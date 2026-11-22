@@ -262,10 +262,10 @@ next action: repository administrator: add PREVIEW_TOKEN under Settings, Secrets
 Take the step the owner is named for. Typical causes the run cannot fix are a
 missing secret, a workflow run awaiting maintainer approval, a setting only a
 repository or organisation owner can change, an account or billing block on
-CI, and a fix that needs a change under `.github/workflows/`, which the run's
-token cannot push (GitHub rejects it without the `workflow` scope). In that last
-case the owner pushes the change to the workflow file from a credential that
-holds the scope. To confirm the state of the checks first:
+CI, and a fix that needs a change under `.github/**`, which the repair never
+edits, whether or not the pull request changes it. In that last case the owner
+is the code owner of `.github/` or the repository administrator, who makes the
+change. To confirm the state of the checks first:
 
 ```bash
 gh pr view "$PR_NUMBER" \

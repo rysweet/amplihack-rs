@@ -93,7 +93,7 @@ agentic finalizer described in
 | Open PR with green checks | Success with `terminal_state=EXISTING_OPEN_PR`; merge according to repository policy. |
 | Open PR with pending checks | The assessment waits for them with `gh pr checks --watch`, then decides on what they report. Pending is not success. |
 | Open PR with failing checks the run can fix | Repaired in a loop with no round or time limit; success once the head is green. CI gating remains active and nothing is skipped to get past it. |
-| Open PR with a failing check the run cannot fix (missing secret, run awaiting maintainer approval, owner-only setting, account or billing block, fix in a workflow file the token cannot push) | Failure with `terminal_state=BLOCKED_CI`, the check and cause as the reason, and the owner and exact step as the next action. The run exits `81` after step recovery hands it off. |
+| Open PR with a failing check the run cannot fix (missing secret, run awaiting maintainer approval, owner-only setting, account or billing block, a fix under `.github/**`, which the repair never edits) | Failure with `terminal_state=BLOCKED_CI`, the check and cause as the reason, and the owner and exact step as the next action. The run exits `81` after step recovery hands it off. |
 | Closed unmerged PR with remaining branch diff | Failure with `terminal_state=FAILED_CLOSED_UNMERGED`; user action is required. |
 | Meaningful branch diff without terminal publication or verification proof | Failure with `terminal_state=FAILED_MEANINGFUL_DIFF`. |
 | Missing or ambiguous PR state | Failure; ambiguity is not treated as success. |
@@ -202,17 +202,18 @@ A run that repairs CI pushes to the pull request branch as often as it needs to,
 and has no round limit. Before relying on it:
 
 - Give the run's token `contents`, `pull-requests` and `actions` write access
-  and no administration or secrets permission. Do not add the `workflow` scope:
-  without it GitHub rejects a push that changes `.github/workflows/`, so a red
-  check whose fix is in a workflow file ends the run `BLOCKED_CI`, naming the
-  file and asking the repository administrator to push the change.
+  and no administration or secrets permission. As a further safeguard, do not
+  add the `workflow` scope. The repair rule does not depend on it: `.github/**` is
+  never edited, whether or not the pull request changes it, so a red check
+  whose fix is under `.github/` ends the run `BLOCKED_CI` before any edit,
+  naming the file and its owner (the code owner of `.github/`, or the
+  repository administrator).
 - Protect the base branch: require a review, dismiss stale approvals when new
   commits are pushed, and forbid force-push and deletion. The repair rules
   forbid force-push and merging without an approval on the current head, but
   the branch protection is what enforces it.
-- Cover `.github/` with `CODEOWNERS`. The repair does not edit workflow files
-  that the pull request does not already change, but a rule in a prompt is
-  advice and the code-owner review is the control.
+- Cover `.github/` with `CODEOWNERS`. The repair never edits `.github/**`,
+  but a rule in a prompt is advice and the code-owner review is the control.
 - Do not configure deploy workflows to run on pushes to non-default branches.
   Each repair push would start one.
 

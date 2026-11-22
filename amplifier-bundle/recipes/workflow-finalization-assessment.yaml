@@ -182,11 +182,9 @@ steps:
       - a workflow run awaiting maintainer approval;
       - a setting only a repository owner can change;
       - an account or billing block on CI;
-      - a cause in a protected file (below) that the pull request does not
-        already change;
-      - a fix under `.github/workflows/`: the run's token has no `workflow`
-        scope, so GitHub rejects the push. Report the rejection; do not try
-        another route to the same push;
+      - a cause under `.github/**`, which the repair never edits (below);
+      - a cause in another protected file (below) that the pull request does
+        not already change;
       - a pull request from a fork or another repository, to which you make no
         write.
 
@@ -281,16 +279,25 @@ steps:
         `skip-checks: true` trailer), `continue-on-error`, a narrowed trigger
         or path filter, a removed job, a skipped or weakened test, or any other
         way of making a check pass without fixing its cause;
-      - editing `.github/**`, hook configuration, `.cargo/config*`,
-        `rust-toolchain*`, `deny.toml`, `amplifier-bundle/recipes/**`,
+      - editing `.github/**` (workflows, composite actions, `CODEOWNERS`,
+        Dependabot configuration). `.github/**` is never edited, whether or
+        not the pull request changes it. A cause there is `BLOCKED_CI` before
+        any edit, naming the file, the change needed and the owner: the code
+        owner of `.github/`, or the repository administrator;
+      - editing hook configuration (`.pre-commit-config.yaml`,
+        `.githooks/**`, `.husky/**`, `lefthook.yml`, and the directory that
+        `core.hooksPath` names), toolchain and registry configuration
+        (`.cargo/config*`, `rust-toolchain*`, `deny.toml`), or framework
+        governance files (`amplifier-bundle/recipes/**`,
         `amplifier-bundle/agents/**`,
-        `amplifier-bundle/tools/workflow_finalization_*.sh` or guard tests,
-        unless the file is already in the pull request's diff against its
-        base; the commit message then names it. Even then, never add or widen a
-        `secrets.*` reference, `permissions:`, `pull_request_target` or another
-        trigger, a third-party action or a network fetch, and never make a
-        check non-blocking. A cause in a protected file outside the diff is
-        `BLOCKED_CI`, naming the file, the change and the owner;
+        `amplifier-bundle/tools/workflow_finalization_*.sh` and the guard tests
+        that check them), unless the file is already in the pull request's
+        diff against its base; the commit message then names it. Even then,
+        never add or widen a `secrets.*` reference, `permissions:`,
+        `pull_request_target` or another trigger, a third-party action or a
+        network fetch, and never make a check non-blocking. A cause in one of
+        these files outside the diff is `BLOCKED_CI`, naming the file, the
+        change needed and the owner;
       - changing a dependency, adding a git or alternative-registry source, or
         adding a build script, unless the failing check shows that exact need;
         name it in the commit message and run the repository's own audit or

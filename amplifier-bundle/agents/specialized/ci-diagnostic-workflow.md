@@ -322,10 +322,10 @@ run does not hold:
 - a workflow run awaiting maintainer approval;
 - a setting only a repository or organisation owner can change;
 - an account or billing block on CI;
-- a cause inside a [protected file](#protected-paths) that the PR does not
-  already change;
-- a fix that needs a change under `.github/workflows/`, because the run's token
-  cannot push one and GitHub rejects the push;
+- a cause under `.github/**`, which the repair never edits (see
+  [Protected Paths](#protected-paths));
+- a cause inside another [protected file](#protected-paths) that the PR does
+  not already change;
 - a pull request from a fork or another repository, which the run makes no
   write to.
 
@@ -384,34 +384,34 @@ step.
 
 ## Protected Paths
 
-The repair does not edit these paths:
+This section is the one list of protected paths. The finalization assessment
+prompt names the same paths, and a guard test compares the two.
 
-- `.github/**`: workflows, composite actions, `CODEOWNERS`, Dependabot
-  configuration;
-- hook configuration;
+`.github/**` is never edited, whether or not the pull request changes it. That
+covers workflows, composite actions, `CODEOWNERS` and Dependabot configuration.
+A cause there is a cause the run cannot fix, reported before any edit: name the
+file, the change needed and the owner, who is the code owner of `.github/` or
+the repository administrator.
+
+These paths are not edited unless the file is already in the pull request's
+diff against its base:
+
+- hook configuration: `.pre-commit-config.yaml`, `.githooks/**`, `.husky/**`,
+  `lefthook.yml`, and the directory that `core.hooksPath` names;
 - toolchain and registry configuration: `.cargo/config*`, `rust-toolchain*`,
   `deny.toml`;
 - framework governance files: `amplifier-bundle/recipes/**`,
   `amplifier-bundle/agents/**`, `amplifier-bundle/tools/workflow_finalization_*.sh`
   and the guard tests that check them.
 
-The exception is a file the PR already changes against its base. A failure
-caused by an edit the PR itself made to such a file stays repairable, apart from
-the `.github/workflows/` limit below. The commit message then names the file.
-Even under the exception, never add or widen a `secrets.*` reference,
-`permissions:`, `pull_request_target` or any other trigger, a third-party
-action or a network fetch, and never make a check non-blocking.
+A failure caused by an edit the PR itself made to one of these files stays
+repairable, and the commit message then names the file. Even then, never add or
+widen a `secrets.*` reference, `permissions:`, `pull_request_target` or any
+other trigger, a third-party action or a network fetch, and never make a check
+non-blocking.
 
-A cause in a protected file that the PR does not change is a cause the run
+A cause in one of these files that the PR does not change is a cause the run
 cannot fix. Name the file, the change needed and the owner.
-
-The run's token does not hold the `workflow` scope, so GitHub rejects a push
-that creates or changes a file under `.github/workflows/`, even when the PR
-already changes that file. Do not look for another route to the same push. When
-the fix is such a change, report the rejection as a cause the run cannot fix:
-name the workflow file, the change needed, and the repository administrator as
-the owner, whose step is to push the change from a credential that holds the
-scope and then re-run the check.
 
 ## Dependencies
 

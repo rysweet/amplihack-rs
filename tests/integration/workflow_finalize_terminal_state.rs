@@ -461,3 +461,170 @@ fn the_assessment_recipe_gains_no_step_for_the_repair() {
         "the step budget is unchanged"
     );
 }
+
+// #2966 (SEC-02). The CI repair never edits `.github/**`, whether or not the
+// pull request changes it: an unreviewed workflow change would run on the
+// branch with the job's secrets, and a token may hold the `workflow` scope, so
+// GitHub refusing the push is not the control. The other protected paths keep
+// the "already in the pull request's diff" exception. The rule is stated in the
+// assessment prompt and in the agent file, which is shipped twice; this keeps
+// them naming the same paths, keeps `.github/**` out of the exception, and keeps
+// any wording that makes the rule depend on the token's scope out of the
+// prompts.
+const PROTECTED_PATHS: [&str; 12] = [
+    ".github/**",
+    ".pre-commit-config.yaml",
+    ".githooks/**",
+    ".husky/**",
+    "lefthook.yml",
+    "core.hooksPath",
+    ".cargo/config*",
+    "rust-toolchain*",
+    "deny.toml",
+    "amplifier-bundle/recipes/**",
+    "amplifier-bundle/agents/**",
+    "amplifier-bundle/tools/workflow_finalization_*.sh",
+];
+
+const GITHUB_RULE: &str =
+    "`.github/**` is never edited, whether or not the pull request changes it";
+
+fn flat(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The text between `start` and the first `end` after it, both required.
+fn between<'a>(text: &'a str, start: &str, end: &str, what: &str) -> &'a str {
+    let from = text
+        .find(start)
+        .unwrap_or_else(|| panic!("{what}: `{start}` not found"));
+    let rest = &text[from..];
+    let to = rest
+        .find(end)
+        .unwrap_or_else(|| panic!("{what}: `{end}` not found after `{start}`"));
+    &rest[..to]
+}
+
+/// Backticked tokens that name a path: they hold a `/` or a `*`, or end in a
+/// configuration file suffix. `secrets.*` is an expression, not a path.
+fn named_paths(text: &str) -> std::collections::BTreeSet<String> {
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|t| {
+            *t != "secrets.*"
+                && (t.contains('/')
+                    || t.contains('*')
+                    || t.ends_with(".yml")
+                    || t.ends_with(".yaml")
+                    || t.ends_with(".toml"))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_ci_repair_never_edits_github_and_names_the_same_protected_paths_everywhere() {
+    let root = workspace_root();
+    let assessment_path =
+        root.join("amplifier-bundle/recipes/workflow-finalization-assessment.yaml");
+    let assessment: Value = serde_yaml::from_str(
+        &fs::read_to_string(&assessment_path).expect("read the assessment recipe"),
+    )
+    .expect("parse the assessment recipe");
+    let prompt = assessment["steps"][0]["prompt"]
+        .as_str()
+        .expect("assess-finalization has a prompt")
+        .to_owned();
+    let agent_paths = [
+        "amplifier-bundle/agents/specialized/ci-diagnostic-workflow.md",
+        "docs/claude/agents/amplihack/specialized/ci-diagnostic-workflow.md",
+    ];
+    let agents: Vec<String> = agent_paths
+        .iter()
+        .map(|p| fs::read_to_string(root.join(p)).unwrap_or_else(|e| panic!("read {p}: {e}")))
+        .collect();
+
+    let prompt_rules = between(
+        &prompt,
+        "- editing `.github/**`",
+        "- changing a dependency",
+        "assessment prompt",
+    );
+    let agent_sections: Vec<&str> = agents
+        .iter()
+        .zip(agent_paths)
+        .map(|(text, p)| between(text, "## Protected Paths", "\n## Dependencies", p))
+        .collect();
+    assert_eq!(
+        agent_sections[0], agent_sections[1],
+        "both copies of the agent carry the same Protected Paths section"
+    );
+
+    for (what, rules, exception) in [
+        (
+            "assessment prompt",
+            prompt_rules,
+            between(
+                prompt_rules,
+                "- editing hook configuration",
+                "outside the diff is",
+                "assessment prompt exception",
+            ),
+        ),
+        (
+            "agent Protected Paths",
+            agent_sections[0],
+            between(
+                agent_sections[0],
+                "These paths are not edited unless",
+                "\n\nA failure caused",
+                "agent exception",
+            ),
+        ),
+    ] {
+        assert!(
+            flat(rules).contains(GITHUB_RULE),
+            "{what} must say {GITHUB_RULE}"
+        );
+        assert!(
+            !exception.contains(".github"),
+            "{what}: the diff exception must not reach `.github/**`:\n{exception}"
+        );
+        for path in PROTECTED_PATHS {
+            assert!(
+                rules.contains(&format!("`{path}`")),
+                "{what} must name the protected path `{path}`"
+            );
+        }
+    }
+    assert_eq!(
+        named_paths(prompt_rules),
+        named_paths(agent_sections[0]),
+        "the assessment prompt and the agent's Protected Paths name the same paths"
+    );
+
+    let step22 = step_prompt(&load_finalize_recipe(), "step-22-ensure-mergeable");
+    assert!(
+        step22.contains("never edit `.github/**`"),
+        "step-22 must say never edit `.github/**`:\n{step22}"
+    );
+    for (what, text) in [
+        ("assessment prompt", prompt.as_str()),
+        ("agent", agents[0].as_str()),
+        ("agent copy", agents[1].as_str()),
+        ("step-22", step22.as_str()),
+    ] {
+        let lower = flat(text).to_lowercase();
+        for stale in [
+            "`workflow` scope",
+            "report the rejection",
+            "rejects the push",
+        ] {
+            assert!(
+                !lower.contains(stale),
+                "{what} must not make the rule depend on the token: found `{stale}`"
+            );
+        }
+    }
+}
