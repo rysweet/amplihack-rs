@@ -89,6 +89,10 @@ fi
 . "$here/workflow_finalization_facts.sh"
 . "$here/workflow_finalization_worktree.sh"
 . "$here/workflow_finalization_validate.sh"
+# #2966: the re-entry into the CI repair, run between the assessment and the
+# validator (continue-ci-repair). It classifies with the result brick's
+# vocabulary, so it is sourced after it.
+. "$here/workflow_finalization_reentry.sh"
 . "$here/workflow_finalization_complete.sh"
 
 # Sets FINALIZATION_BASE_BRANCH from the run's pull request when --base was
@@ -125,9 +129,10 @@ resolve_finalization_base() {
 case "$mode" in
   collect) run_finalization_cleanup; collect_evidence ;;
   validate) validate_finalization ;;
+  reassess) continue_ci_repair ;;
   complete) complete_workflow ;;
   *)
-    echo "ERROR: workflow_agentic_finalization.sh requires mode: collect, validate, or complete" >&2
+    echo "ERROR: workflow_agentic_finalization.sh requires mode: collect, validate, reassess, or complete" >&2
     exit 2
     ;;
 esac

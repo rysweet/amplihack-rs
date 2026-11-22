@@ -35,6 +35,8 @@ mod assessed_ci;
 mod assessed_ci_owner;
 #[path = "issue_1714_finalization_handoff/brick.rs"]
 mod brick;
+#[path = "issue_1714_finalization_handoff/compat_alias.rs"]
+mod compat_alias;
 #[path = "issue_1714_finalization_handoff/fixture.rs"]
 mod fixture;
 #[path = "issue_1714_finalization_handoff/probe.rs"]

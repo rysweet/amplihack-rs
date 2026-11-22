@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use super::fixture::*;
 
-fn recipe_files() -> Vec<PathBuf> {
+pub(super) fn recipe_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut dirs = vec![workspace_root().join("amplifier-bundle/recipes")];
     while let Some(dir) = dirs.pop() {
@@ -23,7 +23,7 @@ fn recipe_files() -> Vec<PathBuf> {
     files
 }
 
-fn tool_files() -> Vec<PathBuf> {
+pub(super) fn tool_files() -> Vec<PathBuf> {
     fs::read_dir(workspace_root().join("amplifier-bundle/tools"))
         .expect("read tools dir")
         .flatten()
@@ -32,7 +32,7 @@ fn tool_files() -> Vec<PathBuf> {
         .collect()
 }
 
-fn rel(path: &std::path::Path) -> String {
+pub(super) fn rel(path: &std::path::Path) -> String {
     path.strip_prefix(workspace_root())
         .unwrap_or(path)
         .display()
@@ -40,7 +40,7 @@ fn rel(path: &std::path::Path) -> String {
 }
 
 /// Every bundle tool, then every recipe, whose text holds `definition`.
-fn definers(definition: &str) -> Vec<String> {
+pub(super) fn definers(definition: &str) -> Vec<String> {
     tool_files()
         .into_iter()
         .chain(recipe_files())
@@ -170,24 +170,6 @@ fn the_allow_list_is_defined_once_in_the_brick() {
     assert!(
         brick_text.lines().count() <= 300,
         "the brick must fit the 300-line budget"
-    );
-}
-
-// #2966: the validator no longer answers BLOCKED_CI from the probe's record, so
-// the drop-in that handed off on the run's own PR number has no caller and no
-// definition. A hand-off now goes only through the *_open_pr functions, which
-// need the pull request number the assessment returned.
-#[test]
-fn the_prior_state_handoff_helper_is_gone() {
-    let holders = definers("finalization_fail_or_handoff()");
-    assert!(
-        holders.is_empty(),
-        "finalization_fail_or_handoff() must not be defined: {holders:?}"
-    );
-    let validate = read(&tool_path("workflow_finalization_validate.sh"));
-    assert!(
-        !code_lines(&validate).any(|l| l.contains("finalization_fail_or_handoff ")),
-        "the validator must not call the removed helper"
     );
 }
 

@@ -434,11 +434,17 @@ fn the_ci_repair_step_works_in_the_runs_worktree_and_is_not_wrapped() {
     );
 }
 
-// #2966: the assessment that decides the terminal state is still the one
-// agent step of its recipe. The CI repair is done inside it, not by a step
-// added beside it, so the recipe's step budget (`max_total_steps`) is unchanged.
+// #2966, crusty round 1. The repair lives in one agent session, and a session
+// can end before its work does. `continue-ci-repair`, the assessment recipe's
+// second step, starts the agent step again while its answer is not a decision,
+// so a crash or an unfinished repair no longer ends the run. It re-runs this
+// same recipe with `ci_repair_reentry` set, and its condition skips it there,
+// so a pass never nests another and one run of the recipe stays within its
+// step budget. It is wrapped in step recovery without `--no-repair`: a retry
+// re-runs the re-entry, which reads the pull request live. Both steps live here
+// and not in workflow-finalize, which is at its brick budget.
 #[test]
-fn the_assessment_recipe_gains_no_step_for_the_repair() {
+fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
     let path = workspace_root()
         .join("amplifier-bundle")
         .join("recipes")
@@ -447,18 +453,59 @@ fn the_assessment_recipe_gains_no_step_for_the_repair() {
     let recipe: Value =
         serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
 
-    let ids: Vec<&str> = recipe
+    let steps = recipe
         .get("steps")
         .and_then(Value::as_sequence)
-        .expect("the assessment recipe has steps")
+        .expect("the assessment recipe has steps");
+    let ids: Vec<&str> = steps
         .iter()
         .filter_map(|step| step.get("id").and_then(Value::as_str))
         .collect();
-    assert_eq!(ids, ["assess-finalization"], "one step, as before");
+    assert_eq!(ids, ["assess-finalization", "continue-ci-repair"]);
     assert_eq!(
         recipe["recursion"]["max_total_steps"].as_u64(),
         Some(4),
-        "the step budget is unchanged"
+        "one run of the recipe is two steps, within its budget"
+    );
+    assert_eq!(
+        recipe["context"]["ci_repair_reentry"].as_str(),
+        Some(""),
+        "the re-entry note is declared, empty on the first pass"
+    );
+
+    let agent = &steps[0];
+    assert_eq!(
+        agent["continue_on_error"].as_bool(),
+        Some(true),
+        "a crash reaches the re-entry"
+    );
+    assert!(
+        agent["prompt"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("```reentry\n{{ci_repair_reentry}}\n```"),
+        "the agent step reads why it was started again, as data"
+    );
+
+    let reentry = &steps[1];
+    assert_eq!(reentry["condition"].as_str(), Some("not ci_repair_reentry"));
+    assert_eq!(reentry["output"].as_str(), Some("finalization_assessment"));
+    assert_eq!(reentry["parse_json"].as_bool(), Some(true));
+    assert!(
+        reentry.get("continue_on_error").is_none(),
+        "its failure is its own"
+    );
+    let command = reentry["command"].as_str().expect("a bash command");
+    assert!(command.contains("bash \"$H\" reassess"), "{command}");
+    assert!(
+        command.contains(
+            "step-recovery run --step-id continue-ci-repair --essential --stop-on-handoff"
+        ),
+        "{command}"
+    );
+    assert!(
+        !command.contains("--no-repair"),
+        "a retry can observe a repair: {command}"
     );
 }
 
@@ -629,14 +676,15 @@ fn the_ci_repair_never_edits_github_and_names_the_same_protected_paths_everywher
     }
 }
 
-// #2966, from the step-17b review. The prompt tells the agent to return a
-// terminal state when it must stop before the head is green and before it can
-// name a cause the run cannot fix. It has to say which state: with none named,
-// the nearest reading is `EXISTING_OPEN_PR`, which finalization publishes as a
-// success over a red head. It is `FAILED_IMPLEMENTATION` -- the verification
-// the run needs is not complete -- and never a success.
+// #2966, from the step-17b review and crusty round 1. The prompt tells the
+// agent what to answer when it must stop before the head is green and before
+// it can name a cause the run cannot fix. With nothing named, the nearest
+// reading is `EXISTING_OPEN_PR`, which finalization publishes as a success over
+// a red head. It was `FAILED_IMPLEMENTATION`, which ended a standalone run on a
+// repairable CI; it is now `CI_REPAIR_UNFINISHED`, which is no terminal state
+// at all: continue-ci-repair starts the step again to continue the repair.
 #[test]
-fn the_assessment_names_the_state_for_a_stop_before_green() {
+fn the_assessment_names_the_answer_for_a_stop_before_green() {
     let path =
         workspace_root().join("amplifier-bundle/recipes/workflow-finalization-assessment.yaml");
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
@@ -648,8 +696,23 @@ fn the_assessment_names_the_state_for_a_stop_before_green() {
     ));
 
     assert!(
-        paragraph.contains("`FAILED_IMPLEMENTATION`"),
-        "the stop-before-green paragraph must name the state to return: {paragraph}"
+        paragraph.contains("answer `CI_REPAIR_UNFINISHED`")
+            && paragraph.contains("It is not a terminal state"),
+        "the stop-before-green paragraph must name the answer to return: {paragraph}"
+    );
+    assert!(
+        paragraph.contains("never `FAILED_IMPLEMENTATION`"),
+        "an unfinished repair is never FAILED_IMPLEMENTATION: {paragraph}"
+    );
+    let failed_implementation = flat(between(
+        &text,
+        "- `FAILED_IMPLEMENTATION` —",
+        "- `FAILED_REPORTING`",
+        "assessment prompt",
+    ));
+    assert!(
+        failed_implementation.contains("is never this state: answer `CI_REPAIR_UNFINISHED`"),
+        "the FAILED_IMPLEMENTATION definition must not offer itself for an unfinished repair: {failed_implementation}"
     );
     for success in [
         "EXISTING_OPEN_PR",

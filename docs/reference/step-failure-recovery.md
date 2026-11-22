@@ -69,6 +69,7 @@ record is an ordinary failure.
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
 | `workflow-finalize` | `validate-agentic-finalization` | `--essential --stop-on-handoff --no-repair` |
+| `workflow-finalization-assessment` | `continue-ci-repair` | `--essential --stop-on-handoff` |
 
 Report steps: `workflow-finalize` `step-recovery-report` (before
 `workflow-complete`), `auto-drive-to-merge` `autodrive-report`, and
@@ -169,12 +170,22 @@ decides on what it did.
 A CI failure the run can fix never reaches this step (#2966). The probe lets
 failing checks continue, `step-22-ensure-mergeable` repairs them, and
 `assess-finalization` waits for what is pending and continues the repair before
-it decides. `BLOCKED_CI` therefore arrives here only when the assessment judged
+it decides. When an assessment session ends short of a decision (a crash, a
+prose answer, an unfinished repair), `continue-ci-repair` starts it again
+before this step runs. `BLOCKED_CI` therefore arrives here only when the assessment judged
 the cause one the run cannot fix, such as a missing secret or a workflow run
 awaiting maintainer approval. The step's goal text says so, and the move is
 `handoff` to the owner the assessment named, with the check, the cause and the
 exact step. `--no-repair` stays right for it: the cause is recorded, and a retry
 would read the same bytes.
+
+`continue-ci-repair` is the opposite case and is not `--no-repair`. Its command
+runs the assessment again, which reads the pull request live and may repair it,
+so a retry can observe a repair. It fails only when two passes in a row
+returned no decision and changed nothing in the worktree, or when the nested
+run itself failed. Its recovery agent may then retry, which runs the re-entry
+again, or hand off with the reason. See
+[When the assessment stops short](./default-workflow-agentic-finalization.md#when-the-assessment-stops-short).
 
 Making the step read live instead would not rescue the retry. The terminal
 state is still the one recorded before the first attempt, so fresher facts

@@ -14,7 +14,7 @@ use crate::support::step_recovery::{Fixture, HANDOFF_EXIT, bundle_recipes, show}
 /// `(recipe, step whose command runs the driver, recorded step id)`. Bash
 /// steps are wrapped in place; an agent or sub-recipe step keeps its type,
 /// gets `continue_on_error`, and is recovered by the bash step after it.
-const CONVERTED: [(&str, &str, &str); 7] = [
+const CONVERTED: [(&str, &str, &str); 8] = [
     (
         "autodrive-crusty-loop",
         "step-02-crusty-loop",
@@ -45,6 +45,13 @@ const CONVERTED: [(&str, &str, &str); 7] = [
         "workflow-finalize",
         "validate-agentic-finalization",
         "validate-agentic-finalization",
+    ),
+    // #2966: the re-entry into the CI repair, the assessment recipe's second
+    // step. A bash step wrapped in place.
+    (
+        "workflow-finalization-assessment",
+        "continue-ci-repair",
+        "continue-ci-repair",
     ),
 ];
 
@@ -148,6 +155,11 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             "step-21-pr-ready",
             "--essential --stop-on-handoff",
         ),
+        (
+            "workflow-finalization-assessment",
+            "continue-ci-repair",
+            "--essential --stop-on-handoff",
+        ),
     ] {
         let command = step_command(name, id);
         assert!(
@@ -156,6 +168,14 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
         );
         assert!(!command.contains("--state-file"), "{name}/{id}");
     }
+    // #2966: unlike the validator, continue-ci-repair is offered a retry. What
+    // it re-runs is the assessment, which reads the pull request live and may
+    // repair it, so a retry can observe a repair.
+    assert!(
+        !step_command("workflow-finalization-assessment", "continue-ci-repair")
+            .contains("--no-repair"),
+        "continue-ci-repair must not be --no-repair"
+    );
     for (name, step_id, id) in CONVERTED.iter().filter(|(_, s, i)| s != i) {
         let original = step(name, id);
         assert_eq!(

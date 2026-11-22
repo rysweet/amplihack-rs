@@ -28,8 +28,16 @@ description: >
   and the owner's step in the hand-off record and on the failure line. The
   fourth checks that a check still in progress is waited on: the assessment
   runs `gh pr checks --watch`, reads the settled green head and reports
-  EXISTING_OPEN_PR, with exit 0 and no push. Every case allows at most one pull
-  request comment, the "Ready for Final Review" note. With
+  EXISTING_OPEN_PR, with exit 0 and no push. Five more cases cover an
+  assessment session that ends short of a decision, which the first review of
+  the fix found still ended the run: a session that crashes is started again
+  and the second pass repairs the CI; two sessions that stop with the repair
+  unfinished are continued and the third repairs it; a BLOCKED_CI without the
+  owner's step is asked again and the second pass names it; a file the repair
+  left behind is handed back and removed; and two passes in a row that answer
+  prose and change nothing send continue-ci-repair to its recovery agent, exit
+  81. Every case allows at most one pull request comment, the "Ready for Final
+  Review" note. With
   AMPLIHACK_2966_BASELINE_REF set, the driver runs the first fixture against the
   bundle that ref held and confirms the reported behaviour: BLOCKED_CI, exit 81,
   and the repair step never started. What the scenario does not cover is an
@@ -88,3 +96,28 @@ assertions:
     params:
       target: stdout
       expected: "PASS: pending_checks_are_waited_on - "
+  - name: crashed-assessment-is-started-again
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: crashed_assessment_is_started_again - "
+  - name: unfinished-repair-is-continued
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unfinished_repair_is_continued - "
+  - name: unowned-blocked-ci-is-asked-again
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unowned_blocked_ci_is_asked_again - "
+  - name: leftover-file-is-cleaned
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: leftover_file_is_cleaned - "
+  - name: repeated-crash-goes-to-recovery
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: repeated_crash_goes_to_recovery - "

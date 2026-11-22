@@ -147,6 +147,12 @@ _finalization_state_names_pr() {
 # asks only whether the decision named what it asserts: it re-judges no fact
 # and reads no check.
 #
+# It is the last check, not the first. continue-ci-repair (#2966,
+# workflow_finalization_reentry.sh) applies this same rule to the assessment's
+# answer and asks a new session for the missing sentence first, so an unowned
+# BLOCKED_CI reaches the validator only when the pass asked again still named
+# none and changed nothing.
+#
 # _finalization_decision_unowned <state> <reason> <next> -> prints what is
 # missing and returns 0 when the state needs an owner and was given none.
 _finalization_decision_unowned() {

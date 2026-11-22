@@ -188,12 +188,21 @@ required_next_action=Re-run the reporting step; the implementation is intact.
 Retry the reporting step for `FAILED_REPORTING`; do not re-run the
 implementation. Resume from implementation only for `FAILED_IMPLEMENTATION`.
 
-Since #2966 `FAILED_IMPLEMENTATION` also covers a published pull request whose
-head the run left not green, with the repair unfinished and no cause named
-that the run cannot fix. It then carries the pull request number, and `reason`
-names the head commit with the count of green, failing, pending and unknown
-checks read last. Resume the CI repair from that head rather than from
-implementation.
+A published pull request whose head the run left not green, with the repair
+unfinished and no cause named that the run cannot fix, is not
+`FAILED_IMPLEMENTATION` (#2966). The assessment answers `CI_REPAIR_UNFINISHED`,
+and `continue-ci-repair` starts it again in a new session until a session
+decides. A crash or a prose answer is started again the same way. Each new pass
+logs one line on stderr naming why:
+
+```text
+INFO: #2966: assess-finalization ended with repair_unfinished; starting it again to continue the CI repair
+```
+
+Only two passes in a row that gave no decision and changed nothing end the
+asking. `continue-ci-repair` then goes to its recovery agent, and the recovery
+record names that step. See
+[When the assessment stops short](../reference/default-workflow-agentic-finalization.md#when-the-assessment-stops-short).
 
 The finalizer narrative is never parsed, so its text cannot cause either state.
 Read it as diagnostics only:

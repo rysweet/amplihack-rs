@@ -141,9 +141,9 @@ after="$(pwd) $(umask) $- $(set -o | tr -s ' \t' ' ' | tr '\n' ,)"
 for f in finalization_handoff_allowed finalization_handoff_flag finalization_fail_or_handoff_open_pr autodrive_build_handoff; do
   [ "$(type -t "$f")" = function ] || { echo "missing function $f"; exit 5; }
 done
-# #2966: its only caller, the prior-state BLOCKED_CI answer, is gone, so the
-# drop-in for fail_result that handed off on the run's own PR number is too.
-[ "$(type -t finalization_fail_or_handoff)" != function ] || { echo "finalization_fail_or_handoff is back"; exit 6; }
+# #2966 removed the old drop-in's only caller; it stays one release as an
+# alias (#3049), and an alias is still only a definition.
+[ "$(type -t finalization_fail_or_handoff)" = function ] || { echo "missing the finalization_fail_or_handoff alias"; exit 6; }
 echo clean"#;
     let outcome = brick(
         r#"bash -c "$SCRIPT""#,
