@@ -137,9 +137,13 @@ tool is one the gateway routes (Claude Code, RustyClawd or Copilot CLI) and
 never configured for the ids in the shipped mapping, so amplihack removes the
 tier's `--model` pair and its existing chain writes `AMPLIHACK_LITELLM_MODEL`
 in its place. Ranks 1 and 3 are dropped on that path for the same reason. The
-tier's reasoning effort is not dropped: an effort is a session setting, not a
-routing key, so a gateway-routed Claude launch still receives `--effort` from
-its tier. Codex is not routed by the gateway, so its tiers apply as usual.
+tier's reasoning effort is not dropped with it: an effort is a session setting,
+not a routing key, so the gateway path keeps the tier's `--effort` and applies
+the same [version rule](#a-claude-code-that-does-not-accept---effort) as any
+other Claude launch. The Claude Code that the gateway installs is pinned to
+2.1.247, which is older than 2.1.329, so a gateway-routed launch runs without
+`--effort` and prints the notice described there until that pin moves. Codex is
+not routed by the gateway, so its tiers apply as usual.
 
 `model.force` outranks an explicit `--model`, because the forced value comes
 from your own user config or environment. A forced launch keeps the tier's
@@ -181,12 +185,11 @@ stderr line says so. On Claude that means an `--effort <value>` or an
 `--effort=<value>` before any bare `--`; an `--effort` written after a bare `--`
 is prompt text for Claude and does not count. On Codex it means the
 `model_reasoning_effort` key. Copilot CLI has no such argument, so an effort
-written in its column is recorded as requested rather than effective.
+written in its column is recorded in the record file but never passed on.
 
-When amplihack adds `--effort` to a Claude-compatible launch, it reads the
-installed binary's `--help` once and keeps the flag only if the text lists it.
-See
-[a Claude Code that does not know `--effort`](#a-claude-code-that-does-not-know---effort).
+On a Claude-compatible launch, amplihack keeps the flag only when the version
+it already read from the installed binary is 2.1.329 or later. See
+[a Claude Code that does not accept `--effort`](#a-claude-code-that-does-not-accept---effort).
 
 Accepted effort values differ by harness, weakest first:
 
@@ -248,7 +251,7 @@ effort = "max"
 ```
 
 A cell that names a model and no `effort` launches that model with no
-`--effort`, and Claude Code applies its own default. That is the way to clear
+`--effort`, and Claude Code applies its own default. That is one way to clear
 the shipped `xhigh` on one host:
 
 ```toml
@@ -268,21 +271,45 @@ A concrete model id written by hand on a step (`--model claude-opus-5[1m]`
 rather than a tier word) gets no tier, no effort and no record line, as before:
 `--effort` appears only where a tier word was present.
 
-### A Claude Code that does not know `--effort`
+### A Claude Code that does not accept `--effort`
 
-A Claude Code old enough not to accept `--effort` would refuse the whole launch
-with its own message. To avoid that, a launch to which amplihack has added
-`--effort` first runs the resolved binary's `--help` once, with the same
-handling as the existing `--version` probe. When the help text does not list
-`--effort`, amplihack takes the pair back off the command line, prints one
-stderr line saying the step runs without it, and records no effective effort.
-The step then runs on the tier's model. This is a fall-back, not a gate: a help
-text that cannot be read leaves the flag in place, and nothing here ends the
-launch. No probe runs when the tier carries no effort or when your command
-already sets `--effort`.
+`--effort` is accepted by Claude Code 2.1.329 and later. amplihack already reads
+the installed binary's version when it resolves the binary, so the decision
+needs no further process: the version is parsed and compared with 2.1.329, and
+`claude` is started exactly once. The flag is kept when all of these hold:
 
-To stop amplihack writing the flag at all on such a host, and save the probe,
-write the cell with no `effort` key, which clears the shipped effort:
+- the value is one of `low`, `medium`, `high`, `xhigh` or `max`;
+- your command carries no `--effort` of its own, in either the `--effort X` or
+  the `--effort=X` form;
+- the version is 2.1.329 or later.
+
+When the version is older, or cannot be read or understood, amplihack does not
+write the flag. It prints one stderr line and runs the step on the tier's
+`--model` alone. The step starts and exits as it otherwise would; this is a
+fall-back, not a gate. The line names the version it found:
+
+```text
+amplihack: model tier `strong` on `claude`: the installed Claude Code reports version 2.1.320, and `--effort` needs 2.1.329 or later, so this step runs without `--effort xhigh`. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
+```
+
+or says that it could not read one:
+
+```text
+amplihack: model tier `strong` on `claude`: the installed Claude Code version could not be read, and `--effort` needs 2.1.329 or later, so this step runs without `--effort xhigh`. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
+```
+
+A version string that does not look like a Claude Code version, such as one from
+a Claude-compatible tool with its own numbering, is treated as older. Text taken
+from the binary or from an override file is shown with control characters
+removed and is cut at 64 characters.
+
+The threshold 2.1.329 is the oldest version seen to accept the flag, and the
+first release that accepted it is not known. If it was earlier, an install
+between that release and 2.1.329 loses only the effort: the step still runs on
+the tier's model. No retry is made and nothing waits for the binary to refuse.
+
+You need to do nothing for an older Claude Code, since the step falls back by
+itself. Write a cell with no `effort` key only if you want to stop the notice:
 
 ```toml
 # ~/.amplihack/model-tiers.toml
@@ -296,11 +323,10 @@ Or lower every Claude tier at once with a
 [ceiling](#when-an-account-refuses-an-effort), which bounds an effort without
 removing it.
 
-`rusty`, `rustyclawd` and `amplifier` share the `claude` column and so receive
-the same `--effort`. They already receive Claude's `--model` with Claude-only
-ids, so the column is already treated as command-line compatible with Claude.
-Their `--help` is read in the same way, and if one of them refuses the flag
-anyway, clear the cell as above.
+`rusty`, `rustyclawd` and `amplifier` share the `claude` column and receive the
+same `--effort` through the same version rule. A binary of theirs that reports a
+version below 2.1.329, or numbers its releases differently from Claude Code, runs
+without the effort and prints the notice above.
 
 ### Raising a Codex effort
 
@@ -520,7 +546,7 @@ With `AMPLIHACK_DEFAULT_MODEL=claude-sonnet-5-5` set, a `strong` step receives:
 | Claude-compatible | `claude-sonnet-5-5` | `--effort xhigh` |
 | Codex, shipped mapping | none; the cell names no model, so Codex's own runs | `-c model_reasoning_effort=high` |
 | Codex, with the instance cell below | that cell's model | `-c model_reasoning_effort=high` |
-| Copilot CLI, shipped mapping | none | none; no launch control, so an effort there is recorded as requested only |
+| Copilot CLI, shipped mapping | none | none; no launch control, so an effort there is recorded and not passed |
 
 To give a Codex tier a model, write the cell in your own `model-tiers.toml`:
 
@@ -600,8 +626,10 @@ used; `tier`, one of the three words or `null`; `requested_model` and
 `null` when it carries none; and `fallback`, one of `no_column`, `no_mapping`,
 `no_model`, `gateway`, or `null`. The line above is a `strong` Codex step on
 the shipped mapping: the cell names an effort and no model, so the model falls
-back with `no_model` while the effort is passed. The file carries no command
-line, no environment, no prompt text, no working directory and no path.
+back with `no_model` while the effort is passed. A launch that the contract
+gate refuses still records its effort as `null` when the version rule withholds
+it, because the record is finished before the gate runs. The file carries no
+command line, no environment, no prompt text, no working directory and no path.
 
 It is written only when `AMPLIHACK_RUN_DIR` names a directory that already
 exists, with a fixed name, mode 0600, without following a symlink, and under an
@@ -680,6 +708,7 @@ amplihack: model tier `fast` on `claude`: passing `--model claude-haiku-5-5`. Se
 amplihack: model tier `strong` on `claude`: passing `--model claude-opus-5[1m]` and `--effort xhigh`. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: model tier `strong` on `codex`: passing `-c model_reasoning_effort=high`; the model stays `codex`'s own. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: model tier `strong` on `claude`: leaving the `--effort` already on the command line alone.
+amplihack: model tier `strong` on `claude`: the installed Claude Code reports version 2.1.320, and `--effort` needs 2.1.329 or later, so this step runs without `--effort xhigh`. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: model tier `strong` has no entry in the `copilot` column, so `copilot` runs on its own default model. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: model tiers: step_tiers.step-99-polish: amplihack staged no recipe declaring a step with that id, so nothing is overridden and every step keeps the tier its recipe declares. Usually the id is mistyped; a recipe amplihack could not read, one larger than the size bound, and one past the candidate cap all look the same from here. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: AMPLIHACK_DEFAULT_MODEL is set, so `claude` is launched with `--model claude-sonnet-5-5` in place of the model its tier maps to. Unset it to restore the mapping. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.

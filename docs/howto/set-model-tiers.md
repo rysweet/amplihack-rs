@@ -66,7 +66,7 @@ the shipped `[codex.strong]`, which asks for `high`, so a cell with only a
 Accepted effort values depend on the column. Claude takes `low`, `medium`,
 `high`, `xhigh` and `max`; Codex takes `minimal`, `low`, `medium`, `high` and
 `xhigh`. Copilot CLI has no launch control for effort, so a value in its column
-is recorded as requested rather than effective.
+is recorded and not passed on.
 
 ## 3. Set the effort a Claude tier is launched at
 
@@ -97,10 +97,15 @@ effort = "max"
 ```
 
 Your cell replaces the shipped one whole, so a cell that names only a `model`
-launches with no `--effort` at all. On a host whose Claude Code is too old to
-accept `--effort`, amplihack sees that the option is missing from its `--help`,
-runs the step without it and prints a line saying so; clearing the effort in
-the cell stops the flag being written in the first place.
+launches with no `--effort` at all.
+
+`--effort` needs Claude Code 2.1.329 or later, which is the oldest version seen
+to accept it. amplihack compares the version it has already read from the
+binary. On an older Claude Code, or when the version cannot be read, the step
+runs on the tier's model without `--effort` and prints a line naming the version
+found and the minimum; nothing for you to change. The Claude Code that a LiteLLM
+gateway installs is pinned to 2.1.247, so gateway launches run without it too.
+To stop the line appearing, leave the effort out of the cell:
 
 ```toml
 [claude.strong]
@@ -246,8 +251,9 @@ jq -r '[.tier // "none", .effective_model // "harness default"] | @tsv' \
 
 A line whose `effective_model` is `null` fell back, and its `fallback` field
 says why. A line whose `requested_effort` is set and whose `effective_effort`
-is `null` ran on a harness with no launch control for effort; one where the two
-differ was lowered by the column's `max_effort`.
+is `null` ran on a harness with no launch control for effort, or on a Claude
+Code older than 2.1.329. A line where the two differ was lowered by the
+column's `max_effort`.
 
 ## Troubleshooting
 
@@ -262,7 +268,7 @@ differ was lowered by the column's `max_effort`.
 | Tiers have no effect at all | The launch goes through the LiteLLM gateway | Unset `AMPLIHACK_LITELLM_ENDPOINT`, `AMPLIHACK_LITELLM_API_KEY` and `AMPLIHACK_LITELLM_MODEL`, or set the gateway's model |
 | One step ran on `auto`, with no tier effort | `AMPLIHACK_RATELIMIT_FALLBACK_AUTO_MODEL` made the runner replace that step's model before amplihack saw a tier | Unset it, or accept that the last retry of a rate-limited step is untiered |
 | An effort value is dropped | It is outside its column's list: `low`, `medium`, `high`, `xhigh`, `max` for Claude, or `minimal`, `low`, `medium`, `high`, `xhigh` for Codex | Use an accepted value; the model applied anyway |
-| Claude refuses `--effort`, or a line says the step runs without it | The installed Claude Code is too old to know the option, or a Claude-compatible tool other than `claude` does not accept it | Name the `[claude.<tier>]` cell with its `model` and no `effort` |
+| A line says the step runs without `--effort` | The installed Claude Code is older than 2.1.329, or its version could not be read, so amplihack withheld the flag; the step ran on the tier's model | Update Claude Code, or leave `effort` out of the `[claude.<tier>]` cell to silence the line |
 | A Claude `strong` step ran at a different effort than the cell says | The command already carried its own `--effort`, which amplihack leaves alone, or `[claude] max_effort` lowered it | Check the command line and the column's ceiling |
 | Codex refuses the effort amplihack passed | Your account's model does not accept the value that cell names | Lower `effort` in that `[codex.<tier>]` cell, or set `[codex] max_effort` to bound all three |
 | A Codex or Copilot CLI step ignores `AMPLIHACK_DEFAULT_MODEL`, with no line about it | The variable applies to Claude-compatible tools only | Write a `[codex.<tier>]` cell with `model` and `effort`, or a `[copilot.<tier>]` cell with `model`, in your `model-tiers.toml` |

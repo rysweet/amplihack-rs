@@ -22,9 +22,14 @@ version = 1
 # The effort reaches Claude Code as its own `--effort xhigh` argument (issue
 # #2916); Claude's words are `low`, `medium`, `high`, `xhigh` and `max`.
 #
-# An override cell replaces this one whole, so an instance whose Claude Code
-# is too old to know `--effort`, or which wants a different model here, writes
-# its own `[claude.strong]` with no `effort` key and the effort is cleared.
+# amplihack passes `--effort` only to a Claude Code at version 2.1.329 or
+# later, the oldest version seen to accept it. On an older Claude Code, or one
+# whose version cannot be read, the step runs with `--model` alone and a notice
+# says so; no edit to this file is needed for that fall-back.
+#
+# An override cell replaces this one whole, so an instance which wants a
+# different model here, or no effort at all, writes its own `[claude.strong]`
+# with no `effort` key and the effort is cleared.
 # `[claude] max_effort = "high"` lowers it for the whole column instead.
 [claude.strong]
 model = "claude-opus-5[1m]"

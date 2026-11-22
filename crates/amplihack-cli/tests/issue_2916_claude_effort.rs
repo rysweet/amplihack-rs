@@ -5,8 +5,9 @@
 //! builds, against a stand-in `claude` that records its own argv. Every path
 //! is under one temporary home and every variable is set on the child only.
 //!
-//! A Claude Code whose `--help` does not list `--effort` gets the step without
-//! it and a line saying so; nothing ends the launch. An instance can also
+//! A Claude Code older than 2.1.329, or whose version cannot be read, gets the
+//! step without `--effort` and a line saying so; nothing ends the launch and
+//! the stand-in is started exactly once. An instance can also
 //! clear the cell's effort in its own override file, which R9 pins.
 
 #![cfg(target_os = "linux")]
@@ -36,6 +37,7 @@ fn a_strong_tier_step_launches_with_xhigh_and_the_tier_model() {
     );
     assert_eq!(launch.model(), Some(STRONG), "argv: {:?}", launch.argv);
     assert_eq!(count_effort_flags(&launch), 1, "argv: {:?}", launch.argv);
+    assert_eq!(f.launches(), 1, "one launch, no probe");
     assert!(
         launch.output.status.success(),
         "stderr:\n{}",
@@ -238,8 +240,8 @@ fn the_applied_line_names_claudes_flag_and_never_the_argv_tail() {
 }
 
 #[test]
-fn a_gateway_launch_still_carries_the_effort() {
-    // The gateway chooses the model; the effort still belongs to the step.
+fn a_gateway_launch_withholds_the_effort_its_pinned_claude_code_predates() {
+    // The gateway chooses the model; the pinned Claude Code decides the effort.
     //
     // The fixture is `issue_1619_tier_propagation`'s: a gateway launch of
     // Claude Code wants one of `VERIFIED_CLAUDE_CODE_VERSIONS` (2.1.247),
@@ -249,7 +251,7 @@ fn a_gateway_launch_still_carries_the_effort() {
     let f = Fixture::new();
     crate::support::exec_stub::write_executable(
         &f.tools.join("claude"),
-        crate::support::tier_harness::FAKE_HARNESS.replace("2.1.319", "2.1.247"),
+        crate::support::tier_harness::FAKE_HARNESS.replace("2.1.329", "2.1.247"),
         0o755,
     );
     let launch = f.finish(
@@ -259,13 +261,10 @@ fn a_gateway_launch_still_carries_the_effort() {
             .env("AMPLIHACK_LITELLM_API_KEY", "test-key")
             .env("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1"),
     );
-    assert_eq!(
-        launch.claude_effort(),
-        Some("xhigh"),
-        "argv: {:?}",
-        launch.argv
-    );
-    assert_eq!(count_effort_flags(&launch), 1, "argv: {:?}", launch.argv);
+    // The gateway pins Claude Code 2.1.247, which predates `--effort`.
+    assert_eq!(count_effort_flags(&launch), 0, "argv: {:?}", launch.argv);
+    assert_eq!(f.launches(), 1, "one launch");
+    assert!(launch.stderr().contains("2.1.247"), "{}", launch.stderr());
     assert_eq!(
         launch.model(),
         Some("gateway-model"),
@@ -314,18 +313,17 @@ fn a_codex_launch_is_unchanged_and_carries_no_claude_flag() {
     assert_eq!(count_effort_flags(&launch), 0, "argv: {:?}", launch.argv);
 }
 
-/// An installed Claude Code too old to know `--effort`: the step reports it
-/// and runs without the flag rather than failing on Claude's unknown option.
+/// An installed Claude Code older than 2.1.329: the step runs without the
+/// effort, once, and says so.
 #[test]
 fn a_claude_too_old_for_effort_runs_the_step_without_it_and_says_so() {
     let f = Fixture::new();
-    // The stand-in's `--help` lists no `--effort`, and like an old Claude Code
-    // it refuses the option outright if it is passed anyway.
+    // Like an old Claude Code, the stand-in refuses `--effort` outright.
     let old = crate::support::tier_harness::FAKE_HARNESS
-        .replace("--effort <level>", "--model <model>")
+        .replace("2.1.329 (Claude Code)", "2.1.320 (Claude Code)")
         .replace(
-            ": > \"$ARGV_LOG\"",
-            "for a in \"$@\"; do [ \"$a\" = --effort ] && { echo \"error: unknown option '--effort'\" >&2; exit 1; }; done\n: > \"$ARGV_LOG\"",
+            "echo launch >>",
+            "for a in \"$@\"; do [ \"$a\" = --effort ] && { echo \"error: unknown option '--effort'\" >&2; exit 1; }; done\necho launch >>",
         );
     crate::support::exec_stub::write_executable(&f.tools.join("claude"), old, 0o755);
     let launch = f.run("claude", &["--model", "strong", "-p"]);
@@ -336,20 +334,53 @@ fn a_claude_too_old_for_effort_runs_the_step_without_it_and_says_so() {
     );
     assert_eq!(count_effort_flags(&launch), 0, "argv: {:?}", launch.argv);
     assert_eq!(launch.model(), Some(STRONG), "argv: {:?}", launch.argv);
+    assert_eq!(f.launches(), 1, "one launch, no retry");
     let stderr = launch.stderr();
     assert!(
-        stderr.contains("does not list `--effort`")
+        stderr.contains("2.1.320")
+            && stderr.contains("2.1.329")
             && stderr.contains("runs without `--effort xhigh`"),
-        "the step says it ran without the effort:\n{stderr}"
+        "the step says why it ran without the effort:\n{stderr}"
     );
 }
+
+/// A caller's own `--effort` is passed through unchanged, once.
+#[test]
+fn a_callers_effort_low_is_passed_through_with_no_duplicate() {
+    let f = Fixture::new();
+    let launch = f.run("claude", &["--effort", "low", "--model", "strong", "-p"]);
+    assert_eq!(launch.claude_effort(), Some("low"), "{:?}", launch.argv);
+    assert_eq!(count_effort_flags(&launch), 1, "{:?}", launch.argv);
+    assert_eq!(f.launches(), 1);
+}
+
+/// An override file's effort is the one passed.
+#[test]
+fn an_override_files_high_effort_is_passed() {
+    let f = Fixture::new();
+    f.write_override(
+        "version = 1\n[claude.strong]\nmodel = \"claude-opus-5[1m]\"\neffort = \"high\"\n",
+    );
+    let launch = f.run("claude", &["--model", "strong", "-p"]);
+    assert_eq!(launch.claude_effort(), Some("high"), "{:?}", launch.argv);
+    assert_eq!(f.launches(), 1);
+}
+
+// A version that cannot be read never reaches the tier step on the real
+// launch path: the binary health gate refuses an unparseable `--version`
+// first. The rule's answer for it is pinned by the unit tests in
+// `model_tiers/tests_claude_effort.rs`.
 
 /// The record a launch that stops early leaves, and its stderr.
 ///
 /// Each early exit below ends the launch before the stand-in Claude runs. The
 /// tier decision is made, recorded and announced first, so the record and the
 /// applied line must still be there, once.
-fn record_of_a_stopped_launch(f: &Fixture, command: &mut std::process::Command) -> String {
+fn record_of_a_stopped_launch(
+    f: &Fixture,
+    command: &mut std::process::Command,
+    expected_effort: serde_json::Value,
+) -> String {
     let output = command
         .env("AMPLIHACK_RUN_DIR", &f.run_dir)
         .output()
@@ -369,11 +400,14 @@ fn record_of_a_stopped_launch(f: &Fixture, command: &mut std::process::Command) 
     assert_eq!(lines.len(), 1, "exactly one record: {text}");
     let line: serde_json::Value = serde_json::from_str(lines[0]).expect("json");
     assert_eq!(line["tier"], "strong", "record: {text}");
-    assert_eq!(line["effective_effort"], "xhigh", "record: {text}");
+    assert_eq!(line["effective_effort"], expected_effort, "record: {text}");
     assert_eq!(
-        stderr.matches("`--effort xhigh`").count(),
-        1,
-        "the applied line prints once:\n{stderr}"
+        stderr
+            .lines()
+            .filter(|l| l.contains("`--effort xhigh`") && !l.contains("runs without"))
+            .count(),
+        usize::from(expected_effort == "xhigh"),
+        "the applied line prints once when the effort applied:\n{stderr}"
     );
     stderr
 }
@@ -387,7 +421,7 @@ fn a_launch_whose_binary_cannot_be_resolved_still_writes_the_record() {
         "AMPLIHACK_CLAUDE_BINARY_PATH",
         f.tools.join("no-such-claude"),
     );
-    record_of_a_stopped_launch(&f, &mut command);
+    record_of_a_stopped_launch(&f, &mut command, serde_json::json!("xhigh"));
 }
 
 /// A Claude Code older than the contract gate's minimum is refused before it
@@ -396,10 +430,13 @@ fn a_launch_whose_binary_cannot_be_resolved_still_writes_the_record() {
 fn a_launch_the_contract_gate_refuses_still_writes_the_record() {
     let f = Fixture::new();
     let old = crate::support::tier_harness::FAKE_HARNESS
-        .replace("2.1.319 (Claude Code)", "2.1.100 (Claude Code)");
+        .replace("2.1.329 (Claude Code)", "2.1.100 (Claude Code)");
     crate::support::exec_stub::write_executable(&f.tools.join("claude"), &old, 0o755);
-    let stderr =
-        record_of_a_stopped_launch(&f, &mut f.launch("claude", &["--model", "strong", "-p"]));
+    let stderr = record_of_a_stopped_launch(
+        &f,
+        &mut f.launch("claude", &["--model", "strong", "-p"]),
+        serde_json::Value::Null,
+    );
     assert!(
         stderr.contains("2.1.100"),
         "the refusal names the installed version:\n{stderr}"
@@ -420,6 +457,7 @@ fn a_docker_launch_still_writes_the_record() {
     let stderr = record_of_a_stopped_launch(
         &f,
         &mut f.launch_with_flags("claude", &["--docker"], &["--model", "strong", "-p"]),
+        serde_json::json!("xhigh"),
     );
     assert!(
         stderr.contains("Docker is not running"),

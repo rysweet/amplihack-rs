@@ -18,9 +18,10 @@ use std::process::{Command, Output};
 use crate::support::amplihack_bin::amplihack_bin;
 
 /// A fake harness: answers `--version` plausibly for whichever name it was
-/// invoked under, answers `--help` with the `--effort` line Claude Code
-/// 2.1.329 prints when invoked under a Claude name (issue #2916), writes every argument it was given one per line to
-/// `$ARGV_LOG`, then exits 0.
+/// invoked under (a Claude name reports 2.1.329, the oldest Claude Code known
+/// to accept `--effort`, issue #2916), appends one line to
+/// `$ARGV_LOG.launches` for every call that is not `--version`, writes every
+/// argument it was given one per line to `$ARGV_LOG`, then exits 0.
 ///
 /// The Claude version must be at least 2.1.319 or amplihack refuses the
 /// launch rather than deliver its contract without
@@ -29,19 +30,13 @@ pub const FAKE_HARNESS: &str = r#"#!/bin/sh
 case "$1" in
   --version)
     case "${0##*/}" in
-      claude|rusty|rustyclawd|amplifier) echo '2.1.319 (Claude Code)' ;;
+      claude|rusty|rustyclawd|amplifier) echo '2.1.329 (Claude Code)' ;;
       codex*) echo 'codex-cli 0.166.0' ;;
       *) echo '0.0.400' ;;
     esac
     exit 0 ;;
-  --help)
-    case "${0##*/}" in
-      claude|rusty|rustyclawd|amplifier)
-        echo '  --effort <level>    Effort level for the current session'
-        echo '                      (low, medium, high, xhigh, max)' ;;
-    esac
-    exit 0 ;;
 esac
+echo launch >> "$ARGV_LOG.launches"
 : > "$ARGV_LOG"
 for a in "$@"; do printf '%s\n' "$a" >> "$ARGV_LOG"; done
 exit 0
@@ -166,6 +161,14 @@ impl Fixture {
             argv: argv.lines().map(str::to_string).collect(),
             output,
         }
+    }
+
+    /// How many times the stand-in was started for anything but `--version`.
+    /// Zero when it never ran.
+    pub fn launches(&self) -> usize {
+        let mut path = self.argv_log.clone().into_os_string();
+        path.push(".launches");
+        fs::read_to_string(PathBuf::from(path)).map_or(0, |t| t.lines().count())
     }
 
     /// The common case: launch with nothing extra and read the recording.
