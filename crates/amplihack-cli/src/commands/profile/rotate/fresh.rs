@@ -272,7 +272,6 @@ pub(super) fn settle_timed(
             }
             let remaining = budget.saturating_sub(spent());
             let facts = Facts {
-                stale: true,
                 failed_now,
                 attempts,
                 can_read: !remaining.is_zero(),
@@ -280,9 +279,6 @@ pub(super) fn settle_timed(
                 label: known.or_else(|| extra.labels.get(&to).copied()),
             };
             match next(&facts) {
-                // Not reached from here: the loop broke out above for a target
-                // that is not stale. `next` stays total for its other callers.
-                Step::Accept => break,
                 Step::AcceptUnconfirmed(label) => {
                     extra.unconfirmed.insert(to.clone(), label);
                     unconfirmed = Some((to, label));

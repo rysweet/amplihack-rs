@@ -128,14 +128,18 @@ first group that has a qualifying login:
 3. logins in another organisation, a confirmed crossing.
 
 The third group is available only when the live login has no room now (a
-window at 100%, a spend limit or an active recorded block) or is an overflow
-profile. A live login that still has room never crosses, a live login whose
-probe failed never crosses, and an upgrade never crosses. A live login with no
-room is a login that cannot run work, and staying on it stops work for
-certain, whereas a crossing costs earlier thinking and leaves the visible
-conversation in place. So a login at 100% moves to a login in another
-organisation when nothing in its own organisation, and nothing unresolved,
-qualifies, and the move carries the confirmed-crossing warning.
+window at 100%, a spend limit or an active recorded block), is an overflow
+profile, or its probe failed. A live login that still has room never crosses,
+and an upgrade never crosses. A live login with no room is a login that cannot
+run work, and staying on it stops work for certain, whereas a crossing costs
+earlier thinking and leaves the visible conversation in place. So a login at
+100% moves to a login in another organisation when nothing in its own
+organisation, and nothing unresolved, qualifies, and the move carries the
+confirmed-crossing warning. A live login whose probe failed is treated as
+before: its only move is the
+[failed-probe swap](./profile-command.md#rotate-failed-live-probes), which
+waits for three failures in a row, and a substituted figure never makes that
+crossing sooner.
 
 After the swap is authorised, the rotator compares the two organisations
 that authorisation already read, with no further read, and refuses a crossing

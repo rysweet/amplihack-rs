@@ -370,7 +370,7 @@ write_usage "$LIVE" 86 65
 before="$(live_token)"
 run_cli profile rotate --dry-run "${FLAGS[@]}"
 [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "case 6: dry run exited $STATUS"; }
-grep -q "would stay (live room 14, best other login has room 0, a move needs 17)" "$WORK/stdout" \
+grep -q "would stay (live room 14, only a login in another organisation has room, a move needs 17)" "$WORK/stdout" \
   || { cat "$WORK/stdout" >&2; fail "case 6: the dry run did not say it would stay, with the note"; }
 ! grep -qE "would (alert|swap)" "$WORK/stdout" || fail "case 6: the dry run would move or alert"
 [[ "$(live_token)" == "$before" ]] || fail "case 6: the dry run moved ~/.claude"

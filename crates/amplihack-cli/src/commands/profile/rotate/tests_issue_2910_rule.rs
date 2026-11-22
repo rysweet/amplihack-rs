@@ -518,7 +518,7 @@ fn the_22_nov_0548_cycle_stays_because_no_login_leaves_17_points() {
     assert_eq!(decide(&nov22(), &l, &c, None, NOW), Decision::Alert);
     match no_move(&nov22(), &l, &c, None, NOW) {
         NoMove::LessRoom { most, room, needs } => {
-            assert_eq!((most, room, needs), (12, 14, 17));
+            assert_eq!((most, room, needs), (Some(12), Some(14), 17));
         }
         other => panic!("expected LessRoom, got {other:?}"),
     }

@@ -11,11 +11,12 @@
 //! 3. otherwise the logins in another organisation, a confirmed crossing, and
 //!    only when `may_cross` is true.
 //!
-//! `may_cross` is true when the live login is an overflow login being left, or
-//! when the live login has no room now (a window at 100%, or a recorded block).
-//! It is false for an upgrade, for a live login that still has room, and for a
-//! live login whose probe failed. With no known source organisation the pool
-//! is unrestricted, as today.
+//! `may_cross` is true when the live login is an overflow login being left,
+//! when the live login has no room now (a window at 100%, or a recorded block),
+//! or when its probe failed (the failed-probe swap, which `damp` holds until
+//! three failures in a row). It is false for an upgrade and for a live login
+//! that still has room. With no known source organisation the pool is
+//! unrestricted, as today.
 //!
 //! The candidate type is the shared one in `amplihack_utils`, which is not
 //! changed (auto-switch uses it too). Here `capacity` means "qualifies and is

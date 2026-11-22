@@ -210,9 +210,16 @@ pub fn swap_reason(s: &Settings, to: &Reading) -> Reason {
 pub enum NoMove {
     /// No login is eligible.
     NoTarget,
-    /// Logins are eligible, but none has the room a move needs: the most any
-    /// has, the live login's room, and what a move needs (D1).
-    LessRoom { most: u8, room: u8, needs: u16 },
+    /// Logins are eligible, but none has the room a move needs (D1). `most`
+    /// is the most room of a login the rotator may move to, `None` when only
+    /// a login in another organisation has room (S1). `room` is the live
+    /// login's room, `None` when its probe read nothing usable. `needs` is
+    /// what a move needs.
+    LessRoom {
+        most: Option<u8>,
+        room: Option<u8>,
+        needs: u16,
+    },
     /// The best qualifying login is at or above `--session-at`, and the hold
     /// after the rotator's own swap `since` seconds ago applies (D3).
     Held {
@@ -244,14 +251,19 @@ pub fn no_move(
         return NoMove::NoTarget;
     };
     let room = match lr {
-        LiveRoom::Room(r) => r,
-        LiveRoom::NoRoom | LiveRoom::Failed => 0,
+        LiveRoom::Room(r) => Some(r),
+        LiveRoom::NoRoom => Some(0),
+        LiveRoom::Failed => None,
     };
     let needs = match lr {
         LiveRoom::Room(r) if !needs_swap(s, live) => upgrade_floor(r, s.upgrade_margin),
         _ => relief_floor(lr, s.margin),
     };
-    let less = NoMove::LessRoom { most, room, needs };
+    let less = NoMove::LessRoom {
+        most: Some(most),
+        room,
+        needs,
+    };
     let Some((to, _)) = ranked(s, candidates, needs).into_iter().next() else {
         return less;
     };

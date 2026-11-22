@@ -1,34 +1,35 @@
-//! The pre-swap confirmation step (issue #2910, D6 and D7): for the target a
-//! decision chose, whether its reading stands, is read again, is accepted
-//! without a fresh reading, or is rejected so that the decision runs again
-//! and reaches the next-ranked login. Pure: the freshness gate
-//! (`fresh::settle`) gathers the facts, makes any read and writes the lines.
+//! The pre-swap confirmation step (issue #2910, D6 and D7): for a stale
+//! target a decision chose, whether it is read again, accepted without a
+//! fresh reading, or rejected so that the decision runs again and reaches
+//! the next-ranked login. A target that is not stale needs no step: its
+//! reading stands. Pure: the freshness gate (`fresh::settle`) gathers the
+//! facts, makes any read and writes the lines.
 //!
-//! | The target | Step |
-//! |------------|------|
-//! | read directly this cycle and fresh | [`Step::Accept`], with no second read |
-//! | stale, and this cycle's re-reads are used up | [`Step::NotTried`] ([`Limit::Count`]) |
+//! | The stale target | Step |
+//! |------------------|------|
 //! | its probe failed this cycle, live login has no room now | [`Step::AcceptUnconfirmed`] |
+//! | this cycle's re-reads are used up | [`Step::NotTried`] ([`Limit::Count`]) |
 //! | its probe failed this cycle, live login has room | [`Step::Reject`] ([`Why::Unknown`]) |
-//! | stale, and the cycle can read no more | [`Step::NotTried`] ([`Limit::Time`]) |
-//! | stale, and it can be read | [`Step::ReadAgain`] |
+//! | the cycle can read no more | [`Step::NotTried`] ([`Limit::Time`]) |
+//! | it can be read | [`Step::ReadAgain`] |
 //!
 //! A probe that failed this cycle is never read again in it: there is
 //! nothing to read, only to decide. A rejection made without a read counts
 //! against the cap of [`MAX_REREADS_PER_CYCLE`], so a cycle writes at most
-//! three `reject:` lines (E5). No retry loop, backoff or timer is added: the
+//! three `reject:` lines (E5). An acceptance without a fresh reading makes no
+//! read and writes no `reject:` line, so the cap does not bound it: D7 holds
+//! after three re-reads too. No retry loop, backoff or timer is added: the
 //! gate's existing cap and shared time budget bound the step.
 
 use super::super::fresh::MAX_REREADS_PER_CYCLE;
 use super::super::measure::ProbeLabel;
 use super::target::Unfit;
 
-/// What the gate knows about the chosen target.
+/// What the gate knows about the chosen target, whose reading is stale by
+/// `fresh::stale` (no reading time, too old, older than the live reading, or
+/// not after a damped swap).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Facts {
-    /// Its reading is stale by `fresh::stale` (no reading time, too old,
-    /// older than the live reading, or not after a damped swap).
-    pub stale: bool,
     /// Its probe failed in this cycle (failed and not carried from an
     /// earlier cycle; a read still running counts).
     pub failed_now: bool,
@@ -64,8 +65,6 @@ pub enum Why {
 /// What the gate does with the chosen target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// Its reading stands: swap.
-    Accept,
     /// Swap on the reading the decision used, without a fresh one, and say
     /// so on the swap line.
     AcceptUnconfirmed(ProbeLabel),
@@ -77,10 +76,15 @@ pub enum Step {
     NotTried(Limit),
 }
 
-/// The step for one chosen target (D6, D7).
+/// The step for one stale chosen target (D6, D7).
 pub fn next(f: &Facts) -> Step {
-    if !f.stale {
-        return Step::Accept;
+    // D7 before the cap: this acceptance reads nothing, so there is nothing
+    // for the cap to bound.
+    if f.failed_now
+        && f.live_no_room
+        && let Some(label) = f.label
+    {
+        return Step::AcceptUnconfirmed(label);
     }
     if f.attempts >= MAX_REREADS_PER_CYCLE {
         return Step::NotTried(Limit::Count);

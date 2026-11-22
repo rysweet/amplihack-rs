@@ -96,9 +96,17 @@ pub fn unconfirmed(label: ProbeLabel) -> String {
 pub fn stay_note(m: &NoMove, s: &Settings) -> Option<String> {
     match m {
         NoMove::NoTarget => None,
-        NoMove::LessRoom { most, room, needs } => Some(format!(
-            "stay: live room {room}, best other login has room {most}, a move needs {needs}"
-        )),
+        NoMove::LessRoom { most, room, needs } => {
+            // A figure the cycle did not measure is said in words, not as 0.
+            let room = room.map_or_else(|| "unknown".to_string(), |r| r.to_string());
+            let best = most.map_or_else(
+                || "only a login in another organisation has room".to_string(),
+                |m| format!("best other login has room {m}"),
+            );
+            Some(format!(
+                "stay: live room {room}, {best}, a move needs {needs}"
+            ))
+        }
         NoMove::Held { to, session, since } => Some(format!(
             "stay: held after last swap ({since}s of {}s): {to} is at s={}%, at or above --session-at",
             s.hold,

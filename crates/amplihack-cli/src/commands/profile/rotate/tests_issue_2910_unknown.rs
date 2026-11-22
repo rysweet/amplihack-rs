@@ -2,20 +2,22 @@
 //! confirmation of the target before a swap, and what an unknown reading
 //! does. Wired from `target_confirm.rs`.
 //!
-//! The first part tests the pure step. For one candidate about to be chosen,
-//! `next` says what to do from the facts of the cycle:
+//! The first part tests the pure step. For one stale candidate about to be
+//! chosen, `next` says what to do from the facts of the cycle (a candidate
+//! read directly this cycle and fresh needs no step):
 //!
-//! | The candidate | Step |
-//! |---------------|------|
-//! | read directly this cycle and fresh | `Accept` (no second read) |
-//! | stale, and this cycle's three re-reads are used | `NotTried(Count)` |
-//! | its probe failed this cycle, live login has no room now | `AcceptUnconfirmed(label)` |
+//! | The stale candidate | Step |
+//! |---------------------|------|
+//! | its probe failed this cycle, live login has no room now | `AcceptUnconfirmed(label)`, even at the cap |
+//! | this cycle's three re-reads are used | `NotTried(Count)` |
 //! | its probe failed this cycle, live login has room | `Reject(Unknown(label))` |
-//! | stale, and the cycle can read no more | `NotTried(Time)` |
-//! | stale, and it can be read | `ReadAgain` |
+//! | the cycle can read no more | `NotTried(Time)` |
+//! | it can be read | `ReadAgain` |
 //!
 //! `after_unknown` is the same choice for a re-read that came back unknown.
-//! A rejection made without a read counts against the cap of three (E5).
+//! A rejection made without a read counts against the cap of three (E5); an
+//! acceptance without a fresh reading reads nothing, so the cap does not
+//! bound it (D7, review of PR #3048).
 //!
 //! The second part runs real cycles with a counting re-read hook (AC5) on the
 //! shared fixture (`tests_issue_2910_fixture`).
@@ -23,11 +25,11 @@
 //! API assumed, from the design (in `target_confirm.rs`):
 //!
 //! ```text
-//! struct Facts { stale: bool, failed_now: bool, attempts: usize, can_read: bool,
+//! struct Facts { failed_now: bool, attempts: usize, can_read: bool,
 //!                live_no_room: bool, label: Option<ProbeLabel> }
 //! enum Limit { Count, Time }
 //! enum Why { Unknown(ProbeLabel), Unfit(Unfit) }
-//! enum Step { Accept, AcceptUnconfirmed(ProbeLabel), ReadAgain, Reject(Why),
+//! enum Step { AcceptUnconfirmed(ProbeLabel), ReadAgain, Reject(Why),
 //!             NotTried(Limit) }
 //! next(f: &Facts) -> Step
 //! after_unknown(label: ProbeLabel, live_no_room: bool) -> Step
@@ -59,29 +61,11 @@ use ProbeLabel::{Http429, Transport};
 
 fn facts() -> Facts {
     Facts {
-        stale: true,
         failed_now: false,
         attempts: 0,
         can_read: true,
         live_no_room: false,
         label: None,
-    }
-}
-
-#[test]
-fn a_candidate_read_directly_and_fresh_is_accepted_whatever_else_is_true() {
-    for attempts in [0, 1, MAX_REREADS_PER_CYCLE, 99] {
-        for (can_read, live_no_room) in [(true, true), (true, false), (false, true), (false, false)]
-        {
-            let f = Facts {
-                stale: false,
-                attempts,
-                can_read,
-                live_no_room,
-                ..facts()
-            };
-            assert_eq!(next(&f), Step::Accept);
-        }
     }
 }
 
@@ -152,7 +136,6 @@ fn a_candidate_whose_probe_failed_this_cycle_is_never_read_again() {
         attempts: 0,
         label: Some(Transport),
         live_no_room: true,
-        ..facts()
     };
     assert_eq!(next(&f), Step::AcceptUnconfirmed(Transport));
 }
@@ -165,6 +148,44 @@ fn a_rejection_without_a_read_still_counts_against_the_limit() {
         failed_now: true,
         attempts: MAX_REREADS_PER_CYCLE,
         label: Some(Http429),
+        ..facts()
+    };
+    assert_eq!(next(&f), Step::NotTried(Limit::Count));
+}
+
+/// D7 at the cap: with the live login out of room, a target whose probe
+/// failed this cycle is still accepted on the reading the decision used.
+/// That acceptance makes no read and writes no `reject:` line, so the cap,
+/// which bounds both, does not turn it into `not tried`.
+#[test]
+fn at_the_cap_a_failed_target_is_still_accepted_when_the_live_login_has_no_room() {
+    for attempts in [MAX_REREADS_PER_CYCLE, MAX_REREADS_PER_CYCLE + 1, 40] {
+        for can_read in [true, false] {
+            let f = Facts {
+                failed_now: true,
+                attempts,
+                can_read,
+                live_no_room: true,
+                label: Some(Http429),
+            };
+            assert_eq!(next(&f), Step::AcceptUnconfirmed(Http429), "{f:?}");
+        }
+    }
+    // With no label there is no last good reading to stand on: the cap
+    // applies, as to any other rejection.
+    let f = Facts {
+        failed_now: true,
+        attempts: MAX_REREADS_PER_CYCLE,
+        live_no_room: true,
+        label: None,
+        ..facts()
+    };
+    assert_eq!(next(&f), Step::NotTried(Limit::Count));
+    // A stale target that was not failed is still bound by the cap when the
+    // live login has no room: reading it is what the cap counts.
+    let f = Facts {
+        attempts: MAX_REREADS_PER_CYCLE,
+        live_no_room: true,
         ..facts()
     };
     assert_eq!(next(&f), Step::NotTried(Limit::Count));

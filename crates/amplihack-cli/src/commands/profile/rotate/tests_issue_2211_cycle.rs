@@ -1666,14 +1666,16 @@ fn o3_a_substitution_tests_the_failed_probe_swaps_own_target() {
 
 lane!(lo4);
 
-/// A failed probe after 66% with only `third` (org B) to go to. Issue #2910
-/// changed this expectation (ruling S1, R3): a live login whose probe failed
-/// is not known to have no room, so it never crosses, on the substitution or
-/// on the failed-probe swap after three failures. Each cycle is the
-/// no-target ALERT, so a person sees that only a crossing would help.
+/// A failed probe after 66% with only `third` (org B) to go to: the
+/// failed-probe rules may cross, since a dead login needs relief, but the
+/// substitution never makes that crossing sooner, though `third` beats
+/// 70% easily. The crossing is the failed-probe swap on failure 3. Issue
+/// #2910 keeps this (review of PR #3048): a live login whose probe has
+/// failed three times in a row cannot be shown to run work, so it may cross
+/// as one with no room does.
 #[cfg(target_os = "linux")]
 #[test]
-fn o4_a_failed_live_probe_never_crosses() {
+fn o4_a_substitution_never_makes_a_crossing_sooner() {
     in_two_orgs(|e| {
         take_key_from_home(e);
         let third = stored(e, "third");
@@ -1685,22 +1687,27 @@ fn o4_a_failed_live_probe_never_crosses() {
         );
         let mut c = ctx(e, lo4::clock, lo4::measure, Some(lo4::reread));
         assert_eq!(step(&mut c, &lo4::CLOCK), CycleOutcome::Stayed);
-        let before = ino_at(&e.live());
-        for nth in 1..=3 {
+        for nth in 1..=2 {
             let got = step(&mut c, &lo4::CLOCK);
             let log = log_of(e);
             assert_eq!(basis(&c), Some(Basis::Substituted), "failure {nth}");
-            assert_eq!(got, CycleOutcome::Alerted, "failure {nth}: {log}");
+            assert_eq!(got, CycleOutcome::StayedUnread, "failure {nth}: {log}");
             assert_eq!(swaps(&log), 0, "failure {nth}: {log}");
+            assert!(
+                log.contains(&format!("stay: live probe failed ({nth}/3)")),
+                "failure {nth}: {log}"
+            );
+            assert!(!log.contains("ALERT"), "failure {nth}: {log}");
         }
+        let got = step(&mut c, &lo4::CLOCK);
         let log = log_of(e);
-        assert_ne!(ino_at(&e.live()), third, "{log}");
-        assert_eq!(ino_at(&e.live()), before, "{log}");
+        assert_eq!(got, CycleOutcome::Swapped, "{log}");
+        assert_eq!(ino_at(&e.live()), third, "{log}");
         assert!(
-            log.contains("ALERT: no capacity known live=work failed"),
+            log.contains("swap work->third live failed target s=0% w=0% reason=failed-probe"),
             "{log}"
         );
-        assert!(!log.contains("affinity: crossing"), "{log}");
+        assert!(log.contains("affinity: crossing work->third"), "{log}");
         assert!(!log.contains("reason=projected"), "{log}");
     });
 }

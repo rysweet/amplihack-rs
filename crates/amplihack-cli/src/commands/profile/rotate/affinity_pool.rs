@@ -10,9 +10,10 @@
 //! 2. logins whose organisation is not known (an unknown organisation is not
 //!    a crossing, and the swap carries the existing "unresolved" warning);
 //! 3. logins in another organisation, a confirmed crossing, only when
-//!    `may_cross` is true: the live login is an overflow login being left, or
-//!    it has no room now. An upgrade, a live login that still has room and a
-//!    live login whose probe failed never cross.
+//!    `may_cross` is true: the live login is an overflow login being left,
+//!    has no room now, or its probe failed (whose swap `damp` holds until
+//!    three failures in a row). An upgrade and a live login that still has
+//!    room never cross.
 //!
 //! With no known source organisation the pool is every usable login, as
 //! before. `capacity` on a [`Candidate`] means "qualifies and is not held";

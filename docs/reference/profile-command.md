@@ -6306,11 +6306,13 @@ first group that has a qualifying login:
 1. logins in the live login's organisation, whatever their tier;
 2. logins whose organisation is unresolved;
 3. logins in another organisation, a confirmed crossing, only when the live
-   login has no room now or is an overflow profile.
+   login has no room now, is an overflow profile, or its probe failed.
 
-An upgrade never crosses, and a live login that still has room, or whose
-probe failed, never crosses, so a projected or threshold move that only
-another organisation can satisfy is a stay. Every crossing writes the
+An upgrade never crosses, and a live login that still has room never crosses,
+so a projected or threshold move that only another organisation can satisfy
+is a stay. A live login whose probe failed may cross only by the
+[failed-probe swap](#rotate-failed-live-probes), after three failures in a
+row, as before this rule. Every crossing writes the
 existing [`affinity:` warning](profile-organisation-affinity.md#warnings) in
 the same cycle. Once the swap is authorised, the rotator compares the
 incoming login's organisation with the outgoing one's, using the two
@@ -6360,8 +6362,8 @@ organisation the note reads:
 ```
 
 If `rrowan` is alone in its organisation, a live login with room never moves
-to another one, so no other login counts and the same note reads `best other
-login has room 0`.
+to another one, so no other login counts and the same note reads `only a login
+in another organisation has room` in place of the figure.
 
 #### Rotate hold
 
@@ -6536,7 +6538,10 @@ per candidate. A rejection made without a read counts against the 3, so a
 cycle writes at most three `reject:` lines. Candidates the cap leaves
 untried are logged with the existing `reread: <name> limit reached; treated
 as unknown` line and counted as `not tried (re-read limit 3)`; the next
-cycle goes on from there. See [Re-reads](#re-reads).
+cycle goes on from there. A swap on an unknown reading while the live login
+has no room makes no read and writes no `reject:` line, so the cap does not
+apply to it: such a candidate is accepted after three re-reads as well. See
+[Re-reads](#re-reads).
 
 ```
 2026-11-23T09:14:01Z cycle live=rrowan rrowan:s=88%,w=70% llarame:s=0%,w=40% qquinn:s=10%,w=50%
@@ -6562,7 +6567,7 @@ the cycle is a stay with capacity and writes a note, not an ALERT:
 
 | Note | Case |
 |------|------|
-| `stay: live room <R>, best other login has room <M>, a move needs <N>` | No eligible login has `N = R + max(--margin, 1)` or more room. `<M>` is the most room of a login the rotator may move to: while the live login has room, a login in another organisation is not one, so `<M>` is `0` when only such logins have room. |
+| `stay: live room <R>, best other login has room <M>, a move needs <N>` | No eligible login has `N = R + max(--margin, 1)` or more room. `<M>` is the most room of a login the rotator may move to: while the live login has room, a login in another organisation is not one. When only such logins have room, the note reads `only a login in another organisation has room` in place of `best other login has room <M>`. When the live probe read nothing usable, `<R>` is `unknown` and `<N>` is `--margin`. |
 | `stay: held after last swap (<S>s of <H>s): <name> is at s=<n>%, at or above --session-at` | The [hold](#rotate-hold) applies. |
 | `stay: no candidate confirmed by a fresh reading` | Every qualifying login was rejected at [confirmation](#rotate-confirmation), and a rejected login is still eligible because its re-read was unknown. When every rejection showed no room, no login is eligible and the no-target line below is written instead. |
 
@@ -7776,10 +7781,12 @@ below name what each does with such a login. Excluded, login-less and
 `not oauth` profiles do not count, nor do overflow or API-key profiles.
 
 **After a move to a login at or above `--session-at`.** The ledger records
-`live_room` as `false` after such a move, because the new live login has no
-session room, so a recipe step that is waiting on a usage limit is not woken by
-the move. It wakes on the next cycle that records room, or on a
-`profile switch`. See [Plan room in the ledger](#plan-room-in-the-ledger).
+`live_room` as `false` after such a move. The ledger's room bit requires
+session use below `--session-at` ([Plan room in the ledger](#plan-room-in-the-ledger)),
+which is stricter than the room the target rule asks of a target, so a recipe
+step that is waiting on a usage limit is not woken by the move. It wakes on
+the next cycle that records room, which for that login may be after its
+session window resets, or on a `profile switch`.
 
 #### Rotate decision order
 

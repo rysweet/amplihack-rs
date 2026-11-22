@@ -291,8 +291,8 @@ fn the_replay_stays_on_a_live_login_with_more_room_than_any_other() {
     assert_eq!(
         no_move(&c.s, &c.live.reading, &plan_of(&c), None, NOW),
         NoMove::LessRoom {
-            most: 8,
-            room: 13,
+            most: Some(8),
+            room: Some(13),
             needs: 18
         }
     );

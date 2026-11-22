@@ -72,6 +72,40 @@ fn the_note_for_a_move_that_needs_more_room() {
     );
 }
 
+/// A figure the cycle did not measure is said in words, never printed as 0
+/// (review of PR #3048): a live probe that read nothing has no room figure,
+/// and when only a login in another organisation has room, no login the
+/// rotator may move to has one either.
+#[test]
+fn the_note_never_prints_an_unmeasured_figure_as_zero() {
+    // The live probe failed: a move needs the margin, and qquinn has 2.
+    let c = [m("qquinn", 98.0, 20.0)];
+    let nm = no_move(&settings(), &Reading::Failed, &c, None, NOW);
+    assert_eq!(
+        nm,
+        NoMove::LessRoom {
+            most: Some(2),
+            room: None,
+            needs: 3
+        }
+    );
+    assert_eq!(
+        stay_note(&nm, &settings()).as_deref(),
+        Some("stay: live room unknown, best other login has room 2, a move needs 3")
+    );
+    // S1: the live login has room 14, and only another organisation's login
+    // has room, which a live login with room never crosses to.
+    let nm = NoMove::LessRoom {
+        most: None,
+        room: Some(14),
+        needs: 17,
+    };
+    assert_eq!(
+        stay_note(&nm, &settings()).as_deref(),
+        Some("stay: live room 14, only a login in another organisation has room, a move needs 17")
+    );
+}
+
 #[test]
 fn the_note_for_a_move_the_hold_stops() {
     let c = [m("qquinn", 88.0, 20.0)];
