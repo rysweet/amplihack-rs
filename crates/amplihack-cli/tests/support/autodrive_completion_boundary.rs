@@ -16,6 +16,8 @@ name="$(basename "$3" .yaml)"; shift 3
 if [ "$name" = loop-health-evaluator ]; then
   jq -cn --arg depth "$AMPLIHACK_SESSION_DEPTH" --arg ceiling "$AMPLIHACK_MAX_DEPTH" \
     --arg cwd "$PWD" --args '$ARGS.positional as $argv | {depth:$depth,ceiling:$ceiling,cwd:$cwd,argv:$argv}' -- "$@" >> "$FAKE_LOG/evaluator.jsonl"
+  # The context files are removed after the run; keep the history it was given.
+  for a in "$@"; do case "$a" in loop_history=*) cat -- "${a#loop_history=}" >> "$FAKE_LOG/evaluator-history" ;; esac; done
   if [ -f "$FIXTURE/eval-rc" ]; then
     [ ! -f "$FIXTURE/eval-message" ] || cat "$FIXTURE/eval-message"
     exit "$(cat "$FIXTURE/eval-rc")"

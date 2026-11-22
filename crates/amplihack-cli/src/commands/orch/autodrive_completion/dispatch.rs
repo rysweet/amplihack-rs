@@ -75,11 +75,23 @@ pub fn run(args: Dispatch) -> Result<i32> {
                 &args.private_state.with_extension("dispatched"),
                 state.run_id.as_bytes(),
             )?;
-            (
-                serde_json::json!({"loop":"crusty","loop_result":"DONE","round_label":state.round_label,
-                "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false}),
-                0,
-            )
+            // #2333: the claim is valid; GitHub must still show the reviewed
+            // head. A head that differs, or a read that does not answer, is
+            // not a completion and not an invalid decision: the evaluator
+            // gets the fault and judges whether another round can get past
+            // it. See `evidence::RemoteHead` for why the comparison stays.
+            let head = record["head_sha"].as_str().unwrap_or_default();
+            match evidence::remote_head(&state.repo, head).fault(head) {
+                None => (
+                    serde_json::json!({"loop":"crusty","loop_result":"DONE","round_label":state.round_label,
+                    "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false}),
+                    0,
+                ),
+                Some(fault) => {
+                    eprintln!("completion not granted ({fault}); asking the loop-health evaluator");
+                    evaluator::run(&state, &record, args.child_exit_code, Some(&fault))?
+                }
+            }
         }
         Action::Evaluate => {
             // #2814: asking for convergence evaluation is never refused here.
@@ -96,7 +108,7 @@ pub fn run(args: Dispatch) -> Result<i32> {
                 &args.private_state.with_extension("dispatched"),
                 state.run_id.as_bytes(),
             )?;
-            evaluator::run(&state, &record, args.child_exit_code)?
+            evaluator::run(&state, &record, args.child_exit_code, None)?
         }
     };
     // The dispatch result is iteration evidence only. Follow-up receipts and

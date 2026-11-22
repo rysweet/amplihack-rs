@@ -215,13 +215,41 @@ this condition; it still has to pass every other check above.
 A completion claim also reads the PR head from GitHub and compares it with the
 reviewed head. The read is one REST call, `gh api
 repos/{owner}/{repo}/pulls/<n> --jq .head.sha`, run in the PR worktree, so
-`gh` fills in the owner and repository from that worktree's remote. The PR
-number comes from the loop's `pr_number` context, which `autodrive_loop.sh`
-passes to dispatch as `PR_NUMBER`. GraphQL is not used, so an account whose
-GraphQL quota is exhausted can still complete a reviewed PR (#2333). When the
-call fails, dispatch exits non-zero with `gh`'s own error text; when the heads
-differ, it names both. The loop prints that text and escalates with it as the
-`INVALID_DECISION` reason, so the recovery step sees what went wrong.
+`gh` fills in the owner and repository from that worktree's remote. GraphQL is
+not used, so an account whose GraphQL quota is exhausted can still complete a
+reviewed PR (#2333).
+
+The PR number comes from the loop's `pr_number` context, which
+`autodrive_loop.sh` passes to dispatch as `PR_NUMBER`. A caller may pass that
+context empty. Dispatch then asks REST for the open PR whose head is the
+worktree's branch (`repos/{owner}/{repo}/pulls?state=open&head={owner}:<branch>`),
+which is what `gh pr view` used to infer. If no open PR or more than one
+matches, or the worktree is on a detached head, that is reported as a named
+blocker; the number is never guessed.
+
+The comparison is kept on purpose. The round record binds the review to the
+worktree's `HEAD`, and only GitHub can say whether that commit is what would
+be merged; completing while the PR head on GitHub is another commit would
+carry an unreviewed head to the merge step. The read has three outcomes:
+
+| Outcome     | Meaning                                       | Dispatch                                                                                    |
+| ----------- | --------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Matches     | GitHub shows the reviewed head.               | Completes (`DONE`, no evaluator).                                                           |
+| Differs     | GitHub shows another commit.                  | Does not complete. Writes the receipt and runs the loop-health evaluator, naming both SHAs. |
+| Unavailable | The read did not answer, or no PR was found. | Does not complete. Writes the receipt and runs the evaluator with the cause and `gh`'s text. |
+
+In both refused cases the fault is added to the evaluator's `loop_history` as
+`<round>: completion claimed but not granted: head differs: ...` or `...: head
+unavailable: ...`, and dispatch prints the same line on standard error. The
+evaluator judges whether another round can get past the fault (a rate-limit
+window, a push still propagating) or whether the run is stuck; its `DONE` is
+still demoted to `CONTINUE`, because only a matching head completes. Neither
+case is an invalid decision, so neither ends the run with `INVALID_DECISION`.
+
+This change does not touch the coded no-progress rule. The part of #2333 that
+concerns it, merge-ready rounds ended as STUCK while waiting, was already
+covered on main by #2575: `autodrive_loop.sh` skips `progress_stop` for the
+merge-ready loop. The Crusty loop's own no-progress rule is outside #2333.
 
 Private directories and files normally use modes `0700` and `0600`.
 Hashes check integrity against trusted state; they do not authenticate the
