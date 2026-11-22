@@ -598,11 +598,11 @@ ALERT custodian: stopped: restart limit (3 restarts in the last hour)
 agent stays stopped until you act.
 
 A [standing session](./keep-sessions-running.md) that keeps failing arrives
-here too. Its own pane relaunches it only while something has changed since
-the launch that failed; when nothing has, it stops, leaves the reason in the
-agent's `alert` field, and leaves the agent `active` for this recovery. So an
-alert of the form `not relaunched: exited …` is a session the supervisor is
-about to pick up, and `stopped: restart limit` is one it has given up on.
+here too. Its own pane gives every exit one relaunch, and stops when that
+relaunch gets nowhere either; it then leaves the reason in the agent's `alert`
+field and leaves the agent `active` for this recovery. So an alert of the form
+`not relaunched: …` is a session the supervisor is about to pick up, and
+`stopped: restart limit` is one it has given up on.
 
 Find out why the session fails before you re-arm it. A session that exits
 with an error closes its tmux window, so run it yourself in a window that

@@ -7,12 +7,24 @@
 //!
 //! There is no count-based limit on relaunches. A count is a retry limit,
 //! and the defect this fixes was a supervisor session held stopped for
-//! fourteen hours by one. The brake is [`worth_relaunching`] instead: a
-//! relaunch is made only when something has changed since the launch that
-//! failed, which is either conversation the run added or capacity the wait
-//! for room found. A process that starts and dies with nothing to show for
-//! itself is therefore started again no more than once, and its failure is
-//! handed to the supervisor as evidence.
+//! fourteen hours by one. The brake is [`worth_relaunching`] instead, and
+//! what it judges is the relaunch chain rather than the run:
+//!
+//! - Every exit is given a relaunch. A session that sat idle for hours and
+//!   was then killed by the host, by the out-of-memory killer or by a pane
+//!   that went away has nothing to show for its run, and is started again
+//!   all the same, because "this run did no work" and "this start is
+//!   failing" are different facts.
+//! - A relaunch given on nothing but that rule, when the conversation did
+//!   not grow and no room had to be waited for, is a trial. If the run it
+//!   starts comes back the same way, the chain is a start-up crash loop and
+//!   the wrapper stops: one more start would repeat the one that just
+//!   failed.
+//!
+//! So a process that cannot start is started again once and then left to
+//! the supervisor with its failure on its own record as evidence, while a
+//! session that does work, or that waits for capacity, is relaunched as
+//! often as it exits.
 //!
 //! [`Standing`] is the whole of the decision: the wrapper calls
 //! [`Standing::next`] once its child has returned and either starts the
@@ -75,30 +87,83 @@ pub fn after_exit(standing: bool, ok: bool, signalled: bool, ended_marker: bool)
     }
 }
 
-/// Whether a relaunch answers something new rather than repeating the run
-/// that has just failed. This is the brake on the relaunch loop, and it is
-/// read from the exit itself: no count of attempts, no timer and no poll.
+/// What one run left in its session's conversation, from the measurement
+/// [`Standing::conversation_bytes`] takes before the launch and again after
+/// the exit (issue #2912).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Progress {
+    /// The conversation holds more than it did: the run did a turn of work,
+    /// and a relaunch has more to carry on from than the last one had.
+    Advanced,
+    /// The conversation is the size it was: the run left nothing a
+    /// `--continue` could carry on.
+    Idle,
+    /// There is no conversation of this session's to measure, so the run is
+    /// neither known to have worked nor known to have been idle. A record
+    /// names a conversation only once the wrapper's id thread has found the
+    /// Claude process and its sessions file, and it names none while
+    /// another active agent holds that conversation (C3).
+    Unmeasured,
+}
+
+impl Progress {
+    /// What a run did to its conversation, from the bytes measured before
+    /// the launch and after the exit. `None` is the absence of a
+    /// measurement, not a measurement of nothing.
+    ///
+    /// A conversation first recorded during the run counts from nothing,
+    /// which is what every first launch of a session does: the id thread
+    /// records the conversation while the run is going, so `before` is
+    /// `None` and `after` is the size the run left behind.
+    ///
+    /// Only `after` can say the run did something. With no measurement
+    /// after the exit there is nothing to compare, however much was
+    /// measured before it, so that is [`Progress::Unmeasured`] too.
+    pub fn of(before: Option<u64>, after: Option<u64>) -> Self {
+        match after {
+            Some(after) if after > before.unwrap_or(0) => Self::Advanced,
+            Some(_) => Self::Idle,
+            None => Self::Unmeasured,
+        }
+    }
+}
+
+/// Whether a relaunch answers something new rather than repeating the
+/// launch that has just failed. This is the brake on the relaunch loop, and
+/// every input is read from the exit itself: no count of attempts, no timer
+/// and no poll.
 ///
-/// Two observations make the next launch different from the last, and the
-/// wrapper has both by the time it asks:
+/// A relaunch is made unless all three of these are against it:
 ///
-/// - `advanced`: the session's conversation grew during the run, so the run
-///   did something and there is more for `--continue` to carry on. Whatever
-///   failure comes next will be a new one.
+/// - `progress`: [`Progress::Advanced`] means the session's conversation
+///   grew during the run, so the run did something and there is more for
+///   `--continue` to carry on. Whatever failure comes next will be a new
+///   one.
 /// - `room_appeared`: no login had room at the exit and the wrapper waited
 ///   until one did, so the capacity that was spent has been replaced. This
 ///   is the usage-limit case the feature exists for, and it is why a
 ///   process that dies in under a second on a limit wall is still started
 ///   again.
+/// - `on_trial`: the run that has just exited was itself started by a
+///   relaunch that had neither of the above behind it. That relaunch was
+///   the one trial an exit with nothing to show is given; the run it
+///   started has now come back with nothing to show either, so the chain,
+///   and not just this run, is getting nowhere.
 ///
-/// With neither, the process ran on a host that could run it and left
-/// nothing behind: a configuration it cannot start under, a `--continue`
-/// that resolves to nothing, a crash during start-up. Starting it again
-/// would repeat it, so the wrapper stops, says why in the pane and the log,
-/// and leaves the failure on the session's record for the supervisor and
-/// for `amplihack agent status`.
-pub fn worth_relaunching(advanced: bool, room_appeared: bool) -> bool {
-    advanced || room_appeared
+/// An exit that is not on trial is therefore always relaunched, whatever it
+/// has to show. A session killed while idle, by the out-of-memory killer,
+/// by a host event or by a pane that went away, is exactly that case, and
+/// it is the one the issue was reported from.
+///
+/// With all three against it, the process ran on a host that could run it,
+/// was started again for that reason alone, and left nothing behind twice:
+/// a configuration it cannot start under, a `--continue` that resolves to
+/// nothing, a crash during start-up. Starting it again would repeat it, so
+/// the wrapper stops, says why in the pane and the log, and leaves the
+/// failure on the session's record for the supervisor and for `amplihack
+/// agent status`.
+pub fn worth_relaunching(on_trial: bool, progress: Progress, room_appeared: bool) -> bool {
+    !on_trial || progress == Progress::Advanced || room_appeared
 }
 
 /// What the wrapper saw of one run of Claude Code, for [`Standing::next`].
@@ -114,10 +179,30 @@ pub(super) struct Exit<'a> {
     pub result: &'a anyhow::Result<()>,
     /// The wrapper has had SIGHUP or SIGTERM.
     pub signalled: bool,
-    /// The session's conversation holds more than it did before the launch:
-    /// [`Standing::conversation_bytes`] taken after the exit is larger than
-    /// the same measurement taken before the launch.
-    pub advanced: bool,
+    /// What the run left in the session's conversation: [`Progress::of`] the
+    /// [`Standing::conversation_bytes`] taken before the launch and the
+    /// same measurement taken after the exit.
+    pub progress: Progress,
+    /// This run was started by a relaunch that had nothing behind it but
+    /// the rule that every exit is given one: the trial of
+    /// [`worth_relaunching`]. `false` for the first run of a wrapper, and
+    /// for any run started because the conversation grew or because room
+    /// appeared.
+    pub on_trial: bool,
+}
+
+/// The next launch of a standing session: what [`Standing::next`] hands
+/// back to the wrapper's loop.
+pub(super) struct Relaunch {
+    /// The launch id this run is recorded under, taken from the entry under
+    /// the registry's lock.
+    pub launch_id: String,
+    /// The entry the run's Claude Code arguments are rebuilt from.
+    pub entry: Entry,
+    /// This relaunch is a trial: nothing was behind it but the rule that
+    /// every exit is given one. The wrapper carries it into the next
+    /// [`Exit::on_trial`], which is what lets the brake judge the chain.
+    pub on_trial: bool,
 }
 
 /// Whether this session is standing, and the rotator root its room gate
@@ -169,16 +254,26 @@ impl Standing {
 
     /// How many bytes of its own conversation this session has on disk: the
     /// transcript of the conversation its record names, in whichever
-    /// configuration directory holds it. `0` when the session is not
-    /// standing, when the record names no conversation, when no transcript
-    /// is there, or when the configuration directories cannot be listed.
+    /// configuration directory holds it. `Some(0)` when the record names a
+    /// conversation that has no transcript yet, which is what a
+    /// conversation with no turn written to it looks like.
+    ///
+    /// `None` is the absence of a measurement rather than a measurement of
+    /// nothing: the session is not standing, its record names no
+    /// conversation, or the configuration directories cannot be listed.
+    /// [`Progress::of`] keeps that apart from `Some(0)` and
+    /// [`no_progress_alert`] says which of the two a refusal saw, because
+    /// "the conversation did not grow" and "there is no conversation of
+    /// this session's to look at" are different facts about a run. Neither
+    /// is evidence that the run did something, so neither relaunches a run
+    /// that is already on trial.
     ///
     /// The wrapper takes this before every launch and again after the exit.
-    /// Growth across a run is the `advanced` of [`worth_relaunching`]: the
-    /// evidence that the run did something a relaunch could continue. It is
-    /// a measurement of work and not a count of attempts, so it never caps
-    /// a session that is running: a session that is working grows it every
-    /// turn, and one that starts and dies never does.
+    /// Growth across a run is the [`Progress::Advanced`] of
+    /// [`worth_relaunching`]: the evidence that the run did something a
+    /// relaunch could continue. It is a measurement of work and not a count
+    /// of attempts, so it never caps a session that is running: a session
+    /// that is working grows it every turn.
     ///
     /// It is read from the conversation the session's own record names, not
     /// from the launch directory as a whole, so a second session running in
@@ -190,39 +285,37 @@ impl Standing {
         home: &Path,
         launch_dir: &Path,
         name: &str,
-    ) -> u64 {
+    ) -> Option<u64> {
         if !self.on {
-            return 0;
+            return None;
         }
-        let Some(id) = entry::conversation(dir, name) else {
-            return 0;
-        };
-        let Ok(dirs) = sessions::config_dirs_from(home, |k| std::env::var_os(k)) else {
-            return 0;
-        };
-        dirs.iter()
-            .filter_map(|d| sessions::transcript_len(d, launch_dir, &id))
-            .max()
-            .unwrap_or(0)
+        let id = entry::conversation(dir, name)?;
+        let dirs = sessions::config_dirs_from(home, |k| std::env::var_os(k)).ok()?;
+        Some(
+            dirs.iter()
+                .filter_map(|d| sessions::transcript_len(d, launch_dir, &id))
+                .max()
+                .unwrap_or(0),
+        )
     }
 
     /// The next launch of a standing session, or `None` to stop.
     ///
-    /// `Some((launch_id, entry))` means start Claude Code again under that
-    /// launch id, with the arguments rebuilt from that entry. Every
-    /// relaunch, wait and refusal is logged; an owner-ended exit, a
-    /// signalled wrapper and a session that is not standing are not, since
-    /// each of those is a stop someone chose. A `no-progress` refusal is
-    /// left on the session's record as well, because it stops a session its
-    /// owner still wants running. `stopped` is the wrapper's flag for
-    /// SIGHUP and SIGTERM, read again during and after a wait for room.
+    /// A [`Relaunch`] means start Claude Code again under its launch id,
+    /// with the arguments rebuilt from its entry. Every relaunch, wait and
+    /// refusal is logged; an owner-ended exit, a signalled wrapper and a
+    /// session that is not standing are not, since each of those is a stop
+    /// someone chose. A `no-progress` refusal is left on the session's
+    /// record as well, because it stops a session its owner still wants
+    /// running. `stopped` is the wrapper's flag for SIGHUP and SIGTERM,
+    /// read again during and after a wait for room.
     pub(super) fn next(
         &self,
         dir: &AgentsDir,
         name: &str,
         exit: &Exit<'_>,
         stopped: &AtomicBool,
-    ) -> Option<(String, Entry)> {
+    ) -> Option<Relaunch> {
         let marker = entry::owner_ended(
             dir,
             name,
@@ -248,9 +341,15 @@ impl Standing {
             loudly(dir, &refused_line(registry::now(), name, "gone"));
             return None;
         }
-        if !worth_relaunching(exit.advanced, waited == Room::Waited) {
+        let room = waited == Room::Waited;
+        if !worth_relaunching(exit.on_trial, exit.progress, room) {
             loudly(dir, &refused_line(registry::now(), name, "no-progress"));
-            entry::note_refusal(dir, name, exit.launch_id, &no_progress_alert(&reason));
+            entry::note_refusal(
+                dir,
+                name,
+                exit.launch_id,
+                &no_progress_alert(&reason, exit.progress),
+            );
             return None;
         }
         // One pane per session: the relaunch happens only while the entry
@@ -258,15 +357,20 @@ impl Standing {
         // another window while this wrapper waited for room, the launch id
         // has moved on and the relaunch is refused rather than making a
         // second Claude Code run against one conversation.
-        let Some((next_id, taken)) = entry::reactivate(dir, name, exit.launch_id) else {
+        let Some((launch_id, entry)) = entry::reactivate(dir, name, exit.launch_id) else {
             loudly(dir, &refused_line(registry::now(), name, "superseded"));
             return None;
         };
-        loudly(
-            dir,
-            &relaunch_line(registry::now(), name, &reason, waited == Room::Waited),
-        );
-        Some((next_id, taken))
+        loudly(dir, &relaunch_line(registry::now(), name, &reason, room));
+        Some(Relaunch {
+            launch_id,
+            entry,
+            // Nothing is behind this relaunch but the rule that every exit
+            // is given one, so it is the trial: should the run it starts
+            // come back with nothing to show as well, the brake stops the
+            // chain rather than giving it another start.
+            on_trial: exit.progress != Progress::Advanced && !room,
+        })
     }
 }
 
@@ -317,14 +421,24 @@ pub fn refused_line(now: i64, name: &str, reason: &str) -> String {
 
 /// The text left in the session's registry record by a `no-progress`
 /// refusal: the one refusal that leaves a session stopped while its owner
-/// still wants it running. It names the exit and the evidence, so an
-/// operator reading `amplihack agent status` has the cause without the log,
-/// and the supervisor's pass has it on the entry it recovers.
-pub fn no_progress_alert(reason: &str) -> String {
+/// still wants it running.
+///
+/// It names the exit, that the exit was of a relaunch given on nothing but
+/// the rule that every exit is given one, and what was measured of the
+/// conversation: that it did not grow, or that there was none of this
+/// session's to measure. So an operator reading `amplihack agent status`
+/// has the cause without the log, and the supervisor's pass has it on the
+/// entry it recovers.
+pub fn no_progress_alert(reason: &str, progress: Progress) -> String {
     let reason = sanitize(reason, MAX_TEXT);
+    let measured = match progress {
+        Progress::Unmeasured => "with no conversation of its own on record",
+        Progress::Advanced | Progress::Idle => "without advancing its conversation",
+    };
     let whole = format!(
-        "not relaunched: exited {reason} without advancing its conversation \
-         while a login had room, so a relaunch would repeat it"
+        "not relaunched: the relaunch of an exit that showed nothing itself \
+         exited {reason} {measured} while a login had room, so another \
+         relaunch would repeat it"
     );
     sanitize(&whole, MAX_LINE)
 }

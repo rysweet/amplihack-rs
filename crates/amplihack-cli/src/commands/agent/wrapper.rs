@@ -15,7 +15,7 @@ use super::entry::{mark_ended, record_claude, start};
 use super::fields::{Launch, check_profile, check_socket, subject};
 use super::launch::continue_args;
 use super::registry::{self, AmplihackFlags};
-use super::standing::{Exit, Standing};
+use super::standing::{Exit, Progress, Standing};
 use super::store::AgentsDir;
 use super::tmux::{self, Tmux};
 use super::{cmdline, env_record, procfs, report, sessions, validate};
@@ -109,6 +109,12 @@ pub fn run_wrapped(
     let standing = Standing::resolve(req.standing, req.name, &home);
 
     let mut args: Vec<String> = req.claude_args.to_vec();
+    // Issue #2912: whether this run was started by a relaunch that had
+    // nothing behind it but the rule that every exit is given one. The
+    // first run of a wrapper never is, and carrying it from one turn of the
+    // loop to the next is what lets the brake judge the relaunch chain
+    // instead of the run; see `standing::worth_relaunching`.
+    let mut on_trial = false;
     loop {
         // One per run, so the id thread of an earlier run can never say
         // that this one started.
@@ -123,11 +129,13 @@ pub fn run_wrapped(
         // Issue #2912: how much conversation the session has before this
         // run. Whether it holds more afterwards is the evidence that a
         // relaunch would answer something new; see
-        // `standing::worth_relaunching`.
+        // `standing::worth_relaunching`. `None` from either measurement is
+        // no measurement rather than no conversation, and
+        // `Progress::of` keeps the two apart.
         let before = standing.conversation_bytes(&dir, &home, &cwd, req.name);
         let result = launch(&args);
         run.over.store(true, Ordering::SeqCst);
-        let advanced = standing.conversation_bytes(&dir, &home, &cwd, req.name) > before;
+        let after = standing.conversation_bytes(&dir, &home, &cwd, req.name);
         let signalled = stopped.load(Ordering::SeqCst);
         if result.is_ok()
             && !signalled
@@ -147,17 +155,19 @@ pub fn run_wrapped(
             first_conversation: first_conversation.as_deref(),
             result: &result,
             signalled,
-            advanced,
+            progress: Progress::of(before, after),
+            on_trial,
         };
-        let Some((next_id, entry)) = standing.next(&dir, req.name, &exit, &stopped) else {
+        let Some(next) = standing.next(&dir, req.name, &exit, &stopped) else {
             return result;
         };
-        launch_id = next_id;
+        launch_id = next.launch_id;
+        on_trial = next.on_trial;
         since = registry::now();
         // Through the same launch path as the first run, so the relaunch
         // gets what the first launch got from the launcher and nothing
         // more; only the Claude arguments are rebuilt from the record.
-        args = continue_args(&entry);
+        args = continue_args(&next.entry);
     }
 }
 

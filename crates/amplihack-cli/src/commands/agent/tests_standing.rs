@@ -5,7 +5,7 @@
 //! `tests/issue_2912_standing_relaunch.rs`.
 
 use super::relaunch::{Room, wait_for_room_until};
-use super::{AfterExit, after_exit, no_progress_alert, worth_relaunching};
+use super::{AfterExit, Progress, after_exit, no_progress_alert, worth_relaunching};
 use amplihack_utils::rotator_status::swap_record::{
     SWAP_FILE, SwapReading, SwapRecord, rotate_dir,
 };
@@ -62,15 +62,84 @@ fn a_session_that_is_not_standing_is_never_relaunched() {
     }
 }
 
+// ── what a run left in its conversation ─────────────────────────────────────
+
+/// Growth is work. A conversation first recorded during the run counts from
+/// nothing, which is what every first launch of a session does.
+#[test]
+fn a_conversation_that_grew_across_the_run_is_progress() {
+    for (before, after) in [(Some(10), Some(11)), (Some(0), Some(1)), (None, Some(1))] {
+        assert_eq!(
+            Progress::of(before, after),
+            Progress::Advanced,
+            "{before:?} -> {after:?}"
+        );
+    }
+}
+
+/// A conversation that is the size it was, or that has no transcript yet,
+/// is a run that did nothing a `--continue` could carry on. A transcript
+/// that shrank is not growth either.
+#[test]
+fn a_conversation_that_did_not_grow_is_an_idle_run() {
+    for (before, after) in [
+        (Some(10), Some(10)),
+        (Some(10), Some(4)),
+        (Some(0), Some(0)),
+        (None, Some(0)),
+    ] {
+        assert_eq!(
+            Progress::of(before, after),
+            Progress::Idle,
+            "{before:?} -> {after:?}"
+        );
+    }
+}
+
+/// No measurement after the exit is not a measurement of nothing: the
+/// record named no conversation of this session's, so the run is neither
+/// known to have worked nor known to have been idle.
+#[test]
+fn no_conversation_to_measure_is_neither_progress_nor_an_idle_run() {
+    for before in [None, Some(0), Some(10)] {
+        assert_eq!(
+            Progress::of(before, None),
+            Progress::Unmeasured,
+            "{before:?}"
+        );
+    }
+}
+
 // ── the brake on the relaunch loop ──────────────────────────────────────────
 
+/// Every exit is given a relaunch. A session that sat idle and was then
+/// killed by the host or the out-of-memory killer has nothing to show for
+/// its run and a login with room, and is still started again: the issue
+/// asks for a relaunch whenever the process exits other than by its owner,
+/// and "this run did no work" is not "this start is failing". The same
+/// holds when there was no conversation of its own to measure at all.
+#[test]
+fn an_exit_that_is_not_on_trial_is_always_relaunched() {
+    for progress in [Progress::Advanced, Progress::Idle, Progress::Unmeasured] {
+        for room_appeared in [true, false] {
+            assert!(
+                worth_relaunching(false, progress, room_appeared),
+                "{progress:?} room={room_appeared}"
+            );
+        }
+    }
+}
+
 /// A run that added to the conversation is started again however often it
-/// happens: the evidence is work done, not a number of attempts, so a
-/// working session is never capped.
+/// happens, trial or not: the evidence is work done, not a number of
+/// attempts, so a working session is never capped.
 #[test]
 fn a_run_that_advanced_the_conversation_is_relaunched() {
     for room_appeared in [true, false] {
-        assert!(worth_relaunching(true, room_appeared), "{room_appeared}");
+        assert!(
+            worth_relaunching(true, Progress::Advanced, room_appeared),
+            "{room_appeared}"
+        );
     }
 }
 
@@ -79,26 +148,45 @@ fn a_run_that_advanced_the_conversation_is_relaunched() {
 /// capacity, because the capacity is what has changed.
 #[test]
 fn a_run_that_waited_for_room_is_relaunched_with_nothing_else_to_show() {
-    assert!(worth_relaunching(false, true));
+    for progress in [Progress::Idle, Progress::Unmeasured] {
+        assert!(worth_relaunching(true, progress, true), "{progress:?}");
+    }
 }
 
-/// The brake: a process that ran while a login had room and left the
-/// conversation where it was would only do the same again.
+/// The brake, and the only case it stops: the run was itself the one trial
+/// an exit with nothing to show is given, and it has come back with nothing
+/// to show as well while a login had room. The chain is getting nowhere, so
+/// another start would repeat the one that just failed.
 #[test]
-fn a_run_with_neither_progress_nor_new_room_is_not_relaunched() {
-    assert!(!worth_relaunching(false, false));
+fn a_trial_run_with_neither_progress_nor_new_room_is_not_relaunched() {
+    for progress in [Progress::Idle, Progress::Unmeasured] {
+        assert!(!worth_relaunching(true, progress, false), "{progress:?}");
+    }
 }
 
-/// The alert names the exit and the evidence, carries no control character,
-/// and does not grow without bound on a hostile exit reason.
+/// The alert names the exit, the chain it stopped, and what was measured of
+/// the conversation; it carries no control character and does not grow
+/// without bound on a hostile exit reason.
 #[test]
 fn the_no_progress_alert_names_the_exit_and_the_evidence() {
     assert_eq!(
-        no_progress_alert("exit-status-1"),
-        "not relaunched: exited exit-status-1 without advancing its conversation \
-         while a login had room, so a relaunch would repeat it"
+        no_progress_alert("exit-status-1", Progress::Idle),
+        "not relaunched: the relaunch of an exit that showed nothing itself \
+         exited exit-status-1 without advancing its conversation while a login \
+         had room, so another relaunch would repeat it"
     );
-    let hostile = no_progress_alert(&format!("a\u{1b}[31mb\nc{}", "x".repeat(4096)));
+    // The blind case says so rather than claiming the conversation stood
+    // still: there was none of this session's to look at.
+    assert_eq!(
+        no_progress_alert("SIGKILL", Progress::Unmeasured),
+        "not relaunched: the relaunch of an exit that showed nothing itself \
+         exited SIGKILL with no conversation of its own on record while a login \
+         had room, so another relaunch would repeat it"
+    );
+    let hostile = no_progress_alert(
+        &format!("a\u{1b}[31mb\nc{}", "x".repeat(4096)),
+        Progress::Idle,
+    );
     assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
     assert!(hostile.chars().count() <= super::MAX_LINE, "{hostile:?}");
 }
