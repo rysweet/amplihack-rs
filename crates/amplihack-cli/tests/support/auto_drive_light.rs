@@ -258,6 +258,7 @@ pub fn fault(o: &Output, token: &str) {
 ///   empty)
 /// - `label list`                `$FAKE_GH_LABELS` (default `[]`)
 /// - `search issues`/`issue list` `$FAKE_GH_SEARCH` (default `[]`)
+/// - `api repos/.../pulls/<n>`   `{"head":{"sha":"$FAKE_GH_HEAD"}}`
 /// - `api .../search/issues...`  `{"items": $FAKE_GH_SEARCH_API}` (default `[]`)
 /// - `issue view <n>`            `$FAKE_GH_ISSUE_VIEW` (default open, by `me`)
 /// - `issue create`              `https://github.com/o/r/issues/$FAKE_GH_NEW_ISSUE`
@@ -300,6 +301,8 @@ case "$1 ${2:-}" in
   *)
     if [ "$1" = api ] && [[ "$joined" == *search/issues* ]]; then
       emit "{\"total_count\":0,\"items\":${FAKE_GH_SEARCH_API:-[]}}"
+    elif [ "$1" = api ] && [[ "$joined" == *repos/*/pulls/* ]]; then
+      emit "{\"head\":{\"sha\":\"${FAKE_GH_HEAD:-}\"}}"
     elif [ "$1" = api ] && [[ "$joined" == *repos/o/r/issues/* ]]; then
       emit "${FAKE_GH_ISSUE_API:-{\"state\":\"open\",\"user\":{\"login\":\"$login\"},\"body\":\"\"}}"
     elif [ "$1" = api ]; then

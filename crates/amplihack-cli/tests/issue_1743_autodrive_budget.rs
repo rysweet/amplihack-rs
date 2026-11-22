@@ -153,7 +153,8 @@ exit "${rc_s:-0}"
 const GH_STUB: &str = r#"#!/usr/bin/env bash
 set -u
 # Head verification is read-only; comment assertions count only comment calls.
-if [ "${1:-} ${2:-}" = 'pr view' ]; then git -C "$STUB_REPO" rev-parse HEAD; exit $?; fi
+# #2333: completion reads the head over REST (`gh api repos/{owner}/{repo}/pulls/<n>`).
+case "${1:-} ${2:-}" in api\ repos/*/pulls/*) git -C "$STUB_REPO" rev-parse HEAD; exit $? ;; esac
 exec 9>"$STUB_STATE/gh.lock"; flock 9
 n=$(cat "$STUB_STATE/gh-calls" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s' "$n" > "$STUB_STATE/gh-calls"
 flock -u 9; exec 9>&-

@@ -121,14 +121,33 @@ pub fn validate(state: &State, expected: &Snapshot, completing: bool) -> Result<
         "record does not describe current head"
     );
     if completing {
+        // #2333: one REST read, so a GraphQL refusal does not hide the head.
+        // `gh api` fills {owner}/{repo} from the worktree's remote; the PR
+        // number comes from the loop (PR_NUMBER). A failure carries gh's own
+        // stderr to the loop, which prints it and escalates with it.
+        let pr = std::env::var("PR_NUMBER").unwrap_or_default();
+        ensure!(
+            !pr.is_empty(),
+            "PR_NUMBER is not set; the loop passes its pr_number context to dispatch"
+        );
         let remote = Command::new("gh")
             .current_dir(&state.repo)
             .env_remove("GH_REPO")
-            .args(["pr", "view", "--json", "headRefOid", "--jq", ".headRefOid"])
+            .args(["api", &format!("repos/{{owner}}/{{repo}}/pulls/{pr}")])
+            .args(["--jq", ".head.sha"])
             .output()?;
         ensure!(
-            remote.status.success() && String::from_utf8(remote.stdout)?.trim() == head.trim(),
-            "current PR head differs from reviewed evidence or is unavailable"
+            remote.status.success(),
+            "gh api repos/{{owner}}/{{repo}}/pulls/{pr} failed ({}): {}",
+            remote.status,
+            String::from_utf8_lossy(&remote.stderr).trim()
+        );
+        let remote = String::from_utf8(remote.stdout)?;
+        ensure!(
+            remote.trim() == head.trim(),
+            "PR #{pr} head on GitHub is {}, but the reviewed head is {}",
+            remote.trim(),
+            head.trim()
         );
         ensure!(
             record["reviewed_head_sha"].as_str() == Some(head.trim()),

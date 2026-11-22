@@ -129,6 +129,8 @@ impl Drive {
             .env("FIXTURE", self.tmp.path())
             .env("FAKE_LOG", &self.fakes.log)
             .env("FAKE_GH_HEAD", self.head())
+            // #2333: completion reads the PR head by number over REST.
+            .env("PR_NUMBER", "7")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("AMPLIHACK_SESSION_DEPTH", "2")
             .env("AMPLIHACK_MAX_DEPTH", "6");

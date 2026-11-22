@@ -212,6 +212,17 @@ outcome rule applies only to the top-level `auto-drive-to-merge` and
 A CLEAN round whose steps all succeeded therefore exits `0` and can satisfy
 this condition; it still has to pass every other check above.
 
+A completion claim also reads the PR head from GitHub and compares it with the
+reviewed head. The read is one REST call, `gh api
+repos/{owner}/{repo}/pulls/<n> --jq .head.sha`, run in the PR worktree, so
+`gh` fills in the owner and repository from that worktree's remote. The PR
+number comes from the loop's `pr_number` context, which `autodrive_loop.sh`
+passes to dispatch as `PR_NUMBER`. GraphQL is not used, so an account whose
+GraphQL quota is exhausted can still complete a reviewed PR (#2333). When the
+call fails, dispatch exits non-zero with `gh`'s own error text; when the heads
+differ, it names both. The loop prints that text and escalates with it as the
+`INVALID_DECISION` reason, so the recovery step sees what went wrong.
+
 Private directories and files normally use modes `0700` and `0600`.
 Hashes check integrity against trusted state; they do not authenticate the
 agent. Instructions and same-user permissions do not isolate the decision
