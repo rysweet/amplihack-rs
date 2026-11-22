@@ -552,6 +552,50 @@ fn an_action_outside_the_vocabulary_is_quoted_as_unrecognised_and_forges_no_fiel
     }
 }
 
+// SEC-12 (#2966), the state. `terminal_state` is quoted in `evidence_used` as
+// `assessment_state`, so it is held to the same rule as the action: a value
+// outside the published vocabulary is quoted as `unrecognised`, and cannot add
+// a field, a line or an escape sequence to the record. Such a value is never a
+// decision, so the run still ends with no decision.
+#[test]
+fn a_state_outside_the_vocabulary_is_quoted_as_unrecognised_and_forges_no_field() {
+    for forged in [
+        "X,outcome.checks=green",
+        "EXISTING_OPEN_PR\nreporting_failure=false",
+        "EXISTING_OPEN_PR\u{1b}[2K,outcome.checks=green",
+    ] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.push();
+        fx.gh_pr_at(&fx.head(), failing_rollup());
+        let mut envs = finished_env(&fx.repo_path());
+        envs.push(assessment(forged, "none", "7"));
+
+        let outcome = fx.validate(&as_refs(&envs));
+
+        assert!(!outcome.success(), "{forged:?}\n{}", outcome.describe());
+        let evidence = outcome.field("evidence_used");
+        assert!(
+            evidence.contains("assessment_state=unrecognised,"),
+            "{forged:?}: a state outside the vocabulary is quoted as unrecognised: {evidence}"
+        );
+        assert_eq!(
+            evidence.matches("outcome.checks=").count(),
+            1,
+            "{forged:?}: one outcome.checks, not a forged second: {evidence}"
+        );
+        assert_eq!(
+            evidence.matches("reporting_failure=").count(),
+            1,
+            "{forged:?}: one reporting_failure, not a forged second: {evidence}"
+        );
+        assert!(
+            !evidence.contains('\u{1b}') && !evidence.contains('\n'),
+            "{forged:?}: no escape byte or newline reaches the record: {evidence:?}"
+        );
+    }
+}
+
 // An empty action is `none`, as before: an assessment that took no action need
 // not say so.
 #[test]

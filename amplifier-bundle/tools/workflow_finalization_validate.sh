@@ -55,7 +55,7 @@ validate_finalization() {
   local outcome_present="false" outcome_branch="" outcome_local_head="" outcome_remote=""
   local outcome_remote_head="" outcome_pr_number="" outcome_pr_url="" outcome_pr_state=""
   local outcome_pr_head="" outcome_checks="" outcome_unread=""
-  local assessment_state="" assessment_action="" assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
+  local assessment_state="" assessment_state_quoted="" assessment_action="" assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
   local probe_where="" probe_status=0 probe_output="" probe_unreadable=""
   finalization_evidence="$(workflow_context_read finalization_evidence || :)"
   # A selected field that is present but corrupt is not absence. It is not a
@@ -275,7 +275,16 @@ FIELDS
     [ "$outcome_pr_state" != "OPEN" ] || publish_state_override="true"
   fi
 
-  evidence_used="$(outcome_facts_line),assessment_state=${assessment_state:-none},assessment_action=$assessment_action,reporting_failure=$reporting_failure"
+  # The state is quoted the same way as the action (SEC-12, #2966): free text
+  # here could forge a field of the record people and the next loop read.
+  if [ -z "$assessment_state" ]; then
+    assessment_state_quoted="none"
+  elif _finalization_state_allowed "$assessment_state"; then
+    assessment_state_quoted="$assessment_state"
+  else
+    assessment_state_quoted="unrecognised"
+  fi
+  evidence_used="$(outcome_facts_line),assessment_state=$assessment_state_quoted,assessment_action=$assessment_action,reporting_failure=$reporting_failure"
   evidence_used="$evidence_used$(corrupt_evidence_note)"
   open_pr_confirmed_facts="$evidence_used"
 

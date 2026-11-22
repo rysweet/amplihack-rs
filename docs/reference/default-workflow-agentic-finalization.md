@@ -640,10 +640,12 @@ Two checks stay in the validator, and neither reads CI:
   recorded worktree that is missing or not a work tree, and a `git status` that
   fails there, because neither shows a clean worktree. Without a recorded path
   the probe runs against `.` only when the record does not say exactly `false`.
-- **Action vocabulary.** `action_taken` must be `none`, `pushed_branch`,
+- **Quoted vocabulary.** `action_taken` must be `none`, `pushed_branch`,
   `opened_pull_request` or `repaired_ci`. An empty value becomes `none`; it
-  labels the record and decides nothing. Anything else is quoted in
-  `evidence_used` as `unrecognised`, so it cannot forge fields in that record.
+  labels the record and decides nothing. The terminal state is quoted as
+  `assessment_state`: `none` when empty, the state itself when finalization
+  publishes it, and `unrecognised` otherwise. Neither value can therefore forge
+  a field in `evidence_used`.
 
 ### Prerequisites and limits
 
@@ -944,7 +946,9 @@ terminal state.
 9. `action_taken` is checked only against the vocabulary `none`,
    `pushed_branch`, `opened_pull_request` and `repaired_ci`. An empty value
    becomes `none`; any other value is quoted as `unrecognised` and never
-   echoed into `evidence_used`, so it cannot forge fields in that record.
+   echoed into `evidence_used`, so it cannot forge fields in that record. The
+   assessment's `terminal_state` is quoted the same way, as `assessment_state`
+   (#2966).
 
 Finalization is still total: every input produces exactly one result. Inside
 `validate_finalization` the fallthrough is step 6 of the evaluation order in
