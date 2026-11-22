@@ -143,8 +143,13 @@ never widens the extra directories.
 - There is no count-based limit on relaunches. The owner-ending rules, the
   refusal for a session that never started, and the wait for room still apply.
   A session that starts and then exits at once for a cause other than
-  capacity, such as a broken configuration, while a login has room, is
-  relaunched each time. The relaunch lines in the supervisor log show it.
+  capacity, such as a broken configuration, is relaunched each time while a
+  login has room, or while there is no swap record the wrapper can use (no
+  rotator, or a record that is refused or cannot be parsed). The relaunch
+  lines in the supervisor log show it. To stop the loop, close the pane or
+  send `SIGTERM` to the wrapper, as listed under
+  [What counts as you ending the session](#what-counts-as-you-ending-the-session),
+  then fix the cause before you start the session again.
 - `--continue` resumes the most recent conversation for the session's working
   directory in its configuration directory. If another session with the same
   working directory and configuration directory was more recently active, the
