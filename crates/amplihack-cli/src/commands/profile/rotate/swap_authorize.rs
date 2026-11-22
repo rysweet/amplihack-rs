@@ -90,7 +90,21 @@ pub const CROSS_REFUSED: &str =
 /// with no further read. A confirmed crossing the decision did not allow is
 /// refused; one it allowed goes ahead with the crossing warning the cycle
 /// writes, and an unknown organisation on either side goes ahead as before.
-/// A hand switch passes `None` and is not checked.
+/// A hand switch passes `None` and is not checked. The swap runs it on both
+/// authorisation reads, the first and the one the swap acts on.
+///
+/// It applies the decision's own rule (`affinity_pool::org_check`, the rule
+/// of `affinity_pool::pool`), so on the organisations the decision saw it
+/// never refuses. It refuses only when authorisation reads an organisation
+/// the decision did not see and no earlier check caught the change:
+/// revalidation reconsiders a target whose organisation changed while the
+/// cycle measured, and `check_snapshot` refuses a login with a uuid whose
+/// organisation changed after that. What is left is a login with no uuid,
+/// which `Account::same` compares by e-mail alone, that changes organisation
+/// under the lock. The refusal moves nothing, and the next cycle decides on a
+/// snapshot that reads the new organisation, so that login is then a
+/// crossing and the next qualifying login is chosen
+/// (`tests_issue_2910_deployed`).
 pub fn check_org(authorized: &Authorized, may_cross: Option<bool>) -> Result<(), ProfileError> {
     use super::observe::affinity::affinity_pool::{OrgCheck, org_check};
     let Some(may_cross) = may_cross else {

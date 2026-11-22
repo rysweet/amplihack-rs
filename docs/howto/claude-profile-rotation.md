@@ -139,7 +139,7 @@ real run. Run a dry run first, and again whenever you change a threshold.
 a temporary `HOME`, a fake `claude` and a loopback stand-in for the usage
 service, with no real login and no `CLAUDE_CONFIG_DIR`. It needs `socat`. It
 replays a day on which the live login filled while several others had room, and
-checks eight cases: a dry run that reports the swap to the login below
+checks nine cases: a dry run that reports the swap to the login below
 `--session-at`; a one-shot cycle that moves `~/.claude` to it with
 `reason=plan-room`; the usage service answering HTTP 429 with a last good
 reading in the history, which gives an `unconfirmed (HTTP 429)` swap; HTTP 429
@@ -148,9 +148,12 @@ with no history, which gives one `no capacity known` ALERT and leaves
 nothing; readings on which the live login still has room and nothing it may
 move to qualifies, which says it would stay with the note; the stand-in's own
 guards, where a bad, missing or oversized request is refused and serves no
-fixture; and a login carrying a recorded spend block, which is passed over for
+fixture; a login carrying a recorded spend block, which is passed over for
 the next login the ranking gives until the block's reset and chosen again
-after it:
+after it; and the same day at `--session-at 95 --week-at 98`, where every
+login below 95% of its session is in the first tier, so the rotator moves to
+the one with the most room now with no ALERT, records room for a waiting step,
+and stays without a note while the live login is below both thresholds:
 
 ```bash
 AMPLIHACK_QA_BINARY=target/debug/amplihack bash tests/qa/claude-profile-rotate-room.sh
@@ -2107,7 +2110,13 @@ of its session moves to any login that has room, including one at or above
 `--session-at`. After such a move, the ledger's `live_room` is `false` if the
 new login is at or above `--session-at`, so a recipe step that is waiting on a
 usage limit is not woken by that swap, and wakes on a later cycle that
-records room. Recipe steps waiting on a usage limit read the same test from
+records room. The wait can last until that login's session window resets,
+which may be hours. The rotator moves to such a login only when no login
+below `--session-at` qualifies in the organisation group it may move within,
+because the ranking puts logins below `--session-at` first. A step woken on a
+login at or above `--session-at` would meet its limit at once, as runs did on
+19 November 2026, so the rotator does not wake it there. A `profile switch`
+still wakes it. Recipe steps waiting on a usage limit read the same test from
 the ledger (see [Steps that wait on a usage limit](#steps-that-wait-on-a-usage-limit)).
 
 ### Steps that wait on a usage limit

@@ -72,6 +72,23 @@ fn the_note_for_a_move_that_needs_more_room() {
     );
 }
 
+/// The same note at the thresholds the hosts run, 95/98: a live login at 97%
+/// (room 3) and the best other login at 95.5% (room 4), short of the margin.
+#[test]
+fn the_note_for_a_move_that_needs_more_room_at_the_deployed_settings() {
+    let s = Settings {
+        session_at: 95,
+        week_at: 98,
+        ..settings()
+    };
+    let c = [m("edge", 95.5, 10.0)];
+    let nm = no_move(&s, &live(97.0, 50.0), &c, None, NOW);
+    assert_eq!(
+        stay_note(&nm, &s).as_deref(),
+        Some("stay: live room 3, best other login has room 4, a move needs 6")
+    );
+}
+
 /// A figure the cycle did not measure is said in words, never printed as 0
 /// (review of PR #3048): a live probe that read nothing has no room figure,
 /// and when only a login in another organisation has room, no login the

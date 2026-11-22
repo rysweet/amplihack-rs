@@ -261,6 +261,75 @@ pub(in crate::commands::profile::rotate) fn reporter() -> Settings {
     }
 }
 
+/// The thresholds the hosts run, `--session-at 95 --week-at 98`, with the
+/// reporter's other flags and the default ceiling of 95.
+pub(in crate::commands::profile::rotate) fn reporter_deployed() -> Settings {
+    Settings {
+        session_at: 95,
+        week_at: 98,
+        ..reporter()
+    }
+}
+
+/// A label for messages and the settings it names.
+pub(in crate::commands::profile::rotate) type Labelled = (&'static str, fn() -> Settings);
+
+/// Both settings the 22 November tests run at.
+pub(in crate::commands::profile::rotate) const BOTH: [Labelled; 2] =
+    [("85/90", reporter), ("95/98", reporter_deployed)];
+
+// --- The 22 November readings ---------------------------------------------------
+
+/// Names of the logins in the 05:56:57Z cycle that have a reading. The live
+/// login is `work`.
+pub(in crate::commands::profile::rotate) const NAMES: &[&str] = &[
+    "aanderson",
+    "bbuck",
+    "ddrumpf",
+    "eelsworth",
+    "ffarmer",
+    "ggrant",
+    "jjansport",
+    "kkane",
+    "llarame",
+    "nnorth",
+    "ppatton",
+    "qquinn",
+    "rraborne",
+    "ssorrel",
+    "uunze",
+    "yyandis",
+];
+
+/// The probes of the 05:56:57Z cycle (and of 05:48Z, which differs only in
+/// the live login's reading).
+pub(in crate::commands::profile::rotate) fn nov22_table() -> Vec<(&'static str, Probed)> {
+    use crate::commands::profile::rotate::tests_issue_1870::{exh, rd};
+    vec![
+        ("aanderson", exh(0.0, 100.0)),
+        ("bbuck", exh(0.0, 100.0)),
+        ("ddrumpf", exh(100.0, 74.0)),
+        ("eelsworth", rd(96.0, 82.0, None)),
+        ("ffarmer", unread()),
+        ("ggrant", exh(100.0, 12.0)),
+        ("jjansport", rd(90.0, 10.0, None)),
+        ("kkane", unread()),
+        ("llarame", rd(0.0, 95.0, None)),
+        ("nnorth", exh(100.0, 50.0)),
+        ("ppatton", exh(100.0, 99.0)),
+        ("qquinn", rd(88.0, 20.0, None)),
+        ("rraborne", exh(100.0, 22.0)),
+        ("ssorrel", rd(93.0, 22.0, None)),
+        ("uunze", rd(90.0, 71.0, None)),
+        ("yyandis", rd(88.0, 71.0, None)),
+    ]
+}
+
+pub(in crate::commands::profile::rotate) const STILL_RUNNING: &[(&str, ProbeLabel)] = &[
+    ("ffarmer", ProbeLabel::StillRunning),
+    ("kkane", ProbeLabel::StillRunning),
+];
+
 /// An unread probe, as a 429 or a transport failure leaves it.
 pub(in crate::commands::profile::rotate) fn unread() -> Probed {
     Probed::failed()
@@ -287,6 +356,29 @@ pub(in crate::commands::profile::rotate) fn run_full(
     reread: Option<RereadFn>,
     measure: MeasureFn,
 ) -> CycleOutcome {
+    run_tuned(f, s, live, table, labels, mode, &|ctx| {
+        ctx.reread = reread;
+        ctx.measure = Some(measure);
+    })
+}
+
+/// [`run_full`] with the stub measurement, after `tune` has adjusted the
+/// cycle's context (an identity reader, for example).
+///
+/// Every call builds a new [`Ctx`] from the ledger, the profile root and the
+/// settings alone, as `daemon::watch` does when a rotator starts: no failed
+/// live probe count, outlook, in-flight read or identity budget is carried
+/// from an earlier call. So each call is also the first cycle of a rotator
+/// started on that ledger.
+pub(in crate::commands::profile::rotate) fn run_tuned(
+    f: &Fleet,
+    s: Settings,
+    live: Probed,
+    table: &[(&str, Probed)],
+    labels: &[(&str, ProbeLabel)],
+    mode: Mode,
+    tune: &dyn Fn(&mut Ctx),
+) -> CycleOutcome {
     SCENE.with(|sc| {
         *sc.borrow_mut() = Scene {
             live: Some(live),
@@ -309,10 +401,11 @@ pub(in crate::commands::profile::rotate) fn run_full(
     for var in ENV_CREDENTIAL_VARS {
         g.clear(var);
     }
-    let mut ctx = ctx_with(&f.e, measure);
+    let mut ctx = ctx_with(&f.e, stub);
     ctx.settings = s;
     ctx.now = clock;
-    ctx.reread = reread;
+    ctx.reread = None;
+    tune(&mut ctx);
     run_cycle(&mut ctx, mode).expect("a cycle does not end in an error for this")
 }
 

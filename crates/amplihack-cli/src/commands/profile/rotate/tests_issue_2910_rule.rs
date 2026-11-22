@@ -64,6 +64,12 @@ fn nov22() -> Settings {
     settings(85, 90, 3, 30, 3600)
 }
 
+/// The thresholds the hosts run, `--session-at 95 --week-at 98`, with the
+/// reporter's other flags and the default ceiling of 95.
+fn deployed() -> Settings {
+    settings(95, 98, 3, 30, 3600)
+}
+
 fn name(n: &str) -> ProfileName {
     ProfileName::parse(n).unwrap()
 }
@@ -575,7 +581,7 @@ fn decide_and_no_move_agree_on_the_hold() {
         vec![],
     ];
     let mut held_seen = 0;
-    for s in [nov22(), defaults()] {
+    for s in [nov22(), defaults(), deployed()] {
         for l in &lives {
             for c in &sets {
                 for at in [None, Some(NOW - 600), Some(NOW - 7200), Some(NOW + 600)] {
@@ -628,6 +634,111 @@ fn hold_zero_lets_the_move_go_at_once() {
     let s = Settings { hold: 0, ..nov22() };
     let d = decide(&s, &live(0.0, 95.0), &c, Some(NOW - 1), NOW);
     assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+}
+
+// --- 22 November at the deployed thresholds, 95/98 -----------------------------------
+
+/// Every 22 November login with room and a session below 95% is in the first
+/// tier, so the ranking is by room now: qquinn and yyandis (12, qquinn's week
+/// is lower), jjansport and uunze (10), ssorrel (7), llarame (5). eelsworth
+/// (96%) is in the second tier.
+#[test]
+fn at_the_deployed_settings_the_22_nov_logins_rank_by_room_now() {
+    let c = nov22_candidates();
+    let r = ranked(&deployed(), &c, 0);
+    assert_eq!(
+        names(&r),
+        [
+            "qquinn",
+            "yyandis",
+            "jjansport",
+            "uunze",
+            "ssorrel",
+            "llarame",
+            "eelsworth"
+        ]
+    );
+}
+
+/// 05:56:57Z at 95/98: the live login is full, every login below 100% on
+/// both windows qualifies, and qquinn ranks first. Its windows are below both
+/// deployed thresholds, so the swap is a threshold swap.
+#[test]
+fn the_22_nov_0556_cycle_at_the_deployed_settings_swaps_to_qquinn() {
+    let s = deployed();
+    let d = decide(&s, &live_out(100.0, 67.0), &nov22_candidates(), None, NOW);
+    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    assert_eq!(swap_reason(&s, &live(88.0, 20.0)), Reason::Threshold);
+    // The hold never stops a move off a login with no room.
+    let d = decide(
+        &s,
+        &live_out(100.0, 67.0),
+        &nov22_candidates(),
+        Some(NOW - 10),
+        NOW,
+    );
+    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+}
+
+/// 05:48:27Z at 95/98: the live login (86/65, room 14) is below both
+/// thresholds, so nothing needs to move. An upgrade would need room 44 and
+/// no login has it: a plain stay, not the advisory ALERT that carries the
+/// stay note.
+#[test]
+fn the_22_nov_0548_cycle_at_the_deployed_settings_is_a_plain_stay() {
+    let d = decide(
+        &deployed(),
+        &live(86.0, 65.0),
+        &nov22_candidates(),
+        None,
+        NOW,
+    );
+    assert_eq!(d, Decision::Stay);
+}
+
+/// At 95/98 the live login reaches `--session-at` with room 5. A move needs
+/// room 8, and qquinn (room 12) is below `--session-at`, so the hold does
+/// not apply and it moves at once.
+#[test]
+fn at_the_deployed_settings_a_live_login_at_95_percent_moves_at_once() {
+    let l = live(95.0, 66.0);
+    let d = decide(&deployed(), &l, &nov22_candidates(), Some(NOW - 10), NOW);
+    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    // One point below the threshold nothing needs to move.
+    let d = decide(
+        &deployed(),
+        &live(94.0, 66.0),
+        &nov22_candidates(),
+        None,
+        NOW,
+    );
+    assert_eq!(d, Decision::Stay);
+}
+
+/// Logins between 95% and 99% of their session at 95/98: a live login at
+/// 98% (room 2) may move to one at 95% (room 5, a gain of the margin 3), but
+/// that target is at `--session-at`, so the move waits for the hold after the
+/// last swap. One at 96% (room 4) is short of the margin and never a target.
+#[test]
+fn at_the_deployed_settings_a_move_between_logins_past_session_at_waits_for_the_hold() {
+    let s = deployed();
+    let l = live(98.0, 40.0);
+    let c = [m("edge", 95.0, 20.0), m("short", 96.0, 20.0)];
+    let inside = Some(NOW - 600);
+    assert_eq!(decide(&s, &l, &c, inside, NOW), Decision::Alert);
+    match no_move(&s, &l, &c, inside, NOW) {
+        NoMove::Held { to, since, .. } => {
+            assert_eq!(to.as_str(), "edge");
+            assert_eq!(since, 600);
+        }
+        other => panic!("expected Held, got {other:?}"),
+    }
+    let d = decide(&s, &l, &c, Some(NOW - 7200), NOW);
+    assert_eq!(swapped(&d), Some(("edge", Reason::Threshold)), "{d:?}");
+    // At `--session-at`, the cycle labels it a plan-room swap (D15).
+    assert_eq!(swap_reason(&s, &live(95.0, 20.0)), Reason::PlanRoom);
+    let only_short = [m("short", 96.0, 20.0)];
+    assert_eq!(decide(&s, &l, &only_short, None, NOW), Decision::Alert);
 }
 
 // --- AC3: a login at 98% of its week is never chosen -----------------------------------

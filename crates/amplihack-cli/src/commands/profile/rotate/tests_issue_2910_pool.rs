@@ -214,3 +214,36 @@ fn an_unknown_organisation_on_either_side_is_never_refused() {
         }
     }
 }
+
+/// `org_check` applies the rule `pool` applies, so on the organisations the
+/// decision saw it never refuses the login the pool offered. It can refuse
+/// only when authorisation reads an organisation the decision did not see
+/// (the cycle-level case is in `tests_issue_2910_deployed`). Over every pair
+/// of a source and a target organisation, with and without a crossing open,
+/// alone and beside other logins.
+#[test]
+fn org_check_never_refuses_a_login_the_pool_offered_on_the_same_organisations() {
+    let orgs = [None, Some("org-a"), Some("org-b")];
+    let mut offered = 0;
+    for source in orgs {
+        for target in orgs {
+            for may_cross in [true, false] {
+                for beside in [false, true] {
+                    let mut cands = vec![c(target, true)];
+                    if beside {
+                        cands.extend([c(Some("org-a"), true), c(None, true)]);
+                    }
+                    if pool(source, may_cross, &cands).contains(&0) {
+                        offered += 1;
+                        assert_ne!(
+                            org_check(source, target, may_cross),
+                            OrgCheck::Refuse,
+                            "{source:?} -> {target:?}, may_cross {may_cross}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(offered > 0, "the grid offers the target at least once");
+}

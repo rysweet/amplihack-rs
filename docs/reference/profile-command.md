@@ -6321,6 +6321,13 @@ organisations that authorisation already read and making no further read; a
 crossing that the rule did not allow is refused with
 `ALERT: swap refused: the incoming login is in a different organisation from the live login`,
 and when either organisation is unknown the swap goes ahead as it did before.
+The comparison is made on both authorisation reads, including the last one
+before the exchange. On the organisations the decision saw, it applies the
+same rule and never refuses. It refuses only when a login's organisation
+changes after revalidation in a way the account comparison does not catch:
+a login with no account uuid, whose account is compared by e-mail alone. The
+refusal moves nothing; the next cycle reads the new organisation, passes over
+that login as a crossing, and chooses the next login that qualifies.
 Auto-switch keeps its own rule: see
 [Organisation affinity](profile-organisation-affinity.md#selection-rules).
 
@@ -7805,7 +7812,18 @@ session use below `--session-at` ([Plan room in the ledger](#plan-room-in-the-le
 which is stricter than the room the target rule asks of a target, so a recipe
 step that is waiting on a usage limit is not woken by the move. It wakes on
 the next cycle that records room, which for that login may be after its
-session window resets, or on a `profile switch`.
+session window resets, hours later, or on a `profile switch`. Such a move
+happens only when no login below `--session-at` qualifies in the first
+organisation group that holds a qualifying login, because the ranking puts
+the first tier first. The bit is kept strict because a step woken onto a login
+at or above `--session-at` would meet its limit on its first call, which is
+what issue #2857 stopped. Whether the bit should follow the target rule for
+the login the rotator chose is open as issue #3067.
+
+At `--session-at 95 --week-at 98`, every login below 95% of
+its session is in the first tier, so on readings like those of 22 November the
+rotator moves to a login below `--session-at` (qquinn, 88% and 20%) and records
+room.
 
 #### Rotate decision order
 
@@ -8805,7 +8823,7 @@ fails with `RotateRefused` and nothing changes:
   duplicate login is uncertainty and blocks movement; missing records can
   follow the existing trusted adoption/backfill rules;
 - the incoming login's organisation, read with the same identity reads,
-  is compared with the outgoing login's: a swap between two known and
+  on both reads, is compared with the outgoing login's: a swap between two known and
   different organisations is made only when the
   [target rule](#rotate-target-choice) allowed the crossing (the live login
   has no room now, or is an overflow profile), and is otherwise refused with

@@ -8,7 +8,7 @@
 # profile root.
 #
 # It replays 22 November 2026: the live login reached 100% of its session
-# while several logins had room, and the rotator only alerted. Eight cases:
+# while several logins had room, and the rotator only alerted. Nine cases:
 #
 #   1. dry run: reports the swap to the login with a fresh session (llarame);
 #   2. one-shot cycle: moves ~/.claude to it, reason=plan-room, no ALERT;
@@ -21,7 +21,12 @@
 #   7. the stand-in's own guards: a bad bearer token, a missing one and an
 #      oversized request line are refused and serve no fixture;
 #   8. a recorded spend block on llarame: it is passed over for qquinn, the
-#      next login the ranking gives, and chosen again once the block ended.
+#      next login the ranking gives, and chosen again once the block ended;
+#   9. the thresholds the hosts run, --session-at 95 --week-at 98: the dry run
+#      and the one-shot cycle choose qquinn (every login below 95% of its
+#      session is in the first tier, and qquinn has the most room now), with
+#      no ALERT, the ledger records room for a waiting step, and at the 05:48Z
+#      readings the dry run would stay with no note.
 #
 # Needs socat and GNU `date -d` (Linux); the handler itself avoids bash 4 only
 # expansions. Runs locally and is not part of CI.
@@ -499,6 +504,51 @@ echo "PASS: case 8: a blocked login is passed over until its reset and chosen af
 evidence '^would (swap|stay|alert)' <<< "$blocked_out"
 evidence 'llarame:' <<< "$blocked_out"
 evidence '^would (swap|stay|alert)' <<< "$after_out"
+
+# --- Case 9: the thresholds the hosts run, 95/98 -------------------------------------------
+# Cases 1 to 8 use the reporter's flags. The hosts run --session-at 95
+# --week-at 98, where every login below 95% of its session is in the first
+# tier: qquinn (88/20) and yyandis (88/71) have the most room now, 12, and
+# qquinn the lower week. Its windows are below both thresholds, so the swap is
+# a threshold swap. The live login has no room, so no ALERT is written while
+# a login below 100% on both windows exists, and the ledger records room on
+# the login now live, which is what wakes a step waiting on a usage limit.
+DEPLOYED=(--session-at 95 --week-at 98 --margin 3 --upgrade-margin 30 --hold 3600)
+new_home deployed
+before="$(live_token)"
+run_cli profile rotate --dry-run "${DEPLOYED[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "case 9: the dry run exited $STATUS"; }
+deployed_out="$(cat "$WORK/stdout")"
+grep -q "would swap $LIVE->qquinn .*target s=88% w=20% reason=threshold" <<< "$deployed_out" \
+  || { echo "$deployed_out" >&2; fail "case 9: the dry run did not report the threshold swap to qquinn"; }
+! grep -q "no profile has capacity" <<< "$deployed_out" || fail "case 9: the dry run said no profile has capacity"
+[[ "$(live_token)" == "$before" ]] || fail "case 9: the dry run moved ~/.claude"
+run_cli profile rotate "${DEPLOYED[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 9: rotate exited $STATUS"; }
+[[ "$(live_token)" == "qa-qquinn" ]] || fail "case 9: ~/.claude holds $(live_token), not qa-qquinn"
+log="$(rotate_log)"
+grep -q "swap $LIVE->qquinn .*reason=threshold" <<< "$log" || { echo "$log" >&2; fail "case 9: no threshold swap line"; }
+! grep -q " ALERT: " <<< "$log" || { echo "$log" >&2; fail "case 9: the cycle wrote an ALERT"; }
+ledger="$ROOT/.auto-switch.d/rotate/ledger.json"
+grep -qE '"live_room": *true' "$ledger" \
+  || fail "case 9: the ledger does not record room on qquinn for a waiting step"
+# 05:48Z at 95/98: the live login (86/65) is below both thresholds and no
+# login is 30 points better, so the dry run would stay, with no note.
+new_home deployed-stay
+write_usage "$LIVE" 86 65
+before="$(live_token)"
+run_cli profile rotate --dry-run "${DEPLOYED[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "case 9: the 05:48Z dry run exited $STATUS"; }
+stay_out="$(cat "$WORK/stdout")"
+grep -qx "would stay" <<< "$stay_out" \
+  || { echo "$stay_out" >&2; fail "case 9: the 05:48Z dry run did not say a plain 'would stay'"; }
+! grep -qE "would (alert|swap)" <<< "$stay_out" || fail "case 9: the 05:48Z dry run would move or alert"
+[[ "$(live_token)" == "$before" ]] || fail "case 9: the 05:48Z dry run moved ~/.claude"
+write_usage "$LIVE" "$LIVE_SESSION" "$LIVE_WEEK"
+echo "PASS: case 9: at 95/98 the rotator moves to qquinn with no ALERT, records room, and stays at 05:48Z"
+evidence '^would (swap|stay|alert)' <<< "$deployed_out"
+evidence ' (swap|affinity:) ' <<< "$log"
+evidence '^would (swap|stay|alert)' <<< "$stay_out"
 
 [[ ! -s "$WORK/claude-calls" ]] || fail "claude was started: $(cat "$WORK/claude-calls")"
 echo "ROTATE_ROOM_QA_PASSED"

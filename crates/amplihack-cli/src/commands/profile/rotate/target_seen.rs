@@ -235,6 +235,9 @@ pub fn build(
 #[cfg(test)]
 #[path = "tests_issue_2910_cycle.rs"]
 mod tests_issue_2910_cycle;
+#[cfg(test)]
+#[path = "tests_issue_2910_deployed.rs"]
+mod tests_issue_2910_deployed;
 /// The shared fixture of the cycle tests: also used by `target_confirm`'s.
 #[cfg(test)]
 #[path = "tests_issue_2910_fixture.rs"]

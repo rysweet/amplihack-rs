@@ -174,7 +174,10 @@ pub(super) fn swap_with(
         platform_out,
         reader,
         Proof::Live,
-    );
+    )
+    // S4 again on the read the swap acts on: `same` compares an account with
+    // no uuid by e-mail alone, so it would pass a change of organisation.
+    .and_then(|auth| super::swap_authorize::check_org(&auth, may_cross).map(|()| auth));
     let mut auth = match checked {
         Ok(auth) if first.same(&auth) && auth.current(store) => auth,
         other => {
