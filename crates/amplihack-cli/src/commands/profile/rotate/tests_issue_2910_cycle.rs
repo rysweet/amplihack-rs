@@ -792,32 +792,9 @@ fn ac10_a_dry_run_on_the_0548_readings_would_stay() {
 
 // --- The organisation check after authorise (S4) ------------------------------------------------------------------
 
-/// The pure check is tested in `tests_issue_2910_pool`. This guards its
-/// wiring: a source file other than the pool's own calls it, so a refusal of
-/// an unallowed crossing happens at the swap, after authorisation, and not
-/// only in the decision.
-#[test]
-fn s4_the_swap_step_calls_the_organisation_check() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/rotate");
-    let mut callers = Vec::new();
-    for entry in fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        if !file.ends_with(".rs") || file.starts_with("tests_") || file == "affinity_pool.rs" {
-            continue;
-        }
-        let text = fs::read_to_string(&path).unwrap();
-        if text.lines().any(|l| {
-            let code = l.split("//").next().unwrap_or_default();
-            code.contains("org_check(")
-        }) {
-            callers.push(file);
-        }
-    }
-    assert!(!callers.is_empty(), "no rotate source calls org_check");
-}
-
-/// S4 end to end, on the real swap: after authorisation has read both logins,
+/// S4 end to end, on the real swap (the pure check is tested in
+/// `tests_issue_2910_pool`; this is its wiring, which a swap that stopped
+/// calling `org_check` fails): after authorisation has read both logins,
 /// a confirmed crossing the decision did not allow (`may_cross` false) is
 /// refused with the fixed text and moves nothing; the same crossing goes ahead
 /// when the decision allowed it; a login whose organisation is not recorded is

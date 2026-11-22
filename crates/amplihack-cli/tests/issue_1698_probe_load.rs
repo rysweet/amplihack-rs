@@ -3,8 +3,9 @@
 //! `claude`, `isolated(..)`; never a real `claude` or profile root).
 //!
 //! Contract:
-//! - A candidate whose probe passes the deadline shows as `<name>:failed`
-//!   in the cycle line, never as a percentage, is never swapped to, warns
+//! - A candidate whose probe passes the deadline shows as
+//!   `<name>:unknown, timeout` in the cycle line (issue #2910; it was
+//!   `<name>:failed`), never as a percentage, is never swapped to, warns
 //!   `probe of <name> timed out` on stderr, and is probed again on the next
 //!   cycle.
 //! - The live probe counts against `AMPLIHACK_PROFILE_USAGE_PARALLEL`.

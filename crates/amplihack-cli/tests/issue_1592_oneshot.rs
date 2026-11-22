@@ -362,7 +362,14 @@ fn a_no_capacity_alert_is_written_once_across_runs() {
     f.ok(&["profile", "rotate"]);
     f.usage("work", 90, 40);
     f.ok(&["profile", "rotate"]);
-    assert_eq!(f.log().lines().filter(known).count(), 2, "{}", f.log());
+    let log = f.log();
+    assert_eq!(log.lines().filter(known).count(), 2, "{log}");
+    // Over all four runs, those two are the only no-capacity lines of
+    // either wording: the stay cycle in between wrote none.
+    let no_capacity = |l: &&str| {
+        l.contains("ALERT: no capacity known") || l.contains("ALERT: no profile has capacity")
+    };
+    assert_eq!(log.lines().filter(no_capacity).count(), 2, "{log}");
 }
 
 #[test]

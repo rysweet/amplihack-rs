@@ -34,9 +34,31 @@ pub(in crate::commands::profile::rotate) fn reread_env(
     env
 }
 
+/// The settings of both production re-reads: [`reread_env`] with the probe
+/// method `AMPLIHACK_PROFILE_USAGE_PROBE` names in the process environment
+/// now. It is resolved without a warning (`measure::mode_quiet`), because
+/// the cycle's measurement has already given one for a bad value, and no
+/// mode is forced: a bad or empty value reads in the default order, as it
+/// does in the measurement.
+pub(in crate::commands::profile::rotate) fn configured_env(left: Duration) -> SourceEnv {
+    reread_env(measure::mode_quiet(), left)
+}
+
+/// One read of `name` with [`configured_env`]: its live login in `~/.claude`
+/// when `live`, else its profile directory.
+fn reread_configured(
+    ctx: &Ctx,
+    name: &ProfileName,
+    left: Duration,
+    live: bool,
+) -> (Probed, Option<ProbeLabel>) {
+    let reader = measure::reader(ctx, configured_env(left), 1, now());
+    let p = reader.profile(name, live);
+    (measure::reading(name.as_str(), &p), measure::label_of(&p))
+}
+
 /// The production re-read: one read of `name` by the user's probe method
-/// with passive readings off ([`reread_env`]), resolved without a warning
-/// because the cycle's measurement has already given it, bounded by `left`: what
+/// with passive readings off ([`configured_env`]), bounded by `left`: what
 /// remains of the gate's one time limit. At most one `claude` runs for it,
 /// under the same deadline. It writes no rotate state and takes no rotate
 /// lock; like any direct read it may refresh a near-expiry OAuth token
@@ -46,10 +68,7 @@ pub fn reread_as_configured(
     name: &ProfileName,
     left: Duration,
 ) -> (Probed, Option<ProbeLabel>) {
-    let env = reread_env(measure::mode_quiet(), left);
-    let reader = measure::reader(ctx, env, 1, now());
-    let p = reader.profile(name, false);
-    (measure::reading(name.as_str(), &p), measure::label_of(&p))
+    reread_configured(ctx, name, left, false)
 }
 
 /// Issue #2211: the production re-read of the live login `name`. Like
@@ -64,8 +83,5 @@ pub fn reread_live_as_configured(
     name: &ProfileName,
     left: Duration,
 ) -> (Probed, Option<ProbeLabel>) {
-    let env = reread_env(measure::mode_quiet(), left);
-    let reader = measure::reader(ctx, env, 1, now());
-    let p = reader.profile(name, true);
-    (measure::reading(name.as_str(), &p), measure::label_of(&p))
+    reread_configured(ctx, name, left, true)
 }

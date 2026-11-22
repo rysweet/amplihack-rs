@@ -1203,6 +1203,15 @@ fn a_plan_login_under_the_session_threshold_without_capacity_comes_before_overfl
             .run();
         assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
         assert_eq!(v.tag, None);
+        // The fixture's old week, 97, is above the ceiling: no target, and
+        // the exhausted credit profile is no way off either.
+        let v = Case::new("work", exhausted(reset, reset))
+            .cand("spare", measured(50.0, 97.0, reset, reset))
+            .cand("cred", exhausted(reset, reset))
+            .overflow(&["cred"])
+            .run();
+        assert_eq!(v.decision, Decision::Alert, "{v:?}");
+        assert_eq!(v.tag, None);
     }
 }
 

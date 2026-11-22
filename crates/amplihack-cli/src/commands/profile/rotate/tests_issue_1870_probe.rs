@@ -13,21 +13,26 @@
 //!   | `direct` | direct only; a failure is an error row |
 //!
 //!   and never uses a stored (passive) reading, however fresh.
-//! - `fresh::reread_as_configured` builds its env with `reread_env` and the
-//!   mode `measure::mode_quiet()` resolves from the environment (no second
-//!   warning: the cycle's measurement has already warned once).
+//! - `fresh::reread_as_configured` and `fresh::reread_live_as_configured`
+//!   both read with `fresh::configured_env(left)`: `reread_env` with the mode
+//!   `AMPLIHACK_PROFILE_USAGE_PROBE` names in the process environment, never
+//!   a forced one, resolved with no second warning (the cycle's measurement
+//!   has already warned once).
 //!
 //! Direct reads go to a loopback fake; the fallback is a closure that
-//! records its calls. No `claude` is started and no variable is set.
+//! records its calls. No `claude` is started. Only the last two tests set a
+//! variable, `AMPLIHACK_PROFILE_USAGE_PROBE`, and they hold the shared
+//! `env_lock` while it is set.
 
-use super::fresh::reread_env;
+use super::fresh::{configured_env, reread_env};
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::probe_limits::{ProbeMode, probe_mode};
+use crate::commands::profile::probe_limits::{PROBE_ENV, ProbeMode, probe_mode};
 use crate::commands::profile::tests_fake_http::{FakeHttp, Reply};
 use crate::commands::profile::usage_cmd::Probe;
 use crate::commands::profile::usage_direct::Endpoints;
 use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
-use crate::commands::profile::usage_source::{Plan, Source, Spend, read};
+use crate::commands::profile::usage_source::{Plan, Source, SourceEnv, Spend, read};
+use crate::test_support::EnvGuard;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::ffi::OsStr;
@@ -108,18 +113,32 @@ fn user_mode(value: Option<&str>) -> ProbeMode {
     mode
 }
 
-/// The re-read's env for `value`, with the endpoints pointed at `fake`.
-fn reread_env_for(
-    fake: &FakeHttp,
-    value: Option<&str>,
-) -> crate::commands::profile::usage_source::SourceEnv {
-    let mut env = reread_env(user_mode(value), Duration::from_secs(5));
+/// `env` with the endpoints pointed at `fake`.
+fn at_fake(fake: &FakeHttp, mut env: SourceEnv) -> SourceEnv {
     let (endpoints, _) = Endpoints::resolve(
         Some(OsStr::new(&fake.base())),
         Some(OsStr::new(&fake.token_url())),
     );
     env.endpoints = endpoints;
     env
+}
+
+/// The re-read's env for `value`, with the endpoints pointed at `fake`.
+fn reread_env_for(fake: &FakeHttp, value: Option<&str>) -> SourceEnv {
+    at_fake(fake, reread_env(user_mode(value), Duration::from_secs(5)))
+}
+
+/// Runs `f` with `AMPLIHACK_PROFILE_USAGE_PROBE` set to `value` (unset for
+/// `None`) in the process environment, under the shared lock.
+fn with_probe_var<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _var = match value {
+        Some(v) => EnvGuard::set([(PROBE_ENV, v)]),
+        None => EnvGuard::unset([PROBE_ENV]),
+    };
+    f()
 }
 
 /// The `claude` probe stand-in: records each mode and reads 43%/100%.
@@ -270,23 +289,73 @@ fn under_direct_a_failed_reread_is_an_error_and_starts_no_claude() {
     assert!(p.error.is_some(), "the target is unknown for the cycle");
 }
 
+/// The settings both production re-reads use follow the variable as the
+/// process environment holds it: each value gives the mode it names, a bad
+/// or empty one the default order, and none is forced.
 #[test]
-fn the_production_reread_resolves_the_mode_from_the_environment() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/rotate");
-    // Issue #2910: the production re-reads moved to `fresh_reread.rs` (the
-    // line budget), still re-exported as `fresh::reread_as_configured`.
-    let text = fs::read_to_string(dir.join("fresh_reread.rs")).unwrap();
-    let body = text
-        .split("pub fn reread_as_configured(")
-        .nth(1)
-        .expect("fresh::reread_as_configured exists");
-    let body = &body[..body.find("\n}\n").unwrap()];
+fn the_production_reread_settings_take_the_mode_from_the_environment() {
+    let left = Duration::from_millis(1234);
+    for (value, want) in [
+        (None, ProbeMode::Ordered),
+        (Some(""), ProbeMode::Ordered),
+        (Some("direct"), ProbeMode::Direct),
+        (Some("auto"), ProbeMode::Auto),
+        (Some("text"), ProbeMode::Text),
+        (Some("sideways"), ProbeMode::Ordered),
+    ] {
+        let env = with_probe_var(value, || configured_env(left));
+        assert_eq!(env.mode, want, "{value:?}: the mode the variable names");
+        assert_eq!(env.passive_max_age, 0, "{value:?}: no stored reading");
+        assert_eq!(env.timeout, left, "{value:?}");
+    }
+}
+
+/// End to end through `read`, with the stand-ins for the endpoint and for
+/// `claude`: the production settings read the way the variable says.
+#[test]
+fn the_production_reread_reads_the_way_the_variable_in_the_environment_names() {
+    let left = Duration::from_secs(5);
+
+    // `text`: one `claude` read as text, never a direct read.
+    let r = root();
+    let fake = FakeHttp::start(|_, _| Reply::json(200, &usage_body(1.0, 1.0, false)));
+    let claude = Claude::new();
+    let env = with_probe_var(Some("text"), || configured_env(left));
+    let p = read(&at_fake(&fake, env), &plan(&r), &r.root, now(), |m| {
+        claude.run(m)
+    });
+    assert_eq!(claude.calls(), [ProbeMode::Text]);
+    assert!(fake.seen().is_empty(), "text: no direct read was made");
+    assert_eq!(week(&p), Some(100.0), "text: claude's figures");
+
+    // `direct`: a failed read is an error and starts no `claude`.
+    let r = root();
+    let fake = FakeHttp::start(|_, _| Reply::raw(500, ""));
+    let claude = Claude::new();
+    let env = with_probe_var(Some("direct"), || configured_env(left));
+    let p = read(&at_fake(&fake, env), &plan(&r), &r.root, now(), |m| {
+        claude.run(m)
+    });
+    assert!(claude.calls().is_empty(), "direct: no claude");
+    assert!(!fake.seen().is_empty(), "direct: the endpoint was read");
     assert!(
-        body.contains("reread_env(measure::mode_quiet(), left)"),
-        "the re-read uses AMPLIHACK_PROFILE_USAGE_PROBE: {body}"
+        p.error.is_some(),
+        "direct: the target is unknown for the cycle"
     );
-    assert!(
-        !body.contains("ProbeMode::"),
-        "no mode is forced on the re-read: {body}"
+
+    // Unset: a direct read that skips the fresh 7%/9% stored reading.
+    let r = root();
+    let fake = FakeHttp::start(|_, _| Reply::json(200, &usage_body(43.0, 100.0, false)));
+    let claude = Claude::new();
+    let env = with_probe_var(None, || configured_env(left));
+    let p = read(&at_fake(&fake, env), &plan(&r), &r.root, now(), |m| {
+        claude.run(m)
+    });
+    assert_eq!(
+        p.source,
+        Some(Source::Direct),
+        "unset: not the stored reading"
     );
+    assert_eq!(week(&p), Some(100.0));
+    assert!(claude.calls().is_empty(), "unset: the direct read answered");
 }

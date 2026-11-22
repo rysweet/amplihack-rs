@@ -9,9 +9,11 @@
 //! credits billing) is not unknown. It gets no label, so such a login can
 //! never be chosen on an old reading.
 //!
-//! The label table is closed and fails closed: a reason this table does not
-//! name gives no label. `usage_direct::reason::ALL` lists every reason, so a
-//! reason added later without a row here fails the test below.
+//! The label table is closed and fails closed: a text that is not a reason
+//! gives no label. The reasons are one enum, `usage_direct::reason::Reason`,
+//! declared in one list with their text constants, and `direct_label`
+//! matches on it with no wildcard, so the compiler refuses a reason added
+//! without a classification. The table below pins what each one is.
 //!
 //! API these tests assume (in `probe_reading.rs`):
 //!
@@ -28,7 +30,7 @@
 
 use super::*;
 use crate::commands::profile::usage_cmd::{ErrorReason, Probe};
-use crate::commands::profile::usage_direct::reason;
+use crate::commands::profile::usage_direct::reason::{self, Reason};
 use crate::commands::profile::usage_parse::{UsageReport, UsageState};
 use crate::commands::profile::usage_source::Spend;
 use std::collections::BTreeSet;
@@ -57,81 +59,62 @@ fn fell_back(why: &'static str) -> Probe {
 
 use ProbeLabel::{Http429, IdentityUnavailable, ProbeError, StillRunning, Timeout, Transport};
 
-/// One row for every `reason::ALL` entry: the label, or `None` for a reason
-/// that is not a transient failure of the probe itself.
-const TABLE: &[(&str, Option<ProbeLabel>)] = &[
-    (reason::NO_FILE, None),
-    (reason::REFUSED, None),
-    (reason::NO_TOKEN, None),
-    (reason::EXPIRED, None),
-    (reason::TIMEOUT, Some(Timeout)),
-    (reason::TRANSPORT, Some(Transport)),
-    (reason::UNPARSEABLE, Some(ProbeError)),
-    (reason::CREDITS_ON, None),
-    (reason::REFRESH_BUSY, Some(ProbeError)),
-    (reason::REFRESH_REFUSED, None),
-    (reason::REFRESH_FAILED, None),
-    (reason::REFRESH_NOT_SAVED, None),
-    (reason::NO_REFRESH_TOKEN, None),
-    (reason::UNREADABLE_CREDS, None),
-    (reason::HTTP_401, None),
-    (reason::HTTP_403, None),
-    (reason::HTTP_429, Some(Http429)),
-    (reason::HTTP_3XX, Some(ProbeError)),
-    (reason::HTTP_4XX, None),
-    (reason::HTTP_5XX, Some(ProbeError)),
+/// One row for every `Reason`: the label, or `None` for a reason that is not
+/// a transient failure of the probe itself.
+const TABLE: &[(Reason, Option<ProbeLabel>)] = &[
+    (Reason::NoFile, None),
+    (Reason::Refused, None),
+    (Reason::NoToken, None),
+    (Reason::Expired, None),
+    (Reason::Timeout, Some(Timeout)),
+    (Reason::Transport, Some(Transport)),
+    (Reason::Unparseable, Some(ProbeError)),
+    (Reason::CreditsOn, None),
+    (Reason::RefreshBusy, Some(ProbeError)),
+    (Reason::RefreshRefused, None),
+    (Reason::RefreshFailed, None),
+    (Reason::RefreshNotSaved, None),
+    (Reason::NoRefreshToken, None),
+    (Reason::UnreadableCreds, None),
+    (Reason::Http401, None),
+    (Reason::Http403, None),
+    (Reason::Http429, Some(Http429)),
+    (Reason::Http3xx, Some(ProbeError)),
+    (Reason::Http4xx, None),
+    (Reason::Http5xx, Some(ProbeError)),
 ];
 
 // --- The closed table ----------------------------------------------------------
 
+/// `Reason::ALL` comes from the same list as the enum, so this holds the
+/// table above to every reason and to nothing else.
 #[test]
-fn every_reason_constant_has_a_row() {
-    for r in reason::ALL {
-        assert!(
-            TABLE.iter().any(|(t, _)| t == r),
-            "reason {r:?} has no row in the label table: classify it"
-        );
+fn the_table_has_one_row_for_every_reason() {
+    for r in Reason::ALL {
+        let rows = TABLE.iter().filter(|(t, _)| t == r).count();
+        assert_eq!(rows, 1, "reason {r:?} needs exactly one row: classify it");
     }
-    for (r, _) in TABLE {
-        assert!(reason::ALL.contains(r), "{r:?} is not in reason::ALL");
-    }
+    assert_eq!(TABLE.len(), Reason::ALL.len());
 }
 
-/// `reason::ALL` is written by hand, so check it against the module's own
-/// source: every `pub const` in `mod reason` must be listed.
+/// What a direct read reports is the text: each one names its reason and no
+/// other, and the constant the reader writes is that text.
 #[test]
-fn reason_all_lists_every_constant_of_the_module() {
-    let src = include_str!("../usage_direct.rs");
-    let start = src
-        .find("pub(super) mod reason {")
-        .expect("mod reason in usage_direct.rs");
-    let body = &src[start..];
-    let body = &body[..body.find("\n}\n").expect("end of mod reason")];
-    let mut found = 0;
-    for line in body.lines().map(str::trim) {
-        if !line.starts_with("pub const ") || line.starts_with("pub const ALL") {
-            continue;
-        }
-        let first = line.find('"').expect("a string constant");
-        let last = line.rfind('"').expect("a string constant");
-        let value = &line[first + 1..last];
-        assert!(
-            reason::ALL.contains(&value),
-            "{value:?} is missing from reason::ALL"
-        );
-        found += 1;
+fn each_reason_text_reads_back_as_that_reason() {
+    for r in Reason::ALL {
+        assert_eq!(Reason::parse(r.as_str()), Some(*r), "{r:?}");
     }
-    assert!(found >= 20, "found only {found} constants");
-    assert_eq!(
-        reason::ALL.len(),
-        found,
-        "reason::ALL has an entry that is not a constant"
-    );
+    assert_eq!(reason::HTTP_429, Reason::Http429.as_str());
+    assert_eq!(reason::NO_FILE, "no credentials file");
+    assert_eq!(reason::UNREADABLE_CREDS, "unreadable credentials");
+    assert_eq!(Reason::parse("HTTP 429"), None, "the label is not a reason");
+    assert_eq!(Reason::parse(""), None);
 }
 
 #[test]
 fn a_direct_read_failing_with_each_reason_gets_the_label_in_the_table() {
-    for (why, want) in TABLE {
+    for (r, want) in TABLE {
+        let why = r.as_str();
         assert_eq!(label_of(&direct_error(why)), *want, "direct read: {why}");
     }
 }
@@ -140,7 +123,8 @@ fn a_direct_read_failing_with_each_reason_gets_the_label_in_the_table() {
 fn a_direct_failure_that_led_to_a_fallback_gets_the_same_label() {
     // The probe's own error is `claude not found`, which alone is a probe
     // error; the direct read's reason is the cause and decides the label.
-    for (why, want) in TABLE {
+    for (r, want) in TABLE {
+        let why = r.as_str();
         assert_eq!(label_of(&fell_back(why)), *want, "fallback after: {why}");
     }
 }

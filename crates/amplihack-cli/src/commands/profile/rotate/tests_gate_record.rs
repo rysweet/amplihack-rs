@@ -594,6 +594,12 @@ fn the_rotator_moves_back_only_where_auto_switch_does_for_any_auto_switch_thresh
             (84.9, 10.0),
             (85.0, 10.0),
             (87.0, 95.0),
+            // Either side of the week ceiling (95, inclusive): auto-switch
+            // still takes these, the rotator takes only the first.
+            (0.0, 95.0),
+            (0.0, 95.5),
+            (0.0, 97.0),
+            (50.0, 99.9),
             (100.0, 100.0),
         ] {
             let r = rotator_returns(&s, session, week);

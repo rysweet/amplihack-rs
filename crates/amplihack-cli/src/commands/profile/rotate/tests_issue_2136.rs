@@ -87,6 +87,24 @@ fn plan_room_full(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 fn threshold_full(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     measured(ctx, snap, 100.0)
 }
+/// Issue #2910 (S1): both other logins have room 50, well past the margin
+/// over the live login's room 10, so only the organisation rule can keep
+/// the live login (85/90) where it is.
+fn roomy_others(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let probes = probes_for(
+        snap,
+        &[("spare", ok(50.0, 40.0)), ("third", ok(50.0, 40.0))],
+    );
+    decide_measured(ctx, snap, ok(85.0, 90.0), probes, at())
+}
+/// [`roomy_others`] with the live login at 100%: it has no room.
+fn roomy_others_full(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let probes = probes_for(
+        snap,
+        &[("spare", ok(50.0, 40.0)), ("third", ok(50.0, 40.0))],
+    );
+    decide_measured(ctx, snap, ok(100.0, 90.0), probes, at())
+}
 
 #[test]
 fn threshold_prefers_same_organisation_before_headroom() {
@@ -163,6 +181,26 @@ fn plan_room_and_its_fallback_never_cross() {
         "{}",
         log_of(&e)
     );
+
+    // The margin is no part of it: the others have room 50 against the
+    // live login's 10, and the live login still stays.
+    let e = fixture(json!("org-a"), json!("org-b"), json!("org-b"));
+    let before = ino_at(&e.home.join(".claude").join(CREDS));
+    run(&e, roomy_others);
+    assert_eq!(
+        ino_at(&e.home.join(".claude").join(CREDS)),
+        before,
+        "{}",
+        log_of(&e)
+    );
+
+    // With no room on the live login the same crossing is made.
+    let e = fixture(json!("org-a"), json!("org-b"), json!("org-b"));
+    let before = ino_at(&e.home.join(".claude").join(CREDS));
+    run(&e, roomy_others_full);
+    let log = log_of(&e);
+    assert_ne!(ino_at(&e.home.join(".claude").join(CREDS)), before, "{log}");
+    assert_eq!(swap_affinity(&e), "crossing", "{log}");
 }
 
 /// Issue #2910 changed this test's fixture (ruling D1), as above.
@@ -171,12 +209,11 @@ fn plan_room_onto_an_unknown_organisation_is_not_a_crossing() {
     let e = fixture(json!("org-a"), Value::Null, Value::Null);
     let before = ino_at(&e.home.join(".claude").join(CREDS));
     run(&e, plan_room_full);
-    assert_ne!(
-        ino_at(&e.home.join(".claude").join(CREDS)),
-        before,
-        "{}",
-        log_of(&e)
-    );
+    let log = log_of(&e);
+    assert_ne!(ino_at(&e.home.join(".claude").join(CREDS)), before, "{log}");
+    // Recorded as unresolved, not as a crossing the live login at 100% would
+    // also have been allowed.
+    assert_eq!(swap_affinity(&e), "unresolved", "{log}");
 }
 
 #[test]

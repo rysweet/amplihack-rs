@@ -27,7 +27,7 @@
 //! usable credit profile (`OverflowOut`); off a blocked profile, the next
 //! usable per-token one only when no plan login has room.
 
-use super::decide::target::{NoMove, no_move, ranked};
+use super::decide::target::{NoMove, no_move, past_session_at, ranked};
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Win, Windows, decide};
 use super::ledger::OverflowBlock;
 use super::overflow::{OverflowInput, Tag, Verdict, decide_overflow};
@@ -381,16 +381,34 @@ fn logins_at_98_to_100_percent_session_do_not_trade_places() {
 }
 
 /// `--session-at` decides the tier across its range, and a NaN session is
-/// never ranked.
+/// never ranked. `roomy` (60%/0%, room 40) has more room than `under`
+/// (50%/90%, room 10), so only the tier can put `under` first.
 #[test]
 fn the_tier_follows_session_at_and_a_nan_never_ranks() {
     let plan = vec![
-        m("high", &measured(99.0, 0.0, FAR)),
-        m("low", &measured(50.0, 40.0, FAR)),
+        m("roomy", &measured(60.0, 0.0, FAR)),
+        m("under", &measured(50.0, 90.0, FAR)),
     ];
-    assert_eq!(ranked_names(&settings(100), &plan), ["low", "high"]);
-    assert_eq!(ranked_names(&settings(51), &plan), ["low", "high"]);
-    assert_eq!(ranked_names(&settings(50), &plan), ["low", "high"]);
+    // Both in the first tier, then both in the second: room decides.
+    assert_eq!(ranked_names(&settings(100), &plan), ["roomy", "under"]);
+    assert_eq!(ranked_names(&settings(50), &plan), ["roomy", "under"]);
+    // Only `under` is below 51: the tier decides against the room.
+    assert_eq!(ranked_names(&settings(51), &plan), ["under", "roomy"]);
+    assert_eq!(ranked_names(&settings(61), &plan), ["roomy", "under"]);
+
+    // The ends of the range, as `choose` pinned them: at 100 a login at
+    // 99.9% is in the first tier and at 99 it is not; at 1 only a login
+    // under 1% is.
+    let edge = vec![
+        m("top", &measured(99.9, 40.0, FAR)),
+        m("tiny", &measured(0.5, 40.0, FAR)),
+        m("one", &measured(1.0, 40.0, FAR)),
+    ];
+    let past = |at: u8, who: &str| past_session_at(&settings(at), &edge, &n(who));
+    assert!(!past(100, "top"));
+    assert!(past(99, "top"));
+    assert!(!past(1, "tiny"));
+    assert!(past(1, "one"));
     let nan = vec![m("spare", &measured(f64::NAN, 40.0, FAR))];
     for at in [1, 50, 100] {
         assert!(
@@ -423,8 +441,9 @@ fn the_ranking_leaves_out_failed_exhausted_and_full_logins() {
     assert!(ranked_names(&s, &plan).is_empty());
 }
 
-/// D1: two logins with the same room do not trade places: a move needs
-/// `max(--margin, 1)` more room now.
+/// D1: a login with the same room as the live one, or less, is not a
+/// target: a move needs `max(--margin, 1)` more room now. ccapstone has the
+/// live login's room 8; spare has 8 against the live login's 5, short of 10.
 #[test]
 fn a_login_with_the_same_room_as_the_live_one_is_not_a_target() {
     let s = settings(85);
@@ -493,10 +512,11 @@ fn the_margin_keeps_ccapstone_from_moving_to_a_login_with_the_same_room() {
     assert_eq!(v.decision, Decision::Alert, "{v:?}");
 }
 
-/// Issue #2857 changed this test's expectation and kept it: with every login
-/// past `--session-at` (85) the rotator no longer swaps onto the one with the
-/// lowest week. The login it stays on has room, so no credit is spent either:
-/// the cycle is the ALERT (advisory while the live login reads below 100%).
+/// Issue #2857 changed this test's expectation and kept it. Since #2910 the
+/// margin keeps it (D1): work (90/50) has room 10, so a move needs 15, and
+/// spare has 5 and extra 12. The login it stays on has room, so no credit is
+/// spent either: the cycle is the ALERT (advisory while the live login reads
+/// below 100%).
 #[test]
 fn no_plan_room_swap_when_every_login_is_past_session_at() {
     let v = Case::new("work", measured(90.0, 50.0, FAR))
@@ -507,10 +527,12 @@ fn no_plan_room_swap_when_every_login_is_past_session_at() {
     assert_eq!(v.tag, None);
 }
 
-/// Issue #2857 changed this test's expectation and kept it. No login has
-/// session room (--session-at 85); the first cycle used to swap on the week
-/// ranking. Now neither cycle swaps, in either direction, so there is nothing
-/// to flap.
+/// Issue #2857 changed this test's expectation and kept it: the first cycle
+/// used to swap on the week ranking, and now neither cycle swaps. Since
+/// #2910 the first stays by the margin (room 10 needs 15; spare has 5), and
+/// the second by the hold (D3): from spare (room 5), work's room 10 meets
+/// the margin, but work is past `--session-at` and the last swap is a
+/// minute old.
 #[test]
 fn d5_with_no_login_under_session_at_neither_cycle_swaps_in_either_direction() {
     let first = Case::new("work", measured(90.0, 80.0, FAR))
@@ -541,10 +563,32 @@ fn d5_neither_cycle_moves_between_a_login_with_more_room_and_one_with_less() {
     assert_eq!(second.decision, Decision::Alert, "no flap back: {second:?}");
 }
 
+/// The swap that happens, once. `work` (96/50) has room 4, so a login needs
+/// room 9; `spare` (70/91) has exactly 9 and is below `--session-at`, so no
+/// hold applies and the first cycle moves. From `spare` (room 9) a login
+/// needs room 14 and `work` has 4, so the next cycle does not move back.
+#[test]
+fn d5_a_swap_with_the_margin_happens_once_and_does_not_flap_back() {
+    let first = Case::new("work", measured(96.0, 50.0, FAR))
+        .cand("spare", measured(70.0, 91.0, FAR))
+        .run();
+    assert_eq!(
+        first.decision,
+        swap("spare", Reason::Threshold),
+        "{first:?}"
+    );
+    let second = Case::new("spare", measured(70.0, 91.0, FAR))
+        .cand("work", measured(96.0, 50.0, FAR))
+        .run();
+    assert_eq!(second.decision, Decision::Alert, "no flap back: {second:?}");
+    assert_eq!(second.tag, None);
+}
+
 /// Issue #2857 changed this test's expectation and kept it. An exhausted live
-/// login used to give way to a login at 99% session. That login is far past
-/// `--session-at`, so the rotator no longer swaps onto it; it has room, so no
-/// credit is spent either.
+/// login used to give way to a login at 99% session. Since #2910 a login at
+/// 99% session is a target for a live login with no room (D2); this one is
+/// not, because its week, 99%, is above the ceiling (F1). It is not full, so
+/// no credit is spent either.
 #[test]
 fn d5_an_exhausted_live_login_does_not_swap_onto_a_login_at_99_percent() {
     let v = Case::new("work", exhausted(FAR))
@@ -697,8 +741,8 @@ fn d1_the_replay_with_credits_and_the_api_key_marked_stays() {
 
 #[test]
 fn credits_wait_while_the_live_login_still_has_room() {
-    // The live login is past --session-at but below 100% and wins pass 2:
-    // no plan-room swap, and no credit spend either, since it has room.
+    // The live login is past --session-at but below 100%, and no other
+    // login has room: no swap, and no credit spend either, since it has room.
     let v = Case::new("work", measured(87.0, 61.0, FAR))
         .cand("spare", exhausted(FAR))
         .credits(measured(10.0, 10.0, FAR))
@@ -801,8 +845,8 @@ fn the_api_key_is_never_used_unmarked_even_when_every_plan_login_is_at_100() {
 #[test]
 fn the_api_key_is_not_used_while_the_live_login_still_has_room() {
     // The issue's own case: live past --session-at but below 100%, nothing
-    // else with room. Plan-room keeps it (the live login wins pass 2), and
-    // the API key is refused because the live login has room.
+    // else with room. It stays, and the API key is refused because the live
+    // login has room.
     let v = Case::new("work", measured(87.0, 61.0, FAR))
         .cand("spare", exhausted(FAR))
         .marked_key()
@@ -911,8 +955,9 @@ fn credits_still_come_before_the_api_key() {
 
 #[test]
 fn on_the_api_key_a_plan_login_with_room_is_a_way_off() {
-    // Issue #2857: "room" for a move is now under --session-at (85); work is
-    // at 60% session and short of capacity (its week is past --week-at).
+    // work is at 60/95: short of capacity (its week is past --week-at) but
+    // eligible, at the week ceiling (95, inclusive). Off overflow every
+    // eligible plan login qualifies (D2).
     let mut c = Case::new("api-key", Probed::platform())
         .cand("work", measured(60.0, 95.0, FAR))
         .cand("spare", exhausted(FAR));
@@ -976,8 +1021,8 @@ fn on_the_api_key_with_no_plan_room_a_usable_credit_profile_is_the_way_off() {
 fn on_a_credit_profile_a_plan_login_with_room_is_a_way_off() {
     // 60/95 at --session-at 85: no capacity (the week is past --week-at), but
     // room under the session threshold. Credits cost money, so the rotator
-    // returns to the plan login. Issue #2857: the fixture was 92/40, which is
-    // past --session-at; see the next test.
+    // returns to the plan login. Issue #2857 changed the fixture from 92/40,
+    // past --session-at; since #2910 that is a way off too (the next test).
     let mut c = Case::new("credits", measured(10.0, 10.0, FAR))
         .cand("work", measured(60.0, 95.0, FAR))
         .cand("spare", exhausted(FAR));
@@ -1035,8 +1080,8 @@ fn on_the_api_key_with_no_plan_room_it_stays() {
 
 #[test]
 fn blocked_credits_move_to_a_plan_login_with_room_not_to_the_api_key() {
-    // Issue #2857: the plan login must be under --session-at (85); work is
-    // at 60% session with no capacity (its week is past --week-at).
+    // work is at 60/95: no capacity (its week is past --week-at), but
+    // eligible, at the week ceiling (95, inclusive).
     let mut c = Case::new("credits", measured(10.0, 10.0, FAR))
         .cand("work", measured(60.0, 95.0, FAR))
         .marked_key()

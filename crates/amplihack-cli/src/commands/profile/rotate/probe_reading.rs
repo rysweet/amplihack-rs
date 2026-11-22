@@ -4,7 +4,7 @@
 
 use super::super::decide::Probed;
 use crate::commands::profile::usage_cmd::{self, ErrorReason, Probe};
-use crate::commands::profile::usage_direct::reason;
+use crate::commands::profile::usage_direct::reason::Reason;
 use crate::commands::profile::usage_parse::UsageState;
 use crate::commands::profile::usage_source;
 use std::io::Write;
@@ -84,20 +84,35 @@ impl ProbeLabel {
     }
 }
 
-/// The label of a direct read's failure reason, from a closed table that
-/// fails closed (issue #2910, S2). A reason about the login's account (an
-/// expired or refused token, a refresh that failed, no credentials, a plain
-/// 4xx, credits billing) and any reason the table does not name give `None`,
-/// so such a login is never chosen on an old reading.
+/// The label of a direct read's failure reason (issue #2910, S2). A reason
+/// about the login's account (an expired or refused token, a refresh that
+/// failed, no credentials, a plain 4xx, credits billing) gives `None`, so
+/// such a login is never chosen on an old reading. So does a text that is
+/// not a [`Reason`]: the table fails closed.
+///
+/// The `match` names every [`Reason`] and has no wildcard, so a reason added
+/// to `usage_direct::reason` does not compile until it is classified here.
 fn direct_label(why: &str) -> Option<ProbeLabel> {
-    match why {
-        reason::HTTP_429 => Some(ProbeLabel::Http429),
-        reason::TRANSPORT => Some(ProbeLabel::Transport),
-        reason::TIMEOUT => Some(ProbeLabel::Timeout),
-        reason::HTTP_3XX | reason::HTTP_5XX | reason::UNPARSEABLE | reason::REFRESH_BUSY => {
+    match Reason::parse(why)? {
+        Reason::Http429 => Some(ProbeLabel::Http429),
+        Reason::Transport => Some(ProbeLabel::Transport),
+        Reason::Timeout => Some(ProbeLabel::Timeout),
+        Reason::Http3xx | Reason::Http5xx | Reason::Unparseable | Reason::RefreshBusy => {
             Some(ProbeLabel::ProbeError)
         }
-        _ => None,
+        Reason::NoFile
+        | Reason::Refused
+        | Reason::NoToken
+        | Reason::Expired
+        | Reason::CreditsOn
+        | Reason::RefreshRefused
+        | Reason::RefreshFailed
+        | Reason::RefreshNotSaved
+        | Reason::NoRefreshToken
+        | Reason::UnreadableCreds
+        | Reason::Http401
+        | Reason::Http403
+        | Reason::Http4xx => None,
     }
 }
 

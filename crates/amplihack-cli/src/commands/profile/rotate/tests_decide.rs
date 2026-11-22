@@ -240,14 +240,21 @@ fn failed_and_exhausted_candidates_are_never_chosen() {
 #[test]
 fn the_best_candidate_wins_and_ties_go_to_the_first_name() {
     let cands = [
-        c("zed", r(10.0, 10.0)),
+        c("zed", r(10.0, 0.0)),
         c("mid", r(40.0, 0.0)),
         c("alpha", r(10.0, 0.0)),
     ];
     assert_eq!(
         decide(&settings(), &r(90.0, 0.0), &cands, None, NOW),
         swap("alpha", Reason::Threshold),
-        "alpha and zed both have 90; alpha sorts first"
+        "alpha and zed both have room 90 and week 0; alpha sorts first"
+    );
+    // Issue #2910 (F3): with equal room the lower week comes before the name.
+    let cands = [c("alpha", r(10.0, 10.0)), c("zed", r(10.0, 0.0))];
+    assert_eq!(
+        decide(&settings(), &r(90.0, 0.0), &cands, None, NOW),
+        swap("zed", Reason::Threshold),
+        "both have room 90; zed's week is lower"
     );
 }
 

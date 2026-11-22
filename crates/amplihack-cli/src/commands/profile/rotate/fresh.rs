@@ -32,7 +32,7 @@ pub(super) mod live;
 #[path = "fresh_reread.rs"]
 mod reread;
 #[cfg(test)]
-pub(super) use reread::reread_env;
+pub(super) use reread::{configured_env, reread_env};
 pub use reread::{reread_as_configured, reread_live_as_configured};
 
 /// The oldest a target's reading may be. It equals the default passive

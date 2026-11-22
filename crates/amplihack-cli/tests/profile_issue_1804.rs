@@ -224,8 +224,11 @@ fn the_plan_room_swap_does_not_flap_back_on_the_next_cycle() {
     near_limits(&f);
     f.ok(&["profile", "rotate"]);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{}", f.log());
-    // spare is now live at 0/91 (week past --week-at, room 9); work is at
-    // 100% and extra (98/17, room 2) is short of the margin, so it stays.
+    // spare is now live at 0/91 (week past --week-at, room 9), so a move
+    // needs room 14 (--margin 5). work has recovered to 50/87: room 13,
+    // more than spare's and below both thresholds, so no hold applies, but
+    // short of the margin; extra (98/17, room 2) is further short. It stays.
+    f.usage_resetting("work", 50, 87, 3);
     f.ok(&["profile", "rotate"]);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{}", f.log());
     assert_eq!(

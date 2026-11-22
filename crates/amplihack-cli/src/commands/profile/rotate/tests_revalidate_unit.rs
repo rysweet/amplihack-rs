@@ -443,7 +443,10 @@ fn a_login_with_room_is_not_counted() {
     let seen = seen_of(vec![("a", standing(Basis::Probe, Ok(5)))]);
     let (kind, line) = summary("work", &Reading::EXHAUSTED, &seen);
     assert_eq!(kind, "no-capacity/known");
-    assert!(line.ends_with("(candidates: none)"), "{line}");
+    assert_eq!(
+        line,
+        "ALERT: no capacity known live=work s=100% w=100% (candidates: none)"
+    );
 }
 
 #[test]
