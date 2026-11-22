@@ -15,11 +15,11 @@
 //!   that went away has nothing to show for its run, and is started again
 //!   all the same, because "this run did no work" and "this start is
 //!   failing" are different facts.
-//! - A relaunch given on nothing but that rule, when the conversation did
-//!   not grow and no room had to be waited for, is a trial. If the run it
-//!   starts comes back the same way, the chain is a start-up crash loop and
-//!   the wrapper stops: one more start would repeat the one that just
-//!   failed.
+//! - A relaunch given on nothing but that rule, when the model wrote no
+//!   reply during the run and no room had to be waited for, is a trial. If
+//!   the run it starts comes back the same way, the chain is a start-up
+//!   crash loop and the wrapper stops: one more start would repeat the one
+//!   that just failed.
 //!
 //! So a process that cannot start is started again once and then left to
 //! the supervisor with its failure on its own record as evidence, while a
@@ -56,6 +56,11 @@ mod run;
 /// to the session's record, and the exit text they name.
 #[path = "standing_lines.rs"]
 mod lines;
+
+/// Whether a run did any work: a reply the model wrote to the session's
+/// conversation during the run, read from its transcript after the exit.
+#[path = "standing_progress.rs"]
+mod progress;
 
 pub(super) use run::Standing;
 
@@ -94,18 +99,24 @@ pub fn after_exit(standing: bool, ok: bool, signalled: bool, ended_marker: bool)
     }
 }
 
-/// What one run left in its session's conversation, from the measurement
-/// [`Standing::conversation_bytes`] takes before the launch and again after
-/// the exit (issue #2912).
+/// What one run did in its session's conversation, read by
+/// [`Standing::progress`] after the exit (issue #2912).
+///
+/// It is read from replies the model wrote, not from the size of the
+/// transcript. Claude Code appends bookkeeping lines on a start that does
+/// no work, and a request that fails is written as an assistant line of its
+/// own, so a start-up crash loop grows the transcript on every start; see
+/// `standing_progress.rs` for what was observed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress {
-    /// The conversation holds more than it did: the run did a turn of work,
-    /// and a relaunch has more to carry on from than the last one had.
+    /// The conversation holds a reply the model wrote during the run: the
+    /// run did a turn of work, and a relaunch has more to carry on from
+    /// than the last one had.
     Advanced,
-    /// The conversation is the size it was: the run left nothing a
-    /// `--continue` could carry on.
+    /// The conversation holds no such reply, or has no transcript: the run
+    /// left nothing a `--continue` could carry on.
     Idle,
-    /// There is no conversation of this session's to measure, so the run is
+    /// There is no conversation of this session's to read, so the run is
     /// neither known to have worked nor known to have been idle. A record
     /// names a conversation only once the wrapper's id thread has found the
     /// Claude process and its sessions file, and it names none while
@@ -114,22 +125,13 @@ pub enum Progress {
 }
 
 impl Progress {
-    /// What a run did to its conversation, from the bytes measured before
-    /// the launch and after the exit. `None` is the absence of a
-    /// measurement, not a measurement of nothing.
-    ///
-    /// A conversation first recorded during the run counts from nothing,
-    /// which is what every first launch of a session does: the id thread
-    /// records the conversation while the run is going, so `before` is
-    /// `None` and `after` is the size the run left behind.
-    ///
-    /// Only `after` can say the run did something. With no measurement
-    /// after the exit there is nothing to compare, however much was
-    /// measured before it, so that is [`Progress::Unmeasured`] too.
-    pub fn of(before: Option<u64>, after: Option<u64>) -> Self {
-        match after {
-            Some(after) if after > before.unwrap_or(0) => Self::Advanced,
-            Some(_) => Self::Idle,
+    /// From whether the session's conversation holds a reply the model
+    /// wrote during the run. `None` is the absence of a conversation to
+    /// read, not a conversation with nothing in it.
+    pub fn of(replied: Option<bool>) -> Self {
+        match replied {
+            Some(true) => Self::Advanced,
+            Some(false) => Self::Idle,
             None => Self::Unmeasured,
         }
     }
@@ -142,10 +144,11 @@ impl Progress {
 ///
 /// A relaunch is made unless all three of these are against it:
 ///
-/// - `progress`: [`Progress::Advanced`] means the session's conversation
-///   grew during the run, so the run did something and there is more for
-///   `--continue` to carry on. Whatever failure comes next will be a new
-///   one.
+/// - `progress`: [`Progress::Advanced`] means the model wrote a reply to
+///   the session's conversation during the run, so the run did something
+///   and there is more for `--continue` to carry on. Whatever failure comes
+///   next will be a new one. Lines Claude Code writes without a turn, and
+///   the assistant line it writes for a failed request, are not replies.
 /// - `room_appeared`: no login had room at the exit and the wrapper waited
 ///   until one did, so the capacity that was spent has been replaced. This
 ///   is the usage-limit case the feature exists for, and it is why a
@@ -186,15 +189,14 @@ pub(super) struct Exit<'a> {
     pub result: &'a anyhow::Result<()>,
     /// The wrapper has had SIGHUP or SIGTERM.
     pub signalled: bool,
-    /// What the run left in the session's conversation: [`Progress::of`] the
-    /// [`Standing::conversation_bytes`] taken before the launch and the
-    /// same measurement taken after the exit.
+    /// What the run did in the session's conversation: [`Standing::progress`]
+    /// read after the exit, for replies dated from just before the launch.
     pub progress: Progress,
     /// This run was started by a relaunch that had nothing behind it but
     /// the rule that every exit is given one: the trial of
     /// [`worth_relaunching`]. `false` for the first run of a wrapper, and
-    /// for any run started because the conversation grew or because room
-    /// appeared.
+    /// for any run started because the model replied during the run before
+    /// it or because room appeared.
     pub on_trial: bool,
 }
 
@@ -218,3 +220,6 @@ mod tests_standing;
 #[cfg(test)]
 #[path = "tests_standing_lines.rs"]
 mod tests_standing_lines;
+#[cfg(test)]
+#[path = "tests_standing_progress.rs"]
+mod tests_standing_progress;

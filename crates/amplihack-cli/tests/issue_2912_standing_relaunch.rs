@@ -14,11 +14,14 @@
 //! swap record says at that moment. A run counts as started by the wrapper
 //! once the wrapper's id thread has recorded its process.
 //!
-//! A run that is meant to have done something appends a line to its
-//! conversation's transcript, as a real session does on every turn. That
-//! growth is the evidence the wrapper's brake reads, so a stand-in that
-//! writes nothing is a session that started and crashed with nothing for
-//! `--continue` to carry on.
+//! A run that is meant to have done something appends a turn the model
+//! answered to its conversation's transcript, as a real session does on
+//! every turn. That reply is the evidence the wrapper's brake reads, so a
+//! stand-in that writes no reply is a session that started and crashed with
+//! nothing for `--continue` to carry on, however much else it writes. The
+//! lines it writes are the fixtures in
+//! `src/commands/agent/testdata/issue_2912/`, recorded from a real Claude
+//! Code; see docs/howto/keep-sessions-running.md.
 //!
 //! The brake judges the relaunch chain, so a run that writes nothing is
 //! started again once; it takes a second such run, started by that
@@ -43,8 +46,16 @@ const CLAUDE_PID: u32 = 60001;
 /// The stand-in session. Run `n` records its arguments, then acts on line
 /// `n` of `claude.script`:
 ///
-/// - `hold:N` appends one turn to its conversation's transcript, waits for
-///   `release.<n>` and exits N: a run that did something.
+/// - `hold:N` appends a turn the model answered to its conversation's
+///   transcript, waits for `release.<n>` and exits N: a run that did
+///   something.
+/// - `boot:N` appends what a real start writes with no turn behind it
+///   (`bridge-session` and `cost-state`), waits for `release.<n>` and exits
+///   N: a start that grows the transcript and does no work.
+/// - `fail:N` appends a turn whose request failed (the prompt and Claude
+///   Code's own `<synthetic>` assistant line), waits and exits N.
+/// - `copy:N` appends a copy of everything already in the transcript, as a
+///   resume under a new id copies the history, waits and exits N.
 /// - `wait:N` waits for `release.<n>` and exits N, having written nothing:
 ///   a run the wrapper certainly saw, since the test can wait for its
 ///   process to be recorded before releasing it, and which still leaves
@@ -59,16 +70,24 @@ fn install_stand_in(fx: &Fx, dir: &Path, script: &[&str]) {
 case "$1" in --version) echo '2.1.319 (Claude Code)'; exit 0 ;; esac
 d='{records}'
 t='{transcript}'
+f='{fixtures}'
+now=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 {{ for a in "$@"; do printf '%s ' "$a"; done; echo; }} >> "$d/claude.runs"
 n=$(wc -l < "$d/claude.runs" | tr -d ' ')
 verb=$(sed -n "${{n}}p" "$d/claude.script")
 : > "$d/claude.started"
 echo FAKE-CLAUDE-STARTED >&2
+mkdir -p "$(dirname "$t")"
 case "$verb" in
-  hold:*) mkdir -p "$(dirname "$t")"
-          printf '{{"type":"user","run":%s}}\n' "$n" >> "$t"
+  hold:*) sed "s/@NOW@/$now/g" "$f/model_reply_turn.jsonl" >> "$t" ;;
+  boot:*) cat "$f/start_without_a_turn.jsonl" >> "$t" ;;
+  fail:*) sed "s/@NOW@/$now/g" "$f/failed_turn.jsonl" >> "$t" ;;
+  copy:*) if [ -f "$t" ]; then cat "$t" > "$d/copy.$n"; cat "$d/copy.$n" >> "$t"; fi ;;
+esac
+case "$verb" in
+  hold:*|boot:*|fail:*|copy:*)
           while [ ! -e "$d/release.$n" ]; do sleep 0.05; done
-          : > "$d/exited.$n"; exit "${{verb#hold:}}" ;;
+          : > "$d/exited.$n"; exit "${{verb#*:}}" ;;
   wait:*) while [ ! -e "$d/release.$n" ]; do sleep 0.05; done
           : > "$d/exited.$n"; exit "${{verb#wait:}}" ;;
   exit:*) : > "$d/exited.$n"; exit "${{verb#exit:}}" ;;
@@ -76,7 +95,10 @@ case "$verb" in
 esac
 "#,
         records = fx.records.display(),
-        transcript = transcript(fx, dir).display()
+        transcript = transcript(fx, dir).display(),
+        fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/commands/agent/testdata/issue_2912")
+            .display()
     );
     write_executable(&fx.tools.join("claude"), body, 0o755);
     fs::write(fx.records.join("claude.script"), script.join("\n") + "\n").unwrap();
@@ -488,8 +510,8 @@ fn an_idle_session_that_was_killed_is_started_again_while_a_login_has_room() {
 /// given the one relaunch every exit gets, and run 3 comes back the same
 /// way, so the chain is a start-up crash loop and the wrapper stops. What
 /// stops it is the evidence of the exits themselves and not a count of
-/// attempts, a timer or a scan: the conversation is the size it was when
-/// run 2 started, and a login had room throughout.
+/// attempts, a timer or a scan: the model wrote no reply to the
+/// conversation after run 2 started, and a login had room throughout.
 #[test]
 fn a_session_that_keeps_crashing_with_nothing_to_show_is_refused_loudly() {
     let (fx, dir) = fixture(&["hold:1", "wait:1", "wait:1", "wait:1"]);
@@ -519,6 +541,98 @@ fn a_session_that_keeps_crashing_with_nothing_to_show_is_refused_loudly() {
         "{refusal}"
     );
     assert!(stderr(&out).contains(refusal.as_str()), "{}", stderr(&out));
+}
+
+/// The bytes of the stand-in's transcript on disk, zero when there is none.
+fn transcript_bytes(fx: &Fx, dir: &Path) -> u64 {
+    fs::metadata(transcript(fx, dir)).map_or(0, |m| m.len())
+}
+
+/// Crusty's case on PR #3009: a start-up crash loop that writes to its
+/// transcript on every start. A real Claude Code does exactly that: a
+/// `--continue` start ended before any turn appends `bridge-session` and
+/// `cost-state` lines, and a failed request appends the prompt and an
+/// assistant line of Claude Code's own. Measured by size, every one of
+/// these runs did work and the chain would never be braked. Measured by
+/// replies, they did none.
+///
+/// Run 1 does a turn of work and exits 1, so it is relaunched on that
+/// evidence. Run 2 starts, writes what a start writes and exits 1: it is
+/// not on trial, so it is given the one relaunch every exit gets. Run 3 has
+/// its request fail and exits 1: it was the trial, and it has nothing to
+/// show either, so the wrapper stops. Run 4 never happens.
+#[test]
+fn a_start_up_crash_loop_that_grows_its_transcript_is_refused() {
+    let (fx, dir) = fixture(&["hold:1", "boot:1", "fail:1", "boot:1", "exit:0"]);
+    set_standing(&fx, true);
+    let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
+    let mut sizes = Vec::new();
+    for n in 1..=3usize {
+        run_is_up(&fx, n);
+        sizes.push(transcript_bytes(&fx, &dir));
+        release(&fx, n);
+    }
+    let out = w.finish();
+    expect_code(&out, 1);
+    assert!(
+        sizes.windows(2).all(|w| w[1] > w[0]) && sizes[0] > 0,
+        "the premise: every run grew the transcript: {sizes:?}"
+    );
+    assert_eq!(runs(&fx).len(), 3, "{:?}", runs(&fx));
+    assert_eq!(
+        relaunch_lines(&fx.log_lines()).len(),
+        2,
+        "{:?}",
+        fx.log_lines()
+    );
+    let refusal = refusal(&fx, "a crash loop that writes");
+    assert!(
+        refusal.ends_with(" standing session refused session=area-docs reason=no-progress"),
+        "{refusal}"
+    );
+    let e = fx.agent(NAME);
+    assert_eq!(e["state"], "active", "{e}");
+    assert_eq!(
+        e["alert"].as_str().unwrap_or_default(),
+        "not relaunched: the relaunch of an exit that showed nothing itself \
+         exited exit-status-1 without a reply from the model in its \
+         conversation while a login had room, so another relaunch would repeat it",
+        "{e}"
+    );
+}
+
+/// A resume that copies the conversation's history into the transcript the
+/// record names, as `--continue --fork-session` does into a new one, grows
+/// it by everything that went before. The copied replies keep the times
+/// they were first written, before this run's launch, so they are not this
+/// run's work and the chain is braked as for any other run with nothing to
+/// show.
+#[test]
+fn history_copied_into_the_transcript_is_not_work() {
+    let (fx, dir) = fixture(&["hold:1", "copy:1", "copy:1", "exit:0"]);
+    set_standing(&fx, true);
+    let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
+    for n in 1..=3usize {
+        run_is_up(&fx, n);
+        release(&fx, n);
+        assert!(wait_until(|| exited(&fx, n)), "run {n}");
+    }
+    expect_code(&w.finish(), 1);
+    assert_eq!(runs(&fx).len(), 3, "{:?}", runs(&fx));
+    let reply = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/commands/agent/testdata/issue_2912/model_reply_turn.jsonl"),
+    )
+    .unwrap();
+    // `@NOW@` becomes a 24-character timestamp in each line the run wrote.
+    let one_turn = reply.len() + reply.matches("@NOW@").count() * (24 - "@NOW@".len());
+    assert_eq!(
+        transcript_bytes(&fx, &dir),
+        4 * one_turn as u64,
+        "the premise: two copies doubled the transcript twice"
+    );
+    let refusal = refusal(&fx, "copied history");
+    assert!(refusal.ends_with(" reason=no-progress"), "{refusal}");
 }
 
 /// The same brake on a session that never gets anywhere at all, whether its
@@ -595,7 +709,7 @@ fn a_session_with_no_conversation_on_record_is_started_again_once_then_refused()
 ///
 /// Both runs are waited for until the wrapper has recorded the session's
 /// process and conversation, so the conversation is on the record and the
-/// alert names what was measured of it: it did not grow.
+/// alert names what was read of it: the model wrote no reply to it.
 #[test]
 fn a_no_progress_refusal_is_left_on_the_record_for_the_supervisor() {
     let (fx, dir) = fixture(&["wait:7", "wait:7", "exit:0"]);
@@ -613,8 +727,8 @@ fn a_no_progress_refusal_is_left_on_the_record_for_the_supervisor() {
     assert_eq!(
         alert,
         "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited exit-status-7 without advancing its conversation while a login \
-         had room, so another relaunch would repeat it",
+         exited exit-status-7 without a reply from the model in its \
+         conversation while a login had room, so another relaunch would repeat it",
         "{e}"
     );
     let status = fx.run(&["agent", "status"]);
@@ -673,6 +787,51 @@ fn no_relaunch_until_a_login_has_room_then_one_on_the_event() {
         lines[0].ends_with("reason=exit-status-1 waited=room"),
         "{}",
         lines[0]
+    );
+}
+
+/// A wait for room that ends without one and without a signal leaves a
+/// session stopped that its owner wants running. Here the rotator's
+/// directory is moved away during the wait, so the watch on the swap record
+/// is lost. The refusal is logged as before, and its cause is now on the
+/// session's record too, as a `no-progress` refusal's is: the record stays
+/// `active` for the supervisor and `amplihack agent status` shows why.
+#[test]
+fn a_wait_for_room_that_loses_its_watch_is_left_on_the_record() {
+    let (fx, dir) = fixture(&["hold:1", "hold:0"]);
+    set_standing(&fx, true);
+    let swap_file = swap(&fx, 1, 100, 0o600);
+    let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
+    run_is_up(&fx, 1);
+    release(&fx, 1);
+    waiting_for_room(&fx, 1);
+    let rotate = swap_file.parent().unwrap().to_path_buf();
+    fs::rename(&rotate, rotate.with_extension("moved")).unwrap();
+    expect_code(&w.finish(), 1);
+    assert_eq!(runs(&fx).len(), 1, "{:?}", runs(&fx));
+    let refusal = refusal(&fx, "watch lost");
+    assert!(
+        refusal.ends_with(" standing session refused session=area-docs reason=gone"),
+        "{refusal}"
+    );
+    let e = fx.agent(NAME);
+    assert_eq!(
+        e["state"], "active",
+        "the supervisor may still recover it: {e}"
+    );
+    let alert = e["alert"].as_str().unwrap_or_default();
+    assert_eq!(
+        alert,
+        "not relaunched: it exited exit-status-1 while no login had room, and the \
+         watch on the rotator's swap record was lost, so the session was left for \
+         the supervisor",
+        "{e}"
+    );
+    let status = fx.run(&["agent", "status"]);
+    assert!(
+        stdout(&status).contains(&format!("ALERT {NAME}: {alert}")),
+        "the status shows it: {}",
+        stdout(&status)
     );
 }
 

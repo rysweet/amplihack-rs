@@ -99,10 +99,11 @@ pub(super) fn owner_ended(
 ///
 /// The launch id is deliberately not matched here. The conversation belongs
 /// to the session and not to one launch, and the standing-session wrapper
-/// measures it to tell a run that did something from one that did not
-/// (issue #2912). A supervisor that rebuilt the session in another window
-/// while this run was going would otherwise make the run look idle, and the
-/// refusal would name the wrong cause; the relaunch itself still happens
+/// reads the model's replies in it to tell a run that did something from
+/// one that did not (issue #2912). A supervisor that rebuilt the session in
+/// another window while this run was going would otherwise make the run
+/// look idle, and the refusal would name the wrong cause; the relaunch
+/// itself still happens
 /// only under this launch's id, in [`reactivate`].
 pub(super) fn conversation(dir: &AgentsDir, name: &str) -> Option<String> {
     let reg = store::load(dir).ok()?;

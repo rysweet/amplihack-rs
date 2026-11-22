@@ -4,19 +4,23 @@
 //! The rule the decision applies is in the parent module: [`after_exit`]
 //! for whose stop an exit was, and [`worth_relaunching`] for whether a
 //! relaunch answers anything new. What is here is the reading of the world
-//! that rule needs, which is the session's record, the transcript of its
-//! conversation and the rotator's swap record.
+//! that rule needs, which is the session's record, the model's replies in
+//! the transcript of its conversation and the rotator's swap record.
 
 use super::lines::{
-    exit_reason, loudly, no_progress_alert, refused_line, relaunch_line, waiting_line,
+    exit_reason, gone_alert, loudly, no_progress_alert, refused_line, relaunch_line, waiting_line,
 };
+use super::progress::replied_since;
 use super::relaunch::{self, Room};
 use super::{AfterExit, Exit, Progress, Relaunch, after_exit, worth_relaunching};
 use crate::commands::agent::registry;
 use crate::commands::agent::store::AgentsDir;
 use crate::commands::agent::{entry, sessions};
+use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 
 /// Whether this session is standing, and the rotator root its room gate
 /// reads. Settled once, before the first launch.
@@ -65,40 +69,53 @@ impl Standing {
         Self { on, root }
     }
 
-    /// How many bytes of its own conversation this session has on disk: the
-    /// transcript of the conversation its record names, in whichever
-    /// configuration directory holds it. `Some(0)` when the record names a
-    /// conversation that has no transcript yet, which is what a
-    /// conversation with no turn written to it looks like.
+    /// What the run that began at `started` did in this session's
+    /// conversation: [`Progress::Advanced`] when the transcript of the
+    /// conversation its record names, in whichever configuration directory
+    /// holds it, has a reply the model wrote at or after `started`.
     ///
-    /// `None` is the absence of a measurement rather than a measurement of
-    /// nothing: the session is not standing, its record names no
-    /// conversation, or the configuration directories cannot be listed.
-    /// [`Progress::of`] keeps that apart from `Some(0)` and
-    /// [`no_progress_alert`] says which of the two a refusal saw, because
-    /// "the conversation did not grow" and "there is no conversation of
-    /// this session's to look at" are different facts about a run. Neither
-    /// is evidence that the run did something, so neither relaunches a run
-    /// that is already on trial.
+    /// The wrapper reads this once, after the exit, with `started` taken
+    /// just before the launch. A reply is the evidence that the run did
+    /// something a relaunch could continue: the [`Progress::Advanced`] of
+    /// [`worth_relaunching`]. It is a reading of work and not a count of
+    /// attempts, so it never caps a session that is running: a session
+    /// that is working writes a reply every turn. The size of the
+    /// transcript is not read, because a start that does nothing and a
+    /// request that fails both grow it (see `standing_progress.rs`).
     ///
-    /// The wrapper takes this before every launch and again after the exit.
-    /// Growth across a run is the [`Progress::Advanced`] of
-    /// [`worth_relaunching`]: the evidence that the run did something a
-    /// relaunch could continue. It is a measurement of work and not a count
-    /// of attempts, so it never caps a session that is running: a session
-    /// that is working grows it every turn.
+    /// [`Progress::Unmeasured`] when the session is not standing, its record
+    /// names no conversation, or the configuration directories cannot be
+    /// listed. [`no_progress_alert`] says which a refusal saw, because "the
+    /// model wrote nothing" and "there is no conversation of this session's
+    /// to look at" are different facts about a run. Neither is evidence
+    /// that the run did something, so neither relaunches a run that is
+    /// already on trial.
     ///
     /// It is read from the conversation the session's own record names, not
     /// from the launch directory as a whole, so a second session running in
     /// the same directory can neither pass this session off as working nor
     /// keep its relaunch loop alive.
-    pub(in crate::commands::agent) fn conversation_bytes(
+    pub(in crate::commands::agent) fn progress(
         &self,
         dir: &AgentsDir,
         home: &Path,
         launch_dir: &Path,
         name: &str,
-    ) -> Option<u64> {
+        started: SystemTime,
+    ) -> Progress {
+        Progress::of(self.replied(dir, home, launch_dir, name, started))
+    }
+
+    /// Whether the session's conversation has a reply dated at or after
+    /// `started`; `None` when there is no conversation of its own to read.
+    fn replied(
+        &self,
+        dir: &AgentsDir,
+        home: &Path,
+        launch_dir: &Path,
+        name: &str,
+        started: SystemTime,
+    ) -> Option<bool> {
         if !self.on {
             return None;
         }
@@ -106,9 +123,9 @@ impl Standing {
         let dirs = sessions::config_dirs_from(home, |k| std::env::var_os(k)).ok()?;
         Some(
             dirs.iter()
-                .filter_map(|d| sessions::transcript_len(d, launch_dir, &id))
-                .max()
-                .unwrap_or(0),
+                .filter_map(|d| sessions::transcript_path(d, launch_dir, &id))
+                .filter_map(|p| File::open(p).ok())
+                .any(|f| replied_since(BufReader::new(f), started)),
         )
     }
 
@@ -118,10 +135,11 @@ impl Standing {
     /// with the arguments rebuilt from its entry. Every relaunch, wait and
     /// refusal is logged; an owner-ended exit, a signalled wrapper and a
     /// session that is not standing are not, since each of those is a stop
-    /// someone chose. A `no-progress` refusal is left on the session's
-    /// record as well, because it stops a session its owner still wants
-    /// running. `stopped` is the wrapper's flag for SIGHUP and SIGTERM,
-    /// read again during and after a wait for room.
+    /// someone chose. A `no-progress` refusal, and a `gone` refusal that no
+    /// signal caused, are left on the session's record as well, because
+    /// each stops a session its owner still wants running. `stopped` is the
+    /// wrapper's flag for SIGHUP and SIGTERM, read again during and after a
+    /// wait for room.
     pub(in crate::commands::agent) fn next(
         &self,
         dir: &AgentsDir,
@@ -150,8 +168,21 @@ impl Standing {
             }),
             None => Room::Now,
         };
-        if waited == Room::Gone || stopped.load(Ordering::SeqCst) {
+        // A signal during or just before the wait is the pane or the host
+        // going away: a stop someone chose, so it is logged and no more.
+        if waited == Room::Stopped || stopped.load(Ordering::SeqCst) {
             loudly(dir, &refused_line(registry::now(), name, "gone"));
+            return None;
+        }
+        // The wait ended with no room and no one asked it to: the deadline
+        // passed, or the swap record could not be watched. The owner still
+        // wants the session running, so the cause goes on its record as a
+        // `no-progress` refusal's does, and the record is left active for
+        // the supervisor's recovery. That starts the session in a new
+        // wrapper, which waits for room again should the run exit with none.
+        if let Room::Gone(why) = waited {
+            loudly(dir, &refused_line(registry::now(), name, "gone"));
+            entry::note_refusal(dir, name, exit.launch_id, &gone_alert(&reason, why));
             return None;
         }
         let room = waited == Room::Waited;

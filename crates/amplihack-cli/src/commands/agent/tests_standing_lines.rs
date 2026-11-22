@@ -3,9 +3,11 @@
 //!
 //! The decision and its room gate are in `tests_standing.rs`.
 
-use super::lines::{refused_line, relaunch_line, waiting_line};
+use super::lines::{gone_alert, refused_line, relaunch_line, waiting_line};
+use super::relaunch::Lost;
 use crate::commands::agent::launch::continue_args;
 use crate::commands::agent::registry::Entry;
+use crate::commands::agent::report::MAX_LINE;
 use serde_json::json;
 
 const NOW: i64 = 1_793_316_490;
@@ -141,4 +143,44 @@ fn control_characters_never_reach_the_pane_or_the_log() {
         assert!(!line.chars().any(char::is_control), "{line:?}");
         assert_eq!(line.lines().count(), 1, "{line:?}");
     }
+}
+
+/// A wait for room that ended without one, and without a signal, stops a
+/// session its owner wants running, so the record says which exit it was
+/// and why the wait ended, for `amplihack agent status` and the supervisor.
+#[test]
+fn the_gone_alert_names_the_exit_and_why_the_wait_ended() {
+    let cases = [
+        (
+            Lost::Deadline,
+            "the wait for one reached its limit of 7 days",
+        ),
+        (
+            Lost::Watch,
+            "the watch on the rotator's swap record was lost",
+        ),
+        (
+            Lost::Unarmed,
+            "the rotator's swap record could not be watched",
+        ),
+        (
+            Lost::Unwatchable,
+            "the rotator's directory is missing or not private to this user",
+        ),
+    ];
+    for (why, text) in cases {
+        assert_eq!(
+            gone_alert("exit-status-1", why),
+            format!(
+                "not relaunched: it exited exit-status-1 while no login had room, \
+                 and {text}, so the session was left for the supervisor"
+            )
+        );
+    }
+    let hostile = gone_alert(
+        &format!("a\u{1b}[31mb\nc{}", "x".repeat(4096)),
+        Lost::Deadline,
+    );
+    assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
+    assert!(hostile.chars().count() <= MAX_LINE, "{hostile:?}");
 }

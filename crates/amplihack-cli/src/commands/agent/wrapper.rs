@@ -15,7 +15,7 @@ use super::entry::{mark_ended, record_claude, start};
 use super::fields::{Launch, check_profile, check_socket, subject};
 use super::launch::continue_args;
 use super::registry::{self, AmplihackFlags};
-use super::standing::{Exit, Progress, Standing};
+use super::standing::{Exit, Standing};
 use super::store::AgentsDir;
 use super::tmux::{self, Tmux};
 use super::{cmdline, env_record, procfs, report, sessions, validate};
@@ -23,7 +23,7 @@ use anyhow::{anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const NO_TMUX: &str = "amplihack claude --supervise needs tmux: $TMUX and $TMUX_PANE are not set";
 const PRINT_MODE: &str = "amplihack claude --supervise needs an interactive session; \
@@ -126,16 +126,14 @@ pub fn run_wrapped(
             launch_id.clone(),
             Arc::clone(&run),
         );
-        // Issue #2912: how much conversation the session has before this
-        // run. Whether it holds more afterwards is the evidence that a
+        // Issue #2912: when this run began. A reply the model wrote to the
+        // session's conversation from then on is the evidence that a
         // relaunch would answer something new; see
-        // `standing::worth_relaunching`. `None` from either measurement is
-        // no measurement rather than no conversation, and
-        // `Progress::of` keeps the two apart.
-        let before = standing.conversation_bytes(&dir, &home, &cwd, req.name);
+        // `standing::worth_relaunching`. It is read once, after the exit.
+        let started = SystemTime::now();
         let result = launch(&args);
         run.over.store(true, Ordering::SeqCst);
-        let after = standing.conversation_bytes(&dir, &home, &cwd, req.name);
+        let progress = standing.progress(&dir, &home, &cwd, req.name, started);
         let signalled = stopped.load(Ordering::SeqCst);
         if result.is_ok()
             && !signalled
@@ -155,7 +153,7 @@ pub fn run_wrapped(
             first_conversation: first_conversation.as_deref(),
             result: &result,
             signalled,
-            progress: Progress::of(before, after),
+            progress,
             on_trial,
         };
         let Some(next) = standing.next(&dir, req.name, &exit, &stopped) else {

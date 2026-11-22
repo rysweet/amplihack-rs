@@ -273,13 +273,11 @@ pub fn project_dir_names(launch_dir: &Path) -> Vec<String> {
     names
 }
 
-/// How many bytes of `<config_dir>/projects/<enc>/<id>.jsonl` are on disk,
-/// for either encoding of `launch_dir`; `None` when no such file is there,
-/// when `id` is not a conversation id, or when the file cannot be read.
-/// Claude Code appends one line per turn, so the standing-session wrapper
-/// compares this across a run (issue #2912): a run that left it the same
-/// size left nothing for `claude --continue` to carry on.
-pub fn transcript_len(config_dir: &Path, launch_dir: &Path, id: &str) -> Option<u64> {
+/// `<config_dir>/projects/<enc>/<id>.jsonl` for whichever encoding of
+/// `launch_dir` holds a regular file of that name; `None` when neither does
+/// or `id` is not a conversation id. The standing-session wrapper reads the
+/// model's replies from it after a run (issue #2912).
+pub fn transcript_path(config_dir: &Path, launch_dir: &Path, id: &str) -> Option<PathBuf> {
     if validate::conversation_id(id).is_err() {
         return None;
     }
@@ -287,13 +285,11 @@ pub fn transcript_len(config_dir: &Path, launch_dir: &Path, id: &str) -> Option<
     project_dir_names(launch_dir)
         .iter()
         .map(|enc| projects.join(enc).join(format!("{id}.jsonl")))
-        .filter_map(|p| fs::metadata(p).ok())
-        .find(fs::Metadata::is_file)
-        .map(|m| m.len())
+        .find(|p| fs::metadata(p).is_ok_and(|m| m.is_file()))
 }
 
 /// Whether `<config_dir>/projects/<enc>/<id>.jsonl` exists for either
 /// encoding of `launch_dir`.
 pub fn transcript_exists(config_dir: &Path, launch_dir: &Path, id: &str) -> bool {
-    transcript_len(config_dir, launch_dir, id).is_some()
+    transcript_path(config_dir, launch_dir, id).is_some()
 }

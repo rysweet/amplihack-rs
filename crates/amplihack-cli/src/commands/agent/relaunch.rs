@@ -29,12 +29,32 @@ pub enum Room {
     /// either on the swap event or on the read taken once the watch was
     /// armed, and the relaunch follows it.
     Waited,
-    /// Nothing to wait on, or the wait reached [`MAX_WAIT`] with no room.
-    Gone,
+    /// The wrapper had SIGHUP or SIGTERM before the wait could block: the
+    /// pane or the host is going away.
+    Stopped,
+    /// The wait ended with no room and no signal, for the reason given.
+    Gone(Lost),
+}
+
+/// Why a wait for room ended without one. Each leaves a standing session
+/// stopped that its owner wants running, so the wrapper puts it on the
+/// session's record for the supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lost {
+    /// The rotator's directory is missing, a symbolic link, not this
+    /// user's, or writable by others, so no event could ever arrive.
+    Unwatchable,
+    /// The watch on the swap record could not be set up.
+    Unarmed,
+    /// The watch was lost, or the wait itself failed.
+    Watch,
+    /// [`MAX_WAIT`] passed with no login with room.
+    Deadline,
 }
 
 /// Blocks until a login with room appears under `root`, or `stopped` is
-/// already set, or [`MAX_WAIT`] passes.
+/// already set, or [`MAX_WAIT`] passes, or the swap record cannot be
+/// watched; [`Room`] says which.
 ///
 /// `Room::Now` without any wait when a login has room, and also when there
 /// is no record, the reader refuses it, or it cannot be parsed: an attacker
@@ -60,7 +80,7 @@ pub fn wait_for_room_until(root: &Path, stopped: &AtomicBool, on_wait: impl FnOn
     if !watchable(&dir) {
         // Nothing to wait on: the directory the rotator writes in is gone
         // or is not ours, so no event can ever arrive.
-        return Room::Gone;
+        return Room::Gone(Lost::Unwatchable);
     }
     let watches = [Watch {
         dir,
@@ -74,15 +94,15 @@ pub fn wait_for_room_until(root: &Path, stopped: &AtomicBool, on_wait: impl FnOn
         Ok(w) => w,
         Err(e) => {
             eprintln!("warning: standing session: cannot watch the swap record: {e}");
-            return Room::Gone;
+            return Room::Gone(Lost::Unarmed);
         }
     };
     let Some(deadline) = Instant::now().checked_add(MAX_WAIT) else {
-        return Room::Gone;
+        return Room::Gone(Lost::Deadline);
     };
     let _default_signals = DefaultSignals::install();
     if stopped.load(Ordering::SeqCst) {
-        return Room::Gone;
+        return Room::Stopped;
     }
     // Read once more now the watch is armed. A record written between the
     // read at the top and `Waiter::new` reaches neither, and the session
@@ -101,14 +121,17 @@ pub fn wait_for_room_until(root: &Path, stopped: &AtomicBool, on_wait: impl FnOn
                     return Room::Waited;
                 }
             }
-            Ok(Woke::Deadline | Woke::ProcessGone) => return Room::Gone,
+            Ok(Woke::Deadline) => return Room::Gone(Lost::Deadline),
+            // The pidfd is this process, so this cannot happen while the
+            // wait runs; were it to, the wait has nothing left to end it.
+            Ok(Woke::ProcessGone) => return Room::Gone(Lost::Watch),
             Ok(Woke::Lost(_)) => {
                 eprintln!("warning: standing session: the watch on the swap record was lost");
-                return Room::Gone;
+                return Room::Gone(Lost::Watch);
             }
             Err(e) => {
                 eprintln!("warning: standing session: the wait for room failed: {e}");
-                return Room::Gone;
+                return Room::Gone(Lost::Watch);
             }
         }
     }

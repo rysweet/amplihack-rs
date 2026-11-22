@@ -1,11 +1,12 @@
 //! Issue #2912: the standing-session decision and its room gate.
 //!
 //! The relaunch argv and the log lines are in `tests_standing_lines.rs`,
+//! what counts as a run having done work is in `tests_standing_progress.rs`,
 //! and the loop itself, with a stand-in session in its pane, is in
 //! `tests/issue_2912_standing_relaunch.rs`.
 
 use super::lines::no_progress_alert;
-use super::relaunch::{Room, wait_for_room_until};
+use super::relaunch::{Lost, Room, wait_for_room_until};
 use super::{AfterExit, Progress, after_exit, worth_relaunching};
 use crate::commands::agent::report::MAX_LINE;
 use amplihack_utils::rotator_status::swap_record::{
@@ -61,54 +62,6 @@ fn a_session_that_is_not_standing_is_never_relaunched() {
                 );
             }
         }
-    }
-}
-
-// ── what a run left in its conversation ─────────────────────────────────────
-
-/// Growth is work. A conversation first recorded during the run counts from
-/// nothing, which is what every first launch of a session does.
-#[test]
-fn a_conversation_that_grew_across_the_run_is_progress() {
-    for (before, after) in [(Some(10), Some(11)), (Some(0), Some(1)), (None, Some(1))] {
-        assert_eq!(
-            Progress::of(before, after),
-            Progress::Advanced,
-            "{before:?} -> {after:?}"
-        );
-    }
-}
-
-/// A conversation that is the size it was, or that has no transcript yet,
-/// is a run that did nothing a `--continue` could carry on. A transcript
-/// that shrank is not growth either.
-#[test]
-fn a_conversation_that_did_not_grow_is_an_idle_run() {
-    for (before, after) in [
-        (Some(10), Some(10)),
-        (Some(10), Some(4)),
-        (Some(0), Some(0)),
-        (None, Some(0)),
-    ] {
-        assert_eq!(
-            Progress::of(before, after),
-            Progress::Idle,
-            "{before:?} -> {after:?}"
-        );
-    }
-}
-
-/// No measurement after the exit is not a measurement of nothing: the
-/// record named no conversation of this session's, so the run is neither
-/// known to have worked nor known to have been idle.
-#[test]
-fn no_conversation_to_measure_is_neither_progress_nor_an_idle_run() {
-    for before in [None, Some(0), Some(10)] {
-        assert_eq!(
-            Progress::of(before, None),
-            Progress::Unmeasured,
-            "{before:?}"
-        );
     }
 }
 
@@ -174,11 +127,11 @@ fn the_no_progress_alert_names_the_exit_and_the_evidence() {
     assert_eq!(
         no_progress_alert("exit-status-1", Progress::Idle),
         "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited exit-status-1 without advancing its conversation while a login \
-         had room, so another relaunch would repeat it"
+         exited exit-status-1 without a reply from the model in its \
+         conversation while a login had room, so another relaunch would repeat it"
     );
-    // The blind case says so rather than claiming the conversation stood
-    // still: there was none of this session's to look at.
+    // The blind case says so rather than claiming the model wrote nothing:
+    // there was no conversation of this session's to look at.
     assert_eq!(
         no_progress_alert("SIGKILL", Progress::Unmeasured),
         "not relaunched: the relaunch of an exit that showed nothing itself \
@@ -271,4 +224,14 @@ fn a_refused_or_unparseable_record_is_not_waited_for() {
     fs::write(&f, b"not json").unwrap();
     fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(wait_for_room(r.path()), Room::Now, "unparseable");
+}
+
+/// A rotator directory others can write to is not watched, so a session
+/// with no room is not held on it; the wait ends at once and says why.
+#[test]
+fn a_rotate_directory_others_can_write_is_not_waited_on() {
+    let r = root();
+    write_record(r.path(), &record(100, 100), 0o600);
+    fs::set_permissions(rotate_dir(r.path()), fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(wait_for_room(r.path()), Room::Gone(Lost::Unwatchable));
 }

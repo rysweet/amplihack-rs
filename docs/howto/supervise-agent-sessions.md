@@ -599,8 +599,9 @@ agent stays stopped until you act.
 
 A [standing session](./keep-sessions-running.md) that keeps failing arrives
 here too. Its own pane gives every exit one relaunch, and stops when that
-relaunch gets nowhere either; it then leaves the reason in the agent's `alert`
-field and leaves the agent `active` for this recovery. So an alert of the form
+relaunch gets nowhere either, or when its wait for a login with room ends
+without one; it then leaves the reason in the agent's `alert` field and
+leaves the agent `active` for this recovery. So an alert of the form
 `not relaunched: …` is a session the supervisor is about to pick up, and
 `stopped: restart limit` is one it has given up on.
 
