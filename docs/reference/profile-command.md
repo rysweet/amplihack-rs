@@ -4569,6 +4569,24 @@ weekly    no session window  47%   2m ago     home    installed
 work      93%                61%   5m ago     home    installed
 ```
 
+The `login` column says where the profile's login is. In order of precedence
+it is `live in <dir>`, `parked`, `home`, `keychain`, `keychain unreadable` or
+`none`. `home` means the profile's own `.credentials.json` exists. On macOS,
+a profile with no login file reads `keychain` when the
+[Keychain lookup](#keychain-logins) finds its item, and `keychain unreadable`
+when the Keychain could not be read. For those two values the answer comes
+from the same function as the launch guard, so the two agree. `home` does
+not carry that guarantee: it says only that the file exists, whereas the
+guard treats a login file that is unreadable or has no OAuth login as no
+login. A profile resolved as an API-key profile that has no login file on
+macOS shows `none` in this column, yet still counts as a candidate for
+selection by the rules in
+[API-key profiles and auto-switch](#api-key-profiles-and-auto-switch).
+
+`status` resolves each profile's kind twice, once for the `login` column and
+once for its notes, so a profile with no login file on macOS costs two
+[Keychain lookups](#keychain-logins) in one `status` run.
+
 `status` prints `wrapper` as `installed`, `missing`, `stale` (an older or
 edited wrapper command, one wrapped twice, or one pointing at a different
 binary) or `unsafe` (the binary is in a location `install` would refuse).
@@ -5428,7 +5446,13 @@ the state to `ok`. The API-key profile counts only while its
 [login check](#api-key-login-check) passes: `reachable`, the rotator's check,
 in the rotator's writes and in any write while a rotator runs, and otherwise
 auto-switch's check of the profile's own files. A live API-key profile that
-fails the check does not set the state to `ok`. The
+fails the check does not set the state to `ok`. An overflow profile that
+holds no login of its own, as [auto-switch checks it](#when-a-capacity-wait-starts),
+is not counted either, unless the rotator has made it live. On macOS, when
+that is because its Keychain could not be read, the writer
+[says so](#keychain-unreadable-reports): the `usage` and `statusline`
+writers print one line on stderr, and the `rotate` writer writes the same
+line to the rotate log, for each such profile that is not excluded. The
 rotator's own `ALERT` line still follows its own thresholds. All three
 write while holding the global state lock, so writes never interleave and
 the last one wins. A writer that cannot get the lock records nothing and
@@ -5617,7 +5641,7 @@ you and not a symlink.
 | Linux, `/proc/self/environ` readable, login in `.credentials.json` | yes | yes |
 | Linux where `/proc/self/environ` cannot be read (for example `hidepid`) | no; `status` says so and nothing is moved | yes |
 | Other Unix (no `/proc`) | no; `status` says so and nothing is moved | yes |
-| macOS with logins in the Keychain | no; no credentials file to move, skipped silently with a `status` note | yes |
+| macOS with logins in the Keychain | no; no credentials file to move, skipped silently with a `status` note | yes, for a profile with an identifiable `oauthAccount` and a [Keychain item](#keychain-logins). A profile whose Keychain could not be read is not a candidate. A profile resolved as an API-key profile counts with no login file, as before. |
 | Windows and other non-Unix | no | no; every `auto-switch` command is refused with `AutoSwitchUnsupported`, and every other auto-switch path does nothing |
 
 An in-session swap only happens when `<live dir>/.credentials.json` exists.
@@ -9626,6 +9650,7 @@ run and prints their `reread:` lines; see
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
+| `auto-switch: profile <name> was passed over: it has no login file and the macOS Keychain could not be read (<cause>)` | macOS only. This cycle's [capacity file](#capacity-writers) write left overflow profile `<name>` out because its [Keychain could not be read](#keychain-unreadable). Written once while that lasts, and again when the Keychain is unreadable again after a cycle in which it answered, or after the rotator restarts. An excluded profile gets no line. The cycle goes on. |
 | `overflow: on <name>; no measured plan login below 100%, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
 | `overflow: staying on <name>; no measured plan login below 100%, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `overflow: on` line is written instead. |
 | `overflow: off <name>; back on plan profile <name>` | Written after an `overflow-out` swap. |
@@ -12260,8 +12285,14 @@ when the profile store holds at least one profile that:
   or, for a `$HOME/.claude` step, the [rotate ledger](#rotate-state-directory)'s
   `live` profile (any stored profile counts when the ledger names none);
 - is not in the auto-switch `exclude` list;
-- holds its own login, as auto-switch checks it (on macOS logins are in
-  the Keychain, so every profile counts);
+- holds its own login, as auto-switch checks it: a `.credentials.json` file,
+  or, on macOS, a profile with no file whose `.claude.json` has an
+  identifiable `oauthAccount` and whose [Keychain item](#keychain-logins)
+  exists. A profile whose Keychain could not be read is not a candidate.
+  A selection that may move a launch (before its first attempt, at a usage
+  limit, and once after a wait) prints one line on stderr for each such
+  profile that is not excluded, hosting or lent, naming the profile and the
+  cause; the 30 s takeover check described below prints nothing;
 - is a plan login, or an overflow profile that `overflow=` marks while the
   overflow gate is open; an API-key profile is never a plan login, so an
   unmarked one never counts (issue #1804);
@@ -12372,8 +12403,10 @@ file, a listing of the profile root to enumerate the stored profiles, and
 the [overflow inputs](#auto-switch-and-overflow-profiles), which resolve
 each stored profile's [kind](#kind-detection) from its own files and read
 the [rotate ledger](#rotate-state-directory) for spend blocks and the
-overflow gate. Off macOS, where the login is a file rather than a Keychain
-entry, each candidate costs one further `stat` for its login file, and a
+overflow gate. Each candidate costs one further `stat` for its login file;
+on macOS a candidate with no login file and an identifiable `oauthAccount`
+also costs one [Keychain lookup](#keychain-logins), measured at 18 to 23 ms
+for an absent item in an unlocked login Keychain, and a
 marked API-key candidate costs auto-switch's
 [own login check](#api-key-profiles-and-auto-switch) against the profile's
 `.claude.json` and `settings.json`. None of them makes a network call.
@@ -13589,8 +13622,9 @@ error: profile '<name>' is signed in to the same account and organization as <ho
 hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login <name>' again.
 ```
 
-The refused login stays in the Keychain, which amplihack never reads or
-changes, until you sign out of it.
+The refused login stays in the Keychain until you sign out of it. amplihack
+asks only whether an item exists for a profile's directory; it never reads an
+item's secret or changes an item.
 
 #### What counts as a new account
 
@@ -13822,7 +13856,8 @@ runs `apiKeyHelper`, and never prints, logs or stores any part of a key.
 The kind is worked out again on every read and never stored. Only key names
 and file presence are used; no value is read. All inspection of
 `.credentials.json`, `settings.json` and `.claude.json` happens in
-`rotate/identify.rs`.
+`rotate/identify.rs`. On macOS, one further question is asked of the login
+Keychain; see [Keychain logins](#keychain-logins).
 
 The first rule that matches wins. `kind list` prints the source shown:
 
@@ -13832,18 +13867,21 @@ The first rule that matches wins. `kind list` prints the source shown:
 | 2 | The login file is a readable JSON object with a `claudeAiOauth` key | `subscription` | `detected: oauth login` |
 | 2 | The login file is a readable JSON object that is `{}` or has no `claudeAiOauth` key | `api-key` | `detected: login file has no oauth login` |
 | 2 | The login file exists but is [unreadable](#unreadable-login-file) | `subscription`, with no login | `detected: login file unreadable` |
-| 3 | The login file is missing, the rotate ledger names the profile as `live`, and `~/.claude/.credentials.json` has a `claudeAiOauth` key | `subscription` | `detected: live in ~/.claude (oauth login)` |
-| 3 | As above, and `~/.claude/.credentials.json` is a readable object with no `claudeAiOauth` key | `api-key` | `detected: live in ~/.claude (no oauth login)` |
-| 3 | As above, and `~/.claude/.credentials.json` is missing or unreadable | `subscription`, with no login | `detected: live in ~/.claude (login file unreadable)` |
-| 4 | The login file is missing and the profile names an API-key setting | `api-key` | `detected: api key setting` |
-| 5 | None of the above | `subscription`, with no login | `detected: no login` |
+| 3 (macOS) | The login file is missing, `.claude.json` has an identifiable `oauthAccount`, and the login Keychain holds [an item for the profile's directory](#keychain-logins) | `subscription`, with its own login | `detected: oauth login in the macOS Keychain` |
+| 3 (macOS) | As above, but the Keychain [could not be read](#keychain-unreadable) | `subscription`, with no login, even when an API-key setting is named | `detected: macOS Keychain unreadable` |
+| 4 | The login file is missing, the rotate ledger names the profile as `live`, and `~/.claude/.credentials.json` has a `claudeAiOauth` key | `subscription` | `detected: live in ~/.claude (oauth login)` |
+| 4 | As above, and `~/.claude/.credentials.json` is a readable object with no `claudeAiOauth` key | `api-key` | `detected: live in ~/.claude (no oauth login)` |
+| 4 | As above, and `~/.claude/.credentials.json` is missing or unreadable | `subscription`, with no login | `detected: live in ~/.claude (login file unreadable)` |
+| 5 | The login file is missing and the profile names an API-key setting | `api-key` | `detected: api key setting` |
+| 6 | None of the above | `subscription`, with no login | `detected: no login` |
 
 Only a readable `{}` file, or an object without `claudeAiOauth`, is evidence
 of the platform credential. A missing login file is not: on its own it
 resolves to `detected: no login`, a subscription profile with no login,
 which `run`, `launch` and `switch` [refuse](#no-silent-billing). A damaged or
 unreadable file is not either. Every doubtful case therefore refuses a launch
-instead of billing per token.
+instead of billing per token. A Keychain that cannot be read is one of those
+doubtful cases: it is never taken as proof of an API key.
 
 An *API-key setting* is any of these names, checked for presence only:
 
@@ -13851,11 +13889,15 @@ An *API-key setting* is any of these names, checked for presence only:
 - `apiKeyHelper` in `settings.json`;
 - `primaryApiKey` in `.claude.json`.
 
-**Key settings count only when the profile has no login file** (rule 4).
-They give one source, `detected: api key setting`, however many of them are
-present. A profile whose login file has a `claudeAiOauth` key stays a
-subscription profile whatever settings it names; `list` and `show` then
-print one warning on stderr, because Claude may prefer the key:
+**Key settings count only when the profile has no login file** (rule 5), and
+only when the Keychain, where it was asked, did not answer that the profile
+holds a login or that it could not be read. They give one source,
+`detected: api key setting`, however many of them are present. A profile
+whose login file has a `claudeAiOauth` key stays a subscription profile
+whatever settings it names; on macOS the same holds for a profile whose
+[Keychain item](#keychain-logins) exists. `kind list` and `show` then print
+one warning on stderr for either kind of login, because Claude may prefer
+the key:
 
 ```
 warning: profile ryan-mistt has an oauth login and an API-key setting is also configured; Claude may bill per token. Set the kind to confirm: amplihack profile kind set ryan-mistt subscription
@@ -13871,11 +13913,153 @@ What counts as evidence:
   object.
 - A `settings.json` or `.claude.json` that fails the same checks, or is
   writable by group or others, counts as naming no setting.
-- The `oauthAccount` block in `.claude.json` plays no part.
-- Rule 3 reads `~/.claude/.credentials.json` only when the rotate ledger
+- The `oauthAccount` block in `.claude.json` plays no part in rules 1, 2 and
+  4 to 6. Rule 3 uses it only as the precondition for asking the Keychain.
+- Rule 4 reads `~/.claude/.credentials.json` only when the rotate ledger
   names the profile as `live`. An unreadable ledger names no profile.
 - When `.auto-switch` is corrupt, no override is trusted and only detection
   is used.
+
+### Keychain logins
+
+On macOS, Claude Code keeps a profile's
+login in the login Keychain and writes no `.credentials.json`. Without a
+further rule, every such profile would resolve to `detected: no login` and be
+refused. Rule 3 of the [detection table](#kind-detection) asks the Keychain
+instead.
+
+Rule 3 applies only when all of these hold:
+
+- the platform is macOS;
+- no override names the profile as `api-key` (an `api-key` override never
+  starts the lookup);
+- the profile's own `.credentials.json` is missing. A file that exists,
+  readable or not, decides the kind by rules 1 and 2 and the Keychain is
+  not asked;
+- the profile's `.claude.json` has an `oauthAccount` block that identifies an
+  account, read through the same bounded reader as every other
+  `.claude.json` check. A missing, corrupt or empty block means the Keychain
+  is not asked, and the profile keeps the `detected: no login` refusal.
+
+The Keychain is then asked whether an item exists for the profile's
+configuration directory. The service name is
+`Claude Code-credentials-<h>`, where `<h>` is the first eight lower-case hex
+digits of the SHA-256 of the absolute directory path, with no trailing
+slash, in Unicode Normalization Form C (NFC) and encoded as UTF-8. Claude
+Code normalises the directory to NFC before it hashes it, so a directory
+name whose accented letters reach amplihack decomposed, for example `e`
+followed by U+0301 in place of `é`, still names the item Claude Code wrote.
+A path that is already in NFC, which includes every ASCII path, is hashed as
+its bytes unchanged. Nothing else is done to the path, so it must be the
+path exported as `CLAUDE_CONFIG_DIR`. This is the name Claude Code gives the
+item when `CLAUDE_CONFIG_DIR` is set; amplihack reproduces it in one
+function and pins it with test vectors. The unsuffixed service that
+`~/.claude` uses is not looked up, because every profile has a
+configuration directory of its own.
+
+The question is one command, `security find-generic-password -s <service>`,
+found through `PATH` by its bare name and run with `HOME` set to the home
+directory the command was given. Its standard input, output and error are
+discarded, and `-w`, `-g` and `-a` are never passed, so the secret and the
+account name are never read, printed or logged. The child's environment holds
+only `HOME`, `PATH`, `TMPDIR`, `USER` and `LOGNAME`, where they are set. The
+exit status gives the answer:
+
+| `security` result | Answer | Kind and source |
+|-------------------|--------|-----------------|
+| Exit status 0 | An item exists | `subscription`, with its own login: `detected: oauth login in the macOS Keychain` |
+| Exit status 44 (item not found) | No item | Rule 3 does not apply; rules 4 to 6 follow |
+| Any other exit status, ended by a signal, could not be started, could not be waited for, or no absolute home directory known | The Keychain could not be read | `subscription`, with no login: `detected: macOS Keychain unreadable` |
+
+<a id="keychain-unreadable"></a>An unreadable Keychain, for example a locked
+one, is never taken as proof of an API key, and it is never guessed at in a
+way that bills per token. It resolves as a subscription profile with no login
+even when the profile names `ANTHROPIC_API_KEY`, `apiKeyHelper` or
+`primaryApiKey`. The launch guard then refuses with
+[`KeychainUnreadable`](#keychain-unreadable-refusal), which is a different
+message from `SubscriptionNoLogin`, because the remedy is different.
+
+<a id="keychain-unreadable-reports"></a>The same holds wherever the answer
+decides an outcome. A profile whose Keychain could not be read may well hold
+a login, so no command reports it as a profile with no login:
+
+| Where | What is said |
+|-------|--------------|
+| The launch guard | The [`KeychainUnreadable`](#keychain-unreadable-refusal) refusal. |
+| `profile auto-switch status` | `keychain unreadable` in the [`login` column](#auto-switch-commands). |
+| A selection that may move a launch | One line on stderr for each profile passed over: `auto-switch: profile <name> was passed over: it has no login file and the macOS Keychain could not be read (<cause>)`. |
+| `profile overflow add <name>` | `warning: <name> has no login file and the macOS Keychain could not be read (<cause>), so it cannot be used as overflow until the Keychain can be read: auto-switch passes it over, and the capacity file does not count it. Unlock the login Keychain; 'amplihack profile auto-switch status' then shows where its login is`. The warning for a profile with no login, `<name> has no login file, so it cannot be used as overflow until it has one`, is not printed for it. The mark is stored either way, and the command exits 0. |
+| The [capacity file writers](#capacity-writers) | The selection's line, for each overflow profile left out of the count for this reason and not in the `exclude` list. `profile usage` and the status-line wrapper print it on stderr. The rotator writes it to the [rotate log](#rotate-log). |
+
+`<cause>` is one of the texts listed under
+[Keychain unreadable refusal](#keychain-unreadable-refusal). None of these
+lines holds an account value or the service name.
+
+Limits:
+
+- An item that exists is accepted without a validity check, as an expired
+  login file is. A locked or expired item counts as a login, because
+  checking it would mean unlocking the Keychain, which can raise a dialog,
+  or reading the secret.
+- An answer of "no item" with an API-key setting named still resolves as
+  `api-key`, as before. The guard cannot tell a profile that never logged in
+  from one whose item Claude Code stored under a different name.
+- The lookup is one blocking wait for `security` to end. amplihack sets no
+  time limit on it, and never sleeps, polls or kills `security`; the answer
+  is the exit status `security` ends with. A `security` that is held by a
+  Keychain dialog holds the command that asked, the rotator's cycle
+  included, until the dialog is answered. A command that must not wait is
+  supervised from outside, by whatever started it. No amplihack layer sets
+  that bound yet; issue #2968 tracks which one should. Before `security` is
+  started, amplihack logs the debug line
+  `starting security; the lookup waits for it to end, with no time limit`
+  with `op="keychain lookup"`, so a command run with `RUST_LOG=debug` that
+  is held by a dialog shows that line as its last one about the lookup. The
+  line names neither the profile directory nor the service. Where nobody
+  can answer a Keychain dialog, unlock the login Keychain before the run.
+  Each lookup is answered by its own `security`, so one profile's answer
+  never decides another's. The lookup is not retried, and a stop request to
+  the rotator is noticed only when a lookup in progress has ended.
+- One lookup was measured at 18 to 23 ms for an absent item in an unlocked
+  login Keychain. Each kind resolution that reaches rule 3 starts one. The
+  check made at a usage limit and `profile auto-switch status` each start up
+  to two per profile with no login file, because the kinds are resolved once
+  for the overflow inputs and once for the logins. Nothing is cached between
+  processes.
+- The lookup is made when the kind is resolved, which is before the launch
+  guard asks whether the login is [held](#held-logins) elsewhere. A profile
+  with no login file whose login is held therefore still costs a
+  `security` start each time the guard runs, and its answer does not change
+  the outcome. `profile run` runs the guard twice, so it starts `security`
+  twice for the profile it launches.
+- Two resolutions are two lookups. If the Keychain changes between them,
+  they can differ.
+- The naming rule belongs to Claude Code and may change between its
+  versions. Where the name no longer matches, profiles with no API-key
+  setting are refused at launch, and profiles with an identifiable account
+  and an API-key setting resolve as API-key profiles, as they did before
+  this rule existed. Nothing in that refusal says the rule changed. If every
+  Keychain profile is refused with `SubscriptionNoLogin` after a Claude Code
+  upgrade, check the service name first:
+  `printf '%s' "<profile directory>" | shasum -a 256 | cut -c1-8` prints
+  `<h>` for a path in NFC (for a name with accented letters, type them
+  composed, as `printf` hashes the bytes it is given), and `security find-generic-password -s "Claude Code-credentials-<h>" >/dev/null 2>&1; echo $?`
+  prints 0 when the item exists and 44 when it does not. Searching the login
+  Keychain for `Claude Code-credentials` in Keychain Access shows the names
+  Claude Code now uses.
+- Only macOS runs the lookup. On Linux and other Unix systems `security` is
+  never started and detection is unchanged.
+
+The Keychain answer decides only whether a profile has a login of its own. It
+does not change [held logins](#held-logins), overrides, the `api-key` kind or
+which logins the rotator may move. A Keychain login has no file to move, so
+the rotator's file moves and its live-profile checks do not use it.
+
+An override of `subscription` keeps the kind and the `override` source, and
+the question of whether the profile has its own login is answered by the
+login file first and then by the Keychain, with the same three outcomes. A
+macOS user who has set `kind=subscription` for a Keychain profile is
+therefore launched, not refused.
 
 ### Kind override
 
@@ -13969,7 +14153,10 @@ anything being wrong. The login is *held* for the profile when either:
 - auto-switch records a [lease](#leases) or hosting record for it.
 
 A `hand-change`, `ambiguous` or adopt result does not count. A held profile
-keeps the `subscription` kind and its launches are allowed.
+keeps the `subscription` kind and its launches are allowed. On macOS a held
+profile with no login file and an identifiable `oauthAccount` still has its
+[Keychain looked up](#keychain-logins) at launch, before the held check is
+made.
 
 ### No silent billing
 
@@ -13980,10 +14167,13 @@ taken from `AMPLIHACK_CLAUDE_PROFILE` or the default pointer) and
 - its kind is `subscription`;
 - its own login file has no OAuth login (missing, unreadable, or without a
   `claudeAiOauth` key);
+- on macOS, the login Keychain does not hold [a login for the profile's
+  directory](#keychain-logins);
 - its login is not [held](#held-logins) elsewhere.
 
 While `.auto-switch` is corrupt, every profile whose own login file has no
-OAuth login is checked as a subscription profile. The refusal comes before
+OAuth login is checked as a subscription profile; a Keychain login still
+counts for it. The refusal comes before
 any variable is set, any process is spawned, or any pointer, journal or
 rename is written. The command exits 1:
 
@@ -13999,14 +14189,38 @@ The error is `SubscriptionNoLogin`.
 |------|--------|
 | API-key profile | Allowed. Work is billed per token. |
 | Subscription profile with its own OAuth login | Allowed, as before. |
+| macOS subscription profile with no login file, an identifiable `oauthAccount` and a Keychain item for its directory | Allowed. The login is in the Keychain; see [Keychain logins](#keychain-logins). |
 | Subscription profile whose login is the rotator's live login | `launch` and `claude` are [redirected](#live-profile-launch) to `~/.claude`; `switch` is allowed. |
 | Subscription profile whose login is leased to another session | Refused with `Leased`, as before. |
+| macOS subscription profile with no login file whose Keychain could not be read | Refused with `KeychainUnreadable`. A profile whose login is [held](#held-logins) elsewhere is allowed, although the Keychain lookup is still made first. |
 | Subscription profile with no login held anywhere | Refused with `SubscriptionNoLogin`. |
 
 Plain `amplihack launch` with no profile, and plain `claude`, are not
 checked. For those the rotator's [swap check](#api-key-rotation) is the
 safeguard: it never leaves `~/.claude` without an OAuth login unless an
 API-key profile is moved there.
+
+#### Keychain unreadable refusal
+
+When the Keychain could not be read, the command exits 1 with a message that
+names the profile and says so. It gives one of five causes, and never any
+output from `security`:
+
+```
+$ amplihack profile run work -- -p "reply with OK"
+error: profile work has no login file and the macOS Keychain could not be read (`security` exit status 51); launching it could bill the Claude Platform API key per token. Unlock the login Keychain and run again, or run 'amplihack profile kind set work api-key' if per-token billing is intended.
+hint: unlock the login Keychain and run again, or: amplihack profile kind set <name> api-key
+```
+
+The error is `KeychainUnreadable`. The cause is one of:
+
+| Cause | Meaning |
+|-------|---------|
+| `` `security` exit status <n> `` | `security` answered with a status other than 0 or 44. Which status a locked Keychain gives was not measured. |
+| `` `security` was ended by a signal `` | The process was killed. |
+| `` `security` could not be started `` | No `security` was found on `PATH`, or it is not executable. |
+| `` `security` could not be waited for `` | `security` was started, but waiting for it failed, so it gave no exit status. It is not killed. |
+| `no home directory is known` | No absolute home directory was available, so nothing was started. |
 
 The refusal exists only on Unix; see
 [API-key platform support](#api-key-platform-support).
@@ -14017,6 +14231,9 @@ Kind detection, `profile kind`, the `SubscriptionNoLogin` refusal and the
 rotator's swap check exist only on Unix. They are compiled out on Windows
 and other non-Unix platforms, as are the rotator and auto-switch they build
 on.
+
+The Keychain lookup exists only on macOS; Linux and the other Unix systems
+never start `security`.
 
 On those platforms `profile run`, `claude --profile` and `launch --profile`
 start Claude with `CLAUDE_CONFIG_DIR=<root>/<name>` and no kind check, and
@@ -14434,7 +14651,10 @@ goes back to its own profile. Nothing is copied, an interrupted swap is
 recovered from the journal, and `~/.claude` always holds a login file. A
 profile with no login file cannot be swapped in; no empty file is created
 for it. Auto-switch passes over such a profile too, so the capacity file does
-not count it as usable overflow, and `profile overflow add` warns about it. A
+not count it as usable overflow, and `profile overflow add` warns about it. On
+macOS a profile with no login file may hold its login in the Keychain; when
+the Keychain could not be read, the warning and the capacity file writers
+[say that instead](#keychain-unreadable-reports). A
 profile the rotator has already made live has its login file in `~/.claude`
 and still counts.
 

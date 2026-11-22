@@ -713,6 +713,18 @@ pub(super) fn home_dir() -> Option<std::path::PathBuf> {
         .filter(|h| h.is_absolute())
 }
 
+/// The process's own values of `names`, in that order, for a child that is
+/// started with nothing else (the Keychain lookup, issue #2885). A name that
+/// is unset or empty is left out, so the child never sees an empty value.
+#[cfg(unix)]
+pub(super) fn child_vars(names: &[&'static str]) -> Vec<(&'static str, std::ffi::OsString)> {
+    names
+        .iter()
+        .filter_map(|name| Some((*name, std::env::var_os(name)?)))
+        .filter(|(_, value)| !value.is_empty())
+        .collect()
+}
+
 /// The Codex read of one `profile usage` run (issue #2001), running on its
 /// own thread from before the Claude probes until [`CodexRead::finish`].
 struct CodexRead {
