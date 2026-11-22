@@ -3,18 +3,16 @@
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Output};
 
+/// The `amplihack` binary of this run: built from the current sources and
+/// copied aside by `support::amplihack_bin`.
+///
+/// This file used to take whatever binary lay beside the test executable and
+/// never built one, so it could run a binary left by an earlier build. That
+/// was seen in #2931: with the probe's group kill removed from the source on
+/// purpose, `exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group`
+/// still passed, because it had run the binary of the build before.
 fn cli_binary() -> std::path::PathBuf {
-    std::env::var_os("AMPLIHACK_TEST_BINARY")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("amplihack")
-        })
+    crate::support::amplihack_bin::amplihack_bin()
 }
 
 const REPO: &str = "https://github.com/rysweet/amplihack-recipe-runner";
@@ -253,6 +251,9 @@ fn exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group() {
         ),
     )
     .unwrap();
+    // Resolved before the clock starts: the first lookup of a run builds
+    // the binary, and that time is not the probe's.
+    let _ = cli_binary();
     let started = std::time::Instant::now();
     failure(f.run("codex", false, &f.binary()), "RUNNER_PROBE_FAILED");
     // A ceiling, not a measurement: the probe gives up at its own 10 s
