@@ -676,6 +676,37 @@ unknown runner fields. See [RecipeResult Reference](./recipe-result.md) and
 [Recipe Run Correlation Reference](./recipe-run-correlation.md) for schema
 details.
 
+### Heartbeat while a step waits for a usage limit
+
+When an agent step meets a usage limit and no login can run it, its supervisor
+waits for a reset (see [Usage-limit wait](./profile-command.md#usage-limit-wait)).
+The runner's heartbeat for that step would still read `working`, so
+`amplihack recipe run` rewrites it while the wait lasts:
+
+```text
+  [21:53:10] [amplihack:claude:41822] ... working (3590s elapsed, 3590s since last output)
+  [21:53:10] [amplihack:claude:41822] ... waiting for usage limit until 2026-11-22 23:52:00 +00:00 (3590s elapsed, 3590s since last output)
+```
+
+The second line replaces the first on the terminal and in the recipe log. Only
+the word `working` changes, and it never appears in a heartbeat for a step that
+is waiting. The time is the wait's `until=` value, and an enclosing step's
+heartbeat states the earliest `until` beneath it when the supervisors can be
+reached from it. A heartbeat for a step that is not waiting, and every other
+line, passes unchanged, byte for byte.
+
+`amplihack recipe run` sets `AMPLIHACK_USAGE_LIMIT_WAIT_DIR` for the runner to
+a directory named `usage-limit-wait` in the run's own directory, mode `0700`, in
+which a waiting supervisor keeps a small record for the length of its wait. An
+inherited valid value is reused, and `--dry-run` sets none. Do not set the
+variable by hand. The record's format, the checks a reader makes, and what the
+stderr pump keeps for failure diagnostics are in
+[The heartbeat while waiting](./profile-command.md#the-heartbeat-while-waiting).
+
+A usage-limit wait may also be an [earliest-reset wait](./profile-command.md#earliest-reset-wait),
+which ends at the earliest reset across all of the step's logins; the heartbeat
+reads the same.
+
 ---
 
 ## Recipe file format

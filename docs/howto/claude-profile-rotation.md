@@ -1973,6 +1973,72 @@ The waits and hosts that this rule does not apply to are listed in
 [What is not gated](../reference/profile-command.md#what-is-not-gated).
 `amplihack profile rotate status` shows the last cycle.
 
+### Steps that move to another login before they wait
+
+A recipe step that hits a usage limit does not wait while another stored login
+can run it. The step reruns on that login at once, and waits only when none can
+take it. The reference describes the rules in
+[Moving to another login first](../reference/profile-command.md#moving-to-another-login-first).
+
+To see what a step did, search the run's log for the wait lines and the
+auto-switch notes:
+
+```bash
+grep -E 'amplihack.recipe.usage_limit_wait|auto-switch' ~/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261122-101500.log
+```
+
+A step that moved prints a note and no wait line:
+
+```
+amplihack: profile "work" hit its usage limit; rerunning this step under profile "personal" (auto-switch)
+```
+
+A step that found no login to move to prints a `start` line that names the
+login it ran on. When every other login is limited too, the deadline is the
+earliest reset among them, and `bound=earliest_reset+margin` says so:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit account=work reset=2026-11-22 22:30:00 +00:00 until=2026-11-22 22:32:00 +00:00 bound=earliest_reset+margin
+amplihack.recipe.usage_limit_wait end reason=reset reached
+```
+
+Four settings decide whether a step can move:
+
+- **Auto-switch must be on.** With `amplihack profile auto-switch off`, nothing
+  may move the step. It waits for its own login's reset, and `account=` still
+  names that login. Turn it back on with `amplihack profile auto-switch on`.
+- **The login must be usable by the same test as `profile usage`.** Session use
+  below 95% and weekly use below 100%. `amplihack profile usage` prints the
+  count as `usable now`, and `--usable-session-pct` changes the 95. A login
+  with no reading is not usable, so run `amplihack profile usage` or the
+  rotator to give each profile a reading.
+- **A step on `~/.claude` moves itself only when no rotator is running.** With a
+  rotator running, the rotator moves the login and the waiting step wakes on
+  the swap. With none running, the step reruns under a stored profile, provided
+  the rotator's files name the live login and Claude was not started with a
+  session flag such as `--resume` or `--continue`. A step with a session flag
+  stays on `~/.claude` and waits, because the session's transcript is there.
+- **A reset with no zone needs a readable host zone.** Some limit messages say
+  `your 5-hour limit resets 11:50pm` with no zone. They are read in the host's
+  zone, taken from `TZ` when that names an IANA zone, and from the system zone
+  when `TZ` is unset. If `TZ` is set to a path such as `:/etc/localtime`, or to
+  a POSIX rule, the reset is not read and the step takes the no-reset path.
+  Set it to a zone name:
+
+  ```bash
+  export TZ=Europe/London
+  ```
+
+When the log says `account=unknown` for a step that ran under a stored profile,
+the step is not being identified, and the usable logins will not be considered.
+Report it with the log lines. On a host with no profile store, or for a step that
+uses `$CLAUDE_CONFIG_DIR`, `unknown` is expected.
+
+While a step waits, the run's heartbeat reads
+`... waiting for usage limit until <time> (...)` and does not say `working`.
+When a step's heartbeat says `working`, that step is not waiting. See
+[The heartbeat while waiting](../reference/profile-command.md#the-heartbeat-while-waiting).
+
 ## Use usage credits when every plan login is exhausted
 
 If one of your accounts has usage credits turned on, the rotator can move
