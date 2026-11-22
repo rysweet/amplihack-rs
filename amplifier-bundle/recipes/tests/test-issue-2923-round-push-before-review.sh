@@ -46,6 +46,10 @@ unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR \
     GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION \
     GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE \
     GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GH_REPO
+# The step-04 identity helper prefers these over the fixture's identity, so an
+# operator's own values would hide a fixture identity the helper refuses.
+unset AMPLIHACK_GIT_AUTHOR_NAME AMPLIHACK_GIT_AUTHOR_EMAIL \
+    AMPLIHACK_GIT_COMMITTER_NAME AMPLIHACK_GIT_COMMITTER_EMAIL AMPLIHACK_CONFIG
 while IFS= read -r git_variable; do
     case "${git_variable}" in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset "${git_variable}" ;; esac
 done < <(compgen -e)
@@ -112,11 +116,11 @@ STUB
 chmod +x "${BIN}/git" "${BIN}/amplihack" "${TOOLS_STUB}/autodrive_worktree_guard.sh"
 export PATH="${BIN}:${PATH}"
 export AMPLIHACK_HOME="${REPO_ROOT}" AMPLIHACK_BIN="${BIN}/amplihack"
-export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
 
 git config --global init.defaultBranch main
 git config --global user.name t
-git config --global user.email t@example.invalid
+git config --global user.email t@example.com
 git config --global push.default upstream
 git config --global advice.pushUpdateRejected false
 
