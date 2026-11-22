@@ -1117,7 +1117,7 @@ exactly one path:
   be this session's own terminal, and `pane-not-reading` when it was the
   terminal but Claude Code is not the process reading it. The three differ
   only in the log line; each is recorded under the same lock, so the
-  per-session cap and the duplicate guard apply to all of them.
+  duplicate guard applies to all of them.
 
 A pane that fails its check is never replaced by another one. The hook does
 not list panes or clients, and sends nothing to any pane but the one its own
@@ -1129,7 +1129,7 @@ that terminal is showing: the hook reads no screen contents, and
 `#{pane_tty}` reports the pane's terminal device, not its text. What narrows
 the keys is the situation instead. They are sent only after Claude Code ran
 this hook on a `rate_limit` stop, only after the rotator recorded a swap onto
-a login with room, and only once per limit event within the per-session cap.
+a login with room, and only once per limit event.
 A session that had already recovered by itself therefore receives one extra
 `continue` turn. Telling the menu apart from an ordinary prompt would need a
 parser of the screen's text, which this hook does not have; see
@@ -1144,12 +1144,14 @@ both are trusted because they belong to the same user as the session.
 `pane-unverified` and `pane-not-reading`. The continue message is written
 for exactly those three. Every other outcome, including
 `resumed-keys`, `resume-keys-failed`, `watch-lost`, `no-capacity-timeout`,
-`moved-on`, `session-gone`, `disabled`, `duplicate`, `cap`,
-`stop-hook-active`, `rotator-down` and `guard-failed`, exits `0` and prints
-nothing. stdout is always empty.
+`moved-on`, `session-gone`, `disabled`, `duplicate`,
+`session-record-reset`, `stop-hook-active`, `rotator-down` and
+`guard-failed`, exits `0` and prints nothing. stdout is always empty.
 
-It resumes at most once per limit event, once per session per wait, and 3
-times per session in 24 hours, never reads a credentials or token file, and
+It resumes at most once per limit event and once per session per wait. There
+is no limit on how many times a session is resumed: each resume follows a
+login with room, so a session held by a limit is resumed every time one
+appears. The hook never reads a credentials or token file, and
 reads nothing from the transcript but the last entry's `timestamp`. The
 608400-second timeout covers the 7-day wait plus a 300-second margin; Claude
 Code 2.1.307 accepts it (read at that version; not re-read at 2.1.329).

@@ -18,7 +18,7 @@
 //! Required tests from the issues:
 //! (a) a swap record newer than the stop, with room → resume once
 //! (b) a stale, unchanged or full record → no resume
-//! (c) repeated distinct limit events → bounded by the per-session cap
+//! (c) repeated distinct limit events → each resumes, with no per-session cap
 //! (d) non-limit error → no action
 //! (e) auto-switch off → exit 0, no output, nothing read
 //! loop: 50 invocations on one event → at most 1 resume
@@ -28,11 +28,11 @@
 use amplihack_hooks::limit_resume::decide::{
     Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key,
 };
-use amplihack_hooks::limit_resume::guard::{CommitError, GuardStore};
+use amplihack_hooks::limit_resume::guard::{CommitError, GuardStore, Resumes};
 use amplihack_hooks::limit_resume::keys::{Key, Pane, PaneCheck, RESUME_KEYS};
 use amplihack_hooks::limit_resume::log::LogEntry;
 use amplihack_hooks::limit_resume::{
-    Deps, Event, MAX_RESUMES_PER_SESSION, Outcome, RESUME_MSG, run_with, run_with_io, send_resume,
+    Deps, Event, Outcome, RESUME_MSG, run_with, run_with_io, send_resume,
 };
 use amplihack_types::HookInput;
 use amplihack_utils::rotator_status::swap_record::{SwapReading, SwapRecord};
@@ -62,6 +62,8 @@ struct MemGuard {
     fail_prepare: bool,
     prepared: u32,
     fail_resumes: bool,
+    /// Sessions whose record is unreadable: no prior resumes, never a refusal.
+    malformed: HashSet<String>,
     force_commit: Option<CommitError>,
     calls: u32,
     /// What happened, in order: `commit`, `key:<Key>`, `arm`, `wait`.
@@ -77,14 +79,23 @@ impl GuardStore for MemGuard {
         Ok(self.events.contains(event))
     }
 
-    fn resumes(&mut self, session: &str, now: i64) -> io::Result<u32> {
+    fn resumes(&mut self, session: &str, now: i64) -> io::Result<Resumes> {
         self.calls += 1;
         if self.fail_resumes {
             return Err(io::Error::other("injected"));
         }
-        Ok(self.sessions.get(session).map_or(0, |v| {
-            v.iter().filter(|t| now - **t < 86_400).count() as u32
-        }))
+        if self.malformed.contains(session) {
+            return Ok(Resumes {
+                count: 0,
+                malformed: true,
+            });
+        }
+        Ok(Resumes {
+            count: self.sessions.get(session).map_or(0, |v| {
+                v.iter().filter(|t| now - **t < 86_400).count() as u32
+            }),
+            malformed: false,
+        })
     }
 
     fn last_resume(&mut self, session: &str) -> io::Result<Option<i64>> {
@@ -130,9 +141,7 @@ impl GuardStore for MemGuard {
         if v.iter().any(|t| *t > start) {
             return Err(CommitError::Duplicate);
         }
-        if v.iter().filter(|t| now - **t < 86_400).count() as u32 >= MAX_RESUMES_PER_SESSION {
-            return Err(CommitError::Cap);
-        }
+        self.malformed.remove(session);
         self.events.insert(event.to_string());
         v.push(now);
         self.order.push("commit".into());
@@ -463,7 +472,7 @@ fn outcome_strings_and_exit_codes() {
         (Outcome::NoCapacityTimeout, "no-capacity-timeout", 0),
         (Outcome::MovedOn, "moved-on", 0),
         (Outcome::Duplicate, "duplicate", 0),
-        (Outcome::Cap, "cap", 0),
+        (Outcome::SessionRecordReset, "session-record-reset", 0),
         (Outcome::StopHookActive, "stop-hook-active", 0),
         (Outcome::GuardFailed, "guard-failed", 0),
         (Outcome::SessionGone, "session-gone", 0),
@@ -475,11 +484,6 @@ fn outcome_strings_and_exit_codes() {
         assert_eq!(o.as_str(), s);
         assert_eq!(o.exit_code(), code, "{s}");
     }
-}
-
-#[test]
-fn per_session_cap_is_three() {
-    assert_eq!(MAX_RESUMES_PER_SESSION, 3);
 }
 
 // ── is_limit (IV-3) ─────────────────────────────────────────────────────────
@@ -589,14 +593,13 @@ fn session_id_rules() {
 // ── gate: contract order ────────────────────────────────────────────────────
 
 #[test]
-fn gate_order_is_disabled_notlimit_stopactive_duplicate_cap_proceed() {
+fn gate_order_is_disabled_notlimit_stopactive_duplicate_proceed() {
     let all_bad = Facts {
         enabled: false,
         limit: false,
         session_ok: false,
         stop_hook_active: true,
         duplicate: true,
-        capped: true,
     };
     assert_eq!(gate(&all_bad), Gate::Disabled);
     let f = Facts {
@@ -620,8 +623,6 @@ fn gate_order_is_disabled_notlimit_stopactive_duplicate_cap_proceed() {
         duplicate: false,
         ..f
     };
-    assert_eq!(gate(&f), Gate::Cap);
-    let f = Facts { capped: false, ..f };
     assert_eq!(gate(&f), Gate::Proceed);
 }
 
@@ -1024,10 +1025,12 @@ fn the_wait_ends_when_its_session_exits() {
     assert_eq!(d.outcomes(), [Outcome::SessionGone]);
 }
 
-// ── (c) repeated distinct events are capped per session ─────────────────────
+// ── (c) repeated distinct events each resume: there is no per-session cap ───
 
+/// Issue #2912: four limits in one day each lead to a resume when room
+/// appears. The session bb:0 was refused at its fourth.
 #[test]
-fn c_distinct_limit_events_stop_at_the_session_cap() {
+fn c_four_distinct_limit_events_in_a_day_each_resume() {
     let mut d = Fake::new();
     let mut resumed = 0;
     for i in 0..6u64 {
@@ -1040,32 +1043,69 @@ fn c_distinct_limit_events_stop_at_the_session_cap() {
         r.reading.measured_at = t0 + 570;
         d.script.push_back(Act::Swap(r));
         let out = run_with(&limit_input("s1", &format!("hit your limit #{i}")), &mut d);
-        if out == Outcome::Resumed {
-            resumed += 1;
-        } else {
-            assert_eq!(out, Outcome::Cap, "event {i}");
-            d.script.clear();
-        }
+        assert_eq!(out, Outcome::Resumed, "event {i}");
+        resumed += 1;
     }
-    assert_eq!(resumed, MAX_RESUMES_PER_SESSION);
+    assert_eq!(resumed, 6);
+    assert_eq!(d.guard.sessions[&session_key("s1")].len(), 6);
 }
 
 #[test]
-fn c_capped_session_exits_without_waiting() {
+fn c_a_session_with_many_recent_resumes_still_resumes() {
     let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    d.guard.sessions.insert(
+        session_key("s1"),
+        vec![START - 10, START - 20, START - 30, START - 40, START - 50],
+    );
+    let out = run_with(&limit_input("s1", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::ResumedKeys);
+    assert_eq!(d.guard.sessions[&session_key("s1")].len(), 6);
+}
+
+#[test]
+fn c_two_room_events_with_one_event_identity_resume_once() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    let input = limit_input("s1", "hit your limit");
+    assert_eq!(run_with(&input, &mut d), Outcome::Resumed);
+    d.restart_at(START);
+    d.script.push_back(Act::Swap(fresh(1)));
+    assert_eq!(run_with(&input, &mut d), Outcome::Duplicate);
+    assert_eq!(d.guard.events.len(), 1);
+    assert_eq!(d.guard.sessions[&session_key("s1")].len(), 1);
+}
+
+#[test]
+fn c_a_malformed_session_record_does_not_stop_a_resume_and_is_logged() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    d.guard.malformed.insert(session_key("s1"));
+    let out = run_with(&limit_input("s1", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    let outcomes = d.outcomes();
+    assert!(
+        outcomes.contains(&Outcome::SessionRecordReset),
+        "the malformation is logged loudly: {outcomes:?}"
+    );
+    assert_eq!(*outcomes.last().unwrap(), Outcome::Resumed);
+    assert_eq!(
+        Outcome::SessionRecordReset.exit_code(),
+        0,
+        "the reset line is evidence only"
+    );
+    assert_eq!(d.guard.sessions[&session_key("s1")].len(), 1);
+}
+
+#[test]
+fn c_every_post_gate_log_line_carries_the_resume_count() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     d.guard
         .sessions
-        .insert(session_key("s1"), vec![START - 10, START - 20, START - 30]);
-    let out = run_with(&limit_input("s1", "hit your limit"), &mut d);
-    assert_eq!(out, Outcome::Cap);
-    assert_eq!(d.arms, 0, "no watch is armed");
-    assert!(d.waits.is_empty());
-    assert_eq!(d.key_attempts, 0);
-    assert_eq!(d.outcomes(), [Outcome::Cap]);
+        .insert(session_key("s1"), vec![START - 10, START - 20]);
+    run_with(&limit_input("s1", "hit your limit"), &mut d);
+    assert_eq!(d.last_log().resumes, Some(2));
 }
 
 #[test]
-fn c_other_sessions_are_not_capped_by_this_one() {
+fn c_other_sessions_are_not_affected_by_this_one() {
     let mut d = Fake::new().then(Act::Swap(fresh(1)));
     d.guard
         .sessions
@@ -1236,7 +1276,6 @@ fn guard_failure_before_waiting_is_guard_failed() {
 fn losing_the_commit_race_never_resumes() {
     for (err, want) in [
         (CommitError::Duplicate, Outcome::Duplicate),
-        (CommitError::Cap, Outcome::Cap),
         (CommitError::Io, Outcome::GuardFailed),
     ] {
         let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));

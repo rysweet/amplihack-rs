@@ -41,7 +41,7 @@ fn hex_digest(domain: &str, fields: &[Option<&str>]) -> String {
 /// hook started (#2235). The same limit on the same login gives the same
 /// key; a limit after the rotator swapped logins does not. With no ledger
 /// at the start and no such swap `live` is `None`, so a later limit seen
-/// with a ledger is a new event; the session cap and one wake per session
+/// with a ledger is a new event; the event marker and one wake per session
 /// still bound it.
 pub fn event_key(
     session_id: &str,
@@ -80,8 +80,6 @@ pub struct Facts {
     pub stop_hook_active: bool,
     /// This event already has a marker.
     pub duplicate: bool,
-    /// The session reached `MAX_RESUMES_PER_SESSION` in the last 24 hours.
-    pub capped: bool,
 }
 
 /// What the gate decided, in contract order.
@@ -91,13 +89,13 @@ pub enum Gate {
     NotLimit,
     StopHookActive,
     Duplicate,
-    Cap,
     Proceed,
 }
 
 /// The first reason not to wait, in the order Disabled, NotLimit (also a
-/// missing or oversized session id), StopHookActive, Duplicate, Cap; else
-/// Proceed.
+/// missing or oversized session id), StopHookActive, Duplicate; else
+/// Proceed. No count appears here: since issue #2912 nothing refuses a
+/// resume on how often a session has already been resumed.
 pub fn gate(f: &Facts) -> Gate {
     if !f.enabled {
         Gate::Disabled
@@ -107,8 +105,6 @@ pub fn gate(f: &Facts) -> Gate {
         Gate::StopHookActive
     } else if f.duplicate {
         Gate::Duplicate
-    } else if f.capped {
-        Gate::Cap
     } else {
         Gate::Proceed
     }

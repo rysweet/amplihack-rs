@@ -7,8 +7,8 @@
 //! Lives in amplihack-hooks rather than the CLI's `tests_docs_sync.rs`
 //! because the CLI does not depend on this crate.
 
+use amplihack_hooks::limit_resume::Outcome;
 use amplihack_hooks::limit_resume::keys::RESUME_KEYS;
-use amplihack_hooks::limit_resume::{MAX_RESUMES_PER_SESSION, Outcome};
 use amplihack_utils::rotator_status::swap_record::MAX_SWAP_BYTES;
 use amplihack_utils::rotator_status::{
     LIMIT_RESUME_TIMEOUT_MARGIN, LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT,
@@ -49,9 +49,9 @@ fn reference_limits_table_matches_the_constants() {
     // The ledger's skew rule (`MAX_SKEW_SECS`, crate-private in utils).
     assert_eq!(row("Clock skew allowed"), "300 s");
     assert_eq!(row("Keys per resume"), RESUME_KEYS.len().to_string());
-    assert_eq!(
-        row("Resumes per session"),
-        format!("{MAX_RESUMES_PER_SESSION} per 24 hours")
+    assert!(
+        limits_row("Resumes per session").is_none(),
+        "the per-session resume cap is gone (#2912)"
     );
     assert_eq!(row("Resumes per limit event"), "1");
 }
@@ -90,7 +90,7 @@ fn every_outcome_the_hook_logs_is_documented() {
         Outcome::NoCapacityTimeout,
         Outcome::MovedOn,
         Outcome::Duplicate,
-        Outcome::Cap,
+        Outcome::SessionRecordReset,
         Outcome::StopHookActive,
         Outcome::SessionGone,
         Outcome::RotatorDown,

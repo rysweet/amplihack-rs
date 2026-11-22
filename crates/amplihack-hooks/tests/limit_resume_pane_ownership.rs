@@ -333,7 +333,7 @@ fn exit_2_and_the_wake_message_follow_one_predicate() {
         Outcome::NoCapacityTimeout,
         Outcome::MovedOn,
         Outcome::Duplicate,
-        Outcome::Cap,
+        Outcome::SessionRecordReset,
         Outcome::StopHookActive,
         Outcome::SessionGone,
         Outcome::RotatorDown,
@@ -542,7 +542,7 @@ fn no_tmux_still_takes_the_wake_path_and_is_logged_as_resumed() {
 }
 
 #[test]
-fn a_refused_pane_is_still_committed_once_so_the_cap_and_duplicate_guard_apply() {
+fn a_refused_pane_is_still_committed_once_so_the_duplicate_guard_applies() {
     // D7 ordering: the verdict is taken before the guard commit, and all
     // three wake outcomes pass through the same commit.
     for check in [
