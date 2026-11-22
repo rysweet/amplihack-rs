@@ -202,7 +202,6 @@ pub(super) fn settle(
     // so the log does not read as if the re-read had been accepted.
     let mut accepted: Vec<ProfileName> = Vec::new();
     let mut reads = 0;
-    let can_read = mode == Reread::Allowed && ctx.reread.is_some();
     let started = Instant::now();
     // Each name is handled at most twice: read (or made unknown), then made
     // unknown. One more pass finds the settled decision.
@@ -230,25 +229,19 @@ pub(super) fn settle(
             // readings that went stale under the rotator are the ones #2910
             // names. Where no read is allowed, see `fresh_confirm.rs`.
             let stored = probes[i].1.passive || probes[i].1.carried;
-            if !(can_read && stored) {
+            if mode == Reread::Never || !stored {
                 break;
             }
-            let new = confirm::read(
-                ctx,
-                &to,
-                &probes[i].1,
-                &mut reads,
-                budget,
-                started,
-                &mut lines,
-            );
-            let Some(new) = new else {
-                break;
-            };
             if ctx.stopping() {
+                // As for a stale target below: no read and no swap.
                 m.decision = Decision::Stay;
                 break;
             }
+            let old = &probes[i].1;
+            let Some(new) = confirm::read(ctx, &to, old, &mut reads, budget, started, &mut lines)
+            else {
+                break;
+            };
             probes[i].1 = new;
             m = decide(live.clone(), probes.clone(), m.measured_at)?;
             continue;

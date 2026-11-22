@@ -32,10 +32,10 @@ use std::time::{Duration, Instant};
 /// taken now, out of the same per-cycle budget as the freshness gate's
 /// re-reads.
 ///
-/// `None` means no reading could be taken and the swap goes ahead on the
-/// stored one. That happens only where a read is impossible or its budget
-/// is spent, and it always writes a line, so the weaker guarantee is
-/// visible. A reading that shows the login has no room after all becomes
+/// `None` means no reading was taken and the swap goes ahead on the stored
+/// one. Where the budget is spent it writes a line, so the weaker guarantee
+/// is visible; with no re-read hook, which only tests build, it writes
+/// nothing. A reading that shows the login has no room after all becomes
 /// [`Probed::no_room`], and the gate's own re-decision then picks the next
 /// candidate; a read that fails is unknown, as a stale re-read's is.
 pub(super) fn read(
@@ -51,9 +51,6 @@ pub(super) fn read(
     let reread = ctx.reread?;
     if *reads >= super::MAX_REREADS_PER_CYCLE || left.is_zero() {
         lines.push(msg::CONFIRM_SKIPPED.to_string());
-        return None;
-    }
-    if ctx.stopping() {
         return None;
     }
     *reads += 1;

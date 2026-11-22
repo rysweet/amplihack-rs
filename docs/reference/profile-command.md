@@ -7723,10 +7723,11 @@ every pass, the plan-room swap included:
    itself already has that reading and takes no second one; a stored reading
    (a cached passive one, or one carried from an earlier cycle) is replaced by
    a fresh read before the swap, logged as `confirm: <name> was ...; now ...`.
-   If the confirming reading shows no session or week room, or its state is
-   `Failed` or `Exhausted`, the target is dropped, `reject: <name> fresh
-   reading shows no room` is logged, and the next-ranked candidate goes
-   through the same steps.
+   If the confirming reading shows no session or week room, or is
+   `Exhausted`, the target is dropped, `reject: <name> fresh reading shows
+   no room` is logged, and the next-ranked candidate goes through the same
+   steps. A confirming read that fails is dropped in the same way, logged
+   `reread: <name> failed; treated as unknown`.
    When the cycle's re-read limit or time limit is already spent, the swap
    proceeds on the stored reading, and the rotator logs
    `confirm: skipped, no reading could be taken in this cycle`. Refusing every
