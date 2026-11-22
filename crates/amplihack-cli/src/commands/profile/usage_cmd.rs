@@ -1825,8 +1825,10 @@ fn kill_group(_child: &std::process::Child) {}
 /// The order every view prints (issue #1813): usable rows by the
 /// rotator's headroom, most first, then usable rows with no headroom;
 /// exhausted rows by when they are back (unknown last); API-key rows;
-/// unavailable rows by state. Every tie goes to the name, as in the
-/// rotator's `best()`.
+/// unavailable rows by state. Every tie goes to the name. The rotator's own
+/// ranking (`rotate::decide::target::order`) also puts a session below
+/// `--session-at` first and the lower week before the name, and applies the
+/// week ceiling; this view orders by headroom alone.
 pub(super) fn order(rows: &mut [Row], now: i64) {
     rows.sort_by(|a, b| {
         row_key(a, now)

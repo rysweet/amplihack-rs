@@ -22,7 +22,7 @@
 //! The second part runs real cycles with a counting re-read hook (AC5) on the
 //! shared fixture (`tests_issue_2910_fixture`).
 //!
-//! API assumed, from the design (in `target_confirm.rs`):
+//! The API these tests exercise (in `target_confirm.rs`):
 //!
 //! ```text
 //! struct Facts { failed_now: bool, attempts: usize, can_read: bool,
@@ -264,7 +264,8 @@ fn reread_ac5(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeL
 /// - `top` (room 60) has a passive reading; its fresh reading shows it full.
 /// - `lg` (room 55 on its last good reading) answered 429 this cycle.
 /// - `second` (room 50) has a passive reading; its fresh reading is as read.
-/// - `direct` (room 40) was read directly this cycle.
+/// - `direct` (room 40) was read directly this cycle; it ranks after `second`,
+///   so it is not tried here (the next test covers a directly read target).
 #[test]
 fn ac5_a_rejected_target_is_named_and_the_next_one_is_confirmed_with_one_read_each() {
     let f = fleet(&["top", "lg", "second", "direct"], &[]);
@@ -285,7 +286,7 @@ fn ac5_a_rejected_target_is_named_and_the_next_one_is_confirmed_with_one_read_ea
     assert_eq!(out, CycleOutcome::Swapped, "{log}");
     assert!(f.live_is("second"), "{log}");
     // Exactly one read per candidate tried: none for `lg` (its probe failed in
-    // this cycle) and none for `direct` (read directly in it).
+    // this cycle), and `direct` ranks after `second`, so it is never tried.
     assert_eq!(calls(&CALLS_AC5), ["top", "second"], "{log}");
     assert!(
         log.contains("reject: top no room on a fresh reading"),
@@ -302,6 +303,61 @@ fn ac5_a_rejected_target_is_named_and_the_next_one_is_confirmed_with_one_read_ea
     assert!(log.contains("swap work->second"), "{log}");
     assert!(!log.contains("unconfirmed"), "second was confirmed:\n{log}");
     assert!(!log.contains("no profile has capacity"), "{log}");
+}
+
+/// D7 holds after the cap: three re-reads that each show no room use up the
+/// cycle's allowance, and a fourth candidate whose probe failed this cycle is
+/// still accepted unconfirmed, because that makes no read for the cap to bound.
+#[test]
+fn ac5_an_unconfirmed_swap_is_still_made_after_three_rereads() {
+    static CALLS: Calls = Mutex::new(Vec::new());
+    fn reread(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
+        record(&CALLS, who);
+        (exh(100.0, 40.0), None)
+    }
+    let f = fleet(&["a", "b", "c", "lg"], &[]);
+    f.history("lg", 1800, 0, 40);
+    let out = run_with(
+        &f,
+        exh(100.0, 40.0),
+        &[
+            ("a", rd(0.0, 10.0, stale_at())),
+            ("b", rd(0.0, 20.0, stale_at())),
+            ("c", rd(0.0, 30.0, stale_at())),
+            ("lg", unread()),
+        ],
+        &[("lg", Http429)],
+        Some(reread),
+    );
+    let log = f.log();
+    assert_eq!(out, CycleOutcome::Swapped, "{log}");
+    assert!(f.live_is("lg"), "{log}");
+    assert_eq!(calls(&CALLS), ["a", "b", "c"], "{log}");
+    assert!(log.contains("unconfirmed (HTTP 429)"), "{log}");
+}
+
+/// A candidate read directly in this cycle is not stale, so it is chosen
+/// without a second read: the hook must never run.
+#[test]
+fn ac5_a_candidate_read_directly_this_cycle_is_chosen_without_a_second_read() {
+    fn reread(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
+        panic!("{who} was read directly in this cycle and must not be read again")
+    }
+    let f = fleet(&["direct"], &[]);
+    let out = run_with(
+        &f,
+        rd(86.0, 65.0, None),
+        &[("direct", rd(10.0, 40.0, None))],
+        &[],
+        Some(reread),
+    );
+    let log = f.log();
+    assert_eq!(out, CycleOutcome::Swapped, "{log}");
+    assert!(f.live_is("direct"), "{log}");
+    assert!(
+        !log.contains("reject:") && !log.contains("reread:"),
+        "{log}"
+    );
 }
 
 #[test]
@@ -398,6 +454,72 @@ fn d7_an_unknown_reread_goes_ahead_unconfirmed_when_the_live_login_has_no_room()
     assert!(!log.contains("reject: top"), "{log}");
 }
 
+/// A re-read that shows the organisation's spend limit shows a login with no
+/// room, not a read that failed: the target is rejected for it by name, and
+/// the next login is chosen.
+#[test]
+fn a_reread_that_shows_a_spend_limit_is_rejected_for_it() {
+    static CALLS: Calls = Mutex::new(Vec::new());
+    fn reread(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
+        record(&CALLS, who);
+        let spent = Probed {
+            spend_limit: true,
+            unknown: false,
+            ..unread()
+        };
+        (spent, None)
+    }
+    let f = fleet(&["top", "next"], &[]);
+    let out = run_with(
+        &f,
+        exh(100.0, 40.0),
+        &[
+            ("top", rd(0.0, 40.0, stale_at())),
+            ("next", rd(20.0, 60.0, None)),
+        ],
+        &[],
+        Some(reread),
+    );
+    let log = f.log();
+    assert_eq!(out, CycleOutcome::Swapped, "{log}");
+    assert!(f.live_is("next"), "{log}");
+    assert_eq!(calls(&CALLS), ["top"]);
+    assert!(
+        log.contains("reject: top spend limit on a fresh reading"),
+        "{log}"
+    );
+    assert!(!log.contains("no usable reading"), "{log}");
+}
+
+/// An unconfirmed swap carries no measured figures of its target: the stale
+/// reading it was chosen on is not written as a swap record, and no room is
+/// claimed for the login now live, so the usage-limit wait does not resume a
+/// stopped step on a login nobody has read ("Rotate confirmation" says so).
+#[test]
+fn d7_an_unconfirmed_swap_writes_no_swap_record_and_claims_no_room() {
+    let f = fleet(&["top"], &[]);
+    let out = run_with(
+        &f,
+        exh(100.0, 40.0),
+        &[("top", rd(0.0, 40.0, stale_at()))],
+        &[],
+        Some(reread_unknown),
+    );
+    let log = f.log();
+    assert_eq!(out, CycleOutcome::Swapped, "{log}");
+    assert!(log.contains("unconfirmed (HTTP 429)"), "{log}");
+    assert!(
+        !f.e.rs.dir.join("swap.json").exists(),
+        "a swap on an unknown reading writes no swap record:\n{log}"
+    );
+    let cycle = f.e.rs.load_ledger().unwrap().unwrap().last_cycle.unwrap();
+    assert_ne!(
+        cycle.live_room,
+        Some(true),
+        "no room is claimed for a login that was not read:\n{log}"
+    );
+}
+
 #[test]
 fn d7_an_unknown_reread_is_a_rejection_when_the_live_login_has_room() {
     static CALLS: Calls = Mutex::new(Vec::new());
@@ -450,6 +572,37 @@ fn d7_when_every_rejection_was_unknown_and_the_live_login_has_room_it_is_a_stay_
         l.advisory_alert.as_deref(),
         Some("no-capacity/unconfirmed:work")
     );
+}
+
+/// A login rejected as unknown does not hide the hold on the next one: `u`
+/// qualifies on a known reading (room 10 against the 7 a move needs from the
+/// live room 4) and is held for being at or above `--session-at`, so the note
+/// says that, with the time the hold has run, not that nothing was confirmed.
+#[test]
+fn d7_a_rejection_as_unknown_does_not_replace_the_hold_note() {
+    let f = fleet(&["t", "u"], &[]);
+    f.history("t", 1800, 0, 30);
+    f.set_swapped_at(clock() - 60);
+    let out = run_with(
+        &f,
+        rd(96.0, 40.0, None),
+        &[("t", unread()), ("u", rd(90.0, 10.0, None))],
+        &[("t", Transport)],
+        None,
+    );
+    let log = f.log();
+    assert_eq!(out, CycleOutcome::Stayed, "{log}");
+    assert!(f.live_is("work"), "{log}");
+    assert!(
+        log.contains("reject: t reading unknown (transport)"),
+        "{log}"
+    );
+    assert!(
+        log.contains("stay: held after last swap (60s of 3600s): u is at s=90%"),
+        "{log}"
+    );
+    assert!(!log.contains("no candidate confirmed"), "{log}");
+    assert!(alerts(&log).is_empty(), "{log}");
 }
 
 #[test]

@@ -803,7 +803,7 @@ the exact rules.
 | `--target-week-max N` | `AMPLIHACK_ROTATE_TARGET_WEEK_MAX` | `95` | Never swap to a login whose weekly use is above N%. A login at exactly N% is allowed. It is separate from `--week-at`. |
 | `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | While the live login still has room, a swap needs a target with at least N more points of room (never less than 1). |
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
-| `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap, and no swap onto a login at or above `--session-at` while the live login has room, for this long after the rotator's own swap. `0` turns the hold off. |
+| `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap, and no swap onto a login at or above `--session-at` while the live login has room, for this long after the last swap, a rotator swap or a `profile switch`. `0` turns the hold off. |
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
 
@@ -884,7 +884,7 @@ stayed: `llarame` did not have `14 + 3`.
 The hold stops flapping. Just after a swap, the account that was swapped out
 often has its session window reset and looks fresh; without the hold the next
 cycle would swap straight back. Two kinds of move are held for `--hold`
-seconds after the rotator's own swap: an upgrade, and a swap off a login that
+seconds after the last swap: an upgrade, and a swap off a login that
 still has room onto a login at or above `--session-at`. In the example,
 `llarame` now has room 5, and `qquinn` has room 12, which would qualify, but
 `qquinn` is at 88% of its session, so the rotator stays on `llarame` and
@@ -1093,7 +1093,6 @@ the probe's own error beside the login it was for:
 |----------|-------|
 | `unknown, HTTP 429` | The usage service rate-limited the probe. |
 | `unknown, transport` | The connection failed or dropped. |
-| `unknown, identity unavailable` | The login's account identity could not be read. |
 | `unknown, timeout` | The probe timed out. |
 | `unknown, still running` | The read had not finished when the cycle stopped waiting. |
 | `unknown, probe error` | Any other failure of the probe itself. |
@@ -2007,7 +2006,7 @@ marked, it moves there instead when the next plan reset is far enough away.
 There are two wordings, and they differ in what the rotator knows:
 
 - `ALERT: no profile has capacity` says that every other plan login is known,
-  by a fresh reading or a last good one, to have a window at 100% or a
+  by a fresh reading or a last good one, to have a window at 100%, a spend limit or a
   recorded block.
 - `ALERT: no capacity known` says that the rotator could not show that, because
   some logins are unknown (a probe was rate-limited or failed), failed, above
@@ -2021,7 +2020,8 @@ Both end with the counts of what it found:
 ```
 
 The counts appear in this order, and a count of zero is left out: unknown
-(with the cause, one entry per cause), failed, blocked until the earliest
+(with the cause, one entry per cause), not read (a login the cycle skipped before
+probing it, with the reason of its `skip:` line), failed, blocked until the earliest
 reset, exhausted, above the week ceiling, and not tried (the three re-reads of
 the cycle were used). When there is nothing to count, it reads
 `candidates: none`. The line never names a login.
@@ -2362,8 +2362,8 @@ On each cycle:
    When there is no such login, and no measured plan login, the live one
    included, has room, it looks
    at overflow: if the earliest plan reset is more than `--overflow-wait`
-   away, no plan profile's probe was unknown in this cycle (unless its last
-   good reading shows it full), and an overflow profile can be used, it swaps
+   away, no plan profile's probe was unknown in this cycle (whatever its last
+   good reading shows), and an overflow profile can be used, it swaps
    to the first one by tier with `reason=overflow-in`. A failed live probe
    never leads to credits.
 2. While the live login is an overflow profile, it checks every plan

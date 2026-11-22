@@ -55,13 +55,13 @@ pub struct TuneFlags {
     /// Swap when the live weekly usage reaches N% (default 90)
     #[arg(long, value_name = "N")]
     pub week_at: Option<String>,
-    /// Points of headroom the target needs over the live login (default 5)
+    /// Points of room now a target needs over a live login that still has room (default 5; at least 1 applies)
     #[arg(long, value_name = "N")]
     pub margin: Option<String>,
     /// Points of headroom that justify a swap below the thresholds (default 30)
     #[arg(long, value_name = "N")]
     pub upgrade_margin: Option<String>,
-    /// Seconds after a rotator swap during which no upgrade happens, and no move from a live login that still has room to one at or above --session-at; 0 disables (default 3600)
+    /// Seconds after a swap during which no upgrade happens, and no move from a live login that still has room to one at or above --session-at; 0 disables (default 3600)
     #[arg(long, value_name = "SECS")]
     pub hold: Option<String>,
     /// Never swap to a login whose weekly usage is above N%; a login at exactly N% may be chosen (default 95)

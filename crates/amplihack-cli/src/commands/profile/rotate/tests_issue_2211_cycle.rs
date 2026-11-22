@@ -453,6 +453,37 @@ fn b2_a_projected_swap_is_not_held() {
     assert!(log.contains("reason=projected"), "{log}");
 }
 
+lane!(lw);
+
+/// Issue #2910 (AC3): the week ceiling holds for a projected swap too. The
+/// only login with room is at week 98, above `--target-week-max` 95, so the
+/// projection moves nothing and the no-target line counts it as above the
+/// ceiling.
+#[test]
+fn b3_a_projected_swap_never_goes_to_a_login_above_the_week_ceiling() {
+    let e = env();
+    seed(&lw::CLOCK);
+    set(
+        &lw::LIVE,
+        &[Live::Direct(50.0, 41.0), Live::Direct(63.0, 41.0)],
+    );
+    set(
+        &lw::OTHERS,
+        &[
+            ("spare", rd(0.0, 98.0, None)),
+            ("work", rd(0.0, 40.0, None)),
+        ],
+    );
+    let mut c = ctx(&e, lw::clock, lw::measure, Some(lw::reread));
+    step(&mut c, &lw::CLOCK);
+    let got = step(&mut c, &lw::CLOCK);
+    let log = log_of(&e);
+    assert_ne!(got, CycleOutcome::Swapped, "{log}");
+    assert_eq!(swaps(&log), 0, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
+    assert!(log.contains("1 above week ceiling 95%"), "{log}");
+}
+
 // --- (c) A steady low rate does not swap ------------------------------------
 
 lane!(ll);

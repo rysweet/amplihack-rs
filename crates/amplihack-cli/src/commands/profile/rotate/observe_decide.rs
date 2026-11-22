@@ -3,7 +3,8 @@
 //! the cycle's [`Extra`] (probe labels and last good readings), on the one
 //! target rule, and with what the cycle saw of each login kept in
 //! [`Measurement::seen`] for its lines. The decision opens no file but the
-//! ledger: the history is read once a cycle, at the edge (`Extra::for_cycle`).
+//! ledger (and, for a failed-probe swap only, the home key file): the history
+//! is read once a cycle, at the edge (`Extra::for_cycle`).
 
 use super::super::cycle::Ctx;
 use super::super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};

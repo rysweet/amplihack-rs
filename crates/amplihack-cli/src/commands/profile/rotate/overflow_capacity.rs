@@ -1,6 +1,6 @@
 //! The plan-capacity gate of the overflow policy, split from
-//! [`super`]: when a plan login has capacity, when it regains it,
-//! and the shared [`Gate`] built from the rotator's settings.
+//! [`super`]: when a plan login regains capacity, and the shared [`Gate`]
+//! built from the rotator's settings (which auto-switch also reads).
 use super::super::decide::{Reading, Windows};
 use super::super::settings::Settings;
 use crate::commands::profile::overflow::Gate;

@@ -294,7 +294,9 @@ pub enum Decision {
         to: ProfileName,
         reason: Reason,
     },
-    /// A threshold is reached and no candidate has enough headroom.
+    /// A threshold is reached and the rotator does not move: no candidate
+    /// qualifies, or the best one is held (D3). `target::no_move` says which,
+    /// and the cycle writes a stay note or the no-target line accordingly.
     Alert,
 }
 

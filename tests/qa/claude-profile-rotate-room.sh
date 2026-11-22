@@ -23,6 +23,9 @@
 #   8. a recorded spend block on llarame: it is passed over for qquinn, the
 #      next login the ranking gives, and chosen again once the block ended.
 #
+# Needs socat and GNU `date -d` (Linux); the handler itself avoids bash 4 only
+# expansions. Runs locally and is not part of CI.
+#
 # Usage: AMPLIHACK_QA_BINARY=target/debug/amplihack bash tests/qa/claude-profile-rotate-room.sh
 set -euo pipefail
 
@@ -35,19 +38,22 @@ command -v socat >/dev/null 2>&1 \
   || fail "socat is required for the usage stand-in (apt install socat); this driver cannot run without it"
 BIN="$(cd "$(dirname "$AMPLIHACK_QA_BINARY")" && pwd)/$(basename "$AMPLIHACK_QA_BINARY")"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/rotate-room-qa.XXXXXX")"
-[[ "$WORK" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "unsuitable scratch folder name: $WORK"
 SOCAT_PID=""
 DRAIN_PID=""
+WORK=""
 cleanup() {
   [[ -z "$DRAIN_PID" ]] || kill "$DRAIN_PID" 2>/dev/null || true
   [[ -z "$SOCAT_PID" ]] || kill "$SOCAT_PID" 2>/dev/null || true
   wait 2>/dev/null || true
-  if [[ -n "${WORK:-}" && "$WORK" == "${TMPDIR:-/tmp}"/rotate-room-qa.* && -d "$WORK" ]]; then
+  if [[ -n "$WORK" && "$WORK" == "${TMPDIR:-/tmp}"/rotate-room-qa.* && -d "$WORK" ]]; then
     rm -rf -- "$WORK"
   fi
 }
+# Installed before the folder is made, so a scratch folder this driver then
+# refuses is still removed.
 trap cleanup EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/rotate-room-qa.XXXXXX")"
+[[ "$WORK" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "unsuitable scratch folder name: $WORK"
 
 FX="$WORK/fx"
 QA_BIN_DIR="$WORK/bin"
@@ -242,6 +248,9 @@ new_home() { # fresh HOME with every login stored, and the live one in ~/.claude
   [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "profile switch --none"; }
   run_cli profile remove default-original --yes
   [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "profile remove default-original"; }
+  # Every case that says "moved nothing" compares with this login.
+  [[ "$(live_token)" == "qa-$LIVE" ]] \
+    || fail "the setup left ~/.claude holding '$(live_token)', not qa-$LIVE"
   mkdir -p "$ROOT/.auto-switch.d"
   chmod 700 "$ROOT/.auto-switch.d"
 }
@@ -343,8 +352,13 @@ before="$(live_token)"
 run_cli profile rotate "${FLAGS[@]}"
 [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 4: rotate exited $STATUS"; }
 run_cli profile rotate "${FLAGS[@]}"
+# The second, identical cycle must have run and finished: one ALERT in the log
+# proves the key held only if both cycles are in it.
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 4: the second rotate exited $STATUS"; }
 [[ "$(live_token)" == "$before" ]] || fail "case 4: ~/.claude changed"
 log="$(rotate_log)"
+cycles="$(grep -c "cycle live=" <<< "$log" || true)"
+[[ "$cycles" == "2" ]] || { echo "$log" >&2; fail "case 4: expected two cycle lines, found $cycles"; }
 alerts="$(grep -c " ALERT: no capacity known " <<< "$log" || true)"
 [[ "$alerts" == "1" ]] || { echo "$log" >&2; fail "case 4: expected one 'no capacity known' ALERT, found $alerts"; }
 grep -q "ALERT: no capacity known live=$LIVE s=100% w=67% (candidates: 12 unknown (HTTP 429))" <<< "$log" \
@@ -429,13 +443,15 @@ line="$(status_of <<< "$answer")"
 [[ "$line" == "HTTP/1.1 401 Unauthorized" ]] \
   || fail "case 7: the stand-in answered '$line' with no Authorization header, not 401"
 CASE7+=("no Authorization header: $line")
-# A request line past the handler's 2048-byte read: it is cut short, so it names
-# no fixture, and nothing is answered 200.
+# A request line of 2500 bytes names a path that is no fixture's: 404, and
+# never 200. The status does not show the handler's 2048-byte read bound (a
+# path cut at that bound is no fixture's either); it shows that the listener
+# is up, answers a long line, and serves nothing for it.
 answer="$(ask qa-llarame "GET /api/oauth/usage/$(printf 'a%.0s' $(seq 2500)) HTTP/1.1")"
 line="$(status_of <<< "$answer")"
-[[ "$line" != "HTTP/1.1 200 OK" ]] \
-  || fail "case 7: an oversized request line served a fixture"
-CASE7+=("oversized request line: ${line:-no answer}")
+[[ "$line" == "HTTP/1.1 404 Not Found" ]] \
+  || fail "case 7: the oversized request line was answered '${line:-no answer}', not 404"
+CASE7+=("oversized request line: $line")
 # The refused token named a path with `..`; nothing was read or written there.
 [[ ! -e "$FX/x.json" && ! -e "$FX/usage/x.json" ]] \
   || fail "case 7: a token holding .. reached a path outside the fixtures"

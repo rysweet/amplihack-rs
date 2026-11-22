@@ -12,7 +12,7 @@
 //!   `Account::same`. `candidates`, `skips`, `sees_sessions` and
 //!   `candidate_accounts` of any other profile are not compared.
 //! - `msg::changed(&[Changed])`, `msg::reconsidered(&ProfileName, &str)` and
-//!   `msg::alert_no_capacity_for(live, reading, others)`.
+//!   `target_msg::alert_line(...)` (the no-target line and the stay notes).
 //! - `Measurement::probed` holds the probes `decide_measured` decided on.
 
 use super::decide::target::Unfit;

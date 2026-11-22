@@ -210,6 +210,45 @@ fn reference_and_howto_document_profile_rotate() {
     }
 }
 
+/// The usage lines of `rotate`, `rotate start` and `rotate watch` list every
+/// tuning flag, not only the settings table (issue #2910: `--target-week-max`).
+#[test]
+fn reference_usage_lines_list_every_rotate_tuning_flag() {
+    let tuning = [
+        "--session-at",
+        "--week-at",
+        "--margin",
+        "--upgrade-margin",
+        "--hold",
+        "--target-week-max",
+        "--overflow-wait",
+        "--overflow-unknown-reset",
+    ];
+    // The abbreviated `[<tuning flags>]` forms are not the spelled-out synopsis.
+    let usage: Vec<&str> = REFERENCE
+        .lines()
+        .filter(|l| {
+            [
+                "amplihack profile rotate [--dry-run]",
+                "amplihack profile rotate start ",
+                "amplihack profile rotate watch ",
+            ]
+            .iter()
+            .any(|p| l.starts_with(p))
+                && !l.contains("<tuning flags>")
+        })
+        .collect();
+    assert!(
+        usage.len() >= 3,
+        "the reference has the usage lines of rotate, start and watch: {usage:?}"
+    );
+    for line in usage {
+        for flag in tuning {
+            assert!(line.contains(flag), "`{line}` is missing {flag}");
+        }
+    }
+}
+
 #[test]
 fn reference_quotes_every_rotate_error_hint() {
     use super::ProfileError as E;

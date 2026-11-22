@@ -355,6 +355,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             room.alert(&mut out, &mut l, line.kind, &key, t, &line.text)
         }
     };
+    // Issue #2910 (D7): a target accepted on no fresh reading is recorded unread.
+    let others = saw.recorded(&others);
     record::record(
         ctx,
         &mut out,

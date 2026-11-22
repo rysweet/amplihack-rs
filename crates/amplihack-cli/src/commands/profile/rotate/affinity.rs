@@ -157,9 +157,9 @@ pub(in super::super) fn with_outlook(
 ///   capacity. A stay, not the no-capacity ALERT: there is capacity, in
 ///   another organisation, and the reading as measured crosses to it once
 ///   it has no room.
-/// - None either way: the ALERT. No login has capacity on the outlook,
-///   whatever the plan-room or overflow rules would make of it, since those
-///   moves never run on an outlook.
+/// - None either way: the ALERT, or its stay note when eligible logins exist.
+///   No login qualifies on the outlook, and the overflow moves never run on
+///   an outlook.
 fn outlook(
     snap: &Snap,
     input: &OverflowInput<'_>,

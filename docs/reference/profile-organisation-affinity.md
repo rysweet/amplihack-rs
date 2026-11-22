@@ -167,10 +167,12 @@ ineligible target eligible. Before completing a swap, execution re-reads the
 source and target organisations under the execution locks and refuses the
 swap if either changed since selection.
 
-The rotator, auto-switch swap and nested rerun share one policy function
+The auto-switch swap and nested rerun share one policy function
 (`organisation_affinity::pools`), called once per decision with the need from
-`Need::of`, which returns both the selection pool and the plan-room pool. Auto-switch reaches it through one
-helper (`auto_switch/affinity.rs`).
+`Need::of`, which returns both the selection pool and the plan-room pool.
+Auto-switch reaches it through one helper (`auto_switch/affinity.rs`). The
+rotator does not call it: it uses its own single pool
+(`rotate/affinity.rs`, `affinity_pool::pool`), which is the rule above.
 
 ### Selection examples
 

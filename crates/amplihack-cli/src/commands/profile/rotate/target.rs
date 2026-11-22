@@ -184,10 +184,12 @@ pub fn ranked<'a>(
 }
 
 /// D3: whether a move to a login at or above `--session-at` away from a live
-/// login that still has room waits, because the rotator's own swap at
-/// `swapped_at` was less than `hold` seconds ago. `hold` 0 disables it, a hand
-/// switch leaves no `swapped_at`, and a swap time in the future (a clock
-/// change) is no evidence of a recent swap, so it never holds (S11).
+/// login that still has room waits, because the last swap, at `swapped_at`,
+/// was less than `hold` seconds ago. A rotator swap and a `profile switch` both
+/// write `swapped_at`; a login change made outside amplihack
+/// writes none. `hold` 0 disables it, no `swapped_at` holds nothing, and a
+/// swap time in the future (a clock change) is no evidence of a recent swap,
+/// so it never holds (S11).
 pub fn held_move(hold: u64, swapped_at: Option<i64>, now: i64) -> bool {
     swapped_at.is_some_and(|t| t <= now) && super::held(hold, swapped_at, now)
 }
@@ -221,7 +223,7 @@ pub enum NoMove {
         needs: u16,
     },
     /// The best qualifying login is at or above `--session-at`, and the hold
-    /// after the rotator's own swap `since` seconds ago applies (D3).
+    /// after the last swap `since` seconds ago applies (D3).
     Held {
         to: ProfileName,
         session: f64,
@@ -230,6 +232,18 @@ pub enum NoMove {
     /// Every qualifying login was rejected at confirmation, and one of them
     /// is still eligible because its re-read was unknown (D7).
     Unconfirmed,
+}
+
+impl NoMove {
+    /// The note after a rejection at confirmation left a stay (D7, D10): no
+    /// candidate was confirmed, unless a login that qualifies on a known
+    /// reading is held, which says why the cycle did not move and when it may.
+    pub fn after_rejection(prior: Option<NoMove>) -> NoMove {
+        match prior {
+            Some(held @ NoMove::Held { .. }) => held,
+            _ => NoMove::Unconfirmed,
+        }
+    }
 }
 
 /// Why `decide` made no move on these readings. `candidates` are the logins

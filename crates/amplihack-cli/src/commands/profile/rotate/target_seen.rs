@@ -136,6 +136,24 @@ pub struct Seen {
     pub week_max: u8,
 }
 
+impl Seen {
+    /// The readings the cycle records: the capacity file, the no-room marks,
+    /// `live_room` and the swap record. A swap target accepted without a fresh
+    /// reading (D7) has no measured figures, whether its probe failed or the
+    /// stale reading it was chosen on stood, so it is recorded as read
+    /// nothing: no swap record, and no room claimed for the login now live.
+    pub fn recorded(&self, others: &[(ProfileName, Reading)]) -> Vec<(ProfileName, Reading)> {
+        let unconfirmed = self.unconfirmed.as_ref().map(|(n, _)| n);
+        others
+            .iter()
+            .map(|(n, r)| {
+                let unread = unconfirmed == Some(n);
+                (n.clone(), if unread { Reading::Failed } else { *r })
+            })
+            .collect()
+    }
+}
+
 /// The reading the decision uses for `name`: the probe's, or the last good
 /// reading standing in for it.
 pub fn reading_used(extra: &Extra, name: &ProfileName, p: &Probed) -> Reading {

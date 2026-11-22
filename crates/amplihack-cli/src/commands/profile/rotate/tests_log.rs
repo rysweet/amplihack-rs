@@ -7,7 +7,7 @@
 //! - `log::MAX_LOG: u64` (1 MiB).
 //! - `RotateLog::open(log: &Path, rotated: &Path) -> io::Result<RotateLog>`
 //!   and `RotateLog::write(&mut self, now: i64, msg: &str) -> io::Result<()>`.
-//! - `log::msg::{swap, cycle, alert_no_capacity}` build the documented lines.
+//! - `log::msg::{swap, cycle}` build the documented lines.
 
 use super::decide::Reading;
 use super::log::{MAX_LOG, RotateLog, Shown, line, msg};

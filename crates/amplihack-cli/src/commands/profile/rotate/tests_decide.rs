@@ -479,8 +479,9 @@ fn a_live_profile_with_no_session_limit_swaps_at_the_week_threshold() {
 /// Crusty round 2 on #1829, ported to the one target rule (issue #2910): a
 /// weekly-only login reads as `Measured { session: 0, week }`, so it is in
 /// the first tier and wins over a login past `--session-at` with a lower
-/// week; exhausted logins are never chosen. Live on the no-session-limit
-/// login, which has room 60, nothing has room 65, so it stays (D1).
+/// week; exhausted logins are never chosen. Live on a no-session-limit login
+/// at week 95 (room 5), nothing has the 10 it needs (D1): the ALERT, which
+/// `no_move` turns into a stay note.
 #[test]
 fn plan_room_picks_the_no_session_limit_login_in_the_first_tier() {
     let s = settings();

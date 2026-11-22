@@ -9,8 +9,7 @@
 //! decision is made again on the new figures. See "Rotate reading freshness and
 //! swap-back damping" in docs/reference/profile-command.md.
 //!
-//! The gate writes nothing. Its log lines go to
-//! [`Measurement::fresh_lines`], which the cycle writes.
+//! The gate writes nothing; its lines go to [`Measurement::fresh_lines`].
 
 use super::cycle::Ctx;
 use super::decide::target::{NoMove, Unfit, fit};
@@ -289,6 +288,8 @@ pub(super) fn settle_timed(
                     rejected_unknown |= matches!(why, Why::Unknown(_));
                     lines.push(reject(&to, &why, week_max));
                     extra.rejected.insert(to.clone());
+                    // Unknown for the rest of the cycle, as the arms below make it.
+                    probes[i].1 = Probed::failed();
                 }
                 Step::NotTried(Limit::Count) => {
                     lines.push(fresh_msg::limit(&to));
@@ -358,7 +359,7 @@ pub(super) fn settle_timed(
     // D10: a cycle left with nothing because every qualifying login's
     // reading was unknown is a stay with that note, not the no-target line.
     if m.decision == Decision::Alert && rejected_unknown && !m.seen.live_no_room {
-        m.seen.why = Some(NoMove::Unconfirmed);
+        m.seen.why = Some(NoMove::after_rejection(m.seen.why.take()));
     }
     m.seen.extra = extra;
     m.seen.not_tried = not_tried;
@@ -377,7 +378,9 @@ fn fresh_probe(
     damped: bool,
     lines: &mut Vec<String>,
 ) -> Probed {
-    if p.reading == Reading::Failed || p.unknown || p.still_running || p.carried {
+    // Issue #2910: a spend limit is what the login reported, not a failed read.
+    let spent = p.spend_limit && !p.unknown && !p.still_running && !p.carried;
+    if !spent && (p.reading == Reading::Failed || p.unknown || p.still_running || p.carried) {
         lines.push(fresh_msg::failed(to));
         return Probed::failed();
     }

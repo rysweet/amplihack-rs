@@ -128,7 +128,7 @@ profile it names has a login or a different account, and never writes to
 | `--target-week-max` | 95 | Never swap to a login whose weekly use is above this %. The test uses the figure as read, so a login at 95.0 is allowed and one at 95.4 is above 95 and is not. |
 | `--margin` | 5 | While the live login still has room, a swap needs a login with this many more points of room (at least 1). |
 | `--upgrade-margin` | 30 | Swap early when a profile has this many more points of headroom. |
-| `--hold` | 3600 | Seconds after the rotator's own swap during which no early swap happens, and no swap onto a login at or above `--session-at` while the live login has room. |
+| `--hold` | 3600 | Seconds after the last swap (a rotator swap or a `profile switch`) during which no early swap happens, and no swap onto a login at or above `--session-at` while the live login has room. |
 | `--overflow-wait` | 1800 | Use an overflow profile only when the next plan reset is further away than this many seconds. |
 | `--interval` | 600 | Seconds between checks (`start` and `watch` only). |
 

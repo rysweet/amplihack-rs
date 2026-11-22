@@ -59,7 +59,7 @@
 //!
 //! The figures only change the decision, through [`Outlook`] on the cycle's
 //! context, which `decide_with` reads. They reach the decision rule's
-//! threshold row only ([`with_outlook`]): the plan-room swap and the overflow
+//! threshold row only ([`with_outlook`]): the overflow
 //! rules always run on the reading as measured. The ledger, the history and
 //! the log lines keep the reading as measured. `Point`, [`Series`] and
 //! [`Outlook`] hold a profile name, times and percentages only: never a

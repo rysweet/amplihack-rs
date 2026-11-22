@@ -18,7 +18,7 @@
 //! In these fixtures the live login is `work`. On 22 November it was a login
 //! called `rrowan`; fixtures use neutral names.
 //!
-//! API assumed, from the design:
+//! The API the fixture uses:
 //!
 //! ```text
 //! target_seen::Extra::for_cycle(root: &Path,

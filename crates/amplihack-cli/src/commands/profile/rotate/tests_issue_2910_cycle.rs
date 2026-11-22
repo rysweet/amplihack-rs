@@ -275,9 +275,10 @@ fn ac9_once_the_hold_has_run_out_the_rotator_moves_on() {
 }
 
 #[test]
-fn ac9_a_login_switched_by_hand_does_not_start_the_hold() {
+fn ac9_a_ledger_with_no_swap_time_holds_nothing() {
     let f = after_the_swap_fleet();
-    // No `swapped_at`: the ledger holds none after a hand switch.
+    // No `swapped_at`: a login changed outside amplihack writes none (a
+    // `profile switch` writes one, as `tests_switch` shows).
     let out = run(
         &f,
         reporter(),
@@ -780,7 +781,10 @@ fn t7_a_last_good_reading_changes_the_decision_only() {
 // --- AC10: the dry run takes the same path --------------------------------------------------------------------
 
 #[test]
-fn ac10_a_dry_run_on_the_22_nov_readings_reports_the_swap_to_llarame_and_moves_nothing() {
+fn ac10_a_dry_run_on_the_22_nov_readings_would_swap_and_moves_nothing() {
+    // The target, llarame, is named on the printed `would swap` line, which QA
+    // case 1 checks on the real command; the cycle test above names it for
+    // the same decision. Here: the same path decides a swap and writes nothing.
     let f = fleet(NAMES, &[]);
     let before_log = f.log();
     let before_ledger = fs::read(&f.e.rs.ledger).unwrap();
@@ -821,10 +825,10 @@ fn ac10_a_dry_run_on_the_0548_readings_would_stay() {
         STILL_RUNNING,
         Mode::DryRun,
     );
-    assert_ne!(
+    assert_eq!(
         out,
-        CycleOutcome::Swapped,
-        "a login with room 14 does not leave for room 5"
+        CycleOutcome::Alerted,
+        "a login with room 14 does not leave for room 5: a stay note, which a dry run reports as `Alerted`"
     );
     assert!(f.live_is("work"));
     assert_eq!(f.log(), before_log);

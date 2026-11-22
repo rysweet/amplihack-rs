@@ -11,7 +11,7 @@
 //! label this binary owns. None carries what a server, a credentials file or a
 //! stored reason chose (I5).
 //!
-//! API assumed, from the design (in `target_msg.rs`):
+//! The API these tests exercise (in `target_msg.rs`):
 //!
 //! ```text
 //! utc_minute(t: i64) -> String                      // %Y-%m-%dT%H:%MZ, fixed fallback

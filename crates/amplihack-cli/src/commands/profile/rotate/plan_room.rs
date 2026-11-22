@@ -39,9 +39,10 @@ pub fn has_room(r: &Reading) -> bool {
     }
 }
 
-/// Whether a login using `session`% and `week`% is one the rotator may move
-/// *to*: it has [`room`], and its session window is below the rotator's own
-/// `--session-at` (issue #2857).
+/// Whether a login using `session`% and `week`% has [`room`] and a session
+/// window below the rotator's own `--session-at` (issue #2857): the rotator's
+/// record of room on the login it made live. Since issue #2910 what the
+/// rotator may move *to* is decided by `decide::target::fit` instead.
 ///
 /// [`room`] alone says the login can still be used; this says a step moved
 /// onto it would not meet its limit at once. On 19 November 2026 the
@@ -60,8 +61,8 @@ pub fn room_under(session: f64, week: f64, session_at: u8) -> bool {
     room(session, week) && session < f64::from(session_at)
 }
 
-/// Whether `r` is a measured reading the rotator may move to at
-/// `session_at`. A failed, exhausted or unmeasured reading never is.
+/// Whether `r` is a measured reading with [`room_under`] `session_at`. A
+/// failed, exhausted or unmeasured reading never is.
 pub fn has_room_under(r: &Reading, session_at: u8) -> bool {
     match r {
         Reading::Measured { session, week } => room_under(*session, *week, session_at),

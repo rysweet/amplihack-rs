@@ -5,8 +5,8 @@
 //! readings in memory. Nothing here starts `claude`, reads a login or touches
 //! a profile root.
 //!
-//! API these tests assume, from the design (the implementation provides it in
-//! `target.rs`; `decide` keeps its signature and is rewritten on top of it):
+//! The API these tests exercise (provided in
+//! `target.rs`; `decide` keeps its signature and is built on it):
 //!
 //! ```text
 //! room_now(session: f64, week: f64) -> Option<u8>
@@ -367,7 +367,7 @@ fn ranked_uses_the_week_ceiling_of_the_settings() {
 // --- held_move (D3, S11) --------------------------------------------------------
 
 #[test]
-fn a_move_is_held_for_hold_seconds_after_the_rotators_own_swap() {
+fn a_move_is_held_for_hold_seconds_after_the_last_swap() {
     assert!(held_move(3600, Some(NOW - 600), NOW));
     assert!(held_move(3600, Some(NOW - 3599), NOW));
     assert!(
@@ -375,7 +375,7 @@ fn a_move_is_held_for_hold_seconds_after_the_rotators_own_swap() {
         "the hold has run out"
     );
     assert!(!held_move(3600, Some(NOW - 7200), NOW));
-    assert!(!held_move(3600, None, NOW), "a hand switch is not a swap");
+    assert!(!held_move(3600, None, NOW), "no swap time holds nothing");
 }
 
 #[test]
@@ -548,9 +548,61 @@ fn after_the_swap_a_move_to_a_login_past_session_at_waits_for_the_hold() {
     let after = Some(NOW - 7200);
     let d = decide(&nov22(), &l, &c, after, NOW);
     assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
-    // A hand switch leaves no swap time, so it holds nothing.
+    // A ledger with no swap time holds nothing.
     let d = decide(&nov22(), &l, &c, None, NOW);
     assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+}
+
+/// `decide` and `no_move` each apply the hold; this keeps them in step. Over a
+/// grid of live readings, candidate sets, settings and swap times, when
+/// `decide` does not move, `no_move` names a hold exactly when taking the hold
+/// away makes `decide` move, and to the login it names.
+#[test]
+fn decide_and_no_move_agree_on_the_hold() {
+    let lives = [
+        live(86.0, 65.0),
+        live(0.0, 95.0),
+        live(96.0, 40.0),
+        live(100.0, 67.0),
+        live_out(100.0, 67.0),
+        Reading::Failed,
+    ];
+    let sets = [
+        nov22_candidates(),
+        vec![m("a", 88.0, 20.0), m("b", 10.0, 90.0)],
+        vec![m("a", 90.0, 10.0), m("b", 91.0, 10.0)],
+        vec![m("a", 100.0, 10.0)],
+        vec![],
+    ];
+    let mut held_seen = 0;
+    for s in [nov22(), defaults()] {
+        for l in &lives {
+            for c in &sets {
+                for at in [None, Some(NOW - 600), Some(NOW - 7200), Some(NOW + 600)] {
+                    if decide(&s, l, c, at, NOW) != Decision::Alert {
+                        continue;
+                    }
+                    let free = decide(&s, l, c, None, NOW);
+                    match no_move(&s, l, c, at, NOW) {
+                        NoMove::Held { to, .. } => {
+                            held_seen += 1;
+                            assert_eq!(
+                                swapped(&free),
+                                Some((to.as_str(), Reason::Threshold)),
+                                "held, so no hold means a move to {to}: {l:?} {at:?}"
+                            );
+                        }
+                        other => assert_eq!(
+                            free,
+                            Decision::Alert,
+                            "{other:?} is not the hold, so no hold changes nothing: {l:?} {at:?}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+    assert!(held_seen > 0, "the grid reaches the hold at least once");
 }
 
 #[test]

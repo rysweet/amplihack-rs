@@ -626,6 +626,22 @@ fn all_rereads_of_one_gate_share_one_time_limit() {
         "no swap onto a login that was not read again: {:?}",
         got.decision
     );
+    // Issue #2910: the login the time limit left unread is unknown
+    // (`timeout`) in the no-target counts, not "not tried (re-read limit 3)",
+    // which is for the cap of three re-reads alone.
+    let unread = ["first", "second", "third"]
+        .into_iter()
+        .find(|w| !left.iter().any(|(name, _)| name.as_str() == *w))
+        .expect("one login was not read");
+    let st = got.seen.logins.get(&n(unread)).expect("the cycle saw it");
+    assert_eq!(
+        st.basis,
+        crate::commands::profile::rotate::decide::target_seen::Basis::Unknown(
+            crate::commands::profile::rotate::measure::ProbeLabel::Timeout
+        ),
+        "{st:?}"
+    );
+    assert!(!got.seen.not_tried.contains(&n(unread)), "{:?}", got.seen);
 }
 
 #[test]
@@ -658,6 +674,58 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
         !matches!(got.decision, Decision::Swap { .. }),
         "{:?}",
         got.decision
+    );
+}
+
+/// A target the gate rejects is unknown for the rest of the cycle, whatever
+/// its probe read before. Here an earlier gate accepted `spare` unconfirmed
+/// (the live login had no room then); under the lock the live login has room,
+/// so the gate rejects it, and the decision must not come back to it on its
+/// stale figures: the gate settles instead of ending the cycle in
+/// `GateUnsettled` (issue #2910).
+#[test]
+fn a_rejected_unconfirmed_target_is_not_chosen_again_on_its_stale_reading() {
+    use crate::commands::profile::rotate::measure::ProbeLabel;
+    let e = env();
+    let c = gate_ctx(&e, None);
+    let s = snap(&c);
+    let at = now();
+    let mut m = decide_measured(
+        &c,
+        &s,
+        rd(86.0, 65.0, None),
+        vec![(n("spare"), rd(0.0, 40.0, Some(at - 600)))],
+        at,
+    )
+    .unwrap();
+    assert!(
+        matches!(&m.decision, Decision::Swap { to, .. } if to == &n("spare")),
+        "without the gate the stale reading wins: {:?}",
+        m.decision
+    );
+    m.seen
+        .extra
+        .unconfirmed
+        .insert(n("spare"), ProbeLabel::Http429);
+    let got = fresh::settle(
+        &c,
+        m,
+        Reread::Never,
+        Duration::from_secs(120),
+        |live, probes, extra, at| decide_with(&c, &s, live, probes, at, extra),
+    )
+    .expect("the gate settles, it does not end the cycle in an error");
+    assert!(
+        !matches!(got.decision, Decision::Swap { .. }),
+        "{:?}",
+        got.decision
+    );
+    assert!(
+        got.fresh_lines
+            .iter()
+            .any(|l| l.starts_with("reject: spare ")),
+        "{:?}",
+        got.fresh_lines
     );
 }
 

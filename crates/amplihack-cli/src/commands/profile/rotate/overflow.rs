@@ -6,11 +6,12 @@
 //! - With no overflow profiles the verdict is exactly `decide` (P1).
 //! - A plan login has capacity when its probe read `ok` and its session and
 //!   week use pass [`Gate::plan_capacity`] (below `--session-at` and
-//!   `--week-at`); margins and the hold play no part. Auto-switch applies the
-//!   same test with the same thresholds, read from the running rotator, for
-//!   moving onto and off overflow whatever its own threshold
+//!   `--week-at`); margins and the hold play no part. Only auto-switch applies
+//!   this test now, with the same thresholds, read from the running rotator,
+//!   for moving onto and off overflow whatever its own threshold
 //!   (`candidate::may_return_to`; `tests_gate_record` checks thresholds 70,
-//!   80 and 90 against 85/90).
+//!   80 and 90 against 85/90). The rotator's own choice of a plan login to
+//!   leave overflow for is the one target rule (`decide::target`, issue #2910).
 //! - Onto overflow only when the live plan login is at a threshold (and its
 //!   probe did not fail), no plan login, live included, has room
 //!   ([`plan_room`]), no plan candidate's probe is unknown (it timed out or
@@ -21,9 +22,10 @@
 //!   same order.
 //! - The overflow profile chosen is the first usable one by tier, then by
 //!   file order within a tier.
-//! - Off overflow as soon as a plan login has capacity, then as soon as one
-//!   has room, ignoring the hold (`--hold`, the minimum time after a rotator
-//!   swap) and both margins (P2).
+//! - Off overflow as soon as a plan login is a target (below 100% on both
+//!   windows, its week within `--target-week-max`), the first of the one
+//!   ranking, ignoring the hold (`--hold`, the minimum time after a swap) and
+//!   both margins (P2).
 //! - A `profile switch` pin (`rotate::pin`, #1691) is a different thing from
 //!   the hold, and it wins over every rule here: the cycle stops on the pin
 //!   before measuring, so this function never runs while one is in force.

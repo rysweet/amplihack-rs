@@ -262,11 +262,9 @@ pub fn annotate(seen: &Seen, name: &ProfileName, shown: &mut Shown) {
             ));
         }
         Basis::Unknown(label) => shown.label = Some(label.as_str()),
-        Basis::IdentityUnavailable => shown.label = Some(ProbeLabel::IdentityUnavailable.as_str()),
-        // Not read at all: the cycle's own `skip:` line names it, and the
-        // cycle line carries the same reason rather than a probe label.
-        Basis::NotRead(reason) => shown.label = Some(reason),
-        Basis::Failed => {}
+        // A login the cycle did not read is not on the `cycle` line at all:
+        // its `skip:` line says why, and the no-target counts carry it.
+        Basis::Failed | Basis::NotRead(_) | Basis::IdentityUnavailable => {}
         Basis::Probe => {
             if let Some((until, kind)) = st.block {
                 shown.note = Some(format!("blocked until {} ({kind})", utc_minute(until)));

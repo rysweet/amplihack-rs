@@ -66,8 +66,8 @@ impl Outlook {
 ///
 /// `real` is the overflow-aware verdict on `real_reading`, as measured,
 /// restricted by organisation affinity (#2136). `on_outlook` is the
-/// decision on the outlook's figures, made with the cycle's one affinity
-/// `Need`, worked out on `real_reading` (`observe::affinity::outlook`, or
+/// decision on the outlook's figures, made with no confirmed crossing allowed
+/// (`may_cross` false; `observe::affinity::outlook`, or
 /// `outlook_failed` for a failed reading). So the outlook never makes a
 /// confirmed organisation crossing, nor makes one sooner.
 ///
@@ -83,7 +83,7 @@ impl Outlook {
 ///   warning, so no swap is lost. A stay on the outlook, which affinity
 ///   gives when only a confirmed crossing has capacity, leaves `real`.
 ///
-/// So the plan-room swap and the moves onto overflow never run on a
+/// So the moves onto overflow never run on a
 /// projected or substituted figure, and nothing here moves work onto
 /// credits or the API key.
 pub fn with_outlook(
