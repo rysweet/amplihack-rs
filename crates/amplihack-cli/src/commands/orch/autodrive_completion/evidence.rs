@@ -121,15 +121,6 @@ pub fn validate(state: &State, expected: &Snapshot, completing: bool) -> Result<
         "record does not describe current head"
     );
     if completing {
-        let remote = Command::new("gh")
-            .current_dir(&state.repo)
-            .env_remove("GH_REPO")
-            .args(["pr", "view", "--json", "headRefOid", "--jq", ".headRefOid"])
-            .output()?;
-        ensure!(
-            remote.status.success() && String::from_utf8(remote.stdout)?.trim() == head.trim(),
-            "current PR head differs from reviewed evidence or is unavailable"
-        );
         ensure!(
             record["reviewed_head_sha"].as_str() == Some(head.trim()),
             "completion must cover the current reviewed head"
@@ -151,4 +142,178 @@ pub fn validate(state: &State, expected: &Snapshot, completing: bool) -> Result<
         }
     }
     Ok(record)
+}
+
+/// What GitHub says the PR head is, against the reviewed head (#2333).
+///
+/// This is a fact read, not a gate. Completion does not depend on it: a
+/// valid completion claim is `DONE` whatever the read says, and dispatch puts
+/// the outcome in the result as `pr_head` for the agents that follow. Those
+/// agents decide what a moved or unreadable head means. The recording step in
+/// `autodrive-crusty-loop.yaml` reads `pr_head`; the merge-ready assessment
+/// checks that GitHub's head is the head it assessed and, under criterion 3,
+/// that the Crusty review covers it; and the merge is made with
+/// `gh pr merge --match-head-commit`, which GitHub refuses for any other head.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RemoteHead {
+    Matches,
+    /// The PR head on GitHub, which is not the reviewed head.
+    Differs(String),
+    /// The read did not answer; the text names why, with gh's own stderr.
+    Unavailable(String),
+}
+
+impl RemoteHead {
+    /// The fault in one line, for the evaluator and the operator.
+    pub fn fault(&self, head: &str) -> Option<String> {
+        match self {
+            Self::Matches => None,
+            Self::Differs(remote) => Some(format!(
+                "head differs: the PR head on GitHub is {remote}, but the reviewed head is {head}"
+            )),
+            Self::Unavailable(why) => Some(format!("head unavailable: {why}")),
+        }
+    }
+
+    /// The read as the `pr_head` object of the dispatch result.
+    pub fn evidence(&self, head: &str) -> serde_json::Value {
+        let (read, github_head) = match self {
+            Self::Matches => ("matches", head.trim()),
+            Self::Differs(remote) => ("differs", remote.as_str()),
+            Self::Unavailable(_) => ("unavailable", ""),
+        };
+        serde_json::json!({
+            "read": read,
+            "github_head": github_head,
+            "reviewed_head": head.trim(),
+            "detail": self.fault(head).unwrap_or_default(),
+        })
+    }
+}
+
+/// One REST read of the PR head, so a GraphQL refusal does not hide it.
+/// `gh api` fills `{owner}/{repo}` from the worktree's remote.
+pub fn remote_head(repo: &Path, head: &str) -> RemoteHead {
+    let pr = match pr_number(repo) {
+        Ok(pr) => pr,
+        Err(why) => return RemoteHead::Unavailable(why),
+    };
+    let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{pr}");
+    let sha = match gh_api(repo, &endpoint, ".head.sha") {
+        Ok(sha) => sha,
+        Err(why) => return RemoteHead::Unavailable(why),
+    };
+    let sha = sha.trim();
+    if sha.is_empty() {
+        RemoteHead::Unavailable(format!("gh api {endpoint} returned no head SHA"))
+    } else if sha == head.trim() {
+        RemoteHead::Matches
+    } else {
+        RemoteHead::Differs(sha.to_string())
+    }
+}
+
+/// The PR number: the loop's `pr_number` context, passed as `PR_NUMBER`.
+/// When a caller passed it empty, the open PR whose head is the worktree's
+/// branch, which is what `gh pr view` used to infer. A missing or ambiguous
+/// answer is returned as a named blocker, never guessed.
+fn pr_number(repo: &Path) -> std::result::Result<String, String> {
+    let given = std::env::var("PR_NUMBER").unwrap_or_default();
+    let given = given.trim();
+    if !given.is_empty() {
+        return if given.bytes().all(|b| b.is_ascii_digit()) {
+            Ok(given.to_string())
+        } else {
+            Err(format!("PR_NUMBER {given:?} is not a PR number"))
+        };
+    }
+    let branch = amplihack_git::command_in(repo)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty())
+        .ok_or("PR_NUMBER is empty and the worktree has no branch to find the PR by")?;
+    let endpoint = format!(
+        "repos/{{owner}}/{{repo}}/pulls?state=open&head={{owner}}:{}",
+        query_escape(&branch)
+    );
+    let numbers = gh_api(repo, &endpoint, ".[].number")?;
+    let numbers: Vec<&str> = numbers.split_whitespace().collect();
+    match numbers.as_slice() {
+        [one] if one.bytes().all(|b| b.is_ascii_digit()) => Ok((*one).to_string()),
+        [] => Err(format!(
+            "PR_NUMBER is empty and no open PR has head branch {branch}"
+        )),
+        _ => Err(format!(
+            "PR_NUMBER is empty and branch {branch} matches more than one open PR ({})",
+            numbers.join(", ")
+        )),
+    }
+}
+
+fn gh_api(repo: &Path, endpoint: &str, jq: &str) -> std::result::Result<String, String> {
+    let o = Command::new("gh")
+        .current_dir(repo)
+        .env_remove("GH_REPO")
+        .args(["api", endpoint, "--jq", jq])
+        .output()
+        .map_err(|e| format!("gh api {endpoint} could not run: {e}"))?;
+    if !o.status.success() {
+        return Err(format!(
+            "gh api {endpoint} failed ({}): {}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr).trim()
+        ));
+    }
+    String::from_utf8(o.stdout).map_err(|_| format!("gh api {endpoint} returned non-UTF-8 output"))
+}
+
+/// Percent-encodes a branch name for a query value; `/` stays as it is.
+fn query_escape(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branch_names_are_escaped_for_the_query() {
+        assert_eq!(query_escape("feat/issue-2333_x.y"), "feat/issue-2333_x.y");
+        assert_eq!(query_escape("a&b c#d"), "a%26b%20c%23d");
+    }
+
+    #[test]
+    fn faults_name_both_heads_or_the_cause() {
+        assert_eq!(RemoteHead::Matches.fault("a"), None);
+        let differs = RemoteHead::Differs("b".into()).fault("a").unwrap();
+        assert!(differs.contains("GitHub is b") && differs.contains("reviewed head is a"));
+        let gone = RemoteHead::Unavailable("HTTP 502".into())
+            .fault("a")
+            .unwrap();
+        assert_eq!(gone, "head unavailable: HTTP 502");
+    }
+
+    #[test]
+    fn evidence_names_the_read_and_both_heads() {
+        let v = RemoteHead::Differs("b".into()).evidence("a");
+        assert_eq!(v["read"], "differs");
+        assert_eq!(v["github_head"], "b");
+        assert_eq!(v["reviewed_head"], "a");
+        let v = RemoteHead::Unavailable("HTTP 502".into()).evidence("a");
+        assert_eq!(v["read"], "unavailable");
+        assert_eq!(v["github_head"], "");
+        assert_eq!(v["detail"], "head unavailable: HTTP 502");
+        assert_eq!(RemoteHead::Matches.evidence("a")["detail"], "");
+    }
 }

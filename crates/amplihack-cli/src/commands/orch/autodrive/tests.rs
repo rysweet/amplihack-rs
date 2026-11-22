@@ -372,7 +372,28 @@ fn report_ignores_merge_output_when_the_state_directory_is_not_the_assigned_one(
             "{label}: {result}"
         );
     }
+    // #3053: a folder the build step reports is information only. A different
+    // build_result.state_dir no longer stops a merge the run's own folder
+    // recorded.
     let context = json!({"merge_loop_result": done, "finalize_merge": merged, "build_result": {"state_dir": "/elsewhere"}});
     let result = report(&auth, context.as_object().unwrap(), Some("2329"));
+    assert_eq!(result["stop_reason"], "completed", "{result}");
+    assert_eq!(result["merge"]["result"], "merged", "{result}");
+    // The run's own autodrive_state_dir is still compared when the build
+    // reports another folder too.
+    let context = json!({
+        "merge_loop_result": done,
+        "finalize_merge": merged,
+        "build_result": {"state_dir": "/elsewhere"},
+        "autodrive_state_dir": dir.path().join("other"),
+    });
+    let result = report(&auth, context.as_object().unwrap(), Some("2329"));
     assert_ne!(result["stop_reason"], "completed", "{result}");
+    assert!(result["merge"].is_null(), "{result}");
+    assert!(
+        result["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("runner-assigned state directory")),
+        "{result}"
+    );
 }

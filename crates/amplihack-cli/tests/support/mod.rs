@@ -7,6 +7,8 @@ pub mod auto_drive_light;
 /// One definition, shared with every crate's `test_support`.
 #[path = "../../../../tests/support/claude_profile_isolation.rs"]
 pub mod claude_profile_isolation;
+/// Fixture for #2569: the criterion-1 QA judgement.
+pub mod criterion1_world;
 pub mod events;
 pub mod exec_stub;
 /// Issue #2931 — the end of file on a pipe that a process group holds, as

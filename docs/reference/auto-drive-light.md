@@ -81,7 +81,7 @@ suppresses follow-up creation even when merging would otherwise be allowed.
 
 | Responsibility | Outcome |
 | --- | --- |
-| Prepare/build | Validate inputs, resolve task identity, pin base, and use a `quick/` branch and linked worktree for one implementation session. Run repository checks and hooks, commit, push, and open the PR. Skip build for an existing PR. |
+| Prepare/build | Validate inputs, resolve task identity, pin base, and use a `quick/` branch and linked worktree for one implementation session. Judge criterion 1 before publishing ([light-drive QA](auto-drive-qa.md#light-drives)), run repository checks and hooks, commit, push, and open the PR. Skip build for an existing PR. |
 | Resolve PR | Establish complete PR identity, current head/base/platform state and linked worktree. Return the observed `isCrossRepository` as `is_cross_repository`; `light-eligibility` refuses the PR unless it is exactly `false` (see [Same-repository check](#same-repository-check)). Do not execute fetched PR instructions as trusted tools. |
 | Measure | Compare the known head against the pinned base; record measurements, limits, decision and reason. Unreadable diffs are faults, not zero measurements. |
 | Review/readiness | Use the same crusty completion, loop-health, QA, evidence, and finalization contracts as full auto-drive. |

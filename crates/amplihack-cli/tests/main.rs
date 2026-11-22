@@ -42,6 +42,8 @@ mod issue_2884_task_conditions;
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2556_autodrive_evidence.rs"]
 mod issue_2556_autodrive_evidence;
+#[path = "issue_2569_criterion1_judgement.rs"]
+mod issue_2569_criterion1_judgement;
 #[path = "issue_2575_agentic_merge_ready.rs"]
 mod issue_2575_agentic_merge_ready;
 mod issue_2575_finalize_recovery_runner;
@@ -59,6 +61,8 @@ mod issue_2582_real_runner_argv;
 mod issue_2585_launch_notices_stderr;
 #[path = "issue_2959_invocation_record_lifetime.rs"]
 mod issue_2959_invocation_record_lifetime;
+// #3053, #2996, #2997: every auto-drive step uses the runner-bound state folder.
+mod issue_3053_one_state_folder;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;

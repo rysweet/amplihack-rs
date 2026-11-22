@@ -212,6 +212,64 @@ outcome rule applies only to the top-level `auto-drive-to-merge` and
 A CLEAN round whose steps all succeeded therefore exits `0` and can satisfy
 this condition; it still has to pass every other check above.
 
+A completion claim also reads the PR head from GitHub and reports it next to
+the reviewed head. The read is one REST call, `gh api
+repos/{owner}/{repo}/pulls/<n> --jq .head.sha`, run in the PR worktree, so
+`gh` fills in the owner and repository from that worktree's remote. GraphQL is
+not used, so an account whose GraphQL quota is exhausted can still complete a
+reviewed PR (#2333).
+
+The PR number comes from the loop's `pr_number` context, which
+`autodrive_loop.sh` passes to dispatch as `PR_NUMBER`. A caller may pass that
+context empty. Dispatch then asks REST for the open PR whose head is the
+worktree's branch (`repos/{owner}/{repo}/pulls?state=open&head={owner}:<branch>`),
+which is what `gh pr view` used to infer. If no open PR or more than one
+matches, or the worktree is on a detached head, that is reported as a named
+blocker; the number is never guessed.
+
+The read is a fact read, not a gate. A valid completion claim completes
+(`DONE`, no evaluator) whatever the read says, and the dispatch result carries
+the read as `pr_head` for the agents that follow:
+
+| `pr_head.read` | Meaning                                       | `github_head` | `detail`                                     |
+| -------------- | --------------------------------------------- | ------------- | -------------------------------------------- |
+| `matches`      | GitHub shows the reviewed head.               | that head     | empty                                        |
+| `differs`      | GitHub shows another commit.                  | that commit   | `head differs: ...`, naming both SHAs        |
+| `unavailable`  | The read did not answer, or no PR was found. | empty         | `head unavailable: ...`, with `gh`'s message |
+
+`reviewed_head` is always the record's head. For `differs` and
+`unavailable`, dispatch also prints `detail` on standard error. The
+loop-health evaluator is not involved, so it is never asked to interpret a
+GitHub fault. The evaluator's `DONE` is still demoted to `CONTINUE` on the
+`evaluate` path, where the review is unresolved; that rule predates #2333 and
+never applies to a completion claim.
+
+What a moved or unreadable head means is judged by agents, at three points:
+
+1. `step-03-record-crusty-phase` in `autodrive-crusty-loop.yaml` receives the
+   result. Its prompt describes `pr_head`: for `differs` or `unavailable` it
+   reads the PR head itself, names a read that still fails as a blocker about
+   reaching GitHub, and names a GitHub head the review did not cover as
+   `crusty-review-required:<sha>`.
+2. The merge-ready assessment in `autodrive-merge-round.yaml` checks that the
+   PR worktree head and GitHub's head both equal the head it assesses, and its
+   criterion 3 checks that the Crusty verdict covers that head. A head the
+   review did not cover sends the drive back to Crusty.
+3. The merge in `autodrive_merge.sh` is made with
+   `gh pr merge --match-head-commit <assessed head>`, which GitHub refuses for
+   any other head.
+
+An earlier revision of #2333 refused completion in code when the read did not
+match, and demoted the evaluator's `DONE` to `CONTINUE`. That duplicated the
+three checks above and could fail only towards not finishing, for example on a
+clean round whose REST read stayed degraded, so it was removed.
+
+This change does not touch the coded no-progress rule. The part of #2333 that
+concerns merge-ready rounds ended as STUCK while waiting was covered on main by
+#2575: `autodrive_loop.sh` skips `progress_stop` for the merge-ready loop. The
+Crusty loop still applies `progress_stop` to a round that is not clean; that
+remaining code-decided stop is tracked in #3035.
+
 Private directories and files normally use modes `0700` and `0600`.
 Hashes check integrity against trusted state; they do not authenticate the
 agent. Instructions and same-user permissions do not isolate the decision
