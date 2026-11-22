@@ -82,7 +82,7 @@ fn a_step_that_has_not_waited_refuses_nothing() {
         // wait of a step is never refused for the budget.
         for max in [None, Some(0), Some(600)] {
             let mut w = waiter(&e, max);
-            w.note_attempt_login();
+            w.note_attempt_login(None);
             assert!(
                 !w.ordinarily_refused(),
                 "max_wait_secs {max:?}: a step's first wait is never refused"
@@ -97,7 +97,7 @@ fn the_login_this_step_has_already_waited_on_is_refused() {
         let e = env();
         live(&e, "a");
         let mut w = waiter(&e, None);
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         assert!(w.ordinarily_refused());
     });
@@ -109,12 +109,12 @@ fn a_login_the_step_has_never_waited_on_is_not_refused_while_budget_remains() {
         let e = env();
         live(&e, "a");
         let mut w = waiter(&e, Some(100));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         w.marks.spend(99);
         // The rotator moved the step to `b` before the retry was launched.
         live(&e, "b");
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         assert!(
             !w.ordinarily_refused(),
             "`b` is a login this step has not waited on, and one second is left"
@@ -128,11 +128,11 @@ fn a_spent_budget_refuses_every_login() {
         let e = env();
         live(&e, "a");
         let mut w = waiter(&e, Some(100));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         w.marks.spend(100);
         live(&e, "b");
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         assert!(
             w.ordinarily_refused(),
             "the budget is spent, so a later wait on any login is refused"
@@ -153,11 +153,12 @@ fn a_waiter_with_no_settings_refuses_nothing() {
                 print: true,
                 prompt: true,
                 stream_stdin: false,
+                session: false,
             },
             Box::new(|| false),
             Box::new(|| true),
         );
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         assert!(
             !w.ordinarily_refused(),
@@ -172,12 +173,12 @@ fn asking_records_nothing() {
         let e = env();
         live(&e, "a");
         let mut w = waiter(&e, Some(100));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         for _ in 0..3 {
             assert!(!w.ordinarily_refused());
         }
         assert!(
-            !w.used(),
+            !w.marks.used(),
             "reading the rule marks no login: only a wait that is planned does"
         );
     });
@@ -205,7 +206,7 @@ fn the_reader_and_after_limit_judge_one_rule() {
                     w.marks.record(Some("a".to_string()));
                     w.marks.spend(40);
                     live(e, "b");
-                    w.note_attempt_login();
+                    w.note_attempt_login(None);
                 }),
             ),
             (
@@ -215,7 +216,7 @@ fn the_reader_and_after_limit_judge_one_rule() {
                     w.marks.record(Some("a".to_string()));
                     w.marks.spend(100);
                     live(e, "b");
-                    w.note_attempt_login();
+                    w.note_attempt_login(None);
                 }),
             ),
         ];
@@ -224,7 +225,7 @@ fn the_reader_and_after_limit_judge_one_rule() {
         for (what, max, setup) in cases {
             live(&e, "a");
             let mut w = waiter(&e, max);
-            w.note_attempt_login();
+            w.note_attempt_login(None);
             setup(&e, &mut w);
             let refused = w.ordinarily_refused();
             // Another login's capacity ends the wait the moment it is read, so
@@ -258,7 +259,7 @@ fn a_capacity_wait_that_carries_a_passed_reset_runs_on_a_login_already_waited_on
         let e = env();
         live(&e, "a");
         let mut w = waiter(&e, Some(600));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         assert!(
             w.ordinarily_refused(),
@@ -291,7 +292,7 @@ fn the_same_passed_reset_as_a_reset_wait_is_still_refused_as_already_waited() {
         let e = env();
         live(&e, "a");
         let mut w = waiter(&e, Some(600));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         let wait = WaitFor::Reset {
             harness: Harness::Claude,
@@ -318,7 +319,7 @@ fn a_capacity_wait_for_a_passed_reset_spends_the_budget_and_the_next_is_refused(
         live(&e, "a");
         let budget = 90;
         let mut w = waiter(&e, Some(budget));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         let before = w.now();
         let first = after_a_signal(&mut w, capacity_for(Some(before - 120)), &|_, _| false);

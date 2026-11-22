@@ -128,16 +128,12 @@ pub(super) enum Skip {
     Cannot(NoWait),
 }
 
-/// `t` in zone `tz`, as every line writes an instant.
-fn fmt_time<Z: TimeZone>(t: i64, tz: &Z) -> String
-where
-    Z::Offset: Display,
-{
-    match tz.timestamp_opt(t, 0).single() {
-        Some(d) => d.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-        None => format!("@{t}"),
-    }
-}
+// `t` in zone `tz`, as every line writes an instant. The one formatter is
+// shared with the heartbeat of a waiting step (issue #2967), so that line's
+// time and the `until=` field of the wait's `start` line cannot differ. It
+// lives beside the heartbeat because that module is built on every host and
+// this one only on Unix.
+use crate::commands::recipe::run::heartbeat::fmt_time;
 
 /// A `start` line's body, with `who` naming the harness or the account.
 fn start_body<Z: TimeZone>(

@@ -89,6 +89,66 @@ fn select_by<'a>(
         .or_else(|| unknown.first().copied())
 }
 
+/// Whether a plan reading is usable now by the test `profile usage` applies
+/// (issue #2967): session use below `session_at` and weekly use below 100%,
+/// over [`adjusted`] windows, so a window whose reset has passed counts as
+/// empty. An unreadable value (NaN) is not usable.
+///
+/// This is the second capacity rule of the move a step makes before it
+/// waits. The first is [`select`], whose threshold (90% by default) is lower:
+/// a login at 92% of its session window is over that threshold and can still
+/// run a step. The rule is the rotator's own for a login it may move to
+/// (`rotate::plan_room::room_under`), so the two cannot disagree.
+pub fn is_usable(r: &Reading, session_at: u8, now: i64) -> bool {
+    let (session, week) = session_week(r, now);
+    crate::commands::profile::rotate::plan_room::room_under(session, week, session_at)
+}
+
+/// When a reading that is not [`is_usable`] becomes usable again: the
+/// latest `resets_at` among the windows that make it unusable, because the
+/// login can run a step only once all of them have reset. `None` when the
+/// reading is usable, and when no such window has a reset ahead. Never an
+/// instant at or before `now`: a window whose reset has passed counts as
+/// empty and so is never one of them.
+pub fn regains_usable(r: &Reading, session_at: u8, now: i64) -> Option<i64> {
+    let (session, week) = session_week(r, now);
+    // The two halves of `room_under`, negated. An unreadable value (NaN) is
+    // below nothing, so it bars.
+    let below = |used: f64, bound: f64| used < bound;
+    let session_bars = !(below(session, 100.0) && below(session, f64::from(session_at)));
+    let week_bars = !below(week, 100.0);
+    let reset = |bars: bool, w: Option<&Window>| {
+        w.filter(|_| bars)
+            .map(|w| w.resets_at)
+            .filter(|at| *at > now)
+    };
+    [
+        reset(session_bars, r.five_hour.as_ref()),
+        reset(week_bars, r.seven_day.as_ref()),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+}
+
+/// The eligible profile that is [`is_usable`] and has the most quota left,
+/// ranked as [`select`] ranks: by the worse window, then by name. A profile
+/// with no reading is not usable by this rule; [`select`] is the rule that
+/// takes one. Never `current` or an excluded profile.
+pub fn select_usable<'a>(
+    pool: &Pool<'a>,
+    current: &str,
+    session_at: u8,
+    eligible: impl Fn(&ProfileName) -> bool,
+) -> Option<&'a ProfileName> {
+    select_by(
+        pool,
+        current,
+        |r| r.is_some_and(|r| is_usable(r, session_at, pool.now)),
+        eligible,
+    )
+}
+
 /// The overflow side of a selection (issue #1606).
 pub struct OverflowPool<'a> {
     /// The overflow profiles in the order they are tried: tier, then file

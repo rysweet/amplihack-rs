@@ -5,7 +5,7 @@
 //!
 //! Wired from `recipe/run/mod.rs` with `#[cfg(test)] mod tests_limit_reset;`.
 
-use super::limit_reset::parse;
+use super::limit_reset::{parse, parse_in};
 use chrono::{TimeZone, Timelike};
 use chrono_tz::Tz;
 
@@ -289,4 +289,140 @@ fn the_five_hour_limit_reset_rolls_to_tomorrow_once_it_has_passed() {
         parse("8:20pm (America/Los_Angeles)", LA_2100),
         Some(LA_2020 + DAY)
     );
+}
+
+// --- issue #2967: a reset with no zone, read in the host's zone ---------------
+//
+// `parse_in(fragment, now, local)`: a zone the text states follows the
+// existing rule and never falls back to `local`; text that is empty or only
+// ASCII whitespace after the clock time takes `local`; anything else is
+// `None`. `parse` is `parse_in(.., None)`.
+
+/// 2026-10-18 23:50:00 -07:00.
+const LA_2350: i64 = 1_792_392_600;
+
+#[test]
+fn a_zoneless_clock_time_takes_the_local_zone() {
+    // The observed wording ends `... your 5-hour limit resets 11:50pm`.
+    assert_eq!(parse_in("11:50pm", NOW, Some(LA)), Some(LA_2350));
+    assert_eq!(parse_in("8:30am", NOW, Some(LA)), Some(LA_0830));
+    assert_eq!(parse_in("08:30", NOW, Some(LA)), Some(LA_0830));
+    assert_eq!(
+        parse_in("9pm", NOW, Some(chrono_tz::Europe::London)),
+        Some(at(chrono_tz::Europe::London, 2026, 10, 18, 21, 0))
+    );
+}
+
+#[test]
+fn a_zoneless_dated_reset_takes_the_local_zone() {
+    assert_eq!(
+        parse_in("Oct 24, 2pm", NOW, Some(LA)),
+        Some(at(LA, 2026, 10, 24, 14, 0))
+    );
+    // A date already past is next year's, as for a stated zone.
+    assert_eq!(
+        parse_in("Oct 8, 12am", NOW, Some(LA)),
+        Some(at(LA, 2027, 10, 8, 0, 0))
+    );
+}
+
+#[test]
+fn a_zoneless_clock_time_follows_the_ten_minute_grace_rule() {
+    // 07:55 is five minutes ago: still today's. 07:00 is an hour ago: tomorrow's.
+    assert_eq!(
+        parse_in("7:55am", NOW, Some(LA)),
+        Some(at(LA, 2026, 10, 18, 7, 55))
+    );
+    assert_eq!(
+        parse_in("7:00am", NOW, Some(LA)),
+        Some(at(LA, 2026, 10, 19, 7, 0))
+    );
+}
+
+#[test]
+fn a_zoneless_clock_time_with_no_local_zone_is_none() {
+    assert_eq!(parse_in("11:50pm", NOW, None), None);
+    // `parse` keeps its behaviour: the zone is required.
+    assert_eq!(parse("11:50pm", NOW), None);
+    assert_eq!(parse("8:30am", NOW), None);
+}
+
+#[test]
+fn only_whitespace_may_follow_a_zoneless_clock_time() {
+    for tail in ["", " ", "  ", "\t", " \t "] {
+        let f = format!("8:30am{tail}");
+        assert_eq!(parse_in(&f, NOW, Some(LA)), Some(LA_0830), "{f:?}");
+    }
+    for tail in [
+        ".",
+        " foo",
+        "\u{a0}",                // non-breaking space is not ASCII whitespace
+        "\u{7}",                 // a control character
+        " (",                    // an unclosed bracket opens a stated zone
+        " (America/Los_Angeles", // a stated zone that never closes
+        "\n/upgrade to increase your usage limit.",
+    ] {
+        let f = format!("8:30am{tail}");
+        assert_eq!(parse_in(&f, NOW, Some(LA)), None, "{f:?}");
+    }
+}
+
+#[test]
+fn a_stated_zone_is_used_and_never_falls_back_to_the_local_one() {
+    // The text's zone wins over `local`.
+    assert_eq!(
+        parse_in("8:30am (America/Los_Angeles)", NOW, Some(chrono_tz::UTC)),
+        Some(LA_0830)
+    );
+    // A zone that does not exist is not replaced by `local`.
+    assert_eq!(parse_in("8:30am (Nowhere/Zone)", NOW, Some(LA)), None);
+    assert_eq!(parse_in("8:30am ()", NOW, Some(LA)), None);
+    // Nor is a malformed one: exactly one space before the bracket.
+    assert_eq!(
+        parse_in("8:30am  (America/Los_Angeles)", NOW, Some(LA)),
+        None
+    );
+}
+
+#[test]
+fn parse_is_parse_in_with_no_local_zone() {
+    for f in [
+        "8:30am (America/Los_Angeles)",
+        "Oct 8, 12am (America/Los_Angeles)",
+        "17:00 (Asia/Tokyo)",
+        "8:30am",
+        "8:30am (Nowhere/Zone)",
+        "",
+        "tomorrow",
+    ] {
+        assert_eq!(parse(f, NOW), parse_in(f, NOW, None), "{f:?}");
+    }
+}
+
+#[test]
+fn a_zoneless_reset_in_a_daylight_saving_gap_is_the_first_instant_after_it() {
+    // 2026-03-08 02:30 does not exist in Los Angeles; the clocks go 02:00 -> 03:00.
+    let now = at(LA, 2026, 3, 8, 1, 0);
+    assert_eq!(
+        parse_in("2:30am", now, Some(LA)),
+        Some(at(LA, 2026, 3, 8, 3, 0))
+    );
+}
+
+#[test]
+fn extreme_instants_never_panic_and_are_not_clamped() {
+    for now in [i64::MAX, i64::MIN, 0, i64::MAX - 1, i64::MIN + 1] {
+        // The value does not matter; reaching the end does.
+        let _ = parse_in("11:50pm", now, Some(LA));
+        let _ = parse_in("Oct 8, 12am", now, Some(LA));
+        let _ = parse_in("8:30am (America/Los_Angeles)", now, None);
+    }
+}
+
+#[test]
+fn a_zoneless_fragment_is_still_cut_at_128_bytes_on_a_character_boundary() {
+    let long = format!("8:30am{}\u{e9}", " ".repeat(200));
+    // Nothing but whitespace within the first 128 bytes, then text beyond
+    // the cut: the cut text is not read.
+    assert_eq!(parse_in(&long, NOW, Some(LA)), Some(LA_0830));
 }

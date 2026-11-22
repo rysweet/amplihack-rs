@@ -329,3 +329,76 @@ fn issue_2857_the_re_entry_line_is_the_only_addition_to_what_the_recipe_log_carr
         assert_eq!(recipe(&e, Some("work")), None);
     }
 }
+
+// --- issue #2967: the earliest-reset wait and the login's name -----------------
+
+#[test]
+fn an_earliest_reset_waits_start_line_has_no_wait_token_and_its_own_bound() {
+    // The line has the shape of a reset wait: `reset=` is the earliest
+    // reset, and only `bound=` tells it from one.
+    assert_eq!(
+        stderr(&start(Shape::Reset, Some(T30), T32, Bound::EarliestReset)),
+        "amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude \
+         reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 \
+         bound=earliest_reset+margin"
+    );
+}
+
+#[test]
+fn an_earliest_reset_waits_recipe_log_line_names_the_account_in_place_of_the_harness() {
+    assert_eq!(
+        recipe(
+            &start(Shape::Reset, Some(T30), T32, Bound::EarliestReset),
+            Some("work")
+        )
+        .as_deref(),
+        Some(
+            "amplihack.recipe.usage_limit_wait start reason=usage_limit account=work \
+             reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 \
+             bound=earliest_reset+margin"
+        )
+    );
+}
+
+#[test]
+fn a_login_name_that_is_not_a_plain_name_is_written_as_unknown() {
+    // The grammar of the line is `key=value` separated by spaces: a name
+    // with a space, an `=` or a control character would forge a field.
+    for bad in [
+        "work bound=max_wait",
+        "a=b",
+        "two words",
+        "tab\there",
+        "new\nline",
+        "",
+        "../x",
+        "x/y",
+        "w\u{e9}rk",
+    ] {
+        let line = recipe(
+            &start(Shape::Reset, Some(T30), T32, Bound::ResetMargin),
+            Some(bad),
+        )
+        .unwrap();
+        assert!(
+            line.contains(" account=unknown "),
+            "name {bad:?} gave {line:?}"
+        );
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+    }
+}
+
+#[test]
+fn a_plain_profile_name_is_written_as_it_is() {
+    for good in ["X", "work", "personal-2", "lab_1", "a.b"] {
+        let line = recipe(
+            &start(Shape::Reset, Some(T30), T32, Bound::ResetMargin),
+            Some(good),
+        )
+        .unwrap();
+        assert!(
+            line.contains(&format!(" account={good} ")),
+            "{good}: {line}"
+        );
+    }
+}

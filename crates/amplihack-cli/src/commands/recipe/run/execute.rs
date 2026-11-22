@@ -1039,6 +1039,13 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // start rather than from the caller's work-root variables. Cloned once:
     // the correlation sites below must not hold a `RefCell` borrow.
     let run_location: Option<PathBuf> = workspace.borrow().run_dir().map(Path::to_path_buf);
+    // Issue #2967: where the supervisor of a step that waits for a usage
+    // limit says so, which the stderr pump reads to rewrite that step's
+    // heartbeat. A dry run runs no step and sets none.
+    let wait_dir = (!dry_run)
+        .then(|| super::heartbeat::WaitDir::for_run(run_location.as_deref()))
+        .flatten();
+    let wait_path: Option<PathBuf> = wait_dir.as_ref().map(|d| d.path().to_path_buf());
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
         // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
@@ -1218,6 +1225,9 @@ pub(super) fn execute_recipe_via_rust_fresh(
         command.env(SESSION_DEPTH_ENV, guard.child_depth.to_string());
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
+        if let Some(dir) = &wait_path {
+            command.env(super::heartbeat::WAIT_DIR_ENV, dir);
+        }
         // Issue #2486: this run's own TMPDIR must exist before the step starts.
         workspace.borrow_mut().prepare_attempt()?;
         // Must stay last among the TMPDIR/TMP/TEMP setters: it overrides the
@@ -1504,6 +1514,16 @@ pub(super) fn execute_recipe_via_rust_fresh(
                     Ok(())
                 }),
             ),
+            // Issue #2967: gone before the run report, which reads the run
+            // folder the directory lives in. Dropping it removes it only if
+            // this run created it.
+            (
+                "usage-limit wait state",
+                Box::new(move |_| {
+                    drop(wait_dir);
+                    Ok(())
+                }),
+            ),
             (
                 "run report",
                 Box::new(|result| finish_workspace(workspace.into_inner(), result, dry_run)),
@@ -1653,6 +1673,9 @@ fn spawn_with_streaming_stderr(
     stderr_sink: &mut String,
 ) -> Result<RecipeRunResult> {
     arm_runner(&mut command);
+    // Issue #2967: the directory the steps' supervisors keep their
+    // wait-state records in, read back from the command it was set on.
+    let wait_dir = super::heartbeat::wait_dir_of(&command);
     let spawned = command.spawn().context("failed to spawn recipe-runner-rs");
     let mut child = spawned.map_err(|error| {
         correlation.emit_early();
@@ -1707,8 +1730,19 @@ fn spawn_with_streaming_stderr(
                 Ok(_) => {
                     let line = String::from_utf8_lossy(&buf);
                     let trimmed = line.trim_end_matches(['\r', '\n']);
-                    let _ = writeln!(stderr.lock(), "{trimmed}");
-                    push_bounded_stderr_line(&captured_clone, &dropped_clone, trimmed.to_string());
+                    // Issue #2967: the heartbeat of a step that is waiting
+                    // for a usage limit says so. What is kept for failure
+                    // diagnostics is the runner's own line, never the
+                    // rewrite, and never a wait line.
+                    let pumped = super::heartbeat::pump(
+                        trimmed,
+                        |pid| super::heartbeat::waiting(wait_dir.as_deref(), pid),
+                        &chrono::Local,
+                    );
+                    let _ = writeln!(stderr.lock(), "{}", pumped.print);
+                    if let Some(kept) = pumped.buffer {
+                        push_bounded_stderr_line(&captured_clone, &dropped_clone, kept);
+                    }
                 }
                 // I/O error reading from the pipe: log and stop pumping —
                 // we MUST NOT spin or leak the thread, but the child will

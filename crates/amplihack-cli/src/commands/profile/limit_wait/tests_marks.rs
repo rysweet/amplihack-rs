@@ -270,3 +270,87 @@ fn issue_2857_a_step_that_never_named_a_login_is_re_entered_on_the_same_terms() 
     assert!(m.refuses(&NONE, Some(DEFAULT_BUDGET)));
     assert!(!m.refuses_reentry(Some(DEFAULT_BUDGET)));
 }
+
+// --- Issue #2967: a profile step's mark is its own login ---------------------
+//
+// `Waiter::note_attempt_login(profile: Option<&ProfileName>)` stores the name
+// `attempt_profile(profile)` resolves: the profile the supervisor launched the
+// attempt under, else the inherited one, else the rotator's live login for a
+// `$HOME/.claude` step. `mark()` returns that name, so the one-wait-per-login
+// rule applies per named login, and the wait line's `account=` names it.
+// Before #2967 a profile step had no `attempt_login` (that key is read only
+// from the rotate ledger of a Home step), so its mark was the shared `None`
+// and its wait line said `account=unknown`.
+// `attempt_login` keeps its `(Source, String)` pair for the login-change check.
+
+mod profile_marks {
+    use super::super::fingerprint::Watch;
+    use super::super::settings::WaitSettings;
+    use super::super::{Waiter, claude_args::ClaudeArgs};
+    use crate::commands::profile::name::ProfileName;
+    use crate::commands::profile::store::ProfileStore;
+
+    fn n(s: &str) -> ProfileName {
+        ProfileName::parse(s).unwrap()
+    }
+
+    fn waiter(tmp: &tempfile::TempDir, inherited: Option<&str>) -> Waiter {
+        let store = ProfileStore::new(tmp.path().join("root"));
+        for name in ["lab", "work"] {
+            store.add(&n(name)).unwrap();
+        }
+        let inherited = inherited.map(n);
+        let watch = Watch::new(Some(&store), inherited.as_ref(), None, None);
+        Waiter::new(
+            Some(WaitSettings {
+                enabled: true,
+                max_wait_secs: None,
+                off_in_ci: false,
+            }),
+            watch,
+            ClaudeArgs {
+                print: true,
+                prompt: true,
+                stream_stdin: false,
+                session: false,
+            },
+            Box::new(|| false),
+            Box::new(|| false),
+        )
+    }
+
+    #[test]
+    fn an_inherited_profile_step_is_marked_with_its_own_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut w = waiter(&tmp, Some("lab"));
+        w.note_attempt_login(None);
+        assert_eq!(w.mark().as_deref(), Some("lab"));
+    }
+
+    #[test]
+    fn the_profile_the_supervisor_launched_under_wins_over_the_inherited_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut w = waiter(&tmp, Some("lab"));
+        w.note_attempt_login(Some(&n("work")));
+        assert_eq!(w.mark().as_deref(), Some("work"));
+        // The next attempt runs on the inherited login again.
+        w.note_attempt_login(None);
+        assert_eq!(w.mark().as_deref(), Some("lab"));
+    }
+
+    #[test]
+    fn a_step_with_no_profile_and_no_live_login_keeps_the_unnamed_mark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut w = waiter(&tmp, None);
+        w.note_attempt_login(None);
+        assert_eq!(w.mark(), None);
+    }
+
+    #[test]
+    fn a_wait_on_one_named_login_does_not_refuse_a_wait_on_another() {
+        let mut m = super::Marks::new();
+        m.record(Some("lab".into()));
+        assert!(m.refuses(&Some("lab".into()), None));
+        assert!(!m.refuses(&Some("work".into()), None));
+    }
+}

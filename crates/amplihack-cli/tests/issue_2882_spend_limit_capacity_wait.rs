@@ -17,7 +17,7 @@
 #![cfg(unix)]
 
 use crate::issue_1618_fixture::{Fixture, SPEND_TEXT, claude_stdout, describe, events};
-use crate::issue_1618_wait_profiles::with_profiles;
+use crate::issue_1618_wait_profiles::{switch_on, with_profiles};
 use crate::issue_1801_capacity_wait::{
     assert_no_account_detail, real_clock, rotator_running, run_with_rotator_cycle_during_wait,
     x_is_live,
@@ -87,10 +87,60 @@ fn the_wait_names_the_stated_reset_not_the_five_hour_default() {
 
 #[test]
 fn without_a_running_rotator_the_skip_stays_reset_too_far() {
+    // Issue #2967: with auto-switch off nothing may move the step, so the
+    // eligible set is its own login and the skip is unchanged. The setting is
+    // stated, not left to the fixture's default.
     let f = with_profiles();
     x_is_live(&f);
-    let out = f.run(&mut home_step(&f, SPEND_FAR));
+    let mut c = home_step(&f, SPEND_FAR);
+    c.env("AMPLIHACK_CLAUDE_AUTO_SWITCH", "0");
+    let out = f.run(&mut c);
     assert_skipped(&f, &out, "reset_too_far");
+}
+
+#[test]
+fn with_auto_switch_on_and_no_rotator_a_far_spend_reset_moves_to_another_login() {
+    // Issue #2967: the same step with auto-switch on and a login to move to
+    // is rerun there at once. No wait starts, so no `skipped` line either.
+    // `Y` has no reading, which the candidate rule takes as room.
+    let f = with_profiles();
+    switch_on(&f);
+    x_is_live(&f);
+    let mut c = home_step(&f, SPEND_FAR);
+    c.env("AMPLIHACK_CLAUDE_AUTO_SWITCH", "1");
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "one move: {}", describe(&out));
+    assert_eq!(
+        events(&out),
+        Vec::<String>::new(),
+        "no wait: {}",
+        describe(&out)
+    );
+    assert_eq!(f.call("0", 2)["PROFILE"], "Y");
+    assert_eq!(claude_stdout(&out), "attempt 2 output\n");
+}
+
+#[test]
+fn with_auto_switch_on_a_rotator_running_keeps_the_far_spend_reset_capacity_wait() {
+    // Issue #2967: a running rotator moves the login itself, so the step does
+    // not switch itself and keeps the wait the rotator's swap ends (#2882).
+    let f = with_profiles();
+    switch_on(&f);
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f, SPEND_FAR);
+    c.env("AMPLIHACK_CLAUDE_AUTO_SWITCH", "1")
+        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0");
+    let out = f.run(&mut c);
+    let ev = events(&out);
+    assert!(
+        ev.first()
+            .is_some_and(|l| l.starts_with("start reason=usage_limit wait=capacity")),
+        "{ev:?}: {}",
+        describe(&out)
+    );
+    assert_eq!(f.count("0"), 1, "the step did not move itself");
 }
 
 #[test]

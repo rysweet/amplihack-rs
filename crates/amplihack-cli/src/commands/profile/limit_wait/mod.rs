@@ -17,6 +17,7 @@
 
 pub(crate) mod claude_args;
 mod clock;
+pub(crate) mod earliest;
 mod events;
 pub(crate) mod fingerprint;
 mod ledger;
@@ -26,11 +27,14 @@ mod recipe_log;
 pub(crate) mod scratch;
 pub(crate) mod settings;
 pub(crate) mod wait;
+pub(crate) mod wait_state;
 
 #[cfg(test)]
 mod tests_changed;
 #[cfg(test)]
 mod tests_claude_args;
+#[cfg(test)]
+mod tests_earliest;
 #[cfg(test)]
 mod tests_fingerprint;
 #[cfg(test)]
@@ -69,6 +73,8 @@ mod tests_wait;
 mod tests_wait_ends;
 #[cfg(test)]
 mod tests_wait_room;
+#[cfg(all(test, unix))]
+mod tests_wait_state;
 
 use super::attempt::Signals;
 use super::name::ProfileName;
@@ -80,7 +86,9 @@ pub(crate) use events::Met;
 use events::{Event, FailReason, Shape, Skip, log, recipe_line};
 use fingerprint::{Fingerprint, Source, Watch};
 use marks::Marks;
-use plan::{Bound, NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
+use plan::{
+    Bound, NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_earliest, plan_login_change,
+};
 pub(crate) use recipe_log::RECIPE_LOG_ENV;
 pub(crate) use settings::WaitSettings;
 use std::path::PathBuf;
@@ -230,6 +238,13 @@ pub(crate) struct Waiter {
     /// limit is compared with this one only when both came from the same
     /// file (`changed`).
     attempt_login: Option<(Source, String)>,
+    /// The name of the login the attempt now running was launched on (issue
+    /// #2967): the profile the supervisor launched it under, else the
+    /// inherited profile, else the rotator's live login for a
+    /// `$HOME/.claude` step. It is the wait's mark and the `account=` of
+    /// its recipe-log lines. `None` only where no name can be read: a host
+    /// with no profile store, or a `$CLAUDE_CONFIG_DIR` step.
+    attempt_name: Option<String>,
     clock: Clock,
     step_start: i64,
     step_timeout: Option<u64>,
@@ -253,6 +268,10 @@ pub(crate) struct Waiter {
     /// login. Written once, when the wait returns; `None` leaves the retry
     /// on the inherited profile.
     retry_move: Option<RetryMove>,
+    /// Whether the wait that last ran was an earliest-reset wait that ended
+    /// at its own deadline (issue #2967). Written and cleared with
+    /// `retry_move`, so it only ever describes the wait that just ran.
+    reached_earliest_reset: bool,
     /// Whether the retry [`Waiter::after_limit`] last asked for was earned
     /// by a wait that ended on a positive signal (issue #2857). Read and
     /// consumed by the supervisor for the attempt that retry launches.
@@ -280,6 +299,7 @@ impl Waiter {
             settings,
             marks: Marks::new(),
             attempt_login: None,
+            attempt_name: None,
             clock,
             step_start,
             step_timeout,
@@ -291,6 +311,7 @@ impl Waiter {
             home_takeover,
             home_rotator,
             retry_move: None,
+            reached_earliest_reset: false,
             said_try_now: false,
         }
     }
@@ -312,19 +333,27 @@ impl Waiter {
         self.settings.is_some_and(|s| s.enabled)
     }
 
-    /// Whether this step has waited at all, which is what auto-switch reads
-    /// to stop choosing another candidate. #2731 did not change it.
-    pub(crate) fn used(&self) -> bool {
-        self.marks.used()
-    }
-
     /// Reads the login the next attempt will run on, immediately before it
     /// is launched (issue #2731). On a shared-login host the rotator reacts
     /// to the same exhausted reading that fails the attempt, so the swap
     /// usually lands while the attempt is still failing; taking the key
     /// before the attempt is what lets `after_limit` see that.
-    pub(crate) fn note_attempt_login(&mut self) {
+    ///
+    /// `profile` is the profile the supervisor is about to launch the
+    /// attempt under, `None` for the inherited environment. The login's name
+    /// is resolved here as well (issue #2967), by the resolution
+    /// [`Waiter::attempt_profile`] already makes, so a step under a stored
+    /// profile is marked with that profile and its wait says `account=<name>`.
+    /// Before #2967 only a `$HOME/.claude` step had a name: every profile
+    /// step shared the one unnamed mark and logged `account=unknown`.
+    pub(crate) fn note_attempt_login(&mut self, profile: Option<&ProfileName>) {
         self.attempt_login = self.watch.login();
+        self.attempt_name = self
+            .attempt_profile(profile)
+            .map(|p| p.to_string())
+            // A live login whose name the profile rules refuse still marks
+            // a `$HOME/.claude` step, as it did before #2967.
+            .or_else(|| self.attempt_login.as_ref().map(|(_, n)| n.clone()));
     }
 
     /// Whether this step runs on `$HOME/.claude`, the one directory the
@@ -405,8 +434,12 @@ impl Waiter {
 
     /// The mark for the login the attempt now running was launched on: what
     /// [`Marks`] records for a wait, and the account the wait's lines name.
+    ///
+    /// The name [`Waiter::note_attempt_login`] resolved (issue #2967), so a
+    /// profile step and a `$HOME/.claude` step are both marked with their
+    /// own login.
     fn mark(&self) -> Option<String> {
-        self.attempt_login.as_ref().map(|(_, n)| n.clone())
+        self.attempt_name.clone()
     }
 
     /// Whether the ordinary rule refuses a wait after the attempt now
@@ -433,6 +466,18 @@ impl Waiter {
     /// wait is planned, so it only ever describes the wait that just ran.
     pub(crate) fn retry_move(&self) -> Option<RetryMove> {
         self.retry_move
+    }
+
+    /// Whether the wait that last ran was an earliest-reset wait that ended
+    /// at its deadline, `end reason=reset reached` (issue #2967). The retry
+    /// then runs on the login whose reset set the bound, with no fresh
+    /// reading required, because that reset is what the wait was for.
+    ///
+    /// Cleared wherever `retry_move` is cleared: as each wait is planned,
+    /// the retry-before-wait return included, so a value an earlier wait
+    /// left can never choose the login of a later retry.
+    pub(crate) fn reached_earliest_reset(&self) -> bool {
+        self.reached_earliest_reset
     }
 
     /// The wait's clock, for reading a reset relative to it.
@@ -558,6 +603,13 @@ impl Waiter {
                 plan_login_change(now, budget, step),
                 Shape::LoginChange,
             ),
+            // Issue #2967: the line has the shape of a reset wait, and its
+            // `bound=` is what tells the two apart.
+            WaitFor::EarliestReset { harness, reset } => (
+                harness,
+                plan_earliest(now, reset, budget, step),
+                Shape::Reset,
+            ),
             WaitFor::Skip(why) => {
                 log(&Event::Skipped(Skip::Cannot(why)));
                 return AfterLimit::Finish(None);
@@ -596,8 +648,11 @@ impl Waiter {
         // value an earlier wait left behind can never pick the login a
         // later retry runs on: its freshness floor is older and would admit
         // readings taken before this limit was hit (issue #2731). It is
-        // written again only by a wait that actually ran.
+        // written again only by a wait that actually ran. The same holds
+        // for the earliest-reset flag (issue #2967), which names the login a
+        // retry runs on in the same way.
         self.retry_move = None;
+        self.reached_earliest_reset = false;
         // Issue #2857: one line per re-entry, after everything that could
         // still refuse this wait and before the wait's own `start`, so a
         // refused re-entry and a re-entry whose limit the planner skipped
@@ -662,7 +717,12 @@ impl Waiter {
             plan: &p,
         };
         let waited_from = std::time::Instant::now();
+        // Issue #2967: while this step waits, the run's heartbeat for it
+        // says so. The record is removed when the guard drops, on every way
+        // out of the wait.
+        let waiting = wait_state::begin_wait(p.until, now);
         let mut end = wait::wait(&p, &mut deps);
+        drop(waiting);
         // Issue #2857: a re-entry planned from a reset the clock had passed
         // ends on its budget, which is the only deadline it has. It retries
         // once there, as a reset wait does at its own deadline, instead of
@@ -682,6 +742,9 @@ impl Waiter {
             start: now,
             room_was_seen,
         });
+        // Issue #2967: the earliest reset arrived, so the login whose reset
+        // set the bound is the one to retry on.
+        self.reached_earliest_reset = end == End::ResetReached && p.bound == Bound::EarliestReset;
         // The budget is spent on the wait's own clock, the one that planned
         // the deadline.
         self.marks
@@ -871,8 +934,17 @@ pub(crate) fn supervise_unprofiled(
     let home_takeover = super::auto_switch::takeover::home_check(home_store.clone());
     // Issue #2731: a login-change wait needs only a running rotator.
     let home_rotator = super::auto_switch::takeover::home_rotator(home_store);
+    // Issue #2967: with auto-switch on and no rotator managing `~/.claude`,
+    // a step there moves to a stored profile that can run it, as a profile
+    // step does. A step that resumes a session stays: its transcript lives
+    // under `~/.claude`, and a profile directory does not hold it. The other
+    // conditions, each of which keeps the wait for the step's own reset, are
+    // `Switch::for_home`'s.
+    let switch = store
+        .filter(|_| watch.is_home() && !args.session)
+        .and_then(|s| super::auto_switch::rerun::Switch::for_home(s, &watch));
     super::auto_switch::rerun::run(
-        None,
+        switch,
         Waiter::new(Some(settings), watch, args, home_takeover, home_rotator),
     )
 }

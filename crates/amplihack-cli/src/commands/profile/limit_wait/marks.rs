@@ -24,7 +24,9 @@
 pub(crate) struct Marks {
     /// The login key of each wait this step has made, in order. `None` is
     /// the single mark for "no login name could be read", so a step with no
-    /// profile store waits exactly once, as it always did.
+    /// profile store waits exactly once, as it always did. A step under a
+    /// stored profile is marked with that profile's name (issue #2967), so
+    /// one wait per login holds per named login for profile steps as well.
     waited: Vec<Option<String>>,
     /// Seconds this step has spent waiting, on the wait's clock.
     spent: u64,
@@ -38,9 +40,14 @@ impl Marks {
         }
     }
 
-    /// Whether this step has waited at all. `auto_switch::rerun` reads it
-    /// through `Waiter::used` to stop choosing another candidate once the
-    /// step has waited, which #2731 leaves unchanged.
+    /// Whether this step has waited at all, which is what makes the
+    /// `max_wait_secs` budget binding in [`Marks::refuses`]: a step's first
+    /// wait is never refused for the budget.
+    ///
+    /// Before issue #2967 `auto_switch::rerun` also read this, to stop
+    /// choosing another login once the step had waited. That gate is gone: a
+    /// move to a login that can run the step is not a wait, and a step that
+    /// has waited may still make one.
     pub(crate) fn used(&self) -> bool {
         !self.waited.is_empty()
     }

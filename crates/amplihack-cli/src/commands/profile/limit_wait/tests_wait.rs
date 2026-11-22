@@ -202,6 +202,7 @@ fn a_zero_length_wait_ends_at_once_without_sleeping() {
 fn each_bound_maps_to_its_end_reason() {
     for (bound, want) in [
         (Bound::ResetMargin, End::ResetReached),
+        (Bound::EarliestReset, End::ResetReached),
         (Bound::MaxWait, End::MaxReached),
         (Bound::StepTimeout, End::StepTimeout),
     ] {
@@ -332,4 +333,52 @@ fn an_absent_fingerprint_that_stays_absent_is_no_change() {
         wait(&plan_in(200, Bound::ResetMargin), &mut f),
         End::ResetReached
     );
+}
+
+// --- Issue #2967: the earliest-reset wait --------------------------------------
+//
+// `Bound::EarliestReset` (`earliest_reset+margin`) ends at its deadline as
+// `End::ResetReached`, whatever the plan's kind: the login whose reset set
+// the bound has recovered, so the step is retried on it. The wait is not a
+// login-change wait, so `capacity_may_end` holds and a login that regains
+// room before the deadline still ends it early.
+
+#[test]
+fn an_earliest_reset_wait_ends_reset_reached_at_its_deadline() {
+    for kind in [PlanKind::Reset, PlanKind::Capacity] {
+        let mut f = Fake::new();
+        let plan = Plan::for_test(T0 + 75, Bound::EarliestReset, kind, Some(T0 + 60));
+        assert_eq!(wait(&plan, &mut f), End::ResetReached, "{kind:?}");
+        assert!(f.elapsed() >= 75, "ended early at {}", f.elapsed());
+        assert!(f.elapsed() <= 76, "overslept to {}", f.elapsed());
+        let mut f = Fake::new();
+        let plan = Plan::for_test(T0, Bound::EarliestReset, kind, Some(T0 - 5));
+        assert_eq!(wait(&plan, &mut f), End::ResetReached, "{kind:?} zero");
+    }
+}
+
+#[test]
+fn an_earliest_reset_wait_polls_other_capacity_and_ends_when_a_login_has_room() {
+    let mut f = Fake::new();
+    f.other_from = Some(40);
+    let plan = Plan::for_test(
+        T0 + 600,
+        Bound::EarliestReset,
+        PlanKind::Reset,
+        Some(T0 + 540),
+    );
+    assert!(plan.capacity_may_end());
+    assert_eq!(wait(&plan, &mut f), End::OtherCapacity);
+    assert!(f.elapsed() < 600, "ended at {}", f.elapsed());
+    assert!(!f.other_probes.is_empty(), "other logins were read");
+}
+
+#[test]
+fn an_earlier_max_wait_or_step_timeout_still_names_its_own_end() {
+    let mut f = Fake::new();
+    let plan = Plan::for_test(T0 + 30, Bound::MaxWait, PlanKind::Reset, Some(T0 + 900));
+    assert_eq!(wait(&plan, &mut f), End::MaxReached);
+    let mut f = Fake::new();
+    let plan = Plan::for_test(T0 + 30, Bound::StepTimeout, PlanKind::Reset, Some(T0 + 900));
+    assert_eq!(wait(&plan, &mut f), End::StepTimeout);
 }

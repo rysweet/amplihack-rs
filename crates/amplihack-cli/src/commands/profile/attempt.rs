@@ -11,8 +11,10 @@ use super::auto_switch::SUPERVISED_ENV;
 use super::fsx;
 use super::limit_wait::plan::{self, WaitFor};
 use super::limit_wait::scratch::RerunStdin;
+use super::limit_wait::wait_state;
 use super::name::ProfileName;
 use crate::commands::recipe::run::limit_patterns::{self, Harness};
+use crate::commands::recipe::run::local_zone;
 use crate::commands::recipe::run::{FailureClass, classify_failure_text};
 use anyhow::{Context, Result};
 use std::fs;
@@ -197,6 +199,16 @@ pub(crate) fn run_attempt_with_recovery(
     let spawned = stdin.for_attempt(n).and_then(|input| {
         cmd.args(args)
             .env(SUPERVISED_ENV, "1")
+            // Issue #2967: every supervisor beneath this one names it, so
+            // the heartbeat of this step can state the earliest wait under
+            // it. Supervisor process ids, not step ids.
+            .env(
+                wait_state::STEPS_ENV,
+                wait_state::chain_with(
+                    std::env::var(wait_state::STEPS_ENV).ok().as_deref(),
+                    std::process::id(),
+                ),
+            )
             .stdin(input)
             .stdout(stdout.try_clone()?)
             .stderr(Stdio::piped());
@@ -348,8 +360,11 @@ impl Output {
         }
         let (err, out) = (&self.stderr, &self.stdout);
         let text = joined(err, out);
-        let ledger_reset = classified_reset(&text, err, out, fsx::now())?;
-        let message = limit_patterns::limit_message(err, out, now);
+        // Issue #2967: a reset that states no zone is read in this host's,
+        // which the `claude` child that printed it shares.
+        let local = local_zone::get();
+        let ledger_reset = classified_reset(&text, err, out, fsx::now(), local)?;
+        let message = limit_patterns::limit_message_in(err, out, now, local);
         Some(Limited {
             ledger_reset,
             wait: plan::wait_for_message(message, now),
@@ -430,7 +445,7 @@ pub fn limit_reset(
     if signalled || code == 0 {
         return None;
     }
-    classified_reset(&joined(stderr, stdout), stderr, stdout, now)
+    classified_reset(&joined(stderr, stdout), stderr, stdout, now, None)
 }
 
 /// The text checked for an API-key error: the stderr tail, or the stdout
@@ -469,9 +484,17 @@ fn joined(stderr: &[u8], stdout: &[u8]) -> String {
 }
 
 /// The reset to record when `text`, built by `joined`, is a usage limit.
-fn classified_reset(text: &str, stderr: &[u8], stdout: &[u8], now: i64) -> Option<i64> {
+///
+/// `local` is the zone a reset that names none is read in (issue #2967).
+fn classified_reset(
+    text: &str,
+    stderr: &[u8],
+    stdout: &[u8],
+    now: i64,
+    local: Option<chrono_tz::Tz>,
+) -> Option<i64> {
     (classify_failure_text(text).0 == FailureClass::UsageLimit)
-        .then(|| super::auto_switch::reset_or_default(stderr, stdout, now))
+        .then(|| super::auto_switch::reset_or_default(stderr, stdout, now, local))
 }
 
 /// The last 64 KiB of the buffered stdout, read through the attempt's own

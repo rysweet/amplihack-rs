@@ -606,3 +606,143 @@ fn a_home_step_with_a_running_rotator_and_auto_switch_on_is_true() {
     );
     assert!(home_check(Some(store))());
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2967: the wait's probe and the retry's selection apply both rules
+// ---------------------------------------------------------------------------
+//
+// `capacity_candidate` calls `limit_choice::limit_candidate`, so a login the
+// 90% rule refuses but `profile usage` counts as usable (session below 95,
+// week below 100) ends a wait and takes the retry. The freshness skip is
+// unchanged: a reading not observed after the wait began is stale and
+// contributes nothing, under either rule. The inherited login is never the
+// pick.
+
+mod limit_rules {
+    use super::*;
+    use crate::commands::profile::auto_switch::rerun::KeyAlert;
+    use crate::commands::profile::auto_switch::state::{State, UsageFile};
+    use crate::commands::profile::auto_switch::takeover::capacity_candidate;
+    use crate::commands::profile::auto_switch::usage::{Reading, ReadingSource, Window};
+    use std::collections::BTreeMap;
+
+    fn reading(five: f64, seven: f64, observed_at: i64) -> Reading {
+        Reading {
+            five_hour: Some(Window {
+                used_percentage: five,
+                resets_at: observed_at + 3600,
+            }),
+            seven_day: Some(Window {
+                used_percentage: seven,
+                resets_at: observed_at + 86_400,
+            }),
+            observed_at,
+            source: ReadingSource::Statusline,
+        }
+    }
+
+    /// `names` stored with a login each, auto-switch on, and `readings`
+    /// saved. Returns what `capacity_candidate` picks for inherited `a`
+    /// with the wait begun 60 seconds ago.
+    fn pick(names: &[&str], readings: &[(&str, Reading)]) -> Option<(String, bool)> {
+        let _proc = crate::test_support::proc::fake_proc_scope();
+        let _lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let _env = crate::test_support::EnvGuard::set([("HOME", home.to_str().unwrap())]);
+        let _toggle = crate::test_support::EnvGuard::unset([
+            config::TOGGLE_ENV,
+            "AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT",
+        ]);
+        let store = store(&tmp, names);
+        private(
+            &store.root().join(".auto-switch"),
+            "enabled=on\nthreshold=90\n",
+            0o600,
+        );
+        let state = State::new(store.root()).unwrap();
+        let accounts: BTreeMap<String, Reading> = readings
+            .iter()
+            .map(|(n, r)| (n.to_string(), r.clone()))
+            .collect();
+        state
+            .save_usage(&UsageFile {
+                version: 1,
+                accounts,
+            })
+            .unwrap();
+        let now = fsx::now();
+        capacity_candidate(&store, &state, &name("a"), now - 60, now, KeyAlert::Silent)
+            .map(|p| (p.profile.to_string(), p.usable_only))
+    }
+
+    #[test]
+    fn a_usable_login_over_the_threshold_ends_the_probe_with_a_pick() {
+        let now = fsx::now();
+        let got = pick(
+            &["a", "b"],
+            &[
+                ("a", reading(100.0, 10.0, now)),
+                ("b", reading(92.0, 10.0, now)),
+            ],
+        );
+        assert_eq!(got, Some(("b".into(), true)));
+    }
+
+    #[test]
+    fn a_login_under_the_threshold_is_still_the_first_rules_pick() {
+        let now = fsx::now();
+        let got = pick(
+            &["a", "b"],
+            &[
+                ("a", reading(100.0, 10.0, now)),
+                ("b", reading(50.0, 10.0, now)),
+            ],
+        );
+        assert_eq!(got, Some(("b".into(), false)));
+    }
+
+    #[test]
+    fn an_unusable_login_is_not_a_pick() {
+        let now = fsx::now();
+        let got = pick(
+            &["a", "b"],
+            &[
+                ("a", reading(100.0, 10.0, now)),
+                ("b", reading(95.0, 10.0, now)),
+            ],
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn the_freshness_skip_still_applies_to_the_second_rule() {
+        let now = fsx::now();
+        // Observed before the wait began: it has shown nothing during it.
+        let got = pick(
+            &["a", "b"],
+            &[
+                ("a", reading(100.0, 10.0, now)),
+                ("b", reading(92.0, 10.0, now - 600)),
+            ],
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn the_inherited_login_is_never_the_pick_whatever_it_reads() {
+        let now = fsx::now();
+        assert_eq!(pick(&["a"], &[("a", reading(1.0, 1.0, now))]), None);
+        let got = pick(
+            &["a", "b"],
+            &[
+                ("a", reading(1.0, 1.0, now)),
+                ("b", reading(100.0, 100.0, now)),
+            ],
+        );
+        assert_eq!(got, None);
+    }
+}

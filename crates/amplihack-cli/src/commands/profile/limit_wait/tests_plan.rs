@@ -798,3 +798,209 @@ fn only_a_capacity_wait_for_a_passed_reset_retries_at_its_budget() {
         "a reset wait for a passed reset ends at once, and is not a capacity wait"
     );
 }
+
+// --- issue #2967: the earliest-reset wait ------------------------------------
+//
+// Contract:
+//
+// - `WaitFor::EarliestReset { harness, reset }`: wait for the earliest reset
+//   across the step's eligible logins; `reset` is that instant.
+// - `earliest(w, other, now) -> WaitFor`: `other` is the earliest reset of
+//   the other eligible logins (`None` when none has one). It replaces `w`
+//   only in the rows of "When it starts" in `profile-command.md`, and only
+//   for an `other` strictly after `now` and within five hours of it:
+//     1. `Reset { reset }` with `other < reset`;
+//     2. `Skip(ResetTooFar | NoReset)`, a weekly or unreadable reset;
+//     3. `Capacity` whose own reset is none, far, or already passed.
+//   Everything else, `LoginChange` and every other `Skip` included, is
+//   returned as it was.
+// - `plan_earliest(now, reset, max, step) -> Plan`: `reset` plus the margin,
+//   named `Bound::EarliestReset` (`earliest_reset+margin`), unless `max` or
+//   the step timeout is sooner (a tie is named by the earlier row). Never
+//   later than now + 5 h + 120 s. It does not set `login_change`.
+
+use super::plan::{earliest as earliest_row, plan_earliest};
+
+fn own_reset_wait(reset: i64) -> WaitFor {
+    WaitFor::Reset {
+        harness: Harness::Claude,
+        reset,
+    }
+}
+
+fn earliest_wait(reset: i64) -> WaitFor {
+    WaitFor::EarliestReset {
+        harness: Harness::Claude,
+        reset,
+    }
+}
+
+#[test]
+fn the_bound_is_named_earliest_reset_plus_margin() {
+    assert_eq!(Bound::EarliestReset.as_str(), "earliest_reset+margin");
+}
+
+#[test]
+fn row_1_an_other_reset_strictly_before_the_own_one_makes_an_earliest_reset_wait() {
+    let own = own_reset_wait(NOW + 1800);
+    assert_eq!(
+        earliest_row(own, Some(NOW + 900), NOW),
+        earliest_wait(NOW + 900)
+    );
+}
+
+#[test]
+fn row_1_an_other_reset_at_or_after_the_own_one_changes_nothing() {
+    let own = own_reset_wait(NOW + 1800);
+    assert_eq!(earliest_row(own, Some(NOW + 1800), NOW), own);
+    assert_eq!(earliest_row(own, Some(NOW + 1801), NOW), own);
+    assert_eq!(earliest_row(own, None, NOW), own);
+}
+
+#[test]
+fn an_other_reset_at_or_before_now_is_ignored() {
+    // A reset that has passed is a login that is usable, which the check
+    // before the wait has already considered.
+    for own in [own_reset_wait(NOW + 1800), WaitFor::Skip(NoWait::NoReset)] {
+        assert_eq!(earliest_row(own, Some(NOW), NOW), own);
+        assert_eq!(earliest_row(own, Some(NOW - 1), NOW), own);
+        assert_eq!(earliest_row(own, Some(i64::MIN), NOW), own);
+    }
+}
+
+#[test]
+fn row_2_a_weekly_or_unreadable_own_reset_takes_an_other_reset_within_five_hours() {
+    for skip in [NoWait::ResetTooFar, NoWait::NoReset] {
+        let own = WaitFor::Skip(skip);
+        assert_eq!(
+            earliest_row(own, Some(NOW + 600), NOW),
+            earliest_wait(NOW + 600),
+            "{skip:?}"
+        );
+        assert_eq!(
+            earliest_row(own, Some(NOW + FIVE_HOURS), NOW),
+            earliest_wait(NOW + FIVE_HOURS),
+            "{skip:?}: exactly five hours is within the bound"
+        );
+    }
+}
+
+#[test]
+fn the_five_hour_bound_applies_to_the_earliest_instant() {
+    for own in [
+        WaitFor::Skip(NoWait::ResetTooFar),
+        WaitFor::Skip(NoWait::NoReset),
+    ] {
+        assert_eq!(earliest_row(own, Some(NOW + FIVE_HOURS + 1), NOW), own);
+        assert_eq!(earliest_row(own, Some(i64::MAX), NOW), own);
+    }
+}
+
+#[test]
+fn row_3_a_capacity_wait_with_a_far_none_or_passed_own_reset_takes_an_other_reset() {
+    for reset in [None, Some(NOW + 3 * 86_400), Some(NOW - 60)] {
+        let own = WaitFor::Capacity {
+            harness: Harness::Claude,
+            reset,
+        };
+        assert_eq!(
+            earliest_row(own, Some(NOW + 1200), NOW),
+            earliest_wait(NOW + 1200),
+            "own reset {reset:?}"
+        );
+    }
+}
+
+#[test]
+fn a_capacity_wait_for_a_reset_ahead_and_sooner_than_the_other_is_unchanged() {
+    let own = WaitFor::Capacity {
+        harness: Harness::Claude,
+        reset: Some(NOW + 600),
+    };
+    assert_eq!(earliest_row(own, Some(NOW + 1200), NOW), own);
+}
+
+#[test]
+fn every_other_wait_is_returned_as_it_was() {
+    for own in [
+        WaitFor::LoginChange {
+            harness: Harness::Claude,
+        },
+        WaitFor::Skip(NoWait::SpendLimit),
+        WaitFor::Skip(NoWait::NoLimitMessage),
+        WaitFor::Skip(NoWait::PipedPrompt),
+    ] {
+        assert_eq!(earliest_row(own, Some(NOW + 600), NOW), own, "{own:?}");
+    }
+}
+
+#[test]
+fn the_earliest_plan_ends_at_the_reset_plus_the_margin() {
+    let p = plan_earliest(NOW, NOW + 900, None, None);
+    assert_eq!(p.until, NOW + 900 + MARGIN);
+    assert_eq!(p.bound, Bound::EarliestReset);
+    assert_eq!(p.reset, Some(NOW + 900));
+}
+
+#[test]
+fn the_earliest_plan_is_never_a_login_change_wait() {
+    let p = plan_earliest(NOW, NOW + 900, None, None);
+    assert!(!p.is_login_change());
+    assert!(p.capacity_may_end(), "a login with room still ends it");
+}
+
+#[test]
+fn max_wait_and_the_step_timeout_still_win_when_earlier() {
+    let by_max = plan_earliest(NOW, NOW + 900, Some(60), None);
+    assert_eq!((by_max.until, by_max.bound), (NOW + 60, Bound::MaxWait));
+    // Timeout 600 s from the step start, less the 60 s lead.
+    let by_step = plan_earliest(NOW, NOW + 900, None, Some((NOW, 600)));
+    assert_eq!(
+        (by_step.until, by_step.bound),
+        (NOW + 600 - 60, Bound::StepTimeout)
+    );
+}
+
+#[test]
+fn an_earliest_resets_tie_with_the_maximum_is_named_by_the_reset_row() {
+    // The reset row is first: a maximum that ends exactly with it is not named.
+    let p = plan_earliest(NOW, NOW + 900, Some(900 + MARGIN as u64), None);
+    assert_eq!(
+        (p.until, p.bound),
+        (NOW + 900 + MARGIN, Bound::EarliestReset)
+    );
+}
+
+#[test]
+fn no_input_makes_the_earliest_wait_longer_than_five_hours_and_the_margin() {
+    for reset in [
+        NOW + FIVE_HOURS,
+        NOW + FIVE_HOURS + 1,
+        NOW + 365 * 86_400,
+        i64::MAX,
+    ] {
+        let p = plan_earliest(NOW, reset, None, None);
+        assert!(p.until <= NOW + FIVE_HOURS + MARGIN, "reset {reset}");
+        assert!(p.until >= NOW, "reset {reset}");
+    }
+}
+
+#[test]
+fn the_earliest_plan_is_checked_arithmetic_at_the_extremes() {
+    for now in [i64::MAX, i64::MIN, i64::MAX - 100, 0] {
+        for reset in [i64::MAX, i64::MIN, now, now.saturating_add(1)] {
+            let _ = plan_earliest(now, reset, Some(u64::MAX), Some((i64::MIN, u64::MAX)));
+        }
+        let _ = earliest_row(own_reset_wait(i64::MAX), Some(i64::MAX), now);
+        let _ = earliest_row(WaitFor::Skip(NoWait::NoReset), Some(i64::MIN), now);
+    }
+}
+
+#[test]
+fn an_earliest_reset_wait_is_disjoint_from_the_other_promotions() {
+    // It never turns a spend limit into a login-change wait, and a passed
+    // reset on a re-entry is still `upgrade_passed_reset`'s: this row only
+    // reads what those leave.
+    let spend = WaitFor::Skip(NoWait::SpendLimit);
+    assert_eq!(earliest_row(spend, Some(NOW + 600), NOW), spend);
+}

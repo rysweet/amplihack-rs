@@ -138,6 +138,9 @@ impl End {
             // On a capacity wait the reset is the failed login's own: it has
             // recovered, so the step is retried.
             (Bound::ResetMargin, _) => End::ResetReached,
+            // Issue #2967: the login whose reset set the bound has
+            // recovered, so the step is retried on it.
+            (Bound::EarliestReset, _) => End::ResetReached,
             (Bound::MaxWait, PlanKind::Reset) => End::MaxReached,
             (Bound::MaxWait, PlanKind::Capacity) => End::CapacityExpired,
         }

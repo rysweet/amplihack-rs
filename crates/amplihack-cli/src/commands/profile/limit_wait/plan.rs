@@ -70,6 +70,13 @@ pub(crate) enum WaitFor {
     LoginChange {
         harness: Harness,
     },
+    /// The earliest reset across the logins the step could run on (issue
+    /// #2967): every one of them is limited, and `reset` is when the first
+    /// of the others can run the step again. Built by [`earliest`] alone.
+    EarliestReset {
+        harness: Harness,
+        reset: i64,
+    },
     Skip(NoWait),
 }
 
@@ -203,10 +210,66 @@ pub(crate) fn upgrade_spend(
     }
 }
 
+/// `w`, made an earliest-reset wait when another login the step could run
+/// on resets sooner than `w` would end (issue #2967).
+///
+/// `other` is the earliest reset among the other eligible logins, on the
+/// wait's clock, and `None` when none of them has one. The caller has
+/// already found that none of them can run the step now, so a wait is due;
+/// this decides only what it is timed by. `other` counts when it is strictly
+/// after `now` and at most five hours ahead, the bound every reset wait has,
+/// and then replaces `w` in three rows:
+///
+/// 1. a reset wait whose own reset is later than `other`;
+/// 2. a reset too far away or unreadable, which would otherwise be skipped;
+/// 3. a capacity wait whose own reset is absent, more than five hours away
+///    or already passed, which would otherwise run to its maximum. A
+///    capacity wait for a reset that is ahead and near is compared as row 1
+///    is.
+///
+/// Everything else is returned as it was. A login-change wait and a spend
+/// limit that states no reset are for an organisation's credit, which no
+/// other login's reset restores (issue #2731), and the remaining skips say
+/// the step cannot be rerun at all.
+///
+/// A reset at or before `now` is ignored: such a login is usable, which the
+/// check before the wait has already considered. The comparison never
+/// subtracts, so no input overflows.
+pub(crate) fn earliest(w: WaitFor, other: Option<i64>, now: i64) -> WaitFor {
+    let ceiling = now.saturating_add(FIVE_HOURS);
+    let Some(other) = other.filter(|o| *o > now && *o <= ceiling) else {
+        return w;
+    };
+    // An own reset that is ahead and within the five-hour bound still wins
+    // when it is no later than the other login's.
+    let own_is_sooner = |own: i64| own > now && own <= ceiling && own <= other;
+    match w {
+        WaitFor::Reset { harness, reset } if other < reset => WaitFor::EarliestReset {
+            harness,
+            reset: other,
+        },
+        WaitFor::Capacity { harness, reset } if !reset.is_some_and(own_is_sooner) => {
+            WaitFor::EarliestReset {
+                harness,
+                reset: other,
+            }
+        }
+        WaitFor::Skip(NoWait::ResetTooFar | NoWait::NoReset) => WaitFor::EarliestReset {
+            harness: Harness::Claude,
+            reset: other,
+        },
+        _ => w,
+    }
+}
+
 /// Which row set the deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bound {
     ResetMargin,
+    /// The earliest reset across the step's eligible logins, plus the
+    /// margin (issue #2967): the deadline came from another login's reset,
+    /// not from the reset of the login that failed.
+    EarliestReset,
     MaxWait,
     StepTimeout,
 }
@@ -215,6 +278,7 @@ impl Bound {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Bound::ResetMargin => "reset+margin",
+            Bound::EarliestReset => "earliest_reset+margin",
             Bound::MaxWait => "max_wait",
             Bound::StepTimeout => "step_timeout",
         }
@@ -347,6 +411,28 @@ pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u6
         reset: Some(reset),
         login_change: false,
     }
+}
+
+/// The deadline for an earliest-reset wait starting at `now` (issue #2967):
+/// [`plan`]'s table with the reset row named [`Bound::EarliestReset`].
+/// `reset` is the earliest reset across the step's eligible logins, which
+/// [`earliest`] has kept within five hours. The maximum and the step timeout
+/// still win when they are sooner, a tie is named by the earlier row, and no
+/// input makes the wait longer than five hours and the margin.
+///
+/// The plan is a [`PlanKind::Reset`] one and never a login-change wait, so a
+/// login with room that the wait's own poll finds still ends it early.
+pub(crate) fn plan_earliest(
+    now: i64,
+    reset: i64,
+    max: Option<u64>,
+    step: Option<(i64, u64)>,
+) -> Plan {
+    let mut p = plan(now, reset, max, step);
+    if p.bound == Bound::ResetMargin {
+        p.bound = Bound::EarliestReset;
+    }
+    p
 }
 
 /// When `step` requires the wait to end, never before `now`; a timeout of 0

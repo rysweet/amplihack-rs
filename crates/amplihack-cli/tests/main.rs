@@ -433,6 +433,8 @@ mod issue_2882_spend_limit_capacity_wait;
 mod issue_2889_freshest_live_reading;
 #[path = "issue_2890_spend_blocked_login.rs"]
 mod issue_2890_spend_blocked_login;
+#[path = "issue_2967_other_logins.rs"]
+mod issue_2967_other_logins;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

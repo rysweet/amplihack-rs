@@ -301,7 +301,7 @@ fn output_without_a_usage_limit_never_reruns() {
 fn reset_time_comes_from_a_line_that_starts_with_the_marker() {
     let stderr = format!("working\n{MARKER}|{}\nmore\n\n", NOW + 600);
     assert_eq!(
-        usage::usage_limit_reset(stderr.as_bytes(), b"", NOW),
+        usage::usage_limit_reset(stderr.as_bytes(), b"", NOW, None),
         Some(NOW + 600)
     );
     for stderr in [
@@ -311,12 +311,12 @@ fn reset_time_comes_from_a_line_that_starts_with_the_marker() {
         "usage limit reached\n".to_string(),
     ] {
         assert_eq!(
-            usage::usage_limit_reset(stderr.as_bytes(), b"", NOW),
+            usage::usage_limit_reset(stderr.as_bytes(), b"", NOW, None),
             None,
             "{stderr:?} supplies no reset time"
         );
         assert_eq!(
-            usage::reset_or_default(stderr.as_bytes(), b"", NOW),
+            usage::reset_or_default(stderr.as_bytes(), b"", NOW, None),
             NOW + FIVE_HOURS
         );
     }
@@ -327,11 +327,11 @@ fn the_last_marker_line_wins_and_stderr_before_stdout() {
     let stderr = format!("{MARKER}|{}\n{MARKER}|{}\n", NOW + 100, NOW + 200);
     let stdout = format!("{MARKER}|{}\n", NOW + 300);
     assert_eq!(
-        usage::usage_limit_reset(stderr.as_bytes(), stdout.as_bytes(), NOW),
+        usage::usage_limit_reset(stderr.as_bytes(), stdout.as_bytes(), NOW, None),
         Some(NOW + 200)
     );
     assert_eq!(
-        usage::usage_limit_reset(b"no marker\n", stdout.as_bytes(), NOW),
+        usage::usage_limit_reset(b"no marker\n", stdout.as_bytes(), NOW, None),
         Some(NOW + 300)
     );
 }
@@ -340,12 +340,12 @@ fn the_last_marker_line_wins_and_stderr_before_stdout() {
 fn usage_limit_reset_is_never_later_than_five_hours() {
     let stderr = format!("{MARKER}|{}\n", NOW + 30 * 86_400);
     assert_eq!(
-        usage::usage_limit_reset(stderr.as_bytes(), b"", NOW),
+        usage::usage_limit_reset(stderr.as_bytes(), b"", NOW, None),
         Some(NOW + FIVE_HOURS)
     );
     let stderr = format!("{MARKER}|99999999999999999999999\n");
     assert_eq!(
-        usage::usage_limit_reset(stderr.as_bytes(), b"", NOW),
+        usage::usage_limit_reset(stderr.as_bytes(), b"", NOW, None),
         Some(NOW + FIVE_HOURS)
     );
 }
@@ -411,4 +411,114 @@ fn the_5h_cell_says_no_session_window_only_for_a_week_without_five_hour() {
 
     let session_only = reading(Some(win(5.0, NOW + 600)), None);
     assert_eq!(five_cell(Some(&session_only), NOW), "5%");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2967: a stated clock-time reset is the reset that is recorded
+// ---------------------------------------------------------------------------
+//
+// `usage_limit_reset(stderr, stdout, now, local)` and
+// `reset_or_default(stderr, stdout, now, local)` take the zone a zone-less
+// reset is read in. Order: the epoch marker's stated reset; otherwise the
+// reset `limit_patterns::limit_message_in` reports; each capped at
+// `now + FIVE_HOURS`; otherwise (`reset_or_default` only) five hours.
+// Before #2967 only the epoch marker was read, so every clock-time message
+// recorded the five-hour default, and `record_limit` stored that.
+
+/// 2025-10-09 22:00:00 -07:00.
+const EVENING: i64 = 1_760_072_400;
+/// 2025-10-09 23:50:00 -07:00.
+const LA_2350: i64 = EVENING + 6_600;
+const LA: chrono_tz::Tz = chrono_tz::America::Los_Angeles;
+
+const SPEND_ZONELESS: &str = "You've hit your individual spend limit \u{b7} run /usage-credits to ask your admin for a higher limit \u{b7} your 5-hour limit resets 11:50pm";
+const SPEND_ZONED: &str = "You've hit your individual spend limit \u{b7} run /usage-credits to raise it, or visit claude.ai/admin-settings/usage \u{b7} your 5-hour limit resets 11:50pm (America/Los_Angeles)";
+const SESSION_ZONED: &str =
+    "You've hit your session limit \u{b7} resets 11:50pm (America/Los_Angeles)";
+
+#[test]
+fn a_zoned_clock_time_reset_is_the_reset_recorded() {
+    for text in [SPEND_ZONED, SESSION_ZONED] {
+        let stderr = format!("{text}\n");
+        assert_eq!(
+            usage::usage_limit_reset(stderr.as_bytes(), b"", EVENING, None),
+            Some(LA_2350),
+            "{text}"
+        );
+        assert_eq!(
+            usage::reset_or_default(stderr.as_bytes(), b"", EVENING, None),
+            LA_2350,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_zoneless_clock_time_reset_is_read_in_the_given_zone() {
+    let stderr = format!("{SPEND_ZONELESS}\n");
+    assert_eq!(
+        usage::usage_limit_reset(stderr.as_bytes(), b"", EVENING, Some(LA)),
+        Some(LA_2350)
+    );
+    assert_eq!(
+        usage::reset_or_default(stderr.as_bytes(), b"", EVENING, Some(LA)),
+        LA_2350
+    );
+    // The same wall-clock time in another zone is another instant.
+    let utc = usage::usage_limit_reset(stderr.as_bytes(), b"", EVENING, Some(chrono_tz::UTC));
+    assert_ne!(utc, Some(LA_2350));
+}
+
+#[test]
+fn a_zoneless_clock_time_reset_with_no_zone_falls_back_to_five_hours() {
+    let stderr = format!("{SPEND_ZONELESS}\n");
+    assert_eq!(
+        usage::usage_limit_reset(stderr.as_bytes(), b"", EVENING, None),
+        None
+    );
+    assert_eq!(
+        usage::reset_or_default(stderr.as_bytes(), b"", EVENING, None),
+        EVENING + FIVE_HOURS
+    );
+}
+
+#[test]
+fn the_epoch_marker_still_wins_over_a_clock_time_message() {
+    let stderr = format!("{SESSION_ZONED}\n{MARKER}|{}\n", EVENING + 900);
+    assert_eq!(
+        usage::usage_limit_reset(stderr.as_bytes(), b"", EVENING, Some(LA)),
+        Some(EVENING + 900)
+    );
+}
+
+#[test]
+fn a_clock_time_reset_is_never_later_than_five_hours() {
+    // At 08:00 the next 11:50pm is nearly sixteen hours away.
+    let morning = EVENING - 14 * 3600; // 08:00 -07:00 the same day
+    let stderr = format!("{SESSION_ZONED}\n");
+    let got = usage::usage_limit_reset(stderr.as_bytes(), b"", morning, Some(LA));
+    assert_eq!(got, Some(morning + FIVE_HOURS));
+}
+
+#[test]
+fn a_clock_time_reset_in_the_past_does_not_record_a_past_reset() {
+    // The ten-minute grace rule is the parser's; whatever it says, the
+    // recorded reset is within [now - grace, now + five hours].
+    let stderr = format!("{SESSION_ZONED}\n");
+    let after = LA_2350 + 3600;
+    let got = usage::reset_or_default(stderr.as_bytes(), b"", after, None);
+    assert!(got >= after - 600, "{got}");
+    assert!(got <= after + FIVE_HOURS, "{got}");
+}
+
+#[test]
+fn output_with_no_limit_message_gives_the_default_and_no_stated_reset() {
+    assert_eq!(
+        usage::usage_limit_reset(b"Error: boom\n", b"", EVENING, Some(LA)),
+        None
+    );
+    assert_eq!(
+        usage::reset_or_default(b"Error: boom\n", b"", EVENING, Some(LA)),
+        EVENING + FIVE_HOURS
+    );
 }

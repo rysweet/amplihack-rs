@@ -16,9 +16,12 @@ mod failure_class;
 pub(crate) mod failure_evidence;
 mod failure_markers;
 pub(crate) mod format;
+/// Issue #2967: the heartbeat of a step waiting for a usage limit.
+pub(crate) mod heartbeat;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
+pub(crate) mod local_zone;
 /// Issue #1976 — a nested run watches its parent `recipe run`.
 pub(crate) mod orphan_record;
 pub(crate) mod parent_watch;
@@ -518,12 +521,16 @@ mod tests_failure_class;
 mod tests_failure_class_1437;
 #[cfg(test)]
 mod tests_format;
+#[cfg(test)]
+mod tests_heartbeat;
 #[cfg(all(test, unix))]
 mod tests_issue_3049_release_pin;
 #[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]
 mod tests_limit_reset;
+#[cfg(test)]
+mod tests_local_zone;
 #[cfg(all(test, unix))]
 mod tests_merge_guard_pin;
 #[cfg(test)]

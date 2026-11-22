@@ -179,20 +179,39 @@ pub fn merge(old: Option<&Reading>, new: Reading) -> Reading {
     }
 }
 
-/// The reset time Claude's own usage-limit message states, or `None` when no
-/// line starts with its epoch marker. This only reads the time: whether an
-/// attempt hit its limit is decided by the recipe runner's classifier. The
-/// last marker line in stderr wins, then the last in stdout. The reset is
-/// never later than five hours from now. The patterns live in
-/// `recipe::run::limit_patterns` (#1618).
-pub fn usage_limit_reset(stderr: &[u8], stdout: &[u8], now: i64) -> Option<i64> {
-    let epoch = limit_patterns::epoch_marker(stderr, stdout)?;
+/// The reset time Claude's own usage-limit message states, or `None` when it
+/// states none. This only reads the time: whether an attempt hit its limit
+/// is decided by the recipe runner's classifier.
+///
+/// A line starting with the epoch marker is read first: the last such line
+/// in stderr wins, then the last in stdout. Otherwise the reset is the one
+/// the harness's own limit message states as a clock time (issue #2967),
+/// read at the position `limit_patterns::limit_message_in` reads it
+/// (`limit_patterns::clock_reset_in`), with a reset that names no zone read
+/// in `local`. A marker that does not start its line still states nothing. Before #2967 only the epoch
+/// marker was read, so every clock-time message recorded the five-hour
+/// default. The reset is never later than five hours from now. The patterns
+/// live in `recipe::run::limit_patterns` (#1618).
+pub fn usage_limit_reset(
+    stderr: &[u8],
+    stdout: &[u8],
+    now: i64,
+    local: Option<chrono_tz::Tz>,
+) -> Option<i64> {
     let latest = now.saturating_add(FIVE_HOURS);
-    Some(epoch.map_or(latest, |e| e.min(latest)))
+    match limit_patterns::epoch_marker(stderr, stdout) {
+        Some(epoch) => Some(epoch.map_or(latest, |e| e.min(latest))),
+        None => limit_patterns::clock_reset_in(stderr, stdout, now, local).map(|r| r.min(latest)),
+    }
 }
 
 /// The reset to record for an attempt that hit its usage limit: the stated
 /// time, or five hours from now.
-pub fn reset_or_default(stderr: &[u8], stdout: &[u8], now: i64) -> i64 {
-    usage_limit_reset(stderr, stdout, now).unwrap_or(now + FIVE_HOURS)
+pub fn reset_or_default(
+    stderr: &[u8],
+    stdout: &[u8],
+    now: i64,
+    local: Option<chrono_tz::Tz>,
+) -> i64 {
+    usage_limit_reset(stderr, stdout, now, local).unwrap_or(now.saturating_add(FIVE_HOURS))
 }

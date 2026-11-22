@@ -10,6 +10,14 @@
 //! compiled-in table. No year, day or zone is ever guessed: anything else
 //! gives no reset.
 //!
+//! Issue #2967: Claude Code also prints the reset with no zone at all, as in
+//! `your 5-hour limit resets 11:50pm`. [`parse_in`] reads that form in a zone
+//! its caller supplies, which in production is the zone of the host the
+//! supervisor and the `claude` child share. The zone-less form is exactly a
+//! clock time followed by nothing but ASCII whitespace; a zone the text
+//! states is always the one used, and one that does not parse is never
+//! replaced by the caller's.
+//!
 //! Without a date the clock time is placed today in that zone; with one, in
 //! this year. A time up to ten minutes in the past stays (already reached);
 //! an older one moves to tomorrow, or to next year for a dated reset. A time
@@ -29,8 +37,25 @@ const MONTHS: [&[u8]; 12] = [
     b"jan", b"feb", b"mar", b"apr", b"may", b"jun", b"jul", b"aug", b"sep", b"oct", b"nov", b"dec",
 ];
 
-/// The instant `fragment` names, relative to `now` (Unix seconds).
+/// The instant `fragment` names, relative to `now` (Unix seconds). The zone
+/// must be stated: this is [`parse_in`] with no zone to read a zone-less
+/// reset in.
+///
+/// Every production caller supplies its zone through [`parse_in`]. This
+/// entry point is built for the tests alone, which pin that the zone-required
+/// reading is unchanged.
+#[cfg(test)]
 pub(super) fn parse(fragment: &str, now: i64) -> Option<i64> {
+    parse_in(fragment, now, None)
+}
+
+/// The instant `fragment` names, relative to `now` (Unix seconds), reading a
+/// reset that states no zone in `local` (issue #2967).
+///
+/// `local` is used only when nothing but ASCII whitespace follows the clock
+/// time. Any other text must be a stated zone in the existing form, and a
+/// stated zone that is malformed or unknown gives `None`.
+pub(super) fn parse_in(fragment: &str, now: i64, local: Option<Tz>) -> Option<i64> {
     let mut end = fragment.len().min(MAX_FRAGMENT);
     while !fragment.is_char_boundary(end) {
         end -= 1;
@@ -41,7 +66,11 @@ pub(super) fn parse(fragment: &str, now: i64) -> Option<i64> {
         None => (None, bytes),
     };
     let (hour, minute, rest) = clock(bytes)?;
-    let tz = Tz::from_str(zone(rest)?).ok()?;
+    let tz = if rest.iter().all(u8::is_ascii_whitespace) {
+        local?
+    } else {
+        Tz::from_str(zone(rest)?).ok()?
+    };
     let today = tz.timestamp_opt(now, 0).single()?.date_naive();
     let at = |date: NaiveDate| resolve(&tz, date.and_hms_opt(hour, minute, 0)?);
     let (first, later) = match date {

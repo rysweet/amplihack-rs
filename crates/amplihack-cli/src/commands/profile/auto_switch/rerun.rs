@@ -10,10 +10,20 @@
 //! another login had room (#2694). A step pinned to a profile can therefore
 //! finish on a different account from the one it started on. Only the final
 //! attempt's stdout is printed.
+//!
+//! Issue #2967: a wait is the last resort. Whenever an attempt reports a
+//! usage limit, the step first moves to a login that can run it now
+//! (`limit_choice::limit_candidate`), whether or not it has waited before. A
+//! wait starts only when none can, and is then timed by the earliest reset
+//! across the logins the step could still move to, with the retry on the
+//! login that reset. A step on `$HOME/.claude` is moved in the same way when
+//! auto-switch is on and no rotator is managing that directory
+//! ([`Switch::for_home`]).
 
 use super::candidate::{self, Pool};
 use super::config::{self, Config};
 use super::fsx;
+use super::limit_choice;
 use super::overflow_inputs::OverflowInputs;
 use super::own_login::{OwnLogins, unreadable_note};
 use super::per_token;
@@ -23,6 +33,8 @@ use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
     Attempt, Limited, Signals, note_key_error, run_attempt_with_recovery,
 };
+use crate::commands::profile::limit_wait::earliest::earliest;
+use crate::commands::profile::limit_wait::fingerprint::Watch;
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
 use crate::commands::profile::limit_wait::{AfterLimit, Met, Resumed, Waiter};
@@ -44,6 +56,24 @@ pub(super) use crate::commands::profile::attempt::limit_reset;
 const NO_STORED_PROMPT: &str = "this step's prompt came on a pipe and could not be stored, so a \
                                 rerun cannot read it again";
 
+/// The notes a retry after a wait prints about the login it runs on. They
+/// reach the step's stderr, which the recipe runner's classifier reads, so
+/// none of them carries a usage-limit marker (pinned in
+/// `tests_limit_choice`), and each names at most the local profile the step
+/// moves to: never the login that failed, an account or an e-mail address.
+///
+/// A login showed capacity during the wait; the profile name follows.
+pub(crate) const NOTE_CAPACITY: &str =
+    "amplihack: a login has capacity again; rerunning this step under profile";
+/// The room a reading showed was gone when the retry came to move.
+pub(crate) const NOTE_NO_ROOM: &str =
+    "amplihack: no login has room now; this step retries under the limited profile (auto-switch)";
+/// An earliest-reset wait reached its deadline (issue #2967); the profile
+/// whose reset set the bound follows.
+pub(crate) const NOTE_EARLIEST: &str = "amplihack: the earliest reset among this step's logins has arrived; rerunning this step under profile";
+/// What closes a note that names a profile.
+const NOTE_SUFFIX: &str = "(auto-switch)";
+
 /// A profile for a nested launch.
 #[derive(Debug, PartialEq)]
 pub struct Pick {
@@ -51,6 +81,11 @@ pub struct Pick {
     /// The reason line for a move onto a per-token profile, for
     /// [`per_token::record`]; `None` for a plan profile.
     pub per_token: Option<String>,
+    /// The pick was made by the usable rule alone (issue #2967): the
+    /// candidate rule refused the login for being over the auto-switch
+    /// threshold, and it is still usable by the `profile usage` test. See
+    /// `limit_choice::limit_candidate`.
+    pub usable_only: bool,
 }
 
 /// An eligible profile for a nested launch: not excluded, not exhausted (an
@@ -88,41 +123,16 @@ pub fn nested_candidate(
     )
 }
 
-/// [`nested_candidate`] without the held-key alert: the same choice, made
-/// without writing or printing anything (issue #2694). This is for the
-/// usage-limit wait's 30-second probe only, which asks the same question for
-/// the whole of a wait, so the alert would repeat for hours in the step's
-/// stderr and crowd the runner's evidence tail. The step that is waiting has
-/// already hit a limit under auto-switch, so the alert for its held-back key
-/// was written once by the rerun check before the wait began.
-///
-/// The retry's own single selection after the wait keeps [`nested_candidate`]
-/// and so keeps the alert: it runs once, and it is the call that decides the
-/// login the step actually moves to.
-pub(super) fn silent_candidate(
-    state: &State,
-    ledger: &Ledger,
-    profiles: &[ProfileName],
-    readings: &BTreeMap<String, Reading>,
-    cfg: &Config,
-    current: &str,
-    skip: &[String],
-) -> Option<Pick> {
-    candidate(
-        Reads {
-            state,
-            ledger,
-            profiles,
-            readings,
-            cfg,
-        },
-        current,
-        skip,
-        KeyAlert::Silent,
-    )
-}
-
 /// Whether a caller of [`candidate`] wants the held-key ALERT written.
+///
+/// [`KeyAlert::Silent`] is for the usage-limit wait's 30-second probe only
+/// (issue #2694), which asks the same question for the whole of a wait: the
+/// alert would repeat for hours in the step's stderr and crowd the runner's
+/// evidence tail. The step that is waiting has already hit a limit under
+/// auto-switch, so the alert for its held-back key was written once by the
+/// rerun check before the wait began. The retry's own single selection after
+/// the wait passes [`KeyAlert::Write`]: it runs once, and it is the call
+/// that decides the login the step actually moves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum KeyAlert {
     Write,
@@ -132,15 +142,43 @@ pub(super) enum KeyAlert {
 /// Everything a candidate choice is read from, bundled so that [`candidate`]
 /// stays inside clippy's argument limit without an exemption. Shared
 /// references only: the choice reads this state and never writes it.
-struct Reads<'a> {
-    state: &'a State,
-    ledger: &'a Ledger,
-    profiles: &'a [ProfileName],
-    readings: &'a BTreeMap<String, Reading>,
-    cfg: &'a Config,
+#[derive(Clone, Copy)]
+pub(super) struct Reads<'a> {
+    pub(super) state: &'a State,
+    pub(super) ledger: &'a Ledger,
+    pub(super) profiles: &'a [ProfileName],
+    pub(super) readings: &'a BTreeMap<String, Reading>,
+    pub(super) cfg: &'a Config,
 }
 
-fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) -> Option<Pick> {
+/// The eligibility every choice of a login to move to is made under, set
+/// up once by [`with_choice`] (issue #2967). The candidate rule, the usable
+/// rule and the reader of other logins' resets (`limit_choice`) all take it
+/// from here, so no rule can admit a login another refuses.
+pub(super) struct Choice<'c, 'a> {
+    pub(super) reads: Reads<'a>,
+    /// The directory the step runs in: a profile name.
+    pub(super) source_host: &'c str,
+    /// The account the auto-switch ledger says is live in that directory.
+    pub(super) current: &'c str,
+    pub(super) pool: &'c Pool<'a>,
+    pub(super) overflow: &'c OverflowInputs,
+    own: &'c OwnLogins<'c>,
+    /// Free to be moved onto, as far as the caller's skip list and the
+    /// ledger say: not skipped, not hosting another account, not leased.
+    free: &'c dyn Fn(&ProfileName) -> bool,
+    /// `free`, and passing the login checks ([`login_ready`]).
+    pub(super) eligible: &'c dyn Fn(&ProfileName) -> bool,
+}
+
+/// Runs `f` with the eligibility for a move from directory `current`, never
+/// onto a name in `skip`. The one place it is set up.
+pub(super) fn with_choice<T>(
+    reads: Reads<'_>,
+    current: &str,
+    skip: &[String],
+    f: impl FnOnce(&Choice<'_, '_>) -> T,
+) -> T {
     let Reads {
         state,
         ledger,
@@ -163,7 +201,6 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
         exclude: &cfg.exclude,
         now,
     };
-    // Free to be moved onto, as far as the caller and the ledger say.
     let free = |c: &ProfileName| {
         let n = c.as_str();
         !skip.iter().any(|s| s == n)
@@ -171,30 +208,73 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
             && ledger.leased_to(n).is_none()
     };
     let eligible = |c: &ProfileName| free(c) && login_ready(state, &overflow, &own, c);
+    f(&Choice {
+        reads,
+        source_host,
+        current,
+        pool: &pool,
+        overflow: &overflow,
+        own: &own,
+        free: &free,
+        eligible: &eligible,
+    })
+}
+
+pub(super) fn candidate(
+    reads: Reads<'_>,
+    current: &str,
+    skip: &[String],
+    alert: KeyAlert,
+) -> Option<Pick> {
+    with_choice(reads, current, skip, |choice| candidate_in(choice, alert))
+}
+
+/// The candidate rule over an eligibility already set up: [`candidate`]'s
+/// body, shared with `limit_choice::limit_candidate` so both rules of the
+/// move before a wait read one set of inputs.
+pub(super) fn candidate_in(choice: &Choice<'_, '_>, alert: KeyAlert) -> Option<Pick> {
+    let Choice {
+        reads,
+        source_host,
+        current,
+        pool,
+        overflow,
+        own,
+        free,
+        eligible,
+    } = choice;
+    let Reads {
+        state,
+        ledger,
+        profiles,
+        readings,
+        cfg,
+    } = *reads;
+    let (pool, overflow, current) = (*pool, *overflow, *current);
     let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
     let need = amplihack_utils::organisation_affinity::Need::of(
         on_overflow,
-        !on_overflow && candidate::is_exhausted(readings.get(current), cfg.threshold, now),
+        !on_overflow && candidate::is_exhausted(readings.get(current), cfg.threshold, pool.now),
     );
     let restriction = super::affinity::restrict(
         state,
         ledger,
-        &pool,
-        &overflow,
+        pool,
+        overflow,
         source_host,
         current,
         need,
         eligible,
     );
     let picked = candidate::select_restricted(
-        &pool,
+        pool,
         &overflow.pool(),
         current,
         |p| eligible(p) && restriction.allowed.contains(p),
         |p| restriction.plan_room.contains(p),
     );
     if alert == KeyAlert::Write && picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
-        let held = per_token::key_held(&pool, &overflow, current, eligible);
+        let held = per_token::key_held(pool, overflow, current, eligible);
         per_token::record_key_held(state, &held);
     }
     if alert == KeyAlert::Write && own.macos() {
@@ -216,8 +296,12 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
     // Read again for the detail the reason line gives. A key that went away
     // since the check above is refused like any other failed check.
     let check = overflow.check_note(&state.root, &profile)?;
-    let per_token = per_token::reason(&pool, &overflow, cfg, current, &profile, check);
-    Some(Pick { profile, per_token })
+    let per_token = per_token::reason(pool, overflow, cfg, current, &profile, check);
+    Some(Pick {
+        profile,
+        per_token,
+        usable_only: false,
+    })
 }
 
 /// The login checks a move onto `c` must pass, apart from the readings and
@@ -390,7 +474,87 @@ pub(crate) fn ledger_account(root: &std::path::Path, name: &str) -> Option<Strin
 pub(crate) struct Switch<'a> {
     store: &'a ProfileStore,
     state: State,
+    /// The profile the step inherited. For a `$HOME/.claude` step, the
+    /// login that was live there when the step started.
     inherited: ProfileName,
+    /// The step runs on `$HOME/.claude` with no inherited profile (issue
+    /// #2967). Such a step is never substituted before its first attempt
+    /// and never moved while a rotator runs: see [`Switch::for_home`].
+    home: bool,
+}
+
+impl<'a> Switch<'a> {
+    /// Auto-switch for a step on `$HOME/.claude` (issue #2967), or `None`
+    /// when that step must stay where it is.
+    ///
+    /// Before #2967 only a step that inherited a profile could move. A
+    /// `$HOME/.claude` step relied on the rotator to swap another login in,
+    /// and with no rotator running it waited for its own login's reset
+    /// while other stored logins were usable. With no rotator the step is
+    /// now rerun under a stored profile's directory, through the same rerun
+    /// path a profile step uses: only `AMPLIHACK_CLAUDE_PROFILE` and
+    /// `CLAUDE_CONFIG_DIR` change, and nothing is copied between `~/.claude`
+    /// and a profile directory.
+    ///
+    /// The caller has established that the step runs on `$HOME/.claude`
+    /// with a profile store and that Claude's arguments carry no session
+    /// flag. This checks the rest, and each failure keeps the wait for the
+    /// step's own reset:
+    ///
+    /// - auto-switch is on, which is the user's standing instruction;
+    /// - no rotator is running. One that is moves the login itself, and two
+    ///   processes never move the same login;
+    /// - the live login's name can be read from the rotator's own files, so
+    ///   the step can be marked and its moves bounded.
+    ///
+    /// The last two are checked again whenever a limit is seen
+    /// ([`may_move`], [`current_login`]), because a rotator may start, or
+    /// the files go, while the step runs.
+    pub(crate) fn for_home(store: &'a ProfileStore, watch: &Watch) -> Option<Self> {
+        if !config::effective(store.root()).on || rotate::daemon::rotating(store.root()) {
+            return None;
+        }
+        let (_, live) = watch.login()?;
+        let inherited = ProfileName::parse(&live).ok()?;
+        let state = match State::new(store.root()) {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("auto-switch: this step cannot move to another login: {e}");
+                return None;
+            }
+        };
+        Some(Self {
+            store,
+            state,
+            inherited,
+            home: true,
+        })
+    }
+}
+
+/// Whether auto-switch may move this step now. Always for a step that
+/// inherited a profile. A `$HOME/.claude` step fails closed while a rotator
+/// is running: the rotator moves that login itself.
+fn may_move(sw: &Switch<'_>, waiter: &Waiter) -> bool {
+    !sw.home || !waiter.rotator_running()
+}
+
+/// The login the attempt that has just failed ran on, as the profile
+/// auto-switch moves from: the profile the supervisor launched it under,
+/// else the inherited profile. For a `$HOME/.claude` step it is the live
+/// login read before the attempt started, and `None` when that cannot be
+/// read: without a name the step cannot be marked as tried, so it is not
+/// moved.
+fn current_login(
+    sw: &Switch<'_>,
+    profile: Option<&ProfileName>,
+    waiter: &Waiter,
+) -> Option<ProfileName> {
+    match profile {
+        Some(p) => Some(p.clone()),
+        None if sw.home => waiter.attempt_profile(None),
+        None => Some(sw.inherited.clone()),
+    }
 }
 
 /// Runs a launch that inherited a profile under supervision. `None` when
@@ -410,6 +574,7 @@ pub fn supervise(
             store,
             state: State::new(store.root())?,
             inherited,
+            home: false,
         })
     } else {
         None
@@ -431,13 +596,17 @@ pub fn supervise(
 /// the step's when the prompt that reached that attempt stopped short of
 /// the one that was sent (issue #2816).
 pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Option<i32>> {
-    let on = switch.is_some();
+    // A `$HOME/.claude` step keeps the scratch directory and the wording it
+    // had before #2967: it is supervised for the wait, and auto-switch only
+    // comes into it if a limit is seen.
+    let on = switch.as_ref().is_some_and(|sw| !sw.home);
     // Looks at stdin without reading it, so nothing here can block. It is
     // taken before the scratch directory so that every path out of this
     // function, including the ones that stand down below, can say what has
     // been taken off stdin and hand it back (issue #2816).
     let mut stdin = RerunStdin::capture();
-    let setup = scratch_dir(switch.as_ref().map(|s| &s.state)).and_then(|dir| {
+    let profile_state = switch.as_ref().filter(|sw| !sw.home).map(|sw| &sw.state);
+    let setup = scratch_dir(profile_state).and_then(|dir| {
         Ok((
             dir,
             std::env::current_exe().context("cannot find the amplihack binary")?,
@@ -508,8 +677,8 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // Both kinds of step need a running rotator, so a capacity wait never
     // starts when nothing could end it.
     let takeover = |waiter: &Waiter| match &switch {
-        Some(sw) => profile_check(sw.store, sw.inherited.as_str()),
-        None => waiter.takeover_home(),
+        Some(sw) if !sw.home => profile_check(sw.store, sw.inherited.as_str()),
+        _ => waiter.takeover_home(),
     };
     // Silent: this runs every 30 s for the whole of a wait, and it only
     // answers whether a move is possible; the retry's own selection below
@@ -525,9 +694,15 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 KeyAlert::Silent,
             )
             .is_some()
+                // Issue #2967: a `$HOME/.claude` step does not move itself
+                // while a rotator runs. Asked last, and only when there is a
+                // login to move to, so a wait that sees none takes no lock.
+                && !(sw.home && rotate::daemon::rotating(sw.store.root()))
         })
     };
-    if let Some(sw) = &switch {
+    // A `$HOME/.claude` step is never substituted before it runs: which
+    // login is live there is the rotator's or the user's choice.
+    if let Some(sw) = switch.as_ref().filter(|sw| !sw.home) {
         let eff = config::effective(sw.store.root());
         if let Some(sub) = substitute(sw.store, &sw.state, &eff.config, &sw.inherited) {
             eprintln!(
@@ -571,7 +746,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // Issue #2731: which login this attempt runs on, read before it
         // starts. The rotator reacts to the same exhausted reading that
         // fails it, so the swap often lands while the attempt is failing.
-        waiter.note_attempt_login();
+        // Issue #2967: the login's name is resolved here too, so the wait
+        // is marked with it and its recipe-log lines say `account=<name>`.
+        waiter.note_attempt_login(profile.as_ref());
         let attempt = match run_attempt_with_recovery(
             &exe,
             &args,
@@ -722,23 +899,23 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     || waiter.rotator_running(),
                 ));
             }
-            if let Some(sw) = &switch {
-                let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
+            // Issue #2967: a `$HOME/.claude` step moves only while no
+            // rotator runs and its live login can be named, and it keeps
+            // the handling it had for an organisation spend limit that
+            // states no reset, which no login of that organisation lifts.
+            let movable = switch
+                .as_ref()
+                .filter(|sw| may_move(sw, &waiter) && !(sw.home && lim.spend.is_some()))
+                .and_then(|sw| Some((sw, current_login(sw, profile.as_ref(), &waiter)?)));
+            if let Some((sw, current)) = movable {
                 tried.push(current.to_string());
                 let eff = config::effective(&sw.state.root);
                 // The profile an unstored prompt kept this step from rerunning
                 // under.
                 let mut refused: Option<ProfileName> = None;
                 if eff.on
-                    && let Some(next) = next_profile(
-                        sw.store,
-                        &sw.state,
-                        &eff.config,
-                        &current,
-                        &tried,
-                        lim,
-                        &waiter,
-                    )
+                    && let Some(next) =
+                        next_profile(sw.store, &sw.state, &eff.config, &current, &tried, lim)
                 {
                     // The limit is recorded; a rerun that has no whole prompt to
                     // read is refused rather than given part of one. When the
@@ -765,7 +942,12 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                         );
                         per_token::record(&sw.state.root, next.per_token.as_deref());
                         attempt.discard();
-                        profile = Some(next.profile).filter(|p| *p != sw.inherited);
+                        // The inherited profile is run in the inherited
+                        // environment. A `$HOME/.claude` step has none: the
+                        // name it started under is a stored profile like
+                        // any other, and `~/.claude` may hold another login
+                        // by now.
+                        profile = Some(next.profile).filter(|p| sw.home || *p != sw.inherited);
                         continue;
                     }
                 }
@@ -813,9 +995,24 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // or `disabled`/`ci`) and never starts a wait.
         // With nothing blocking the wait there is no reset to wait for, and
         // the result is passed up.
-        let Some(wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {
+        let Some(own_wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {
             return finish(attempt, None, &stdin);
         };
+        // Issue #2967: no login can run the step now, so it waits, and the
+        // wait is timed by the earliest reset across the logins it could
+        // still move to when that is sooner than its own. The own login's
+        // wait stays the base and the other logins are read again for each
+        // wait, so a wait never carries an instant an earlier one computed.
+        // `bound_login` is the login whose reset sets that bound, which is
+        // where the retry runs when the wait reaches it.
+        let (wait, bound_login) = earliest_wait(
+            switch.as_ref(),
+            &waiter,
+            profile.as_ref(),
+            &tried,
+            own_wait,
+            now,
+        );
         // Issue #2816: the retry the wait earns is announced only once the
         // prompt it would read is known to be there. `rerun_refused` is
         // asked at that moment and not before, because a prompt still
@@ -836,7 +1033,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             AfterLimit::Finish(code) => return finish(attempt, code, &stdin),
             AfterLimit::Retry => {
                 attempt.discard();
-                profile = retry_profile(switch.as_ref(), &waiter);
+                profile = retry_profile(switch.as_ref(), &waiter, bound_login.as_ref());
             }
         }
     }
@@ -898,8 +1095,23 @@ fn finish(attempt: Attempt, code: Option<i32>, stdin: &RerunStdin) -> Result<Opt
 /// retry is issue #2719.
 ///
 /// [`room_was_seen`]: crate::commands::profile::limit_wait::RetryMove::room_was_seen
-fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<ProfileName> {
-    let sw = switch?;
+///
+/// Issue #2967: after an earliest-reset wait that reached its deadline the
+/// retry runs on `bound`, the login whose reset set that deadline, and no
+/// fresh reading is asked for, because the reset is what the wait was for.
+/// The login must still pass the checks that need no reading
+/// (`limit_choice::may_run_on`); when it does not, the retry runs on the
+/// step's own login. A `$HOME/.claude` step moves nowhere while a rotator
+/// runs.
+fn retry_profile(
+    switch: Option<&Switch<'_>>,
+    waiter: &Waiter,
+    bound: Option<&ProfileName>,
+) -> Option<ProfileName> {
+    let sw = switch.filter(|sw| may_move(sw, waiter))?;
+    if waiter.reached_earliest_reset() {
+        return bound_profile(sw, bound?);
+    }
     let mv = waiter.retry_move()?;
     let Some(pick) = capacity_candidate(
         sw.store,
@@ -919,22 +1131,86 @@ fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<Profile
             // the log reads
             // `end reason=login capacity` and then fails on the login that
             // had none, with nothing in between to name the cause.
-            eprintln!(
-                "amplihack: no login has room now; this step retries under the limited profile (auto-switch)"
-            );
+            eprintln!("{NOTE_NO_ROOM}");
         }
         return None;
     };
     // The run log names the login the retry moves to, as every other move
     // in this loop does (#1801, item 3).
-    eprintln!(
-        "amplihack: a login has capacity again; rerunning this step under profile {:?} (auto-switch)",
-        pick.profile.as_str()
-    );
+    eprintln!("{NOTE_CAPACITY} {:?} {NOTE_SUFFIX}", pick.profile.as_str());
     // A move onto a per-token profile gives its reason line, as any rerun
     // onto one does (#1804).
     per_token::record(&sw.state.root, pick.per_token.as_deref());
     Some(pick.profile)
+}
+
+/// The readings a choice among the stored logins is made from, loaded for
+/// one decision. `None` when auto-switch has been turned off since the step
+/// started, or the ledger or the readings cannot be read: the caller then
+/// keeps the step where it is.
+fn with_reads<T>(sw: &Switch<'_>, f: impl FnOnce(Reads<'_>) -> T) -> Option<T> {
+    let eff = config::effective(&sw.state.root);
+    if !eff.on {
+        return None;
+    }
+    let ledger = sw.state.load_ledger().ok()?;
+    let readings = sw.state.try_load_usage().ok()?.accounts;
+    let profiles = profile_names(sw.store);
+    Some(f(Reads {
+        state: &sw.state,
+        ledger: &ledger,
+        profiles: &profiles,
+        readings: &readings,
+        cfg: &eff.config,
+    }))
+}
+
+/// `own_wait`, made an earliest-reset wait when another login the step
+/// could still move to resets sooner (issue #2967), and the login whose
+/// reset then sets the bound. `own_wait` comes back unchanged, with no
+/// login, for a step auto-switch may not move, when no other login has a
+/// reset ahead, and when the earliest is no sooner than the step's own or
+/// more than five hours away (`plan::earliest`).
+///
+/// `now` is the wait's clock; the readings are moved onto it by
+/// `limit_choice::cross_login_reset`.
+fn earliest_wait(
+    switch: Option<&Switch<'_>>,
+    waiter: &Waiter,
+    profile: Option<&ProfileName>,
+    tried: &[String],
+    own_wait: WaitFor,
+    now: i64,
+) -> (WaitFor, Option<ProfileName>) {
+    let found = switch
+        .filter(|sw| may_move(sw, waiter))
+        .and_then(|sw| Some((sw, current_login(sw, profile, waiter)?)))
+        .and_then(|(sw, current)| {
+            with_reads(sw, |reads| {
+                limit_choice::cross_login_reset(reads, current.as_str(), tried, now)
+            })
+        })
+        .and_then(|others| earliest(&others));
+    let Some((login, at)) = found else {
+        return (own_wait, None);
+    };
+    match plan::earliest(own_wait, Some(at), now) {
+        wait @ WaitFor::EarliestReset { .. } => (wait, Some(login)),
+        wait => (wait, None),
+    }
+}
+
+/// The retry after an earliest-reset wait: `bound`, when the step may still
+/// be run on it, else `None` for the step's own login.
+fn bound_profile(sw: &Switch<'_>, bound: &ProfileName) -> Option<ProfileName> {
+    let allowed = with_reads(sw, |reads| {
+        limit_choice::may_run_on(reads, sw.inherited.as_str(), bound)
+    })?;
+    if !allowed {
+        return None;
+    }
+    eprintln!("{NOTE_EARLIEST} {:?} {NOTE_SUFFIX}", bound.as_str());
+    Some(bound.clone()).filter(|p| sw.home || *p != sw.inherited)
 }
 
 /// `<root>/.auto-switch.d/rerun` with auto-switch on, else
@@ -990,8 +1266,15 @@ fn unsupervised(
     Ok(None)
 }
 
-/// Records the limit for the account live in `profile`, then the next
-/// eligible profile, unless the wait was already used for this step.
+/// Records the limit for the account live in `profile`, then the login the
+/// step moves to, if any can run it now (`limit_choice::limit_candidate`).
+///
+/// Issue #2967: this is asked for every limit, whether or not the step has
+/// waited. Before, a step that had used its wait was never moved again, so
+/// a limit on the retry that wait earned ended the step with another login
+/// usable. A move is not a wait: it spends none of the wait budget and
+/// records no mark. The moves still end, because `tried` holds every login
+/// the step has run on and grows with each one.
 fn next_profile(
     store: &ProfileStore,
     state: &State,
@@ -999,7 +1282,6 @@ fn next_profile(
     profile: &ProfileName,
     tried: &[String],
     lim: &Limited,
-    waiter: &Waiter,
 ) -> Option<Pick> {
     // Without the ledger the account is unknown: recording the limit under
     // the profile name could mark the wrong account exhausted.
@@ -1011,20 +1293,20 @@ fn next_profile(
         }
     };
     record_limit(state, &account, lim.ledger_reset);
-    if waiter.used() {
-        return None;
-    }
     match state.load_ledger() {
         Ok(ledger) => {
             let readings = state.load_usage_or_warn().accounts;
-            nested_candidate(
-                state,
-                &ledger,
-                &profile_names(store),
-                &readings,
-                cfg,
+            limit_choice::limit_candidate(
+                Reads {
+                    state,
+                    ledger: &ledger,
+                    profiles: &profile_names(store),
+                    readings: &readings,
+                    cfg,
+                },
                 profile.as_str(),
                 tried,
+                KeyAlert::Write,
             )
         }
         Err(e) => {

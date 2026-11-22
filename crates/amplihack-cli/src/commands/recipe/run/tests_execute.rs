@@ -4475,3 +4475,314 @@ fn release_failures_are_chained_onto_the_runs_own_error() {
         "the run's own error stays the primary cause"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2967: the stderr pump rewrites a waiting step's heartbeat
+// ---------------------------------------------------------------------------
+//
+// Contract (pure parts are in `tests_heartbeat.rs`; these run the real pump):
+//
+// - A runner stderr line `... working (Ns elapsed, Ns since last output, pid
+//   P alive)` for which a live, unexpired wait-state record of supervisor `P`
+//   exists in the wait-state directory is printed as `... waiting for usage
+//   limit until <until> (...)`. The runner's own line, not the rewrite, goes
+//   into the bounded failure-evidence buffer.
+// - A line that is already a wait line (`heartbeat::is_wait_line`, which a
+//   nested run's pump printed) is printed and not buffered, so the failure
+//   classifier never reads a wait line as a usage limit.
+// - A line carrying the wait phrase and a limit marker is not a wait line:
+//   it is printed and buffered.
+// - Every other line, including one with no record and one that is not
+//   UTF-8, is printed and buffered unchanged. The buffer keeps its bound.
+// - The wait-state directory (`AMPLIHACK_USAGE_LIMIT_WAIT_DIR`): an inherited
+//   value that passes `wait_state::valid_dir` is reused and neither removed
+//   nor re-moded at the end of the run; otherwise the run creates
+//   `<run_dir>/usage-limit-wait` with mode 0700, sets it on the runner, and
+//   removes it at the end. A dry run sets nothing.
+
+#[cfg(unix)]
+mod wait_heartbeat {
+    use super::*;
+    use crate::commands::profile::limit_wait::wait_state::DIR_ENV;
+    use std::os::unix::fs::PermissionsExt;
+
+    const CAPS: &str = "case \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n";
+
+    fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    fn stub(runner: &Path, body: &str) {
+        crate::test_support::write_executable(runner, &format!("#!/bin/sh\n{CAPS}{body}"));
+    }
+
+    fn private_dir(parent: &Path, name: &str) -> PathBuf {
+        let dir = parent.canonicalize().unwrap().join(name);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
+    /// Runs `body` as the runner with `DIR_ENV` set to `dir` (or unset),
+    /// returning the run's result, what the pump printed and the work dir.
+    fn run(
+        body: &str,
+        dir: Option<&Path>,
+        dry_run: bool,
+    ) -> (Result<RecipeRunResult>, String, tempfile::TempDir) {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut fixture_env = fixture_environment();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let runner = temp.path().join("recipe-runner-rs");
+        stub(&runner, body);
+        let recipe = temp.path().join("recipe.yaml");
+        std::fs::write(&recipe, "name: probe\nsteps: []\n").unwrap();
+        fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+        match dir {
+            Some(d) => fixture_env.assign(DIR_ENV, d),
+            None => fixture_env.clear(DIR_ENV),
+        }
+        let (result, printed) = capture_stderr_during(|| {
+            execute::execute_recipe_via_rust(
+                &recipe,
+                &BTreeMap::new(),
+                dry_run,
+                true,
+                temp.path(),
+                &[],
+                None,
+            )
+        });
+        (result, printed, temp)
+    }
+
+    /// The runner keeps a record for its own pid, as a waiting supervisor
+    /// does, then prints heartbeats.
+    fn with_record(lines: &str) -> String {
+        let until = now() + 3600;
+        let expires = now() + 7200;
+        format!(
+            "umask 077\n\
+             printf '{{\"v\":1,\"pid\":%s,\"until\":%s,\"expires\":%s,\"steps\":[]}}' \
+             \"$$\" {until} {expires} > \"${DIR_ENV}/$$\"\n{lines}"
+        )
+    }
+
+    fn err(result: Result<RecipeRunResult>) -> String {
+        format!("{:#}", result.expect_err("the stub exits 1"))
+    }
+
+    #[test]
+    fn a_live_records_heartbeat_is_printed_rewritten_and_buffered_as_the_runner_wrote_it() {
+        let marker = super::super::limit_patterns::all_markers()[0];
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = private_dir(tmp.path(), "wait");
+        let body = with_record(&format!(
+            "echo \"  [12:00:00] [amplihack:claude:$$] ... working (3590s elapsed, 3590s since last output)\" >&2\n\
+             echo '  [12:00:00] [amplihack:claude:999999] ... working (10s elapsed, 10s since last output)' >&2\n\
+             echo '  [12:00:00] [amplihack:claude:999998] ... waiting for usage limit until 2026-10-18 08:32:00 -07:00 (1s elapsed, 1s since last output)' >&2\n\
+             echo '  [12:00:00] [amplihack:claude:999997] ... waiting for usage limit until 2026-10-18 08:32:00 -07:00 (1s elapsed, 1s since last output) {marker}' >&2\n\
+             exit 1\n"
+        ));
+        let (result, printed, _temp) = run(&body, Some(&dir), false);
+        let error = err(result);
+
+        // What was printed. The run's own `failure_class` line quotes the
+        // evidence buffer, so only the pump's lines are looked at here.
+        let rewritten: Vec<&str> = printed
+            .lines()
+            .filter(|l| l.starts_with("  [12:00:00] ") && l.contains("3590s since last output"))
+            .collect();
+        assert_eq!(rewritten.len(), 1, "{printed}");
+        assert!(
+            rewritten[0].contains("... waiting for usage limit until "),
+            "{}",
+            rewritten[0]
+        );
+        assert!(!rewritten[0].contains("working"), "{}", rewritten[0]);
+        assert!(
+            printed.contains(
+                "  [12:00:00] [amplihack:claude:999999] ... working (10s elapsed, 10s since last output)"
+            ),
+            "a heartbeat with no record is printed unchanged: {printed}"
+        );
+        assert!(
+            printed.contains("amplihack:claude:999998]"),
+            "wait line printed"
+        );
+        assert!(
+            printed.contains("amplihack:claude:999997]"),
+            "mixed line printed"
+        );
+
+        // What the failure evidence holds.
+        let kept: Vec<&str> = error
+            .lines()
+            .filter(|l| l.contains("3590s since last output"))
+            .collect();
+        assert!(!kept.is_empty(), "the runner's own line is kept: {error}");
+        assert!(kept.iter().all(|l| l.contains("working (")), "{kept:?}");
+        assert!(
+            error.contains("amplihack:claude:999999]"),
+            "an unrewritten heartbeat is kept: {error}"
+        );
+        assert!(
+            !error.contains("amplihack:claude:999998]"),
+            "a wait line is not buffered, so it is never classified: {error}"
+        );
+        assert!(
+            error.contains("amplihack:claude:999997]"),
+            "a line with the wait phrase and a limit marker is kept: {error}"
+        );
+    }
+
+    #[test]
+    fn an_expired_or_missing_record_leaves_the_heartbeat_as_it_was() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = private_dir(tmp.path(), "wait");
+        // The record expired a minute ago, though its process is alive.
+        let past = now() - 60;
+        let body = format!(
+            "umask 077\n\
+             printf '{{\"v\":1,\"pid\":%s,\"until\":{future},\"expires\":{past},\"steps\":[]}}' \"$$\" > \"${DIR_ENV}/$$\"\n\
+             echo \"  [12:00:00] [amplihack:claude:$$] ... working (3590s elapsed, 3590s since last output)\" >&2\n\
+             exit 1\n",
+            future = now() + 3600
+        );
+        let (result, printed, _temp) = run(&body, Some(&dir), false);
+        let _ = err(result);
+        assert!(printed.contains("... working (3590s elapsed"), "{printed}");
+        assert!(
+            !printed.contains("waiting for usage limit until"),
+            "{printed}"
+        );
+    }
+
+    #[test]
+    fn non_utf8_and_ordinary_lines_pass_unchanged_and_the_buffer_keeps_its_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = private_dir(tmp.path(), "wait");
+        let body = with_record(
+            "printf '\\377\\n' >&2\n\
+             echo 'ordinary line' >&2\n\
+             i=0; while [ $i -lt 6000 ]; do \
+             echo \"  [12:00:00] [amplihack:claude:$$] ... working (${i}s elapsed, ${i}s since last output)\" >&2; \
+             i=$((i+1)); done\n\
+             echo 'after-flood-marker' >&2\n\
+             exit 1\n",
+        );
+        let (result, printed, _temp) = run(&body, Some(&dir), false);
+        let error = err(result);
+        assert!(printed.contains("ordinary line"), "{printed}");
+        assert!(printed.contains("after-flood-marker"), "{printed}");
+        assert!(error.contains("after-flood-marker"), "pump died or stalled");
+        assert!(
+            error.len() < 1 << 20,
+            "the evidence buffer is bounded; got {} bytes",
+            error.len()
+        );
+        assert!(
+            !error.contains("waiting for usage limit until"),
+            "only the runner's own lines are buffered"
+        );
+    }
+
+    #[test]
+    fn an_inherited_valid_directory_is_reused_and_left_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = private_dir(tmp.path(), "wait");
+        let seen = tmp.path().join("seen");
+        let body = format!(
+            "printf '%s' \"${{{DIR_ENV}-unset}}\" > {}\nexit 1\n",
+            seen.display()
+        );
+        let (result, _printed, _temp) = run(&body, Some(&dir), false);
+        let _ = err(result);
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap(),
+            dir.to_str().unwrap()
+        );
+        assert!(dir.is_dir(), "a directory this run did not create stays");
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn with_none_inherited_the_run_makes_a_private_directory_and_removes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let seen = tmp.path().join("seen");
+        let body = format!(
+            "printf '%s' \"${{{DIR_ENV}-unset}}\" > {}\nexit 1\n",
+            seen.display()
+        );
+        let (result, _printed, _temp) = run(&body, None, false);
+        let _ = err(result);
+        let given = std::fs::read_to_string(&seen).unwrap();
+        assert_ne!(given, "unset", "the runner is given a directory");
+        assert!(given.ends_with("/usage-limit-wait"), "{given}");
+        assert!(
+            !Path::new(&given).exists(),
+            "a directory this run created is removed at its end: {given}"
+        );
+    }
+
+    #[test]
+    fn the_directory_the_runner_is_given_is_private_while_it_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let verdict = tmp.path().join("verdict");
+        // The runner looks at the directory it was given, while it runs.
+        let body = format!(
+            "ls -ld \"${{{DIR_ENV}}}\" | cut -c1-10 > {v}\nexit 1\n",
+            v = verdict.display()
+        );
+        let (result, _printed, _temp) = run(&body, None, false);
+        let _ = err(result);
+        let text = std::fs::read_to_string(&verdict).expect("the directory existed in the run");
+        assert_eq!(text.trim(), "drwx------", "{text}");
+    }
+
+    #[test]
+    fn an_inherited_directory_that_is_not_valid_is_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let loose = private_dir(tmp.path(), "loose");
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let seen = tmp.path().join("seen");
+        let body = format!(
+            "printf '%s' \"${{{DIR_ENV}-unset}}\" > {}\nexit 1\n",
+            seen.display()
+        );
+        let (result, _printed, _temp) = run(&body, Some(&loose), false);
+        let _ = err(result);
+        let given = std::fs::read_to_string(&seen).unwrap();
+        assert_ne!(
+            given,
+            loose.to_str().unwrap(),
+            "a loose directory is not trusted"
+        );
+        assert_ne!(given, "unset");
+        let mode = std::fs::metadata(&loose).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(
+            mode, 0o755,
+            "a directory this run did not create is not re-moded"
+        );
+    }
+
+    #[test]
+    fn a_dry_run_sets_no_wait_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let seen = tmp.path().join("seen");
+        let body = format!(
+            "printf '%s' \"${{{DIR_ENV}-unset}}\" > {}\nexit 0\n",
+            seen.display()
+        );
+        let (_result, _printed, _temp) = run(&body, None, true);
+        if let Ok(given) = std::fs::read_to_string(&seen) {
+            assert_eq!(given, "unset", "a dry run has no wait to show");
+        }
+    }
+}
