@@ -150,10 +150,16 @@ amplihack config get node.heap_consent --show-origin
 
 ## Out of scope
 
-- Other syncs on the launch path: `persist_launcher_context`, and the legacy
-  migration in `user_config::migrate`.
+- Other syncs on the launch path: the legacy migration in
+  `user_config::migrate`.
 - Syncing the parent directory after the rename.
 - The consent prompt itself, its timeout and the non-interactive auto-yes.
+
+`.claude/runtime/launcher_context.json` is written atomically, mode 0600, but
+not synced, because every launch rewrites it (#2068). After a crash it may be
+unchanged, missing, empty or unparsable. Readers treat the last three as absent
+and apply the 24-hour staleness check to an unchanged one, as described in
+[agent binary resolution](./agent-binary-routing.md#resolution-algorithm).
 
 ## Related
 

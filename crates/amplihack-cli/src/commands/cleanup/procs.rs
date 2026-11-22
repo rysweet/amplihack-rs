@@ -1,6 +1,6 @@
 //! Which folders running processes use (issue #1808): working folders, open
 //! files and TMPDIR/TMP/TEMP read from the process table. Split out of
-//! `sweep.rs`.
+//! `sweep.rs`; also used by the run's runtime guard (issue #2486).
 //!
 //! The table is `procfs::proc_root()` (issue #2042), so a test that runs
 //! `amplihack cleanup` reads its own fake tree, never every process on the
@@ -12,13 +12,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Working folders and open files of every other process this user can see.
-pub(super) struct ProcScan {
+pub(crate) struct ProcScan {
     available: bool,
     paths: Vec<PathBuf>,
 }
 
 impl ProcScan {
-    pub(super) fn take() -> Self {
+    pub(crate) fn take() -> Self {
         let Ok(entries) = fs::read_dir(crate::commands::agent::procfs::proc_root()) else {
             return Self {
                 available: false,
@@ -70,7 +70,7 @@ impl ProcScan {
     /// Whether a process has its working folder, a file open or its temporary
     /// folder variable in `path`.
     /// Without `/proc`, everything counts as in use.
-    pub(super) fn in_use(&self, path: &Path) -> bool {
+    pub(crate) fn in_use(&self, path: &Path) -> bool {
         if !self.available {
             return true;
         }
@@ -78,5 +78,13 @@ impl ProcScan {
         self.paths
             .iter()
             .any(|p| p.starts_with(&canonical) || p.starts_with(path))
+    }
+
+    /// Whether the scan could read the process table and found a process
+    /// using `path` (issue #2486). Unlike [`Self::in_use`], this is `false`
+    /// without `/proc`: the runtime guard then removes the folder as before,
+    /// while the sweep keeps failing closed through `in_use`.
+    pub(crate) fn found_user(&self, path: &Path) -> bool {
+        self.available && self.in_use(path)
     }
 }

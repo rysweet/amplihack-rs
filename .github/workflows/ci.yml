@@ -226,6 +226,9 @@ jobs:
       - name: Auto-drive — an agent/API failure is not a policy refusal (issue #1437)
         shell: bash
         run: bash tests/issue_1437_autodrive_loop.sh
+      - name: Test stubs — only a blob mode reads stdin (issue #2582)
+        shell: bash
+        run: bash tests/issue_2582_stub_stdin_contract.sh
       - name: Recipes — every committing recipe prepares its identity (issue #1394)
         shell: bash
         run: bash tests/recipe_commit_identity_static_test.sh
@@ -363,6 +366,11 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh
+      - name: "Recipes: a round pushes its own fix before review (issue #2923)"
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-2923-round-push-before-review.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh
@@ -399,9 +407,6 @@ jobs:
       - name: Recipes — documentation-only pull requests need no gadugi scenario (issue #2219)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh
-      - name: Recipes — the stop names what held the pull request (issue #2219)
-        shell: bash
-        run: bash amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
@@ -745,6 +750,72 @@ jobs:
       - name: Outside-in — agent binary resolution and hand-off (issues #1481, #1525)
         shell: bash
         run: AMPLIHACK_1481_QA_REQUIRE_ALL=1 AMPLIHACK_1481_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
+      # Issue #2788: run the shipped round through the installed launcher and
+      # pinned runner. Missing prerequisites fail; no live agent or GitHub writes.
+      - name: "Outside-in - Codex Crusty review launch (issue #2788)"
+        shell: bash
+        run: AMPLIHACK_2788_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2788-codex-review-launch-scenario.sh
+      # Issue #2784: step-16 with base_branch empty, an open pull request from the
+      # branch into dev and origin/HEAD main, through the pinned runner installed above.
+      - name: "Outside-in - Existing pull request on another base (issue #2784)"
+        shell: bash
+        run: AMPLIHACK_2784_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh
+      # Issue #2783: `recipe guide` finding a run started under a non-default
+      # work root, from a shell with no work-root variable, through the pinned
+      # runner installed above. No live agent and no GitHub writes.
+      - name: "Outside-in - recipe guide without a work root (issue #2783)"
+        shell: bash
+        run: AMPLIHACK_2783_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2783-guide-without-work-root-scenario.sh
+      # Issue #2815: a usage limit in a step whose prompt arrived on stdin, which
+      # is how every recipe agent step is launched, against the binary installed
+      # above. The limit states a past reset, so the real wait ends at once.
+      # The recipe case drives the pinned runner installed above, as the
+      # issue #1619 scenario below does; REQUIRE_ALL turns a case that could
+      # not run into a failure rather than a SKIP.
+      - name: "Outside-in - Usage limit on a piped prompt (issue #2815)"
+        shell: bash
+        run: AMPLIHACK_2815_QA_REQUIRE_ALL=1 AMPLIHACK_2815_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2815-piped-prompt-wait-scenario.sh
+      # Issue #2857: a limit on the retry a wait earned is waited for again and
+      # reported once, and a wait wakes on a login change only when the rotator's
+      # last cycle records room on the login now live. Runs against the binary
+      # installed above, with a stub agent and a stub rotator ledger; no real
+      # account, rotator or network.
+      - name: "Outside-in - Limit wait wakes only on room (issue #2857)"
+        shell: bash
+        run: AMPLIHACK_2857_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh
+      # Issue #2343: finalization reports the run's real outcome. A pull request
+      # open at the pushed head with checks still pending is a success that
+      # hands the pull request on, not an implementation failure; one at an
+      # unrelated commit fails with both commit ids named.
+      - name: "Outside-in - Finalization reads the run's real outcome (issue #2343)"
+        shell: bash
+        run: AMPLIHACK_2343_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2343-finalization-outcome-scenario.sh
+      # Issue #1619: outside-in check of the model and reasoning effort each
+      # harness receives when a recipe agent step declares a tier, through the
+      # pinned runner installed above. REQUIRE_ALL turns a case that could not
+      # run into a failure.
+      - name: "Outside-in: model tiers per harness (issue #1619)"
+        shell: bash
+        run: AMPLIHACK_1619_QA_REQUIRE_ALL=1 AMPLIHACK_1619_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1619-tier-scenario.sh
+      # Issue #1582: two launches that start together on one home with missing
+      # framework assets re-stage once, against the binary installed above.
+      - name: "Outside-in: concurrent launches re-stage once (issue #1582)"
+        shell: bash
+        run: AMPLIHACK_1582_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1582-concurrent-launch-scenario.sh
+      # Issue #2785: when a run ends, cleanup keeps a temporary folder that holds
+      # unsaved Git work (a commit never pushed, a file never committed) and
+      # removes a clean one, against the binary installed above and the pinned
+      # runner. The "remote" is a folder; no live agent and no network.
+      - name: "Outside-in: cleanup keeps unsaved Git work (issue #2785)"
+        shell: bash
+        run: AMPLIHACK_2785_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2785-cleanup-keeps-unsaved-work-scenario.sh
+      # Issue #2806: one whole build and one whole drive, end to end, against the
+      # binary installed above and the pinned runner. `gh`, `claude` and `codex`
+      # are stand-ins on a private PATH; the origin is a folder. Missing
+      # prerequisites fail; nothing reaches GitHub or a live agent.
+      - name: "Outside-in: whole build and whole drive (issue #2806)"
+        shell: bash
+        run: AMPLIHACK_2806_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing
@@ -862,6 +933,18 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }}
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
+
+      # The release build compiles neither cfg(test) nor debug_assertions
+      # code. Check the Unix tests of the crates with injected clocks and FIFO
+      # fixtures, and amplihack-utils' debug-only probe capture path
+      # (binary_finder::to_exit: poll, fcntl, FIONREAD), on macOS too, where
+      # Linux-only pidfds are unavailable. The dev profile, not --release,
+      # keeps debug_assertions on.
+      - name: Check test compilation (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          cargo check --locked --tests --target ${{ matrix.target }}
+          -p amplihack-cli -p amplihack-utils -p amplihack-hooks
 
       # Outside-in: drive the real hooks binary through session-stop and
       # user-prompt-submit, as Claude Code does (issue #1483).

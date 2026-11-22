@@ -230,7 +230,7 @@ pub fn refresh_capacity(
     t: i64,
     tag: Option<Tag>,
     platform: Option<&ProfileName>,
-) {
+) -> Vec<String> {
     let key_usable = platform.is_none() || key_check::reachable(&ctx.home).is_ok();
     let readings: Vec<(ProfileName, Rotated)> = rotated(live, reading, others)
         .into_iter()
@@ -238,12 +238,36 @@ pub fn refresh_capacity(
         .collect();
     let on_overflow = Tag::on_overflow(tag) && (key_usable || live != platform);
     let root = ctx.store.root();
-    capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home));
+    capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home))
+}
+
+/// The reading of the login that is live *after* this cycle (issue #2857):
+/// the swap target's when the cycle swapped, else the live login's own.
+///
+/// The target is found by name, never by position: the readings arrive in
+/// whatever order they were probed in, and a swap from a full login to one
+/// with room would otherwise record the wrong one. `None` when the cycle
+/// swapped to a login none of the readings names, which is a cycle that
+/// measured nothing about the login now in place.
+pub fn live_reading<'a>(
+    swapped_to: Option<&ProfileName>,
+    live: &'a Reading,
+    others: &'a [(ProfileName, Reading)],
+) -> Option<&'a Reading> {
+    match swapped_to {
+        Some(to) => others.iter().find(|(n, _)| n == to).map(|(_, r)| r),
+        None => Some(live),
+    }
 }
 
 /// Records the cycle as ended at `t` with `outcome`, after measuring from
-/// `measured_at`, with its overflow tag, drops expired spend blocks, and
-/// saves the ledger.
+/// `measured_at`, with its overflow tag and `live_room`, drops expired
+/// spend blocks, and saves the ledger.
+///
+/// `live_room` is the rotator's own reading of whether the login live after
+/// this cycle has plan room (issue #2857), for the usage-limit wait. `None`
+/// leaves the field out of the file, which every reader takes as no room:
+/// that is what a cycle which measured nothing about that login records.
 pub fn record(
     rs: &RotateState,
     l: &mut RotateLedger,
@@ -251,12 +275,14 @@ pub fn record(
     t: i64,
     measured_at: Option<i64>,
     tag: Option<Tag>,
+    live_room: Option<bool>,
 ) -> Result<(), ProfileError> {
     l.last_cycle = Some(LastCycle {
         at: t,
         measured_at,
         outcome: outcome.into(),
         overflow: tag.map(|t| t.as_str().to_string()),
+        live_room,
     });
     prune_blocks(l, t);
     rs.save_ledger(l)

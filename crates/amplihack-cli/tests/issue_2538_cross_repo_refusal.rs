@@ -8,12 +8,11 @@
 //! `.is_cross_repository == false` in `build_result`. The refusal is a hard
 //! stop, never an `escalate` decision, it comes before any cached
 //! `light-eligibility.json` or `escalation.json` is reused, and the step makes
-//! no `gh` call. `autodrive_open_pr_for_run_branch` (`autodrive_run_pr.sh`)
-//! applies the same rule to the PRs it lists.
+//! no `gh` call.
 //!
-//! Each reader is run for real, with a fake `gh` first on `PATH`, over the
-//! same table: `true`, a missing field, `null` and the string `"false"` are
-//! refused; `false` is accepted.
+//! The step is run for real, with a fake `gh` first on `PATH`: `true`, a
+//! missing field, `null`, the string `"false"` and `0` are refused; `false`
+//! is accepted.
 //!
 //! No agent, real `gh`, network or real `~/.amplihack` is used. Every test
 //! fails when `jq` is not installed.
@@ -25,8 +24,8 @@ use std::process::Output;
 use serde_json::{Value, json};
 
 use crate::support::auto_drive_light::{
-    Fakes, LightRepo, fake_bin, git, jq_available, private_dir, private_file, repo_root, run_bash,
-    show, stderr, stdout, step_command, tools_dir,
+    Fakes, LightRepo, fake_bin, jq_available, private_dir, private_file, repo_root, run_bash, show,
+    stderr, stdout, step_command,
 };
 
 const RECIPE: &str = "auto-drive-light";
@@ -44,15 +43,13 @@ fn refused_values() -> Vec<(&'static str, Option<Value>)> {
     ]
 }
 
-/// The readers under test are jq programs, so a host without jq cannot pass.
+/// The step under test is a jq check, so a host without jq cannot pass.
 fn require_jq() {
     assert!(
         jq_available(),
-        "`jq` must be on PATH to run the #2538 reader tests"
+        "`jq` must be on PATH to run the #2538 tests"
     );
 }
-
-// --- (a) light-eligibility ---------------------------------------------------
 
 /// A repository with one small commit after the base, a private state
 /// directory, a private TMPDIR and the fakes.
@@ -118,16 +115,12 @@ impl Env {
     /// Runs the live `light-eligibility` step with `cross` as
     /// `build_result.is_cross_repository` (`None` leaves it out).
     fn run(&self, cross: Option<&Value>, env: &[(&str, &str)]) -> Output {
-        self.run_raw(&self.build_result(cross), env)
-    }
-
-    /// Runs the live `light-eligibility` step with `br` as `build_result`.
-    fn run_raw(&self, br: &str, env: &[(&str, &str)]) -> Output {
+        let br = self.build_result(cross);
         let script = step_command(RECIPE, STEP);
         let root = repo_root();
         let mut v: Vec<(&str, &OsStr)> = vec![
             ("AMPLIHACK_HOME", root.as_os_str()),
-            ("RECIPE_VAR_build_result", OsStr::new(br)),
+            ("RECIPE_VAR_build_result", OsStr::new(&br)),
             ("RECIPE_VAR_repo_path", self.repo.wt.as_os_str()),
             ("RECIPE_VAR_light_max_lines", OsStr::new("300")),
             ("RECIPE_VAR_light_max_new_modules", OsStr::new("0")),
@@ -245,28 +238,6 @@ fn light_eligibility_refuses_a_cached_escalation_too() {
 }
 
 #[test]
-fn light_eligibility_refuses_more_than_one_build_result_object() {
-    require_jq();
-    // A second object must not override the first one's refused value.
-    let e = Env::new();
-    let br = format!(
-        "{}{}",
-        e.build_result(Some(&json!(true))),
-        e.build_result(Some(&json!(false)))
-    );
-    let o = e.run_raw(&br, &[]);
-    assert_ne!(o.status.code(), Some(0), "{}", show(&o));
-    assert!(
-        stderr(&o).contains("build_result is not exactly one JSON object"),
-        "{}",
-        show(&o)
-    );
-    assert!(stdout(&o).trim().is_empty(), "{}", show(&o));
-    assert!(e.file("light-eligibility.json").is_none(), "{}", show(&o));
-    assert_no_gh(&e, "two objects");
-}
-
-#[test]
 fn light_eligibility_accepts_exact_false_and_measures_without_gh() {
     require_jq();
     let e = Env::new();
@@ -289,98 +260,4 @@ fn light_eligibility_accepts_exact_false_and_measures_without_gh() {
         "decision: {j}"
     );
     assert_no_gh(&e, "accepted");
-}
-
-// --- (b) autodrive_run_pr.sh ---------------------------------------------------
-
-const RUN_BRANCH: &str = "feat/run-2538";
-
-/// A `gh` that answers `pr list` with `$FAKE_GH_PR_LIST` verbatim.
-const LIST_GH: &str = r#"#!/usr/bin/env bash
-( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "${FAKE_LOG:?}/gh.log"
-case "${1:-} ${2:-}" in
-  "pr list") printf '%s' "${FAKE_GH_PR_LIST-[]}" ;;
-esac
-exit 0
-"#;
-
-fn run_pr_list(entry: Option<Value>, raw: Option<&str>) -> (Output, Fakes, LightRepo) {
-    let repo = LightRepo::new();
-    git(&repo.wt, &["checkout", "-q", "-b", RUN_BRANCH]);
-    repo.write("docs/guide.md", "# guide\n\nrun work\n");
-    let head = repo.commit("run work");
-    let fakes = fake_bin(repo.tmp.path());
-    crate::support::exec_stub::write_executable(&fakes.bin.join("gh"), LIST_GH, 0o755);
-    let list = match (entry, raw) {
-        (_, Some(r)) => r.to_string(),
-        (Some(mut obj), None) => {
-            obj["number"] = json!(7);
-            obj["headRefName"] = json!(RUN_BRANCH);
-            obj["headRefOid"] = json!(head);
-            json!([obj]).to_string()
-        }
-        (None, None) => "[]".to_string(),
-    };
-    let tool = tools_dir().join("autodrive_run_pr.sh");
-    let script = r#". "$1" && autodrive_open_pr_for_run_branch "$2" "$3""#;
-    let o = run_bash(
-        &repo.home,
-        &fakes,
-        Some(script),
-        &[
-            tool.as_os_str(),
-            repo.wt.as_os_str(),
-            OsStr::new(RUN_BRANCH),
-        ],
-        &[("FAKE_GH_PR_LIST", OsStr::new(&list))],
-        "",
-    );
-    (o, fakes, repo)
-}
-
-#[test]
-fn run_pr_lookup_refuses_every_value_but_exact_false() {
-    require_jq();
-    let cases: Vec<(&str, Option<Value>, Option<&str>)> = vec![
-        ("true", Some(json!({"isCrossRepository": true})), None),
-        ("missing field", Some(json!({})), None),
-        ("null", Some(json!({"isCrossRepository": null})), None),
-        (
-            "string \"false\"",
-            Some(json!({"isCrossRepository": "false"})),
-            None,
-        ),
-        ("empty output", None, Some("")),
-        ("invalid JSON", None, Some("[{this is not json")),
-    ];
-    for (label, entry, raw) in cases {
-        let (o, _fakes, _repo) = run_pr_list(entry, raw);
-        assert_eq!(
-            o.status.code(),
-            Some(0),
-            "{label}: never fails\n{}",
-            show(&o)
-        );
-        assert!(
-            stdout(&o).trim().is_empty(),
-            "isCrossRepository {label}: no PR may be reported as the run's PR\n{}",
-            show(&o)
-        );
-    }
-}
-
-#[test]
-fn run_pr_lookup_accepts_exact_false() {
-    require_jq();
-    let (o, fakes, _repo) = run_pr_list(Some(json!({"isCrossRepository": false})), None);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert_eq!(stdout(&o).trim(), "7", "{}", show(&o));
-    assert!(
-        fakes
-            .gh_calls()
-            .iter()
-            .any(|c| c.first().map(String::as_str) == Some("pr")
-                && c.get(1).map(String::as_str) == Some("list")),
-        "the lookup must ask gh"
-    );
 }

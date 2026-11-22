@@ -185,7 +185,7 @@ any left from before the guard, list them by exact match and check each
 before ending it:
 
 ```bash
-pgrep -xa tail | grep -F ' -f /dev/null'
+ps -eo pid=,args= | grep -F 'tail -f /dev/null' | grep -v grep
 ```
 
 The list also shows the `tail -f /dev/null` entry point of any running
@@ -199,3 +199,4 @@ PID 1 or a user `systemd` as its parent (`ps -o ppid= -p <pid>`).
 - [CLI reference](../reference/cli.md)
 - [XPIA configuration: check order](../reference/xpia-configuration.md)
 - [Keep Tests from Prompting for Git Credentials](./keep-tests-from-prompting-for-git.md)
+- [Stop Background Jobs by PID](./stop-background-jobs-by-pid.md) - Stop your own job by `$!` or process group, never by pattern (#2582)

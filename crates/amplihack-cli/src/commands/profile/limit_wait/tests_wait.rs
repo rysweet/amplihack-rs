@@ -26,14 +26,40 @@ pub(super) struct Fake {
     signal_seen_at_ms: Option<i64>,
     sleeps: Vec<Duration>,
     pub(super) sleeps_after_signal: usize,
-    probes: Vec<i64>,
+    /// The virtual second of each login fingerprint. `tests_wait_ends`
+    /// derives from this where another login's capacity may be read, so the
+    /// reading's cadence is stated against the checks the wait already
+    /// makes rather than against their interval (issue #2694).
+    pub(super) probes: Vec<i64>,
     logs: Vec<String>,
     /// Virtual second from which the step's parent is gone.
     pub(super) parent_gone_from: Option<i64>,
     /// Virtual second from which the rotator reports fresh capacity.
     pub(super) capacity_from: Option<i64>,
+    /// The virtual second of each reading of the rotator's cycle. The
+    /// other-login source has `other_probes`; this is its counterpart, so a
+    /// wait that must read *neither* can say so about both (issue #2731).
+    pub(super) capacity_probes: Vec<i64>,
     /// Virtual second from which another stored login reports capacity.
     pub(super) other_from: Option<i64>,
+    /// Virtual second from which the named login key differs from the one
+    /// the attempt ran on (issue #2731). Unlike `prints` this needs no
+    /// baseline: the anchor was read before the attempt was launched.
+    pub(super) login_changed_from: Option<i64>,
+    /// The virtual second of each reading of the login key.
+    pub(super) login_probes: Vec<i64>,
+    /// The virtual second of each reading of another login's capacity, so a
+    /// test can show the wait adds no cadence of its own (issue #2694).
+    pub(super) other_probes: Vec<i64>,
+    /// Virtual second from which the login the retry would use has room, as
+    /// the rotator's last cycle records it (issue #2857). It defaults to room
+    /// from the start, so a test that is not about the room gate sees a wait
+    /// that is never held back; the tests that are about it close it with
+    /// `None` or open it later.
+    pub(super) change_room_from: Option<i64>,
+    /// The virtual second of each question "may this change end the wait",
+    /// which is asked only after a login change has been seen.
+    pub(super) change_probes: Vec<i64>,
 }
 
 impl Fake {
@@ -49,7 +75,13 @@ impl Fake {
             logs: Vec::new(),
             parent_gone_from: None,
             capacity_from: None,
+            capacity_probes: Vec::new(),
             other_from: None,
+            other_probes: Vec::new(),
+            login_changed_from: None,
+            login_probes: Vec::new(),
+            change_room_from: Some(0),
+            change_probes: Vec::new(),
         }
     }
 
@@ -97,6 +129,11 @@ impl WaitDeps for Fake {
             .and_then(|(_, p)| *p)
     }
 
+    fn login_changed(&mut self) -> bool {
+        self.login_probes.push(self.elapsed());
+        self.login_changed_from.is_some_and(|t| self.elapsed() >= t)
+    }
+
     fn signal(&mut self) -> Option<i32> {
         let (from, sig) = self.signal_from?;
         if self.ms >= from * 1000 {
@@ -113,11 +150,18 @@ impl WaitDeps for Fake {
 
     fn rotator_capacity(&mut self, start: i64) -> bool {
         assert_eq!(start, T0, "capacity is judged from the wait's start");
+        self.capacity_probes.push(self.elapsed());
         self.capacity_from.is_some_and(|t| self.elapsed() >= t)
+    }
+
+    fn change_may_end(&mut self) -> bool {
+        self.change_probes.push(self.elapsed());
+        self.change_room_from.is_some_and(|t| self.elapsed() >= t)
     }
 
     fn other_capacity(&mut self, start: i64) -> bool {
         assert_eq!(start, T0, "capacity is judged from the wait's start");
+        self.other_probes.push(self.elapsed());
         self.other_from.is_some_and(|t| self.elapsed() >= t)
     }
 
@@ -127,20 +171,20 @@ impl WaitDeps for Fake {
 }
 
 pub(super) fn plan_in(secs: i64, bound: Bound) -> Plan {
-    Plan {
-        until: T0 + secs,
-        bound,
-        kind: PlanKind::Reset,
-        reset: Some(T0),
-    }
+    Plan::for_test(T0 + secs, bound, PlanKind::Reset, Some(T0))
 }
 
 pub(super) fn capacity_plan_in(secs: i64, bound: Bound) -> Plan {
-    Plan {
-        kind: PlanKind::Capacity,
-        reset: None,
-        ..plan_in(secs, bound)
-    }
+    Plan::for_test(T0 + secs, bound, PlanKind::Capacity, None)
+}
+
+/// A login-change plan ending `secs` after `T0` (issue #2731), built by the
+/// real constructor rather than by hand: the flag that suppresses the two
+/// capacity sources is `plan_login_change`'s to set, and a test that could
+/// set it itself would stop proving that the constructor does.
+pub(super) fn login_change_plan_in(secs: i64) -> Plan {
+    let max = u64::try_from(secs).expect("a login-change wait's length is not negative");
+    super::plan::plan_login_change(T0, Some(max), None)
 }
 
 #[test]

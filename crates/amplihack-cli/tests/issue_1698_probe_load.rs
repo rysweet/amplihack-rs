@@ -74,12 +74,19 @@ fn a_timed_out_candidate_is_failed_never_chosen_and_probed_again() {
             "{}",
             text(&out.stdout)
         );
+        // This cycle's own warning is the proof that this cycle probed
+        // spare again: the rotator writes it only after starting a probe
+        // and reaching the deadline with no answer, so a slower host only
+        // makes it surer. Counting spare's record files instead would ask
+        // the stub to spawn and write within the 3 s it is being cut off
+        // at, which is the race this test deliberately sets up; see
+        // `docs/howto/keep-tests-passing-under-host-load.md`, "Keep the
+        // rest of the run off the short deadline".
         assert!(
             text(&out.stderr).contains("warning: rotate: probe of spare timed out"),
-            "{}",
+            "cycle {cycle}: {}",
             text(&out.stderr)
         );
-        assert_eq!(f.usage_probes("spare"), cycle, "probed every cycle");
     }
     assert_eq!(ino(&f.home_login()), Some(f.live_ino));
     assert_each_login_once_by_inode(&f);

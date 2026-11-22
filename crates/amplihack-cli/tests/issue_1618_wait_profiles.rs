@@ -247,7 +247,7 @@ fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
 }
 
 #[test]
-fn a_piped_prompt_is_not_rerun_by_auto_switch_either() {
+fn a_piped_prompt_is_rerun_by_auto_switch_with_the_same_prompt() {
     let f = with_profiles();
     switch_on(&f);
     // `-p` with no prompt text: the prompt is on the pipe.
@@ -255,7 +255,7 @@ fn a_piped_prompt_is_not_rerun_by_auto_switch_either() {
     c.env("AMPLIHACK_CLAUDE_PROFILE", "X")
         .env("CLAUDE_CONFIG_DIR", f.profiles.join("X"))
         .env(TOGGLE_ENV, "1")
-        .env("LIMIT_CALLS", "5")
+        .env("LIMIT_CALLS", "1")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -266,12 +266,17 @@ fn a_piped_prompt_is_not_rerun_by_auto_switch_either() {
         stdin.write_all(b"the piped prompt\n").unwrap();
     }
     let out = child.wait_with_output().unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 1, "no rerun under Y with an empty prompt");
-    let stderr = text(&out.stderr);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "X, then the rerun under Y");
+    assert_eq!(f.call("0", 1)["PROFILE"], "X");
+    assert_eq!(f.call("0", 2)["PROFILE"], "Y");
+    let want = crate::issue_1618_fixture::sha256_hex(b"the piped prompt\n");
+    assert_eq!(f.call("0", 1)["STDIN"], want);
+    assert_eq!(f.call("0", 2)["STDIN"], want, "Y got the same prompt");
     assert!(
-        stderr.contains("auto-switch: no rerun under profile \"Y\""),
-        "{stderr}"
+        !text(&out.stderr).contains("piped_prompt"),
+        "{}",
+        describe(&out)
     );
-    assert_eq!(wait_lines(&out), vec!["skipped reason=piped_prompt"]);
+    assert!(wait_lines(&out).iter().all(|l| !l.starts_with("skipped")));
 }

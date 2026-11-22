@@ -1,21 +1,19 @@
 //! File-backed values must survive the actual validator's JSON output boundary.
+//!
+//! The terminal state is the file's assessment, reported as written (#2343,
+//! #2809). The values under test are the ones the validator emits beside it.
+use super::assessed::{assessed, completion, facts_line};
 use super::fixtures::*;
 use serde_json::{Value, json};
 
 fn completed() -> Value {
-    json!({
-        "implementation_terminal_evidence": {
-            "implementation_completed": true, "terminal_no_op": false
-        },
-        "verification_terminal_evidence": {"verification_completed": true},
-        "allow_no_op": false,
-        "finalization_evidence": {"git": {"dirty_worktree": "false"}}
-    })
+    assessed(completion(true), "IMPLEMENTED_VERIFIED", "")
 }
 
 fn validate(context: Value) -> Run {
-    // Only file paths enter argv/environment. The unrelated cwd and explicit
-    // clean evidence prevent repository discovery from masking this boundary.
+    // Only file paths enter argv/environment. The unrelated cwd and the
+    // outcome recorded in the evidence prevent repository discovery from
+    // masking this boundary.
     let f = Fixture::new();
     let ceiling = f.temp.path().display().to_string();
     let r = f
@@ -33,10 +31,13 @@ fn expected(pr_url: &str, pr_number: &str) -> Value {
     json!({
         "terminal_success": "true",
         "terminal_state": "IMPLEMENTED_VERIFIED",
-        "terminal_reason": "implementation and verification evidence is complete",
-        "required_next_action": "No action required.",
+        "terminal_reason": "assess-finalization decided IMPLEMENTED_VERIFIED on the run's outcome",
+        "required_next_action": "Act on IMPLEMENTED_VERIFIED.",
         "hollow_success_detected": "false",
-        "evidence_used": "implementation_completed=true,verification_completed=true",
+        "evidence_used": format!(
+            "{},assessment_state=IMPLEMENTED_VERIFIED,assessment_action=none,reporting_failure=false",
+            facts_line()
+        ),
         "finalizer_schema_version": "1",
         "finalizer_confidence": "high",
         "finalizer_output_valid": "true",
@@ -106,4 +107,32 @@ fn validator_numeric_pr_number_is_emitted_as_a_string() {
     let mut context = completed();
     context["terminal_state"] = json!({"pr_number": 1538});
     exact_output(&validate(context), expected("", "1538"), 0);
+}
+
+// The assessment's own text is a transported value too. Large and carrying
+// control characters, it must come out bounded and clean, in an object that is
+// still one complete result of 19 String fields.
+#[test]
+fn validator_large_file_assessment_text_is_bounded_and_free_of_control_characters() {
+    let text = format!("decided {}", "x\n\t\u{1}".repeat(70_000));
+    assert!(text.len() >= 200_000);
+    let mut context = completed();
+    context["finalization_assessment"]["reason"] = json!(text);
+    context["finalization_assessment"]["next_action"] = json!(text);
+    let r = validate(context);
+    r.exit(0);
+    let actual = r.json();
+    assert_eq!(actual.as_object().unwrap().len(), 19);
+    assert!(actual.as_object().unwrap().values().all(Value::is_string));
+    assert_eq!(actual["terminal_state"], "IMPLEMENTED_VERIFIED");
+    assert_eq!(actual["terminal_success"], "true");
+    for field in ["terminal_reason", "required_next_action"] {
+        let text = actual[field].as_str().unwrap();
+        assert!(text.starts_with("decided xxxx"), "{field}: {text:.40}");
+        assert!(text.len() <= 1200, "{field} is {} bytes", text.len());
+        assert!(
+            !text.chars().any(char::is_control),
+            "{field} kept a control"
+        );
+    }
 }

@@ -20,7 +20,8 @@
 use super::config::{self, Config, FileState};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
-use super::rerun::{Pick, login_ready, nested_candidate};
+use super::own_login::OwnLogins;
+use super::rerun::{KeyAlert, Pick, login_ready, nested_candidate, silent_candidate};
 use super::state::State;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate;
@@ -51,6 +52,21 @@ pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
             rotate::daemon::rotating(s.root())
                 && could_take_over(Some(s), live_profile(s).as_deref())
         })
+    })
+}
+
+/// Whether a rotator is running with auto-switch on for a `$HOME/.claude`
+/// step, and nothing else (issue #2731). A login-change wait needs only
+/// this: the rotator is the one thing that moves a login into `~/.claude`,
+/// and which login it moves in is its own choice, so neither the stored
+/// readings nor the "another login could take over" rules say anything about
+/// whether such a wait can end. With no rotator the step fails at once, as
+/// it did before.
+pub(crate) fn home_rotator(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
+    Box::new(move || {
+        store
+            .as_ref()
+            .is_some_and(|s| rotate::daemon::rotating(s.root()))
     })
 }
 
@@ -106,16 +122,32 @@ fn another_login(store: &ProfileStore, own: Option<&str>, home: Option<&Path>) -
         }
     };
     let overflow = OverflowInputs::load_at(store.root(), &cfg, fsx::now(), home);
-    another_login_with(store, own, &cfg, &overflow)
+    // The same home for the Keychain lookups as for everything else here.
+    another_login_in(store, own, &cfg, &overflow, &OwnLogins::new(store, home))
 }
 
 /// [`another_login`] with the config and overflow inputs already read, so a
-/// test can give the overflow gate.
+/// test can give the overflow gate. The home is the process's own.
+#[cfg(test)]
 pub(super) fn another_login_with(
     store: &ProfileStore,
     own: Option<&str>,
     cfg: &Config,
     overflow: &OverflowInputs,
+) -> Option<bool> {
+    let home = crate::commands::profile::usage_cmd::home_dir();
+    let logins = OwnLogins::new(store, home.as_deref());
+    another_login_in(store, own, cfg, overflow, &logins)
+}
+
+/// [`another_login`] over inputs already read; `logins` answers whether
+/// each profile holds a login of its own.
+fn another_login_in(
+    store: &ProfileStore,
+    own: Option<&str>,
+    cfg: &Config,
+    overflow: &OverflowInputs,
+    logins: &OwnLogins<'_>,
 ) -> Option<bool> {
     let state = State::new(store.root()).ok()?;
     let ledger = RotateState::new(&state.root).load_ledger().ok()?;
@@ -133,7 +165,7 @@ pub(super) fn another_login_with(
             !blocked.contains_key(*n)
                 && !cfg.exclude.iter().any(|e| e == p)
                 && pool.could_select(p)
-                && login_ready(&state, overflow, p)
+                && login_ready(&state, overflow, logins, p)
         })
         .map(|(n, _)| hosts.account_in(n))
         .collect();
@@ -153,17 +185,43 @@ pub(super) fn is_fresh(observed_at: i64, start: i64, now: i64) -> bool {
 /// The profile auto-switch would choose now for a step that inherited
 /// `inherited`, from readings taken since `start` only: a profile with an
 /// older reading, or none, has shown nothing during this wait.
-pub(crate) fn capacity_candidate(
+///
+/// The same candidate rules as `rerun::nested_candidate`, narrowed by the
+/// freshness skip above. `alert` is the caller's, because this has two
+/// callers that want different things of it (issue #2694):
+///
+/// - the wait's 30-second probe passes [`KeyAlert::Silent`], since over a
+///   multi-hour wait it asks hundreds of times and the held-key ALERT, the
+///   rotate-log line and the key-held marker write would repeat for hours in
+///   the step's stderr;
+/// - the retry's single selection once the wait is over passes
+///   [`KeyAlert::Write`], as it did before #2694: it runs once and it is the
+///   call that moves the step, so its held-back key is worth a line.
+///
+/// Its reads are bounded: the effective configuration, the auto-switch
+/// ledger, the readings, a listing of the profile root, and the overflow
+/// inputs, which resolve each stored profile's kind and read the rotate
+/// ledger for spend blocks and the overflow gate. Each candidate costs one
+/// further `stat` for its login file; on macOS a candidate without one is
+/// resolved once more through `kind::Ctx`, which is where the Keychain is
+/// asked (issue #2885).
+pub(super) fn capacity_candidate(
     store: &ProfileStore,
     state: &State,
     inherited: &ProfileName,
     start: i64,
     now: i64,
+    alert: KeyAlert,
 ) -> Option<Pick> {
     let eff = config::effective(store.root());
     if !eff.on {
         return None;
     }
+    // A refused readings file — wrong mode, a symlink, over the size bound,
+    // an unparsable account key — is indistinguishable here from no
+    // readings, so takeover goes quiet instead of complaining. Refusing to
+    // parse it is the right posture; the missing diagnostic is issue #2728,
+    // which this probe makes more pressing by asking on every wait kind.
     let ledger = state.load_ledger().ok()?;
     let readings = state.try_load_usage().ok()?.accounts;
     let profiles: Vec<ProfileName> = store
@@ -181,14 +239,25 @@ pub(crate) fn capacity_candidate(
                 .is_some_and(|r| is_fresh(r.observed_at, start, now))
         })
         .collect();
-    nested_candidate(
-        state,
-        &ledger,
-        &profiles,
-        &readings,
-        &eff.config,
-        inherited.as_str(),
-        &stale,
-    )
-    .filter(|p| p.profile != *inherited)
+    let pick = match alert {
+        KeyAlert::Silent => silent_candidate(
+            state,
+            &ledger,
+            &profiles,
+            &readings,
+            &eff.config,
+            inherited.as_str(),
+            &stale,
+        ),
+        KeyAlert::Write => nested_candidate(
+            state,
+            &ledger,
+            &profiles,
+            &readings,
+            &eff.config,
+            inherited.as_str(),
+            &stale,
+        ),
+    };
+    pick.filter(|p| p.profile != *inherited)
 }

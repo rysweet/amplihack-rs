@@ -18,6 +18,7 @@
 //! directory unless the profile root is under HOME and itself under a
 //! temporary directory.
 
+use super::ProfileError;
 use super::name::ProfileName;
 use super::store::ProfileStore;
 use crate::commands::install::hook_block::{FileMerge, update_file};
@@ -37,17 +38,40 @@ pub(crate) enum Refresh {
     Skipped(String),
 }
 
+/// What a pass over the managed profiles came to.
+///
+/// Issue #2589 (R6): the pass used to return a bare list, which was empty
+/// both when the root held no profiles and when the root could not be read
+/// at all. The install then said the deny rules were written "in every
+/// managed profile that has one" after a run that read no profile. The two
+/// cases are told apart here, and the failure travels back to the caller so
+/// it can be reported on the caller's own channels.
+#[derive(Debug, Default)]
+pub(crate) struct ProfileRefresh {
+    /// One entry per profile that was visited, in listing order.
+    pub results: Vec<(String, Refresh)>,
+    /// Why no profile could be reached: the root could not be resolved, or
+    /// listing it failed. `None` when the root was read, including when it
+    /// holds no profiles at all.
+    pub root_failure: Option<String>,
+}
+
 /// Applies `update`, which registers `hooks_bin`, to the `settings.json` of
 /// every profile under the configured root. Returns each profile's name and
-/// result; empty when no root is configured. When [`hook_path_refusal`]
-/// refuses `hooks_bin`, no file is opened and every profile with a
-/// `settings.json` is `Skipped` with the reason.
+/// result, and the reason no profile could be reached when that is why the
+/// list is empty. When [`hook_path_refusal`] refuses `hooks_bin`, no file is
+/// opened and every profile with a `settings.json` is `Skipped` with the
+/// reason.
+/// `update` is given the profile's name as well as its settings, because a
+/// line about one profile that does not name it cannot be acted on
+/// (issue #2589).
 pub(crate) fn refresh_profile_settings(
     hooks_bin: &Path,
-    update: &dyn Fn(&mut Value),
-) -> Vec<(String, Refresh)> {
-    let Ok(store) = ProfileStore::from_env() else {
-        return Vec::new();
+    update: &dyn Fn(&str, &mut Value),
+) -> ProfileRefresh {
+    let store = match ProfileStore::from_env() {
+        Ok(store) => store,
+        Err(error) => return ProfileRefresh::failed(&error),
     };
     let home = current_home();
     let account_home = passwd_home();
@@ -59,7 +83,7 @@ pub(crate) fn refresh_profile_settings(
         &temp_bases(),
     ) {
         Some(reason) => refused_all(&store, &reason),
-        None => refresh_in(&store, update),
+        None => refresh_in_named(&store, update),
     }
 }
 
@@ -195,12 +219,54 @@ fn current_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+impl ProfileRefresh {
+    /// A pass that reached no profile at all, with `error` reduced to a
+    /// short phrase by [`root_reason`].
+    fn failed(error: &ProfileError) -> Self {
+        Self {
+            results: Vec::new(),
+            root_failure: Some(root_reason(error)),
+        }
+    }
+
+    /// A pass that read the root, whatever it found there.
+    fn read(results: Vec<(String, Refresh)>) -> Self {
+        Self {
+            results,
+            root_failure: None,
+        }
+    }
+}
+
+/// Why the managed profiles could not be reached, as a short phrase chosen
+/// from the condition.
+///
+/// Never `error.to_string()`: `ProfileError::SymlinkRefused` and
+/// `InvalidRoot` carry the configured root path, and this reason reaches the
+/// install summary and the policy warning, where a path would leak the shape
+/// of the machine and could carry whatever the path happens to hold. The
+/// phrases are the ones `docs/reference/dangerous-command-policy.md` prints.
+///
+/// The catch-all arm is the requirement rather than a convenience: an
+/// exhaustive match would compile a variant added later straight into
+/// user-visible output, with no local signal that it had happened.
+fn root_reason(error: &ProfileError) -> String {
+    match error {
+        ProfileError::SymlinkRefused(_) => "the profile root is a symlink".to_string(),
+        ProfileError::Io(io) => io.kind().to_string(),
+        ProfileError::InvalidRoot(_) | ProfileError::InvalidSavedRoot { .. } => {
+            "the profile root could not be resolved".to_string()
+        }
+        _ => "the profile root could not be read".to_string(),
+    }
+}
+
 /// Every profile's result when the hooks path is refused. Only stats
 /// `settings.json`; nothing is opened.
-fn refused_all(store: &ProfileStore, reason: &str) -> Vec<(String, Refresh)> {
+fn refused_all(store: &ProfileStore, reason: &str) -> ProfileRefresh {
     each_profile(
         store,
-        &|dir| match std::fs::symlink_metadata(dir.join("settings.json")) {
+        &|_name, dir| match std::fs::symlink_metadata(dir.join("settings.json")) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Refresh::Missing,
             _ => Refresh::Skipped(reason.to_string()),
         },
@@ -208,31 +274,52 @@ fn refused_all(store: &ProfileStore, reason: &str) -> Vec<(String, Refresh)> {
 }
 
 /// Unchecked: it does not consult [`hook_path_refusal`]. Production code
-/// calls [`refresh_profile_settings`]; tests call this with a fixture store.
+/// calls [`refresh_profile_settings`], whose closure is also given the
+/// profile's name; this name-less form is what the fixture tests use.
+#[cfg(test)]
 pub(super) fn refresh_in(
     store: &ProfileStore,
     update: &dyn Fn(&mut Value),
 ) -> Vec<(String, Refresh)> {
-    each_profile(store, &|dir| refresh_one(dir, update))
+    // The fixtures here are about what happens to one profile's file, not
+    // about the root, so they keep the plain list they were written against.
+    refresh_in_named(store, &|_name, settings| update(settings)).results
+}
+
+/// [`refresh_in`] whose closure is also given the profile's name.
+pub(super) fn refresh_in_named(
+    store: &ProfileStore,
+    update: &dyn Fn(&str, &mut Value),
+) -> ProfileRefresh {
+    each_profile(store, &|name, dir| {
+        refresh_one(dir, &|settings| update(name, settings))
+    })
 }
 
 /// `act` applied to each listed profile's directory; a profile whose name
 /// does not parse is left out, and one that does not resolve is `Skipped`.
-fn each_profile(store: &ProfileStore, act: &dyn Fn(&Path) -> Refresh) -> Vec<(String, Refresh)> {
-    let Ok(names) = store.list() else {
-        return Vec::new();
+fn each_profile(store: &ProfileStore, act: &dyn Fn(&str, &Path) -> Refresh) -> ProfileRefresh {
+    // A root that cannot be listed is a failure, not an empty set of
+    // profiles. `list` returns `Ok(vec![])` for a root that is simply not
+    // there, so the ordinary "nothing to write into" case does not come
+    // through here and raises no warning (issue #2589, R6).
+    let names = match store.list() {
+        Ok(names) => names,
+        Err(error) => return ProfileRefresh::failed(&error),
     };
-    names
-        .into_iter()
-        .filter_map(|name| {
-            let parsed = ProfileName::parse(&name).ok()?;
-            let result = match store.resolve(&parsed) {
-                Ok(dir) => act(&dir),
-                Err(error) => Refresh::Skipped(error.to_string()),
-            };
-            Some((name, result))
-        })
-        .collect()
+    ProfileRefresh::read(
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let parsed = ProfileName::parse(&name).ok()?;
+                let result = match store.resolve(&parsed) {
+                    Ok(dir) => act(&name, &dir),
+                    Err(error) => Refresh::Skipped(error.to_string()),
+                };
+                Some((name, result))
+            })
+            .collect(),
+    )
 }
 
 /// Issue #2279 (C6): one profile's file through `hook_block::update_file`,

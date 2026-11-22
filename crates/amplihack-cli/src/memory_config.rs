@@ -29,7 +29,7 @@ struct SavedPreference {
 
 pub fn prepare_memory_config(existing_node_options: Option<&str>) -> Result<MemoryConfig> {
     let config = resolve_memory_config(existing_node_options)?;
-    println!("{}", display_memory_config(&config));
+    eprintln!("{}", display_memory_config(&config));
     Ok(config)
 }
 
@@ -213,7 +213,7 @@ fn prompt_user_consent(config: &MemoryConfig) -> Result<bool> {
     }
 
     let system_ram = config.system_ram_gb.unwrap_or(0);
-    println!(
+    eprintln!(
         "Memory: {} GB RAM detected, recommend {} MB limit",
         system_ram, config.recommended_limit_mb
     );

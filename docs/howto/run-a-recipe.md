@@ -1,3 +1,10 @@
+---
+title: Run a Recipe End-to-End
+description: Launch a recipe in a named checkout and inspect its result.
+doc_type: howto
+last_updated: 2026-11-18
+---
+
 # Run a Recipe End-to-End
 
 How to use `amplihack recipe run` to execute a YAML recipe through the Rust CLI
@@ -133,6 +140,42 @@ the terminal status:
 ```text
 amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","status":"success","child_pid":41822,"exit_code":0,"runner_path":"/home/user/.local/bin/recipe-runner-rs"}
 ```
+
+---
+
+## Know where the run works
+
+Run in the checkout you select. `-w` / `--working-dir` sets the runner's
+working directory; `repo_path` supplies the repository to recipe steps.
+Use matching paths when both refer to the same checkout:
+
+```sh
+amplihack recipe run default-workflow -w "$PWD" \
+  -c repo_path="$PWD" \
+  -c task_description="Document named-checkout recipe execution" \
+  -c base_branch=main -c no_merge=true --detach
+```
+
+The command prints the detached session and log path. The default workflow
+creates or recovers its task worktree in the named repository. Auto-drive
+resolves the PR's registered linked worktree there. An explicitly selected
+linked worktree is preserved; no private repository or detached execution
+copy is inserted between the caller and its workflow.
+
+Steps can modify files and the index in their selected checkout. Paths are
+used directly rather than translated into a private copy. Ignored files
+remain available in that checkout. Credentials and user/system Git
+configuration remain available; inherited Git repository and index routing
+is scrubbed after environment construction. See
+[workflow commit identity](configure-workflow-commit-identity.md).
+
+A resumed run continues in the retained checkout/worktree, including local
+uncommitted or unpushed work. A dry run executes no steps. Runs need no
+`ptrace` privilege and keep no Git-command journal.
+
+Try [Run a recipe in a selected worktree](../tutorials/recipe-checkout-isolation.md).
+The [execution reference](../reference/recipe-checkout-isolation.md) covers
+review evidence, assessment, and retention.
 
 ---
 
@@ -452,3 +495,4 @@ amplihack recipe run recipe.yaml -c task_description="..." --verbose
 - [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_CONTEXT_*` and `RECIPE_RUNNER_RS_PATH`
 - [Run amplihack in Non-interactive Mode](./run-in-noninteractive-mode.md) — CI configuration
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How agents are located during recipe execution
+- [Recipe Execution in Named Checkouts](../reference/recipe-checkout-isolation.md) — Execution directories, review, and retained work

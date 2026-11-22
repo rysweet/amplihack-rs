@@ -76,7 +76,9 @@ fn merge_restrictions_reach_shared_loops_and_light_escalation() {
 }
 
 #[test]
-fn finalization_is_an_agent_responsibility_with_structured_outcome() {
+fn finalization_states_its_outcome_in_prose_and_merges_only_from_a_bash_step() {
+    // #2575: the agents observe and state the outcome in plain words; nothing
+    // parses their text. The only merge request is the `merge` bash step.
     let doc = recipe("autodrive-finalize");
     assert_eq!(
         doc["context"]["no_merge"].as_str(),
@@ -86,12 +88,16 @@ fn finalization_is_an_agent_responsibility_with_structured_outcome() {
     assert!(
         steps(&doc).iter().any(|step| {
             step["type"].as_str() == Some("agent")
-                && step["prompt"]
-                    .as_str()
-                    .is_some_and(|prompt| !prompt.trim().is_empty())
-                && step["parse_json"].as_bool() == Some(true)
+                && step["output"].as_str() == Some("autodrive_finalization")
+                && step["parse_json"].as_bool() != Some(true)
         }),
-        "an agent must observe and report the final state"
+        "an agent must state the final outcome, unparsed"
+    );
+    assert!(
+        steps(&doc).iter().any(|step| {
+            step["id"].as_str() == Some("merge") && step["type"].as_str() == Some("bash")
+        }),
+        "the merge is requested by a bash step under captured authorization"
     );
     let mut pending = vec!["auto-drive-to-merge".to_string()];
     let mut seen = BTreeSet::new();
@@ -373,6 +379,39 @@ mod runner {
         )
     }
 
+    /// The child runner ran and exited 0, and the run's own verdict is the one
+    /// its invocation name earns.
+    ///
+    /// #2663 M1: a top-level drive succeeds only when it merged (`stop_reason`
+    /// `completed`); these stub runs merge nothing, so a drive ends without
+    /// success. #2769: every other invocation the trusted path accepts, which
+    /// is every `autodrive-*` sub-recipe, is judged by its own steps, and
+    /// these stubs' steps all pass, so the run succeeds.
+    fn assert_child_ran(invocation: &str, output: &Output) {
+        let result: Json = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|e| panic!("structured runner result ({e}): {}", details(output)));
+        assert_eq!(
+            result["log_pointer"]["exit_code"],
+            json!(0),
+            "{}",
+            details(output)
+        );
+        let expected = match invocation {
+            // A drive is judged by its merge, and these stub runs merge nothing.
+            "auto-drive-to-merge" | "auto-drive-light" => {
+                result["autodrive_outcome"]["stop_reason"] == json!("completed")
+            }
+            // A sub-recipe is judged by its own steps, which all passed above.
+            _ => true,
+        };
+        assert_eq!(
+            output.status.success(),
+            expected,
+            "{invocation}: {}",
+            details(output)
+        );
+    }
+
     #[test]
     fn local_recipe_defaults_cannot_grant_authority_or_replace_trusted_defaults() {
         for (name, args, no_merge, dry_run) in [
@@ -401,7 +440,7 @@ mod runner {
             let fixture = Fixture::new();
             let output = fixture.run_with_defaults(name, &args, false,
                 "{no_merge: 'false', autodrive_dry_run: 'true', pr_number: '999', task_description: 'untrusted-default'}");
-            assert!(output.status.success(), "{}", details(&output));
+            assert_child_ran(name, &output);
             let result: Json = serde_json::from_slice(&output.stdout).unwrap();
             let inputs = fs::read_to_string(fixture.root.join("context-inputs")).unwrap();
             let inputs: Vec<_> = inputs.lines().collect();
@@ -457,7 +496,7 @@ mod runner {
     fn child_context_and_child_result_cannot_replace_invocation_authorization() {
         let fixture = Fixture::new();
         let output = fixture.run("auto-drive-to-merge", &["-c", "no_merge=true"], false);
-        assert!(output.status.success(), "{}", details(&output));
+        assert_child_ran("auto-drive-to-merge", &output);
         let result: Json =
             serde_json::from_slice(&output.stdout).expect("structured runner result");
         let auth = &result["autodrive_authorization"];
@@ -572,7 +611,7 @@ mod runner {
             &["-c", "no_merge=true", "-c", &arg],
             false,
         );
-        assert!(output.status.success(), "{}", details(&output));
+        assert_child_ran("auto-drive-to-merge", &output);
         let inputs = recorded_inputs(&fixture);
         assert_eq!(inputs[3], state.to_string_lossy(), "{}", details(&output));
         let result: Json = serde_json::from_slice(&output.stdout).unwrap();
@@ -595,7 +634,7 @@ mod runner {
         for _ in 0..2 {
             let fixture = Fixture::new();
             let output = fixture.run("auto-drive-to-merge", &["-c", "no_merge=true"], false);
-            assert!(output.status.success(), "{}", details(&output));
+            assert_child_ran("auto-drive-to-merge", &output);
             let assigned = PathBuf::from(&recorded_inputs(&fixture)[3]);
             assert!(assigned.is_absolute(), "{}", assigned.display());
             let result: Json = serde_json::from_slice(&output.stdout).unwrap();
@@ -650,11 +689,7 @@ mod runner {
                 false,
                 "{no_merge: 'false', autodrive_dry_run: 'false', autodrive_state_dir: '/stored/state'}",
             );
-            assert!(
-                output.status.success(),
-                "fresh={fresh}: {}",
-                details(&output)
-            );
+            assert_child_ran("auto-drive-light", &output);
             let result: Json = serde_json::from_slice(&output.stdout).unwrap();
             let auth = &result["autodrive_authorization"];
             assert_eq!(auth["no_merge"], true, "fresh={fresh}: {auth}");

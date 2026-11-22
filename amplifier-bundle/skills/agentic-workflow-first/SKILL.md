@@ -29,6 +29,26 @@ or "reduce the code".
 Default behavior is to write code. This skill forces the opposite default: prove a
 step *cannot* be a prompt or a tool before you write imperative logic for it.
 
+A second rule governs fixes: **validate strictly, fail loudly, recover agentically,
+never lower the bar.** Keep the validation and keep the loud failure. What changes is
+what happens next. The failure, with its evidence and the step's purpose, goes to an
+agent step, which works out whether the change, the environment, the plan or the check
+itself is at fault, and then fixes the cause and revalidates, changes approach, or stops
+and states plainly what is blocked and why. Recovery decides whether to go round again
+by whether it is making progress, not by a retry count: a pass that produces new
+information or a different failure is progress, and a pass that returns the same failure
+with nothing new learned is not. That is when it stops and states what is blocked. Do
+not gate recovery on an attempt counter: the repo's step-failure recovery has no
+timers, no waits and no attempt counter
+(`docs/reference/step-failure-recovery.md`).
+
+When a step or check fails, ask first why it failed. If the check was right, fix the
+cause. If the check was making a judgement, keep the validation and move the judgement
+into an agent step. Never skip, weaken, mock out, special-case or delete a check to get
+past it, and never report a success you have not shown. A step that would lose work
+(deleting unpushed commits, force-pushing) refuses; that refusal is loud and goes to
+recovery like any other failure.
+
 ## The 6-Step Decision Procedure
 
 Follow these in order for any new piece of work.
@@ -52,8 +72,10 @@ Tag each step as exactly one of:
   IO, `git`, `gh`. Choose this for anything with an external effect or a single
   correct deterministic result.
 - **(c) Thin rail** — minimal glue code: typed-record IO, guardrails, attempt caps,
-  fail-closed reads. Choose this ONLY for plumbing that is neither judgment nor an
-  external capability.
+  record-integrity reads. An attempt cap belongs on a mechanical loop such as
+  pagination or polling. Recovery is excluded: never cap it with an attempt counter,
+  because it stops on a lack of progress rather than at a count (see the rule above).
+  Choose this ONLY for plumbing that is neither judgment nor an external capability.
 
 **Classification test — apply literally:**
 - Does the step *decide something* a reasonable person could disagree on? → **(a)**.
@@ -67,7 +89,7 @@ Tag each step as exactly one of:
 Write the workflow as a recipe YAML (repo format — see `templates.md`). Agentic steps
 use `type: "agent"` with a `prompt:` block; tools use `type: "bash"`. Data flows
 between steps as **typed records** (a file/JSON schema written by one step, read
-fail-closed by the next) — NEVER by scraping/parsing another step's stdout prose.
+integrity-checked by the next), never by scraping/parsing another step's stdout prose.
 
 ### Step 5 — Write code only for the thin rail
 Write imperative code ONLY for step-type (c), and only for what genuinely cannot be a
@@ -83,7 +105,8 @@ carry the data.
 
 See `reference.md` for the four named anti-patterns and their replacements:
 1. Brittle stdout / JSON scraping of agent output → typed, owner-only (`0o600`),
-   freshness-checked records read **fail-CLOSED**.
+   freshness-checked records. The reader still refuses to proceed on a record it
+   cannot verify; it reports which check failed, as evidence an agent step can read.
 2. Imperative heuristics standing in for judgment (`classify_signal`, `orient`,
    `decide`) → an agentic step behind a prompt.
 3. Wall-clock timeouts that kill working agentic steps → idle/liveness detection.
@@ -92,10 +115,12 @@ See `reference.md` for the four named anti-patterns and their replacements:
 
 ## Templates & Example
 
-- `templates.md` — copy-ready recipe, prompt, typed-record, and fail-closed-reader
+- `templates.md`: copy-ready recipe, prompt, typed-record, and record-integrity-reader
   skeletons matching the repo's real shapes.
 - `worked-example.md` — one behavior (classify + route a signal) built as recipe +
   prompt + typed record + ~10-line rail, contrasted with a naive hardcoded function.
+  A second example moves step-21 pr-ready's judgement out of `workflow_pr_scope.sh`
+  into an agent step, keeping the readiness check and the loud "none found".
 
 ## §7 — Honest note on reflexive irony
 
@@ -103,6 +128,8 @@ Some shipped recipes in this repo still hand data between steps by having a late
 parse an earlier step's stdout (e.g. `parse_json` over agent output). That works, and
 this skill does not claim those recipes are broken. The **recipe step is the agentic
 unit** either way. What this skill teaches is the *improved handoff*: a step writes a
-**typed record** (owner-only, freshness-checked) and the next step reads it fail-closed.
+**typed record** (owner-only, freshness-checked) and the next step verifies it, refusing
+to act on a record that fails a check and handing that failure, with its reason, to an
+agent step.
 Model new work on the typed-record handoff; treat stdout-scraping as legacy, not as the
 target pattern.

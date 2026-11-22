@@ -90,6 +90,7 @@ mkrepo "$WORK/gh-https" "https://github.com/example-org/example-repo.git"
 mkrepo "$WORK/gh-ssh"   "git@github.com:example-org/example-repo.git"
 mkrepo "$WORK/azdo"     "https://dev.azure.com/example-org/example-project/_git/example-repo"
 mkrepo "$WORK/noremote" "-"
+mkrepo "$WORK/fileorigin" "file:///srv/mirrors/example-org/example-repo.git"
 mkdir -p "$WORK/notagit"
 
 # run <repo> [env assignments...] -> sets OUT / RC
@@ -199,6 +200,15 @@ run "$WORK/noremote" FAKE_GH=ok_write
 [ "$RC" -eq 0 ] && grep -q 'no-origin-remote' <<<"$OUT" \
   && pass "a repository with no origin is skipped" \
   || fail "no-origin repo mishandled: rc=$RC out=${OUT:0:200}"
+# A `file://` origin parses to no host. An empty host compared against an unset
+# GH_HOST is equal, which once sent the path's first two segments to the GitHub
+# API as an owner and a repository name.
+run "$WORK/fileorigin" FAKE_GH=ok_write
+if [ "$RC" -eq 0 ] && grep -q 'non-github-remote' <<<"$OUT" && [ ! -s "$WORK/calls.log" ]; then
+  pass "a file:// origin is skipped without calling gh at all"
+else
+  fail "file:// origin mishandled: rc=$RC calls=$(wc -l < "$WORK/calls.log") out=${OUT:0:200}"
+fi
 run "$WORK/notagit" FAKE_GH=ok_write
 [ "$RC" -eq 0 ] && grep -q 'not-a-git-repository' <<<"$OUT" \
   && pass "a non-repository directory is skipped" \

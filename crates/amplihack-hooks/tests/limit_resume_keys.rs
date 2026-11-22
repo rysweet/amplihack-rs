@@ -12,19 +12,27 @@
 //! - `send_with(program, &Pane, Key)`: runs `program` with `argv`, no shell,
 //!   null stdio; a non-zero exit is an error. `tmux_send` is
 //!   `send_with("tmux", …)`.
-//! - `parse_stat(text) -> Option<ProcStat { pgrp, tpgid }>` splits after the
-//!   last `)`; `ProcStat::foreground()` is `pgrp == tpgid`.
+//! - `parse_stat(text) -> Option<ProcStat { ppid, pgrp, tpgid }>` splits
+//!   after the last `)`; `ProcStat::foreground()` is `pgrp == tpgid`. The
+//!   ancestry walk the pane check uses (#2695) reads `ppid` from the same
+//!   line, so it is asserted here too.
 //! - `foreground_now(pid)`: one read of `/proc/<pid>/stat`; false when the
 //!   process is gone, unreadable or not in the foreground (S4, Ctrl-Z).
 //! - `same_tty(pane_tty_output, stdin_target)`: the pane's tty (at most 256
 //!   bytes, absolute, under `/dev/`, one trailing newline allowed) is the
 //!   file Claude Code's stdin points at.
+//! - `capture_argv(&Pane)`: `capture-pane -p -t %N`, with no `-S`, so only
+//!   the visible screen is read. `recognise(capture)` (#2695) is `Held` for
+//!   a screen holding one of `SCREEN_MARKERS`, `Unrecognised` otherwise:
+//!   `screen-unreadable` for nothing to read, `screen-unknown` for a screen
+//!   the keys do not answer. Nothing read is returned.
 //!
 //! No test talks to a tmux server.
 
 use amplihack_hooks::limit_resume::keys::{
-    Key, Pane, ProcStat, RESUME_KEYS, argv, foreground_now, pane_tty_argv, parse_stat, same_tty,
-    send_with,
+    Key, Pane, ProcStat, RESUME_KEYS, SCREEN_MARKERS, SCREEN_UNKNOWN, SCREEN_UNREADABLE,
+    ScreenCheck, UNRECOGNISED_REASONS, argv, capture_argv, foreground_now, pane_tty_argv,
+    parse_stat, recognise, same_tty, send_with,
 };
 use std::ffi::OsStr;
 use std::path::Path;
@@ -182,6 +190,7 @@ fn parse_stat_reads_pgrp_and_tpgid() {
     assert_eq!(
         s,
         ProcStat {
+            ppid: 4000,
             pgrp: 4321,
             tpgid: 4321
         }
@@ -193,6 +202,7 @@ fn parse_stat_reads_pgrp_and_tpgid() {
 fn parse_stat_splits_after_the_last_paren() {
     // A command name may hold `) (` and digits; only the last `)` ends it.
     let s = parse_stat(&stat_line("x) (S 1 2 3 4 5", 77, 78)).unwrap();
+    assert_eq!(s.ppid, 4000);
     assert_eq!(s.pgrp, 77);
     assert_eq!(s.tpgid, 78);
     assert!(!s.foreground(), "a background process group gets no keys");
@@ -250,4 +260,86 @@ fn an_oversized_pane_tty_is_refused() {
 fn foreground_now_is_false_for_a_pid_that_does_not_exist() {
     // Above the kernel's pid_max (2^22), so no process can hold it.
     assert!(!foreground_now(u32::MAX));
+}
+
+// ── What the pane is showing (issue #2695) ──────────────────────────────────
+
+#[test]
+fn capture_argv_reads_the_visible_screen_of_one_pane() {
+    assert_eq!(
+        capture_argv(&pane("%5")),
+        ["capture-pane", "-p", "-t", "%5"]
+    );
+    // No `-S`: the scrollback is never read, so an old limit notice above
+    // the screen cannot stand in for the one showing now.
+    assert!(!capture_argv(&pane("%5")).iter().any(|a| a == "-S"));
+}
+
+#[test]
+fn the_menu_and_the_automatic_continue_screens_are_recognised() {
+    for screen in [
+        "Claude usage limit reached - resets at 3:00pm\n\nWhat do you want to do?\n",
+        "WHAT DO YOU WANT TO DO?",
+        "Usage limit reached - Continuing automatically at 12:30am",
+        "You've hit your 5-hour limit - resets 3pm",
+        "You've hit your weekly limit - resets Monday",
+        "You've hit your session limit",
+    ] {
+        assert_eq!(
+            recognise(screen.as_bytes()),
+            ScreenCheck::Held,
+            "a held screen: {screen}"
+        );
+    }
+}
+
+#[test]
+fn a_screen_the_keys_do_not_answer_is_refused_by_name() {
+    assert_eq!(
+        recognise(b"user@host:~/src$ git status\nOn branch main\n"),
+        ScreenCheck::Unrecognised(SCREEN_UNKNOWN)
+    );
+    // A permission prompt is not a usage limit, and Enter would answer it.
+    assert_eq!(
+        recognise(b"Do you want to allow this edit?\n  1. Yes\n  2. No\n"),
+        ScreenCheck::Unrecognised(SCREEN_UNKNOWN)
+    );
+}
+
+#[test]
+fn nothing_to_read_is_refused_as_unreadable() {
+    for empty in [&b""[..], b"\n", b"   \n\t\n"] {
+        assert_eq!(
+            recognise(empty),
+            ScreenCheck::Unrecognised(SCREEN_UNREADABLE),
+            "{:?}",
+            String::from_utf8_lossy(empty)
+        );
+    }
+}
+
+#[test]
+fn a_capture_that_is_not_utf8_is_refused_and_never_returned() {
+    // Invalid UTF-8 must neither panic nor pass: lossy decoding leaves
+    // replacement characters, which match no marker.
+    assert_eq!(
+        recognise(&[0xff, 0xfe, 0x80, 0x0a]),
+        ScreenCheck::Unrecognised(SCREEN_UNKNOWN)
+    );
+}
+
+#[test]
+fn every_refusal_reason_is_a_fixed_word_from_the_closed_set() {
+    for reason in UNRECOGNISED_REASONS {
+        assert!(
+            reason.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
+            "{reason} must be a fixed word"
+        );
+    }
+    assert_eq!(UNRECOGNISED_REASONS, [SCREEN_UNREADABLE, SCREEN_UNKNOWN]);
+    // Every marker is lowercase, because `recognise` lowercases the capture
+    // before it matches; an uppercase marker could never match.
+    for m in SCREEN_MARKERS {
+        assert_eq!(*m, m.to_ascii_lowercase(), "{m} must be lowercase");
+    }
 }

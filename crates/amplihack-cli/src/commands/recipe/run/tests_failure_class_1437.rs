@@ -202,7 +202,7 @@ fn the_precedence_doc_names_agent_api() {
 fn the_agent_api_verdict_names_its_cause_and_is_not_a_refusal() {
     let verdict = classify_run_failure(
         &run(vec![
-            completed("step-03-extract-merge-ready-verdict", "ok"),
+            completed("step-05a-outcome-word", "ok"),
             failed(
                 "step-04-address-blockers",
                 "amplihack copilot failed (exit 1)",

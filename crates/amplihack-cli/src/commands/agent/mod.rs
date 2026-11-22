@@ -163,7 +163,7 @@ mod tmux;
 #[cfg(unix)]
 mod tmux_parse;
 #[cfg(unix)]
-mod validate;
+pub(crate) mod validate;
 #[cfg(unix)]
 mod wrapper;
 

@@ -152,6 +152,7 @@ pub(crate) fn render(
         .iter()
         .map(|(variable, _)| *variable)
         .chain(PARENT_WATCH_ENV)
+        .chain([crate::run_guidance::GUIDANCE_DIRS_ENV])
         .map(|variable| format!("-u {variable} "))
         .collect();
     format!(
@@ -174,6 +175,7 @@ mod tests {
             .iter()
             .map(|(variable, _)| *variable)
             .chain(PARENT_WATCH_ENV)
+            .chain([crate::run_guidance::GUIDANCE_DIRS_ENV])
             .map(|variable| format!("-u {variable}"))
             .collect();
         format!("env {}", unset.join(" "))

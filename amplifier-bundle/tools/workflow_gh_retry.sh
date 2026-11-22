@@ -62,7 +62,9 @@ gh_safe_stderr() {
 }
 
 gh_remove_capture() {
-  rm -f -- "$1" 2>/dev/null || printf '%s\n' 'WARNING: gh capture cleanup failed' >&2
+  # The warning is a courtesy: with stderr unwritable it must not end a set -e
+  # caller before the remaining captures are removed or its traps have run.
+  rm -f -- "$1" 2>/dev/null || printf '%s\n' 'WARNING: gh capture cleanup failed' >&2 || :
   return 0
 }
 
@@ -240,7 +242,7 @@ gh_pr_exists_rest() {
         headRefOid: (.head.sha // ""),
         headRepositoryOwner: { login: (.head.repo.owner.login // "") },
         headRepository: { name: (.head.repo.name // "") },
-        isCrossRepository: ((.head.repo.full_name // "") as $h | (.base.repo.full_name // "") as $b | (($h | type) != "string" or $h == "" or $h != $b))
+        isCrossRepository: (((.head.repo.full_name // "") != (.base.repo.full_name // "")))
       })' 2>/dev/null || return 1
 }
 
@@ -269,7 +271,7 @@ gh_pr_view_rest() {
       headRefOid: (.head.sha // ""),
       headRepositoryOwner: { login: (.head.repo.owner.login // "") },
       headRepository: { name: (.head.repo.name // "") },
-      isCrossRepository: ((.head.repo.full_name // "") as $h | (.base.repo.full_name // "") as $b | (($h | type) != "string" or $h == "" or $h != $b))
+      isCrossRepository: (((.head.repo.full_name // "") != (.base.repo.full_name // "")))
     }' 2>/dev/null || return 1
 }
 
@@ -286,6 +288,12 @@ gh_pr_number_from_url() {
 # _gh_retry_core <label> <gh-arg>...
 #
 #   stdout : command output on success (or REST fallback output).
+#   stderr : retry WARNINGs first, then the terminal diagnostic as the LAST
+#            line. Callers that report a single line (workflow_publish_pr.sh)
+#            read that final line, so every failing exit path, cancellation
+#            included, ends with its own terminal line. The one exception is
+#            a capture that cannot be removed: gh_remove_capture then prints a
+#            WARNING after the terminal line. The return status is unaffected.
 #   return : 0 on success; otherwise the last gh exit status.
 #
 # Behaviour is tuned via environment variables (all optional):
@@ -347,6 +355,11 @@ _gh_retry_restore_traps() {
 _gh_retry_interrupt() {
   retry_interrupted_status=$2
   _gh_retry_cleanup
+  # Terminal line for the caller: it must be the last stderr line, as with a
+  # rejection, so a retry warning before the signal is not reported instead.
+  # A failed write (closed or full stderr) must not replace the cancellation
+  # status or skip the caller's trap, which `set -e` would otherwise do.
+  printf 'ERROR: gh interrupted by %s (exit %s)\n' "$1" "$2" >&2 || :
   local previous_trap
   case "$1" in INT) previous_trap=$retry_int ;; TERM) previous_trap=$retry_term ;; HUP) previous_trap=$retry_hup ;; esac
   _gh_retry_restore_traps

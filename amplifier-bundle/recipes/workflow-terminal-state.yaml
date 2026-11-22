@@ -39,6 +39,7 @@ context:
   branch_name: ""
   base_ref: ""
   base_branch: ""
+  forbidden_base_branches: ""  # a base read from the PR must not match these globs (docs/reference/workflow-delivery-inputs.md)
   pr_number: ""
   pr_url: ""
   goal_already_met: "false"
@@ -332,6 +333,14 @@ steps:
         fail_terminal_state "FAILED_WRONG_BRANCH" "target checkout branch '$current_branch' does not match branch_name '$BRANCH_INPUT'"
       fi
       local_head="$(git rev-parse --verify HEAD 2>/dev/null)" || fail_terminal_state "FAILED_INVALID_INPUT" "target checkout HEAD does not resolve"
+      # #2520: no base_branch and a recorded PR: its base, from the publish result or the PR (delivery_run_base).
+      # On failure the discovery below stays, and the scoped match below turns away a PR on another base.
+      if [ -z "$BASE_INPUT" ] && [ -n "$PR_URL_INPUT$PR_NUMBER_INPUT" ] && . "$RV_TOOLS/workflow_delivery_inputs.sh"; then
+        run_repo="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)"
+        if run_base="$(delivery_run_base "" "$(rv_field pr_publish_result base_branch)" "${PR_URL_INPUT:-$PR_NUMBER_INPUT}" "$run_repo" "$BRANCH_INPUT" "${RECIPE_VAR_forbidden_base_branches:-}")"; then
+          BASE_INPUT="origin/$run_base"
+        fi
+      fi
 
       resolve_base_ref() {
         local candidate

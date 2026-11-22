@@ -55,7 +55,7 @@ context:
   loop_last_round_output: ""
   # Machine-checkable progress evidence.
   loop_repo_path: "."
-  loop_agent_working_dir: "."  # step-02's agent starts here, never in loop_repo_path (#1528)
+  loop_agent_working_dir: "."  # step-02 uses the actual PR worktree
   loop_baseline_ref: ""
   loop_child_exit_code: ""
   loop_findings_current: ""
@@ -109,9 +109,8 @@ steps:
       A loop on round 12 that is converging should CONTINUE; a loop on round 2
       that produced nothing twice should be STUCK. Judge the evidence.
 
-      Do not create, edit, move, rename, delete or archive any file in the
-      auto-drive state directory (the directory holding crusty-round-*.json,
-      merge-ready-round-*.json and phases.tsv).
+      Do not create, edit, move, rename, delete or archive any file in the auto-drive state
+      directory (the directory holding crusty-round-*.json, merge-ready-round-*.json and phases.tsv).
 
       ## Measured evidence (computed, not summarised)
 
@@ -134,7 +133,9 @@ steps:
       - `tests_observed` / `tests_moved`, `ci_observed` / `ci_moved` — whether
         the test and CI signals changed at all. Unobserved is NOT progress.
       - `waiting_on_output` — the loop reporting it is waiting on output that
-        never arrives.
+        never arrives. The CI signal `{{loop_ci_signal}}` is `<pass|pending|fail|none>@<head>`:
+        `pending@<head>` with the head unchanged is a required check still running, a wait,
+        so answer `CONTINUE`, never `STUCK`. `fail@<head>` with no movement is still `STUCK`.
       - `infrastructure_fault` / `infrastructure_fault_class` — the last round
         ended on an infrastructure fault (an overloaded model endpoint, a
         missing credential), not on the work. `amplihack recipe run` already
@@ -185,9 +186,8 @@ steps:
         converging, with the specific evidence, so a human or a parent workflow
         can act on it instead of burning the rest of the budget.
 
-      If you are not sure, answer `STUCK`; a round that visibly acted on its
-      findings is not in doubt. Stopping and escalating costs one round;
-      looping on a dead loop costs the whole budget.
+      If you are not sure, answer `STUCK`; a round that visibly acted on its findings is not in
+      doubt. Stopping and escalating costs one round; looping on a dead loop costs the whole budget.
 
       ## OUTPUT CONTRACT (repeated)
 
