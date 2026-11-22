@@ -74,7 +74,6 @@ pub fn run(
     state: &State,
     record: &serde_json::Value,
     child_rc: i32,
-    completion_fault: Option<&str>,
 ) -> Result<(serde_json::Value, i32)> {
     let mut context = state.context.clone();
     let label = &state.round_label;
@@ -118,13 +117,6 @@ pub fn run(
         "\n{label}: crusty_verdict={} rc={child_rc}",
         record["crusty_verdict"].as_str().unwrap_or("MISSING")
     ));
-    // #2333: a completion the PR head read refused reaches the evaluator as
-    // data. It is a fault in reading GitHub, not a fault in the round.
-    if let Some(fault) = completion_fault {
-        history.push_str(&format!(
-            "\n{label}: completion claimed but not granted: {fault}"
-        ));
-    }
     let round_log = state.state_dir.join(format!("crusty-{label}.log"));
     if round_log.is_file() {
         let o = Command::new("bash")

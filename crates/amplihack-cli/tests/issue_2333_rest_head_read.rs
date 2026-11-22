@@ -1,9 +1,10 @@
 //! Issue #2333: completion reads the PR head through one REST call, so a
 //! refused GraphQL read (`gh pr view`) does not stop a reviewed PR from
-//! completing. A read that does not answer, a head that has moved on GitHub
-//! and an empty PR number never complete, and never end the run as an
-//! invalid decision either: dispatch hands the named fault to the loop-health
-//! evaluator, which judges whether another round can get past it.
+//! completing. The read is a fact read, not a gate: a valid completion claim
+//! is `DONE` whatever it says, with no evaluator call, and the result carries
+//! the read as `pr_head` for the agents that follow. A head that moved on
+//! GitHub, a read that does not answer and an empty PR number are named
+//! there, never turned into a refusal or a demoted verdict in code.
 
 use super::fixture::{Drive, assert_complete, json_output};
 use crate::support::amplihack_bin::amplihack_bin;
@@ -34,29 +35,27 @@ fn gh_log(d: &Drive) -> String {
     std::fs::read_to_string(d.fakes.log.join("gh.log")).unwrap_or_default()
 }
 
-fn evaluator_history(d: &Drive) -> String {
-    std::fs::read_to_string(d.fakes.log.join("evaluator-history")).unwrap_or_default()
-}
-
-/// The fault reached the evaluator as data, completion was not granted, the
-/// dispatch receipt was written, and the evaluator's verdict (STUCK in the
-/// fixture) is the loop result rather than an invalid-decision error.
-fn assert_evaluated_with(d: &Drive, p: &serde_json::Value, o: &Output, fault: &str) {
+/// Completion was granted, and `pr_head` reports the read: its outcome, both
+/// heads, and a detail that contains `detail`. The same detail is on stderr.
+fn assert_completed_with(d: &Drive, o: &Output, read: &str, github: &str, detail: &str) {
+    assert_complete(d, o);
     let v = json_output(o);
-    assert_eq!(v["source"], "evaluator", "{}", show(o));
-    assert_eq!(v["evaluator_invoked"], true, "{}", show(o));
-    assert_eq!(v["loop_result"], "STUCK", "{}", show(o));
-    assert_eq!(d.evaluators().len(), 1, "{}", show(o));
-    let history = evaluator_history(d);
+    let pr_head = &v["pr_head"];
+    assert_eq!(pr_head["read"], read, "{}", show(o));
+    assert_eq!(pr_head["github_head"], github, "{}", show(o));
+    assert_eq!(pr_head["reviewed_head"], d.head().trim(), "{}", show(o));
+    let got = pr_head["detail"].as_str().unwrap_or_default();
     assert!(
-        history.contains("round-1: completion claimed but not granted: ")
-            && history.contains(fault),
-        "evaluator history must name the fault {fault:?}: {history}"
+        got.contains(detail),
+        "pr_head.detail {got:?} lacks {detail:?}"
     );
-    let receipt =
-        std::path::Path::new(p["private_state"].as_str().unwrap()).with_extension("dispatched");
-    assert!(receipt.exists(), "dispatch receipt must be written");
-    assert!(!d.marked(), "a refused completion does not mark the phase");
+    if !detail.is_empty() {
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains(detail),
+            "{}",
+            show(o)
+        );
+    }
 }
 
 #[test]
@@ -64,44 +63,40 @@ fn completion_reads_the_head_over_rest_while_graphql_is_refused() {
     let d = Drive::new();
     let p = clean_round(&d);
     let o = dispatch_with(&d, &p, &[("FAKE_GH_FAIL", "pr view")]);
-    assert_complete(&d, &o);
+    assert_completed_with(&d, &o, "matches", d.head().trim(), "");
     let log = gh_log(&d);
     assert!(log.contains("repos/{owner}/{repo}/pulls/7"), "{log}");
     assert!(!log.contains("pr\u{1f}view"), "{log}");
 }
 
 #[test]
-fn a_failed_rest_read_goes_to_the_evaluator_as_unavailable() {
+fn a_failed_rest_read_is_reported_and_does_not_block_completion() {
     let d = Drive::new();
     let p = clean_round(&d);
     let o = dispatch_with(&d, &p, &[("FAKE_GH_FAIL", "/pulls/7")]);
-    assert_evaluated_with(&d, &p, &o, "head unavailable: ");
-    assert!(evaluator_history(&d).contains("HTTP 404: Not Found"));
-}
-
-#[test]
-fn an_evaluator_continue_after_a_failed_read_keeps_the_run_going() {
-    let d = Drive::new();
-    d.set("eval-verdict", "CONTINUE");
-    let p = clean_round(&d);
-    let o = dispatch_with(&d, &p, &[("FAKE_GH_FAIL", "/pulls/7")]);
-    assert!(o.status.success(), "{}", show(&o));
+    assert_completed_with(&d, &o, "unavailable", "", "head unavailable: ");
     let v = json_output(&o);
-    assert_eq!(v["loop_result"], "CONTINUE", "{}", show(&o));
-    assert_eq!(v["source"], "evaluator", "{}", show(&o));
+    assert!(
+        v["pr_head"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("HTTP 404: Not Found"),
+        "gh's own error text reaches the next agent: {}",
+        show(&o)
+    );
 }
 
 #[test]
-fn a_moved_head_names_both_shas_and_never_completes() {
+fn a_moved_head_is_reported_with_both_shas_for_the_next_agent() {
     let d = Drive::new();
     let p = clean_round(&d);
     let moved = "1".repeat(40);
     let o = dispatch_with(&d, &p, &[("FAKE_GH_HEAD", &moved)]);
-    let fault = format!(
+    let detail = format!(
         "head differs: the PR head on GitHub is {moved}, but the reviewed head is {}",
-        d.head()
+        d.head().trim()
     );
-    assert_evaluated_with(&d, &p, &o, &fault);
+    assert_completed_with(&d, &o, "differs", &moved, &detail);
 }
 
 #[test]
@@ -109,7 +104,7 @@ fn an_empty_pr_number_is_resolved_from_the_branch_over_rest() {
     let d = Drive::new();
     let p = clean_round(&d);
     let o = dispatch_with(&d, &p, &[("PR_NUMBER", "")]);
-    assert_complete(&d, &o);
+    assert_completed_with(&d, &o, "matches", d.head().trim(), "");
     let log = gh_log(&d);
     assert!(
         log.contains("repos/{owner}/{repo}/pulls?state=open&head={owner}:quick/demo"),
@@ -124,10 +119,37 @@ fn an_empty_pr_number_with_no_open_pr_is_a_named_blocker() {
     let d = Drive::new();
     let p = clean_round(&d);
     let o = dispatch_with(&d, &p, &[("PR_NUMBER", ""), ("FAKE_GH_PULLS", "[]")]);
-    assert_evaluated_with(
+    assert_completed_with(
         &d,
-        &p,
         &o,
+        "unavailable",
+        "",
         "head unavailable: PR_NUMBER is empty and no open PR has head branch quick/demo",
     );
+}
+
+/// The agent that receives the result is told what `pr_head` means, so the
+/// judgement on a moved or unreadable head is made there and not in code.
+#[test]
+fn the_recording_step_is_briefed_on_pr_head() {
+    let recipe = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../amplifier-bundle/recipes/autodrive-crusty-loop.yaml"),
+    )
+    .unwrap();
+    let step = recipe
+        .split("- id: \"step-03-record-crusty-phase\"")
+        .nth(1)
+        .and_then(|s| s.split("- id: ").next())
+        .expect("step-03-record-crusty-phase exists");
+    for needle in [
+        "`pr_head`",
+        "`differs`",
+        "`unavailable`",
+        "does not undo the DONE",
+        "crusty-review-required:<github head>",
+        "--match-head-commit",
+    ] {
+        assert!(step.contains(needle), "step-03 must mention {needle}");
+    }
 }

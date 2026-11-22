@@ -146,13 +146,14 @@ pub fn validate(state: &State, expected: &Snapshot, completing: bool) -> Result<
 
 /// What GitHub says the PR head is, against the reviewed head (#2333).
 ///
-/// Completion keeps this comparison on purpose. The record binds the review
-/// to the worktree's `HEAD`; only GitHub can say whether that commit is what
-/// would be merged. A completion granted while the PR head on GitHub is some
-/// other commit would carry an unreviewed head to the merge step, so neither
-/// `Differs` nor `Unavailable` ever completes. Neither ends the run either:
-/// dispatch hands both to the loop-health evaluator with the fault named,
-/// and a later round can complete once the read answers and agrees.
+/// This is a fact read, not a gate. Completion does not depend on it: a
+/// valid completion claim is `DONE` whatever the read says, and dispatch puts
+/// the outcome in the result as `pr_head` for the agents that follow. Those
+/// agents decide what a moved or unreadable head means. The recording step in
+/// `autodrive-crusty-loop.yaml` reads `pr_head`; the merge-ready assessment
+/// checks that GitHub's head is the head it assessed and, under criterion 3,
+/// that the Crusty review covers it; and the merge is made with
+/// `gh pr merge --match-head-commit`, which GitHub refuses for any other head.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RemoteHead {
     Matches,
@@ -172,6 +173,21 @@ impl RemoteHead {
             )),
             Self::Unavailable(why) => Some(format!("head unavailable: {why}")),
         }
+    }
+
+    /// The read as the `pr_head` object of the dispatch result.
+    pub fn evidence(&self, head: &str) -> serde_json::Value {
+        let (read, github_head) = match self {
+            Self::Matches => ("matches", head.trim()),
+            Self::Differs(remote) => ("differs", remote.as_str()),
+            Self::Unavailable(_) => ("unavailable", ""),
+        };
+        serde_json::json!({
+            "read": read,
+            "github_head": github_head,
+            "reviewed_head": head.trim(),
+            "detail": self.fault(head).unwrap_or_default(),
+        })
     }
 }
 
@@ -286,5 +302,18 @@ mod tests {
             .fault("a")
             .unwrap();
         assert_eq!(gone, "head unavailable: HTTP 502");
+    }
+
+    #[test]
+    fn evidence_names_the_read_and_both_heads() {
+        let v = RemoteHead::Differs("b".into()).evidence("a");
+        assert_eq!(v["read"], "differs");
+        assert_eq!(v["github_head"], "b");
+        assert_eq!(v["reviewed_head"], "a");
+        let v = RemoteHead::Unavailable("HTTP 502".into()).evidence("a");
+        assert_eq!(v["read"], "unavailable");
+        assert_eq!(v["github_head"], "");
+        assert_eq!(v["detail"], "head unavailable: HTTP 502");
+        assert_eq!(RemoteHead::Matches.evidence("a")["detail"], "");
     }
 }
