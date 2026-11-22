@@ -1,0 +1,81 @@
+name: issue-2966-finalize-ci-repair
+description: >
+  Outside-in QA for issue #2966. An implementation run that reached
+  finalisation with its pull request's CI red ended Failed instead of fixing the
+  CI: the terminal-state probe named the failing check BLOCKED_CI, the
+  validator answered it from the probe's record, step recovery handed off, and
+  the run ended exit 81 (the #2916 run, PR #2947, 22 November 2026; the failing
+  check was an ordinary one, the Install Smoke Test). The owner's ruling is that
+  a red CI means the run iterates until the CI is fixed, and that only a cause
+  the run cannot fix itself ends it, with the cause and the exact step a person
+  must take. The scenario (via
+  tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh) runs the shipped
+  workflow-finalize recipe through `amplihack recipe run` and the pinned recipe
+  runner, with the context default-workflow gives it, against a local bare
+  remote and a linked worktree on the run branch, under env -i with a fresh HOME
+  per case. A stub gh, first on PATH, holds pull request #7 whose checks are read
+  from the tip the bare remote holds for the run branch, so a check turns green
+  only when a fix has been pushed; every call outside its short table exits 96
+  and fails the case. A scripted stand-in for the agent dispatches on a literal
+  phrase of each prompt. The first case checks that a head whose smoke check
+  fails reaches the CI repair step, which fixes and pushes it, and that the run
+  ends EXISTING_OPEN_PR with exit 0 and no hand-off on record. The second checks
+  that when the repair step ends without a push, the assessment finishes the
+  repair itself, reports repaired_ci, and the run still ends a success. The
+  third checks that a check which fails on a secret the repository does not
+  define, which no push can fix, ends the run with exit 81 after one look by the
+  repair step and one by the assessment, with BLOCKED_CI, the check, the cause
+  and the owner's step in the hand-off record and on the failure line. With
+  AMPLIHACK_2966_BASELINE_REF set, the driver runs the first fixture against the
+  bundle that ref held and confirms the reported behaviour: BLOCKED_CI, exit 81,
+  and the repair step never started. What the scenario does not cover is an
+  agent's judgement, which the live run and the review show. CI's Install Smoke
+  Test job runs the driver script directly against the binary it installs; CI
+  does not run gadugi-test, so this file is for running the same cases through
+  gadugi-test by hand.
+version: "1.0"
+config:
+  timeout: 1200000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, workflow-finalize, ci-repair, regression]
+  priority: critical
+  issues: ["2966", "2809", "1722"]
+steps:
+  - name: run-issue-2966-finalize-ci-repair-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh
+    timeout: 1180000
+  - name: all-finalize-ci-repair-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: red-ci-is-repaired
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: red_ci_is_repaired - "
+  - name: assessment-finishes-the-repair
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: assessment_finishes_the_repair - "
+  - name: unfixable-cause-is-handed-to-its-owner
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unfixable_cause_is_handed_to_its_owner - "
