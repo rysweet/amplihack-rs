@@ -28,11 +28,11 @@ use super::ledger::{Phase, RotateLedger};
 use super::observe::snapshot;
 use super::pin::{self, Gate, PinState};
 use super::settings;
-use super::swap::{DOCUMENTED, Source, swap};
-use super::switch::{Switched, release, switch_live};
+use super::swap::{DOCUMENTED, Source, swap_by};
+use super::switch::{AfterSwapFailure, Switched, release, switch_in};
 use super::tests_swap::{CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, json, login, n};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::State;
+use crate::commands::profile::auto_switch::kit::{FakeExchange, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::pointer;
 use std::fs;
@@ -79,8 +79,22 @@ fn log(e: &Env) -> String {
     fs::read_to_string(&e.rs.log).unwrap_or_default()
 }
 
+/// `switch_live` for `e` with a fake exchange (issue #2935), so that no
+/// test here depends on what the host can exchange. The view of running
+/// sessions is the host's, over the synthetic process table `env()`
+/// installed for this thread.
+fn switch_live_faked(
+    e: &Env,
+    name: &ProfileName,
+) -> Result<Result<Switched, AfterSwapFailure>, ProfileError> {
+    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None)?;
+    let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
+    ctx.exchange = FakeExchange::working();
+    switch_in(ctx, name)
+}
+
 pub(super) fn switch(e: &Env, name: &str) -> Result<Switched, ProfileError> {
-    match switch_live(&e.store, &e.home, &n(name)) {
+    match switch_live_faked(e, &n(name)) {
         Ok(Ok(s)) => Ok(s),
         Ok(Err(f)) => panic!("unexpected partial failure: {}", f.what),
         Err(err) => Err(err),
@@ -103,7 +117,7 @@ fn snap_but_default(e: &Env) -> Vec<(String, FileState)> {
 pub(super) fn assert_refused(e: &Env, name: &str, want: &str) -> Option<ProfileName> {
     let before = snap_but_default(e);
     let pin_before = pin::read(&e.rs);
-    let held = match switch_live(&e.store, &e.home, &n(name)) {
+    let held = match switch_live_faked(e, &n(name)) {
         Ok(Ok(Switched::DefaultOnly { reason, held })) => {
             assert!(reason.contains(want), "refusal {reason:?} lacks {want:?}");
             assert!(
@@ -138,7 +152,7 @@ pub(super) fn assert_refused(e: &Env, name: &str, want: &str) -> Option<ProfileN
 #[track_caller]
 pub(super) fn assert_refused_untouched(e: &Env, name: &str, want: &str) {
     let before = snap(e);
-    match switch_live(&e.store, &e.home, &n(name)) {
+    match switch_live_faked(e, &n(name)) {
         Err(ProfileError::RotateRefused(m)) => {
             assert!(m.contains(want), "refusal {m:?} lacks {want:?}");
         }
@@ -330,9 +344,7 @@ fn the_no_stored_login_reason_is_documented() {
     assert_eq!(DOCUMENTED.len(), 13);
     let e = env();
     fs::remove_file(e.slot("spare")).unwrap();
-    let Ok(Ok(Switched::DefaultOnly { reason: m, .. })) =
-        switch_live(&e.store, &e.home, &n("spare"))
-    else {
+    let Ok(Ok(Switched::DefaultOnly { reason: m, .. })) = switch_live_faked(&e, &n("spare")) else {
         panic!("refused");
     };
     assert!(
@@ -435,7 +447,8 @@ fn a_refusal_from_the_swap_is_passed_through_unchanged() {
     })
     .unwrap();
     let s = login(&e.slot("work"));
-    let direct = swap(
+    let direct = swap_by(
+        FakeExchange::working().as_ref(),
         &e.store,
         &e.rs,
         &e.home,
@@ -445,7 +458,7 @@ fn a_refusal_from_the_swap_is_passed_through_unchanged() {
     )
     .unwrap_err()
     .to_string();
-    let via_switch = match switch_live(&e.store, &e.home, &n("spare")) {
+    let via_switch = match switch_live_faked(&e, &n("spare")) {
         Ok(Ok(Switched::DefaultOnly { reason, .. })) => {
             ProfileError::RotateRefused(reason).to_string()
         }
@@ -500,7 +513,7 @@ fn a_failed_pin_write_after_the_swap_is_a_partial_failure() {
     let e = env();
     fs::create_dir(&e.rs.pin).unwrap();
     fs::write(e.rs.pin.join("blocker"), "x").unwrap();
-    match switch_live(&e.store, &e.home, &n("spare")) {
+    match switch_live_faked(&e, &n("spare")) {
         Ok(Err(f)) => assert_eq!(f.what, "rotation hold"),
         Ok(Ok(s)) => panic!("expected a partial failure, got {s:?}"),
         Err(err) => panic!("the swap ran, so this is not a refusal: {err:?}"),
@@ -529,7 +542,7 @@ fn a_failed_pointer_write_after_the_swap_is_a_partial_failure() {
     let blocker = e.root.join(".default");
     fs::create_dir(&blocker).unwrap();
     fs::write(blocker.join("blocker"), "x").unwrap();
-    match switch_live(&e.store, &e.home, &n("spare")) {
+    match switch_live_faked(&e, &n("spare")) {
         Ok(Err(f)) => assert_eq!(f.what, "default pointer"),
         Ok(Ok(s)) => panic!("expected a partial failure, got {s:?}"),
         Err(err) => panic!("the swap ran, so this is not a refusal: {err:?}"),

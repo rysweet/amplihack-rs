@@ -2,6 +2,11 @@
 //! `/proc/<pid>/environ`. A directory is live when a process of the same user,
 //! other than this one and not a zombie, has `CLAUDE_CONFIG_DIR` resolving to
 //! it. Any doubt counts as live.
+//!
+//! The decisions that depend on this take a [`SessionView`] (issue #2935),
+//! so a test of a decision supplies the answer and reads no process table.
+//! [`HostSessions`] is the host's view. A system with no `/proc` has none,
+//! and its answer is [`Liveness::Unsupported`].
 
 use super::fsx;
 use crate::commands::profile::name::ProfileName;
@@ -35,29 +40,85 @@ impl Liveness {
     }
 }
 
-/// The live set for this process on this machine. The process table is the
-/// one `procfs::proc_root()` names: `/proc` in normal use, or a test
-/// fixture's synthetic table when every condition of the test seam holds.
-pub fn scan_system(root: &Path) -> Liveness {
-    #[cfg(target_os = "linux")]
-    {
+/// The view of running sessions: which profiles under a profile root a
+/// running process is using. One question, so that the code that decides
+/// what to move never reads a process table itself.
+pub trait SessionView {
+    fn liveness(&self, root: &Path) -> Liveness;
+}
+
+/// A function is a view. `rotate`'s cycle context holds one (`Ctx::scan`),
+/// and a test sets it to a function that returns a table the test wrote.
+impl SessionView for fn(&Path) -> Liveness {
+    fn liveness(&self, root: &Path) -> Liveness {
+        self(root)
+    }
+}
+
+/// The host's view: the process table [`readable_table`] names. That is
+/// `/proc` on Linux. A system without `/proc` has no table and the answer is
+/// `Unsupported`, unless a test supplied a synthetic table through the
+/// process-table seam, which is the only way a test that starts the binary
+/// can supply one.
+///
+/// [`readable_table`]: crate::commands::agent::procfs::readable_table
+pub struct HostSessions;
+
+impl SessionView for HostSessions {
+    fn liveness(&self, root: &Path) -> Liveness {
         // SAFETY: getuid has no preconditions.
         let uid = unsafe { libc::getuid() };
-        match root.canonicalize() {
-            Ok(root) => scan(
-                &crate::commands::agent::procfs::proc_root(),
-                &root,
-                std::process::id(),
-                uid,
-            ),
-            Err(_) => Liveness::Unsupported,
-        }
+        seen_in(
+            crate::commands::agent::procfs::readable_table().as_deref(),
+            root,
+            std::process::id(),
+            uid,
+        )
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = root;
-        Liveness::Unsupported
+}
+
+/// The pure part of [`HostSessions`]: the sessions under `root` that the
+/// process table `table` shows. With no table, sessions cannot be seen.
+pub(super) fn seen_in(table: Option<&Path>, root: &Path, self_pid: u32, uid: u32) -> Liveness {
+    let Some(table) = table else {
+        return Liveness::Unsupported;
+    };
+    match root.canonicalize() {
+        Ok(root) => scan(table, &root, self_pid, uid),
+        Err(_) => Liveness::Unsupported,
     }
+}
+
+/// A view a test holds in memory: the answer it was built with, whatever
+/// the root.
+#[cfg(test)]
+pub struct FakeSessions(pub Liveness);
+
+#[cfg(test)]
+impl FakeSessions {
+    /// Sessions can be seen, and exactly `names` have one.
+    pub fn running(names: &[&str]) -> Self {
+        Self(Liveness::Known(
+            names.iter().map(|n| (*n).to_string()).collect(),
+        ))
+    }
+
+    /// The answer of a system where sessions cannot be seen.
+    pub fn unseen() -> Self {
+        Self(Liveness::Unsupported)
+    }
+}
+
+#[cfg(test)]
+impl SessionView for FakeSessions {
+    fn liveness(&self, _root: &Path) -> Liveness {
+        self.0.clone()
+    }
+}
+
+/// [`HostSessions`] for `root`, for a caller that holds no view of its own.
+pub fn scan_system(root: &Path) -> Liveness {
+    HostSessions.liveness(root)
 }
 
 /// `root` must be canonical.

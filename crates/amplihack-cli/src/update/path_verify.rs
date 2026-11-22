@@ -37,6 +37,16 @@ pub(crate) fn stale_copies_on_path(expected: &str) -> Result<Vec<StaleCopy>> {
     let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
+    stale_copies_in(expected, home, path_dirs)
+}
+
+/// [`stale_copies_on_path`] with the home folder and the PATH entries given, so
+/// a test names folders it made and reads nothing from the host (issue #2931).
+fn stale_copies_in(
+    expected: &str,
+    home: PathBuf,
+    path_dirs: Vec<PathBuf>,
+) -> Result<Vec<StaleCopy>> {
     let input = PathAnalysisInput {
         home_dir: home,
         current_exe: std::env::current_exe().unwrap_or_default(),
@@ -155,25 +165,101 @@ mod tests {
         assert!(msg.contains(".cargo/bin/amplihack (no version reported)"));
     }
 
-    /// This host is the reproduction: two distinct copies on PATH. The probe must
-    /// find at least the one it is running as, or the check is inert.
+    /// One `amplihack` stand-in in a new folder under `root`. It prints `says`
+    /// for `--version`, or exits 1 with no output when `says` is `None`.
+    #[cfg(unix)]
+    fn copy_in(root: &std::path::Path, folder: &str, says: Option<&str>) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = root.join(folder);
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = match says {
+            Some(line) => format!("#!/bin/sh\necho '{line}'\n"),
+            None => "#!/bin/sh\nexit 1\n".to_string(),
+        };
+        let path = dir.join("amplihack");
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    /// The probe finds every copy on the PATH it is given, or the check is
+    /// inert. The reproduction of issue #1331 was a host with two copies; this
+    /// test makes that host in its own folder: three folders on a PATH of its
+    /// own, each with a stand-in `amplihack`, and a fourth entry with none.
+    ///
+    /// It used to read the host's PATH and pass only where an `amplihack` was
+    /// installed (issue #2931), which is a fact about the machine and not
+    /// about this code. Nothing here has a time limit, so a stand-in that is
+    /// slow to start changes nothing.
+    #[cfg(unix)]
     #[test]
-    fn the_probe_finds_copies_on_this_host() {
-        // Issue #1380: this reads PATH, and sibling tests point PATH at a tempdir
-        // holding one stub binary while they run. A reader has to take the same
-        // lock as the writers or it observes a PATH with no amplihack on it and
-        // fails for reasons that have nothing to do with the probe.
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Deliberately asks for a version nothing can be, so every copy found is
-        // reported stale -- this asserts discovery, not the comparison.
-        let found = stale_copies_on_path("0.0.0-nonexistent").unwrap_or_default();
-        if std::env::var_os("PATH").is_some() {
-            assert!(
-                !found.is_empty() || std::env::current_exe().is_err(),
-                "the probe found no amplihack on PATH at all; the gate would be inert"
-            );
-        }
+    fn the_probe_finds_every_copy_on_the_path_it_is_given() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let current = copy_in(root, "current", Some("amplihack 9.9.9"));
+        let older = copy_in(root, "older", Some("amplihack 9.9.8"));
+        let silent = copy_in(root, "silent", None);
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let path_dirs = vec![empty, current.clone(), older.clone(), silent.clone()];
+        let home = root.join("home");
+
+        // A version nothing reports: every copy found is listed, in PATH order.
+        let found = stale_copies_in("0.0.0-nonexistent", home.clone(), path_dirs.clone()).unwrap();
+        assert_eq!(
+            found,
+            vec![
+                StaleCopy {
+                    path: current.join("amplihack"),
+                    reported: Some("9.9.9".into()),
+                },
+                StaleCopy {
+                    path: older.join("amplihack"),
+                    reported: Some("9.9.8".into()),
+                },
+                StaleCopy {
+                    path: silent.join("amplihack"),
+                    reported: None,
+                },
+            ],
+            "discovery must find each copy and read what it reports"
+        );
+
+        // The version one copy reports: that copy is current, the older one and
+        // the one that will not say are stale.
+        let stale = stale_copies_in("9.9.9", home.clone(), path_dirs).unwrap();
+        assert_eq!(
+            stale.iter().map(|c| c.path.clone()).collect::<Vec<_>>(),
+            vec![older.join("amplihack"), silent.join("amplihack")],
+            "only the copies that are not the expected version are stale"
+        );
+
+        // No copy anywhere on the PATH: nothing is stale, and nothing fails.
+        assert_eq!(
+            stale_copies_in("9.9.9", home, vec![root.join("empty")]).unwrap(),
+            Vec::new()
+        );
+    }
+
+    /// Two PATH entries that reach one file are one copy, not two.
+    #[cfg(unix)]
+    #[test]
+    fn one_binary_reached_through_a_link_is_one_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let real = copy_in(root, "real", Some("amplihack 9.9.8"));
+        let linked = root.join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(real.join("amplihack"), linked.join("amplihack")).unwrap();
+
+        let stale =
+            stale_copies_in("9.9.9", root.join("home"), vec![real.clone(), linked]).unwrap();
+        assert_eq!(
+            stale,
+            vec![StaleCopy {
+                path: real.join("amplihack"),
+                reported: Some("9.9.8".into()),
+            }]
+        );
     }
 }

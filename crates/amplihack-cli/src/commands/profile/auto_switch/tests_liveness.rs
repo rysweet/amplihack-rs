@@ -180,6 +180,46 @@ fn failed_capability_probe_is_unsupported_and_everything_counts_as_live() {
     assert!(l.is_live(&n("X")), "unsupported must fail closed");
 }
 
+/// Issue #2935, the second macOS refusal. A system without `/proc` gives the
+/// host's view no process table, and its answer is then that sessions
+/// cannot be seen: every profile counts as live, so nothing is moved. With a
+/// table, the same root gives the sessions the table shows.
+#[test]
+fn without_a_process_table_sessions_cannot_be_seen() {
+    let p = FakeProc::new();
+    p.process(
+        100,
+        UID,
+        "S (sleeping)",
+        &[&p.config_dir("X")],
+        Path::new("/"),
+    );
+    let none = liveness::seen_in(None, &p.root, SELF_PID, UID);
+    assert_eq!(none, Liveness::Unsupported);
+    assert!(!none.supported());
+    assert!(none.is_live(&n("X")) && none.is_live(&n("Y")));
+
+    let some = liveness::seen_in(Some(&p.proc_root), &p.root, SELF_PID, UID);
+    assert!(some.supported());
+    assert!(some.is_live(&n("X")) && !some.is_live(&n("Y")), "{some:?}");
+}
+
+/// The in-memory view answers what it was built with, whatever the root, and
+/// a plain function is a view too (`Ctx::scan` holds one).
+#[test]
+fn a_fake_view_and_a_function_answer_as_they_were_built() {
+    use liveness::{FakeSessions, SessionView};
+    let anywhere = Path::new("/nowhere");
+    let running = FakeSessions::running(&["X"]).liveness(anywhere);
+    assert!(running.is_live(&n("X")) && !running.is_live(&n("Y")));
+    assert_eq!(
+        FakeSessions::unseen().liveness(anywhere),
+        Liveness::Unsupported
+    );
+    let function: fn(&Path) -> Liveness = |_| Liveness::Everything;
+    assert_eq!(function.liveness(anywhere), Liveness::Everything);
+}
+
 #[test]
 fn missing_proc_is_unsupported() {
     let tmp = tempfile::tempdir().unwrap();

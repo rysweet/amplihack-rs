@@ -47,6 +47,12 @@ impl Endpoint {
                     }
                     Err(e) => panic!("task-local identity server: {e}"),
                 };
+                // The listener polls, so it is non-blocking. On macOS and the
+                // BSDs an accepted connection inherits that mode (Linux does
+                // not pass it on), and a read that arrives before the request
+                // then fails with `WouldBlock` in place of waiting. The
+                // connection is read in blocking mode under the limit below.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .unwrap();
