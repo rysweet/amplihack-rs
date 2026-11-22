@@ -55,20 +55,18 @@
 autodrive_merge() {
   local -x LC_ALL=C
   local pr="${1:-}" sha="${2:-}" given="${3:-}" mm state rc vrc out errf json subject ms
-  local method="" method_reason="" allow_merge="" allow_squash="" allow_rebase=""
+  local method="" method_reason="" allow_merge="" allow_squash="" allow_rebase="" allows=""
   local api_out api_rc parsed shown
-  local -a argv
   _autodrive_merge_emit() { # <result> <reason>
     jq -cn --arg r "$1" --argjson pr "$pr" --arg sha "$sha" --arg why "$2" \
       --arg mm "$method" --arg mmr "$method_reason" \
       '{result:$r,pr:$pr,expected_head:$sha,reason:$why,merge_method:$mm,merge_method_reason:$mmr}'
   }
-  # _autodrive_merge_shown <text>: a caller's own string made safe to name in a
-  # reason. Bytes outside printable ASCII become '?', and the result is cut at
-  # 32 bytes, so no quote, newline or escape sequence travels on into the
-  # finalisation statement or the hand-off comment.
-  _autodrive_merge_shown() {
-    printf '%s' "$1" | tr -c '\040-\176' '?' | head -c 32
+  # _autodrive_merge_unsettled <reason>: the merge method could not be settled,
+  # so no merge is requested and the PR is handed off. The caller returns 4.
+  _autodrive_merge_unsettled() {
+    method_reason="$1"
+    _autodrive_merge_emit refused "the merge method could not be settled: $1"
   }
   # _autodrive_merge_wait <gh pr checks output>: checks-pending, naming the
   # pending checks with control characters removed and cut at 300 bytes.
@@ -149,13 +147,17 @@ autodrive_merge() {
 
   # The merge method (#1888). Every path that ends before this point makes no
   # repository call, so a PR that is not open, whose checks are not green or
-  # whose branch conflicts still ends exactly as it did.
+  # whose branch conflicts still ends exactly as it did. Past this case the
+  # given method is one of three literals, so every later mention of it is
+  # already safe to name. The text refused here is the caller's own: bytes
+  # outside printable ASCII become '?' and it is cut at 32 bytes, so no quote,
+  # newline or escape sequence travels on into the finalisation statement or
+  # the hand-off comment.
   case "$given" in
     ""|merge|squash|rebase) ;;
     *)
-      shown="$(_autodrive_merge_shown "$given")"
-      method_reason="the run was given '${shown}', which is not merge, squash or rebase"
-      _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
+      shown="$(printf '%s' "$given" | tr -c '\040-\176' '?' | head -c 32)"
+      _autodrive_merge_unsettled "the run was given '${shown}', which is not merge, squash or rebase"
       return 4 ;;
   esac
   # One read of the repository's own settings. An explicit method is checked
@@ -165,8 +167,7 @@ autodrive_merge() {
   api_out="$(gh api "repos/{owner}/{repo}" --jq '[.allow_merge_commit,.allow_squash_merge,.allow_rebase_merge]|@tsv')"; api_rc=$?
   [ "$api_rc" -eq 79 ] && return 79
   if [ "$api_rc" -ne 0 ]; then
-    method_reason="the repository's allowed methods could not be read (gh exit ${api_rc})"
-    _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
+    _autodrive_merge_unsettled "the repository's allowed methods could not be read (gh exit ${api_rc})"
     return 4
   fi
   # One line of exactly three true/false fields, or nothing: a reading that is
@@ -179,11 +180,11 @@ autodrive_merge() {
       && ($3 == "true" || $3 == "false") { ok = 1; m = $1; s = $2; r = $3 }
     END { if (ok && !bad) printf "%s %s %s", m, s, r }')"
   if [ -z "$parsed" ]; then
-    method_reason="the repository's allowed methods did not read as three true or false values"
-    _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
+    _autodrive_merge_unsettled "the repository's allowed methods did not read as three true or false values"
     return 4
   fi
   read -r allow_merge allow_squash allow_rebase <<<"$parsed"
+  allows="merge commits ${allow_merge}, squash ${allow_squash}, rebase ${allow_rebase}"
   if [ -n "$given" ]; then
     case "$given" in
       merge)  [ "$allow_merge" = true ] && method=merge ;;
@@ -191,39 +192,31 @@ autodrive_merge() {
       rebase) [ "$allow_rebase" = true ] && method=rebase ;;
     esac
     if [ -z "$method" ]; then
-      method_reason="the run was given '$(_autodrive_merge_shown "$given")', which this repository does not allow (merge commits ${allow_merge}, squash ${allow_squash}, rebase ${allow_rebase})"
-      _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
+      _autodrive_merge_unsettled "the run was given '${given}', which this repository does not allow (${allows})"
       return 4
     fi
     method_reason="the run was given the merge method '${method}', and the repository allows it"
-  elif [ "$allow_squash" = true ]; then
-    method=squash
-    method_reason="no merge method was given to the run, and the repository allows squash"
-  elif [ "$allow_merge" = true ]; then
-    method=merge
-    method_reason="no merge method was given to the run; the repository does not allow squash and does allow merge commits"
-  elif [ "$allow_rebase" = true ]; then
-    method=rebase
-    method_reason="no merge method was given to the run; the repository allows neither squash nor merge commits, and does allow rebase"
   else
-    method_reason="the repository allows no merge method (merge commits ${allow_merge}, squash ${allow_squash}, rebase ${allow_rebase})"
-    _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
-    return 4
+    # Squash wherever the repository allows it, then a merge commit, then
+    # rebase. A method it disallows is never put in another's place.
+    if [ "$allow_squash" = true ]; then method=squash
+    elif [ "$allow_merge" = true ]; then method=merge
+    elif [ "$allow_rebase" = true ]; then method=rebase
+    else
+      _autodrive_merge_unsettled "the repository allows no merge method (${allows})"
+      return 4
+    fi
+    method_reason="no merge method was given to the run, so '${method}' was taken: the first of squash, a merge commit and rebase that this repository allows (${allows})"
   fi
 
-  # The flag is a literal of this file, chosen by the branch above. A merge
-  # commit takes the same cut message as a squash (#2056); a rebase writes no
-  # commit of its own, so it takes neither, and no body is piped to it.
+  # The flag is a literal of this file, chosen by the method settled above. A
+  # merge commit takes the same cut message as a squash (#2056); a rebase
+  # writes no commit of its own, so it takes neither and is piped no body.
   case "$method" in
-    squash) argv=(--squash --match-head-commit "$sha" --subject "$subject" --body-file -) ;;
-    merge)  argv=(--merge --match-head-commit "$sha" --subject "$subject" --body-file -) ;;
-    rebase) argv=(--rebase --match-head-commit "$sha") ;;
+    squash) printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --squash --match-head-commit "$sha" --subject "$subject" --body-file - ;;
+    merge)  printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --merge --match-head-commit "$sha" --subject "$subject" --body-file - ;;
+    rebase) printf '' | gh pr merge "$pr" --rebase --match-head-commit "$sha" ;;
   esac
-  if [ "$method" = rebase ]; then
-    printf '' | gh pr merge "$pr" "${argv[@]}"
-  else
-    printf '%s' "$MERGE_BODY" | gh pr merge "$pr" "${argv[@]}"
-  fi
   rc="${PIPESTATUS[1]}"
   [ "$rc" -eq 79 ] && return 79
   if [ "$rc" -ne 0 ]; then

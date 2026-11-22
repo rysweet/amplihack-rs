@@ -56,10 +56,14 @@ steps:
       RUN_ID="${RECIPE_VAR_autodrive_parent_run_id:-}"
       [ -n "$RUN_ID" ] || RUN_ID="$(printf '%s\n' "${RECIPE_VAR_autodrive_authorization:-}" | jq -R -r 'fromjson? | select(type == "object") | .run_id // empty | strings' 2>/dev/null | tail -n 1)"
       [[ "$RUN_ID" =~ ^[0-9a-f-]{36}$ ]] || RUN_ID=""
-      emit() { # emit <result> <handoff> <expected_head> <reason> [method] [method_reason]
+      # #1888: the merge method and the reason it was settled, read by emit
+      # from here. They stay empty on every path that ends before the merge
+      # tool runs, which is where the tool itself sets them.
+      MM="" MMR=""
+      emit() { # emit <result> <handoff> <expected_head> <reason>
         local line
         line="$(jq -cn --arg r "$1" --arg h "$2" --arg sha "$3" --arg why "$4" --arg pr "$PR" \
-          --arg mm "${5:-}" --arg mmr "${6:-}" \
+          --arg mm "$MM" --arg mmr "$MMR" \
           '{result:$r,pr:($pr | tonumber? // null),expected_head:$sha,handoff:$h,reason:$why,merge_method:$mm,merge_method_reason:$mmr}')"
         printf '%s\n' "$line"
         # #2575 B3: the same line, bound to the run, in the runner-bound state
@@ -146,19 +150,19 @@ steps:
       MM="$(printf '%s\n' "$OUT" | jq -R -r 'fromjson? | select(type == "object") | .merge_method // empty' 2>/dev/null | tail -n 1)"
       MMR="$(printf '%s\n' "$OUT" | jq -R -r 'fromjson? | select(type == "object") | .merge_method_reason // empty' 2>/dev/null | tail -n 1)"
       case "$RC" in
-        0) emit merged false "$EXPECTED" "$WHY" "$MM" "$MMR" ;;
-        3) emit checks-not-green true "$EXPECTED" "$WHY" "$MM" "$MMR" ;;
-        4) emit refused true "$EXPECTED" "$WHY" "$MM" "$MMR" ;;
-        5) emit not-open true "$EXPECTED" "$WHY" "$MM" "$MMR" ;;
-        6) emit message-unavailable true "$EXPECTED" "$WHY" "$MM" "$MMR" ;;
-        7) emit checks-pending true "$EXPECTED" "$WHY" "$MM" "$MMR" ;;
+        0) emit merged false "$EXPECTED" "$WHY" ;;
+        3) emit checks-not-green true "$EXPECTED" "$WHY" ;;
+        4) emit refused true "$EXPECTED" "$WHY" ;;
+        5) emit not-open true "$EXPECTED" "$WHY" ;;
+        6) emit message-unavailable true "$EXPECTED" "$WHY" ;;
+        7) emit checks-pending true "$EXPECTED" "$WHY" ;;
         # A recovery re-run (step-03r) is not followed by the merge loop's
         # base sync, so there it hands off: the PR is drafted with a comment,
         # never left ready with no drive (#2575).
         8) if [ -n "${RECIPE_VAR_autodrive_parent_run_id:-}" ]; then
-             emit base-behind true "$EXPECTED" "$WHY" "$MM" "$MMR"
+             emit base-behind true "$EXPECTED" "$WHY"
            else
-             emit base-behind false "$EXPECTED" "$WHY" "$MM" "$MMR"
+             emit base-behind false "$EXPECTED" "$WHY"
            fi ;;
         79) echo "ERROR: exit 79 terminal refusal from gh during the merge; final, never retried [autodrive-finalize/merge]" >&2; exit 79 ;;
         *) exit "$RC" ;;

@@ -380,49 +380,40 @@ the step does not fall back to the platform's default message. The helper is
 called whichever method the drive settles on, so that result stays reachable
 exactly as it was.
 
-### Choosing the merge method (#1888)
-
-Some repositories require merge commits, and a squash would drop a commit
-that another repository pins. A pin of that kind cannot be restored
-afterwards, because force-pushes are blocked. So the method is chosen rather
-than fixed.
-
-`autodrive_merge` settles it immediately before the merge request, after every
-other condition has been met:
-
-1. The method the run was given in the `merge_method` context value, used only
-   where the repository allows it. The recipe reads that context value alone:
-   a method stated in a task description counts only if whoever launches the
-   run passes it as `-c merge_method=...`.
-2. Otherwise the first the repository allows, of squash, a merge commit, then
-   rebase, from one read of
-   `gh api "repos/{owner}/{repo}" --jq '[.allow_merge_commit,.allow_squash_merge,.allow_rebase_merge]|@tsv'`.
-
-A method the repository does not allow is never used, and no other method
-takes its place: an explicit method the repository disallows is refused.
-Where the method cannot be settled the result is `refused` with a reason
-beginning `the merge method could not be settled:` and naming what was found,
-which is the existing hand-off path rather than a new way for a run to stop.
-
-`--match-head-commit <expected sha>` accompanies every method, and no method
-is ever given `--admin`, `--auto` or `--bypass`. The caller's string never reaches the
-command line: it selects a branch in the tool, and the flag is a literal of
-the tool. Where a reason echoes the string it was given, the string is cut to
-32 characters and every non-printable or non-ASCII byte is replaced first;
-the finalisation statement and the hand-off treat that reason as a record of
-what the step found, not as an instruction.
-
-Every result line carries `merge_method` and `merge_method_reason`, and the
-finalisation statement says which method was used and why. See
-[Merge method](autodrive-merge-ready-round.md#merge-method).
-
-The separate `amplihack pr merge` command and the quality loop's own
-drive-green-PRs step still squash; they are not part of this drive.
-
 Two limitations stay open. An empty description gives `gh` an empty body;
 whether GitHub then falls back to its default message is unverified (#2263).
 GitHub is believed, from landed commits rather than a controlled probe, to
 add no `Co-authored-by` lines to a supplied body (#2263).
+
+### Choosing the merge method (#1888)
+
+Some repositories require merge commits, so the method is chosen rather than
+fixed. Immediately before the merge request, `autodrive_merge` uses the method
+given in the `merge_method` context value where the repository allows it.
+With none given, it takes the first of squash, a merge commit and rebase that
+the repository allows, from one read of `gh api "repos/{owner}/{repo}"`. Only
+the context value is read: a method stated in a task description counts only
+if whoever launches the run passes it as `-c merge_method=...`.
+
+A method the repository does not allow is never used, and no other method
+takes its place. Where the method cannot be settled, the result is `refused`
+with a reason beginning `the merge method could not be settled:`, and the PR
+is handed off on the existing path.
+
+`--match-head-commit <expected sha>` accompanies every method, and no method
+is ever given `--admin`, `--auto` or `--bypass`. The caller's string never
+reaches the command line, and where a reason echoes it, it is cut to 32
+characters with every non-printable or non-ASCII byte replaced first; the
+finalisation statement and the hand-off treat that reason as a record of what
+the step found, not as an instruction.
+
+Every result line carries `merge_method` and `merge_method_reason`, and the
+finalisation statement says which method was used and why.
+[Merge method](autodrive-merge-ready-round.md#merge-method) sets out the
+conditions in full.
+
+The separate `amplihack pr merge` command and the quality loop's own
+drive-green-PRs step still squash; they are not part of this drive.
 
 ### Hosting calls and rate limits
 

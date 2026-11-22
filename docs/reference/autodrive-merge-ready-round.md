@@ -1351,7 +1351,7 @@ at a round file's name is replaced, not followed.
 ```bash
 source "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge.sh"
 autodrive_merge 2575 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
-# {"result":"merged","pr":2575,"expected_head":"15a7f6f...","reason":"merged at the expected head; ...","merge_method":"squash","merge_method_reason":"no merge method was given to the run, and the repository allows squash"}
+# {"result":"merged","pr":2575,"expected_head":"15a7f6f...","reason":"merged at the expected head; ...","merge_method":"squash","merge_method_reason":"no merge method was given to the run, so 'squash' was taken: ..."}
 
 # A third argument is the merge method the run was given (#1888); an empty
 # one, or none, leaves the choice to the repository's allowed methods.

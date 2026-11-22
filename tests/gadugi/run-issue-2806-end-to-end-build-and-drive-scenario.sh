@@ -404,13 +404,11 @@ case "${1-} ${2-}" in
     exit 0 ;;
   # The repository's own allowed merge methods, read once by autodrive_merge
   # immediately before the merge request (#1888). Real gh expands
-  # {owner}/{repo} from the folder it was called in; this stand-in is gh, so
-  # the path arrives as the tool wrote it, and the expanded form is answered
-  # too for a caller that resolves the repository itself. All three methods
-  # are allowed, as they are in a repository created on GitHub today, so the
-  # drive settles on squash and records the merge this scenario has always
-  # recorded.
-  "api repos/{owner}/{repo}"|"api /repos/{owner}/{repo}"|"api repos/qa-owner/qa-repo"|"api /repos/qa-owner/qa-repo")
+  # {owner}/{repo} itself; this stand-in is gh, so the path arrives exactly as
+  # the tool wrote it. All three methods are allowed, as they are in a
+  # repository created on GitHub today, so the drive settles on squash and
+  # records the merge this scenario has always recorded.
+  "api repos/{owner}/{repo}")
     emit '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}' "$@"
     exit 0 ;;
   "pr list")

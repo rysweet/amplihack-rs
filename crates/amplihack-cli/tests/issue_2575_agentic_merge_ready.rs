@@ -1134,8 +1134,10 @@ fn gh_exit_79_on_the_repository_read_passes_through() {
 
 #[test]
 fn hostile_method_text_is_refused_and_never_reaches_argv() {
-    let marker_dir = tempfile_dir();
-    let marker = marker_dir.join("ran");
+    // A path no shell of this test ever writes: it exists only if the method
+    // text was executed rather than matched.
+    let marker_dir = tempfile::tempdir().expect("temporary folder");
+    let marker = marker_dir.path().join("ran");
     let hostile = [
         format!("merge\"; touch {} #", marker.display()),
         format!("$(touch {})", marker.display()),
@@ -1164,14 +1166,13 @@ fn hostile_method_text_is_refused_and_never_reaches_argv() {
                 .any(|a| a.contains("--admin")),
             "{method:?}"
         );
+        assert!(
+            fx.api_calls().is_empty(),
+            "{method:?}: refused before the repository read: {:?}",
+            fx.gh_calls()
+        );
     }
     assert!(!marker.exists(), "the method text was executed");
-}
-
-fn tempfile_dir() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("issue1888-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
 }
 
 #[test]
