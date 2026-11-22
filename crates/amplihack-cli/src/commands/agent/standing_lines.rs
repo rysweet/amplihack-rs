@@ -6,8 +6,8 @@
 //! every line is sanitised: no control character of either may survive to
 //! forge a line or an escape sequence.
 
-use super::Progress;
 use super::relaunch::Lost;
+use super::{Evidence, Progress};
 use crate::commands::agent::registry::fmt_ts;
 use crate::commands::agent::report::{self, MAX_LINE, MAX_TEXT, sanitize};
 use crate::commands::agent::store::AgentsDir;
@@ -63,21 +63,32 @@ pub fn refused_line(now: i64, name: &str, reason: &str) -> String {
 /// running.
 ///
 /// It names the exit, that the exit was of a relaunch given on nothing but
-/// the rule that every exit is given one, and what was read of the
-/// conversation: that the model wrote no reply to it during the run, or
-/// that there was none of this session's to read. So an operator reading
-/// `amplihack agent status` has the cause without the log, and the
-/// supervisor's pass has it on the entry it recovers.
-pub fn no_progress_alert(reason: &str, progress: Progress) -> String {
+/// the rule that every exit is given one, what was read of the
+/// conversation (that the model wrote no reply to it during the run, or
+/// that there was none of this session's to read), and what the room the
+/// refusal rests on was read from. So an operator reading `amplihack agent
+/// status` has the cause without the log, and the supervisor's pass has it
+/// on the entry it recovers, including whether a usage limit was ruled out
+/// by the rotator or only by a swap record older than the exit.
+pub fn no_progress_alert(reason: &str, progress: Progress, evidence: Evidence) -> String {
     let reason = sanitize(reason, MAX_TEXT);
     let measured = match progress {
         Progress::Unmeasured => "with no conversation of its own on record",
         Progress::Advanced | Progress::Idle => "without a reply from the model in its conversation",
     };
+    let room = match evidence {
+        Evidence::Unchecked => "while a login had room",
+        Evidence::Record => {
+            "while the last swap record showed a login with room and no rotator \
+             reading after the exit could be had"
+        }
+        Evidence::Reading => {
+            "while the rotator's first reading after the exit found a login with room"
+        }
+    };
     let whole = format!(
         "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited {reason} {measured} while a login had room, so another \
-         relaunch would repeat it"
+         exited {reason} {measured} {room}, so another relaunch would repeat it"
     );
     sanitize(&whole, MAX_LINE)
 }
@@ -99,6 +110,7 @@ pub fn gone_alert(reason: &str, why: Lost) -> String {
         Lost::Unwatchable => {
             "the rotator's directory is missing or not private to this user".to_string()
         }
+        Lost::Rotator => "the rotator stopped before one appeared".to_string(),
     };
     let whole = format!(
         "not relaunched: it exited {reason} while no login had room, and {why}, \
@@ -107,13 +119,16 @@ pub fn gone_alert(reason: &str, why: Lost) -> String {
     sanitize(&whole, MAX_LINE)
 }
 
-/// `<ts> standing session waiting session=<name> reason=no-room`: no login
-/// had room when the session's process exited, so the relaunch is held
-/// until one appears. Written once per wait, after the watch on the swap
-/// record is armed, so an operator looking at a quiet pane can tell a
-/// session waiting for capacity from one that has stopped.
-pub fn waiting_line(now: i64, name: &str) -> String {
-    line(now, "waiting", name, "no-room", None)
+/// `<ts> standing session waiting session=<name> reason=<reason>`: the
+/// relaunch is held, so an operator looking at a quiet pane can tell a
+/// session waiting from one that has stopped. `reason` is `no-room` when no
+/// login has room and the wrapper waits until one does, and
+/// `room-unconfirmed` when the brake would refuse on room that only a swap
+/// record older than the exit showed, and the wrapper waits for the
+/// rotator's next reading. Written once per wait and reason, after the
+/// watch on the rotate directory is armed.
+pub fn waiting_line(now: i64, name: &str, reason: &str) -> String {
+    line(now, "waiting", name, reason, None)
 }
 
 /// Every standing-session line. The name and the reason are cut to

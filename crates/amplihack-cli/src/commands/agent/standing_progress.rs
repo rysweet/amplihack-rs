@@ -29,6 +29,14 @@
 //! loop measured by size would never be braked. A model reply dated after
 //! the launch cannot come from a crash, a failed request or a copy of
 //! earlier history.
+//!
+//! Claude Code does not document this format, and the field names matched
+//! here are what 2.1.330 wrote. If a later version changes them so that no
+//! reply is recognised, every run reads as idle and each standing session
+//! is refused after one relaunch, loudly and on its record. That errs
+//! towards stopping, but it stops sessions that were working. Issue #3077
+//! proposes that the supervisor agent judge `no-progress` from the
+//! transcript's tail instead of this reader.
 
 use serde::Deserialize;
 use std::io::BufRead;

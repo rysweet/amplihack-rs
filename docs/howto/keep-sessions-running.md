@@ -23,6 +23,7 @@ why and hands the failure to the supervisor:
 - [What counts as you ending the session](#what-counts-as-you-ending-the-session)
 - [What happens after a limit](#what-happens-after-a-limit)
 - [What stops a session that keeps crashing](#what-stops-a-session-that-keeps-crashing)
+- [Before a refusal: the rotator is asked](#before-a-refusal-the-rotator-is-asked)
 - [Read the relaunch line](#read-the-relaunch-line)
 - [What is carried into the relaunch](#what-is-carried-into-the-relaunch)
 - [Limits of this feature](#limits-of-this-feature)
@@ -114,6 +115,16 @@ The room rule is the one the
 answers the usage-limit menu in a running session. The wrapper covers the case
 where the process has gone.
 
+The rotator writes the swap record only when it swaps. At the moment of an
+exit the record is therefore usually older than the run, and a record that
+shows room says only that the login it swapped to had room then. It does not
+show a limit the run has just met. The wrapper does not wait on that account,
+so a session killed for any other reason is not held back. A run that goes
+into a limit and exits is relaunched at once, and if that relaunch is the one
+the [brake](#what-stops-a-session-that-keeps-crashing) would refuse, the wrapper
+first asks the rotator whether the room was real; see
+[before a refusal](#before-a-refusal-the-rotator-is-asked).
+
 ## What stops a session that keeps crashing
 
 What the wrapper judges is the relaunch chain, not the run. There is no count
@@ -134,11 +145,17 @@ exit itself:
 | Changed since the launch that failed | Meaning |
 |--------------------------------------|---------|
 | The model wrote a reply to the conversation during the run | The run did something. There is more for `--continue` to carry on, so whatever fails next will be a new failure |
-| The wrapper waited for room, and a login with room appeared | The capacity that was spent has been replaced. This is the usage-limit case the feature exists for |
+| The wrapper waited for room, and a login with room appeared, or the rotator swapped onto a login with room after the run began | The capacity that was spent has been replaced. This is the usage-limit case the feature exists for |
 
 Either of those relaunches a session however often it exits, trial or not, so
 a session that is working and a session that keeps hitting limits are never
 stopped by this rule.
+
+The trial is a count of one: a chain with nothing to show is given one
+relaunch and no more. It does not add up across a session's life, because any
+reply or any new room clears it, but it is a count all the same. Moving that
+judgement to the supervisor agent is
+[#3077](https://github.com/rysweet/amplihack-rs/issues/3077).
 
 A reply is read from the transcript of the conversation the session's record
 names, once, after the exit. It is a line of type `assistant` that names the
@@ -147,6 +164,16 @@ the moment just before the launch. A session that is working writes one every
 turn. The reading is of that one conversation, so a second session running in
 the same directory can neither pass a failing session off as working nor keep
 its relaunch loop alive.
+
+Claude Code does not document its transcript format. The fields above were
+read from Claude Code 2.1.330. If a later version changes them so that no
+reply is recognised, every run reads as idle: each standing session is
+relaunched once after an exit and refused after the next one, with the
+refusal in the pane, the supervisor log and the session's record. It fails
+towards stopping, never towards a loop, but it stops sessions that were
+working. [#3077](https://github.com/rysweet/amplihack-rs/issues/3077) proposes
+that the supervisor agent make this judgement from the transcript's tail
+instead.
 
 ### Why the size of the transcript is not used
 
@@ -221,9 +248,53 @@ stopped either.
 ALERT coordinator: not relaunched: the relaunch of an exit that showed nothing itself exited exit-status-1 without a reply from the model in its conversation while a login had room, so another relaunch would repeat it
 ```
 
-The alert ends with what was read of the conversation: `without a reply from
-the model in its conversation`, or `with no conversation of its own on record`
-when there was none to read.
+The alert says what was read of the conversation: `without a reply from the
+model in its conversation`, or `with no conversation of its own on record`
+when there was none to read. It ends with what the room the refusal rests on
+was read from:
+
+| Text | Meaning |
+|------|---------|
+| `while a login had room` | There is no swap record and no rotator to ask, so nothing held the session back for capacity |
+| `while the rotator's first reading after the exit found a login with room` | The rotator measured after the exit and found room, so the exit was not a usage limit |
+| `while the last swap record showed a login with room and no rotator reading after the exit could be had` | Only a swap record from before the exit showed room: no rotator runs, a login is pinned with `profile switch`, or the rotator stopped before it measured. A usage limit is not ruled out, so the supervisor should check the logins before it restarts the session |
+
+## Before a refusal: the rotator is asked
+
+A `no-progress` refusal rests on a login having had room. When the only
+evidence of that is a swap record from before the exit, and a rotator is
+running, the wrapper does not refuse yet. It writes one waiting line with
+`reason=room-unconfirmed`, watches the rotator's directory, and acts on the
+rotator's first cycle that measured after the exit:
+
+| The rotator found | The wrapper |
+|-------------------|-------------|
+| A swap since the run began onto a login with room, or a `profile switch` after the exit | Relaunches with `waited=room`: the capacity has been replaced |
+| The live login with room, and no swap | Refuses with `reason=no-progress`: the exit was not a usage limit |
+| No capacity (its no-room alert) | Writes a waiting line with `reason=no-room`, waits until a swap onto a login with room or a cycle that finds room again, and then relaunches with `waited=room` |
+
+So a trial relaunch that goes straight into a usage limit is waited for and
+started again, not refused as a crash. The wait follows the rotator's own
+cycle, so it normally lasts one rotator interval (`--interval`, 600 seconds by
+default). It has no timer of its own and ends at once if the rotator exits.
+A cycle whose reading of the live login was taken in the second of the exit or
+before it is not used, because it may predate the exit; the next one is. A
+reading the rotator took from a status line can be that old even in a later
+cycle. The rotator reads the login directly once such a reading is older than
+its passive limit (`AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`, 300 seconds
+by default) or one interval, so the wait is then a few cycles.
+
+The wrapper does not wait, and the refusal is made at once on the swap record
+alone, when no rotator is running, when a login is pinned with
+`amplihack profile switch` (pinned cycles measure nothing), or when the
+rotator's directory cannot be watched. If the rotator stops before it has
+measured, the refusal is made then. The alert says so in each case, as in the
+table above. A cycle already on disk that measured after the exit is still
+acted on in these cases: room refuses on that reading, and a swap onto a login
+with room relaunches. If the rotator found no capacity after the exit and is
+not running, or stops while the wrapper waits for room, the wrapper refuses
+with `reason=gone` and `the rotator stopped before one appeared` on the
+record.
 
 This also covers a session whose Claude Code never started: it wrote no
 conversation, so there is nothing to continue and the same refusal applies
@@ -241,14 +312,16 @@ timestamp in the form `YYYY-MM-DDTHH:MM:SSZ`:
 ```
 
 It names the session, the exit as a status (`exit-status-1`) or a signal name,
-and whether the wrapper waited for room (`waited=room`) or not
-(`waited=none`). A refusal to relaunch is one line in the same form, with the
+and whether the relaunch follows new room (`waited=room`) or not
+(`waited=none`). New room is a login with room that the wrapper waited for,
+or a swap the rotator made onto a login with room after the run began. A
+refusal to relaunch is one line in the same form, with the
 word `refused` in place of `relaunch` and one of these reasons:
 
 | Reason | Meaning |
 |--------|---------|
-| `no-progress` | A relaunch that was given on nothing itself got no reply from the model while a login had room, so another relaunch would repeat it. The reason is also left on the session's record; see [what stops a session that keeps crashing](#what-stops-a-session-that-keeps-crashing) |
-| `gone` | The wait for room ended with no login that has room: the seven days passed, or the swap record could not be watched. The reason is also left on the session's record; see [what happens after a limit](#what-happens-after-a-limit). Also written, without the record, when the wrapper is signalled just before the wait |
+| `no-progress` | A relaunch that was given on nothing itself got no reply from the model while a login had room, so another relaunch would repeat it. The reason is also left on the session's record; see [what stops a session that keeps crashing](#what-stops-a-session-that-keeps-crashing) and [before a refusal](#before-a-refusal-the-rotator-is-asked) |
+| `gone` | The wait for room ended with no login that has room: the seven days passed, the swap record could not be watched, or the rotator stopped after it found no capacity. The reason is also left on the session's record; see [what happens after a limit](#what-happens-after-a-limit). Also written, without the record, when the wrapper is signalled just before the wait |
 | `superseded` | The session record changed while the wrapper waited: the supervisor rebuilt, ended or stopped the session |
 
 ```text
@@ -262,8 +335,16 @@ A session held for capacity writes one line in the same form with the word
 2026-11-21T21:40:07Z standing session waiting session=coordinator reason=no-room
 ```
 
-It is written once per wait, after the watch on the swap record is armed, so
-a record written from that moment on always ends the wait.
+A session held for the rotator's reading
+[before a refusal](#before-a-refusal-the-rotator-is-asked) writes
+`reason=room-unconfirmed` instead:
+
+```text
+2026-11-21T21:40:07Z standing session waiting session=coordinator reason=room-unconfirmed
+```
+
+Each is written once per wait, after the watch on the rotator's directory is
+armed, so a record written from that moment on always ends the wait.
 
 Control characters are stripped from the session name and from the reason. No
 arguments, prompt text or environment appear in either line. The tests assert

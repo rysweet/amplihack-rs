@@ -11,8 +11,9 @@ use super::lines::{
     exit_reason, gone_alert, loudly, no_progress_alert, refused_line, relaunch_line, waiting_line,
 };
 use super::progress::replied_since;
-use super::relaunch::{self, Room};
-use super::{AfterExit, Exit, Progress, Relaunch, after_exit, worth_relaunching};
+use super::recheck::{Recheck, recheck};
+use super::relaunch::{self, Lost, Room};
+use super::{AfterExit, Evidence, Exit, Progress, Relaunch, after_exit, worth_relaunching};
 use crate::commands::agent::registry;
 use crate::commands::agent::store::AgentsDir;
 use crate::commands::agent::{entry, sessions};
@@ -140,6 +141,10 @@ impl Standing {
     /// each stops a session its owner still wants running. `stopped` is the
     /// wrapper's flag for SIGHUP and SIGTERM, read again during and after a
     /// wait for room.
+    ///
+    /// Before a `no-progress` refusal, a running rotator is asked whether
+    /// the room the refusal rests on was there after the exit; see
+    /// `standing_recheck.rs`.
     pub(in crate::commands::agent) fn next(
         &self,
         dir: &AgentsDir,
@@ -158,20 +163,21 @@ impl Standing {
             AfterExit::OwnerEnded | AfterExit::GoingAway => return None,
             AfterExit::Relaunch => {}
         }
+        let exited = registry::now();
         let reason = exit_reason(exit.result);
         // Before the brake, because an exit with no room is the usage limit
         // this feature exists for: the wait is what makes the next launch
         // different from the one that failed.
         let waited = match self.root.as_deref() {
             Some(root) => relaunch::wait_for_room_until(root, stopped, || {
-                loudly(dir, &waiting_line(registry::now(), name));
+                loudly(dir, &waiting_line(registry::now(), name, "no-room"));
             }),
             None => Room::Now,
         };
         // A signal during or just before the wait is the pane or the host
         // going away: a stop someone chose, so it is logged and no more.
         if waited == Room::Stopped || stopped.load(Ordering::SeqCst) {
-            loudly(dir, &refused_line(registry::now(), name, "gone"));
+            gone(dir, name, exit, &reason, None);
             return None;
         }
         // The wait ended with no room and no one asked it to: the deadline
@@ -181,20 +187,38 @@ impl Standing {
         // the supervisor's recovery. That starts the session in a new
         // wrapper, which waits for room again should the run exit with none.
         if let Room::Gone(why) = waited {
-            loudly(dir, &refused_line(registry::now(), name, "gone"));
-            entry::note_refusal(dir, name, exit.launch_id, &gone_alert(&reason, why));
+            gone(dir, name, exit, &reason, Some(why));
             return None;
         }
-        let room = waited == Room::Waited;
+        let mut room = waited == Room::Waited;
         if !worth_relaunching(exit.on_trial, exit.progress, room) {
-            loudly(dir, &refused_line(registry::now(), name, "no-progress"));
-            entry::note_refusal(
-                dir,
-                name,
-                exit.launch_id,
-                &no_progress_alert(&reason, exit.progress),
-            );
-            return None;
+            // The refusal would say a login had room, and the swap record
+            // that says so is written only when the rotator swaps: it may
+            // be older than the run and blind to a limit the run has just
+            // met. A running rotator is asked first.
+            let checked = match self.root.as_deref() {
+                Some(root) => recheck(root, exit.since, exited, stopped, |why| {
+                    loudly(dir, &waiting_line(registry::now(), name, why));
+                }),
+                None => Recheck::Refuse(Evidence::Unchecked),
+            };
+            match checked {
+                Recheck::Appeared => room = true,
+                Recheck::Refuse(evidence) => {
+                    loudly(dir, &refused_line(registry::now(), name, "no-progress"));
+                    let alert = no_progress_alert(&reason, exit.progress, evidence);
+                    entry::note_refusal(dir, name, exit.launch_id, &alert);
+                    return None;
+                }
+                Recheck::Stopped => {
+                    gone(dir, name, exit, &reason, None);
+                    return None;
+                }
+                Recheck::Gone(why) => {
+                    gone(dir, name, exit, &reason, Some(why));
+                    return None;
+                }
+            }
         }
         // One pane per session: the relaunch happens only while the entry
         // is still this launch's. If the supervisor rebuilt the session in
@@ -215,5 +239,15 @@ impl Standing {
             // chain rather than giving it another start.
             on_trial: exit.progress != Progress::Advanced && !room,
         })
+    }
+}
+
+/// A `gone` refusal: one line in the pane and the log and, when `why` says
+/// a wait for room ended with no room and no signal, the cause on the
+/// session's record, which is left `active` for the supervisor's recovery.
+fn gone(dir: &AgentsDir, name: &str, exit: &Exit<'_>, reason: &str, why: Option<Lost>) {
+    loudly(dir, &refused_line(registry::now(), name, "gone"));
+    if let Some(why) = why {
+        entry::note_refusal(dir, name, exit.launch_id, &gone_alert(reason, why));
     }
 }

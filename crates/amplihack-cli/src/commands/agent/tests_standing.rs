@@ -7,7 +7,7 @@
 
 use super::lines::no_progress_alert;
 use super::relaunch::{Lost, Room, wait_for_room_until};
-use super::{AfterExit, Progress, after_exit, worth_relaunching};
+use super::{AfterExit, Evidence, Progress, after_exit, worth_relaunching};
 use crate::commands::agent::report::MAX_LINE;
 use amplihack_utils::rotator_status::swap_record::{
     SWAP_FILE, SwapReading, SwapRecord, rotate_dir,
@@ -125,7 +125,7 @@ fn a_trial_run_with_neither_progress_nor_new_room_is_not_relaunched() {
 #[test]
 fn the_no_progress_alert_names_the_exit_and_the_evidence() {
     assert_eq!(
-        no_progress_alert("exit-status-1", Progress::Idle),
+        no_progress_alert("exit-status-1", Progress::Idle, Evidence::Unchecked),
         "not relaunched: the relaunch of an exit that showed nothing itself \
          exited exit-status-1 without a reply from the model in its \
          conversation while a login had room, so another relaunch would repeat it"
@@ -133,7 +133,7 @@ fn the_no_progress_alert_names_the_exit_and_the_evidence() {
     // The blind case says so rather than claiming the model wrote nothing:
     // there was no conversation of this session's to look at.
     assert_eq!(
-        no_progress_alert("SIGKILL", Progress::Unmeasured),
+        no_progress_alert("SIGKILL", Progress::Unmeasured, Evidence::Unchecked),
         "not relaunched: the relaunch of an exit that showed nothing itself \
          exited SIGKILL with no conversation of its own on record while a login \
          had room, so another relaunch would repeat it"
@@ -141,9 +141,32 @@ fn the_no_progress_alert_names_the_exit_and_the_evidence() {
     let hostile = no_progress_alert(
         &format!("a\u{1b}[31mb\nc{}", "x".repeat(4096)),
         Progress::Idle,
+        Evidence::Record,
     );
     assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
     assert!(hostile.chars().count() <= MAX_LINE, "{hostile:?}");
+}
+
+/// The alert says what the room the refusal rests on was read from, so the
+/// supervisor can tell a usage limit ruled out by the rotator after the exit
+/// from one ruled out only by a swap record older than the run.
+#[test]
+fn the_no_progress_alert_says_where_the_room_was_read() {
+    assert_eq!(
+        no_progress_alert("exit-status-1", Progress::Idle, Evidence::Reading),
+        "not relaunched: the relaunch of an exit that showed nothing itself \
+         exited exit-status-1 without a reply from the model in its \
+         conversation while the rotator's first reading after the exit found \
+         a login with room, so another relaunch would repeat it"
+    );
+    assert_eq!(
+        no_progress_alert("exit-status-1", Progress::Idle, Evidence::Record),
+        "not relaunched: the relaunch of an exit that showed nothing itself \
+         exited exit-status-1 without a reply from the model in its \
+         conversation while the last swap record showed a login with room and \
+         no rotator reading after the exit could be had, so another relaunch \
+         would repeat it"
+    );
 }
 
 // ── the room rule ───────────────────────────────────────────────────────────

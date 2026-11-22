@@ -122,12 +122,18 @@ fn the_refusal_line_is_the_documented_one() {
 }
 
 /// Written once the watch is armed, so an operator reading a quiet pane can
-/// tell a session waiting for capacity from one that has stopped.
+/// tell a session waiting for capacity, or for the rotator's reading before
+/// a refusal, from one that has stopped.
 #[test]
 fn the_waiting_line_is_the_documented_one() {
     assert_eq!(
-        waiting_line(NOW, "coordinator"),
+        waiting_line(NOW, "coordinator", "no-room"),
         "2026-10-29T23:28:10Z standing session waiting session=coordinator reason=no-room"
+    );
+    assert_eq!(
+        waiting_line(NOW, "coordinator", "room-unconfirmed"),
+        "2026-10-29T23:28:10Z standing session waiting session=coordinator \
+         reason=room-unconfirmed"
     );
 }
 
@@ -138,7 +144,7 @@ fn control_characters_never_reach_the_pane_or_the_log() {
     for line in [
         relaunch_line(NOW, "a\u{1b}[31mb\nc\rd", "x\u{1b}]0;t\u{7}y\nz", false),
         refused_line(NOW, "a\u{1b}[31mb\nc\rd", "x\ny\u{1b}"),
-        waiting_line(NOW, "a\u{1b}[31mb\nc\rd"),
+        waiting_line(NOW, "a\u{1b}[31mb\nc\rd", "x\ny\u{1b}"),
     ] {
         assert!(!line.chars().any(char::is_control), "{line:?}");
         assert_eq!(line.lines().count(), 1, "{line:?}");
@@ -167,6 +173,7 @@ fn the_gone_alert_names_the_exit_and_why_the_wait_ended() {
             Lost::Unwatchable,
             "the rotator's directory is missing or not private to this user",
         ),
+        (Lost::Rotator, "the rotator stopped before one appeared"),
     ];
     for (why, text) in cases {
         assert_eq!(

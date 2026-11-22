@@ -510,16 +510,20 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | `moved-on` | The user sent a prompt in that session during the wait (for example `continue`), so the hook did not wake it. |
 | `disabled` | Auto-switch was off when a swap would have resumed the session. |
 | `duplicate` | A wake attempt was already recorded for that limit event (same session, text and login), or another hook recorded an attempt for the session during the wait. |
-| `cap` | The session reached its limit of 3 recorded wake attempts in 24 hours. Another attempt can be made once an older one ages out. |
+| `session-record-reset` | The session's record of earlier wakes could not be parsed. It was rewritten and treated as no earlier wakes; the session is still woken, and its own line follows. Nothing for the user to do unless it repeats. |
 | `stop-hook-active` | Claude Code reported a stop hook already running; nothing was done. |
 | `guard-failed` | The resume state under `<root>/.auto-switch.d/resume/` could not be used safely. Check its owner and mode (`0700`). |
 
 The hook requires a qualifying swap record and records a wake attempt before
-delivering it, so a partial send counts toward the limit. It records at most
-one attempt per limit event, one per wait and 3 per session in 24 hours. Each
-`resume.log` line also has `cycle=`, the rotator's last cycle outcome, and,
-when they apply, `swap_seq=`, `swap_live=`, `pane=` (a hash, not the pane
-id), `keys_sent=` and `detail=`.
+delivering it, so a partial send still counts as the attempt for that limit
+event. It records at most one attempt per limit event and one per wait. There
+is no count of wake attempts per session (issue #2912): a session is woken
+every time a login with room follows a limit, however many limits it met that
+day. Each `resume.log` line also has `cycle=`, the rotator's last cycle
+outcome, and, when they apply, `resumes=` (the session's earlier wakes in 24
+hours, logged as evidence; nothing is refused on it), `swap_seq=`,
+`swap_live=`, `pane=` (a hash, not the pane id), `keys_sent=` and
+`detail=`.
 
 Claude Code's `autoContinueAtUsageLimit` setting controls whether it starts
 a wait that can continue the conversation when the limit resets. The

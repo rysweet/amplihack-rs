@@ -24,7 +24,15 @@
 //! So a process that cannot start is started again once and then left to
 //! the supervisor with its failure on its own record as evidence, while a
 //! session that does work, or that waits for capacity, is relaunched as
-//! often as it exits.
+//! often as it exits. The trial is a count of one: it does not accumulate,
+//! because any reply or new room clears it, but it is a count. Issue #3077
+//! proposes moving the judgement to the supervisor agent.
+//!
+//! A refusal rests on a login having had room, and the rotator's swap
+//! record, which says so, is written only when the rotator swaps. Before it
+//! refuses, the wrapper therefore asks a running rotator for a reading taken
+//! after the exit (`standing_recheck.rs`), so a run that went into a usage
+//! limit is waited for and relaunched rather than refused as a crash.
 //!
 //! [`Standing`] is the whole of the decision: the wrapper calls
 //! [`Standing::next`] once its child has returned and either starts the
@@ -61,6 +69,10 @@ mod lines;
 /// conversation during the run, read from its transcript after the exit.
 #[path = "standing_progress.rs"]
 mod progress;
+
+/// The rotator's reading after an exit, taken before the brake refuses.
+#[path = "standing_recheck.rs"]
+mod recheck;
 
 pub(super) use run::Standing;
 
@@ -149,11 +161,12 @@ impl Progress {
 ///   and there is more for `--continue` to carry on. Whatever failure comes
 ///   next will be a new one. Lines Claude Code writes without a turn, and
 ///   the assistant line it writes for a failed request, are not replies.
-/// - `room_appeared`: no login had room at the exit and the wrapper waited
-///   until one did, so the capacity that was spent has been replaced. This
-///   is the usage-limit case the feature exists for, and it is why a
-///   process that dies in under a second on a limit wall is still started
-///   again.
+/// - `room_appeared`: the capacity that was spent has been replaced. Either
+///   no login had room at the exit and the wrapper waited until one did, or
+///   the rotator, asked before a refusal, swapped after the run began or
+///   found the login spent and then with room again. This is the
+///   usage-limit case the feature exists for, and it is why a process that
+///   dies in under a second on a limit wall is still started again.
 /// - `on_trial`: the run that has just exited was itself started by a
 ///   relaunch that had neither of the above behind it. That relaunch was
 ///   the one trial an exit with nothing to show is given; the run it
@@ -174,6 +187,22 @@ impl Progress {
 /// agent status`.
 pub fn worth_relaunching(on_trial: bool, progress: Progress, room_appeared: bool) -> bool {
     !on_trial || progress == Progress::Advanced || room_appeared
+}
+
+/// What a `no-progress` refusal knew of the room a login had when it
+/// refused, for the alert it leaves on the session's record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Evidence {
+    /// No swap record and no reading from a rotator: nothing was holding
+    /// the session back for capacity.
+    Unchecked,
+    /// The last swap record showed a login with room, and no rotator reading
+    /// taken after the exit could be had: no rotator runs, a login is
+    /// pinned, or the rotator stopped before it measured.
+    Record,
+    /// The rotator measured the live login after the exit and found room, so
+    /// the exit was not a usage limit.
+    Reading,
 }
 
 /// What the wrapper saw of one run of Claude Code, for [`Standing::next`].
@@ -223,3 +252,6 @@ mod tests_standing_lines;
 #[cfg(test)]
 #[path = "tests_standing_progress.rs"]
 mod tests_standing_progress;
+#[cfg(test)]
+#[path = "tests_standing_recheck.rs"]
+mod tests_standing_recheck;

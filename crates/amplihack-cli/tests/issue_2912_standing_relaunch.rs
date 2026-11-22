@@ -40,6 +40,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
+/// The check a refusal makes with a running rotator, which uses the
+/// stand-in session and the helpers below.
+#[path = "issue_2912_standing_recheck.rs"]
+mod recheck;
+
 const NAME: &str = "area-docs";
 const CLAUDE_PID: u32 = 60001;
 
@@ -71,7 +76,12 @@ case "$1" in --version) echo '2.1.319 (Claude Code)'; exit 0 ;; esac
 d='{records}'
 t='{transcript}'
 f='{fixtures}'
-now=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+# The turn's time to the millisecond, as `%N` cut to three digits. Not
+# `%3N`: uutils coreutils 0.12 drops the leading zeros before it applies
+# the width, so at 0.095 s it prints 952 and dates the turn up to 0.9 s
+# ahead, after the next run's launch, which reads as a reply to that run.
+now=$(date -u +%Y-%m-%dT%H:%M:%S.%N)
+now="${{now%??????}}Z"
 {{ for a in "$@"; do printf '%s ' "$a"; done; echo; }} >> "$d/claude.runs"
 n=$(wc -l < "$d/claude.runs" | tr -d ' ')
 verb=$(sed -n "${{n}}p" "$d/claude.script")

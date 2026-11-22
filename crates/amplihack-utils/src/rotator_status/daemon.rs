@@ -102,6 +102,17 @@ pub fn rotator_down(root: &Path, now: i64) -> bool {
     rotator_down_at(root, Path::new("/proc"), now)
 }
 
+/// The pid of the rotator for `root`, when one of this user runs per the
+/// real `/proc`. The check [`rotator_down`] makes, for a caller that also
+/// needs the pid: a standing session's wrapper waits on the rotator's next
+/// cycle and must stop waiting if the rotator exits (issue #2912).
+pub fn running_rotator(root: &Path) -> Option<u32> {
+    match daemon_state(&pid_path(root), Path::new("/proc"), None) {
+        DaemonState::Running(pid) => Some(pid),
+        DaemonState::Stopped | DaemonState::Stale | DaemonState::Unverifiable => None,
+    }
+}
+
 /// [`rotator_down`] against another `/proc`.
 pub fn rotator_down_at(root: &Path, proc_root: &Path, now: i64) -> bool {
     match daemon_state(&pid_path(root), proc_root, None) {
