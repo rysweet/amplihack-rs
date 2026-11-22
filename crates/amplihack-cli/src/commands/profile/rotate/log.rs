@@ -210,7 +210,9 @@ pub mod msg {
     /// exhausted shows its stored figures; no session window is `s=0%`, as
     /// in D1 (#1846), so a weekly-only login never logs a session limit it
     /// does not have. An unread week is `w=?`, failed `failed`, in flight
-    /// `unknown, still running`.
+    /// `unknown, still running`. Issue #2889: a measured or exhausted
+    /// reading read before this cycle's measurement began ends
+    /// `{sep}cached=<n>s` (`Shown::age`).
     pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
         if r.excluded {
             return EXCLUDED_NOT_PROBED.to_string();
@@ -222,11 +224,11 @@ pub mod msg {
         match r.reading {
             Reading::Measured { session, .. } => {
                 let s = r.session.unwrap_or(session);
-                format!("s={}%{sep}w={}", pct(s), week(r.week))
+                format!("s={}%{sep}w={}{}", pct(s), week(r.week), r.age(sep))
             }
             Reading::Exhausted { session, week: w } => {
                 let s = session.or(r.session).unwrap_or(0.0);
-                format!("s={}%{sep}w={}", pct(s), week(w.or(r.week)))
+                format!("s={}%{sep}w={}{}", pct(s), week(w.or(r.week)), r.age(sep))
             }
             Reading::Failed => "failed".to_string(),
         }

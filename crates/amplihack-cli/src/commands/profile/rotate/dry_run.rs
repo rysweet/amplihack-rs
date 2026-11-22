@@ -121,19 +121,21 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         Some(stub) => stub(ctx, &snap)?,
         None => measure_and_decide(ctx, &snap)?,
     };
-    let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded);
+    // Issue #1870: the same re-reads as a real cycle; no rotate state is written.
+    let m = fresh::live::step(ctx, &snap, m)?;
+    // Issue #2889: as in a real cycle, the line reports the live figures the
+    // preview decided on, after the live step and before the target gate.
     let name = live_name(&snap.live);
+    let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded, (ctx.now)());
     out.emit(
         0,
         &msg::cycle(name, &live_shown, &others_shown, snap.shown_platform()),
     );
-    // Issue #1870: the same re-reads as a real cycle; no rotate state is written.
-    let m = fresh::live::step(ctx, &snap, m)?;
     let m = fresh::gate(ctx, &snap, m, Reread::Allowed)?;
     for line in &m.fresh_lines {
         out.emit(0, line);
     }
-    let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded);
+    let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded, (ctx.now)());
     let Measurement {
         live,
         others,

@@ -3,6 +3,7 @@
 //! decision reads it.
 
 use super::super::decide::{Probed, Reading};
+use super::super::fresh::read_at;
 use super::super::observe::Measurement;
 use crate::commands::profile::name::ProfileName;
 
@@ -18,6 +19,12 @@ pub struct Shown {
     pub still_running: bool,
     /// Issue #2218: the live login of an excluded profile, never probed.
     pub excluded: bool,
+    /// Issue #2889: how old, in whole seconds, the figures the cycle decided
+    /// on were when it decided, for the live login and only when they were
+    /// read before this cycle's measurement began. `None` for a direct
+    /// probe, for a re-read that succeeded, for a reading with no reading
+    /// time and for every candidate.
+    pub cached: Option<u64>,
 }
 
 impl Shown {
@@ -29,6 +36,7 @@ impl Shown {
             week: p.windows.week.map(|w| w.used),
             still_running: p.still_running,
             excluded: false,
+            cached: None,
         }
     }
 
@@ -45,17 +53,53 @@ impl Shown {
             week,
             still_running: false,
             excluded: false,
+            cached: None,
         }
     }
+
+    /// Issue #2889: `<sep>cached=<n>s` when the figures this reading shows
+    /// were read before the cycle's measurement began, else nothing. Fixed
+    /// text and one whole number, in the `s=`, `w=` and `reason=` grammar of
+    /// the rest of the line.
+    pub fn age(&self, sep: &str) -> String {
+        self.cached
+            .map_or_else(String::new, |n| format!("{sep}cached={n}s"))
+    }
+}
+
+/// Issue #2889: how old the live reading `live` was at `now`, in whole
+/// seconds, when it was read before the cycle began measuring at
+/// `measured_at`; `None` otherwise.
+///
+/// A direct probe and a successful re-read are both dated at or after
+/// `measured_at`, so neither is annotated, and a reading with no reading
+/// time (carried, unknown, still running or failed, `fresh::read_at`) gives
+/// no age rather than a guessed one. The difference is taken with saturating
+/// arithmetic on `i64` and a reading time in the future reports `0`, so no
+/// age is ever negative or wrapped.
+fn cached_age(live: &Probed, measured_at: i64, now: i64) -> Option<u64> {
+    let read = read_at(live, measured_at)?;
+    if read >= measured_at {
+        return None;
+    }
+    Some(u64::try_from(now.saturating_sub(read)).unwrap_or(0))
 }
 
 /// What the log shows for the live login and each candidate (issue #1844):
 /// the windows read when the measurement kept its probes, else the
 /// readings alone. `live_excluded` (issue #2218, `Snap::live_excluded`)
 /// shows the live login as `excluded (not probed)`.
-pub fn shown(m: &Measurement, live_excluded: bool) -> (Shown, Vec<(ProfileName, Shown)>) {
+///
+/// `now` is the cycle's own clock, the clock that dates the readings, not
+/// the wall clock the log line is stamped with. Issue #2889: it gives the
+/// live login's `cached=<n>s`, which no candidate ever carries.
+pub fn shown(m: &Measurement, live_excluded: bool, now: i64) -> (Shown, Vec<(ProfileName, Shown)>) {
     let (mut live, others) = shown_all(m);
     live.excluded = live_excluded;
+    live.cached = m
+        .probed
+        .as_ref()
+        .and_then(|(p, _)| cached_age(p, m.measured_at, now));
     (live, others)
 }
 

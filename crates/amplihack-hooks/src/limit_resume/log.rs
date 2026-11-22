@@ -55,7 +55,10 @@ pub struct LogEntry {
     pub pane: Option<String>,
     /// How many resume keys were sent.
     pub keys_sent: Option<u8>,
-    /// Why a step failed: an `io::ErrorKind` name or `session-gone`.
+    /// Why a step failed, or why no key was sent: an `io::ErrorKind` name,
+    /// `session-gone`, `no-tmux-pane`, one of
+    /// [`super::keys::UNVERIFIED_REASONS`] for `pane-unverified`, or one of
+    /// [`super::keys::UNRECOGNISED_REASONS`] for `screen-unrecognised`.
     pub detail: Option<String>,
 }
 
