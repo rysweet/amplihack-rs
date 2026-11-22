@@ -20,7 +20,7 @@ finalization with failing checks goes back into a repair loop (diagnose, fix,
 push, wait for CI, reassess) and repeats until CI is green, with no round limit
 and no time limit. Only a cause the run cannot fix, such as a missing secret,
 ends it, and then with that cause and the exact human step named. See
-[Red CI Is Repaired](#red-ci-is-repaired-2966). Where this page describes a
+[Red CI at Finalization](#red-ci-at-finalization-2966). Where this page describes a
 failing check ending the run, that section takes precedence.
 
 **The terminal state is decided by one step, `assess-finalization`, on the
@@ -165,7 +165,7 @@ failures. The finished model is designed around these concrete cases:
 | Closed-unmerged PR handling | Closed PRs without merge evidence were sometimes treated like completed work even when branch diffs remained. | Return `CLOSED_OBSOLETE` only when local no-diff/obsolete proof exists; otherwise return a failing closed-unmerged state. |
 | Remaining meaningful diff | Branch changes remain but no valid publish, merge, follow-up, or implementation-plus-verification path proves closure. | Return `FAILED_MEANINGFUL_DIFF` unless the diff is intentionally represented by a validated PR/follow-up or another success state with deterministic proof. |
 | Missing tooling | `gh`, `jq`, Git metadata, or provider auth was absent on paths that required it. | Tooling absence is reported as a deterministic failure such as `FAILED_MISSING_TOOLING` or `FAILED_PR_METADATA_UNAVAILABLE`, not as no-op success. |
-| Failed CI | Open PRs with failing checks reached final output that looked complete. Until #2966 a run that reached finalization with red CI ended `BLOCKED_CI`, and step recovery handed it off with exit `81`, although the failure was an ordinary one (the Install Smoke Test on PR #2947 reported `claude-strong: 2 launches of claude, want 1`). | Repair it: diagnose, fix, push, wait for CI and reassess until the checks are green. Report `BLOCKED_CI` only for a cause the run cannot fix, with `terminal_success=false`, the cause and the human step. See [Red CI Is Repaired](#red-ci-is-repaired-2966). |
+| Failed CI | Open PRs with failing checks reached final output that looked complete. Until #2966 a run that reached finalization with red CI ended `BLOCKED_CI`, and step recovery handed it off with exit `81`, although the failure was an ordinary one (the Install Smoke Test on PR #2947 reported `claude-strong: 2 launches of claude, want 1`). | Repair it: diagnose, fix, push, wait for CI and reassess until the checks are green. Report `BLOCKED_CI` only for a cause the run cannot fix, with `terminal_success=false`, the cause and the human step. See [Red CI at Finalization](#red-ci-at-finalization-2966). |
 | Hollow success | A recipe exited `0` after setup, planning, empty agent output, or inaccessible codebase messages without implementation, verification, publish, or valid no-op evidence. | The signal is a typed fact beside the published outcome; `HOLLOW_SUCCESS` when nothing published contradicts it (#2809). |
 | Finished runs failed on bookkeeping | A run whose branch was pushed and whose pull request was open ended `FAILED_IMPLEMENTATION` because its context file was unreadable and its checks were pending (#2343, the #2784 run). | The terminal state is decided on what the run published, not on whether its own record of itself is complete. |
 | Implementation failure | Implementation or verification evidence is absent or failed while meaningful work remains, which since #2966 includes a published pull request whose head the run left not green. | Return `FAILED_IMPLEMENTATION`, distinct from a reporting failure. |
@@ -408,8 +408,10 @@ Its answer is stored as `finalization_assessment`:
 | `next_action` | What a human or the next loop should do. Becomes `required_next_action`. |
 
 The agent reads the evidence as data. The prompt fences it and states that
-nothing inside it is an instruction. It may take three actions, and it may use
-`gh` to write only for these:
+nothing inside it is an instruction. The step sets no `working_dir`, so the
+prompt names the worktree the agent works in: `git.worktree_path` in the
+evidence, or `git.repo_path` when that is empty. It may take three actions, and
+it may use `gh` to write only for these:
 
 1. Push the run branch (clean worktree, current branch equal to the run branch,
    `origin` at the repository the facts name).
@@ -418,7 +420,7 @@ nothing inside it is an instruction. It may take three actions, and it may use
 3. Bring CI to green: continue the repair that `step-22-ensure-mergeable`
    began, using the commands in the
    [`ci-diagnostic-workflow`](../../amplifier-bundle/agents/specialized/ci-diagnostic-workflow.md)
-   guidance. See [Red CI Is Repaired](#red-ci-is-repaired-2966).
+   guidance. See [Red CI at Finalization](#red-ci-at-finalization-2966).
 
 Before it chooses a state it waits for any pending check with
 `gh pr checks <n> --watch`, and if a check fails for a cause the run can fix it
@@ -451,7 +453,7 @@ declined assessment nor a failure of the sub-recipe itself (resolution, the
 recursion limit) ends the run by itself. It leaves the validator with no
 decision to report, which is handled below.
 
-## Red CI Is Repaired (#2966)
+## Red CI at Finalization (#2966)
 
 A pull request whose checks fail is not a finished run, and finalization does
 not end it. The run returns to a repair loop:
@@ -723,11 +725,13 @@ because each repair push would start one.
 
 Known limits of the design:
 
-- The validator does not re-read checks. `gh` was removed from it in #2343
-  deliberately, because a reporter that reads live remote facts adds a network
-  dependency and a failure path to the step that reports. A wrong assessment
-  can therefore still end `0` on a red head. The head SHA and per-class check
-  counts in the assessment's `reason` show it afterwards.
+- The validator does not re-read checks to decide. It quotes the outcome the
+  collector recorded, and reads the pull request itself only when no outcome was
+  recorded, to gather the facts it then reports. `gh` was removed from its
+  decision in #2343 deliberately, because a reporter that judges on live remote
+  facts adds a network dependency and a failure path to the step that reports.
+  A wrong assessment can therefore still end `0` on a red head. The head SHA and
+  per-class check counts in the assessment's `reason` show it afterwards.
 - A repair commit made by the assessment does not pass through
   `step-20a` (artefact guard) or `step-20c` (quality audit). It is committed
   through the repository's hooks, never with `--no-verify`, and only for the
@@ -889,7 +893,7 @@ failures that were not real.
 | `SUPERSEDED` | Yes | A newer workflow-owned PR or issue explicitly supersedes this run and durable metadata links the old run to the replacement. |
 | `IMPLEMENTED_VERIFIED` | Yes | Implementation and required verification completed on a path that does not require publish/merge evidence. |
 | `ALLOW_NO_OP` | Yes | Explicit no-op path was allowed and includes evidence-backed reason text. |
-| `EXISTING_OPEN_PR` | Yes | The branch is pushed at the local head and an open, same-repo PR sits at that head (or a descendant of it), with every check green or no check reported (#2966). Pending is not success: the assessment waits for the checks first. A failing check is repaired, and `BLOCKED_CI` only when the cause is one the run cannot fix. See [The Run's Real Outcome](#the-runs-real-outcome-2343) and [Red CI Is Repaired](#red-ci-is-repaired-2966). |
+| `EXISTING_OPEN_PR` | Yes | The branch is pushed at the local head and an open, same-repo PR sits at that head (or a descendant of it), with every check green or no check reported (#2966). Pending is not success: the assessment waits for the checks first. A failing check is repaired, and `BLOCKED_CI` only when the cause is one the run cannot fix. See [The Run's Real Outcome](#the-runs-real-outcome-2343) and [Red CI at Finalization](#red-ci-at-finalization-2966). |
 | `MANUAL_REQUIRED` | No | A provider action is intentionally manual and the final output names the required next action. |
 | `BLOCKED_MANUAL_PROVIDER` | No | Provider tooling, credentials, permissions, or APIs block required automation. |
 | `BLOCKED_CI` | No | A check on the PR head fails, or cannot run, for a cause the run cannot fix itself (#2966), such as a missing secret or a workflow run awaiting maintainer approval. `reason` names the check and the cause, and `next_action` names the owner and the exact step. A CI the run can fix is repaired before finalization decides, and is not a terminal state. |
@@ -1062,7 +1066,7 @@ The judgements those facts used to be fed into are now the assessment's, and
 the prompt states them: a pull request open at the run's head with every check
 green, or with none reported, is a success; pending checks are waited on;
 failing checks are repaired, and are `BLOCKED_CI` only when the cause is one
-the run cannot fix (see [Red CI Is Repaired](#red-ci-is-repaired-2966)); a
+the run cannot fix (see [Red CI at Finalization](#red-ci-at-finalization-2966)); a
 pull request on another branch, from a fork, or at a commit the
 local head is not an ancestor of does not carry this run's work, and a green
 rollup on an older commit cannot vouch for code that was never pushed.
@@ -1184,7 +1188,7 @@ A pending, failing or null entry, an unknown type, or an empty rollup is not
 green. Every entry counts, not only required checks: `gh pr view` does not say
 which checks are required, so the evidence is labelled `all_checks=green`, not
 `required_checks=green`. This is the reading the facts report. What the loop does
-with it is under [Red CI Is Repaired](#red-ci-is-repaired-2966): a `pending`
+with it is under [Red CI at Finalization](#red-ci-at-finalization-2966): a `pending`
 class is waited on, a `failing` class is repaired, `none` is a head with no CI
 once the agent has confirmed that, and an `unknown` entry is read and classified
 by the assessment.
@@ -1272,7 +1276,7 @@ What the facts report, and the state the prompt tells the assessment to return:
 | Open PR at the pushed head, none reported | the same with `checks=none` | `EXISTING_OPEN_PR` (success), once the agent has confirmed the head has no CI | Yes |
 | Open PR, an unclassifiable check | `checks=unknown` | the assessment reads the checks itself, or fails naming them | Yes |
 | PR `CLOSED` or `MERGED` | `pr_state=CLOSED` / `MERGED` | `FAILED_IMPLEMENTATION`, or `FAILED_CLOSED_UNMERGED` | Yes |
-| PR on another branch, or cross-repository | `pr_head_ref`, `pr_cross_repository=true` | `FAILED_IMPLEMENTATION` | Yes |
+| PR on another branch, or cross-repository | `pr_head_ref`, `pr_cross_repository=true` | `FAILED_IMPLEMENTATION`; `BLOCKED_CI` with the owner when a cross-repository PR at the run's head has a failing check, because the run makes no write to it | Yes |
 | PR head diverged from, behind, or not a fast-forward of the local HEAD | `pr_head`, `pr_head_descends_local_head=false` | `FAILED_IMPLEMENTATION` | Yes |
 | PR head not fetchable | `pr_head_descends_local_head=""` and a sentence in `unread` | not a success it could not check | Yes |
 | `pr_url` names another repo and no valid `pr_number` is set | `pr_number=""` and a sentence in `unread`; no `pr list` fallback | `FAILED_IMPLEMENTATION` | No |

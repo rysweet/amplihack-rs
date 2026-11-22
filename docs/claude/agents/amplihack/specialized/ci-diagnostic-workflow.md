@@ -109,7 +109,6 @@ PR is at mergeable state. The calling workflow decides the merge.
 
 ### Essential Tools
 
-- **ci_workflow.py**: CI workflow automation (diagnose, iterate-fixes, poll-status)
 - **Bash**: Git operations and fixes
 - **MultiEdit**: Fix code issues
 - **Task**: Coordinate diagnostic agents
@@ -553,7 +552,7 @@ diagnosis:
 
 fix:
   - Pin versions in requirements
-  - Update .pre-commit-config.yaml
+  - Update .pre-commit-config.yaml, only when the pull request already changes it (see Protected Paths)
   - Sync local environment
 ```
 

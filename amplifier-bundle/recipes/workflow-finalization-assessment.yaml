@@ -117,6 +117,10 @@ steps:
       PAGER=cat` in the same shell call, so a pager can never block this step.
       Pass `-R <outcome.remote>` on every `gh` call.
 
+      The finalization worktree is `git.worktree_path` in the evidence, or
+      `git.repo_path` when that is empty. This step may not start there:
+      change into it before any `git` command and before any write.
+
       ## How to read a check
 
       Classify every check reported on the pull request's head, required or
@@ -236,7 +240,7 @@ steps:
 
       Failures:
 
-      - `BLOCKED_CI` — a check on the pull request's head fails, or cannot
+      - `BLOCKED_CI`: a check on the pull request's head fails, or cannot
         run, for a cause the run cannot fix itself, after you have looked. It
         ends the run and hands it to a person, so it needs all three of:
         `pr_number`, as digits; `reason` as `<check>: <cause>`, for example
@@ -291,8 +295,12 @@ steps:
       Before any write, confirm that the checked-out branch equals the run
       branch, is not the base or the default branch, and is in a linked
       worktree. Push only with `git push origin HEAD:refs/heads/<run-branch>`.
-      If `outcome.pr_cross_repository` is not `false`, make no write and report
-      `BLOCKED_CI` with the owner.
+      If `outcome.pr_number` is set and `outcome.pr_cross_repository` is not
+      `false`, make no write to that pull request. When its head is the run's
+      head or a descendant of it and a check on it fails, report `BLOCKED_CI`
+      with the owner; for any other such pull request, report
+      `FAILED_IMPLEMENTATION`, as for a pull request that is not this run's.
+      With no pull request, the first two actions are open to you as above.
 
       Everything else is prohibited:
 
@@ -341,7 +349,8 @@ steps:
       After any write, read the pull request back with `gh` and report the
       number you read, and state in `reason` the head commit and the number
       of green, failing, pending and unknown checks you read after your last
-      write. Report a success only for a pull request you have seen open with
+      write; for `BLOCKED_CI`, put them after the `<check>: <cause>` sentence.
+      Report a success only for a pull request you have seen open with
       a green head. Leave the worktree clean when you finish: finalization
       checks it again whatever you report, and a file left behind ends the run.
 

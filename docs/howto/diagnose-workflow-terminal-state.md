@@ -293,7 +293,7 @@ in the assessment's judgement.
 
 ---
 
-## Check That a Red CI Is Repaired
+## Checking the CI Repair
 
 The QA scenario for #2966 runs the shipped `workflow-finalize` recipe against a
 local bare remote, a stub `gh` whose check results depend on the pushed head,
@@ -307,8 +307,8 @@ AMPLIHACK_2966_QA_BIN="$(command -v amplihack)" \
 The driver prints the binary path it uses and fails if the variable does not
 name an existing executable; without the variable it builds `amplihack` with
 cargo first. It runs with `env -i` and an allowlist, a fresh
-`HOME` per case and temporary folders under `$TMPDIR`, so it never reads a real
-Claude profile or a GitHub token. Four cases run in turn:
+`HOME` per case and temporary folders under `$TMPDIR`, so it never reads the
+operator's Claude profile or a GitHub token. Four cases run in turn:
 
 | Case | What the stubs do | Expected result |
 | --- | --- | --- |
@@ -335,8 +335,7 @@ AMPLIHACK_2966_QA_BIN="$(command -v amplihack)" \
 
 The driver extracts that ref's `amplifier-bundle` with `git archive` into a
 separate temporary folder, and prints `BASELINE_CONFIRMED` when the run ends
-`BLOCKED_CI` with exit `81` and never starts the `step-22` agent. That is the
-behaviour the scenario exists to catch.
+`BLOCKED_CI` with exit `81` and never starts the `step-22` agent.
 
 ---
 

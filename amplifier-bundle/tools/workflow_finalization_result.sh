@@ -66,8 +66,10 @@ fail_result() {
   # #2966: one line carrying the state, the reason and the step a person must
   # take, so the human step of an unfixable cause survives step recovery's
   # excerpt of this output. The fields are printed as data with printf '%s',
-  # and any control character is removed from the assembled line, so a reason
-  # cannot start a second line on this channel or carry an escape sequence.
+  # and any C0 control character or DEL is removed from the assembled line, so a
+  # reason cannot start a second line on this channel or carry a 7-bit escape
+  # sequence. The two-byte UTF-8 forms of the C1 controls are not removed: the
+  # shared cleaner (_finalization_outcome_clean) leaves them too.
   {
     LC_ALL=C printf 'ERROR: workflow finalization failed closed: %s: %s; next action: %s' \
       "$terminal_state" "$terminal_reason" "$required_next_action" | LC_ALL=C tr -d '\001-\037\177'

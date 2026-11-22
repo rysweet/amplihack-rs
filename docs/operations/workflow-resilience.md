@@ -106,7 +106,7 @@ GitHub PR metadata, or both. Failing checks on an active PR are repaired and
 pending checks are waited on; terminal-state resilience must not bypass CI, and
 the repair never lowers the bar (no skip directive, no weakened test, no
 non-blocking check). See
-[Red CI Is Repaired](../reference/default-workflow-agentic-finalization.md#red-ci-is-repaired-2966).
+[Red CI at Finalization](../reference/default-workflow-agentic-finalization.md#red-ci-at-finalization-2966).
 
 ## Recipe context reference
 
@@ -217,7 +217,7 @@ and has no round limit. Before relying on it:
 - Do not configure deploy workflows to run on pushes to non-default branches.
   Each repair push would start one.
 
-See [Red CI Is Repaired](../reference/default-workflow-agentic-finalization.md#red-ci-is-repaired-2966)
+See [Red CI at Finalization](../reference/default-workflow-agentic-finalization.md#red-ci-at-finalization-2966)
 for the safeguards and the limits of the design.
 
 ## Troubleshooting

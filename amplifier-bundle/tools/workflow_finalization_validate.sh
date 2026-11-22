@@ -57,7 +57,7 @@ validate_finalization() {
   local outcome_present="false" outcome_branch="" outcome_local_head="" outcome_remote=""
   local outcome_remote_head="" outcome_pr_number="" outcome_pr_url="" outcome_pr_state=""
   local outcome_pr_head="" outcome_checks="" outcome_unread=""
-  local assessment_state="" assessment_state_quoted="" assessment_action="" assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
+  local assessment_state="" assessment_state_quoted="" assessment_action="" assessment_action_status=0 assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
   finalization_evidence="$(workflow_context_read finalization_evidence || :)"
   # A selected field that is present but corrupt is not absence. It is not a
   # terminal state of its own and it never ends the run; it is reported beside
@@ -154,10 +154,15 @@ FIELDS
 
   # What assess-finalization says it did. It labels the record and decides
   # nothing: the worktree probe below runs whatever it says (SEC-01), so an
-  # empty value is simply `none`. Outside the vocabulary it is quoted as
-  # `unrecognised` (SEC-12, #2966).
-  assessment_action="$(workflow_finalization_field finalization_assessment action_taken || :)"
-  [ -n "$assessment_action" ] || assessment_action="none"
+  # absent value is simply `none`. A value outside the vocabulary, or one of the
+  # wrong type, is quoted as `unrecognised` (SEC-12, #2966).
+  assessment_action_status=0
+  assessment_action="$(workflow_finalization_field finalization_assessment action_taken)" || assessment_action_status=$?
+  if [ "$assessment_action_status" != 0 ] && [ "$assessment_action_status" != 2 ]; then
+    assessment_action="unrecognised"
+  elif [ -z "$assessment_action" ]; then
+    assessment_action="none"
+  fi
   _finalization_action_allowed "$assessment_action" || assessment_action="unrecognised"
 
   # 2. Blockers about the local checkout, which no published outcome can

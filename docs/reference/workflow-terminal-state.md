@@ -14,7 +14,7 @@ code-change completion.
 - [What the Gate Protects](#what-the-gate-protects)
 - [Valid Success Evidence](#valid-success-evidence)
 - [Default Workflow Agentic Finalization](#default-workflow-agentic-finalization)
-- [Failing Checks Continue to Repair](#failing-checks-continue-to-repair-2966)
+- [Failing Checks at the Probe](#failing-checks-at-the-probe-2966)
 - [Evidence Precedence](#evidence-precedence)
 - [Evidence Marker API](#evidence-marker-api)
 - [Recipe Output Contract](#recipe-output-contract)
@@ -99,7 +99,7 @@ for the evidence document, finalizer output schema, configuration, and examples.
 
 ---
 
-## Failing Checks Continue to Repair (#2966)
+## Failing Checks at the Probe (#2966)
 
 The probe does not end a run because checks are failing. Until #2966 it called
 `fail_terminal_state "BLOCKED_CI"` when the pull request's rollup carried a
@@ -129,7 +129,7 @@ The probe's early successes are unchanged: `MERGED`, `CLOSED_OBSOLETE` and
 `NO_DIFF_SUCCESS`. A pull request with no diff against its base reads as
 `NO_DIFF_SUCCESS` or `CLOSED_OBSOLETE` whatever its checks say.
 
-See [Red CI Is Repaired](default-workflow-agentic-finalization.md#red-ci-is-repaired-2966)
+See [Red CI at Finalization](default-workflow-agentic-finalization.md#red-ci-at-finalization-2966)
 for the loop, the meaning of "green", the causes the run cannot fix, and the
 safeguards on the repair.
 
@@ -886,7 +886,7 @@ bookkeeping step must not turn a successful run into a failed one:
   correctly so: it runs *before* publish, so there is no landed work to discard.
 - The probe's `BLOCKED_CI` exit on failing checks (#1467): **removed (#2966).** A
   red CI is repaired instead of ending the run; see
-  [Failing Checks Continue to Repair](#failing-checks-continue-to-repair-2966).
+  [Failing Checks at the Probe](#failing-checks-at-the-probe-2966).
 - `step-21-pr-ready` closed-unmerged exit — a readable negative about the PR
   itself, not a string comparison. Retained.
 - `step-20a-artifact-guard`, `step-17a-testing-evidence-gate`,

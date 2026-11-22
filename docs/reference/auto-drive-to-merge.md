@@ -103,7 +103,7 @@ approval. Its `terminal_reason` names the check and the cause, and
 `required_next_action` names the owner and the exact step. The hand-off
 routes (`FINALIZATION_HANDOFF_STATES`, `handoff=merge_ready_loop`) are
 unchanged; only the meaning of the state narrowed. See
-[Red CI Is Repaired](default-workflow-agentic-finalization.md#red-ci-is-repaired-2966).
+[Red CI at Finalization](default-workflow-agentic-finalization.md#red-ci-at-finalization-2966).
 
 ## Configuration
 
@@ -535,7 +535,10 @@ the code stop: `autodrive_progress.sh` exempts a failing signal as it exempts a
 pending one. The evaluator judges `fail@<head>` as `CONTINUE` with CI repair
 named in `recommended_action`, and as `STUCK` only when the evidence names a
 cause the run cannot fix, with that cause and the human step. The code stop
-still applies to unchanged rounds whose CI signal is green or absent.
+still applies to unchanged rounds whose CI signal is green or absent. A crusty
+round record writes an empty `ci_signal` today (`autodrive_crusty_record.sh`),
+so this exemption reaches a crusty round only once a round supplies a signal;
+the merge-ready loop, whose rounds carry the signal, has no code stop.
 `BUDGET_EXHAUSTED` is the operator's own usage budget for the whole drive, and
 the drive can be resumed with a larger one; it is not a verdict on CI.
 

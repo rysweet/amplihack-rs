@@ -96,7 +96,7 @@
 # ends BLOCKED_CI with exit 81 and the repair step is never started. The fixed
 # scenario prints BASELINE_CONFIRMED for it.
 #
-# What this scenario does NOT cover: an agent's judgement. Whether a real agent
+# What this scenario does NOT cover: an agent's judgement. Whether a live agent
 # finds the right fix, or tells a missing secret from a flaky check, is the live
 # run's to show, and the PR's own CI and review are where it shows. What is under
 # test here is the wiring the owner's ruling needs: a red check reaches the
@@ -402,6 +402,10 @@ case "$role" in
     # The assessment is started where the run was, and finds the worktree in the
     # evidence it was given, as an agent would: the fenced `evidence` block of
     # its prompt, as data.
+    # The stand-in may rely only on what the prompt tells it, so the prompt has to
+    # say where the worktree is: a real agent has nothing else to go on.
+    printf '%s\n' "$input" | grep -q 'git\.worktree_path' \
+      || printf 'the assessment prompt does not say where the worktree is\n' >> "$dir/stub-errors"
     wt="$(printf '%s\n' "$input" | awk '/^```evidence/ { f = 1; next } /^```/ { f = 0 } f' | jq -r '.git.worktree_path // empty' 2>/dev/null)"
     [ -z "$wt" ] || cd "$wt" || { echo "cannot enter $wt" >&2; exit 1; }
     pushed=none
@@ -659,8 +663,11 @@ if dir="$(new_case red_ci_is_repaired fixable repair)"; then
   check_common "$dir"
   expect_exit "$dir" 0
   expect_calls "$dir" repair 1
+  expect_calls "$dir" assess 1
   expect_calls "$dir" recover 0
-  [ -s "$dir/push.log" ] || problems+=("no repair push was made")
+  # The push must come from the repair step: a push by the assessment alone
+  # would also move the tip, and would show nothing about step-22.
+  grep -q '^repair ' "$dir/push.log" 2>/dev/null || problems+=("the repair step made no push")
   tip="$(remote_tip "$dir")"
   [ -n "$tip" ] && [ "$tip" != "$(cat "$dir/initial-tip")" ] || problems+=("the remote tip did not move")
   git --git-dir="$dir/origin.git" cat-file -e "$tip:fixed.txt" 2>/dev/null || problems+=("the pushed tip does not hold the fix")

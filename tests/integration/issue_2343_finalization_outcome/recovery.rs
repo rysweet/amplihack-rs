@@ -51,7 +51,14 @@ fn a_run_with_nothing_pushed_and_no_assessment_ends_with_no_decision() {
 
     assert_no_decision(&outcome, "nothing pushed, nothing decided");
     let evidence = outcome.field("evidence_used");
-    for fact in [BRANCH, local.as_str(), "assessment_state=none"] {
+    // With no assessment at all there is no action either: `none`, not a value
+    // the validator could not read.
+    for fact in [
+        BRANCH,
+        local.as_str(),
+        "assessment_state=none",
+        "assessment_action=none,",
+    ] {
         assert!(
             evidence.contains(fact),
             "the gathered facts must reach the record (`{fact}`): {evidence}"

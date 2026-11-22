@@ -105,7 +105,6 @@ PR is at mergeable state. The calling workflow decides the merge.
 
 ### Essential Tools
 
-- **ci_workflow**: CI workflow automation (diagnose, iterate-fixes, poll-status)
 - **ci_status**: Monitor CI state
 - **Bash**: Git operations and fixes
 - **MultiEdit**: Fix code issues
@@ -549,7 +548,7 @@ diagnosis:
 
 fix:
   - Pin versions in Cargo.toml
-  - Update rust-toolchain.toml
+  - Update rust-toolchain.toml, only when the pull request already changes it (see Protected Paths)
   - Sync local environment
 ```
 

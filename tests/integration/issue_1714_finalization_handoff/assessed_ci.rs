@@ -200,10 +200,13 @@ fn an_unfixable_blocked_ci_carries_the_cause_and_the_human_step() {
         "{}",
         outcome.describe()
     );
-    let excerpt: String = outcome.stderr.chars().take(2000).collect();
+    // Step recovery keeps the end of the output (`truncate_evidence`), so the
+    // excerpt is the last 2,000 characters, not the first.
+    let chars: Vec<char> = outcome.stderr.chars().collect();
+    let excerpt: String = chars[chars.len().saturating_sub(2000)..].iter().collect();
     assert!(
         excerpt.contains(HUMAN_STEP),
-        "the human step must sit inside the first 2,000 characters\n{}",
+        "the human step must sit inside the last 2,000 characters\n{}",
         outcome.describe()
     );
     fx.assert_gh_reads_only();
@@ -237,6 +240,30 @@ fn a_blocked_ci_that_names_no_pull_request_is_never_handed_off() {
     assert_failed_closed(&outcome, "BLOCKED_CI", "no pull request named");
     assert_eq!(outcome.field("terminal_reason"), CAUSE);
     assert_eq!(outcome.field("required_next_action"), HUMAN_STEP);
+    assert!(
+        !outcome.stderr.contains(HANDOFF_INFO),
+        "{}",
+        outcome.describe()
+    );
+}
+
+// SEC-01 with the hand-off. A repair that leaves a file behind and then reports
+// a cause it cannot fix has not shown a clean worktree, so inside auto-drive the
+// pull request is not handed on: the run ends `FAILED_DIRTY_WORKTREE`, whatever
+// the assessment decided and whatever the flag says.
+#[test]
+fn an_unfixable_blocked_ci_over_a_dirty_worktree_is_not_handed_off() {
+    let fx = Fixture::new();
+    let envs = unfixable_env(&fx, "7");
+    std::fs::write(
+        std::path::Path::new(&fx.repo_path()).join("left-behind.txt"),
+        "a file the repair did not commit\n",
+    )
+    .expect("leave a file behind");
+
+    let outcome = validate(&fx, &with_flag(&envs));
+
+    assert_failed_closed(&outcome, "FAILED_DIRTY_WORKTREE", "dirty worktree");
     assert!(
         !outcome.stderr.contains(HANDOFF_INFO),
         "{}",

@@ -592,6 +592,38 @@ fn an_action_outside_the_vocabulary_is_quoted_as_unrecognised_and_forges_no_fiel
     }
 }
 
+// SEC-12 (#2966), the type. A value that is not a string is no label either: a
+// number, a list or an object in `action_taken` is quoted as `unrecognised`, and
+// is not read as an action that was never reported. Only an absent, empty or
+// null value is `none`.
+#[test]
+fn an_action_of_the_wrong_type_is_quoted_as_unrecognised() {
+    for forged in [json!(5), json!(["repaired_ci"]), json!({"a": 1})] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.push();
+        fx.gh_pr_at(&fx.head(), failing_rollup());
+        let mut envs = finished_env(&fx.repo_path());
+        envs.push(
+            crate::issue_1641_finalization_open_pr::builders::assessment_raw(json!({
+                "terminal_state": "EXISTING_OPEN_PR",
+                "action_taken": forged,
+                "pr_number": "7",
+                "reason": "assess-finalization decided EXISTING_OPEN_PR on the run's outcome",
+                "next_action": "Act on EXISTING_OPEN_PR for PR #7.",
+            })),
+        );
+
+        let outcome = fx.validate(&as_refs(&envs));
+
+        let evidence = outcome.field("evidence_used");
+        assert!(
+            evidence.contains("assessment_action=unrecognised,"),
+            "{forged}: an action of the wrong type is quoted as unrecognised: {evidence}"
+        );
+    }
+}
+
 // SEC-12 (#2966), the state. `terminal_state` is quoted in `evidence_used` as
 // `assessment_state`, so it is held to the same rule as the action: a value
 // outside the published vocabulary is quoted as `unrecognised`, and cannot add
@@ -725,4 +757,89 @@ fn the_cause_and_the_human_step_reach_the_result_and_the_failure_line_as_one_cle
         outcome.describe()
     );
     fx.assert_gh_reads_only();
+}
+
+// An omitted or a null action is `none` too. Only a value of the wrong type is
+// `unrecognised`: an absent one reported nothing, and `none` says so. This is
+// the branch of the reading that tells the two apart, so it is held on its own.
+#[test]
+fn an_omitted_or_a_null_action_is_none() {
+    for answer in [
+        json!({
+            "terminal_state": "EXISTING_OPEN_PR",
+            "pr_number": "7",
+            "reason": "assess-finalization decided EXISTING_OPEN_PR on the run's outcome",
+            "next_action": "Act on EXISTING_OPEN_PR for PR #7.",
+        }),
+        json!({
+            "terminal_state": "EXISTING_OPEN_PR",
+            "action_taken": null,
+            "pr_number": "7",
+            "reason": "assess-finalization decided EXISTING_OPEN_PR on the run's outcome",
+            "next_action": "Act on EXISTING_OPEN_PR for PR #7.",
+        }),
+    ] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.push();
+        fx.gh_pr_at(&fx.head(), green_rollup());
+        let mut envs = finished_env(&fx.repo_path());
+        envs.push(crate::issue_1641_finalization_open_pr::builders::assessment_raw(answer.clone()));
+
+        let outcome = fx.validate(&as_refs(&envs));
+
+        assert!(outcome.success(), "{answer}\n{}", outcome.describe());
+        let evidence = outcome.field("evidence_used");
+        assert!(
+            evidence.contains("assessment_action=none,"),
+            "{answer}: an action that was not reported is none: {evidence}"
+        );
+    }
+}
+
+// The failure line is cleaned where it is printed. `terminal_reason` is not
+// always the assessment's own sentence, which `_finalization_outcome_clean` has
+// already cleaned: the recorded list of missing tools is quoted into the reason
+// of FAILED_MISSING_TOOLING as it was recorded. A newline or an escape byte in
+// it must not start a second line on the failure channel or colour a terminal.
+#[test]
+fn a_recorded_value_quoted_in_a_reason_cannot_forge_a_line_or_carry_an_escape() {
+    let fx = Fixture::new();
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(
+        crate::issue_1641_finalization_open_pr::builders::evidence_env(
+            "false",
+            "x,jq,\n\u{1b}[31mERROR: forged line",
+            "false",
+        ),
+    );
+    envs.push(assessment("EXISTING_OPEN_PR", "none", "7"));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_eq!(
+        outcome.field("terminal_state"),
+        "FAILED_MISSING_TOOLING",
+        "{}",
+        outcome.describe()
+    );
+    let failure_lines: Vec<&str> = outcome
+        .stderr
+        .lines()
+        .filter(|l| l.contains("workflow finalization failed closed"))
+        .collect();
+    assert_eq!(failure_lines.len(), 1, "{}", outcome.describe());
+    assert!(
+        !outcome.stderr.contains('\u{1b}'),
+        "no escape byte reaches the failure channel\n{}",
+        outcome.describe()
+    );
+    assert!(
+        outcome
+            .stderr
+            .lines()
+            .all(|l| !l.starts_with("ERROR: forged line")),
+        "the forged text did not start a line of its own\n{}",
+        outcome.describe()
+    );
 }
