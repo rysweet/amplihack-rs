@@ -122,6 +122,27 @@ pub(crate) mod claude_profile_isolation;
 #[allow(dead_code)]
 mod scratch_base;
 
+/// Issue #2931: the end of file on a pipe that a process group holds, as the
+/// event "the group is gone".
+#[cfg(unix)]
+#[path = "../tests/support/exit_witness.rs"]
+#[allow(dead_code)]
+pub(crate) mod exit_witness;
+
+/// Issue #2931: `ls -ldn` parsing for stubs that inspect a file the test
+/// removes afterwards; one copy, shared with `cli_integration`.
+#[cfg(unix)]
+#[path = "../tests/support/ls_mode.rs"]
+#[allow(dead_code)]
+pub(crate) mod ls_mode;
+
+/// Issue #2931: the one place that builds a non-UTF-8 file name and records
+/// why an Apple target ignores the tests that need one.
+#[cfg(unix)]
+#[path = "../tests/support/non_utf8_name.rs"]
+#[allow(dead_code)]
+pub(crate) mod non_utf8_name;
+
 /// A temporary directory that no framework lookup can see past: no
 /// `amplifier-bundle/`, `.claude/` or `src/amplihack/.claude/` above it, and
 /// not under the real `~/.claude` or `~/.amplihack`. Panics when no candidate
@@ -166,6 +187,39 @@ mod scratch_base_tests {
                 base.display()
             );
         }
+    }
+
+    /// Issue #2931 (ENOTDIR): `/var/folders/..` is a link to `/private/var/..`
+    /// on macOS, and the run directory opens every component without following
+    /// links. The base must therefore come back in canonical form.
+    #[test]
+    fn the_scratch_base_is_returned_in_canonical_form() {
+        let base = super::scratch_base::scratch_base();
+        assert_eq!(
+            base,
+            base.canonicalize().expect("the base exists"),
+            "a base that is reached through a link is refused by the run directory"
+        );
+    }
+
+    /// A link whose target lies under the real `~/.claude` must not pass for a
+    /// clean base because its own text does not start with the home path.
+    #[cfg(unix)]
+    #[test]
+    fn a_base_reached_through_a_link_into_the_real_home_dirs_is_rejected() {
+        let home = tempfile::tempdir().unwrap();
+        let home_path = home.path().canonicalize().unwrap();
+        let real = home_path.join(".claude").join("work");
+        fs::create_dir_all(&real).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = outside.path().join("innocent");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let reason = scratch_base_rejection(&link, Some(&home_path));
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains(".claude")),
+            "{}: {reason:?}",
+            link.display()
+        );
     }
 
     #[test]
@@ -616,6 +670,14 @@ mod exec_stub;
 #[cfg(unix)]
 pub(crate) fn write_executable(path: &Path, body: &str) {
     exec_stub::write_executable(path, body, 0o755);
+}
+
+/// One word of POSIX shell text holding `value` byte for byte (issue #2931):
+/// every path or name a lib test writes into the text of a stub goes through
+/// this. The one definition is `tests/support/exec_stub.rs`.
+#[cfg(unix)]
+pub(crate) fn sh_quote(value: &str) -> String {
+    exec_stub::sh_quote(value)
 }
 
 #[path = "test_support_proc_guard.rs"]

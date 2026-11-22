@@ -190,7 +190,7 @@ mod execute;
 #[path = "target_remove.rs"]
 pub(in crate::commands::cleanup) mod target_remove;
 
-use super::procs::ProcScan;
+use super::procs::{ProcScan, REASON_IN_USE, REASON_USE_UNKNOWN};
 use execute::{Refusal, execute, other_live_owner};
 use target_remove::{LinkRoots, Shape};
 
@@ -982,8 +982,12 @@ impl Collector<'_> {
         self.s.categories.contains(&category)
     }
 
-    fn in_use(&mut self, path: &Path) -> bool {
-        self.procs.get_or_insert_with(ProcScan::take).in_use(path)
+    /// Why `path` is kept on account of running processes, or `None` when
+    /// none uses it ([`ProcScan::keep_reason`]).
+    fn keep_reason(&mut self, path: &Path) -> Option<&'static str> {
+        self.procs
+            .get_or_insert_with(ProcScan::take)
+            .keep_reason(path)
     }
 
     fn past_deadline(&self) -> bool {
@@ -1218,13 +1222,22 @@ impl Collector<'_> {
                             "run is active",
                             Some(id),
                         ));
-                    } else if self.in_use(dir) {
-                        self.items.push(Item::skip(
-                            Category::RunTmp,
-                            dir,
-                            "in use by a running process",
-                            Some(id),
-                        ));
+                    } else if let Some(reason) = self.keep_reason(dir) {
+                        // Issue #2935: where processes cannot be seen, the
+                        // runner kept this folder at the end of its run and
+                        // no sweep will remove it, so the dry run is the
+                        // list of what is waiting to be deleted by hand and
+                        // gives each folder's size. An applying sweep, which
+                        // every run ends with, does not walk them.
+                        let size_bytes = if reason == REASON_USE_UNKNOWN && !self.s.apply {
+                            tree_size(dir)
+                        } else {
+                            None
+                        };
+                        self.items.push(Item {
+                            size_bytes,
+                            ..Item::skip(Category::RunTmp, dir, reason, Some(id))
+                        });
                     } else if let Some(keep) = keep_and_report_unsaved_work(&canonical_or_self(dir))
                     {
                         // Issue #2785: a step left a repository copy here
@@ -1409,8 +1422,8 @@ impl Collector<'_> {
         if let Some(reason) = unpushed_reason(&c.canonical) {
             return Item::skip(category, path, reason, Some(id));
         }
-        if self.in_use(&c.canonical) {
-            return Item::skip(category, path, "in use by a running process", Some(id));
+        if let Some(reason) = self.keep_reason(&c.canonical) {
+            return Item::skip(category, path, reason, Some(id));
         }
         Item {
             category,
@@ -1589,13 +1602,14 @@ impl Collector<'_> {
             let Some((age, size)) = idle_for(&path, self.now, self.s.keep) else {
                 continue;
             };
-            if has_live_pid_marker(&path) || self.in_use(&path) {
-                self.items.push(Item::skip(
-                    Category::TmpLeftover,
-                    &path,
-                    "in use by a running process",
-                    None,
-                ));
+            let kept = if has_live_pid_marker(&path) {
+                Some(REASON_IN_USE)
+            } else {
+                self.keep_reason(&path)
+            };
+            if let Some(reason) = kept {
+                self.items
+                    .push(Item::skip(Category::TmpLeftover, &path, reason, None));
                 continue;
             }
             self.items.push(Item {
@@ -1805,6 +1819,13 @@ fn target_item(
 }
 
 fn collect(settings: &Settings) -> Result<Vec<Item>> {
+    collect_seeing(settings, None)
+}
+
+/// [`collect`] with the scan of running processes given. `None` takes the
+/// host's on first use, as `collect` does; a test passes the scan of a table
+/// it wrote, or of a system where processes cannot be seen.
+fn collect_seeing(settings: &Settings, procs: Option<ProcScan>) -> Result<Vec<Item>> {
     let runs = scan_runs(&settings.work_root)?;
     let roots = ManagedRoots::new(settings);
     let mut c = Collector {
@@ -1812,7 +1833,7 @@ fn collect(settings: &Settings) -> Result<Vec<Item>> {
         links: LinkRoots::from_env(&roots),
         roots,
         now: SystemTime::now(),
-        procs: None,
+        procs,
         gh_cache: HashMap::new(),
         common_cache: HashMap::new(),
         list_cache: HashMap::new(),
@@ -1995,12 +2016,10 @@ fn worktree_target_entries(
             out.push(entry(Action::WouldRemove, REASON.into(), size));
             continue;
         }
-        if dir.is_some_and(|d| procs.get_or_insert_with(ProcScan::take).in_use(d)) {
-            out.push(entry(
-                Action::Skipped,
-                "in use by a running process".into(),
-                size,
-            ));
+        if let Some(reason) =
+            dir.and_then(|d| procs.get_or_insert_with(ProcScan::take).keep_reason(d))
+        {
+            out.push(entry(Action::Skipped, reason.into(), size));
             continue;
         }
         out.push(

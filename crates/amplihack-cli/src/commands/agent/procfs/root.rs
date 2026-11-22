@@ -73,13 +73,41 @@ pub fn proc_root() -> PathBuf {
     if let Some(root) = OVERRIDE.with(|o| o.borrow().clone()) {
         return root;
     }
+    root_from(resolved())
+}
+
+/// What [`resolve`] makes of this process's environment.
+fn resolved() -> Result<Option<PathBuf>, Refusal> {
     let var = std::env::var_os(VAR);
-    let guard = std::env::var_os(crate::user_config::TEST_HOME_GUARD_ENV);
-    root_from(resolve(
-        var.as_deref(),
-        guard.as_deref(),
-        &std::env::temp_dir(),
-    ))
+    let test_home = std::env::var_os(crate::user_config::TEST_HOME_GUARD_ENV);
+    resolve(var.as_deref(), test_home.as_deref(), &std::env::temp_dir())
+}
+
+/// The process table for a reader that works on any system when it is
+/// given one (issue #2935): on Linux this is [`proc_root`]. A system with
+/// no `/proc` has no host table, so there the answer is `None` unless a
+/// test supplied a synthetic table, through the same variable and the same
+/// checks, or through `override_proc_root` in lib tests. A lib test with
+/// neither gets the shared empty table, as on Linux. The product's own
+/// answer on such a system is therefore unchanged: no table.
+pub fn readable_table() -> Option<PathBuf> {
+    if cfg!(test) {
+        return Some(proc_root());
+    }
+    table_on(cfg!(target_os = "linux"), resolved())
+}
+
+/// The pure part of [`readable_table`] outside lib tests: an accepted
+/// synthetic table on any system, or else `/proc` where the system has one
+/// (`has_proc`) and nothing where it has none. A refused variable warns once
+/// and counts as unset.
+fn table_on(has_proc: bool, outcome: Result<Option<PathBuf>, Refusal>) -> Option<PathBuf> {
+    match outcome {
+        Ok(Some(root)) => return Some(root),
+        Ok(None) => {}
+        Err(why) => warn_once(why),
+    }
+    has_proc.then(|| PathBuf::from("/proc"))
 }
 
 /// The root for an outcome of [`resolve`]: the accepted tree, or else the

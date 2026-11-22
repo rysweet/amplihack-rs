@@ -1157,10 +1157,9 @@ mod context_transport_2582 {
     /// the release, and the context file must still be gone.
     #[test]
     fn context_file_is_removed_even_when_the_runtime_folder_is_retained() {
+        use crate::commands::cleanup::procs::FakeProcesses;
         use crate::commands::cleanup::run_dir::{RuntimeGuard, RuntimeRemoval};
-        use crate::test_support::proc::fake_proc_scope;
 
-        let procs = fake_proc_scope();
         let tmp = tempfile::tempdir().unwrap();
         let runtime = tmp.path().join("runtime");
         fs::create_dir(&runtime).unwrap();
@@ -1177,37 +1176,18 @@ mod context_transport_2582 {
         let path = file.path().to_path_buf();
         assert!(path.is_file());
 
-        // A live process inside the runtime folder, so the guard must keep it.
-        let mut child = std::process::Command::new("sh")
-            .env("PATH", crate::test_support::host_path())
-            .arg("-c")
-            .arg("echo ready; while read -r _; do :; done")
-            .current_dir(runtime.join("tmp"))
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn sh");
-        {
-            use std::io::BufRead;
-            let mut line = String::new();
-            std::io::BufReader::new(child.stdout.take().unwrap())
-                .read_line(&mut line)
-                .unwrap();
-            assert_eq!(line.trim(), "ready");
-        }
-        procs.fake.link_own(child.id());
+        // A process whose working folder is inside the runtime folder, in a
+        // table this test wrote (issue #2935), so the folder must be kept.
+        let processes = FakeProcesses::seen();
+        processes.hold(&runtime.join("tmp"));
 
         // The run's own teardown order: the context file is dropped, then the
         // runtime folder is released.
         drop(file);
-        let removal = RuntimeGuard::new(runtime.clone())
+        let removal = RuntimeGuard::seen_by(runtime.clone(), processes)
             .unwrap()
             .remove()
             .unwrap();
-
-        drop(child.stdin.take());
-        let _ = child.wait();
 
         // The precondition that makes this test meaningful. If this ever
         // becomes `Removed`, the assertions below are proved by

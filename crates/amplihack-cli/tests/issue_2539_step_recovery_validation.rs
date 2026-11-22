@@ -222,12 +222,22 @@ fn a_record_file_changed_while_the_agent_ran_becomes_a_validator_handoff() {
     );
 
     // The agent rewrites the earlier record while it "repairs".
-    let file = f.dir.join("step-02-merge-ready-loop.jsonl");
+    // `sed -i` takes a different argument on GNU and BSD `sed`, so the edit
+    // is written out: a copy that keeps the record's mode, the edited text
+    // into it, and a rename over the record, which is what `sed -i` does
+    // (issue #2931).
+    let file = crate::support::exec_stub::sh_quote(
+        f.dir
+            .join("step-02-merge-ready-loop.jsonl")
+            .to_str()
+            .expect("a UTF-8 fixture path"),
+    );
     f.repair(
         2,
         &format!(
-            "#!/bin/sh\nsed -i 's/first-round skip/forged history/' '{}'\n",
-            file.display()
+            "#!/bin/sh\nset -e\nf={file}\ncp -p \"$f\" \"$f.edit\"\n\
+             sed 's/first-round skip/forged history/' \"$f\" > \"$f.edit\"\n\
+             mv \"$f.edit\" \"$f\"\n"
         ),
     );
     f.choose(

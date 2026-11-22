@@ -124,7 +124,9 @@ fn procfs_reads_the_variable_by_this_name_and_names_its_exceptions() {
     assert_eq!(naming, expected);
 }
 
-/// Files that read the process table and must do it through `proc_root()`.
+/// Files that read the process table and must do it through the resolver in
+/// `procfs/root.rs`: `proc_root()`, or `readable_table()` (issue #2935),
+/// which gives the same table and gives none on a system without `/proc`.
 const ROUTED: [&str; 10] = [
     "src/commands/profile/auto_switch/liveness.rs",
     "src/commands/profile/rotate/control.rs",
@@ -196,13 +198,15 @@ fn routed_files_read_through_the_seam() {
     }
     for file in ROUTED {
         let src = std::fs::read_to_string(manifest().join(file)).unwrap();
-        if !src.contains("proc_root()") {
-            bad.push(format!("{file}: never calls proc_root()"));
+        if !src.contains("proc_root()") && !src.contains("readable_table()") {
+            bad.push(format!(
+                "{file}: calls neither proc_root() nor readable_table()"
+            ));
         }
     }
     assert!(
         bad.is_empty(),
-        "host /proc paths outside procfs::proc_root() (see \
+        "host /proc paths outside the procfs resolver (see \
          docs/howto/keep-tests-off-the-host-process-table.md):\n{}",
         bad.join("\n")
     );
