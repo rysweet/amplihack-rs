@@ -163,9 +163,26 @@ type Probes = Vec<(ProfileName, Probed)>;
 /// can check the cap and the time limit.
 pub(super) fn settle(
     ctx: &Ctx,
+    m: Measurement,
+    mode: Reread,
+    budget: Duration,
+    decide: impl FnMut(Probed, Probes, i64) -> Result<Measurement, ProfileError>,
+) -> Result<Measurement, ProfileError> {
+    let started = Instant::now();
+    settle_timed(ctx, m, mode, budget, || started.elapsed(), decide)
+}
+
+/// [`settle`] with the time spent so far passed in as `spent`, which
+/// `settle` answers from the clock (issue #3008). The time limit is a rule
+/// about that figure alone: each read gets `budget` less what is spent, and
+/// none is started once nothing is left. A test supplies a figure its fake
+/// read advances, so it states the rule exactly and waits for nothing.
+pub(super) fn settle_timed(
+    ctx: &Ctx,
     mut m: Measurement,
     mode: Reread,
     budget: Duration,
+    mut spent: impl FnMut() -> Duration,
     mut decide: impl FnMut(Probed, Probes, i64) -> Result<Measurement, ProfileError>,
 ) -> Result<Measurement, ProfileError> {
     if gated_target(&m.decision).is_none() {
@@ -193,7 +210,6 @@ pub(super) fn settle(
     // so the log does not read as if the re-read had been accepted.
     let mut accepted: Vec<ProfileName> = Vec::new();
     let mut reads = 0;
-    let started = Instant::now();
     // Each name is handled at most twice: read (or made unknown), then made
     // unknown. One more pass finds the settled decision.
     let max_handled = 2 * probes.len();
@@ -233,7 +249,7 @@ pub(super) fn settle(
                 m.decision = Decision::Stay;
                 break;
             }
-            let left = budget.saturating_sub(started.elapsed());
+            let left = budget.saturating_sub(spent());
             if left.is_zero() {
                 lines.push(fresh_msg::time_limit(&to));
                 Probed::failed()

@@ -789,9 +789,9 @@ so `workflow-finalize` acts on it in two places:
   exits `0`; a failed fetch or a refused fast-forward prints one warning and
   leaves the worktree as it was.
 - `step-20b-push-cleanup` runs the same tool after its cleanup commit, so it
-  fetches `origin/<branch>` again and sets a missing upstream, then runs
-  `git pull --rebase` before it pushes. It falls back to
-  `git push -u origin <branch>` only when the branch has no upstream after
+  fetches `origin/<branch>` again and sets a missing upstream, then merges
+  the remote branch with `workflow_pull_merge` before it pushes. It falls
+  back to `git push -u origin <branch>` only when the branch has no upstream after
   that, which means origin has no such branch, or the fetch failed and this
   checkout never saw one.
 

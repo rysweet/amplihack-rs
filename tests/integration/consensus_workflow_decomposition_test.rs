@@ -113,6 +113,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step8-local-testing",
     // consensus-publish
     "step9-commit",
+    "step9-push-recovery",
     "step10-create-pr",
     // consensus-pr-review (5-perspective panel + consensus + first feedback step)
     "step11-pr-review-reviewer",
@@ -124,6 +125,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step12-implement-feedback",
     // consensus-pr-feedback (push + 4-perspective philosophy panel)
     "step12-push-updates",
+    "step12-push-recovery",
     "step13-philosophy-reviewer",
     "step13-philosophy-patterns",
     "step13-philosophy-cleanup",

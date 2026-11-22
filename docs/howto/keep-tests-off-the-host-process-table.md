@@ -1,8 +1,8 @@
 ---
 title: Keep Tests off the Host Process Table
 type: howto
-updated: 2026-11-11
-related: issue #2196, issue #2042, issue #2040, issue #1760, issue #1690, issue #2175
+updated: 2026-11-22
+related: issue #2196, issue #2042, issue #2040, issue #1760, issue #1690, issue #2175, issue #2935
 ---
 
 # Keep Tests off the Host Process Table
@@ -101,6 +101,13 @@ Agent code (`agent/pass.rs`, `register.rs`, `wrapper.rs`) was routed for
 
 `#2040` adds one cached process snapshot per production pass. That snapshot
 reads through the same `proc_root()`, so tests stay on the fake tree.
+
+#2935 adds `procfs::readable_table()` beside it, for the two readers whose
+code runs on every system: the session scan (`auto_switch/liveness.rs`) and
+the cleanup scan (`cleanup/procs.rs`). It applies the same rule S27 and
+returns the same table as `proc_root()`, with one difference: on a system
+without `/proc` it returns nothing unless a test supplied a table, so the
+product never reads a host path there.
 
 ## Write a test that runs `amplihack profile`
 
@@ -639,7 +646,7 @@ has seven tests; the scanner itself is `tests/support/proc_root_scan.rs`:
 |------|--------|
 | 1 | `isolated(..)` sets `AMPLIHACK_TEST_PROC_ROOT` to a path that is not `/proc`, lies under the temp dir, is a 0700 directory owned by the effective user, and holds only `self/environ`. |
 | 2 | `procfs/root.rs` reads the variable under the name `AMPLIHACK_TEST_PROC_ROOT`, and its doc comment names the exceptions (`/proc/loadavg`, `/proc/self`, `util.rs`, `rotator_down`, `running_on_host`, `recipe/process_tree.rs`). No other file under `src/` names the variable, apart from the resolver's unit tests. |
-| 3 | No non-test file under `src/commands/profile/` or `src/commands/sessions/`, and not `src/commands/cleanup/procs.rs`, has a string literal that starts with `/proc` (`"/proc"`, `"/proc/{pid}/cmdline"` inside `format!`, and so on), apart from `"/proc/self/..."` and `"/proc/loadavg"`. Files whose name starts with `tests` are unit tests and are skipped. Each routed file must call `proc_root()`. A sample test pins what the matcher flags. `util.rs` is not checked; see [the exceptions](#what-still-reads-the-real-proc). |
+| 3 | No non-test file under `src/commands/profile/` or `src/commands/sessions/`, and not `src/commands/cleanup/procs.rs`, has a string literal that starts with `/proc` (`"/proc"`, `"/proc/{pid}/cmdline"` inside `format!`, and so on), apart from `"/proc/self/..."` and `"/proc/loadavg"`. Files whose name starts with `tests` are unit tests and are skipped. Each routed file must call `proc_root()` or `readable_table()`. A sample test pins what the matcher flags. `util.rs` is not checked; see [the exceptions](#what-still-reads-the-real-proc). |
 | 4 | Scans every `crates/amplihack-cli/tests/**/*.rs`, including `support/`, with the rules below and prints each finding as `file:line rule`. |
 | 5 | Runs the same scanner over in-memory samples: each bad sample gives exactly its own rule, and the good sample gives none. |
 | 6 | The scanner recognises each form of function declaration listed below, and nothing else. |
@@ -755,7 +762,7 @@ lists `/proc`.
 Agent code is not in this table: `agent/pass.rs`, `register.rs` and
 `wrapper.rs` already read through `proc_root()`, routed for #1760.
 `amplihack cleanup`'s scan of working folders, open files and `TMPDIR`
-values (`cleanup/procs.rs`) reads through `proc_root()` too. It signals
+values (`cleanup/procs.rs`) reads through `readable_table()`. It signals
 nothing; the `issue_1808_run_cleanup` fixture writes its fake tree inside the
 child's `TMPDIR` and links each process `live_process` starts.
 

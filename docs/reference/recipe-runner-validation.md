@@ -2,7 +2,7 @@
 title: Recipe runner validation
 description: Runner capability schema, provider rules and managed source provenance.
 type: reference
-updated: 2026-11-11
+updated: 2026-11-21
 ---
 
 # Recipe runner validation
@@ -206,6 +206,38 @@ Public CLI errors remain human-readable.
 | `RUNNER_RECEIPT_MISSING` | Managed receipt is absent. |
 | `RUNNER_PROVENANCE_MISMATCH` | Receipt is invalid or same-entry package/source/revision/binary identity does not match. |
 | `RUNNER_BINARY_SHADOWED` | Selected executable differs from the managed binary. |
+
+### Probe failure cause
+
+`RUNNER_PROBE_FAILED` carries a cause, so that a failure seen on one operating
+system only can be told apart from the others. The error's own text stays exactly
+`RUNNER_PROBE_FAILED`, and the code that reads it needs no change. The cause is
+added in `details.cause`, next to the existing `details.provider`, on this code
+only. The `code` and the `message` are unchanged:
+
+```json
+{"error":{"code":"RUNNER_PROBE_FAILED","message":"runner capability probe failed; check executable compatibility and permissions","details":{"provider":"codex","cause":"runner exited with status 17"}}}
+```
+
+The human-readable lines print the code first, unchanged, with the cause after
+it. `amplihack recipe run` prints:
+
+```text
+amplihack: runner capability check failed: RUNNER_PROBE_FAILED: runner exited with status 17
+```
+
+The freshness check adds the cause to the code in the same way inside its own
+sentence. The exact layout of each line may change; read `error.code` and
+`details.cause` rather than parsing a line.
+
+A cause is a step name written in the amplihack source, followed by the exit
+status or the operating system's error number and its standard text. The steps are
+the capture of the probe's output, a non-zero exit, and the canonicalisation of the
+binary's path. For example, a binary that cannot be resolved gives
+`canonicalize binary: No such file or directory (os error 2)`. A cause holds no
+path, argument, environment value or byte read from the runner, so the canary and
+no-leak guarantees above are unchanged. It is limited to 512 characters, and
+control characters are escaped.
 
 See [Codex usage](../howto/install-codex-plugin.md),
 [Claude plugin installation](../howto/install-claude-code-plugin.md) and

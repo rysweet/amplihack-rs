@@ -385,8 +385,9 @@ steps:
           amplihack hygiene artifact-guard --repo . --mode pre-publish && stage_workflow_changes && amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused; do not commit" >&2; exit 1; }
           amplihack_prepare_git_commit_identity
           git commit -m "fix: <describe the fix found during outside-in testing>"
-          rb="$(bash "${GIT_IDENTITY_HELPER%/*}/workflow_remote_branch.sh" .)" || exit 1; [ "$rb" != "$(git branch --show-current)" ] || rb=""; workflow_pull_rebase && git push ${rb:+origin "HEAD:$rb"}  # #2839: autostash the rewritten tracked report
+          rb="$(bash "${GIT_IDENTITY_HELPER%/*}/workflow_remote_branch.sh" .)" || exit 1; [ "$rb" != "$(git branch --show-current)" ] || rb=""; workflow_pull_merge && git push ${rb:+origin "HEAD:$rb"}  # #2994: merge, never rebase; #2839: autostash keeps the report
           ```
+          If the merge conflicts, the branch is left as it was: run `git merge --no-edit @{u}`, resolve the conflicted files, `git add` them, run `git commit` (hooks on) and push. Never rebase.
        6. If failures persist after 3 iterations, document them honestly.
 
        Update the PR description with a "Step 16b: Outside-In Testing Results"

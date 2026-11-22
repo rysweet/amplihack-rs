@@ -2,7 +2,7 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state, and see which folders cleanup keeps because they hold unsaved Git work.
 doc_type: howto
-last_updated: 2026-11-21
+last_updated: 2026-11-22
 ---
 
 # Clean Up After Recipe Runs
@@ -413,11 +413,13 @@ earlier one failed, and the final error names every failure.
 1. Finishes the recovery admission with an outcome judged from the run.
 2. Finishes the workspace (`finish_workspace`):
    1. Removes `<run dir>/runtime/`, including everything steps wrote to
-      `TMPDIR` and `artifacts/`, unless a running process still uses it or it
-      holds unsaved Git work.
+      `TMPDIR` and `artifacts/`, unless a running process still uses it,
+      running processes cannot be seen on this system, or it holds unsaved
+      Git work.
       Durable `recovery/` state and copied artifacts remain outside that
       disposable folder. See
       [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept),
+      [Where running processes cannot be seen](#where-running-processes-cannot-be-seen),
       [Locked folders inside the runtime folder](#locked-folders-inside-the-runtime-folder)
       and
       [Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept).
@@ -487,7 +489,17 @@ A real run starts its workspace with `RunWorkspace::begin_durable`. If the
 work root cannot be used, for example because it is group-writable, the run
 fails before any step starts, with an error that names the work root. Fix
 its permissions (`chmod g-w,o-w`) or point `AMPLIHACK_WORK_ROOT` at a private
-absolute directory. A real run never falls back to a temporary folder. A `--dry-run` uses
+absolute directory. A real run never falls back to a temporary folder.
+
+The error names the work root and the operation that failed, for example
+opening the work root or creating the run's runtime folder. The run opens every
+component of the work root without following symbolic links, so a work root that
+passes through a link is unusable, as it has always been. When a link is on the
+path, the error also names the first component that is a symbolic link, but not
+the place it points to. Name the folder by its canonical path
+(`realpath "$AMPLIHACK_WORK_ROOT"`) to avoid the link. On macOS, `/var` and `/tmp`
+are links to `/private/var` and `/private/tmp`, so `/var/tmp` is reached through
+one; a path under any of them goes through a link there. A `--dry-run` uses
 `RunWorkspace::dry_runtime`: a temporary `amplihack-dry-*` folder that is
 removed on exit, with no run folder and no checkout.
 
@@ -529,9 +541,76 @@ runs after that process exits. To remove it now, stop the process and run:
 amplihack cleanup --apply --only run-tmp
 ```
 
-The check needs `/proc`. Where `/proc` cannot be read, as on macOS, the
-runner removes `runtime/` at the end of the run as before, while the sweep
-still keeps every folder it cannot prove unused.
+#### Where running processes cannot be seen
+
+The check needs `/proc`. A system without `/proc`, as macOS is, gives the
+runner no view of running processes, so it cannot tell whether `runtime/` is
+still in use. It then keeps the folder, changes nothing in it, and prints one
+line on stderr:
+
+```text
+amplihack: running processes cannot be seen on this system, so whether runtime folder "~/.amplihack/work/r/<id>" is still in use is not known; leaving it in place. Cleanup will not remove it either: delete it by hand once nothing started by the run is still running
+```
+
+The run's exit status does not change. Before issue #2935 the runner removed
+the folder in this case.
+
+The sweep and `amplihack cleanup --apply` have the same limit: they keep every
+folder they cannot prove unused, so on such a system neither removes a kept
+`runtime/` folder later. These folders stay until they are deleted by hand.
+See [the troubleshooting entry](#troubleshooting) for how to check that
+nothing still uses a folder before deleting it.
+
+##### What this costs, and how to list the kept folders
+
+On such a system every run leaves its `runtime/` folder behind, and nothing
+removes it until the system gets a view of running processes (issue #2936).
+The folder holds what the run's steps wrote to `TMPDIR` and to `artifacts/`,
+so its size is whatever they left there; there is no upper limit.
+
+Sizes measured on one macOS host on 22 November 2026, over the 14 runtime
+folders it held, each read with `du -sk` while its run was in progress:
+
+| Runtime folders | Size of each |
+| --- | --- |
+| 8 of the 14 | under 1 MiB (0 to 660 KiB) |
+| 5, each an auto-drive run, whose launcher copies its recipe bundle into `TMPDIR` | 12.4 MiB |
+| 1, the largest | 42.2 MiB |
+
+So a run that writes little to `TMPDIR` leaves well under 1 MiB, and an
+auto-drive run about 12 MiB. A step that builds in `TMPDIR` can leave far more
+than any figure above. At 12.4 MiB a run, a host that makes 50 auto-drive runs
+a day keeps about 620 MiB a day.
+
+The dry run lists them. It removes nothing:
+
+```bash
+amplihack cleanup --only run-tmp
+```
+
+```text
+CATEGORY        ACTION                             SIZE  PATH
+run-tmp         skipped                        12.4 MiB  /Users/ryan/.amplihack/work/r/3f0c9a526d1e
+                reason: running processes cannot be seen on this system
+run-tmp         skipped                               -  /Users/ryan/.amplihack/work/r/7b1e44c0a2d9
+                reason: run is active
+```
+
+A folder with the reason `running processes cannot be seen on this system`
+belongs to a run that has ended, or was killed, and is waiting to be deleted
+by hand. Its size is shown in the dry run only: `--apply`, and the sweep at
+the end of each run, report the same reason without reading the folder. A
+folder with `run is active` belongs to a run that is still going; leave it
+alone. The reason `in use by a running process` appears only where processes
+can be seen, so it is never printed for these folders.
+
+To see only the kept folders, or their total size:
+
+```bash
+amplihack cleanup --only run-tmp | grep -B1 'cannot be seen'
+amplihack cleanup --only run-tmp --format json \
+  | jq '[.entries[] | select(.reason | contains("cannot be seen")) | .size_bytes] | add'
+```
 
 The folder of a `recipe run --dry-run` is not checked: it lives in the system
 temporary folder, no sweep ever looks at it, and keeping it would leave it
@@ -1815,6 +1894,31 @@ done
 The loop reads every process, so it can take a minute or more on a busy host.
 
 See [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept).
+
+**A run printed `running processes cannot be seen on this system`.** The
+system has no `/proc` (macOS, for example), so the runner could not check
+whether the run's runtime folder is still in use, and kept it. No later sweep
+and no `amplihack cleanup --apply` removes it, for the same reason. Once
+nothing that the run started is still running, check the folder and delete it.
+Set `DIR` to the quoted path from the message:
+
+```bash
+DIR="$HOME/.amplihack/work/r/<id>"   # the quoted path from the message
+lsof +D "$DIR"                       # lists processes with a file or working folder inside it
+rm -rf -- "$DIR"                     # only when lsof printed nothing
+```
+
+`amplihack cleanup --only run-tmp` lists every folder kept this way, with its
+size; see
+[What this costs, and how to list the kept folders](#what-this-costs-and-how-to-list-the-kept-folders).
+
+`lsof +D` does not show a process whose only link to the folder is a `TMPDIR`
+value, so also make sure that no build server, language server or background
+job from that run is still alive. If the folder holds a Git work tree, look
+for uncommitted or unpushed work in it first: deleting by hand skips the check
+described in the next entry.
+
+See [Where running processes cannot be seen](#where-running-processes-cannot-be-seen).
 
 **A folder stays, and stderr says `leaving "<folder>" in place`.** The folder
 holds a Git work tree with uncommitted changes or unpushed commits, or cleanup

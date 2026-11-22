@@ -83,3 +83,78 @@ pub fn copy_executable(from: &Path, to: &Path) {
         to.display()
     );
 }
+
+/// `value` as one word of POSIX shell text: wrapped in single quotes, with
+/// each embedded single quote written as `'\''`. Nothing inside single
+/// quotes is expanded, so the shell hands the value on byte for byte.
+///
+/// Every value a test writes into the text of a stub goes through this (a
+/// folder, a FIFO, the test executable's path): a temporary path may hold a
+/// space or a quote, and a stub must never run part of a path as code. The
+/// value must come from the test, never from a child's output.
+#[allow(dead_code)]
+pub fn sh_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for c in value.chars() {
+        if c == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(c);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+#[cfg(test)]
+mod sh_quote_tests {
+    use super::sh_quote;
+    use std::process::Command;
+
+    /// What `sh` makes of `sh_quote(value)` when it is the one argument of
+    /// `printf %s`: the value must come back byte for byte.
+    fn through_sh(value: &str) -> String {
+        let script = format!("printf %s {}", sh_quote(value));
+        let out = Command::new("/bin/sh")
+            .args(["-c", &script])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("start sh");
+        assert!(out.status.success(), "{script}: {out:?}");
+        String::from_utf8(out.stdout).expect("utf-8 out")
+    }
+
+    #[test]
+    fn a_value_with_shell_syntax_reaches_the_script_unchanged() {
+        for value in [
+            "plain",
+            "",
+            "it's here",
+            "'",
+            "two'quotes'in",
+            "has a space",
+            "$HOME and ${HOME} and $(id)",
+            "`id`",
+            "a;b&c|d>e<f",
+            "back\\slash",
+            "new\nline",
+            "/tmp/it's a $dir/with `ticks`",
+        ] {
+            assert_eq!(through_sh(value), value, "value {value:?}");
+        }
+    }
+
+    #[test]
+    fn the_quoted_form_is_one_word() {
+        // A value that would split or expand if left bare stays one word.
+        let script = format!("set -- {}; printf %s \"$#\"", sh_quote("a b  c $x"));
+        let out = Command::new("/bin/sh")
+            .args(["-c", &script])
+            .env_clear()
+            .output()
+            .expect("start sh");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1");
+    }
+}

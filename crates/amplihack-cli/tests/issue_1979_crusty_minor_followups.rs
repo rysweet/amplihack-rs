@@ -2878,3 +2878,135 @@ fn a_task_that_is_not_an_issue_gets_no_comment() {
     assert!(!d.p("followups.parent").exists());
     assert_eq!(stdout(&d.check()).trim(), "followups-ok 3");
 }
+
+// ── break_refs on BSD and GNU sed (issue #2931, GNUSED) ─────────────────────
+//
+// `break_refs` inserts a zero-width space after `#` before a digit, after
+// `github.com/` in any letter case, and after `GH-` before a digit when the
+// `GH` starts a word. GNU sed's `\b` and the `I` flag are not in BSD sed
+// (macOS), which read `\b` as a literal backspace. The rules must give the
+// same text with either sed, and a sed that fails must stop the output: a
+// reference that was not broken would link or notify on GitHub.
+
+/// Runs `break_refs "$1"` from the shared rules file through the one
+/// isolated bash of this file. `extra_path` goes in front of its `PATH`. The
+/// locale is UTF-8, as a user's is, so the function's own `LC_ALL=C` on the
+/// `sed` call is what the cases with bytes outside ASCII rest on.
+fn break_refs_with(input: &OsStr, extra_path: Option<&Path>) -> Output {
+    let d = Drive::new();
+    let rules = tools_dir().join(RULES);
+    let path = extra_path.map(|dir| {
+        std::env::join_paths(
+            std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&d.path_env())),
+        )
+        .expect("a PATH with the stub folder first")
+    });
+    let mut env: Vec<(&str, &OsStr)> = vec![("LANG", OsStr::new("en_US.UTF-8"))];
+    if let Some(path) = &path {
+        env.push(("PATH", path.as_os_str()));
+    }
+    d.bash(
+        Some("source \"$1\" && break_refs \"$2\""),
+        &[rules.as_os_str(), input],
+        &env,
+        "",
+    )
+}
+
+fn broken(input: &str) -> String {
+    let o = break_refs_with(OsStr::new(input), None);
+    assert!(o.status.success(), "{input:?}: {}", show(&o));
+    String::from_utf8(o.stdout).expect("utf-8 output")
+}
+
+#[test]
+fn break_refs_breaks_each_reference_form() {
+    let cases: [(&str, String); 13] = [
+        ("see #12", format!("see #{ZW}12")),
+        ("#7 and #8", format!("#{ZW}7 and #{ZW}8")),
+        ("a # b", "a # b".to_string()),
+        (
+            "https://github.com/o/r",
+            format!("https://github.com/{ZW}o/r"),
+        ),
+        (
+            "GitHub.com/o and GITHUB.COM/p",
+            format!("GitHub.com/{ZW}o and GITHUB.COM/{ZW}p"),
+        ),
+        ("see GH-45", format!("see GH-{ZW}45")),
+        ("gh-7 and Gh-12", format!("gh-{ZW}7 and Gh-{ZW}12")),
+        (
+            "GH-12 at the line start",
+            format!("GH-{ZW}12 at the line start"),
+        ),
+        ("(GH-3)", format!("(GH-{ZW}3)")),
+        ("fixes: GH-1,GH-2", format!("fixes: GH-{ZW}1,GH-{ZW}2")),
+        ("GH-1 GH-2", format!("GH-{ZW}1 GH-{ZW}2")),
+        (
+            "GH-x is not a reference",
+            "GH-x is not a reference".to_string(),
+        ),
+        ("@octocat", format!("@{ZW}octocat")),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(broken(input), expected, "{input:?}");
+    }
+}
+
+#[test]
+fn break_refs_leaves_gh_inside_a_longer_word_alone() {
+    for input in ["GHz-1", "xGH-1", "9GH-1", "_GH-1", "ghost-1", "NGH-22"] {
+        assert_eq!(broken(input), input, "{input:?}");
+    }
+}
+
+/// A non-ASCII neighbour is not a word character to a portable sed, so the
+/// reference is broken: the safe side. The test pins that the link is broken,
+/// not that the neighbour counts as a word.
+#[test]
+fn break_refs_breaks_a_reference_beside_a_non_ascii_letter() {
+    let out = broken("café GH-5");
+    assert!(out.contains(&format!("GH-{ZW}5")), "{out:?}");
+    let out = broken("éGH-5");
+    assert!(out.contains(&format!("GH-{ZW}5")), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn break_refs_survives_input_that_is_not_utf_8() {
+    use std::os::unix::ffi::OsStrExt;
+    let o = break_refs_with(OsStr::from_bytes(b"bad \xff GH-9 #4"), None);
+    assert!(o.status.success(), "{}", show(&o));
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(text.contains(&format!("GH-{ZW}9")), "{text:?}");
+    assert!(text.contains(&format!("#{ZW}4")), "{text:?}");
+}
+
+/// A sed that exits non-zero must stop the output and fail the function.
+#[cfg(unix)]
+#[test]
+fn break_refs_fails_closed_when_sed_fails() {
+    let stubs = tempfile::tempdir().unwrap();
+    crate::support::exec_stub::write_executable(
+        &stubs.path().join("sed"),
+        "#!/bin/sh\nprintf 'half-done GH-1'\nexit 1\n",
+        0o755,
+    );
+    let o = break_refs_with(OsStr::new("see GH-1"), Some(stubs.path()));
+    assert!(!o.status.success(), "{}", show(&o));
+    assert!(
+        o.stdout.is_empty(),
+        "no text may leave when sed failed: {}",
+        show(&o)
+    );
+}
+
+/// The program text of every sed call is fixed: input only ever arrives as
+/// data (issue #2931 S12).
+#[test]
+fn break_refs_does_not_put_its_input_in_the_sed_program() {
+    let hostile = "s/x/y/e;w /dev/null\n#1 $(id) `id`";
+    let out = broken(hostile);
+    assert!(out.contains(&format!("#{ZW}1")), "{out:?}");
+    assert!(out.contains("$(id) `id`"), "{out:?}");
+}

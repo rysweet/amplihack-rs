@@ -2,29 +2,34 @@
 //! files and TMPDIR/TMP/TEMP read from the process table. Split out of
 //! `sweep.rs`; also used by the run's runtime guard (issue #2486).
 //!
-//! The table is `procfs::proc_root()` (issue #2042), so a test that runs
-//! `amplihack cleanup` reads its own fake tree, never every process on the
-//! host. Outside tests that is `/proc`. Nothing here signals a process: a
-//! fake tree can only make a folder look free or busy, and the folders a
-//! test's cleanup can reach are that test's own temp folders.
+//! The host's table is `procfs::readable_table()` (issues #2042, #2935), so
+//! a test that runs `amplihack cleanup` reads its own fake tree, never every
+//! process on the host. Outside tests that is `/proc`, and a system without
+//! `/proc` has no table: every folder is then of unknown use. Nothing here
+//! signals a process: a fake tree can only make a folder look free or busy,
+//! and the folders a test's cleanup can reach are that test's own temp
+//! folders.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Working folders and open files of every other process this user can see.
-pub(crate) struct ProcScan {
-    available: bool,
-    paths: Vec<PathBuf>,
+/// The view of what running processes hold (issue #2935): the working
+/// folder, every open file and the TMPDIR/TMP/TEMP values of each process of
+/// this user other than this one. `None` when this system gives no such
+/// view. The code that decides whether a folder may go takes one of these,
+/// so a test of that decision writes its own table and starts no process.
+pub(crate) trait ProcessView: Send + Sync {
+    fn held_paths(&self) -> Option<Vec<PathBuf>>;
 }
 
-impl ProcScan {
-    pub(crate) fn take() -> Self {
-        let Ok(entries) = fs::read_dir(crate::commands::agent::procfs::proc_root()) else {
-            return Self {
-                available: false,
-                paths: Vec::new(),
-            };
-        };
+/// The host's view: the process table `procfs::readable_table()` names,
+/// which is `/proc` on Linux. A system without `/proc` has none.
+pub(crate) struct HostProcesses;
+
+impl ProcessView for HostProcesses {
+    fn held_paths(&self) -> Option<Vec<PathBuf>> {
+        let table = crate::commands::agent::procfs::readable_table()?;
+        let entries = fs::read_dir(table).ok()?;
         let me = std::process::id().to_string();
         let mut paths = Vec::new();
         for entry in entries.flatten() {
@@ -61,30 +66,131 @@ impl ProcScan {
                 }
             }
         }
-        Self {
-            available: true,
-            paths,
+        Some(paths)
+    }
+}
+
+/// A table a test holds in memory. `hold` and `release` change it while a
+/// folder's owner keeps the view, as a process starting or exiting would.
+#[cfg(test)]
+pub(crate) struct FakeProcesses(std::sync::Mutex<Option<Vec<PathBuf>>>);
+
+#[cfg(test)]
+impl FakeProcesses {
+    /// Processes can be seen, and none holds anything yet.
+    pub(crate) fn seen() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self(std::sync::Mutex::new(Some(Vec::new()))))
+    }
+
+    /// The answer of a system where processes cannot be seen.
+    pub(crate) fn unseen() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self(std::sync::Mutex::new(None)))
+    }
+
+    /// Adds one held path: a working folder, an open file or a TMPDIR value.
+    pub(crate) fn hold(&self, path: &Path) {
+        self.0
+            .lock()
+            .unwrap()
+            .as_mut()
+            .expect("an unseen table holds nothing")
+            .push(path.to_path_buf());
+    }
+
+    /// Drops every held path, as when the holding processes have exited.
+    pub(crate) fn release(&self) {
+        if let Some(paths) = self.0.lock().unwrap().as_mut() {
+            paths.clear();
+        }
+    }
+}
+
+#[cfg(test)]
+impl ProcessView for FakeProcesses {
+    fn held_paths(&self) -> Option<Vec<PathBuf>> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// What one scan says about a folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Use {
+    /// A process has its working folder, an open file or its temporary
+    /// folder variable in it.
+    Held,
+    /// The scan saw the processes and none uses it.
+    Free,
+    /// Processes cannot be seen here, so nothing is known.
+    Unknown,
+}
+
+/// The reason a cleanup report gives for a folder a process uses.
+pub(crate) const REASON_IN_USE: &str = "in use by a running process";
+
+/// The reason a cleanup report gives for a folder whose use is not known
+/// (issue #2935). It is a different line from [`REASON_IN_USE`] on purpose:
+/// on a system without `/proc` every folder is kept for this reason, and a
+/// report that said "in use" there would name a process that may not exist.
+pub(crate) const REASON_USE_UNKNOWN: &str = "running processes cannot be seen on this system";
+
+impl Use {
+    /// Why a folder with this use is kept, in the words of a cleanup report,
+    /// or `None` when it is free and may go.
+    pub(crate) fn keep_reason(self) -> Option<&'static str> {
+        match self {
+            Use::Free => None,
+            Use::Held => Some(REASON_IN_USE),
+            Use::Unknown => Some(REASON_USE_UNKNOWN),
+        }
+    }
+}
+
+/// Working folders and open files of every other process this user can see.
+pub(crate) struct ProcScan {
+    available: bool,
+    paths: Vec<PathBuf>,
+}
+
+impl ProcScan {
+    /// One scan of the host's view.
+    pub(crate) fn take() -> Self {
+        Self::of(&HostProcesses)
+    }
+
+    /// One scan of `view`.
+    pub(crate) fn of(view: &dyn ProcessView) -> Self {
+        match view.held_paths() {
+            Some(paths) => Self {
+                available: true,
+                paths,
+            },
+            None => Self {
+                available: false,
+                paths: Vec::new(),
+            },
         }
     }
 
-    /// Whether a process has its working folder, a file open or its temporary
-    /// folder variable in `path`.
-    /// Without `/proc`, everything counts as in use.
-    pub(crate) fn in_use(&self, path: &Path) -> bool {
+    /// Why `path` is kept, in the words of a cleanup report: a process has
+    /// its working folder, a file open or its temporary folder variable in
+    /// it, or processes cannot be seen and so nothing is known. `None` when
+    /// the scan saw the processes and none uses it. Without a view of the
+    /// processes, every folder is kept.
+    pub(crate) fn keep_reason(&self, path: &Path) -> Option<&'static str> {
+        self.judge(path).keep_reason()
+    }
+
+    /// What this scan says about `path`, with "cannot tell" kept apart from
+    /// "in use" (issue #2935).
+    pub(crate) fn judge(&self, path: &Path) -> Use {
         if !self.available {
-            return true;
+            return Use::Unknown;
         }
         let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        self.paths
+        let held = self
+            .paths
             .iter()
-            .any(|p| p.starts_with(&canonical) || p.starts_with(path))
-    }
-
-    /// Whether the scan could read the process table and found a process
-    /// using `path` (issue #2486). Unlike [`Self::in_use`], this is `false`
-    /// without `/proc`: the runtime guard then removes the folder as before,
-    /// while the sweep keeps failing closed through `in_use`.
-    pub(crate) fn found_user(&self, path: &Path) -> bool {
-        self.available && self.in_use(path)
+            .any(|p| p.starts_with(&canonical) || p.starts_with(path));
+        if held { Use::Held } else { Use::Free }
     }
 }
