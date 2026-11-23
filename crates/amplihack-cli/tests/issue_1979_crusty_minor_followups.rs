@@ -2295,17 +2295,25 @@ fn round_step06_records_minor_only() {
     assert_eq!(r["concern_count"], 2);
 }
 
-/// Runs crusty-loop step-03 on a drive whose loop ended DONE.
+/// #3129: the Crusty loop is gone. The drive passes dry-run to the goal
+/// loop, whose review action passes it on to each Crusty round.
 #[test]
-fn auto_drive_passes_dry_run_to_the_crusty_loop() {
-    let top = step("auto-drive-to-merge", "autodrive-crusty-loop");
+fn auto_drive_passes_dry_run_to_the_crusty_round() {
+    let top = step("auto-drive-to-merge", "autodrive-loop");
+    assert_eq!(top["recipe"].as_str(), Some("autodrive-goal-loop"));
     assert_eq!(
         top["context"]["autodrive_dry_run"].as_str(),
         Some("{{autodrive_dry_run}}")
     );
     assert_eq!(
-        recipe_yaml("autodrive-crusty-loop")["context"]["autodrive_dry_run"].as_str(),
+        recipe_yaml("autodrive-goal-loop")["context"]["autodrive_dry_run"].as_str(),
         Some("false")
+    );
+    let goal = read("amplifier-bundle/tools/autodrive_pr_goal.sh");
+    assert!(
+        goal.contains("d=\"${RECIPE_VAR_autodrive_dry_run:-false}\"")
+            && goal.contains("-c \"autodrive_dry_run=${d}\""),
+        "the review action passes the run's dry-run to the Crusty round"
     );
 }
 
@@ -2544,22 +2552,10 @@ fn docs_no_longer_give_light_mode_priority() {
     );
 }
 
+/// #3129 removed the Crusty loop, its second clean token and the re-review
+/// that ran the finaliser; the finaliser's own order is unchanged.
 #[test]
-fn only_the_crusty_loops_pass_the_second_clean_token() {
-    let cl = step_command("autodrive-crusty-loop", "step-02-crusty-loop");
-    assert!(
-        cl.contains("--also-clean-token MINOR_ONLY")
-            || cl.contains("--also-clean-token \"MINOR_ONLY\""),
-        "crusty loop"
-    );
-    let rr = read("amplifier-bundle/tools/autodrive_crusty_rereview.sh");
-    assert!(rr.contains("--also-clean-token"), "re-review");
-    let ml = read("amplifier-bundle/recipes/autodrive-merge-loop.yaml");
-    assert!(
-        !ml.contains("--also-clean-token"),
-        "the merge-ready loop passes no second token"
-    );
-    assert!(rr.contains("bash \"$HERE/autodrive_crusty_finalize.sh\""));
+fn the_crusty_finaliser_collects_files_and_checks_before_done() {
     let finalizer = read("amplifier-bundle/tools/autodrive_crusty_finalize.sh");
     let collect = finalizer.find(" collect").unwrap();
     let file = finalizer.find(" file").unwrap();
@@ -2570,6 +2566,8 @@ fn only_the_crusty_loops_pass_the_second_clean_token() {
     assert!(collect < file && file < check && check < done);
 }
 
+/// #3129: the loop steps that forwarded plan_task_id are gone; the drive and
+/// the two one-release alias recipes still declare it.
 #[test]
 fn plan_task_id_is_an_input_and_reaches_both_loops() {
     for r in [
@@ -2583,51 +2581,6 @@ fn plan_task_id_is_an_input_and_reaches_both_loops() {
             "{r} declares plan_task_id"
         );
     }
-    for id in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
-        let s = step("auto-drive-to-merge", id);
-        let text = serde_yaml::to_string(&s).unwrap();
-        assert!(
-            text.contains("plan_task_id"),
-            "{id} receives plan_task_id: {text}"
-        );
-    }
-}
-
-#[test]
-fn merge_loop_files_before_the_gate() {
-    let ids: Vec<String> = steps("autodrive-merge-loop")
-        .iter()
-        .map(|s| s["id"].as_str().unwrap().to_string())
-        .collect();
-    let b = ids
-        .iter()
-        .position(|i| i == "step-02b-file-followups")
-        .expect("step-02b exists");
-    let g = ids.iter().position(|i| i == "step-03-finalize").unwrap();
-    assert!(b < g, "step-02b runs before the gate");
-    let s = step("autodrive-merge-loop", "step-02b-file-followups");
-    assert_eq!(s["type"].as_str(), Some("agent"));
-    assert_eq!(
-        s["condition"].as_str(),
-        Some("merge_loop_preflight.should_run == 'true'")
-    );
-    assert!(
-        s["prompt"]
-            .as_str()
-            .unwrap()
-            .contains("autodrive_followups.sh")
-    );
-}
-
-#[test]
-fn agent_followups_preserve_dry_run_and_parent_obligations() {
-    let prep = step("autodrive-crusty-loop", "step-03-record-crusty-phase");
-    assert_eq!(prep["type"].as_str(), Some("agent"));
-    let prompt = prep["prompt"].as_str().unwrap();
-    assert!(prompt.contains("Dry-run"));
-    assert!(prompt.contains("followup-missing"));
-    assert!(prompt.contains("linked to plan task"));
-    assert!(prompt.contains("Only after verified DONE"));
 }
 
 /// `check` and `gate` live in their own file beside the tool, and the tool
