@@ -32,6 +32,7 @@ the drive.
 - [Round files](#round-files)
 - [How the loop ends](#how-the-loop-ends)
 - [Finalisation and merge conditions](#finalisation-and-merge-conditions)
+  - [Merge method](#merge-method)
 - [Base sync](#base-sync)
 - [Hand-off](#hand-off)
 - [Run report](#run-report)
@@ -438,7 +439,9 @@ written by `autodrive_crusty_record.sh`.
 An optional first argument asks for that many further rounds; it must
 match `^[0-9]+$` and be at least `1`, and the tool turns it into a budget of
 the rounds already used plus that number (see
-[`autodrive_merge_loop_run.sh`](#autodrive_merge_loop_runsh)). The step keeps its default `fatal`
+[`autodrive_merge_loop_run.sh`](#autodrive_merge_loop_runsh)). A
+`merge_method` the merge tool would not take stops the tool with exit `2`
+before the driver starts (see [Merge method](#merge-method)). The step keeps its default `fatal`
 handling and the tool maps the driver's exit status itself, so that exit `79`
 is never hidden by `continue_on_error` (#2490).
 
@@ -746,8 +749,10 @@ this order:
    `HEAD` still equals it. A different head means the PR changed after the
    assessment; the step returns `refused` without calling `gh`.
 4. `autodrive_merge` finds the PR open, its checks green or absent (see
-   [Checks](#checks)) and its `mergeStateStatus` not `DIRTY`, then GitHub
-   accepts `gh pr merge --squash --match-head-commit <expected sha>`.
+   [Checks](#checks)) and its `mergeStateStatus` not `DIRTY`, settles on a
+   merge method the repository allows (see [Merge method](#merge-method)),
+   then GitHub accepts
+   `gh pr merge --<method> --match-head-commit <expected sha>`.
 
 GitHub's acceptance covers required reviews, branch protection and a head
 that moved on the server. No agent-written text is a merge condition: an
@@ -795,19 +800,97 @@ statements whose default arm is the safe result.
 | After GitHub refuses the merge, read once more | `BEHIND` or `DIRTY` | `base-behind` (tool exit `8`). |
 | After GitHub refuses the merge | anything else, including empty or unknown | `refused` (tool exit `4`). |
 
-`--squash --match-head-commit` is always used, so the merge can only land the
-assessed head. A `gh` exit `79` stays terminal.
+`--match-head-commit` accompanies every merge method, so the merge can only
+land the assessed head. A `gh` exit `79` stays terminal.
+
+### Merge method
+
+Some repositories require merge commits, so the method is chosen rather than
+fixed (#1888). `autodrive_merge` settles it immediately before the merge
+request, after every condition above:
+
+1. The method the run was given, in the `merge_method` context value: `merge`,
+   `squash` or `rebase`. It is used only where the repository allows it.
+2. Otherwise the first the repository allows, of squash, a merge commit, then
+   rebase.
+
+The repository's own settings are read once, with
+
+```bash
+gh api "repos/{owner}/{repo}" --jq '[.allow_merge_commit,.allow_squash_merge,.allow_rebase_merge]|@tsv'
+```
+
+A method the repository does not allow is never used, and no other method
+takes its place. Where the method cannot be settled, the result is `refused`
+(tool exit `4`) with a reason that begins `the merge method could not be
+settled:` and names what was found. That is the ordinary hand-off path: an
+agent step states the outcome and the PR is handed off, so there is no new
+exit code and no new way for a run to end. Three readings reach it:
+
+- the run was given a method the repository does not allow, or a word that is
+  not `merge`, `squash` or `rebase`;
+- the repository's settings could not be read, or did not read as three
+  `true` or `false` values. For a failed read the reason names `gh`'s exit
+  status and then the first line of its error output that is not blank, with
+  every byte outside printable ASCII replaced and cut at 200 bytes, so the
+  hand-off says why the read failed (a `403`, a missing scope). The whole
+  error output still goes to the step's log;
+- the repository allows no merge method at all.
+
+The caller's string never reaches the argv: it selects a branch in the tool,
+and the flag put on the command line is a literal of the tool. Where the
+reason echoes the string it was given, the string is cut to 32 characters and
+every non-printable or non-ASCII byte is replaced first. The finalisation
+statement and the hand-off comment treat that reason as a record of what the
+step found, never as an instruction.
+
+Paths that end before a merge request, such as a closed PR, failing or
+pending checks, a `DIRTY` branch or an unavailable merge message, make no
+repository call at all.
+
+Branch protection and rulesets, such as a required linear history, are not
+read here. GitHub applies them to the merge request itself, and a merge it
+refuses ends `refused` and is handed off, as set out under
+[Merge state](#merge-state).
+
+The merge loop also passes `merge_method` to every merge-ready round. Where
+the task text states how the PR is to be merged, or a condition only one
+method can keep, such as a commit that must stay an ancestor of the base, the
+assessment treats it as a stated merge condition: it holds only when the run
+was given that method, and otherwise the round concludes hand-off, naming the
+method the task asks for and the method the run was given.
+
+Because the round prompt names the method, `autodrive_merge_loop_run.sh`
+checks it before any round starts, with `autodrive_merge_method_known` from
+`autodrive_merge.sh`, the one list both tools use. A value that is not empty,
+`merge`, `squash` or `rebase` stops the step with exit `2` and an error that
+names the value, cut and made printable as above. No round runs, the state
+folder is not written, and the value is never replaced with an empty one,
+which would let the repository choose a method nobody asked for. The tool is
+the only way a round receives `merge_method`: `autodrive-merge-round.yaml` is
+run only by the loop driver this tool starts, never directly by a recipe.
+
+Every result line carries `merge_method` and `merge_method_reason`, empty
+where the method was never settled. `autodrive-finalize.yaml` passes both on
+in `finalize_merge`, and the `state-outcome` agent step states the method and
+the reason.
 
 ### Merge message
 
-The squash subject and body come from the trusted
+The merge subject and body come from the trusted
 `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`, as before
 (#2056; see [the squash commit message](auto-drive-to-merge.md#the-squash-commit-message-2056)).
 The helper is sourced only after the absolute-path and non-symlink checks, and
-the body reaches `gh` on standard input:
+is called on every path, whichever method is settled on, so
+`message-unavailable` stays reachable as it was. A squash and a merge commit
+both take the composed subject and body; a rebase writes no commit of its own
+and takes neither, and no body is piped to it. The body reaches `gh` on
+standard input:
 
 ```bash
 printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --squash --match-head-commit "$sha" --subject "$subject" --body-file -
+printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --merge --match-head-commit "$sha" --subject "$subject" --body-file -
+printf '' | gh pr merge "$pr" --rebase --match-head-commit "$sha"
 ```
 
 ### `finalize_merge` values
@@ -816,7 +899,7 @@ printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --squash --match-head-commit "$sha
 | --- | --- | --- | --- |
 | `merged` | `0` | `0` | `false` |
 | `not-authorised` | not called | `0` | `false` |
-| `authorization-unreadable` | not called | `0` | `true` |
+| `authorization-unreadable` | not called | `1`; goes to [recovery](#an-unreadable-invocation-record-goes-to-recovery) | `false` |
 | `checks-not-green` | `3` | `0` | `true` |
 | `refused` | `4`, or head moved before the call | `0` | `true` |
 | `not-open` | `5` | `0` | `true` |
@@ -831,8 +914,52 @@ A `not-authorised` result is the expected outcome of a verify-only run
 authorization helper is called, or of a captured invocation that does not
 allow a merge. The PR stays open and is not drafted. On a merge run, a helper
 that exits non-zero or prints no object with a boolean `allows_merge` gives
-`authorization-unreadable`, and the PR is handed off. Its reason names only
-the helper's exit status. A helper exit `79` passes through as `79`.
+`authorization-unreadable`. The step fails with exit `1` before any merge
+command, and the PR is not drafted. A helper exit `79` passes through as `79`
+and is terminal.
+
+### An unreadable invocation record goes to recovery
+
+When the record is missing, unreadable or bound to another state folder, the
+`merge` step prints one `ERROR:` line to standard error and exits `1`. The
+line names the result (`authorization-unreadable`), the expected
+`invocation.json` path and whether it is present or missing, the state folder
+the step was given, and the helper's exit status. It holds paths and exit
+codes only, never the record's contents. The helper's own message goes to the
+same standard error and names both the folder it was given and the folder the
+runner bound.
+
+The merge loop's `step-03-finalize` continues on error, so
+`step-03r-finalize-recovery` runs. It carries the condition
+`not autodrive_finalization`, because `continue_on_error` lets the loop go on
+after the failed step and recovery must still be entered.
+
+The pinned runner captures a bash step's standard error and keeps it only in
+that step's error result; it does not stream it to the drive log, whose
+progress lines show the step's status and duration only. The first attempt's
+`ERROR:` line and the helper's message therefore stay in the parent run's
+result for `step-03-finalize`. Recovery starts with `--already-failed`, so the
+recovery agent does not receive that first attempt's standard error either.
+What it can read is `finalize-merge.json`, if one exists. When a re-run made
+by recovery fails, its `ERROR:` line does reach the recovery agent, because
+`step-recovery` passes on and keeps the tail of each attempt's standard error.
+It reaches the drive log only if `step-03r-finalize-recovery` itself fails and
+the runner reports that failure.
+
+Recovery runs `autodrive-finalize` again as a separate process. Capturing the
+invocation again uses only the operator's original inputs (`no_merge`, the dry
+run flag and the PR), and `step-03r-finalize-recovery` defaults `no_merge` to
+`true`, so a recovery re-run cannot allow a merge the operator did not ask
+for. A verify-only or dry run stays verify-only. The recipe tests in
+`crates/amplihack-cli/tests/issue_2539_step_recovery_recipes.rs` and
+`issue_2539_step_recovery_loop.rs` cover the recipe wiring.
+
+If recovery succeeds, the run report shows the re-run's result, read from
+`finalize-merge.json`. If it fails too, finalisation produced no readable
+result and the report shows `merge` as `null` with `stop_reason`
+`unreadable`.
+
+An explicit refusal (exit `79`) never reaches recovery.
 
 `autodrive-finalize.yaml` emits `base-behind` with `handoff false`: the
 merge loop syncs the base instead, except after a recovery re-run (below). It emits `checks-pending` with
@@ -865,6 +992,22 @@ The runner writes `invocation.json` again once it has bound the state folder
 to the invocation, so the authorization read below finds the bound folder.
 Before this, the record held no state folder and every merge run's
 finalisation returned `authorization-unreadable`.
+
+Every step of a drive reads and writes the one runner-bound
+`autodrive_state_dir`. The crusty loop, the merge loop and finalisation each
+receive `{{autodrive_state_dir}}` from their parent recipe and nothing else, in
+`auto-drive-to-merge.yaml`, `auto-drive-light.yaml` and
+`autodrive-merge-loop.yaml`. The recovery re-run in
+`step-03r-finalize-recovery` passes the same bound folder, so
+`finalize-merge.json` is written to the folder the report reads.
+
+A state folder that an agent step reports, such as `build_result.state_dir` or
+a preflight's `state_dir`, is information only. It never decides where records
+go. The runner copies every key of a finished sub-recipe's context back into
+its parent, so a sub-recipe handed any other value would replace the bound
+folder for every later step. Bash steps read `RECIPE_VAR_autodrive_state_dir`
+first and use a reported folder only when a command is run directly, outside
+`amplihack`.
 
 ## Base sync
 
@@ -996,7 +1139,7 @@ The first matching row applies.
 | `DONE` or `WAITING` | `not-authorised`, `requested_action` `merge` | `not_merged` |
 | `DONE` or `WAITING` | `checks-pending` | `waiting_for_checks` |
 | `DONE` or `WAITING` | `base-behind` | `not_merged` |
-| `DONE` or `WAITING` | any other result, including `authorization-unreadable` and unknown values | `handoff` |
+| `DONE` or `WAITING` | any other result, including unknown values | `handoff`. `authorization-unreadable` (`handoff false`) reaches this row only if recovery also fails and still leaves that result readable; normally a failed recovery gives `merge` `null` and the `unreadable` row below |
 | `DONE` or `WAITING` | `null`: finalisation did not run, or its output is missing or unreadable, with no exit `79` | `unreadable`, with a `note` naming the error kind and path |
 | `HANDOFF`, `STUCK` | | `handoff` |
 | `BUDGET_EXHAUSTED` | | `budget_exhausted` |
@@ -1296,13 +1439,18 @@ at a round file's name is replaced, not followed.
 ```bash
 source "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge.sh"
 autodrive_merge 2575 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
-# {"result":"merged","pr":2575,"expected_head":"15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605","reason":"merged at the expected head; ..."}
+# {"result":"merged","pr":2575,"expected_head":"15a7f6f...","reason":"merged at the expected head; ...","merge_method":"squash","merge_method_reason":"no merge method was given to the run, so 'squash' was taken: ..."}
+
+# A third argument is the merge method the run was given (#1888); an empty
+# one, or none, leaves the choice to the repository's allowed methods.
+autodrive_merge 1170 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605 merge
 ```
 
 The function prints one JSON line built with `jq -cn`. It calls `gh` once for
 each of these, in order: PR state with title, body and `mergeStateStatus` (one
 read), `checks --required` (and `checks` when no required checks are
-reported), merge, PR state after the merge. It adds no retries or waits.
+reported), the repository's allowed merge methods, merge, PR state after the
+merge. It adds no retries or waits.
 
 ```bash
 autodrive_merge 2575 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
@@ -1314,9 +1462,9 @@ echo $?
 | Exit | Meaning |
 | --- | --- |
 | `0` | `merged`: GitHub reads the PR `MERGED` with `headRefOid` equal to the expected head. This holds whether the PR already read so before the request (no request is made), after the request, or after `gh pr merge` exited non-zero. |
-| `2` | Bad arguments, or the merge-message helper failed its path checks. |
+| `2` | Bad arguments (fewer than two or more than three, a malformed PR number or head), or the merge-message helper failed its path checks. |
 | `3` | `checks-not-green`; no merge attempted. |
-| `4` | `refused`: GitHub declined the merge, for example on a moved head, a missing review or branch protection, and the read-back `mergeStateStatus` is not `BEHIND` or `DIRTY`. |
+| `4` | `refused`: GitHub declined the merge, for example on a moved head, a missing review or branch protection, and the read-back `mergeStateStatus` is not `BEHIND` or `DIRTY`; or the merge method could not be settled (#1888), in which case no merge was requested. |
 | `5` | `not-open`: the PR was closed, or merged at a head other than the expected one, before the merge. |
 | `6` | `message-unavailable`: the merge-message helper refused the title or body. |
 | `7` | `checks-pending`: a required check is still running at the head; no merge attempted. |
@@ -1367,6 +1515,12 @@ operator's own `autodrive_budget_loop_rounds` when one is set. When the
 operator's budget leaves no room, the round stops as `BUDGET_EXHAUSTED` and
 the PR is handed off. `autodrive_budget_total_rounds` applies unchanged.
 
+Before it reads the preflight or touches the state directory, the tool loads
+`autodrive_merge.sh` from beside itself and checks `RECIPE_VAR_merge_method`
+with `autodrive_merge_method_known`. Anything other than empty, `merge`,
+`squash` or `rebase` exits `2` with an error naming the value, made printable
+and cut at 32 bytes, and no round runs (see [Merge method](#merge-method)).
+
 ### `amplihack orch helper autodrive authorization`
 
 ```bash
@@ -1383,12 +1537,24 @@ the invocation allows a merge. With `--pr`, `pr_selected` says whether that PR
 is the one selected at launch (always `true` when none was selected). The
 head branch selection (`existing_branch`) is not checked here. Any error exits `2` and prints nothing on
 standard output; on a merge run the merge step reports that as
-`authorization-unreadable` and hands the PR off.
+`authorization-unreadable`, fails with exit `1` and leaves the rest to
+[recovery](#an-unreadable-invocation-record-goes-to-recovery). A mismatch error
+names both the `--directory` value and the bound state folder.
 
 The launcher writes the invocation to `invocation.json` inside a fresh
-`autodrive-invocation-*` folder. It creates the folder with mode `0700` and
-the file with mode `0600` (`create_new`), whatever the caller's umask. The
-private read requires a folder outside the auto-drive state root to have no
+`autodrive-invocation-*` folder. The folder lives in the run's own durable
+folder, `runs/<id>/autodrive-invocation-*/`, which cleanup never sweeps while
+the run is live, so nested recipe runs that end and clean up cannot remove it.
+It goes with the run folder, or when the launching process ends.
+
+A dry run has no durable folder and keeps the record under `TMPDIR`. That is
+safe because a dry run never merges.
+
+The launcher creates the folder with mode `0700` and the file with mode `0600`,
+whatever the caller's umask. The file is first made with `create_new`, and
+the bound state directory is later written to it only by an atomic rename from
+a private file in the same folder, as before the move. The private read
+requires a folder outside the auto-drive state root to have no
 group or other permission bits (mode `0700`). The default folder mode under
 `umask 022` (`0755`) or `umask 002` (`0775`) would make this check fail and
 leave the drive `STUCK` (#2656). The tests

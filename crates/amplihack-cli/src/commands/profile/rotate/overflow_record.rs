@@ -230,7 +230,7 @@ pub fn refresh_capacity(
     t: i64,
     tag: Option<Tag>,
     platform: Option<&ProfileName>,
-) {
+) -> Vec<String> {
     let key_usable = platform.is_none() || key_check::reachable(&ctx.home).is_ok();
     let readings: Vec<(ProfileName, Rotated)> = rotated(live, reading, others)
         .into_iter()
@@ -238,7 +238,7 @@ pub fn refresh_capacity(
         .collect();
     let on_overflow = Tag::on_overflow(tag) && (key_usable || live != platform);
     let root = ctx.store.root();
-    capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home));
+    capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home))
 }
 
 /// The reading of the login that is live *after* this cycle (issue #2857):

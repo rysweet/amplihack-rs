@@ -32,10 +32,12 @@
 # entirely. unstage_root_run_reports_here is that correction on its own, for a
 # caller that has already staged.
 #
-# workflow_pull_rebase is the counterpart a publishing step needs after its
+# workflow_pull_merge is the counterpart a publishing step needs after its
 # commit: the index correction above leaves a rewritten, tracked report on disk
-# as an unstaged modification, and a plain `git pull --rebase` refuses to run
-# with one. It lives here because this module creates that state.
+# as an unstaged modification, and the pull that brings in a moved remote must
+# keep it. It lives here because this module creates that state.
+# workflow_pull_rebase is kept as an alias of it for runs started on an older
+# release, whose recipes still call that name (#3019, #3049).
 #
 # Contract: docs/reference/recipe-commit-hook-repair.md#staging-rules
 
@@ -175,26 +177,50 @@ unstage_root_run_reports_here() {
   return "$rc"
 }
 
-# workflow_pull_rebase [git-option...]: `git pull --rebase` that survives the
-# one unstaged change the corrections above leave behind (#2839). A run/reports
-# file the repository already tracks and the run has since rewritten is reset in
-# the index and kept on disk, so the next pull sees an unstaged modification and
-# a plain `git pull --rebase` exits 128 with `cannot pull with rebase: You have
-# unstaged changes`. On the publishing path that refusal is a dead end rather
-# than a recoverable failure: push-failure-recovery is forbidden to stage,
-# commit, reset or rebase, and its gate fails on a dirty tracked file, so the
-# run ends needing a person. rebase.autoStash stashes the report, rebases and
-# reapplies it with its bytes intact; a clean autostash leaves no entry on
-# refs/stash, which is shared with every other worktree of the repository.
+# workflow_pull_merge [git-option...]: bring a moved remote branch into the
+# local one with a plain merge, never a rebase (#2994). A rebase rewrites the
+# branch's published history and, on a conflict, leaves HEAD detached, which
+# every later step and push-failure-recovery treat as unsafe.
 #
-# Passed as `-c rebase.autoStash=true`, not `--autostash`: git older than 2.9
-# has neither, and ignores an unknown configuration key instead of failing on an
-# unknown option, so on such a git the caller behaves exactly as it did before.
-# Any arguments are given to git before `pull`, for a caller needing --no-pager.
-# Returns git's exit status; writes nothing of its own.
-workflow_pull_rebase() {
-  git -c rebase.autoStash=true "$@" pull --rebase
+# Runs `git pull --no-rebase --ff --no-edit` once. --no-rebase overrides
+# pull.rebase and --ff overrides pull.ff=only, which some gits apply to a
+# diverged branch even with --no-rebase, so the result is a fast-forward or a
+# merge commit whatever the user's configuration. merge.autoStash keeps the one
+# unstaged change the corrections above leave behind (#2839): a run/reports
+# file the repository tracks and the run has rewritten. The stash lives in
+# MERGE_AUTOSTASH, not on refs/stash (shared with every other worktree), and
+# is reapplied with its bytes intact. If the remote also changed that file,
+# git's own autostash rules apply and git reports the result.
+#
+# If the pull fails part-way through a merge it started (a conflict), the
+# merge is aborted, which also restores the autostash, so the caller is left
+# on its branch with no MERGE_HEAD: the state push-failure-recovery accepts,
+# and whose agent repeats the merge itself and sees git's message first-hand.
+# A merge already in progress before the call (an agent's own attempt, say)
+# makes git refuse the pull, and is left exactly as it was found.
+#
+# The arguments sit in git's global-option position, so callers pass only
+# literal options such as --no-pager. git's output goes to stderr, where each
+# caller shows it; the function writes nothing of its own unless the abort
+# itself fails. Returns the pull's exit status.
+workflow_pull_merge() {
+  local rc=0 merging_before=false
+  git "$@" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 && merging_before=true
+  git -c merge.autoStash=true "$@" pull --no-rebase --ff --no-edit >&2 || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$merging_before" = false ] \
+    && git "$@" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    git "$@" merge --abort >&2 \
+      || echo "workflow_pull_merge: git merge --abort failed (exit $?); the merge is still in progress" >&2
+  fi
+  return "$rc"
 }
+
+# workflow_pull_rebase: the name before #3019 renamed it. A run started on an
+# older release read its recipes at start and still calls this name after an
+# upgrade replaces the helper under it (#3049). It forwards to
+# workflow_pull_merge, so it merges and never rebases. Remove it once no
+# supported release can start a run that calls the old name (#3062).
+workflow_pull_rebase() { workflow_pull_merge "$@"; }
 
 stage_workflow_changes() {
   local top scratch list add_help rc=0

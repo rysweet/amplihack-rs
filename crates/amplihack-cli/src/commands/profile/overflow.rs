@@ -268,10 +268,10 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                     super::rotate::key_check::HOME_KEY_EFFECT
                 );
             }
-            if !super::auto_switch::can_take_login(root, &name) {
-                eprintln!(
-                    "warning: {name} has no login file, so it cannot be used as overflow until it has one: neither the rotator nor auto-switch can move onto it, and the capacity file does not count it"
-                );
+            // Issue #2885: a Keychain that could not be read gets its own
+            // warning, because the remedy is to unlock it, not to log in.
+            if let Some(gap) = super::auto_switch::login_gap(root, &name) {
+                eprintln!("warning: {}", gap.overflow_warning(&name));
             }
             if before.is_none() && !key {
                 println!(

@@ -8,11 +8,12 @@ use super::candidate::{Pool, select_with_overflow};
 use super::capacity::{self, Evidence, refresh};
 use super::config::{self, Config};
 use super::fsx;
+use super::liveness::FakeSessions;
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
 use super::rerun::{Pick, nested_candidate};
 use super::state::{CREDS, Ledger, State, UsageFile};
-use super::swap::swap_check;
+use super::swap::swap_check_seeing;
 use super::usage::{RateLimits, Reading, ReadingSource, Window};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry};
@@ -46,9 +47,19 @@ fn private(p: &Path, body: &str) {
     fs::set_permissions(p, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+/// The view of running sessions these tests hand to `swap_check`: sessions
+/// can be seen, and no profile has one. Held in memory (issue #2935).
+fn no_sessions() -> FakeSessions {
+    FakeSessions::running(&[])
+}
+
 /// A private root: `work`, `spare` and `cred` hold OAuth logins; `console`
 /// and `ignored` are API-key profiles with mode-600 `{}` logins, which pass
 /// `fsx::movable_login` like the host's did on 30 October.
+///
+/// Every login here is a file. A test build reads as not macOS unless the
+/// test holds `keychain::test_seam` (issue #2885), so a missing file means
+/// no login on every host; the Keychain answers are in `tests_own_login.rs`.
 struct Fx {
     _tmp: tempfile::TempDir,
     home: PathBuf,
@@ -300,15 +311,19 @@ fn capacity_counts_no_overflow_profile_without_a_login_file() {
     let now = 2_000_000_000;
     let blocked = |f: &Fx| {
         let mut inputs = f.inputs(&c, Some(GATE), now);
-        inputs.refuse_no_login(&f.root);
+        // No Keychain is asked in this test, so none is unreadable.
+        assert!(inputs.refuse_no_login(&f.root, Some(&f.home)).is_empty());
         inputs.blocked.contains(&"console".to_string())
     };
     assert!(!blocked(&f), "its login file is there");
-    assert!(super::can_take_login(&f.root, &console));
+    assert_eq!(super::login_gap(&f.root, &console), None);
 
     fs::remove_file(f.root.join("console").join(CREDS)).unwrap();
     assert!(blocked(&f), "selection would pass it over");
-    assert!(!super::can_take_login(&f.root, &console));
+    assert_eq!(
+        super::login_gap(&f.root, &console),
+        Some(super::overflow_inputs::LoginGap::NoLogin)
+    );
 
     let rs = RotateState::new(&f.root);
     rs.ensure().unwrap();
@@ -434,11 +449,10 @@ fn a_held_key_names_the_login_that_held_it() {
     );
 }
 
-/// `swap_check` needs the liveness scan, over an empty synthetic process
-/// table (issue #2196), and the real gate.
+/// `swap_check` needs a view of running sessions, here one that sees none
+/// (`no_sessions`), and the real overflow setting (`Gate`).
 #[test]
 fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {
-    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\n");
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
@@ -464,7 +478,15 @@ fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {
         five_hour: window,
         seven_day: window,
     };
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&[])).unwrap();
+    swap_check_seeing(
+        &no_sessions(),
+        &f.state,
+        &f.profiles,
+        &n("work"),
+        &rl,
+        &cfg(&[]),
+    )
+    .unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.is_empty(),
         "no login moved"
@@ -549,7 +571,6 @@ fn a_session_on_an_unmarked_key_never_moves_onto_another_key() {
 /// `{}` login is no login on its own, so the session would be logged out.
 #[test]
 fn swap_check_never_swaps_a_marked_key_into_a_session() {
-    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\noverflow=console\n");
     // A key the login check accepts, so only the swap rule can refuse.
@@ -589,7 +610,7 @@ fn swap_check_never_swaps_a_marked_key_into_a_session() {
     let inputs = OverflowInputs::load(&f.root, &c, now);
     assert!(inputs.gate.is_some(), "the gate must be open for this test");
     assert!(inputs.check_note(&f.root, &n("console")).is_some());
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &c).unwrap();
+    swap_check_seeing(&no_sessions(), &f.state, &f.profiles, &n("work"), &rl, &c).unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.is_empty(),
         "no login moved"
@@ -730,7 +751,6 @@ fn a_recorded_reason_is_in_the_rotate_log() {
 
 #[test]
 fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
-    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\noverflow=cred\n");
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
@@ -752,7 +772,15 @@ fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
         five_hour: window,
         seven_day: window,
     };
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&["cred"])).unwrap();
+    swap_check_seeing(
+        &no_sessions(),
+        &f.state,
+        &f.profiles,
+        &n("work"),
+        &rl,
+        &cfg(&["cred"]),
+    )
+    .unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.contains_key("work"),
         "the login moved"
@@ -803,7 +831,15 @@ fn crossing_run(spare_org: &str) -> (Fx, Vec<String>, Option<String>) {
         five_hour: window,
         seven_day: window,
     };
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&[])).unwrap();
+    swap_check_seeing(
+        &no_sessions(),
+        &f.state,
+        &f.profiles,
+        &n("work"),
+        &rl,
+        &cfg(&[]),
+    )
+    .unwrap();
     assert_eq!(
         f.state
             .load_ledger()

@@ -249,9 +249,10 @@ jq -r '.git_env_cleared, .run_env_cleared' "$AUTODRIVE_STATE_DIR/qa-evidence.jso
 # none
 ```
 
-`qa_status`, `qa_reason`, `head_sha` and every other field mean what they
-meant before; see the [evidence table](auto-drive-to-merge.md#criterion-1-qa-team-scenarios-by-repository-type)
-in the auto-drive reference.
+`autodrive_qa_evidence.sh` writes these fields into the record at
+`AUTODRIVE_QA_EVIDENCE`, which is the only file holding them; nothing copies
+them from a second file. For `qa_status`, `qa_reason`, `head_sha` and the
+other fields, see [the measured record](auto-drive-qa.md#the-measured-record).
 
 ## The drift guard
 
@@ -346,7 +347,7 @@ bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
 
 - **Not a sandbox.** Clearing the variables stops tests from acting on another
   repository by accident. The suite still runs the branch's code, as
-  described under [Running the suite commands](auto-drive-to-merge.md#running-the-suite-commands).
+  described under [source precedence](auto-drive-qa.md#source-precedence).
 - **Equal trust for `REPO_PATH`.** Step-00 of the merge round may pick the
   tools directory from the PR's own tree. That trusts the tree no more than
   running its QA tool and tests already does, and `$AMPLIHACK_HOME` is

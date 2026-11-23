@@ -242,3 +242,11 @@ fn an_unreadable_or_corrupt_file_does_not_panic_a_reader() {
 fn the_file_name_is_fixed() {
     assert_eq!(RECORD_FILE, "model-tiers.jsonl");
 }
+
+#[test]
+fn max_serialises_as_its_lowercase_word() {
+    let json = serde_json::to_value(Effort::Max).unwrap();
+    assert_eq!(json, serde_json::json!("max"));
+    let back: Effort = serde_json::from_value(json).unwrap();
+    assert_eq!(back, Effort::Max);
+}

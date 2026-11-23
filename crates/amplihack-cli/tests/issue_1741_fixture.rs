@@ -15,6 +15,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+/// The fixture's own `timeout`, first on the run's `PATH`.
+///
+/// The runner starts a bash step that has a limit as `timeout <secs> <bash>
+/// <script>`, and every hook has one. `timeout` is a GNU tool: Linux has it
+/// in `/usr/bin`, stock macOS has none, and there the hook failed to start,
+/// which the runner only warns about (issue #2931). No test of this fixture
+/// is about that limit, so the stand-in drops it and runs the command. The
+/// tests then use a tool they made on every host.
+const TIMEOUT_STAND_IN: &str = "#!/bin/sh\nshift\nexec \"$@\"\n";
+
 pub struct Fixture {
     _tmp: tempfile::TempDir,
     pub root: PathBuf,
@@ -205,8 +215,21 @@ printf '%s\n' '{{"label":"saved-output","enabled":true,"count":7,"empty":null,"i
             quote(&f.root)
         );
         crate::support::exec_stub::write_executable(&f.tool, script, 0o700);
+        let tools = f.tools();
+        fs::create_dir(&tools).unwrap();
+        crate::support::exec_stub::write_executable(
+            &tools.join("timeout"),
+            TIMEOUT_STAND_IN,
+            0o700,
+        );
         f.write_recipe(&f.recipe, &f.workflow());
         f
+    }
+
+    /// The folder of tools the fixture made, first on the run's `PATH`. Not
+    /// `tools`: a test makes a folder of that name for its own stand-ins.
+    fn tools(&self) -> PathBuf {
+        self.root.join("fixture-tools")
     }
 
     pub fn git(&self, args: &[&str]) -> String {
@@ -311,7 +334,10 @@ printf '%s\n' '{{"label":"saved-output","enabled":true,"count":7,"empty":null,"i
             .args(extra)
             .current_dir(repo)
             .env("HOME", &self.home)
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env(
+                "PATH",
+                format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools().display()),
+            )
             .env("AMPLIHACK_HOME", self.home.join(".amplihack"))
             .env("AMPLIHACK_WORK_ROOT", &self.work_root)
             .env("RECIPE_RUNNER_RS_PATH", &self.runner)

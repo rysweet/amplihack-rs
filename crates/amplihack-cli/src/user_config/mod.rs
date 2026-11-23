@@ -20,6 +20,8 @@ pub(crate) mod schema;
 pub(crate) mod schema_governor;
 
 #[cfg(test)]
+mod tests_home_check;
+#[cfg(test)]
 mod tests_load;
 #[cfg(test)]
 mod tests_schema;
@@ -207,11 +209,78 @@ pub(crate) fn guard_forbids(path: &Path) -> bool {
     test_guard() && !under_temp_dir(path)
 }
 
+/// Whether `path` lies under a base the test home check accepts: the temp dir,
+/// read on each call because tests change `TMPDIR`.
+///
+/// The unit tests of this library also accept `/var/tmp` and `/tmp` (issue
+/// #2931): `scratch_base()` puts fixtures there when `TMPDIR` lies inside a
+/// framework install, and neither folder holds a user's configuration. The
+/// shipped binary keeps the temp dir alone, whatever its environment says.
 fn under_temp_dir(path: &Path) -> bool {
-    let temp = std::env::temp_dir();
-    let temp = temp.canonicalize().unwrap_or(temp);
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    path.starts_with(&temp)
+    #[cfg_attr(not(test), allow(unused_mut))]
+    let mut bases = vec![std::env::temp_dir()];
+    #[cfg(test)]
+    bases.extend(test_build_bases().iter().cloned());
+    under_any(path, &bases)
+}
+
+/// `/var/tmp` and `/tmp`, as written and resolved, for [`under_temp_dir`] in
+/// the library's own tests. Computed once: neither changes during a run, and
+/// neither is read from the environment.
+#[cfg(test)]
+fn test_build_bases() -> &'static [PathBuf] {
+    static BASES: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    BASES.get_or_init(|| {
+        let mut bases = Vec::new();
+        for literal in ["/var/tmp", "/tmp"] {
+            let literal = PathBuf::from(literal);
+            if let Ok(canonical) = literal.canonicalize()
+                && canonical != literal
+            {
+                bases.push(canonical);
+            }
+            bases.push(literal);
+        }
+        bases
+    })
+}
+
+/// Whether `path` lies under one of `bases`, compared by component after
+/// links are resolved.
+///
+/// A `..` component is refused before any comparison. The deepest ancestor
+/// that exists is resolved and the rest of the path appended, so a leaf that
+/// is not made yet is judged by where it would be made. An entry that exists
+/// and cannot be resolved (a dangling link, a loop) is refused: where it leads
+/// is unknown.
+pub(crate) fn under_any(path: &Path, bases: &[PathBuf]) -> bool {
+    use std::path::Component;
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return false;
+    }
+    let Some(resolved) = resolve_deepest_existing(path) else {
+        return false;
+    };
+    bases.iter().any(|base| {
+        let base = base.canonicalize().unwrap_or_else(|_| base.clone());
+        resolved.starts_with(&base)
+    })
+}
+
+/// `path` with its deepest existing ancestor resolved, or `None` when an
+/// ancestor exists and cannot be resolved, or none exists.
+fn resolve_deepest_existing(path: &Path) -> Option<PathBuf> {
+    let mut rest = Vec::new();
+    let mut current = path;
+    loop {
+        if current.symlink_metadata().is_ok() {
+            let mut resolved = current.canonicalize().ok()?;
+            resolved.extend(rest.iter().rev());
+            return Some(resolved);
+        }
+        rest.push(current.file_name()?);
+        current = current.parent()?;
+    }
 }
 
 /// Load the config the way this process sees it: `$HOME`, the process

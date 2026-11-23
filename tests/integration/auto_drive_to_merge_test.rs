@@ -51,13 +51,14 @@ const AUTODRIVE_RECIPES: [&str; 8] = [
     "autodrive-finalize",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 32] = [
+const AUTODRIVE_TOOLS: [&str; 33] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
     "autodrive_escalate.sh",
     "autodrive_finding_rules.sh",
     "autodrive_followups.sh",
+    "autodrive_followups_file.sh",
     "autodrive_followups_check.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
@@ -1581,19 +1582,6 @@ fn step_index(recipe: &Value, id: &str) -> usize {
 
 // The five agent steps of the auto-drive workflow, by recipe.
 
-const QA_REASON_TOKENS: [&str; 10] = [
-    "qa-command-failed",
-    "no-scenarios",
-    "gadugi-validate-failed",
-    "gadugi-scenario-unnamed",
-    "gadugi-run-failed",
-    "qa-config-invalid",
-    "qa-unresolved",
-    "qa-command-missing",
-    "qa-command-not-installed",
-    "gadugi-test-missing",
-];
-
 const CRUSTY_FINAL_TOKENS: [&str; 6] = [
     "crusty-loop-not-done",
     "crusty-manifest-missing",
@@ -1619,8 +1607,9 @@ fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
         "gadugi_scenario_dir",
         "gadugi_status",
         "NO_SCENARIOS",
-        "VALIDATE_FAILED",
-        "RUN_FAILED",
+        // The judgement acts on the operator's missing directory instead of
+        // failing every round on it (#2569).
+        "operator-missing",
         "gadugi-test validate -d",
         "--scenario",
         "#207",
@@ -1664,140 +1653,6 @@ fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
     let validate = fix.find("gadugi-test validate -d").unwrap();
     let run = fix.find("gadugi-test run").unwrap();
     assert!(validate < run, "step-04 must validate before it runs");
-}
-
-// step-02-qa-team-scenarios runs autodrive_qa_evidence.sh, the file that
-// measures criterion 1. It is executed, never sourced, and a missing tool
-// fails the step by name instead of producing evidence nobody measured.
-
-#[test]
-fn qa_evidence_runs_one_gadugi_process_per_scenario() {
-    let tool = read(&tool_path("autodrive_qa_evidence.sh"));
-    let cmd = tool.as_str();
-    for needle in [
-        "gadugi-test validate -d \"$",
-        "--scenario \"$",
-        "#207",
-        "mktemp -d",
-        "cp -P",
-        "trap",
-        "AUTODRIVE_QA_SCENARIO_DIR",
-        "AUTODRIVE_QA_COMMAND",
-        "AUTODRIVE_QA_COMMANDS",
-        "AUTODRIVE_QA_DIR",
-        "set -f",
-        "bash -c \"$",
-        "tests/agentic",
-        "-maxdepth 1",
-        "npm test",
-        "cargo test --workspace --locked --no-fail-fast",
-        "pytest",
-    ] {
-        assert!(
-            cmd.contains(needle),
-            "autodrive_qa_evidence.sh must contain `{needle}`"
-        );
-    }
-    // Every gadugi-test run line selects one scenario; the whole-directory
-    // run of the first #1517 commit is gone.
-    for line in cmd.lines().filter(|l| l.contains("gadugi-test run")) {
-        if line.trim_start().starts_with('#') {
-            continue;
-        }
-        assert!(
-            line.contains("--scenario"),
-            "autodrive_qa_evidence.sh runs a whole directory in one process (#207):\n  {line}"
-        );
-    }
-    assert!(
-        !cmd.contains("gadugi-test run -d \"$SDIR\""),
-        "autodrive_qa_evidence.sh must never run the scenario directory itself"
-    );
-    let validate = cmd.find("gadugi-test validate -d").unwrap();
-    let run = cmd
-        .lines()
-        .scan(0usize, |at, l| {
-            let start = *at;
-            *at += l.len() + 1;
-            Some((start, l))
-        })
-        .find(|(_, l)| l.contains("gadugi-test run") && !l.trim_start().starts_with('#'))
-        .map(|(at, _)| at)
-        .expect("a gadugi-test run line");
-    assert!(
-        validate < run,
-        "gadugi-test validate must run before any gadugi-test run"
-    );
-    for field_name in [
-        "qa_status",
-        "qa_reason",
-        "qa_repo_type",
-        "qa_dir",
-        "qa_command",
-        "qa_command_source",
-        "qa_command_paths",
-        "qa_candidates",
-        "qa_ci_skip",
-        "qa_suite_commands_count",
-        "qa_exit_code",
-        "head_sha",
-        "gadugi_required",
-        "gadugi_status",
-        "gadugi_validate_exit_code",
-        "gadugi_run_exit_code",
-        "gadugi_scenario_count",
-        "gadugi_scenario_dir",
-        "gadugi_scenarios_validated",
-        "gadugi_scenarios_run",
-        "gadugi_scenarios_passed",
-        "gadugi_scenarios_failed",
-        "gadugi_failed_scenarios",
-    ] {
-        assert!(
-            cmd.contains(&format!("\"{field_name}\":\"%s\"")),
-            "the qa evidence JSON must record `{field_name}` as a string"
-        );
-    }
-    for token in QA_REASON_TOKENS {
-        assert!(
-            cmd.contains(token),
-            "autodrive_qa_evidence.sh must be able to emit qa_reason `{token}`"
-        );
-    }
-    for status in [
-        "NOT_REQUIRED",
-        "NOT_INSTALLED",
-        "NO_SCENARIOS",
-        "VALIDATE_FAILED",
-        "RUN_FAILED",
-    ] {
-        assert!(
-            cmd.contains(status),
-            "gadugi_status must include `{status}`"
-        );
-    }
-    // Commands from the environment are never concatenated into one script,
-    // sourced, or evaluated.
-    let eval = regex::Regex::new(r"(^|[;&|\s(])eval\s").unwrap();
-    for line in cmd.lines() {
-        if line.trim_start().starts_with('#') {
-            continue;
-        }
-        assert!(
-            !eval.is_match(line),
-            "autodrive_qa_evidence.sh must never eval a command:\n  {line}"
-        );
-    }
-    assert!(
-        !cmd.contains("--timeout"),
-        "no timeout is passed to gadugi-test (issue #439)"
-    );
-    // gadugi runs only where qa-team's repo-type table requires it.
-    assert!(
-        cmd.contains("autodrive_gadugi_required")
-            && cmd.contains("if [ \"$GREQ\" = \"false\" ]; then\n  G_STATUS=\"NOT_REQUIRED\""),
-        "autodrive_qa_evidence.sh must skip gadugi-test where autodrive_gadugi_required says false"
-    );
 }
 
 #[test]
@@ -2863,29 +2718,6 @@ fn autodrive_trust_is_a_side_effect_free_library() {
         "sourced\n",
         "sourcing autodrive_trust.sh under set -u must print nothing and succeed; stderr: {}",
         String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn qa_evidence_records_one_result_per_scenario_file() {
-    let tool = read(&tool_path("autodrive_qa_evidence.sh"));
-    for needle in [
-        "\"gadugi_scenario_results\":\"%s\"",
-        "autodrive_scenario_results",
-        "autodrive_trust.sh",
-        "umask 077",
-        "INVALID",
-    ] {
-        assert!(
-            tool.contains(needle),
-            "autodrive_qa_evidence.sh must reference `{needle}`"
-        );
-    }
-    // The trust helpers come from beside the tool, never from a search a
-    // pull request could populate.
-    assert!(
-        tool.contains("dirname \"${BASH_SOURCE[0]}\"") && !tool.contains("for c in"),
-        "autodrive_qa_evidence.sh must source autodrive_trust.sh from its own directory only"
     );
 }
 

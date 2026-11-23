@@ -45,6 +45,7 @@ use crate::support::auto_drive_light::{
 
 const TOOL: &str = "autodrive_followups.sh";
 const RULES: &str = "autodrive_finding_rules.sh";
+const FILE_TOOL: &str = "autodrive_followups_file.sh";
 const PR: &str = "7";
 const ZW: char = '\u{200b}';
 
@@ -66,6 +67,8 @@ fn skip() -> bool {
 ///   `$FAKE_GH_CREATE_OK` lets only that many creates succeed first.
 /// - `issue comment` prints a comment URL and copies its `--body-file` to
 ///   `$FAKE_LOG/comment-<n>.md`; `$FAKE_GH_COMMENT_EXIT` makes it fail.
+/// - `label create` fails with gh's own message and `$FAKE_GH_LABEL_EXIT` as
+///   the code when that is set (a label the token cannot make); else exit 0.
 /// - anything else  nothing, exit 0.
 const FAKE_GH: &str = r#"#!/usr/bin/env bash
 set -u
@@ -94,6 +97,8 @@ case "${1:-} ${2:-}" in
     fi
     echo x >> "$log/created"
     printf 'https://github.com/o/r/issues/%s\n' "$((101 + made))" ;;
+  "label create")
+    [ -z "${FAKE_GH_LABEL_EXIT:-}" ] || { echo "HTTP 403: Resource not accessible by integration" >&2; exit "$FAKE_GH_LABEL_EXIT"; } ;;
   "issue comment")
     [ -z "${FAKE_GH_COMMENT_EXIT:-}" ] || { echo "HTTP 410: Issue is locked" >&2; exit "$FAKE_GH_COMMENT_EXIT"; }
     printf 'https://github.com/o/r/issues/%s#issuecomment-1\n' "${3:-0}" ;;
@@ -784,8 +789,10 @@ fn classify_refuses_a_state_dir_that_is_not_private() {
     assert_not_minor(&d, &o, "world-writable state dir");
 }
 
+/// #2915: the summary becomes the issue title, so it is kept to GitHub's 256
+/// title characters; evidence stays at 200.
 #[test]
-fn classify_clips_summary_and_evidence_to_200_characters() {
+fn classify_clips_summary_to_256_and_evidence_to_200_characters() {
     if skip() {
         return;
     }
@@ -795,8 +802,50 @@ fn classify_clips_summary_and_evidence_to_200_characters() {
     let o = d.classify(1, &c.to_string());
     assert_eq!(stdout(&o).trim(), "MINOR_ONLY", "{}", show(&o));
     let row = &lines_of(&d.read("crusty-round-1.json.minor"))[0];
-    assert!(row["summary"].as_str().unwrap().chars().count() <= 200);
+    assert_eq!(row["summary"].as_str().unwrap().chars().count(), 256);
     assert!(row["evidence"].as_str().unwrap().chars().count() <= 200);
+}
+
+/// #2915: a summary over 256 characters is stored as its longest run of whole
+/// words, so the title made from it ends on a whole word.
+#[test]
+fn classify_keeps_a_long_summary_to_whole_words() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let long = "plain words ".repeat(30);
+    let long = long.trim_end();
+    let c = json!([{"id": "n-1", "severity": "minor", "summary": long, "evidence": "e"}]);
+    let o = d.classify(1, &c.to_string());
+    assert_eq!(stdout(&o).trim(), "MINOR_ONLY", "{}", show(&o));
+    let row = &lines_of(&d.read("crusty-round-1.json.minor"))[0];
+    let kept = row["summary"].as_str().unwrap();
+    assert!(
+        kept.chars().count() <= 256 && kept.chars().count() > 200,
+        "{kept:?}"
+    );
+    assert!(long.starts_with(kept), "{kept:?}");
+    assert_eq!(
+        &long[kept.len()..kept.len() + 1],
+        " ",
+        "cut at a space: {kept:?}"
+    );
+}
+
+/// #2915: the summary is filed up to 256 characters, so the minor check reads
+/// all of it; a security word past character 200 keeps the round CONCERNS.
+#[test]
+fn classify_scans_the_whole_summary_that_is_filed() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let summary = format!("{} and the token is printed", "word ".repeat(44));
+    assert!(summary.find("token").unwrap() > 200 && summary.chars().count() <= 256);
+    let c = json!([{"id": "n-1", "severity": "minor", "summary": summary, "evidence": "e"}]);
+    let o = d.classify(1, &c.to_string());
+    assert_not_minor(&d, &o, "a security word after character 200 of the summary");
 }
 
 #[test]
@@ -978,19 +1027,27 @@ fn file_creates_one_issue_per_minor_finding_naming_the_task() {
             "explicit --repo from the PR URL: {call:?}"
         );
         let title = arg_after(call, "--title").expect("--title");
-        assert!(
-            title.starts_with("Follow-up (#1979): "),
-            "title names the task: {title}"
+        assert_eq!(
+            title, summary,
+            "title is the finding in plain words, no task id: {title}"
         );
-        assert!(title.contains(summary), "{title}");
-        assert!(title.chars().count() <= 80, "title clipped to 80: {title}");
+        assert!(!title.contains("#1979"), "no task id in the title: {title}");
+        assert!(
+            title.chars().count() <= 256,
+            "title within GitHub's 256: {title}"
+        );
         assert!(
             call.iter().any(|a| a == "--body-file"),
             "body goes through --body-file: {call:?}"
         );
+        assert_eq!(
+            arg_after(call, "--label"),
+            Some("follow-up"),
+            "every follow-up carries the follow-up label: {call:?}"
+        );
         assert!(
-            !call.iter().any(|a| a == "--label" || a == "--assignee"),
-            "no labels or assignees: {call:?}"
+            !call.iter().any(|a| a == "--assignee"),
+            "no assignees: {call:?}"
         );
     }
     let bodies = d.bodies();
@@ -1207,8 +1264,13 @@ fn file_task_id_forms_and_fallbacks() {
         );
         let title = arg_after(&d.creates()[0], "--title").unwrap().to_string();
         assert!(
-            title.starts_with(&format!("Follow-up ({want}): ")),
-            "{title}"
+            !title.contains(want) && !title.starts_with("Follow-up"),
+            "the task id stays out of the title: {title}"
+        );
+        let body = &d.bodies()[0];
+        assert!(
+            body.contains(&format!("Task: {want}")),
+            "the task id goes in the body: {body}"
         );
     }
 }
@@ -1315,11 +1377,7 @@ fn file_title_keeps_plain_characters_as_one_argument() {
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let call = &d.creates()[0];
     let title = arg_after(call, "--title").unwrap();
-    assert_eq!(
-        title,
-        format!("Follow-up (#1979): {summary}"),
-        "title is plain text, one argv element"
-    );
+    assert_eq!(title, summary, "title is plain text, one argv element");
     assert!(
         !title.contains("&amp;") && !title.contains("&#x"),
         "no HTML entities in the title: {title}"
@@ -1340,8 +1398,8 @@ fn file_title_breaks_mentions_and_issue_references() {
     let o = d.file(&["--task-id", "1979"], &[]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let title = arg_after(&d.creates()[0], "--title").unwrap().to_string();
-    assert!(title.starts_with("Follow-up (#1979): "), "{title}");
-    let summary = &title["Follow-up (#1979): ".len()..];
+    assert!(!title.contains("#1979"), "{title}");
+    let summary = title.as_str();
     for raw in ["@user", "#1", "GH-4"] {
         assert!(!summary.contains(raw), "{raw} left unbroken: {title}");
     }
@@ -1349,6 +1407,365 @@ fn file_title_breaks_mentions_and_issue_references() {
     assert!(
         !title.contains("&amp;") && !title.contains("&#x"),
         "{title}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #2915: the follow-up label, whole plain-words titles, the body's context
+// ---------------------------------------------------------------------------
+
+fn label_creates(d: &Drive) -> Vec<Vec<String>> {
+    d.gh_calls()
+        .into_iter()
+        .filter(|c| {
+            c.first().map(String::as_str) == Some("label")
+                && c.get(1).map(String::as_str) == Some("create")
+        })
+        .collect()
+}
+
+#[test]
+fn file_labels_every_follow_up() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let creates = d.creates();
+    assert_eq!(creates.len(), 3);
+    for call in &creates {
+        let labels: Vec<_> = call.iter().filter(|a| *a == "--label").collect();
+        assert_eq!(labels.len(), 1, "exactly one --label: {call:?}");
+        assert_eq!(arg_after(call, "--label"), Some("follow-up"), "{call:?}");
+    }
+}
+
+/// The tool never probes for the label, so a repository without it looks the
+/// same as one with it. What is observable is the order: the label is made
+/// before the first issue is filed.
+#[test]
+fn file_creates_the_follow_up_label_before_the_first_issue() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let calls = d.gh_calls();
+    let label_at = calls
+        .iter()
+        .position(|c| c.starts_with(&["label".into(), "create".into(), "follow-up".into()]))
+        .unwrap_or_else(|| panic!("no `label create follow-up` call: {calls:?}"));
+    let issue_at = calls
+        .iter()
+        .position(|c| c.starts_with(&["issue".into(), "create".into()]))
+        .expect("an issue create");
+    assert!(label_at < issue_at, "label before first issue: {calls:?}");
+    let labels = label_creates(&d);
+    assert_eq!(labels.len(), 1, "once per run, not per finding: {labels:?}");
+    assert_eq!(arg_after(&labels[0], "--repo"), Some("o/r"), "{labels:?}");
+    assert!(labels[0].iter().any(|a| a == "--force"), "{labels:?}");
+    assert!(
+        arg_after(&labels[0], "--color").is_some_and(|c| !c.is_empty()),
+        "a fixed colour, so --force does not recolour at random: {labels:?}"
+    );
+    assert!(
+        arg_after(&labels[0], "--description").is_some_and(|c| !c.is_empty()),
+        "{labels:?}"
+    );
+    assert!(
+        stderr(&o).contains("follow-up") && stderr(&o).contains("o/r"),
+        "the step says the label is present: {}",
+        show(&o)
+    );
+}
+
+#[test]
+fn file_makes_no_label_call_when_there_is_nothing_to_file() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    assert_eq!(d.file(&["--task-id", "1979"], &[]).status.code(), Some(0));
+    assert_eq!(label_creates(&d).len(), 1);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(label_creates(&d).len(), 1, "a rerun adds no label call");
+    let e = Drive::new();
+    e.set(&[]);
+    assert_eq!(e.file(&[], &[]).status.code(), Some(0));
+    assert!(label_creates(&e).is_empty(), "{:?}", e.gh_calls());
+}
+
+/// A label gh cannot make is logged with gh's message; the drive goes on to
+/// the create, which is where a missing label would surface.
+#[test]
+fn file_continues_when_the_label_call_fails_and_logs_gh_message() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three()[..1]);
+    let o = d.file(&["--task-id", "1979"], &[("FAKE_GH_LABEL_EXIT", "1")]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(
+        stderr(&o).contains("Resource not accessible"),
+        "gh's own message reaches the log: {}",
+        show(&o)
+    );
+    assert_eq!(d.creates().len(), 1, "the create still runs");
+    assert_eq!(arg_after(&d.creates()[0], "--label"), Some("follow-up"));
+}
+
+#[test]
+fn file_with_label_and_create_both_failing_reports_the_create_failure() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three()[..1]);
+    let o = d.file(
+        &["--task-id", "1979"],
+        &[("FAKE_GH_LABEL_EXIT", "1"), ("FAKE_GH_CREATE_EXIT", "1")],
+    );
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert_eq!(d.read("followups.error").trim(), "followup-create-failed");
+    assert!(d.tsv_rows().is_empty(), "nothing recorded as filed");
+}
+
+/// Contrived on purpose: a summary is stored at no more than 256 characters,
+/// so a title only passes 256 when `break_refs` adds a zero-width space after
+/// each `#N`. Sixty-six `#1 ` tokens are 198 characters and become 264.
+#[test]
+fn file_title_keeps_whole_words_when_break_refs_inflates_it() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let summary = "#1 ".repeat(66);
+    d.minor_drive(&[("naming-1", summary.trim_end(), "e")]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let title = arg_after(&d.creates()[0], "--title").unwrap().to_string();
+    let n = title.chars().count();
+    assert!(n <= 256, "title within GitHub's limit, got {n}");
+    assert!(n > 200, "shortened, not emptied: {n}");
+    assert!(
+        title.ends_with(&format!("#{ZW}1")),
+        "whole token last: {title:?}"
+    );
+    assert!(!title.ends_with(char::is_whitespace), "{title:?}");
+    assert!(!title.contains('…') && !title.ends_with("..."), "{title:?}");
+    for tok in title.split(' ') {
+        assert_eq!(tok, format!("#{ZW}1"), "every token whole: {title:?}");
+    }
+}
+
+/// Contrived on purpose, like the test above: only `break_refs` inflation
+/// takes a summary past 256 characters. "abcd", sixty-three ` #1` tokens and
+/// " tail" are 198 characters and become 261, with a space at character 257,
+/// so the first 256 characters already end on a whole word and keep it.
+#[test]
+fn file_title_keeps_the_last_word_when_the_cut_falls_on_a_space() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let summary = format!("abcd{} tail", " #1".repeat(63));
+    assert_eq!(summary.chars().count(), 198);
+    d.minor_drive(&[("naming-1", summary.as_str(), "e")]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let title = arg_after(&d.creates()[0], "--title").unwrap().to_string();
+    let want = format!("abcd{}", format!(" #{ZW}1").repeat(63));
+    assert_eq!(title, want, "the 63rd token is kept");
+    assert_eq!(title.chars().count(), 256);
+}
+
+#[test]
+fn file_title_passes_an_ordinary_long_summary_through_whole() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let summary = "word ".repeat(40);
+    let summary = summary.trim_end();
+    assert_eq!(summary.chars().count(), 199);
+    d.minor_drive(&[("naming-1", summary, "e")]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(arg_after(&d.creates()[0], "--title"), Some(summary));
+}
+
+#[test]
+fn file_title_is_never_cut_at_eighty() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let summary = "Rename the temporary record variable in the last round helper so that it says what it holds";
+    assert!(summary.chars().count() > 80);
+    d.minor_drive(&[("naming-1", summary, "e")]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(arg_after(&d.creates()[0], "--title"), Some(summary));
+}
+
+/// #2915: a plain-words finding longer than 256 characters, from the crusty
+/// review through classify and collect, is filed under its longest run of
+/// whole words; the 200 clip that once cut it mid-word is gone.
+#[test]
+fn file_title_of_a_long_reviewed_finding_ends_on_a_whole_word() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let long = "The helper that reads the last crusty round from the manifest repeats the same file and link tests that the collect command already makes, so a reader has to look in both places to learn which rule applies when the record is missing or cannot be read at filing time";
+    assert!(long.chars().count() > 256);
+    let c = json!([{"id": "naming-1", "severity": "minor", "summary": long, "evidence": "e"}]);
+    assert_eq!(stdout(&d.classify(1, &c.to_string())).trim(), "MINOR_ONLY");
+    d.loop_writes_round(1, "MINOR_ONLY", 1);
+    assert_eq!(d.collect().status.code(), Some(0));
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let title = arg_after(&d.creates()[0], "--title").unwrap().to_string();
+    assert!(
+        title.chars().count() > 200 && title.chars().count() <= 256,
+        "{title}"
+    );
+    assert!(long.starts_with(&title), "{title}");
+    assert_eq!(
+        &long[title.len()..title.len() + 1],
+        " ",
+        "whole words: {title}"
+    );
+}
+
+#[test]
+fn file_body_names_the_task_the_pr_and_the_round() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three()[..1]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let b = &d.bodies()[0];
+    assert!(b.contains("Task: #1979"), "{b}");
+    assert!(b.contains("PR #7"), "{b}");
+    assert!(b.contains("Crusty round: round-1"), "{b}");
+}
+
+#[test]
+fn file_body_says_the_round_is_not_recorded_when_there_is_no_manifest() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor(1, &three()[..1]);
+    d.set(&three()[..1]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let b = &d.bodies()[0];
+    assert!(b.contains("Crusty round: not recorded"), "{b}");
+}
+
+#[test]
+fn file_title_falls_back_when_the_summary_is_empty() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&[("naming-1", "", "e"), ("style-3", "   ", "e")]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let titles: Vec<_> = d
+        .creates()
+        .iter()
+        .map(|c| arg_after(c, "--title").unwrap().to_string())
+        .collect();
+    assert_eq!(
+        titles,
+        vec![
+            "Minor crusty finding naming-1",
+            "Minor crusty finding style-3"
+        ]
+    );
+    assert!(titles.iter().all(|t| !t.contains("1979")));
+}
+
+/// Known limit: the empty check uses `[[:space:]]`, so a summary of only
+/// zero-width characters is not caught. The create is still made.
+#[test]
+fn file_title_with_only_zero_width_characters_is_a_known_limit() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let zw = ZW.to_string().repeat(3);
+    d.minor_drive(&[("naming-1", &zw, "e")]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(d.creates().len(), 1);
+}
+
+#[test]
+fn file_title_with_an_option_like_summary_is_one_argument() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let summary = "--label evil --assignee someone";
+    d.minor_drive(&[("naming-1", summary, "e")]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let call = &d.creates()[0];
+    assert_eq!(arg_after(call, "--title"), Some(summary), "{call:?}");
+    assert_eq!(
+        call.iter().filter(|a| *a == "--label").count(),
+        1,
+        "{call:?}"
+    );
+    assert!(!call.iter().any(|a| a == "--assignee"), "{call:?}");
+    assert!(!call.iter().any(|a| a == "evil"), "{call:?}");
+    let call = &d.creates()[0];
+    let dash = Drive::new();
+    dash.minor_drive(&[("naming-1", "-x leading dash", "e")]);
+    assert_eq!(
+        dash.file(&["--task-id", "1979"], &[]).status.code(),
+        Some(0)
+    );
+    assert_eq!(
+        arg_after(&dash.creates()[0], "--title"),
+        Some("-x leading dash"),
+        "{call:?}"
+    );
+}
+
+#[test]
+fn file_title_breaks_mentions_and_references_at_the_start() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&[
+        ("naming-1", "@user please rename this", "e"),
+        ("style-3", "#12 is the wrong name", "e"),
+    ]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let c = d.creates();
+    assert_eq!(
+        arg_after(&c[0], "--title"),
+        Some(format!("@{ZW}user please rename this").as_str())
+    );
+    assert_eq!(
+        arg_after(&c[1], "--title"),
+        Some(format!("#{ZW}12 is the wrong name").as_str())
     );
 }
 
@@ -1976,6 +2393,8 @@ fn light_recipe_copies_the_shared_rules_file() {
 fn every_touched_recipe_and_tool_stays_within_400_lines() {
     for f in [
         "amplifier-bundle/tools/autodrive_followups.sh",
+        "amplifier-bundle/tools/autodrive_followups_file.sh",
+        "amplifier-bundle/tools/autodrive_followups_check.sh",
         "amplifier-bundle/tools/autodrive_finding_rules.sh",
         "amplifier-bundle/tools/autodrive_loop.sh",
         "amplifier-bundle/tools/autodrive_loop_record.sh",
@@ -1999,7 +2418,11 @@ fn every_touched_recipe_and_tool_stays_within_400_lines() {
 
 #[test]
 fn no_timeouts_or_numeric_caps_in_the_new_tool() {
-    let body = read(&format!("amplifier-bundle/tools/{TOOL}"));
+    let body = [TOOL, FILE_TOOL, "autodrive_followups_check.sh", RULES]
+        .iter()
+        .map(|f| read(&format!("amplifier-bundle/tools/{f}")))
+        .collect::<Vec<_>>()
+        .join("\n");
     for line in body.lines().filter(|l| !l.trim_start().starts_with('#')) {
         assert!(!line.contains("timeout "), "no timeout: {line}");
         assert!(
@@ -2219,6 +2642,10 @@ fn check_and_gate_are_split_out_and_refuse_without_their_file() {
     assert!(!t.contains("cmd_gate() {"), "cmd_gate is not in {TOOL}");
     let c = read("amplifier-bundle/tools/autodrive_followups_check.sh");
     assert!(c.contains("cmd_check() {") && c.contains("cmd_gate() {"));
+    // #2915: `file` outgrew the tool and moved the same way.
+    assert!(!t.contains("cmd_file() {"), "cmd_file is not in {TOOL}");
+    let f = read(&format!("amplifier-bundle/tools/{FILE_TOOL}"));
+    assert!(f.contains("cmd_file() {") && f.contains("post_parent() {"));
     let d = Drive::new();
     let copy = d.tmp.path().join("tools-copy");
     std::fs::create_dir_all(&copy).unwrap();
@@ -2253,6 +2680,51 @@ fn check_and_gate_are_split_out_and_refuse_without_their_file() {
         );
         assert!(!stdout(&o).contains("followups-ok"), "{cmd}: {}", show(&o));
     }
+}
+
+/// #2915: `file` outgrew the tool and moved beside it the same way. The tool
+/// refuses the command when that file is missing, and files nothing.
+#[test]
+fn file_is_split_out_and_refuses_without_its_file() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    let copy = d.tmp.path().join("tools-copy");
+    std::fs::create_dir_all(&copy).unwrap();
+    for f in [
+        TOOL,
+        RULES,
+        "autodrive_state.sh",
+        "workflow_issue_tracking.sh",
+    ] {
+        let src = tools_dir().join(f);
+        if src.exists() {
+            std::fs::copy(&src, copy.join(f)).unwrap();
+        }
+    }
+    let st = d.state.clone();
+    let tool = copy.join(TOOL);
+    let args: Vec<&OsStr> = vec![
+        tool.as_os_str(),
+        OsStr::new("file"),
+        OsStr::new("--state-dir"),
+        st.as_os_str(),
+        OsStr::new("--pr"),
+        OsStr::new(PR),
+        OsStr::new("--task-id"),
+        OsStr::new("1979"),
+    ];
+    let o = d.bash(None, &args, &[], "");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert!(
+        stderr(&o).contains("autodrive_followups_file.sh is missing beside it"),
+        "{}",
+        show(&o)
+    );
+    assert!(d.creates().is_empty(), "nothing filed: {:?}", d.gh_calls());
+    assert!(d.tsv_rows().is_empty());
 }
 
 // ===========================================================================
@@ -2405,4 +2877,136 @@ fn a_task_that_is_not_an_issue_gets_no_comment() {
     );
     assert!(!d.p("followups.parent").exists());
     assert_eq!(stdout(&d.check()).trim(), "followups-ok 3");
+}
+
+// ── break_refs on BSD and GNU sed (issue #2931, GNUSED) ─────────────────────
+//
+// `break_refs` inserts a zero-width space after `#` before a digit, after
+// `github.com/` in any letter case, and after `GH-` before a digit when the
+// `GH` starts a word. GNU sed's `\b` and the `I` flag are not in BSD sed
+// (macOS), which read `\b` as a literal backspace. The rules must give the
+// same text with either sed, and a sed that fails must stop the output: a
+// reference that was not broken would link or notify on GitHub.
+
+/// Runs `break_refs "$1"` from the shared rules file through the one
+/// isolated bash of this file. `extra_path` goes in front of its `PATH`. The
+/// locale is UTF-8, as a user's is, so the function's own `LC_ALL=C` on the
+/// `sed` call is what the cases with bytes outside ASCII rest on.
+fn break_refs_with(input: &OsStr, extra_path: Option<&Path>) -> Output {
+    let d = Drive::new();
+    let rules = tools_dir().join(RULES);
+    let path = extra_path.map(|dir| {
+        std::env::join_paths(
+            std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&d.path_env())),
+        )
+        .expect("a PATH with the stub folder first")
+    });
+    let mut env: Vec<(&str, &OsStr)> = vec![("LANG", OsStr::new("en_US.UTF-8"))];
+    if let Some(path) = &path {
+        env.push(("PATH", path.as_os_str()));
+    }
+    d.bash(
+        Some("source \"$1\" && break_refs \"$2\""),
+        &[rules.as_os_str(), input],
+        &env,
+        "",
+    )
+}
+
+fn broken(input: &str) -> String {
+    let o = break_refs_with(OsStr::new(input), None);
+    assert!(o.status.success(), "{input:?}: {}", show(&o));
+    String::from_utf8(o.stdout).expect("utf-8 output")
+}
+
+#[test]
+fn break_refs_breaks_each_reference_form() {
+    let cases: [(&str, String); 13] = [
+        ("see #12", format!("see #{ZW}12")),
+        ("#7 and #8", format!("#{ZW}7 and #{ZW}8")),
+        ("a # b", "a # b".to_string()),
+        (
+            "https://github.com/o/r",
+            format!("https://github.com/{ZW}o/r"),
+        ),
+        (
+            "GitHub.com/o and GITHUB.COM/p",
+            format!("GitHub.com/{ZW}o and GITHUB.COM/{ZW}p"),
+        ),
+        ("see GH-45", format!("see GH-{ZW}45")),
+        ("gh-7 and Gh-12", format!("gh-{ZW}7 and Gh-{ZW}12")),
+        (
+            "GH-12 at the line start",
+            format!("GH-{ZW}12 at the line start"),
+        ),
+        ("(GH-3)", format!("(GH-{ZW}3)")),
+        ("fixes: GH-1,GH-2", format!("fixes: GH-{ZW}1,GH-{ZW}2")),
+        ("GH-1 GH-2", format!("GH-{ZW}1 GH-{ZW}2")),
+        (
+            "GH-x is not a reference",
+            "GH-x is not a reference".to_string(),
+        ),
+        ("@octocat", format!("@{ZW}octocat")),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(broken(input), expected, "{input:?}");
+    }
+}
+
+#[test]
+fn break_refs_leaves_gh_inside_a_longer_word_alone() {
+    for input in ["GHz-1", "xGH-1", "9GH-1", "_GH-1", "ghost-1", "NGH-22"] {
+        assert_eq!(broken(input), input, "{input:?}");
+    }
+}
+
+/// A non-ASCII neighbour is not a word character to a portable sed, so the
+/// reference is broken: the safe side. The test pins that the link is broken,
+/// not that the neighbour counts as a word.
+#[test]
+fn break_refs_breaks_a_reference_beside_a_non_ascii_letter() {
+    let out = broken("café GH-5");
+    assert!(out.contains(&format!("GH-{ZW}5")), "{out:?}");
+    let out = broken("éGH-5");
+    assert!(out.contains(&format!("GH-{ZW}5")), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn break_refs_survives_input_that_is_not_utf_8() {
+    use std::os::unix::ffi::OsStrExt;
+    let o = break_refs_with(OsStr::from_bytes(b"bad \xff GH-9 #4"), None);
+    assert!(o.status.success(), "{}", show(&o));
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(text.contains(&format!("GH-{ZW}9")), "{text:?}");
+    assert!(text.contains(&format!("#{ZW}4")), "{text:?}");
+}
+
+/// A sed that exits non-zero must stop the output and fail the function.
+#[cfg(unix)]
+#[test]
+fn break_refs_fails_closed_when_sed_fails() {
+    let stubs = tempfile::tempdir().unwrap();
+    crate::support::exec_stub::write_executable(
+        &stubs.path().join("sed"),
+        "#!/bin/sh\nprintf 'half-done GH-1'\nexit 1\n",
+        0o755,
+    );
+    let o = break_refs_with(OsStr::new("see GH-1"), Some(stubs.path()));
+    assert!(!o.status.success(), "{}", show(&o));
+    assert!(
+        o.stdout.is_empty(),
+        "no text may leave when sed failed: {}",
+        show(&o)
+    );
+}
+
+/// The program text of every sed call is fixed: input only ever arrives as
+/// data (issue #2931 S12).
+#[test]
+fn break_refs_does_not_put_its_input_in_the_sed_program() {
+    let hostile = "s/x/y/e;w /dev/null\n#1 $(id) `id`";
+    let out = broken(hostile);
+    assert!(out.contains(&format!("#{ZW}1")), "{out:?}");
+    assert!(out.contains("$(id) `id`"), "{out:?}");
 }

@@ -508,13 +508,26 @@ fn a_decision_that_keeps_naming_an_unknown_target_is_an_error_within_the_cap() {
 
 static SLOW_LEFT: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
 
-/// A slow endpoint: each read takes 200 ms and finds the login full.
+/// The time the slow endpoint's reads have taken so far. `settle_timed` is
+/// told this figure in place of the clock's.
+static SLOW_SPENT: Mutex<Duration> = Mutex::new(Duration::ZERO);
+
+/// A slow endpoint: each read takes 200 ms and finds the login full. It
+/// takes them on `SLOW_SPENT`, not on the clock, so the test waits for
+/// nothing and a loaded host cannot make a read take longer (issue #3008).
 fn slow_full(_: &Ctx, name: &ProfileName, left: Duration) -> Probed {
     SLOW_LEFT.lock().unwrap().push((name.to_string(), left));
-    std::thread::sleep(Duration::from_millis(200));
+    *SLOW_SPENT.lock().unwrap() += Duration::from_millis(200);
     exh(43.0, 100.0)
 }
 
+/// The rule: all re-reads of one cycle share one time limit. With a limit of
+/// 300 ms and reads of 200 ms, the first read is given the whole limit, the
+/// second exactly the 100 ms the first left, and the third is never started.
+///
+/// This test used to sleep 200 ms inside a real 300 ms limit and failed when
+/// the sleep overran on a loaded host (issue #3008). `settle_timed` takes
+/// the time spent as an argument, so the figures below are exact.
 #[test]
 fn all_rereads_of_one_gate_share_one_time_limit() {
     let e = env();
@@ -540,9 +553,14 @@ fn all_rereads_of_one_gate_share_one_time_limit() {
         m.decision
     );
     let budget = Duration::from_millis(300);
-    let got = fresh::settle(&c, m, Reread::Allowed, budget, |live, probes, at| {
-        decide_measured(&c, &s, live, probes, at)
-    })
+    let got = fresh::settle_timed(
+        &c,
+        m,
+        Reread::Allowed,
+        budget,
+        || *SLOW_SPENT.lock().unwrap(),
+        |live, probes, at| decide_measured(&c, &s, live, probes, at),
+    )
     .unwrap();
     let left = SLOW_LEFT.lock().unwrap().clone();
     assert_eq!(
@@ -550,9 +568,10 @@ fn all_rereads_of_one_gate_share_one_time_limit() {
         2,
         "the third read is never started; the limit is spent: {left:?}"
     );
-    assert!(left[0].1 <= budget, "the first read gets at most the limit");
-    assert!(
-        left[1].1 < Duration::from_millis(150),
+    assert_eq!(left[0].1, budget, "the first read gets the whole limit");
+    assert_eq!(
+        left[1].1,
+        Duration::from_millis(100),
         "the second read gets only what the first left, not a new deadline: {left:?}"
     );
     let third = got

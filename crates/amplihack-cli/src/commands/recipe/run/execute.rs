@@ -775,53 +775,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // value it started with. Taken here, after the depth guard and before the
     // bundle, spawn and every step.
     let checkout_bare = super::checkout_bare::CheckoutBare::snapshot(working_dir);
-    let launch = if let Some(auth) = &mut authorization {
-        let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
-        let home = env
-            .var("AMPLIHACK_HOME")
-            .context("trusted AMPLIHACK_HOME missing for auto-drive")?;
-        Some(trusted::LaunchBundle::prepare(Path::new(home), auth)?)
-    } else {
-        None
-    };
-    let pinned_recipe = launch.as_ref().map(|l| {
-        l.home
-            .join("amplifier-bundle/recipes")
-            .join(format!("{invocation_name}.yaml"))
-    });
-    let recipe_path = pinned_recipe.as_deref().unwrap_or(recipe_path);
-    let pinned_search = launch
-        .as_ref()
-        .map(|l| vec![l.home.join("amplifier-bundle/recipes")]);
-    let search_dirs = pinned_search.as_deref().unwrap_or(search_dirs);
-    // Expand auto-drive defaults only after trusted entrypoint selection.
-    // Neither requested recipe defaults nor inferred values grant authority.
-    let (mut invocation_context, inferred) = if launch.is_some() {
-        let recipe = super::parse_recipe_from_path(recipe_path)?;
-        let (mut expanded, inferred) =
-            super::infer_missing_context(&recipe.context, explicit_inputs);
-        // Entry resolved an explicitly selected repo_path against the caller's
-        // directory. Keep that derived path when expanding the trusted recipe,
-        // while authorization continues to read the untouched operator inputs.
-        if explicit_inputs.contains_key("repo_path")
-            && let Some(repo) = context.get("repo_path")
-        {
-            expanded.insert("repo_path".into(), repo.clone());
-        }
-        // Recovery identity is normalised on this derived copy only, never on
-        // `explicit_inputs`, which stays the raw source of authority.
-        super::recovery::normalize(&mut expanded, working_dir);
-        (expanded, inferred)
-    } else {
-        (context.clone(), Vec::new())
-    };
-    if verbose && !inferred.is_empty() {
-        eprintln!(
-            "[context] Inferred {} variable(s): {}",
-            inferred.len(),
-            inferred.join(", ")
-        );
-    }
     // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
     // point: setup, a running attempt, or retry backoff.
     super::stop_signal::arm();
@@ -832,6 +785,8 @@ pub(super) fn execute_recipe_via_rust_fresh(
     let binary = super::binary::find_recipe_runner_binary()?
         .canonicalize()
         .context("resolve recipe runner before changing its launch directory")?;
+    // The trusted launch copy below does not change a recipe's `name:`, so
+    // the name read from the requested recipe is the pinned copy's name too.
     let recipe_name = recipe_name_for_correlation(recipe_path);
     // Issue #2582: the report is kept, so the context transport can check
     // for `context_file_v1` without a second probe.
@@ -845,7 +800,12 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 binary.as_path(),
             );
             correlation.emit_early();
-            eprintln!("amplihack: runner capability check failed: {error}");
+            // The code first, unchanged, then why the probe failed (issue
+            // #2931): a step name and an OS error, never runner output.
+            eprintln!(
+                "amplihack: runner capability check failed: {error}{}",
+                crate::runner_validation::cause_suffix(&error)
+            );
             return Err(fail_with_final_record(
                 &correlation,
                 RecipeRunFinalStatus::SpawnFailure,
@@ -878,6 +838,10 @@ pub(super) fn execute_recipe_via_rust_fresh(
             .build()
             .remove("AMPLIHACK_HOME"),
     };
+    // Issue #3049: the stage-changes helper this run's shell steps source,
+    // resolved once from the release the bundle link names now, so an upgrade
+    // that moves the link mid-run (or before a retry) does not change it.
+    let stage_helper_pin = stage_helper_pin(run_settings.amplihack_home.as_deref());
 
     // Issue #1808: the run's folder under the work root holds run.json and
     // owned-paths; its runtime/ (TMPDIR, TMP, TEMP and artifacts) is removed
@@ -887,6 +851,75 @@ pub(super) fn execute_recipe_via_rust_fresh(
     } else {
         crate::commands::cleanup::run_dir::RunWorkspace::begin_durable(&recipe_name, working_dir)?
     });
+    // #2959: the trusted launch copy, and with it the invocation record, is
+    // made inside this run's own durable folder (`runs/<id>/`), beside the
+    // state directory the runner binds below, rather than in a loose TMPDIR
+    // folder that the run does not own. Cleanup keeps a live run's folder,
+    // so the record lasts as long as the drive; it is removed when this
+    // owner ends. The bundle is prepared here, once the run folder exists and
+    // before admission, because `prepare` writes the record's path into the
+    // pinned recipes. A dry run has no durable folder and never merges, so its
+    // copy stays under the inherited TMPDIR as before.
+    let launch = match authorization.as_mut().map(|auth| {
+        let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
+        let home = env
+            .var("AMPLIHACK_HOME")
+            .context("trusted AMPLIHACK_HOME missing for auto-drive")?;
+        let parent = match workspace.borrow().durable_run_dir()? {
+            Some(run_dir) => run_dir.to_path_buf(),
+            None => std::env::temp_dir(),
+        };
+        trusted::LaunchBundle::prepare(Path::new(home), &parent, auth)
+    }) {
+        None => None,
+        Some(Ok(launch)) => Some(launch),
+        Some(Err(error)) => {
+            return fail_before_execution(workspace.into_inner(), None, error, dry_run);
+        }
+    };
+    let pinned_recipe = launch.as_ref().map(|l| {
+        l.home
+            .join("amplifier-bundle/recipes")
+            .join(format!("{invocation_name}.yaml"))
+    });
+    let recipe_path = pinned_recipe.as_deref().unwrap_or(recipe_path);
+    let pinned_search = launch
+        .as_ref()
+        .map(|l| vec![l.home.join("amplifier-bundle/recipes")]);
+    let search_dirs = pinned_search.as_deref().unwrap_or(search_dirs);
+    // Expand auto-drive defaults only after trusted entrypoint selection.
+    // Neither requested recipe defaults nor inferred values grant authority.
+    let (mut invocation_context, inferred) = if launch.is_some() {
+        let recipe = match super::parse_recipe_from_path(recipe_path) {
+            Ok(recipe) => recipe,
+            Err(error) => {
+                return fail_before_execution(workspace.into_inner(), None, error, dry_run);
+            }
+        };
+        let (mut expanded, inferred) =
+            super::infer_missing_context(&recipe.context, explicit_inputs);
+        // Entry resolved an explicitly selected repo_path against the caller's
+        // directory. Keep that derived path when expanding the trusted recipe,
+        // while authorization continues to read the untouched operator inputs.
+        if explicit_inputs.contains_key("repo_path")
+            && let Some(repo) = context.get("repo_path")
+        {
+            expanded.insert("repo_path".into(), repo.clone());
+        }
+        // Recovery identity is normalised on this derived copy only, never on
+        // `explicit_inputs`, which stays the raw source of authority.
+        super::recovery::normalize(&mut expanded, working_dir);
+        (expanded, inferred)
+    } else {
+        (context.clone(), Vec::new())
+    };
+    if verbose && !inferred.is_empty() {
+        eprintln!(
+            "[context] Inferred {} variable(s): {}",
+            inferred.len(),
+            inferred.join(", ")
+        );
+    }
     let delegated = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
     let admission = if !dry_run && delegated.is_none() {
         // #2329: whether auto-drive authority applies is part of the resume
@@ -1155,7 +1188,10 @@ pub(super) fn execute_recipe_via_rust_fresh(
                     .set("AMPLIHACK_BIN", executable.to_string_lossy().into_owned())
                     .set("AMPLIHACK_HOME", launch.home.to_string_lossy().into_owned())
             }
-            None => env_builder,
+            None => match &stage_helper_pin {
+                Some(pin) => env_builder.set(STAGE_HELPER_PIN_ENV, pin.clone()),
+                None => env_builder,
+            },
         };
         // Issue #439: propagate --step-timeout as AMPLIHACK_STEP_TIMEOUT env var.
         // When Some(n), the child process sees AMPLIHACK_STEP_TIMEOUT=n (0 = disable).
@@ -2709,4 +2745,33 @@ fn stage_step_tier_overrides(
             None
         }
     }
+}
+
+/// Variable the recipes read first when looking for `workflow_stage_changes.sh`.
+const STAGE_HELPER_PIN_ENV: &str = "WORKFLOW_STAGE_CHANGES_HELPER";
+
+/// Issue #3049: the release copy of `workflow_stage_changes.sh` that the
+/// `amplifier-bundle` link under `home` names at run start, in the
+/// non-canonical `<home>/releases/<name>/...` form that release clean-up
+/// matches against a live process's environment.
+///
+/// `None` when the parent environment already sets the variable (a nested run
+/// keeps its parent's release), when the bundle is not reached through a
+/// release (a development checkout), when the release has no helper, or when
+/// the path is not UTF-8. Best effort: the steps' own search applies then.
+fn stage_helper_pin(home: Option<&str>) -> Option<String> {
+    if std::env::var_os(STAGE_HELPER_PIN_ENV).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    let home = Path::new(home?);
+    let releases = crate::commands::install::release_layout::releases_dir(home);
+    let root = crate::commands::install::release_layout::release_root_of(
+        &releases,
+        &home.join("amplifier-bundle"),
+    )?;
+    let helper = root.join("amplifier-bundle/tools/workflow_stage_changes.sh");
+    if !helper.is_file() {
+        return None;
+    }
+    helper.to_str().map(str::to_owned)
 }

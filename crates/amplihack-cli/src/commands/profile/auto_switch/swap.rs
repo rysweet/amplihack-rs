@@ -6,7 +6,7 @@
 use super::candidate::{self, Pool};
 use super::config::Config;
 use super::fsx;
-use super::liveness::{self, Liveness};
+use super::liveness::{self, Liveness, SessionView};
 use super::mv::{self, MoveError, abort_point};
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
@@ -262,6 +262,16 @@ pub fn recover(state: &State) -> Result<Option<Liveness>, ProfileError> {
 
 /// `recover`, plus one line for each thing it did, for `repair`.
 pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
+    recover_seeing(&liveness::HostSessions, state)
+}
+
+/// [`recover_reporting`] with the view of running sessions given (issue
+/// #2935): recovery returns a hosted login only once `sessions` shows no
+/// session on its directory.
+pub(super) fn recover_seeing(
+    sessions: &dyn SessionView,
+    state: &State,
+) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
     let mut done = Vec::new();
     let mut ledger = state.load_ledger()?;
     if let Some(j) = state.load_journal()? {
@@ -276,7 +286,7 @@ pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>
         cleanup_rerun(state);
         return Ok((None, done));
     }
-    let live = liveness::scan_system(&state.root);
+    let live = sessions.liveness(&state.root);
     let hosted: Vec<(String, HostEntry)> = ledger
         .hosts
         .iter()
@@ -484,6 +494,19 @@ pub fn swap_check(
     rl: &RateLimits,
     cfg: &Config,
 ) -> Result<(), ProfileError> {
+    swap_check_seeing(&liveness::HostSessions, state, profiles, owner, rl, cfg)
+}
+
+/// [`swap_check`] with the view of running sessions given (issue #2935). A
+/// view that cannot see sessions allows no swap.
+pub(super) fn swap_check_seeing(
+    sessions: &dyn SessionView,
+    state: &State,
+    profiles: &[ProfileName],
+    owner: &ProfileName,
+    rl: &RateLimits,
+    cfg: &Config,
+) -> Result<(), ProfileError> {
     let now = fsx::now();
     // Most updates need no move: decide that cheaply, before recovery and
     // the `/proc` scan. The status-line wrapper ran recovery moments ago in
@@ -497,9 +520,9 @@ pub fn swap_check(
     if !worth_checking {
         return Ok(());
     }
-    let live = match recover(state)? {
+    let live = match recover_seeing(sessions, state)?.0 {
         Some(live) => live,
-        None => liveness::scan_system(&state.root),
+        None => sessions.liveness(&state.root),
     };
     if !swap_allowed(state, &live, owner) {
         return Ok(());

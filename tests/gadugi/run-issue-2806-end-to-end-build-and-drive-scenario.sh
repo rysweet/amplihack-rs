@@ -11,11 +11,12 @@
 # What is stood in for, and nothing else:
 #   gh      answers auth status, repo view, issue view, issue list, issue
 #           create, issue comment, label create, pr list, pr create, pr view,
-#           pr checks, pr merge, pr ready/edit/comment, and the two read-only
-#           account calls `api user` and `api rate_limit`. It reads the body from
-#           standard input exactly where real gh does (`--body-file -`),
-#           records every call in $WORK/gh-calls, and exits 96 on anything
-#           else, GraphQL included (recorded in
+#           pr checks, pr merge, pr ready/edit/comment, the two read-only
+#           account calls `api user` and `api rate_limit`, and the read of the
+#           repository's allowed merge methods, `api repos/{owner}/{repo}`
+#           (#1888). It reads the body from standard input exactly where real
+#           gh does (`--body-file -`), records every call in $WORK/gh-calls,
+#           and exits 96 on anything else, GraphQL included (recorded in
 #           $WORK/gh-unexpected). The pull request's checks are PENDING for the
 #           build and SUCCESS for the drive; the state lives in
 #           $WORK/gh-state/checks and is written below, in this file, once
@@ -401,6 +402,15 @@ case "${1-} ${2-}" in
   "api rate_limit"|"api /rate_limit")
     emit '{"resources":{"core":{"limit":5000,"used":0,"remaining":5000,"reset":4102444800},"graphql":{"limit":5000,"used":0,"remaining":5000,"reset":4102444800}},"rate":{"limit":5000,"used":0,"remaining":5000,"reset":4102444800}}' "$@"
     exit 0 ;;
+  # The repository's own allowed merge methods, read once by autodrive_merge
+  # immediately before the merge request (#1888). Real gh expands
+  # {owner}/{repo} itself; this stand-in is gh, so the path arrives exactly as
+  # the tool wrote it. All three methods are allowed, as they are in a
+  # repository created on GitHub today, so the drive settles on squash and
+  # records the merge this scenario has always recorded.
+  "api repos/{owner}/{repo}")
+    emit '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}' "$@"
+    exit 0 ;;
   "pr list")
     if [ -e "$state/pr-created" ]; then emit "[$(pr_json)]" "$@"; else emit '[]' "$@"; fi
     exit 0 ;;
@@ -569,10 +579,13 @@ if [ "${QA_RUN_LABEL:-}" = drive ]; then
           moved:[],recommended_action:"stop and read the round record"}')"
     fi
 
-  elif has 'Determine QA prerequisites using the trusted qa-team'; then
+  elif has 'Report the QA facts the merge rounds will judge from'; then
     # auto-drive-to-merge/autodrive-prerequisites. The sandbox's PATH holds
     # git, gh and jq, and the fixture is a Rust-shaped repository, where
-    # qa-team's own table does not require gadugi.
+    # qa-team's own table does not require gadugi. The step reports facts and
+    # names no blocker: since #2569 a repository type, a missing scenario and
+    # an absent tool are facts each merge round judges, not prerequisites that
+    # hold the drive here.
     step=autodrive-prerequisites
     response="$(j '{prerequisites:["git","gh","jq"],gadugi_required:false,blockers:[],attempts:[]}')"
 
@@ -726,22 +739,19 @@ if [ "${QA_RUN_LABEL:-}" = drive ]; then
       git_observed:"the branch already contains origin/main; there was nothing to merge",
       blockers:[],attempts:[]}')"
 
-  elif has 'Execute criterion 1 against the current observed PR head'; then
-    # autodrive-merge-evidence/step-02-qa-team-scenarios. The fixture is a
-    # Rust-shaped repository, where qa-team's table does not require gadugi,
-    # and it declares no suite the sandbox can run, so the record says so.
-    # The measured record is a file the next step hashes, so it is written.
+  elif has 'Judge merge-ready criterion 1 for PR #'; then
+    # autodrive-merge-evidence/step-02-qa-team-scenarios. Since #2569 this step
+    # records a judgement and no longer owns the record: the preceding
+    # step-02a-qa-inputs bash step measures and writes qa-evidence.json, so the
+    # stand-in writes no file here. The fixture's change is feature.txt alone,
+    # which no user, operator or calling program reads, so the judgement is
+    # not_user_facing with that file as its cited reason, and nothing is handed
+    # off. The light path's criterion-1 prompt opens "for the change in", so it
+    # cannot reach this entry.
     step=autodrive-merge-evidence/step-02-qa-team-scenarios
-    tail_of="${input#*Save the actual measured qa-evidence.json to }"
-    evidence_file="${tail_of%% *}"
-    qa="$(j '{qa_status:"PASS",gadugi_required:false,gadugi_status:"NOT_REQUIRED",
-      qa_criterion1_declaration:"none",
-      qa_reason:"the repository declares no suite command at the merge base and the change is one text file",
-      qa_command_paths:["feature.txt"],head_sha:$h,blockers:[],attempts:[]}')"
-    case "$evidence_file" in
-      /*) ( umask 077; printf '%s\n' "$qa" > "$evidence_file" ) || true ;;
-    esac
-    response="$qa"
+    response="$(j '{qa_judgement:"not_user_facing",
+      qa_judgement_notes:"The diff is feature.txt alone, a text file no user, operator or calling program reads, so no scenario exercises it and none is needed. The measurement named no suite command at the merge base. Nothing was blocked and nothing was handed off.",
+      qa_handoff:null,head_sha:$h,blockers:[],attempts:[]}')"
 
   elif has 'Return JSON with ci_status GREEN'; then
     # autodrive-merge-evidence/step-03-wait-for-ci. The stub reports the one

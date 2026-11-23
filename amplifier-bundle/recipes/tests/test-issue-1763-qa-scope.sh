@@ -393,19 +393,19 @@ expect ev-cand-cap "twelve candidates" qa_status=QA_UNRESOLVED \
 if [[ "$OUT" != *"$WORK"* ]]; then pass ev-cand-nohost "the QA_UNRESOLVED record holds no host path"
 else fail ev-cand-nohost "host path leaked: $OUT"; fi
 
-echo "== #1763 evidence: QA_UNRESOLVED with a package.json candidate runs gadugi =="
+echo "== #1763 evidence: QA_UNRESOLVED with a package.json candidate lists scenarios =="
+# The scenarios are listed, never run: criterion 1 is judged by an agent step
+# inside the loop, and the judgement runs the ones this PR changed (#2569).
 repo a/Cargo.toml b/package.json tests/agentic/s.yaml; put tests/agentic/s.yaml $'name: smoke\n'; base
 run_tool
-expect ev-unres-gadugi-pass "gadugi passes; the round stays unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved \
-    gadugi_required=true gadugi_status=PASS gadugi_scenarios_run=1 qa_candidates="a b"
-if calls_of gadugi-test | grep -q '|validate ' && calls_of gadugi-test | grep -q '|run '; then
-    pass ev-unres-gadugi-ran "gadugi-test validate and run were called"
-else fail ev-unres-gadugi-ran "gadugi-test calls: $(calls_of gadugi-test | tr '\n' '|')"; fi
+expect ev-unres-gadugi-pass "scenarios are found; the round stays unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved \
+    gadugi_required=true gadugi_status=FOUND gadugi_scenario_dir_state=detected gadugi_scenario_count=1 \
+    gadugi_scenarios_run=0 qa_scenarios="tests/agentic/s.yaml" qa_candidates="a b"
+expect_calls ev-unres-gadugi-ran "the measurement calls no gadugi-test" gadugi-test ""
 expect_calls ev-unres-gadugi-npm "no suite runs" npm ""
 : > "$CALLS"; run_tool STUB_GADUGI_RC=1
-expect ev-unres-gadugi-fail "gadugi fails; still QA_UNRESOLVED/qa-unresolved" qa_status=QA_UNRESOLVED \
-    qa_reason=qa-unresolved gadugi_required=true gadugi_status=VALIDATE_FAILED
-expect_summary_has ev-unres-gadugi-fail-summary "gadugi"
+expect ev-unres-gadugi-fail "a gadugi-test that would fail changes nothing here" qa_status=QA_UNRESOLVED \
+    qa_reason=qa-unresolved gadugi_required=true gadugi_status=FOUND
 expect_summary_has ev-unres-gadugi-fail-cands "unresolved QA project candidates: a b"
 rm -rf "${REPO:?}/tests"; snap
 : > "$CALLS"; run_tool

@@ -245,31 +245,22 @@ steps:
         echo "No staged changes from review feedback"
       fi
       push_output_file=$(mktemp -t step18c-review-feedback-push-XXXXXX)
-      git_remote_with_retry() {
-        local rc attempt
-        : >"$push_output_file"
-        for attempt in 1 2 3; do
-          "$@" >>"$push_output_file" 2>&1 && return 0
-          rc=$?
-          [ "$attempt" -lt 3 ] || return "$rc"
-          echo "WARNING: $* failed (exit $rc); retrying ($attempt/3)" >>"$push_output_file"
-        done
-      }
-      push_rc=0
+      push_rc=0; push_error="ERROR: git push failed"
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-        if git_remote_with_retry workflow_pull_rebase; then  # #2839: autostash the rewritten tracked report the staging helper left unstaged
-          git_remote_with_retry git push ${remote_branch:+origin "HEAD:$remote_branch"} || push_rc=$?
+        # #2994: merge a moved remote, never rebase; #2839: autostash keeps the unstaged report. One pull, one push.
+        if workflow_pull_merge >"$push_output_file" 2>&1; then
+          git push ${remote_branch:+origin "HEAD:$remote_branch"} >>"$push_output_file" 2>&1 || push_rc=$?
         else
-          push_rc=$?
+          push_rc=$?; push_error="ERROR: git pull --no-rebase failed"
         fi
       else
-        git_remote_with_retry git push -u origin "$current_branch"${remote_branch:+":$remote_branch"} || push_rc=$?
+        git push -u origin "$current_branch"${remote_branch:+":$remote_branch"} >"$push_output_file" 2>&1 || push_rc=$?
       fi
       if [ "$push_rc" -eq 0 ]; then
         cat "$push_output_file"
         rm -f "$push_output_file"
       else
-        echo "ERROR: git push failed during step-18c-push-feedback-changes (exit $push_rc); git pull --rebase may also have failed" >&2
+        echo "$push_error during step-18c-push-feedback-changes (exit $push_rc); nothing was pushed" >&2
         cat "$push_output_file" >&2
         rm -f "$push_output_file"
         git --no-pager status --short >&2

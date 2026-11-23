@@ -293,44 +293,29 @@ fn a_dry_runtime_records_attempts_as_a_no_op_and_removes_its_folder() {
 // Contract:
 // - `pub(crate) enum RuntimeRemoval { Removed, KeptInUse }` (`Debug`,
 //   `PartialEq`; issue #2785 adds `KeptUnsavedWork`, see the section at the
-//   end of this file); `RuntimeGuard::remove(self) -> Result<RuntimeRemoval>`;
+//   end of this file, and issue #2935 adds `KeptUseUnknown`);
+//   `RuntimeGuard::remove(self) -> Result<RuntimeRemoval>`;
 //   a failed removal or a replaced folder (issue #2096) is an `Err`.
 //   A missing folder counts as `Removed`.
-// - The guard takes one fresh `ProcScan` from `procfs::proc_root()` and keeps
-//   the folder when the scan is available and a process has its working
-//   folder, an open file or TMPDIR/TMP/TEMP under it. `Drop` does the same.
+// - `RuntimeGuard` takes one fresh `ProcScan` of its `ProcessView` and keeps the
+//   folder when a process has its working folder, an open file or
+//   TMPDIR/TMP/TEMP under it, and also when the view cannot see processes at
+//   all. `Drop` does the same.
 // - `RunWorkspace::prepare_attempt(&self) -> anyhow::Result<()>` re-creates a
 //   missing `<runtime>/tmp` and `<runtime>/artifacts` (mode 0700), accepts a
 //   real folder as it is, and refuses a symlink or a file there with an error
 //   naming the path and "refusing to launch the step".
 //
-// Lib tests never read the host `/proc`: each test installs its own fake
-// table and links in only the children it started (issue #2196). Children
-// are reaped with `wait()`; nothing sleeps or polls.
+// Issue #2935: no test here starts a process or reads `/proc`. A test of what
+// `RuntimeGuard` decides writes its own table in memory (`FakeProcesses`): each
+// held path stands for the working folder, an open file or a TMPDIR value of
+// some process. That the host's view turns a process table into those paths
+// is tested once, against a synthetic table, in `host_view` below.
 
+use crate::commands::cleanup::procs::{FakeProcesses, HostProcesses, ProcessView};
 use crate::test_support::proc::fake_proc_scope;
-use std::io::BufRead;
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Child, Command, Stdio};
-
-/// A child the test started; killed and reaped if the test fails first.
-struct Holder(Child);
-
-impl Holder {
-    /// Closes the child's stdin and waits for it to exit.
-    fn finish(mut self) {
-        drop(self.0.stdin.take());
-        let status = self.0.wait().expect("wait for holder");
-        assert!(status.success(), "holder exited with {status}");
-    }
-}
-
-impl Drop for Holder {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
+use std::sync::Arc;
 
 fn runtime_with_tmp() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
@@ -341,179 +326,249 @@ fn runtime_with_tmp() -> (tempfile::TempDir, PathBuf) {
     (tmp, rt)
 }
 
-/// A shell with piped stdin: it runs until the test closes stdin. `spawn`
-/// can return before the kernel has filled in the new program's
-/// environment (`/proc/<pid>/environ` reads empty for a moment after a vfork
-/// spawn), so the child prints `ready` once it runs and the test waits for
-/// that line. It then reads stdin to EOF without another `exec`, so its
-/// environment stays readable.
-fn cat_holder(cwd: &Path, tmpdir: &Path) -> Holder {
-    let mut child = Command::new("sh")
-        .env("PATH", crate::test_support::host_path())
-        .arg("-c")
-        .arg("echo ready; while read -r _; do :; done")
-        .current_dir(cwd)
-        .env("TMPDIR", tmpdir)
-        .env("TMP", tmpdir)
-        .env("TEMP", tmpdir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sh");
-    let mut line = String::new();
-    std::io::BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    assert_eq!(line.trim(), "ready");
-    Holder(child)
+/// What the release of `rt` does when it sees the processes of `view`.
+fn remove_seen_by(rt: &Path, view: &Arc<FakeProcesses>) -> RuntimeRemoval {
+    RuntimeGuard::seen_by(rt.to_path_buf(), view.clone())
+        .unwrap()
+        .remove()
+        .unwrap()
 }
 
 #[test]
 fn runtime_guard_keeps_folder_held_by_child_then_removes_after_exit() {
-    let procs = fake_proc_scope();
     let (_tmp, rt) = runtime_with_tmp();
-    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
-    procs.fake.link_own(holder.0.id());
+    let view = FakeProcesses::seen();
+    view.hold(&rt.join("tmp"));
 
-    assert_eq!(
-        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::KeptInUse
-    );
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::KeptInUse);
     assert!(
         rt.join("tmp/scratch").is_file(),
         "a folder in use is left in place, contents and all"
     );
 
-    holder.finish();
-    assert_eq!(
-        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::Removed
-    );
+    view.release();
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::Removed);
     assert!(!rt.exists(), "removed once the holder has exited");
 }
 
 #[test]
 fn runtime_guard_drop_also_keeps_a_folder_in_use() {
-    let procs = fake_proc_scope();
     let (_tmp, rt) = runtime_with_tmp();
-    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
-    procs.fake.link_own(holder.0.id());
+    let view = FakeProcesses::seen();
+    view.hold(&rt.join("tmp"));
 
-    drop(RuntimeGuard::new(rt.clone()).unwrap());
+    drop(RuntimeGuard::seen_by(rt.clone(), view.clone()).unwrap());
     assert!(rt.join("tmp").is_dir(), "Drop must check too");
-    holder.finish();
+
+    view.release();
+    drop(RuntimeGuard::seen_by(rt.clone(), view).unwrap());
+    assert!(!rt.exists(), "Drop removes the folder once it is free");
 }
 
-/// A child whose only link to the folder is TMPDIR in its environment (cwd
-/// elsewhere, nothing open) still keeps it: a killed run's child may have
-/// nothing open between writes.
+/// A process whose only link to the folder is TMPDIR in its environment (its
+/// working folder elsewhere, nothing open) still keeps it: a killed run's
+/// child may have nothing open between writes. The held path is the value of
+/// the variable, a folder inside `runtime/` and not `runtime/` itself.
 #[test]
 fn runtime_guard_keeps_folder_named_only_by_a_tmpdir_variable() {
-    let procs = fake_proc_scope();
     let (tmp, rt) = runtime_with_tmp();
-    let holder = cat_holder(tmp.path(), &rt.join("tmp"));
-    procs.fake.link_own(holder.0.id());
+    let view = FakeProcesses::seen();
+    view.hold(tmp.path());
+    view.hold(&rt.join("tmp"));
 
-    assert_eq!(
-        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::KeptInUse
-    );
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::KeptInUse);
     assert!(rt.is_dir());
-    holder.finish();
 }
 
-/// An open file under the folder keeps it. The child says `ready` after it
-/// opened the file, so the test waits on that line, not on time.
+/// An open file under the folder keeps it: the held path is the file.
 #[test]
 fn runtime_guard_keeps_folder_with_a_file_open_in_it() {
-    let procs = fake_proc_scope();
     let (tmp, rt) = runtime_with_tmp();
-    let mut child = Command::new("sh")
-        .env("PATH", crate::test_support::host_path())
-        .arg("-c")
-        .arg("exec 3<\"$1\"; echo ready; exec cat")
-        .arg("sh")
-        .arg(rt.join("tmp/scratch"))
-        .current_dir(tmp.path())
-        .env_remove("TMPDIR")
-        .env_remove("TMP")
-        .env_remove("TEMP")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sh");
-    let mut line = String::new();
-    std::io::BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    assert_eq!(line.trim(), "ready");
-    let holder = Holder(child);
-    procs.fake.link_own(holder.0.id());
+    let view = FakeProcesses::seen();
+    view.hold(tmp.path());
+    view.hold(&rt.join("tmp/scratch"));
 
-    assert_eq!(
-        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::KeptInUse
-    );
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::KeptInUse);
     assert!(rt.join("tmp/scratch").is_file());
-    holder.finish();
 }
 
 /// A process in a sibling whose name only starts with the folder's name
 /// (`runtime-sib`) does not keep `runtime`.
 #[test]
 fn runtime_guard_ignores_a_sibling_with_a_longer_name() {
-    let procs = fake_proc_scope();
     let (tmp, rt) = runtime_with_tmp();
     let sibling = tmp.path().join("runtime-sib");
     std::fs::create_dir_all(&sibling).unwrap();
-    let holder = cat_holder(&sibling, &sibling);
-    procs.fake.link_own(holder.0.id());
+    let view = FakeProcesses::seen();
+    view.hold(&sibling);
 
-    assert_eq!(
-        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::Removed
-    );
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::Removed);
     assert!(!rt.exists());
     assert!(sibling.is_dir(), "the sibling is never touched");
-    holder.finish();
 }
 
 #[test]
 fn runtime_guard_with_no_users_removes_and_missing_counts_as_removed() {
-    let _procs = fake_proc_scope();
     let (_tmp, rt) = runtime_with_tmp();
-    assert_eq!(
-        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::Removed
-    );
+    let view = FakeProcesses::seen();
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::Removed);
     assert!(!rt.exists());
     // Issue #2096: a guard is only made for an existing folder, so the folder
     // goes away after the guard was made.
     std::fs::create_dir(&rt).unwrap();
-    let guard = RuntimeGuard::new(rt.clone()).unwrap();
+    let release = RuntimeGuard::seen_by(rt.clone(), view).unwrap();
     std::fs::remove_dir(&rt).unwrap();
     assert_eq!(
-        guard.remove().unwrap(),
+        release.remove().unwrap(),
         RuntimeRemoval::Removed,
         "a folder that is already gone is not a failure"
     );
 }
 
-/// Without a readable process table (as on macOS) the guard cannot prove a
-/// folder is in use, so it removes it as before. `in_use` alone would say
-/// "in use" here and keep every runtime folder for good.
+/// Issue #2935, the owner's decision: where running processes cannot be seen
+/// (a system without `/proc`, as macOS is), the release cannot tell whether
+/// the folder is in use, so it keeps it, untouched, and says so. Before, it
+/// removed the folder.
 #[test]
-fn runtime_guard_without_a_process_table_removes_as_before() {
-    let procs = fake_proc_scope();
-    std::fs::remove_dir_all(procs.path()).unwrap();
+fn a_folder_whose_use_cannot_be_seen_is_kept_and_reported() {
     let (_tmp, rt) = runtime_with_tmp();
+    let locked = rt.join("tmp/ro0500");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let view = FakeProcesses::unseen();
+
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::KeptUseUnknown);
+    assert!(rt.join("tmp/scratch").is_file(), "kept, contents and all");
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::Removed
+        std::fs::metadata(&locked).unwrap().permissions().mode() & 0o777,
+        0o500,
+        "a folder that is kept is not changed"
     );
-    assert!(!rt.exists());
+    drop(RuntimeGuard::seen_by(rt.clone(), view).unwrap());
+    assert!(rt.is_dir(), "Drop keeps it too");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let line = use_unknown_line(&rt);
+    assert!(line.contains(&format!("{rt:?}")), "{line}");
+    for part in [
+        "running processes cannot be seen",
+        "leaving it in place",
+        "delete it by hand",
+    ] {
+        assert!(line.contains(part), "{line:?} lacks {part:?}");
+    }
+}
+
+/// The three answers of a scan, in the words a cleanup report uses. "Cannot
+/// tell" has its own line: on a system without `/proc` it is the reason for
+/// every folder, and "in use" there would name a process that may not exist.
+#[test]
+fn a_report_says_in_use_only_for_a_folder_a_process_is_seen_to_hold() {
+    use crate::commands::cleanup::procs::{ProcScan, Use};
+    let (_tmp, rt) = runtime_with_tmp();
+
+    let seen = FakeProcesses::seen();
+    assert_eq!(ProcScan::of(seen.as_ref()).judge(&rt), Use::Free);
+    assert_eq!(ProcScan::of(seen.as_ref()).keep_reason(&rt), None);
+
+    seen.hold(&rt.join("tmp"));
+    assert_eq!(ProcScan::of(seen.as_ref()).judge(&rt), Use::Held);
+    assert_eq!(
+        ProcScan::of(seen.as_ref()).keep_reason(&rt),
+        Some("in use by a running process")
+    );
+
+    let unseen = FakeProcesses::unseen();
+    assert_eq!(ProcScan::of(unseen.as_ref()).judge(&rt), Use::Unknown);
+    assert_eq!(
+        ProcScan::of(unseen.as_ref()).keep_reason(&rt),
+        Some("running processes cannot be seen on this system")
+    );
+}
+
+/// The host's view of a process table, read from a synthetic one the test
+/// writes: no process is started and the host's table is not read.
+mod host_view {
+    use super::*;
+    use crate::test_support::proc::FAKE_PID_BASE;
+    use std::os::unix::fs::symlink;
+
+    /// The paths the host's view reports for one synthetic process with the
+    /// given working folder, environment and open files, sorted: a folder
+    /// is listed in no fixed order.
+    fn held_by(cwd: Option<&Path>, environ: &[(&str, &str)], open: &[&Path]) -> Vec<PathBuf> {
+        let procs = fake_proc_scope();
+        let entry = procs.fake.process(FAKE_PID_BASE + 1);
+        entry.environ(environ);
+        if let Some(cwd) = cwd {
+            symlink(cwd, entry.path().join("cwd")).unwrap();
+        }
+        std::fs::create_dir(entry.path().join("fd")).unwrap();
+        for (n, target) in open.iter().enumerate() {
+            symlink(target, entry.path().join("fd").join((n + 3).to_string())).unwrap();
+        }
+        let mut held = HostProcesses
+            .held_paths()
+            .expect("a table that can be read");
+        held.sort();
+        held
+    }
+
+    #[test]
+    fn a_working_folder_an_open_file_and_each_temp_variable_are_held() {
+        let cases: [(&str, &str); 3] = [("TMPDIR", "/t/a"), ("TMP", "/t/b"), ("TEMP", "/t/c")];
+        for (key, value) in cases {
+            assert_eq!(held_by(None, &[(key, value)], &[]), [PathBuf::from(value)]);
+        }
+        assert_eq!(
+            held_by(Some(Path::new("/w/cwd")), &[], &[]),
+            [PathBuf::from("/w/cwd")]
+        );
+        assert_eq!(
+            held_by(None, &[], &[Path::new("/o/file"), Path::new("/o/other")]),
+            [PathBuf::from("/o/file"), PathBuf::from("/o/other")]
+        );
+    }
+
+    #[test]
+    fn other_variables_relative_values_and_non_path_descriptors_are_not_held() {
+        let none: [PathBuf; 0] = [];
+        assert_eq!(
+            held_by(
+                None,
+                &[
+                    ("HOME", "/t/home"),
+                    ("TMPDIR", "relative"),
+                    ("XTMP", "/t/x")
+                ],
+                &[Path::new("pipe:[42]"), Path::new("socket:[7]")],
+            ),
+            none
+        );
+    }
+
+    #[test]
+    fn this_process_and_entries_that_are_not_pids_are_skipped() {
+        let procs = fake_proc_scope();
+        // `self` is seeded by the fixture; a named entry holds a folder too.
+        let named = procs.path().join("sys");
+        std::fs::create_dir(&named).unwrap();
+        symlink("/w/named", named.join("cwd")).unwrap();
+        let own = procs.path().join(std::process::id().to_string());
+        std::fs::create_dir(&own).unwrap();
+        symlink("/w/own", own.join("cwd")).unwrap();
+        let none: [PathBuf; 0] = [];
+        assert_eq!(HostProcesses.held_paths().unwrap(), none);
+    }
+
+    /// With no table to read, the host's view has no answer. This is what the
+    /// product gets on a system without `/proc`.
+    #[test]
+    fn a_table_that_cannot_be_read_gives_no_view() {
+        let procs = fake_proc_scope();
+        std::fs::remove_dir_all(procs.path()).unwrap();
+        assert_eq!(HostProcesses.held_paths(), None);
+    }
 }
 
 fn scoped_workspace(base: &Path) -> RunWorkspace {
@@ -796,21 +851,16 @@ fn removes_runtime_whose_root_is_0500() {
 /// after the scan finds no user (D8).
 #[test]
 fn a_folder_in_use_keeps_its_locked_modes() {
-    let procs = fake_proc_scope();
     let (tmp, rt) = runtime_with_tmp();
     let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
     let ro = rt.join("tmp/ro0500");
     std::fs::create_dir_all(&ro).unwrap();
     set_mode(&ro, 0o500);
-    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
-    procs.fake.link_own(holder.0.id());
+    let view = FakeProcesses::seen();
+    view.hold(&rt.join("tmp"));
 
-    assert_eq!(
-        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::KeptInUse
-    );
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::KeptInUse);
     assert_eq!(mode(&ro), 0o500, "an in-use folder is never changed");
-    holder.finish();
 }
 
 /// A symlink inside the runtime folder that points at a 0500 folder outside
@@ -1129,20 +1179,20 @@ fn runtime_guard_drop_also_keeps_a_folder_with_unsaved_work() {
 /// folder is `KeptInUse`, as before, and nothing is said about unsaved work.
 #[test]
 fn a_folder_in_use_is_kept_in_use_even_when_it_also_holds_unsaved_work() {
-    let procs = fake_proc_scope();
     let s = Scratch::new();
     let (_tmp, rt) = runtime_with_tmp();
     let clone = rt.join("tmp/amplihack-rs");
     s.origin.clone_to(&clone);
     make_dirty(&clone);
-    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
-    procs.fake.link_own(holder.0.id());
+    let view = FakeProcesses::seen();
+    view.hold(&rt.join("tmp"));
 
-    assert_eq!(
-        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::KeptInUse
-    );
-    holder.finish();
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::KeptInUse);
+
+    // The same folder with no process in it is kept for its unsaved work, so
+    // the answer above came from the process view and nothing else.
+    view.release();
+    assert_eq!(remove_seen_by(&rt, &view), RuntimeRemoval::KeptUnsavedWork);
 }
 
 /// The folder that holds the work tree is locked (as a step can leave it). The
@@ -1362,5 +1412,81 @@ mod build_output_at_run_end {
                 .map(|(_, v)| v);
             assert_eq!(value, Some(std::ffi::OsString::new()), "cleared, not unset");
         }
+    }
+}
+
+// ── Issue #2931 (ENOTDIR): a work root that cannot be opened says why ───────
+//
+// Contract: `open_work_root(root: &Path) -> Result<Directory>` opens the work
+// root the way `begin_durable` does (every component without following links,
+// so a link component is refused: that control is unchanged). On failure the
+// error names the work root and, when one component of it is a symbolic link,
+// that component. It reads the link with `symlink_metadata` only, and never
+// prints where the link points.
+
+#[cfg(unix)]
+mod open_work_root_tests {
+    use super::super::open_work_root;
+    use std::fs;
+    use std::os::unix::fs::DirBuilderExt;
+
+    /// The work root is opened as a private folder, so make it mode 0700.
+    fn private_dir(path: &std::path::Path) {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_plain_folder_opens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("work");
+        private_dir(&root);
+        assert!(open_work_root(&root).is_ok());
+    }
+
+    #[test]
+    fn a_link_component_is_still_refused_and_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let hidden_target = base.join("target-folder-with-a-distinct-name");
+        private_dir(&hidden_target.join("work"));
+        let link = base.join("the-link");
+        std::os::unix::fs::symlink(&hidden_target, &link).unwrap();
+        let root = link.join("work");
+
+        let error = match open_work_root(&root) {
+            Ok(_) => panic!("a work root through a link must stay refused"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(
+            error.contains(&root.display().to_string()),
+            "names the work root: {error}"
+        );
+        assert!(
+            error.contains(&link.display().to_string()),
+            "names the first link component: {error}"
+        );
+        assert!(
+            !error.contains("target-folder-with-a-distinct-name"),
+            "never prints where the link points: {error}"
+        );
+    }
+
+    #[test]
+    fn a_work_root_below_a_file_names_the_work_root_and_no_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let blocker = base.join("blocker");
+        fs::write(&blocker, b"not a folder").unwrap();
+        let root = blocker.join("work");
+        let error = match open_work_root(&root) {
+            Ok(_) => panic!("a work root below a file cannot open"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(error.contains(&root.display().to_string()), "{error}");
+        assert!(!error.contains("symbolic link"), "{error}");
     }
 }

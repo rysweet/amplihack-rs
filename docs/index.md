@@ -94,6 +94,7 @@ Centralized plugin system that works across all your projects:
 - [Quick Start](../README.md) - Basic usage and first commands
 - [Stale Wrapper Repair Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn how install/update keeps the Rust binary first and refreshes stale assets
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
+- [Update amplihack with gh's login](howto/update-with-gh-login.md) - Use gh's existing login for release lookup and download, and read a GitHub rate-limit refusal
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
 - [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset, for another stored login to show capacity, or for the rotator to move a new login into `~/.claude`, and run once more ([reference](reference/profile-command.md#usage-limit-wait))
@@ -175,6 +176,7 @@ amplihack copilot
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
 - [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT` or, in lib tests, a per-thread scope and a shared empty default, the `FakeProc` builder, and the guard that fails a test reading host processes
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
+- [Keep Tests from Writing to an Inherited Claude Profile](howto/keep-tests-from-writing-to-an-inherited-claude-profile.md) - The shared helper that clears `CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE`, `AMPLIHACK_CLAUDE_PROFILE_ROOT`, `AMPLIHACK_CLAUDE_AUTO_SWITCH` and `AMPLIHACK_HOME` wherever a test sets `HOME`, `with_config_dir` for tests that need one set, and the behaviour test that leaves a stand-in profile byte-identical (#2922)
 - [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, seed logins in rotate unit tests, re-issue a credential when its account changes, and test the no-record case
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
 - [Keep Tests from Prompting for Git Credentials](howto/keep-tests-from-prompting-for-git.md) - Why git under plain `timeout` stops on `SIGTTIN`, the settings that stop test and amplihack git from prompting, and how to run long commands safely
@@ -190,6 +192,7 @@ amplihack copilot
 - [`amplihack sessions` Reference](reference/sessions-command.md) - Archive old Claude Code session logs out of `~/.claude/projects`, restore one, and the rotator's daily run
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
+- [Update Release Lookup Reference](reference/update-release-lookup.md) - When update uses gh, the commands it runs, the download checks and the 403 and 429 message
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Framework Source Selection](reference/framework-source-selection.md) - Which source install, update and self-heal stage the bundle from, the release tag fetch, the manifest check and file modes
 - [Versioned Install Layout](concepts/versioned-install-layout.md) - Releases under `~/.amplihack/releases`, atomic link switch, in-use cleanup and why an install leaves running recipe runs alone
@@ -348,8 +351,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Planned responsibilities, invocation-wide authorization, gate retirement, and target compatibility matrix
 - [Auto-drive Evidence and Outcomes](reference/auto-drive-evidence.md) - The 13 criteria, auto-drive's crusty convergence substitution, the PR write-up and reported outcomes
 - [Merge-ready Round, Merge and Hand-off](reference/autodrive-merge-ready-round.md) - The agentic merge-ready write-up, the one-word outcome, GitHub-only merge conditions, the hand-off recipe, the run report, which invocations the "success means merged" rule judges, and the loop driver's output kept in the state folder for an `UNREADABLE` hand-off (#2575, #2769, #2849)
+- [Auto-drive QA (Criterion 1)](reference/auto-drive-qa.md) - Criterion 1 as a recorded judgement: the measured QA record, the declared QA command from merge-base `qa.toml`, the named recoverable blockers, and how the merge round reads the judgement (#2569)
 - [Auto-drive State Permissions](reference/auto-drive-state-permissions.md) - State folders 0700 and files 0600 under any umask; when the evidence check repairs an entry this user owns (slug folders directly under the auto-drive state root), when it refuses, and the `INFO`/`WARNING` repair log line (#2546)
-- [Auto-drive QA Selection](reference/auto-drive-qa.md) - QA selection requirements for the planned evidence workflow
 - [Verify a PR Without Merging](howto/verify-pr-with-auto-drive.md) - Planned guide; current no_merge=true does not protect final merging
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
 - [Crusty Completion Contract](reference/autodrive-crusty-completion.md) - Completion-first dispatch for CLEAN and MINOR_ONLY, decision integrity, and follow-up recording before phase completion; preflight skip reasons and recoverable assess and round faults
@@ -380,7 +383,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Workflow Runtime Isolation](features/workflow-runtime-isolation.md) - Runtime-root isolation and narrow cleanup for generated workflow artifacts
 - [How to Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Set `AMPLIHACK_RUNTIME_ROOT`, inspect runtime files, and troubleshoot guard failures
 - [Tutorial: Workflow Runtime Isolation](tutorials/workflow-runtime-isolation.md) - Practice the runtime isolation and strict Artifact Guard contract
-- [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, and regression contract
+- [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, the single excluded-runtime-paths list (including `/index.scip`) and the dirty-worktree message, and regression contract
 - [Workflow Commit Identity Reference](reference/workflow-commit-identity.md) - Explicit author/committer identity contract for workflow-created commits
 - [Workflow Identity Preflight Reference](reference/identity-preflight.md) - One-call check, before any step does real work, that the acting `gh` account can write to the target repository (issue #1290)
 - [How to Configure Workflow Commit Identity](howto/configure-workflow-commit-identity.md) - Setup for `AMPLIHACK_GIT_*`, repo-local Git identity, and provider-safe fallbacks
