@@ -8,10 +8,9 @@
 use super::failure_markers::TRANSIENT_MARKERS;
 use super::limit_patterns::{
     CLAUDE_RATE_LIMIT, Harness, LimitKind, LimitMessage, all_markers, epoch_marker, limit_message,
-    limit_message_in, rate_limit, reset_hint,
+    rate_limit, reset_hint,
 };
 use super::{FailureClass, classify_failure_text};
-use chrono_tz::Tz;
 
 /// 2026-10-18 08:00:00 -07:00.
 const NOW: i64 = 1_792_335_600;
@@ -49,6 +48,7 @@ fn msg(reset: Option<i64>, spend: bool) -> Option<LimitMessage> {
             LimitKind::Session
         },
         reset,
+        reset_without_zone: false,
     })
 }
 
@@ -502,146 +502,4 @@ fn the_marker_a_429_line_is_classified_by_is_the_one_that_starts_it() {
             "{line:?}"
         );
     }
-}
-
-// --- issue #2967: the spend-limit wording with no zone ------------------------
-//
-// `limit_message_in(stderr, stdout, now, local)`: `limit_message` with the
-// zone a zone-less reset is read in. `limit_message(..)` is
-// `limit_message_in(.., None)`. The zone is consulted only on a line that
-// passed `shaped()`, so no marker and no false-positive protection changes.
-
-const LA: Tz = chrono_tz::America::Los_Angeles;
-/// 2026-10-18 23:50:00 -07:00.
-const LA_2350: i64 = 1_792_392_600;
-
-/// The wording seen on 21 November 2026, with each of the two clauses seen
-/// on that host in place of the elided middle.
-pub(super) const SPEND_ZONELESS_ADMIN: &str = "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit · your 5-hour limit resets 11:50pm";
-pub(super) const SPEND_ZONELESS_VISIT: &str = "You've hit your individual spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your 5-hour limit resets 11:50pm";
-
-#[test]
-fn the_zoneless_spend_limit_wording_classifies_as_a_usage_limit() {
-    for text in [SPEND_ZONELESS_ADMIN, SPEND_ZONELESS_VISIT] {
-        assert_eq!(
-            classify_failure_text(text).0,
-            FailureClass::UsageLimit,
-            "{text}"
-        );
-    }
-}
-
-#[test]
-fn the_zoneless_spend_limit_reads_its_reset_in_the_given_zone() {
-    for text in [SPEND_ZONELESS_ADMIN, SPEND_ZONELESS_VISIT] {
-        assert_eq!(
-            limit_message_in(text.as_bytes(), b"", NOW, Some(LA)),
-            msg(Some(LA_2350), true),
-            "{text}"
-        );
-    }
-}
-
-#[test]
-fn the_zoneless_spend_limit_is_still_a_spend_limit_when_no_zone_is_known() {
-    for text in [SPEND_ZONELESS_ADMIN, SPEND_ZONELESS_VISIT] {
-        assert_eq!(
-            limit_message_in(text.as_bytes(), b"", NOW, None),
-            msg(None, true),
-            "{text}"
-        );
-        assert_eq!(
-            limit_message(text.as_bytes(), b"", NOW),
-            msg(None, true),
-            "{text}"
-        );
-    }
-}
-
-#[test]
-fn the_zoneless_wording_is_read_from_the_last_stdout_line_as_well() {
-    assert_eq!(
-        limit_message_in(b"", SPEND_ZONELESS_ADMIN.as_bytes(), NOW, Some(LA)),
-        msg(Some(LA_2350), true)
-    );
-}
-
-#[test]
-fn a_stated_zone_in_the_message_wins_over_the_given_zone() {
-    assert_eq!(
-        limit_message_in(SPEND_SESSION.as_bytes(), b"", NOW, Some(chrono_tz::UTC)),
-        msg(Some(LA_1300), true)
-    );
-    assert_eq!(
-        limit_message_in(SESSION.as_bytes(), b"", NOW, Some(chrono_tz::UTC)),
-        msg(Some(LA_1300), false)
-    );
-}
-
-#[test]
-fn limit_message_is_limit_message_in_with_no_zone_for_every_known_message() {
-    for text in [SPEND, SPEND_SESSION, SPEND_WEEKLY, WEEKLY, SESSION] {
-        assert_eq!(
-            limit_message(text.as_bytes(), b"", NOW),
-            limit_message_in(text.as_bytes(), b"", NOW, None),
-            "{text}"
-        );
-    }
-}
-
-#[test]
-fn a_zoneless_reset_is_never_read_from_a_line_that_is_not_the_harnesss_message() {
-    // SR-28: the zone is consulted only after `shaped()` accepts the line.
-    for prose in [
-        "I think the 5-hour limit resets 11:50pm",
-        "the limit resets 11:50pm",
-        "Note: You've hit your limit and it resets 11:50pm",
-        // No `·`: not the message's shape.
-        "You've hit your individual spend limit, your 5-hour limit resets 11:50pm",
-        // No `limit`.
-        "You've hit your stride · it resets 11:50pm",
-    ] {
-        assert_eq!(
-            limit_message_in(prose.as_bytes(), b"", NOW, Some(LA)),
-            None,
-            "stderr: {prose}"
-        );
-        assert_eq!(
-            limit_message_in(b"", prose.as_bytes(), NOW, Some(LA)),
-            None,
-            "stdout: {prose}"
-        );
-    }
-}
-
-#[test]
-fn model_prose_after_a_zoneless_message_on_stdout_hides_it() {
-    // In `-p` mode only the closing line of stdout counts.
-    let stdout = format!("{SPEND_ZONELESS_ADMIN}\nAnd that is what happened.\n");
-    assert_eq!(
-        limit_message_in(b"", stdout.as_bytes(), NOW, Some(LA)),
-        None
-    );
-}
-
-#[test]
-fn a_message_with_text_after_the_clock_time_states_no_zoneless_reset() {
-    // Only whitespace may follow; the message is still a spend limit.
-    let text = format!("{SPEND_ZONELESS_ADMIN}. Try again later.");
-    assert_eq!(
-        limit_message_in(text.as_bytes(), b"", NOW, Some(LA)),
-        msg(None, true)
-    );
-}
-
-#[test]
-fn the_wait_phrase_of_the_heartbeat_is_a_marker_line_the_pump_must_not_buffer() {
-    // The rewritten heartbeat names a usage limit, so the classifier would
-    // read it as one. That is why the stderr pump prints it and does not
-    // keep it (see `tests_heartbeat`); this pins the reason.
-    let line = "  [15:01:10] [amplihack:claude:41822] ... waiting for usage limit until 2026-10-18 08:32:00 -07:00 (7s elapsed, 7s since last output)";
-    assert_eq!(classify_failure_text(line).0, FailureClass::UsageLimit);
-    // It is not in the harness's own message shape, so the wait never reads
-    // it as a limit message.
-    assert_eq!(limit_message_in(line.as_bytes(), b"", NOW, Some(LA)), None);
 }

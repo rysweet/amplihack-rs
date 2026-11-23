@@ -181,32 +181,7 @@ pub(crate) struct ClaudeArgs {
     /// the safe side (see the module comment). Only an unknown option with
     /// two or more values (`<values...>`) can still leave a value counted.
     pub(crate) prompt: bool,
-    /// A session flag is present (issue #2967): `--resume`, `--continue`,
-    /// `--session-id`, `--fork-session`, `--resume-session-at`, `-r` or
-    /// `-c`, as a separate argument or in the `--flag=value` form.
-    ///
-    /// A step that resumes a session needs that session's transcript, which
-    /// lives under the configuration directory the session ran in. A step on
-    /// `$HOME/.claude` is therefore never moved onto a stored profile's
-    /// directory when this is set. The list is an allow-list read by the
-    /// same Commander rules as everything else here, so a value an option
-    /// takes is not a flag and nothing after `--` is one. A cluster is read
-    /// widely (`-pc` is `-p -c`), which only keeps a step where it is.
-    pub(crate) session: bool,
 }
-
-/// Long options that name, resume or fork a session. See
-/// [`ClaudeArgs::session`].
-const SESSION_LONG: &[&str] = &[
-    "resume",
-    "continue",
-    "session-id",
-    "fork-session",
-    "resume-session-at",
-];
-
-/// Short options that resume a session: `-r` and `-c`.
-const SESSION_SHORT: &[char] = &['r', 'c'];
 
 /// Reads Claude's arguments as Commander would.
 pub(crate) fn parse<S: AsRef<str>>(args: &[S]) -> ClaudeArgs {
@@ -225,7 +200,6 @@ pub(crate) fn parse<S: AsRef<str>>(args: &[S]) -> ClaudeArgs {
                 None => (long, None),
             };
             out.print |= name == "print" && inline.is_none();
-            out.session |= SESSION_LONG.contains(&name);
             // `--input-format` needs nothing of its own here (issue #3036):
             // a stream channel on stdin is copied and replayed as any piped
             // input is, so all that matters is that its value is skipped
@@ -264,13 +238,11 @@ pub(crate) fn option_end<S: AsRef<str>>(args: &[S], i: usize) -> usize {
     skip_values(args, i + 1, kind)
 }
 
-/// A cluster such as `-p`, `-pc` or `-nNAME`: sets `print` for `p` and
-/// `session` for `r` and `c`, and returns what the last option still needs
-/// from the following arguments.
+/// A cluster such as `-p`, `-pc` or `-nNAME`: sets `print` for `p`, and
+/// returns what the last option still needs from the following arguments.
 fn short_cluster(shorts: &str, out: &mut ClaudeArgs) -> Kind {
     for (at, c) in shorts.char_indices() {
         let kind = short_kind(c);
-        out.session |= SESSION_SHORT.contains(&c);
         if kind != Kind::Flag {
             // The rest of the cluster, if any, is this option's value.
             let rest = &shorts[at + c.len_utf8()..];

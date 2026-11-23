@@ -137,14 +137,20 @@ pub(super) enum Skip {
     Cannot(NoWait),
 }
 
-// `t` in zone `tz`, as every line writes an instant. The one formatter is
-// shared with the heartbeat of a waiting step (issue #2967), so that line's
-// time and the `until=` field of the wait's `start` line cannot differ. It
-// lives beside the heartbeat because that module is built on every host and
-// this one only on Unix. Re-exported `pub(super)` because the sentence the
-// supervisor prints beside the prompt-loss ending (`ending`) also names an
-// instant, and an instant must read the same in every line a step writes.
-pub(super) use crate::commands::recipe::run::heartbeat::fmt_time;
+/// `t` in zone `tz`, as every line writes an instant.
+///
+/// `pub(super)` because the sentence the supervisor prints beside the
+/// prompt-loss ending also names an instant, and an instant must read the
+/// same in every line a step writes.
+pub(super) fn fmt_time<Z: TimeZone>(t: i64, tz: &Z) -> String
+where
+    Z::Offset: Display,
+{
+    match tz.timestamp_opt(t, 0).single() {
+        Some(d) => d.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+        None => format!("@{t}"),
+    }
+}
 
 /// An optional instant as a line writes it: the time, or `none`.
 fn fmt_opt<Z: TimeZone>(t: Option<i64>, tz: &Z) -> String

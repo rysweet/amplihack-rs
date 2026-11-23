@@ -1,36 +1,28 @@
-//! Issue #2967: the move a step makes before it waits, and the logins whose
-//! resets bound a wait. Temporary metadata only; no real profile root, no
-//! network and no Claude process.
+//! Issue #2967: the logins whose resets bound a step's wait. Temporary
+//! metadata only; no real profile root, no network and no Claude process.
 //!
-//! Contract (`auto_switch/limit_choice.rs`, wired with
-//! `#[cfg(all(test, unix))] mod tests_limit_choice;` in `auto_switch/mod.rs`):
+//! Contract (`auto_switch/limit_choice.rs`):
 //!
-//! - `rerun::Reads` and its five fields become `pub(super)`, so the sibling
-//!   module and these tests can build one. `rerun::Pick` gains
-//!   `usable_only: bool`.
-//! - `limit_choice::limit_candidate(reads, current, skip, alert) -> Option<Pick>`
-//!   runs rule 1 (the unchanged `candidate`, 90% threshold) and, only when it
-//!   yields nothing, rule 2: the `profile usage` "usable now" test (session
-//!   below `session_at`, default 95 and read once per call from
-//!   `capacity_weight::usable_threshold(None, env)`; week below 100) over
-//!   `adjusted` windows, ranked by the existing ordering, under the same
-//!   eligibility and affinity closures as rule 1. A pick by rule 2 has
-//!   `usable_only == true`; a pick by rule 1 has `false`. A login with no
-//!   reading is never picked by rule 2. `current` and every name in `skip`
-//!   are never picked by either rule.
 //! - `limit_choice::cross_login_reset(reads, current, tried, wait_now)
-//!   -> Vec<(ProfileName, i64)>`: for each profile that passes the same
-//!   eligibility rules as rule 1 (not excluded, not overflow, not leased, not
-//!   hosting another account, within affinity, `login_ready`), is not
-//!   `current`, is not in `tried`, has a reading and is not usable by rule 2,
-//!   the instant (`candidate::regains_usable`) moved onto the wait's clock
+//!   -> Vec<(ProfileName, i64)>`: for each plan profile that passes the
+//!   candidate rule's eligibility (not excluded, not overflow, not leased,
+//!   not hosting another account, `login_ready`), is not `current`, is not in
+//!   `tried`, has a reading and is exhausted by the candidate rule (a window
+//!   at or above the auto-switch threshold), the instant
+//!   `candidate::regains_room` gives, moved onto the wait's clock
 //!   (`wait_now + (instant - fsx::now())`, saturating). Only instants strictly
-//!   after `wait_now` are returned. A usable login, a login with no reading or
-//!   no instant, and a login barred by another rule contribute nothing.
+//!   after `wait_now` are returned. A login under the threshold, a login with
+//!   no reading or no instant, and a login barred by another rule contribute
+//!   nothing.
+//! - `limit_choice::may_run_on(reads, current, login) -> bool`: the same
+//!   eligibility, with no reading asked for.
+//! - The note the retry after an earliest-reset wait prints reaches the
+//!   step's stderr, which the recipe runner's classifier reads, so it must
+//!   never read as a usage limit.
 
 use super::config::Config;
-use super::limit_choice::{cross_login_reset, limit_candidate};
-use super::rerun::{KeyAlert, Reads};
+use super::limit_choice::{cross_login_reset, may_run_on};
+use super::rerun::Reads;
 use super::state::{HostEntry, Ledger, State};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::name::ProfileName;
@@ -82,10 +74,6 @@ struct World {
 
 impl World {
     fn new(names: &[&str]) -> Self {
-        Self::with_env(names, &[])
-    }
-
-    fn with_env(names: &[&str], extra: &[(&str, &str)]) -> Self {
         let lock = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -95,19 +83,13 @@ impl World {
         let mut env = crate::test_support::EnvGuard::capture(&[]);
         env.assign("HOME", &fake_home);
         env.assign("AMPLIHACK_CLAUDE_PROFILE_ROOT", tmp.path());
-        for (key, value) in extra {
-            env.assign(key, value);
-        }
         for key in [
             "AMPLIHACK_ROTATE_OVERFLOW_WAIT",
             "AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET",
             "AMPLIHACK_ROTATE_SESSION_AT",
             "AMPLIHACK_ROTATE_WEEK_AT",
-            "AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT",
         ] {
-            if !extra.iter().any(|(set, _)| *set == key) {
-                env.clear(key);
-            }
+            env.clear(key);
         }
         fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let state = State::new(tmp.path()).unwrap();
@@ -198,10 +180,13 @@ impl World {
         }
     }
 
-    fn choose(&self, current: &str, skip: &[&str]) -> Option<(String, bool)> {
-        let skip: Vec<String> = skip.iter().map(|s| s.to_string()).collect();
-        limit_candidate(self.reads(), current, &skip, KeyAlert::Silent)
-            .map(|p| (p.profile.to_string(), p.usable_only))
+    fn threshold(mut self, at: u8) -> Self {
+        self.cfg.threshold = at;
+        self
+    }
+
+    fn may_run_on(&self, current: &str, login: &str) -> bool {
+        may_run_on(self.reads(), current, &n(login))
     }
 
     fn resets(&self, current: &str, tried: &[&str], wait_now: i64) -> Vec<(String, i64)> {
@@ -223,185 +208,10 @@ fn near(got: i64, want: i64) -> bool {
 
 const WAIT_NOW: i64 = 1_000_000;
 
-// --- limit_candidate: rule 1, then rule 2 ------------------------------------
-
-#[test]
-fn rule_one_runs_first_and_its_pick_is_not_marked_usable_only() {
-    let w = World::new(&["cur", "a", "b"])
-        .read("cur", read(100.0, 10.0))
-        .read("a", read(50.0, 10.0))
-        .read("b", read(92.0, 10.0));
-    assert_eq!(w.choose("cur", &[]), Some(("a".into(), false)));
-}
-
-#[test]
-fn rule_two_takes_a_login_over_the_threshold_and_under_the_usable_bound() {
-    // Observed on 21 November 2026: four logins were usable by `profile
-    // usage` and the step moved to none of them.
-    let w = World::new(&["cur", "b"])
-        .read("cur", read(100.0, 10.0))
-        .read("b", read(92.0, 10.0));
-    assert_eq!(w.choose("cur", &[]), Some(("b".into(), true)));
-}
-
-#[test]
-fn rule_two_ranks_as_the_existing_chooser_does() {
-    let w = World::new(&["cur", "a", "b", "c"])
-        .read("cur", read(100.0, 10.0))
-        .read("a", read(94.0, 10.0))
-        .read("b", read(92.0, 10.0))
-        .read("c", read(93.0, 10.0));
-    assert_eq!(w.choose("cur", &[]), Some(("b".into(), true)));
-}
-
-#[test]
-fn nothing_usable_gives_no_pick() {
-    let w = World::new(&["cur", "a", "b"])
-        .read("cur", read(100.0, 10.0))
-        .read("a", read(95.0, 10.0))
-        .read("b", read(10.0, 100.0));
-    assert_eq!(w.choose("cur", &[]), None);
-}
-
-#[test]
-fn the_login_that_reported_the_limit_is_never_chosen_whatever_it_reads() {
-    // Its stored reading is stale and says it is nearly empty.
-    let w = World::new(&["cur", "a"])
-        .read("cur", read(1.0, 1.0))
-        .read("a", read(100.0, 100.0));
-    assert_eq!(w.choose("cur", &[]), None);
-    // One world at a time: each holds the process-wide environment lock.
-    drop(w);
-    let w = World::new(&["cur"]).read("cur", read(1.0, 1.0));
-    assert_eq!(w.choose("cur", &[]), None);
-}
-
-#[test]
-fn a_login_the_step_already_tried_is_never_chosen_by_either_rule() {
-    let w = World::new(&["cur", "a", "b"])
-        .read("cur", read(100.0, 10.0))
-        .read("a", read(10.0, 10.0))
-        .read("b", read(92.0, 10.0));
-    assert_eq!(w.choose("cur", &["a"]), Some(("b".into(), true)));
-    assert_eq!(w.choose("cur", &["a", "b"]), None);
-}
-
-#[test]
-fn an_excluded_login_is_never_chosen_by_rule_two() {
-    let w = World::new(&["cur", "a"])
-        .read("cur", read(100.0, 10.0))
-        .read("a", read(92.0, 10.0))
-        .exclude("a");
-    assert_eq!(w.choose("cur", &[]), None);
-}
-
-#[test]
-fn a_login_hosting_another_account_is_rejected_by_rule_two() {
-    // SR-22: rule 2 shares rule 1's eligibility, so a leased directory is
-    // never moved onto because its reading is usable.
-    let w = World::new(&["cur", "a"])
-        .read("cur", read(100.0, 10.0))
-        .read("a", read(92.0, 10.0))
-        .hosts("a", "cur");
-    assert_eq!(w.choose("cur", &[]), None);
-}
-
-#[test]
-fn a_login_leased_to_another_step_is_rejected_by_rule_two() {
-    let w = World::new(&["cur", "a", "b"])
-        .read("cur", read(100.0, 10.0))
-        .read("a", read(92.0, 10.0))
-        .read("b", read(93.0, 10.0))
-        .hosts("b", "a");
-    // `b` hosts `a`'s account, so neither directory is free for a move.
-    let got = w.choose("cur", &[]);
-    assert!(got.as_ref().is_none_or(|(p, _)| p != "b"), "{got:?}");
-}
-
-#[test]
-fn a_login_that_holds_no_login_of_its_own_is_rejected_by_rule_two() {
-    let w = World::new(&["cur", "a"])
-        .read("cur", read(100.0, 10.0))
-        .read("a", read(92.0, 10.0))
-        .logged_out("a");
-    assert_eq!(w.choose("cur", &[]), None);
-}
-
-#[test]
-fn a_login_with_no_reading_is_taken_by_rule_one_and_never_by_rule_two() {
-    let w = World::new(&["cur", "unread"]).read("cur", read(100.0, 10.0));
-    assert_eq!(w.choose("cur", &[]), Some(("unread".into(), false)));
-    // Rule 1 refuses it once it is tried; rule 2 has nothing to add.
-    assert_eq!(w.choose("cur", &["unread"]), None);
-}
-
-#[test]
-fn the_usable_bound_is_read_from_the_environment_once_per_call() {
-    let w = World::with_env(
-        &["cur", "b"],
-        &[("AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT", "90")],
-    )
-    .read("cur", read(100.0, 10.0))
-    .read("b", read(92.0, 10.0));
-    assert_eq!(w.choose("cur", &[]), None, "92% is not under a bound of 90");
-    // One world at a time: each holds the process-wide environment lock.
-    drop(w);
-    let w = World::with_env(
-        &["cur", "b"],
-        &[("AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT", "99")],
-    )
-    .read("cur", read(100.0, 10.0))
-    .read("b", read(98.0, 10.0));
-    assert_eq!(w.choose("cur", &[]), Some(("b".into(), true)));
-}
-
-#[test]
-fn a_garbled_usable_bound_falls_back_to_ninety_five() {
-    let w = World::with_env(
-        &["cur", "b"],
-        &[("AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT", "lots")],
-    )
-    .read("cur", read(100.0, 10.0))
-    .read("b", read(94.0, 10.0));
-    assert_eq!(w.choose("cur", &[]), Some(("b".into(), true)));
-}
-
-#[test]
-fn a_window_that_has_reset_counts_as_empty_for_rule_two() {
-    let w = World::new(&["cur", "b"])
-        .read("cur", read(100.0, 10.0))
-        .read("b", reading_with(100.0, -60, 10.0, 86_400));
-    // Rule 1 also sees `b` at 10%, so it is the unmarked pick.
-    assert_eq!(w.choose("cur", &[]), Some(("b".into(), false)));
-}
-
-#[test]
-fn termination_every_pick_is_new_so_the_choices_end() {
-    // SR-23: with `tried` growing by each pick, two logins that both report
-    // a limit end after two moves, whichever rule picked them.
-    let w = World::new(&["cur", "a", "b"])
-        .read("cur", read(100.0, 10.0))
-        .read("a", read(92.0, 10.0))
-        .read("b", read(93.0, 10.0));
-    let mut tried: Vec<&str> = vec![];
-    let mut moves = 0;
-    while let Some((next, _)) = w.choose("cur", &tried) {
-        let name: &'static str = match next.as_str() {
-            "a" => "a",
-            "b" => "b",
-            other => panic!("unexpected pick {other}"),
-        };
-        tried.push(name);
-        moves += 1;
-        assert!(moves <= 2, "more moves than stored logins: {tried:?}");
-    }
-    assert_eq!(moves, 2);
-}
-
 // --- cross_login_reset -------------------------------------------------------
 
 #[test]
-fn an_unusable_login_contributes_its_reset_on_the_waits_clock() {
+fn an_exhausted_login_contributes_its_reset_on_the_waits_clock() {
     let w = World::new(&["cur", "a"])
         .read("cur", read(100.0, 10.0))
         .read("a", reading_with(100.0, 1800, 10.0, 86_400));
@@ -412,10 +222,11 @@ fn an_unusable_login_contributes_its_reset_on_the_waits_clock() {
 }
 
 #[test]
-fn a_usable_login_contributes_nothing() {
+fn a_login_under_the_threshold_contributes_nothing() {
+    // The candidate rule takes such a login before any wait starts.
     let w = World::new(&["cur", "a", "b"])
         .read("cur", read(100.0, 10.0))
-        .read("a", read(92.0, 10.0))
+        .read("a", read(89.0, 10.0))
         .read("b", reading_with(100.0, 1800, 10.0, 86_400));
     let got = w.resets("cur", &[], WAIT_NOW);
     assert_eq!(got.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), ["b"]);
@@ -466,7 +277,8 @@ fn the_instant_is_the_latest_reset_among_the_windows_that_bar_it() {
 
 #[test]
 fn an_instant_at_or_before_the_waits_clock_is_left_out() {
-    // A window that has already reset is usable, not a reset to wait for.
+    // A window that has already reset counts as empty, not as a reset to
+    // wait for.
     let w = World::new(&["cur", "a"])
         .read("cur", read(100.0, 10.0))
         .read("a", reading_with(100.0, -5, 100.0, 86_400));
@@ -503,38 +315,66 @@ fn extreme_stored_resets_do_not_panic() {
 }
 
 #[test]
-fn the_usable_bound_decides_which_logins_are_waited_for() {
-    let w = World::with_env(
-        &["cur", "a"],
-        &[("AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT", "90")],
-    )
-    .read("cur", read(100.0, 10.0))
-    .read("a", reading_with(92.0, 1800, 10.0, 86_400));
-    let got = w.resets("cur", &[], WAIT_NOW);
-    assert_eq!(got.len(), 1, "92% is unusable at a bound of 90: {got:?}");
+fn the_auto_switch_threshold_decides_which_logins_are_waited_for() {
+    // One bound: the candidate rule's. A login at 92% is exhausted at the
+    // default threshold of 90 and waited for, and under a threshold of 95 it
+    // is the candidate rule's to take, so nothing waits for it.
+    let base = |w: World| {
+        w.read("cur", read(100.0, 10.0))
+            .read("a", reading_with(92.0, 1800, 10.0, 86_400))
+    };
+    let at_90 = base(World::new(&["cur", "a"]));
+    let got = at_90.resets("cur", &[], WAIT_NOW);
+    assert_eq!(got.len(), 1, "92% is exhausted at 90: {got:?}");
+    drop(at_90);
+    let at_95 = base(World::new(&["cur", "a"]).threshold(95));
+    assert_eq!(at_95.resets("cur", &[], WAIT_NOW), vec![]);
 }
 
-// --- the notes a retry prints -------------------------------------------------
+// --- may_run_on ---------------------------------------------------------------
 
 #[test]
-fn the_retry_notes_carry_no_usage_limit_marker_and_name_no_failed_login() {
-    // They reach the step's stderr, which the recipe runner's classifier
+fn a_stored_login_of_its_own_may_be_run_on_with_no_reading() {
+    let w = World::new(&["cur", "a"]);
+    assert!(w.may_run_on("cur", "a"));
+}
+
+#[test]
+fn a_login_barred_by_another_rule_may_not_be_run_on() {
+    let w = World::new(&["cur", "x", "h", "l"])
+        .exclude("x")
+        .hosts("h", "cur")
+        .logged_out("l");
+    for login in ["x", "h", "l", "cur"] {
+        assert!(!w.may_run_on("cur", login), "{login}");
+    }
+}
+
+#[test]
+fn a_login_no_longer_in_the_store_may_not_be_run_on() {
+    let w = World::new(&["cur", "a"]);
+    assert!(!w.may_run_on("cur", "gone"));
+}
+
+// --- the note a retry prints --------------------------------------------------
+
+#[test]
+fn the_earliest_reset_note_carries_no_usage_limit_marker_and_names_no_failed_login() {
+    // It reaches the step's stderr, which the recipe runner's classifier
     // reads: a note that named a usage limit would be read as one.
-    use super::rerun::{NOTE_CAPACITY, NOTE_EARLIEST, NOTE_NO_ROOM};
+    use super::rerun::NOTE_EARLIEST;
     use crate::commands::recipe::run::limit_patterns::all_markers;
     use crate::commands::recipe::run::{FailureClass, classify_failure_text};
-    for note in [NOTE_CAPACITY, NOTE_EARLIEST, NOTE_NO_ROOM] {
-        let line = format!("{note} \"personal\" (auto-switch)");
-        let lowered = line.to_ascii_lowercase();
-        for marker in all_markers() {
-            assert!(!lowered.contains(marker), "{marker:?} in {line:?}");
-        }
-        assert_ne!(
-            classify_failure_text(&line).0,
-            FailureClass::UsageLimit,
-            "{line:?}"
-        );
-        assert!(line.starts_with("amplihack: "), "{line:?}");
-        assert_eq!(line.lines().count(), 1, "{line:?}");
+    let line = format!("{NOTE_EARLIEST} \"personal\" (auto-switch)");
+    let lowered = line.to_ascii_lowercase();
+    for marker in all_markers() {
+        assert!(!lowered.contains(marker), "{marker:?} in {line:?}");
     }
+    assert_ne!(
+        classify_failure_text(&line).0,
+        FailureClass::UsageLimit,
+        "{line:?}"
+    );
+    assert!(line.starts_with("amplihack: "), "{line:?}");
+    assert_eq!(line.lines().count(), 1, "{line:?}");
 }

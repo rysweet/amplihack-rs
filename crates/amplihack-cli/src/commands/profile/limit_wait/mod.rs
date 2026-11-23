@@ -60,18 +60,14 @@
 //! recipe log, so a waiting step is visible there and not just in its own
 //! stderr (`recipe_log`). See docs/reference/usage-limit-waits.md.
 //!
-//! Issue #2967 adds three things and no timer. A wait is the last resort:
-//! the supervisor first moves the step to a login that can run it now
-//! (`auto_switch::limit_choice`), and only when none can does it wait. That
-//! wait's deadline is moved earlier when another login the step could use
-//! resets sooner than the step's own (`plan::earliest`), and a wait that
-//! ends there retries on that login. Every wait names the login it is for
-//! (`Waiter::note_attempt_login`), and while it lasts it keeps a small
-//! record (`wait_state`) from which `amplihack recipe run` rewrites the
-//! runner's heartbeat for the step from `working` to `waiting for usage
-//! limit until <time>` (`recipe::run::heartbeat`). The record is written
-//! once as the wait starts and removed as it ends; nothing re-reads or
-//! re-writes it on a clock.
+//! Issue #2967 adds no timer. A wait is the last resort: whenever an
+//! attempt meets a limit, waited or not, an auto-switch step first moves to
+//! another login the candidate rule allows (`auto_switch::rerun`), and only
+//! when none can run it does it wait. That wait's one deadline is moved
+//! earlier when another login the step could still move to drops under the
+//! auto-switch threshold sooner (`plan::earliest`), and a wait that ends
+//! there retries on that login. Every wait names the login it is for
+//! (`Waiter::note_attempt_login`).
 //!
 //! `Waiter` decides what happens after a limit; the one supervisor loop,
 //! `auto_switch::rerun::run`, runs the attempts with or without auto-switch.
@@ -90,7 +86,6 @@ mod recipe_log;
 pub(crate) mod scratch;
 pub(crate) mod settings;
 pub(crate) mod wait;
-pub(crate) mod wait_state;
 mod wake;
 
 #[cfg(test)]
@@ -137,8 +132,6 @@ mod tests_wait;
 mod tests_wait_ends;
 #[cfg(test)]
 mod tests_wait_room;
-#[cfg(test)]
-mod tests_wait_state;
 
 use super::attempt::Signals;
 use super::name::ProfileName;
@@ -339,7 +332,8 @@ pub(crate) struct Waiter {
     /// on the inherited profile.
     retry_move: Option<RetryMove>,
     /// The earliest instant, on the wait's clock, at which another login
-    /// this step could move to becomes usable again (issue #2967). Offered
+    /// this step could move to comes back under the auto-switch threshold
+    /// (issue #2967). Offered
     /// by the supervisor for the one wait it is about to plan
     /// ([`Waiter::offer_earliest_reset`]) and taken by
     /// [`Waiter::after_limit`] on every call, so no later wait can inherit
@@ -494,8 +488,9 @@ impl Waiter {
     }
 
     /// Offers the wait about to be planned the earliest instant, on the
-    /// wait's clock, at which another login this step could move to becomes
-    /// usable again (issue #2967); `None` when there is none. The next call
+    /// wait's clock, at which another login this step could move to comes
+    /// back under the auto-switch threshold (issue #2967); `None` when there
+    /// is none. The next call
     /// to [`Waiter::after_limit`] takes it, whatever that call does, and
     /// moves the wait's deadline there when it is sooner (`plan::earliest`).
     pub(crate) fn offer_earliest_reset(&mut self, at: Option<i64>) {
@@ -635,8 +630,8 @@ impl Waiter {
                 return AfterLimit::Finish(None);
             }
         };
-        // Issue #2967: another login the step could move to becoming usable
-        // is a limit event too, and the one a login's own files never
+        // Issue #2967: another login the step could move to coming back under
+        // the auto-switch threshold is a limit event too, and the one a login's own files never
         // record. Its instant moves the deadline earlier when it is sooner;
         // the kind of wait, and so what may end it, is unchanged.
         let p = plan::earliest(p, other_reset, now);
@@ -726,12 +721,7 @@ impl Waiter {
             plan: &p,
         };
         let waited_from = std::time::Instant::now();
-        // Issue #2967: while this step waits, the run's heartbeat for it
-        // says so. The record is written once here and removed when the
-        // guard drops, on every way out of the wait.
-        let record = wait_state::begin_wait(p.until, now);
         let end = wait::wait(&p, &mut deps);
-        drop(record);
         // Real time, not the test clock: auto-drive compares it with its own
         // wall time (issue #1743).
         ledger::record(waited_from.elapsed());
@@ -930,18 +920,8 @@ pub(crate) fn supervise_unprofiled(
     // Issue #2911: a login-change wait no longer asks whether a rotator is
     // running. With none running nothing ends the wait early, so it runs its
     // length and the step retries; before, it ended the step instead.
-    //
-    // Issue #2967: with auto-switch on and no rotator managing `~/.claude`,
-    // a step there moves to a stored profile that can run it, as a profile
-    // step does. A step that resumes a session stays: its transcript lives
-    // under `~/.claude`, and a profile directory does not hold it. The other
-    // conditions, each of which keeps the step on `~/.claude`, are
-    // `Switch::for_home`'s.
-    let switch = store
-        .filter(|_| watch.is_home() && !args.session)
-        .and_then(|s| super::auto_switch::rerun::Switch::for_home(s, &watch));
     super::auto_switch::rerun::run(
-        switch,
+        None,
         Waiter::new(Some(settings), watch, args, home_takeover),
     )
 }

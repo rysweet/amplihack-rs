@@ -2,7 +2,7 @@
 //!
 //! Pure: it is given the instants and picks the minimum, a tie going to the
 //! first profile name, so the same inputs always name the same login. The
-//! caller has already left out every login that is usable, tried, barred or
+//! caller has already left out every login that is under the threshold, tried, barred or
 //! without a reset, and every instant at or before now; nothing is filtered
 //! here.
 //!

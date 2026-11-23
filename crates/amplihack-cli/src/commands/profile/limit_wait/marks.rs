@@ -19,7 +19,7 @@
 //! Issue #2967 removed the other. `auto_switch::rerun` used to read
 //! `Waiter::used` to stop choosing another login once the step had waited,
 //! so a limit on the retry a wait earned left the step waiting again while
-//! other logins were usable. A move to a login that can run the step is not
+//! other logins had room. A move to a login that can run the step is not
 //! a wait, so a step that has waited may still make one; the moves end
 //! because the rerun loop's `tried` list grows with every login it runs on.
 //!

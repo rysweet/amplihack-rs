@@ -2,7 +2,7 @@
 title: Recovery after a recipe usage limit
 description: How relaunched recipe trees reuse verified work after a usage-limit stop.
 doc_type: explanation
-last_updated: 2026-11-22
+last_updated: 2026-11-23
 ---
 
 # Recovery after a recipe usage limit
@@ -22,7 +22,6 @@ its partial output is never treated as a completed result.
 ## Contents
 
 - [Three ways to continue work](#three-ways-to-continue-work)
-- [Why a step moves before it waits](#why-a-step-moves-before-it-waits)
 - [Why only the latest run qualifies](#why-only-the-latest-run-qualifies)
 - [How a recipe tree resumes](#how-a-recipe-tree-resumes)
 - [Why workflow changes can remain compatible](#why-workflow-changes-can-remain-compatible)
@@ -34,7 +33,7 @@ its partial output is never treated as a completed result.
 
 | Mechanism | When it applies | What it restores |
 | --- | --- | --- |
-| Same-process login move, or wait and retry | The running process survives until a login can run the step | Reruns the blocked agent step on another login at once, or after the earliest reset across the step's logins, within the existing execution |
+| Same-process login move, or wait and retry | The running process survives until a login can run the step | Reruns the blocked agent step on another login at once, or after the earliest reset across the step's logins, within the existing execution; see [Other logins](../reference/usage-limit-waits.md#other-logins) |
 | Durable relaunch recovery | A new process starts after an eligible usage-limit stop | Validated step results, typed context changes, and required artifacts across the recipe tree |
 | `resume_checkpoint` | A caller selects an existing workflow checkpoint | The workflow's declared checkpoint behavior; it does not discover an earlier run or supply missing outputs |
 
@@ -47,63 +46,6 @@ controls recovery eligibility.
 `--fresh` bypasses historical recovery for the entire new execution tree.
 It still records the new run, which can itself become a recovery source.
 It does not clear an explicitly supplied `resume_checkpoint` or reset Git.
-
-## Why a step moves before it waits
-
-A step that hits a usage limit has two ways to continue in the same process:
-move to another login, or wait. Moving costs one failed attempt at most, while
-waiting costs the time until a reset, which can be hours. The supervisor
-therefore tries to move first, and waits only when no configured login can run
-the step.
-
-The rule has three parts.
-
-1. **Every login counts, not only the failed one.** The step's own login and
-   each stored profile it is allowed to move to form the set the supervisor
-   reads. A login that is excluded, an overflow profile, leased, outside the
-   step's organisation affinity, or already tried by this step is outside the
-   set, because a reset on a login the step cannot use does not let it resume.
-2. **Two capacity tests, in order.** The ordinary candidate test (90% by
-   default) runs first. When it finds nothing, the test that
-   `amplihack profile usage` calls usable now (session below 95%, weekly below
-   100%) runs over the same set. The second test exists because the first
-   rejects a login at 92% that can still run a step. The login that has just
-   reported the limit is never chosen.
-3. **The wait also ends at the earliest reset.** When both tests find
-   nothing, the step waits. Besides the events every wait ends on, it ends
-   at the earliest reset across the set, plus a two-minute margin, when that
-   comes before its own deadline, and then retries on the login that reset.
-   It does not wait for its own login's reset when another login resets
-   first. That reset is read from the login's reading; it moves the wait's
-   one deadline earlier and adds no timer.
-
-Two observed runs show why each part is needed. One logged `account=unknown`
-and waited two hours for its own login's reset while `amplihack profile usage`
-counted four other logins as usable. The wait line could not name a step that
-ran under a stored profile, the candidate test alone decided the move and
-rejected logins the usable test accepts, and the wait followed the failed
-login's reset alone. Another run printed
-`You've hit your individual spend limit … your 5-hour limit resets 11:50pm`,
-which names no zone. The agent stopped and the run's heartbeat kept saying
-`working` for half an hour. A clock time with no zone is now read in the host's
-zone, the message follows the rules above, and the heartbeat says
-`waiting for usage limit until <time>` while a step waits.
-
-Each move marks one more login as tried, so a step makes at most one move per
-stored login. If two logins report a limit in turn, the moves end after those
-two and the step waits. Four cases keep the step on its own login, by design: a
-host with auto-switch off, because that setting is a standing instruction; a
-step on `~/.claude` while a rotator runs, because the rotator moves the login;
-a step on `~/.claude` whose live login name cannot be read, because without a
-name the step cannot be marked as having moved; and a step on `~/.claude` that
-resumes a session, because the transcript is under `~/.claude`. The last three
-fail closed: the step waits rather than guess.
-
-For the exact rules, log lines and settings, see
-[Other logins](../reference/usage-limit-waits.md#other-logins) and
-[Usage-limit wait](../reference/profile-command.md#usage-limit-wait). For the
-host-side checks, see
-[Steps that move to another login before they wait](../howto/claude-profile-rotation.md#steps-that-move-to-another-login-before-they-wait).
 
 ## Why only the latest run qualifies
 

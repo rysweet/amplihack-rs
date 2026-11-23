@@ -598,7 +598,8 @@ fn issue_2911_the_wait_for_a_passed_reset_waits_for_an_event() {
 // --- issue #2967: the earliest-reset deadline -------------------------------
 //
 // Contract: `earliest(p, other, now) -> Plan`. `other` is the earliest
-// instant at which another login the step could move to becomes usable,
+// instant at which another login the step could move to comes back under
+// the auto-switch threshold,
 // on the wait's clock (`None` when there is none). It is held to the weekly
 // window, as any reset read from a reading is, and it moves `p`'s deadline
 // to `other + MARGIN`, named `Bound::EarliestReset`
@@ -639,7 +640,7 @@ fn an_other_reset_at_or_after_the_own_one_changes_nothing() {
 
 #[test]
 fn an_other_reset_at_or_before_now_is_ignored() {
-    // A reset that has passed is a login that is usable, which the move
+    // A reset that has passed is a login under the threshold, which the move
     // before the wait has already considered.
     for own in [plan(NOW, NOW + 1800), plan_capacity(NOW, None)] {
         assert_eq!(earliest(own, Some(NOW), NOW), own);

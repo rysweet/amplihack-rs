@@ -157,6 +157,11 @@ pub(crate) enum Waiting {
     /// minutes stale, so the step waits for a reading rather than for a time
     /// that has been and gone (issue #2857).
     PassedReset,
+    /// The message states its reset as a clock time with no zone, as in
+    /// `your 5-hour limit resets 11:50pm` (issue #2967). No zone is guessed,
+    /// so the reset is not read; the line names the cause instead of
+    /// reading as a limit that stated no reset.
+    ResetWithoutZone,
 }
 
 impl Waiting {
@@ -167,6 +172,7 @@ impl Waiting {
             Waiting::SpendLimit => "spend_limit",
             Waiting::Credits => "credits",
             Waiting::PassedReset => "passed_reset",
+            Waiting::ResetWithoutZone => "reset_without_zone",
         }
     }
 }
@@ -242,6 +248,13 @@ pub(crate) fn wait_for_message(message: Option<LimitMessage>, now: i64) -> WaitF
         why,
     };
     match m.reset {
+        // A reset stated with no zone is not read (issue #2967). The message
+        // still names a usage window that resets, so even a spend-limit line
+        // is waited out like the one below that states a readable reset: as
+        // capacity, which a login with room, a login change or another
+        // login's reset ends. A login-change wait would end on the first
+        // alone.
+        None if m.reset_without_zone => capacity(Waiting::ResetWithoutZone),
         // No usage window's reset lifts a spend limit, and no login of the
         // same organisation would either, so this waits for the login
         // itself to change (issue #2731).
@@ -469,7 +482,7 @@ pub(crate) fn plan_login_change() -> Plan {
 /// move to when that comes before `p` would end (issue #2967).
 ///
 /// On 21 November 2026 a step waited two hours for its own login's reset
-/// while other stored logins were usable or about to be. A login's window
+/// while other stored logins had room or were about to. A login's window
 /// resetting writes no file, so no file event ends the wait there; the
 /// instant is known from that login's reading, and it is the one more limit
 /// event a wait can have a deadline for. This adds no timer: it only moves
@@ -478,7 +491,7 @@ pub(crate) fn plan_login_change() -> Plan {
 ///
 /// `other` is that earliest reset on the wait's clock, from
 /// `auto_switch::limit_choice::cross_login_reset`, which has already left
-/// out every login that is usable now, tried, barred or without a reset
+/// out every login that is under the threshold now, tried, barred or without a reset
 /// ahead. It is held to the weekly window ([`held`]), as any reset read
 /// from a reading is. It counts when it is strictly after `now` and its
 /// deadline comes strictly before `p.until`, or `p` has none. Then the

@@ -19,10 +19,9 @@
 
 use super::config::{self, Config, FileState};
 use super::fsx;
-use super::limit_choice::limit_candidate;
 use super::overflow_inputs::OverflowInputs;
 use super::own_login::OwnLogins;
-use super::rerun::{KeyAlert, Pick, Reads, login_ready};
+use super::rerun::{KeyAlert, Pick, login_ready, nested_candidate, silent_candidate};
 use super::state::State;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate;
@@ -176,8 +175,7 @@ pub(super) fn is_fresh(observed_at: i64, start: i64, now: i64) -> bool {
 /// `inherited`, from readings taken since `start` only: a profile with an
 /// older reading, or none, has shown nothing during this wait.
 ///
-/// The same candidate rules as `rerun::nested_candidate`, then the usable
-/// rule (`limit_choice::limit_candidate`, issue #2967), both narrowed by the
+/// The same candidate rules as `rerun::nested_candidate`, narrowed by the
 /// freshness skip above. `alert` is the caller's, because this has two
 /// callers that want different things of it (issue #2694):
 ///
@@ -230,21 +228,25 @@ pub(super) fn capacity_candidate(
                 .is_some_and(|r| is_fresh(r.observed_at, start, now))
         })
         .collect();
-    // Issue #2967: both rules of the move before a wait, so a login the
-    // candidate rule refuses for being over its threshold and `profile
-    // usage` counts as usable ends the wait and takes the retry. The
-    // freshness skip applies to both alike.
-    let pick = limit_candidate(
-        Reads {
+    let pick = match alert {
+        KeyAlert::Silent => silent_candidate(
             state,
-            ledger: &ledger,
-            profiles: &profiles,
-            readings: &readings,
-            cfg: &eff.config,
-        },
-        inherited.as_str(),
-        &stale,
-        alert,
-    );
+            &ledger,
+            &profiles,
+            &readings,
+            &eff.config,
+            inherited.as_str(),
+            &stale,
+        ),
+        KeyAlert::Write => nested_candidate(
+            state,
+            &ledger,
+            &profiles,
+            &readings,
+            &eff.config,
+            inherited.as_str(),
+            &stale,
+        ),
+    };
     pick.filter(|p| p.profile != *inherited)
 }

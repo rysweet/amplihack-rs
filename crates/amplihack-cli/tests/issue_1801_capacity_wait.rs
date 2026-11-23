@@ -1145,14 +1145,9 @@ fn issue_2694_an_explicit_login_sleeps_to_its_reset_though_another_login_has_roo
     );
 }
 
-/// The same for a step on `$HOME/.claude` whose live login cannot be named:
-/// the rotator may change that login under it, but auto-switch may not, so
-/// the reading does not end this wait either.
-///
-/// Issue #2967 keeps this expectation by a different route. With no rotator
-/// a step that *can* name its login moves to another one before waiting (see
-/// `issue_2967_other_logins`, A1); this step has no live login on record, so
-/// it cannot be marked, and it fails closed to the wait for its own reset.
+/// The same for a step on `$HOME/.claude`: the rotator may change that
+/// login under it, but auto-switch may not, so the reading does not end
+/// this wait either.
 #[test]
 fn issue_2694_a_home_step_sleeps_to_its_reset_though_another_login_has_room() {
     let f = with_profiles();
@@ -1160,24 +1155,6 @@ fn issue_2694_a_home_step_sleeps_to_its_reset_though_another_login_has_room() {
     readings_with_room(&f.profiles, TEST_NOW + 60);
     let mut c = home_step(&f);
     c.env(TOGGLE_ENV, "1").env("LIMIT_MESSAGE", LIMIT_TEXT);
-    let out = f.run(&mut c);
-    assert_slept_to_its_reset(&f, &out);
-    assert_room_still_shown(&f, TEST_NOW + 60);
-}
-
-/// Issue #2967: the auto-switch-off variant of the case above, with the
-/// live login named. Auto-switch is the user's standing instruction, so with
-/// it off no mechanism may move the step: the eligible set is its own login
-/// and the wait is for its own reset, as before #2967. The environment
-/// setting overrides the file that `switch_on` wrote.
-#[test]
-fn issue_2967_a_home_step_with_auto_switch_off_sleeps_to_its_reset_though_a_login_has_room() {
-    let f = with_profiles();
-    switch_on(&f);
-    x_is_live(&f);
-    readings_with_room(&f.profiles, TEST_NOW + 60);
-    let mut c = home_step(&f);
-    c.env(TOGGLE_ENV, "0").env("LIMIT_MESSAGE", LIMIT_TEXT);
     let out = f.run(&mut c);
     assert_slept_to_its_reset(&f, &out);
     assert_room_still_shown(&f, TEST_NOW + 60);

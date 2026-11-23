@@ -15,7 +15,6 @@
 //! never starts a wait. `epoch_marker` is the auto-switch ledger's reading.
 
 use super::limit_reset;
-use chrono_tz::Tz;
 
 /// An agent CLI whose usage-limit messages are recognised.
 ///
@@ -280,6 +279,12 @@ pub(crate) struct LimitMessage {
     /// The reset the message states, not clamped; `None` when it states
     /// none that parses.
     pub(crate) reset: Option<i64>,
+    /// The message states its reset as a clock time with no zone, as in
+    /// `your 5-hour limit resets 11:50pm` (issue #2967). Such a reset is
+    /// never read, because no zone is guessed, so `reset` is `None`; this
+    /// says why, so the wait can name the cause rather than read as a limit
+    /// that stated no reset at all.
+    pub(crate) reset_without_zone: bool,
 }
 
 impl LimitMessage {
@@ -298,93 +303,39 @@ impl LimitMessage {
 /// line starting with the epoch marker and `|`, a line opening with the
 /// harness's whole-line message, or one starting with the message prefix and
 /// also containing `limit` and the middle dot.
-///
-/// A reset that states no zone is not read: see [`limit_message_in`], which
-/// every production caller uses. This entry point is built for the tests
-/// alone, which pin that the zone-required reading is unchanged.
-#[cfg(test)]
 pub(crate) fn limit_message(stderr: &[u8], stdout: &[u8], now: i64) -> Option<LimitMessage> {
-    limit_message_in(stderr, stdout, now, None)
-}
-
-/// [`limit_message`], reading a reset that states no zone in `local` (issue
-/// #2967): `You've hit your individual spend limit · ... · your 5-hour limit
-/// resets 11:50pm`.
-///
-/// `local` is consulted only for the one line that already has the harness's
-/// message shape, so it widens which reset is read and never which line is a
-/// limit message. A zone the message states is always the one used.
-pub(crate) fn limit_message_in(
-    stderr: &[u8],
-    stdout: &[u8],
-    now: i64,
-    local: Option<Tz>,
-) -> Option<LimitMessage> {
-    read_message(stderr, stdout, now, local).map(|(message, _)| message)
-}
-
-/// The reset the harness's own limit message states as a clock time, read
-/// as [`limit_message_in`] reads it; `None` when there is no such message,
-/// when it states no reset that parses, and when it is the epoch form.
-///
-/// This is the auto-switch ledger's second reading (issue #2967), after
-/// [`epoch_marker`]. The epoch form is left out because the ledger has its
-/// own, stricter rule for it: [`limit_message_in`] trims a line before it
-/// looks at it, and the ledger takes an epoch only from a line that starts
-/// with the marker.
-pub(crate) fn clock_reset_in(
-    stderr: &[u8],
-    stdout: &[u8],
-    now: i64,
-    local: Option<Tz>,
-) -> Option<i64> {
-    let (message, form) = read_message(stderr, stdout, now, local)?;
-    message.reset.filter(|_| form == Form::Clock)
-}
-
-/// How a limit message states its reset.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Form {
-    /// `<epoch marker>|<Unix seconds>`.
-    Epoch,
-    /// A clock time after the anchor, or no reset at all.
-    Clock,
-}
-
-fn read_message(
-    stderr: &[u8],
-    stdout: &[u8],
-    now: i64,
-    local: Option<Tz>,
-) -> Option<(LimitMessage, Form)> {
     let err = String::from_utf8_lossy(stderr);
     let out = String::from_utf8_lossy(stdout);
     Harness::ALL.iter().find_map(|&h| {
         let p = h.patterns();
         let line = positioned(&err, &out, |l| shaped(p, l))?;
-        let (reset, form) = match p.epoch_marker.and_then(|m| line.strip_prefix(m)) {
-            Some(rest) => (epoch_digits(rest.as_bytes()), Form::Epoch),
-            None => (
-                p.anchor.and_then(|anchor| {
-                    line.to_ascii_lowercase().find(anchor).and_then(|at| {
-                        limit_reset::parse_in(&line[at + anchor.len()..], now, local)
-                    })
-                }),
-                Form::Clock,
-            ),
-        };
-        Some((
-            LimitMessage {
-                harness: h,
-                // A whole-line message names its own kind outright.
-                kind: match p.whole_line {
-                    Some(_) => LimitKind::Credits,
-                    None => LimitKind::of(line),
-                },
-                reset,
+        let (reset, reset_without_zone) = match p.epoch_marker.and_then(|m| line.strip_prefix(m)) {
+            Some(rest) => (epoch_digits(rest.as_bytes()), false),
+            None => match p.anchor.and_then(|anchor| {
+                line.to_ascii_lowercase()
+                    .find(anchor)
+                    .map(|at| &line[at + anchor.len()..])
+            }) {
+                Some(fragment) => {
+                    let reset = limit_reset::parse(fragment, now);
+                    (
+                        reset,
+                        reset.is_none() && limit_reset::states_no_zone(fragment),
+                    )
+                }
+                None => (None, false),
             },
-            form,
-        ))
+        };
+        Some(LimitMessage {
+            harness: h,
+            // A whole-line message names its own kind outright.
+            kind: match p.whole_line {
+                Some(_) => LimitKind::Credits,
+                None => LimitKind::of(line),
+            },
+            reset,
+            reset_without_zone,
+        })
     })
 }
 

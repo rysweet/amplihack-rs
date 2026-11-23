@@ -597,236 +597,101 @@ fn weekly_only_profiles_rank_by_their_week() {
     assert_eq!(c.pick("cur").as_deref(), Some("y"));
 }
 
-// --- issue #2967: the usable rule ---------------------------------------------
+// --- issue #2967: when an exhausted login comes back under the threshold ------
 //
-// Rule 2 of the move before a wait: the test `profile usage` applies for
-// "usable now" (session below `session_at`, default 95, and week below 100),
-// read over `adjusted` windows, so a window whose reset has passed counts as
-// 0. Rule 1 (`select`, the 90% threshold) is unchanged and runs first.
-//
-// - `is_usable(r, session_at, now) -> bool`
-// - `regains_usable(r, session_at, now) -> Option<i64>`: for an unusable
-//   reading, the latest `resets_at` among the windows that make it unusable;
-//   `None` when it is usable or no such window has an instant. Never an
-//   instant at or before `now`.
-// - `select_usable(pool, current, session_at, eligible)`: the usable logins
-//   that have a reading, ranked as `select` ranks (lowest worse window, then
-//   name), never `current`, an excluded or an ineligible profile. A login
-//   with no reading is not usable.
+// `regains_room(r, threshold, now) -> Option<i64>`: for a reading that
+// `is_exhausted` at `threshold`, the latest `resets_at` among the windows at
+// or above it; `None` when the reading is not exhausted, or no such window
+// has a reset ahead. Never an instant at or before `now`. It is the one
+// threshold the move before a wait is made by, read window by window.
 
-fn is_usable(r: &Reading, session_at: u8) -> bool {
-    candidate::is_usable(r, session_at, NOW)
+fn regains(r: &Reading, threshold: u8) -> Option<i64> {
+    candidate::regains_room(r, threshold, NOW)
 }
 
-fn regains(r: &Reading, session_at: u8) -> Option<i64> {
-    candidate::regains_usable(r, session_at, NOW)
-}
-
-#[test]
-fn a_login_is_usable_below_the_session_bound_and_below_a_full_week() {
-    assert!(is_usable(&reading(10.0, 5.0), 95));
-    assert!(is_usable(&reading(94.9, 99.9), 95));
-    assert!(is_usable(&reading(92.0, 40.0), 95), "over 90, under 95");
-    assert!(is_usable(&reading(0.0, 0.0), 95));
-}
-
-#[test]
-fn the_session_bound_is_strict_and_the_week_bound_is_one_hundred() {
-    assert!(
-        !is_usable(&reading(95.0, 0.0), 95),
-        "at the bound is not under it"
-    );
-    assert!(!is_usable(&reading(100.0, 0.0), 95));
-    assert!(!is_usable(&reading(0.0, 100.0), 95));
-    assert!(!is_usable(&reading(100.0, 100.0), 95));
-    assert!(is_usable(&reading(89.0, 0.0), 90));
-    assert!(!is_usable(&reading(90.0, 0.0), 90));
-    assert!(is_usable(&reading(99.9, 0.0), 100));
-    assert!(!is_usable(&reading(100.0, 0.0), 100));
-}
-
-#[test]
-fn a_window_that_has_reset_counts_as_zero() {
-    let r = Reading {
-        five_hour: w(100.0, -5),
-        seven_day: w(100.0, 0),
-        observed_at: NOW - 7200,
-        source: ReadingSource::UsageLimitFailure,
-    };
-    assert!(is_usable(&r, 95));
-    assert_eq!(regains(&r, 95), None);
-}
-
-#[test]
-fn an_unreadable_value_is_not_usable() {
-    assert!(!is_usable(&reading(f64::NAN, 0.0), 95));
-    assert!(!is_usable(&reading(0.0, f64::NAN), 95));
-}
-
-#[test]
-fn a_usable_login_regains_nothing() {
-    assert_eq!(regains(&reading(10.0, 5.0), 95), None);
-    assert_eq!(regains(&reading(94.0, 99.0), 95), None);
-}
-
-#[test]
-fn a_login_out_on_session_regains_at_the_session_reset() {
-    assert_eq!(regains(&reading(100.0, 5.0), 95), Some(NOW + 3600));
-    assert_eq!(regains(&reading(96.0, 5.0), 95), Some(NOW + 3600));
-}
-
-#[test]
-fn a_login_out_on_week_alone_regains_at_the_week_reset_not_the_session_one() {
-    assert_eq!(regains(&reading(10.0, 100.0), 95), Some(NOW + 86_400));
-}
-
-#[test]
-fn a_login_out_on_both_windows_regains_at_the_later_reset() {
-    let r = Reading {
-        five_hour: w(100.0, 3600),
-        seven_day: w(100.0, 86_400),
+fn both(five: f64, five_in: i64, seven: f64, seven_in: i64) -> Reading {
+    Reading {
+        five_hour: w(five, five_in),
+        seven_day: w(seven, seven_in),
         observed_at: NOW - 10,
         source: ReadingSource::Statusline,
-    };
-    assert_eq!(regains(&r, 95), Some(NOW + 86_400));
-    // The session window resetting last gives the session reset.
-    let r = Reading {
-        five_hour: w(100.0, 7200),
-        seven_day: w(100.0, 600),
-        observed_at: NOW - 10,
-        source: ReadingSource::Statusline,
-    };
-    assert_eq!(regains(&r, 95), Some(NOW + 7200));
-}
-
-#[test]
-fn only_the_windows_that_make_it_unusable_count() {
-    // The session window is fine (10%); the week is out. A session reset
-    // later than the week's must not be picked.
-    let r = Reading {
-        five_hour: w(10.0, 20_000),
-        seven_day: w(100.0, 600),
-        observed_at: NOW - 10,
-        source: ReadingSource::Statusline,
-    };
-    assert_eq!(regains(&r, 95), Some(NOW + 600));
-    // A window that has already reset is not one of them.
-    let r = Reading {
-        five_hour: w(100.0, -30),
-        seven_day: w(100.0, 600),
-        observed_at: NOW - 10,
-        source: ReadingSource::Statusline,
-    };
-    assert_eq!(regains(&r, 95), Some(NOW + 600));
-}
-
-#[test]
-fn regains_is_never_at_or_before_now() {
-    for resets in [-100, -1, 0] {
-        let r = Reading {
-            five_hour: w(100.0, resets),
-            seven_day: w(10.0, 3600),
-            observed_at: NOW - 10,
-            source: ReadingSource::Statusline,
-        };
-        assert!(regains(&r, 95).is_none_or(|t| t > NOW), "resets {resets}");
     }
 }
 
 #[test]
-fn extreme_resets_do_not_overflow() {
-    let far = Reading {
-        five_hour: Some(Window {
-            used_percentage: 100.0,
-            resets_at: i64::MAX,
-        }),
-        seven_day: w(0.0, 3600),
-        observed_at: NOW,
-        source: ReadingSource::Statusline,
-    };
-    assert_eq!(regains(&far, 95), Some(i64::MAX));
-    let past = Reading {
-        five_hour: Some(Window {
-            used_percentage: 100.0,
-            resets_at: i64::MIN,
-        }),
-        seven_day: w(0.0, 3600),
-        observed_at: NOW,
-        source: ReadingSource::Statusline,
-    };
-    assert_eq!(regains(&past, 95), None, "reset long ago: usable");
-    assert!(is_usable(&past, 95));
-}
-
-fn usable_pick(c: &Case, current: &str) -> Option<String> {
-    candidate::select_usable(&c.pool(), current, 95, |_| true).map(|p| p.to_string())
+fn a_login_under_the_threshold_regains_nothing() {
+    assert_eq!(regains(&reading(10.0, 5.0), 90), None);
+    assert_eq!(regains(&reading(89.9, 89.9), 90), None);
 }
 
 #[test]
-fn the_usable_rule_takes_a_login_the_threshold_rule_refuses() {
-    // 92% is over the 90% threshold and under the 95% bound.
-    let c = Case::new(&["cur", "y"]).with("y", reading(92.0, 40.0));
-    assert_eq!(c.pick("cur"), None, "rule 1 refuses it");
+fn regains_room_agrees_with_is_exhausted_at_the_bound() {
+    for (five, seven) in [(90.0, 0.0), (0.0, 90.0), (89.0, 0.0), (92.0, 40.0)] {
+        let r = reading(five, seven);
+        assert_eq!(
+            regains(&r, 90).is_some(),
+            candidate::is_exhausted(Some(&r), 90, NOW),
+            "{five}/{seven}"
+        );
+    }
+}
+
+#[test]
+fn a_login_out_on_session_regains_at_the_session_reset() {
+    assert_eq!(regains(&reading(100.0, 5.0), 90), Some(NOW + 3600));
+    assert_eq!(regains(&reading(92.0, 5.0), 90), Some(NOW + 3600));
+}
+
+#[test]
+fn a_login_out_on_week_alone_regains_at_the_week_reset_not_the_session_one() {
+    assert_eq!(regains(&reading(10.0, 100.0), 90), Some(NOW + 86_400));
+}
+
+#[test]
+fn a_login_out_on_both_windows_regains_at_the_later_reset() {
     assert_eq!(
-        usable_pick(&c, "cur").as_deref(),
-        Some("y"),
-        "rule 2 takes it"
+        regains(&both(100.0, 3600, 100.0, 86_400), 90),
+        Some(NOW + 86_400)
+    );
+    assert_eq!(
+        regains(&both(100.0, 7200, 100.0, 600), 90),
+        Some(NOW + 7200)
     );
 }
 
 #[test]
-fn the_usable_rule_ignores_the_auto_switch_threshold() {
-    let mut c = Case::new(&["cur", "y"]).with("y", reading(40.0, 40.0));
-    c.threshold = 30;
-    assert_eq!(c.pick("cur"), None);
-    assert_eq!(usable_pick(&c, "cur").as_deref(), Some("y"));
+fn only_the_windows_at_or_above_the_threshold_count() {
+    // The session window is fine (10%); the week is out. A session reset
+    // later than the week's must not be picked.
+    assert_eq!(
+        regains(&both(10.0, 20_000, 100.0, 600), 90),
+        Some(NOW + 600)
+    );
+    // A window that has already reset counts as empty.
+    assert_eq!(regains(&both(100.0, -30, 100.0, 600), 90), Some(NOW + 600));
 }
 
 #[test]
-fn the_usable_rule_ranks_by_the_worse_window_then_name() {
-    let c = Case::new(&["cur", "a", "b", "c", "d"])
-        .with("a", reading(94.0, 10.0)) // worst 94
-        .with("b", reading(92.0, 5.0)) // worst 92
-        .with("c", reading(20.0, 92.0)) // worst 92, after b by name
-        .with("d", reading(93.0, 0.0)); // worst 93
-    assert_eq!(usable_pick(&c, "cur").as_deref(), Some("b"));
+fn regains_room_is_never_at_or_before_now() {
+    for resets in [-100, -1, 0] {
+        let r = both(100.0, resets, 10.0, 3600);
+        assert!(regains(&r, 90).is_none_or(|t| t > NOW), "resets {resets}");
+    }
+    // Even at a threshold of 0, where every window is at or above it.
+    assert!(regains(&both(0.0, -5, 0.0, 0), 0).is_none());
 }
 
 #[test]
-fn the_usable_rule_never_takes_an_unusable_login() {
-    let c = Case::new(&["cur", "x", "y"])
-        .with("x", reading(95.0, 0.0))
-        .with("y", reading(0.0, 100.0));
-    assert_eq!(usable_pick(&c, "cur"), None);
-}
-
-#[test]
-fn a_login_with_no_reading_is_not_usable_by_the_second_rule() {
-    // Rule 1 takes it (as it always has); rule 2 does not.
-    let c = Case::new(&["cur", "unread"]);
-    assert_eq!(c.pick("cur").as_deref(), Some("unread"));
-    assert_eq!(usable_pick(&c, "cur"), None);
-}
-
-#[test]
-fn the_usable_rule_never_takes_the_current_an_excluded_or_an_ineligible_login() {
-    let mut c = Case::new(&["cur", "skip", "busy", "ok"])
-        .with("cur", reading(1.0, 1.0))
-        .with("skip", reading(1.0, 1.0))
-        .with("busy", reading(2.0, 2.0))
-        .with("ok", reading(94.0, 0.0));
-    c.exclude = vec![n("skip")];
-    let picked = candidate::select_usable(&c.pool(), "cur", 95, |p| p.as_str() != "busy");
-    assert_eq!(picked.map(|p| p.to_string()).as_deref(), Some("ok"));
-    // The login that just reported the limit is never chosen, whatever its
-    // reading says: here it reads as perfectly usable.
-    let c = Case::new(&["cur"]).with("cur", reading(1.0, 1.0));
-    assert_eq!(usable_pick(&c, "cur"), None);
-}
-
-#[test]
-fn the_usable_session_bound_is_a_parameter() {
-    let c = Case::new(&["cur", "y"]).with("y", reading(92.0, 0.0));
-    assert!(candidate::select_usable(&c.pool(), "cur", 95, |_| true).is_some());
-    assert!(candidate::select_usable(&c.pool(), "cur", 90, |_| true).is_none());
+fn regains_room_survives_extreme_resets() {
+    assert_eq!(regains(&both(100.0, 0, 0.0, 3600), 90), None);
+    let mut far = both(100.0, 0, 0.0, 3600);
+    far.five_hour.as_mut().unwrap().resets_at = i64::MAX;
+    assert_eq!(regains(&far, 90), Some(i64::MAX));
+    let mut past = both(100.0, 0, 0.0, 3600);
+    past.five_hour.as_mut().unwrap().resets_at = i64::MIN;
+    assert_eq!(
+        regains(&past, 90),
+        None,
+        "reset long ago: under the threshold"
+    );
 }

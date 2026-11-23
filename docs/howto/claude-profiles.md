@@ -2152,20 +2152,13 @@ limit is passed back at once.
 
 ### What happens
 
-1. If another login can run the step, the step first runs again on it with no
-   wait. A stored profile qualifies when it is not excluded or leased and its
-   reading shows room: below the auto-switch threshold, or failing that,
-   session use below 95% and weekly use below 100% (the test behind
-   `amplihack profile usage`'s `usable now`). [Auto-switch](#switch-accounts-automatically)
-   must be on. A step on `~/.claude` moves this way only when no rotator is
-   running; see
-   [Steps that move to another login before they wait](claude-profile-rotation.md#steps-that-move-to-another-login-before-they-wait).
+1. If [auto-switch](#switch-accounts-automatically) is on and another
+   profile has quota left, the step first runs again under that profile. It
+   does so on every limit, including one met after the step has already
+   waited.
 2. Otherwise amplihack reads the reset time from Claude's own message, such
-   as `You've hit your session limit · resets 1pm (America/Los_Angeles)`.
-   A clock time with no zone, such as `your 5-hour limit resets 11:50pm`, is
-   read in the host's zone. While the step waits, the recipe heartbeat reads
-   `waiting for usage limit until <time>` instead of `working`. The step
-   waits until the earliest of:
+   as `You've hit your session limit · resets 1pm (America/Los_Angeles)`,
+   and waits until the earliest of:
    - the reset plus two minutes;
    - a different account becoming live for the step's login directory; on
      `~/.claude`, one the [rotator](claude-profile-rotation.md) records as

@@ -124,7 +124,6 @@ mod profile_marks {
             ClaudeArgs {
                 print: true,
                 prompt: true,
-                session: false,
             },
             Box::new(|| false),
         )

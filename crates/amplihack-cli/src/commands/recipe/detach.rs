@@ -359,7 +359,7 @@ fn session_exists(session: &str) -> bool {
 /// (issue #1976, D8): it must not watch the launching run as its parent, nor
 /// write into another drive's state directory. The governor markers are
 /// issue #1811's.
-pub(crate) const PANE_ENV_REMOVED: [&str; 11] = [
+pub(crate) const PANE_ENV_REMOVED: [&str; 9] = [
     "AMPLIHACK_RECOVERY_ATTACHMENT",
     "AMPLIHACK_RECOVERY_DESCRIPTOR",
     crate::commands::governor::GOVERNOR_PARENT_ENV,
@@ -372,12 +372,6 @@ pub(crate) const PANE_ENV_REMOVED: [&str; 11] = [
     // Issue #2886: a pane root is an outermost run, so it owns the build
     // output it makes and the launcher's claim still applies to it.
     "AMPLIHACK_RUN_ID",
-    // Issue #2967: a pane root keeps its own usage-limit wait records. The
-    // launching run removes its record directory when it ends, which a
-    // detached run outlives, and the supervisors above the launcher are not
-    // above the detached run's steps.
-    crate::commands::profile::limit_wait::wait_state::DIR_ENV,
-    crate::commands::profile::limit_wait::wait_state::STEPS_ENV,
 ];
 
 /// Where a detached run's steps append their usage-limit wait lines (issue
@@ -1019,21 +1013,6 @@ mod tests {
             "AMPLIHACK_PARENT_RECIPE_PIDX",
         ] {
             assert!(keeps_in_pane(kept), "{kept} must reach the pane");
-        }
-    }
-
-    /// Issue #2967: a detached run outlives the run that launched it, and
-    /// that run removes its usage-limit wait directory when it ends. The pane
-    /// therefore takes neither the directory nor the chain of supervisors
-    /// above the launcher, and `recipe run` in the pane makes its own.
-    #[test]
-    fn the_pane_drops_the_usage_limit_wait_variables() {
-        for name in [
-            "AMPLIHACK_USAGE_LIMIT_WAIT_DIR",
-            "AMPLIHACK_USAGE_LIMIT_WAIT_STEPS",
-        ] {
-            assert!(PANE_ENV_REMOVED.contains(&name), "{name} missing");
-            assert!(!keeps_in_pane(name), "{name} reaches the pane");
         }
     }
 

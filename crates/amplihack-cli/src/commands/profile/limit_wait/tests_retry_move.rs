@@ -108,7 +108,6 @@ impl Env {
             super::claude_args::ClaudeArgs {
                 print: true,
                 prompt: true,
-                session: false,
             },
             Box::new(|| false),
         )
@@ -555,7 +554,8 @@ fn a_fallback_reading_does_not_start_the_retry_before_the_wait() {
 //
 // `Waiter::offer_earliest_reset(Option<i64>)` gives the wait about to be
 // planned the earliest instant at which another login the step could move to
-// becomes usable; the next `after_limit` takes it whatever it does. When that
+// comes back under the auto-switch threshold; the next `after_limit` takes it
+// whatever it does. When that
 // instant comes before the wait's own deadline the wait ends there, and
 // `Waiter::reached_earliest_reset()` says so: the retry then runs on that
 // login (`auto_switch::rerun::retry_profile`), with no fresh reading

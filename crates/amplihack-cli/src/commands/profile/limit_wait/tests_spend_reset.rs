@@ -165,3 +165,61 @@ fn issue_2911_no_shape_of_spend_limit_ends_the_step() {
         }
     }
 }
+
+/// Issue #2967: the same spend cap printed with no zone after the reset.
+/// No zone is guessed, so the reset is not read, and the wait says why.
+const SPEND_NO_ZONE: &str = "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit · your 5-hour limit resets 11:50pm";
+
+/// Issue #2967: a reset stated with no zone is not read, and the message
+/// says so. The wait is for capacity, as the readable form's would be when
+/// its reset is unusable, and it names the cause: `reset_without_zone`. A
+/// login-change wait, which is what a spend limit with no reset earns, would
+/// end only on a login change, though the message names a window that
+/// resets.
+#[test]
+fn a_spend_limit_whose_reset_states_no_zone_waits_for_capacity_and_says_why() {
+    let m = message(SPEND_NO_ZONE);
+    assert!(m.spend());
+    assert_eq!(m.reset, None);
+    assert!(m.reset_without_zone);
+    assert_eq!(
+        wait_for_message(Some(m), NOW),
+        WaitFor::Capacity {
+            harness: Harness::Claude,
+            reset: None,
+            why: Waiting::ResetWithoutZone,
+        }
+    );
+    assert_eq!(Waiting::ResetWithoutZone.as_str(), "reset_without_zone");
+}
+
+/// A message that states no reset at all, and one whose reset names a zone,
+/// are not read as a reset with no zone.
+#[test]
+fn only_a_bare_clock_time_is_a_reset_without_zone() {
+    for text in [SPEND_NO_RESET, SPEND_FIVE_HOUR, SPEND_SESSION, SPEND_WEEKLY] {
+        assert!(!message(text).reset_without_zone, "{text}");
+    }
+    // A zone the table does not know is a stated zone, not a missing one.
+    let unknown = SPEND_FIVE_HOUR.replace("America/Los_Angeles", "Mars/Base");
+    let m = message(&unknown);
+    assert_eq!(m.reset, None);
+    assert!(!m.reset_without_zone);
+}
+
+/// Issue #2967: a usage limit (not a spend limit) whose reset states no
+/// zone names the same cause.
+#[test]
+fn a_usage_limit_whose_reset_states_no_zone_says_why() {
+    let m = message("You've hit your 5-hour limit · resets 8:20pm");
+    assert!(!m.spend());
+    assert!(m.reset_without_zone);
+    assert!(matches!(
+        wait_for_message(Some(m), NOW),
+        WaitFor::Capacity {
+            why: Waiting::ResetWithoutZone,
+            reset: None,
+            ..
+        }
+    ));
+}

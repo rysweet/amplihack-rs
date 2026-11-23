@@ -4,7 +4,7 @@
 //! same inputs always name the same login.
 //!
 //! Contract: `earliest(others: &[(ProfileName, i64)]) -> Option<(ProfileName, i64)>`.
-//! The caller has already left out every login that is usable, tried,
+//! The caller has already left out every login that is under the threshold, tried,
 //! barred or without a reset, and every instant at or before now; this
 //! function filters nothing and orders the rest.
 //!

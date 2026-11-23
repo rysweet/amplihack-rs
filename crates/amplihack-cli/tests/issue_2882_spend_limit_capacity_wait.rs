@@ -20,16 +20,13 @@
 //!   that wait needs no running rotator either.
 //! - A limit on the retry a wait earned starts another wait (#2857), as any
 //!   limit does; nothing counts a step's waits.
-//! - Issue #2967: with auto-switch on and no rotator running, the same home
-//!   step moves to another stored login before any wait starts; with a
-//!   rotator running it does not move itself, and waits as above.
 //!
 //! See `issue_1618_fixture` and `issue_1801_capacity_wait`.
 
 #![cfg(unix)]
 
 use crate::issue_1618_fixture::{Fixture, SPEND_TEXT, claude_stdout, describe, events};
-use crate::issue_1618_wait_profiles::{switch_on, with_profiles};
+use crate::issue_1618_wait_profiles::with_profiles;
 use crate::issue_1801_capacity_wait::{
     assert_no_account_detail, real_clock, rotator_running, run_with_rotator_cycle_during_wait,
     x_is_live,
@@ -146,53 +143,9 @@ fn the_wait_names_the_stated_reset_not_the_five_hour_default() {
 /// step waits, and the wait's own wake conditions notice either.
 #[test]
 fn without_a_running_rotator_the_step_still_waits() {
-    // Issue #2967: with auto-switch off nothing may move the step, so it
-    // waits on its own login. The setting is stated, not left to the
-    // fixture's default.
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f, SPEND_FAR);
-    c.env("AMPLIHACK_CLAUDE_AUTO_SWITCH", "0");
-    let out = f.run(&mut c);
-    assert_waited_then_retried(&f, &out);
-}
-
-/// Issue #2967: the same step with auto-switch on, no rotator running and a
-/// login to move to is rerun there at once. No wait starts, so the step
-/// writes no wait line at all. `Y` has no reading, which the candidate rule
-/// takes as room.
-#[test]
-fn with_auto_switch_on_and_no_rotator_a_far_spend_reset_moves_to_another_login() {
-    let f = with_profiles();
-    switch_on(&f);
-    x_is_live(&f);
-    let mut c = home_step(&f, SPEND_FAR);
-    c.env("AMPLIHACK_CLAUDE_AUTO_SWITCH", "1");
-    let out = f.run(&mut c);
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2, "one move: {}", describe(&out));
-    assert_eq!(
-        events(&out),
-        Vec::<String>::new(),
-        "no wait: {}",
-        describe(&out)
-    );
-    assert_eq!(f.call("0", 2)["PROFILE"], "Y");
-    assert_eq!(claude_stdout(&out), "attempt 2 output\n");
-}
-
-/// Issue #2967: a running rotator moves the login in `~/.claude` itself
-/// (since #3012 at once when a limit is recorded), so the step does not
-/// move itself even with auto-switch on, and makes the capacity wait the
-/// other tests here make.
-#[test]
-fn with_auto_switch_on_a_rotator_running_keeps_the_far_spend_reset_capacity_wait() {
-    let f = with_profiles();
-    switch_on(&f);
-    x_is_live(&f);
-    let _rotator = rotator_running(&f);
-    let mut c = home_step(&f, SPEND_FAR);
-    c.env("AMPLIHACK_CLAUDE_AUTO_SWITCH", "1");
     let out = f.run(&mut c);
     assert_waited_then_retried(&f, &out);
 }

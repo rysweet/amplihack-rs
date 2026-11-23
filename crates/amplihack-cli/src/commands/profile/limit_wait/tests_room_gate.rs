@@ -445,7 +445,6 @@ pub(super) fn waiter(e: &Env) -> Waiter {
         super::claude_args::ClaudeArgs {
             print: true,
             prompt: true,
-            session: false,
         },
         Box::new(|| false),
     )

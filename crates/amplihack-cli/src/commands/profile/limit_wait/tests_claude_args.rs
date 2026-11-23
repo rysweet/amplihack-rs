@@ -13,12 +13,10 @@ fn p(args: &[&str]) -> ClaudeArgs {
 const PRINT_PROMPT: ClaudeArgs = ClaudeArgs {
     print: true,
     prompt: true,
-    session: false,
 };
 const PRINT_ONLY: ClaudeArgs = ClaudeArgs {
     print: true,
     prompt: false,
-    session: false,
 };
 
 #[test]
@@ -32,6 +30,7 @@ fn the_prompt_is_any_positional_argument_wherever_it_is() {
         &["-p", "--output-format", "json", "--max-turns", "5", "x"],
         &["-p", "--append-system-prompt", "be brief", "x"],
         &["-p", "--model=opus", "x"],
+        &["-pc", "x"],
     ] {
         assert_eq!(p(args), PRINT_PROMPT, "{args:?}");
     }
@@ -70,29 +69,14 @@ fn option_values_are_not_the_prompt() {
         &["-p", ""],
         &["-p", "-"],
     ] {
-        // Three of these name a session, which `session` records since
-        // #2967 and its own tests below cover. What this pins is that no
-        // value is taken for the prompt.
-        assert_eq!(sans_session(p(args)), PRINT_ONLY, "{args:?}");
-    }
-}
-
-/// `parsed` with the session flag cleared, for a case that is about the
-/// prompt and happens to resume a session.
-fn sans_session(parsed: ClaudeArgs) -> ClaudeArgs {
-    ClaudeArgs {
-        session: false,
-        ..parsed
+        assert_eq!(p(args), PRINT_ONLY, "{args:?}");
     }
 }
 
 #[test]
 fn an_option_after_a_variadic_one_ends_its_values() {
     assert_eq!(p(&["--tools", "Read", "-p", "x"]), PRINT_PROMPT);
-    assert_eq!(
-        sans_session(p(&["-p", "--resume", "--verbose", "x"])),
-        PRINT_PROMPT
-    );
+    assert_eq!(p(&["-p", "--resume", "--verbose", "x"]), PRINT_PROMPT);
 }
 
 #[test]
@@ -109,7 +93,6 @@ fn a_prompt_starting_with_a_dash_is_reachable_only_after_double_dash() {
         ClaudeArgs {
             print: false,
             prompt: true,
-            session: false,
         }
     );
     assert_eq!(p(&["-p", "--", ""]), PRINT_ONLY);
@@ -290,101 +273,4 @@ fn option_end_skips_file_flag_values_for_the_rewrite() {
     assert_eq!(option_end(&args, 0), 1);
     let args = ["--model=opus", "hello"];
     assert_eq!(option_end(&args, 0), 1);
-}
-
-// --- issue #2967: session flags ------------------------------------------------
-//
-// A step that resumes a session needs that session's transcript, which lives
-// under `~/.claude`. A profile directory does not hold it, so the Home switch
-// (a `$HOME/.claude` step moved onto a stored profile) never moves such a
-// step. `ClaudeArgs::session` is set by an allow-list, read with the same
-// Commander rules as everything else here: a value an option takes is not a
-// flag, and everything after `--` is positional.
-
-#[test]
-fn each_session_flag_sets_session() {
-    for flag in [
-        &["--resume", "abc"][..],
-        &["--resume"],
-        &["--resume=abc"],
-        &["--continue"],
-        &["--session-id", "11111111-1111-1111-1111-111111111111"],
-        &["--session-id=11111111-1111-1111-1111-111111111111"],
-        &["--fork-session"],
-        &["--resume-session-at", "msg-1"],
-        &["--resume-session-at=msg-1"],
-        &["-r", "abc"],
-        &["-r"],
-        &["-c"],
-    ] {
-        // The prompt comes first: `--resume` and `-r` take an optional
-        // value, so a word after a bare one is the session, not the prompt.
-        let mut args = vec!["-p", "do the step"];
-        args.extend(flag);
-        let parsed = p(&args);
-        assert!(parsed.session, "{args:?}");
-        assert!(
-            parsed.print && parsed.prompt,
-            "{args:?}: nothing else changes"
-        );
-    }
-}
-
-#[test]
-fn a_session_flag_before_the_print_flag_counts_too() {
-    assert!(p(&["--resume", "abc", "-p", "x"]).session);
-    assert!(p(&["--continue", "-p", "x"]).session);
-}
-
-#[test]
-fn a_cluster_with_c_counts_as_a_session_flag() {
-    // `-pc` is `-p -c`. Reading a cluster too widely only keeps a step on
-    // `~/.claude`, the safe side.
-    let parsed = p(&["-pc", "x"]);
-    assert!(parsed.print && parsed.prompt);
-    assert!(parsed.session);
-}
-
-#[test]
-fn ordinary_arguments_are_not_session_flags() {
-    for args in [
-        &["-p", "x"][..],
-        &["-p"],
-        &["-p", "--model", "opus", "x"],
-        &["-p", "--model=resume", "x"],
-        &["-p", "continue the work", "--verbose"],
-        &["-p", "--resume-foo", "x"],
-        &["-p", "--continued", "x"],
-        &["-p", "--session", "x"],
-        &["-p", "--fork", "x"],
-    ] {
-        assert!(!p(args).session, "{args:?}");
-    }
-}
-
-#[test]
-fn a_value_an_option_takes_is_not_a_session_flag() {
-    // `--system-prompt` takes the next argument, whatever it looks like.
-    assert!(!p(&["-p", "--system-prompt", "--resume", "x"]).session);
-    assert!(!p(&["-p", "--append-system-prompt", "-c", "x"]).session);
-    assert!(!p(&["-p", "--model", "--continue", "x"]).session);
-}
-
-#[test]
-fn everything_after_double_dash_is_positional_so_not_a_session_flag() {
-    assert!(!p(&["-p", "--", "--resume", "abc"]).session);
-    assert!(!p(&["-p", "--", "-c"]).session);
-    assert!(!p(&["-p", "--", "--continue"]).session);
-}
-
-#[test]
-fn a_session_flag_sets_session_and_changes_no_other_field() {
-    assert_eq!(
-        p(&["-p", "--continue", "x"]),
-        ClaudeArgs {
-            session: true,
-            ..PRINT_PROMPT
-        }
-    );
-    assert_eq!(p(&["-p", "x"]), PRINT_PROMPT);
 }
