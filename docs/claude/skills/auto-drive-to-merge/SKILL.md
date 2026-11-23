@@ -74,8 +74,9 @@ captures authorization afresh.
    is handed off. A job the base renamed or removed is not a reason to
    merge the base; accept it only when it passed at the head under its base
    name. A second moved base is handed off. See
-   [base sync](../../../docs/reference/autodrive-merge-ready-round.md#base-sync). A merge run succeeds only when merged; a verify-only
-   run that reaches DONE succeeds. Report `merged`
+   [base sync](../../../docs/reference/autodrive-merge-ready-round.md#base-sync).
+   A merge run succeeds only when merged; a verify-only run that reaches DONE
+   succeeds. Report `merged`
    only on platform confirmation: GitHub reads back `MERGED`. Squash with an explicit message
    composed by the trusted
    `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`, sourced
