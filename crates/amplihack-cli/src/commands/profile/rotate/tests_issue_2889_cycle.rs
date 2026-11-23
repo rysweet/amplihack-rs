@@ -695,6 +695,7 @@ fn measurement(live: Probed, measured_at: i64) -> Measurement {
         measured_at,
         probed: Some((live, vec![(n("spare"), passive(0.0, 40.0, T - 30))])),
         fresh_lines: Vec::new(),
+        seen: Default::default(),
     }
 }
 

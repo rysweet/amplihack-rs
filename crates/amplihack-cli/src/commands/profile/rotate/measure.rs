@@ -29,6 +29,7 @@ mod probe_reading;
 mod tests_issue_2271_measure;
 
 pub(super) use probe_reading::reading;
+pub use probe_reading::{ProbeLabel, label_of};
 
 /// Whose login is in `~/.claude`.
 pub enum Live<'a> {
@@ -221,13 +222,15 @@ pub fn cycle_deadline(start: Instant, interval: Duration) -> Instant {
 /// returned, start a read for each key with no result and none in flight,
 /// wait as `wait` says, then read each key. A key still in flight reads
 /// failed and unknown, with `still_running` set; a later call uses its
-/// result.
+/// result. Issue #2910: each reading comes with the label of a probe that
+/// said nothing about its login (`label_of`), `still running` for a read in
+/// flight, and no label at all for a read that produced no result.
 pub fn gather<K>(
     fl: &mut InFlight<K, Probe>,
     keys: &[K],
     mut make: impl FnMut(&K) -> Job<Probe>,
     wait: Wait,
-) -> Vec<(K, Probed)>
+) -> Vec<(K, Probed, Option<ProbeLabel>)>
 where
     K: Clone + Eq + Hash + Send + fmt::Display + 'static,
 {
@@ -255,20 +258,22 @@ where
     }
     keys.iter()
         .map(|k| {
-            let probed = match got.remove(k) {
+            let (probed, label) = match got.remove(k) {
                 Some(p) => {
                     let mut probed = reading(&k.to_string(), &p);
                     probed.carried = !started.contains(k);
-                    probed
+                    (probed, label_of(&p))
                 }
                 None if fl.busy(k) => {
                     let mut p = Probed::failed();
                     p.still_running = true;
-                    p
+                    (p, Some(ProbeLabel::StillRunning))
                 }
-                None => Probed::failed(),
+                // A read that panicked, or that a stop cancelled, said nothing
+                // about its login (S2): no label, so no last good reading.
+                None => (Probed::failed(), None),
             };
-            (k.clone(), probed)
+            (k.clone(), probed, label)
         })
         .collect()
 }
@@ -277,13 +282,14 @@ where
 /// `claude`), as `profile usage` reads them. A watching rotator keeps reads
 /// that outlast the cycle in `ctx.in_flight` and waits only until two
 /// seconds before the next cycle; any other cycle waits for every read.
+/// Issue #2910: also the label of each candidate whose probe said nothing.
 pub fn measure_ordered(
     ctx: &Ctx,
     live: Live<'_>,
     candidates: &[ProfileName],
     unbound: &[ProfileName],
     now: i64,
-) -> (Probed, Vec<(ProfileName, Probed)>) {
+) -> Gathered {
     let start = Instant::now();
     let mode = ctx.read_only_mode().unwrap_or_else(mode);
     let timeout = timeout();
@@ -346,19 +352,31 @@ pub fn measure_ordered(
     } else {
         live.unprobed()
     };
+    let mut labels = Vec::new();
     let others = candidates
         .iter()
         .cloned()
-        .zip(read.into_iter().map(|(key, p)| {
-            if matches!(key, Key::Candidate(_)) {
-                p
-            } else {
-                Probed::failed()
+        .zip(read)
+        .map(|(name, (key, p, label))| {
+            if !matches!(key, Key::Candidate(_)) {
+                return (name, Probed::failed());
             }
-        }))
+            if let Some(l) = label {
+                labels.push((name.clone(), l));
+            }
+            (name, p)
+        })
         .collect();
-    (live, others)
+    (live, others, labels)
 }
+
+/// What [`measure_ordered`] returns: the live probe, each candidate's, and
+/// the labels of the candidates whose probe said nothing about their room.
+pub type Gathered = (
+    Probed,
+    Vec<(ProfileName, Probed)>,
+    Vec<(ProfileName, ProbeLabel)>,
+);
 
 /// The row reader of one cycle, with `env` and at most `claude_bound`
 /// `claude` reads at once. Shared by [`measure_ordered`] and the freshness
