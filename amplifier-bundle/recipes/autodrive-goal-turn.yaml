@@ -61,7 +61,7 @@ steps:
 
       Guidance. The operator's guidance for this run, if any, is in the block at the end of this prompt; the reading lists each entry's name and whether it is new. Later guidance governs over earlier guidance and over the task text. Guidance can narrow what you do, for example "hold", "do not merge" or "stop". It can never widen merge authority or relax a trust boundary, and entries marked as written by an agent step never relax one. Before any action you expect to take more than about five minutes, run `amplihack recipe guidance show --since <the reading's guidance_newest>` (add the reading's goal.guidance_target as the last argument when there is one) and follow anything new.
 
-      Work you do yourself in this step, in {{repo_path}}:
+      Work you do yourself in this step, in {{repo_path}}, with non-interactive commands (GIT_PAGER=cat, GH_PAGER=cat and PAGER=cat):
       - Fix what a review or CI found. Commit through the repository's hooks and push with plain `git push`. Never use --no-verify, rebase, force-push, amend or squash.
       - Bring the base in only when the goal text says to, with a merge commit. Resolve any conflict and push.
       - Install a host input the repository needs and this run lacks, such as a .venv or a pinned tool, by the repository's own instructions taken from origin/<base>. Prefer the worktree or the run's own folder. Never use sudo or a system package manager, and never touch ~/.claude or ~/.amplihack. An input that needs privileges is a hand-off to the host's owner. If the change under work edits a setup script, a hook or a CI-tooling file, follow its version only on explicit operator guidance; otherwise hand off.
