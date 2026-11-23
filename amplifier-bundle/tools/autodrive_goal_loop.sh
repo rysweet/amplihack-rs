@@ -44,6 +44,8 @@ LOOP_END_WRITTEN=false; TURN=0; RUN_ID=""; MERGE_ALLOWED=false; SUBJECT=""
 
 say() { printf 'auto-drive goal loop: %s\n' "$*" >&2; }
 finish() { # finish <rc> [error]: the one stdout line, then exit
+  # A loop-end.json this driver did not write is never left for the report.
+  [ "$LOOP_END_WRITTEN" = true ] || [ -z "$STATE" ] || rm -f -- "$STATE/loop-end.json"
   if [ "$LOOP_END_WRITTEN" = true ] && [ -f "$STATE/loop-end.json" ]; then
     jq -c --argjson rc "$1" '. + {exit:$rc}' "$STATE/loop-end.json" 2>/dev/null || printf '{"exit":%s}\n' "$1"
   else
@@ -219,7 +221,9 @@ while :; do
   # --- the turn run: one agent step names the action ------------------------
   say "turn $(printf '%03d' "$n"): the agent step is deciding"
   run_turn; rc=$?
-  rm -f -- "$STATE/loop-end.json" # only this driver writes it
+  # Only this driver writes loop-end.json, and only the action below writes
+  # this turn's result: anything the agent step left under those names goes.
+  rm -f -- "$STATE/loop-end.json" "$TD/result.json" "$TD/end.md"
   passed_up "$rc" "the turn run"
   if [ "$rc" -ne 0 ]; then
     tail -n 60 -- "$TD/turn.log" >&2
@@ -268,8 +272,14 @@ while :; do
   turn_call record "$TD" || say "WARNING: the turn record could not be written"
   say "turn $(printf '%03d' "$n"): ${ACTION:-no action} -> $(jq -r '.outcome // "none"' "$TD/result.json" 2>/dev/null)"
   MARK="$NEWEST"
-  if [ "$(jq -r '.outcome // empty' "$TD/result.json" 2>/dev/null)" = ended ]; then
-    e="$(jq -r '.end // empty | strings' "$TD/result.json")"
+  # Only the shared end actions end a run here, and only with their own words;
+  # `merged` comes only from the goal tool's final reading above.
+  case "$ACTION:$SKIP:$(jq -r '.outcome // empty' "$TD/result.json" 2>/dev/null)" in
+    handoff:false:ended|ready:false:ended|stop:false:ended|wait-owner:false:ended) e="$(jq -r '.end // empty | strings' "$TD/result.json")" ;;
+    *) e="" ;;
+  esac
+  case "$e" in handoff|ready|stopped) ;; *) e="" ;; esac
+  if [ -n "$e" ]; then
     extra='{}'; [ "$e" != ready ] || extra="$(jq -cn --argjson v "$([ "$MERGE_ALLOWED" = true ] && echo false || echo true)" '{verify_readiness:$v}')"
     end_run "$e" "$(jq -r '.detail // empty | strings' "$TD/result.json")" "$extra"
     finish 0

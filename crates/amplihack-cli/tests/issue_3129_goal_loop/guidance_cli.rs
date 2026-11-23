@@ -296,6 +296,13 @@ fn recipe_guide_still_succeeds_when_a_waiter_folder_holds_a_stale_fifo() {
     guide(&fx, "make the folder");
     let wake = fx.pr_parent().join("guidance-wake");
     fs::create_dir_all(&wake).unwrap();
+    // 0700 whatever the umask, as the product creates it: a group-writable
+    // folder is untrusted and its FIFOs are left alone.
+    fs::set_permissions(
+        &wake,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .unwrap();
     mkfifo(&wake.join("424242-1.fifo")); // no reader
     let out = fx.guide_text(&[PR_URL], "second");
     assert!(
