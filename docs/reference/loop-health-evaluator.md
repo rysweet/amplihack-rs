@@ -846,9 +846,10 @@ unchanged. The caller sees one completed evaluator run with an ordinary
 `LOOP_HEALTH:` line, and the step's stderr holds the
 `amplihack.recipe.usage_limit_wait` `start`, `end` and `resume` lines.
 Step-02 waits for every limit it meets and then runs again; nothing counts
-its waits or caps their total. `max_wait_secs` is the length of one wait, and
-nothing bounds the chain but the limit lifting, a stop signal or the end of
-the session; the step timeout does not cut a wait (issue #3037). See
+its waits or caps their total. `max_wait_secs` is the outer bound of one
+capacity or login-change wait, reaching it runs the step again, and nothing
+bounds the chain but the limit lifting, a stop signal or the end of the
+session; the step timeout does not cut a wait (issue #3037). See
 [Usage-limit waits](usage-limit-waits.md).
 
 ### The wait is visible in the recipe log

@@ -17,7 +17,16 @@
 //! limit message in it, and a prompt that could not be read to its end,
 //! which is a lost prompt and not a limit ending.
 //!
-//! No clock ends a limit wait. `$AMPLIHACK_STEP_TIMEOUT` used to: the wait
+//! What ends a *wait* is a limit event (its reset, a login with room, a
+//! login change) with one timed exception: a capacity or login-change wait
+//! that no event ends runs to an outer bound,
+//! `recipe.usage_limit_max_wait_secs`, and the step then runs once more. A
+//! reset wait has no such bound. The wait loop also reads its files on a
+//! 30-second pass rather than blocking on file events. Both are the interim
+//! bound #2909 allows while limits become events, and #3098 removes them;
+//! `plan` and `wait` say why they remain.
+//!
+//! No clock ends a step. `$AMPLIHACK_STEP_TIMEOUT` used to: the wait
 //! ended a minute before it and the step failed, on the reading that the
 //! recipe runner kills a step at that time. It does not - recipe-runner-rs
 //! enforces only a step's own YAML `timeout:` field - so this module was the
@@ -478,13 +487,15 @@ impl Waiter {
     ///
     /// Issue #2911: nothing here refuses a wait for a limit. A second and a
     /// third limit in one step each wait, and the chain is paced by the
-    /// waits costing time rather than by a count, a budget or a clock: every
-    /// plan a limit produces ends strictly after `now` (see `plan`), and
-    /// reaching its deadline retries the step. `$AMPLIHACK_STEP_TIMEOUT`
-    /// plays no part (issue #3037). What still ends a step is a stop signal,
-    /// the end of its session, the wait turned off, output with no limit
-    /// message in it, and a prompt that could not be read to its end, which
-    /// fails the step whether or not it met a limit.
+    /// waits costing time rather than by a count or a budget: every plan a
+    /// limit produces ends strictly after `now` (see `plan`), and reaching
+    /// its deadline retries the step. A reset wait's deadline is its reset;
+    /// a capacity or login-change wait's may be the outer bound, the one
+    /// timed re-entry left, declared in `plan` and removed by #3098.
+    /// `$AMPLIHACK_STEP_TIMEOUT` plays no part (issue #3037). What still ends
+    /// a step is a stop signal, the end of its session, the wait turned off,
+    /// output with no limit message in it, and a prompt that could not be
+    /// read to its end, which fails the step whether or not it met a limit.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -515,11 +526,12 @@ impl Waiter {
         // was launched. It refuses nothing (#2911); it is what the
         // `reentered` line reports and what `used` reads.
         let mark = self.mark();
-        // `max_wait_secs` is the length of one wait, not a budget for the
-        // step: a later wait gets the same length as the first, and no total
-        // ends the chain (#2911). The floor that keeps a configured value
-        // from planning a wait of no length is applied where the value is
-        // read (`settings`).
+        // `max_wait_secs` is the outer bound of one capacity or login-change
+        // wait, not a budget for the step: a later wait gets the same bound
+        // as the first, and no total ends the chain (#2911). A reset wait
+        // does not read it (round 6 of the review of PR #2992). The floor
+        // that keeps a configured value from planning a wait of no length is
+        // applied where the value is read (`settings`).
         let max = settings.max_wait_secs;
         // Issue #2857: a wait had just ended claiming this login was usable
         // and the limit now being judged contradicts it. Reported once,
@@ -535,7 +547,7 @@ impl Waiter {
             .blocked
             .map_or(inherited, |(why, _)| WaitFor::Skip(why));
         let (harness, p, shape) = match waiting {
-            WaitFor::Reset { harness, reset } => (harness, plan(now, reset, max), Shape::Reset),
+            WaitFor::Reset { harness, reset } => (harness, plan(now, reset), Shape::Reset),
             WaitFor::Capacity { harness, reset, .. } => {
                 (harness, plan_capacity(now, reset, max), Shape::Capacity)
             }
@@ -651,13 +663,16 @@ impl Waiter {
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
             End::SessionEnded => AfterLimit::Finish(None),
-            // Issue #2911: a capacity wait that reached its deadline, and a
-            // login-change wait that reached its, each retry rather than end
+            // Issue #2911: a capacity wait that reached its outer bound, and
+            // a login-change wait that reached its, each retry rather than end
             // the step. Nothing has lifted the limit, and the retry may well
             // meet it again; that is another wait, not a failure. The two
             // used to write `failed reason=capacity_expired` and `failed
             // reason=spend_limit`, which between them ended most of the runs
-            // #2911 reports.
+            // #2911 reports. These two arms are the timed re-entry the
+            // module docs declare: no event ran the step again here, the
+            // outer bound did (#3098). Only a capacity or login-change wait
+            // reaches them; a reset wait has no outer bound.
             End::CapacityExpired
             | End::ResetReached
             | End::MaxReached

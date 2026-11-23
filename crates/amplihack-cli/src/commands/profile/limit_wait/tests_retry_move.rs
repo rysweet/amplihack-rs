@@ -105,8 +105,9 @@ impl Env {
         Waiter::new(
             Some(WaitSettings {
                 enabled: true,
-                // The shortest wait a configured length may ask for: the
-                // length of one wait, never a budget for the step.
+                // The shortest outer bound a configured length may ask for:
+                // the bound of one capacity or login-change wait, never a
+                // budget for the step.
                 max_wait_secs: Some(MIN_WAIT_SECS),
                 off_in_ci: false,
             }),

@@ -10,11 +10,15 @@
 //!   wait. The only two readings left that end a step are not limits: output
 //!   with no limit message in it, and a prompt that could not be read to
 //!   its end.
-//! - **the deadline.** The earlier of the reset row and the wait's length
-//!   wins, a tie is named by the reset row, and no reset row can push a
-//!   reset wait past now + 5 h + 120 s. Every plan a limit produces ends
-//!   strictly after `now`: that is the pacing rule that replaced #2731's
-//!   per-step budget. There is no step-timeout row (issue #3037).
+//! - **the deadline.** A reset wait ends at its reset plus the margin and
+//!   has no other row: no configured length and no five-hour ceiling
+//!   (round 6 of the review of PR #2992). A capacity wait ends at the
+//!   earlier of its failed login's reset and its outer bound, a tie named by
+//!   the reset row, and a login-change wait at its outer bound. The outer
+//!   bound is the one timed row left, declared in `plan` and removed by
+//!   #3098. Every plan a limit produces ends strictly after `now`: that is
+//!   the pacing rule that replaced #2731's per-step budget. There is no
+//!   step-timeout row (issue #3037).
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_plan;`.
 
@@ -30,7 +34,6 @@ const NOW: i64 = 1_792_335_600;
 const LA_1300: i64 = 1_792_353_600;
 const MARGIN: i64 = 120;
 const FIVE_HOURS: i64 = 5 * 3600;
-const CEILING: i64 = FIVE_HOURS + MARGIN;
 
 const SPEND: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
 const SPEND_SESSION: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your session limit resets 1pm (America/Los_Angeles)";
@@ -43,8 +46,8 @@ fn wait_for(stderr: &[u8], stdout: &[u8], now: i64) -> WaitFor {
     wait_for_message(limit_patterns::limit_message(stderr, stdout, now), now)
 }
 
-fn p(reset: i64, max: Option<u64>) -> Plan {
-    plan(NOW, reset, max)
+fn p(reset: i64) -> Plan {
+    plan(NOW, reset)
 }
 
 fn reset_wait(reset: i64) -> WaitFor {
@@ -285,27 +288,57 @@ fn the_takeover_check_is_asked_once_and_only_here() {
 
 #[test]
 fn a_future_reset_waits_until_reset_plus_margin() {
-    let got = p(NOW + 1800, None);
+    let got = p(NOW + 1800);
     assert_eq!(
         (got.until, got.bound, got.reset),
         (NOW + 1800 + MARGIN, Bound::ResetMargin, Some(NOW + 1800))
     );
 }
 
+/// Round 6 of the review of PR #2992: a reset wait has no timed bound. Its
+/// reset is the limit event it waits for, so its deadline is that reset
+/// plus the margin for every reset the router can hand it, and it is never
+/// named `max_wait`. The configured length used to cut it short, so a
+/// length below the reset's distance retried the step on a timer; `plan`
+/// no longer takes one, so no configured value can reach it.
 #[test]
-fn a_maximum_only_shortens_the_wait() {
-    let got = p(NOW + 1800, Some(600));
-    assert_eq!((got.until, got.bound), (NOW + 600, Bound::MaxWait));
-    let got = p(NOW + 1800, Some(7200));
-    assert_eq!((got.until, got.bound), (NOW + 1920, Bound::ResetMargin));
+fn round_6_a_reset_wait_ends_at_its_reset_and_on_no_timer() {
+    for ahead in [1i64, 60, 61, 600, 1800, 7200, FIVE_HOURS] {
+        let got = p(NOW + ahead);
+        assert_eq!(
+            (got.until, got.bound, got.kind),
+            (NOW + ahead + MARGIN, Bound::ResetMargin, PlanKind::Reset),
+            "a reset {ahead}s ahead"
+        );
+    }
 }
 
+/// Round 6 of the review of PR #2992: there is no five-hour ceiling on a
+/// reset wait. The five-hour rule decides which wait a limit earns, once, in
+/// the router, and a reset beyond it is a capacity wait before it gets here
+/// (`issue_2911_a_reset_beyond_five_hours_waits_for_capacity`). The
+/// reviewer read the old ceiling as what reached a weekly reset in timed
+/// steps; it never saw a weekly reset. The outer bound of the capacity wait
+/// did, and that is declared in `plan` and removed by #3098.
 #[test]
-fn a_tie_is_named_by_the_earlier_row() {
-    let got = p(NOW + 480, Some(600));
-    assert_eq!((got.until, got.bound), (NOW + 600, Bound::ResetMargin));
-    let got = p(NOW + 1800, Some(600));
-    assert_eq!((got.until, got.bound), (NOW + 600, Bound::MaxWait));
+fn round_6_a_reset_wait_has_no_five_hour_ceiling() {
+    let far = NOW + FIVE_HOURS + 3600;
+    let got = p(far);
+    assert_eq!(
+        (got.until, got.bound),
+        (far + MARGIN, Bound::ResetMargin),
+        "a reset the router would never send here is still waited for as stated"
+    );
+    let weekly = limit_patterns::limit_message(WEEKLY.as_bytes(), b"", NOW)
+        .and_then(|m| m.reset)
+        .expect("the line states a weekly reset");
+    assert!(
+        matches!(
+            wait_for(WEEKLY.as_bytes(), b"", NOW),
+            WaitFor::Capacity { reset: Some(r), why: Waiting::ResetTooFar, .. } if r == weekly
+        ),
+        "a weekly reset is a capacity wait, so `plan` never sees it"
+    );
 }
 
 /// Issue #3037, review of PR #2992: a deadline is set by the limit's reset
@@ -325,7 +358,7 @@ fn issue_3037_a_deadline_is_the_reset_or_the_wait_length_and_nothing_else() {
     }
     // Each planner's deadline is exactly its own rows, however long the
     // step has already run: none of them is told when the step started.
-    let got = p(NOW + 1800, None);
+    let got = p(NOW + 1800);
     assert_eq!(
         (got.until, got.bound),
         (NOW + 1800 + MARGIN, Bound::ResetMargin)
@@ -338,18 +371,20 @@ fn issue_3037_a_deadline_is_the_reset_or_the_wait_length_and_nothing_else() {
 
 #[test]
 fn extreme_inputs_saturate_without_panicking() {
-    let got = p(i64::MAX, Some(u64::MAX));
-    assert_eq!(got.until, NOW + CEILING);
-    let got = p(i64::MIN, None);
+    let got = p(i64::MAX);
+    assert_eq!(got.until, i64::MAX, "saturates rather than wrapping");
+    let got = p(i64::MIN);
     assert_eq!(got.until, NOW + MARGIN);
-    let got = plan(i64::MAX - 10, i64::MAX, Some(u64::MAX));
+    let got = plan(i64::MAX - 10, i64::MAX);
     assert!(got.until >= i64::MAX - 10);
-    let got = plan(i64::MIN, i64::MIN, None);
+    let got = plan(i64::MIN, i64::MIN);
     assert!(got.until > i64::MIN, "strictly after now");
 }
 
+/// A reset wait's deadline is the later of its reset and `now`, plus the
+/// margin: never before `now + MARGIN`, and never cut short.
 #[test]
-fn until_is_always_between_now_and_the_ceiling() {
+fn until_is_the_reset_plus_margin_and_never_before_now_plus_margin() {
     let resets = [
         i64::MIN,
         NOW - 1,
@@ -359,15 +394,10 @@ fn until_is_always_between_now_and_the_ceiling() {
         NOW + FIVE_HOURS + 1,
         i64::MAX,
     ];
-    let maxes = [None, Some(0), Some(1800), Some(18_120), Some(u64::MAX)];
     for r in resets {
-        for m in maxes {
-            let got = p(r, m);
-            assert!(
-                got.until >= NOW && got.until - NOW <= CEILING,
-                "reset {r} max {m:?}"
-            );
-        }
+        let got = p(r);
+        assert_eq!(got.until, r.max(NOW).saturating_add(MARGIN), "reset {r}");
+        assert!(got.until >= NOW + MARGIN, "reset {r}");
     }
 }
 
@@ -392,15 +422,12 @@ fn issue_2911_every_plan_a_limit_produces_ends_strictly_after_now() {
     // The reset rows a limit can reach: `wait_for_message` only builds a
     // reset wait from a reset strictly ahead of `now` and inside five hours,
     // and every other limit is a capacity or login-change wait.
+    for ahead in [1i64, 60, 1800, FIVE_HOURS] {
+        let got = plan(NOW, NOW + ahead);
+        assert!(got.until > NOW, "reset {ahead}s ahead: {got:?}");
+    }
     let maxes = [None, Some(MIN_WAIT_SECS), Some(600), Some(21_600)];
     for max in maxes {
-        for ahead in [1i64, 60, 1800, FIVE_HOURS] {
-            let got = plan(NOW, NOW + ahead, max);
-            assert!(
-                got.until > NOW,
-                "reset {ahead}s ahead, max {max:?}: {got:?}"
-            );
-        }
         for reset in [None, Some(NOW - 86_400), Some(NOW + 7 * 86_400)] {
             let got = plan_capacity(NOW, reset, max);
             assert!(got.until > NOW, "capacity, reset {reset:?}, max {max:?}");
@@ -416,7 +443,7 @@ fn issue_2911_every_plan_a_limit_produces_ends_strictly_after_now() {
 #[test]
 fn a_reset_at_or_before_now_is_still_floored_at_the_margin() {
     for reset in [NOW, NOW - 300, i64::MIN] {
-        let got = p(reset, None);
+        let got = p(reset);
         assert_eq!(
             (got.until, got.bound, got.reset),
             (NOW + MARGIN, Bound::ResetMargin, Some(reset))
@@ -428,7 +455,7 @@ fn a_reset_at_or_before_now_is_still_floored_at_the_margin() {
 
 #[test]
 fn a_reset_plan_is_of_the_reset_kind() {
-    assert_eq!(p(NOW + 1800, None).kind, PlanKind::Reset);
+    assert_eq!(p(NOW + 1800).kind, PlanKind::Reset);
 }
 
 #[test]
@@ -480,11 +507,12 @@ fn ac5_an_unset_maximum_gives_a_capacity_wait_of_six_hours() {
     assert_eq!((got.until, got.bound), (NOW + 21_600, Bound::MaxWait));
 }
 
-// The six-hour capacity default never reaches a reset wait: with no maximum
-// a reset wait still ends at its reset plus margin, inside five hours.
+// The six-hour capacity default never reaches a reset wait, and since round
+// 6 of the review of PR #2992 neither does a configured outer bound: a reset
+// wait ends at its reset plus margin.
 #[test]
 fn the_capacity_default_does_not_bound_a_reset_wait() {
-    let got = p(NOW + 4 * 3600, None);
+    let got = p(NOW + 4 * 3600);
     assert_eq!(
         (got.until, got.bound, got.kind),
         (NOW + 4 * 3600 + MARGIN, Bound::ResetMargin, PlanKind::Reset)
@@ -554,5 +582,5 @@ fn issue_2911_the_wait_for_a_passed_reset_has_real_length() {
     }
     // And the plan a reset wait would have given, had the planner built one:
     // the margin is what keeps even that above `now`.
-    assert_eq!(plan(NOW, past, None).until, NOW + MARGIN);
+    assert_eq!(plan(NOW, past).until, NOW + MARGIN);
 }

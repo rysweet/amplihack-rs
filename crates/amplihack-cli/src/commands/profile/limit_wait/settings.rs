@@ -7,16 +7,19 @@
 //! better bound. Setting the key in a user or project file, or the
 //! variable, turns it back on there.
 //!
-//! `recipe.usage_limit_max_wait_secs` is the length of *one* wait, not a
-//! budget for the whole step (issue #2911). A step that meets limit after
-//! limit waits each of them out; nothing counts the waits or ends the step
-//! when a total is reached. A configured value below
-//! [`plan::MIN_WAIT_SECS`] is raised to it, which is what holds the pacing
-//! rule for every configured value rather than only for zero: the wait loop
-//! polls every 30 seconds, so a shorter wait has no wake condition that
-//! could end it and would simply return. A zero therefore no longer means
-//! "do not wait"; `recipe.usage_limit_wait = false` is how to turn the wait
-//! off.
+//! `recipe.usage_limit_max_wait_secs` is the outer bound of *one* capacity
+//! or login-change wait, not a budget for the whole step (issue #2911). A
+//! reset wait does not read it: it ends at its reset, on a login with room
+//! or on a login change (round 6 of the review of PR #2992). A step that
+//! meets limit after limit waits each of them out; nothing counts the waits
+//! or ends the step when a total is reached. The bound is a timer, kept as
+//! the interim outer bound until a wait wakes on events alone (#3098; see
+//! `plan`). A configured value below [`plan::MIN_WAIT_SECS`] is raised to
+//! it, which is what holds the pacing rule for every configured value
+//! rather than only for zero: the wait loop reads its files every 30
+//! seconds, so a shorter bound could expire before any reading had a chance
+//! to end the wait. A zero therefore no longer means "do not wait";
+//! `recipe.usage_limit_wait = false` is how to turn the wait off.
 //!
 //! The floor is applied here, where the value is read, and not in the
 //! planners, so that there is one place to look and `lower_only` keeps
@@ -24,18 +27,18 @@
 //! project's configured value to the 21 600-second default.
 //!
 //! Raising it is not silent. Before #2911 a `0` meant "fail at once", so a
-//! host may still carry one that now means a 60-second wait. While the wait
+//! host may still carry one that now means a 60-second bound. While the wait
 //! is on, [`resolve`] says so on stderr each time it reads such a value
 //! ([`length_warning`]), and names the key that turns the wait off.
 //!
-//! The same line reports the cost of any short length, not only one below
-//! the floor (review of PR #2992). Because the value is the length of one
-//! wait and a step still limited when a wait ends runs its agent again,
-//! the value *is* the interval at which a waiting step re-asks the harness,
-//! and each ask is a fresh agent launch. Nothing counts or ends that chain
-//! (issue #2911): it ends when the limit lifts, on a stop signal or with the
-//! step's session, so a short length is a poll of the harness and is named
-//! as one; see [`SHORT_WAIT_SECS`].
+//! The same line reports the cost of any short bound, not only one below
+//! the floor (review of PR #2992). A step still limited when its capacity or
+//! login-change wait reaches the bound runs its agent again, so the value
+//! *is* the interval at which such a step re-asks the harness, and each ask
+//! is a fresh agent launch. Nothing counts or ends that chain (issue #2911):
+//! it ends when the limit lifts, on a stop signal or with the step's
+//! session, so a short bound is a poll of the harness and is named as one;
+//! see [`SHORT_WAIT_SECS`].
 //!
 //! [`plan::MIN_WAIT_SECS`]: super::plan::MIN_WAIT_SECS
 
@@ -90,10 +93,10 @@ pub(crate) fn resolve(cwd: &Path) -> WaitSettings {
 ///
 /// Two causes, one line. A length below [`MIN_WAIT_SECS`] was raised to it,
 /// which a host carrying the pre-#2911 `0` needs to be told. A length below
-/// [`SHORT_WAIT_SECS`] is a poll of the harness: the value is the length of
-/// one wait, and a step still limited when that wait ends launches its agent
-/// again, so the step re-asks about that often for as long as the limit
-/// lasts. Neither is refused.
+/// [`SHORT_WAIT_SECS`] is a poll of the harness: the value is the outer bound
+/// of a capacity or login-change wait, and a step still limited when that
+/// wait ends launches its agent again, so the step re-asks about that often
+/// for as long as the limit lasts. Neither is refused.
 ///
 /// Only while the wait is on: with it off the length is never used, so
 /// there is nothing to warn about. The line names the keys, the variable and
@@ -110,17 +113,18 @@ pub(crate) fn length_warning(effective: &Effective, settings: &WaitSettings) -> 
     }
     let cause = if configured < MIN_WAIT_SECS {
         format!(
-            "is below {MIN_WAIT_SECS} seconds, so each usage-limit wait lasts \
-             {MIN_WAIT_SECS} seconds; 0 no longer turns the wait off"
+            "is below {MIN_WAIT_SECS} seconds, so the outer bound of a usage-limit \
+             wait is {MIN_WAIT_SECS} seconds; 0 no longer turns the wait off"
         )
     } else {
         format!("is below {SHORT_WAIT_SECS} seconds, the rotator's own cycle")
     };
     Some(format!(
         "warning: {MAX_WAIT_KEY} (AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS) {cause}. It is \
-         the length of one wait, and a step still limited when a wait ends runs its \
-         agent again, so this is how often such a step re-asks; the default of \
-         {CAPACITY_DEFAULT_MAX} seconds asks once every six hours. Set \
+         the outer bound of a capacity or login-change wait, and a step still \
+         limited when such a wait ends runs its agent again, so this is how often \
+         such a step re-asks; the default of {CAPACITY_DEFAULT_MAX} seconds asks once \
+         every six hours. A wait for a reset is not shortened by it. Set \
          {ENABLED_KEY} = false (AMPLIHACK_USAGE_LIMIT_WAIT=0) to stop steps waiting"
     ))
 }

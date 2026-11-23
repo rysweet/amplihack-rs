@@ -34,12 +34,33 @@
 //! no end that already had a name: a swapping rotator cycle moves the key
 //! and reports capacity in the same write, and such a wait still ends
 //! `rotator capacity` as it always has.
+//!
+//! # The 30-second pass is the interim mechanism
+//!
+//! The events a wait ends on (a login with room, a rotator cycle, a login
+//! change) arrive as writes to files: the rotate ledger, the auto-switch
+//! readings, the swap record, `.claude.json` and the credentials file. The
+//! loop finds them by reading those files every [`POLL_SECS`], and checks the
+//! stop signal and the session every second. It runs no `/usage` probe and
+//! launches no agent: a pass is a handful of file reads. It also decides
+//! nothing about when the step runs again. That is set by an event, a
+//! reset, or the outer bound `plan` declares, and the interval only sets how
+//! soon after its write an event is noticed.
+//!
+//! It is still a poll, and it is kept as the interim bound #2909 allows
+//! while limits become events. The wait cannot yet block on file events
+//! instead: `amplihack_utils::file_event::Waiter` is Linux-only and retries
+//! `poll(2)` on `EINTR`, so a stop signal could not end a wait blocked in
+//! it, and the step must answer one at once. PR #3012 adds the interrupt the
+//! waiter lacks. Replacing this pass with a blocking wait on those files is
+//! #3098.
 
 use super::events::{Event, line};
 use super::plan::{Bound, Plan, PlanKind};
 use std::time::Duration;
 
-/// How often the login fingerprint is taken again.
+/// How often the login fingerprint, the rotator's record and the readings
+/// are read again: the interim pass described in the module docs (#3098).
 const POLL_SECS: i64 = 30;
 /// How often a `progress` line is written.
 const PROGRESS_SECS: i64 = 60;
@@ -90,10 +111,13 @@ pub(crate) trait WaitDeps {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum End {
     ResetReached,
+    /// A login-change wait's outer bound passed; the login did not change.
+    /// Since round 6 of the review of PR #2992 no reset wait can end this
+    /// way, because a reset wait has no outer bound.
     MaxReached,
     LoginChanged,
     RotatorCapacity,
-    /// A capacity wait's `max_wait` deadline passed; nothing lifted the limit.
+    /// A capacity wait's outer bound passed; nothing lifted the limit.
     CapacityExpired,
     /// A reading showed that another stored login has capacity.
     OtherCapacity,

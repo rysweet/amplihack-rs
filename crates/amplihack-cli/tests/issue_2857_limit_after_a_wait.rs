@@ -14,11 +14,13 @@
 //! removed them, and this file no longer describes either. In particular
 //! `skipped reason=already_waited`, `failed reason=already_waited` and
 //! `failed reason=capacity_expired` no longer exist; `max_wait_secs` is the
-//! length of one wait rather than a total for the step; and a reset already
-//! behind the clock is a capacity wait for every limit, not only for a
-//! re-entry the old rule would have refused. What paces a chain of limits now
-//! is that every wait costs time, and the only bound left on the chain is the
-//! step's own timeout.
+//! outer bound of one capacity or login-change wait rather than a total for
+//! the step, and since round 6 of the review of PR #2992 it does not shorten a
+//! reset wait; and a reset already behind the clock is a capacity wait for
+//! every limit, not only for a re-entry the old rule would have refused. What
+//! paces a chain of limits now is that every wait costs time. Nothing bounds
+//! the chain: the step timeout plays no part (issue #3037), and an outer bound
+//! that is reached runs the step again rather than ending it.
 //!
 //! What these tests pin:
 //!
@@ -686,14 +688,23 @@ fn issue_3037_a_step_timeout_does_not_end_a_wait_for_a_passed_reset() {
 
 // --- a wait that ran out earns no `reentered` line --------------------------
 
-/// A step with no rotator and no profile root of its own: the reset wait the
-/// stock message asks for, planned with a configured `max_wait_secs` of 0,
-/// which reads as the 60-second floor (issue #2911), ends at that ceiling
-/// (`max reached`) and the step retries.
+/// A session limit that states no reset: its wait is a capacity wait with
+/// no reset row, so only its outer bound can end it here.
+const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
+
+/// A step with no rotator and no profile root of its own, whose limit states
+/// no reset: a capacity wait planned with a configured `max_wait_secs` of 0,
+/// which reads as the 60-second floor (issue #2911), ends at that outer
+/// bound (`capacity expired`) and the step retries.
+///
+/// It used to be the stock message's reset wait, cut short by the
+/// configured length (`max reached`). Since round 6 of the review of PR
+/// #2992 a reset wait has no outer bound and runs to its reset, which does
+/// say to try, so the wait that runs out is now a capacity wait.
 fn ceiling_step(f: &Fixture) -> Command {
     executable(&f.tools.join("claude"), STUB);
     let mut c = f.step();
-    c.env(MAX_WAIT_ENV, "0");
+    c.env(MAX_WAIT_ENV, "0").env("LIMIT_MESSAGE", NO_RESET_TEXT);
     c
 }
 
@@ -729,13 +740,17 @@ fn a_usage_limit_after_a_wait_that_ran_out_waits_again_and_never_refuses() {
     assert_eq!(
         ev,
         [
-            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
+            "waiting_for_capacity reason=no_reset harness=claude \
+             until=2026-10-18 08:01:00 -07:00",
+            "start reason=usage_limit wait=capacity harness=claude reset=none \
              until=2026-10-18 08:01:00 -07:00 bound=max_wait",
-            "end reason=max reached",
+            "end reason=capacity expired",
             "resume attempt=2",
-            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
+            "waiting_for_capacity reason=no_reset harness=claude \
+             until=2026-10-18 08:02:00 -07:00",
+            "start reason=usage_limit wait=capacity harness=claude reset=none \
              until=2026-10-18 08:02:00 -07:00 bound=max_wait",
-            "end reason=max reached",
+            "end reason=capacity expired",
             "resume attempt=3",
         ],
         "a configured 0 is the 60-second floor, twice over: {ev:?}"
@@ -744,7 +759,7 @@ fn a_usage_limit_after_a_wait_that_ran_out_waits_again_and_never_refuses() {
     assert_eq!(count(&ev, "skipped "), 0, "{ev:?}");
     assert_eq!(count(&ev, "failed "), 0, "{ev:?}");
     assert!(
-        text(&out.stderr).contains(LIMIT_TEXT),
+        text(&out.stderr).contains(NO_RESET_TEXT),
         "the runner's classifier must still see the limit"
     );
 }
@@ -759,8 +774,8 @@ fn a_429_after_a_wait_that_ran_out_is_not_re_entered() {
     assert_eq!(f.count("0"), 2);
     let ev = events(&out);
     assert_eq!(
-        ev[1..],
-        ["end reason=max reached", "resume attempt=2"],
+        ev[2..],
+        ["end reason=capacity expired", "resume attempt=2"],
         "the 429 is passed up as before; nothing waits for it: {ev:?}"
     );
 }

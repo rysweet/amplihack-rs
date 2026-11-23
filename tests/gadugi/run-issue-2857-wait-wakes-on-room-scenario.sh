@@ -52,8 +52,8 @@
 #     which is the whole of the pacing rule that replaced the per-step budget.
 #     So a wait that runs to its end now ends `capacity expired`, where before
 #     it ended `reset reached`.
-#   * AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS is the length of one wait, not a
-#     budget for the step, and it is floored at 60 seconds, because the wait
+#   * AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS is the outer bound of one capacity
+#     wait, not a budget for the step, and it is floored at 60 seconds, because the wait
 #     loop polls every 30 seconds and a shorter wait has no wake condition
 #     that could end it. The two seconds this scenario used to ask for would
 #     be raised to 60 in any case, so it asks for 60 plainly.
@@ -138,9 +138,11 @@ mkdir -m 700 -- "$PROFILES" "$PROFILES/.auto-switch.d" "$LEDGER_DIR" \
 # the step waits for capacity rather than for a time that has been and gone.
 NOW="$(date +%s)"
 LIMIT_EPOCH=$(( NOW - 300 ))
-# The length of one wait, lowered from its 21600-second default so a wait that
-# nothing ends early ends on `bound=max_wait` in a minute rather than in six
-# hours. 60 is the floor the binary applies (two poll intervals of the wait
+# The outer bound of one capacity wait, lowered from its 21600-second default
+# so a wait that nothing ends early ends on `bound=max_wait` in a minute rather
+# than in six hours. It is the one timed bound left on a wait, kept as an
+# interim bound (docs/reference/usage-limit-waits.md, #3098); a reset wait
+# has none. 60 is the floor the binary applies (two poll intervals of the wait
 # loop), so asking for less would be raised to it anyway (issue #2911).
 MAX_WAIT_SECS=60
 
@@ -154,7 +156,7 @@ MAX_WAIT_SECS=60
 #   AMPLIHACK_CLAUDE_BINARY_PATH        the stub agent
 #   RECORD_DIR, LEDGER_DIR, LEDGER_BODY,
 #   LIMIT_CALLS, LIMIT_EPOCH            the stub's own inputs
-#   AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS the length of one wait, lowered to the
+#   AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS the outer bound of one wait, lowered to the
 #                                       binary's own 60-second floor
 #   AMPLIHACK_STEP_TIMEOUT              the step's own bound, set only by the
 #                                       case B cases that need one; empty

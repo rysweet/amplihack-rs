@@ -1,28 +1,55 @@
 //! What a usage limit allows, and the wait's deadline (issues #1618, #2911).
 //!
-//! No limit this module reads is refused a wait, and no count, budget or
-//! clock here ends a step that keeps meeting limits. A reset the step can
-//! use within five hours is waited for directly. Every other limit becomes
-//! a wait for *capacity* (a login with room, the rotator's next cycle, or
-//! the login in `$HOME/.claude` changing) and says why it has no reset to
-//! end on ([`Waiting`]). Two readings are left that no wait can help, and
-//! neither is a limit: output with no limit message in it at all, and a
-//! prompt that could not be read to its end ([`NoWait`]).
+//! No limit this module reads is refused a wait, and no count or budget here
+//! ends a step that keeps meeting limits. A reset the step can use within
+//! five hours is waited for directly. Every other limit becomes a wait for
+//! *capacity* (a login with room, the rotator's next cycle, or the login in
+//! `$HOME/.claude` changing) and says why it has no reset to end on
+//! ([`Waiting`]). Two readings are left that no wait can help, and neither is
+//! a limit: output with no limit message in it at all, and a prompt that
+//! could not be read to its end ([`NoWait`]).
 //!
-//! The deadline is the earlier of two rows, a tie named by the reset row.
-//! All arithmetic saturates. A reset wait's deadline lies in
-//! `now + 120 s ..= now + 5 h + 120 s`; a capacity or login-change wait has
-//! no five-hour ceiling and ends at `max` from now, or at the failed
-//! login's own reset plus the margin when that is sooner. Reaching either
-//! row retries the step; neither ends it.
+//! # What ends a wait, and the one timed bound left
+//!
+//! #2911 asks for a wait that is woken by limit events: the recorded reset
+//! passing, a login with room, the login changing. How close a wait comes
+//! to that turns on whether its limit stated a reset the step can sleep to.
+//!
+//! - **A reset wait** ([`plan`]) has no timed bound. It ends at its reset
+//!   plus [`MARGIN`], or sooner on room or a login change, and on nothing
+//!   else. The configured length does not shorten it (round 6 of the review
+//!   of PR #2992).
+//! - **A capacity wait** ([`plan_capacity`]) and **a login-change wait**
+//!   ([`plan_login_change`]) end on room or a login change too, and a
+//!   capacity wait at its failed login's own reset when that comes first.
+//!   Failing those, they end at an **outer bound**
+//!   ([`Bound::MaxWait`]): `recipe.usage_limit_max_wait_secs`, or
+//!   [`CAPACITY_DEFAULT_MAX`] when unset, never less than
+//!   [`MIN_WAIT_SECS`]. Reaching it runs the step once more, and a limit on
+//!   that run starts another wait. It never ends the step.
+//!
+//! The outer bound is a timer, not a limit event. It is kept as the interim
+//! outer bound that #2909 allows "while this lands", for two reasons. A session, weekly or credits
+//! limit that states no reset records no block (`rotate::step_block`), so
+//! nothing records when it lifts, and on a host with no rotator and no other
+//! login nothing but this bound would ever run such a step again without a
+//! person. And a capacity wait whose limit stated a reset more than five
+//! hours away is still reached in steps of the bound rather than waited
+//! for, because waiting for that reset alone needs it held to its kind's
+//! window, as the ledger holds it, which this module does not yet do.
+//! Removing the bound is #3098, together with the 30-second pass of the
+//! wait loop (`wait`).
+//!
+//! The deadline is the earlier of the rows a wait has, a tie named by the
+//! reset row. All arithmetic saturates.
 //!
 //! **Every plan a limit produces ends strictly after `now`.** That is the
 //! whole of the pacing rule, and it replaces the per-step budget #2731
 //! used: a chain of limits is paced by each wait costing time, not by a
 //! counter that eventually refuses one. It holds because a reset row is
 //! only built from a reset in the future, and because [`MIN_WAIT_SECS`]
-//! floors the configured wait length where it is read (`settings`), so no
-//! `max` row can land on `now` either.
+//! floors the configured outer bound where it is read (`settings`), so no
+//! outer bound can land on `now` either.
 //!
 //! There is no step-timeout row (issue #3037, review of PR #2992). One used
 //! to pull the deadline back to `$AMPLIHACK_STEP_TIMEOUT` less a minute and
@@ -38,19 +65,24 @@ use crate::commands::recipe::run::limit_patterns::{Harness, LimitKind, LimitMess
 
 /// Added to a reset still in the future.
 pub(crate) const MARGIN: i64 = 120;
-/// A reset further away than this is not waited for directly.
+/// A reset further away than this is not waited for directly: the router
+/// ([`wait_for_message`], [`from_reading`]) makes it a capacity wait.
 pub(crate) const FIVE_HOURS: i64 = 5 * 3600;
-/// A capacity wait's length when nothing sets one: the schema's default.
+/// The outer bound of a capacity or login-change wait when nothing sets
+/// one: the schema's default, six hours.
+///
+/// A timer, kept as the interim outer bound until the wait wakes on events
+/// alone (#3098; see the module docs). A reset wait never reaches it.
 pub(crate) const CAPACITY_DEFAULT_MAX: u64 = 21_600;
-/// The shortest wait a configured length may ask for: two poll intervals of
+/// The shortest outer bound a configured length may ask for: two passes of
 /// the wait loop (issue #2911).
 ///
-/// The loop takes its fingerprint and its capacity readings every 30
-/// seconds, so a wait shorter than one interval has no wake condition that
-/// could end it and would simply return. A chain of those is the busy loop
-/// the pacing rule exists to prevent, wearing different clothes. It is a
-/// floor on a length a person configured, not a timer: nothing here sleeps
-/// or counts, and the wait loop is the one that already existed.
+/// The loop reads its files every 30 seconds (`wait`), so an outer bound
+/// shorter than one pass could expire before any reading had a chance to
+/// end the wait first, and every expiry runs the step's agent again: a chain
+/// of those would be a busy loop of agent launches. It floors the outer
+/// bound and adds no timer of its own, and it goes when the outer bound
+/// does (#3098).
 pub(crate) const MIN_WAIT_SECS: u64 = 60;
 
 /// Why no wait can help, whatever the output said.
@@ -258,7 +290,12 @@ pub(crate) fn rate_limit_capacity(
 /// Which row set the deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bound {
+    /// The limit's own reset plus [`MARGIN`]: the recorded reset passing,
+    /// which is a limit event.
     ResetMargin,
+    /// The outer bound of a capacity or login-change wait: a timer, kept as
+    /// the interim outer bound until the wait wakes on events alone (#3098).
+    /// A reset wait never has it.
     MaxWait,
 }
 
@@ -332,29 +369,30 @@ impl Plan {
     }
 }
 
-/// The deadline for a wait starting at `now` for `reset`, which
-/// [`wait_for_message`] has kept within five hours and strictly ahead of the
-/// clock: the reset plus the margin, or `max` from now when that is sooner.
+/// The deadline for a reset wait starting at `now` for `reset`: the reset
+/// plus the margin, and nothing else.
 ///
-/// The reset row is floored at `now + MARGIN`, so the deadline is after
-/// `now` even for a reset no caller should have passed in.
-pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>) -> Plan {
-    let ceiling = now.saturating_add(FIVE_HOURS);
-    let mut until = reset
-        .min(ceiling)
-        .saturating_add(MARGIN)
-        .max(now.saturating_add(MARGIN));
-    let mut bound = Bound::ResetMargin;
-    if let Some(max) = max {
-        let end = now.saturating_add(secs(max));
-        if end < until {
-            until = end;
-            bound = Bound::MaxWait;
-        }
-    }
+/// A reset wait has no timed bound (round 6 of the review of PR #2992). The
+/// router builds one only from a reset strictly ahead of the clock and
+/// within five hours, so its reset is the limit event it waits for: the wait
+/// ends there, or sooner on a login with room or a login change. The
+/// configured length used to shorten it, which turned a reset wait into a
+/// retry on a timer whenever the length was below the reset's distance; it
+/// no longer does.
+///
+/// There is no five-hour ceiling here either. The five-hour rule decides
+/// which wait a limit earns, and it is applied once, by the router: a reset
+/// beyond it never reaches this function but becomes a capacity wait, whose
+/// outer bound is the timer that reaches a far reset in steps
+/// ([`plan_capacity`]). A ceiling repeated here could only have cut short a
+/// wait the router had already judged.
+///
+/// The row is floored at `now + MARGIN`, so the deadline is after `now`
+/// even for a reset no caller should have passed in.
+pub(crate) fn plan(now: i64, reset: i64) -> Plan {
     Plan {
-        until,
-        bound,
+        until: reset.max(now).saturating_add(MARGIN),
+        bound: Bound::ResetMargin,
         kind: PlanKind::Reset,
         reset: Some(reset),
         login_change: false,
@@ -363,9 +401,15 @@ pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>) -> Plan {
 
 /// The deadline for a capacity wait starting at `now`: the earlier of the
 /// failed login's own `reset` plus the margin (when still in the future)
-/// and `max` from now. A tie is named `ResetMargin`. There is no five-hour
-/// ceiling. Reaching the reset retries the step, because that login has
-/// recovered; reaching `max` retries it too (issue #2911).
+/// and the outer bound `max` from now. A tie is named `ResetMargin`. There
+/// is no five-hour ceiling. Reaching the reset retries the step, because
+/// that login has recovered; reaching the outer bound retries it too (issue
+/// #2911), and that is the timed re-entry declared in the module docs and
+/// removed by #3098.
+///
+/// A weekly limit's reset, days away, is waited for here and not in
+/// [`plan`], so it is this function's outer bound, not a ceiling on a reset
+/// wait, that reaches such a reset in steps.
 ///
 /// `max` has already been floored at [`MIN_WAIT_SECS`] where it was read, and
 /// the reset row is only applied for a reset still ahead of `now`, so the
@@ -389,9 +433,12 @@ pub(crate) fn plan_capacity(now: i64, reset: Option<i64>, max: Option<u64>) -> P
     }
 }
 
-/// The deadline for a login-change wait starting at `now`: `max` from now.
-/// There is no reset row, because the limit stated none, and no five-hour
-/// ceiling.
+/// The deadline for a login-change wait starting at `now`: the outer bound
+/// `max` from now. There is no reset row, because the limit stated none,
+/// and no five-hour ceiling. The login changing is the event this wait is
+/// for; the outer bound is the declared interim timer (#3098) that runs the
+/// step again when no change comes, which on a host with no rotator is the
+/// only thing that would.
 ///
 /// The plan's kind is [`PlanKind::Reset`] on purpose: the kind says what
 /// the deadline means, and reaching this one retries the step, as reaching a

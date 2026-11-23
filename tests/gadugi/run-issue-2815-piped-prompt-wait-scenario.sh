@@ -139,7 +139,7 @@ mkdir -m 700 -- "$PROFILES" || { echo "FAIL: cannot create the profile root"; ec
 #   AMPLIHACK_ROTATE_AUTOSTART=0        no detached rotator outlives the scenario
 #   AMPLIHACK_GOVERNOR=off              the #1811 capacity governor would hold
 #                                       the exhausted reading before the wait
-#   AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS the length of one wait, lowered to the
+#   AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS the outer bound of one wait, lowered to the
 #                                       60-second floor (issue #2911)
 scenario_env() {
   env -i \
@@ -172,8 +172,8 @@ mkdir -p -- "$WORK/tmp" || { echo "FAIL: cannot create the scratch TMPDIR"; echo
 # is named `passed_reset` rather than ending the moment it begins.
 LIMIT_EPOCH=$(( $(date +%s) - 300 ))
 
-# The length of one wait (issue #2911: a length, not a per-step budget),
-# lowered to plan::MIN_WAIT_SECS. A smaller value would be raised to the floor
+# The outer bound of one capacity wait (issue #2911: a bound on one wait, not
+# a per-step budget), lowered to plan::MIN_WAIT_SECS. A smaller value would be raised to the floor
 # anyway and would print a warning, so 60 is the shortest honest setting.
 MAX_WAIT_SECS=60
 # A hang detector and nothing else: one wait plus generous room for the step's

@@ -638,31 +638,64 @@ fn a_retry_that_skipped_the_wait_because_the_login_had_room_also_said_try_now() 
     });
 }
 
-/// A wait that merely reached its maximum retried because the maximum said so,
-/// not because anything said the login was usable: a limit after it is no
-/// contradiction, so it writes no `reentered` line.
+/// A wait that merely reached its outer bound retried because the bound said
+/// so, not because anything said the login was usable: a limit after it is
+/// no contradiction, so it writes no `reentered` line.
+///
+/// Round 6 of the review of PR #2992: only a capacity or login-change wait
+/// has an outer bound, so this is a capacity wait with no reset. A reset
+/// wait used to be cut short by a configured length; it now ends at its
+/// reset, which does say to try.
 #[test]
 fn a_retry_after_a_wait_that_ran_out_said_nothing() {
     guarded(|| {
         let e = env();
-        // The shortest wait the setting can ask for: it ends on its own
-        // maximum, well before the reset, and earns a retry (issue #2911).
+        // The shortest outer bound the setting can ask for: nothing ends the
+        // wait before it, and it earns a retry (issue #2911).
         let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
-        let reset = w.now() + 1800;
+        let got = after(&mut w, capacity(), 1, &|_, _| false);
+        assert!(
+            matches!(got, AfterLimit::Retry),
+            "capacity expired still retries"
+        );
+        assert!(
+            !w.resumed_on_a_signal(),
+            "`capacity expired` is the wait's own outer bound: nothing said to try"
+        );
+    });
+}
+
+/// Round 6 of the review of PR #2992: a reset wait is not cut short by the
+/// configured length. With the shortest outer bound the setting allows and
+/// a reset half an hour away, the wait runs to its reset, and a reset that
+/// arrived does say *try now*.
+#[test]
+fn round_6_a_reset_wait_runs_past_the_configured_length_to_its_reset() {
+    guarded(|| {
+        let e = env();
+        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
+        w.note_attempt_login();
+        let start = w.now();
+        let reset = start + 1800;
         let wait = WaitFor::Reset {
             harness: Harness::Claude,
             reset,
         };
         let got = after(&mut w, wait, 1, &|_, _| false);
+        assert!(matches!(got, AfterLimit::Retry));
         assert!(
-            matches!(got, AfterLimit::Retry),
-            "max reached still retries"
+            w.now() >= reset + super::plan::MARGIN,
+            "the wait ran to its reset plus the margin, not to the {}-second length: \
+             started {start}, ended {}",
+            super::plan::MIN_WAIT_SECS,
+            w.now()
         );
         assert!(
-            !w.resumed_on_a_signal(),
-            "`max reached` is the wait's own ceiling: nothing said to try"
+            w.resumed_on_a_signal(),
+            "`reset reached` claims the retry will work"
         );
     });
 }

@@ -31,7 +31,14 @@
 //! it again. The agentic layer that decides whether and when to relaunch
 //! (`loop-health-evaluator`, auto-drive) reads the classification as JSON.
 //! `tests_ending_evidence` pins that the verdict is the same with this
-//! module's sentence removed from the evidence.
+//! module's sentence removed from the evidence, and the integration test
+//! `issue_2911_prompt_loss_resumes` runs the whole path on the pinned recipe
+//! runner: the step ends `failed reason=prompt_cut_short` with no limit text
+//! reaching the runner, the run's result carries the `usage_limit`
+//! `failure_cause`, and the same command launched again resumes at this
+//! step with the steps before it restored. No amplihack code relaunches a
+//! run by itself; the layer that started it does, and needs nothing but the
+//! same command.
 //!
 //! What the step writes here is for the person reading the log, in the
 //! order they need it:

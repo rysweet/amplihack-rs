@@ -1,9 +1,11 @@
 //! Issue #1618: how the usage-limit wait ends other than at the reset.
 //!
-//! - AC4: `max_wait_secs = 0` is raised to the 60-second floor and waits
-//!   that long before retrying once (issue #2911: there are no zero-length
-//!   waits any more, and a zero no longer means "do not wait"); a step
-//!   timeout of 60 s or less ends the wait at once with no retry.
+//! - AC4: `max_wait_secs = 0` is raised to the 60-second floor and bounds a
+//!   wait with no reset to wait for at that length before retrying once
+//!   (issue #2911: there are no zero-length waits any more, and a zero no
+//!   longer means "do not wait"). Since round 6 of the review of PR #2992 the
+//!   value does not shorten a reset wait, which ends at its reset. A step
+//!   timeout plays no part (issue #3037).
 //! - AC5: a login that changes during the wait ends it with
 //!   `login changed`, then the retry runs.
 //!
@@ -13,6 +15,10 @@
 
 use crate::issue_1618_fixture::{Fixture, WAIT_PREFIX, describe, events};
 use std::fs;
+
+/// A session limit that states no reset: a capacity wait with no reset row,
+/// so the configured length is the only deadline it has.
+const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 
 /// Issue #2911: a configured maximum of zero is raised to the floor of 60
 /// seconds, so it plans a real wait of that length and then retries once.
@@ -27,19 +33,25 @@ use std::fs;
 /// `recipe.usage_limit_wait = false`; no length means "do not wait".
 ///
 /// The fixture's virtual clock keeps the 60-second wait instant in real time.
+///
+/// The limit here states no reset, because only such a wait has an outer
+/// bound for the floor to apply to (round 6 of the review of PR #2992).
 #[test]
 fn ac4_a_zero_maximum_is_raised_to_the_sixty_second_floor_and_retries_once() {
     let f = Fixture::new();
     let mut c = f.step();
-    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0");
+    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0")
+        .env("LIMIT_MESSAGE", NO_RESET_TEXT);
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         events(&out),
         vec![
-            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
+            "waiting_for_capacity reason=no_reset harness=claude \
+             until=2026-10-18 08:01:00 -07:00",
+            "start reason=usage_limit wait=capacity harness=claude reset=none \
              until=2026-10-18 08:01:00 -07:00 bound=max_wait",
-            "end reason=max reached",
+            "end reason=capacity expired",
             "resume attempt=2",
         ]
     );
@@ -50,14 +62,38 @@ fn ac4_a_zero_maximum_is_raised_to_the_sixty_second_floor_and_retries_once() {
 fn ac4_a_smaller_maximum_names_the_bound() {
     let f = Fixture::new();
     let mut c = f.step();
+    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "600")
+        .env("LIMIT_MESSAGE", NO_RESET_TEXT);
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(
+        events(&out)[1],
+        "start reason=usage_limit wait=capacity harness=claude reset=none \
+         until=2026-10-18 08:10:00 -07:00 bound=max_wait"
+    );
+}
+
+/// Round 6 of the review of PR #2992: the same smaller maximum does not
+/// shorten a reset wait. It used to end this one at 08:10 with `max
+/// reached` and run the agent again twenty minutes before the reset it was
+/// waiting for; the wait now ends at the reset.
+#[test]
+fn round_6_a_smaller_maximum_does_not_shorten_a_reset_wait() {
+    let f = Fixture::new();
+    let mut c = f.step();
     c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "600");
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
-        events(&out)[0],
-        "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
-         until=2026-10-18 08:10:00 -07:00 bound=max_wait"
+        events(&out),
+        vec![
+            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
+             until=2026-10-18 08:32:00 -07:00 bound=reset+margin",
+            "end reason=reset reached",
+            "resume attempt=2",
+        ]
     );
+    assert_eq!(f.count("0"), 2);
 }
 
 #[test]
@@ -162,11 +198,10 @@ fn a_finished_wait_is_written_to_the_ledger_auto_drive_names() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = dir.path().join("ledger");
     let mut c = f.step();
-    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0")
-        .env("AMPLIHACK_USAGE_WAIT_LEDGER", &ledger);
+    c.env("AMPLIHACK_USAGE_WAIT_LEDGER", &ledger);
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(events(&out)[1], "end reason=max reached");
+    assert_eq!(events(&out)[1], "end reason=reset reached");
     let text = std::fs::read_to_string(&ledger).expect("ledger written");
     assert_eq!(text.lines().count(), 1, "{text:?}");
     assert!(text.trim_end().parse::<u64>().is_ok(), "{text:?}");

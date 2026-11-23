@@ -152,7 +152,7 @@ fn issue_2911_nothing_gates_the_start_of_a_login_change_wait() {
 
 #[test]
 fn a_reset_plan_may_be_ended_by_a_capacity_reading() {
-    let plan = super::plan::plan(NOW, NOW + 1800, None);
+    let plan = super::plan::plan(NOW, NOW + 1800);
     assert!(
         plan.capacity_may_end(),
         "#2717: another login with room ends a reset wait"
@@ -177,7 +177,7 @@ fn a_login_change_plan_may_not_be_ended_by_any_capacity_reading() {
 fn the_flag_rides_with_the_plan_and_not_with_its_kind() {
     // Both plans are `PlanKind::Reset`, because that is what their deadline
     // means; only the login-change one suppresses the capacity sources.
-    let reset = super::plan::plan(NOW, NOW + 1800, None);
+    let reset = super::plan::plan(NOW, NOW + 1800);
     let login_change = p(Some(600));
     assert_eq!(reset.kind, login_change.kind, "the same kind");
     assert_ne!(

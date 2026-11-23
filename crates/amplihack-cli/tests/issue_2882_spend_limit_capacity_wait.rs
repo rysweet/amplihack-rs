@@ -36,8 +36,8 @@ use std::process::{Command, Output};
 /// Claude's individual spend limit with a weekly reset days after `TEST_NOW`.
 pub(crate) const SPEND_FAR: &str = "You've hit your individual spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 24, 2pm (America/Los_Angeles)";
 
-/// The length of one wait here, in seconds, as a string. Since #2911 this
-/// is the shortest a configured value may ask for: `MIN_WAIT_SECS` floors
+/// The outer bound of one capacity wait here, in seconds, as a string. Since
+/// #2911 this is the shortest a configured value may ask for: `MIN_WAIT_SECS` floors
 /// it where it is read, so a configured `0` would wait this long too.
 const ONE_WAIT: &str = "60";
 /// `SPEND_FAR`'s reset, read at the fixture's `TEST_NOW`.

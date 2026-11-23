@@ -805,8 +805,9 @@ fn ac3_a_swap_to_a_limited_login_waits_again_keyed_to_it() {
 /// on the retry is the signal being wrong: X and then Y are waited on
 /// again, each time with one `reentered` line. It then said the step's
 /// *budget* ended the chain. Issue #2911 removed the budget, so nothing
-/// ends a chain of limits at all: `max_wait_secs` is the length of one wait
-/// and a step waits as many times as it meets a limit. What bounds this
+/// ends a chain of limits at all: `max_wait_secs` is the outer bound of one
+/// capacity or login-change wait and a step waits as many times as it meets a
+/// limit. What bounds this
 /// test is therefore the stub, not the product: after `LIMIT_CALLS` the
 /// stub stops reporting a limit.
 ///
@@ -848,12 +849,17 @@ fn a_login_that_comes_round_again_is_waited_on_again_and_the_chain_continues() {
     );
 }
 
+/// Round 6 of the review of PR #2992: the second wait is a reset wait, and
+/// a reset wait is not cut short by `max_wait_secs`. It used to be: this
+/// test pinned the second wait ending at the one-minute maximum with `max
+/// reached` and the agent run again half an hour before the reset, a
+/// re-entry on a timer. It now runs to the reset, the event it waits for.
+/// The first wait here ended before it began (`login changed`), so the
+/// second starts from the same instant and would have had its whole
+/// minute; the configured length is still read, and still ignored by a
+/// reset wait.
 #[test]
-fn the_second_wait_is_bounded_by_the_steps_own_maximum() {
-    // `max_wait_secs` is the length of one wait (issue #2911), measured
-    // from that wait's own start. The first wait here ended before it
-    // began, so the second gets the whole minute from the instant it starts
-    // and ends at the maximum rather than at the reset.
+fn the_second_wait_runs_to_its_reset_however_short_the_maximum() {
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f);
@@ -865,10 +871,10 @@ fn the_second_wait_is_bounded_by_the_steps_own_maximum() {
     let ev = events(&out);
     assert_eq!(ev.len(), 6, "{ev:?}");
     assert!(
-        ev[3].ends_with("until=2026-10-18 08:01:00 -07:00 bound=max_wait"),
+        ev[3].ends_with("until=2026-10-18 08:32:00 -07:00 bound=reset+margin"),
         "{ev:?}"
     );
-    assert_eq!(ev[4..], ["end reason=max reached", "resume attempt=3"]);
+    assert_eq!(ev[4..], ["end reason=reset reached", "resume attempt=3"]);
 }
 
 // --- AC5: the wait in the recipe log -----------------------------------------

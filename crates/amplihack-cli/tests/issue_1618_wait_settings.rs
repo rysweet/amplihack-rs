@@ -15,6 +15,11 @@ use crate::issue_1618_fixture::{Fixture, describe, events, private_file, text, w
 
 const ENABLED_VAR: &str = "AMPLIHACK_USAGE_LIMIT_WAIT";
 const MAX_VAR: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
+/// A session limit that states no reset. Its wait is a capacity wait whose
+/// only deadline is the configured outer bound, so it is the wait on which a
+/// configured maximum can be seen: since round 6 of the review of PR #2992 a
+/// reset wait ignores the value.
+const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 
 fn assert_today(f: &Fixture, out: &std::process::Output) {
     assert_eq!(out.status.code(), Some(1), "{}", describe(out));
@@ -81,14 +86,32 @@ fn ci_turns_the_wait_off_unless_it_is_set_explicitly() {
 fn the_config_maximum_bounds_the_wait() {
     let f = Fixture::new();
     f.write_config("[recipe]\nusage_limit_max_wait_secs = 0\n");
-    let out = f.run(&mut f.step());
+    let mut c = f.step();
+    c.env("LIMIT_MESSAGE", NO_RESET_TEXT);
+    let out = f.run(&mut c);
     assert_waited(&f, &out);
     assert!(
-        events(&out)[0].ends_with("bound=max_wait"),
+        events(&out)[1].ends_with("until=2026-10-18 08:01:00 -07:00 bound=max_wait"),
         "{:?}",
         events(&out)
     );
-    assert_eq!(events(&out)[1], "end reason=max reached");
+    assert_eq!(events(&out)[2], "end reason=capacity expired");
+}
+
+/// Round 6 of the review of PR #2992: the same configured maximum does not
+/// bound a reset wait, which ends at its reset.
+#[test]
+fn the_config_maximum_does_not_bound_a_reset_wait() {
+    let f = Fixture::new();
+    f.write_config("[recipe]\nusage_limit_max_wait_secs = 0\n");
+    let out = f.run(&mut f.step());
+    assert_waited(&f, &out);
+    assert!(
+        events(&out)[0].ends_with("until=2026-10-18 08:32:00 -07:00 bound=reset+margin"),
+        "{:?}",
+        events(&out)
+    );
+    assert_eq!(events(&out)[1], "end reason=reset reached");
 }
 
 #[test]
@@ -110,7 +133,9 @@ fn an_invalid_variable_warns_and_the_layers_below_decide() {
     let f = Fixture::new();
     f.write_config("[recipe]\nusage_limit_max_wait_secs = 600\n");
     let mut c = f.step();
-    c.env(ENABLED_VAR, "maybe-VALUE-1618").env(MAX_VAR, "60s");
+    c.env(ENABLED_VAR, "maybe-VALUE-1618")
+        .env(MAX_VAR, "60s")
+        .env("LIMIT_MESSAGE", NO_RESET_TEXT);
     let out = f.run(&mut c);
     assert_waited(&f, &out);
     let stderr = text(&out.stderr);
@@ -123,7 +148,7 @@ fn an_invalid_variable_warns_and_the_layers_below_decide() {
         "the value is quoted: {stderr}"
     );
     assert!(
-        events(&out)[0].ends_with("until=2026-10-18 08:10:00 -07:00 bound=max_wait"),
+        events(&out)[1].ends_with("until=2026-10-18 08:10:00 -07:00 bound=max_wait"),
         "{:?}",
         events(&out)
     );

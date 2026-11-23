@@ -14,8 +14,11 @@
 //!   waits: refusing to wait because no login has room *this instant* is
 //!   exactly the `reset_too_far` failure issue #2911 reports, and a login can
 //!   gain room while the step waits.
-//! - AC4, AC14: `usage_limit_max_wait_secs` is the length of one wait, not a
-//!   budget for the step, and a configured `0` reads as the 60-second floor.
+//! - AC4, AC14: `usage_limit_max_wait_secs` is the outer bound of one capacity
+//!   wait, not a budget for the step, and a configured `0` reads as the
+//!   60-second floor. Reaching it runs the step again: the one timed
+//!   re-entry left, declared in docs/reference/usage-limit-waits.md ("The
+//!   timed parts that remain") and removed by #3098.
 //!   `recipe.usage_limit_wait = false` is how to turn waiting off.
 //! - AC15: a retry that hits the limit again gets a wait of its own, as long
 //!   as the first, and reaching a wait's maximum starts the next attempt.
@@ -784,7 +787,7 @@ fn starts(ev: &[String]) -> Vec<&String> {
 /// Issue #2911 changed what that second wait is. It used to be bounded by
 /// what the first left of `max_wait_secs`, and when nothing lifted X's limit
 /// it ended the step with `failed reason=capacity_expired`. The maximum is
-/// the length of one wait now, so the second wait is as long as the first and
+/// the outer bound of one wait now, so the second wait is as long as the first and
 /// its deadline lies later than the first wait's, which a remaining budget
 /// could not produce; when it ends the step simply runs again.
 #[test]

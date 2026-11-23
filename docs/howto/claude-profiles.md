@@ -2232,9 +2232,10 @@ Three things follow, and all of them apply only to a step that runs on
   swaps back to an account the step has already waited on starts a wait like
   any other.
 
-- **Each wait has the full length.** `recipe.usage_limit_max_wait_secs` (six
-  hours by default) is the length of one wait, not a total for the step.
-  Raise it to lengthen each wait.
+- **Each wait has the full outer bound.** `recipe.usage_limit_max_wait_secs`
+  (six hours by default) is the outer bound of one capacity or login-change
+  wait, not a total for the step. A wait for a reset ignores it and ends at
+  the reset. Raise it to lengthen each capacity or login-change wait.
 
 
 Before this, such a step slept until its **own** account's reset, however
@@ -2245,7 +2246,7 @@ An organisation spend limit with no reset also waits on this kind of host.
 Nothing lifts that limit for the account that hit it, but the next account the
 rotator brings in may belong to another organisation, so the step waits for the
 login to change and nothing else. The wait needs no running rotator: with none
-running it runs one `max_wait_secs` and the step retries. A step pinned to
+running it runs to its outer bound, one `max_wait_secs`, and the step retries. A step pinned to
 `~/.claude` with a spend limit that no login change lifts therefore waits in
 cycles of six hours until the limit lifts or the run is stopped.
 
@@ -2631,7 +2632,7 @@ For every run, set it in `~/.amplihack/config.toml`:
 
 ```bash
 amplihack config set recipe.usage_limit_wait false
-amplihack config set recipe.usage_limit_max_wait_secs 3600   # at most an hour
+amplihack config set recipe.usage_limit_max_wait_secs 3600   # re-ask every hour
 ```
 
 For one run or one shell, the variables outrank the file:
@@ -2641,13 +2642,15 @@ export AMPLIHACK_USAGE_LIMIT_WAIT=0
 export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600
 ```
 
-The maximum defaults to `21600` seconds (six hours). It shortens a wait for
-a reset, which never lasts beyond the reset plus two minutes, and sets how
-long a wait for another login or for a login change lasts. It is a budget for
-the whole step: a step that waits on two or three logins in turn still waits
-no longer in total than one wait of the maximum. `0` means no wait, and what
-follows depends on the limit: for a reset, one more attempt; for a weekly or
-spend limit, the step ends at once as a usage limit, with no retry.
+The maximum defaults to `21600` seconds (six hours). It is the outer bound of
+a wait for another login or for a login change: such a wait ends sooner when a
+login has room or the login changes, and otherwise at the maximum, when the
+step runs once more. It does not shorten a wait for a reset, which ends at the
+reset plus two minutes. It is not a budget for the step: each wait gets the
+whole maximum, and nothing ends the chain. `0` is read as 60 seconds, not as
+"do not wait"; set `recipe.usage_limit_wait` to `false` to turn waiting off.
+The maximum is the one timed bound left on a wait, kept for now; see
+[the timed parts that remain](../reference/usage-limit-waits.md#the-timed-parts-that-remain).
 
 To wait longer than six hours for another login, raise it in your user
 file or the variable:
@@ -2792,7 +2795,7 @@ cat > "$d/claude" <<'STUB'
 #!/bin/sh
 echo call >> "$HOME/calls"
 if [ "$(wc -l < "$HOME/calls")" -eq 1 ]; then
-  echo "Claude AI usage limit reached|$(( $(date +%s) + 3600 ))" >&2
+  echo "Claude AI usage limit reached|soon" >&2
   exit 1
 fi
 cat    # echo the prompt it was given on stdin
@@ -2803,6 +2806,10 @@ PATH="$d:$PATH" AMPLIHACK_NONINTERACTIVE=1 AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=6
   amplihack claude -p < "$HOME/prompt"
 ```
 
-The launch writes a `start` line with `bound=max_wait`, waits one minute (the
-shortest length a wait may be given), writes `end reason=max reached` and `resume attempt=2`, and then prints
-`summarise CHANGELOG.md`: the retry reads the file from the start again.
+The limit states no reset, so the launch writes `waiting_for_capacity
+reason=no_reset` and a `start` line with `bound=max_wait`, waits one minute
+(the shortest outer bound a wait may be given), writes
+`end reason=capacity expired` and `resume attempt=2`, and then prints
+`summarise CHANGELOG.md`: the retry reads the file from the start again. A
+message with a reset an hour away would instead wait the hour: a wait for a
+reset is not shortened by the maximum.
