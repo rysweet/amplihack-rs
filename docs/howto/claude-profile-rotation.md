@@ -139,7 +139,7 @@ real run. Run a dry run first, and again whenever you change a threshold.
 a temporary `HOME`, a fake `claude` and a loopback stand-in for the usage
 service, with no real login and no `CLAUDE_CONFIG_DIR`. It needs `socat`. It
 replays a day on which the live login filled while several others had room, and
-checks nine cases: a dry run that reports the swap to the login below
+checks ten cases: a dry run that reports the swap to the login below
 `--session-at`; a one-shot cycle that moves `~/.claude` to it with
 `reason=plan-room`; the usage service answering HTTP 429 with a last good
 reading in the history, which gives a `reject:` line and no swap; HTTP 429
@@ -150,10 +150,14 @@ move to qualifies, which says it would stay with the note; the stand-in's own
 guards, where a bad, missing or oversized request is refused and serves no
 fixture; a login carrying a recorded spend block, which is passed over for
 the next login the ranking gives until the block's reset and chosen again
-after it; and the same day at `--session-at 95 --week-at 98`, where every
+after it; the same day at `--session-at 95 --week-at 98`, where every
 login below 95% of its session is in the first tier, so the rotator moves to
 the one with the most room now with no ALERT, records room for a waiting step,
-and stays without a note while the live login is below both thresholds:
+and stays without a note while the live login is below both thresholds; and
+the 23 November replay, where a login with a spend block, failing live probes
+and an old, roomy reading in the history is never swapped to, at 95/98 or at
+85/90, while a rotator from another build is running, and with no block at all
+the old reading still leads to no swap:
 
 ```bash
 AMPLIHACK_QA_BINARY=target/debug/amplihack bash tests/qa/claude-profile-rotate-room.sh

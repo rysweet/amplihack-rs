@@ -8,7 +8,7 @@
 # profile root.
 #
 # It replays 22 November 2026: the live login reached 100% of its session
-# while several logins had room, and the rotator only alerted. Nine cases:
+# while several logins had room, and the rotator only alerted. Ten cases:
 #
 #   1. dry run: reports the swap to the login with a fresh session (llarame);
 #   2. one-shot cycle: moves ~/.claude to it, reason=plan-room, no ALERT;
@@ -29,7 +29,16 @@
 #      and the one-shot cycle choose qquinn (every login below 95% of its
 #      session is in the first tier, and qquinn has the most room now), with
 #      no ALERT, the ledger records room for a waiting step, and at the 05:48Z
-#      readings the dry run would stay with no note.
+#      readings the dry run would stay with no note;
+#  10. the 23 November replay (issue #3105): llarame carries a spend block,
+#      every live probe but the live login's fails with HTTP 429, and the
+#      history holds an old, roomy reading of llarame (0/33). With a rotator
+#      from another build running, so that each ledger save takes the form
+#      for older readers, two one-shot cycles (95/98, then 85/90) never swap,
+#      log `reject: llarame blocked until <time> (spend limit)` each time and
+#      keep the block in the ledger. With no block at all, the old reading
+#      still leads to no swap at 95/98: the target is rejected at
+#      confirmation.
 #
 # Needs socat and GNU `date -d` (Linux); the handler itself avoids bash 4 only
 # expansions. Runs locally and is not part of CI.
@@ -48,8 +57,10 @@ BIN="$(cd "$(dirname "$AMPLIHACK_QA_BINARY")" && pwd)/$(basename "$AMPLIHACK_QA_
 
 SOCAT_PID=""
 DRAIN_PID=""
+STANDIN_PID=""
 WORK=""
 cleanup() {
+  [[ -z "$STANDIN_PID" ]] || kill "$STANDIN_PID" 2>/dev/null || true
   [[ -z "$DRAIN_PID" ]] || kill "$DRAIN_PID" 2>/dev/null || true
   [[ -z "$SOCAT_PID" ]] || kill "$SOCAT_PID" 2>/dev/null || true
   wait 2>/dev/null || true
@@ -574,6 +585,85 @@ echo "PASS: case 9: at 95/98 the rotator moves to qquinn with no ALERT, records 
 evidence '^would (swap|stay|alert)' <<< "$deployed_out"
 evidence ' (swap|affinity:) ' <<< "$log"
 evidence '^would (swap|stay|alert)' <<< "$stay_out"
+
+# --- Case 10: the 23 November replay (issue #3105) ------------------------------------------
+# On 23 November a login (here llarame) hit its spend limit at 06:00:21Z and
+# was blocked until 10:40Z. Its live probes then failed, and the history still
+# held its reading from 05:44:55Z, 0/33, which looks roomy. The rotator had
+# been upgraded in place, so it ran another build than the one on disk, and
+# every ledger save wrote the form for older readers, which dropped the block.
+# At 06:18:29Z it swapped to the blocked login on the old reading, unconfirmed.
+#
+# Here the block is in the ledger, every probe but the live login's answers
+# 429, and the old reading is in the history, 2006 seconds old. The rotator
+# from another build is a stand-in process this driver starts: its command
+# line reads as `profile rotate watch` and its executable is not the
+# candidate's. It never cycles; it only makes each save take the older form.
+# Two one-shot cycles run, at the hosts' 95/98 and then at 85/90. The second
+# reads the ledger the first saved, which is where the block was lost before.
+new_home replay
+before="$(live_token)"
+write_block llarame 1077 15822 spend_limit
+storm
+write_history llarame 0 33 2006
+ledger="$ROOT/.auto-switch.d/rotate/ledger.json"
+block_until() { tr -d ' \n' < "$ledger" | sed -n 's/.*"overflow_blocked":{"llarame":{[^}]*"until":\([0-9]*\).*/\1/p'; }
+until_before="$(block_until)"
+[[ -n "$until_before" ]] || fail "case 10: the setup left no block on llarame in the ledger"
+# The stand-in says it is up only once it runs as `bash -c`, so its command
+# line is the one the rotator checks before the pid file names it.
+mkfifo "$WORK/standin.ready" "$WORK/standin.hold"
+bash -c 'echo up > "$1"; read -r _ < "$2"' amplihack "$WORK/standin.ready" "$WORK/standin.hold" profile rotate watch &
+STANDIN_PID=$!
+read -r _ < "$WORK/standin.ready"
+printf '%s\n' "$STANDIN_PID" > "$ROOT/.auto-switch.d/rotate/rotate.pid"
+chmod 600 "$ROOT/.auto-switch.d/rotate/rotate.pid"
+replay_cycle() { # label flags...
+  local label=$1 seen
+  shift
+  run_cli profile rotate "$@"
+  [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 10 ($label): rotate exited $STATUS"; }
+  grep -q "runs another amplihack binary" "$WORK/stderr" \
+    || { cat "$WORK/stderr" >&2; fail "case 10 ($label): the cycle did not see the stand-in as a rotator from another build"; }
+  [[ "$(live_token)" == "$before" ]] || fail "case 10 ($label): ~/.claude changed to $(live_token)"
+  seen="$(block_until)"
+  [[ "$seen" == "$until_before" ]] \
+    || fail "case 10 ($label): the ledger saved for older readers holds '${seen}' for llarame's block, not $until_before"
+}
+replay_cycle 95/98 "${DEPLOYED[@]}"
+replay_cycle 85/90 "${FLAGS[@]}"
+log="$(rotate_log)"
+rejects="$(grep -cE " reject: llarame blocked until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z \(spend limit\)$" <<< "$log" || true)"
+[[ "$rejects" == "2" ]] \
+  || { echo "$log" >&2; fail "case 10: expected one 'reject: llarame blocked until <time> (spend limit)' line per cycle, found $rejects in two"; }
+! grep -q " swap $LIVE->" <<< "$log" || { echo "$log" >&2; fail "case 10: the rotator swapped"; }
+! grep -q "unconfirmed (" <<< "$log" || { echo "$log" >&2; fail "case 10: the log has an unconfirmed swap"; }
+kill "$STANDIN_PID" 2>/dev/null || true
+wait "$STANDIN_PID" 2>/dev/null || true
+STANDIN_PID=""
+replay_log="$log"
+
+# The same old reading with no block at all, as if the block had been lost:
+# at 95/98 the target is still rejected at confirmation and nothing moves.
+new_home replay-unblocked
+before="$(live_token)"
+storm
+write_history llarame 0 33 2006
+run_cli profile rotate "${DEPLOYED[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 10: the unblocked cycle exited $STATUS"; }
+[[ "$(live_token)" == "$before" ]] || fail "case 10: ~/.claude changed to $(live_token) on a reading nobody confirmed"
+log="$(rotate_log)"
+grep -q "reject: llarame reading unknown (HTTP 429)" <<< "$log" \
+  || { echo "$log" >&2; fail "case 10: llarame was not rejected at confirmation"; }
+grep -q "stay: no candidate confirmed by a fresh reading" <<< "$log" \
+  || { echo "$log" >&2; fail "case 10: the cycle did not end on the no-candidate-confirmed note"; }
+! grep -q " swap $LIVE->" <<< "$log" || { echo "$log" >&2; fail "case 10: the unblocked cycle swapped"; }
+! grep -q "unconfirmed (" <<< "$log" || { echo "$log" >&2; fail "case 10: the unblocked cycle has an unconfirmed swap"; }
+echo ok > "$FX/usage-mode"
+: > "$FX/usage-ok"
+echo "PASS: case 10: the 23 November replay never swaps to the blocked login or on its old reading, at 95/98 and 85/90"
+evidence ' (reject:|stay:|swap|ALERT:) ' <<< "$replay_log"
+evidence ' (reject:|stay:|swap) ' <<< "$log"
 
 [[ ! -s "$WORK/claude-calls" ]] || fail "claude was started: $(cat "$WORK/claude-calls")"
 echo "ROTATE_ROOM_QA_PASSED"

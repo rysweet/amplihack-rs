@@ -5,7 +5,7 @@ description: >
   executable and a loopback stand-in for the usage and profile endpoints
   (socat, 127.0.0.1 only), replaying 22 November 2026: the live login reached
   100% of its session while several logins had room, alone in its organisation.
-  Nine cases: a dry run that reports the swap to the login with a fresh session;
+  Ten cases: a dry run that reports the swap to the login with a fresh session;
   a one-shot cycle that moves ~/.claude to it with reason=plan-room and no ALERT;
   HTTP 429 from the usage endpoint with a last good reading in the history,
   where the target is rejected at confirmation and nothing moves (issue #3105:
@@ -19,11 +19,17 @@ description: >
   carrying a recorded spend block, which is passed over for the next login
   the ranking gives until the block's reset, with one "reject: llarame blocked
   until <time> (spend limit)" line at 85/90 and at 95/98, and chosen again
-  after it; and the
+  after it; the
   same readings at the thresholds the hosts run (--session-at 95 --week-at 98),
   where the dry run and the one-shot cycle choose qquinn with reason=threshold
   and no ALERT, the ledger records room for a waiting step, and the 05:48Z
-  readings give a plain stay.
+  readings give a plain stay; and the 23 November replay (issue #3105), where a
+  login with a spend block, failing live probes and an old, roomy reading in the
+  history is never swapped to across two one-shot cycles (95/98, then 85/90)
+  while a stand-in rotator from another build makes each ledger save take the
+  form for older readers: each cycle logs one "reject: llarame blocked until
+  <time> (spend limit)" line and the block stays in the ledger, and with no
+  block at all the old reading is rejected at confirmation and nothing moves.
   Needs socat; runs locally and is not part of CI.
 version: "1.0"
 environment:
