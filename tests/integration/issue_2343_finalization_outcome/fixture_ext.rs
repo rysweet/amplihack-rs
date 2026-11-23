@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::issue_1641_finalization_open_pr::builders::{check_run, open_pr};
 use crate::issue_1641_finalization_open_pr::fixture::{
-    BRANCH, Fixture, Outcome, PR_URL, workspace_root, write_executable,
+    BRANCH, Fixture, Outcome, PR_URL, REPO, workspace_root, write_executable,
 };
 
 /// Phrase the old transport emitted for absence. Its presence on stderr means
@@ -87,6 +87,44 @@ pub fn finished_env(repo: &str) -> Vec<(&'static str, String)> {
     let mut envs = crate::issue_1641_finalization_open_pr::builders::resumed_env(repo);
     envs.push(("PR_URL", PR_URL.to_owned()));
     envs
+}
+
+/// Collected evidence in the shape `collect-finalization-evidence` writes: a
+/// clean worktree, and pull request #7 open at the fixture's head with checks
+/// of class `checks` as they were read (#2966). It is the record a write the
+/// assessment makes afterwards can contradict.
+pub fn recorded_evidence(fx: &Fixture, checks: &str, check_states: &str) -> (&'static str, String) {
+    (
+        "RECIPE_VAR_finalization_evidence",
+        json!({
+            "schema_version": 1,
+            "git": {"dirty_worktree": "false"},
+            "tooling": {"missing": "", "gh_required": "true"},
+            "prior_terminal_state": {"terminal_state": ""},
+            "agent_outputs": {"hollow_success_signals": "unknown"},
+            "outcome": {
+                "schema_version": 3,
+                "branch": BRANCH,
+                "local_head": fx.head(),
+                "remote": REPO,
+                "github_origin": "true",
+                "remote_head": fx.head(),
+                "remote_head_descends_local_head": "true",
+                "open_pr_count": "1",
+                "pr_number": "7",
+                "pr_url": PR_URL,
+                "pr_state": "OPEN",
+                "pr_draft": "false",
+                "pr_head": fx.head(),
+                "pr_cross_repository": "false",
+                "pr_head_descends_local_head": "true",
+                "checks": checks,
+                "check_states": check_states,
+                "unread": "",
+            },
+        })
+        .to_string(),
+    )
 }
 
 /// A credential-bearing origin URL. `parse_github_repo_identity` accepts

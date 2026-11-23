@@ -14,6 +14,7 @@ code-change completion.
 - [What the Gate Protects](#what-the-gate-protects)
 - [Valid Success Evidence](#valid-success-evidence)
 - [Default Workflow Agentic Finalization](#default-workflow-agentic-finalization)
+- [Failing Checks at the Probe](#failing-checks-at-the-probe-2966)
 - [Evidence Precedence](#evidence-precedence)
 - [Evidence Marker API](#evidence-marker-api)
 - [Recipe Output Contract](#recipe-output-contract)
@@ -95,6 +96,42 @@ implementation classifies as `FAILED_REPORTING` and preserves durable evidence.
 
 See [Default Workflow Agentic Finalization](default-workflow-agentic-finalization.md)
 for the evidence document, finalizer output schema, configuration, and examples.
+
+---
+
+## Failing Checks at the Probe (#2966)
+
+The probe does not end a run because checks are failing. Until #2966 it called
+`fail_terminal_state "BLOCKED_CI"` when the pull request's rollup carried a
+failing entry, which ended the run at finalize and, with `terminal_fail_mode:
+exit`, at publish as well. A run that reached finalization with an ordinary
+fixable failure therefore ended as failed instead of fixing it.
+
+Now failing checks take the continue path. In both `exit` and `report` modes
+the probe prints:
+
+```text
+terminal_state=FOLLOWUP_CREATED
+should_finalize=true
+should_run_ci_wait=true
+terminal_success=false
+```
+
+and exits `0`. `step-22-ensure-mergeable` therefore runs and repairs the checks
+(diagnose, fix, push, wait, reassess, with no round limit), and
+`assess-finalization` waits for what is pending and continues the repair if a
+check still fails for a cause the run can fix. The probe emits `BLOCKED_CI` at
+no point. The terminal state is `BLOCKED_CI` only when the assessment reports a
+cause the run cannot fix, with `reason` and `next_action` naming the check, the
+owner and the exact step.
+
+The probe's early successes are unchanged: `MERGED`, `CLOSED_OBSOLETE` and
+`NO_DIFF_SUCCESS`. A pull request with no diff against its base reads as
+`NO_DIFF_SUCCESS` or `CLOSED_OBSOLETE` whatever its checks say.
+
+See [Red CI at Finalization](default-workflow-agentic-finalization.md#red-ci-at-finalization-2966)
+for the loop, the meaning of "green", the causes the run cannot fix, and the
+safeguards on the repair.
 
 ---
 
@@ -185,7 +222,7 @@ canonical strings.
 | `FAILED_MISSING_TOOLING` | No | Required deterministic tooling is unavailable for the selected finalization path. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | No | Provider change-request proof is required but metadata, auth, or provider output is unavailable or ambiguous. |
 | `FAILED_CLOSED_UNMERGED` | No | A PR is closed without merge evidence and meaningful local branch diff remains. |
-| `BLOCKED_CI` | No | Required checks are failing or unavailable. |
+| `BLOCKED_CI` | No | A check on the PR head fails, or cannot run, for a cause the run cannot fix itself, such as a missing secret (#2966). The probe does not emit it: failing checks continue to repair, and only `assess-finalization` reports it, naming the cause and the human step. |
 | `HOLLOW_SUCCESS` | No | The recipe appeared successful but lacked implementation, verification, publish, or valid no-op evidence. |
 | `INCOMPLETE` | No | Work remains and no more specific terminal failure state applies. |
 
@@ -496,7 +533,8 @@ and the result still reports `terminal_success=false`.
 Set only by `autodrive-build` step-02, so that a `BLOCKED_CI` build with a
 published PR, or a `FAILED_IMPLEMENTATION` build whose open PR the open-PR
 check confirmed, reaches auto-drive's crusty and merge-ready loops instead of
-ending the run (issue #1714). It is on only when
+ending the run (issue #1714). Since #2966 a `BLOCKED_CI` build names a cause
+the run could not fix itself, because CI it can fix is repaired first. It is on only when
 `RECIPE_VAR_finalization_handoff` is exactly `true`; there is no truthy alias
 and no bare-environment fallback. `default-workflow.yaml` declares it `""`, so
 a standalone run keeps failing closed on both states.
@@ -549,7 +587,7 @@ expressions, trimming or case folding.
 
 | State | Allowed | Reason |
 | --- | --- | --- |
-| `BLOCKED_CI` | Yes | A PR exists and needs only merge-ready work on its checks. |
+| `BLOCKED_CI` | Yes | A check on the PR head fails for a cause the run could not fix itself (#2966), so the PR needs the named human step and then merge-ready work on its checks. |
 | `FAILED_IMPLEMENTATION` | Yes, only on a PR the assessment named | `assess-finalization` decided the work is not complete and named the pull request it read, which the crusty loop reviews. Naming none fails closed. |
 | `FAILED_CLOSED_UNMERGED` | No | The PR is closed. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | No | No PR could be identified. |
@@ -730,8 +768,9 @@ probe:
   ancestor of the PR head;
 - prints
   `INFO: ... open PR head ... commit(s) ahead of local HEAD, a fast-forward of it; same PR (#1714)`
-  and continues. Failing checks on that head still end `BLOCKED_CI`, because
-  they ran on a commit that holds the run's work;
+  and continues. Failing checks on that head still count, because they ran on a
+  commit that holds the run's work; they are repaired, not reported as a
+  terminal state (#2966);
 - passes `--allow-head-ahead` to `workflow_pr_scope.sh`, which then accepts a
   named PR that is `OPEN` and whose head is a fast-forward of local `HEAD`.
 
@@ -845,6 +884,9 @@ bookkeeping step must not turn a successful run into a failed one:
   miss no longer exits non-zero on its own.
 - `step-20b-push-cleanup` (missing git repo, detached HEAD) — fails closed, and
   correctly so: it runs *before* publish, so there is no landed work to discard.
+- The probe's `BLOCKED_CI` exit on failing checks (#1467): **removed (#2966).** A
+  red CI is repaired instead of ending the run; see
+  [Failing Checks at the Probe](#failing-checks-at-the-probe-2966).
 - `step-21-pr-ready` closed-unmerged exit — a readable negative about the PR
   itself, not a string comparison. Retained.
 - `step-20a-artifact-guard`, `step-17a-testing-evidence-gate`,

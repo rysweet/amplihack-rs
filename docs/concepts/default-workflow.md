@@ -132,10 +132,10 @@ The loud blocking states include:
 | `FAILED_CLOSED_UNMERGED` | A GitHub PR is closed without merge evidence and obsolete/no-diff proof is missing. |
 | `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely treated as terminal success. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | GitHub metadata is required for a GitHub PR proof or meaningful-diff safety decision but cannot be loaded. This is not used merely because an Azure or unknown remote lacks GitHub metadata. |
-| `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. |
+| `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. An unfinished CI repair is not this state: since #2966 the assessment answers `CI_REPAIR_UNFINISHED` and is started again. |
 | `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`, implementation/verification markers) is preserved and reported. |
 | `HOLLOW_SUCCESS` | The run appeared successful but its agent output was empty or inaccessible, so it may have produced nothing at all. Unchanged by #2343. |
-| `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
+| `BLOCKED_CI` | A check on the PR head fails, or cannot run, for a cause the run cannot fix itself, such as a missing secret (#2966). A red CI the run can fix is repaired and is not a terminal state. The reason names the check and the cause, and the next action names the owner and the exact step. |
 
 `workflow-terminal-state` never invokes `gh pr list`, `gh pr view`, or related
 GitHub metadata commands for Azure Repos, `visualstudio.com`,
@@ -623,11 +623,18 @@ gh pr ready 2>&1 | cat
       or merging.
 - [ ] If the re-check returns `MERGED`, `CLOSED_OBSOLETE`, or
       `NO_DIFF_SUCCESS`, stop successfully without CI wait or merge.
-- [ ] If the re-check returns `BLOCKED_CI`, `BLOCKED_DIRTY_WORKTREE`,
+- [ ] If the re-check returns `BLOCKED_DIRTY_WORKTREE`,
       `BLOCKED_CLOSED_UNMERGED`, or `BLOCKED_UNMERGED_DIFF`, fail loudly with
       the evidence instead of converting the result to success.
+- [ ] Failing checks do not fail the re-check (#2966): it continues, so that
+      the next items repair them.
 - [ ] Check CI status (all checks passing)
-- [ ] **Always use** ci-diagnostic-workflow agent if CI fails
+- [ ] **Always use** ci-diagnostic-workflow agent if CI fails. It diagnoses,
+      fixes, pushes, waits with `gh pr checks --watch` and reassesses until
+      every check is green, with no round or time limit. It stops early only
+      on a cause the run cannot fix (a missing secret, a workflow run awaiting
+      maintainer approval), and then names the check, the cause, the owner and
+      the exact step to take.
 - [ ] **💡 TIP**: When investigating CI failures, use `parallel agent investigation` (see `amplifier-bundle/CLAUDE.md` in the amplifier-bundle) to explore logs and code simultaneously
 - [ ] Resolve any merge conflicts
 - [ ] Verify all review comments addressed, including check for any that showed up after marking the PR as ready

@@ -238,9 +238,6 @@ collect_evidence() {
         number: $pr_number,
         publish_status: $publish_status
       },
-      ci: {
-        state: (if $prior_terminal_state == "BLOCKED_CI" then "FAILURE" else "UNKNOWN" end)
-      },
       completion: {
         implementation_completed: $implementation_completed,
         verification_completed: $verification_completed,

@@ -138,9 +138,12 @@ before="$(pwd) $(umask) $- $(set -o | tr -s ' \t' ' ' | tr '\n' ,)"
 after="$(pwd) $(umask) $- $(set -o | tr -s ' \t' ' ' | tr '\n' ,)"
 [ "$before" = "$after" ] || { echo "changed: $before -> $after"; exit 3; }
 [ ! -s "$TMPDIR/brick.out" ] || { echo "output:"; cat "$TMPDIR/brick.out"; exit 4; }
-for f in finalization_handoff_allowed finalization_handoff_flag finalization_fail_or_handoff autodrive_build_handoff; do
+for f in finalization_handoff_allowed finalization_handoff_flag finalization_fail_or_handoff_open_pr autodrive_build_handoff; do
   [ "$(type -t "$f")" = function ] || { echo "missing function $f"; exit 5; }
 done
+# #2966 removed the old drop-in's only caller; it stays one release as an
+# alias (#3049), and an alias is still only a definition.
+[ "$(type -t finalization_fail_or_handoff)" = function ] || { echo "missing the finalization_fail_or_handoff alias"; exit 6; }
 echo clean"#;
     let outcome = brick(
         r#"bash -c "$SCRIPT""#,

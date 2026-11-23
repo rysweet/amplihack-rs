@@ -495,16 +495,17 @@ mod auto_drive_to_merge;
 mod issue_2458_qa_declaration;
 
 // Issue #1641: a resumed run whose branch already has an open, same-repo PR
-// with green checks (or pending/no CI plus this run's typed precommit evidence)
-// finalizes as EXISTING_OPEN_PR instead of FAILED_IMPLEMENTATION; a failing
-// check is BLOCKED_CI, and every fail-closed case (no PR, no verification
-// signal, hollow success, blockers) is kept. Runs the
-// real validator against a private git repo and a stub gh.
+// that the assessment reports as EXISTING_OPEN_PR finalizes as such instead of
+// FAILED_IMPLEMENTATION; failing checks are repaired first (#2966; BLOCKED_CI
+// only for a cause the run cannot fix), and every fail-closed case (no PR, no
+// verification signal, hollow success, blockers) is kept. Runs the real
+// validator against a private git repo and a stub gh.
 #[path = "issue_1641_finalization_open_pr.rs"]
 mod issue_1641_finalization_open_pr;
 
 // Issue #1714: under auto-drive, a default-workflow build that finalizes
-// BLOCKED_CI with a published open PR hands that PR to the crusty and
+// BLOCKED_CI (#2966: an unfixable cause, named, from the assessment) with a
+// published open PR hands that PR to the crusty and
 // merge-ready loops; a standalone run and every other failure still fail
 // closed. Runs the real validator and autodrive-build step-03 against stubs.
 #[path = "issue_1714_finalization_handoff.rs"]
@@ -580,3 +581,10 @@ mod recipe_step_body;
 // Issues #2343, #1726, #2809: finalization reads the run's real outcome.
 #[path = "issue_2343_finalization_outcome.rs"]
 mod issue_2343_finalization_outcome;
+
+// Issue #2966, crusty rounds 1 to 3: continue-ci-repair's body starts one fresh
+// assessment pass, hands it the last answer as data, prints its answer and
+// passes on the nested run's exit code, with no loop and no answer field read.
+// Runs the real dispatcher with a stub nested `recipe run`.
+#[path = "issue_2966_ci_repair_reentry.rs"]
+mod issue_2966_ci_repair_reentry;

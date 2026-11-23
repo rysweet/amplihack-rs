@@ -69,6 +69,7 @@ record is an ordinary failure.
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
 | `workflow-finalize` | `validate-agentic-finalization` | `--essential --stop-on-handoff --no-repair` |
+| `workflow-finalization-assessment` | `continue-ci-repair` | `--essential --stop-on-handoff --retry-on-recurrence` |
 
 Report steps: `workflow-finalize` `step-recovery-report` (before
 `workflow-complete`), `auto-drive-to-merge` `autodrive-report`, and
@@ -136,7 +137,7 @@ grep -rn 'workflow_pull_rebase' amplifier-bundle/ docs/   # expected: no call; o
 
 | Choice | Agent supplies | Driver | Not offered |
 |---|---|---|---|
-| `retry_after_repair` | `reason`, `repair` | Re-runs the same command once. The agent made the repair itself. | `--guard`, `--no-repair`, a recurrence |
+| `retry_after_repair` | `reason`, `repair` | Re-runs the same command once. The agent made the repair itself. | `--guard`, `--no-repair`, a recurrence (unless `--retry-on-recurrence`) |
 | `alternative_step` | `reason`, `alternative` | Runs the declared alternative. Its failure recovers as `<id>:alt:<name>`, with no alternatives. | no alternatives declared |
 | `continue_recorded` | `reason` | Prints the outcome line, exits 0. | `--essential`, `--guard` |
 | `handoff` | `reason`, `owner`, `needs` | Prints the outcome line; exits 81 with `--stop-on-handoff` or `--guard`, else 0. | never |
@@ -162,8 +163,46 @@ failed step was working on, and may make no other GitHub write and start no
 recipe. This step has no commit of its own to push, and opening the pull
 request that a `FAILED_IMPLEMENTATION` is missing stays forbidden, so the agent
 can neither open it nor produce an assessment where there is none. The repair
-belongs to `assess-finalization`, which is permitted exactly those two actions and
-then decides on what it did.
+belongs to `assess-finalization`, which is permitted exactly three actions
+(push the run branch, open the pull request, bring CI to green) and then
+decides on what it did.
+
+A CI failure the run can fix never reaches this step (#2966). The probe lets
+failing checks continue, `step-22-ensure-mergeable` repairs them, and
+`assess-finalization` waits for what is pending and continues the repair before
+it decides. When an assessment session ends without deciding (a crash, a
+prose answer, `CI_REPAIR_UNFINISHED`), the runner's condition on
+`continue-ci-repair` starts it again before this step runs. `BLOCKED_CI`
+therefore arrives here only when the assessment judged the cause one the run
+cannot fix, such as a missing secret or a workflow run awaiting maintainer
+approval. The step's goal text says so, and the move is `handoff` to the owner
+the assessment named, with the check, the cause and the exact step. When the
+assessment left the cause or the owner's step out, the validator reports
+`BLOCKED_CI` anyway, with a sentence naming what is missing, and the goal text
+asks the recovery agent to read the failing check and complete the owner and
+the step in its hand-off: the missing sentence is the agent's to complete, not
+the reason for the hand-off. `--no-repair` stays right for it: the cause is
+recorded, and a retry would read the same bytes.
+
+`continue-ci-repair` is the opposite case and is not `--no-repair`. Its command
+runs the assessment once more, which reads the pull request live and may
+repair it, so a retry can observe a repair. It runs only when the runner's
+condition finds no terminal state in the answer, or `CI_REPAIR_UNFINISHED`. It
+fails when that fresh session did not decide either, which the nested run's
+own `reentered-pass-undecided` step detects under the same condition, or when
+the nested run itself failed. The command has no loop and reads no field of
+the answer; its ERROR line carries the fresh session's answer as a JSON string
+for the recovery agent to read. Whether another session is useful is that
+agent's judgement: a retry starts one; a handoff ends the run with the reason
+on record. Each such decision is a record here, so the passes are visible to
+the operator and to the agent's next call. A session that fails the same way
+after a retry is a recurrence, and the record says so, but the step runs with
+`--retry-on-recurrence`, so a retry stays on offer: CI that is still running,
+or a session cut off before it decided, prints the same lines each time
+without showing that the next session cannot get further. The step's goal
+tells the agent that slow CI, a pending check or a session that ended before
+it decided is never on its own a reason to hand off. See
+[When the assessment stops short](./default-workflow-agentic-finalization.md#when-the-assessment-stops-short).
 
 Making the step read live instead would not rescue the retry. The terminal
 state is still the one recorded before the first attempt, so fresher facts
@@ -240,7 +279,8 @@ steps run unwrapped.
 ```
 run --step-id <id> --dir <dir> --goal <text> [--owner <v>]
     [--alternative <name>=<command>]... [--essential] [--stop-on-handoff]
-    [--no-repair] [--guard] [--already-failed] [--recipe-dir <dir>] -- <command>...
+    [--no-repair | --retry-on-recurrence] [--guard] [--already-failed]
+    [--recipe-dir <dir>] -- <command>...
 ```
 
 | Flag | Meaning |
@@ -252,7 +292,8 @@ run --step-id <id> --dir <dir> --goal <text> [--owner <v>]
 | `--essential` | `continue_recorded` not offered |
 | `--stop-on-handoff` | A handoff exits 81 |
 | `--no-repair` | `retry_after_repair` not offered (a step that publishes the worktree, or one whose every input was recorded before the first attempt) |
-| `--guard` | Only `handoff` and declared alternatives; implies the three flags above |
+| `--retry-on-recurrence` | `retry_after_repair` stays on offer on a recurrence. For a step whose command reads live state each time, so the same output again does not show that a retry cannot help; the record and the evidence still mark the recurrence. Refused with `--no-repair` or `--guard` (#2966) |
+| `--guard` | Only `handoff` and declared alternatives; implies `--essential`, `--stop-on-handoff` and `--no-repair` |
 | `--already-failed` | Go straight to recovery; the record has `unavailable_reason` |
 | `--recipe-dir` | Run `<dir>/step-failure-recovery.yaml` (tests) |
 
@@ -372,6 +413,13 @@ characters). `repair`, `alternative`, `owner` and `needs` appear only with
 their choice. `source` is `agent`, `validator` or `policy`. Unknown fields
 are refused, and a record whose `step_id` does not match its file is invalid.
 
+The excerpt keeps the end of the output, so what a step must tell the owner
+belongs on its last line. `validate-agentic-finalization` does this for
+`BLOCKED_CI` (#2966): its failure line is
+`ERROR: workflow finalization failed closed: <state>: <reason>; next action: <next action>`,
+built only from the already-cleaned fields, so the check, the cause, the owner
+and the exact step survive the 2000-character cut and reach the hand-off record.
+
 On `continue_recorded` or `handoff`, `run` prints a text line and then the
 outcome line `{"step_recovery":{"choice":…,"step_id":…,"record":…}}`; the
 text line keeps the runner from parsing the output as an object.
@@ -397,7 +445,10 @@ where it used to exit 1.
 
 `validate-agentic-finalization` ends the run only on a failure the run really
 has: a branch that was not pushed, no open PR, a PR at a different head, a
-failing check, a dirty worktree or missing `git`/`jq`. A missing or unreadable
+check failing for a cause the run cannot fix (`BLOCKED_CI`, which names the
+check, the cause, the owner and the step), a dirty worktree or missing
+`git`/`jq`. A red CI the run can fix is repaired before the step runs, and
+does not reach it (#2966). A missing or unreadable
 context file, an unset empty object key and pending CI no longer produce a
 failure, so they never reach the guard (#2343, #1726). See
 [The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).

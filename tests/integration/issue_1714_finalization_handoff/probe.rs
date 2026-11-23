@@ -16,7 +16,9 @@
 //! it. They check that:
 //! - green checks end `EXISTING_OPEN_PR`, named or discovered;
 //! - pending checks end `FAILED_IMPLEMENTATION`, handed off only in auto-drive;
-//! - a failing check is `BLOCKED_CI` from the probe, handed off;
+//! - a failing check lets the probe continue to the CI repair (#2966), and the
+//!   validator then reports the state `assess-finalization` decided on what it
+//!   read after the repair;
 //! - a diverged head, a rewound remote, and a probe run without
 //!   `accept_pr_head_ahead` (as `workflow-publish` runs it) still end
 //!   `FAILED_INVALID_INPUT`, which is never handed off (`probe_stale.rs`).
@@ -121,13 +123,25 @@ pub(super) fn probe_json(outcome: &Outcome) -> Value {
 
 /// The validator after the probe, with the probe's result as `terminal_state`
 /// and the state `assess-finalization` decided on the published outcome. A
-/// probe state the validator answers from its own record (BLOCKED_CI and the
-/// other deterministic blockers) is reached before any assessment is read, so
-/// `decided` is ignored there; pass the state the assessment would return.
+/// probe state the validator answers from its own record (the deterministic
+/// blockers `FAILED_*`) is reached before any assessment is read, so `decided`
+/// is ignored there; pass the state the assessment would return.
 pub(super) fn validate_after(fx: &Fixture, probe: &Value, handoff: bool, decided: &str) -> Outcome {
+    validate_after_acting(fx, probe, handoff, decided, "none")
+}
+
+/// [`validate_after`] for an assessment that wrote before it decided: `action`
+/// is its `action_taken` (`repaired_ci` when it brought CI to green).
+pub(super) fn validate_after_acting(
+    fx: &Fixture,
+    probe: &Value,
+    handoff: bool,
+    decided: &str,
+    action: &str,
+) -> Outcome {
     let repo = fx.repo_path();
     let probe = probe.to_string();
-    let assessed = assessment(decided, "none", "7").1;
+    let assessed = assessment(decided, action, "7").1;
     let mut envs = vec![
         ("RECIPE_VAR_repo_path", repo.as_str()),
         ("RECIPE_VAR_branch_name", BRANCH),
@@ -220,23 +234,43 @@ fn pending_checks_hand_the_open_pr_on_with_or_without_auto_drive() {
     }
 }
 
-// A red check on a head that holds the run's work is BLOCKED_CI from the
-// probe itself, and handed off.
+// #2966: a red check on a head that holds the run's work is not a state the
+// probe ends the run on. It continues, with the finalize and CI-wait gates
+// open, so the repair can run. Once the repair has brought the head to green
+// the assessment decides on what it reads then, and the validator reports that
+// decision: the probe's earlier reading of the red head decides nothing.
 #[test]
-fn a_failing_check_is_blocked_ci_from_the_probe_and_handed_off() {
+fn a_failing_check_continues_from_the_probe_and_the_repaired_head_is_a_success() {
     let (fx, _, pr_head) = merged_on_remote_before_finalize();
     answer(
         &fx,
         &pr_head,
         json!([check_run("COMPLETED", json!("FAILURE"))]),
     );
-    let json = probe_json(&probe(&fx, true, true));
-    assert_eq!(json["terminal_state"], "BLOCKED_CI");
-    // The probe's own BLOCKED_CI is answered from its record, before any
-    // assessment is read: an assessment claiming success cannot override it.
-    let outcome = validate_after(&fx, &json, true, "EXISTING_OPEN_PR");
-    assert!(outcome.success(), "{}", outcome.describe());
-    assert_eq!(outcome.field("terminal_state"), "BLOCKED_CI");
-    assert_eq!(outcome.field("terminal_success"), "false");
-    assert_eq!(outcome.field("handoff"), "merge_ready_loop");
+    let outcome = probe(&fx, true, true);
+    assert!(
+        outcome.output.status.success(),
+        "the probe must not end the run on a red check\n{}",
+        outcome.describe()
+    );
+    let json = assert_probe_continues(&outcome, "failing check");
+    assert_eq!(json["terminal_success"], "false");
+    assert_eq!(json["should_finalize"], "true");
+    assert_eq!(json["should_run_ci_wait"], "true");
+
+    // The repair pushes a fix; the head now reads green.
+    answer(&fx, &pr_head, green_rollup());
+    for auto_drive in [true, false] {
+        let outcome =
+            validate_after_acting(&fx, &json, auto_drive, "EXISTING_OPEN_PR", "repaired_ci");
+        assert!(
+            outcome.success(),
+            "auto_drive={auto_drive}\n{}",
+            outcome.describe()
+        );
+        assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
+        assert_eq!(outcome.field("terminal_success"), "true");
+        assert_eq!(outcome.field("pr_number"), "7");
+        assert_no_handoff_key(&outcome, "a repaired run is a success, not a hand-off");
+    }
 }
