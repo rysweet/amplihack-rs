@@ -17,6 +17,13 @@ description: >
   candidate and a last good reading, the blocked live login still moves,
   unconfirmed (HTTP 429), and the swap line says why the live login has no
   room and until when. The dry run names the same move and moves nothing.
+  A real supervised step (`amplihack claude --subprocess-safe -p`, with a
+  stand-in claude that meets a usage limit four hours from its reset) parks
+  in its usage-limit wait on the blocked live login; the rotator's move ends
+  the wait `rotator capacity` at 95/98 and at 85/90, and the retry runs on
+  the new login. After a move on a last good reading, the wait stays until
+  the next cycle reads the new login with room. No sleep or timer: the driver
+  acts on the step's own wait lines.
   Needs socat; runs locally and is not part of CI.
 version: "1.0"
 environment:

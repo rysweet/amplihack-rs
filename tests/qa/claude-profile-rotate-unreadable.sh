@@ -26,7 +26,18 @@
 #   4. HTTP 429 for every candidate, with a last good reading of `wwest`: the
 #      spend-blocked live login still moves, `unconfirmed (HTTP 429)`, and the
 #      swap line says why the live login has no room and until when;
-#   5. the dry run names the same move and moves nothing.
+#   5. the dry run names the same move and moves nothing;
+#   6. a waiting step wakes on the move. A real supervised step
+#      (`amplihack claude --subprocess-safe -p`, with a stand-in `claude`
+#      that meets a usage limit four hours from its reset on its first call)
+#      parks in its usage-limit wait on the blocked live login. Once its
+#      `start` line is written, the one-shot rotator cycle of cases 1 and 2
+#      moves the login, and the wait ends `rotator capacity`, at 95/98 and
+#      at 85/90; the retry runs on `wwest`. When the move is made on a last
+#      good reading (case 4), the wait reads the move and stays, because no
+#      room was read (#2857). The next cycle, which reads `wwest` with room,
+#      ends it. The driver reacts to the step's own lines, read from a pipe;
+#      it adds no sleep or timer.
 #
 # Needs socat and GNU `date -d` (Linux). Runs locally and is not part of CI.
 #
@@ -44,8 +55,10 @@ BIN="$(cd "$(dirname "$AMPLIHACK_QA_BINARY")" && pwd)/$(basename "$AMPLIHACK_QA_
 
 SOCAT_PID=""
 DRAIN_PID=""
+STEP_PID=""
 WORK=""
 cleanup() {
+  [[ -z "$STEP_PID" ]] || kill "$STEP_PID" 2>/dev/null || true
   [[ -z "$DRAIN_PID" ]] || kill "$DRAIN_PID" 2>/dev/null || true
   [[ -z "$SOCAT_PID" ]] || kill "$SOCAT_PID" 2>/dev/null || true
   wait 2>/dev/null || true
@@ -391,6 +404,177 @@ for secret in qa-sentinel-argv-secret qa-sentinel-environ-secret; do
 done
 echo "PASS: case 5: the dry run names the move to wwest and moves nothing"
 evidence '^would (swap|stay|alert)' < "$WORK/stdout"
+
+# --- Case 6: a waiting step wakes on the move ---------------------------------------------------
+# A supervised step on the live login (a `$HOME/.claude` step) meets a usage
+# limit whose reset is four hours away, as the steps of 23 November did, and
+# waits. Its stand-in `claude` notes which stand-in login ~/.claude holds at
+# each call, meets the limit on its first call and succeeds on the next.
+# Auto-switch is off, so the step waits rather than rerunning on another
+# profile, and no rotator is autostarted. The step's stderr comes through a
+# pipe, and the driver acts on each wait line as the step writes it.
+STEP_BIN="$WORK/step-bin"
+mkdir -p "$STEP_BIN"
+cat > "$STEP_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "2.1.319 (Claude Code)"; exit 0; fi
+n=$(( $(cat "$STEP_RECORD/count" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$STEP_RECORD/count"
+printf '%s\n' "$(sed -n 's/.*"accessToken":"qa-\([^"]*\)".*/\1/p' "$HOME/.claude/.credentials.json")" >> "$STEP_RECORD/logins"
+echo "attempt $n output"
+if [[ "$n" == 1 ]]; then
+  printf 'Claude AI usage limit reached|%s\n' "$LIMIT_EPOCH" >&2
+  exit 1
+fi
+exit 0
+STUB
+chmod +x "$STEP_BIN/claude"
+
+WAIT_PREFIX='amplihack.recipe.usage_limit_wait'
+STEP_RECORD=""
+STEP_ERR=""
+STEP_RC=""
+NEXT=""
+start_step() { # case name: starts the step; its stderr is read on descriptor 4
+  STEP_RECORD="$WORK/step.$1"
+  mkdir -p "$STEP_RECORD"
+  STEP_ERR="$STEP_RECORD/stderr"
+  : > "$STEP_ERR"
+  mkfifo "$STEP_RECORD/stderr.fifo"
+  (cd "$WORK" && exec env -i \
+    HOME="$QA_HOME" \
+    PATH="$STEP_BIN:/usr/bin:/bin" \
+    TERM=dumb \
+    LANG=C \
+    TZ=UTC \
+    TMPDIR="$WORK/tmp" \
+    STEP_RECORD="$STEP_RECORD" \
+    LIMIT_EPOCH="$(( $(date +%s) + 4 * 3600 ))" \
+    AMPLIHACK_CLAUDE_BINARY_PATH="$STEP_BIN/claude" \
+    AMPLIHACK_CLAUDE_AUTO_SWITCH=0 \
+    AMPLIHACK_ROTATE_AUTOSTART=0 \
+    AMPLIHACK_GOVERNOR=off \
+    AMPLIHACK_NONINTERACTIVE=1 \
+    AMPLIHACK_NO_FRESHNESS_CHECK=1 \
+    AMPLIHACK_SKIP_AUTO_INSTALL=1 \
+    AMPLIHACK_SKIP_POWER_STEERING=1 \
+    AMPLIHACK_SKIP_REFLECTION=1 \
+    AMPLIHACK_TEST_HOME_GUARD=1 \
+    AMPLIHACK_PROFILE_USAGE_API_BASE="http://127.0.0.1:$PORT" \
+    AMPLIHACK_PROFILE_USAGE_TOKEN_URL="http://127.0.0.1:$PORT/oauth/token" \
+    AMPLIHACK_PROFILE_USAGE_PROBE=direct \
+    "$BIN" claude --subprocess-safe -- -p step) \
+    > "$STEP_RECORD/stdout" 2> "$STEP_RECORD/stderr.fifo" < /dev/null &
+  STEP_PID=$!
+  exec 4< "$STEP_RECORD/stderr.fifo"
+}
+# Reads the step's stderr, keeping every line, up to its next wait line, and
+# sets NEXT to the rest of that line after the prefix. Fails when the step
+# closes its stderr first.
+next_wait_line() {
+  local line
+  NEXT=""
+  while IFS= read -r -u 4 line; do
+    printf '%s\n' "$line" >> "$STEP_ERR"
+    if [[ "$line" == *"$WAIT_PREFIX "* ]]; then
+      NEXT="${line#*"$WAIT_PREFIX "}"
+      return 0
+    fi
+  done
+  return 1
+}
+# Reads the rest of the step's stderr, then its exit status.
+finish_step() {
+  local line
+  while IFS= read -r -u 4 line; do printf '%s\n' "$line" >> "$STEP_ERR"; done
+  exec 4<&-
+  set +e
+  wait "$STEP_PID"
+  STEP_RC=$?
+  set -e
+  STEP_PID=""
+}
+step_fail() { # label, message
+  cat "$STEP_ERR" >&2
+  [[ -z "$STEP_PID" ]] || kill "$STEP_PID" 2>/dev/null || true
+  fail "$1: $2"
+}
+# The step is parked: its wait began on the blocked live login and, a minute
+# in, wrote its first progress line with nothing having woken it.
+await_parked() { # label
+  next_wait_line || step_fail "$1" "the step ended without starting a usage-limit wait"
+  [[ "$NEXT" == "start reason=usage_limit "* ]] || step_fail "$1" "the first wait line is '$NEXT', not a usage-limit start"
+  next_wait_line || step_fail "$1" "the step ended while it should be waiting"
+  [[ "$NEXT" == "progress remaining="* ]] || step_fail "$1" "the wait wrote '$NEXT' before anything moved"
+  [[ "$(cat "$STEP_RECORD/count")" == "1" ]] || step_fail "$1" "the stand-in claude ran more than once before the move"
+}
+# The step ran again on wwest after its wait ended on the rotator's record,
+# and succeeded.
+assert_resumed_on_wwest() { # label
+  finish_step
+  [[ "$STEP_RC" -eq 0 ]] || step_fail "$1" "the step exited $STEP_RC"
+  [[ "$(tr '\n' ' ' < "$STEP_RECORD/logins")" == "$LIVE wwest " ]] \
+    || step_fail "$1" "the attempts ran on '$(tr '\n' ' ' < "$STEP_RECORD/logins")', not '$LIVE wwest'"
+  ! grep -q "$WAIT_PREFIX \(failed\|skipped\) " "$STEP_ERR" || step_fail "$1" "the wait wrote a failed or skipped line"
+}
+
+# 6a and 6b: a move confirmed by a fresh reading of wwest ends the wait at once.
+check_wake_case() { # label flags...
+  local label=$1 log
+  shift
+  new_home "wake-${label//[^a-z0-9]/-}"
+  nov23_processes
+  block_live > /dev/null
+  start_step "wake-${label//[^a-z0-9]/-}"
+  await_parked "$label"
+  run_cli profile rotate "$@"
+  [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; step_fail "$label" "rotate exited $STATUS"; }
+  log="$(rotate_log)"
+  grep -q " swap $LIVE->wwest " <<< "$log" || { echo "$log" >&2; step_fail "$label" "no swap line to wwest"; }
+  next_wait_line || step_fail "$label" "the step ended without ending its wait"
+  [[ "$NEXT" == "end reason=rotator capacity" ]] \
+    || step_fail "$label" "after the move the wait wrote '$NEXT', not 'end reason=rotator capacity'"
+  assert_resumed_on_wwest "$label"
+  echo "PASS: $label: a step parked on the spend-blocked live login wakes on the rotator's move and runs again on wwest"
+  evidence "$WAIT_PREFIX (start|end|resume)" < "$STEP_ERR"
+  evidence ' swap ' <<< "$log"
+}
+check_wake_case "case 6a (95/98)" "${DEPLOYED[@]}"
+check_wake_case "case 6b (85/90)" "${REPORTER[@]}"
+
+# 6c: a move made on wwest's last good reading (HTTP 429 for every
+# candidate) records no room, so the wait reads it and stays (#2857); the next
+# cycle reads wwest, now live, with room, and the wait ends on that record.
+label="case 6c (95/98, last good reading)"
+new_home wake-h429
+nov23_processes
+block_live > /dev/null
+echo 429 > "$FX/usage-mode"
+printf '%s\n' "$LIVE" > "$FX/usage-ok"
+write_history wwest 30 40 1800
+start_step wake-h429
+await_parked "$label"
+run_cli profile rotate "${DEPLOYED[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; step_fail "$label" "the first rotate exited $STATUS"; }
+log="$(rotate_log)"
+grep -q " swap $LIVE->wwest .* unconfirmed (HTTP 429)" <<< "$log" \
+  || { echo "$log" >&2; step_fail "$label" "no unconfirmed swap line to wwest"; }
+[[ "$(live_token)" == "qa-wwest" ]] || step_fail "$label" "~/.claude holds $(live_token), not qa-wwest"
+next_wait_line || step_fail "$label" "the step ended after the unconfirmed move"
+[[ "$NEXT" == "progress remaining="* ]] \
+  || step_fail "$label" "after a move with no room read the wait wrote '$NEXT', not a progress line"
+echo ok > "$FX/usage-mode"
+: > "$FX/usage-ok"
+run_cli profile rotate "${DEPLOYED[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; step_fail "$label" "the second rotate exited $STATUS"; }
+log="$(rotate_log)"
+next_wait_line || step_fail "$label" "the step ended without ending its wait"
+[[ "$NEXT" == "end reason=rotator capacity" ]] \
+  || { echo "$log" >&2; step_fail "$label" "after the cycle that read wwest the wait wrote '$NEXT', not 'end reason=rotator capacity'"; }
+assert_resumed_on_wwest "$label"
+echo "PASS: $label: the wait stays through a move on a last good reading and ends when the next cycle reads wwest with room"
+evidence "$WAIT_PREFIX (start|progress|end|resume)" < "$STEP_ERR"
+evidence ' (swap|cycle) ' <<< "$log"
 
 [[ ! -s "$WORK/claude-calls" ]] || fail "claude was started: $(cat "$WORK/claude-calls")"
 echo "ROTATE_UNREADABLE_QA_PASSED"
