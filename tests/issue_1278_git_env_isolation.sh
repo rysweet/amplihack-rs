@@ -481,22 +481,9 @@ hook_refuses() {
 hook_refuses missing
 hook_refuses symlink
 
-# 6.8 The recipe steps carry the exact STOP lines the reference documents.
-EVIDENCE_YAML="$REPO_ROOT/amplifier-bundle/recipes/autodrive-merge-evidence.yaml"
-ROUND_YAML="$REPO_ROOT/amplifier-bundle/recipes/autodrive-merge-round.yaml"
-step_body() { awk -v id="  - id: \"$2\"" '$0 == id { on = 1; print; next } on && /^  - id:/ { exit } on { print }' "$1"; }
-for sid in step-01-sync-with-base step-02-qa-team-scenarios; do
-    case "$(step_body "$EVIDENCE_YAML" "$sid")" in
-        *'STOP: cannot load git-repo-env.sh from the tools directory (#2033)'*)
-            record_pass "merge-evidence $sid has the exact #2033 STOP line" ;;
-        *) record_fail "merge-evidence $sid has the exact #2033 STOP line" "not found in $sid" ;;
-    esac
-done
-case "$(step_body "$ROUND_YAML" step-04-address-blockers)" in
-    *'STOP: cannot load git-repo-env.sh from the tools directory (#2033)'*)
-        record_pass "merge-round step-04 has the exact #2033 STOP line" ;;
-    *) record_fail "merge-round step-04 has the exact #2033 STOP line" "not found in step-04" ;;
-esac
+# 6.8 (removed, #3129) checked the #2033 STOP lines in merge-evidence step-01
+# and step-02 and merge-round step-04. Those steps went with the merge round
+# and merge evidence recipes, which are one-release aliases now.
 
 echo
 echo "passed: $pass, failed: $fail"
