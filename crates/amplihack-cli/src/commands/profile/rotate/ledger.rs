@@ -123,6 +123,9 @@ pub struct RotateLedger {
     pub since: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swapped_at: Option<i64>,
+    /// When the last swap installed the live login: `swap_finish` (#2218).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_login_at: Option<i64>,
     /// The profile swapped out by the last swap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
@@ -179,6 +182,7 @@ impl Default for RotateLedger {
             login_identity: None,
             since: None,
             swapped_at: None,
+            live_login_at: None,
             previous: None,
             alert: None,
             advisory_alert: None,
@@ -217,8 +221,7 @@ pub struct RotateState {
     pub err: PathBuf,
 }
 
-/// A state file amplihack may act on: this user's, and not writable by the
-/// group or others.
+/// A state file amplihack may act on: this user's, and not writable by the group or others.
 pub(super) fn trusted(m: &std::fs::Metadata) -> bool {
     m.uid() == euid() && !writable_by_others(m)
 }

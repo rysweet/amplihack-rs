@@ -169,7 +169,6 @@ mod tests {
     /// for `--version`, or exits 1 with no output when `says` is `None`.
     #[cfg(unix)]
     fn copy_in(root: &std::path::Path, folder: &str, says: Option<&str>) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let dir = root.join(folder);
         std::fs::create_dir_all(&dir).unwrap();
         let body = match says {
@@ -177,8 +176,12 @@ mod tests {
             None => "#!/bin/sh\nexit 1\n".to_string(),
         };
         let path = dir.join("amplihack");
-        std::fs::write(&path, body).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The shared stub writer, which never holds the file open for
+        // writing in this process. Written here with `std::fs::write`, a
+        // sibling test's fork can inherit that descriptor and leave the
+        // stub "text file busy"; the probe then reads the copy as one that
+        // reports no version at all (issue #1973).
+        crate::test_support::write_executable(&path, &body);
         dir
     }
 
