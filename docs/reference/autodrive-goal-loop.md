@@ -496,7 +496,7 @@ Rust:
   was removed in #2340. The launch stamp tells the agent only the loop's merge
   action merges, but that is a directive and not a mechanical block.
   `--match-head-commit` and GitHub's branch protection remain the real boundary.
-  A follow-up issue tracks restoring enforcement.
+  #3144 tracks restoring enforcement.
 - There is no code stop. An agent that keeps choosing to continue, or that waits
   on a PR with no checks (where `gh pr checks --watch` returns at once), costs
   one agent call per turn. The agent is told to hand off when a failure keeps
