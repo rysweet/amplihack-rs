@@ -85,61 +85,59 @@ jq -cn --arg repo "$pr" --arg head "$OBSERVED_HEAD" --arg state "$FIXTURE_STATE"
   '{pr_found:"true",pr:"2808",pr_url:"https://example.invalid/pull/2808",pr_state:"OPEN",should_run:"true",skip_reason:"",branch:"feature/2808",head_sha:$head,state_dir:$state,repo:$repo,blockers:[],attempts:[]}'
 "#;
 
+/// #3129: the Crusty loop and merge loop preflights went with those loops
+/// (both recipes are one-step aliases now), so the build's is the one entry
+/// preflight left.
 #[test]
-fn all_three_entry_preflights_resolve_pr_from_named_clone_on_declared_fast_tier() {
-    for (name, id) in [
-        ("autodrive-build", "step-01-build-preflight"),
-        ("autodrive-crusty-loop", "step-01-crusty-loop-preflight"),
-        ("autodrive-merge-loop", "step-01-merge-loop-preflight"),
-    ] {
-        let f = Fixture::new();
-        let source = workspace()
-            .join("amplifier-bundle/recipes")
-            .join(format!("{name}.yaml"));
-        let mut recipe = RecipeParser::new()
-            .parse(&fs::read_to_string(source).unwrap())
-            .unwrap();
-        let gate = recipe
-            .steps
-            .iter()
-            .position(|step| step.id == id)
-            .expect("declared entry preflight");
-        recipe.steps.truncate(gate + 1);
-        // Execute this component's prefix without impersonating an authorized
-        // top-level drive; invocation authorization has its own existing suite.
-        recipe.name = format!("issue-2808-entry-{name}");
-        let agents = f.home.join(".amplihack/.claude/agents/core");
-        private(&agents);
-        fs::write(
-            agents.join("builder.md"),
-            "---\nname: builder\ndescription: fixture\n---\nRead local Git facts.\n",
-        )
+fn the_entry_preflight_resolves_pr_from_named_clone_on_declared_fast_tier() {
+    let (name, id) = ("autodrive-build", "step-01-build-preflight");
+    let f = Fixture::new();
+    let source = workspace()
+        .join("amplifier-bundle/recipes")
+        .join(format!("{name}.yaml"));
+    let mut recipe = RecipeParser::new()
+        .parse(&fs::read_to_string(source).unwrap())
         .unwrap();
-        write_executable(&f.bin.join("claude"), PREFLIGHT, 0o700);
-        let out = command(&f, &serde_yaml::to_string(&recipe).unwrap())
-            .env("CLAUDE_BINARY_PATH", f.bin.join("claude"))
-            .env("AMPLIHACK_CLAUDE_BINARY_PATH", f.bin.join("claude"))
-            .output()
-            .unwrap();
-        succeeds(&out);
-        assert_eq!(
-            fs::read_to_string(f.state.join("gate-cwd")).unwrap().trim(),
-            f.repo.to_str().unwrap(),
-            "{id}"
-        );
-        let argv = fs::read(f.state.join("agent-argv")).unwrap();
-        let args: Vec<&[u8]> = argv.split(|byte| *byte == 0).collect();
-        // Shipped fast mapping, asserted at the child process boundary.
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == [b"--model".as_slice(), b"claude-haiku-5-5".as_slice()]),
-            "declared fast tier did not reach {id}: {args:?}"
-        );
-        let verified: serde_json::Value =
-            serde_json::from_slice(&fs::read(f.state.join("verified-worktree")).unwrap()).unwrap();
-        assert_eq!(verified["head_sha"], f.observed_head);
-        assert_eq!(verified["worktree"], f.pr.to_str().unwrap());
-        assert!(!f.home.join(".amplihack/model-tiers.toml").exists());
-        f.assert_no_private_repositories();
-    }
+    let gate = recipe
+        .steps
+        .iter()
+        .position(|step| step.id == id)
+        .expect("declared entry preflight");
+    recipe.steps.truncate(gate + 1);
+    // Execute this component's prefix without impersonating an authorized
+    // top-level drive; invocation authorization has its own existing suite.
+    recipe.name = format!("issue-2808-entry-{name}");
+    let agents = f.home.join(".amplihack/.claude/agents/core");
+    private(&agents);
+    fs::write(
+        agents.join("builder.md"),
+        "---\nname: builder\ndescription: fixture\n---\nRead local Git facts.\n",
+    )
+    .unwrap();
+    write_executable(&f.bin.join("claude"), PREFLIGHT, 0o700);
+    let out = command(&f, &serde_yaml::to_string(&recipe).unwrap())
+        .env("CLAUDE_BINARY_PATH", f.bin.join("claude"))
+        .env("AMPLIHACK_CLAUDE_BINARY_PATH", f.bin.join("claude"))
+        .output()
+        .unwrap();
+    succeeds(&out);
+    assert_eq!(
+        fs::read_to_string(f.state.join("gate-cwd")).unwrap().trim(),
+        f.repo.to_str().unwrap(),
+        "{id}"
+    );
+    let argv = fs::read(f.state.join("agent-argv")).unwrap();
+    let args: Vec<&[u8]> = argv.split(|byte| *byte == 0).collect();
+    // Shipped fast mapping, asserted at the child process boundary.
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == [b"--model".as_slice(), b"claude-haiku-5-5".as_slice()]),
+        "declared fast tier did not reach {id}: {args:?}"
+    );
+    let verified: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.state.join("verified-worktree")).unwrap()).unwrap();
+    assert_eq!(verified["head_sha"], f.observed_head);
+    assert_eq!(verified["worktree"], f.pr.to_str().unwrap());
+    assert!(!f.home.join(".amplihack/model-tiers.toml").exists());
+    f.assert_no_private_repositories();
 }
