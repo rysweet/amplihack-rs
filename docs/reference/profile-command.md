@@ -13320,7 +13320,8 @@ The `start` and `end` lines of each wait also go to the run's
 `reentered` line, which is identical in both sinks. The `end` line is
 identical; the `start` line is this one with `harness=` dropped and
 `account=<login>` put where it was. A `waiting_for_capacity` line reaches it
-too. No other event reaches that sink.
+too, and so do `other_logins_unread` and `retry_not_moved` (issue #2967), with
+`account=<login>` added at the end. No other event reaches that sink.
 
 | Event | Fields |
 |-------|--------|
@@ -13335,6 +13336,8 @@ too. No other event reaches that sink.
 | `failed` | `reason=prompt_cut_short`; the step's piped prompt could not be read to its end, so the step fails whether or not it met a limit (see [usage-limit waits](./usage-limit-waits.md#a-prompt-that-could-not-be-read-to-its-end)). Replaces `skipped reason=piped_prompt` |
 | `waiting_for_capacity` | `reason=reset_too_far\|no_reset\|spend_limit\|credits\|passed_reset\|reset_without_zone harness=<name> until=<time>\|none`, before the wait's `start`; the recipe log has `account=<login>` in place of `harness=`. `until=none` is followed on stderr by a sentence saying the wait has no deadline ([A wait with no deadline](./usage-limit-waits.md#a-wait-with-no-deadline)) |
 | `no_file_events` | `reason=unsupported\|watch_failed\|wait_failed`; stderr only, once per wait, where no file event can be had ([A wait with no file events](./usage-limit-waits.md#a-wait-with-no-file-events)) |
+| `other_logins_unread` | `reason=auto_switch_off\|ledger_unreadable\|readings_unreadable`, before the wait's `start`: the step's other logins could not be read, so no other login's reset can end this wait early. The recipe log adds `account=<login>`. On stderr a sentence naming the cause and the error comes first ([When the other logins cannot be read](./usage-limit-waits.md#when-the-other-logins-cannot-be-read)) |
+| `retry_not_moved` | `reason=auto_switch_off\|ledger_unreadable\|readings_unreadable\|login_not_eligible`, after the `resume` of a wait that ended at another login's reset: the retry runs on the step's own profile, not on that login. The recipe log adds `account=<login>`. On stderr a sentence naming both profiles and the cause comes first |
 
 `reason=` on a `start` line says **what stopped the step**, not which kind
 of wait followed. An organisation spend limit that states no reset, which is
@@ -13530,8 +13533,7 @@ Every token means the same thing in both sinks. The line is the stderr
 `grep amplihack.recipe.usage_limit_wait` over the recipe log and the step's
 stderr together reads as one stream. No
 `failed reason=…` line is written any more (see [Closing line](#closing-line)),
-so a `reason=` here is always a `start`
-line's.
+so a `reason=` here is never a step's closing line.
 
 A login-change wait therefore appears as:
 
@@ -13556,6 +13558,14 @@ One more line can reach it: the `reentered` line of a
 from the step's output, only `met=usage_limit` or `met=rate_limit` from a fixed
 list, so a reader sees that the signal was contradicted, and by which kind of
 limit, and nothing else.
+
+Two more can reach it (issue #2967): `other_logins_unread`, before a wait's
+`start`, and `retry_not_moved`, after the wait. Each says that the step's
+other logins played no part, and why, from a fixed list of reasons:
+`auto_switch_off`, `ledger_unreadable`, `readings_unreadable`, or, for the
+retry only, `login_not_eligible`. Each line ends with `account=<login>`, the
+login the wait was for. The error itself goes to stderr only
+([When the other logins cannot be read](./usage-limit-waits.md#when-the-other-logins-cannot-be-read)).
 
 **The account name.** It is the profile name the rotator records, read at
 runtime from the [rotate ledger](#rotate-state-directory)'s `live` or the

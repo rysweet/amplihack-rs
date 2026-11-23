@@ -34,7 +34,7 @@ use crate::commands::profile::attempt::{
 use crate::commands::profile::limit_wait::earliest::earliest;
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, Replay, RerunStdin};
-use crate::commands::profile::limit_wait::{AfterLimit, Met, Resumed, Waiter};
+use crate::commands::profile::limit_wait::{AfterLimit, Met, Resumed, Unconsidered, Waiter};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate;
 use crate::commands::profile::store::ProfileStore;
@@ -70,10 +70,11 @@ const PROMPT_CUT_SHORT: &str = "its piped prompt could not be read to its end, s
                                 attempt nor a later one can be given the whole of it";
 
 /// The note the retry after an earliest-reset wait prints (issue #2967),
-/// followed by the profile whose reset set the wait's deadline. It reaches
-/// the step's stderr, which the recipe runner's classifier reads, so it
-/// carries no usage-limit marker (pinned in `tests_limit_choice`), and it
-/// names only the local profile the step moves to.
+/// followed by the profile whose reset set the wait's deadline, and only
+/// when the step changes login ([`earliest_note`]). It reaches the step's
+/// stderr, which the recipe runner's classifier reads, so it carries no
+/// usage-limit marker (pinned in `tests_limit_choice`), and it names only
+/// the local profile the step moves to.
 pub(super) const NOTE_EARLIEST: &str = "amplihack: the earliest reset among this step's logins has arrived; rerunning this step under profile";
 
 /// A profile for a nested launch.
@@ -907,7 +908,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // read again for each wait, so a wait never carries an instant an
         // earlier one computed. `bound_login` is the login whose reset that
         // is, which is where the retry runs when the wait reaches it.
-        let earliest = earliest_other(switch.as_ref(), profile.as_ref(), &tried, waiter.now());
+        let earliest = earliest_other(switch.as_ref(), &waiter, profile.as_ref(), &tried);
         waiter.offer_earliest_reset(earliest.as_ref().map(|(_, at)| *at));
         let bound_login = earliest.map(|(login, _)| login);
         // Issue #2816: the retry the wait earns is announced only once its
@@ -929,7 +930,12 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             AfterLimit::Finish(code) => return finish(attempt, code, &mut stdin),
             AfterLimit::Retry => {
                 attempt.discard();
-                profile = retry_profile(switch.as_ref(), &waiter, bound_login.as_ref());
+                profile = retry_profile(
+                    switch.as_ref(),
+                    &waiter,
+                    bound_login.as_ref(),
+                    profile.as_ref(),
+                );
             }
         }
     }
@@ -1018,15 +1024,18 @@ fn finish(attempt: Attempt, code: Option<i32>, stdin: &mut RerunStdin) -> Result
 /// set, the retry runs on `bound`, that login, and no fresh reading is asked
 /// for, because the reset is what the wait was for. The login must still
 /// pass the checks that need no reading (`limit_choice::may_run_on`); when
-/// it does not, the retry runs on the step's own login.
+/// it does not, or the logins cannot be read, the retry runs on the step's
+/// own login and says why ([`bound_profile`]). `from` is the profile the
+/// limited attempt ran under, `None` for the inherited one.
 fn retry_profile(
     switch: Option<&Switch<'_>>,
     waiter: &Waiter,
     bound: Option<&ProfileName>,
+    from: Option<&ProfileName>,
 ) -> Option<ProfileName> {
     let sw = switch?;
     if waiter.reached_earliest_reset() {
-        return bound_profile(sw, bound?);
+        return bound_profile(sw, waiter, from.unwrap_or(&sw.inherited), bound?);
     }
     let mv = waiter.retry_move()?;
     let Some(pick) = capacity_candidate(
@@ -1065,20 +1074,115 @@ fn retry_profile(
     Some(pick.profile)
 }
 
-/// The readings a choice among the stored logins is made from, loaded for
-/// one decision. `None` when auto-switch has been turned off since the step
-/// started, or the ledger or the readings cannot be read: the caller then
-/// keeps the step where it is.
-fn with_reads<T>(sw: &Switch<'_>, f: impl FnOnce(Reads<'_>) -> T) -> Option<T> {
-    let eff = config::effective(&sw.state.root);
-    if !eff.on {
-        return None;
+/// Why a step's wait, or the retry after an earliest-reset wait, could not
+/// consider the step's other stored logins (issue #2967).
+///
+/// The step goes on as it would have without them, waiting for or retrying
+/// on its own login. There is no retry and no gate; the cause is reported.
+/// Each case writes one stderr line that names the cause, and the error for
+/// a file that could not be read ([`NotConsidered::wait_line`],
+/// [`NotConsidered::retry_line`]). It also writes one wait line from a
+/// closed set, which also reaches the run's recipe log
+/// (`Waiter::other_logins_unread`, `Waiter::retry_not_moved`). Without
+/// them, "no other login had a reset ahead", which writes nothing, and "the
+/// logins could not be read" look the same, and the second is the quiet wait
+/// on the step's own reset that #2967 is about. `next_profile` and
+/// `State::load_usage_or_warn` already report the same failures on the
+/// paths they serve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum NotConsidered {
+    /// Auto-switch was turned off while the step ran. A step that started
+    /// with it off has no `Switch`, never had another login to consider, and
+    /// writes nothing here: that is the operator's standing instruction.
+    AutoSwitchOff,
+    /// The auto-switch ledger could not be read, with the error.
+    LedgerUnreadable(String),
+    /// The usage readings could not be read, with the error.
+    ReadingsUnreadable(String),
+    /// The login whose reset ended the wait may no longer be run on
+    /// (`limit_choice::may_run_on`). Only the retry after a wait meets it.
+    LoginNotEligible,
+}
+
+impl NotConsidered {
+    /// The closed-set reason the wait lines write.
+    pub(super) fn why(&self) -> Unconsidered {
+        match self {
+            NotConsidered::AutoSwitchOff => Unconsidered::AutoSwitchOff,
+            NotConsidered::LedgerUnreadable(_) => Unconsidered::LedgerUnreadable,
+            NotConsidered::ReadingsUnreadable(_) => Unconsidered::ReadingsUnreadable,
+            NotConsidered::LoginNotEligible => Unconsidered::LoginNotEligible,
+        }
     }
-    let ledger = sw.state.load_ledger().ok()?;
-    let readings = sw.state.try_load_usage().ok()?.accounts;
-    let profiles = profile_names(sw.store);
-    Some(f(Reads {
-        state: &sw.state,
+
+    /// The cause in words, with the error for a file that could not be read.
+    fn cause(&self) -> String {
+        match self {
+            NotConsidered::AutoSwitchOff => {
+                "auto-switch was turned off while this step ran".to_string()
+            }
+            NotConsidered::LedgerUnreadable(e) => {
+                format!("the auto-switch ledger cannot be read: {e}")
+            }
+            NotConsidered::ReadingsUnreadable(e) => {
+                format!("the auto-switch usage readings cannot be read: {e}")
+            }
+            NotConsidered::LoginNotEligible => "that profile was excluded, leased, given \
+                                                another account, logged out or removed \
+                                                while this step waited"
+                .to_string(),
+        }
+    }
+
+    /// The stderr line for a wait whose other logins could not be read.
+    pub(super) fn wait_line(&self) -> String {
+        format!(
+            "amplihack: this step's other logins were not read for its wait (reason={}): {}; \
+             no other login's reset can end this wait early (auto-switch)",
+            self.why().as_str(),
+            self.cause()
+        )
+    }
+
+    /// The stderr line for a retry after an earliest-reset wait that runs
+    /// under `own`, the step's inherited profile, and not under `bound`, the
+    /// profile whose reset ended the wait.
+    pub(super) fn retry_line(&self, bound: &ProfileName, own: &ProfileName) -> String {
+        format!(
+            "amplihack: the wait ended at the reset of profile {:?}, but this step reruns under \
+             its own profile {:?} (reason={}): {} (auto-switch)",
+            bound.as_str(),
+            own.as_str(),
+            self.why().as_str(),
+            self.cause()
+        )
+    }
+}
+
+/// Loads the readings for one choice among the stored logins and runs `f` on
+/// them. `Err` says why they could not be loaded: auto-switch has been
+/// turned off since the step started, or the ledger or the readings cannot
+/// be read. The caller then keeps the step where it is and reports the
+/// cause, so this never fails quietly.
+pub(super) fn with_reads<T>(
+    store: &ProfileStore,
+    state: &State,
+    f: impl FnOnce(Reads<'_>) -> T,
+) -> Result<T, NotConsidered> {
+    let eff = config::effective(&state.root);
+    if !eff.on {
+        return Err(NotConsidered::AutoSwitchOff);
+    }
+    let ledger = state
+        .load_ledger()
+        .map_err(|e| NotConsidered::LedgerUnreadable(e.to_string()))?;
+    let readings = state
+        .try_load_usage()
+        .map_err(|e| NotConsidered::ReadingsUnreadable(e.to_string()))?
+        .accounts;
+    let profiles = profile_names(store);
+    Ok(f(Reads {
+        state,
         ledger: &ledger,
         profiles: &profiles,
         readings: &readings,
@@ -1087,37 +1191,98 @@ fn with_reads<T>(sw: &Switch<'_>, f: impl FnOnce(Reads<'_>) -> T) -> Option<T> {
 }
 
 /// The earliest moment another login the step could still move to drops
-/// under the auto-switch threshold, and the login it is (issue #2967):
-/// `None` without auto-switch, and when no such login has a reset ahead.
+/// under the auto-switch threshold, and the login it is (issue #2967).
 /// Whether it is sooner than the step's own deadline is the wait's to
 /// decide (`plan::earliest`).
 ///
-/// `now` is the wait's clock; the readings are moved onto it by
+/// `None` without auto-switch, when the step's wait is off (no wait, so
+/// nothing to bound and nothing is read), and when no such login has a
+/// reset ahead, which writes nothing. It is also `None` when the logins
+/// cannot be read, and then the step says why, on stderr and in the run's
+/// recipe log ([`NotConsidered`]), before the wait's `start` line.
+///
+/// `profile` is the profile the limited attempt ran under, `None` for the
+/// inherited one. The readings are moved onto the wait's clock by
 /// `limit_choice::cross_login_reset`.
 fn earliest_other(
     switch: Option<&Switch<'_>>,
+    waiter: &Waiter,
     profile: Option<&ProfileName>,
     tried: &[String],
-    now: i64,
 ) -> Option<(ProfileName, i64)> {
     let sw = switch?;
+    if !waiter.enabled() {
+        return None;
+    }
     let current = profile.unwrap_or(&sw.inherited);
-    let others = with_reads(sw, |reads| {
+    let now = waiter.now();
+    match with_reads(sw.store, &sw.state, |reads| {
         limit_choice::cross_login_reset(reads, current.as_str(), tried, now)
+    }) {
+        Ok(others) => earliest(&others),
+        Err(why) => {
+            eprintln!("{}", why.wait_line());
+            waiter.other_logins_unread(why.why());
+            None
+        }
+    }
+}
+
+/// Whether the retry after an earliest-reset wait may run on `bound`, the
+/// login whose reset ended it. The checks are the ones that need no reading
+/// (`limit_choice::may_run_on`), asked with `from`, the login the limited
+/// attempt ran on, as the step's login, as `cross_login_reset` was asked
+/// when it chose `bound`. `Err` says why not.
+pub(super) fn may_retry_on(
+    store: &ProfileStore,
+    state: &State,
+    from: &ProfileName,
+    bound: &ProfileName,
+) -> Result<(), NotConsidered> {
+    let allowed = with_reads(store, state, |reads| {
+        limit_choice::may_run_on(reads, from.as_str(), bound)
     })?;
-    earliest(&others)
+    if allowed {
+        Ok(())
+    } else {
+        Err(NotConsidered::LoginNotEligible)
+    }
+}
+
+/// The note for a retry that moves from `from` to `bound` after an
+/// earliest-reset wait; `None` when the two are one login, so the note
+/// never claims a move that does not happen. `cross_login_reset` never
+/// chooses the step's own login and `may_run_on` refuses it, so `None` is a
+/// check here and not a path the supervisor takes.
+pub(super) fn earliest_note(from: &ProfileName, bound: &ProfileName) -> Option<String> {
+    (from != bound).then(|| format!("{NOTE_EARLIEST} {:?} (auto-switch)", bound.as_str()))
 }
 
 /// The retry after an earliest-reset wait: `bound`, when the step may still
-/// be run on it, else `None` for the step's own login.
-fn bound_profile(sw: &Switch<'_>, bound: &ProfileName) -> Option<ProfileName> {
-    let allowed = with_reads(sw, |reads| {
-        limit_choice::may_run_on(reads, sw.inherited.as_str(), bound)
-    })?;
-    if !allowed {
+/// be run on it, else `None` for the step's own login, with the cause on
+/// stderr and in the run's recipe log ([`NotConsidered`]). `from` is the
+/// login the limited attempt ran on.
+///
+/// `None` is the inherited environment, which is the profile
+/// `sw.inherited` itself. So the filter at the end maps that profile onto
+/// `None`. It does not mean the login is unchanged: when `bound` is the
+/// inherited profile, `from` is another profile the step was moved to, and
+/// the step moves back. The note is printed for exactly the moves that
+/// happen ([`earliest_note`]).
+fn bound_profile(
+    sw: &Switch<'_>,
+    waiter: &Waiter,
+    from: &ProfileName,
+    bound: &ProfileName,
+) -> Option<ProfileName> {
+    if let Err(why) = may_retry_on(sw.store, &sw.state, from, bound) {
+        eprintln!("{}", why.retry_line(bound, &sw.inherited));
+        waiter.retry_not_moved(why.why());
         return None;
     }
-    eprintln!("{NOTE_EARLIEST} {:?} (auto-switch)", bound.as_str());
+    if let Some(note) = earliest_note(from, bound) {
+        eprintln!("{note}");
+    }
     Some(bound.clone()).filter(|p| *p != sw.inherited)
 }
 
@@ -1220,3 +1385,7 @@ fn next_profile(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests_rerun_unread.rs"]
+mod tests_unread;

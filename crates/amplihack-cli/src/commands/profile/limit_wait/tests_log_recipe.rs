@@ -13,12 +13,15 @@
 //! (issue #2731, the deputy's point 5).
 //!
 //! No other event reaches the recipe log: not `progress`, not `resume`, not
-//! `skipped`, and not the closing `failed` line.
+//! `skipped`, and not the closing `failed` line. The exceptions added since
+//! are `reentered` (#2857), `waiting_for_capacity` (#2911), and
+//! `other_logins_unread` and `retry_not_moved` (#2967), each tested in its
+//! own section below.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_log_recipe;`.
 
 use super::Met;
-use super::events::{Event, Shape, Skip, line, recipe_line};
+use super::events::{Event, Shape, Skip, Unconsidered, line, recipe_line};
 use super::plan::{Bound, NoWait, Waiting};
 use super::wait::End;
 use crate::commands::recipe::run::limit_patterns::Harness;
@@ -489,4 +492,114 @@ fn the_recipe_log_names_the_steps_own_login_for_such_a_wait() {
              bound=earliest_reset+margin"
         )
     );
+}
+
+// --- issue #2967: the other logins could not be considered ---------------------
+//
+// Before a wait, `other_logins_unread` says the step's other logins could not
+// be read, so no other login's reset can end that wait early. After an
+// earliest-reset wait, `retry_not_moved` says the retry runs on the step's
+// own login and not on the login whose reset ended the wait. Without them
+// "the logins could not be read" looked exactly like "no other login had a
+// reset ahead", which writes nothing. Both reach the recipe log, where they
+// are the stderr line with `account=` added at the end, re-validated as on
+// every line that carries one. The reason is a closed set: the error itself
+// is on the supervisor's own stderr line, never in a wait line.
+
+const EVERY_CAUSE: [Unconsidered; 4] = [
+    Unconsidered::AutoSwitchOff,
+    Unconsidered::LedgerUnreadable,
+    Unconsidered::ReadingsUnreadable,
+    Unconsidered::LoginNotEligible,
+];
+
+#[test]
+fn issue_2967_the_unread_line_names_each_cause_in_both_sinks() {
+    for (why, word) in EVERY_CAUSE.into_iter().zip([
+        "auto_switch_off",
+        "ledger_unreadable",
+        "readings_unreadable",
+        "login_not_eligible",
+    ]) {
+        let e = Event::OtherLoginsUnread { why };
+        assert_eq!(
+            stderr(&e),
+            format!("amplihack.recipe.usage_limit_wait other_logins_unread reason={word}")
+        );
+        assert_eq!(
+            recipe(&e, Some("work")),
+            Some(format!(
+                "amplihack.recipe.usage_limit_wait other_logins_unread reason={word} account=work"
+            ))
+        );
+    }
+}
+
+#[test]
+fn issue_2967_the_retry_line_names_each_cause_in_both_sinks() {
+    for (why, word) in EVERY_CAUSE.into_iter().zip([
+        "auto_switch_off",
+        "ledger_unreadable",
+        "readings_unreadable",
+        "login_not_eligible",
+    ]) {
+        let e = Event::RetryNotMoved { why };
+        assert_eq!(
+            stderr(&e),
+            format!("amplihack.recipe.usage_limit_wait retry_not_moved reason={word}")
+        );
+        assert_eq!(
+            recipe(&e, Some("work")),
+            Some(format!(
+                "amplihack.recipe.usage_limit_wait retry_not_moved reason={word} account=work"
+            ))
+        );
+    }
+}
+
+#[test]
+fn issue_2967_a_login_outside_the_name_form_is_written_unknown() {
+    for e in [
+        Event::OtherLoginsUnread {
+            why: Unconsidered::LedgerUnreadable,
+        },
+        Event::RetryNotMoved {
+            why: Unconsidered::LoginNotEligible,
+        },
+    ] {
+        for bad in [
+            None,
+            Some(""),
+            Some("a b"),
+            Some("../x"),
+            Some("x\nend reason=signal"),
+        ] {
+            let l = recipe(&e, bad).expect("it reaches the recipe log");
+            assert!(l.ends_with(" account=unknown"), "{bad:?}: {l}");
+            assert_eq!(l.lines().count(), 1, "{bad:?}: {l}");
+        }
+    }
+}
+
+#[test]
+fn issue_2967_the_causes_are_distinct_and_carry_no_limit_marker() {
+    // The lines reach the step's stderr, which the recipe runner's classifier
+    // reads; a cause that read as a usage limit would be classed as one.
+    use crate::commands::recipe::run::limit_patterns::all_markers;
+    let words: Vec<&str> = EVERY_CAUSE.iter().map(|w| w.as_str()).collect();
+    let mut unique = words.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), words.len(), "{words:?}");
+    for why in EVERY_CAUSE {
+        for e in [
+            Event::OtherLoginsUnread { why },
+            Event::RetryNotMoved { why },
+        ] {
+            let l = recipe(&e, Some("work")).unwrap().to_ascii_lowercase();
+            for marker in all_markers() {
+                assert!(!l.contains(marker), "{marker:?} in {l:?}");
+            }
+        }
+    }
 }

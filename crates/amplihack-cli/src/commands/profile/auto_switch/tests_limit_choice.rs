@@ -18,7 +18,13 @@
 //!   eligibility, with no reading asked for.
 //! - The note the retry after an earliest-reset wait prints reaches the
 //!   step's stderr, which the recipe runner's classifier reads, so it must
-//!   never read as a usage limit.
+//!   never read as a usage limit, and it is printed only for a move that
+//!   happens (`rerun::earliest_note`).
+//! - A choice among the logins that cannot be made says why
+//!   (`rerun::with_reads`, `rerun::may_retry_on`): auto-switch turned off,
+//!   the ledger or the readings unreadable, or the login whose reset ended
+//!   the wait no longer eligible. Each cause has its own stderr line, which
+//!   names it and the error, and never reads as a usage limit.
 
 use super::config::Config;
 use super::limit_choice::{cross_login_reset, may_run_on};
@@ -64,7 +70,7 @@ fn reading_with(five: f64, five_in: i64, seven: f64, seven_in: i64) -> Reading {
 struct World {
     _tmp: tempfile::TempDir,
     _lock: std::sync::MutexGuard<'static, ()>,
-    _env: crate::test_support::EnvGuard,
+    env: crate::test_support::EnvGuard,
     state: State,
     profiles: Vec<ProfileName>,
     readings: BTreeMap<String, Reading>,
@@ -99,7 +105,7 @@ impl World {
         Self {
             _tmp: tmp,
             _lock: lock,
-            _env: env,
+            env,
             state,
             profiles: names.iter().map(|p| n(p)).collect(),
             readings: BTreeMap::new(),
@@ -377,4 +383,263 @@ fn the_earliest_reset_note_carries_no_usage_limit_marker_and_names_no_failed_log
     );
     assert!(line.starts_with("amplihack: "), "{line:?}");
     assert_eq!(line.lines().count(), 1, "{line:?}");
+}
+
+// --- a choice that cannot be made says why (issue #2967) -----------------------
+//
+// `with_reads` used to turn each of these into a bare `None`, so the wait
+// went on to the step's own reset, the two-hour wait of #2967, with nothing
+// in either log to tell "the logins could not be read" from "no other login
+// had a reset ahead". Each is now an error naming its cause, and each cause
+// has a stderr line. The wait line beside it (`other_logins_unread`,
+// `retry_not_moved`) is pinned in `limit_wait/tests_log_recipe.rs`, and the
+// whole path in `tests/issue_2967_other_logins.rs`.
+
+use super::config::TOGGLE_ENV;
+use super::rerun::{NOTE_EARLIEST, NotConsidered, earliest_note, may_retry_on, with_reads};
+use crate::commands::profile::store::ProfileStore;
+
+impl World {
+    /// Auto-switch on or off through its environment toggle, which is how
+    /// `config::effective` is read on every call.
+    fn auto_switch(mut self, on: bool) -> Self {
+        self.env.assign(TOGGLE_ENV, if on { "1" } else { "0" });
+        self
+    }
+
+    /// Writes `body` as the auto-switch state file `name`, private as the
+    /// state requires, so only its content can make it unreadable.
+    fn state_file(self, name: &str, body: &str) -> Self {
+        let path = self.state.dir.join(name);
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        self
+    }
+
+    /// `name` is no longer in the store.
+    fn removed(self, name: &str) -> Self {
+        fs::remove_dir_all(self.state.root.join(name)).unwrap();
+        self
+    }
+
+    fn store(&self) -> ProfileStore {
+        ProfileStore::new(self.state.root.clone())
+    }
+
+    /// Why the readings for a choice cannot be loaded, or `None` when they
+    /// can.
+    fn unread(&self) -> Option<NotConsidered> {
+        with_reads(&self.store(), &self.state, |_| ()).err()
+    }
+
+    fn retry_on(&self, from: &str, bound: &str) -> Result<(), NotConsidered> {
+        may_retry_on(&self.store(), &self.state, &n(from), &n(bound))
+    }
+}
+
+/// One line, opening as the supervisor's other notes do, that the recipe
+/// runner's classifier does not take for a usage limit.
+fn assert_not_a_limit(line: &str) {
+    use crate::commands::recipe::run::limit_patterns::all_markers;
+    use crate::commands::recipe::run::{FailureClass, classify_failure_text};
+    let lowered = line.to_ascii_lowercase();
+    for marker in all_markers() {
+        assert!(!lowered.contains(marker), "{marker:?} in {line:?}");
+    }
+    assert_ne!(
+        classify_failure_text(line).0,
+        FailureClass::UsageLimit,
+        "{line:?}"
+    );
+    assert!(line.starts_with("amplihack: "), "{line:?}");
+    assert_eq!(line.lines().count(), 1, "{line:?}");
+}
+
+#[test]
+fn readable_logins_are_read() {
+    let w = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .state_file("ledger.json", r#"{"version":1,"hosts":{}}"#)
+        .state_file("usage.json", r#"{"version":1,"accounts":{}}"#);
+    assert_eq!(w.unread(), None);
+}
+
+#[test]
+fn an_unreadable_ledger_is_named_with_its_error() {
+    let w = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .state_file("ledger.json", "{");
+    let why = w.unread().expect("an unreadable ledger is not swallowed");
+    assert!(matches!(why, NotConsidered::LedgerUnreadable(_)), "{why:?}");
+    let line = why.wait_line();
+    assert!(
+        line.starts_with(
+            "amplihack: this step's other logins were not read for its wait \
+             (reason=ledger_unreadable): the auto-switch ledger cannot be read: "
+        ),
+        "{line}"
+    );
+    assert!(
+        line.contains("ledger.json"),
+        "the error names the file: {line}"
+    );
+    assert!(
+        line.ends_with("; no other login's reset can end this wait early (auto-switch)"),
+        "{line}"
+    );
+    assert_not_a_limit(&line);
+}
+
+#[test]
+fn unreadable_readings_are_named_with_their_error() {
+    let w = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .state_file("usage.json", "{");
+    let why = w.unread().expect("unreadable readings are not swallowed");
+    assert!(
+        matches!(why, NotConsidered::ReadingsUnreadable(_)),
+        "{why:?}"
+    );
+    let line = why.wait_line();
+    assert!(
+        line.starts_with(
+            "amplihack: this step's other logins were not read for its wait \
+             (reason=readings_unreadable): the auto-switch usage readings cannot be read: "
+        ),
+        "{line}"
+    );
+    assert!(
+        line.contains("usage.json"),
+        "the error names the file: {line}"
+    );
+    assert_not_a_limit(&line);
+}
+
+#[test]
+fn auto_switch_turned_off_during_the_step_is_named() {
+    let w = World::new(&["cur", "a"]).auto_switch(false);
+    let why = w.unread().expect("auto-switch off is not swallowed");
+    assert_eq!(why, NotConsidered::AutoSwitchOff);
+    let line = why.wait_line();
+    assert_eq!(
+        line,
+        "amplihack: this step's other logins were not read for its wait \
+         (reason=auto_switch_off): auto-switch was turned off while this step ran; \
+         no other login's reset can end this wait early (auto-switch)"
+    );
+    assert_not_a_limit(&line);
+}
+
+#[test]
+fn the_ledger_is_named_before_the_readings_when_both_are_unreadable() {
+    // One cause per line: the first file a choice needs is the one named.
+    let w = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .state_file("ledger.json", "{")
+        .state_file("usage.json", "{");
+    assert!(matches!(
+        w.unread(),
+        Some(NotConsidered::LedgerUnreadable(_))
+    ));
+}
+
+// --- the retry after an earliest-reset wait --------------------------------------
+
+#[test]
+fn a_retry_onto_an_eligible_login_is_allowed() {
+    let w = World::new(&["cur", "a"]).auto_switch(true);
+    assert_eq!(w.retry_on("cur", "a"), Ok(()));
+}
+
+#[test]
+fn a_retry_onto_a_login_no_longer_eligible_is_named() {
+    // Logged out, or removed from the store, while the step waited; and the
+    // step's own login, which `cross_login_reset` never chooses.
+    let w = World::new(&["cur", "a", "l", "gone"])
+        .auto_switch(true)
+        .logged_out("l")
+        .removed("gone");
+    for bound in ["l", "gone", "cur"] {
+        assert_eq!(
+            w.retry_on("cur", bound),
+            Err(NotConsidered::LoginNotEligible),
+            "{bound}"
+        );
+    }
+    let line = NotConsidered::LoginNotEligible.retry_line(&n("l"), &n("cur"));
+    assert_eq!(
+        line,
+        "amplihack: the wait ended at the reset of profile \"l\", but this step reruns \
+         under its own profile \"cur\" (reason=login_not_eligible): that profile was \
+         excluded, leased, given another account, logged out or removed while this step \
+         waited (auto-switch)"
+    );
+    assert_not_a_limit(&line);
+}
+
+#[test]
+fn a_retry_whose_logins_cannot_be_read_is_named() {
+    let ledger = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .state_file("ledger.json", "{");
+    let why = ledger.retry_on("cur", "a").unwrap_err();
+    assert!(matches!(why, NotConsidered::LedgerUnreadable(_)), "{why:?}");
+    let line = why.retry_line(&n("a"), &n("cur"));
+    assert!(
+        line.starts_with(
+            "amplihack: the wait ended at the reset of profile \"a\", but this step reruns \
+             under its own profile \"cur\" (reason=ledger_unreadable): the auto-switch \
+             ledger cannot be read: "
+        ),
+        "{line}"
+    );
+    assert_not_a_limit(&line);
+    drop(ledger);
+
+    let readings = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .state_file("usage.json", "{");
+    let why = readings.retry_on("cur", "a").unwrap_err();
+    assert!(
+        matches!(why, NotConsidered::ReadingsUnreadable(_)),
+        "{why:?}"
+    );
+    let line = why.retry_line(&n("a"), &n("cur"));
+    assert!(line.contains("(reason=readings_unreadable)"), "{line}");
+    assert_not_a_limit(&line);
+    drop(readings);
+
+    let off = World::new(&["cur", "a"]).auto_switch(false);
+    assert_eq!(off.retry_on("cur", "a"), Err(NotConsidered::AutoSwitchOff));
+    let line = NotConsidered::AutoSwitchOff.retry_line(&n("a"), &n("cur"));
+    assert!(line.contains("(reason=auto_switch_off)"), "{line}");
+    assert_not_a_limit(&line);
+}
+
+#[test]
+fn a_retry_back_to_the_inherited_profile_is_a_move_and_is_noted() {
+    // The step was moved off its inherited profile `inh` onto `sub` before
+    // it waited, and `inh`'s reset ended the wait. The eligibility is asked
+    // from `sub`, the login the limited attempt ran on, as
+    // `cross_login_reset` was when it chose `inh`, so `inh` is allowed. The
+    // retry's `None` is the inherited environment, which is `inh`: the step
+    // does change login, and the note says so.
+    let w = World::new(&["inh", "sub"]).auto_switch(true);
+    assert_eq!(w.retry_on("sub", "inh"), Ok(()));
+    assert_eq!(
+        earliest_note(&n("sub"), &n("inh")),
+        Some(format!("{NOTE_EARLIEST} \"inh\" (auto-switch)"))
+    );
+}
+
+#[test]
+fn the_earliest_reset_note_is_printed_only_for_a_move() {
+    assert_eq!(earliest_note(&n("a"), &n("a")), None);
+    let note = earliest_note(&n("cur"), &n("a")).expect("a move is noted");
+    assert_eq!(
+        note,
+        "amplihack: the earliest reset among this step's logins has arrived; rerunning \
+         this step under profile \"a\" (auto-switch)"
+    );
+    assert_not_a_limit(&note);
 }

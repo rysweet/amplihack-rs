@@ -44,6 +44,7 @@ task-oriented guidance is in the
 - [Other logins](#other-logins)
     - [Moving to another login before a wait](#moving-to-another-login-before-a-wait)
     - [The earliest-reset deadline](#the-earliest-reset-deadline)
+    - [When the other logins cannot be read](#when-the-other-logins-cannot-be-read)
     - [The login a wait names](#the-login-a-wait-names)
     - [A reset that names no zone](#a-reset-that-names-no-zone)
 - [The timed parts that remain](#the-timed-parts-that-remain)
@@ -450,16 +451,71 @@ instant is known from that login's reading.
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-11-21 23:50:00 -08:00 until=2026-11-21 22:32:00 -08:00 bound=earliest_reset+margin
 amplihack.recipe.usage_limit_wait end reason=reset reached
-amplihack: the earliest reset among this step's logins has arrived; rerunning this step under profile "lab" (auto-switch)
 amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack: the earliest reset among this step's logins has arrived; rerunning this step under profile "lab" (auto-switch)
 ```
 
 A wait that reaches such a deadline ends as `reset reached`, and the retry
 runs on the login whose reset it was, with no fresh reading required,
 because that reset is what the wait was for. That login must still pass the
-checks that need no reading (stored, not excluded, not leased); if it does
-not, the retry runs on the step's own login. The other logins are read again
-for each wait, so no wait is timed by an instant an earlier one computed.
+checks that need no reading (stored, not excluded, not leased, holding its
+own login), asked from the login the limited attempt ran on, as when the
+login was chosen. If it does not pass, the retry runs on the step's own
+profile and says why
+([When the other logins cannot be read](#when-the-other-logins-cannot-be-read)).
+The note above is printed only when the retry changes login. A retry back to
+the step's inherited profile, for a step that was moved off it before it
+waited, is such a change. The other logins are read again for each wait, so
+no wait is timed by an instant an earlier one computed.
+
+### When the other logins cannot be read
+
+The other logins are read from the auto-switch ledger and usage readings,
+under the auto-switch setting. When that read fails, the step goes on as it
+would without them: the wait keeps its own deadline, or the retry runs on the
+step's own profile. Nothing is retried and no gate is added. The step says why,
+once on stderr in words, with the error, and once as a wait line that also
+reaches the [recipe log](./profile-command.md#the-wait-in-the-recipe-log)
+with `account=` added. A reader can then tell "the logins could not be
+read" from "no other login had a reset ahead", which writes nothing. On
+21 November 2026 the two looked the same.
+
+| Cause | `reason=` |
+|-------|-----------|
+| Auto-switch was turned off while the step ran | `auto_switch_off` |
+| The auto-switch ledger cannot be read | `ledger_unreadable` |
+| The auto-switch usage readings cannot be read | `readings_unreadable` |
+| The login whose reset ended the wait was excluded, leased, given another account, logged out or removed while the step waited (the retry only) | `login_not_eligible` |
+
+Before a wait, the lines come before its `start`:
+
+```
+amplihack: this step's other logins were not read for its wait (reason=auto_switch_off): auto-switch was turned off while this step ran; no other login's reset can end this wait early (auto-switch)
+amplihack.recipe.usage_limit_wait other_logins_unread reason=auto_switch_off
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-11-21 23:50:00 -08:00 until=2026-11-21 23:52:00 -08:00 bound=reset+margin
+```
+
+After a wait that ended at another login's reset, they come after its
+`resume`:
+
+```
+amplihack.recipe.usage_limit_wait end reason=reset reached
+amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack: the wait ended at the reset of profile "lab", but this step reruns under its own profile "work" (reason=login_not_eligible): that profile was excluded, leased, given another account, logged out or removed while this step waited (auto-switch)
+amplihack.recipe.usage_limit_wait retry_not_moved reason=login_not_eligible
+```
+
+For an unreadable file the stderr sentence carries the error after the
+cause, as in `the auto-switch ledger cannot be read: auto-switch state is
+inconsistent: .auto-switch.d/ledger.json: invalid JSON at line 1 column 1`.
+The wait line carries the fixed `reason=` only.
+
+A step that started with auto-switch off never had another login to
+consider, and a step whose wait is off has no wait to bound, so neither
+writes these lines. A ledger that is already unreadable when the step starts
+stops the launch under its profile (`error: auto-switch state is
+inconsistent`) before any limit is met, so `ledger_unreadable` comes only
+from a ledger that became unreadable while the step ran.
 
 ### The login a wait names
 

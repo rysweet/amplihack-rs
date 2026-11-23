@@ -23,6 +23,14 @@
 //!   has room by then, instead of waiting again.
 //! - T: two logins that each report a limit: the step moves once, then
 //!   waits, and does not cycle between them.
+//! - U: the other logins cannot be considered (here, auto-switch turned
+//!   off while the step ran). The step still waits for its own reset, as it
+//!   must, but says why on stderr and in the recipe log before the wait's
+//!   `start`, so the quiet wait of #2967 cannot recur unexplained. An
+//!   unreadable ledger or readings file reaches the same lines (unit tests in
+//!   `auto_switch/tests_rerun_unread.rs` and `tests_limit_choice.rs`). A
+//!   ledger unreadable from the start fails the launch before any attempt
+//!   runs, so only these tests can reach that case.
 //!
 //! Every case uses fake logins and the fixture's virtual clock (`TEST_NOW`),
 //! which moves only while a wait blocks, and never real time. Readings are
@@ -519,4 +527,88 @@ fn t_two_logins_that_each_report_a_limit_move_once_then_wait() {
         "{ev:?}"
     );
     assert_eq!(ev[1..], ["end reason=reset reached", "resume attempt=3"]);
+}
+
+// --- U: the other logins cannot be considered -------------------------------------
+
+/// A `claude` that turns auto-switch off during the step's first attempt,
+/// by putting a prepared `off` toggle file in place, then runs the fixture's
+/// stub. The supervisor reads the setting again when the limit arrives.
+const SWITCH_OFF_CLAUDE: &str = r#"#!/bin/sh
+case "$1" in --version) exec "$REAL_CLAUDE" "$@" ;; esac
+n=$(cat "$RECORD_DIR/count.${STEP:-0}" 2>/dev/null || echo 0)
+if [ "$n" = "0" ]; then
+  cp "$OFF_FROM" "$OFF_TO.tmp" && mv "$OFF_TO.tmp" "$OFF_TO"
+fi
+exec "$REAL_CLAUDE" "$@"
+"#;
+
+#[test]
+fn u_auto_switch_turned_off_during_the_step_is_named_before_the_wait() {
+    // Y is out for about 15 minutes, so with auto-switch on its reset ends
+    // the wait (E1). Auto-switch is turned off while the first attempt runs:
+    // the step then waits for X's own reset, with no retry and no gate
+    // added, and both logs say why. Before, the lines here were the same as
+    // for a step with no other login at all.
+    let f = with_profiles();
+    let toggle = f.profiles.join(".auto-switch");
+    let out = f.run(&mut f.cmd(&["profile", "auto-switch", "off"]));
+    assert!(out.status.success(), "auto-switch off: {}", describe(&out));
+    let off = f.root.join("auto-switch.off");
+    private_file(&off, &fs::read_to_string(&toggle).unwrap());
+    switch_on(&f);
+    write_readings(&f, &[Login::out("Y", 900)]);
+    let dir = f.root.join("switch-off-wrapper");
+    fs::create_dir_all(&dir).unwrap();
+    let wrapper = dir.join("claude");
+    executable(&wrapper, SWITCH_OFF_CLAUDE);
+    let log = recipe_log(&f);
+    let mut c = nested_x(&f, LIMIT_TEXT, true);
+    // The setting comes from the file alone, so turning it off there counts.
+    c.env_remove(TOGGLE_ENV)
+        .env(RECIPE_LOG_ENV, &log)
+        .env("AMPLIHACK_CLAUDE_BINARY_PATH", &wrapper)
+        .env("REAL_CLAUDE", f.tools.join("claude"))
+        .env("OFF_FROM", &off)
+        .env("OFF_TO", &toggle);
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "{}", describe(&out));
+    assert_eq!(f.call("0", 2)["PROFILE"], "X", "the retry stays on X");
+
+    assert!(
+        text(&out.stderr).contains(
+            "amplihack: this step's other logins were not read for its wait \
+             (reason=auto_switch_off): auto-switch was turned off while this step ran; \
+             no other login's reset can end this wait early (auto-switch)"
+        ),
+        "{}",
+        describe(&out)
+    );
+    let ev = events(&out);
+    assert_eq!(
+        ev[0], "other_logins_unread reason=auto_switch_off",
+        "{ev:?}"
+    );
+    assert!(
+        ev[1].starts_with(
+            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 "
+        ),
+        "{ev:?}"
+    );
+    assert!(
+        ev[1].ends_with(" bound=reset+margin"),
+        "X's own reset, not Y's: {ev:?}"
+    );
+    assert_eq!(ev[2..], ["end reason=reset reached", "resume attempt=2"]);
+
+    let lines = log_lines(&log);
+    assert_eq!(
+        lines[0], "other_logins_unread reason=auto_switch_off account=X",
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].starts_with("start reason=usage_limit account=X "),
+        "{lines:?}"
+    );
 }

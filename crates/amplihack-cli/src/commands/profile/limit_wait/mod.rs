@@ -140,8 +140,8 @@ use amplihack_utils::rotator_status::Ledger;
 use anyhow::Result;
 use clock::Clock;
 use ending::the_prompt_was_lost;
-pub(crate) use events::Met;
 use events::{Event, Shape, Skip, log, recipe_line};
+pub(crate) use events::{Met, Unconsidered};
 use fingerprint::{Fingerprint, Source, Watch};
 use marks::Marks;
 use plan::{Bound, NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
@@ -495,6 +495,30 @@ impl Waiter {
     /// moves the wait's deadline there when it is sooner (`plan::earliest`).
     pub(crate) fn offer_earliest_reset(&mut self, at: Option<i64>) {
         self.earliest_reset = at;
+    }
+
+    /// Writes `other_logins_unread reason=<why>` to stderr and to the run's
+    /// recipe log (issue #2967): the step's other logins could not be read
+    /// for the wait about to be planned, so no other login's reset can end
+    /// it early. Without this line an operator could not tell that from no
+    /// other login having a reset ahead, which writes nothing, and the first
+    /// is the quiet wait on the step's own reset that #2967 is about. It
+    /// changes nothing the wait does: no retry, no gate.
+    ///
+    /// The supervisor prints the error itself on the line before; this line
+    /// carries only the closed set, as every wait line does.
+    pub(crate) fn other_logins_unread(&self, why: Unconsidered) {
+        emit(&Event::OtherLoginsUnread { why }, self.mark().as_deref());
+    }
+
+    /// Writes `retry_not_moved reason=<why>` to stderr and to the run's
+    /// recipe log (issue #2967): the wait ended at another login's reset, and
+    /// the retry runs on the step's own login instead of that one, because
+    /// that login may no longer be run on or the logins could not be read.
+    /// The account is the one the wait was for, as on its `end` line. The
+    /// supervisor names both logins on the line before.
+    pub(crate) fn retry_not_moved(&self, why: Unconsidered) {
+        emit(&Event::RetryNotMoved { why }, self.mark().as_deref());
     }
 
     /// Whether the wait that last ran ended at a deadline another login's
