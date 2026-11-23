@@ -9,8 +9,11 @@ description: >
   larger than a pipe buffer, with a NUL byte and bytes that are not valid
   UTF-8, into the real binary's supervised launch, against a stub agent that
   reports a Claude usage limit on its first call and succeeds on its second.
-  The limit states a reset a few minutes in the past, so the real wait ends
-  at once and the scenario takes seconds without any debug-only clock seam.
+  The limit states a reset a few seconds ahead, set before each case, so each
+  case's wait ends at that reset plus the binary's two-minute margin and the
+  scenario takes about eight minutes without any debug-only clock seam. A
+  reset already behind the clock would be a wait with no deadline (issue
+  #2911), which only an event ends.
   It checks that the step succeeds, that the agent ran twice, that both
   calls read the prompt byte for byte, that one wait was reported with its
   reset and its end, that no `piped_prompt` refusal was written, and that no

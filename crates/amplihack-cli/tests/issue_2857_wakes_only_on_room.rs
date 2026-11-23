@@ -28,6 +28,15 @@
 //! organisation's credit, which no capacity reading reports, and is covered by
 //! its own cases here. A 429 that wait may then meet is part 1's concern.
 //!
+//! Issue #2911 changed two things these tests read. A wait with no reset to
+//! end on, which is every capacity and every login-change wait, writes a
+//! `waiting_for_capacity reason=<why>` line immediately before its `start`,
+//! so a login-change wait's sequence opens with two lines rather than one.
+//! And the endings that used to finish the step on a limit now retry it:
+//! nothing in this file ends a run, and `failed reason=spend_limit` no longer
+//! exists. A wait that does not wake simply sleeps to its own deadline and
+//! the step retries there.
+//!
 //! The rotator is a stub ledger. Cases that act while the attempt is failing
 //! run on the fixture's virtual clock and sleep nothing. Cases that must act
 //! during a wait use the real clock, sped up, and act on a line the run
@@ -54,8 +63,14 @@ use std::sync::mpsc::{RecvTimeoutError, channel};
 const RESET_START: &str = "start reason=usage_limit harness=claude \
                            reset=2026-10-18 08:30:00 -07:00 \
                            until=2026-10-18 08:32:00 -07:00 bound=reset+margin";
+/// A login-change wait has no deadline (issue #2911): it ends when the
+/// login changes.
 const SPEND_START: &str = "start reason=spend_limit wait=login_change harness=claude reset=none \
-                           until=2026-10-18 14:00:00 -07:00 bound=max_wait";
+                           until=none bound=none";
+/// A login-change wait has no reset to end on, so since issue #2911 it says
+/// so on a `waiting_for_capacity` line immediately before its `start`. Its
+/// reason is `spend_limit`, the limit that is the only thing to start one.
+const SPEND_WAITING: &str = "waiting_for_capacity reason=spend_limit harness=claude until=none";
 
 /// The stub `claude`: limited for its first `$LIMIT_CALLS` calls with
 /// `$LIMIT_MESSAGE`, and, on the calls named in `$LEDGER_ON_CALL`, a
@@ -282,9 +297,15 @@ fn a_true_live_room_on_a_record_that_is_not_capacity_moves_no_step() {
 
 /// `Plan::capacity_may_end()` is false for this wait: it waits for another
 /// organisation's credit, which no capacity reading reports, so a login change
-/// to a login that reads full is still the thing it waits for. Gating it would
-/// bring #2731 back. Part 1 is what makes this safe: if the login it wakes on
-/// is full, the 429 that follows re-enters a wait instead of ending the run.
+/// to a login that reads full is still the thing it waits for. The room gate
+/// does not hold that change back, because no reading speaks to organisation
+/// credit; gating it would bring #2731 back. Part 1 is what makes this safe:
+/// if the login it wakes on is full, the 429 that follows re-enters a wait
+/// instead of ending the run.
+///
+/// Since issue #2911 the wait announces itself with a `waiting_for_capacity
+/// reason=spend_limit` line before its `start`, and the login change retries
+/// the step rather than being one of the endings that could finish it.
 #[test]
 fn a_spend_limit_wait_still_ends_on_a_login_change_to_a_login_without_room() {
     for room in ["false", "none"] {
@@ -298,7 +319,12 @@ fn a_spend_limit_wait_still_ends_on_a_login_change_to_a_login_without_room() {
         assert!(out.status.success(), "room={room}: {}", describe(&out));
         assert_eq!(
             events(&out),
-            [SPEND_START, "end reason=login changed", "resume attempt=2"],
+            [
+                SPEND_WAITING,
+                SPEND_START,
+                "end reason=login changed",
+                "resume attempt=2"
+            ],
             "room={room}: {}",
             describe(&out)
         );
@@ -534,11 +560,12 @@ fn a_manual_switch_that_recorded_no_room_does_not_end_a_wait() {
 /// on the first change would pass every "does not wake" case above and fail
 /// this one, so it is the case that says the rule is *room*, not *quiet*.
 ///
-/// The reason is `login changed`, not `rotator capacity`. Both ledger records
-/// name the same login, so the fingerprint moved once, at the first record, and
-/// the room gate held that change back. The second record opens the gate, and
-/// the held-back change is read before the capacity check. Either way the wait
-/// ends at the first poll after room is recorded and not before.
+/// Both ledger records name the same login, so the fingerprint moved once, at
+/// the first record, and the room gate held that change back. The second
+/// record is a fresh cycle with room, which the rotator's capacity check reads
+/// before the fingerprint, so the wait ends `rotator capacity`; the held-back
+/// change would have ended it at the same write. Either way the wait ends at
+/// the write that records room and not before.
 #[test]
 fn a_wait_that_did_not_wake_for_a_full_login_wakes_when_room_appears() {
     let f = with_profiles();
@@ -552,7 +579,11 @@ fn a_wait_that_did_not_wake_for_a_full_login_wakes_when_room_appears() {
     });
     let out = run_in_stages(&f, &mut c, vec![full, room]);
     assert!(out.status.success(), "{}", describe(&out));
-    assert_ends(&out, &f, ["end reason=login changed", "resume attempt=2"]);
+    assert_ends(
+        &out,
+        &f,
+        ["end reason=rotator capacity", "resume attempt=2"],
+    );
     assert!(
         progress_lines(&out) >= 4,
         "the wait ran past the full login's record before the room record woke it: {}",
@@ -568,9 +599,7 @@ fn a_spend_limit_wait_ends_on_a_login_change_during_the_wait_whatever_the_room()
     let f = with_profiles();
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", SPEND_TEXT)
-        .env("LIMIT_CALLS", "1")
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "3000");
+    c.env("LIMIT_MESSAGE", SPEND_TEXT).env("LIMIT_CALLS", "1");
     real_clock(&mut c);
     c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "100");
     let profiles = f.profiles.clone();

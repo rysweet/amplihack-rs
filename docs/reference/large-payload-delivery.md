@@ -877,29 +877,30 @@ The exception is a prompt that arrives on stdin, which is how the recipe
 runner gives every Claude agent step its task: a bare `-p` on argv and the
 task written to the launch's stdin. Since issue #2815 the supervisor copies
 that prompt aside as it arrives and gives every attempt the same bytes, so
-such a step is rerun and waited for like any other. The copy is a `0600`
-file in the supervisor's rerun directory, created with `O_EXCL` and
-`O_NOFOLLOW` and removed when the step ends; the prompt is never put in
-argv, in the environment or in the rerun output buffer. The full rules,
-including what happens when the copy cannot be made, are in
+such a step is rerun and waited for like any other. The copy is kept in the
+supervisor's own memory and dropped when the step ends; nothing is written
+to disk, and the prompt is never put in argv, in the environment or in the
+rerun output buffer. The full rules are in
 [Stdin handling](./profile-command.md#stdin-handling).
 
-A failure to write the copy costs only the rerun: the attempt in hand still
-receives every byte, and amplihack names the error on standard error as it
-happens. A failure to read stdin costs the prompt, because the attempt is
-reading the copier's pipe and closing a pipe is the only signal it carries.
-amplihack names that too, and fails the step rather than report the
-attempt's result as the step's.
+Every byte the copier reads is kept before it is passed to the attempt, so
+the copy cannot be lost while the prompt is read. A failure to read stdin
+costs the prompt itself, because the attempt is reading the copier's pipe and
+closing a pipe is the only signal it carries. amplihack names that, and fails
+the step rather than report the attempt's result as the step's.
 
-A caller that never closes the pipe costs the rerun and nothing else. The
-copier finishes at the end of stdin, so the supervisor joins it only when it
-is certain to finish and otherwise refuses the rerun with a named reason: a
-supervised step never waits on a pipe nobody closes. An `--input-format`
-channel, which is a pipe its caller holds open on purpose, is not copied at
-all.
+A caller that has not closed the pipe when a rerun is due holds nothing up.
+The rerun starts at once, fed what has arrived and then the rest as it
+arrives, and reaches the end of its stdin when the caller closes the pipe, as
+the first attempt did (issue #3036). Nothing waits on the
+caller's pipe, so a caller that never closes it holds up only an attempt that
+reads it. An `--input-format` channel is copied and replayed like any other
+piped prompt.
 
-Where no copy is made, a piped prompt went to the first attempt and a rerun
-gets `/dev/null`: the prompt is lost, not exposed.
+Where the copy cannot be set up at all (the process is out of descriptors or
+threads), the step is not run: nothing is read from stdin, and the step fails
+at once naming the error. An attempt run without a copy could not be
+repeated, so a usage limit on it would end the step.
 
 amplihack's own large-payload sites take other paths:
 
