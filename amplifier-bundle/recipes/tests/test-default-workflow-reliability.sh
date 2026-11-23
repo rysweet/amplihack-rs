@@ -2063,7 +2063,9 @@ assert_pr_title_from_issue_on_moved_base() {
     git -C "${repo}" remote set-url origin "https://example.invalid/acme/widgets.git"
     rc=0; run_publish_1968_case "${repo}" "${tag}" answer "" || rc=$?
     [ "${rc}" -ne 0 ] || publish_1968_fail "${tag}" "issue #1968 case 7b: a rejected origin must fail the publish"
-    cat "${WORK}/publish-1968-${tag}.out" "${WORK}/publish-1968-${tag}.err" | grep -qF 'FAILED_PR_IDENTITY' \
+    # grep reads both files itself: piping cat into grep -q under pipefail
+    # fails when grep exits on a match while cat still writes (SIGPIPE, #1820).
+    grep -qF 'FAILED_PR_IDENTITY' "${WORK}/publish-1968-${tag}.out" "${WORK}/publish-1968-${tag}.err" \
         || publish_1968_fail "${tag}" "issue #1968 case 7b: expected FAILED_PR_IDENTITY"
     if grep -q '^issue view' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 7b: gh issue view ran without a repository identity"; fi
     if grep -q '^pr create' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 7b: gh pr create ran without a repository identity"; fi
