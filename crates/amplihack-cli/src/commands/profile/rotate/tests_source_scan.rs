@@ -67,6 +67,13 @@ fn rotate_has_the_planned_files() {
         "fresh.rs",
         "fresh_msg.rs",
         "swap_back.rs",
+        // Issue #2909: the event wake, its lines, and the blocks a cycle
+        // began with.
+        "wake.rs",
+        "wake_msg.rs",
+        "wake_blocks.rs",
+        // Issue #2909, item 3: what a cycle after an event reads.
+        "event_read.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }

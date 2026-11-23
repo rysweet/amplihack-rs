@@ -98,7 +98,8 @@ const MAX_KIND: usize = 32;
 /// `^[a-z0-9_]{1,32}$`, checked on bytes, so no case folding, no Unicode
 /// and no separator can smuggle a path, a newline or a NUL through.
 ///
-/// A token this binary does not recognise still blocks its login, which is
+/// A token this binary does not recognise still blocks its login and, for
+/// a watching rotator (issue #2909), still contributes a wake time, which is
 /// the point: the rotator must honour a limit a newer writer recorded rather
 /// than refuse the whole ledger. Every other rule on a block is unchanged:
 /// the key is a [`ProfileName`], the span passes [`valid_span`], and a
@@ -163,6 +164,10 @@ pub fn prune_blocks(l: &mut RotateLedger, now: i64) {
         l.platform_block = None;
     }
 }
+
+#[cfg(test)]
+#[path = "tests_issue_2909.rs"]
+mod tests_issue_2909;
 
 #[cfg(test)]
 #[path = "tests_issue_2910_kind.rs"]

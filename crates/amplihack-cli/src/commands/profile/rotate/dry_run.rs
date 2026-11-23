@@ -2,6 +2,7 @@
 //! decision without a lock or a write. Issue #1962: read-only on every read
 //! path, so it never refreshes a token and never starts `claude`.
 
+use super::cycle::event_read::measure_and_decide;
 use super::cycle::{Ctx, CycleOutcome};
 use super::decide::{Decision, target_msg};
 use super::fresh::{self, Reread};
@@ -9,9 +10,7 @@ use super::handfix;
 use super::identify::excluded_offline;
 use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
-use super::observe::{
-    Measurement, live_alert, live_name, measure_and_decide, platform_block_reason, snapshot,
-};
+use super::observe::{Measurement, live_alert, live_name, platform_block_reason, snapshot};
 use super::overflow_record::target_check;
 use super::pin::{self, Gate as PinGate};
 use super::prelude::ledger_stop;
