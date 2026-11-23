@@ -808,7 +808,7 @@ the exact rules.
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap, and no swap onto a login at or above `--session-at` while the live login has room, for this long after the last swap, a rotator swap or a `profile switch`. `0` turns the hold off. |
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
-| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
+| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Longest wait between cycles, for `start` and `watch` only. A limit record or a recorded reset runs a cycle sooner; see [Rotate wake](../reference/profile-command.md#rotate-wake). |
 
 A flag beats the variable, and the variable beats the default. For example, to
 rotate earlier and check every five minutes:
@@ -1233,8 +1233,14 @@ When the rotator stops, it waits a little over the deadline for any token
 refresh in progress, so that it does not leave Claude's refresh lock
 behind.
 
-Cycles do not overlap: the next one starts `--interval` seconds after the
-previous one ends.
+Cycles do not overlap: the next one starts after the previous one ends,
+when a new limit is recorded in the ledger, a recorded reset falls due or
+`--interval` seconds have passed, whichever comes first. A ledger write that
+leaves the recorded limits as they were does not start one. A cycle after a
+limit record or a reset reads the live login, takes the other logins' figures
+from their last reading while it can still stand, and reads the login it
+chooses before it swaps; a cycle after `--interval` reads every login. See
+[Rotate wake](../reference/profile-command.md#rotate-wake).
 
 Each cycle stores the readings it took, and later cycles use a stored
 reading while it is younger than `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`

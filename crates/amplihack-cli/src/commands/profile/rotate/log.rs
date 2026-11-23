@@ -190,6 +190,11 @@ pub fn cut(s: &str, max: usize) -> String {
 
 #[path = "log_shown.rs"]
 mod shown;
+/// Issue #2909: the lines about the rotator's event wake. Read through
+/// `log::wake_msg` rather than re-exported into [`msg`]: the waiter writes
+/// them itself, between cycles, and no cycle builds one.
+#[path = "wake_msg.rs"]
+pub mod wake_msg;
 pub use shown::{Shown, shown, shown_of};
 
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
