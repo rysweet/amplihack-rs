@@ -13,6 +13,10 @@ Guidance can narrow what you do. It never widens merge authority.
 4. A red check is a fix: read the failure, fix it, push.
 5. A pending check is a wait: choose `wait`. Do not hand off for it.
 6. Choose `review` for a head that has no review or has changed substantially.
+   When a review left minor findings (the reading lists them under
+   `reviews.crusty[].minor_findings`), file each as its own issue with the
+   `follow-up` label before you merge, with a complete plain-words title and
+   no task id, and say in `why` which issues you filed.
 7. Choose `merge` when the owner's conditions hold. Name the head you judged in
    `args.head`. List any task steps written for after the merge in `after_merge`.
 8. With merging off, finish the task's later steps, then choose `ready`.

@@ -96,7 +96,7 @@ which is why waiting is an action and not part of the agent step.
 | `merge_authority` | `no_merge`, dry run, and the effective authority |
 | `pr` | Head, base, `mergeable`, `mergeStateStatus`, draft, state |
 | `checks` | Each check at the head with its status, counts, and whether `required` could be read |
-| `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at |
+| `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at and the round's minor findings, which the agent files as follow-up issues before it merges |
 | `base` | Merge base, how far behind the PR is, conflicting files from `git merge-tree --write-tree`, and the files the base changed since the merge base that the PR also touches |
 | `repository` | Allowed merge methods; whether strict status checks are required |
 | `guidance` | Name, time, caller, source, new flag and size of each entry |
@@ -235,10 +235,14 @@ no poll of its own, and never sets `AMPLIHACK_STEP_TIMEOUT`.
 After each turn the driver ends the run when:
 
 - the fresh PR reading shows `MERGED` or `CLOSED`;
-- the turn carried out a `handoff` or `ready` action;
+- the turn carried out a `handoff`, `ready` or `stop` action;
+- step recovery recorded a hand-off during the turn (the report's exit 81);
 - the owner stopped the run.
 
-Trust-boundary refusals and exit 79 also end the run. Nothing reads the turn
+Trust-boundary refusals also end the run: exit 79 from any child, or the
+runner's `structural_refusal` failure-class marker on a turn run's log
+(`terminal_refusal` in `autodrive_refusal.sh`; nothing reads the transcript's
+wording). Nothing reads the turn
 record to decide, and nothing counts turns, rounds or time.
 
 ## Failures inside a turn
@@ -319,7 +323,10 @@ they were:
 
 - Merge authority comes only from the operator's inputs (`no_merge`) and the
   captured invocation: effective = allows merge, PR selected, not `no_merge`, not
-  dry run. An unreadable record gives `authorization-unreadable` and no merge.
+  dry run. The run's own context can narrow it and never grant it: `no_merge`
+  and `autodrive_dry_run` must also be exactly `false` there. An unreadable
+  record gives `authorization-unreadable` and no merge; exit 79 from the
+  authorisation helper passes up.
 - The pinned launch bundle. Tools, recipes and goal text resolve only inside
   the bundle, as regular files and not symlinks. Edits in the worktree are
   ignored.

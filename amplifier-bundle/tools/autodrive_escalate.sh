@@ -8,7 +8,7 @@
 # naming the replacement and does nothing else: it brings back no stop, no
 # budget and no gate. Sourced or run, it ends with status 0.
 # docs/reference/autodrive-goal-loop.md#retired-keys-and-aliases.
-_ad_refusal="$(dirname "${BASH_SOURCE[0]}")/autodrive_refusal.sh"
+case "${BASH_SOURCE[0]}" in */*) _ad_refusal="${BASH_SOURCE[0]%/*}/autodrive_refusal.sh" ;; *) _ad_refusal="autodrive_refusal.sh" ;; esac
 # shellcheck source=autodrive_refusal.sh
 [ -f "$_ad_refusal" ] && . "$_ad_refusal"
 unset _ad_refusal

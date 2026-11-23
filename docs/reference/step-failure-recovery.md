@@ -62,18 +62,15 @@ record is an ordinary failure.
 | Recipe | Step | Flags |
 |---|---|---|
 | `autodrive-build` | `step-02-default-workflow` (sub-recipe), recovered by `step-02r-default-workflow-recovery` | `--already-failed --essential` |
-| `autodrive-crusty-loop` | `step-02-crusty-loop` | `--essential --stop-on-handoff` |
-| `autodrive-crusty-loop` | `step-03-record-crusty-phase` (agent), recovered by `step-03r-record-crusty-phase-recovery` | `--essential` |
-| `autodrive-merge-loop` | `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
-| `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` only when the loop asked for finalisation | `--already-failed --essential` |
+| `autodrive-goal-loop` | `goal-loop` (the goal loop's driver, #3129) | `--essential --stop-on-handoff` |
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
 | `workflow-finalize` | `validate-agentic-finalization` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalization-assessment` | `continue-ci-repair` | `--essential --stop-on-handoff --retry-on-recurrence` |
 
 Report steps: `workflow-finalize` `step-recovery-report` (before
-`workflow-complete`), `auto-drive-to-merge` `autodrive-report`, and
-`autodrive_loop.sh` before the first round and after each round.
+`workflow-complete`), `auto-drive-to-merge` `autodrive-report`, and the goal
+loop's driver (`autodrive_goal_loop.sh`) after each turn's action.
 
 ### Recovery inside the auto-drive loops
 
@@ -84,16 +81,16 @@ changes against ordinary pre-review evidence and handles them without failing
 on a mere difference. See
 [review and preservation](recipe-checkout-isolation.md#assessment-after-review).
 
-`autodrive_loop.sh` passes `step_recovery_dir` to each round. Recovery retains
+The goal loop's review action passes `step_recovery_dir` to each Crusty round. Recovery retains
 the baseline associated with an interrupted reviewer invocation; it does not
 replace the baseline with partial reviewer changes. Pre-existing staged,
 unstaged, and untracked work remains recoverable. There are no
 `review_launch_dir` or private review-generation context values.
 
-That retention holds across the round and past its end. The loop reclaims the
-round's `pre-review.*` baseline only once the round has returned and the loop
-is going on; the reclaim runs after `orphan_stop`, the terminal-refusal check,
-`usage_limit_stop` and `recovery_stop`, so a round that ends the run — and in
+That retention holds across the round and past its end. The review action
+reclaims the round's `pre-review.*` baseline only once the round has returned
+and the loop is going on; the reclaim runs after the terminal-refusal and
+orphan checks, so a round that ends the run — and in
 particular one that ends it on a recorded handoff — leaves its baseline in
 place for the operator who has to act on it. The next run's first round
 reclaims every `pre-review.*` in the state directory, so a handoff nobody
@@ -429,9 +426,9 @@ text line keeps the runner from parsing the output as an object.
 A step with `--stop-on-handoff` or `--guard` exits 81, the runner stops, and
 `amplihack recipe run` exits 81. Otherwise a report ends the run:
 
-- `autodrive_loop.sh` runs `report` before the first round and after each
-  round. On 81 it escalates `STEP_RECOVERY_HANDOFF` and exits 81; on 2,
-  `INVALID_RECOVERY_RECORDS`.
+- `autodrive_goal_loop.sh` runs `report` after each turn's action. On 81 it
+  ends the run as a hand-off (`loop-end.json` `end: handoff`) and exits 81.
+  Any other answer is left to the next turn.
 - `auto-drive-to-merge` `autodrive-report` reports before any other exit
   path, and records a validator handoff when finalization evidence is
   missing.

@@ -1132,6 +1132,10 @@ fn merge_action(
             fx.state.join("invocation.json"),
         )
         .env("RECIPE_VAR_pr_number", PR)
+        // The runner stamps both into every auto-drive context; a test that
+        // narrows merge permission through the context overrides them below.
+        .env("RECIPE_VAR_no_merge", "false")
+        .env("RECIPE_VAR_autodrive_dry_run", "false")
         .current_dir(&fx.repo)
         .stdin(Stdio::null());
     for (k, v) in vars {

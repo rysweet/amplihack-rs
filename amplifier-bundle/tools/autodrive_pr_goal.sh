@@ -21,9 +21,9 @@
 # AUTODRIVE_GOAL_CONTRACT must be 1, else exit 2. Inputs from the driver:
 # AUTODRIVE_STATE_DIR, AUTODRIVE_REPO, AUTODRIVE_WORKTREE, AUTODRIVE_LOOP_HOME,
 # AUTODRIVE_INVOCATION_FILE, AUTODRIVE_TASK_FILE; from the run's context:
-# RECIPE_VAR_pr_number, merge_method, autodrive_dry_run, step_recovery_dir.
-# AUTODRIVE_PR gives the number only when the run context has none (the
-# one-release tool aliases).
+# RECIPE_VAR_pr_number, merge_method, no_merge, autodrive_dry_run,
+# step_recovery_dir, plan_task_id. Only RECIPE_VAR_* names are read, so an
+# inherited bare variable never fills one in (#1561).
 # `act` writes <turn_dir>/result.json ({outcome, summary}). Exit 79 and 75
 # pass up unchanged; any other failure is an outcome, never an exit.
 # docs/reference/autodrive-goal-loop.md#goal-contract-v1.
@@ -37,7 +37,7 @@ for lib in autodrive_goal_lib.sh autodrive_refusal.sh; do
 done
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_TERMINAL_PROMPT=0
-PR="${RECIPE_VAR_pr_number:-${AUTODRIVE_PR:-}}"; STATE="${AUTODRIVE_STATE_DIR:-}"
+PR="${RECIPE_VAR_pr_number:-}"; STATE="${AUTODRIVE_STATE_DIR:-}"
 WORK="${AUTODRIVE_WORKTREE:-${AUTODRIVE_REPO:-$PWD}}"
 CALLER_UMASK="$(umask)"; umask 077
 
@@ -74,13 +74,17 @@ crusty_round() {
       -c "pr_number=${PR}" -c "autodrive_dry_run=${d}" \
       -c "step_recovery_dir=${RECIPE_VAR_step_recovery_dir:-}" ) >"$log" 2>&1
   rc=$?
-  # The round's pre-review baselines may hold untracked file contents; once the
-  # round has returned they are reclaimed. A failed removal is said out loud.
+  # A round that ends the run (a terminal refusal, by exit 79 or by the
+  # runner's structural_refusal marker, or an orphaned run) keeps its
+  # baseline, the only record of what the worktree held before the reviewer.
+  terminal_refusal "$rc" "$log" && return 79
+  [ "$rc" -ne 75 ] || return 75
+  # Otherwise the round's pre-review baselines, which may hold untracked file
+  # contents, are reclaimed. A failed removal is said out loud.
   for b in "$STATE"/pre-review.*; do
     [ -d "$b" ] && [ ! -L "$b" ] || continue
     rm -rf -- "$b" || echo "WARNING: the pre-review baseline ${b} could not be removed; it may hold untracked file contents" >&2
   done
-  case "$rc" in 79|75) return "$rc" ;; esac
   if [ "$rc" -ne 0 ]; then echo "the Crusty round failed ($(child_failure_summary "$rc" "$log"))"; return 1; fi
   if goal_json_file "$record" 65536; then
     jq -r '"Crusty verdict \(.crusty_verdict) at \(.head_sha), reviewed \(.reviewed_head_sha), \(.concern_count) concern(s)"' "$record"
@@ -137,17 +141,24 @@ do_act_merge() {
     printf '%s' "$1" | jq -c --arg r "$run_id" '. + {run_id:$r, handoff:"false"}' | goal_atomic_write "$STATE/merge-result.json"
   }
   run_id=""
-  if ! auth="$("$AMPLIHACK_BIN" orch helper autodrive authorization --invocation "${AUTODRIVE_INVOCATION_FILE:-}" --directory "$STATE" --pr "$PR" 2>"$TD/auth.err")"; then
+  auth="$("$AMPLIHACK_BIN" orch helper autodrive authorization --invocation "${AUTODRIVE_INVOCATION_FILE:-}" --directory "$STATE" --pr "$PR" 2>"$TD/auth.err")"; rc=$?
+  case "$rc" in 79|75) exit "$rc" ;; esac
+  if [ "$rc" -ne 0 ]; then
     result authorization-unreadable "the captured authorisation could not be read ($(goal_clean_line 300 < "$TD/auth.err")); nothing was merged"
     return 0
   fi
   run_id="$(printf '%s' "$auth" | jq -r '.run_id // empty')"
   allows="$(printf '%s' "$auth" | jq -r '.allows_merge | tostring')"; sel="$(printf '%s' "$auth" | jq -r '.pr_selected | tostring')"
+  # The run's own context can narrow the captured authority, never grant it:
+  # anything but exactly "false" for no_merge or autodrive_dry_run is off.
+  if [ "${RECIPE_VAR_no_merge:-}" != false ] || [ "${RECIPE_VAR_autodrive_dry_run:-}" != false ]; then allows=false; fi
   if [ "$allows" != true ] || [ "$sel" != true ]; then
     merge_record "$(jq -cn --argjson pr "$PR" --arg h "$head" '{result:"not-authorised", pr:$pr, expected_head:$h, reason:"the captured invocation does not allow this merge"}')"
     result not-authorised "the captured invocation does not allow a merge of this pull request (allows_merge ${allows}, pr_selected ${sel}); merging is off for this run, so nothing was merged"
     return 0
   fi
+  # The launch bundle's tools are regular files only: a symlinked one is refused.
+  goal_bundle_file "${HERE%/tools}" tools/autodrive_merge.sh >/dev/null || { result refused "autodrive_merge.sh is missing or a symlink in the launch bundle; nothing was merged"; return 0; }
   # shellcheck source=autodrive_merge.sh
   . "$HERE/autodrive_merge.sh" || { result refused "autodrive_merge.sh could not be loaded; nothing was merged"; return 0; }
   line="$(cd "$WORK" && autodrive_merge "$PR" "$head" "${RECIPE_VAR_merge_method:-}")"; rc=$?

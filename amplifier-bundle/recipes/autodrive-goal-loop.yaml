@@ -68,7 +68,7 @@ steps:
       set -- bash "$T/autodrive_goal_loop.sh" --goal-tool "${RECIPE_VAR_goal_tool:-}" --goal-file "${RECIPE_VAR_goal_file:-}" \
         --state-dir "${RECIPE_VAR_autodrive_state_dir:-}" --repo "${RECIPE_VAR_repo_path:-.}" \
         --task-file "$W/task" --notes-file "$W/notes" --invocation "${RECIPE_VAR_autodrive_invocation_file:-}" \
-        ${ONCE[@]+"${ONCE[@]}"}
+        --recovery-dir "${RECIPE_VAR_step_recovery_dir:-}" ${ONCE[@]+"${ONCE[@]}"}
       if [ -n "${RECIPE_VAR_step_recovery_dir:-}" ]; then
         amplihack orch helper step-recovery run --essential --stop-on-handoff --step-id goal-loop \
           --dir "$RECIPE_VAR_step_recovery_dir" \

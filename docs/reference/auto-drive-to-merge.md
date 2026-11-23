@@ -22,6 +22,7 @@ operator sets and sees.
 - [Inputs](#inputs)
 - [Merge authority](#merge-authority)
 - [What the agent decides](#what-the-agent-decides)
+- [Minor review findings](#minor-review-findings)
 - [How a run ends](#how-a-run-ends)
 - [Retired inputs](#retired-inputs)
 - [How to](#how-to)
@@ -88,6 +89,19 @@ With merging off, the run does not end at the readiness assessment. It carries
 on with the task's remaining steps, then posts a comment saying the PR is ready,
 merging is off, and who decides the merge. Nothing ends a run for slow progress,
 number of rounds or elapsed time.
+
+## Minor review findings
+
+A Crusty round sorts its findings by severity (`autodrive_followups.sh
+classify`). The reading lists each round's minor findings, and the agent files
+each as its own issue with the `follow-up` label before it merges.
+
+#### Cell sanitising
+
+Finding identifiers are exact stable tokens. The shared finding rules
+(`autodrive_finding_rules.sh`) remove control characters from display cells and
+escape HTML or table delimiters. Summaries are data; they cannot create new
+records or change a finding's identifier or severity.
 
 ## Retired inputs
 

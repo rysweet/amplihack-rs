@@ -37,7 +37,7 @@ export GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_TERMINAL_PROMPT=0
 umask 077
 TD="${1:-}"
 goal_check_turn_dir "$TD" || exit 2
-PR="${RECIPE_VAR_pr_number:-${AUTODRIVE_PR:-}}"; STATE="${AUTODRIVE_STATE_DIR:-}"; REPO="${AUTODRIVE_REPO:-$PWD}"
+PR="${RECIPE_VAR_pr_number:-}"; STATE="${AUTODRIVE_STATE_DIR:-}"; REPO="${AUTODRIVE_REPO:-$PWD}"
 S="$(mktemp -d "$TD/.reading.XXXXXX")" || exit 1
 trap 'rm -rf -- "$S"' EXIT
 g() { git -c core.fsmonitor=false -C "$WORK" "$@"; }
@@ -66,9 +66,12 @@ if [ -n "${AUTODRIVE_INVOCATION_FILE:-}" ] && goal_is_pr "$PR"; then
 else
   AUTH_ERR="authorization-unreadable: no captured invocation record or no pull request number"
 fi
+# The run's context can narrow the captured authority, never grant it.
+CTX_OFF=false
+{ [ "${RECIPE_VAR_no_merge:-}" = false ] && [ "${RECIPE_VAR_autodrive_dry_run:-}" = false ]; } || CTX_OFF=true
 if [ -n "$AUTH" ]; then
-  put merge_authority "$(printf '%s' "$AUTH" | jq -c '{allows_merge, pr_selected:(.pr_selected // false), no_merge:(.no_merge // null),
-    dry_run:(.dry_run // null), effective:((.allows_merge == true) and (.pr_selected == true))}' 2>/dev/null)" ""
+  put merge_authority "$(printf '%s' "$AUTH" | jq -c --argjson off "$CTX_OFF" '{allows_merge, pr_selected:(.pr_selected // false), no_merge:(.no_merge // null),
+    dry_run:(.dry_run // null), narrowed_by_context:$off, effective:((.allows_merge == true) and (.pr_selected == true) and ($off | not))}' 2>/dev/null)" ""
 else
   put merge_authority '{"allows_merge":false,"pr_selected":false,"effective":false}' "$AUTH_ERR"
 fi
@@ -117,7 +120,12 @@ fi
 CR='[]'
 for f in "$STATE"/crusty-round-*.json; do
   goal_json_file "$f" 65536 || continue
-  CR="$(jq -c --arg n "${f##*/}" --argjson a "$CR" '$a + [{record:$n, verdict:.crusty_verdict, head:.head_sha, reviewed_head:.reviewed_head_sha, concerns:.concern_count}]' "$f")"
+  MINOR='[]'
+  if [ -f "$f.minor" ] && [ ! -L "$f.minor" ]; then
+    MINOR="$(head -c 65536 -- "$f.minor" | jq -c -s '[.[] | objects | {id, summary}] | .[:50]' 2>/dev/null)" || MINOR='[]'
+    [ -n "$MINOR" ] || MINOR='[]'
+  fi
+  CR="$(jq -c --arg n "${f##*/}" --argjson a "$CR" --argjson m "$MINOR" '$a + [{record:$n, verdict:.crusty_verdict, head:.head_sha, reviewed_head:.reviewed_head_sha, concerns:.concern_count, minor_findings:$m}]' "$f")"
 done
 put reviews "$(jq -cn --argjson cr "$CR" --slurpfile pr "$S/pr.raw" '{github:([($pr[0].reviews // [])[] | {author:(.author.login // null), state, submitted_at:(.submittedAt // null), head:(.commit.oid // null)}]), crusty:$cr}' 2>/dev/null \
   || jq -cn --argjson cr "$CR" '{github:[], crusty:$cr}')" ""

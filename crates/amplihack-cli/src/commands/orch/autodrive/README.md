@@ -93,8 +93,8 @@ retired environment entries, `already_merged` and the assigned state
 directory. `report_goal_tests.rs` holds the goal loop's report rules, and
 `report_v2_tests.rs` covers any finalisation text, the end-word mapping,
 records of another run or PR, and an oversized multi-byte summary. The CLI suite
-`issue_2575_agentic_merge_ready.rs` runs the merge-ready round, loop endings,
-merge tool and hand-off against a stub `amplihack` and `gh`, with `HOME`,
+`issue_2575_agentic_merge_ready.rs` runs the goal loop's merge action and its
+trust boundaries against a stub `amplihack` and `gh`, with `HOME`,
 `AMPLIHACK_HOME`, the state directory and `CLAUDE_CONFIG_DIR` in temporary
 directories. `issue_2329_autodrive_outcomes.rs` exercises runner boundaries,
 including `--fresh` and recovery resume with stored authority and the

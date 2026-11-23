@@ -18,7 +18,7 @@
 #
 #   autodrive_goal_loop.sh --goal-tool <name.sh> --goal-file <bundle-relative path>
 #     --state-dir <dir> --repo <dir> [--task-file <f>] [--notes-file <f>]
-#     [--invocation <invocation.json>] [--once]
+#     [--invocation <invocation.json>] [--recovery-dir <dir>] [--once]
 #
 # Exit: 0 an end (loop-end.json written) or one --once turn; 1 an error or a
 # failed turn run; 2 usage, or a refused contract before turn 1 (no turn
@@ -39,7 +39,7 @@ export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 SHARED_WORDS=" continue wait-owner handoff ready stop "
 CALLER_UMASK="$(umask)"
 
-GOAL_TOOL=""; GOAL_FILE=""; STATE=""; REPO=""; TASK_FILE=""; NOTES_FILE=""; INVOCATION=""; ONCE=false
+GOAL_TOOL=""; GOAL_FILE=""; STATE=""; REPO=""; TASK_FILE=""; NOTES_FILE=""; INVOCATION=""; RECOVERY=""; ONCE=false
 LOOP_END_WRITTEN=false; TURN=0; RUN_ID=""; MERGE_ALLOWED=false; SUBJECT=""
 
 say() { printf 'auto-drive goal loop: %s\n' "$*" >&2; }
@@ -64,6 +64,7 @@ while [ $# -gt 0 ]; do
     --task-file) TASK_FILE="${2:-}"; shift 2 ;;
     --notes-file) NOTES_FILE="${2:-}"; shift 2 ;;
     --invocation) INVOCATION="${2:-}"; shift 2 ;;
+    --recovery-dir) RECOVERY="${2:-}"; shift 2 ;;
     --once) ONCE=true; shift ;;
     *) usage "unknown argument '$(printf '%s' "$1" | goal_clean_line 64)'" ;;
   esac
@@ -225,6 +226,12 @@ while :; do
   # this turn's result: anything the agent step left under those names goes.
   rm -f -- "$STATE/loop-end.json" "$TD/result.json" "$TD/end.md"
   passed_up "$rc" "the turn run"
+  # #1437: the runner's structural_refusal marker is a terminal refusal too,
+  # whatever the exit; nothing reads the transcript's wording.
+  if terminal_refusal "$rc" "$TD/turn.log"; then
+    end_run refused "the turn run returned a terminal policy refusal (${TERMINAL_WHY}); it is never retried"
+    finish 79
+  fi
   if [ "$rc" -ne 0 ]; then
     tail -n 60 -- "$TD/turn.log" >&2
     why="the turn run failed after the runner's own recovery ($(child_failure_summary "$rc" "$TD/turn.log")); no agent judged this turn"
@@ -268,6 +275,18 @@ while :; do
           jq -cn --arg a "$ACTION" '{outcome:"no-action", summary:("no mechanical action ran: " + $a + " is not an action of this goal")}' | goal_atomic_write "$TD/result.json"
         fi ;;
     esac
+  fi
+  # #2539: a hand-off that step recovery recorded during this turn (inside a
+  # review round, say) is an agent's decision for an owner; it ends the run.
+  if [ -n "$RECOVERY" ]; then
+    rec="$("$AMPLIHACK_BIN" orch helper step-recovery report --dir "$RECOVERY" 2>&1)"; rrc=$?
+    if [ "$rrc" -eq 81 ]; then
+      jq -cn --arg d "a hand-off recorded by step recovery: $(printf '%s' "$rec" | goal_clean_line 600)" \
+        '{outcome:"recovery-handoff", summary:$d}' | goal_atomic_write "$TD/result.json"
+      turn_call record "$TD" || :
+      end_run handoff "a hand-off recorded by step recovery during turn ${TURN}: $(printf '%s' "$rec" | goal_clean_line 600)"
+      finish 81
+    fi
   fi
   turn_call record "$TD" || say "WARNING: the turn record could not be written"
   say "turn $(printf '%03d' "$n"): ${ACTION:-no action} -> $(jq -r '.outcome // "none"' "$TD/result.json" 2>/dev/null)"
