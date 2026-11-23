@@ -1,8 +1,9 @@
 //! The lines of target choice (issue #2910, D9 to D11): the ALERT a cycle
 //! with no move writes (the no-target line, in one of two wordings, or a stay
-//! note), the `reject:` line, the unconfirmed suffix of a swap, and the
-//! reason a login carries on the `cycle` line. See "Rotate no target" and
-//! "Rotate confirmation" in docs/reference/profile-command.md.
+//! note), the `reject:` lines (issue #3105: also one for each plan login
+//! with a standing block), and the reason a login carries on the `cycle`
+//! line. See "Rotate no target" and "Rotate confirmation" in
+//! docs/reference/profile-command.md.
 //!
 //! Every text is fixed or built from a profile name, a whole number, a time
 //! to the minute or a label this binary owns. None carries what a server, a
@@ -17,10 +18,10 @@ use super::super::measure::ProbeLabel;
 use super::super::observe::{Snap, live_name};
 use super::super::overflow::Tag;
 use super::super::settings::Settings;
-use super::Reading;
 use super::target::{NoMove, Unfit};
 use super::target_confirm::Why;
 use super::target_seen::{Basis, Seen};
+use super::{Decision, Reading};
 use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeMap;
 
@@ -69,14 +70,30 @@ pub fn reject(who: &ProfileName, why: &Why, week_max: u8) -> String {
         }
         Why::Unfit(Unfit::SpendLimit) => "spend limit on a fresh reading".to_string(),
         Why::Unfit(Unfit::NoReading) => "no usable reading".to_string(),
+        Why::Unfit(Unfit::Blocked { until, kind }) => {
+            format!("blocked until {} ({kind})", utc_minute(*until))
+        }
         Why::Unknown(label) => format!("reading unknown ({})", label.as_str()),
+        Why::Older(secs) => format!("reading {secs}s older than one already held"),
     };
     format!("reject: {who} {reason}")
 }
 
-/// The suffix of a swap made without a fresh reading of its target (D15).
-pub fn unconfirmed(label: ProbeLabel) -> String {
-    format!(" unconfirmed ({})", label.as_str())
+/// Issue #3105: `reject: <name> blocked until <minute> (<kind>)` for each
+/// plan login with a standing block, in name order, when `decision` looked
+/// for a target (a swap or an ALERT). A stay looked for none and writes none.
+pub fn blocked(seen: &Seen, decision: &Decision) -> Vec<String> {
+    if *decision == Decision::Stay {
+        return Vec::new();
+    }
+    seen.logins
+        .iter()
+        .filter_map(|(name, st)| {
+            let (until, kind) = st.block?;
+            let why = Why::Unfit(Unfit::Blocked { until, kind });
+            Some(reject(name, &why, seen.week_max))
+        })
+        .collect()
 }
 
 /// The stay note for a cycle that did not move although the live login has
@@ -131,7 +148,7 @@ fn counts(seen: &Seen) -> (String, bool) {
             }
             (Basis::NotRead(reason), _) => *not_read.entry(reason).or_insert(0) += 1,
             (Basis::Failed, _) | (_, Err(Unfit::NoReading)) => failed += 1,
-            (_, Err(Unfit::Full | Unfit::SpendLimit)) => exhausted += 1,
+            (_, Err(Unfit::Full | Unfit::SpendLimit | Unfit::Blocked { .. })) => exhausted += 1,
             (_, Err(Unfit::AboveCeiling)) => above += 1,
             (_, Ok(_)) => other += 1,
         }
@@ -275,10 +292,10 @@ pub fn annotate(seen: &Seen, name: &ProfileName, shown: &mut Shown) {
     }
 }
 
-/// The whole `swap` line (F8): the target figures of [`swap_target`], the
-/// shared `swap` text and the unconfirmed suffix when this cycle accepted
-/// `to` without a fresh reading. A cycle emits it as it stands and
-/// `--dry-run` prefixes it with `would `, so the two cannot drift apart.
+/// The whole `swap` line (F8): the target figures of [`swap_target`] and
+/// the shared `swap` text. A cycle emits it as it stands and `--dry-run`
+/// prefixes it with `would `, so the two cannot drift apart. Issue #3105: a
+/// swap is made only on a fresh reading, so the line has no suffix.
 pub fn swap_line(
     seen: &Seen,
     from: &ProfileName,
@@ -287,12 +304,7 @@ pub fn swap_line(
     target: Shown,
     reason: super::Reason,
 ) -> String {
-    let target = swap_target(seen, to, target);
-    let mut line = msg::swap(from, to, live, &target, reason);
-    if let Some((_, label)) = seen.unconfirmed.as_ref().filter(|(n, _)| n == to) {
-        line.push_str(&unconfirmed(*label));
-    }
-    line
+    msg::swap(from, to, live, &swap_target(seen, to, target), reason)
 }
 
 /// The target figures of a `swap` line: a target chosen on its last good

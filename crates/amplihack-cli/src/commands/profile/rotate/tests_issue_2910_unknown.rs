@@ -1,6 +1,7 @@
-//! Issue #2910 (D6, D7, F5, F7, AC5, AC7, A1, A2, S2, S4, E5, E5b): the
+//! Issue #2910 (D6, F5, F7, AC5, AC7, A1, A2, S2, S4, E5, E5b): the
 //! confirmation of the target before a swap, and what an unknown reading
-//! does. Wired from `target_confirm.rs`.
+//! does. Wired from `target_confirm.rs`. Issue #3105 withdraws D7: no target
+//! is taken without a fresh reading, whatever room the live login has.
 //!
 //! The first part tests the pure step. For one stale candidate about to be
 //! chosen, `next` says what to do from the facts of the cycle (a candidate
@@ -8,16 +9,12 @@
 //!
 //! | The stale candidate | Step |
 //! |---------------------|------|
-//! | its probe failed this cycle, live login has no room now | `AcceptUnconfirmed(label)`, even at the cap |
 //! | this cycle's three re-reads are used | `NotTried(Count)` |
-//! | its probe failed this cycle, live login has room | `Reject(Unknown(label))` |
+//! | its probe failed this cycle | `Reject(Unknown(label))`, or `Reject(Unfit(NoReading))` with no label |
 //! | the cycle can read no more | `NotTried(Time)` |
 //! | it can be read | `ReadAgain` |
 //!
-//! `after_unknown` is the same choice for a re-read that came back unknown.
-//! A rejection made without a read counts against the cap of three (E5); an
-//! acceptance without a fresh reading reads nothing, so the cap does not
-//! bound it (D7, review of PR #3048).
+//! A rejection made without a read counts against the cap of three (E5).
 //!
 //! The second part runs real cycles with a counting re-read hook (AC5) on the
 //! shared fixture (`tests_issue_2910_fixture`).
@@ -26,13 +23,11 @@
 //!
 //! ```text
 //! struct Facts { failed_now: bool, attempts: usize, can_read: bool,
-//!                live_no_room: bool, label: Option<ProbeLabel> }
+//!                label: Option<ProbeLabel> }
 //! enum Limit { Count, Time }
-//! enum Why { Unknown(ProbeLabel), Unfit(Unfit) }
-//! enum Step { AcceptUnconfirmed(ProbeLabel), ReadAgain, Reject(Why),
-//!             NotTried(Limit) }
+//! enum Why { Unknown(ProbeLabel), Unfit(Unfit), Older(u64) }
+//! enum Step { ReadAgain, Reject(Why), NotTried(Limit) }
 //! next(f: &Facts) -> Step
-//! after_unknown(label: ProbeLabel, live_no_room: bool) -> Step
 //! ```
 //!
 //! The re-read hook takes the new signature
@@ -64,7 +59,6 @@ fn facts() -> Facts {
         failed_now: false,
         attempts: 0,
         can_read: true,
-        live_no_room: false,
         label: None,
     }
 }
@@ -113,31 +107,29 @@ fn the_count_limit_comes_before_the_time_limit() {
 }
 
 /// A probe that already failed this cycle is not probed again in the same
-/// cycle (D6): there is nothing to read, only to decide.
+/// cycle (D6): there is nothing to read, only to decide. Issue #3105: it is
+/// rejected, never taken on the reading the decision used.
 #[test]
 fn a_candidate_whose_probe_failed_this_cycle_is_never_read_again() {
+    for label in [Http429, Transport] {
+        let f = Facts {
+            failed_now: true,
+            label: Some(label),
+            ..facts()
+        };
+        assert_eq!(next(&f), Step::Reject(Why::Unknown(label)));
+        // Even when the cycle could not read.
+        let f = Facts {
+            can_read: false,
+            ..f
+        };
+        assert_eq!(next(&f), Step::Reject(Why::Unknown(label)));
+    }
     let f = Facts {
         failed_now: true,
-        label: Some(Http429),
         ..facts()
     };
-    assert_eq!(next(&f), Step::Reject(Why::Unknown(Http429)));
-    let f = Facts {
-        failed_now: true,
-        label: Some(Http429),
-        live_no_room: true,
-        ..facts()
-    };
-    assert_eq!(next(&f), Step::AcceptUnconfirmed(Http429));
-    // Even when the cycle could read, and the count is not used.
-    let f = Facts {
-        failed_now: true,
-        can_read: true,
-        attempts: 0,
-        label: Some(Transport),
-        live_no_room: true,
-    };
-    assert_eq!(next(&f), Step::AcceptUnconfirmed(Transport));
+    assert_eq!(next(&f), Step::Reject(Why::Unfit(Unfit::NoReading)));
 }
 
 #[test]
@@ -153,62 +145,30 @@ fn a_rejection_without_a_read_still_counts_against_the_limit() {
     assert_eq!(next(&f), Step::NotTried(Limit::Count));
 }
 
-/// D7 at the cap: with the live login out of room, a target whose probe
-/// failed this cycle is still accepted on the reading the decision used.
-/// That acceptance makes no read and writes no `reject:` line, so the cap,
-/// which bounds both, does not turn it into `not tried`.
+/// Issue #3105 (was D7 at the cap): a target whose probe failed this cycle
+/// is never taken without a fresh reading. Below the cap it is rejected and
+/// at the cap it is not tried; in neither case is it swapped to. The step
+/// has no input for the live login's room, so that room cannot change it.
 #[test]
-fn at_the_cap_a_failed_target_is_still_accepted_when_the_live_login_has_no_room() {
+fn at_the_cap_a_failed_target_is_not_tried_and_never_accepted() {
     for attempts in [MAX_REREADS_PER_CYCLE, MAX_REREADS_PER_CYCLE + 1, 40] {
         for can_read in [true, false] {
-            let f = Facts {
-                failed_now: true,
-                attempts,
-                can_read,
-                live_no_room: true,
-                label: Some(Http429),
-            };
-            assert_eq!(next(&f), Step::AcceptUnconfirmed(Http429), "{f:?}");
+            for label in [Some(Http429), None] {
+                let f = Facts {
+                    failed_now: true,
+                    attempts,
+                    can_read,
+                    label,
+                };
+                assert_eq!(next(&f), Step::NotTried(Limit::Count), "{f:?}");
+            }
         }
     }
-    // With no label there is no last good reading to stand on: the cap
-    // applies, as to any other rejection.
     let f = Facts {
-        failed_now: true,
         attempts: MAX_REREADS_PER_CYCLE,
-        live_no_room: true,
-        label: None,
         ..facts()
     };
     assert_eq!(next(&f), Step::NotTried(Limit::Count));
-    // A stale target that was not failed is still bound by the cap when the
-    // live login has no room: reading it is what the cap counts.
-    let f = Facts {
-        attempts: MAX_REREADS_PER_CYCLE,
-        live_no_room: true,
-        ..facts()
-    };
-    assert_eq!(next(&f), Step::NotTried(Limit::Count));
-}
-
-#[test]
-fn a_reread_that_came_back_unknown_is_accepted_only_when_the_live_login_has_no_room() {
-    assert_eq!(
-        after_unknown(Http429, true),
-        Step::AcceptUnconfirmed(Http429)
-    );
-    assert_eq!(
-        after_unknown(Transport, true),
-        Step::AcceptUnconfirmed(Transport)
-    );
-    assert_eq!(
-        after_unknown(Http429, false),
-        Step::Reject(Why::Unknown(Http429))
-    );
-    assert_eq!(
-        after_unknown(Transport, false),
-        Step::Reject(Why::Unknown(Transport))
-    );
 }
 
 // --- Re-read hooks: each test has its own statics (tests run in parallel) -------------------
@@ -305,11 +265,12 @@ fn ac5_a_rejected_target_is_named_and_the_next_one_is_confirmed_with_one_read_ea
     assert!(!log.contains("no profile has capacity"), "{log}");
 }
 
-/// D7 holds after the cap: three re-reads that each show no room use up the
-/// cycle's allowance, and a fourth candidate whose probe failed this cycle is
-/// still accepted unconfirmed, because that makes no read for the cap to bound.
+/// Issue #3105 (was D7 after the cap): three re-reads that each show no room
+/// use up the cycle's allowance, and a fourth candidate whose probe failed
+/// this cycle is not tried and not swapped to, though the live login is full
+/// and its last good reading shows room.
 #[test]
-fn ac5_an_unconfirmed_swap_is_still_made_after_three_rereads() {
+fn ac5_after_three_rereads_a_failed_target_is_not_tried_and_nothing_is_swapped() {
     static CALLS: Calls = Mutex::new(Vec::new());
     fn reread(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
         record(&CALLS, who);
@@ -330,10 +291,16 @@ fn ac5_an_unconfirmed_swap_is_still_made_after_three_rereads() {
         Some(reread),
     );
     let log = f.log();
-    assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("lg"), "{log}");
+    assert_eq!(out, CycleOutcome::Alerted, "{log}");
+    assert!(f.live_is("work"), "{log}");
     assert_eq!(calls(&CALLS), ["a", "b", "c"], "{log}");
-    assert!(log.contains("unconfirmed (HTTP 429)"), "{log}");
+    assert!(
+        log.contains("reread: lg limit reached; treated as unknown"),
+        "{log}"
+    );
+    assert!(log.contains("1 not tried (re-read limit 3)"), "{log}");
+    assert!(!log.contains("unconfirmed ("), "{log}");
+    assert!(lines_with(&log, "swap work->").is_empty(), "{log}");
 }
 
 /// A candidate read directly in this cycle is not stale, so it is chosen
@@ -428,7 +395,7 @@ fn at_most_three_candidates_are_read_and_the_rest_are_counted_as_not_tried() {
     );
 }
 
-// --- D7: a re-read that comes back unknown ------------------------------------------------------------------
+// --- A re-read that comes back unknown (issue #3105 withdraws D7) ---------------------------------------------
 
 static CALLS_UNK: Calls = Mutex::new(Vec::new());
 
@@ -437,8 +404,11 @@ fn reread_unknown(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<Pr
     (unread(), Some(Http429))
 }
 
+/// Issue #3105 (was D7): with the live login full, a target whose re-read
+/// comes back unknown is rejected, not taken on its stale reading. The cycle
+/// ends on the stay note, as a hard ALERT that pauses session resumes.
 #[test]
-fn d7_an_unknown_reread_goes_ahead_unconfirmed_when_the_live_login_has_no_room() {
+fn an_unknown_reread_is_rejected_even_when_the_live_login_has_no_room() {
     let f = fleet(&["top"], &[]);
     let out = run_with(
         &f,
@@ -448,10 +418,20 @@ fn d7_an_unknown_reread_goes_ahead_unconfirmed_when_the_live_login_has_no_room()
         Some(reread_unknown),
     );
     let log = f.log();
-    assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("top"), "{log}");
-    assert!(log.contains("unconfirmed (HTTP 429)"), "{log}");
-    assert!(!log.contains("reject: top"), "{log}");
+    assert_eq!(out, CycleOutcome::Alerted, "{log}");
+    assert!(f.live_is("work"), "{log}");
+    assert!(
+        log.contains("reject: top reading unknown (HTTP 429)"),
+        "{log}"
+    );
+    assert!(
+        log.contains("stay: no candidate confirmed by a fresh reading"),
+        "{log}"
+    );
+    assert!(!log.contains("unconfirmed ("), "{log}");
+    let l = f.e.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(l.alert.as_deref(), Some("no-capacity/unconfirmed:work"));
+    assert_eq!(l.advisory_alert, None, "a full live login: a hard ALERT");
 }
 
 /// A re-read that shows the organisation's spend limit shows a login with no
@@ -491,12 +471,12 @@ fn a_reread_that_shows_a_spend_limit_is_rejected_for_it() {
     assert!(!log.contains("no usable reading"), "{log}");
 }
 
-/// An unconfirmed swap carries no measured figures of its target: the stale
-/// reading it was chosen on is not written as a swap record, and no room is
-/// claimed for the login now live, so the usage-limit wait does not resume a
-/// stopped step on a login nobody has read ("Rotate confirmation" says so).
+/// Issue #3105 (was D7): a target whose re-read said nothing is not swapped
+/// to, so no swap record is written on the stale reading it was chosen on,
+/// and no room is claimed for the live login, which is full: the usage-limit
+/// wait does not resume a stopped step ("Rotate confirmation" says so).
 #[test]
-fn d7_an_unconfirmed_swap_writes_no_swap_record_and_claims_no_room() {
+fn an_unknown_reread_with_a_full_live_login_writes_no_swap_record_and_claims_no_room() {
     let f = fleet(&["top"], &[]);
     let out = run_with(
         &f,
@@ -506,11 +486,11 @@ fn d7_an_unconfirmed_swap_writes_no_swap_record_and_claims_no_room() {
         Some(reread_unknown),
     );
     let log = f.log();
-    assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(log.contains("unconfirmed (HTTP 429)"), "{log}");
+    assert_eq!(out, CycleOutcome::Alerted, "{log}");
+    assert!(f.live_is("work"), "{log}");
     assert!(
         !f.e.rs.dir.join("swap.json").exists(),
-        "a swap on an unknown reading writes no swap record:\n{log}"
+        "no swap on an unknown reading, so no swap record:\n{log}"
     );
     let cycle = f.e.rs.load_ledger().unwrap().unwrap().last_cycle.unwrap();
     assert_ne!(

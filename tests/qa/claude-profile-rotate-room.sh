@@ -8,12 +8,13 @@
 # profile root.
 #
 # It replays 22 November 2026: the live login reached 100% of its session
-# while several logins had room, and the rotator only alerted. Nine cases:
+# while several logins had room, and the rotator only alerted. Eleven cases:
 #
 #   1. dry run: reports the swap to the login with a fresh session (llarame);
 #   2. one-shot cycle: moves ~/.claude to it, reason=plan-room, no ALERT;
 #   3. HTTP 429 from the usage endpoint, a last good reading in the history:
-#      the swap goes ahead, `unconfirmed (HTTP 429)`;
+#      the target is rejected at confirmation and nothing moves (issue #3105:
+#      no swap without a fresh reading, whatever room the live login has);
 #   4. HTTP 429 and no history: one `no capacity known` ALERT, nothing moves;
 #   5. HTTP 429 and the target's identity read returns another account:
 #      nothing moves;
@@ -21,12 +22,29 @@
 #   7. the stand-in's own guards: a bad bearer token, a missing one and an
 #      oversized request line are refused and serve no fixture;
 #   8. a recorded spend block on llarame: it is passed over for qquinn, the
-#      next login the ranking gives, and chosen again once the block ended;
+#      next login the ranking gives, with `reject: llarame blocked until
+#      <time> (spend limit)` at 85/90 and at 95/98 (issue #3105), and chosen
+#      again once the block ended;
 #   9. the thresholds the hosts run, --session-at 95 --week-at 98: the dry run
 #      and the one-shot cycle choose qquinn (every login below 95% of its
 #      session is in the first tier, and qquinn has the most room now), with
 #      no ALERT, the ledger records room for a waiting step, and at the 05:48Z
-#      readings the dry run would stay with no note.
+#      readings the dry run would stay with no note;
+#  10. the 23 November replay (issue #3105): llarame carries a spend block,
+#      every live probe but the live login's fails with HTTP 429, and the
+#      history holds an old, roomy reading of llarame (0/33). With a rotator
+#      from another build running, so that each ledger save takes the form
+#      for older readers, two one-shot cycles (95/98, then 85/90) never swap,
+#      log `reject: llarame blocked until <time> (spend limit)` each time and
+#      keep the block in the ledger. With no block at all, the old reading
+#      still leads to no swap at 95/98: the target is rejected at
+#      confirmation.
+#  11. a usage block (issue #3105: a standing spend *or usage* block): with a
+#      session-limit block on qquinn, the one-shot cycle at 95/98 moves to
+#      yyandis, logs `reject: qquinn blocked until <time> (session limit)`
+#      and keeps the block in the ledger; with a week-limit block on llarame,
+#      the dry run at 85/90 passes it over for qquinn with a `(week limit)`
+#      reject line.
 #
 # Needs socat and GNU `date -d` (Linux); the handler itself avoids bash 4 only
 # expansions. Runs locally and is not part of CI.
@@ -45,8 +63,10 @@ BIN="$(cd "$(dirname "$AMPLIHACK_QA_BINARY")" && pwd)/$(basename "$AMPLIHACK_QA_
 
 SOCAT_PID=""
 DRAIN_PID=""
+STANDIN_PID=""
 WORK=""
 cleanup() {
+  [[ -z "$STANDIN_PID" ]] || kill "$STANDIN_PID" 2>/dev/null || true
   [[ -z "$DRAIN_PID" ]] || kill "$DRAIN_PID" 2>/dev/null || true
   [[ -z "$SOCAT_PID" ]] || kill "$SOCAT_PID" 2>/dev/null || true
   wait 2>/dev/null || true
@@ -338,16 +358,21 @@ evidence ' (swap|affinity:) ' <<< "$log"
 new_home h429
 storm
 write_history llarame 78 92 1800
+before="$(live_token)"
 run_cli profile rotate "${FLAGS[@]}"
 [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 3: rotate exited $STATUS"; }
-[[ "$(live_token)" == "qa-llarame" ]] || fail "case 3: ~/.claude holds $(live_token), not qa-llarame"
+[[ "$(live_token)" == "$before" ]] || fail "case 3: ~/.claude changed to $(live_token) on a reading nobody confirmed"
 log="$(rotate_log)"
 grep -q "llarame:unknown, HTTP 429, last s=78%,w=92% " <<< "$log" \
   || { echo "$log" >&2; fail "case 3: the cycle line does not show the probe's own error for llarame"; }
-grep -q "reason=plan-room unconfirmed (HTTP 429)" <<< "$log" \
-  || { echo "$log" >&2; fail "case 3: the swap line is not unconfirmed (HTTP 429)"; }
-echo "PASS: case 3: HTTP 429 with a last good reading gives an unconfirmed swap to llarame"
-evidence ' swap ' <<< "$log"
+grep -q "reject: llarame reading unknown (HTTP 429)" <<< "$log" \
+  || { echo "$log" >&2; fail "case 3: llarame was not rejected at confirmation"; }
+grep -q "stay: no candidate confirmed by a fresh reading" <<< "$log" \
+  || { echo "$log" >&2; fail "case 3: the cycle did not end on the no-candidate-confirmed note"; }
+! grep -q " swap $LIVE->" <<< "$log" || { echo "$log" >&2; fail "case 3: the rotator swapped"; }
+! grep -q "unconfirmed (" <<< "$log" || { echo "$log" >&2; fail "case 3: the log has an unconfirmed swap"; }
+echo "PASS: case 3: HTTP 429 with a last good reading rejects llarame at confirmation and moves nothing"
+evidence ' (reject:|stay:|swap) ' <<< "$log"
 grep -o 'llarame:unknown, HTTP 429, last [^ ]* [0-9]*m ago' <<< "$log" | sed 's/^/  | /' || true
 
 # --- Case 4: HTTP 429, no history ----------------------------------------------------------------------
@@ -379,17 +404,16 @@ printf '%s\n' llarame > "$FX/profile-mismatch"
 write_history llarame 78 92 1800
 before="$(live_token)"
 run_cli profile rotate "${FLAGS[@]}"
-# A one-shot cycle reports a refused swap to its caller (watch mode does not),
-# so the exit is 1 and stderr carries the refusal.
-[[ $STATUS -eq 1 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 5: rotate exited $STATUS, not 1"; }
-grep -q "swap refused: trusted login identity conflicts with the account recorded for profile llarame" "$WORK/stderr" \
-  || { cat "$WORK/stderr" >&2; fail "case 5: stderr does not carry the refusal"; }
+# Issue #3105: llarame's usage is unknown (HTTP 429), so it is rejected at
+# confirmation, before any swap and so before its identity is read; the
+# one-shot cycle ends on the stay note, with nothing refused to report.
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 5: rotate exited $STATUS"; }
 log="$(rotate_log)"
 # The cycle ran and tried llarame: it says so, and says why it did not move.
 grep -q "llarame:unknown, HTTP 429, last s=78%,w=92% " <<< "$log" \
   || { echo "$log" >&2; fail "case 5: the cycle line does not show that llarame was tried"; }
-grep -q " ALERT: swap refused: trusted login identity conflicts with the account recorded for profile llarame" <<< "$log" \
-  || { echo "$log" >&2; fail "case 5: the refusal was not logged"; }
+grep -q "reject: llarame reading unknown (HTTP 429)" <<< "$log" \
+  || { echo "$log" >&2; fail "case 5: llarame was not rejected at confirmation"; }
 [[ "$(live_token)" == "$before" ]] || fail "case 5: ~/.claude changed for a login whose identity did not match"
 ! grep -q " swap $LIVE->llarame" <<< "$log" || fail "case 5: the rotator swapped to llarame"
 : > "$FX/profile-mismatch"
@@ -486,9 +510,24 @@ grep -q "would swap $LIVE->qquinn " <<< "$blocked_out" \
   || { echo "$blocked_out" >&2; fail "case 8: the rotator did not choose qquinn, the next login the ranking gives"; }
 grep -q "llarame:.*blocked until .*(spend limit)" <<< "$blocked_out" \
   || { echo "$blocked_out" >&2; fail "case 8: the cycle line does not say why llarame was passed over"; }
+rejects="$(grep -cE "^reject: llarame blocked until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z \(spend limit\)$" <<< "$blocked_out" || true)"
+[[ "$rejects" == "1" ]] \
+  || { echo "$blocked_out" >&2; fail "case 8: expected one 'reject: llarame blocked until <time> (spend limit)' line, found $rejects"; }
 ! grep -q "no profile has capacity" <<< "$blocked_out" \
   || fail "case 8: the dry run said no profile has capacity"
 [[ "$(live_token)" == "$before" ]] || fail "case 8: the blocked dry run moved ~/.claude"
+
+# The same block at the thresholds the hosts run: llarame is still passed
+# over, with the same one reject line.
+run_cli profile rotate --dry-run --session-at 95 --week-at 98 --margin 3 --upgrade-margin 30 --hold 3600
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "case 8: the blocked dry run at 95/98 exited $STATUS"; }
+blocked_hosts="$(cat "$WORK/stdout")"
+! grep -q "would swap $LIVE->llarame " <<< "$blocked_hosts" \
+  || { echo "$blocked_hosts" >&2; fail "case 8: at 95/98 the rotator chose llarame while its block was in force"; }
+rejects="$(grep -cE "^reject: llarame blocked until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z \(spend limit\)$" <<< "$blocked_hosts" || true)"
+[[ "$rejects" == "1" ]] \
+  || { echo "$blocked_hosts" >&2; fail "case 8: at 95/98 expected one block reject line for llarame, found $rejects"; }
+[[ "$(live_token)" == "$before" ]] || fail "case 8: the blocked dry run at 95/98 moved ~/.claude"
 
 # The same readings with the block already ended: llarame is chosen again.
 write_block llarame 7200 -60 spend_limit
@@ -499,10 +538,13 @@ grep -q "would swap $LIVE->llarame " <<< "$after_out" \
   || { echo "$after_out" >&2; fail "case 8: the rotator did not choose llarame once its block had ended"; }
 ! grep -q "llarame:.*blocked until" <<< "$after_out" \
   || { echo "$after_out" >&2; fail "case 8: the cycle line still calls llarame blocked after its reset"; }
+! grep -q "^reject: llarame blocked" <<< "$after_out" \
+  || { echo "$after_out" >&2; fail "case 8: a reject line still calls llarame blocked after its reset"; }
 [[ "$(live_token)" == "$before" ]] || fail "case 8: the dry run after the reset moved ~/.claude"
 echo "PASS: case 8: a blocked login is passed over until its reset and chosen after it"
-evidence '^would (swap|stay|alert)' <<< "$blocked_out"
+evidence '^(would (swap|stay|alert)|reject: )' <<< "$blocked_out"
 evidence 'llarame:' <<< "$blocked_out"
+evidence '^(would (swap|stay|alert)|reject: )' <<< "$blocked_hosts"
 evidence '^would (swap|stay|alert)' <<< "$after_out"
 
 # --- Case 9: the thresholds the hosts run, 95/98 -------------------------------------------
@@ -549,6 +591,138 @@ echo "PASS: case 9: at 95/98 the rotator moves to qquinn with no ALERT, records 
 evidence '^would (swap|stay|alert)' <<< "$deployed_out"
 evidence ' (swap|affinity:) ' <<< "$log"
 evidence '^would (swap|stay|alert)' <<< "$stay_out"
+
+# --- Case 10: the 23 November replay (issue #3105) ------------------------------------------
+# On 23 November a login (here llarame) hit its spend limit at 06:00:21Z and
+# was blocked until 10:40Z. Its live probes then failed, and the history still
+# held its reading from 05:44:55Z, 0/33, which looks roomy. The rotator had
+# been upgraded in place, so it ran another build than the one on disk, and
+# every ledger save wrote the form for older readers, which dropped the block.
+# At 06:18:29Z it swapped to the blocked login on the old reading, unconfirmed.
+#
+# Here the block is in the ledger, every probe but the live login's answers
+# 429, and the old reading is in the history, 2006 seconds old. The rotator
+# from another build is a stand-in process this driver starts: its command
+# line reads as `profile rotate watch` and its executable is not the
+# candidate's. It never cycles; it only makes each save take the older form.
+# Two one-shot cycles run, at the hosts' 95/98 and then at 85/90. The second
+# reads the ledger the first saved, which is where the block was lost before.
+new_home replay
+before="$(live_token)"
+write_block llarame 1077 15822 spend_limit
+storm
+write_history llarame 0 33 2006
+ledger="$ROOT/.auto-switch.d/rotate/ledger.json"
+block_until() { tr -d ' \n' < "$ledger" | sed -n 's/.*"overflow_blocked":{"llarame":{[^}]*"until":\([0-9]*\).*/\1/p'; }
+until_before="$(block_until)"
+[[ -n "$until_before" ]] || fail "case 10: the setup left no block on llarame in the ledger"
+# The stand-in says it is up only once it runs as `bash -c`, so its command
+# line is the one the rotator checks before the pid file names it.
+mkfifo "$WORK/standin.ready" "$WORK/standin.hold"
+bash -c 'echo up > "$1"; read -r _ < "$2"' amplihack "$WORK/standin.ready" "$WORK/standin.hold" profile rotate watch &
+STANDIN_PID=$!
+read -r _ < "$WORK/standin.ready"
+printf '%s\n' "$STANDIN_PID" > "$ROOT/.auto-switch.d/rotate/rotate.pid"
+chmod 600 "$ROOT/.auto-switch.d/rotate/rotate.pid"
+replay_cycle() { # label flags...
+  local label=$1 seen
+  shift
+  run_cli profile rotate "$@"
+  [[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 10 ($label): rotate exited $STATUS"; }
+  grep -q "runs another amplihack binary" "$WORK/stderr" \
+    || { cat "$WORK/stderr" >&2; fail "case 10 ($label): the cycle did not see the stand-in as a rotator from another build"; }
+  [[ "$(live_token)" == "$before" ]] || fail "case 10 ($label): ~/.claude changed to $(live_token)"
+  seen="$(block_until)"
+  [[ "$seen" == "$until_before" ]] \
+    || fail "case 10 ($label): the ledger saved for older readers holds '${seen}' for llarame's block, not $until_before"
+}
+replay_cycle 95/98 "${DEPLOYED[@]}"
+replay_cycle 85/90 "${FLAGS[@]}"
+log="$(rotate_log)"
+rejects="$(grep -cE " reject: llarame blocked until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z \(spend limit\)$" <<< "$log" || true)"
+[[ "$rejects" == "2" ]] \
+  || { echo "$log" >&2; fail "case 10: expected one 'reject: llarame blocked until <time> (spend limit)' line per cycle, found $rejects in two"; }
+! grep -q " swap $LIVE->" <<< "$log" || { echo "$log" >&2; fail "case 10: the rotator swapped"; }
+! grep -q "unconfirmed (" <<< "$log" || { echo "$log" >&2; fail "case 10: the log has an unconfirmed swap"; }
+kill "$STANDIN_PID" 2>/dev/null || true
+wait "$STANDIN_PID" 2>/dev/null || true
+STANDIN_PID=""
+replay_log="$log"
+
+# The same old reading with no block at all, as if the block had been lost:
+# at 95/98 the target is still rejected at confirmation and nothing moves.
+new_home replay-unblocked
+before="$(live_token)"
+storm
+write_history llarame 0 33 2006
+run_cli profile rotate "${DEPLOYED[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 10: the unblocked cycle exited $STATUS"; }
+[[ "$(live_token)" == "$before" ]] || fail "case 10: ~/.claude changed to $(live_token) on a reading nobody confirmed"
+log="$(rotate_log)"
+grep -q "reject: llarame reading unknown (HTTP 429)" <<< "$log" \
+  || { echo "$log" >&2; fail "case 10: llarame was not rejected at confirmation"; }
+grep -q "stay: no candidate confirmed by a fresh reading" <<< "$log" \
+  || { echo "$log" >&2; fail "case 10: the cycle did not end on the no-candidate-confirmed note"; }
+! grep -q " swap $LIVE->" <<< "$log" || { echo "$log" >&2; fail "case 10: the unblocked cycle swapped"; }
+! grep -q "unconfirmed (" <<< "$log" || { echo "$log" >&2; fail "case 10: the unblocked cycle has an unconfirmed swap"; }
+echo ok > "$FX/usage-mode"
+: > "$FX/usage-ok"
+echo "PASS: case 10: the 23 November replay never swaps to the blocked login or on its old reading, at 95/98 and 85/90"
+evidence ' (reject:|stay:|swap|ALERT:) ' <<< "$replay_log"
+evidence ' (reject:|stay:|swap) ' <<< "$log"
+
+# --- Case 11: a usage block is kept out as a spend block is (issue #3105) ---------------
+# The issue asks that a login with a standing spend *or usage* block is never
+# chosen. Cases 8 and 10 use a spend block; here the ledger holds a usage
+# block instead, on the login each threshold setting would choose first.
+#
+# At the hosts' 95/98, qquinn (88/20) is the first choice (case 9). With a
+# session-limit block on it, the one-shot cycle must pass it over for yyandis
+# (88/71: the same room now, 12, and the next week), move ~/.claude there with
+# reason=threshold, log one `reject: qquinn blocked until <time> (session
+# limit)` line, and keep the block in the ledger it saves.
+new_home usage-blocked
+before="$(live_token)"
+write_block qquinn 600 7200 session_limit
+ledger="$ROOT/.auto-switch.d/rotate/ledger.json"
+qquinn_until() { tr -d ' \n' < "$ledger" | sed -n 's/.*"overflow_blocked":{[^}]*"qquinn":{[^}]*"until":\([0-9]*\).*/\1/p'; }
+until_before="$(qquinn_until)"
+[[ -n "$until_before" ]] || fail "case 11: the setup left no block on qquinn in the ledger"
+run_cli profile rotate "${DEPLOYED[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 11: rotate at 95/98 exited $STATUS"; }
+[[ "$(live_token)" == "qa-yyandis" ]] \
+  || { rotate_log >&2 || true; fail "case 11: ~/.claude holds $(live_token), not qa-yyandis"; }
+usage_log="$(rotate_log)"
+! grep -q " swap $LIVE->qquinn " <<< "$usage_log" \
+  || { echo "$usage_log" >&2; fail "case 11: the rotator swapped to qquinn while its session-limit block stood"; }
+grep -q " swap $LIVE->yyandis .*reason=threshold" <<< "$usage_log" \
+  || { echo "$usage_log" >&2; fail "case 11: no threshold swap line to yyandis"; }
+rejects="$(grep -cE " reject: qquinn blocked until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z \(session limit\)$" <<< "$usage_log" || true)"
+[[ "$rejects" == "1" ]] \
+  || { echo "$usage_log" >&2; fail "case 11: expected one 'reject: qquinn blocked until <time> (session limit)' line, found $rejects"; }
+[[ "$(qquinn_until)" == "$until_before" ]] \
+  || fail "case 11: the ledger the cycle saved holds '$(qquinn_until)' for qquinn's block, not $until_before"
+
+# At 85/90, llarame (0/95) is the first choice (case 1). With a week-limit
+# block on it, the dry run passes it over for qquinn, as case 8 does for a
+# spend block, with one `(week limit)` reject line, and moves nothing.
+new_home week-blocked
+before="$(live_token)"
+write_block llarame 600 7200 week_limit
+run_cli profile rotate --dry-run "${FLAGS[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "case 11: the week-blocked dry run exited $STATUS"; }
+week_out="$(cat "$WORK/stdout")"
+! grep -q "would swap $LIVE->llarame " <<< "$week_out" \
+  || { echo "$week_out" >&2; fail "case 11: the rotator chose llarame while its week-limit block stood"; }
+grep -q "would swap $LIVE->qquinn " <<< "$week_out" \
+  || { echo "$week_out" >&2; fail "case 11: the rotator did not choose qquinn, the next login the ranking gives"; }
+rejects="$(grep -cE "^reject: llarame blocked until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z \(week limit\)$" <<< "$week_out" || true)"
+[[ "$rejects" == "1" ]] \
+  || { echo "$week_out" >&2; fail "case 11: expected one 'reject: llarame blocked until <time> (week limit)' line, found $rejects"; }
+[[ "$(live_token)" == "$before" ]] || fail "case 11: the week-blocked dry run moved ~/.claude"
+echo "PASS: case 11: a session-limit or week-limit block keeps a login out, at 95/98 and 85/90, as a spend block does"
+evidence ' (reject:|swap) ' <<< "$usage_log"
+evidence '^(would (swap|stay|alert)|reject: )' <<< "$week_out"
 
 [[ ! -s "$WORK/claude-calls" ]] || fail "claude was started: $(cat "$WORK/claude-calls")"
 echo "ROTATE_ROOM_QA_PASSED"

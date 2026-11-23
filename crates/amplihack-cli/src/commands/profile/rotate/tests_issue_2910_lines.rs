@@ -1,6 +1,8 @@
 //! Issue #2910 (D9 to D11, T6, S5, S6, A5): the text of the stay notes, the
-//! `reject:` line, the unconfirmed suffix, the time shown in a count and the
-//! alert keys. Wired from `target_msg.rs`.
+//! `reject:` line, the time shown in a count and the alert keys. Wired from
+//! `target_msg.rs`. Issue #3105 withdrew the unconfirmed swap, and with it
+//! the swap line's suffix; the two `reject:` forms it added are tested in
+//! `tests_issue_3105`.
 //!
 //! The grammar is the one in `docs/reference/profile-command.md`, "Rotate no
 //! target" and "Rotate confirmation". The summary line, with its counts, is
@@ -16,7 +18,6 @@
 //! ```text
 //! utc_minute(t: i64) -> String                      // %Y-%m-%dT%H:%MZ, fixed fallback
 //! reject(who: &ProfileName, why: &Why, week_max: u8) -> String   // "reject: <name> <reason>"
-//! unconfirmed(label: ProbeLabel) -> String          // " unconfirmed (<label>)"
 //! stay_note(m: &NoMove, s: &Settings) -> Option<String>   // None for NoTarget
 //! ```
 
@@ -237,21 +238,6 @@ fn a_reject_line_names_the_login_and_nothing_else_it_was_given() {
         assert!(line.is_ascii() && !line.contains('\n'), "{line:?}");
         assert!(line.contains(label.as_str()), "{line}");
     }
-}
-
-// --- unconfirmed (D15) ------------------------------------------------------------------------
-
-#[test]
-fn the_unconfirmed_suffix_names_the_probes_label() {
-    assert_eq!(unconfirmed(ProbeLabel::Http429), " unconfirmed (HTTP 429)");
-    assert_eq!(
-        unconfirmed(ProbeLabel::Transport),
-        " unconfirmed (transport)"
-    );
-    assert_eq!(
-        unconfirmed(ProbeLabel::StillRunning),
-        " unconfirmed (still running)"
-    );
 }
 
 // --- The time in a count (A5, S6) ------------------------------------------------------------------

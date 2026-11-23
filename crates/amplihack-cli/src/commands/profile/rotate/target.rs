@@ -5,9 +5,15 @@
 //! plan room, upgrade, failed probe, projected and overflow-out) ranks with
 //! [`ranked`]. See "Rotate target choice" in docs/reference/profile-command.md.
 //!
+//! - Blocked ([`fit_blocked`], issue #3105): a login with a standing block in
+//!   the ledger (`overflow_blocked`) is ruled out until the block's recorded
+//!   end, before any reading is looked at, however much room a reading shows.
+//!   [`standing_block`] is the one test of whether a block stands:
+//!   `observe_decide::decide_with` uses it to leave such a login out of every
+//!   pass, the overflow rule to treat it as having no room, and
+//!   `target_seen::build` to record why for the cycle's lines.
 //! - Eligible ([`fit`]): no spend limit, a usable reading, both windows below
-//!   100%, and a week at or below `--target-week-max`. A recorded block is
-//!   applied by the callers, which give a blocked login a reading with no room.
+//!   100%, and a week at or below `--target-week-max`.
 //! - Qualifying ([`relief_floor`], [`upgrade_floor`]): a live login with no
 //!   room now takes any eligible login; one with room needs a login with
 //!   `max(--margin, 1)` more room now; below both thresholds the upgrade
@@ -15,10 +21,13 @@
 //! - Ranked ([`order`]): session below `--session-at` first, then the larger
 //!   room now, then the lower week, then the name in byte order.
 
+use super::super::ledger::OverflowBlock;
 use super::super::settings::Settings;
+use super::super::spend_blocks::kind_label;
 use super::{Measured, Reading, Reason, needs_swap};
 use crate::commands::profile::name::ProfileName;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 /// Points of room a login can use now, `floor(100 - max(session, week))`,
 /// when both windows are from 0 up to below 100; `None` otherwise (a full
@@ -32,9 +41,30 @@ pub fn room_now(session: f64, week: f64) -> Option<u8> {
     Some((100.0 - session.max(week)).floor() as u8)
 }
 
-/// Why a login is not eligible, in the order [`fit`] checks.
+/// A standing block on a login: when it ends, and its fixed kind label
+/// (`spend_blocks::kind_label`), never a stored text.
+pub type Block = (i64, &'static str);
+
+/// The block standing on `name` at `now` in the ledger's `overflow_blocked`
+/// map, if any: one whose recorded end is still ahead (`now < until`), so a
+/// block ends exactly at its recorded time. The one test of a standing block
+/// for every pass of the decision (issue #3105).
+pub fn standing_block(
+    blocks: &BTreeMap<String, OverflowBlock>,
+    name: &ProfileName,
+    now: i64,
+) -> Option<Block> {
+    blocks
+        .get(name.as_str())
+        .filter(|b| now < b.until)
+        .map(|b| (b.until, kind_label(&b.reason)))
+}
+
+/// Why a login is not eligible, in the order [`fit_blocked`] checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unfit {
+    /// A standing block in the ledger, until `until` (issue #3105).
+    Blocked { until: i64, kind: &'static str },
     /// Claude reported the organisation's spend limit for it.
     SpendLimit,
     /// No usable figures: a failed probe, or a figure that is negative, NaN
@@ -72,6 +102,15 @@ pub fn fit(m: &Measured, week_max: u8) -> Result<u8, Unfit> {
         return Err(Unfit::AboveCeiling);
     }
     room_now(session, week).ok_or(Unfit::NoReading)
+}
+
+/// [`fit`] with the login's standing block, if any, checked first: a block
+/// rules the login out whatever its reading says (issue #3105).
+pub fn fit_blocked(m: &Measured, block: Option<Block>, week_max: u8) -> Result<u8, Unfit> {
+    match block {
+        Some((until, kind)) => Err(Unfit::Blocked { until, kind }),
+        None => fit(m, week_max),
+    }
 }
 
 /// The live login's room now.
@@ -229,13 +268,13 @@ pub enum NoMove {
         session: f64,
         since: u64,
     },
-    /// Every qualifying login was rejected at confirmation, and one of them
-    /// is still eligible because its re-read was unknown (D7).
+    /// Every qualifying login was rejected at confirmation, at least one of
+    /// them because its reading was unknown or superseded (D10).
     Unconfirmed,
 }
 
 impl NoMove {
-    /// The note after a rejection at confirmation left a stay (D7, D10): no
+    /// The note after a rejection at confirmation left a stay (D10): no
     /// candidate was confirmed, unless a login that qualifies on a known
     /// reading is held, which says why the cycle did not move and when it may.
     pub fn after_rejection(prior: Option<NoMove>) -> NoMove {
@@ -304,3 +343,6 @@ pub fn no_move(
 #[cfg(test)]
 #[path = "tests_issue_2910_rule.rs"]
 mod tests_issue_2910_rule;
+#[cfg(test)]
+#[path = "tests_issue_3105.rs"]
+mod tests_issue_3105;

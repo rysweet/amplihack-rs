@@ -20,9 +20,13 @@
 //! swap and decides again on what that read finds. A target that has filled
 //! up is replaced by the next, read the same way, within the gate's limits.
 //! A re-read that says nothing about the login is handled by the issue #2910
-//! confirmation (`target_confirm`) as for any stale reading: the swap goes
-//! ahead `unconfirmed` on the stored figure only when the live login has no
-//! room now, and the target is rejected otherwise (`tests_issue_2909_confirm`).
+//! confirmation (`target_confirm`) as for any stale reading: the target is
+//! rejected, whatever room the live login has, and the next one is tried
+//! (issue #3105, `tests_issue_2909_confirm`).
+//!
+//! A kept reading is never replaced by an older one (issue #3105), so what a
+//! watch keeps is the newest reading it has seen of each login. A failed,
+//! unknown or spend-limit probe has no figures and never moves it forward.
 //!
 //! A stored reading is never replaced by a last good reading (issue #2910):
 //! it is not a probe of this cycle, so it has no probe label. Only the
@@ -71,7 +75,10 @@ impl Stored {
     /// Keeps each reading in `probes` that has a reading time in the cycle
     /// that measured from `measured_at` ([`read_at`]), the live probe under
     /// `live`. A probe with none (failed, unknown, still running, or itself a
-    /// stored reading) leaves what is kept for its login as it was.
+    /// stored reading) leaves what is kept for its login as it was, and so
+    /// does one older than the reading kept (issue #3105). A reading of the
+    /// same time replaces it, and so does any reading when the kept one is
+    /// dated after `measured_at` (the clock stepped back).
     pub fn keep(&mut self, live: Option<&ProfileName>, probes: Option<&Probes>, measured_at: i64) {
         let Some((live_probe, others)) = probes else {
             return;
@@ -81,10 +88,28 @@ impl Stored {
             .into_iter()
             .chain(others.iter().map(|(n, p)| (n, p)));
         for (name, p) in named {
-            if let Some(at) = read_at(p, measured_at) {
+            let Some(at) = read_at(p, measured_at) else {
+                continue;
+            };
+            let newer_kept = self
+                .0
+                .get(name)
+                .is_some_and(|(held, _)| at < *held && *held <= measured_at);
+            if !newer_kept {
                 self.0.insert(name.clone(), (at, p.clone()));
             }
         }
+    }
+
+    /// When each kept reading was taken, leaving out any dated after `now`
+    /// (the clock stepped back): the newest reading time this watch holds of
+    /// each login, for `Extra::for_cycle` (issue #3105).
+    pub fn times(&self, now: i64) -> Vec<(ProfileName, i64)> {
+        self.0
+            .iter()
+            .filter(|(_, (at, _))| *at <= now)
+            .map(|(n, (at, _))| (n.clone(), *at))
+            .collect()
     }
 
     /// The reading kept for `name`, for an event cycle at `now`, when it can
@@ -186,10 +211,13 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
         probes.push((p.clone(), Probed::platform()));
     }
     // Issue #2910: the cycle's one read of the usage history, for the last
-    // good readings of the candidates whose probe said nothing.
+    // good readings of the candidates whose probe said nothing. Issue #3105:
+    // with the times of the watch's kept readings, so no older reading is
+    // decided on.
     let extra = Extra::for_cycle(
         ctx.store.root(),
         labels,
+        ctx.stored.times(measured_at),
         &snap.decision_overflow(),
         snap.measured_live(),
         measured_at,
