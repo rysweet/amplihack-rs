@@ -240,20 +240,20 @@ fn autodrive_loop_recipes_do_not_pass_task_description_as_context() {
     }
 }
 
+/// #3129: the shared goal loop replaced the rounds of `autodrive_loop.sh`.
+/// Its driver copies `--task-file` once into its private scratch folder and
+/// names that copy with `--context-from-file` on every turn run, so the task
+/// never travels as a `-c` value.
 #[test]
-fn autodrive_loop_passes_task_description_from_a_state_file() {
-    let text = code(&bundle_file("tools/autodrive_loop.sh"));
+fn goal_loop_passes_task_description_to_each_turn_from_a_file() {
+    let text = code(&bundle_file("tools/autodrive_goal_loop.sh"));
     assert!(
-        text.contains("autodrive_use_task_file \"$TASK_FILE_IN\"")
-            && text.contains("-task_description.txt"),
-        "autodrive_loop.sh must copy --task-file to $STATE_DIR/<loop>-task_description.txt"
+        text.contains("cp -- \"$TASK_FILE\" \"$W/TASK\""),
+        "autodrive_goal_loop.sh must copy --task-file into its private scratch folder"
     );
-    // The copy and the round argument live in autodrive_state.sh, which the
-    // loop sources, so the loop stays within the brick budget.
-    let state = code(&bundle_file("tools/autodrive_state.sh"));
     assert!(
-        state.contains("--context-from-file") && state.contains("task_description="),
-        "autodrive_use_task_file must pass --context-from-file task_description=<file> each round"
+        text.contains("--context-from-file \"task_description=$W/TASK\""),
+        "autodrive_goal_loop.sh must pass --context-from-file task_description=<file> each turn"
     );
 }
 

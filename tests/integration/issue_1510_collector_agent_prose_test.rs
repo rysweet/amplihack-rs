@@ -447,18 +447,24 @@ fn issue_1510_agent_only_log_does_not_abort_the_step() {
 
 #[test]
 fn issue_1437_collector_and_loop_share_one_refusal_helper() {
-    // The two readers cannot drift apart: both call terminal_refusal from
-    // autodrive_refusal.sh, and neither reads the guard's text.
+    // The two readers cannot drift apart: both take terminal_refusal from
+    // autodrive_refusal.sh, and neither reads the guard's text. #3129: the
+    // goal loop's driver replaced autodrive_loop.sh as the loop's reader.
     let root = workspace_root();
-    let loop_sh = std::fs::read_to_string(root.join("amplifier-bundle/tools/autodrive_loop.sh"))
-        .expect("read autodrive_loop.sh");
+    let loop_sh =
+        std::fs::read_to_string(root.join("amplifier-bundle/tools/autodrive_goal_loop.sh"))
+            .expect("read autodrive_goal_loop.sh");
     let code = |text: &str| -> String {
         text.lines()
             .filter(|l| !l.trim_start().starts_with('#'))
             .collect::<Vec<_>>()
             .join("\n")
     };
-    assert!(code(&loop_sh).contains(". \"${LOOP_HOME}/autodrive_refusal.sh\""));
+    assert!(
+        code(&loop_sh).contains(
+            "for lib in autodrive_goal_lib.sh autodrive_refusal.sh autodrive_state.sh; do"
+        ) && code(&loop_sh).contains(". \"$LOOP_HOME/$lib\"")
+    );
     assert!(!code(&loop_sh).contains("terminal_refusal() {"));
     let cmd = code(&step01_command());
     assert!(
@@ -680,30 +686,6 @@ fn run_round_tail(log: &[u8]) -> Vec<u8> {
         out.status.code()
     );
     out.stdout
-}
-
-#[test]
-fn issue_1510_autodrive_loop_passes_autodrive_round_tail_not_a_raw_byte_tail() {
-    let loop_sh =
-        std::fs::read_to_string(workspace_root().join("amplifier-bundle/tools/autodrive_loop.sh"))
-            .expect("read autodrive_loop.sh");
-    // #2582: eval_ctx_write (autodrive_escalate.sh) writes the evaluator's
-    // free-text context to files; the driver no longer puts it on argv.
-    let escalate_sh = std::fs::read_to_string(
-        workspace_root().join("amplifier-bundle/tools/autodrive_escalate.sh"),
-    )
-    .expect("read autodrive_escalate.sh");
-    assert!(
-        loop_sh.contains("eval_ctx_write")
-            && escalate_sh.contains(
-                "bash \"${LOOP_HOME}/autodrive_round_tail.sh\" \"$LOG\" >\"${EVAL_CTX}/loop_last_round_output\""
-            ),
-        "loop_last_round_output must come from autodrive_round_tail.sh, which drops the partial first line"
-    );
-    assert!(
-        !loop_sh.contains("loop_last_round_output=$(tail -c"),
-        "a raw byte tail leaves a prefix-less fragment as the first line"
-    );
 }
 
 #[test]

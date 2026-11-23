@@ -4,7 +4,7 @@
 //!
 //! The assessor is a scripted agent here: these tests pin the contract around
 //! it (the run continues, nothing is written outside the tree, nothing is
-//! readable by others, loop-owned keys cannot be injected), not model quality.
+//! readable by others, review-owned keys cannot be injected), not model quality.
 use super::fixture::{Fixture, files_under, private, succeeds, workspace};
 use super::review_rounds::{Mutation, ROUNDS, run};
 use crate::support::exec_stub::write_executable;
@@ -156,33 +156,42 @@ fn symlinked_parent_makes_the_baseline_incomplete_without_following_it() {
     }
 }
 
-/// SR-5/SR-6/SR-7 and #2814: the loop owns some context keys and hands them to
-/// the guard, which then refuses the run; every other key is forwarded to the
-/// round. The guard refuses whatever key it is given, so what is under test is
-/// the loop's own routing, and only driving the loop shows it.
+/// SR-5/SR-6/SR-7 and #2814: some context keys belong to the review and are
+/// never taken from the caller. #3129 replaced the Crusty loop, whose guard
+/// refused such a key, with the review action (`autodrive_pr_goal.sh review`,
+/// reached through the `autodrive_loop.sh --loop-name crusty` alias, the one
+/// path that still takes a caller's `--context`). The action builds the
+/// round's context itself: the reviewed head is the one it measured and the
+/// launch tools are the launch bundle's, whatever the caller supplied, and the
+/// round's own keys are never passed in. Forwarding the caller's other keys
+/// went with the loop.
 #[test]
-fn the_loop_refuses_the_context_keys_it_owns_and_forwards_the_rest() {
+fn the_review_never_takes_the_context_keys_it_owns_from_the_caller() {
     let tools = workspace().join("amplifier-bundle/tools");
-    for (key, owned) in [
-        ("reviewed_head_sha", true),
-        ("autodrive_launch_tools", true),
-        ("autodrive_completion_state", true),
-        ("pre_review_evidence", true),
-        ("review_change_assessment", true),
-        ("task_type", false),
-        ("autodrive_base_branch", false),
+    for key in [
+        "reviewed_head_sha",
+        "autodrive_launch_tools",
+        "autodrive_completion_state",
+        "pre_review_evidence",
+        "review_change_assessment",
     ] {
         let f = Fixture::new();
         let task = f.temp.path().join("task.txt");
         fs::write(&task, "address the review\n").unwrap();
-        // Every amplihack call the loop makes after the preflight fails, so a
-        // forwarded key stops at the next check instead, with its own reason.
+        // The round's `amplihack recipe run` records its arguments and fails,
+        // so no review runs.
         let stub = f.temp.path().join("amplihack-stub");
-        write_executable(&stub, "#!/bin/sh\nexit 97\n", 0o700);
+        let argv = f.temp.path().join("round-argv");
+        write_executable(
+            &stub,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ARGV_OUT\"\nexit 97\n",
+            0o700,
+        );
         let out = f
             .command("bash")
             .current_dir(&f.pr)
             .env("AMPLIHACK_BIN", &stub)
+            .env("ARGV_OUT", &argv)
             .arg(tools.join("autodrive_loop.sh"))
             .args(["--loop-name", "crusty"])
             .args(["--round-recipe", "autodrive-crusty-round"])
@@ -194,15 +203,45 @@ fn the_loop_refuses_the_context_keys_it_owns_and_forwards_the_rest() {
             .arg(&f.state)
             .arg("--task-file")
             .arg(&task)
+            .args(["--context", "pr_number=2808"])
             .arg("--context")
             .arg(format!("{key}=supplied-by-the-operator"))
             .output()
             .unwrap();
-        assert!(!out.status.success(), "{key}: {out:?}");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let refused = stdout.contains("\"loop_result\":\"UNTRUSTED_RECIPE\"")
-            && stdout.contains("reserved loop context");
-        assert_eq!(refused, owned, "{key} routing: {out:?}");
+        let args = fs::read_to_string(&argv)
+            .unwrap_or_else(|e| panic!("{key}: the review started no round ({e}): {out:?}"));
+        let args: Vec<&str> = args.lines().collect();
+        assert_eq!(
+            args[..3],
+            [
+                "recipe",
+                "run",
+                tools
+                    .parent()
+                    .unwrap()
+                    .join("recipes/autodrive-crusty-round.yaml")
+                    .to_str()
+                    .unwrap()
+            ],
+            "{key}: the round recipe comes from the launch bundle: {out:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("supplied-by-the-operator")),
+            "{key}: a caller's value reached the round: {args:?}"
+        );
+        let expected: Vec<String> = match key {
+            "reviewed_head_sha" => vec![format!("reviewed_head_sha={}", f.observed_head)],
+            "autodrive_launch_tools" => {
+                vec![format!("autodrive_launch_tools={}", tools.display())]
+            }
+            _ => Vec::new(),
+        };
+        let given: Vec<&str> = args
+            .iter()
+            .copied()
+            .filter(|a| a.starts_with(&format!("{key}=")))
+            .collect();
+        assert_eq!(given, expected, "{key} routing: {out:?}");
     }
 }
 

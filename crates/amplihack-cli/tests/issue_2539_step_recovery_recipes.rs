@@ -14,27 +14,14 @@ use crate::support::step_recovery::{Fixture, HANDOFF_EXIT, bundle_recipes, show}
 /// `(recipe, step whose command runs the driver, recorded step id)`. Bash
 /// steps are wrapped in place; an agent or sub-recipe step keeps its type,
 /// gets `continue_on_error`, and is recovered by the bash step after it.
-const CONVERTED: [(&str, &str, &str); 8] = [
-    (
-        "autodrive-crusty-loop",
-        "step-02-crusty-loop",
-        "step-02-crusty-loop",
-    ),
-    (
-        "autodrive-crusty-loop",
-        "step-03r-record-crusty-phase-recovery",
-        "step-03-record-crusty-phase",
-    ),
-    (
-        "autodrive-merge-loop",
-        "step-02-merge-ready-loop",
-        "step-02-merge-ready-loop",
-    ),
-    (
-        "autodrive-merge-loop",
-        "step-03r-finalize-recovery",
-        "step-03-finalize",
-    ),
+///
+/// #3129 replaced the Crusty loop's and the merge loop's converted steps
+/// (their loop steps, the crusty-phase recovery and the finalisation
+/// recovery) with one: the goal loop's `goal-loop` step, which runs the
+/// driver through `step-recovery run`. The two old recipes are one-step
+/// aliases now; [`ALIASES`] keeps them validated.
+const CONVERTED: [(&str, &str, &str); 5] = [
+    ("autodrive-goal-loop", "goal-loop", "goal-loop"),
     (
         "workflow-finalize",
         "step-20b-push-cleanup",
@@ -55,6 +42,10 @@ const CONVERTED: [(&str, &str, &str); 8] = [
         "continue-ci-repair",
     ),
 ];
+
+/// The one-release aliases of the recipes whose steps were converted before
+/// #3129. They still load and validate.
+const ALIASES: [&str; 2] = ["autodrive-crusty-loop", "autodrive-merge-loop"];
 
 fn validate(f: &Fixture, path: &std::path::Path) -> Output {
     f.amplihack()
@@ -87,6 +78,7 @@ fn step(name: &str, id: &str) -> serde_yaml::Value {
 fn the_recovery_recipe_and_every_converted_recipe_load_and_validate() {
     let f = Fixture::new();
     let mut names: Vec<&str> = CONVERTED.iter().map(|(r, _, _)| *r).collect();
+    names.extend(ALIASES);
     names.extend([
         "step-failure-recovery",
         "autodrive-build",
@@ -141,6 +133,14 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
     // retry that cannot converge, and a handoff still exits 81. See
     // docs/reference/step-failure-recovery.md#when-a-retry-cannot-observe-a-repair.
     for (name, id, flag) in [
+        // #3129: the goal loop's driver. The old loops stopped in code after
+        // a round that recorded a handoff; the loop step now ends with exit
+        // 81 when recovery hands the failed driver off.
+        (
+            "autodrive-goal-loop",
+            "goal-loop",
+            "--essential --stop-on-handoff",
+        ),
         (
             "workflow-finalize",
             "validate-agentic-finalization",
@@ -241,29 +241,6 @@ fn autodrive_build_recovers_its_sub_recipe_step_and_keeps_build_result_for_resol
 }
 
 #[test]
-fn merge_loop_recovers_finalisation_only_where_the_loop_asked_for_it() {
-    // #2575: step-03 runs only when the loop outcome asks to finalise, so its
-    // recovery never runs after a hand-off, where nothing was finalised.
-    let s03 = step("autodrive-merge-loop", "step-03-finalize");
-    assert_eq!(s03["continue_on_error"].as_bool(), Some(true));
-    assert_eq!(s03["output"].as_str(), Some("autodrive_finalization"));
-    let s03r = step("autodrive-merge-loop", "step-03r-finalize-recovery");
-    assert_eq!(
-        s03r["condition"].as_str().unwrap(),
-        format!(
-            "{} and not autodrive_finalization",
-            s03["condition"].as_str().unwrap()
-        )
-    );
-    let ids = step_ids("autodrive-merge-loop");
-    let pos = |id: &str| ids.iter().position(|s| s == id).unwrap();
-    assert_eq!(
-        pos("step-03r-finalize-recovery"),
-        pos("step-03-finalize") + 1
-    );
-}
-
-#[test]
 fn workflow_finalize_reports_after_validation_and_before_completion() {
     let ids = step_ids("workflow-finalize");
     assert_eq!(ids[0], "step-recovery-init");
@@ -361,43 +338,58 @@ fn workflow_finalize_reports_after_validation_and_before_completion() {
     assert!(own.join("step-21-pr-ready.jsonl").is_file());
 }
 
-/// #2959 S3: when the finalize merge step fails and the recovery step re-runs
-/// finalisation, the re-run is captured from the operator's own inputs and
-/// cannot widen permission. Runs step-03r's own command with a stand-in
-/// `amplihack` that records the `recipe run` arguments it is given.
+/// #2959 S3, re-pointed at the goal loop (#3129). Finalisation and its
+/// recovery step are gone; the step that recovery now re-runs is the goal
+/// loop's `goal-loop`, through `step-recovery run`. A re-run is the same
+/// driver command: it reads merge authority only from the run's own captured
+/// invocation (`--invocation`), and neither recovery nor the recipe hands it
+/// an authorisation, a record or a permission flag of its own. Runs the
+/// step's own command with a stand-in `amplihack` that records the recovery
+/// call and runs the command after `--`, and a stand-in driver that records
+/// its arguments.
 #[test]
-fn finalisation_recovery_cannot_widen_permission() {
-    use std::os::unix::fs::PermissionsExt;
-    let command = step_command("autodrive-merge-loop", "step-03r-finalize-recovery");
-    let run = |vars: &[(&str, &str)]| -> Vec<String> {
+fn goal_loop_recovery_cannot_widen_permission() {
+    let command = step_command("autodrive-goal-loop", "goal-loop");
+    let run = |vars: &[(&str, &str)]| -> (Vec<String>, Vec<String>) {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
-        std::fs::create_dir(&bin).unwrap();
-        let log = dir.path().join("recipe-run.args");
-        std::fs::write(
-            bin.join("amplihack"),
+        let tools = dir.path().join("home/amplifier-bundle/tools");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&tools).unwrap();
+        let recovery_log = dir.path().join("recovery.args");
+        let driver_log = dir.path().join("driver.args");
+        crate::support::exec_stub::write_executable(
+            &bin.join("amplihack"),
             "#!/usr/bin/env bash\n\
              case \"$1 $2 $3\" in\n\
-             \"orch helper step-recovery\") while [ \"$1\" != -- ]; do shift; done; shift; exec \"$@\" ;;\n\
-             \"orch helper extract-json\") cat ;;\n\
-             \"orch helper extract-field\") cat >/dev/null ;;\n\
-             \"recipe run autodrive-finalize\") printf '%s\\n' \"$@\" >\"$RECORD_ARGS\" ;;\n\
+             \"orch helper step-recovery\") printf '%s\\n' \"$@\" >\"$RECORD_RECOVERY\"; while [ \"$1\" != -- ]; do shift; done; shift; exec \"$@\" ;;\n\
              *) echo \"unexpected: $*\" >&2; exit 3 ;;\n\
              esac\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(
-            bin.join("amplihack"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+            0o755,
+        );
+        crate::support::exec_stub::write_executable(
+            &tools.join("autodrive_goal_loop.sh"),
+            "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" >\"$RECORD_ARGS\"\n",
+            0o755,
+        );
+        crate::support::exec_stub::copy_executable(
+            &crate::support::step_recovery::repo_root()
+                .join("amplifier-bundle/tools/recipe_context_value.sh"),
+            &tools.join("recipe_context_value.sh"),
+        );
+        let scratch = dir.path().join("tmp");
+        std::fs::create_dir(&scratch).unwrap();
         let mut cmd = std::process::Command::new("bash");
         cmd.arg("-c")
             .arg(&command)
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-            .env("RECORD_ARGS", &log)
+            .env("TMPDIR", &scratch)
+            .env("AMPLIHACK_HOME", dir.path().join("home"))
+            .env("RECORD_RECOVERY", &recovery_log)
+            .env("RECORD_ARGS", &driver_log)
             .env("RECIPE_VAR_step_recovery_dir", dir.path())
+            .env("RECIPE_VAR_autodrive_state_dir", dir.path().join("state"))
             .current_dir(dir.path())
             .stdin(std::process::Stdio::null());
         for (k, v) in vars {
@@ -405,71 +397,144 @@ fn finalisation_recovery_cannot_widen_permission() {
         }
         let out = cmd.output().unwrap();
         assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-        std::fs::read_to_string(&log)
-            .unwrap_or_else(|e| panic!("recipe run was not invoked ({e}): {}", show(&out)))
-            .lines()
-            .map(str::to_string)
-            .collect()
-    };
-    // No no_merge in the original inputs: the re-run does not merge.
-    let args = run(&[]);
-    assert!(args.contains(&"no_merge=true".to_string()), "{args:?}");
-    // A verify-only original stays verify-only.
-    let args = run(&[("RECIPE_VAR_no_merge", "true")]);
-    assert!(args.contains(&"no_merge=true".to_string()), "{args:?}");
-    // A dry-run original stays a dry run.
-    let args = run(&[
-        ("RECIPE_VAR_no_merge", "false"),
-        ("RECIPE_VAR_autodrive_dry_run", "true"),
-    ]);
-    assert!(
-        args.contains(&"autodrive_dry_run=true".to_string()),
-        "{args:?}"
-    );
-    // Recovery hands the re-run no authorization or record of its own: the
-    // re-run captures its invocation afresh from these inputs.
-    for args in [run(&[]), run(&[("RECIPE_VAR_no_merge", "false")])] {
+        let lines = |p: &std::path::Path| -> Vec<String> {
+            std::fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("{} was not written ({e}): {}", p.display(), show(&out)))
+                .lines()
+                .map(str::to_string)
+                .collect()
+        };
+        let recovery = lines(&recovery_log);
         assert!(
-            !args
-                .iter()
-                .any(|a| a.starts_with("autodrive_invocation_file=") || a.contains("allows_merge")),
-            "{args:?}"
+            recovery.windows(2).any(|w| w == ["--step-id", "goal-loop"])
+                && recovery
+                    .windows(2)
+                    .any(|w| w[0] == "--dir" && w[1] == dir.path().to_str().unwrap()),
+            "the driver runs under step-recovery with the run's own directory: {recovery:?}"
         );
+        (recovery, lines(&driver_log))
+    };
+    let invocation = "/run/state/invocation.json";
+    for vars in [
+        // No no_merge in the original inputs.
+        vec![],
+        // A verify-only original.
+        vec![("RECIPE_VAR_no_merge", "true")],
+        // A dry-run original.
+        vec![
+            ("RECIPE_VAR_no_merge", "false"),
+            ("RECIPE_VAR_autodrive_dry_run", "true"),
+        ],
+        // An original that may merge, with an authorisation already in the
+        // context: the re-run still reads only the captured invocation.
+        vec![
+            ("RECIPE_VAR_no_merge", "false"),
+            ("RECIPE_VAR_autodrive_invocation_file", invocation),
+            (
+                "RECIPE_VAR_autodrive_authorization",
+                r#"{"allows_merge":true,"pr_selected":true}"#,
+            ),
+        ],
+    ] {
+        let (recovery, driver) = run(&vars);
+        let want = vars
+            .iter()
+            .find(|(k, _)| *k == "RECIPE_VAR_autodrive_invocation_file")
+            .map_or("", |(_, v)| *v);
+        let at = driver
+            .iter()
+            .position(|a| a == "--invocation")
+            .unwrap_or_else(|| panic!("the driver was given no --invocation: {driver:?}"));
+        assert_eq!(
+            driver.get(at + 1).map(String::as_str),
+            Some(want),
+            "{vars:?}: merge authority comes only from the run's own captured invocation: {driver:?}"
+        );
+        assert_eq!(
+            driver.iter().filter(|a| *a == "--invocation").count(),
+            1,
+            "{driver:?}"
+        );
+        for a in recovery.iter().chain(&driver) {
+            for granted in [
+                "allows_merge",
+                "no_merge",
+                "dry_run",
+                "autodrive_authorization",
+                "merge_allowed",
+            ] {
+                assert!(
+                    !a.contains(granted),
+                    "{vars:?}: the re-run is handed a permission of its own ({a}): {recovery:?} {driver:?}"
+                );
+            }
+        }
     }
 }
 
-/// #2959: with the helper failing (exit 2), the finalize merge step exits
-/// non-zero so the loop's recovery step has something to recover.
+/// #2959, re-pointed at the goal loop's merge action (#3129). With the
+/// authorisation helper failing (exit 2), nothing is merged and the action
+/// says the authorisation could not be read, with the helper's own error.
+/// Finalisation's exit 1, which gave its recovery step something to
+/// recover, is gone with finalisation: the merge action reports a failure as
+/// an outcome and the next turn reads it.
 #[test]
-fn the_finalize_merge_step_fails_loudly_when_the_record_cannot_be_read() {
+fn the_merge_action_says_authorization_unreadable_when_the_record_cannot_be_read() {
     use std::os::unix::fs::PermissionsExt;
+    let head = "2959295929592959295929592959295929592959";
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let stub = bin.join("amplihack");
-    std::fs::write(
+    crate::support::exec_stub::write_executable(
         &stub,
-        "#!/usr/bin/env bash\ncase \"$1 $2 $3 $4\" in\n  \"orch helper autodrive authorization\") echo 'ERROR: stub' >&2; exit 2 ;;\nesac\nexit 0\n",
+        "#!/usr/bin/env bash\ncase \"$1 $2 $3 $4\" in\n  \"orch helper autodrive authorization\") echo 'ERROR: stub' >&2; exit 2 ;;\nesac\necho \"unexpected: $*\" >&2\nexit 3\n",
+        0o755,
+    );
+    let gh_log = dir.path().join("gh.log");
+    crate::support::exec_stub::write_executable(
+        &bin.join("gh"),
+        format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 0\n", gh_log.display()),
+        0o755,
+    );
+    let state = dir.path().join("state");
+    let td = state.join("turns").join("001");
+    std::fs::create_dir_all(&td).unwrap();
+    for d in [&state, &state.join("turns"), &td] {
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(
+        td.join("decision.json"),
+        serde_json::json!({"schema_version": 1, "valid": true, "action": "merge",
+            "args": {"head": head}, "why": "fixture", "problem": null})
+        .to_string(),
     )
     .unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let state = dir.path().join("state");
-    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        td.join("goal.json"),
+        serde_json::json!({"schema_version": 1, "summary": "fixture", "pr": {"head": head}})
+            .to_string(),
+    )
+    .unwrap();
     let out = std::process::Command::new("bash")
-        .arg("-c")
-        .arg(step_command("autodrive-finalize", "merge"))
+        .arg(
+            crate::support::step_recovery::repo_root()
+                .join("amplifier-bundle/tools/autodrive_pr_goal.sh"),
+        )
+        .args(["act", "merge"])
+        .arg(&td)
         .env(
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
         )
-        .env("AMPLIHACK_HOME", dir.path())
+        .env("AUTODRIVE_GOAL_CONTRACT", "1")
+        .env("AUTODRIVE_STATE_DIR", &state)
+        .env("AUTODRIVE_REPO", dir.path())
+        .env("AUTODRIVE_WORKTREE", dir.path())
         .env("AMPLIHACK_BIN", &stub)
         .env("RECIPE_VAR_pr_number", "2959")
-        .env("RECIPE_VAR_repo_path", dir.path())
-        .env("REPO_PATH", dir.path())
-        .env("RECIPE_VAR_autodrive_state_dir", &state)
         .env(
-            "RECIPE_VAR_autodrive_invocation_file",
+            "AUTODRIVE_INVOCATION_FILE",
             state.join("gone/invocation.json"),
         )
         .env("RECIPE_VAR_no_merge", "false")
@@ -478,10 +543,28 @@ fn the_finalize_merge_step_fails_loudly_when_the_record_cannot_be_read() {
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
+    let result: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(td.join("result.json"))
+            .unwrap_or_else(|e| panic!("no result.json ({e}): {}", show(&out))),
+    )
+    .unwrap();
+    assert_eq!(
+        result["outcome"],
+        "authorization-unreadable",
+        "{result}: {}",
+        show(&out)
+    );
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("authorization-unreadable"),
-        "{}",
+        result["summary"]
+            .as_str()
+            .is_some_and(|s| s.contains("ERROR: stub")),
+        "the summary carries the helper's error: {result}"
+    );
+    assert!(
+        !std::fs::read_to_string(&gh_log)
+            .unwrap_or_default()
+            .contains("pr merge"),
+        "nothing was merged: {}",
         show(&out)
     );
 }

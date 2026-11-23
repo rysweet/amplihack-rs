@@ -196,21 +196,23 @@ fn the_handoff_never_reads_log_text_or_stderr() {
 // handed-off build; the report shows the two new fields.
 #[test]
 fn both_loops_run_on_a_handed_off_build() {
+    // #3129: one goal loop step replaced the crusty and merge-ready loops. It
+    // takes the PR autodrive-goal-pr names: the operator's pr_number, else the
+    // build's PR.
     let composer = recipe_yaml("auto-drive-to-merge");
-    for id in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
-        let loop_step = step(&composer, id);
-        assert_eq!(
-            loop_step["context"]["pr_number"].as_str(),
-            Some("{{build_result.pr}}"),
-            "{id}"
+    let id = "autodrive-loop";
+    let loop_step = step(&composer, id);
+    assert_eq!(
+        loop_step["context"]["pr_number"].as_str(),
+        Some("{{autodrive_goal_pr}}"),
+        "{id}"
+    );
+    let condition = loop_step["condition"].as_str().unwrap_or("");
+    for needle in ["handed_off", "terminal_state", "BLOCKED_CI"] {
+        assert!(
+            !condition.contains(needle),
+            "{id} must not skip on `{needle}`: {condition}"
         );
-        let condition = loop_step["condition"].as_str().unwrap_or("");
-        for needle in ["handed_off", "terminal_state", "BLOCKED_CI"] {
-            assert!(
-                !condition.contains(needle),
-                "{id} must not skip on `{needle}`: {condition}"
-            );
-        }
     }
     let text = read(&recipe_path("auto-drive-to-merge"));
     assert!(

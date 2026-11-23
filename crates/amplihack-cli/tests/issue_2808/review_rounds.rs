@@ -21,18 +21,13 @@ const STAGED: &[u8] = b"prior staged content 2808\n";
 const UNTRACKED: &[u8] = b"prior untracked content 2808\n";
 const BINARY: &[u8] = b"\0\xff\x01binary working content 2808\0";
 const OUTSIDE: &[u8] = b"external symlink content must never be collected 2808\n";
-pub(super) const ROUNDS: [(&str, &str, &str); 2] = [
-    (
-        "autodrive-crusty-round",
-        "step-02-crusty-review",
-        "step-03-extract-crusty-verdict",
-    ),
-    (
-        "autodrive-merge-round",
-        "step-02-merge-ready-assessment",
-        "step-03-outcome-reader",
-    ),
-];
+/// #3129: the merge-ready round is gone (autodrive-merge-round is a one-step
+/// alias of the goal loop), so the Crusty round is the one review round left.
+pub(super) const ROUNDS: [(&str, &str, &str); 1] = [(
+    "autodrive-crusty-round",
+    "step-02-crusty-review",
+    "step-03-extract-crusty-verdict",
+)];
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Mutation {
