@@ -645,9 +645,12 @@ fn reread_i(
 }
 
 /// Four candidates, each best on a stale reading and full when read again.
+/// The live login is at 100%, so the readings are older than the last good
+/// age: issue #2820 would accept a recent one at the cap.
 fn measure_i(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let old = Some(at - 60);
+    let old =
+        Some(at - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS - 60);
     let probes = probes_for(
         snap,
         &[

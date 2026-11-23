@@ -13,7 +13,7 @@
 
 use super::cycle::Ctx;
 use super::decide::target::{NoMove, Unfit, fit};
-use super::decide::target_confirm::{Facts, Limit, Step, Why, next};
+use super::decide::target_confirm::{Facts, Limit, Step, Unconfirmed, Why, next};
 use super::decide::target_msg::reject;
 use super::decide::target_seen::Extra;
 use super::decide::{Decision, Measured, Probed, Reading, Reason};
@@ -30,7 +30,7 @@ pub(super) mod live;
 #[path = "fresh_reread.rs"]
 mod reread;
 #[cfg(test)]
-pub(super) use reread::{configured_env, reread_env};
+pub(super) use reread::{configured_env, recent, reread_env, taken_at};
 pub use reread::{reread_as_configured, reread_live_as_configured};
 
 /// The oldest a target's reading may be. It equals the default passive
@@ -247,10 +247,20 @@ pub(super) fn settle_timed(
         }
         handled += 1;
         // A login already accepted without a fresh reading (an earlier gate
-        // of this cycle, before revalidation) counts as a probe that failed.
+        // of this cycle, before revalidation) is accepted again while the
+        // live login has no room. An unknown one counts as a probe that
+        // failed; one accepted on its reading (#2820) is unknown once the
+        // live login has room, with no `reject:` line.
         let known = extra.unconfirmed.get(&to).copied();
-        let failed_now =
-            known.is_some() || (probes[i].1.reading == Reading::Failed && !probes[i].1.carried);
+        if let Some(why) = known
+            && m.seen.live_no_room
+        {
+            unconfirmed = Some((to, why));
+            break;
+        }
+        let known_label = known.and_then(|u| u.label());
+        let failed_now = known_label.is_some()
+            || (probes[i].1.reading == Reading::Failed && !probes[i].1.carried);
         let mut read = None;
         if !failed_now && (done.contains(&to) || mode == Reread::Never || ctx.reread.is_none()) {
             // Under the lock, with no hook, or a re-read that is still not
@@ -268,17 +278,28 @@ pub(super) fn settle_timed(
                 break;
             }
             let remaining = budget.saturating_sub(spent());
+            let sub = extra.substitute(&to, &probes[i].1);
+            let at = reread::taken_at(&probes[i].1, m.measured_at, sub);
             let facts = Facts {
                 failed_now,
                 attempts,
                 can_read: !remaining.is_zero(),
                 live_no_room: m.seen.live_no_room,
-                label: known.or_else(|| extra.labels.get(&to).copied()),
+                label: known_label.or_else(|| extra.labels.get(&to).copied()),
+                recent: reread::recent(at, damped_at.max(left_at), t),
             };
             match next(&facts) {
                 Step::AcceptUnconfirmed(label) => {
-                    extra.unconfirmed.insert(to.clone(), label);
-                    unconfirmed = Some((to, label));
+                    extra.unconfirmed.insert(to.clone(), label.into());
+                    unconfirmed = Some((to, label.into()));
+                    break;
+                }
+                // Issue #2820: no read, no line of its own, probe unchanged.
+                Step::AcceptStale(limit) => {
+                    let age = at.map_or(0, |at| u64::try_from(t - at).unwrap_or(0));
+                    let why = Unconfirmed::NotTried { limit, age };
+                    extra.unconfirmed.insert(to.clone(), why);
+                    unconfirmed = Some((to, why));
                     break;
                 }
                 Step::Reject(why) => {
@@ -323,8 +344,8 @@ pub(super) fn settle_timed(
                         // it is never a target on the reading it had.
                         let why = match label {
                             Some(l) if m.seen.live_no_room => {
-                                extra.unconfirmed.insert(to.clone(), l);
-                                unconfirmed = Some((to, l));
+                                extra.unconfirmed.insert(to.clone(), l.into());
+                                unconfirmed = Some((to, l.into()));
                                 break;
                             }
                             Some(l) => {

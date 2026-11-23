@@ -9,7 +9,7 @@
 use super::super::cycle::Ctx;
 use super::super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};
 use super::super::decide::target::{self, LiveRoom, NoMove};
-use super::super::decide::target_seen::{self, Extra, reading_used};
+use super::super::decide::target_seen::{self, Extra, LiveFull, reading_used};
 use super::super::decide::{Decision, Measured, Probed, Reading, Reason, needs_swap};
 use super::super::key_check;
 use super::super::overflow::{OverflowInput, Tag};
@@ -63,15 +63,19 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     let s = &ctx.settings;
     let ledger = ctx.rs.load_ledger()?;
     let t = (ctx.now)();
-    let blocked = |n: &ProfileName| {
-        ledger.as_ref().is_some_and(|l| {
-            l.overflow_blocked
-                .get(n.as_str())
-                .is_some_and(|b| t < b.until)
-                || (snap.platform() == Some(n)
-                    && l.platform_block.as_ref().is_some_and(|b| t < b.until))
-        })
+    // The active recorded block on a login: its own, or the API key's.
+    let active_block = |n: &ProfileName| {
+        let l = ledger.as_ref()?;
+        l.overflow_blocked
+            .get(n.as_str())
+            .filter(|b| t < b.until)
+            .or_else(|| {
+                l.platform_block
+                    .as_ref()
+                    .filter(|b| snap.platform() == Some(n) && t < b.until)
+            })
     };
+    let blocked = |n: &ProfileName| active_block(n).is_some();
     let on_overflow =
         live_name(&snap.live).is_some_and(|n| snap.overflow.iter().any(|e| &e.name == n));
     // Issue #2218: an excluded live login is decided on as if no profile
@@ -147,14 +151,19 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     } else {
         next_failed(ctx.failed_live, &probe.reading)
     };
-    let (decision, note) = damp(verdict.decision, &probe.reading, failed, swapped_at, t, s);
+    // Issue #2820: the failed-probe rules read the live reading the
+    // decision used. A blocked live login's is no room (E11), which is
+    // evidence, so a failed live probe neither damps the move off it nor
+    // keeps it for the home key; `next_failed` above still counts the raw
+    // probe.
+    let (decision, note) = damp(verdict.decision, &live_reading, failed, swapped_at, t, s);
     // Only here is the file read: a swap on this ground is rare. The strict
     // reader, not `key_check::home_key`: a key Claude may not read must not
     // keep a dead login live, and the swap it would have stopped is harmless.
-    let home_key = (is_failed_probe_swap(&decision, &probe.reading) && !snap.platform_live())
+    let home_key = (is_failed_probe_swap(&decision, &live_reading) && !snap.platform_live())
         .then(|| key_check::reachable(&ctx.home).ok())
         .flatten();
-    let (decision, note) = keep_for_home_key(decision, note, home_key, &probe.reading);
+    let (decision, note) = keep_for_home_key(decision, note, home_key, &live_reading);
     // D15: a relief move onto a login past a threshold is a plan-room swap.
     let decision = match decision {
         Decision::Swap {
@@ -176,6 +185,10 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     };
     let mut seen = target_seen::build(snap, extra.clone(), &probes, &blocks, s.target_week_max, t);
     seen.live_no_room = !on_overflow && !live_over && room == LiveRoom::NoRoom;
+    // Issue #2820: why, for the swap line of an unconfirmed move off it.
+    seen.live_full = seen
+        .live_no_room
+        .then(|| LiveFull::of(live_name.and_then(active_block), &probe.windows));
     seen.may_cross = may_cross;
     if decision == Decision::Alert {
         // Why no move: on the logins the rotator may move to (plan logins it

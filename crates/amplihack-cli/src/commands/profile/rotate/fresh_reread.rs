@@ -4,6 +4,7 @@
 //! nothing about its login (`measure::label_of`).
 
 use super::super::cycle::Ctx;
+use super::super::decide::last_good::{LAST_GOOD_MAX_AGE_SECS, LastGood};
 use super::super::decide::{Probed, Reading};
 use super::super::fresh_msg;
 use super::super::log::Shown;
@@ -117,4 +118,45 @@ pub(super) fn fresh_probe(
         lines.push(fresh_msg::still_damped(to));
     }
     p
+}
+
+/// Issue #2820: when the reading the decision used for a target was taken.
+/// For a failed probe that is the last good reading standing in for it
+/// (`sub`), and nothing without one; nothing for a read still running or
+/// unknown; a carried result's own time, which it may not have; otherwise
+/// the passive reading's time, or `measured_at` for a read made in this
+/// cycle.
+pub(in crate::commands::profile::rotate) fn taken_at(
+    p: &Probed,
+    measured_at: i64,
+    sub: Option<&LastGood>,
+) -> Option<i64> {
+    if p.reading == Reading::Failed {
+        return sub.map(|lg| lg.at);
+    }
+    if p.still_running || p.unknown {
+        return None;
+    }
+    if p.carried {
+        return p.observed_at;
+    }
+    Some(p.observed_at.unwrap_or(measured_at))
+}
+
+/// Issue #2820: whether a reading taken at `at` may stand for a move off a
+/// live login with no room, `t` now: it has a time, is at most
+/// [`LAST_GOOD_MAX_AGE_SECS`] old and not in the future, and is later than
+/// `left_or_damped`, when the target was last left or damped, so the
+/// rotator never swaps straight back onto a login on a reading from before
+/// it left it.
+pub(in crate::commands::profile::rotate) fn recent(
+    at: Option<i64>,
+    left_or_damped: Option<i64>,
+    t: i64,
+) -> bool {
+    at.is_some_and(|at| {
+        t.saturating_sub(LAST_GOOD_MAX_AGE_SECS) <= at
+            && at <= t
+            && left_or_damped.is_none_or(|d| at > d)
+    })
 }

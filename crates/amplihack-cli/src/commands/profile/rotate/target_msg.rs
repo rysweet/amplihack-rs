@@ -19,7 +19,7 @@ use super::super::overflow::Tag;
 use super::super::settings::Settings;
 use super::Reading;
 use super::target::{NoMove, Unfit};
-use super::target_confirm::Why;
+use super::target_confirm::{Unconfirmed, Why};
 use super::target_seen::{Basis, Seen};
 use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeMap;
@@ -74,9 +74,10 @@ pub fn reject(who: &ProfileName, why: &Why, week_max: u8) -> String {
     format!("reject: {who} {reason}")
 }
 
-/// The suffix of a swap made without a fresh reading of its target (D15).
-pub fn unconfirmed(label: ProbeLabel) -> String {
-    format!(" unconfirmed ({})", label.as_str())
+/// The suffix of a swap made without a fresh reading of its target (D15):
+/// the probe's label, or, issue #2820, the limit that left it unread.
+pub fn unconfirmed(why: impl Into<Unconfirmed>) -> String {
+    format!(" unconfirmed ({})", why.into().text())
 }
 
 /// The stay note for a cycle that did not move although the live login has
@@ -277,8 +278,10 @@ pub fn annotate(seen: &Seen, name: &ProfileName, shown: &mut Shown) {
 
 /// The whole `swap` line (F8): the target figures of [`swap_target`], the
 /// shared `swap` text and the unconfirmed suffix when this cycle accepted
-/// `to` without a fresh reading. A cycle emits it as it stands and
-/// `--dry-run` prefixes it with `would `, so the two cannot drift apart.
+/// `to` without a fresh reading. Issue #2820: such a move off a live login
+/// with no room also says why it has none and until when. A cycle emits it
+/// as it stands and `--dry-run` prefixes it with `would `, so the two cannot
+/// drift apart.
 pub fn swap_line(
     seen: &Seen,
     from: &ProfileName,
@@ -289,26 +292,43 @@ pub fn swap_line(
 ) -> String {
     let target = swap_target(seen, to, target);
     let mut line = msg::swap(from, to, live, &target, reason);
-    if let Some((_, label)) = seen.unconfirmed.as_ref().filter(|(n, _)| n == to) {
-        line.push_str(&unconfirmed(*label));
+    if let Some((_, why)) = seen.unconfirmed.as_ref().filter(|(n, _)| n == to) {
+        line.push_str(&unconfirmed(*why));
+        if let Some(full) = &seen.live_full {
+            let until = full.until.map_or_else(|| NO_TIME.to_string(), utc_minute);
+            line.push_str(&format!(
+                "; live {from} has no room: {} until {until}",
+                full.why
+            ));
+        }
     }
     line
 }
 
 /// The target figures of a `swap` line: a target chosen on its last good
-/// reading shows that reading and its age; any other shows its figures as
-/// read, with no `cycle`-line reason. Only [`swap_line`] builds the line.
+/// reading shows that reading and its age; one accepted unread at a limit
+/// (#2820) shows its figures and how old they are; any other shows its
+/// figures as read, with no `cycle`-line reason. Only [`swap_line`] builds
+/// the line.
 fn swap_target(seen: &Seen, to: &ProfileName, shown: Shown) -> Shown {
     match seen.logins.get(to).map(|st| &st.basis) {
         Some(Basis::LastGood { reading, age, .. }) => Shown {
             note: Some(format!("last {}m ago", minutes(*age))),
             ..Shown::from_reading(*reading)
         },
-        _ => Shown {
-            label: None,
-            note: None,
-            ..shown
-        },
+        _ => {
+            let note = match &seen.unconfirmed {
+                Some((n, Unconfirmed::NotTried { age, .. })) if n == to => {
+                    Some(format!("read {}m ago", minutes(*age)))
+                }
+                _ => None,
+            };
+            Shown {
+                label: None,
+                note,
+                ..shown
+            }
+        }
     }
 }
 

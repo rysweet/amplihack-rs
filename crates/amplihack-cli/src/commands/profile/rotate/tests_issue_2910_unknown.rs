@@ -66,6 +66,7 @@ fn facts() -> Facts {
         can_read: true,
         live_no_room: false,
         label: None,
+        recent: false,
     }
 }
 
@@ -136,6 +137,7 @@ fn a_candidate_whose_probe_failed_this_cycle_is_never_read_again() {
         attempts: 0,
         label: Some(Transport),
         live_no_room: true,
+        recent: false,
     };
     assert_eq!(next(&f), Step::AcceptUnconfirmed(Transport));
 }
@@ -167,6 +169,7 @@ fn at_the_cap_a_failed_target_is_still_accepted_when_the_live_login_has_no_room(
                 can_read,
                 live_no_room: true,
                 label: Some(Http429),
+                recent: false,
             };
             assert_eq!(next(&f), Step::AcceptUnconfirmed(Http429), "{f:?}");
         }
@@ -397,14 +400,21 @@ fn reread_cap(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeL
     (exh(100.0, 10.0), None)
 }
 
+/// The live login is at 100%. Issue #2820 accepts a target the cap left
+/// unread on its reading when that reading is recent (see
+/// `prelude::tests_issue_2820_cycle`), so here the readings are older than
+/// the last good age, and the cap's own rule is what is checked.
 #[test]
 fn at_most_three_candidates_are_read_and_the_rest_are_counted_as_not_tried() {
     let names = ["c1", "c2", "c3", "c4", "c5"];
     let f = fleet(&names, &[]);
+    let too_old = Some(
+        clock() - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS - 60,
+    );
     let table: Vec<(&str, Probed)> = names
         .iter()
         .enumerate()
-        .map(|(i, who)| (*who, rd(0.0, 10.0 * (i as f64 + 1.0), stale_at())))
+        .map(|(i, who)| (*who, rd(0.0, 10.0 * (i as f64 + 1.0), too_old)))
         .collect();
     let out = run_with(&f, exh(100.0, 40.0), &table, &[], Some(reread_cap));
     let log = f.log();

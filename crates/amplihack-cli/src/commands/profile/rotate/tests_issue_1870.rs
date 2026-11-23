@@ -572,7 +572,18 @@ fn all_rereads_of_one_gate_share_one_time_limit() {
     let c = gate_ctx(&e, Some(slow_full));
     let s = snap(&c);
     let at = now();
-    let stale = |sess, week| rd(sess, week, Some(at - 60));
+    // The live login is spent, so the readings are older than the last good
+    // age: issue #2820 accepts a recent one at the time limit.
+    let stale = |sess, week| {
+        rd(
+            sess,
+            week,
+            Some(
+                at - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS
+                    - 60,
+            ),
+        )
+    };
     let m = decide_measured(
         &c,
         &s,
@@ -654,7 +665,19 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
         &c,
         &s,
         spent(),
-        vec![(n("spare"), rd(11.0, 20.0, Some(at - 60)))],
+        // Older than the last good age: issue #2820 accepts a recent
+        // reading at the time limit while the live login is spent.
+        vec![(
+            n("spare"),
+            rd(
+                11.0,
+                20.0,
+                Some(
+                    at - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS
+                        - 60,
+                ),
+            ),
+        )],
         at,
     )
     .unwrap();
@@ -706,7 +729,7 @@ fn a_rejected_unconfirmed_target_is_not_chosen_again_on_its_stale_reading() {
     m.seen
         .extra
         .unconfirmed
-        .insert(n("spare"), ProbeLabel::Http429);
+        .insert(n("spare"), ProbeLabel::Http429.into());
     let got = fresh::settle(
         &c,
         m,

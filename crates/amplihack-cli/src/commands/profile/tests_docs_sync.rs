@@ -329,6 +329,23 @@ fn rotate_log_grammar_is_documented() {
     ] {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }
+    // Issue #2820: the unreadable process lines, and a move off a live login
+    // with no room on a reading the gate left unread. The re-read limit text
+    // is checked against `MAX_REREADS_PER_CYCLE` in
+    // `rotate::prelude::tests_issue_2820_cycle`, where the constant is seen.
+    for line in [
+        "#### Unreadable process lines",
+        "unreadable process <pid> (<exe>) \"<command>\": <verdict>",
+        "counted as a session on <a>, <b>",
+        "not counted (not a Claude executable)",
+        "not counted (profile cannot be told)",
+        "unreadable processes: <N> more not listed",
+        " unconfirmed (time limit)",
+        "read <N>m ago",
+        "; live <from> has no room: <why> until <UTC minute | an unknown time>",
+    ] {
+        assert!(REFERENCE.contains(line), "reference is missing `{line}`");
+    }
 }
 
 /// Rotate revalidation (#1721): the labelled skip line, both `revalidate:`

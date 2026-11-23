@@ -25,6 +25,9 @@ use std::path::Path;
 
 #[path = "live_refresh.rs"]
 mod live_refresh;
+#[cfg(test)]
+#[path = "tests_issue_2820_cycle.rs"]
+mod tests_issue_2820_cycle;
 
 pub enum Prelude {
     /// Recovered and identified, the lock still held. The snapshot is boxed

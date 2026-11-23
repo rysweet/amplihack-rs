@@ -15,7 +15,8 @@ use super::super::observe::Snap;
 use super::super::spend_blocks::kind_label;
 use super::last_good::{LastGood, last_good};
 use super::target::{NoMove, Unfit, fit};
-use super::{Measured, Probed, Reading};
+use super::target_confirm::Unconfirmed;
+use super::{Measured, Probed, Reading, Windows};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::OverflowEntry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,10 +30,11 @@ pub struct Extra {
     /// Candidates rejected at confirmation for an unknown reading: their
     /// last good reading is no longer used in this cycle.
     pub rejected: BTreeSet<ProfileName>,
-    /// Candidates the gate accepted without a fresh reading, with the label
-    /// of their unknown reading, so a later gate of the same cycle (under
-    /// the lock, in revalidation) accepts them again rather than reading.
-    pub unconfirmed: BTreeMap<ProfileName, ProbeLabel>,
+    /// Candidates the gate accepted without a fresh reading, with why (the
+    /// label of their unknown reading, or the limit that left them unread,
+    /// #2820), so a later gate of the same cycle (under the lock, in
+    /// revalidation) accepts them again rather than reading.
+    pub unconfirmed: BTreeMap<ProfileName, Unconfirmed>,
     /// Last good readings of the labelled candidates; `None` when the history
     /// was not read, so nothing is substituted.
     pub last_good: Option<BTreeMap<ProfileName, LastGood>>,
@@ -128,8 +130,11 @@ pub struct Seen {
     pub may_cross: bool,
     /// Why an ALERT decision did not move.
     pub why: Option<NoMove>,
-    /// The swap target accepted without a fresh reading, with its label.
-    pub unconfirmed: Option<(ProfileName, ProbeLabel)>,
+    /// The swap target accepted without a fresh reading, with why.
+    pub unconfirmed: Option<(ProfileName, Unconfirmed)>,
+    /// Issue #2820: why the live login has no room and until when, set
+    /// with `live_no_room`, for the swap line of an unconfirmed move.
+    pub live_full: Option<LiveFull>,
     /// Candidates left untried at the re-read limit.
     pub not_tried: BTreeSet<ProfileName>,
     /// `--target-week-max`, for the lines.
@@ -151,6 +156,39 @@ impl Seen {
                 (n.clone(), if unread { Reading::Failed } else { *r })
             })
             .collect()
+    }
+}
+
+/// Issue #2820: why a live plan login has no room, and until when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveFull {
+    /// The block's fixed kind label, or `window at 100%`.
+    pub why: &'static str,
+    /// When it ends: the block's end, or the latest reset of a window at
+    /// 100%; `None` when no reset is known.
+    pub until: Option<i64>,
+}
+
+impl LiveFull {
+    /// From the live login's active recorded `block`, else from its probe's
+    /// `windows`.
+    pub fn of(block: Option<&OverflowBlock>, windows: &Windows) -> Self {
+        if let Some(b) = block {
+            return Self {
+                why: kind_label(&b.reason),
+                until: Some(b.until),
+            };
+        }
+        let until = [windows.session, windows.week]
+            .iter()
+            .flatten()
+            .filter(|w| w.used >= 100.0)
+            .filter_map(|w| w.resets_at)
+            .max();
+        Self {
+            why: "window at 100%",
+            until,
+        }
     }
 }
 
