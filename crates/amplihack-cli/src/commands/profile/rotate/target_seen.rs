@@ -19,7 +19,7 @@ use super::super::measure::ProbeLabel;
 use super::super::observe::Snap;
 use super::super::spend_blocks::kind_label;
 use super::last_good::{LastGood, last_good};
-use super::target::{NoMove, Unfit, fit_blocked};
+use super::target::{Block, NoMove, Unfit, fit_blocked};
 use super::{Measured, Probed, Reading};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::OverflowEntry;
@@ -130,10 +130,10 @@ pub enum Basis {
 pub struct Standing {
     pub basis: Basis,
     /// Its room now, or why it is not eligible, on the reading used (a
-    /// blocked login has no room).
+    /// blocked login is [`Unfit::Blocked`] whatever the reading).
     pub fit: Result<u8, Unfit>,
-    /// An active recorded block: when it ends, and its fixed kind label.
-    pub block: Option<(i64, &'static str)>,
+    /// An active recorded block.
+    pub block: Option<Block>,
 }
 
 /// What the cycle saw, for its lines and for the swap step.

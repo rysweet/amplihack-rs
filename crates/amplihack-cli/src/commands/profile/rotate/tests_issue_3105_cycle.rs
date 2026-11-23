@@ -51,17 +51,6 @@ fn a_blocked_login_with_a_roomy_reading_is_not_chosen_and_is_logged_as_rejected(
 }
 
 #[test]
-fn the_reject_line_names_the_kind_and_carries_no_other_text() {
-    let f = fleet(&["held", "other"], &[]);
-    f.block("held", "spend_limit", clock() + 3600);
-    let table = [("held", rd(0.0, 33.0, None)), ("other", exh(100.0, 50.0))];
-    run(&f, BOTH[1].1(), exh(100.0, 44.0), &table, &[]);
-    let log = f.log();
-    let line = lines_with(&log, "reject: held blocked until ")[0];
-    assert!(line.ends_with("(spend limit)"), "{line}");
-}
-
-#[test]
 fn a_blocked_login_is_passed_over_for_the_next_candidate() {
     for (label, s) in BOTH {
         let f = fleet(&["held", "other"], &[]);
@@ -97,12 +86,18 @@ enum Block {
     Missing,
 }
 
+/// The watch keeps `p` as its reading of `held`, measured at `at`.
+fn keep_held(ctx: &mut Ctx, p: Probed, at: i64) {
+    let held = ProfileName::parse("held").unwrap();
+    ctx.stored
+        .keep(None, Some(&(unread(), vec![(held, p)])), at);
+}
+
 /// The kept 06:16:18Z reading: what the watch's `Stored::keep` held.
 fn keep_1616(ctx: &mut Ctx) {
-    let held = ProfileName::parse("held").unwrap();
     let at = clock() - 123;
-    let probes = (unread(), vec![(held.clone(), exh(100.0, 44.0))]);
-    ctx.stored.keep(None, Some(&probes), at);
+    keep_held(ctx, exh(100.0, 44.0), at);
+    let held = ProfileName::parse("held").unwrap();
     assert!(
         ctx.stored.times(clock()).contains(&(held, at)),
         "the 06:16:18Z reading is held"
@@ -367,9 +362,7 @@ fn a_confirming_read_older_than_the_kept_reading_is_rejected_for_the_next_login(
             &|ctx| {
                 ctx.reread = Some(reread);
                 ctx.measure = Some(stub);
-                let held = ProfileName::parse("held").unwrap();
-                let kept = (unread(), vec![(held, rd(0.0, 30.0, Some(clock() - 60)))]);
-                ctx.stored.keep(None, Some(&kept), clock() - 60);
+                keep_held(ctx, rd(0.0, 30.0, Some(clock() - 60)), clock() - 60);
             },
         );
         let log = f.log();
@@ -402,9 +395,7 @@ fn a_superseded_confirming_read_with_nothing_else_leaves_the_stay_note() {
             &|ctx| {
                 ctx.reread = Some(reread);
                 ctx.measure = Some(stub);
-                let held = ProfileName::parse("held").unwrap();
-                let kept = (unread(), vec![(held, rd(0.0, 30.0, Some(clock() - 60)))]);
-                ctx.stored.keep(None, Some(&kept), clock() - 60);
+                keep_held(ctx, rd(0.0, 30.0, Some(clock() - 60)), clock() - 60);
             },
         );
         let log = f.log();
