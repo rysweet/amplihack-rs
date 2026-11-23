@@ -13,7 +13,8 @@
 //! week or credit limit, or the API key's block), staying on it is never
 //! better than moving, so a target with a recent reading
 //! ([`Facts::recent`]) is accepted on that reading without a fresh one. A
-//! live login that is merely full, with no block, gets no such move.
+//! live login that is merely full, with no block, gets no such move: #3105
+//! pins that stay, and issue #3130 holds the decision on widening it.
 //!
 //! | The stale target | Step |
 //! |------------------|------|

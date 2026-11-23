@@ -131,8 +131,9 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 /// reaches the next-ranked login. A read that fails, comes back unknown or is
 /// older than one already held rejects the target too (issue #3105), unless
 /// the live login has a standing block and the target's reading is recent
-/// (issue #2820, `target_confirm`). Then, when the decision looked for a target, one `reject:` line for each
-/// plan login with a standing block; it makes no read.
+/// (issue #2820, `target_confirm`). When the decision looked for a target,
+/// the gate then writes one `reject:` line for each plan login with a
+/// standing block; that makes no read.
 /// Each name is read at most once, at most [`MAX_REREADS_PER_CYCLE`] reads and
 /// read-less rejections are made, and the loop is capped at `2n + 1` passes
 /// for `n` probes; a decision that still names a stale target at the cap is
