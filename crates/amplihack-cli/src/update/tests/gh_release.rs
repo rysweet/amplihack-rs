@@ -307,12 +307,12 @@ const PAYLOAD: &[u8] = b"archive payload for 2957";
 
 fn stand_in_gh(root: &Root, mode: GhMode, download: Download, reset: i64) -> GhCommand {
     let script = root.path.join("bin/gh");
-    // Written through a short-lived `sh`, so no fork of this process holds a
-    // write descriptor to it when the code under test execs it. A plain
-    // `fs::write` lost that race under parallel load (ETXTBSY), `gh auth
-    // status` failed to start, and the test took the anonymous path (#3081).
-    // The 0755 file sits in the 0700 `bin` directory, so it stays private.
-    crate::test_support::write_executable(&script, GH_SCRIPT);
+    // The shared stub writer, which never holds the file open for writing in
+    // this process. Written here with `std::fs::write`, a sibling test's fork
+    // can inherit that descriptor and leave the stub "text file busy"; the
+    // failed exec then reads as a `gh` that is not usable, and the lookup
+    // falls back to the anonymous API (issue #1973).
+    crate::test_support::write_executable_with_mode(&script, GH_SCRIPT, 0o700);
 
     let fixture = root.path.join("fixture");
     std::fs::write(fixture.join("release.json"), release_json("v9.9.9")).unwrap();
