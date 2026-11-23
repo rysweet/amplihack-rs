@@ -55,6 +55,13 @@ impl Stand {
     fn p(&self, rest: &str) -> String {
         format!("{}{rest}", self.root.display())
     }
+
+    /// Claude Code's own record of process `pid` in `dir`: an empty
+    /// `<dir>/sessions/<pid>.json`. Its content is never read.
+    fn session_file(dir: &Path, pid: u32) {
+        fs::create_dir_all(dir.join("sessions")).unwrap();
+        fs::write(dir.join(format!("sessions/{pid}.json")), b"{}").unwrap();
+    }
 }
 
 fn counted(names: &[&str]) -> Verdict {
@@ -98,6 +105,50 @@ fn several_named_profiles_are_each_doubtful() {
 fn a_claude_naming_no_profile_is_profile_unknown_and_makes_none_live() {
     let s = Stand::with_args(&["claude".into(), "-p".into(), "x".into()]);
     assert_eq!(s.judge("claude").unwrap().verdict, Verdict::ProfileUnknown);
+}
+
+/// A Claude that names no profile in its arguments is tied to the profile
+/// holding Claude Code's `sessions/<pid>.json` for it, so a login it uses
+/// through its own environment is still protected.
+#[test]
+fn a_session_file_under_a_profile_ties_the_process_to_that_profile() {
+    let s = Stand::with_args(&["claude".into(), "-p".into(), "x".into()]);
+    Stand::session_file(&s.root.join("Y"), 700000);
+    assert_eq!(s.judge("claude").unwrap().verdict, counted(&["Y"]));
+}
+
+#[test]
+fn a_session_file_and_the_arguments_are_both_counted() {
+    let s = Stand::new(b"");
+    s.args(&["claude".into(), "--settings".into(), s.p("/X")]);
+    Stand::session_file(&s.root.join("Z"), 700000);
+    assert_eq!(s.judge("claude").unwrap().verdict, counted(&["X", "Z"]));
+}
+
+/// Another process's file, a file under `~/.claude` (outside the root), a
+/// `sessions` directory that is a symlink (shared, so not the profile's
+/// own) and a profile that is a symlink tie nothing. A shared `sessions`
+/// would otherwise make every profile that shares it live for one process.
+#[test]
+fn only_a_profiles_own_session_file_for_this_pid_ties_it() {
+    let s = Stand::with_args(&["claude".into(), "-p".into(), "x".into()]);
+    Stand::session_file(&s.root.join("X"), 700001);
+    let home = s._tmp.path().join("home/.claude");
+    Stand::session_file(&home, 700000);
+    std::os::unix::fs::symlink(home.join("sessions"), s.root.join("Y/sessions")).unwrap();
+    let outside = s._tmp.path().join("elsewhere");
+    Stand::session_file(&outside, 700000);
+    std::os::unix::fs::symlink(&outside, s.root.join("link")).unwrap();
+    assert_eq!(s.judge("claude").unwrap().verdict, Verdict::ProfileUnknown);
+}
+
+/// A session file never makes a process Claude-like: a non-Claude
+/// executable is no evidence whatever files name its pid.
+#[test]
+fn a_session_file_does_not_make_a_process_claude_like() {
+    let s = Stand::with_args(&["tailscaled".into(), "amplihack wait".into()]);
+    Stand::session_file(&s.root.join("Y"), 700000);
+    assert_eq!(s.judge("tailscaled").unwrap().verdict, Verdict::NotClaude);
 }
 
 #[test]

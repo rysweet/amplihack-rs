@@ -16,6 +16,13 @@
 //! live login that is merely full, with no block, gets no such move: #3105
 //! pins that stay, and issue #3130 holds the decision on widening it.
 //!
+//! The exception is not this module's invention. The 23 November report on
+//! #2820 asks for it ("when the live login is spend-blocked, staying on it
+//! is never better than moving to any measured login"), and point 3 of the
+//! owner's brief for the fix restates it for a spend- or usage-blocked live
+//! login. "Rotate confirmation" in docs/reference/profile-command.md quotes
+//! it and sets out how it is narrower than the D7 rule #3105 withdrew.
+//!
 //! | The stale target | Step |
 //! |------------------|------|
 //! | its probe failed this cycle, live login blocked, its reading recent | [`Step::AcceptUnconfirmed`] |

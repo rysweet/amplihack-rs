@@ -339,7 +339,7 @@ then refuses. Without a pending recovery, a refusal changes nothing but
 | `no login in ~/.claude; no swap` | Log in with plain `claude` first. `switch` never fills an empty `~/.claude`. |
 | `the account in ~/.claude is not the one the ledger names (live=work); no swap` | Someone ran `/login` in `~/.claude`; follow the steps in [Swap refused](#swap-refused). |
 | ``profile spare has no stored login; run `amplihack profile login spare` first`` | The profile has no `.credentials.json` of its own. Log it in, then switch. Not checked when `spare` is already live. |
-| `profile spare is not a rotate candidate (session running): ...` | A running session uses `spare` (`CLAUDE_CONFIG_DIR` set to its directory). Moving its login would log that session out. End it, then switch; `spare` is already the default for new launches. A process the rotator cannot read blocks only the profile its arguments name, and only when it is a Claude or amplihack executable; the rotate log names it with an `unreadable process` line. If the message says running sessions cannot be seen, `/proc` cannot be scanned here (every system but Linux, including macOS), so no login can be moved; the rotator cannot swap there either. `switch` there only sets the default for new launches and exits 1. |
+| `profile spare is not a rotate candidate (session running): ...` | A running session uses `spare` (`CLAUDE_CONFIG_DIR` set to its directory). Moving its login would log that session out. End it, then switch; `spare` is already the default for new launches. A process the rotator cannot read blocks only a profile its arguments name or that holds Claude Code's `sessions/<pid>.json` for it, and only when it is a Claude or amplihack executable; the rotate log names it with an `unreadable process` line. One tied to no profile (`profile cannot be told`) blocks none, so the login it uses is not protected; see [Leases](../reference/profile-command.md#leases). If the message says running sessions cannot be seen, `/proc` cannot be scanned here (every system but Linux, including macOS), so no login can be moved; the rotator cannot swap there either. `switch` there only sets the default for new launches and exits 1. |
 | `profile spare is not a rotate candidate (leased): ...`, `(hosting)`, `(parked)` | Auto-switch has lent `spare`'s login to another session, or `spare`'s directory holds another account's login. Wait for that session to end; auto-switch then returns the logins. |
 | `profile spare is not a rotate candidate (excluded): ...` | `spare` is in the auto-switch exclude list, which keeps it out of rotation; a switch is a rotation done by hand. Set the list without it with `amplihack profile auto-switch exclude`, then switch. |
 | `profile spare is not a rotate candidate (no account): ...` | The login has no usable trusted account evidence. Resolve the identity-read failure; editing `oauthAccount` cannot authorize the switch. |
@@ -911,7 +911,10 @@ exception is a live login with a standing block (a spend, session, week or
 credit limit): no work can run on it until the block ends, so the rotator
 moves to the best target on that target's recent reading (at most 5 hours
 old, and taken after the rotator last left it), and the `swap` line ends
-`unconfirmed (<why>); live <from> has no room: <kind> until <time>`. A login with a standing
+`unconfirmed (<why>); live <from> has no room: <kind> until <time>`. The 23 November
+report on issue #2820 asked for this exception; the
+[reference](../reference/profile-command.md#rotate-confirmation) says how it
+differs from the rule #3105 withdrew. A login with a standing
 block is never a target, and the rotator writes
 `reject: <name> blocked until <time> (<kind>)`. If the targets are rejected only
 because their re-reads were unknown, they are still eligible, and the rotator

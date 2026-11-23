@@ -2,6 +2,7 @@
 //! is using through `CLAUDE_CONFIG_DIR` (issue #1569). Any doubt counts as live.
 
 use super::liveness::{self, Liveness};
+use super::unreadable::Verdict;
 use crate::commands::profile::name::ProfileName;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -169,6 +170,23 @@ fn one_unreadable_process_leaves_the_other_profiles_readable() {
     assert!(!l.is_live(&n("Z")), "Z is named by nobody");
     assert_eq!(l.unreadable().len(), 1);
     assert_eq!(l.unreadable()[0].pid, 107);
+}
+
+/// An unreadable Claude whose arguments name no profile is tied to its
+/// profile by Claude Code's `sessions/<pid>.json` there, so the scan keeps
+/// that login live and leaves the others as candidates.
+#[test]
+fn an_unreadable_claude_is_tied_to_its_profile_by_its_session_file() {
+    let p = FakeProc::new();
+    let dir = p.process(109, UID, "S (sleeping)", &[], &p.root);
+    fs::remove_file(dir.join("environ")).unwrap();
+    fs::create_dir(dir.join("environ")).unwrap();
+    fs::create_dir_all(p.root.join("Z/sessions")).unwrap();
+    fs::write(p.root.join("Z/sessions/109.json"), b"{}").unwrap();
+    let l = p.scan();
+    assert!(l.is_live(&n("Z")), "Z holds the session file of 109");
+    assert!(!l.is_live(&n("X")) && !l.is_live(&n("Y")));
+    assert!(matches!(l.unreadable()[0].verdict, Verdict::Counted(_)));
 }
 
 /// A non-dumpable `tailscaled` whose command mentions amplihack is logged

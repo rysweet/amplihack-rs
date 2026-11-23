@@ -4,15 +4,29 @@
 //! `status`, never from its environment, and `/proc/<pid>/exe` is never read:
 //!
 //! - A Claude or amplihack executable ([`claude_executable`]) makes doubtful
-//!   only the profiles its arguments name ([`Verdict::Counted`]). One that
-//!   names none makes no profile live ([`Verdict::ProfileUnknown`]): it most
-//!   likely uses `~/.claude`, the live login, which is not a candidate.
+//!   only the profiles it can be tied to ([`Verdict::Counted`]): those its
+//!   arguments name, and those that hold Claude Code's own record of it,
+//!   `<root>/<name>/sessions/<pid>.json` ([`session_file_profiles`]).
+//! - One tied to no profile makes no profile live
+//!   ([`Verdict::ProfileUnknown`]), and so protects none. This is the one
+//!   judgement here that errs in the unsafe direction. A login it uses
+//!   through `CLAUDE_CONFIG_DIR` set only in its own environment, with no
+//!   session file of Claude Code's under that profile, can be moved out from
+//!   under it. The log line says `profile cannot be told`. Making every
+//!   profile live instead is what issue #2820 forbids. Two other sources add
+//!   nothing. A readable relative that carries `CLAUDE_CONFIG_DIR` (the
+//!   parent that started it, or a hook, tool or MCP server it started)
+//!   already makes that profile live by the ordinary rule in `liveness.rs`.
+//!   `/proc/<pid>/cwd` is behind the same access check as `environ` for a
+//!   process that is not dumpable or changed its credentials. It names a
+//!   working directory, not a config directory.
 //! - Any other process is no evidence ([`Verdict::NotClaude`]). It is noted
 //!   only when its command line mentions `claude` or `amplihack`, which is
 //!   what the rule before #2820 counted, so the log names what changed.
 //!
 //! A profile name taken from an argument is only ever a lookup key: it is
-//! never used to build a path that is opened.
+//! never used to build a path that is opened. The session-file check only
+//! looks entries up by name and opens nothing.
 
 use super::fsx;
 use crate::commands::agent::procfs;
@@ -53,13 +67,14 @@ impl std::fmt::Debug for Unreadable {
 /// What an unreadable process counts for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// A Claude or amplihack executable naming these profiles: each is
-    /// doubtful, and doubtful counts as live.
+    /// A Claude or amplihack executable tied to these profiles, by its
+    /// arguments or by a session file: each is doubtful, and doubtful counts
+    /// as live.
     Counted(BTreeSet<String>),
     /// Not a Claude or amplihack executable: no evidence for any profile.
     NotClaude,
-    /// A Claude or amplihack executable naming no profile: no profile is
-    /// live because of it.
+    /// A Claude or amplihack executable tied to no profile: no profile is
+    /// live because of it, so it protects none (see the module docs).
     ProfileUnknown,
 }
 
@@ -70,7 +85,8 @@ pub enum Verdict {
 pub fn judge(dir: &Path, pid: u32, comm: &str, root: &Path) -> Option<Unreadable> {
     let argv = argv(dir);
     let verdict = if claude_executable(comm, &argv) {
-        let names = named_profiles(&argv, root);
+        let mut names = named_profiles(&argv, root);
+        names.extend(session_file_profiles(pid, root));
         if names.is_empty() {
             Verdict::ProfileUnknown
         } else {
@@ -156,6 +172,37 @@ fn named_profiles(argv: &[String], root: &Path) -> BTreeSet<String> {
         }
     }
     names
+}
+
+/// The profiles under `root` that hold Claude Code's own record of process
+/// `pid`: an entry named `<root>/<name>/sessions/<pid>.json`. Claude Code
+/// writes that file in the config directory it runs under, for `-p` runs as
+/// well (checked with Claude Code 2.1.330), so it ties a process whose
+/// environment cannot be read to its profile. The entries are looked up by
+/// name: nothing is opened or read.
+///
+/// Every guess here errs toward live. A file whatever its age counts: one
+/// left by an earlier process with the same pid can only make one more
+/// profile doubtful, which delays a swap. A profile directory, or a
+/// `sessions` directory, that is a symlink is not that profile's own record
+/// and ties nothing. Otherwise a `sessions` directory shared by several
+/// profiles would make each of them live for one process, the failure of
+/// issue #2820. A root that cannot be listed ties nothing.
+fn session_file_profiles(pid: u32, root: &Path) -> BTreeSet<String> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return BTreeSet::new();
+    };
+    let file = format!("{pid}.json");
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| {
+            let sessions = e.path().join("sessions");
+            std::fs::symlink_metadata(&sessions).is_ok_and(|m| m.is_dir())
+                && std::fs::symlink_metadata(sessions.join(&file)).is_ok()
+        })
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .collect()
 }
 
 /// The profile `path` is, or is under: the first component under `root`

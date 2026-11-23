@@ -17,12 +17,15 @@
 #
 #   1. at the deployed --session-at 95 --week-at 98: the unreadable
 #      `tailscaled`, an unreadable `claude` naming `busy`, an unreadable
-#      `amplihack` naming no profile, and a readable `claude` using `held`.
-#      The one-shot cycle names each unreadable process once, skips only
-#      `busy` and `held`, and moves the spend-blocked live login to `wwest`;
+#      `amplihack` naming no profile, a readable `claude` using `held`, and
+#      an unreadable `claude` naming no profile whose session file Claude
+#      Code wrote under `xxavier` (`sessions/<pid>.json`). The one-shot
+#      cycle names each unreadable process once, skips only `busy`, `held`
+#      and `xxavier`, and moves the spend-blocked live login to `wwest`;
 #   2. the same at 85/90;
-#   3. no secret reaches the log: an assignment in an unreadable process's
-#      arguments is masked, and no process environment is logged;
+#   3. no secret reaches the log: an assignment and a `--token` value in an
+#      unreadable process's arguments are masked, and no process environment
+#      is logged;
 #   4. HTTP 429 for every candidate, with a last good reading of `wwest`: the
 #      spend-blocked live login still moves, `unconfirmed (HTTP 429)`, and the
 #      swap line says why the live login has no room and until when;
@@ -280,6 +283,11 @@ nov23_processes() {
   proc_entry 4200004 claude \
     "SECRET=qa-sentinel-environ-secret"$'\n'"CLAUDE_CONFIG_DIR=$ROOT/held" \
     claude
+  # Names no profile; only Claude Code's own session file ties it to xxavier.
+  proc_entry 4200005 claude - \
+    claude -p "fix it" --token qa-sentinel-flag-secret
+  mkdir -p "$ROOT/xxavier/sessions"
+  printf '{}' > "$ROOT/xxavier/sessions/4200005.json"
 }
 
 # The live login's spend block on 23 November, added to the rotate ledger the
@@ -341,27 +349,28 @@ check_unreadable_case() { # label flags...
     || { echo "$log" >&2; fail "$label: busy, named by the unreadable claude, was not skipped once"; }
   [[ "$(count "skip: held (session running)" "$log")" == "1" ]] \
     || { echo "$log" >&2; fail "$label: held, used by a readable claude, was not skipped once"; }
-  for other in wwest xxavier; do
-    ! grep -q "skip: $other " <<< "$log" || { echo "$log" >&2; fail "$label: $other was skipped"; }
-  done
+  [[ "$(count "skip: xxavier (session running)" "$log")" == "1" ]] \
+    || { echo "$log" >&2; fail "$label: xxavier, tied by its session file to the unreadable claude, was not skipped once"; }
+  ! grep -q "skip: wwest " <<< "$log" || { echo "$log" >&2; fail "$label: wwest was skipped"; }
   local want
   for want in \
     'unreadable process 4200001 (tailscaled) "tailscaled be-child ssh --remote-ip=100.64.0.7 amplihack recipe run wait": not counted (not a Claude executable)' \
     'unreadable process 4200002 (claude) "claude CLAUDE_CONFIG_DIR=<hidden> TOKEN=<hidden>": counted as a session on busy' \
-    'unreadable process 4200003 (amplihack) "amplihack recipe run": not counted (profile cannot be told)'; do
+    'unreadable process 4200003 (amplihack) "amplihack recipe run": not counted (profile cannot be told)' \
+    'unreadable process 4200005 (claude) "claude -p fix it --token <hidden>": counted as a session on xxavier'; do
     [[ "$(count "$want" "$log")" == "1" ]] \
       || { echo "$log" >&2; fail "$label: expected exactly one line: $want"; }
   done
-  [[ "$(count "unreadable process " "$log")" == "3" ]] \
-    || { echo "$log" >&2; fail "$label: expected three unreadable process lines"; }
+  [[ "$(count "unreadable process " "$log")" == "4" ]] \
+    || { echo "$log" >&2; fail "$label: expected four unreadable process lines"; }
   # Case 3: no secret, no environment and no profile path in the log.
   local secret
-  for secret in qa-sentinel-argv-secret qa-sentinel-environ-secret "$ROOT/busy" "$ROOT/held"; do
+  for secret in qa-sentinel-argv-secret qa-sentinel-flag-secret qa-sentinel-environ-secret "$ROOT/busy" "$ROOT/held"; do
     ! grep -qF -- "$secret" <<< "$log" || fail "$label: the log holds '$secret'"
     ! grep -qF -- "$secret" "$WORK/stdout" "$WORK/stderr" || fail "$label: the output holds '$secret'"
   done
   ! grep -q " ALERT: " <<< "$log" || { echo "$log" >&2; fail "$label: the cycle wrote an ALERT"; }
-  echo "PASS: $label: each unreadable process is named once, only busy and held are skipped, and the spend-blocked live login moves to wwest"
+  echo "PASS: $label: each unreadable process is named once, only busy, held and xxavier are skipped, and the spend-blocked live login moves to wwest"
   evidence ' (unreadable process|skip:|swap) ' <<< "$log"
 }
 check_unreadable_case "case 1 (95/98)" "${DEPLOYED[@]}"
@@ -399,7 +408,7 @@ run_cli profile rotate --dry-run "${DEPLOYED[@]}"
 grep -q "would swap $LIVE->wwest " "$WORK/stdout" \
   || { cat "$WORK/stdout" >&2; fail "case 5: the dry run did not name the swap to wwest"; }
 [[ "$(live_token)" == "$before" ]] || fail "case 5: the dry run moved ~/.claude"
-for secret in qa-sentinel-argv-secret qa-sentinel-environ-secret; do
+for secret in qa-sentinel-argv-secret qa-sentinel-flag-secret qa-sentinel-environ-secret; do
   ! grep -qF -- "$secret" "$WORK/stdout" "$WORK/stderr" || fail "case 5: the output holds '$secret'"
 done
 echo "PASS: case 5: the dry run names the move to wwest and moves nothing"

@@ -3,12 +3,60 @@
 //! "Unreadable process lines" in docs/reference/profile-command.md.
 //!
 //! The arguments are under the control of any process of this user, so the
-//! order of work is mask, then escape, then cut: an environment assignment
-//! never shows its value, a cut never splits an escape, and one process is
-//! always exactly one line that cannot forge another. The environment itself
-//! is never read, so it cannot reach this text.
+//! order of work is mask, then escape, then cut: a value [`masked`] hides
+//! never shows, a cut never splits an escape, and one process is always
+//! exactly one line that cannot forge another. The environment itself is
+//! never read, so it cannot reach this text.
+//!
+//! Masking hides what is shaped like a secret, not every secret. A secret
+//! passed as a bare argument, with no secret-named flag before it and no
+//! known token prefix, is still shown within the 120 characters. The same
+//! user can read it in `/proc/<pid>/cmdline`, and the log is a private file
+//! (`log.rs` creates it 0600 and refuses one that others can read).
 
 use crate::commands::profile::auto_switch::{Unreadable, Verdict, assignment_name};
+
+/// What a hidden value is shown as.
+const HIDDEN: &str = "<hidden>";
+/// A flag or header whose name holds one of these, ignoring case, carries a
+/// secret. A word inside a longer name counts (`--api-key`, `X-Auth-Token`);
+/// hiding a harmless value by mistake costs only log detail.
+const SECRET_WORDS: [&str; 9] = [
+    "token",
+    "secret",
+    "passw",
+    "passphrase",
+    "key",
+    "auth",
+    "cred",
+    "cookie",
+    "bearer",
+];
+/// Well-known credential prefixes: Anthropic and OpenAI keys, GitHub,
+/// GitLab and Slack tokens, AWS access key ids, Google API keys, JWTs, npm
+/// and Hugging Face tokens. An argument, or a flag's value, that starts
+/// with one is hidden whole.
+const TOKEN_PREFIXES: [&str; 19] = [
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "glpat-",
+    "xoxa-",
+    "xoxb-",
+    "xoxp-",
+    "xoxr-",
+    "xoxs-",
+    "AKIA",
+    "ASIA",
+    "AIza",
+    "eyJ",
+    "npm_",
+    "hf_",
+];
 
 /// The most process lines [`lines`] gives; the rest are counted in one
 /// summary line. Every process is still judged: this caps the log only.
@@ -20,12 +68,11 @@ const MAX_EXE: usize = 32;
 
 /// `unreadable process <pid> (<exe>) "<command>": <verdict>`.
 pub fn line(u: &Unreadable) -> String {
-    let command: Vec<String> = u.argv.iter().map(|a| mask(a)).collect();
     format!(
         "unreadable process {} ({}) \"{}\": {}",
         u.pid,
         cut(&u.exe, MAX_EXE),
-        cut(&command.join(" "), MAX_COMMAND),
+        cut(&masked(&u.argv).join(" "), MAX_COMMAND),
         verdict(&u.verdict)
     )
 }
@@ -58,20 +105,93 @@ fn verdict(v: &Verdict) -> String {
     }
 }
 
-/// `NAME=value` as `NAME=<hidden>`, and `--flag=NAME=value` as
-/// `--flag=NAME=<hidden>`: an environment entry handed on. A plain
-/// `--flag=value` is shown as it is.
+/// The arguments as the log shows them. A flag with no `=` whose name holds
+/// a [`SECRET_WORDS`] word (`--token`, `--api-key`) hides the argument after
+/// it, whatever that is. Every argument is then masked by [`mask`].
+fn masked(argv: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut hide_next = false;
+    for arg in argv {
+        if std::mem::take(&mut hide_next) {
+            out.push(HIDDEN.to_string());
+            continue;
+        }
+        hide_next = arg.starts_with('-') && !arg.contains('=') && secret_name(arg);
+        out.push(mask(arg));
+    }
+    out
+}
+
+/// One argument with what it carries hidden, by the first rule that fits:
+///
+/// - `NAME=value` as `NAME=<hidden>`: an environment entry handed on.
+/// - `--flag=value` as `--flag=<hidden>` when the flag is secret-named; as
+///   `--flag=NAME=<hidden>` when the value is `NAME=value`; otherwise its
+///   value as [`mask_value`] gives it.
+/// - Anything else as [`mask_value`] gives it.
 fn mask(arg: &str) -> String {
     if let Some(name) = assignment_name(arg) {
-        return format!("{name}=<hidden>");
+        return format!("{name}={HIDDEN}");
     }
     if arg.starts_with('-')
         && let Some((flag, rest)) = arg.split_once('=')
-        && let Some(name) = assignment_name(rest)
     {
-        return format!("{flag}={name}=<hidden>");
+        if secret_name(flag) {
+            return format!("{flag}={HIDDEN}");
+        }
+        if let Some(name) = assignment_name(rest) {
+            return format!("{flag}={name}={HIDDEN}");
+        }
+        return format!("{flag}={}", mask_value(rest));
     }
-    arg.to_string()
+    mask_value(arg)
+}
+
+/// A whole argument, or the value of a `--flag=value`, by the first rule
+/// that fits:
+///
+/// - One that starts with a [`TOKEN_PREFIXES`] prefix as `<hidden>`.
+/// - `Name: value` as `Name: <hidden>` when `Name` is one word and
+///   secret-named: a header such as `Authorization: Bearer ...`.
+/// - Otherwise the value with the user and password of every URL in it
+///   hidden (`https://<hidden>@host/...`).
+///
+/// A token inside other text is not found.
+fn mask_value(v: &str) -> String {
+    if TOKEN_PREFIXES.iter().any(|p| v.starts_with(p)) {
+        return HIDDEN.to_string();
+    }
+    if let Some((name, _)) = v.split_once(':')
+        && !name.is_empty()
+        && !name.contains(|c: char| c.is_whitespace() || c == '/')
+        && secret_name(name)
+    {
+        return format!("{name}: {HIDDEN}");
+    }
+    let mut out = String::with_capacity(v.len());
+    let mut rest = v;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+            .unwrap_or(tail.len());
+        rest = match tail[..end].rfind('@') {
+            Some(at) => {
+                out.push_str(HIDDEN);
+                &tail[at..]
+            }
+            None => tail,
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether a flag or header name holds a [`SECRET_WORDS`] word.
+fn secret_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    SECRET_WORDS.iter().any(|w| name.contains(w))
 }
 
 /// One character as its display unit: `"` and `\` behind a backslash, an

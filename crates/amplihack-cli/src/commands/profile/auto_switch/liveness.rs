@@ -6,8 +6,10 @@
 //! Issue #2820: the decision is per profile, on what is known. A process
 //! whose environment cannot be read is judged by `unreadable::judge` from its
 //! command line and `status` name: a Claude or amplihack executable makes
-//! doubtful, and so live, only the profiles its arguments name, and any other
-//! is no evidence. One unreadable process never makes every profile live;
+//! doubtful, and so live, only the profiles its arguments name or that hold
+//! Claude Code's `sessions/<pid>.json` for it, and any other is no evidence.
+//! One tied to no profile protects none; `unreadable.rs` says why that is
+//! the remaining gap. One unreadable process never makes every profile live;
 //! only a process table that cannot be used at all does
 //! ([`Liveness::Unsupported`]). Every unreadable process the scan noted is
 //! kept in [`Liveness::Partial`] so the rotate log can name it.
@@ -33,8 +35,8 @@ pub enum Liveness {
     Known(BTreeSet<String>),
     /// Issue #2820: as `Known`, after some processes' environments could
     /// not be read. `live` holds the names readable processes gave and the
-    /// names unreadable Claude or amplihack executables named (doubtful
-    /// counts as live). `unreadable` is every unreadable process the scan
+    /// names unreadable Claude or amplihack executables were tied to by
+    /// their arguments or session files (doubtful counts as live). `unreadable` is every unreadable process the scan
     /// noted, in pid order, and is never empty. It is for the log only and
     /// never changes a decision.
     Partial {

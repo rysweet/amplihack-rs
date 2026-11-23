@@ -77,8 +77,116 @@ fn assignments_are_masked_and_never_shown() {
     assert!(!l.contains("hunter"), "{l}");
 }
 
+/// The command between the quotes of the line for `argv`.
+fn command(argv: &[&str]) -> String {
+    let l = line(&u(6, "x", argv, Verdict::ProfileUnknown));
+    let start = l.find('"').unwrap() + 1;
+    let end = l.rfind("\": ").unwrap();
+    l[start..end].to_string()
+}
+
+/// A secret-named flag hides its value in both forms, and a flag with no
+/// `=` hides the argument after it whatever that is.
+#[test]
+fn secret_named_flags_hide_their_values_in_both_forms() {
+    let shown = command(&[
+        "claude",
+        "--token",
+        "abc123",
+        "--api-key=plain-value",
+        "--Auth-Header",
+        "Basic dXNlcjpw",
+        "--plain",
+        "shown",
+    ]);
+    assert_eq!(
+        shown,
+        "claude --token <hidden> --api-key=<hidden> --Auth-Header <hidden> --plain shown"
+    );
+    assert_eq!(command(&["claude", "--token"]), "claude --token");
+}
+
+#[test]
+fn known_token_shapes_are_hidden_as_an_argument_or_a_flag_value() {
+    let shown = command(&[
+        "x",
+        "sk-ant-api03-AAAA",
+        "--with=ghp_abcdef",
+        "eyJhbGciOi.e30.sig",
+        "AKIAIOSFODNN7EXAMPLE",
+        "github_pat_11AB",
+    ]);
+    assert_eq!(
+        shown,
+        "x <hidden> --with=<hidden> <hidden> <hidden> <hidden>"
+    );
+}
+
+#[test]
+fn url_credentials_are_hidden_and_the_rest_of_the_url_is_kept() {
+    assert_eq!(
+        command(&["git", "clone", "https://bob:pa55@example.com/r.git"]),
+        "git clone https://<hidden>@example.com/r.git"
+    );
+    assert_eq!(
+        command(&["x", "--remote=ssh://git@host/x", "http://example.com/a@b"]),
+        "x --remote=ssh://<hidden>@host/x http://example.com/a@b"
+    );
+    assert_eq!(
+        command(&["x", "see https://a:b@h1/x and http://c:d@h2"]),
+        "x see https://<hidden>@h1/x and http://<hidden>@h2"
+    );
+}
+
+#[test]
+fn a_secret_named_header_hides_its_value() {
+    assert_eq!(
+        command(&["curl", "-H", "Authorization: Bearer abc", "X-Api-Key:k1"]),
+        "curl -H Authorization: <hidden> X-Api-Key: <hidden>"
+    );
+    assert_eq!(
+        command(&["x", "--header=Authorization: Bearer abc"]),
+        "x --header=Authorization: <hidden>"
+    );
+}
+
+/// Masking is for what is shaped like a secret: the arguments the rotate
+/// log names processes by are shown as they are.
+#[test]
+fn ordinary_arguments_are_shown_as_they_are() {
+    let tailscale = [
+        "tailscaled",
+        "be-child",
+        "ssh",
+        "--remote-ip=100.64.0.7",
+        "amplihack recipe run wait",
+    ];
+    assert_eq!(command(&tailscale), tailscale.join(" "));
+    let claude = [
+        "claude",
+        "--dangerously-skip-permissions",
+        "-p",
+        "fix the build: it fails",
+        "--model",
+        "opus",
+    ];
+    assert_eq!(command(&claude), claude.join(" "));
+}
+
 #[test]
 fn a_secret_straddling_the_cut_is_masked_before_it_is_cut() {
+    let pad = "p".repeat(108);
+    let l = line(&u(
+        3,
+        "claude",
+        &[&pad, "--token", "abcdefghijklmnop"],
+        Verdict::ProfileUnknown,
+    ));
+    assert!(!l.contains("abcdef"), "{l}");
+}
+
+#[test]
+fn an_assignment_straddling_the_cut_is_masked_before_it_is_cut() {
     let pad = "p".repeat(110);
     let l = line(&u(
         3,

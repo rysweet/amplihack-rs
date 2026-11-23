@@ -5301,14 +5301,34 @@ and its name, never from its environment:
   `amplihack` or `amplihack-*`, or it is `node` running the Claude Code
   `cli.js`. Text elsewhere in the command line does not make a process
   Claude-like, and `/proc/<pid>/exe` is never read.
-- A Claude or amplihack executable makes *doubtful* only the profiles its
-  arguments name: an argument after `argv[0]` that is `<root>/<name>`, a path
-  under it, or any `=`-separated part of an argument that is such a path
-  (`KEY=<that path>`, `--env=CLAUDE_CONFIG_DIR=<root>/x`). A doubtful profile counts as live. When
-  several profiles are named, each is doubtful.
-- A Claude or amplihack executable whose arguments name no profile makes no
-  profile live. It most likely uses `~/.claude`, the live login, which is not
-  a candidate. The process is logged as `profile cannot be told`.
+- A Claude or amplihack executable makes *doubtful* only the profiles it can
+  be tied to, and a doubtful profile counts as live. When it is tied to
+  several profiles, each is doubtful. Two things tie it to a profile:
+  - Its arguments: an argument after `argv[0]` that is `<root>/<name>`, a
+    path under it, or any `=`-separated part of an argument that is such a
+    path (`KEY=<that path>`, `--env=CLAUDE_CONFIG_DIR=<root>/x`).
+  - Claude Code's own session file for it, `<root>/<name>/sessions/<pid>.json`.
+    Claude Code writes that file in the config directory it runs under,
+    including for `-p` runs (checked with Claude Code 2.1.330; an older one
+    may not write it). Only the file's name is looked up; the file is
+    never opened. A file of any age counts, because a stale one can only
+    delay a swap. A profile directory or `sessions` directory that is a
+    symlink ties nothing, so one `sessions` directory shared by several
+    profiles cannot make all of them live.
+- A Claude or amplihack executable tied to no profile makes no profile live,
+  and is logged as `profile cannot be told`. **The login it uses is not
+  protected.** Suppose it uses a profile through `CLAUDE_CONFIG_DIR` set only
+  in its own environment, and Claude Code has written no session file for it
+  under that profile. The rotator can then move that login out from under it.
+  This is the one case where the scan's guess leans unsafe. The alternative,
+  making every profile live, would let one such process stop all rotation,
+  which is the fault issue #2820 fixed. Two other sources were considered,
+  and neither helps. A readable relative that carries `CLAUDE_CONFIG_DIR`
+  already makes its profile live by the rule above. That covers the process
+  that started it, and any hook, tool or MCP server it started.
+  `/proc/<pid>/cwd` is behind the same access check as `environ` for a
+  process that is not dumpable or changed its credentials, and it names a
+  working directory, not a config directory.
 - Any other unreadable process, such as `tailscaled be-child ssh` or
   `ssh-agent`, is not evidence and makes no profile live.
 
@@ -6757,6 +6777,17 @@ and an entry already accepted is accepted again only while the live login is
 still blocked. When the live login has no block, a capped target becomes
 unknown with no `reject:` line, and is not chosen again in this cycle.
 
+The exception was asked for in the 23 November report on issue #2820: "when
+the live login is spend-blocked, staying on it is never better than moving
+to any measured login. Even with unread candidates, the rotator could fall
+back to the last good reading of the others rather than stay." The owner's
+brief for the fix (point 3) gives the same rule for a spend- or
+usage-blocked live login. It is narrower than #2910's D7, which #3105
+withdrew. D7 let a live login that was only full move on any reading. This
+exception needs a standing recorded block, and it keeps every guard #3105
+added on the target. A live login that is only full keeps #3105's
+fail-closed rule; issue #3130 holds the question of widening it.
+
 The `swap` line of such a move says that it was made without a fresh reading
 and why:
 `<swap line> unconfirmed (<label> | re-read limit 3 | time limit); live <from> has no room: <kind> until <UTC minute>`,
@@ -6925,22 +6956,40 @@ characters), and the command line cut to 120 characters, then one verdict:
 
 | Verdict | Meaning |
 |---------|---------|
-| `counted as a session on <a>, <b>` | A Claude or amplihack executable names these profiles. They count as live. |
+| `counted as a session on <a>, <b>` | A Claude or amplihack executable is tied to these profiles, by its arguments or by Claude Code's session file for it. They count as live. |
 | `not counted (not a Claude executable)` | The command line mentions `claude` or `amplihack`, but the executable is something else. No profile is live because of it. |
-| `not counted (profile cannot be told)` | A Claude or amplihack executable names no profile. No profile is live because of it. |
+| `not counted (profile cannot be told)` | A Claude or amplihack executable is tied to no profile. No profile is live because of it, so the login it uses is not protected; see [Leases](#leases). |
 
 Arguments are joined with a space; NUL is only the separator between them.
 `"` and `\` are escaped with a backslash, any other ASCII control character
 (0x01 to 0x1F, including an embedded one, and 0x7F) is shown as `\xNN`, and a
 Unicode control character (U+0080 to U+009F) as `\u{NN}`. The executable and
 the profile names in the verdict are escaped the same way. A
-trailing `...` marks a command line or executable that was cut. An argument
-that is an environment assignment (`NAME=value`) is shown as `NAME=<hidden>`;
-a flag that carries one (`--flag=NAME=value`) keeps its prefix and is shown as
-`--flag=NAME=<hidden>`. The process
-environment is never read or logged. A plain `--flag=value` is shown as it is;
-any user on the host can already read it in `/proc/<pid>/cmdline`, and the log
-is created with mode 0600.
+trailing `...` marks a command line or executable that was cut.
+
+Each argument is masked before it is escaped and cut. The first rule that
+fits applies. A *secret word* is `token`, `secret`, `passw`, `passphrase`,
+`key`, `auth`, `cred`, `cookie` or `bearer`, found anywhere in a name and in
+any case.
+
+| Argument | Shown as |
+|----------|----------|
+| The argument after a flag written without `=` whose name holds a secret word (`--token abc`, `--api-key sk-...`), whatever it is | `<hidden>` |
+| An environment assignment, `NAME=value` | `NAME=<hidden>` |
+| `--flag=value`, where the flag's name holds a secret word | `--flag=<hidden>` |
+| `--flag=NAME=value` | `--flag=NAME=<hidden>` |
+| An argument, or the value of any other `--flag=value`, that starts with a known token prefix: `sk-`, `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `glpat-`, `xoxa-`, `xoxb-`, `xoxp-`, `xoxr-`, `xoxs-`, `AKIA`, `ASIA`, `AIza`, `eyJ`, `npm_` or `hf_` | `<hidden>` |
+| An argument or flag value `Name: value`, where `Name` is one word holding a secret word (`Authorization: Bearer ...`, `--header=X-Api-Key: ...`) | `Name: <hidden>` |
+| A URL with a user or password, anywhere in an argument or flag value (`https://bob:pw@host/r`) | `https://<hidden>@host/r` |
+| Anything else | as it is |
+
+Masking hides what is shaped like a secret, not every secret. A secret
+passed as a bare argument, with no secret-named flag before it and no known
+prefix, is still shown within the 120 characters. So is a token inside other
+text. Any process of yours can already read it in `/proc/<pid>/cmdline`, and
+so can other users unless `/proc` is mounted with `hidepid`. The log is
+created with mode 0600, and the rotator refuses to write a log that other
+users can read or write. The process environment is never read or logged.
 
 A process is logged again only when it was not in the previous cycle's set, so
 a long-lived one is named once. A restart of the rotator names it again. At
