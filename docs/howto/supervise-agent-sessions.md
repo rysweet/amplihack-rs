@@ -610,7 +610,7 @@ supervisor agent to judge, not a request for recovery. See
 `stopped: restart limit` is a session the supervisor has given up on.
 
 The agent step that reads these alerts is the bundled
-`supervise-agent-sessions` skill, which a supervisor agent runs on every pass.
+`supervise-agent-sessions` skill, which a supervisor agent uses on every pass.
 It judges the relaunch records, stops a crash loop with
 `amplihack agent unregister`, and finds out why a session with a
 `not relaunched` alert was not resumed: the service is not running, or the

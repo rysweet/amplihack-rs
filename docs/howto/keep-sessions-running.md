@@ -186,7 +186,7 @@ wrapper.
 
 The skill is bundled with amplihack under
 `amplifier-bundle/skills/supervise-agent-sessions/` and is installed with the
-other bundled skills. A supervisor agent runs it on every pass. It is an
+other bundled skills. A supervisor agent uses it on every pass. It is an
 agent's judgement, so it holds no count and no timer either.
 
 Tests tie the readers to what the wrapper writes. In
@@ -197,7 +197,7 @@ resumed by one pass of the supervisor service.
 `crates/amplihack-cli/tests/issue_2912_supervisor_skill.rs` checks the skill
 itself and that these guides name it.
 
-When no supervisor agent runs the skill, nothing reads the record of the
+When no supervisor agent uses the skill, nothing reads the record of the
 relaunches. A crash loop then runs until a person reads
 `amplihack agent status`, and a session left stopped in a pane that a shell
 keeps open stays stopped. On a host with standing sessions, run the skill on
