@@ -7,6 +7,7 @@
 
 use super::fs_safety::{DirState, dir_state, untrusted_reason};
 use super::pr_key::{canonical_repo_from_remote, parse_pr_url, pr_guidance_dir, pr_key};
+use super::sanitize::sanitize_line;
 use super::{GUIDANCE_DIR, MAX_ENV_DIRS};
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -17,20 +18,70 @@ use std::process::Stdio;
 /// Cap on what `git remote get-url origin` may print.
 const MAX_REMOTE_BYTES: u64 = 4096;
 
-fn warn_skipped(path: &Path, reason: &str) {
+/// The one warning for a listed folder whose entries are not read. Skipped,
+/// never refused: the caller goes on with the folders that pass, so the
+/// warning carries no verdict word (issue #2809), and it names the folder
+/// once. The path is escaped ([`sanitize_line`]) because the list comes from
+/// the environment.
+pub(crate) fn warn_skipped(path: &Path, reason: &str) {
     eprintln!(
-        "amplihack: ignoring operator guidance folder {}: {reason}",
-        path.display()
+        "{}",
+        sanitize_line(&format!(
+            "amplihack: ignoring operator guidance folder {}: {reason}",
+            path.display()
+        ))
     );
 }
 
-/// The folders of `value` that pass the read-side checks, in order and
-/// without duplicates: at most [`MAX_ENV_DIRS`] entries are considered; each
-/// must be absolute, end in `guidance`, and both it and its parent must pass
-/// the trust rule. A folder that does not exist yet (no entry was ever
-/// added) is skipped silently; anything else that fails is skipped with a
-/// warning naming the path.
-pub(crate) fn dirs_from_env_value(value: &OsStr) -> Vec<PathBuf> {
+/// What the read-side check of one guidance folder found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirCheck {
+    /// It and its parent pass the trust rule: its entries are read.
+    Trusted,
+    /// It, or its parent, does not exist yet (no entry was ever added).
+    Missing,
+    /// It is not a guidance folder, or it or its parent fails a check: the
+    /// fault alone, with no path and no verdict word.
+    Untrusted(String),
+}
+
+/// The read-side check of one folder: it must be absolute and end in
+/// `guidance`, and both its parent and itself must pass the trust rule.
+pub(crate) fn check_guidance_dir(dir: &Path) -> DirCheck {
+    let untrusted = |reason: &str| DirCheck::Untrusted(reason.to_string());
+    if !dir.is_absolute() {
+        return untrusted("it is not an absolute path");
+    }
+    if dir.file_name() != Some(OsStr::new(GUIDANCE_DIR)) {
+        return untrusted("its last component is not `guidance`");
+    }
+    let Some(parent) = dir.parent() else {
+        return untrusted("it has no parent folder");
+    };
+    match std::fs::symlink_metadata(parent) {
+        Ok(meta) => {
+            if let Some(reason) = untrusted_reason(&meta, true) {
+                return untrusted(&format!("its parent folder fails a check: {reason}"));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DirCheck::Missing,
+        Err(e) => return untrusted(&format!("cannot check its parent folder: {e}")),
+    }
+    match dir_state(dir) {
+        Ok(DirState::Trusted) => DirCheck::Trusted,
+        Ok(DirState::Missing) => DirCheck::Missing,
+        Ok(DirState::Untrusted(reason)) => DirCheck::Untrusted(reason),
+        Err(e) => DirCheck::Untrusted(e.to_string()),
+    }
+}
+
+/// Every folder `value` lists, in order and without duplicates or empty
+/// entries, each with its [`check_guidance_dir`]: at most [`MAX_ENV_DIRS`]
+/// entries are considered, and a longer list is named in one warning.
+///
+/// `recipe guidance` shows the result as is, missing and untrusted folders
+/// included; [`dirs_from_env_value`] keeps only the trusted ones.
+pub(crate) fn listed_dirs(value: &OsStr) -> Vec<(PathBuf, DirCheck)> {
     if value.is_empty() {
         return Vec::new();
     }
@@ -42,47 +93,40 @@ pub(crate) fn dirs_from_env_value(value: &OsStr) -> Vec<PathBuf> {
             listed.len()
         );
     }
-    let mut out: Vec<PathBuf> = Vec::new();
+    let mut out: Vec<(PathBuf, DirCheck)> = Vec::new();
     for dir in listed.into_iter().take(MAX_ENV_DIRS) {
-        if dir.as_os_str().is_empty() || out.contains(&dir) {
+        if dir.as_os_str().is_empty() || out.iter().any(|(seen, _)| *seen == dir) {
             continue;
         }
-        if !dir.is_absolute() {
-            warn_skipped(&dir, "it is not an absolute path");
-            continue;
-        }
-        if dir.file_name() != Some(OsStr::new(GUIDANCE_DIR)) {
-            warn_skipped(&dir, "its last component is not `guidance`");
-            continue;
-        }
-        let Some(parent) = dir.parent() else {
-            warn_skipped(&dir, "it has no parent folder");
-            continue;
-        };
-        match std::fs::symlink_metadata(parent) {
-            Ok(meta) => {
-                if let Some(reason) = untrusted_reason(&meta, true) {
-                    warn_skipped(&dir, &format!("its parent folder fails a check: {reason}"));
-                    continue;
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                warn_skipped(&dir, &format!("cannot check its parent folder: {e}"));
-                continue;
-            }
-        }
-        // Skipped, never refused: the launch goes on with the folders that
-        // pass, so the warning carries no verdict word (issue #2809), and
-        // it names the folder once, as the other warnings here do.
-        match dir_state(&dir) {
-            Ok(DirState::Trusted) => out.push(dir),
-            Ok(DirState::Missing) => {}
-            Ok(DirState::Untrusted(reason)) => warn_skipped(&dir, &reason),
-            Err(e) => warn_skipped(&dir, &e.to_string()),
+        let check = check_guidance_dir(&dir);
+        out.push((dir, check));
+    }
+    out
+}
+
+/// The folders of `value` that pass the read-side checks, in order and
+/// without duplicates: at most [`MAX_ENV_DIRS`] entries are considered; each
+/// must be absolute, end in `guidance`, and both it and its parent must pass
+/// the trust rule. A folder that does not exist yet (no entry was ever
+/// added) is skipped silently; anything else that fails is skipped with a
+/// warning naming the path.
+pub(crate) fn dirs_from_env_value(value: &OsStr) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for (dir, check) in listed_dirs(value) {
+        match check {
+            DirCheck::Trusted => out.push(dir),
+            DirCheck::Missing => {}
+            DirCheck::Untrusted(reason) => warn_skipped(&dir, &reason),
         }
     }
     out
+}
+
+/// `<state_root>/auto-drive/<key>/guidance` for pull request `number` of
+/// `owner/repo`. The readers of a per-PR guidance folder, the run context
+/// reader below and `recipe guidance`, both resolve it here.
+pub(crate) fn pr_dir_for(number: u64, owner: &str, repo: &str, state_root: &Path) -> PathBuf {
+    pr_guidance_dir(state_root, &pr_key(owner, repo, number))
 }
 
 /// The `github.com` owner and repository of `repo`'s `origin` remote, or
@@ -158,12 +202,7 @@ fn pr_dir_from_context(
     };
     if let Some(url) = url {
         match parse_pr_url(url) {
-            Ok(pr) => {
-                return Some(pr_guidance_dir(
-                    root,
-                    &pr_key(&pr.owner, &pr.repo, pr.number),
-                ));
-            }
+            Ok(pr) => return Some(pr_dir_for(pr.number, &pr.owner, &pr.repo, root)),
             // The error names the rule broken, not the URL.
             Err(e) => warn_no_pr_dir(&format!("pr_url in the run context is {e}")),
         }
@@ -184,7 +223,7 @@ fn pr_dir_from_context(
         None => working_dir.to_path_buf(),
     };
     match origin_repo(&repo) {
-        Ok((owner, name)) => Some(pr_guidance_dir(root, &pr_key(&owner, &name, number))),
+        Ok((owner, name)) => Some(pr_dir_for(number, &owner, &name, root)),
         Err(reason) => {
             warn_no_pr_dir(&format!("cannot resolve pr_number: {reason}"));
             None

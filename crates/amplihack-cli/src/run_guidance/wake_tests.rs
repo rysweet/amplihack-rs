@@ -1,7 +1,7 @@
 //! Unit tests for `run_guidance::wake` (issue #3129, D4 and D-11).
 //!
-//! Wire with `#[cfg(test)] mod wake_tests;` in `run_guidance/wake.rs`, and
-//! `pub(crate) mod wake;` in `run_guidance/mod.rs`.
+//! Wired with `#[cfg(test)] mod wake_tests;` beside `pub(crate) mod wake;`
+//! in `run_guidance/mod.rs`, so `super::wake` and `super::*` resolve.
 //!
 //! Contract of the crate-private API under test:
 //!
@@ -24,7 +24,7 @@
 //! Nothing here sleeps, polls or sets a timer: every test reads or writes
 //! a FIFO that is already in the state the test needs.
 
-use super::wake::{Waiter, WAKE_DIR, notify};
+use super::wake::{WAKE_DIR, Waiter, notify};
 use super::*;
 
 use std::ffi::CString;
@@ -60,7 +60,11 @@ fn arm_then_notify_wakes_the_waiter_with_one_byte() {
     assert_eq!(waiter.take(), 0, "nothing was sent yet");
     assert_eq!(notify(&root), None, "a healthy notify has no warning");
     assert_eq!(waiter.take(), 1);
-    assert_eq!(waiter.take(), 0, "a second take blocks no one and finds nothing");
+    assert_eq!(
+        waiter.take(),
+        0,
+        "a second take blocks no one and finds nothing"
+    );
 }
 
 #[test]
@@ -77,7 +81,10 @@ fn a_spurious_byte_is_one_wake_not_a_state() {
 fn notify_with_no_wake_folder_does_nothing_and_creates_nothing() {
     let (_t, root) = root();
     assert_eq!(notify(&root), None);
-    assert!(!root.join(WAKE_DIR).exists(), "notify never creates the folder");
+    assert!(
+        !root.join(WAKE_DIR).exists(),
+        "notify never creates the folder"
+    );
 }
 
 #[test]
@@ -87,13 +94,33 @@ fn arm_creates_a_private_folder_and_a_final_named_fifo() {
     let dir = root.join(WAKE_DIR);
     let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o700);
-    let name = waiter.path().file_name().unwrap().to_str().unwrap().to_owned();
+    let name = waiter
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
     let (pid, rest) = name.split_once('-').expect("<pid>-<n>.fifo");
     assert!(pid.bytes().all(|b| b.is_ascii_digit()), "{name}");
-    assert!(rest.strip_suffix(".fifo").unwrap().bytes().all(|b| b.is_ascii_digit()));
-    assert!(fs::symlink_metadata(waiter.path()).unwrap().file_type().is_fifo());
+    assert!(
+        rest.strip_suffix(".fifo")
+            .unwrap()
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+    );
+    assert!(
+        fs::symlink_metadata(waiter.path())
+            .unwrap()
+            .file_type()
+            .is_fifo()
+    );
     assert_eq!(
-        fs::symlink_metadata(waiter.path()).unwrap().permissions().mode() & 0o777,
+        fs::symlink_metadata(waiter.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
         0o600
     );
     let leftovers: Vec<_> = fs::read_dir(&dir)
@@ -101,7 +128,10 @@ fn arm_creates_a_private_folder_and_a_final_named_fifo() {
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .filter(|n| n.starts_with(".tmp-"))
         .collect();
-    assert!(leftovers.is_empty(), "the temp name is gone after the rename: {leftovers:?}");
+    assert!(
+        leftovers.is_empty(),
+        "the temp name is gone after the rename: {leftovers:?}"
+    );
 }
 
 #[test]
@@ -111,8 +141,16 @@ fn a_fifo_under_a_final_name_always_has_a_reader() {
     let waiter = Waiter::arm(&root).unwrap();
     let c = CString::new(waiter.path().as_os_str().as_encoded_bytes()).unwrap();
     // SAFETY: valid path; the descriptor is closed below.
-    let fd = unsafe { libc::open(c.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) };
-    assert!(fd >= 0, "opening the write end must not give ENXIO right after arm");
+    let fd = unsafe {
+        libc::open(
+            c.as_ptr(),
+            libc::O_WRONLY | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    assert!(
+        fd >= 0,
+        "opening the write end must not give ENXIO right after arm"
+    );
     // SAFETY: `fd` was opened above.
     unsafe { libc::close(fd) };
 }
@@ -123,7 +161,10 @@ fn dropping_the_waiter_unlinks_its_fifo() {
     let waiter = Waiter::arm(&root).unwrap();
     let path = waiter.path().to_path_buf();
     drop(waiter);
-    assert!(fs::symlink_metadata(&path).is_err(), "the guard removed {path:?}");
+    assert!(
+        fs::symlink_metadata(&path).is_err(),
+        "the guard removed {path:?}"
+    );
 }
 
 #[test]
@@ -133,7 +174,10 @@ fn a_stale_fifo_is_unlinked_on_enxio() {
     let stale = dir.join("424242-1.fifo");
     mkfifo(&stale); // no reader: open for write gives ENXIO
     assert_eq!(notify(&root), None);
-    assert!(fs::symlink_metadata(&stale).is_err(), "stale FIFO was removed");
+    assert!(
+        fs::symlink_metadata(&stale).is_err(),
+        "stale FIFO was removed"
+    );
 }
 
 #[test]
@@ -146,7 +190,12 @@ fn a_symlink_with_a_fifo_name_is_left_alone_and_nothing_is_written() {
     symlink(&target, &link).unwrap();
     notify(&root);
     assert_eq!(fs::read(&target).unwrap(), b"keep");
-    assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 #[test]
@@ -156,7 +205,11 @@ fn a_regular_file_named_like_a_fifo_is_left_alone_and_not_written() {
     let file = dir.join("1-1.fifo");
     fs::write(&file, b"keep").unwrap();
     notify(&root);
-    assert_eq!(fs::read(&file).unwrap(), b"keep", "fstat said not a FIFO, so no write");
+    assert_eq!(
+        fs::read(&file).unwrap(),
+        b"keep",
+        "fstat said not a FIFO, so no write"
+    );
     assert!(file.exists(), "and it is not unlinked either");
 }
 
@@ -182,7 +235,10 @@ fn names_outside_the_fifo_grammar_are_never_unlinked() {
     }
     notify(&root);
     for name in ["x-1.fifo", "1-1.fifo.bak", "1.fifo", "1-1-1.fifo"] {
-        assert!(dir.join(name).exists(), "{name} must survive: it is not ours");
+        assert!(
+            dir.join(name).exists(),
+            "{name} must survive: it is not ours"
+        );
     }
 }
 
@@ -191,8 +247,15 @@ fn append_entry_wakes_an_armed_waiter() {
     let (_t, root) = root();
     let mut waiter = Waiter::arm(&root).unwrap();
     let appended = append_entry(&root.join(GUIDANCE_DIR), "hold the merge", "operator").unwrap();
-    assert!(appended.wake_warning.is_none(), "{:?}", appended.wake_warning);
-    assert!(appended.path.exists(), "the entry is published before the wake");
+    assert!(
+        appended.wake_warning.is_none(),
+        "{:?}",
+        appended.wake_warning
+    );
+    assert!(
+        appended.path.exists(),
+        "the entry is published before the wake"
+    );
     assert_eq!(waiter.take(), 1);
 }
 

@@ -13,6 +13,8 @@ use std::process::Command;
 
 /// Issue #1606: `recipe run --detach`.
 pub mod detach;
+/// Issue #3129: `recipe guidance show|wait`, reading and waiting for guidance.
+pub mod guidance;
 /// Issue #2535: `recipe guide`, operator guidance for a run's later agent steps.
 pub mod guide;
 /// Issue #2783: the log-pointer records `recipe guide` finds a run by.
