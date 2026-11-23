@@ -12,9 +12,16 @@
 //! null stdio, ended by its exit status. No digit and no slash command can
 //! be expressed.
 //!
-//! A pane is used only when `$TMUX` is set and `$TMUX_PANE` is `%` and up
-//! to nine digits ([`Pane::parse`]), and when [`check_pane_with`] proves the
-//! pane is the terminal of this hook's own session.
+//! The pane comes from one of two places (issue #3104). When `$TMUX` is set
+//! and `$TMUX_PANE` is `%` and up to nine digits ([`Pane::parse`]), that is
+//! the pane, and a pane that fails the proof is refused, never replaced.
+//! When the environment names no pane, the hook walks its own ancestry once
+//! to the terminal its session holds and runs one read-only
+//! `tmux list-panes -a` ([`list_panes_argv`]); the single pane on that
+//! terminal ([`pane_on_tty`]) is the pane. Either way the pane is used only
+//! when [`check_pane_held`] proves it is the terminal of this hook's own
+//! session, by the same proof and with the same refusal words. The listing
+//! is matched in memory and dropped; no pane id or tty from it is logged.
 //!
 //! The ownership proof does not assume that Claude Code itself holds the
 //! pane's terminal. On Claude Code 2.1.329 the hook's parent has a pipe on
@@ -32,8 +39,9 @@
 //! log. The pane id never reaches a log either: only [`Pane::log_tag`] does.
 
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -54,6 +62,10 @@ pub enum Key {
 }
 
 /// What a resume sends, in order.
+///
+/// Escape and C-u must stay first. A commit released after a key failed
+/// (issue #3104) lets another hook type the whole sequence again, and these
+/// two clear whatever a partial earlier run left on the input line.
 pub const RESUME_KEYS: [Key; 4] = [
     Key::Escape,
     Key::ClearLine,
@@ -67,17 +79,22 @@ const TAG_CHARS: usize = 12;
 const MAX_PANE_DIGITS: usize = 9;
 /// Longest accepted `#{pane_tty}` output, without its newline.
 const MAX_TTY_BYTES: usize = 256;
+/// Longest `tmux list-panes` output the pane lookup reads. A listing past
+/// it is refused whole, never cut and matched.
+const MAX_LISTING_BYTES: usize = 64 * 1024;
 
-/// A tmux pane id (`%N`). Built only by [`Pane::parse`]. `Debug` shows the
-/// log tag; there is no `Display`, so the id is never formatted by accident.
+/// A tmux pane id (`%N`). Built only by [`Pane::parse`] and, for a pane
+/// found on the session's terminal, by the crate's own `Pane::listed`.
+/// `Debug` shows the log tag; there is no `Display`, so the id is never
+/// formatted by accident.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Pane(String);
 
 /// Whether `id` is a pane id as a whole: `%` and 1 to 9 digits, nothing
-/// else. The only statement of the rule: [`Pane::parse`] admits an id by
-/// it, and [`check_pane_with`] and [`check_pane_owned`] apply it again
-/// before any tmux call, so an id can never be an option such as `-t` or
-/// carry a separator. One rule, so the two uses cannot drift apart.
+/// else. The only statement of the rule: [`Pane::parse`] and `Pane::listed`
+/// admit an id by it, and [`check_pane_with`] and [`find_pane_with`] apply
+/// it again before any tmux call, so an id can never be an option such as
+/// `-t` or carry a separator. One rule, so the uses cannot drift apart.
 fn valid_pane_id(id: &str) -> bool {
     id.strip_prefix('%').is_some_and(|d| {
         !d.is_empty() && d.len() <= MAX_PANE_DIGITS && d.bytes().all(|b| b.is_ascii_digit())
@@ -91,6 +108,13 @@ impl Pane {
     pub fn parse(tmux: Option<&str>, tmux_pane: Option<&str>) -> Option<Self> {
         tmux.filter(|t| !t.is_empty())?;
         let id = tmux_pane?;
+        valid_pane_id(id).then(|| Self(id.to_string()))
+    }
+
+    /// A pane id read from tmux's own pane listing, by the one
+    /// `valid_pane_id` rule. Private to the crate: only [`pane_on_tty`]
+    /// builds a pane this way, and the pane is then proved like any other.
+    pub(crate) fn listed(id: &str) -> Option<Self> {
         valid_pane_id(id).then(|| Self(id.to_string()))
     }
 
@@ -156,6 +180,16 @@ pub fn pane_tty_argv(pane: &Pane) -> Vec<String> {
     ]
 }
 
+/// The `tmux` argv that lists every pane of the server with its tty, one
+/// `<pane id> <tty>` line each. Read-only: it names no target and sends
+/// nothing.
+pub fn list_panes_argv() -> Vec<String> {
+    ["list-panes", "-a", "-F", "#{pane_id} #{pane_tty}"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 /// Runs `program` with [`argv`] for `key`, without a shell and with null
 /// stdio. A non-zero exit, or a program that cannot start, is an error.
 /// The environment is inherited, so `$TMUX` selects the server.
@@ -194,6 +228,93 @@ fn pane_tty(pane: &Pane) -> io::Result<Vec<u8>> {
     } else {
         Err(io::Error::other("tmux display-message failed"))
     }
+}
+
+/// What `tmux list-panes` prints for every pane of the server `$TMUX`
+/// names (the default server when it is unset), read once through a pipe
+/// and never past [`MAX_LISTING_BYTES`]. No shell, null stdin and stderr,
+/// and the inherited environment. An error when tmux cannot be run, prints
+/// more than the cap, or exits non-zero.
+fn list_panes() -> io::Result<Vec<u8>> {
+    let mut child = Command::new("tmux")
+        .args(list_panes_argv())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut out = Vec::new();
+    // The pipe is dropped at the end of this statement, before the wait, so
+    // a tmux still writing past the cap gets EPIPE instead of blocking.
+    let read = match child.stdout.take() {
+        Some(pipe) => pipe
+            .take(MAX_LISTING_BYTES as u64 + 1)
+            .read_to_end(&mut out),
+        None => Err(io::Error::other("tmux list-panes gave no output pipe")),
+    };
+    let status = child.wait()?;
+    read?;
+    if out.len() > MAX_LISTING_BYTES {
+        return Err(io::Error::other(
+            "tmux list-panes printed more than the pane lookup reads",
+        ));
+    }
+    if !status.success() {
+        return Err(io::Error::other("tmux list-panes failed"));
+    }
+    Ok(out)
+}
+
+/// One `<pane id> <tty>` line of a pane listing, or `None` when it is not
+/// exactly that: one ASCII space, an id by the one `valid_pane_id` rule,
+/// and a tty of 1 to [`MAX_TTY_BYTES`] bytes with no ASCII whitespace.
+fn listing_line(line: &[u8]) -> Option<(&str, &[u8])> {
+    let mut parts = line.split(|b| *b == b' ');
+    let (id, tty) = (parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let id = std::str::from_utf8(id)
+        .ok()
+        .filter(|id| valid_pane_id(id))?;
+    let tty_ok =
+        !tty.is_empty() && tty.len() <= MAX_TTY_BYTES && !tty.iter().any(u8::is_ascii_whitespace);
+    tty_ok.then_some((id, tty))
+}
+
+/// The single pane `listing` (what [`list_panes_argv`] prints) shows on
+/// `holder_tty`, the terminal the hook's own ancestry holds.
+///
+/// The listing is untrusted and read strictly: at most
+/// [`MAX_LISTING_BYTES`], one trailing newline stripped, and every line
+/// `<id> <tty>` as `listing_line` states it. One line that is not, an empty
+/// line or a carriage return included, makes the whole listing malformed,
+/// and so does one id shown on two different ttys. Identical lines count as
+/// one pane, since `-a` lists a window once for each session it is linked
+/// to. A line matches when [`same_tty`] holds. `None` unless `holder_tty`
+/// is a terminal path and exactly one pane id matches; nothing from the
+/// listing is kept but that id.
+pub fn pane_on_tty(listing: &[u8], holder_tty: &Path) -> Option<Pane> {
+    if listing.len() > MAX_LISTING_BYTES || !is_terminal_path(holder_tty) {
+        return None;
+    }
+    // An empty body is one empty line, which `listing_line` refuses.
+    let body = listing.strip_suffix(b"\n").unwrap_or(listing);
+    let mut panes: BTreeMap<&str, &[u8]> = BTreeMap::new();
+    for line in body.split(|b| *b == b'\n') {
+        let (id, tty) = listing_line(line)?;
+        if panes.insert(id, tty).is_some_and(|seen| seen != tty) {
+            return None;
+        }
+    }
+    let mut matching = panes
+        .iter()
+        .filter(|(_, tty)| same_tty(tty, holder_tty))
+        .map(|(id, _)| *id);
+    let id = matching.next()?;
+    if matching.next().is_some() {
+        return None;
+    }
+    Pane::listed(id)
 }
 
 /// The `/proc/<pid>/stat` fields the pane check needs.
@@ -422,15 +543,17 @@ pub fn tty_ancestor<V: ProcView + ?Sized>(
     Err(WALK_LIMIT)
 }
 
-/// The verdict on the pane named by the session's own environment.
+/// The verdict on the session's pane: the one its own environment names,
+/// or else the one found on its terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaneCheck {
     /// The pane is this session's own terminal: the keys may be sent.
     Ready(Pane),
-    /// The session named no pane, so there is nothing to check.
+    /// No pane was named, and none was found on the session's terminal, so
+    /// there is nothing to check.
     None,
-    /// A pane was named but not proved to be this session's terminal. The
-    /// reason is one of [`UNVERIFIED_REASONS`].
+    /// A pane was named or found but not proved to be this session's
+    /// terminal. The reason is one of [`UNVERIFIED_REASONS`].
     Unverified(&'static str),
     /// The pane is this session's terminal, but the session is not the
     /// process reading it.
@@ -438,11 +561,12 @@ pub enum PaneCheck {
 }
 
 /// The pane check once the terminal's holder is known: the whole of the
-/// decision and the only place `Ready` is produced.
+/// decision and the only place `Ready` is produced, for a pane named by the
+/// environment and for one found on the terminal alike.
 ///
 /// `holder_pid` must be what [`tty_ancestor`] returned for this hook, the
 /// nearest ancestor whose standard input is a terminal. Keeping the walk
-/// outside this function is what lets both callers walk the ancestry
+/// outside this function is what lets every caller walk the ancestry
 /// exactly once.
 ///
 /// `Ready` needs all of: `pane_tty_output` naming the holder's own terminal
@@ -502,31 +626,96 @@ pub fn check_pane_with<V: ProcView + ?Sized>(
     check_pane_held(view, holder_pid, parent, pane, pane_tty_output)
 }
 
-/// [`check_pane_with`] against the live `/proc` tree and the tmux server
-/// `$TMUX` names, in the order validate, walk, ask tmux, decide.
+/// The pane check with `/proc` and both tmux questions supplied: the pure
+/// core the tests drive, and what [`check_pane_owned_in`] runs with the
+/// real tmux calls. Each question is asked at most once.
 ///
-/// The pane id is checked before anything is spawned, and the ancestry is
-/// walked once, so a tmux call is made only once the hook knows which
-/// terminal it is looking for. A tmux run that fails or prints nothing
-/// leaves the pane's terminal unproved, which is a [`TTY_MISMATCH`]. No
-/// other pane is ever considered: this never lists panes or clients. There
-/// is no retry, delay or poll: the check runs once.
-pub fn check_pane_owned(pane: Option<&Pane>, parent: u32) -> PaneCheck {
-    let Some(pane) = pane else {
+/// With `env_pane`, the pane the session's environment names, this is
+/// exactly [`check_pane_with`]: the id is validated, the ancestry walked
+/// once, `pane_tty` asked, and [`check_pane_held`] decides. A refusal is
+/// final; it never falls back to the lookup below.
+///
+/// With no `env_pane` (issue #3104), the ancestry is walked once. When no
+/// terminal is found the verdict is [`PaneCheck::None`] and tmux is not
+/// run. Otherwise `list_panes` is asked once and [`pane_on_tty`] picks the
+/// single pane on the holder's terminal; a failed or unmatched listing is
+/// `None`. That pane is then proved exactly as an environment pane is: one
+/// `pane_tty` answer, then [`check_pane_held`]. A pane id reused between
+/// the listing and the proof is a [`TTY_MISMATCH`].
+pub fn find_pane_with<V, L, T>(
+    view: &V,
+    hook_pid: u32,
+    parent: u32,
+    euid: u32,
+    env_pane: Option<Pane>,
+    list_panes: L,
+    pane_tty: T,
+) -> PaneCheck
+where
+    V: ProcView + ?Sized,
+    L: FnOnce() -> io::Result<Vec<u8>>,
+    T: FnOnce(&Pane) -> io::Result<Vec<u8>>,
+{
+    if let Some(pane) = env_pane {
+        if !valid_pane_id(pane.id()) {
+            return PaneCheck::Unverified(BAD_PANE_ID);
+        }
+        let holder_pid = match tty_ancestor(view, hook_pid, euid) {
+            Ok(pid) => pid,
+            Err(reason) => return PaneCheck::Unverified(reason),
+        };
+        let out = pane_tty(&pane).unwrap_or_default();
+        return check_pane_held(view, holder_pid, parent, pane, &out);
+    }
+    let Ok(holder_pid) = tty_ancestor(view, hook_pid, euid) else {
         return PaneCheck::None;
     };
-    if !valid_pane_id(pane.id()) {
-        return PaneCheck::Unverified(BAD_PANE_ID);
-    }
-    let view = ProcFs;
-    let hook_pid = std::process::id();
-    let euid = amplihack_utils::secure_files::euid();
-    let holder_pid = match tty_ancestor(&view, hook_pid, euid) {
-        Ok(pid) => pid,
-        Err(reason) => return PaneCheck::Unverified(reason),
+    // The listing lives only for this match; nothing but the id is kept.
+    let found = view
+        .entry(holder_pid)
+        .and_then(|e| e.stdin)
+        .and_then(|tty| pane_on_tty(&list_panes().ok()?, &tty));
+    let Some(pane) = found else {
+        return PaneCheck::None;
     };
-    let out = pane_tty(pane).unwrap_or_default();
-    check_pane_held(&view, holder_pid, parent, pane.clone(), &out)
+    let out = pane_tty(&pane).unwrap_or_default();
+    check_pane_held(view, holder_pid, parent, pane, &out)
+}
+
+/// [`find_pane_with`] over `view`, with the real tmux calls: one
+/// `tmux list-panes -a` when the lookup needs it, and one
+/// `tmux display-message` for the proof. The seam the stand-in tests drive
+/// with an injected process tree and a stand-in `tmux` on `PATH`.
+pub fn check_pane_owned_in<V: ProcView + ?Sized>(
+    view: &V,
+    hook_pid: u32,
+    parent: u32,
+    euid: u32,
+    env_pane: Option<Pane>,
+) -> PaneCheck {
+    find_pane_with(view, hook_pid, parent, euid, env_pane, list_panes, pane_tty)
+}
+
+/// The pane check against the live `/proc` tree and the tmux server
+/// `$TMUX` names: the pane the session's environment names, or else the
+/// single pane on the session's terminal, proved either way by
+/// [`check_pane_held`] (see [`find_pane_with`]).
+///
+/// A named pane id is checked before anything is spawned, and the ancestry
+/// is walked once, so a tmux call is made only once the hook knows which
+/// terminal it is looking for. A proof run that fails or prints nothing
+/// leaves the pane's terminal unproved, which is a [`TTY_MISMATCH`]. Panes
+/// are listed only when the environment names none, and the listing is
+/// matched and dropped. There is no retry, delay or poll: the check runs
+/// once.
+pub fn check_pane_owned(pane: Option<&Pane>, parent: u32) -> PaneCheck {
+    check_pane_owned_in(
+        &ProcFs,
+        std::process::id(),
+        parent,
+        amplihack_utils::secure_files::euid(),
+        pane.cloned(),
+    )
 }
 
 // ── What the proved pane is showing (issue #2695) ───────────────────────────
