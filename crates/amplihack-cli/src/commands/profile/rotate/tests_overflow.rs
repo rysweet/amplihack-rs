@@ -76,6 +76,7 @@ fn settings() -> Settings {
         interval: 600,
         overflow_wait: WAIT,
         overflow_unknown_reset: false,
+        target_week_max: 95,
     }
 }
 
@@ -461,17 +462,18 @@ fn never_upgrades_onto_overflow_below_the_thresholds() {
 }
 
 #[test]
-fn a_plan_login_below_the_thresholds_but_short_of_the_margin_gets_plan_room_not_overflow() {
-    // work at the session threshold (headroom 15); spare below both
-    // thresholds (headroom 16) but only 1 point better: no threshold swap,
-    // so plan room takes it (issue #1804). No credits are spent.
+fn a_plan_login_short_of_the_margin_is_neither_a_target_nor_a_reason_for_overflow() {
+    // work at the session threshold (room 15); spare below both thresholds
+    // (room 16) but only 1 point better. Issue #2910 changed this expectation
+    // (ruling D1): a live login with room moves only for --margin more, so
+    // the rotator stays. Spare has room, so no credits are spent.
     let far = Some(NOW + 5 * HOUR);
     let v = Case::new("work", measured(85.0, 0.0, far, far))
         .cand("spare", measured(84.0, 0.0, far, far))
         .cand("cred", exhausted(far, far))
         .overflow(&["cred"])
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom));
+    assert_eq!(v.decision, Decision::Alert);
     assert_eq!(v.tag, None);
 }
 
@@ -652,11 +654,10 @@ fn one_unknown_plan_probe_among_exhausted_ones_blocks_overflow() {
     assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
 }
 
-/// Issue #2857 changed this test's expectation and kept it. `decide` swaps
-/// onto spare, itself at a threshold (86% session at `--session-at` 85); that
-/// swap used to stand because the second pass of `plan_room::choose` took it.
-/// It no longer does, and with `extra` unknown nothing is spent either: the
-/// cycle is the ALERT, not overflow.
+/// Issue #2910 changed this test's expectation and kept it (ruling D1,
+/// reversing #2857 behind the margin): spare (86/10, room 14) has --margin
+/// more room than work (95/40, room 5), so `decide`'s swap onto it stands,
+/// and with `extra` unknown nothing is spent either.
 #[test]
 fn an_unknown_plan_probe_keeps_a_threshold_swap_off_overflow() {
     let v = Case::new("work", measured(95.0, 40.0, FAR, FAR))
@@ -665,7 +666,7 @@ fn an_unknown_plan_probe_keeps_a_threshold_swap_off_overflow() {
         .cand("cred", exhausted(None, None))
         .overflow(&["cred"])
         .run();
-    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
     assert_eq!(
         v.tag, None,
         "no overflow while a plan login is unknown or has room"
@@ -1172,11 +1173,9 @@ fn either_plan_limit_takes_away_capacity() {
     assert_eq!(v.tag, Some(Tag::In));
 }
 
-/// Issue #2857 changed this test's expectation and kept it. `spare` at 86%
-/// session is past `--session-at` (85), so it is not plan capacity, and it is
-/// no longer a plan-room target either: `decide`'s swap onto it used to stand
-/// because the second pass of `plan_room::choose` took it. It has room, so no
-/// credit is spent (issue #1804), and nothing moves: the ALERT.
+/// Issue #2910 changed this test's expectation and kept it (ruling D2,
+/// reversing #2857 for this case): the live login is exhausted, so spare at
+/// 86% session, which has room, is the target, and no credit is spent.
 #[test]
 fn a_plan_login_over_a_threshold_comes_before_overflow() {
     for reset in [Some(NOW + 5 * HOUR), Some(NOW + 600)] {
@@ -1185,22 +1184,33 @@ fn a_plan_login_over_a_threshold_comes_before_overflow() {
             .cand("cred", exhausted(reset, reset))
             .overflow(&["cred"])
             .run();
-        assert_eq!(v.decision, Decision::Alert, "{v:?}");
+        assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
         assert_eq!(v.tag, None, "no credit spend while a plan login has room");
     }
 }
 
-/// The same cycle with the plan login under `--session-at` and a gain short of
-/// `--margin`: the free swap still happens, as a plan-room move.
+/// The same cycle with the plan login under `--session-at` and its week past
+/// `--week-at`: the free swap still happens (the cycle labels it plan-room,
+/// D15). Issue #2910: the fixture's week moved from 97 to 94, under the week
+/// ceiling (F1).
 #[test]
 fn a_plan_login_under_the_session_threshold_without_capacity_comes_before_overflow() {
     for reset in [Some(NOW + 5 * HOUR), Some(NOW + 600)] {
+        let v = Case::new("work", exhausted(reset, reset))
+            .cand("spare", measured(50.0, 94.0, reset, reset))
+            .cand("cred", exhausted(reset, reset))
+            .overflow(&["cred"])
+            .run();
+        assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
+        assert_eq!(v.tag, None);
+        // The fixture's old week, 97, is above the ceiling: no target, and
+        // the exhausted credit profile is no way off either.
         let v = Case::new("work", exhausted(reset, reset))
             .cand("spare", measured(50.0, 97.0, reset, reset))
             .cand("cred", exhausted(reset, reset))
             .overflow(&["cred"])
             .run();
-        assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+        assert_eq!(v.decision, Decision::Alert, "{v:?}");
         assert_eq!(v.tag, None);
     }
 }
@@ -1300,10 +1310,8 @@ fn moving_back_off_overflow_ignores_a_recent_swap() {
 // `.default` and compares verdicts with and without it is
 // `tests/profile_overflow.rs::the_default_pointer_does_not_change_the_rotators_verdict`.
 
-/// The overflow exit's room fallback ranks only the plan-room pool it is
-/// given. Which logins that pool holds (a crossing is in it when leaving
-/// overflow and no same-organisation plan login has room) is decided by
-/// `organisation_affinity::pools`; see its tests.
+/// The overflow exit ranks only the pool it is given (issue #2910: one pool,
+/// `affinity_pool::pool`, which says which logins it holds; see its tests).
 #[test]
 fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
     for same_org in [false, true] {
@@ -1312,8 +1320,7 @@ fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
             .cand("plan", measured(95.0, 95.0, FAR, FAR));
         let live = n("credits");
         let overflow = vec![OverflowEntry::new(live.clone(), 1)];
-        let allowed = vec![n("plan")];
-        let same = if same_org { allowed.clone() } else { vec![] };
+        let permitted = if same_org { vec![n("plan")] } else { vec![] };
         let result = super::overflow::decide_restricted(
             &OverflowInput {
                 settings: &case.s,
@@ -1328,7 +1335,7 @@ fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
                 swapped_at: None,
                 now: NOW,
             },
-            Some((&allowed, &same)),
+            Some(&permitted),
         );
         if same_org {
             assert_eq!(result.decision, swap("plan", Reason::OverflowOut));

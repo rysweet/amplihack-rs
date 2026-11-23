@@ -92,6 +92,7 @@ fn settings() -> Settings {
         interval: 600,
         overflow_wait: 1800,
         overflow_unknown_reset: false,
+        target_week_max: 95,
     }
 }
 

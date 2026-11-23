@@ -192,6 +192,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET` | user preference |  | Default for `amplihack profile rotate --overflow-unknown-reset` (`0` or `1`, default `0`); auto-switch reads it only while no rotator runs, and otherwise uses the running rotator's value. |
 | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | user preference |  | Default for `amplihack profile rotate --overflow-wait`; auto-switch reads it only while no rotator runs, and otherwise uses the running rotator's value. |
 | `AMPLIHACK_ROTATE_SESSION_AT` | user preference |  | Default for `amplihack profile rotate --session-at`; also auto-switch's plan-capacity test for overflow while no rotator runs. |
+| `AMPLIHACK_ROTATE_TARGET_WEEK_MAX` | user preference |  | Default for `amplihack profile rotate --target-week-max` (`1`-`100`, default `95`): a login whose week use is above it is never a move target. Auto-switch does not read it; see [Rotate target choice](profile-command.md#rotate-target-choice). |
 | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | user preference |  | Default for `amplihack profile rotate --upgrade-margin`. |
 | `AMPLIHACK_ROTATE_WEEK_AT` | user preference |  | Default for `amplihack profile rotate --week-at`; also auto-switch's plan-capacity test for overflow while no rotator runs. |
 | `AMPLIHACK_RUNTIME_DIR` | user preference |  | Worktree runtime directory override. |

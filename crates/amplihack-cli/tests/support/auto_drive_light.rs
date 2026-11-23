@@ -450,6 +450,9 @@ pub fn run_bash(
         .env_remove("AMPLIHACK_CLAUDE_PROFILE_ROOT")
         .env_remove("GH_TOKEN")
         .env_remove("GITHUB_TOKEN")
+        // #3053: light-eligibility reads the runner-bound folder first, so an
+        // outer drive's folder must not reach a step run directly here.
+        .env_remove("RECIPE_VAR_autodrive_state_dir")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

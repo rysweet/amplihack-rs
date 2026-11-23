@@ -2003,7 +2003,7 @@ run `amplihack profile overflow add <api-key-profile>` to keep that
 behaviour. Nothing is marked for you. If an unmarked API-key profile is
 live in `~/.claude` at the upgrade, it stays live, billed per token, until a
 plan login has capacity or is a plan-room target (room below 100% on both
-windows, session below `--session-at`), or a credit profile can take over;
+windows, week at or below `--target-week-max`), or a credit profile can take over;
 `rotate status` shows
 it as `platform_not_marked` meanwhile. To avoid that, mark it or move
 off it by hand with `amplihack profile switch <plan-profile>`.
@@ -2014,9 +2014,9 @@ When accounts run out of quota, work moves in this order:
 
 1. another plan (subscription) login with capacity;
 2. another plan login that is past a threshold but still below 100% on
-   both windows, with its session below `--session-at`, ranked by the
-   [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
-   the most weekly room first;
+   both windows, with its week at or below `--target-week-max`, ranked by
+   the [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
+   a login below `--session-at` first, then the most room;
 3. only when no measured plan login is below 100% on both windows: a marked credit
    overflow profile, by tier, once the earliest plan reset is further away
    than the overflow wait;
@@ -2033,7 +2033,7 @@ its threshold.
 [rotator](claude-profile-rotation.md#use-an-api-key-as-the-last-resort)
 follow the same order. The rotator moves `~/.claude` off the API key on the
 first cycle after a plan login has capacity, or is a plan-room target again
-(room below 100% on both windows, with its session below `--session-at`),
+(room below 100% on both windows, week at or below `--target-week-max`),
 without waiting for a hold to end. Auto-switch uses the API-key profile only for a new nested
 launch or a usage-limit rerun and never swaps it into a running session; a
 session started on the API-key profile keeps it, and its next nested launch

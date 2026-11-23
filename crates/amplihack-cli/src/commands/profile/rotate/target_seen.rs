@@ -1,0 +1,244 @@
+//! What a cycle saw of each login and why it was or was not a target (issue
+//! #2910): the probe labels and last good readings the decision uses
+//! ([`Extra`]), and the standing of every plan login for the cycle line, the
+//! no-target line and the stay notes ([`Seen`]).
+//!
+//! [`Extra`] is built once a cycle at the edge ([`Extra::for_cycle`], the one
+//! history read) and passed to every decision of the cycle, so the decision
+//! itself opens no file and the live step, the gate and revalidation all
+//! decide on the same last good readings. None of these types is persisted.
+
+use super::super::identify::Skip;
+use super::super::ledger::OverflowBlock;
+use super::super::measure::ProbeLabel;
+use super::super::observe::Snap;
+use super::super::spend_blocks::kind_label;
+use super::last_good::{LastGood, last_good};
+use super::target::{NoMove, Unfit, fit};
+use super::{Measured, Probed, Reading};
+use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::OverflowEntry;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+/// The cycle's extra inputs to the decision.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Extra {
+    /// The label of each candidate whose probe said nothing about its room.
+    pub labels: BTreeMap<ProfileName, ProbeLabel>,
+    /// Candidates rejected at confirmation for an unknown reading: their
+    /// last good reading is no longer used in this cycle.
+    pub rejected: BTreeSet<ProfileName>,
+    /// Candidates the gate accepted without a fresh reading, with the label
+    /// of their unknown reading, so a later gate of the same cycle (under
+    /// the lock, in revalidation) accepts them again rather than reading.
+    pub unconfirmed: BTreeMap<ProfileName, ProbeLabel>,
+    /// Last good readings of the labelled candidates; `None` when the history
+    /// was not read, so nothing is substituted.
+    pub last_good: Option<BTreeMap<ProfileName, LastGood>>,
+}
+
+impl Extra {
+    /// The cycle's `Extra`: `labels` from the measurement, and the last good
+    /// readings of the labelled candidates that are neither the live login
+    /// nor an overflow profile, from one read of the usage history. With no
+    /// such candidate the history is not read.
+    pub fn for_cycle(
+        root: &Path,
+        labels: Vec<(ProfileName, ProbeLabel)>,
+        overflow: &[OverflowEntry],
+        live: Option<&ProfileName>,
+        now: i64,
+    ) -> Self {
+        let labels: BTreeMap<ProfileName, ProbeLabel> = labels.into_iter().collect();
+        let names: Vec<ProfileName> = labels
+            .keys()
+            .filter(|n| Some(*n) != live && !overflow.iter().any(|e| &e.name == *n))
+            .cloned()
+            .collect();
+        let last_good = (!names.is_empty()).then(|| last_good(root, &names, now));
+        Self {
+            labels,
+            last_good,
+            ..Self::default()
+        }
+    }
+
+    /// The last good reading that stands in for `name`'s failed probe `p`:
+    /// only for an unknown, labelled probe that read nothing, and never for a
+    /// login rejected at confirmation.
+    pub fn substitute(&self, name: &ProfileName, p: &Probed) -> Option<&LastGood> {
+        if p.reading != Reading::Failed || !p.unknown || p.spend_limit {
+            return None;
+        }
+        if self.rejected.contains(name) || !self.labels.contains_key(name) {
+            return None;
+        }
+        self.last_good.as_ref()?.get(name)
+    }
+}
+
+/// Where the reading the cycle used for a login came from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Basis {
+    /// The cycle's own probe or re-read.
+    Probe,
+    /// The probe said nothing (`label`); its last good reading, `age`
+    /// seconds old, stands in.
+    LastGood {
+        label: ProbeLabel,
+        reading: Reading,
+        age: u64,
+    },
+    /// The probe said nothing and there is no last good reading.
+    Unknown(ProbeLabel),
+    /// The probe failed for a reason about the login, or with no label.
+    Failed,
+    /// The login was not probed because its identity could not be read.
+    IdentityUnavailable,
+    /// The cycle did not read this plan login at all, for the reason the
+    /// `skip:` line of the same cycle gives (issue #2910): a directory that
+    /// failed the ownership and mode check, a session running on it, a lease,
+    /// a host, or a parked login. Its room is not known, so the cycle cannot
+    /// say that no login has room.
+    NotRead(&'static str),
+}
+
+/// One plan login's standing in the cycle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Standing {
+    pub basis: Basis,
+    /// Its room now, or why it is not eligible, on the reading used (a
+    /// blocked login has no room).
+    pub fit: Result<u8, Unfit>,
+    /// An active recorded block: when it ends, and its fixed kind label.
+    pub block: Option<(i64, &'static str)>,
+}
+
+/// What the cycle saw, for its lines and for the swap step.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Seen {
+    pub extra: Extra,
+    /// Every plan login the cycle measured, and every one it skipped without
+    /// reading (issue #2910), so a login whose room was never read is counted.
+    pub logins: BTreeMap<ProfileName, Standing>,
+    /// The live login has no room now, and is not an overflow profile.
+    pub live_no_room: bool,
+    /// The decision may make a confirmed organisation crossing.
+    pub may_cross: bool,
+    /// Why an ALERT decision did not move.
+    pub why: Option<NoMove>,
+    /// The swap target accepted without a fresh reading, with its label.
+    pub unconfirmed: Option<(ProfileName, ProbeLabel)>,
+    /// Candidates left untried at the re-read limit.
+    pub not_tried: BTreeSet<ProfileName>,
+    /// `--target-week-max`, for the lines.
+    pub week_max: u8,
+}
+
+impl Seen {
+    /// The readings the cycle records: the capacity file, the no-room marks,
+    /// `live_room` and the swap record. A swap target accepted without a fresh
+    /// reading (D7) has no measured figures, whether its probe failed or the
+    /// stale reading it was chosen on stood, so it is recorded as read
+    /// nothing: no swap record, and no room claimed for the login now live.
+    pub fn recorded(&self, others: &[(ProfileName, Reading)]) -> Vec<(ProfileName, Reading)> {
+        let unconfirmed = self.unconfirmed.as_ref().map(|(n, _)| n);
+        others
+            .iter()
+            .map(|(n, r)| {
+                let unread = unconfirmed == Some(n);
+                (n.clone(), if unread { Reading::Failed } else { *r })
+            })
+            .collect()
+    }
+}
+
+/// The reading the decision uses for `name`: the probe's, or the last good
+/// reading standing in for it.
+pub fn reading_used(extra: &Extra, name: &ProfileName, p: &Probed) -> Reading {
+    extra.substitute(name, p).map_or(p.reading, |lg| lg.reading)
+}
+
+/// The cycle's [`Seen`] for the plan candidates in `probes` and the plan
+/// logins `snap` skipped as `no account`. `live_no_room`, `may_cross` and
+/// `why` are set by the caller.
+pub fn build(
+    snap: &Snap,
+    extra: Extra,
+    probes: &[(ProfileName, Probed)],
+    blocks: &BTreeMap<String, OverflowBlock>,
+    week_max: u8,
+    now: i64,
+) -> Seen {
+    let overflow = snap.decision_overflow();
+    let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
+    let mut logins = BTreeMap::new();
+    for (name, p) in probes.iter().filter(|(n, _)| !is_overflow(n)) {
+        let block = blocks
+            .get(name.as_str())
+            .filter(|b| now < b.until)
+            .map(|b| (b.until, kind_label(&b.reason)));
+        let label = extra.labels.get(name).copied();
+        let basis = match (extra.substitute(name, p), label) {
+            (Some(lg), Some(label)) => Basis::LastGood {
+                label,
+                reading: lg.reading,
+                // A reading dated after `now` (a clock step back) is 0 old.
+                age: u64::try_from(now.saturating_sub(lg.at)).unwrap_or(0),
+            },
+            _ if p.reading != Reading::Failed || p.spend_limit => Basis::Probe,
+            (_, Some(label)) => Basis::Unknown(label),
+            (_, None) => Basis::Failed,
+        };
+        let mut m = Measured::new(name.clone(), p);
+        m.reading = reading_used(&extra, name, p);
+        let fit = if block.is_some() {
+            Err(Unfit::Full)
+        } else {
+            fit(&m, week_max)
+        };
+        logins.insert(name.clone(), Standing { basis, fit, block });
+    }
+    // Issue #2910: every plan login the cycle did not read, with the reason
+    // the cycle's own `skip:` line gives. Without these a cycle could log
+    // `skip: x (directory refused)` and then claim `no profile has capacity`
+    // in the same breath, which is the wording the deputy reported on 22
+    // November. `no account` keeps its own basis, which the line already
+    // reports as `unknown (identity unavailable)`.
+    let reason_of =
+        |name: &ProfileName| snap.skips.iter().find(|(s, _)| s == name).map(|(_, k)| *k);
+    let unread = snap
+        .unmeasured_plan()
+        .into_iter()
+        .chain(snap.refused_plan());
+    for name in unread {
+        let basis = match reason_of(&name) {
+            Some(Skip::NoAccount) => Basis::IdentityUnavailable,
+            Some(k) => Basis::NotRead(k.as_str()),
+            None => Basis::NotRead(Skip::Refused.as_str()),
+        };
+        logins.entry(name).or_insert(Standing {
+            basis,
+            fit: Err(Unfit::NoReading),
+            block: None,
+        });
+    }
+    Seen {
+        extra,
+        logins,
+        week_max,
+        ..Seen::default()
+    }
+}
+
+#[cfg(test)]
+#[path = "tests_issue_2910_cycle.rs"]
+mod tests_issue_2910_cycle;
+#[cfg(test)]
+#[path = "tests_issue_2910_deployed.rs"]
+mod tests_issue_2910_deployed;
+/// The shared fixture of the cycle tests: also used by `target_confirm`'s.
+#[cfg(test)]
+#[path = "tests_issue_2910_fixture.rs"]
+pub(in crate::commands::profile::rotate) mod tests_issue_2910_fixture;
