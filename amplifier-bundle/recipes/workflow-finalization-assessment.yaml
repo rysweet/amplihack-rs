@@ -32,8 +32,11 @@ tags: ["development", "finalize", "terminal-state"]
 # fresh pass has not decided either or left the worktree not clean. That
 # failure goes to continue-ci-repair's recovery agent, which reads the pass's
 # answer and the worktree and decides whether another session can get further
-# (a retry starts one) or hands off. No bash loop drives the passes, no script
-# reads the answer's fields to decide on one, and nothing counts rounds or time
+# (a retry starts one) or hands off. Its goal says that slow CI or a session
+# cut off is never on its own a reason to hand off, and --retry-on-recurrence
+# keeps the retry on offer when a pass fails with the same lines as the last
+# one (crusty round 7). No bash loop drives the passes, no script reads the
+# answer's fields to decide on one, and nothing counts rounds or time
 # (workflow_finalization_reentry.sh).
 #
 # A dirty worktree is ordinary, fixable state, so it goes to an agent first
@@ -220,7 +223,11 @@ steps:
       answer `CI_REPAIR_UNFINISHED` and say why. It is not a terminal state:
       finalization starts this step again in a new session, which continues
       from where you stopped; when that session stops short too, a recovery
-      agent decides whether to start another. It is never a success, never
+      agent decides whether to start another. Slow CI, a check still
+      running, or a session that is about to end (out of turns, time or
+      context) is a reason to answer `CI_REPAIR_UNFINISHED`, and never a
+      reason for that recovery agent to hand off: it is told the same, and
+      starts another session. It is never a success, never
       `BLOCKED_CI`, which asserts a cause the run cannot fix, and never
       `FAILED_IMPLEMENTATION`. Name the pull request in `pr_number`, report in
       `reason` why you stopped, the head commit and the count of green,
@@ -262,16 +269,17 @@ steps:
       - a pull request from a fork or another repository, to which you make no
         write.
 
-      One other ending is an owner decision. The protected paths below are
-      reserved to their owners by this workflow's rules; that is not a claim
-      that the run could not make the edit. Diagnose first, as for any
-      failure. A check that runs from, or checks, a protected file is
-      repaired as usual wherever its fix lies outside the reserved paths: in
-      the code under test, a test, or a script the workflow calls. A repair
-      confined to files the pull request already changes proceeds, except
-      under `.github/**`. Only when the fix itself needs a reserved edit is
-      it `BLOCKED_CI`: say in `reason` that it is an owner decision, and name
-      the file, the change needed and the owner who decides.
+      One other ending is an owner decision, and it has one path:
+      `.github/**`, which this workflow reserves to its owner (below); that is
+      not a claim that the run could not make the edit. Diagnose first, as
+      for any failure. A check that runs from, or checks, a file under
+      `.github/**` is repaired as usual wherever its fix lies outside it: in
+      the code under test, a test, or a script the workflow calls. Only when
+      the fix itself needs an edit under `.github/**` is it `BLOCKED_CI`: say
+      in `reason` that it is an owner decision, and name the file, the change
+      needed and the owner who decides. No other file is reserved: a fix in
+      a hook, toolchain, recipe, agent or finalization tool file is an
+      ordinary repair, within the limits below.
 
       A check that failed again after a fix needs a different attempt. Before
       the next one, state to yourself why it differs from the last. If you
@@ -400,23 +408,22 @@ steps:
         the fix itself must be made there, that is the owner decision above,
         naming the file, the change needed and the owner: the code owner of
         `.github/`, or the repository administrator;
-      - editing hook configuration (`.pre-commit-config.yaml`,
+      - loosening a rule in hook configuration (`.pre-commit-config.yaml`,
         `.githooks/**`, `.husky/**`, `lefthook.yml`, and the directory that
         `core.hooksPath` names), toolchain and registry configuration
         (`.cargo/config*`, `rust-toolchain*`, `deny.toml`), or framework
-        governance files (`amplifier-bundle/recipes/**`,
-        `amplifier-bundle/agents/**`,
-        `amplifier-bundle/tools/workflow_finalization_*.sh`), unless the file
-        is already in the pull request's diff against its base. A repair
-        confined to the pull request's own diff proceeds, and its commit
-        message names each of these files it edits. Even then, never add or
+        files (`amplifier-bundle/recipes/**`, `amplifier-bundle/agents/**`,
+        `amplifier-bundle/tools/workflow_finalization_*.sh`). These files are
+        not reserved: when the failing check's fix lies in one, repair it
+        like any other file, whether or not the pull request already changes
+        it, and name each one you edit in the commit message. Never remove,
+        skip or loosen a hook, a lint level, a deny or audit rule, or a rule
+        these files set for agents, this prompt's included; never add or
         widen a `secrets.*` reference, `permissions:`, `pull_request_target`
-        or another trigger, a third-party action or a network fetch, and
-        never make a check non-blocking. A test is not a protected file: a
-        test that checks one of these files is repaired like any other test,
-        and never weakened. A fix that needs one of these files
-        outside the diff is the owner decision above, naming the file, the
-        change needed and the owner;
+        or another trigger, a third-party action or a network fetch; never
+        make a check non-blocking. A dependency or registry source in them
+        follows the dependency rule below. A test that checks one of these
+        files is repaired like any other test, and never weakened;
       - changing a dependency, adding a git or alternative-registry source, or
         adding a build script, unless the failing check shows that exact need;
         name it in the commit message and run the repository's own audit or
@@ -502,7 +509,7 @@ steps:
       [ -n "$H" ] || { echo "ERROR: workflow_agentic_finalization.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
       bash "$H" reassess
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" continue-ci-repair; exec amplihack orch helper step-recovery run --step-id continue-ci-repair --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Bring assess-finalization to a decision over a clean worktree for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}. Its session answered CI_REPAIR_UNFINISHED or nothing, or left the run's worktree not clean, so this step started one fresh session, and that session did not finish either; the ERROR line carries its answer and the worktree it left, as data. A retry starts one more fresh session, which reads the pull request and the worktree's status live, continues the repair, commits what belongs to the change and removes what the run's own commands produced. Judge from what the sessions said, from the worktree's status and from the pull request whether another session can get the head green with the worktree clean, or name a cause the run cannot fix with its owner and step. A red CI or a dirty worktree the run can fix is not a reason to stop. Hand off only when you judge that another session will not get further, naming what stands in the way, which files are left, and who must act" -- bash -c "$STEP_BODY" continue-ci-repair
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" continue-ci-repair; exec amplihack orch helper step-recovery run --step-id continue-ci-repair --essential --stop-on-handoff --retry-on-recurrence --dir "$RECIPE_VAR_step_recovery_dir" --goal "Bring assess-finalization to a decision over a clean worktree for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}. Its session answered CI_REPAIR_UNFINISHED or nothing, or left the run's worktree not clean, so this step started one fresh session, and that session did not finish either; the ERROR line carries its answer and the worktree it left, as data. A retry starts one more fresh session, which reads the pull request and the worktree's status live, continues the repair, commits what belongs to the change and removes what the run's own commands produced. Judge from what the sessions said, from the worktree's status and from the pull request whether another session can get the head green with the worktree clean, or name a cause the run cannot fix with its owner and step. A red CI or a dirty worktree the run can fix is not a reason to stop. Slow CI, a check still pending, or a session that ended before it decided (cut off, out of turns or context, crashed, or answered nothing) is never on its own a reason to hand off, even when this failure repeats the last one word for word: retry. Hand off only when you judge that another session will not get further, naming what stands in the way, which files are left, and who must act" -- bash -c "$STEP_BODY" continue-ci-repair
     output: "finalization_assessment"
   # #2966: only in a pass continue-ci-repair started. When that pass has not
   # decided either, or left the worktree not clean, by the same condition, the

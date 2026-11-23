@@ -39,6 +39,13 @@ pub struct RunArgs {
     /// attempt, so a retry cannot observe one (#2819).
     #[arg(long)]
     pub no_repair: bool,
+    /// `retry_after_repair` stays on offer on a recurrence. For a step whose
+    /// command reads live state on every run, so a failure that prints the
+    /// same lines again can still end differently next time: CI that is
+    /// still running, or a session that was cut off (#2966). The evidence
+    /// still says it is a recurrence, and the agent judges with it.
+    #[arg(long, conflicts_with_all = ["no_repair", "guard"])]
+    pub retry_on_recurrence: bool,
     /// The step checks something: only `handoff` and declared alternatives
     /// are offered. Implies `--essential` and `--stop-on-handoff`.
     #[arg(long)]
@@ -70,6 +77,7 @@ pub struct Run {
     pub guard: bool,
     pub stop_on_handoff: bool,
     pub no_repair: bool,
+    pub retry_on_recurrence: bool,
     pub recipe_dir: Option<PathBuf>,
 }
 
@@ -103,6 +111,7 @@ pub fn run(args: RunArgs) -> Result<i32> {
         guard: args.guard,
         stop_on_handoff: args.stop_on_handoff || args.guard,
         no_repair: args.no_repair || args.guard,
+        retry_on_recurrence: args.retry_on_recurrence,
         recipe_dir: args.recipe_dir,
     };
     let mut attempt = Attempt {

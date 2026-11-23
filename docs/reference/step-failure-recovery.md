@@ -69,7 +69,7 @@ record is an ordinary failure.
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
 | `workflow-finalize` | `validate-agentic-finalization` | `--essential --stop-on-handoff --no-repair` |
-| `workflow-finalization-assessment` | `continue-ci-repair` | `--essential --stop-on-handoff` |
+| `workflow-finalization-assessment` | `continue-ci-repair` | `--essential --stop-on-handoff --retry-on-recurrence` |
 
 Report steps: `workflow-finalize` `step-recovery-report` (before
 `workflow-complete`), `auto-drive-to-merge` `autodrive-report`, and
@@ -137,7 +137,7 @@ grep -rn 'workflow_pull_rebase' amplifier-bundle/ docs/   # expected: no call; o
 
 | Choice | Agent supplies | Driver | Not offered |
 |---|---|---|---|
-| `retry_after_repair` | `reason`, `repair` | Re-runs the same command once. The agent made the repair itself. | `--guard`, `--no-repair`, a recurrence |
+| `retry_after_repair` | `reason`, `repair` | Re-runs the same command once. The agent made the repair itself. | `--guard`, `--no-repair`, a recurrence (unless `--retry-on-recurrence`) |
 | `alternative_step` | `reason`, `alternative` | Runs the declared alternative. Its failure recovers as `<id>:alt:<name>`, with no alternatives. | no alternatives declared |
 | `continue_recorded` | `reason` | Prints the outcome line, exits 0. | `--essential`, `--guard` |
 | `handoff` | `reason`, `owner`, `needs` | Prints the outcome line; exits 81 with `--stop-on-handoff` or `--guard`, else 0. | never |
@@ -195,8 +195,13 @@ the answer; its ERROR line carries the fresh session's answer as a JSON string
 for the recovery agent to read. Whether another session is useful is that
 agent's judgement: a retry starts one; a handoff ends the run with the reason
 on record. Each such decision is a record here, so the passes are visible to
-the operator and to the agent's next call, and a session that fails the same
-way after a retry is a recurrence, for which only a hand-off is offered. See
+the operator and to the agent's next call. A session that fails the same way
+after a retry is a recurrence, and the record says so, but the step runs with
+`--retry-on-recurrence`, so a retry stays on offer: CI that is still running,
+or a session cut off before it decided, prints the same lines each time
+without showing that the next session cannot get further. The step's goal
+tells the agent that slow CI, a pending check or a session that ended before
+it decided is never on its own a reason to hand off. See
 [When the assessment stops short](./default-workflow-agentic-finalization.md#when-the-assessment-stops-short).
 
 Making the step read live instead would not rescue the retry. The terminal
@@ -274,7 +279,8 @@ steps run unwrapped.
 ```
 run --step-id <id> --dir <dir> --goal <text> [--owner <v>]
     [--alternative <name>=<command>]... [--essential] [--stop-on-handoff]
-    [--no-repair] [--guard] [--already-failed] [--recipe-dir <dir>] -- <command>...
+    [--no-repair | --retry-on-recurrence] [--guard] [--already-failed]
+    [--recipe-dir <dir>] -- <command>...
 ```
 
 | Flag | Meaning |
@@ -286,7 +292,8 @@ run --step-id <id> --dir <dir> --goal <text> [--owner <v>]
 | `--essential` | `continue_recorded` not offered |
 | `--stop-on-handoff` | A handoff exits 81 |
 | `--no-repair` | `retry_after_repair` not offered (a step that publishes the worktree, or one whose every input was recorded before the first attempt) |
-| `--guard` | Only `handoff` and declared alternatives; implies the three flags above |
+| `--retry-on-recurrence` | `retry_after_repair` stays on offer on a recurrence. For a step whose command reads live state each time, so the same output again does not show that a retry cannot help; the record and the evidence still mark the recurrence. Refused with `--no-repair` or `--guard` (#2966) |
+| `--guard` | Only `handoff` and declared alternatives; implies `--essential`, `--stop-on-handoff` and `--no-repair` |
 | `--already-failed` | Go straight to recovery; the record has `unavailable_reason` |
 | `--recipe-dir` | Run `<dir>/step-failure-recovery.yaml` (tests) |
 

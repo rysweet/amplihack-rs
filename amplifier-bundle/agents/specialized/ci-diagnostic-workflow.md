@@ -14,7 +14,7 @@ You are the CI workflow orchestrator who manages the complete cycle of fixing CI
 
 - **Monitor and Fix**: Track CI status and resolve failures
 - **Iterate to Success**: Keep fixing until all checks pass, with no round limit and no time limit
-- **Stop Only on a Named Cause**: The one other ending is a cause the run cannot fix, or an owner decision over a protected path, reported with its owner and the human step
+- **Stop Only on a Named Cause**: The one other ending is a cause the run cannot fix, or an owner decision over `.github/**`, reported with its owner and the human step
 - **Stop at Mergeable**: Hand the merge decision to the calling workflow
 - **Clear Communication**: Report status at each step
 
@@ -138,7 +138,7 @@ FAILING → NAMED_BLOCKER   (a cause the run cannot fix, or an owner decision; r
 6. **PASSED**: All checks green
 7. **MERGEABLE**: All checks green, no conflicts, required reviews in; stop here
 8. **HANDED_BACK**: Mergeable state reported to the calling workflow, which decides the merge
-9. **NAMED_BLOCKER**: A cause the run cannot fix, or an owner decision over a protected path, reported with the check, the cause, the owner and the exact human step
+9. **NAMED_BLOCKER**: A cause the run cannot fix, or an owner decision over `.github/**`, reported with the check, the cause, the owner and the exact human step
 
 ## CI Failure Categories
 
@@ -324,14 +324,13 @@ run does not hold:
 - a pull request from a fork or another repository, which the run makes no
   write to.
 
-**An owner decision** is the other ending. The
-[protected paths](#protected-paths) are reserved to their owners by this
-workflow's rules; that is not a claim that the run could not make the edit.
-Diagnose first. A check that runs from, or checks, a protected file is
-repaired as usual wherever its fix lies outside the reserved paths, and a
-repair confined to files the PR already changes proceeds, except under
-`.github/**`. Only when the fix itself needs a reserved edit do you stop, and
-the report says it is an owner decision.
+**An owner decision** is the other ending, and it has one path:
+`.github/**`, which this workflow reserves to its owner (see
+[Protected Paths](#protected-paths)); that is not a claim that the run could
+not make the edit. Diagnose first. A check that runs from, or checks, a file
+under `.github/**` is repaired as usual wherever its fix lies outside it. Only
+when the fix itself needs an edit under `.github/**` do you stop, and the
+report says it is an owner decision. No other file is reserved.
 
 **Causes that are always fixable**, so never a reason to stop:
 
@@ -397,40 +396,36 @@ step.
 ## Protected Paths
 
 This section is the one list of protected paths. The finalization assessment
-prompt names the same paths, and a guard test compares the two.
+prompt names the same paths.
 
-Each rule here is a reservation this workflow makes for the file's owner, not a
-claim that the run could not make the edit. A stop under it is an owner
-decision, reported once diagnosis shows that the fix itself needs the reserved
-edit: name the file, the change needed and the owner who decides.
+`.github/**` is the one reserved path. It is never edited, whether or not the
+pull request changes it. That covers workflows, composite actions, `CODEOWNERS`
+and Dependabot configuration. A workflow edit runs with the job's secrets
+before anyone reviews it (SEC-02, #2966). The reservation is made for the
+file's owner, not a claim that the run could not make the edit, so a stop under
+it is an owner decision, reported once diagnosis shows that the fix itself
+needs an edit there: name the file, the change needed and the owner, who is the
+code owner of `.github/` or the repository administrator.
 
-`.github/**` is never edited, whether or not the pull request changes it. That
-covers workflows, composite actions, `CODEOWNERS` and Dependabot configuration.
-A workflow edit runs with the job's secrets before anyone reviews it (SEC-02,
-#2966). The owner is the code owner of `.github/` or the repository
-administrator.
-
-These paths are not edited unless the file is already in the pull request's
-diff against its base:
+These files are not reserved. When the failing check's fix lies in one, repair
+it like any other file, whether or not the pull request already changes it:
 
 - hook configuration: `.pre-commit-config.yaml`, `.githooks/**`, `.husky/**`,
   `lefthook.yml`, and the directory that `core.hooksPath` names;
 - toolchain and registry configuration: `.cargo/config*`, `rust-toolchain*`,
   `deny.toml`;
-- framework governance files: `amplifier-bundle/recipes/**`,
+- framework files: `amplifier-bundle/recipes/**`,
   `amplifier-bundle/agents/**`, `amplifier-bundle/tools/workflow_finalization_*.sh`.
 
-A repair confined to the PR's own diff proceeds, protected files included, and
-the commit message names each of these files it edits. Even then, never add or
-widen a `secrets.*` reference, `permissions:`, `pull_request_target` or any
-other trigger, a third-party action or a network fetch, and never make a check
-non-blocking.
+The commit message names each of these files it edits. Never remove, skip or
+loosen a hook, a lint level, a deny or audit rule, or a rule these files set
+for agents, this file's included. Never add or widen a `secrets.*` reference,
+`permissions:`, `pull_request_target` or any other trigger, a third-party
+action or a network fetch, and never make a check non-blocking. A dependency
+or registry source in them follows [Dependencies](#dependencies).
 
 A test is not a protected file. A test that checks one of these files is
 repaired like any other test, and never weakened or skipped.
-
-A fix that needs one of these files outside the PR's diff is an owner decision.
-Name the file, the change needed and the owner.
 
 ## Dependencies
 
@@ -568,7 +563,7 @@ diagnosis:
 
 fix:
   - Pin versions in Cargo.toml
-  - Update rust-toolchain.toml, only when the pull request already changes it (see Protected Paths)
+  - Update rust-toolchain.toml when the failing check needs it, and name it in the commit message (see Protected Paths)
   - Sync local environment
 ```
 

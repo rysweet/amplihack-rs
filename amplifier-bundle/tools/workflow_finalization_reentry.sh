@@ -23,7 +23,11 @@
 #     reentered-pass-undecided, the step that fails the nested run when it holds;
 #   - whether to start another pass after that: continue-ci-repair's recovery
 #     agent. A retry runs this function again; a handoff ends the run with the
-#     agent's reason on record (docs/reference/step-failure-recovery.md).
+#     agent's reason on record (docs/reference/step-failure-recovery.md). Its
+#     goal tells it that slow CI, a pending check or a session that ended
+#     before deciding is never on its own a reason to hand off, and the step
+#     runs with --retry-on-recurrence, so a pass that fails with the same lines
+#     as the last one is still offered a retry rather than only a hand-off.
 # What a session should do instead of returning something that is not a
 # decision, including a BLOCKED_CI it cannot yet give an owner and a step, is
 # guidance in the assessment prompt, not a check here.

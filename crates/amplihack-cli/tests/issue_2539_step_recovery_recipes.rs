@@ -156,10 +156,13 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             "step-21-pr-ready",
             "--essential --stop-on-handoff",
         ),
+        // #2966, crusty round 7: a fresh session reads the pull request live,
+        // so a pass that fails with the same lines as the last one is still
+        // offered a retry.
         (
             "workflow-finalization-assessment",
             "continue-ci-repair",
-            "--essential --stop-on-handoff",
+            "--essential --stop-on-handoff --retry-on-recurrence",
         ),
     ] {
         let command = step_command(name, id);
