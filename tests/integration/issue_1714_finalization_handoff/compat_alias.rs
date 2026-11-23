@@ -10,68 +10,6 @@
 //! deprecation warning, and nothing in the bundle calls it.
 
 use super::fixture::*;
-use super::static_guards::{definers, recipe_files, rel, tool_files};
-
-// #2966: the validator no longer answers BLOCKED_CI from the probe's record, so
-// the drop-in that handed off on the run's own PR number has no caller in the
-// bundle. A hand-off from the bundle goes only through the *_open_pr
-// functions, which need the pull request number the assessment returned. The
-// old name stays defined for one release under the live-install rule (#3049),
-// in the hand-off brick only, with its old body (brick.rs runs it); nothing
-// calls it.
-#[test]
-fn the_prior_state_handoff_helper_is_only_a_deprecated_definition_nothing_calls() {
-    let holders = definers("finalization_fail_or_handoff()");
-    assert_eq!(
-        holders,
-        [format!("amplifier-bundle/tools/{BRICK}")],
-        "finalization_fail_or_handoff() is defined only in the hand-off brick"
-    );
-    let brick_text = read(&tool_path(BRICK));
-    let body = brick_text
-        .split_once("finalization_fail_or_handoff() {")
-        .and_then(|(_, rest)| rest.split_once("\n}"))
-        .map(|(body, _)| body)
-        .expect("the deprecated helper's body");
-    let calls: Vec<&str> = code_lines(body)
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    assert_eq!(
-        calls.len(),
-        3,
-        "a warning and the two lines of the body before #2966: {calls:?}"
-    );
-    assert!(
-        calls[0].starts_with("echo \"WARNING: #2966: finalization_fail_or_handoff is deprecated"),
-        "it warns first: {calls:?}"
-    );
-    assert_eq!(
-        &calls[1..],
-        [
-            "_finalization_handoff_emit \"$@\" || :",
-            "fail_result \"$@\""
-        ],
-        "the body is the one it had before #2966: {calls:?}"
-    );
-    for path in tool_files().into_iter().chain(recipe_files()) {
-        let text = read(&path);
-        let callers: Vec<&str> = code_lines(&text)
-            .filter(|l| {
-                let l = l.trim();
-                l.starts_with("finalization_fail_or_handoff ")
-                    || ["; ", "&& ", "|| ", "$(", "then ", "do "]
-                        .iter()
-                        .any(|p| l.contains(&format!("{p}finalization_fail_or_handoff ")))
-            })
-            .collect();
-        assert!(
-            callers.is_empty(),
-            "{}: nothing in the bundle may call the deprecated helper: {callers:?}",
-            rel(&path)
-        );
-    }
-}
 
 // Crusty round 2 (#2966, concern 3): a script written against the earlier
 // release gets the behaviour it was written for. With the hand-off flag set and

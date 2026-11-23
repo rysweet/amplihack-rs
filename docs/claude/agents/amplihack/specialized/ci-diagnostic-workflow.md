@@ -246,8 +246,8 @@ checks have finished, run it again. Do not write a sleep loop, a backoff or a
 timer around it.
 
 The bar does not move to make a round pass. Do not add `--no-verify`, a skip
-directive (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`,
-`[actions skip]` or a `skip-checks: true` trailer), `continue-on-error`, a
+directive (a bracketed marker in a commit message that tells CI or Actions to
+skip the commit, or a `skip-checks: true` trailer), `continue-on-error`, a
 narrowed trigger or path filter, or a removed job. Do not disable, skip or
 weaken a test or a check. The fix changes what the check examines, not
 whether it is examined.

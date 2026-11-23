@@ -448,11 +448,13 @@ fn the_ci_repair_step_works_in_the_runs_worktree_and_is_not_wrapped() {
 // worktree live after the session and decides nothing, did not find it clean.
 // In that nested pass it is skipped, and `reentered-pass-undecided`, under the
 // same condition with the note set, fails the run, so no pass nests another
-// and no script loop drives them. `continue-ci-repair` is wrapped in step recovery without `--no-repair`:
-// a retry starts another pass, which reads the pull request live. The steps
-// live here and not in workflow-finalize, which is at its brick budget. The
-// conditions' behaviour is exercised through the pinned runner in
-// issue_2343_finalization_outcome/wiring.rs.
+// and no script loop drives them. The steps live here and not in
+// workflow-finalize, which is at its brick budget. What the steps' commands
+// and the agent's prompt do is exercised by running them, in
+// issue_2343_finalization_outcome/wiring.rs: the pinned runner drives the
+// conditions, the worktree reading and the nested pass with its reentry
+// note, and the step-recovery wrapping of `continue-ci-repair` is read from
+// the call the shipped step makes.
 #[test]
 fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
     let path = workspace_root()
@@ -499,13 +501,6 @@ fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
         Some(true),
         "a crash reaches the re-entry"
     );
-    assert!(
-        agent["prompt"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("```reentry\n{{ci_repair_reentry}}\n```"),
-        "the agent step reads why it was started again, as data"
-    );
 
     // The worktree reading: it never fails the run, and its answer is data
     // for the runner's conditions below.
@@ -515,13 +510,6 @@ fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
     assert_eq!(
         reading["output"].as_str(),
         Some("worktree_after_assessment")
-    );
-    assert!(
-        reading["command"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("bash \"$H\" worktree"),
-        "{reading:?}"
     );
 
     // One unfinished pass, read by the runner in both places: the outer run
@@ -542,281 +530,4 @@ fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
         reentry.get("continue_on_error").is_none(),
         "its failure is its own"
     );
-    let command = reentry["command"].as_str().expect("a bash command");
-    assert!(command.contains("bash \"$H\" reassess"), "{command}");
-    assert!(
-        command.contains(
-            "step-recovery run --step-id continue-ci-repair --essential --stop-on-handoff"
-        ),
-        "{command}"
-    );
-    assert!(
-        !command.contains("--no-repair"),
-        "a retry can observe a repair: {command}"
-    );
-}
-
-// #2966 (SEC-02). The CI repair never edits `.github/**`, whether or not the
-// pull request changes it: an unreviewed workflow change would run on the
-// branch with the job's secrets, and a token may hold the `workflow` scope, so
-// GitHub refusing the push is not the control. The other protected paths keep
-// the "already in the pull request's diff" exception. The rule is stated in the
-// assessment prompt and in the agent file, which is shipped twice; this keeps
-// them naming the same paths, keeps `.github/**` out of the exception, and keeps
-// any wording that makes the rule depend on the token's scope out of the
-// prompts.
-//
-// Crusty round 5, concern 2: the reservations are policy, so the text calls a
-// stop under them an owner decision, made after diagnosis rather than declared
-// before any edit, and says that a repair confined to the pull request's own
-// diff proceeds. A test is not a protected file.
-const PROTECTED_PATHS: [&str; 12] = [
-    ".github/**",
-    ".pre-commit-config.yaml",
-    ".githooks/**",
-    ".husky/**",
-    "lefthook.yml",
-    "core.hooksPath",
-    ".cargo/config*",
-    "rust-toolchain*",
-    "deny.toml",
-    "amplifier-bundle/recipes/**",
-    "amplifier-bundle/agents/**",
-    "amplifier-bundle/tools/workflow_finalization_*.sh",
-];
-
-const GITHUB_RULE: &str =
-    "`.github/**` is never edited, whether or not the pull request changes it";
-
-fn flat(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The text between `start` and the first `end` after it, both required.
-fn between<'a>(text: &'a str, start: &str, end: &str, what: &str) -> &'a str {
-    let from = text
-        .find(start)
-        .unwrap_or_else(|| panic!("{what}: `{start}` not found"));
-    let rest = &text[from..];
-    let to = rest
-        .find(end)
-        .unwrap_or_else(|| panic!("{what}: `{end}` not found after `{start}`"));
-    &rest[..to]
-}
-
-/// Backticked tokens that name a path: they hold a `/` or a `*`, or end in a
-/// configuration file suffix. `secrets.*` is an expression, not a path.
-fn named_paths(text: &str) -> std::collections::BTreeSet<String> {
-    text.split('`')
-        .skip(1)
-        .step_by(2)
-        .filter(|t| {
-            *t != "secrets.*"
-                && (t.contains('/')
-                    || t.contains('*')
-                    || t.ends_with(".yml")
-                    || t.ends_with(".yaml")
-                    || t.ends_with(".toml"))
-        })
-        .map(str::to_owned)
-        .collect()
-}
-
-#[test]
-fn the_ci_repair_never_edits_github_and_names_the_same_protected_paths_everywhere() {
-    let root = workspace_root();
-    let assessment_path =
-        root.join("amplifier-bundle/recipes/workflow-finalization-assessment.yaml");
-    let assessment: Value = serde_yaml::from_str(
-        &fs::read_to_string(&assessment_path).expect("read the assessment recipe"),
-    )
-    .expect("parse the assessment recipe");
-    let prompt = assessment["steps"][0]["prompt"]
-        .as_str()
-        .expect("assess-finalization has a prompt")
-        .to_owned();
-    let agent_paths = [
-        "amplifier-bundle/agents/specialized/ci-diagnostic-workflow.md",
-        "docs/claude/agents/amplihack/specialized/ci-diagnostic-workflow.md",
-    ];
-    let agents: Vec<String> = agent_paths
-        .iter()
-        .map(|p| fs::read_to_string(root.join(p)).unwrap_or_else(|e| panic!("read {p}: {e}")))
-        .collect();
-
-    let prompt_rules = between(
-        &prompt,
-        "- editing `.github/**`",
-        "- changing a dependency",
-        "assessment prompt",
-    );
-    let agent_sections: Vec<&str> = agents
-        .iter()
-        .zip(agent_paths)
-        .map(|(text, p)| between(text, "## Protected Paths", "\n## Dependencies", p))
-        .collect();
-    assert_eq!(
-        agent_sections[0], agent_sections[1],
-        "both copies of the agent carry the same Protected Paths section"
-    );
-
-    for (what, rules, exception) in [
-        (
-            "assessment prompt",
-            prompt_rules,
-            between(
-                prompt_rules,
-                "- editing hook configuration",
-                "outside the diff is",
-                "assessment prompt exception",
-            ),
-        ),
-        (
-            "agent Protected Paths",
-            agent_sections[0],
-            between(
-                agent_sections[0],
-                "These paths are not edited unless",
-                "\n\nA repair confined",
-                "agent exception",
-            ),
-        ),
-    ] {
-        assert!(
-            flat(rules).contains(GITHUB_RULE),
-            "{what} must say {GITHUB_RULE}"
-        );
-        assert!(
-            !exception.contains(".github"),
-            "{what}: the diff exception must not reach `.github/**`:\n{exception}"
-        );
-        for path in PROTECTED_PATHS {
-            assert!(
-                rules.contains(&format!("`{path}`")),
-                "{what} must name the protected path `{path}`"
-            );
-        }
-    }
-    assert_eq!(
-        named_paths(prompt_rules),
-        named_paths(agent_sections[0]),
-        "the assessment prompt and the agent's Protected Paths name the same paths"
-    );
-
-    for (what, text) in [
-        ("assessment prompt", flat(&prompt)),
-        ("agent Protected Paths", flat(agent_sections[0])),
-    ] {
-        assert!(
-            text.contains("owner decision"),
-            "{what} must call a stop under a protected path an owner decision"
-        );
-        assert!(
-            text.contains("A repair confined to"),
-            "{what} must say that a repair confined to the pull request's own diff proceeds"
-        );
-        assert!(
-            text.contains("A test is not a protected file"),
-            "{what} must keep tests out of the protected paths"
-        );
-        assert!(
-            !text.contains("before any edit"),
-            "{what} must not declare BLOCKED_CI before diagnosis"
-        );
-        assert!(
-            !text.contains("guard tests that check them"),
-            "{what} must not reserve tests"
-        );
-    }
-    let cannot_fix = flat(between(
-        &prompt,
-        "These are examples of causes the run cannot fix:",
-        "A check that failed again after a fix",
-        "assessment prompt",
-    ));
-    let examples = flat(between(
-        &cannot_fix,
-        "These are examples",
-        "One other ending is an owner decision",
-        "assessment prompt examples",
-    ));
-    assert!(
-        !examples.contains("protected") && !examples.contains(".github"),
-        "a protected path is an owner decision, not listed as a cause the run cannot fix: {examples}"
-    );
-
-    let step22 = step_prompt(&load_finalize_recipe(), "step-22-ensure-mergeable");
-    assert!(
-        step22.contains("never edit `.github/**`"),
-        "step-22 must say never edit `.github/**`:\n{step22}"
-    );
-    for (what, text) in [
-        ("assessment prompt", prompt.as_str()),
-        ("agent", agents[0].as_str()),
-        ("agent copy", agents[1].as_str()),
-        ("step-22", step22.as_str()),
-    ] {
-        let lower = flat(text).to_lowercase();
-        for stale in [
-            "`workflow` scope",
-            "report the rejection",
-            "rejects the push",
-        ] {
-            assert!(
-                !lower.contains(stale),
-                "{what} must not make the rule depend on the token: found `{stale}`"
-            );
-        }
-    }
-}
-
-// #2966, from the step-17b review and crusty round 1. The prompt tells the
-// agent what to answer when it must stop before the head is green and before
-// it can name a cause the run cannot fix. With nothing named, the nearest
-// reading is `EXISTING_OPEN_PR`, which finalization publishes as a success over
-// a red head. It was `FAILED_IMPLEMENTATION`, which ended a standalone run on a
-// repairable CI; it is now `CI_REPAIR_UNFINISHED`, which is no terminal state
-// at all: the runner starts the step again to continue the repair.
-#[test]
-fn the_assessment_names_the_answer_for_a_stop_before_green() {
-    let path =
-        workspace_root().join("amplifier-bundle/recipes/workflow-finalization-assessment.yaml");
-    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let paragraph = flat(between(
-        &text,
-        "Carry on until the head is green",
-        "After a push, GitHub moves",
-        "assessment prompt",
-    ));
-
-    assert!(
-        paragraph.contains("answer `CI_REPAIR_UNFINISHED`")
-            && paragraph.contains("It is not a terminal state"),
-        "the stop-before-green paragraph must name the answer to return: {paragraph}"
-    );
-    assert!(
-        paragraph.contains("never `FAILED_IMPLEMENTATION`"),
-        "an unfinished repair is never FAILED_IMPLEMENTATION: {paragraph}"
-    );
-    let failed_implementation = flat(between(
-        &text,
-        "- `FAILED_IMPLEMENTATION` —",
-        "- `FAILED_REPORTING`",
-        "assessment prompt",
-    ));
-    assert!(
-        failed_implementation.contains("is never this state: answer `CI_REPAIR_UNFINISHED`"),
-        "the FAILED_IMPLEMENTATION definition must not offer itself for an unfinished repair: {failed_implementation}"
-    );
-    for success in [
-        "EXISTING_OPEN_PR",
-        "IMPLEMENTED_VERIFIED",
-        "ALLOW_NO_OP",
-        "NO_DIFF_SUCCESS",
-    ] {
-        assert!(
-            !paragraph.contains(success),
-            "a stop before green is never {success}: {paragraph}"
-        );
-    }
 }

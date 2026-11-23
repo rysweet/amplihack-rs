@@ -11,10 +11,10 @@
 //!   runner, with the shipped sub-recipe beside it, so what is asserted is
 //!   that the step is attempted on every outcome and that its failure -- the
 //!   agent's, or the sub-recipe's own -- never ends the run;
-//! - the shipped `validate-agentic-finalization` step's own `command:`, with a
-//!   stub `amplihack` in its path, so what is asserted is the call that
-//!   actually reaches `step-recovery run` and the exit the body actually gave
-//!   it.
+//! - the shipped `validate-agentic-finalization` step's own `command:`, and
+//!   `continue-ci-repair`'s (#2966), with a stub `amplihack` in its path, so
+//!   what is asserted is the call that actually reaches `step-recovery run`
+//!   and what the body it ran actually did.
 //!
 //! Nothing here asserts the presence or absence of a word in a file.
 
@@ -962,6 +962,62 @@ fn a_no_decision_exit_reaches_a_recovery_agent_that_can_only_stop_with_the_reaso
         outcome.field("terminal_state"),
         "FAILED_IMPLEMENTATION",
         "the validator must not reach a verdict of its own"
+    );
+}
+
+// #2966: recovery on `continue-ci-repair` is the opposite case
+// (docs/reference/step-failure-recovery.md). A retry runs the body again, and
+// the body starts one more fresh pass of the bundle's own assessment recipe,
+// which reads the pull request and the worktree live, so a repair made
+// between two runs can change the answer: `retry_after_repair` stays open
+// (no `--no-repair`). `--essential` keeps the step from being passed over as
+// recorded, and `--stop-on-handoff` ends the run on a hand-off. Asserted, as
+// for the validator above, by running the shipped step with a stub in
+// `amplihack`'s place and reading the calls it made.
+#[test]
+fn continue_ci_repair_runs_under_a_recovery_that_can_retry_a_fresh_pass() {
+    let fx = Fixture::new();
+    fx.stub_step_recovery_driver();
+    let command = shipped_step("workflow-finalization-assessment", "continue-ci-repair")["command"]
+        .as_str()
+        .expect("continue-ci-repair has a bash command")
+        .to_owned();
+
+    let outcome = fx.run_step(
+        &command,
+        &[("RECIPE_VAR_step_recovery_dir", fx.repo_path().as_str())],
+    );
+
+    let calls = fx.driver_calls();
+    let call = calls
+        .iter()
+        .find(|call| call.contains("step-recovery run"))
+        .unwrap_or_else(|| panic!("the step must run under step recovery, got {calls:?}"));
+    assert!(
+        call.contains("--step-id continue-ci-repair"),
+        "recovery must be recorded against this step: {call}"
+    );
+    for required in ["--essential", "--stop-on-handoff"] {
+        assert!(call.contains(required), "{required} is missing: {call}");
+    }
+    for withheld in ["--no-repair", "--guard"] {
+        assert!(
+            !call.contains(withheld),
+            "a retry starts a fresh pass that can observe a repair, so `{withheld}` is wrong here: {call}"
+        );
+    }
+    // What recovery ran is the fresh pass: one nested run of the bundle's own
+    // assessment recipe.
+    let passes: Vec<&String> = calls
+        .iter()
+        .filter(|call| call.starts_with("recipe run "))
+        .collect();
+    assert_eq!(passes.len(), 1, "one fresh pass, got {calls:?}");
+    assert!(
+        passes[0].contains("amplifier-bundle/recipes/workflow-finalization-assessment.yaml"),
+        "the pass runs the bundle's own assessment recipe: {}\n{}",
+        passes[0],
+        outcome.describe()
     );
 }
 

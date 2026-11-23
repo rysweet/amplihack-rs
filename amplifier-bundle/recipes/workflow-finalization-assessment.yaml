@@ -388,8 +388,8 @@ steps:
         other branch, changing a remote;
       - changing an existing pull request's state, readiness, base or
         metadata, merging, and closing;
-      - `--no-verify`, a skip directive in a commit message (`[skip ci]`,
-        `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`, or a
+      - `--no-verify`, a skip directive in a commit message (a bracketed
+        marker that tells CI or Actions to skip the commit, or a
         `skip-checks: true` trailer), `continue-on-error`, a narrowed trigger
         or path filter, a removed job, a skipped or weakened test, or any other
         way of making a check pass without fixing its cause;

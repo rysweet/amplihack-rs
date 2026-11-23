@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use super::fixture::*;
 
-pub(super) fn recipe_files() -> Vec<PathBuf> {
+fn recipe_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut dirs = vec![workspace_root().join("amplifier-bundle/recipes")];
     while let Some(dir) = dirs.pop() {
@@ -23,7 +23,7 @@ pub(super) fn recipe_files() -> Vec<PathBuf> {
     files
 }
 
-pub(super) fn tool_files() -> Vec<PathBuf> {
+fn tool_files() -> Vec<PathBuf> {
     fs::read_dir(workspace_root().join("amplifier-bundle/tools"))
         .expect("read tools dir")
         .flatten()
@@ -32,21 +32,11 @@ pub(super) fn tool_files() -> Vec<PathBuf> {
         .collect()
 }
 
-pub(super) fn rel(path: &std::path::Path) -> String {
+fn rel(path: &std::path::Path) -> String {
     path.strip_prefix(workspace_root())
         .unwrap_or(path)
         .display()
         .to_string()
-}
-
-/// Every bundle tool, then every recipe, whose text holds `definition`.
-pub(super) fn definers(definition: &str) -> Vec<String> {
-    tool_files()
-        .into_iter()
-        .chain(recipe_files())
-        .filter(|p| read(p).contains(definition))
-        .map(|p| rel(&p))
-        .collect()
 }
 
 // T6: only autodrive-build step-02 sets the flag; default-workflow and
@@ -140,10 +130,21 @@ fn the_allow_list_is_defined_once_in_the_brick() {
     for function in [
         "finalization_handoff_allowed()",
         "finalization_handoff_flag()",
+        "finalization_fail_or_handoff()",
         "autodrive_build_handoff()",
     ] {
+        let mut definers: Vec<String> = tool_files()
+            .into_iter()
+            .filter(|p| read(p).contains(function))
+            .map(|p| rel(&p))
+            .collect();
+        for path in recipe_files() {
+            if read(&path).contains(function) {
+                definers.push(rel(&path));
+            }
+        }
         assert_eq!(
-            definers(function),
+            definers,
             [format!("amplifier-bundle/tools/{BRICK}")],
             "`{function}` must be defined only in the brick"
         );
