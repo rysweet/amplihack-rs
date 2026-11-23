@@ -819,13 +819,15 @@ runner sees the failure:
 2. The supervisor waits, whatever the limit. A limit that resets within five
    hours gets a reset wait. A weekly limit, one with no readable reset, a
    reset already behind the clock or credit exhaustion gets a
-   [capacity wait](profile-command.md#capacity-wait), for up to six hours by
-   default. An organisation spend limit with no reset gets a
-   [login-change wait](profile-command.md#login-change-wait). None of them
-   needs a rotator to start. Inside a recipe run `AMPLIHACK_RECIPE_RUN_ID`
-   stops launches from starting the rotator, so start one before auto-drive if
-   you want a login moved into `~/.claude`; without one a capacity or
-   login-change wait runs its length and the step retries.
+   [capacity wait](profile-command.md#capacity-wait), which ends at a stated
+   reset still ahead and otherwise has no deadline. An organisation spend
+   limit with no reset gets a
+   [login-change wait](profile-command.md#login-change-wait), which has no
+   deadline. None of them needs a rotator to start. Inside a recipe run
+   `AMPLIHACK_RECIPE_RUN_ID` stops launches from starting the rotator, so
+   start one before auto-drive if you want a login moved into `~/.claude`;
+   without one a wait with no deadline lasts until a person switches the
+   login (`amplihack profile switch`) or stops the run.
 3. A reset or capacity wait ends on `rotator capacity`, `login changed`,
    `login capacity` or `reset reached`, and step-02 runs once more with the
    same prompt. On `rotator capacity`, `login changed` and `reset reached`
@@ -846,11 +848,11 @@ unchanged. The caller sees one completed evaluator run with an ordinary
 `LOOP_HEALTH:` line, and the step's stderr holds the
 `amplihack.recipe.usage_limit_wait` `start`, `end` and `resume` lines.
 Step-02 waits for every limit it meets and then runs again; nothing counts
-its waits or caps their total. `max_wait_secs` is the outer bound of one
-wait whose limit stated no reset still ahead, reaching it runs the step
-again, and nothing
-bounds the chain but the limit lifting, a stop signal or the end of the
-session; the step timeout does not cut a wait (issue #3037). See
+its waits or caps their total. No timer ends a wait: a wait for a stated
+reset ends at that reset, and one whose limit stated no usable reset has no
+deadline and ends when a login has room or the login changes. Nothing bounds
+the chain but the limit lifting, a stop signal or the end of the session; the
+step timeout does not cut a wait (issue #3037). See
 [Usage-limit waits](usage-limit-waits.md).
 
 ### The wait is visible in the recipe log
@@ -869,7 +871,7 @@ step's own stderr uses, so a capacity or login-change wait carries its
 spend limit starts, reads `reason=spend_limit`:
 
 ```
-amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change account=work reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
+amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change account=work reset=none until=none bound=none
 amplihack.recipe.usage_limit_wait end reason=login changed
 ```
 
@@ -881,9 +883,9 @@ line complete. The full rules are in
 
 The time a wait spends is appended to the ledger
 `AMPLIHACK_USAGE_WAIT_LEDGER` names and so is left out of auto-drive's wall
-budget. A step-02 that waits across several logins can therefore hold the
-drive for several `max_wait_secs` of wall time without the budget moving. That
-is the same bargain every kind of wait makes. A stop signal ends it; the step
+budget. A step-02 that waits across several logins, or in a wait with no
+deadline, can therefore hold the drive for hours of wall time without the
+budget moving. That is the same bargain every kind of wait makes. A stop signal ends it; the step
 timeout does not. See
 [Usage-limit waits](usage-limit-waits.md).
 

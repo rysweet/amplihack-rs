@@ -31,7 +31,7 @@
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, describe, events, sha256_hex, text};
+use crate::issue_1618_fixture::{Fixture, WEEKLY_TEXT, describe, events, sha256_hex, text};
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
@@ -172,12 +172,17 @@ fn a_prompt_cut_short_is_a_lost_prompt_and_hands_the_run_the_reset() {
 /// read to its end. A piped prompt read whole is kept whole, so a step that
 /// meets a limit again and again waits each time, every retry reads the
 /// same bytes, and the ending is never written.
+///
+/// The limit is a weekly one whose stated reset is next year's, so each wait
+/// is held to the seven-day window and ends at that deadline, which the
+/// test clock reaches at once: every wait here ends on its own, with no
+/// event from the test.
 #[test]
 fn a_prompt_read_whole_never_reaches_the_prompt_loss_ending() {
     let f = Fixture::new();
     let bytes = prompt();
     let mut c = piped_step(&f);
-    c.env("LIMIT_CALLS", "3");
+    c.env("LIMIT_CALLS", "3").env("LIMIT_MESSAGE", WEEKLY_TEXT);
     let out = run_fed(&mut c, bytes.clone());
 
     assert!(out.status.success(), "{}", describe(&out));

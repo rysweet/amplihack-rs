@@ -310,17 +310,21 @@ recipe log says so once (`reentered met=usage_limit` or `met=rate_limit`). When
 the limit message states a reset the clock has already passed, which a retry at
 08:32 sees in "resets 8:30am", the second wait is a capacity wait: it ends when
 a login with room is live, not at the reset, and its `start` line shows
-`wait=capacity` with the past time in `reset=`. It does not depend on a rotator
-or on a second login: with neither, nothing ends it early, so it runs one
-`max_wait_secs` (default 21600 seconds; the length of one wait, not a budget for
-the step) and the step then retries. A limit on that retry starts another wait,
-and nothing counts them. `AMPLIHACK_STEP_TIMEOUT` does not cut a wait either:
-only the limit lifting, a stop signal or the end of the session ends the chain
-(issues #2911, #3037). A spend limit is never waited out this way, even when its
-message states a session reset. A host with the rotator running and a second
-stored login ends the wait sooner, because a login with room ends it. If steps
-are sitting out whole waits, start the rotator and check `amplihack profile
-list` for a second login. See "A reset that has already passed" in
+`wait=capacity` with the past time in `reset=` and `until=none bound=none`. It
+has no deadline: no timer ends it, and no setting gives it a length. It does
+not depend on a rotator or on a second login to start, but with neither,
+nothing ends it on its own; the step's stderr says so, and a `profile switch`
+ends the wait (a stop signal ends the step instead). A limit on the retry
+after a wait starts another wait, and nothing counts them.
+`AMPLIHACK_STEP_TIMEOUT` does not cut a wait either: only the limit lifting, a
+stop signal or the end of the session ends the chain (issues #2911, #3037). A
+spend limit is never waited out this way, even when its message states a
+session reset. On a host with the rotator running and a second stored login, a
+login with room ends the wait. If steps are sitting in waits with
+`until=none`, start the rotator and check `amplihack profile list` for a
+second login. `recipe.usage_limit_max_wait_secs` has been removed (a config
+file that still sets it gets an `unknown key` warning), and
+`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is no longer read. See "A reset that has already passed" in
 `docs/reference/profile-command.md`.
 
 While on credits the rotator reports capacity, so recipe steps in the

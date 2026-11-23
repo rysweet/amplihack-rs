@@ -179,10 +179,10 @@ pub(super) fn is_fresh(observed_at: i64, start: i64, now: i64) -> bool {
 /// freshness skip above. `alert` is the caller's, because this has two
 /// callers that want different things of it (issue #2694):
 ///
-/// - the wait's 30-second probe passes [`KeyAlert::Silent`], since over a
-///   multi-hour wait it asks hundreds of times and the held-key ALERT, the
-///   rotate-log line and the key-held marker write would repeat for hours in
-///   the step's stderr;
+/// - the wait's probe passes [`KeyAlert::Silent`], since over a multi-hour
+///   wait it asks after every write to the files the wait watches, and the
+///   held-key ALERT, the rotate-log line and the key-held marker write would
+///   repeat for hours in the step's stderr;
 /// - the retry's single selection once the wait is over passes
 ///   [`KeyAlert::Write`], as it did before #2694: it runs once and it is the
 ///   call that moves the step, so its held-back key is worth a line.

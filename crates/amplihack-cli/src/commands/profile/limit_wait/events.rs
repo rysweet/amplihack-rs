@@ -59,13 +59,17 @@ pub(super) enum Event {
         harness: Harness,
         /// `None` when a capacity wait's limit stated no readable reset.
         reset: Option<i64>,
-        until: i64,
+        /// `None` for a wait with no deadline, written `until=none`: its
+        /// limit stated no usable reset, so it ends only on an event.
+        until: Option<i64>,
         bound: Bound,
         /// Which kind of wait this is; a reset wait's line is unchanged.
         shape: Shape,
     },
     Progress {
-        remaining: u64,
+        /// Seconds to the deadline, or `None` for a wait that has none,
+        /// written `remaining=none`.
+        remaining: Option<u64>,
     },
     End(End),
     Resume {
@@ -80,19 +84,20 @@ pub(super) enum Event {
     Reentered {
         met: Met,
     },
-    /// The step is waiting for capacity, and nothing can be known about
-    /// when the limit lifts (issue #2911). Written immediately before the
-    /// wait's [`Event::Start`], to the step's stderr and to the run's
-    /// recipe log, so an operator reading either can see that the step is
-    /// waiting rather than hung, which login it is on and why the wait has
-    /// no reset to end at.
+    /// The step is waiting for capacity rather than for a reset within
+    /// five hours (issue #2911). Written immediately before the wait's
+    /// [`Event::Start`], to the step's stderr and to the run's recipe log, so
+    /// an operator reading either can see that the step is waiting rather
+    /// than hung, which login it is on, why, and until when: a far reset, or
+    /// `until=none` when nothing can be known about when the limit lifts and
+    /// the wait ends only on a login with room or a login change.
     ///
     /// Every field is a closed set, an integer or a formatted instant: the
     /// harness's own words reach neither sink.
     WaitingForCapacity {
         harness: Harness,
         why: Waiting,
-        until: i64,
+        until: Option<i64>,
     },
     /// The step met a limit, but it ends because its prompt was cut short,
     /// not because of the limit: the attempt was given part of its task, so
@@ -101,9 +106,10 @@ pub(super) enum Event {
     /// failure of the step's input, and never as a skipped wait, which would
     /// read as a wait refused to a limit.
     PromptCutShort,
-    /// No file event can be had for this wait (issue #2911), so it reads its
-    /// files at each progress line instead of after each write. `why` is a
-    /// fixed word naming the cause (`wake`).
+    /// No file event can be had for this wait (issue #2911), so it cannot
+    /// see a login gain room or change: it ends on its reset, a stop signal
+    /// or the end of its session, and reads no file on a timer instead.
+    /// `why` is a fixed word naming the cause (`wake`).
     NoFileEvents {
         why: &'static str,
     },
@@ -146,12 +152,20 @@ where
     }
 }
 
+/// An optional instant as a line writes it: the time, or `none`.
+fn fmt_opt<Z: TimeZone>(t: Option<i64>, tz: &Z) -> String
+where
+    Z::Offset: Display,
+{
+    t.map_or_else(|| "none".to_string(), |t| fmt_time(t, tz))
+}
+
 /// A `start` line's body, with `who` naming the harness or the account.
 fn start_body<Z: TimeZone>(
     shape: Shape,
     who: &str,
     reset: Option<i64>,
-    until: i64,
+    until: Option<i64>,
     bound: Bound,
     tz: &Z,
 ) -> String
@@ -163,8 +177,8 @@ where
         shape.reason(),
         shape.token(),
         who,
-        reset.map_or_else(|| "none".to_string(), |r| fmt_time(r, tz)),
-        fmt_time(until, tz),
+        fmt_opt(reset, tz),
+        fmt_opt(until, tz),
         bound.as_str()
     )
 }
@@ -220,7 +234,7 @@ fn account_field(account: Option<&str>) -> String {
 ///
 /// The reason comes first, because that is the question an operator finding
 /// a waiting step asks, and it is the field the tests match on.
-fn capacity_body<Z: TimeZone>(why: Waiting, who: &str, until: i64, tz: &Z) -> String
+fn capacity_body<Z: TimeZone>(why: Waiting, who: &str, until: Option<i64>, tz: &Z) -> String
 where
     Z::Offset: Display,
 {
@@ -228,7 +242,7 @@ where
         "waiting_for_capacity reason={} {} until={}",
         why.as_str(),
         who,
-        fmt_time(until, tz)
+        fmt_opt(until, tz)
     )
 }
 
@@ -252,7 +266,10 @@ where
             *bound,
             tz,
         ),
-        Event::Progress { remaining } => format!("progress remaining={remaining}s"),
+        Event::Progress { remaining } => match remaining {
+            Some(secs) => format!("progress remaining={secs}s"),
+            None => "progress remaining=none".to_string(),
+        },
         Event::End(end) => format!("end reason={}", end.as_str()),
         Event::Resume { attempt } => format!("resume attempt={attempt}"),
         Event::WaitingForCapacity {

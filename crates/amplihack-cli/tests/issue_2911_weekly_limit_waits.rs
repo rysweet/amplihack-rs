@@ -83,13 +83,12 @@ fn the_same_limit_waits_with_no_rotator_running() {
 /// login that could ever take over, and no rotator. Every start gate that
 /// used to be consulted would refuse here, and the run ended `reset_too_far`.
 /// Now the step waits for the weekly reset, held to its seven-day window,
-/// and runs again there, once: the configured maximum, set to its floor,
-/// does not cut the wait short and re-run the agent against the spent login.
+/// and runs again there, once: no timer cuts the wait short and re-runs the
+/// agent against the spent login.
 #[test]
 fn with_one_stored_login_a_weekly_limit_waits_rather_than_ending() {
     let f = crate::issue_1618_fixture::Fixture::new();
     let mut c = home_step(&f);
-    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60");
     let out = f.run(&mut c);
     let ev = events(&out);
     assert!(

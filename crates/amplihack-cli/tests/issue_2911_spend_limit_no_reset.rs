@@ -1,6 +1,7 @@
-//! Issue #2911: a spend limit that states no reset waits for a login with
-//! room and retries, instead of `skipped reason=spend_limit`, with or
-//! without a running rotator.
+//! Issue #2911: a spend limit that states no reset waits for the login to
+//! change and retries, instead of `skipped reason=spend_limit`, with or
+//! without a running rotator. The wait has no deadline; the tests change the
+//! login once it is under way, as a person would.
 
 #![cfg(unix)]
 
@@ -9,8 +10,6 @@ use crate::issue_1618_wait_profiles::with_profiles;
 use crate::issue_1801_capacity_wait::x_is_live;
 use std::fs;
 use std::io::Write;
-use std::process::Stdio;
-use std::time::Duration;
 
 #[test]
 fn a_spend_limit_with_no_reset_waits_and_retries_with_no_rotator() {
@@ -19,9 +18,8 @@ fn a_spend_limit_with_no_reset_waits_and_retries_with_no_rotator() {
     fs::create_dir_all(f.home.join(".claude")).unwrap();
     let mut c = f.step();
     c.env_remove("CLAUDE_CONFIG_DIR")
-        .env("LIMIT_MESSAGE", SPEND_TEXT)
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "120");
-    let out = f.run(&mut c);
+        .env("LIMIT_MESSAGE", SPEND_TEXT);
+    let out = f.run_with_a_login_change_in(&f.home.join(".claude"), &mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "{}", describe(&out));
     let ev = events(&out);
@@ -48,8 +46,9 @@ fn a_spend_limit_with_no_reset_waits_and_retries_with_no_rotator() {
 /// output discarded, so the caller has seen nothing of the attempt that met
 /// the limit, and a retry given the same input is the same step from its
 /// side. The caller writes its message and closes the channel; one that
-/// holds it open is covered in `issue_2815_piped_prompt_wait`, where the
-/// retry waits for it.
+/// holds it open is covered in `issue_2815_piped_prompt_wait`. The message
+/// is written into an OS pipe before the step starts, which it fits in, so
+/// the step reads it from a real channel.
 #[test]
 fn issue_3036_a_spend_limit_on_a_stream_channel_waits_and_retries_with_the_same_input() {
     let f = Fixture::new();
@@ -61,23 +60,14 @@ fn issue_3036_a_spend_limit_on_a_stream_channel_waits_and_retries_with_the_same_
         "--input-format",
         "stream-json",
     ]);
+    let message = b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n";
+    let (read, mut write) = std::io::pipe().expect("a pipe");
+    write.write_all(message).expect("write the message");
+    drop(write);
     c.env("LIMIT_MESSAGE", SPEND_TEXT)
         .env("LIMIT_CALLS", "1")
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "120")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = c.spawn().expect("start amplihack");
-    let message = b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n";
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    stdin.write_all(message).expect("write the message");
-    drop(stdin);
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || tx.send(child.wait_with_output()));
-    let out = rx
-        .recv_timeout(Duration::from_secs(120))
-        .expect("the step hung on a stream-json channel")
-        .expect("the step finished");
+        .stdin(read);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
 
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "the step ran again\n{}", describe(&out));

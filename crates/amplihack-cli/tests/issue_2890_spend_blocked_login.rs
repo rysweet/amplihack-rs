@@ -33,10 +33,6 @@ use std::process::Command;
 
 /// `SPEND_FAR`'s reset, `TEST_NOW + 6 days 6 hours`, as a distance.
 const FAR_DISTANCE: i64 = 6 * 86_400 + 6 * 3600;
-/// Every wait here is bounded by the `MIN_WAIT_SECS` floor on the fixture's
-/// virtual clock, so its deadline is `TEST_NOW + 60 s` exactly. Since #2911
-/// a configured `0` reads as that floor rather than as "do not wait".
-const FLOORED_UNTIL: &str = "2026-10-18 08:01:00 -07:00";
 
 fn ledger_path(f: &Fixture) -> PathBuf {
     f.profiles
@@ -53,8 +49,7 @@ fn home_step(f: &Fixture, message: &str) -> Command {
     fs::create_dir_all(f.home.join(".claude")).unwrap();
     let mut c = f.step();
     c.env_remove("CLAUDE_CONFIG_DIR")
-        .env("LIMIT_MESSAGE", message)
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0");
+        .env("LIMIT_MESSAGE", message);
     c
 }
 
@@ -146,7 +141,9 @@ fn a_spend_limit_with_no_reset_blocks_until_the_monthly_reset() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
-    let out = f.run(&mut home_step(&f, SPEND_TEXT));
+    // The login-change wait has no deadline (issue #2911): the test changes
+    // the login once it is under way.
+    let out = f.run_with_a_login_change_in(&f.home.join(".claude"), &mut home_step(&f, SPEND_TEXT));
     let l = ledger(&f);
     let b = &l["overflow_blocked"]["X"];
     assert!(b.is_object(), "no block for X: {l}\n{}", describe(&out));
@@ -173,9 +170,12 @@ fn a_spend_limit_with_no_reset_blocks_until_the_monthly_reset() {
         rotate_log(&f)
     );
     let ev = events(&out);
-    let why =
-        format!("waiting_for_capacity reason=spend_limit harness=claude until={FLOORED_UNTIL}");
-    assert_eq!(ev.first(), Some(&why), "{ev:?}: {}", describe(&out));
+    assert_eq!(
+        ev.first().map(String::as_str),
+        Some("waiting_for_capacity reason=spend_limit harness=claude until=none"),
+        "{ev:?}: {}",
+        describe(&out)
+    );
     assert!(
         ev.get(1)
             .is_some_and(|l| l.starts_with("start reason=spend_limit wait=login_change")),

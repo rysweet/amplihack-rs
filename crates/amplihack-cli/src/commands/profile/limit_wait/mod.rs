@@ -20,9 +20,9 @@
 //! What ends a *wait* is a limit event: its reset, a login with room, or a
 //! login change. A limit that states a reset still ahead is waited for to
 //! that reset, however far away, held to its kind's window. A limit with no
-//! usable reset also ends at an outer bound,
-//! `recipe.usage_limit_max_wait_secs`, after which the step runs once more;
-//! that bound is the one timer left, and `plan` says why. The wait blocks on
+//! usable reset has no deadline at all: nothing records when it lifts, so
+//! the wait ends on a login with room or a login change, and says so
+//! plainly as it starts (`plan`). No timer ends a wait. The wait blocks on
 //! writes to the files that record those events, on the stop signals and on
 //! the exit of the step's parent (`wake`), and reads its files only after a
 //! write (`wait`).
@@ -167,7 +167,7 @@ pub(crate) enum AfterLimit {
 struct RealDeps<'a> {
     clock: &'a mut Clock,
     watch: &'a Watch,
-    wake: &'a mut Wake,
+    wake: &'a mut Wake<'a>,
     signals: &'a Signals,
     parent: libc::pid_t,
     probe: &'a dyn Fn(i64, i64) -> bool,
@@ -191,7 +191,9 @@ impl WaitDeps for RealDeps<'_> {
         let d = Duration::from_secs(u64::try_from(left).unwrap_or(0));
         let spacing = self.clock.real(wake::READ_SPACING);
         let wake = &mut *self.wake;
-        self.clock.block(d, |real| wake.block(real, spacing))
+        let deadline = self.plan.until.is_some();
+        self.clock
+            .block(d, deadline, |real| wake.block(real, spacing))
     }
 
     fn fingerprint(&mut self) -> Option<Fingerprint> {
@@ -483,11 +485,11 @@ impl Waiter {
     ///
     /// Issue #2911: nothing here refuses a wait for a limit. A second and a
     /// third limit in one step each wait, and the chain is paced by the
-    /// waits costing time rather than by a count or a budget: every plan a
-    /// limit produces ends strictly after `now` (see `plan`), and reaching
-    /// its deadline retries the step. A wait whose limit stated a reset
-    /// still ahead ends at that reset; one with no usable reset may end at
-    /// the outer bound, the one timer that ends a wait (interim; see `plan`).
+    /// waits lasting until something changed rather than by a count or a
+    /// budget: a plan with a deadline ends strictly after `now`, and one
+    /// without ends only on an event (see `plan`). A wait whose limit stated
+    /// a reset still ahead ends at that reset; one with no usable reset ends
+    /// on a login with room or a login change. No timer ends a wait.
     /// `$AMPLIHACK_STEP_TIMEOUT` plays no part (issue #3037), and nor does
     /// `CI` (`settings`). What still ends a step is a stop signal, the end of
     /// its session, the wait turned off explicitly by the operator, output
@@ -521,13 +523,6 @@ impl Waiter {
         // was launched. It refuses nothing (#2911); it is what the
         // `reentered` line reports and what `used` reads.
         let mark = self.mark();
-        // `max_wait_secs` is the outer bound of one wait with no usable reset,
-        // not a budget for the step: a later wait gets the same bound as the
-        // first, and no total ends the chain (#2911). A wait whose limit
-        // stated a reset still ahead does not read it. The floor that keeps a
-        // configured value from planning a wait of no length is applied where
-        // the value is read (`settings`).
-        let max = settings.max_wait_secs;
         // Issue #2857: a wait had just ended claiming this login was usable
         // and the limit now being judged contradicts it. Reported once,
         // below, and only when this step has waited on this login before: a
@@ -544,11 +539,9 @@ impl Waiter {
         let (harness, p, shape) = match waiting {
             WaitFor::Reset { harness, reset } => (harness, plan(now, reset), Shape::Reset),
             WaitFor::Capacity { harness, reset, .. } => {
-                (harness, plan_capacity(now, reset, max), Shape::Capacity)
+                (harness, plan_capacity(now, reset), Shape::Capacity)
             }
-            WaitFor::LoginChange { harness } => {
-                (harness, plan_login_change(now, max), Shape::LoginChange)
-            }
+            WaitFor::LoginChange { harness } => (harness, plan_login_change(), Shape::LoginChange),
             WaitFor::Skip(NoWait::PromptCutShort) => {
                 // The step ends because its prompt was lost, not because of
                 // the limit. Its attempt was given part of its task, so it
@@ -593,6 +586,12 @@ impl Waiter {
                 },
                 account,
             );
+            // A wait with no deadline lasts until an event, which on a host
+            // with no rotator and no other login may be a person's action;
+            // the line above says so to a program, this says it to them.
+            if p.until.is_none() {
+                eprintln!("{NO_DEADLINE}");
+            }
         }
         emit(
             &Event::Start {
@@ -606,7 +605,7 @@ impl Waiter {
         );
         // The watches are made before the login is read below, so a change
         // that lands after that reading wakes the wait.
-        let mut wake = Wake::new(&self.watch, self.parent);
+        let mut wake = Wake::new(&self.watch, self.parent, signals.interrupt());
         // The login may already have changed while the attempt was failing,
         // which on a shared-login host is the common case: there is then
         // nothing left to wait for. The comparison fails closed, so a ledger
@@ -660,28 +659,17 @@ impl Waiter {
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
             End::SessionEnded => AfterLimit::Finish(None),
-            // Issue #2911: a wait that reached its outer bound retries rather
-            // than end the step. Nothing has lifted the limit, and the retry
-            // may meet it again; that is another wait, not a failure. They
-            // used to write `failed reason=capacity_expired` and `failed
-            // reason=spend_limit`, which between them ended most of the runs
-            // #2911 reports. Only a wait whose limit stated no reset still
-            // ahead reaches `capacity expired` or `max reached`.
-            End::CapacityExpired
-            | End::ResetReached
-            | End::MaxReached
-            | End::LoginChanged
-            | End::RotatorCapacity
-            | End::OtherCapacity => {
+            // Every other end is a limit event, and earns a retry. A limit on
+            // that retry is another wait, not a failure (issue #2911).
+            End::ResetReached | End::LoginChanged | End::RotatorCapacity | End::OtherCapacity => {
                 if let Some(finish) = self.prompt_for_the_retry(replay, p.reset) {
                     return finish;
                 }
                 log(&Event::Resume {
                     attempt: n.saturating_add(1),
                 });
-                // Issue #2857: only an end that claimed the retry would work
-                // can be contradicted by a limit on it. `max reached` is the
-                // wait's own ceiling and claims nothing.
+                // Issue #2857: each of these ends claimed the retry would
+                // work, so a limit on it contradicts that claim.
                 self.said_try_now = end.said_try_now();
                 AfterLimit::Retry
             }
@@ -722,6 +710,15 @@ impl Waiter {
         }
     }
 }
+
+/// What a step whose wait has no deadline prints beside its
+/// `waiting_for_capacity ... until=none` line (issue #2911): static text, so
+/// no word of the harness's output reaches it.
+const NO_DEADLINE: &str = "amplihack: nothing records when this limit lifts, so this step waits \
+                           with no deadline until a login has room or the login changes. \
+                           `amplihack profile switch` ends such a wait for a step on \
+                           ~/.claude; a stop signal ends the step. See \
+                           docs/reference/usage-limit-waits.md";
 
 /// The cause `ending` gives when a retry's input can never be whole, which
 /// means the prompt was cut short. The specific reason is printed on the

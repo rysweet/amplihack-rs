@@ -39,8 +39,7 @@ fn home_step(f: &Fixture, message: &str) -> Command {
     fs::create_dir_all(f.home.join(".claude")).unwrap();
     let mut c = f.step();
     c.env_remove("CLAUDE_CONFIG_DIR")
-        .env("LIMIT_MESSAGE", message)
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "120");
+        .env("LIMIT_MESSAGE", message);
     c
 }
 
@@ -104,10 +103,13 @@ fn a_limit_with_no_stated_reset_other_than_spend_writes_no_block() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
-    f.run(&mut home_step(
-        &f,
-        "You've hit your session limit · try again later",
-    ));
+    // The wait has no deadline (issue #2911): the test changes the login once
+    // it is under way, so the step can finish.
+    let out = f.run_with_a_login_change_in(
+        &f.home.join(".claude"),
+        &mut home_step(&f, "You've hit your session limit · try again later"),
+    );
+    assert!(out.status.success(), "{}", describe(&out));
     let l = ledger(&f);
     assert!(
         l.get("overflow_blocked")

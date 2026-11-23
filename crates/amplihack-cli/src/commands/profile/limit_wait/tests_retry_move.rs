@@ -23,7 +23,7 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_retry_move;`.
 
 use super::fingerprint::Watch;
-use super::plan::{MIN_WAIT_SECS, WaitFor};
+use super::plan::WaitFor;
 use super::scratch::Replay;
 use super::settings::WaitSettings;
 use super::{AfterLimit, Resumed, Waiter};
@@ -36,14 +36,13 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 /// Virtual seconds per real second, the most the clock's seam accepts. With
-/// the clock pinned and each wait one [`MIN_WAIT_SECS`] long, a wait that
-/// runs to its deadline does so in two polls and microseconds. What is under
-/// test is the order of the writes to `retry_move`, not the waiting.
+/// the clock pinned, a wait that runs to its reset an hour away does so in
+/// microseconds. What is under test is the order of the writes to
+/// `retry_move`, not the waiting.
 ///
-/// These tests used to end every wait at once with a one-second
-/// `AMPLIHACK_STEP_TIMEOUT`. That variable no longer ends a limit wait
-/// (issue #3037), so a wait here now runs its own length and the step
-/// retries, which is what each test below asserts.
+/// Every wait here has a deadline: a stated reset (issue #2911). A wait
+/// whose limit stated no usable reset has none and ends only on an event,
+/// so a test that wants a wait to run its course gives it a reset.
 const FASTEST: &str = "1000000";
 
 /// The variables that would send a wait's own records outside the test's
@@ -103,13 +102,7 @@ impl Env {
         let watch = Watch::new(Some(&self.store), None, None, Some(self.home.as_path()));
         assert!(watch.is_home(), "the test needs a $HOME/.claude step");
         Waiter::new(
-            Some(WaitSettings {
-                enabled: true,
-                // The shortest outer bound a configured length may ask for:
-                // the bound of one capacity or login-change wait, never a
-                // budget for the step.
-                max_wait_secs: Some(MIN_WAIT_SECS),
-            }),
+            Some(WaitSettings { enabled: true }),
             watch,
             // A prompt in argv: nothing on stdin for the retry to need.
             super::claude_args::ClaudeArgs {
@@ -126,6 +119,29 @@ fn capacity() -> WaitFor {
         harness: Harness::Claude,
         reset: None,
         why: super::plan::Waiting::NoReset,
+    }
+}
+
+/// How far ahead the resets below are: an hour, which the pinned clock
+/// reaches in microseconds.
+const HOUR: i64 = 3600;
+
+/// A capacity wait whose limit stated a reset an hour from `w`'s clock: it
+/// may move the retry (#1801) and, with no reading to end it, runs to that
+/// reset.
+fn capacity_to_reset(w: &Waiter) -> WaitFor {
+    WaitFor::Capacity {
+        harness: Harness::Claude,
+        reset: Some(w.now() + HOUR),
+        why: super::plan::Waiting::ResetTooFar,
+    }
+}
+
+/// A reset wait for a reset an hour from `w`'s clock.
+fn reset_wait(w: &Waiter) -> WaitFor {
+    WaitFor::Reset {
+        harness: Harness::Claude,
+        reset: w.now() + HOUR,
     }
 }
 
@@ -170,8 +186,9 @@ fn a_capacity_wait_still_leaves_a_retry_move() {
         e.rotator("a");
         let mut w = e.waiter();
         w.note_attempt_login();
+        let wait = capacity_to_reset(&w);
         let after = w.after_limit(
-            capacity(),
+            wait,
             1,
             &signals(),
             &|_, _| false,
@@ -180,7 +197,7 @@ fn a_capacity_wait_still_leaves_a_retry_move() {
         );
         assert!(
             matches!(after, AfterLimit::Retry),
-            "a capacity wait that reaches its deadline retries (#2911)"
+            "a capacity wait that reaches its reset retries"
         );
         assert!(
             w.retry_move().is_some(),
@@ -231,16 +248,16 @@ fn a_retry_is_not_announced_when_the_step_can_never_be_given_its_prompt() {
             "no retry is announced for an attempt that cannot run"
         );
     });
-    // A wait that ran to its own deadline and would otherwise retry. Before
-    // issue #3037 this wait ended on the step timeout before `replay` was
-    // asked; it now runs to its deadline, so the question is reached.
+    // A wait that ran to its own deadline and would otherwise retry. The
+    // step timeout does not end it (issue #3037), so the question is reached.
     guarded(|| {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
         w.note_attempt_login();
+        let wait = capacity_to_reset(&w);
         let after = w.after_limit(
-            capacity(),
+            wait,
             1,
             &signals(),
             &|_, _| false,
@@ -305,8 +322,9 @@ fn the_retry_asks_once_for_its_prompt_and_never_waits_for_it() {
         w.note_attempt_login();
         let before = w.now();
         let mut asked = 0;
+        let wait = capacity_to_reset(&w);
         let after = w.after_limit(
-            capacity(),
+            wait,
             1,
             &signals(),
             &|_, _| false,
@@ -319,7 +337,7 @@ fn the_retry_asks_once_for_its_prompt_and_never_waits_for_it() {
         assert_eq!(asked, 1, "asked once, after the wait");
         assert!(matches!(after, AfterLimit::Retry));
         assert!(
-            w.now() >= before + i64::try_from(MIN_WAIT_SECS).unwrap(),
+            w.now() >= before + HOUR,
             "the step waited out its limit wait before the retry"
         );
     });
@@ -385,8 +403,9 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
         e.rotator("a");
         let mut w = e.waiter();
         w.note_attempt_login();
+        let wait = capacity_to_reset(&w);
         let _ = w.after_limit(
-            capacity(),
+            wait,
             1,
             &signals(),
             &|_, _| false,
@@ -395,12 +414,13 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
         );
         assert!(w.retry_move().is_some(), "the state this test starts from");
 
-        // A second wait on another login, this time a login-change wait that
-        // reaches its deadline: no capacity wait, and no reading ended it.
+        // A second wait on another login, this time a reset wait that
+        // reaches its reset: no capacity wait, and no reading ended it.
         e.rotator("b");
         w.note_attempt_login();
+        let wait = reset_wait(&w);
         let _ = w.after_limit(
-            login_change(),
+            wait,
             2,
             &signals(),
             &|_, _| false,
@@ -488,6 +508,11 @@ fn the_wait_that_returns_early_still_records_its_mark() {
 /// limit, and a change counts only when the two readings came from the same
 /// file. A swap record left over from an older swap must not end the wait
 /// before it starts.
+///
+/// This is asked of the comparison itself. A login-change wait is the one
+/// the room gate never holds back, so it is where a false change would
+/// retry at once; and it has no deadline (issue #2911), so a wait that this
+/// test let run would have nothing to end it.
 #[test]
 fn a_fallback_reading_does_not_start_the_retry_before_the_wait() {
     guarded(|| {
@@ -508,27 +533,23 @@ fn a_fallback_reading_does_not_start_the_retry_before_the_wait() {
 
         let mut w = e.waiter();
         w.note_attempt_login();
+        assert!(
+            w.attempt_login.as_ref().is_some_and(|(_, n)| n == "a"),
+            "the attempt ran on `a`, read from the ledger: {:?}",
+            w.attempt_login
+        );
         // The ledger stops being readable: the second reading falls back to
         // the swap record and names `b`, with no swap in between.
         fs::set_permissions(dir.join("ledger.json"), fs::Permissions::from_mode(0o622)).unwrap();
-
-        let after = w.after_limit(
-            login_change(),
-            1,
-            &signals(),
-            &|_, _| false,
-            &mut || Replay::Ready,
-            Resumed::Ordinarily,
+        let now = w.watch.login();
+        assert!(
+            now.as_ref().is_some_and(|(_, n)| n == "b"),
+            "the reader fell back to the swap record: {now:?}"
         );
         assert!(
-            matches!(after, AfterLimit::Retry),
-            "the readings are not comparable, so the step waits as it would \
-             have: this wait reaches its deadline and the step retries (#2911)"
-        );
-        assert!(
-            !w.resumed_on_a_signal(),
-            "the wait ran to its deadline, which claims nothing; the early \
-             return on a login change would have claimed the retry works"
+            !super::changed(&w.attempt_login, now),
+            "the two readings came from different files, so they are not \
+             compared and the step does not retry before its wait"
         );
     });
 }

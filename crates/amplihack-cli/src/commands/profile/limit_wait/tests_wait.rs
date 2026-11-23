@@ -3,8 +3,9 @@
 //! until the next moment something the wait watches changes, or until the
 //! time the wait asked for, never in slices. The order of checks on each
 //! wake, the fingerprint's baseline and failed reads, the 60-second progress
-//! line, the one read as the wait begins and the absence of any other read
-//! without a write are pinned here. The
+//! line, the one read as the wait begins, the absence of any other read
+//! without a write, and a wait with no deadline that no clock ends are
+//! pinned here. The
 //! other ends (a stop signal, which end wins, the step's session ending,
 //! rotator capacity) are in `tests_wait_ends.rs`, which uses `Fake` here.
 //!
@@ -195,13 +196,19 @@ pub(super) fn capacity_plan_in(secs: i64, bound: Bound) -> Plan {
     Plan::for_test(T0 + secs, bound, PlanKind::Capacity, None)
 }
 
-/// A login-change plan ending `secs` after `T0` (issue #2731), built by the
-/// real constructor rather than by hand: the flag that suppresses the two
-/// capacity sources is `plan_login_change`'s to set, and a test that could
-/// set it itself would stop proving that the constructor does.
-pub(super) fn login_change_plan_in(secs: i64) -> Plan {
-    let max = u64::try_from(secs).expect("a login-change wait's length is not negative");
-    super::plan::plan_login_change(T0, Some(max))
+/// A capacity plan whose limit stated no usable reset, so it has no
+/// deadline (issue #2911), built by the real constructor.
+pub(super) fn open_capacity_plan() -> Plan {
+    super::plan::plan_capacity(T0, None)
+}
+
+/// A login-change plan (issue #2731), which has no deadline (issue #2911),
+/// built by the real constructor rather than by hand: the flag that
+/// suppresses the two capacity sources is `plan_login_change`'s to set, and
+/// a test that could set it itself would stop proving that the constructor
+/// does.
+pub(super) fn login_change_plan() -> Plan {
+    super::plan::plan_login_change()
 }
 
 #[test]
@@ -215,17 +222,49 @@ fn a_zero_length_wait_ends_at_once_without_blocking() {
     assert!(f.progress().is_empty());
 }
 
+/// A deadline is a stated reset, so reaching it is the reset passing,
+/// whatever kind of wait it is.
 #[test]
-fn each_bound_maps_to_its_end_reason() {
-    for (bound, want) in [
-        (Bound::ResetMargin, End::ResetReached),
-        (Bound::MaxWait, End::MaxReached),
+fn a_deadline_reached_is_the_reset_reached() {
+    for plan in [
+        plan_in(75, Bound::ResetMargin),
+        capacity_plan_in(75, Bound::ResetMargin),
     ] {
         let mut f = Fake::new();
-        assert_eq!(wait(&plan_in(75, bound), &mut f), want, "{bound:?}");
-        assert_eq!(f.elapsed(), 75, "{bound:?} ended at {}", f.elapsed());
+        assert_eq!(wait(&plan, &mut f), End::ResetReached, "{:?}", plan.kind);
+        assert_eq!(f.elapsed(), 75, "{:?} ended at {}", plan.kind, f.elapsed());
+    }
+}
+
+/// Issue #2911: a wait with no deadline is ended by no clock. With nothing
+/// written it wakes only for its progress lines, reads no file at any of
+/// them, and runs until something it waits on happens: here, six hours in,
+/// the step's session ending. Its progress lines have nothing to count down
+/// to, and say so.
+#[test]
+fn a_wait_with_no_deadline_is_ended_by_no_clock() {
+    let six_hours = 6 * 3600;
+    for plan in [open_capacity_plan(), login_change_plan()] {
+        assert_eq!(plan.until, None);
         let mut f = Fake::new();
-        assert_eq!(wait(&plan_in(0, bound), &mut f), want, "{bound:?} zero");
+        f.parent_gone_from = Some(six_hours + 30);
+        assert_eq!(wait(&plan, &mut f), End::SessionEnded);
+        assert_eq!(f.elapsed(), six_hours + 30);
+        let ends: Vec<i64> = f.blocks.iter().map(|(_, to)| *to).collect();
+        let mut want: Vec<i64> = (1..=360).map(|m| m * 60).collect();
+        want.push(six_hours + 30);
+        assert_eq!(ends, want, "one wake a minute, for the progress line");
+        assert_eq!(f.probes, vec![0, 0], "the baseline and the first read");
+        assert_eq!(f.login_probes, vec![0]);
+        let progress = f.progress();
+        assert_eq!(progress.len(), 360);
+        assert!(
+            progress
+                .iter()
+                .all(|l| *l == "amplihack.recipe.usage_limit_wait progress remaining=none"),
+            "{:?}",
+            &progress[..3]
+        );
     }
 }
 

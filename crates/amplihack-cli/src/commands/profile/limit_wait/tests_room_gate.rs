@@ -55,7 +55,7 @@ use super::plan::{Bound, NoWait, WaitFor, Waiting};
 use super::scratch::Replay;
 use super::settings::WaitSettings;
 use super::tests_fingerprint::{Env, env, private, rotate_ledger};
-use super::tests_wait::{capacity_plan_in, login_change_plan_in, plan_in};
+use super::tests_wait::{login_change_plan, open_capacity_plan, plan_in};
 use super::{AfterLimit, Resumed, Waiter};
 use crate::commands::profile::attempt::Signals;
 use crate::commands::recipe::run::limit_patterns::Harness;
@@ -126,10 +126,7 @@ fn no_room_ledgers(e: &Env) -> Vec<(&'static str, WriteLedger<'_>)> {
 fn a_reset_or_capacity_wait_is_held_back_unless_the_ledger_records_room() {
     let e = env();
     let home = e.home_watch();
-    for plan in [
-        plan_in(300, Bound::ResetMargin),
-        capacity_plan_in(300, Bound::MaxWait),
-    ] {
+    for plan in [plan_in(300, Bound::ResetMargin), open_capacity_plan()] {
         e.rotator_cycle_room("b", 1, None, "swapped", false, Some(true));
         assert!(
             change_may_end(&plan, &home),
@@ -188,7 +185,7 @@ fn a_symlinked_ledger_is_unreadable_not_missing() {
 fn a_login_change_wait_is_never_held_back() {
     let e = env();
     let home = e.home_watch();
-    let plan = login_change_plan_in(300);
+    let plan = login_change_plan();
     assert!(
         !plan.capacity_may_end(),
         "the plan under test is a login-change plan"
@@ -213,10 +210,7 @@ fn a_step_that_is_not_on_home_claude_is_never_held_back() {
     let profile = e.profile("a");
     let cfg = e.tmp.join("cfg");
     let config_dir = Watch::new(Some(&e.store), None, Some(&cfg), Some(&e.home));
-    for plan in [
-        plan_in(300, Bound::ResetMargin),
-        capacity_plan_in(300, Bound::MaxWait),
-    ] {
+    for plan in [plan_in(300, Bound::ResetMargin), open_capacity_plan()] {
         assert!(change_may_end(&plan, &profile), "an inherited profile");
         assert!(change_may_end(&plan, &config_dir), "CLAUDE_CONFIG_DIR");
     }
@@ -251,10 +245,7 @@ fn the_gate_reads_the_ledger_each_time_and_follows_it() {
 fn a_manual_switch_opens_the_gate_without_a_room_reading() {
     let e = env();
     let home = e.home_watch();
-    for plan in [
-        plan_in(300, Bound::ResetMargin),
-        capacity_plan_in(300, Bound::MaxWait),
-    ] {
+    for plan in [plan_in(300, Bound::ResetMargin), open_capacity_plan()] {
         e.rotator_cycle_room("b", 1, None, "swapped", false, None);
         assert!(
             !change_may_end(&plan, &home),
@@ -411,9 +402,10 @@ fn a_ledger_that_is_not_a_regular_file_closes_the_gate() {
 
 // --- the path that never sleeps ----------------------------------------------------
 
-/// A clock fast enough that a wait reaches its first 30-second poll in
+/// A clock fast enough that a wait reaches its first progress line in
 /// milliseconds. It is not a timer of the change under test: the waits here
-/// end on a reading the test gives, or run their own length and retry.
+/// end on a reading or a record the test gives, or run to their reset and
+/// retry.
 const FAST: &str = "1000";
 const SILENCED: [&str; 3] = [
     "AMPLIHACK_USAGE_WAIT_LEDGER",
@@ -443,14 +435,11 @@ pub(super) fn guarded<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-pub(super) fn waiter(e: &Env, max_wait_secs: Option<u64>) -> Waiter {
+pub(super) fn waiter(e: &Env) -> Waiter {
     let watch = Watch::new(Some(&e.store), None, None, Some(e.home.as_path()));
     assert!(watch.is_home(), "the test needs a $HOME/.claude step");
     Waiter::new(
-        Some(WaitSettings {
-            enabled: true,
-            max_wait_secs,
-        }),
+        Some(WaitSettings { enabled: true }),
         watch,
         // A prompt in argv: nothing on stdin for the retry to need.
         super::claude_args::ClaudeArgs {
@@ -556,7 +545,7 @@ fn a_swap_onto_a_login_with_room_during_the_attempt_retries_at_once() {
     guarded(|| {
         let e = env();
         let _writes = readings_written(&e);
-        let mut w = waiter(&e, None);
+        let mut w = waiter(&e);
         swapped_during_the_attempt(&e, &mut w, Some(true));
         let probed = Cell::new(0);
         let got = after(&mut w, capacity(), 1, &probe_counting(&probed));
@@ -574,7 +563,7 @@ fn a_swap_onto_a_login_without_room_during_the_attempt_does_not_retry_at_once() 
         for (what, room) in [("reads full", Some(false)), ("records no room bit", None)] {
             let e = env();
             let _writes = readings_written(&e);
-            let mut w = waiter(&e, None);
+            let mut w = waiter(&e);
             swapped_during_the_attempt(&e, &mut w, room);
             let probed = Cell::new(0);
             let got = after(&mut w, capacity(), 1, &probe_counting(&probed));
@@ -594,7 +583,7 @@ fn a_login_change_wait_still_retries_at_once_onto_a_login_without_room() {
         for room in [Some(false), None] {
             let e = env();
             let _writes = readings_written(&e);
-            let mut w = waiter(&e, None);
+            let mut w = waiter(&e);
             swapped_during_the_attempt(&e, &mut w, room);
             let probed = Cell::new(0);
             let got = after(&mut w, login_change(), 1, &probe_counting(&probed));
@@ -618,7 +607,7 @@ fn a_manual_switch_during_the_attempt_retries_at_once_without_a_room_reading() {
     guarded(|| {
         let e = env();
         let _writes = readings_written(&e);
-        let mut w = waiter(&e, None);
+        let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
         e.rotator_cycle_room("b", 2, None, "switched", false, None);
@@ -635,7 +624,7 @@ fn a_manual_switch_that_recorded_no_room_during_the_attempt_runs_the_wait() {
     guarded(|| {
         let e = env();
         let _writes = readings_written(&e);
-        let mut w = waiter(&e, None);
+        let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
         e.rotator_cycle_room("b", 2, None, "switched", false, Some(false));
@@ -659,7 +648,7 @@ fn a_retry_after_a_wait_that_said_try_now_is_reported_once_and_consumed() {
     guarded(|| {
         let e = env();
         let _writes = readings_written(&e);
-        let mut w = waiter(&e, None);
+        let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
         let probed = Cell::new(0);
@@ -674,7 +663,7 @@ fn a_retry_after_a_wait_that_said_try_now_is_reported_once_and_consumed() {
 fn a_retry_that_skipped_the_wait_because_the_login_had_room_also_said_try_now() {
     guarded(|| {
         let e = env();
-        let mut w = waiter(&e, None);
+        let mut w = waiter(&e);
         swapped_during_the_attempt(&e, &mut w, Some(true));
         let got = after(&mut w, capacity(), 1, &|_, _| false);
         assert!(matches!(got, AfterLimit::Retry));
@@ -685,44 +674,37 @@ fn a_retry_that_skipped_the_wait_because_the_login_had_room_also_said_try_now() 
     });
 }
 
-/// A wait that merely reached its outer bound retried because the bound said
-/// so, not because anything said the login was usable: a limit after it is
-/// no contradiction, so it writes no `reentered` line.
-///
-/// Only a capacity or login-change wait
-/// has an outer bound, so this is a capacity wait with no reset. A reset
-/// wait used to be cut short by a configured length; it now ends at its
-/// reset, which does say to try.
+/// Issue #2911: no wait retries because time ran out. A capacity wait with
+/// no reset is ended by an event - here, the rotator recording a cycle with
+/// room after the limit - and that end says *try now*, so a limit on the
+/// retry it earns is a contradiction the next wait reports.
 #[test]
-fn a_retry_after_a_wait_that_ran_out_said_nothing() {
+fn a_capacity_wait_with_no_reset_retries_only_on_an_event_that_says_try_now() {
     guarded(|| {
         let e = env();
-        // The shortest outer bound the setting can ask for: nothing ends the
-        // wait before it, and it earns a retry (issue #2911).
-        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
+        // A cycle measured after the wait's start, as the rotator's next
+        // cycle would be.
+        let later = w.now() + 1;
+        e.rotator_cycle_room("a", later, Some(later), "stayed", false, Some(true));
         let got = after(&mut w, capacity(), 1, &|_, _| false);
+        assert!(matches!(got, AfterLimit::Retry));
         assert!(
-            matches!(got, AfterLimit::Retry),
-            "capacity expired still retries"
-        );
-        assert!(
-            !w.resumed_on_a_signal(),
-            "`capacity expired` is the wait's own outer bound: nothing said to try"
+            w.resumed_on_a_signal(),
+            "`rotator capacity` claims the retry will work"
         );
     });
 }
 
-/// A reset wait is not cut short by the
-/// configured length. With the shortest outer bound the setting allows and
-/// a reset half an hour away, the wait runs to its reset, and a reset that
-/// arrived does say *try now*.
+/// A reset wait runs to its reset, and a reset that arrived does say *try
+/// now*.
 #[test]
-fn a_reset_wait_runs_past_the_configured_length_to_its_reset() {
+fn a_reset_wait_runs_to_its_reset() {
     guarded(|| {
         let e = env();
-        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
         let start = w.now();
@@ -735,9 +717,7 @@ fn a_reset_wait_runs_past_the_configured_length_to_its_reset() {
         assert!(matches!(got, AfterLimit::Retry));
         assert!(
             w.now() >= reset + super::plan::MARGIN,
-            "the wait ran to its reset plus the margin, not to the {}-second length: \
-             started {start}, ended {}",
-            super::plan::MIN_WAIT_SECS,
+            "the wait ran to its reset plus the margin: started {start}, ended {}",
             w.now()
         );
         assert!(
@@ -759,7 +739,7 @@ fn a_finish_clears_what_an_earlier_retry_set() {
     guarded(|| {
         let e = env();
         let _writes = readings_written(&e);
-        let mut w = waiter(&e, None);
+        let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
         let probed = Cell::new(0);
@@ -782,7 +762,7 @@ fn a_finish_clears_what_an_earlier_retry_set() {
 fn a_waiter_that_has_never_waited_has_not_resumed_on_a_signal() {
     guarded(|| {
         let e = env();
-        let mut w = waiter(&e, None);
+        let mut w = waiter(&e);
         assert!(!w.resumed_on_a_signal());
         // Nor does noting a login change that.
         w.note_attempt_login();
@@ -792,17 +772,16 @@ fn a_waiter_that_has_never_waited_has_not_resumed_on_a_signal() {
 
 // --- issue #2911: what bounds a chain of limits now -------------------------------------
 //
-// #2731 bounded it with a per-step `max_wait_secs` budget, and #2857 with a
-// same-login refusal that a re-entry lifted. Both ended runs that a limit
-// should only have delayed: over the 72 hours to 21 November 2026 they
-// accounted for `already_waited` 141 times and the spent-budget ending
-// besides. Both are gone.
+// #2731 bounded it with a per-step budget, and #2857 with a same-login
+// refusal that a re-entry lifted. Both ended runs that a limit should only
+// have delayed, and both are gone.
 //
-// What bounds the chain now is that every wait costs time. A limit's plan
-// always ends strictly after `now` (`plan`, and the `MIN_WAIT_SECS` floor on
-// the configured length), so a step meeting limit after limit waits each of
-// them out and is woken by a login gaining room or by a reset passing. The
-// tests below pin the behaviour that replaces the two refusals.
+// What paces the chain now is that every wait lasts until something changed.
+// A limit's plan either ends at a reset strictly after `now` or has no
+// deadline and ends only on an event (`plan`), so a step meeting limit after
+// limit waits each of them out and is woken by a login gaining room, a login
+// change or a reset passing. The tests below pin the behaviour that replaces
+// the two refusals.
 
 /// One `after_limit` call as the retry a wait that said *try now* earned.
 fn after_a_signal(w: &mut Waiter, n: u32, wait: WaitFor) -> AfterLimit {
@@ -832,7 +811,7 @@ fn reset_in(w: &Waiter, ahead: i64) -> WaitFor {
 fn issue_2911_a_second_and_a_third_limit_on_one_login_each_wait() {
     guarded(|| {
         let e = env();
-        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         for n in 1..=3 {
             w.note_attempt_login();
@@ -853,23 +832,20 @@ fn issue_2911_a_second_and_a_third_limit_on_one_login_each_wait() {
 
 /// The same for a capacity wait, which is what every limit with no usable
 /// reset now becomes. Nothing counts them, and nothing refuses the later
-/// ones.
+/// ones: each is ended by the rotator recording room after it began.
 #[test]
 fn issue_2911_repeated_capacity_waits_are_never_refused() {
     guarded(|| {
         let e = env();
-        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
-        let before = w.now();
         for n in 1..=4 {
             w.note_attempt_login();
+            let later = w.now() + 1;
+            e.rotator_cycle_room("a", later, Some(later), "stayed", false, Some(true));
             let got = after_a_signal(&mut w, n, capacity());
             assert!(matches!(got, AfterLimit::Retry), "capacity wait {n}");
         }
-        assert!(
-            w.now() - before >= 4 * i64::try_from(super::plan::MIN_WAIT_SECS).unwrap(),
-            "four waits of the configured length each cost their length"
-        );
     });
 }
 
@@ -883,7 +859,7 @@ fn issue_2911_a_passed_reset_waits_instead_of_ending_the_step() {
     guarded(|| {
         let e = env();
         for ahead in [0, -1, -120, -599, -86_400] {
-            let mut w = waiter(&e, None);
+            let mut w = waiter(&e);
             w.note_attempt_login();
             w.marks.record(None);
             let before = w.now();
@@ -898,63 +874,67 @@ fn issue_2911_a_passed_reset_waits_instead_of_ending_the_step() {
     });
 }
 
-/// A login-change wait that reaches its deadline retries. It used to write
-/// `failed reason=spend_limit` and end the step, which is the
-/// `skipped reason=spend_limit` ending #2911 reports.
+/// A login-change wait ends when the login changes, and the step retries
+/// on the login now live. It used to end the step with `failed
+/// reason=spend_limit`, the ending #2911 reports.
 #[test]
-fn issue_2911_a_login_change_wait_that_runs_out_retries() {
+fn issue_2911_a_login_change_wait_retries_when_the_login_changes() {
     guarded(|| {
         let e = env();
-        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        let mut w = waiter(&e);
+        e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
-        let before = w.now();
+        e.rotator_cycle_room("b", 2, None, "swapped", false, None);
         let got = after(&mut w, login_change(), 1, &|_, _| false);
         assert!(matches!(got, AfterLimit::Retry));
-        assert!(w.now() > before, "the wait ran its length");
         assert!(
-            !w.resumed_on_a_signal(),
-            "reaching a deadline claims nothing about the next attempt"
+            w.resumed_on_a_signal(),
+            "a login change claims the retry will work"
         );
     });
 }
 
-/// A capacity wait that reaches its deadline retries. It used to write
-/// `failed reason=capacity_expired`.
+/// A capacity wait with no reset ends when another login has room, and the
+/// step retries there. It used to end the step with `failed
+/// reason=capacity_expired`.
 #[test]
-fn issue_2911_a_capacity_wait_that_runs_out_retries() {
+fn issue_2911_a_capacity_wait_retries_when_another_login_has_room() {
     guarded(|| {
         let e = env();
-        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        let mut w = waiter(&e);
         w.note_attempt_login();
-        let before = w.now();
-        let got = after(&mut w, capacity(), 1, &|_, _| false);
+        let got = after(&mut w, capacity(), 1, &|_, _| true);
         assert!(matches!(got, AfterLimit::Retry));
-        assert!(w.now() > before, "the wait ran its length");
+        assert!(
+            w.retry_move().is_some_and(|m| m.room_was_seen()),
+            "the retry may move to the login with room"
+        );
     });
 }
 
-/// Issue #3037: the step timeout does not end a limit
-/// wait. One already behind the clock used to end this wait at once and
-/// fail the step while the limit still stood. Nothing enforces that
-/// variable on a step - recipe-runner-rs enforces only a step's YAML
-/// `timeout:` - so the wait now runs its own length and the step retries.
+/// Issue #3037: the step timeout does not end a limit wait. One already
+/// behind the clock used to end this wait at once and fail the step while
+/// the limit still stood. Nothing enforces that variable on a step -
+/// recipe-runner-rs enforces only a step's YAML `timeout:` - so the wait runs
+/// to its reset and the step retries.
 #[test]
 fn issue_3037_a_step_timeout_does_not_end_a_limit_wait() {
     guarded(|| {
         let _timeout = EnvGuard::set([("AMPLIHACK_STEP_TIMEOUT", "1")]);
         let e = env();
-        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        let mut w = waiter(&e);
         w.note_attempt_login();
         let before = w.now();
-        let got = after(&mut w, capacity(), 1, &|_, _| false);
+        let wait = reset_in(&w, 1800);
+        let got = after(&mut w, wait, 1, &|_, _| false);
         assert!(
             matches!(got, AfterLimit::Retry),
             "a step timeout long behind the clock no longer ends the wait"
         );
-        let waited = u64::try_from(w.now() - before).unwrap();
+        let waited = w.now() - before;
         assert!(
-            waited >= super::plan::MIN_WAIT_SECS,
-            "the wait ran its full length, {waited}s"
+            waited >= 1800 + super::plan::MARGIN,
+            "the wait ran to its reset, {waited}s"
         );
     });
 }

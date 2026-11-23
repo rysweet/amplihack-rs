@@ -281,17 +281,6 @@ pub(crate) static KEYS: &[KeyDef] = &[
         lower_only: false,
     },
     KeyDef {
-        name: "recipe.usage_limit_max_wait_secs",
-        scope: Scope::UserAndProject,
-        kind: ValueKind::Int {
-            min: 0,
-            max: u64::MAX,
-        },
-        env: Some("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS"),
-        default: Some("21600"),
-        lower_only: true,
-    },
-    KeyDef {
         // Issue #2589: the dangerous-command entries this installation adds
         // to the shipped list. User-only, because a cloned repository must
         // not change what any harness denies, and with no variable, because

@@ -126,7 +126,7 @@ fn a_capacity_wait_for_a_passed_reset_runs_on_a_login_already_waited_on() {
         let e = env();
         let _writes = readings_written(&e);
         live(&e, "a");
-        let mut w = waiter(&e, Some(600));
+        let mut w = waiter(&e);
         w.note_attempt_login();
         w.marks.record(Some("a".to_string()));
         let probed = Cell::new(0);
@@ -146,44 +146,35 @@ fn a_capacity_wait_for_a_passed_reset_runs_on_a_login_already_waited_on() {
     });
 }
 
-/// Issue #2911: the same wait with nothing to end it early runs its length
-/// and then retries, rather than ending the step. Before, a second re-entry
-/// on the same login wrote `skipped reason=already_waited` and the run
-/// finished on the limit it had.
+/// Issue #2911: a capacity wait for a passed reset has no deadline, so no
+/// clock runs the step again on the login whose limit it met. It is ended
+/// by an event - here the rotator recording room after it began - and a
+/// further re-entry is a further wait, not an ending. Before, a second
+/// re-entry on the same login wrote `skipped reason=already_waited` and the
+/// run finished on the limit it had.
 #[test]
-fn issue_2911_a_capacity_wait_that_nothing_lifts_waits_its_length_and_retries() {
+fn issue_2911_a_capacity_wait_for_a_passed_reset_waits_for_an_event_each_time() {
     guarded(|| {
         let e = env();
         live(&e, "a");
-        let length = 90;
-        let mut w = waiter(&e, Some(length));
+        let mut w = waiter(&e);
         w.note_attempt_login();
         w.marks.record(Some("a".to_string()));
-        let before = w.now();
-        let wait = capacity_for(Some(before - 120), Waiting::PassedReset);
-        let first = after_a_signal(&mut w, wait, &|_, _| false);
-        assert!(
-            matches!(first, AfterLimit::Retry),
-            "nothing lifted the limit, and the step retries rather than ending"
-        );
-        assert_eq!(
-            w.now() - before,
-            i64::try_from(length).unwrap(),
-            "the wait lasted its configured length, not nothing"
-        );
-        // And the next one waits again, for the same length.
-        let after_first = w.now();
-        let wait = capacity_for(Some(after_first - 120), Waiting::PassedReset);
-        let again = after_a_signal(&mut w, wait, &|_, _| false);
-        assert!(
-            matches!(again, AfterLimit::Retry),
-            "a further re-entry is a further wait, not an ending"
-        );
-        assert_eq!(
-            w.now() - after_first,
-            i64::try_from(length).unwrap(),
-            "and it cost the same time again: the chain is paced by waiting"
-        );
+        for n in 0..2 {
+            let now = w.now();
+            let wait = capacity_for(Some(now - 120), Waiting::PassedReset);
+            // The rotator's next cycle, measured after the limit.
+            e.rotator_cycle_room("a", now + 1, Some(now + 1), "stayed", false, Some(true));
+            let got = after_a_signal(&mut w, wait, &|_, _| false);
+            assert!(
+                matches!(got, AfterLimit::Retry),
+                "re-entry {n} is waited out to an event, not ended"
+            );
+            assert!(
+                w.resumed_on_a_signal(),
+                "re-entry {n}: the end was the rotator's room, which says try now"
+            );
+        }
     });
 }
 
@@ -195,7 +186,7 @@ fn a_reset_still_ahead_is_an_ordinary_reset_wait() {
         let e = env();
         let _writes = readings_written(&e);
         live(&e, "a");
-        let mut w = waiter(&e, None);
+        let mut w = waiter(&e);
         w.note_attempt_login();
         w.marks.record(Some("a".to_string()));
         let probed = Cell::new(0);

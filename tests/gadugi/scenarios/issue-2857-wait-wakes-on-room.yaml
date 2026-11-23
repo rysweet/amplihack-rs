@@ -7,24 +7,26 @@ description: >
   tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh) drives the real
   binary's supervised launch against a stub agent and a stub rotate ledger.
   Case A: a limit on the retry a wait earned is waited for again, and the
-  third attempt succeeds instead of the step ending `already_waited`. No
-  `reentered` line is written for it: that line reports a wait ended by
-  something saying the login had room, and case A's waits run out instead, so
-  nothing claimed room. Issue #2911 extends case A: each wait announces itself as
-  `waiting_for_capacity reason=passed_reset`, because a reset the clock has
-  already passed is a wait for capacity, and no `failed` or `skipped` line is
-  written at all, because a limit may now only delay a step and never end it.
+  third attempt succeeds instead of the step ending `already_waited`. Each
+  wait announces itself as `waiting_for_capacity reason=passed_reset ...
+  until=none`, because a reset the clock has already passed is a wait for
+  capacity with no deadline (issue #2911); the scenario ends each one with a
+  login change in the step's config directory at its first progress line, a
+  minute in, when the stub has still run only once. The first wait's login
+  change said the retry would work, so the second wait writes one `reentered`
+  line. No `failed` or `skipped` line is written at all, because a limit may
+  now only delay a step and never end it.
   Case B: a wait on a $HOME/.claude step ends `login changed` on a swap only
   when the rotator's last cycle records `live_room: true`; a swap onto a login
   with no room, a ledger from a rotator that records no room bit, and the
   record a stopping rotator leaves are all held back. A person's own `profile
   switch` records no room bit and still wakes the wait unless it says
-  `live_room: false`. The limit states a reset five minutes in the past. Case
-  A's two waits each run the 60-second floor the binary applies to one wait's
-  length, and each of case B's held-back cases runs one such wait to its end
-  (`capacity expired`) before the retry, because the step timeout no longer
-  ends a limit wait (issue #3037). The scenario takes about six minutes. No
-  debug-only clock seam is needed.
+  `live_room: false`. A held-back wait is still waiting at its first progress
+  line; the scenario then writes the record a rotator writes when it
+  measures room, and the wait ends `rotator capacity`. The limit states a
+  reset five minutes in the past. Each wait the scenario ends lasts about a
+  minute, and the step timeout plays no part (issue #3037), so the scenario
+  takes about six minutes. No debug-only clock seam is needed.
   Everything runs under `env -i` with a scratch HOME,
   so the real ~/.claude and ~/.amplihack are never read or written, and no
   agent, account, rotator or network call is made. CI's Install Smoke Test job
@@ -73,11 +75,16 @@ assertions:
     params:
       target: stdout
       expected: "PASS: second_wait_started_not_refused - "
-  - name: no-reentered-line-when-a-wait-ran-out
+  - name: no-timer-ends-a-wait
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: no_reentered_line_when_a_wait_ran_out - "
+      expected: "PASS: no_timer_ends_a_wait - "
+  - name: a-contradicted-wake-is-reported-once
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: a_contradicted_wake_is_reported_once - "
   - name: each-wait-says-it-is-waiting-for-capacity
     type: output_contains
     params:

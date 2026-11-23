@@ -9,7 +9,7 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_wait_ends;`.
 
 use super::plan::Bound;
-use super::tests_wait::{Fake, capacity_plan_in, login_change_plan_in, plan_in};
+use super::tests_wait::{Fake, capacity_plan_in, login_change_plan, open_capacity_plan, plan_in};
 use super::wait::{End, wait};
 
 #[test]
@@ -49,7 +49,10 @@ fn a_passed_deadline_wins_over_a_changed_login() {
     // A write at the deadline: the deadline is read first.
     let mut f = Fake::new();
     f.prints = vec![(0, Some(1)), (60, Some(2))];
-    assert_eq!(wait(&plan_in(60, Bound::MaxWait), &mut f), End::MaxReached);
+    assert_eq!(
+        wait(&plan_in(60, Bound::ResetMargin), &mut f),
+        End::ResetReached
+    );
 }
 
 #[test]
@@ -77,17 +80,6 @@ fn fresh_rotator_capacity_ends_the_wait_at_the_rotators_write() {
 // --- capacity waits (issue #1801) ----------------------------------------
 
 #[test]
-fn a_capacity_wait_expires_at_max_wait_where_a_reset_wait_reaches_max() {
-    let mut f = Fake::new();
-    assert_eq!(
-        wait(&capacity_plan_in(90, Bound::MaxWait), &mut f),
-        End::CapacityExpired
-    );
-    let mut f = Fake::new();
-    assert_eq!(wait(&plan_in(90, Bound::MaxWait), &mut f), End::MaxReached);
-}
-
-#[test]
 fn a_capacity_wait_that_reaches_the_failed_logins_reset_retries() {
     let mut f = Fake::new();
     assert_eq!(
@@ -96,24 +88,26 @@ fn a_capacity_wait_that_reaches_the_failed_logins_reset_retries() {
     );
 }
 
+/// Issue #2911: a capacity wait whose limit stated no usable reset has no
+/// deadline, so with nothing to end it, it is still waiting long after the
+/// six hours the old outer bound gave it, and nothing ran the step again.
 #[test]
-fn a_zero_length_capacity_wait_expires_without_blocking() {
+fn a_capacity_wait_with_no_reset_is_still_waiting_after_any_length_of_time() {
     let mut f = Fake::new();
+    f.signal_from = Some((3 * 86_400, libc::SIGTERM));
     assert_eq!(
-        wait(&capacity_plan_in(0, Bound::MaxWait), &mut f),
-        End::CapacityExpired
+        wait(&open_capacity_plan(), &mut f),
+        End::Signal(libc::SIGTERM),
+        "only the signal, three days in, ended it"
     );
-    assert_eq!(f.elapsed(), 0);
+    assert_eq!(f.elapsed(), 3 * 86_400);
 }
 
 #[test]
 fn another_login_with_capacity_ends_the_wait_at_the_readings_write() {
     let mut f = Fake::new();
     f.other_from = Some(40);
-    assert_eq!(
-        wait(&capacity_plan_in(1800, Bound::MaxWait), &mut f),
-        End::OtherCapacity
-    );
+    assert_eq!(wait(&open_capacity_plan(), &mut f), End::OtherCapacity);
     assert_eq!(f.elapsed(), 40);
 }
 
@@ -122,10 +116,7 @@ fn rotator_capacity_is_checked_before_another_logins_capacity() {
     let mut f = Fake::new();
     f.capacity_from = Some(40);
     f.other_from = Some(40);
-    assert_eq!(
-        wait(&capacity_plan_in(1800, Bound::MaxWait), &mut f),
-        End::RotatorCapacity
-    );
+    assert_eq!(wait(&open_capacity_plan(), &mut f), End::RotatorCapacity);
 }
 
 #[test]
@@ -134,14 +125,14 @@ fn a_signal_and_a_passed_deadline_outrank_other_capacity() {
     f.signal_from = Some((30, libc::SIGTERM));
     f.other_from = Some(30);
     assert_eq!(
-        wait(&capacity_plan_in(1800, Bound::MaxWait), &mut f),
+        wait(&open_capacity_plan(), &mut f),
         End::Signal(libc::SIGTERM)
     );
     let mut f = Fake::new();
     f.other_from = Some(30);
     assert_eq!(
-        wait(&capacity_plan_in(30, Bound::MaxWait), &mut f),
-        End::CapacityExpired,
+        wait(&capacity_plan_in(30, Bound::ResetMargin), &mut f),
+        End::ResetReached,
         "the deadline is read before the files"
     );
 }
@@ -152,10 +143,7 @@ fn a_signal_and_a_passed_deadline_outrank_other_capacity() {
 fn a_record_already_there_is_read_once_as_the_wait_begins() {
     let mut f = Fake::new();
     f.other_from = Some(0);
-    assert_eq!(
-        wait(&capacity_plan_in(300, Bound::MaxWait), &mut f),
-        End::OtherCapacity
-    );
+    assert_eq!(wait(&open_capacity_plan(), &mut f), End::OtherCapacity);
     assert_eq!(f.elapsed(), 0);
     assert_eq!(f.other_probes, vec![0]);
 }
@@ -189,13 +177,16 @@ fn a_reset_wait_with_no_other_login_still_reaches_its_reset() {
     assert!(f.elapsed() >= 13_500, "ended early at {}", f.elapsed());
 }
 
-/// The same deadline bounds the wait whatever its end, so a maximum reached
+/// The same deadline bounds the wait whatever its end, so a reset reached
 /// first still ends the wait there.
 #[test]
-fn a_reset_wait_reaches_its_maximum_before_a_later_reading() {
+fn a_reset_wait_reaches_its_reset_before_a_later_reading() {
     let mut f = Fake::new();
     f.other_from = Some(120);
-    assert_eq!(wait(&plan_in(90, Bound::MaxWait), &mut f), End::MaxReached);
+    assert_eq!(
+        wait(&plan_in(90, Bound::ResetMargin), &mut f),
+        End::ResetReached
+    );
 }
 
 #[test]
@@ -249,12 +240,10 @@ fn a_changed_login_outranks_another_logins_capacity_on_a_reset_wait() {
 /// checks.
 #[test]
 fn another_logins_capacity_is_read_on_the_existing_login_check() {
-    for plan in [
-        plan_in(100, Bound::ResetMargin),
-        capacity_plan_in(100, Bound::MaxWait),
-    ] {
+    for plan in [plan_in(100, Bound::ResetMargin), open_capacity_plan()] {
         let mut f = Fake::new();
         f.writes = vec![20, 50, 80];
+        f.parent_gone_from = Some(100);
         wait(&plan, &mut f);
         assert_eq!(f.probes, vec![0, 0, 20, 50, 80], "{:?}", plan.kind);
         assert_eq!(
@@ -307,12 +296,13 @@ fn the_end_of_the_steps_session_outranks_other_capacity_on_a_reset_wait() {
 fn a_login_change_wait_ignores_another_logins_capacity() {
     let mut f = Fake::new();
     f.other_from = Some(10);
+    f.parent_gone_from = Some(90);
     assert_eq!(
-        wait(&login_change_plan_in(90), &mut f),
-        End::MaxReached,
+        wait(&login_change_plan(), &mut f),
+        End::SessionEnded,
         "a reading of another login's windows says nothing about credit"
     );
-    assert!(f.elapsed() >= 90, "ended early at {}", f.elapsed());
+    assert_eq!(f.elapsed(), 90, "ended early at {}", f.elapsed());
 }
 
 /// The deputy's point 4: the rotator starting a fresh cycle is not the
@@ -324,12 +314,13 @@ fn a_login_change_wait_ignores_another_logins_capacity() {
 fn a_fresh_rotator_cycle_without_a_swap_does_not_end_a_login_change_wait() {
     let mut f = Fake::new();
     f.capacity_from = Some(10);
+    f.parent_gone_from = Some(90);
     assert_eq!(
-        wait(&login_change_plan_in(90), &mut f),
-        End::MaxReached,
+        wait(&login_change_plan(), &mut f),
+        End::SessionEnded,
         "only the login changing ends this wait"
     );
-    assert!(f.elapsed() >= 90, "ended early at {}", f.elapsed());
+    assert_eq!(f.elapsed(), 90, "ended early at {}", f.elapsed());
 }
 
 #[test]
@@ -342,7 +333,7 @@ fn a_login_change_wait_still_ends_when_the_login_changes() {
     f.capacity_from = Some(20);
     f.other_from = Some(20);
     assert_eq!(
-        wait(&login_change_plan_in(1800), &mut f),
+        wait(&login_change_plan(), &mut f),
         End::LoginChanged,
         "the swap, and nothing else, ends it"
     );
@@ -356,7 +347,7 @@ fn a_login_change_wait_still_ends_when_the_login_changes() {
 fn a_swap_just_after_the_wait_began_is_seen_at_its_write() {
     let mut f = Fake::new();
     f.prints = vec![(0, Some(1)), (10, Some(2))];
-    assert_eq!(wait(&login_change_plan_in(300), &mut f), End::LoginChanged);
+    assert_eq!(wait(&login_change_plan(), &mut f), End::LoginChanged);
     assert_eq!(f.elapsed(), 10);
 }
 
@@ -369,7 +360,7 @@ fn the_login_key_catches_a_swap_the_baseline_absorbed() {
     let mut f = Fake::new();
     f.login_changed_from = Some(0);
     assert_eq!(
-        wait(&login_change_plan_in(300), &mut f),
+        wait(&login_change_plan(), &mut f),
         End::LoginChanged,
         "the named login key has no baseline to settle"
     );
@@ -447,22 +438,23 @@ fn a_login_change_wait_still_ends_on_a_signal_and_on_the_sessions_end() {
     let mut f = Fake::new();
     f.signal_from = Some((10, libc::SIGTERM));
     assert_eq!(
-        wait(&login_change_plan_in(1800), &mut f),
+        wait(&login_change_plan(), &mut f),
         End::Signal(libc::SIGTERM)
     );
     let mut f = Fake::new();
     f.parent_gone_from = Some(10);
-    assert_eq!(wait(&login_change_plan_in(1800), &mut f), End::SessionEnded);
+    assert_eq!(wait(&login_change_plan(), &mut f), End::SessionEnded);
 }
 
+/// Issue #2911: a login-change wait has no deadline, so with no swap it is
+/// still waiting a week on, and nothing ran the step again on the spent
+/// login in the meantime.
 #[test]
-fn a_login_change_wait_that_reaches_its_deadline_reads_as_max_reached() {
-    // `mod.rs` retries on this (issue #2911), and `max reached` is the one
-    // end that claims nothing about the login, so the mapping from the
-    // deadline to the end reason must not move with the flag.
+fn a_login_change_wait_has_no_deadline_to_reach() {
     let mut f = Fake::new();
-    assert_eq!(wait(&login_change_plan_in(0), &mut f), End::MaxReached);
-    assert_eq!(f.elapsed(), 0, "a zero-length wait never blocks");
+    f.parent_gone_from = Some(7 * 86_400);
+    assert_eq!(wait(&login_change_plan(), &mut f), End::SessionEnded);
+    assert_eq!(f.elapsed(), 7 * 86_400);
 }
 
 /// A login-change wait never asks either capacity source at all, rather
@@ -476,7 +468,8 @@ fn a_login_change_wait_that_reaches_its_deadline_reads_as_max_reached() {
 fn a_login_change_wait_takes_no_capacity_reading() {
     let mut f = Fake::new();
     f.writes = vec![30, 60, 90];
-    wait(&login_change_plan_in(100), &mut f);
+    f.parent_gone_from = Some(100);
+    wait(&login_change_plan(), &mut f);
     assert!(
         f.other_probes.is_empty(),
         "another login's capacity was read: {:?}",

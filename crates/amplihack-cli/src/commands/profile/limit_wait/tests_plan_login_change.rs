@@ -6,21 +6,19 @@
 //! next may belong to another organisation, so that is what the step waits
 //! for.
 //!
-//! Issue #2911 changed two things about it. The wait no longer asks whether
-//! a rotator is running before it starts: with none running nothing ends it
-//! early, so it runs its length and the step retries, where before it ended
-//! the step with `failed reason=spend_limit`. And it is reached straight from
-//! [`wait_for_message`], with no promotion in between, which is why
-//! `upgrade_spend` is gone. The plan still keeps [`PlanKind::Reset`], so the
-//! wait itself is unchanged and never consults the stored readings.
+//! Issue #2911: the wait does not ask whether a rotator is running before
+//! it starts, and it has no deadline. The login changing is the event it
+//! waits for, and with no rotator running a person makes that event
+//! (`amplihack profile switch`, or a login in the step's config directory);
+//! no timer runs the step again on the spent login in the meantime. It is
+//! reached straight from [`wait_for_message`], with no promotion in
+//! between. The plan keeps [`PlanKind::Reset`], so the wait never consults
+//! the stored readings.
 //!
 //! Wired from `limit_wait/mod.rs` with
 //! `#[cfg(test)] mod tests_plan_login_change;`.
 
-use super::plan::{
-    Bound, CAPACITY_DEFAULT_MAX, MIN_WAIT_SECS, PlanKind, WaitFor, plan_login_change,
-    wait_for_message,
-};
+use super::plan::{Bound, PlanKind, WaitFor, plan_login_change, wait_for_message};
 use crate::commands::recipe::run::limit_patterns::{self, Harness};
 
 /// 2026-10-18 08:00:00 -07:00.
@@ -28,60 +26,18 @@ const NOW: i64 = 1_792_335_600;
 
 const SPEND: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
 
-fn p(max: Option<u64>) -> super::plan::Plan {
-    plan_login_change(NOW, max)
+fn p() -> super::plan::Plan {
+    plan_login_change()
 }
 
 // --- the deadline ---------------------------------------------------------
 
+/// Issues #2911 and #3037: the limit stated no reset, so nothing timed ends
+/// this wait. Neither a configured length nor the step timeout has a row.
 #[test]
-fn the_default_length_is_the_capacity_waits_six_hours() {
-    let plan = p(None);
-    assert_eq!(plan.until, NOW + CAPACITY_DEFAULT_MAX as i64);
-    assert_eq!(plan.bound, Bound::MaxWait);
-}
-
-#[test]
-fn the_maximum_sets_the_length() {
-    let plan = p(Some(600));
-    assert_eq!(plan.until, NOW + 600);
-    assert_eq!(plan.bound, Bound::MaxWait);
-}
-
-#[test]
-fn issue_2911_the_shortest_length_is_one_floor_and_never_zero() {
-    // A zero can no longer reach here: `settings` floors a configured value
-    // at `MIN_WAIT_SECS` where it reads it, so the shortest wait this plan
-    // can be asked for still ends strictly after `now`.
-    let plan = p(Some(MIN_WAIT_SECS));
-    assert_eq!(plan.until, NOW + i64::try_from(MIN_WAIT_SECS).unwrap());
-    assert!(
-        plan.until > NOW,
-        "no wait of no length, and so no busy loop"
-    );
-}
-
-/// Issue #3037: nothing but the wait's own length sets
-/// this deadline. The step timeout once had a row here, which ended the
-/// wait early and failed the step while its spend limit still stood.
-#[test]
-fn issue_3037_only_the_wait_length_sets_the_deadline() {
-    for max in [Some(MIN_WAIT_SECS), Some(240), Some(600), None] {
-        let plan = p(max);
-        let len = i64::try_from(max.unwrap_or(CAPACITY_DEFAULT_MAX)).unwrap();
-        assert_eq!(
-            (plan.until, plan.bound),
-            (NOW + len, Bound::MaxWait),
-            "{max:?}"
-        );
-    }
-}
-
-#[test]
-fn a_very_large_maximum_saturates_rather_than_overflowing() {
-    let plan = p(Some(u64::MAX));
-    assert!(plan.until > NOW);
-    assert_eq!(plan.bound, Bound::MaxWait);
+fn issue_2911_a_login_change_wait_has_no_deadline() {
+    let plan = p();
+    assert_eq!((plan.until, plan.bound), (None, Bound::Unbounded));
 }
 
 // --- the plan's shape -----------------------------------------------------
@@ -89,25 +45,18 @@ fn a_very_large_maximum_saturates_rather_than_overflowing() {
 #[test]
 fn there_is_no_reset_to_show() {
     assert_eq!(
-        p(Some(600)).reset,
+        p().reset,
         None,
         "the limit stated none, so the start line says reset=none"
     );
 }
 
 #[test]
-fn the_deadline_means_what_a_reset_waits_deadline_means() {
-    // The kind says what reaching the deadline means, and nothing else:
-    // `wait::End::at_deadline` maps `Reset` to `MaxReached`, which
-    // `after_limit` turns into a retry (issue #2911). Which readings the
-    // wait consults is `Plan::capacity_may_end`'s answer, asserted below.
-    assert_eq!(p(Some(600)).kind, PlanKind::Reset);
-}
-
-#[test]
-fn there_is_no_five_hour_ceiling() {
-    let eight_hours = 8 * 3600;
-    assert_eq!(p(Some(eight_hours as u64)).until, NOW + eight_hours);
+fn the_kind_is_the_reset_kind() {
+    // The kind says what ending the wait means: a retry under the login now
+    // live (issue #2911). Which readings the wait consults is
+    // `Plan::capacity_may_end`'s answer, asserted below.
+    assert_eq!(p().kind, PlanKind::Reset);
 }
 
 // --- how a spend limit reaches this wait ----------------------------------
@@ -161,24 +110,24 @@ fn a_reset_plan_may_be_ended_by_a_capacity_reading() {
 
 #[test]
 fn a_capacity_plan_may_be_ended_by_a_capacity_reading() {
-    let plan = super::plan::plan_capacity(NOW, None, None);
+    let plan = super::plan::plan_capacity(NOW, None);
     assert!(plan.capacity_may_end(), "#1801: that is what it waits for");
 }
 
 #[test]
 fn a_login_change_plan_may_not_be_ended_by_any_capacity_reading() {
     assert!(
-        !p(Some(600)).capacity_may_end(),
+        !p().capacity_may_end(),
         "no reading says whether the next login's organisation has credit"
     );
 }
 
 #[test]
 fn the_flag_rides_with_the_plan_and_not_with_its_kind() {
-    // Both plans are `PlanKind::Reset`, because that is what their deadline
+    // Both plans are `PlanKind::Reset`, because that is what ending them
     // means; only the login-change one suppresses the capacity sources.
     let reset = super::plan::plan(NOW, NOW + 1800);
-    let login_change = p(Some(600));
+    let login_change = p();
     assert_eq!(reset.kind, login_change.kind, "the same kind");
     assert_ne!(
         reset.capacity_may_end(),

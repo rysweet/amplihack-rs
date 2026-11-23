@@ -36,7 +36,7 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_wait_room;`.
 
 use super::plan::Bound;
-use super::tests_wait::{Fake, capacity_plan_in, plan_in};
+use super::tests_wait::{Fake, open_capacity_plan, plan_in};
 use super::wait::{End, wait};
 
 // --- the fingerprint route -------------------------------------------------------
@@ -127,11 +127,13 @@ fn the_gate_holds_a_capacity_wait_back_the_same_way() {
     let mut f = Fake::new();
     f.login_changed_from = Some(10);
     f.change_room_from = None;
+    f.parent_gone_from = Some(300);
     assert_eq!(
-        wait(&capacity_plan_in(300, Bound::MaxWait), &mut f),
-        End::CapacityExpired,
-        "a capacity wait ends on room or on its own deadline, not on a login that moved"
+        wait(&open_capacity_plan(), &mut f),
+        End::SessionEnded,
+        "a capacity wait ends on room, not on a login that moved to one with none"
     );
+    assert_eq!(f.elapsed(), 300);
 }
 
 // --- the gate is asked only when there is a change to ask about -------------------
@@ -231,7 +233,10 @@ fn a_held_back_change_never_holds_back_a_signal_the_deadline_or_the_sessions_end
     let mut f = Fake::new();
     f.login_changed_from = Some(5);
     f.change_room_from = None;
-    assert_eq!(wait(&plan_in(75, Bound::MaxWait), &mut f), End::MaxReached);
+    assert_eq!(
+        wait(&plan_in(75, Bound::ResetMargin), &mut f),
+        End::ResetReached
+    );
 }
 
 // --- what an end claims -----------------------------------------------------------------
@@ -249,13 +254,8 @@ fn an_end_that_said_try_now_is_one_a_limit_can_contradict() {
 }
 
 #[test]
-fn an_end_that_merely_ran_out_said_nothing() {
-    for end in [
-        End::MaxReached,
-        End::CapacityExpired,
-        End::SessionEnded,
-        End::Signal(libc::SIGTERM),
-    ] {
+fn an_end_that_stops_the_step_said_nothing() {
+    for end in [End::SessionEnded, End::Signal(libc::SIGTERM)] {
         assert!(
             !end.said_try_now(),
             "{}: nothing said to try, so a limit after it is no contradiction",

@@ -7,55 +7,44 @@
 //!
 //! # What ends a wait
 //!
-//! A wait ends on a limit event: its reset passing, a login with room, or
-//! the login changing. Which of those a wait has turns on the reset its
-//! limit stated.
+//! A wait ends on a limit event and on nothing else: its reset passing, a
+//! login with room, or the login changing (and, for the step rather than
+//! the limit, a stop signal or the end of its session). No timer ends a
+//! wait. Which of those events a wait has turns on the reset its limit
+//! stated.
 //!
-//! - **A limit that states a reset still ahead** waits for that reset and
-//!   has no timed bound. Within five hours it is a reset wait ([`plan`]).
-//!   Further away it is a capacity wait ([`plan_capacity`]), which may also
-//!   move the retry to another login with room, and still ends at its reset
-//!   plus [`MARGIN`]. A weekly limit days away is waited for once, to its
-//!   reset, and is not re-asked in steps. The reset is first held to its
-//!   kind's window ([`held`]), as the rotate ledger holds a block, so a
-//!   forged or misread message cannot hold a step longer than the window it
-//!   names allows.
+//! - **A limit that states a reset still ahead** waits for that reset.
+//!   Within five hours it is a reset wait ([`plan`]). Further away it is a
+//!   capacity wait ([`plan_capacity`]), which may also move the retry to
+//!   another login with room, and still ends at its reset plus [`MARGIN`].
+//!   A weekly limit days away is waited for once, to its reset. The reset is
+//!   first held to its kind's window ([`held`]), as the rotate ledger holds
+//!   a block, so a forged or misread message cannot hold a step longer than
+//!   the window it names allows.
 //! - **A limit with no usable reset** (none stated, Codex credits, a reset
 //!   already behind the clock, a bare 429 another login could take over, or
-//!   a spend limit stating none) waits for room or a login change, and
-//!   failing those ends at an outer bound ([`Bound::MaxWait`]):
-//!   `recipe.usage_limit_max_wait_secs`, or [`CAPACITY_DEFAULT_MAX`] when
-//!   unset, never less than [`MIN_WAIT_SECS`]. Reaching it runs the step
-//!   once more, and a limit on that run starts another wait.
+//!   a spend limit stating none) has no deadline ([`Plan::until`] is
+//!   `None`). Nothing records when such a limit lifts, so the wait waits for
+//!   the events that can be seen: a login with room or a login change. It
+//!   says so plainly as it starts (`waiting_for_capacity ... until=none`),
+//!   so an operator can see that it is waiting and why (issue #2911: "when
+//!   nothing can be known about when room returns, it still waits, and says
+//!   plainly ... that it is waiting for capacity and why").
 //!
-//! That outer bound is a timer, not a limit event, and it is the only timer
-//! that ends a wait. (The wait's other timed wakes, the `progress` line and
-//! the fallbacks where no file event can be had, end nothing and launch
-//! nothing; `wait` and `wake` say why.) It is kept for the limits that state
-//! nothing to wait for: such a limit records no block (`rotate::step_block`),
-//! so no file records when it lifts, and on a host with no rotator and no
-//! other login nothing but the bound would run the step again without a
-//! person.
+//! The second kind has no timed outer bound, and none may be added. Each
+//! time such a bound passed it would run the step's agent again on a login
+//! that may still be spent: a poll of the harness on a clock, which #2911
+//! rules out ("no wall-clock budget ... remove the paths above rather than
+//! raising their numbers"). A person who wants such a step to run again
+//! makes an event: `amplihack profile switch` for a step on `$HOME/.claude`
+//! (its `switched` record ends the wait as `rotator capacity`), logging the
+//! step's own config directory in to another account, or a stop signal.
 //!
-//! It is an interim exception to the rule that a wait ends only on a limit
-//! event, and it is kept on that footing, not as the design. It never ends a
-//! step, but each expiry runs the step's agent again on a login that may
-//! still be spent: at most one launch per bound for each waiting step, for
-//! as long as the limit lasts. Whether such a wait should instead wait for a
-//! person, and so lose the bound, is the owner's decision under #3098. Until
-//! that issue is closed the bound stays declared here and in
-//! `docs/reference/usage-limit-waits.md` ("The timed parts that remain");
-//! this module does not decide it.
-//!
-//! The deadline is the earlier of the rows a wait has, a tie named by the
-//! reset row. All arithmetic saturates.
-//!
-//! **Every plan a limit produces ends strictly after `now`.** That is the
-//! pacing rule that replaced the per-step budget of #2731: a chain of limits
-//! is paced by each wait costing time, not by a counter that eventually
-//! refuses one. A reset row is only built from a reset in the future, and
-//! [`MIN_WAIT_SECS`] floors the configured outer bound where it is read
-//! (`settings`).
+//! **Every plan with a deadline ends strictly after `now`**, and a plan
+//! with none ends only on an event. That is the pacing rule that replaced
+//! the per-step budget of #2731: a chain of limits is paced by each wait
+//! lasting until something changed, not by a counter that eventually
+//! refuses one, and no plan can make a busy loop of agent launches.
 //!
 //! There is no step-timeout row (issue #3037). `$AMPLIHACK_STEP_TIMEOUT`
 //! is not enforced on a step by the recipe runner, which enforces only a
@@ -73,16 +62,6 @@ pub(crate) const MARGIN: i64 = 120;
 pub(crate) const FIVE_HOURS: i64 = 5 * 3600;
 /// The weekly window's length.
 pub(crate) const SEVEN_DAYS: i64 = 7 * 86_400;
-/// The outer bound of a wait with no usable reset when nothing sets one:
-/// the schema's default, six hours. No wait whose limit states a reset
-/// still ahead reaches it.
-pub(crate) const CAPACITY_DEFAULT_MAX: u64 = 21_600;
-/// The shortest outer bound a configured length may ask for (issue #2911).
-///
-/// Every expiry of the outer bound runs the step's agent again, so a bound
-/// of a few seconds would be a busy loop of agent launches. A minute is the
-/// floor; it adds no timer of its own.
-pub(crate) const MIN_WAIT_SECS: u64 = 60;
 
 /// The longest the usage window of a limit of `kind` lasts, or `None` for a
 /// kind with no fixed window.
@@ -326,23 +305,23 @@ pub(crate) fn rate_limit_capacity(
     })
 }
 
-/// Which row set the deadline.
+/// What sets the deadline, for the `start` line's `bound=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bound {
     /// The limit's own reset plus [`MARGIN`]: the recorded reset passing,
     /// which is a limit event.
     ResetMargin,
-    /// The outer bound of a wait whose limit stated no reset still ahead: a
-    /// timer, the one left (see the module docs). No wait with a reset ahead
-    /// has it.
-    MaxWait,
+    /// No deadline: the limit stated no usable reset, so the wait ends only
+    /// on a login with room or a login change (see the module docs). Written
+    /// `bound=none`, beside `until=none`.
+    Unbounded,
 }
 
 impl Bound {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Bound::ResetMargin => "reset+margin",
-            Bound::MaxWait => "max_wait",
+            Bound::Unbounded => "none",
         }
     }
 }
@@ -358,7 +337,10 @@ pub(crate) enum PlanKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Plan {
-    pub(crate) until: i64,
+    /// When the wait ends if no event ends it first: the reset plus the
+    /// margin. `None` for a wait whose limit stated no usable reset, which
+    /// ends only on an event (see the module docs).
+    pub(crate) until: Option<i64>,
     pub(crate) bound: Bound,
     pub(crate) kind: PlanKind,
     /// The reset as read, for the log line; a capacity wait may have none.
@@ -399,7 +381,7 @@ impl Plan {
     #[cfg(test)]
     pub(super) fn for_test(until: i64, bound: Bound, kind: PlanKind, reset: Option<i64>) -> Self {
         Self {
-            until,
+            until: Some(until),
             bound,
             kind,
             reset,
@@ -414,7 +396,7 @@ impl Plan {
 /// A reset wait has no timed bound. The router builds one only from a reset
 /// strictly ahead of the clock and within five hours, so its reset is the
 /// limit event it waits for: the wait ends there, or sooner on a login with
-/// room or a login change. The configured length does not shorten it.
+/// room or a login change.
 ///
 /// There is no five-hour ceiling here either. The five-hour rule decides
 /// which wait a limit earns, and the router applies it once: a reset beyond
@@ -425,7 +407,7 @@ impl Plan {
 /// even for a reset no caller should have passed in.
 pub(crate) fn plan(now: i64, reset: i64) -> Plan {
     Plan {
-        until: reset.max(now).saturating_add(MARGIN),
+        until: Some(reset.max(now).saturating_add(MARGIN)),
         bound: Bound::ResetMargin,
         kind: PlanKind::Reset,
         reset: Some(reset),
@@ -436,25 +418,18 @@ pub(crate) fn plan(now: i64, reset: i64) -> Plan {
 /// The deadline for a capacity wait starting at `now`.
 ///
 /// A `reset` still ahead of `now` is the deadline, plus the margin, however
-/// far away it is and whatever `max` says: the failed login has recovered
-/// there, and nothing else on a timer runs the step before it. A weekly
-/// limit days away is waited for once. The router has already held the
-/// reset to its kind's window ([`held`]).
+/// far away it is: the failed login has recovered there, and nothing else
+/// on a timer runs the step before it. A weekly limit days away is waited
+/// for once. The router has already held the reset to its kind's window
+/// ([`held`]).
 ///
 /// With no reset ahead (none stated, credits, a reset already passed, a
-/// bare 429) the deadline is the outer bound `max` from now, the one timer
-/// left (see the module docs). Reaching it retries the step (issue #2911).
-///
-/// `max` has already been floored at [`MIN_WAIT_SECS`] where it was read, and
-/// the reset row is only built for a reset still ahead of `now`, so the
-/// deadline is always after `now`.
-pub(crate) fn plan_capacity(now: i64, reset: Option<i64>, max: Option<u64>) -> Plan {
+/// bare 429) there is no deadline: the wait ends on a login with room or a
+/// login change, and on nothing timed (issue #2911).
+pub(crate) fn plan_capacity(now: i64, reset: Option<i64>) -> Plan {
     let (until, bound) = match reset.filter(|r| *r > now) {
-        Some(r) => (r.saturating_add(MARGIN), Bound::ResetMargin),
-        None => (
-            now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX))),
-            Bound::MaxWait,
-        ),
+        Some(r) => (Some(r.saturating_add(MARGIN)), Bound::ResetMargin),
+        None => (None, Bound::Unbounded),
     };
     Plan {
         until,
@@ -465,29 +440,22 @@ pub(crate) fn plan_capacity(now: i64, reset: Option<i64>, max: Option<u64>) -> P
     }
 }
 
-/// The deadline for a login-change wait starting at `now`: the outer bound
-/// `max` from now. There is no reset row, because the limit stated none.
-/// The login changing is the event this wait is for; the outer bound runs
-/// the step again when no change comes, which on a host with no rotator is
-/// the only thing that would (see the module docs).
+/// The plan for a login-change wait: no deadline. The limit stated no
+/// reset, and the login changing is the event this wait is for, so it ends
+/// on that and on nothing timed (issue #2911).
 ///
 /// The plan's kind is [`PlanKind::Reset`] on purpose: the kind says what
-/// the deadline means, and reaching this one retries the step, as reaching a
-/// reset wait's own deadline does. What this wait does *not* consult is
-/// carried by [`Plan::capacity_may_end`] instead: no reading says whether
-/// the next login's organisation has credit, and the rotator picks what goes
-/// into `~/.claude` in any case.
-pub(crate) fn plan_login_change(now: i64, max: Option<u64>) -> Plan {
-    let until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
+/// ending the wait means, and a login change retries the step under the
+/// login now live, as a reset wait's end does. What this wait does *not*
+/// consult is carried by [`Plan::capacity_may_end`] instead: no reading
+/// says whether the next login's organisation has credit, and the rotator
+/// picks what goes into `~/.claude` in any case.
+pub(crate) fn plan_login_change() -> Plan {
     Plan {
-        until: until.max(now),
-        bound: Bound::MaxWait,
+        until: None,
+        bound: Bound::Unbounded,
         kind: PlanKind::Reset,
         reset: None,
         login_change: true,
     }
-}
-
-fn secs(v: u64) -> i64 {
-    i64::try_from(v).unwrap_or(i64::MAX)
 }

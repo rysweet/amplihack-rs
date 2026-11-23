@@ -26,7 +26,7 @@
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, describe, events, sha256_hex, text};
+use crate::issue_1618_fixture::{Fixture, WEEKLY_TEXT, describe, events, sha256_hex, text};
 use std::io::Write;
 use std::process::{Child, Output, Stdio};
 use std::time::Duration;
@@ -167,18 +167,20 @@ fn a_prompt_in_argv_is_not_captured() {
 ///
 /// Renamed from `a_limit_still_failing_after_the_wait_ends_the_step_and_leaves_no_capture`,
 /// which asserted that the third limit ended the step: the re-entry used the
-/// rest of the step's `max_wait_secs` budget and the next limit was refused.
-/// Both the budget and the refusal are gone. The copy is still removed when
-/// the step ends; the tests above and below that end a step with an error
-/// cover the removal on that path.
+/// rest of the step's budget and the next limit was refused. Both the budget
+/// and the refusal are gone. The copy is still removed when the step ends;
+/// the tests above and below that end a step with an error cover the removal
+/// on that path.
+///
+/// The limit is a weekly one whose stated reset is next year's, so every wait
+/// is held to the seven-day window and ends at that deadline, which the test
+/// clock reaches at once.
 #[test]
 fn a_limit_that_keeps_coming_back_is_waited_out_each_time_with_the_same_prompt() {
     let f = Fixture::new();
     let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
-    // The shortest length a wait may be given, so the five waits stay short
-    // on the test clock whatever kind of wait each one is.
     c.env("LIMIT_CALLS", "5")
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60")
+        .env("LIMIT_MESSAGE", WEEKLY_TEXT)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -684,8 +686,8 @@ fn an_attempt_that_succeeds_on_a_cut_short_prompt_does_not_make_the_step_succeed
 /// The supervisor must then end the step with the prompt-loss ending,
 /// `failed reason=prompt_cut_short`, and pass the limit result up, with the
 /// first attempt's held-back stdout. Before issue #2816 the flag was read
-/// only by `for_attempt(2)`, so the step announced a wait, waited up to
-/// `max_wait_secs`, and then ended in an error with that output discarded.
+/// only by `for_attempt(2)`, so the step announced a wait, waited it out,
+/// and then ended in an error with that output discarded.
 /// The ending used to be `skipped reason=piped_prompt`,
 /// which read as a wait refused to a limit; it is a lost prompt.
 #[test]

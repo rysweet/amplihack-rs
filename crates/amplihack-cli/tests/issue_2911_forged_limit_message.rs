@@ -15,8 +15,7 @@ const FORGED: &str = "You've hit your weekly limit · resets 1pm (America/Los_An
 fn forged_text_never_appears_in_any_wait_line() {
     let f = Fixture::new();
     let mut c = f.step();
-    c.env("LIMIT_MESSAGE", FORGED)
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "120");
+    c.env("LIMIT_MESSAGE", FORGED);
     let out = f.run(&mut c);
     let err = text(&out.stderr);
     for l in err.lines().filter(|l| l.starts_with(WAIT_PREFIX)) {
@@ -45,8 +44,7 @@ fn forged_text_never_reaches_the_rotate_log() {
     fs::create_dir_all(f.home.join(".claude")).unwrap();
     let mut c = f.step();
     c.env_remove("CLAUDE_CONFIG_DIR")
-        .env("LIMIT_MESSAGE", FORGED)
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "120");
+        .env("LIMIT_MESSAGE", FORGED);
     let out = f.run(&mut c);
     let log =
         fs::read_to_string(f.profiles.join(".auto-switch.d/rotate/rotate.log")).unwrap_or_default();

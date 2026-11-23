@@ -1107,54 +1107,44 @@ backend configuration reference.
 
 **Type:** string (boolean)
 **Values:** `true` or `1` (on) | `false` or `0` (off)
-**Default:** on; off in CI (a `CI` other than empty, `0` or `false` in any case) when nothing sets it
+**Default:** on, in CI as elsewhere (`CI` is not read)
 **Config key:** [`recipe.usage_limit_wait`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
 Turns the usage-limit wait on or off: a recipe agent step that fails on a
 Claude usage limit waits for the reset, or for a login with capacity, and
 runs once more instead of ending the run. A reset more than five hours away
-or an unreadable reset is waited out only by a
-[capacity wait](./profile-command.md#capacity-wait), when another login
-could take over. An organisation spend limit with no reset is waited for
-only by a [login-change wait](./profile-command.md#login-change-wait), on a
-step running on `~/.claude` with a rotator running; on any other step it
-ends the run at once, whatever room other logins have. Overrides the
-config files; empty means unset; an invalid value prints one warning and is
-ignored. See the
+is waited out by a [capacity wait](./profile-command.md#capacity-wait) that
+still ends at that reset. An unreadable reset starts a capacity wait with no
+deadline, and an organisation spend limit with no reset starts a
+[login-change wait](./profile-command.md#login-change-wait) with no deadline;
+each ends when a login has room or the login changes. `false` or `0` turns the
+wait off, and a limit is then passed up at once as `skipped reason=disabled`.
+It is the only usage-limit wait setting: no variable sets how long a wait
+lasts ([AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
+is no longer read). Overrides the config files; empty means unset; an invalid
+value prints one warning and is ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).
 
 ---
 
 ### AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS
 
-**Type:** string (non-negative integer, seconds)
-**Default:** `21600` (six hours)
-**Config key:** [`recipe.usage_limit_max_wait_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
-**Read by:** `amplihack claude -p` when it runs as a recipe agent step
+**Status:** no longer read
+**Config key:** none; `recipe.usage_limit_max_wait_secs` has been removed and is reported as an `unknown key`
 
-The outer bound of one wait whose limit stated no reset still ahead. It is not
-a per-step budget: a step that meets another limit after a wait waits again
-with the same bound, and nothing ends the chain. It does not shorten a wait on
-a stated reset, which ends at the reset (plus 120 s), however far away, or
-sooner on room or a login change. A [capacity wait](./profile-command.md#capacity-wait)
-with no usable reset, and a [login-change wait](./profile-command.md#login-change-wait)
-on an organisation spend limit with no reset, last up to this bound.
+A usage-limit wait has no length setting: a wait for a stated reset ends at
+that reset, and one whose limit stated no usable reset ends when a login has
+room or the login changes. While the wait is on, a step that finds this
+variable exported with a value prints one warning and otherwise ignores it:
 
-Because a step still limited when such a wait reaches the bound runs its agent
-again, it is also how often such a step re-asks the harness, and each ask is a
-fresh agent launch. It is the one timer left on a wait; see
-[the timed parts that remain](./usage-limit-waits.md#the-timed-parts-that-remain).
+```
+warning: AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS is no longer read. A usage-limit wait has no timed bound: one whose limit stated a reset ends at that reset, and one whose limit stated none ends when a login has room or the login changes (`amplihack profile switch` makes that change). Set recipe.usage_limit_wait = false (AMPLIHACK_USAGE_LIMIT_WAIT=0) to stop steps waiting
+```
 
-The length has a floor of 60 seconds. `0` means 60 seconds, not "do not wait";
-set `AMPLIHACK_USAGE_LIMIT_WAIT=false` to turn waiting off. A value below 600
-seconds, the rotator's own default cycle, prints one warning naming that cost;
-it is not refused. See
-[Usage-limit waits](./usage-limit-waits.md#what-max_wait_secs-means).
-
-The variable may set a value above the default. Overrides the config files;
-empty means unset; an invalid value prints one warning, naming the variable
-only, and is ignored.
+Unset it to clear the warning. To stop steps waiting, set
+[AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait) to `0`. See
+[A wait has no length setting](./usage-limit-waits.md#a-wait-has-no-length-setting).
 
 ---
 

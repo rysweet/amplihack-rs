@@ -20,13 +20,13 @@ fn start(reset: i64, until: i64, bound: Bound) -> Event {
     Event::Start {
         harness: Harness::Claude,
         reset: Some(reset),
-        until,
+        until: Some(until),
         bound,
         shape: Shape::Reset,
     }
 }
 
-fn capacity_start(reset: Option<i64>, until: i64, bound: Bound) -> Event {
+fn capacity_start(reset: Option<i64>, until: Option<i64>, bound: Bound) -> Event {
     Event::Start {
         harness: Harness::Claude,
         reset,
@@ -50,9 +50,12 @@ fn start_line_matches_the_documented_example() {
 
 #[test]
 fn times_use_the_zone_offset_with_a_colon() {
-    let l = line(&start(T0, T0, Bound::MaxWait), &chrono_tz::Asia::Kolkata);
+    let l = line(
+        &start(T0, T0, Bound::ResetMargin),
+        &chrono_tz::Asia::Kolkata,
+    );
     assert!(
-        l.ends_with("until=2026-10-18 20:30:00 +05:30 bound=max_wait"),
+        l.ends_with("until=2026-10-18 20:30:00 +05:30 bound=reset+margin"),
         "{l}"
     );
 }
@@ -61,8 +64,16 @@ fn times_use_the_zone_offset_with_a_colon() {
 fn every_other_event_has_its_documented_fields() {
     let cases = [
         (
-            Event::Progress { remaining: 1740 },
+            Event::Progress {
+                remaining: Some(1740),
+            },
             "progress remaining=1740s",
+        ),
+        // Issue #2911: a wait whose limit stated no usable reset has no
+        // deadline, so it has nothing to count down to.
+        (
+            Event::Progress { remaining: None },
+            "progress remaining=none",
         ),
         (Event::End(End::ResetReached), "end reason=reset reached"),
         (Event::End(End::LoginChanged), "end reason=login changed"),
@@ -71,7 +82,6 @@ fn every_other_event_has_its_documented_fields() {
             "end reason=rotator capacity",
         ),
         (Event::End(End::SessionEnded), "end reason=session ended"),
-        (Event::End(End::MaxReached), "end reason=max reached"),
         (Event::End(End::Signal(libc::SIGTERM)), "end reason=signal"),
         (Event::Resume { attempt: 2 }, "resume attempt=2"),
         (Event::Skipped(Skip::Disabled), "skipped reason=disabled"),
@@ -90,11 +100,13 @@ fn every_other_event_has_its_documented_fields() {
         // A prompt cut short is a failure of the step's
         // input, not a skipped wait, and says so.
         (Event::PromptCutShort, "failed reason=prompt_cut_short"),
-        (
-            Event::End(End::CapacityExpired),
-            "end reason=capacity expired",
-        ),
         (Event::End(End::OtherCapacity), "end reason=login capacity"),
+        (
+            Event::NoFileEvents {
+                why: "watch_failed",
+            },
+            "no_file_events reason=watch_failed",
+        ),
     ];
     for (event, rest) in cases {
         assert_eq!(line(&event, &LA), format!("{PREFIX}{rest}"));
@@ -105,13 +117,15 @@ fn every_other_event_has_its_documented_fields() {
 fn every_line_is_one_printable_ascii_line_even_for_extreme_values() {
     let events = [
         start(i64::MAX, i64::MIN, Bound::ResetMargin),
-        start(i64::MIN, i64::MAX, Bound::MaxWait),
-        start(0, 0, Bound::MaxWait),
-        capacity_start(None, i64::MAX, Bound::MaxWait),
-        capacity_start(Some(i64::MIN), i64::MIN, Bound::ResetMargin),
+        start(i64::MIN, i64::MAX, Bound::ResetMargin),
+        start(0, 0, Bound::ResetMargin),
+        capacity_start(None, None, Bound::Unbounded),
+        capacity_start(Some(i64::MIN), Some(i64::MIN), Bound::ResetMargin),
+        capacity_start(Some(i64::MAX), None, Bound::Unbounded),
         Event::Progress {
-            remaining: u64::MAX,
+            remaining: Some(u64::MAX),
         },
+        Event::Progress { remaining: None },
         Event::Resume { attempt: u32::MAX },
         Event::End(End::Signal(i32::MIN)),
     ];
@@ -131,20 +145,23 @@ fn every_line_is_one_printable_ascii_line_even_for_extreme_values() {
 fn a_capacity_start_line_names_the_wait_after_the_reason() {
     assert_eq!(
         line(
-            &capacity_start(Some(T0 + 1800), T0 + 21_600, Bound::MaxWait),
+            &capacity_start(Some(T0 + 86_400), Some(T0 + 86_520), Bound::ResetMargin),
             &LA
         ),
         "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude \
-         reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 14:00:00 -07:00 bound=max_wait"
+         reset=2026-10-19 08:00:00 -07:00 until=2026-10-19 08:02:00 -07:00 bound=reset+margin"
     );
 }
 
+/// Issue #2911: a wait whose limit stated no usable reset has no deadline,
+/// and its line says so in both fields rather than naming a time that no
+/// event is tied to.
 #[test]
-fn a_capacity_start_line_with_no_reset_says_none() {
+fn a_capacity_start_line_with_no_reset_has_no_deadline() {
     assert_eq!(
-        line(&capacity_start(None, T0, Bound::MaxWait), &LA),
+        line(&capacity_start(None, None, Bound::Unbounded), &LA),
         "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude \
-         reset=none until=2026-10-18 08:00:00 -07:00 bound=max_wait"
+         reset=none until=none bound=none"
     );
 }
 
@@ -156,7 +173,7 @@ fn a_capacity_start_line_with_no_reset_says_none() {
 // see that it is waiting for capacity rather than hung. The reason comes
 // first, because that is the question a reader of a waiting step asks.
 
-fn waiting(why: Waiting, until: i64) -> Event {
+fn waiting(why: Waiting, until: Option<i64>) -> Event {
     Event::WaitingForCapacity {
         harness: Harness::Claude,
         why,
@@ -167,9 +184,19 @@ fn waiting(why: Waiting, until: i64) -> Event {
 #[test]
 fn issue_2911_the_waiting_line_names_the_reason_first_then_the_harness() {
     assert_eq!(
-        line(&waiting(Waiting::ResetTooFar, T0 + 21_600), &LA),
+        line(&waiting(Waiting::ResetTooFar, Some(T0 + 21_600)), &LA),
         "amplihack.recipe.usage_limit_wait waiting_for_capacity reason=reset_too_far \
          harness=claude until=2026-10-18 14:00:00 -07:00"
+    );
+}
+
+/// A wait with nothing to end at says so: `until=none`, never a time.
+#[test]
+fn issue_2911_a_waiting_line_with_no_deadline_says_none() {
+    assert_eq!(
+        line(&waiting(Waiting::NoReset, None), &LA),
+        "amplihack.recipe.usage_limit_wait waiting_for_capacity reason=no_reset \
+         harness=claude until=none"
     );
 }
 
@@ -183,7 +210,7 @@ fn issue_2911_each_reason_has_its_own_token() {
         (Waiting::PassedReset, "passed_reset"),
     ];
     for (why, token) in rows {
-        let l = line(&waiting(why, T0), &LA);
+        let l = line(&waiting(why, Some(T0)), &LA);
         assert!(
             l.contains(&format!("waiting_for_capacity reason={token} ")),
             "{l}"
@@ -196,7 +223,7 @@ fn issue_2911_each_reason_has_its_own_token() {
 /// instant.
 #[test]
 fn issue_2911_the_waiting_line_is_one_printable_ascii_line_for_any_instant() {
-    for until in [i64::MIN, 0, T0, i64::MAX] {
+    for until in [Some(i64::MIN), Some(0), Some(T0), Some(i64::MAX), None] {
         for why in [
             Waiting::ResetTooFar,
             Waiting::NoReset,
@@ -219,28 +246,28 @@ fn issue_2911_the_waiting_line_is_one_printable_ascii_line_for_any_instant() {
 /// cannot start a wait from it.
 #[test]
 fn issue_2911_the_waiting_line_starts_no_wait_of_its_own() {
-    let l = line(&waiting(Waiting::Credits, T0), &LA);
+    let l = line(&waiting(Waiting::Credits, None), &LA);
     assert_eq!(limit_patterns::limit_message(l.as_bytes(), b"", T0), None);
 }
 
 // Issue #2857: a re-entry on a usage limit that states a reset the clock has
 // already passed is a capacity wait, and its `start` line prints that reset.
 // The reset is whatever the message stated, so it can be any past instant: the
-// line must still be one well-formed line.
+// line must still be one well-formed line. Such a wait has no deadline
+// (issue #2911).
 
 #[test]
 fn issue_2857_a_capacity_start_line_for_a_long_past_reset_is_well_formed() {
-    let until = T0 + 3600;
     for (reset, shown) in [
         (0, "1969-12-31 16:00:00 -08:00"),
         (1, "1969-12-31 16:00:01 -08:00"),
         (T0 - 120, "2026-10-18 07:58:00 -07:00"),
     ] {
         assert_eq!(
-            line(&capacity_start(Some(reset), until, Bound::MaxWait), &LA),
+            line(&capacity_start(Some(reset), None, Bound::Unbounded), &LA),
             format!(
                 "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity \
-                 harness=claude reset={shown} until=2026-10-18 09:00:00 -07:00 bound=max_wait"
+                 harness=claude reset={shown} until=none bound=none"
             ),
             "reset {reset}"
         );
@@ -250,7 +277,7 @@ fn issue_2857_a_capacity_start_line_for_a_long_past_reset_is_well_formed() {
 #[test]
 fn issue_2857_an_instant_the_zone_cannot_write_is_written_as_seconds() {
     let l = line(
-        &capacity_start(Some(i64::MIN), T0 + 3600, Bound::MaxWait),
+        &capacity_start(Some(i64::MIN), Some(T0 + 3600), Bound::ResetMargin),
         &LA,
     );
     assert!(
@@ -260,13 +287,9 @@ fn issue_2857_an_instant_the_zone_cannot_write_is_written_as_seconds() {
     assert!(l.is_ascii() && !l.contains('\n'), "{l:?}");
 }
 
-/// Issue #3037: no line the wait writes says the step
-/// failed on a limit. `capacity_expired`, `spend_limit` and `already_waited`
-/// went in #2911; the last closing line, `failed reason=step_timeout`, went
-/// with the step-timeout row, because nothing enforces that variable on a
-/// step and the wait was the only code that turned it into an ending. A
-/// chain of waits now ends only when the limit lifts, on a stop signal or
-/// with the step's session.
+/// Issue #3037: no line the wait writes says the step failed on a limit,
+/// and (issue #2911) no end of a wait is time running out: every end is a
+/// limit event, a stop signal or the step's session ending.
 ///
 /// The match is exhaustive, so a new way for a wait to end does not compile
 /// here until this test says what its line reads.
@@ -275,10 +298,8 @@ fn issue_3037_no_end_of_a_wait_closes_the_step_as_failed() {
     fn every(e: End) -> End {
         match e {
             End::ResetReached
-            | End::MaxReached
             | End::LoginChanged
             | End::RotatorCapacity
-            | End::CapacityExpired
             | End::OtherCapacity
             | End::SessionEnded
             | End::Signal(_) => e,
@@ -286,10 +307,8 @@ fn issue_3037_no_end_of_a_wait_closes_the_step_as_failed() {
     }
     for end in [
         End::ResetReached,
-        End::MaxReached,
         End::LoginChanged,
         End::RotatorCapacity,
-        End::CapacityExpired,
         End::OtherCapacity,
         End::SessionEnded,
         End::Signal(libc::SIGTERM),
@@ -299,18 +318,21 @@ fn issue_3037_no_end_of_a_wait_closes_the_step_as_failed() {
             !l.contains("failed") && !l.contains("timeout"),
             "a wait's end is not a step's failure: {l}"
         );
+        assert!(
+            !l.contains("expired") && !l.contains("max"),
+            "no end of a wait is a timer running out: {l}"
+        );
     }
 }
 
-/// The same change seen from a wait that runs out: the step has not failed,
-/// and the lines it is writing are not a failure to classify. A capacity wait reaching its deadline is followed by `resume`,
-/// so nothing in that tail claims the step ended on a limit.
+/// A wait with no deadline that an event ends is followed by `resume`, so
+/// nothing in that tail claims the step ended on a limit.
 #[test]
 fn issue_2911_a_wait_that_retries_writes_no_closing_line() {
     let lines = [
-        line(&capacity_start(None, T0 + 21_600, Bound::MaxWait), &LA),
-        line(&Event::Progress { remaining: 60 }, &LA),
-        line(&Event::End(End::CapacityExpired), &LA),
+        line(&capacity_start(None, None, Bound::Unbounded), &LA),
+        line(&Event::Progress { remaining: None }, &LA),
+        line(&Event::End(End::OtherCapacity), &LA),
         line(&Event::Resume { attempt: 2 }, &LA),
     ];
     let tail = lines.join("\n");
@@ -323,12 +345,12 @@ fn issue_2911_a_wait_that_retries_writes_no_closing_line() {
 #[test]
 fn no_event_can_hold_a_name_a_path_or_an_address() {
     let events = [
-        capacity_start(None, T0, Bound::MaxWait),
+        capacity_start(None, None, Bound::Unbounded),
         Event::End(End::OtherCapacity),
         Event::WaitingForCapacity {
             harness: Harness::Claude,
             why: Waiting::ResetTooFar,
-            until: T0 + 21_600,
+            until: Some(T0 + 21_600),
         },
     ];
     for e in &events {

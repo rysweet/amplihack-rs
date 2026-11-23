@@ -63,13 +63,14 @@ use std::sync::mpsc::{RecvTimeoutError, channel};
 const RESET_START: &str = "start reason=usage_limit harness=claude \
                            reset=2026-10-18 08:30:00 -07:00 \
                            until=2026-10-18 08:32:00 -07:00 bound=reset+margin";
+/// A login-change wait has no deadline (issue #2911): it ends when the
+/// login changes.
 const SPEND_START: &str = "start reason=spend_limit wait=login_change harness=claude reset=none \
-                           until=2026-10-18 14:00:00 -07:00 bound=max_wait";
+                           until=none bound=none";
 /// A login-change wait has no reset to end on, so since issue #2911 it says
 /// so on a `waiting_for_capacity` line immediately before its `start`. Its
 /// reason is `spend_limit`, the limit that is the only thing to start one.
-const SPEND_WAITING: &str = "waiting_for_capacity reason=spend_limit harness=claude \
-                             until=2026-10-18 14:00:00 -07:00";
+const SPEND_WAITING: &str = "waiting_for_capacity reason=spend_limit harness=claude until=none";
 
 /// The stub `claude`: limited for its first `$LIMIT_CALLS` calls with
 /// `$LIMIT_MESSAGE`, and, on the calls named in `$LEDGER_ON_CALL`, a
@@ -598,9 +599,7 @@ fn a_spend_limit_wait_ends_on_a_login_change_during_the_wait_whatever_the_room()
     let f = with_profiles();
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", SPEND_TEXT)
-        .env("LIMIT_CALLS", "1")
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "3000");
+    c.env("LIMIT_MESSAGE", SPEND_TEXT).env("LIMIT_CALLS", "1");
     real_clock(&mut c);
     c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "100");
     let profiles = f.profiles.clone();

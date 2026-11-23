@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -65,18 +66,34 @@ pub(crate) struct Signals {
     int: Arc<AtomicBool>,
     /// The last stop signal seen, or 0.
     seen: AtomicI32,
+    /// The read end of a socket each stop signal writes a byte to, so a
+    /// usage-limit wait blocked on file events wakes on a stop signal at
+    /// once (`limit_wait::wake`). Made here, with the flags, so that every
+    /// wait has one: a supervisor that cannot make it cannot catch stop
+    /// signals, and stands down as it does when the flags cannot be
+    /// registered.
+    interrupt: UnixStream,
     ids: Vec<signal_hook::SigId>,
 }
 
 impl Signals {
     pub(crate) fn register() -> std::io::Result<Self> {
+        let (interrupt, write) = UnixStream::pair()?;
+        interrupt.set_nonblocking(true)?;
+        write.set_nonblocking(true)?;
         let mut s = Self {
             term: Arc::new(AtomicBool::new(false)),
             hup: Arc::new(AtomicBool::new(false)),
             int: Arc::new(AtomicBool::new(false)),
             seen: AtomicI32::new(0),
+            interrupt,
             ids: Vec::new(),
         };
+        // The flags are registered before the socket's writers, so that by
+        // the time a wait woken by the byte checks its flags, the signal's
+        // flag is set: signal-hook runs a signal's actions in the order they
+        // were registered. A failure part way drops `s`, which unregisters
+        // whatever was registered.
         for (sig, flag) in [
             (libc::SIGTERM, Arc::clone(&s.term)),
             (libc::SIGHUP, Arc::clone(&s.hup)),
@@ -84,7 +101,16 @@ impl Signals {
         ] {
             s.ids.push(signal_hook::flag::register(sig, flag)?);
         }
+        for sig in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+            let w = write.try_clone()?;
+            s.ids.push(signal_hook::low_level::pipe::register(sig, w)?);
+        }
         Ok(s)
+    }
+
+    /// The socket a stop signal makes readable (see the field).
+    pub(crate) fn interrupt(&self) -> &UnixStream {
+        &self.interrupt
     }
 
     /// Passes SIGTERM and SIGHUP on to `pid` and remembers every stop signal.

@@ -13,14 +13,13 @@
 //!   the run log has a `waiting_for_capacity` line, a capacity start line and
 //!   `end reason=rotator capacity`, and the run is never classed
 //!   `usage_limit`.
-//! - expiry: a wait whose limit states no reset and that nothing lifts ends
-//!   `capacity expired` and step-02
-//!   retries all the same (issue #2911), so the run still exits 0 with its
-//!   verdict. This used to end the run: the wait wrote `failed
-//!   reason=capacity_expired` and the runner classed it `usage_limit`. A
-//!   usage limit is no longer a terminal outcome for the evaluator; only the
-//!   step's own timeout and output with no limit message in it are, as
-//!   docs/reference/loop-health-evaluator.md now documents.
+//! - no reset: a wait whose limit states no reset has no deadline (issue
+//!   #2911); the login change the test makes ends it and step-02 retries, so
+//!   the run still exits 0 with its verdict. This used to end the run: the
+//!   wait wrote `failed reason=capacity_expired` and the runner classed it
+//!   `usage_limit`. A usage limit is no longer a terminal outcome for the
+//!   evaluator; only the wait turned off and output with no limit message in
+//!   it are, as docs/reference/loop-health-evaluator.md documents.
 //!
 //! Both stubs are written to the test's temporary directory and run by
 //! absolute path. HOME, the profile root and the config dir all lie under
@@ -186,8 +185,8 @@ fn g1_a_limited_evaluator_step_is_retried_and_returns_its_verdict() {
     );
 }
 
-/// Issue #2911: a capacity wait that nothing lifts does not fail the
-/// evaluator step. It expires, the step retries, and the verdict arrives.
+/// Issue #2911: a capacity wait with no reset does not fail the evaluator
+/// step. It waits for an event, the step retries, and the verdict arrives.
 ///
 /// This used to assert the opposite: a wait that reached its deadline wrote
 /// `failed reason=capacity_expired`, step-02 ran once, produced no verdict,
@@ -199,33 +198,32 @@ fn g1_a_limited_evaluator_step_is_retried_and_returns_its_verdict() {
 /// docs/reference/loop-health-evaluator.md, "When the wait does not lift the
 /// limit".
 ///
-/// Nothing here can end the wait early: the rotator's ledger names a cycle
+/// Nothing on the host ends the wait: the rotator's ledger names a cycle
 /// from before the step and no reading shows a login with room, and the
-/// limit states no reset, so the wait runs its length. That length is the
-/// 60-second floor a configured `0` now reads as, on the fixture's virtual
-/// clock, so it costs no real time.
+/// limit states no reset, so the wait has no deadline. The test changes the
+/// login once the wait is under way, as a person would.
 #[test]
-fn g1_an_evaluator_wait_that_expires_retries_and_returns_its_verdict() {
+fn g1_an_evaluator_wait_with_no_reset_retries_on_an_event_and_returns_its_verdict() {
     in_quiet_process(
         module_path!(),
-        "g1_an_evaluator_wait_that_expires_retries_and_returns_its_verdict",
+        "g1_an_evaluator_wait_with_no_reset_retries_on_an_event_and_returns_its_verdict",
         || {
             let f = with_profiles();
             x_is_live(&f);
             let _rotator = rotator_running(&f);
-            let out = f.run(&mut evaluator_cmd(
-                &f,
-                &[
-                    ("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0"),
-                    (
+            let out = f.run_with_a_login_change_in(
+                &f.home.join(".claude"),
+                &mut evaluator_cmd(
+                    &f,
+                    &[(
                         "LIMIT_MESSAGE",
                         "You've hit your session limit · try again later",
-                    ),
-                ],
-            ));
+                    )],
+                ),
+            );
 
             assert!(out.status.success(), "{}", describe(&out));
-            assert_eq!(f.count(STEP), 2, "the expired wait still earns a retry");
+            assert_eq!(f.count(STEP), 2, "the wait earned a retry");
             assert_eq!(verdicts(&f), 1, "the verdict is printed once");
             assert!(
                 usage_limit_class_lines(&out).is_empty(),
@@ -233,13 +231,10 @@ fn g1_an_evaluator_wait_that_expires_retries_and_returns_its_verdict() {
                 usage_limit_class_lines(&out)
             );
             let ev = events(&out);
-            assert!(
-                ev.iter().any(|l| l == "end reason=capacity expired"),
-                "{ev:?}"
-            );
+            assert!(ev.iter().any(|l| l == "end reason=login changed"), "{ev:?}");
             assert!(
                 ev.iter().any(|l| l == "resume attempt=2"),
-                "the step retries after the wait expired: {ev:?}"
+                "the step retries after the wait: {ev:?}"
             );
             assert!(
                 !ev.iter()

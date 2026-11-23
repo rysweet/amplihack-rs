@@ -4,12 +4,12 @@
 //!
 //! - a write to a file the wait's checks read ([`Watch::files`]): inotify on
 //!   Linux, kqueue on macOS;
-//! - a stop signal (SIGTERM, SIGHUP, SIGINT), through a socket the signal
-//!   handlers write a byte to;
+//! - a stop signal (SIGTERM, SIGHUP, SIGINT), through the socket the step's
+//!   signal handlers write a byte to (`attempt::Signals`);
 //! - the exit of the process that started the step: a pidfd on Linux,
 //!   `EVFILT_PROC` on macOS;
 //! - the time the wait asks for, which is its deadline or its next progress
-//!   line.
+//!   line. The progress wake reads no file.
 //!
 //! A directory that does not exist yet is watched through the nearest one
 //! above it that does, for any name, so a rotator or a login that appears
@@ -19,12 +19,15 @@
 //! A file can be rewritten many times a second (`$HOME/.claude.json` is
 //! written by every Claude session on the host), so writes that arrive
 //! within [`READ_SPACING`] of the last read are gathered into one read. The
-//! spacing only delays a read that a write has already asked for; nothing
-//! is read without one.
+//! spacing starts only from a write and only delays the read that write
+//! asked for, blocking on events while it lasts; nothing is read without a
+//! write, and nothing is slept.
 //!
 //! Where no file event can be had (another platform, or a host out of
-//! inotify instances), the wait says so once, on a `no_file_events` line,
-//! and reads its files at each wake for its progress line instead.
+//! inotify instances), the wait says so once, on a `no_file_events` line and
+//! in a sentence beside it, and reads nothing more: it cannot see a login
+//! gain room or change, so it ends on its reset, a stop signal or the end of
+//! its session. It does not stand in a timer for the events it lacks.
 
 use super::events::{Event, log};
 use super::fingerprint::Watch;
@@ -63,10 +66,10 @@ enum Woke {
 }
 
 /// The wait's event source, for as long as one wait lasts.
-pub(super) struct Wake {
-    /// The read end of the socket the stop-signal handlers write to.
-    interrupt: Option<UnixStream>,
-    ids: Vec<signal_hook::SigId>,
+pub(super) struct Wake<'a> {
+    /// The read end of the socket the stop-signal handlers write to, owned
+    /// by the step's `Signals`.
+    interrupt: &'a UnixStream,
     files: Vec<(PathBuf, &'static str)>,
     parent: libc::pid_t,
     parent_gone: bool,
@@ -77,17 +80,12 @@ pub(super) struct Wake {
     noted: bool,
 }
 
-impl Wake {
+impl<'a> Wake<'a> {
     /// The event source for a wait on `watch`'s files, for a step started
-    /// by `parent`.
-    pub(super) fn new(watch: &Watch, parent: libc::pid_t) -> Self {
-        let (interrupt, ids) = match interrupt_socket() {
-            Ok((sock, ids)) => (Some(sock), ids),
-            Err(_) => (None, Vec::new()),
-        };
+    /// by `parent`, woken by a stop signal through `interrupt`.
+    pub(super) fn new(watch: &Watch, parent: libc::pid_t, interrupt: &'a UnixStream) -> Self {
         let mut wake = Self {
             interrupt,
-            ids,
             files: watch.files(),
             parent,
             parent_gone: false,
@@ -132,6 +130,10 @@ impl Wake {
                 self.drain_interrupt();
                 false
             }
+            // The event source failed. It is not made again here, since a
+            // source that fails each time it is made would turn this into a
+            // loop of reads; the files are read once, for any write it may
+            // have missed, and the wait goes on without file events.
             Err(_) => {
                 self.events = None;
                 self.note("wait_failed");
@@ -175,42 +177,34 @@ impl Wake {
     /// Makes the watches again for the directories the files need now.
     fn rewatch(&mut self) {
         self.events = None;
-        let Some(sock) = &self.interrupt else {
-            self.note("no_signal_socket");
-            return;
-        };
         // SAFETY: getppid(2) has no preconditions. A step whose session has
         // already ended stops at its first check, so nothing is watched.
         if unsafe { libc::getppid() } != self.parent {
             return;
         }
         let dirs = watched(&self.files);
-        match platform::Events::new(&dirs, &self.files, self.parent, sock) {
+        match platform::Events::new(&dirs, &self.files, self.parent, self.interrupt) {
             Ok(events) => self.events = Some(events),
             Err(e) if e.kind() == io::ErrorKind::Unsupported => self.note("unsupported"),
             Err(_) => self.note("watch_failed"),
         }
     }
 
-    /// Writes the `no_file_events` line once per wait.
+    /// Writes the `no_file_events` line, and the sentence beside it, once
+    /// per wait.
     fn note(&mut self, why: &'static str) {
         if !std::mem::replace(&mut self.noted, true) {
             log(&Event::NoFileEvents { why });
+            eprintln!("{NO_FILE_EVENTS}");
         }
     }
 
-    /// With no file events: blocks until `d` passes or a stop signal comes,
-    /// and asks for the files to be read when `d` passed.
+    /// With no file events: blocks until `d` passes or a stop signal comes.
+    /// Never asks for the files to be read, since no write can have been
+    /// seen; the wait checks the time, the signal and its session itself.
     fn block_without_events(&mut self, d: Duration) -> bool {
-        let Some(sock) = &self.interrupt else {
-            // No signal socket either: slices of a second, so a stop signal
-            // is still answered within one.
-            let slice = d.min(Duration::from_secs(1));
-            std::thread::sleep(slice);
-            return slice >= d;
-        };
         let mut fds = [libc::pollfd {
-            fd: sock.as_raw_fd(),
+            fd: self.interrupt.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         }];
@@ -219,53 +213,26 @@ impl Wake {
         let rc = unsafe { libc::poll(fds.as_mut_ptr(), 1, ms) };
         if rc > 0 {
             self.drain_interrupt();
-            return false;
         }
-        true
+        false
     }
 
     /// Reads away the bytes the signal handlers wrote, so the next wake does
     /// not return on the same signal.
     fn drain_interrupt(&mut self) {
-        if let Some(mut sock) = self.interrupt.as_ref() {
-            let mut buf = [0u8; 64];
-            while matches!(sock.read(&mut buf), Ok(n) if n > 0) {}
-        }
+        let mut sock = self.interrupt;
+        let mut buf = [0u8; 64];
+        while matches!(sock.read(&mut buf), Ok(n) if n > 0) {}
     }
 }
 
-impl Drop for Wake {
-    fn drop(&mut self) {
-        for id in self.ids.drain(..) {
-            signal_hook::low_level::unregister(id);
-        }
-    }
-}
-
-/// A socket whose read end becomes readable on SIGTERM, SIGHUP or SIGINT.
-/// The handlers are added beside the step's own flags (`attempt::Signals`),
-/// which still record which signal came.
-fn interrupt_socket() -> io::Result<(UnixStream, Vec<signal_hook::SigId>)> {
-    let (read, write) = UnixStream::pair()?;
-    read.set_nonblocking(true)?;
-    write.set_nonblocking(true)?;
-    let mut ids = Vec::new();
-    for sig in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
-        match write
-            .try_clone()
-            .and_then(|w| signal_hook::low_level::pipe::register(sig, w))
-        {
-            Ok(id) => ids.push(id),
-            Err(e) => {
-                for id in ids {
-                    signal_hook::low_level::unregister(id);
-                }
-                return Err(e);
-            }
-        }
-    }
-    Ok((read, ids))
-}
+/// What a wait with no file events prints beside its `no_file_events` line:
+/// static text, read by a person deciding whether to act.
+const NO_FILE_EVENTS: &str = "amplihack: this wait cannot watch its files, so it cannot see \
+                              another login gain room or the login change; it ends at its \
+                              reset, on a stop signal or when its session ends, and a wait \
+                              whose limit stated no reset waits for one of the last two. See \
+                              docs/reference/usage-limit-waits.md";
 
 /// The directories to watch for `files`, each once.
 fn watched(files: &[(PathBuf, &'static str)]) -> Vec<Watched> {

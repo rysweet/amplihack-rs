@@ -19,16 +19,15 @@
 # everything on its stdin, and reports a Claude usage limit on its first call
 # only. Nothing reaches a real account, a real agent or the network.
 #
-# The limit message carries its reset as an epoch a few minutes in the past.
-# Before issue #2911 that was the one form that gave a real wait a deadline it
-# had already passed, so the wait ended at once and the whole scenario took
-# seconds. Since #2911 a passed reset adds no deadline candidate at all: it
-# starts a capacity wait, `reason=passed_reset`, bounded by `max_wait_secs`
-# alone. The scenario therefore lowers that to MAX_WAIT_SECS, the 60-second
-# floor, so each case spends about a minute in its wait and the whole scenario
-# takes a few minutes. The debug-only clock seams of the Rust tests are
-# deliberately not used: CI runs this against the release binary it installs,
-# where those seams are compiled out.
+# The limit message carries its reset as an epoch a few seconds ahead, set
+# just before each case starts. That is a reset wait, which ends at its reset
+# plus the binary's two-minute margin, so each case spends about two minutes
+# in its wait and the whole scenario takes about eight. A reset already
+# behind the clock would not do: since issue #2911 that is a wait with no
+# deadline, which only an event ends, and case 3 runs inside the recipe
+# runner, where no log line says when to make one. The debug-only clock
+# seams of the Rust tests are deliberately not used: CI runs this against the
+# release binary it installs, where those seams are compiled out.
 #
 # Every scenario command runs under `env -i` with an explicit allowlist (see
 # scenario_env below): no token, key or setting from the caller's environment
@@ -139,8 +138,6 @@ mkdir -m 700 -- "$PROFILES" || { echo "FAIL: cannot create the profile root"; ec
 #   AMPLIHACK_ROTATE_AUTOSTART=0        no detached rotator outlives the scenario
 #   AMPLIHACK_GOVERNOR=off              the #1811 capacity governor would hold
 #                                       the exhausted reading before the wait
-#   AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS the outer bound of one wait, lowered to the
-#                                       60-second floor (issue #2911)
 scenario_env() {
   env -i \
     PATH="$TOOLS:$SYS_PATH" \
@@ -162,29 +159,27 @@ scenario_env() {
     AMPLIHACK_SKIP_REFLECTION=1 \
     AMPLIHACK_ROTATE_AUTOSTART=0 \
     AMPLIHACK_GOVERNOR=off \
-    AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS="$MAX_WAIT_SECS" \
     "$@"
 }
 mkdir -p -- "$WORK/tmp" || { echo "FAIL: cannot create the scratch TMPDIR"; echo "SCENARIO_FAILED"; exit 1; }
 
-# A reset five minutes ago. Issue #2911: a reset the clock has already passed
-# adds no deadline candidate, so the wait it starts runs for MAX_WAIT_SECS and
-# is named `passed_reset` rather than ending the moment it begins.
-LIMIT_EPOCH=$(( $(date +%s) - 300 ))
-
-# The outer bound of one capacity wait (issue #2911: a bound on one wait, not
-# a per-step budget), lowered to plan::MIN_WAIT_SECS. A smaller value would be raised to the floor
-# anyway and would print a warning, so 60 is the shortest honest setting.
-MAX_WAIT_SECS=60
+# The stated reset: RESET_AHEAD seconds after the moment `next_reset` is
+# called, which each case does just before it starts, so the reset is still
+# ahead when the limit is read. The wait ends at that reset plus the binary's
+# own margin (`plan::MARGIN`, 120 seconds), so one wait lasts WAIT_SECS.
+RESET_AHEAD=5
+WAIT_SECS=$(( RESET_AHEAD + 120 ))
+LIMIT_EPOCH=0
+next_reset() { LIMIT_EPOCH=$(( $(date +%s) + RESET_AHEAD )); }
 # A hang detector and nothing else: one wait plus generous room for the step's
 # own work. No check below reads the clock. Without it, case 1 hung CI's
 # "Install Smoke Test" job for hours when the wait stopped being instant,
 # with nothing naming the case that hung.
-CEILING=$(( MAX_WAIT_SECS + 120 ))
+CEILING=$(( WAIT_SECS + 120 ))
 # Case 3's own ceiling. It starts the recipe runner, discovers a checkout and
 # runs a whole one-step recipe around the same single wait, so it is given more
 # room than the three direct launches.
-RECIPE_CEILING=$(( MAX_WAIT_SECS + 240 ))
+RECIPE_CEILING=$(( WAIT_SECS + 240 ))
 
 # --- the stub agent ---------------------------------------------------------
 cat > "$TOOLS/claude" <<'STUB'
@@ -245,7 +240,8 @@ WANT_SUM="$($SUM_CMD < "$WORK/prompt" | cut -d' ' -f1)"
 # which was never the failing shape.
 cd -- "$RUNDIR" || { echo "FAIL: cannot enter the working folder"; echo "SCENARIO_FAILED"; exit 1; }
 # The ceiling is a hang detector, as in cases 2 and 2b: the step waits one
-# MAX_WAIT_SECS and then succeeds, so anything near the ceiling is a hang.
+# WAIT_SECS and then succeeds, so anything near the ceiling is a hang.
+next_reset
 cat -- "$WORK/prompt" | scenario_env timeout "$CEILING" "$BIN" claude --subprocess-safe -- -p \
   >"$WORK/run.out" 2>"$WORK/run.err"
 RUN_RC=${PIPESTATUS[1]}
@@ -265,13 +261,16 @@ count_in() {
   [ -n "$c" ] || c=0
   printf '%s' "$c"
 }
-WAIT_LINES="$(count_in 'amplihack.recipe.usage_limit_wait ' "$WORK/run.err")"
-STARTS="$(count_in 'amplihack.recipe.usage_limit_wait start reason=usage_limit' "$WORK/run.err")"
-ENDS="$(count_in 'amplihack.recipe.usage_limit_wait end reason=' "$WORK/run.err")"
+# Every wait line but the progress lines, whose number depends on timing.
+WAIT_LINES="$(grep -v 'amplihack.recipe.usage_limit_wait progress ' "$WORK/run.err" 2>/dev/null \
+  | grep -c 'amplihack.recipe.usage_limit_wait ' || true)"
+[ -n "$WAIT_LINES" ] || WAIT_LINES=0
+STARTS="$(count_in 'amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=.* bound=reset+margin$' "$WORK/run.err")"
+ENDS="$(count_in 'amplihack.recipe.usage_limit_wait end reason=reset reached$' "$WORK/run.err")"
 RESUMES="$(count_in 'amplihack.recipe.usage_limit_wait resume attempt=2' "$WORK/run.err")"
-# Issue #2911: a passed reset is a capacity wait, announced by one
-# `waiting_for_capacity` line before the `start`.
-CAPACITY="$(count_in 'waiting_for_capacity reason=passed_reset' "$WORK/run.err")"
+# A reset still ahead is a reset wait, so no `waiting_for_capacity` line is
+# written: that line is for a wait with no reset to end on (issue #2911).
+CAPACITY="$(count_in 'waiting_for_capacity ' "$WORK/run.err")"
 SKIPPED="$(count_in 'skipped reason=piped_prompt' "$WORK/run.err")"
 
 # 1. The run succeeded instead of ending on the first limit.
@@ -295,17 +294,14 @@ else
   fl rerun_read_the_same_prompt "call 1 '${SUM1:-none}', call 2 '${SUM2:-none}', want '$WANT_SUM'; $DIAG"
 fi
 
-# 4. One wait, reported once: the capacity line that names why, the start
-#    naming the reset, the end and the resume. Four lines, no more.
-#    Issue #2911 also put `wait=` on the start line, between the limit's
-#    `reason=` and the harness, so the shape is pinned here: `reason=` names
-#    the limit and `wait=` names what the step is waiting for.
-if [ "$CAPACITY" = 1 ] && [ "$STARTS" = 1 ] && [ "$ENDS" = 1 ] && [ "$RESUMES" = 1 ] \
-   && [ "$WAIT_LINES" = 4 ] \
-   && grep -q 'usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=' "$WORK/run.err"; then
-  pass one_wait_reported_with_its_reset "the run log holds one passed_reset capacity line, one wait start naming the kind and the reset, one end and one resume"
+# 4. One wait, reported once: the start naming the reset and its deadline,
+#    the end at that reset and the resume. Three lines besides the progress
+#    lines, no more, and no `waiting_for_capacity` line.
+if [ "$CAPACITY" = 0 ] && [ "$STARTS" = 1 ] && [ "$ENDS" = 1 ] && [ "$RESUMES" = 1 ] \
+   && [ "$WAIT_LINES" = 3 ]; then
+  pass one_wait_reported_with_its_reset "the run log holds one reset wait start naming the reset, one end at the reset and one resume"
 else
-  fl one_wait_reported_with_its_reset "capacity=$CAPACITY start=$STARTS end=$ENDS resume=$RESUMES total=$WAIT_LINES, want 1/1/1/1/4, and one start line shaped 'reason=usage_limit wait=capacity harness=claude reset='; $DIAG"
+  fl one_wait_reported_with_its_reset "capacity=$CAPACITY start=$STARTS end=$ENDS resume=$RESUMES total=$WAIT_LINES, want 0/1/1/1/3; $DIAG"
 fi
 
 # 5. The old refusal is gone.
@@ -340,13 +336,14 @@ FIFO="$WORK/held.fifo"
 # no reader, or a reader that found no writer, would wait on the other.
 if mkfifo -- "$FIFO" 2>/dev/null && exec 9<>"$FIFO"; then
   # The ceiling is a hang detector and nothing else: no check below reads the
-  # clock, and the step needs one MAX_WAIT_SECS plus a moment's work. It is
+  # clock, and the step needs one WAIT_SECS plus a moment's work. It is
   # deliberately far above anything load can cause, as
   # docs/bugfixes/bugfix-937-recipe-runner-timeout-test-flake.md settled on for
   # the same problem; without it a step that hung would hang the scenario with
   # nothing naming the case that hung.
   # `env -i` resolves `timeout` with the scenario's own PATH, so the ceiling
   # is inside the isolated environment rather than outside it.
+  next_reset
   SKIP_STDIN=1 scenario_env timeout "$CEILING" "$BIN" claude --subprocess-safe -- -p step \
     <"$FIFO" >"$WORK/held.out" 2>"$WORK/held.err"
   HELD_RC=$?
@@ -391,6 +388,7 @@ if mkfifo -- "$FIFO2" 2>/dev/null && exec 8<>"$FIFO2"; then
   # keeps the scenario's own end of the FIFO out of the step, so the only
   # writer of the step's stdin is the scenario, which closes it below, after
   # the step has ended.
+  next_reset
   SKIP_STDIN=1 scenario_env timeout "$CEILING" "$BIN" claude --subprocess-safe -- -p \
     <"$FIFO2" >"$WORK/held2.out" 2>"$WORK/held2.err" 8>&-
   HELD2_RC=$?
@@ -498,7 +496,6 @@ RECIPE
       AMPLIHACK_SKIP_REFLECTION=1 \
       AMPLIHACK_ROTATE_AUTOSTART=0 \
       AMPLIHACK_GOVERNOR=off \
-      AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS="$MAX_WAIT_SECS" \
       AMPLIHACK_CLEANUP_ON_EXIT=0 \
       AMPLIHACK_WORK_ROOT="$CASE/work" \
       AMPLIHACK_LAUNCHER_BINARY="$BIN" \
@@ -515,6 +512,7 @@ if [ -z "$RUNNER" ] || [ ! -x "$RUNNER" ]; then
 elif [ -z "$GIT_BIN" ]; then
   recipe_skip "no git"
 else
+  next_reset
   run_recipe_case
   RECIPE_RC=$?
   R_CALLS="$(cat "$RECORDS/count.0" 2>/dev/null || echo 0)"

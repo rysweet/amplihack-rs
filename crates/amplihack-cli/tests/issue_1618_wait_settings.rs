@@ -1,7 +1,8 @@
-//! Issue #1618, AC6: the usage-limit wait settings from
-//! `AMPLIHACK_USAGE_LIMIT_WAIT`, `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` and
-//! the `recipe.usage_limit_wait` / `recipe.usage_limit_max_wait_secs` keys of
-//! `~/.amplihack/config.toml`, read through the user-config loader.
+//! Issue #1618, AC6: the usage-limit wait setting from
+//! `AMPLIHACK_USAGE_LIMIT_WAIT` and the `recipe.usage_limit_wait` key of
+//! `~/.amplihack/config.toml`, read through the user-config loader. There is
+//! no length setting (issue #2911): `recipe.usage_limit_max_wait_secs` is an
+//! unknown key and `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is not read.
 //!
 //! Disabled, an unprofiled step behaves exactly as before (D7): one
 //! invocation, the original exit code, no wait line. `CI=true` does not turn
@@ -15,9 +16,8 @@ use crate::issue_1618_fixture::{Fixture, describe, events, private_file, text, w
 
 const ENABLED_VAR: &str = "AMPLIHACK_USAGE_LIMIT_WAIT";
 const MAX_VAR: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
-/// A session limit that states no reset. Its wait is a capacity wait whose
-/// only deadline is the configured outer bound, so it is the wait on which a
-/// configured maximum can be seen: a reset wait ignores the value.
+/// A session limit that states no reset. Its wait is a capacity wait with no
+/// deadline, so it is the wait on which a length setting would show.
 const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 
 fn assert_today(f: &Fixture, out: &std::process::Output) {
@@ -94,26 +94,28 @@ fn issue_2911_ci_does_not_turn_the_wait_off() {
     );
 }
 
+/// Issue #2911: a config file that still sets the removed length key gives
+/// a wait with no reset no deadline: the wait ends on the login change, and
+/// on nothing timed.
 #[test]
-fn the_config_maximum_bounds_the_wait() {
+fn the_removed_config_length_does_not_bound_the_wait() {
     let f = Fixture::new();
     f.write_config("[recipe]\nusage_limit_max_wait_secs = 0\n");
     let mut c = f.step();
     c.env("LIMIT_MESSAGE", NO_RESET_TEXT);
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert_waited(&f, &out);
     assert!(
-        events(&out)[1].ends_with("until=2026-10-18 08:01:00 -07:00 bound=max_wait"),
+        events(&out)[1].ends_with(" until=none bound=none"),
         "{:?}",
         events(&out)
     );
-    assert_eq!(events(&out)[2], "end reason=capacity expired");
+    assert_eq!(events(&out)[2], "end reason=login changed");
 }
 
-/// The same configured maximum does not
-/// bound a reset wait, which ends at its reset.
+/// Nor does it bound a reset wait, which ends at its reset.
 #[test]
-fn the_config_maximum_does_not_bound_a_reset_wait() {
+fn the_removed_config_length_does_not_bound_a_reset_wait() {
     let f = Fixture::new();
     f.write_config("[recipe]\nusage_limit_max_wait_secs = 0\n");
     let out = f.run(&mut f.step());
@@ -140,27 +142,31 @@ fn an_empty_variable_is_unset() {
     );
 }
 
+/// An invalid enabling variable is reported without its value and the file
+/// below it decides. The old length variable, exported with any value, is
+/// reported as no longer read, again without its value.
 #[test]
 fn an_invalid_variable_warns_and_the_layers_below_decide() {
     let f = Fixture::new();
-    f.write_config("[recipe]\nusage_limit_max_wait_secs = 600\n");
+    f.write_config("[recipe]\nusage_limit_wait = true\n");
     let mut c = f.step();
     c.env(ENABLED_VAR, "maybe-VALUE-1618")
-        .env(MAX_VAR, "60s")
+        .env(MAX_VAR, "60s-VALUE-2911")
         .env("LIMIT_MESSAGE", NO_RESET_TEXT);
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert_waited(&f, &out);
     let stderr = text(&out.stderr);
+    assert!(stderr.contains(ENABLED_VAR), "{stderr}");
     assert!(
-        stderr.contains(ENABLED_VAR) && stderr.contains(MAX_VAR),
+        stderr.contains(&format!("warning: {MAX_VAR} is no longer read")),
         "{stderr}"
     );
     assert!(
-        !stderr.contains("VALUE-1618"),
-        "the value is quoted: {stderr}"
+        !stderr.contains("VALUE-1618") && !stderr.contains("VALUE-2911"),
+        "a value is quoted: {stderr}"
     );
     assert!(
-        events(&out)[1].ends_with("until=2026-10-18 08:10:00 -07:00 bound=max_wait"),
+        events(&out)[1].ends_with(" until=none bound=none"),
         "{:?}",
         events(&out)
     );

@@ -9,18 +9,17 @@
 //! attempt after a wait it had just finished.
 //!
 //! #2857 bounded the wait that followed with the two refusals it inherited: a
-//! login the step had already waited on, and a per-step `max_wait_secs`
-//! budget. Both ended runs that a limit should only have delayed, so #2911
-//! removed them, and this file no longer describes either. In particular
-//! `skipped reason=already_waited`, `failed reason=already_waited` and
-//! `failed reason=capacity_expired` no longer exist; `max_wait_secs` is the
-//! outer bound of one capacity or login-change wait rather than a total for
-//! the step, and it does not shorten a
-//! reset wait; and a reset already behind the clock is a capacity wait for
-//! every limit, not only for a re-entry the old rule would have refused. What
-//! paces a chain of limits now is that every wait costs time. Nothing bounds
-//! the chain: the step timeout plays no part (issue #3037), and an outer bound
-//! that is reached runs the step again rather than ending it.
+//! login the step had already waited on, and a per-step budget. Both ended
+//! runs that a limit should only have delayed, so #2911 removed them, and
+//! this file no longer describes either. In particular `skipped
+//! reason=already_waited`, `failed reason=already_waited` and `failed
+//! reason=capacity_expired` no longer exist; a wait whose limit stated no
+//! usable reset has no deadline and ends on an event; and a reset already
+//! behind the clock is such a wait for every limit, not only for a re-entry
+//! the old rule would have refused. What paces a chain of limits now is that
+//! every wait lasts until something changed. Nothing bounds the chain: the
+//! step timeout plays no part (issue #3037), and no timer runs the step
+//! again.
 //!
 //! What these tests pin:
 //!
@@ -31,9 +30,9 @@
 //! - a usage-limit message on that attempt is planned by the ordinary planner
 //!   (`met=usage_limit`), so a message that states a near reset is a reset
 //!   wait, and a reset wait writes no `waiting_for_capacity` line;
-//! - a wait that ended at its own ceiling earns no `reentered` line, because
-//!   nothing said *try*, and a 429 after it is still not re-entered; the usage
-//!   limit after it is nonetheless waited for again (#2911);
+//! - every wait that earns a retry ended on something that said *try*, so a
+//!   usage limit after it is a re-entry and is waited for again (#2911); a
+//!   429 after it on a step no login could take over is passed up;
 //! - the position is the whole rule for a 429. A 429 on the first attempt (no
 //!   wait yet), a 429 phrase in the model's prose, or a 429 on a step where no
 //!   login could take over, re-enters nothing;
@@ -42,9 +41,9 @@
 //!   none, for an organisation spend limit that states such a reset, and on a
 //!   login the step has never waited on. The `reentered` line is the one thing
 //!   that still turns on that last question;
-//! - a chain of limits is paced by its waits rather than counted: each wait's
-//!   deadline lies strictly in the future, no `failed` and no `skipped` line is
-//!   written, and `max_wait_secs` is spent again by every wait;
+//! - a chain of limits is paced by its waits rather than counted: each wait
+//!   lasts until an event, no `failed` and no `skipped` line is written, and
+//!   nothing totals the waits;
 //! - no bound is left: since issue #3037 the step's own timeout does not end
 //!   a wait either, and no line says `failed reason=step_timeout`.
 //!
@@ -54,7 +53,9 @@
 //! for a reset wait.
 //!
 //! Everything runs on the fixture's virtual clock, so no test sleeps, and
-//! nothing is asked of a delay. The rotator is a stub ledger: the stub `claude`
+//! nothing is asked of a delay. A wait that the stub's ledger does not end
+//! is ended by a login change the test makes once the wait is under way
+//! (`Fixture::run_with_a_login_change_in`). The rotator is a stub ledger: the stub `claude`
 //! writes the rotate ledger's cycle during the attempt it plays, stamped on the
 //! virtual clock, which is what the wait's capacity reading sees when it reads
 //! its files as it begins. The virtual clock does not move while an attempt
@@ -75,8 +76,6 @@ use crate::issue_1801_capacity_wait::{rotator_running, x_is_live};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-
-const MAX_WAIT_ENV: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
 
 /// A 429 as the harness prints it: the envelope the recipe runner's own
 /// transient markers describe (`api error: 429`, `rate_limit_error`).
@@ -144,6 +143,11 @@ exit 0
 
 fn rotate_dir(f: &Fixture) -> PathBuf {
     f.profiles.join(".auto-switch.d").join("rotate")
+}
+
+/// Where a `$HOME/.claude` step's login lives, for a login change.
+fn home_login(f: &Fixture) -> PathBuf {
+    f.home.join(".claude")
 }
 
 /// A step on `$HOME/.claude` with X live, the stub installed, and a ledger
@@ -224,7 +228,7 @@ fn a_429_on_the_retry_a_rotator_wake_earned_waits_again_and_says_so_once() {
     );
     assert_eq!(
         ev[5],
-        waiting_for("no_reset", "2026-10-18 14:00:00 -07:00"),
+        waiting_for("no_reset", "none"),
         "a 429 states no reset, and the wait says so before it starts: {ev:?}"
     );
     assert!(
@@ -335,7 +339,7 @@ const NINE_AM_RESET_WAIT: &str = "start reason=usage_limit harness=claude \
                                   until=2026-10-18 09:02:00 -07:00 bound=reset+margin";
 
 /// The second `reentered` line and the line after it: a capacity wait that
-/// carries the passed reset and ends at `until`.
+/// carries the passed reset, with `until` and `bound` as given.
 fn passed_reset_capacity_start(until: &str, bound: &str) -> String {
     format!(
         "start reason=usage_limit wait=capacity harness=claude \
@@ -361,15 +365,14 @@ fn a_reset_that_has_already_passed_is_waited_for_as_capacity_and_the_wake_retrie
     // could take over is no longer asked when a wait is started (issue #2911),
     // so the rotator here only supplies the readings that wake the waits.
     //
-    // `max_wait_secs` is 7200, the length of each wait rather than a total for
-    // the step. The first wait is ended by call 1's cycle; the second is a
-    // reset wait to 09:02:00; the third is a capacity wait for the reset that
-    // is now two minutes behind the clock, planned for its own full 7200 s,
-    // which is 11:02:00, and ended by call 3's cycle.
+    // The first wait is ended by call 1's cycle; the second is a reset wait
+    // to 09:02:00; the third is a capacity wait for the reset that is now two
+    // minutes behind the clock, with no deadline, and ended by call 3's
+    // cycle.
     let f = with_profiles();
     let _rotator = rotator_running(&f);
     let mut c = passed_reset_step(&f, 3);
-    c.env(MAX_WAIT_ENV, "7200").env(
+    c.env(
         "ROOM_ON_CALL",
         // Call 3's cycle is stamped after its wait starts (09:02:00 is
         // `TEST_NOW + 3720`), so the wait ends on it.
@@ -404,14 +407,14 @@ fn a_reset_that_has_already_passed_is_waited_for_as_capacity_and_the_wake_retrie
     );
     assert_eq!(
         ev[9],
-        waiting_for("passed_reset", "2026-10-18 11:02:00 -07:00"),
+        waiting_for("passed_reset", "none"),
         "the wait names the reason it has no reset to end on: {ev:?}"
     );
     assert_eq!(
         ev[10],
-        passed_reset_capacity_start("2026-10-18 11:02:00 -07:00", "max_wait"),
-        "a capacity wait that prints the reset the message stated and gets a \
-         whole `max_wait_secs` of its own, not what an earlier wait left: {ev:?}"
+        passed_reset_capacity_start("none", "none"),
+        "a capacity wait that prints the reset the message stated and has no \
+         deadline of its own: {ev:?}"
     );
     assert_eq!(ev[11], "end reason=rotator capacity", "{ev:?}");
     assert_eq!(ev[12], "resume attempt=4", "{ev:?}");
@@ -424,24 +427,21 @@ fn a_reset_that_has_already_passed_is_waited_for_as_capacity_and_the_wake_retrie
 fn a_reset_that_has_already_passed_with_no_login_to_take_over_still_waits_and_then_retries() {
     // Renamed from `..._waits_out_the_budget`: there is no budget left to wait
     // out (issue #2911). No rotator is running and there is no second login,
-    // so nothing can end the capacity wait before its own deadline, and
-    // nothing need be able to: a wait is started whether or not a login could
-    // take over now, because a login can gain room while the wait runs.
+    // so nothing on the host ends the capacity wait, and nothing need be able
+    // to: a wait is started whether or not a login could take over now,
+    // because a login can gain room while the wait runs.
     //
     // The first wait is an ordinary reset wait, from 08:00 to 08:32. The retry
     // meets the same "resets 8:30am", read at 08:32, and is a re-entry: it is
     // reported once, and the step waits again on capacity, carrying the passed
-    // reset, for its own 7200 s, which ends at 10:32:00. Reaching that
-    // deadline retries; it does not end the step. Before #2911 the step ended
-    // here with `skipped reason=already_waited`, which is the run issue #2911
-    // reports.
+    // reset, with no deadline. A person's login change ends it, and the step
+    // retries. Before #2911 the step ended here with `skipped
+    // reason=already_waited`, which is the run issue #2911 reports.
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", LIMIT_TEXT)
-        .env("LIMIT_CALLS", "2")
-        .env(MAX_WAIT_ENV, "7200");
-    let out = f.run(&mut c);
+    c.env("LIMIT_MESSAGE", LIMIT_TEXT).env("LIMIT_CALLS", "2");
+    let out = f.run_with_a_login_change_in(&home_login(&f), &mut c);
     assert!(
         out.status.success(),
         "a limit after a wait must not end the step: {}",
@@ -449,7 +449,7 @@ fn a_reset_that_has_already_passed_with_no_login_to_take_over_still_waits_and_th
     );
     assert_eq!(f.count("0"), 3, "limit, re-entered limit, success");
     let ev = events(&out);
-    let waiting = waiting_for("passed_reset", "2026-10-18 10:32:00 -07:00");
+    let waiting = waiting_for("passed_reset", "none");
     assert_eq!(
         ev,
         [
@@ -460,9 +460,8 @@ fn a_reset_that_has_already_passed_with_no_login_to_take_over_still_waits_and_th
             REENTERED_USAGE,
             waiting.as_str(),
             "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 10:32:00 -07:00 \
-             bound=max_wait",
-            "end reason=capacity expired",
+             reset=2026-10-18 08:30:00 -07:00 until=none bound=none",
+            "end reason=login changed",
             "resume attempt=3",
         ],
         "one `reentered` line, then the capacity wait's two opening lines: {ev:?}"
@@ -494,9 +493,8 @@ fn an_organisation_spend_limit_that_states_a_passed_session_reset_waits_for_capa
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env("LIMIT_MESSAGE", SPEND_SESSION_TEXT)
-        .env("LIMIT_CALLS", "2")
-        .env(MAX_WAIT_ENV, "7200");
-    let out = f.run(&mut c);
+        .env("LIMIT_CALLS", "2");
+    let out = f.run_with_a_login_change_in(&home_login(&f), &mut c);
     assert!(
         out.status.success(),
         "a spend limit must no longer end the step: {}",
@@ -504,7 +502,7 @@ fn an_organisation_spend_limit_that_states_a_passed_session_reset_waits_for_capa
     );
     assert_eq!(f.count("0"), 3, "limit, re-entered limit, success");
     let ev = events(&out);
-    let waiting = waiting_for("passed_reset", "2026-10-18 10:32:00 -07:00");
+    let waiting = waiting_for("passed_reset", "none");
     assert_eq!(
         ev,
         [
@@ -515,9 +513,8 @@ fn an_organisation_spend_limit_that_states_a_passed_session_reset_waits_for_capa
             REENTERED_USAGE,
             waiting.as_str(),
             "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 10:32:00 -07:00 \
-             bound=max_wait",
-            "end reason=capacity expired",
+             reset=2026-10-18 08:30:00 -07:00 until=none bound=none",
+            "end reason=login changed",
             "resume attempt=3",
         ],
         "a spend limit with a passed session reset is a capacity wait: {ev:?}"
@@ -567,15 +564,14 @@ fn a_retry_on_a_login_the_step_has_never_waited_on_still_waits_for_a_passed_rese
     assert_eq!(ev[3], "resume attempt=2", "{ev:?}");
     assert_eq!(
         ev[4],
-        waiting_for("passed_reset", "2026-10-18 14:00:00 -07:00"),
+        waiting_for("passed_reset", "none"),
         "Y's own first wait has no reset it can use either: {ev:?}"
     );
     assert_eq!(
         ev[5],
         "start reason=usage_limit wait=capacity harness=claude \
-         reset=2026-10-18 07:55:00 -07:00 until=2026-10-18 14:00:00 -07:00 \
-         bound=max_wait",
-        "a capacity wait with a real deadline, not a reset wait ending at once: {ev:?}"
+         reset=2026-10-18 07:55:00 -07:00 until=none bound=none",
+        "a capacity wait for an event, not a reset wait ending at once: {ev:?}"
     );
     assert_eq!(ev[6], "end reason=rotator capacity", "{ev:?}");
     assert_eq!(ev[7], "resume attempt=3", "{ev:?}");
@@ -592,23 +588,18 @@ fn a_retry_on_a_login_the_step_has_never_waited_on_still_waits_for_a_passed_rese
 /// This replaces the two tests that proved the opposite,
 /// `the_budget_of_a_step_still_bounds_the_chain_of_waits` and
 /// `the_budget_still_bounds_a_chain_of_waits_for_a_reset_that_keeps_passing`.
-/// Both read `max_wait_secs` as a budget for the whole step: each wait was
-/// planned with what the last had left, the chain ran out of time, and the
-/// step ended with `failed reason=already_waited` or
-/// `failed reason=capacity_expired`. Those endings are gone, and so is the
-/// budget. `max_wait_secs` is the length of ONE wait, and what keeps a chain
-/// of limits from spinning is that every wait of it costs real time.
+/// Both read a configured length as a budget for the whole step, the chain
+/// ran out of time, and the step ended with `failed reason=already_waited`
+/// or `failed reason=capacity_expired`. Those endings are gone, and so is
+/// any length.
 ///
-/// The stub states a reset five minutes behind the clock on each of its first
-/// three calls, so every one of them takes the `passed_reset` row and is a
-/// capacity wait; no rotator cycle is fresh and no login has room, so nothing
-/// ends any of them early. With `max_wait_secs` of 60, the floor, each wait
-/// runs its own full minute: the deadlines are 08:01:00, 08:02:00 and
-/// 08:03:00, each strictly after the wait's own start, and each ends
-/// `capacity expired`, which a wait can only report once its clock has got
-/// there. Three waits of
-/// 60 s out of a configured 60 is the whole of the change: a budget would have
-/// ended the step inside the first minute.
+/// The stub states a reset five minutes behind the clock on each of its
+/// first three calls, so each takes the `passed_reset` row while that reset
+/// is still read as today's, and is a capacity wait with no deadline. No
+/// rotator cycle is fresh and no login has room, so the host ends none of
+/// them; the login change the test makes once each is under way does. When
+/// a later one begins depends on when the earlier change lands, so the waits
+/// are pinned by their shape rather than by their times.
 ///
 /// What ends this chain is the stub running out of limits, which is why
 /// `LIMIT_CALLS` bounds it. Nothing else ends a chain of waits: since issue
@@ -616,13 +607,12 @@ fn a_retry_on_a_login_the_step_has_never_waited_on_still_waits_for_a_passed_rese
 /// `issue_3037_a_step_timeout_does_not_end_a_wait_for_a_passed_reset` is the
 /// guard for that.
 #[test]
-fn a_chain_of_limits_is_paced_by_each_wait_costing_time_and_nothing_counts_them() {
+fn a_chain_of_limits_is_paced_by_each_wait_and_nothing_counts_them() {
     let f = with_profiles();
     let mut c = home_step(&f);
     c.env("LIMIT_MESSAGE", SEVEN_FIFTY_FIVE)
-        .env("LIMIT_CALLS", "3")
-        .env(MAX_WAIT_ENV, "60");
-    let out = f.run(&mut c);
+        .env("LIMIT_CALLS", "3");
+    let out = f.run_with_a_login_change_in(&home_login(&f), &mut c);
     assert!(
         out.status.success(),
         "three limits in a row must each wait, not end the step: {}",
@@ -630,24 +620,25 @@ fn a_chain_of_limits_is_paced_by_each_wait_costing_time_and_nothing_counts_them(
     );
     assert_eq!(f.count("0"), 4, "three limits, then the attempt that works");
     let ev = events(&out);
-    let mut want = Vec::new();
-    for (n, until) in [
-        (2, "2026-10-18 08:01:00 -07:00"),
-        (3, "2026-10-18 08:02:00 -07:00"),
-        (4, "2026-10-18 08:03:00 -07:00"),
-    ] {
-        want.push(waiting_for("passed_reset", until));
-        want.push(format!(
-            "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-18 07:55:00 -07:00 until={until} bound=max_wait"
-        ));
-        want.push("end reason=capacity expired".to_string());
-        want.push(format!("resume attempt={n}"));
-    }
     assert_eq!(
-        ev, want,
-        "each wait gets its own whole minute, and each deadline is later than \
-         the last: {ev:?}"
+        ev[..4],
+        [
+            waiting_for("passed_reset", "none"),
+            "start reason=usage_limit wait=capacity harness=claude \
+             reset=2026-10-18 07:55:00 -07:00 until=none bound=none"
+                .to_string(),
+            "end reason=login changed".to_string(),
+            "resume attempt=2".to_string(),
+        ],
+        "{ev:?}"
+    );
+    assert_eq!(count(&ev, "start "), 3, "{ev:?}");
+    assert_eq!(
+        ev.iter()
+            .filter(|l| l.starts_with("resume "))
+            .collect::<Vec<_>>(),
+        ["resume attempt=2", "resume attempt=3", "resume attempt=4"],
+        "{ev:?}"
     );
     assert_eq!(count(&ev, "failed "), 0, "nothing ended the step: {ev:?}");
     assert_eq!(count(&ev, "skipped "), 0, "nothing was refused: {ev:?}");
@@ -663,8 +654,8 @@ fn a_chain_of_limits_is_paced_by_each_wait_costing_time_and_nothing_counts_them(
 /// 3900-second timeout the third wait ended at 09:04:00, a minute before it,
 /// with `failed reason=step_timeout` while the limit still stood. Nothing
 /// enforces that variable on a step - recipe-runner-rs enforces only a
-/// step's YAML `timeout:` - so the third wait now runs its own length and
-/// the step retries.
+/// step's YAML `timeout:` - so the third wait now ends on its own event, the
+/// rotator's cycle call 3 records, and the step retries.
 #[test]
 fn issue_3037_a_step_timeout_does_not_end_a_wait_for_a_passed_reset() {
     let f = with_profiles();
@@ -672,7 +663,12 @@ fn issue_3037_a_step_timeout_does_not_end_a_wait_for_a_passed_reset() {
     let mut c = passed_reset_step(&f, 3);
     c.env("AMPLIHACK_STEP_TIMEOUT", "3900").env(
         "ROOM_ON_CALL",
-        format!("{} {}", room_on(1, 5, true), room_on(2, 0, false)),
+        format!(
+            "{} {} {}",
+            room_on(1, 5, true),
+            room_on(2, 0, false),
+            room_on(3, 4000, true)
+        ),
     );
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
@@ -688,44 +684,39 @@ fn issue_3037_a_step_timeout_does_not_end_a_wait_for_a_passed_reset() {
         ev[9].starts_with("waiting_for_capacity reason=passed_reset harness=claude until="),
         "{ev:?}"
     );
-    assert_ne!(
+    assert_eq!(
         ev[9],
-        waiting_for("passed_reset", "2026-10-18 09:04:00 -07:00"),
-        "the deadline is no longer pulled back to the step timeout: {ev:?}"
+        waiting_for("passed_reset", "none"),
+        "the step timeout gives the wait no deadline: {ev:?}"
     );
-    assert!(
-        ev[10].ends_with(" bound=max_wait"),
-        "the wait's own length bounds it: {ev:?}"
-    );
+    assert!(ev[10].ends_with(" until=none bound=none"), "{ev:?}");
+    assert_eq!(ev[11], "end reason=rotator capacity", "{ev:?}");
     assert!(ev.iter().any(|e| e == "resume attempt=4"), "{ev:?}");
     assert_eq!(count(&ev, "failed "), 0, "nothing ended the step: {ev:?}");
     assert!(ev.iter().all(|e| !e.contains("step timeout")), "{ev:?}");
 }
 
-// --- a wait that ran out earns no `reentered` line --------------------------
+// --- after a wait that ended on an event ----------------------------------
+//
+// Issue #2911: no wait earns a retry by running out. Every end that retries
+// the step is an event that said *try now*, so a usage limit on that retry is
+// a re-entry, reported on a `reentered` line, and is waited for again.
 
 /// A session limit that states no reset: its wait is a capacity wait with
-/// no reset row, so only its outer bound can end it here.
+/// no deadline.
 const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 
-/// A step with no rotator and no profile root of its own, whose limit states
-/// no reset: a capacity wait planned with a configured `max_wait_secs` of 0,
-/// which reads as the 60-second floor (issue #2911), ends at that outer
-/// bound (`capacity expired`) and the step retries.
-///
-/// It used to be the stock message's reset wait, cut short by the
-/// configured length (`max reached`). A reset wait now has no outer bound
-/// and runs to its reset, which does
-/// say to try, so the wait that runs out is now a capacity wait.
-fn ceiling_step(f: &Fixture) -> Command {
+/// A step on the fixture's own config directory, with no rotator and no
+/// profile root of its own, whose limit states no reset.
+fn no_reset_step(f: &Fixture) -> Command {
     executable(&f.tools.join("claude"), STUB);
     let mut c = f.step();
-    c.env(MAX_WAIT_ENV, "0").env("LIMIT_MESSAGE", NO_RESET_TEXT);
+    c.env("LIMIT_MESSAGE", NO_RESET_TEXT);
     c
 }
 
-/// A limit after a wait that ran out is waited for again, and never refused
-/// (issue #2911).
+/// A limit after a wait is waited for again, and never refused (issue
+/// #2911).
 ///
 /// Renamed from `a_usage_limit_after_a_wait_that_ran_out_is_refused_as_it_always_was`,
 /// which asserted `skipped reason=already_waited` and `failed
@@ -734,18 +725,15 @@ fn ceiling_step(f: &Fixture) -> Command {
 /// even been waited out, because the step had already waited once. Both lines
 /// are gone, and the step waits again.
 ///
-/// The configured `max_wait_secs` here is 0, which no longer means "do not
-/// wait": it reads as the `MIN_WAIT_SECS` floor of 60 seconds, so each wait
-/// has a real deadline a minute ahead of its own start. To turn waiting off a
-/// config must set `recipe.usage_limit_wait = false`. Nothing said *try* when
-/// either wait ran out, so neither re-entry writes a `reentered` line; the
-/// waiting happens all the same.
+/// Each wait has no deadline and ends on a login change the test makes. A
+/// login change says *try now*, so the second limit is a re-entry and says
+/// so once.
 #[test]
-fn a_usage_limit_after_a_wait_that_ran_out_waits_again_and_never_refuses() {
+fn a_usage_limit_after_a_wait_waits_again_and_never_refuses() {
     let f = Fixture::new();
-    let mut c = ceiling_step(&f);
+    let mut c = no_reset_step(&f);
     c.env("LIMIT_CALLS", "2");
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert!(
         out.status.success(),
         "the second limit must be waited for, not refused: {}",
@@ -756,22 +744,20 @@ fn a_usage_limit_after_a_wait_that_ran_out_waits_again_and_never_refuses() {
     assert_eq!(
         ev,
         [
-            "waiting_for_capacity reason=no_reset harness=claude \
-             until=2026-10-18 08:01:00 -07:00",
-            "start reason=usage_limit wait=capacity harness=claude reset=none \
-             until=2026-10-18 08:01:00 -07:00 bound=max_wait",
-            "end reason=capacity expired",
+            "waiting_for_capacity reason=no_reset harness=claude until=none",
+            "start reason=usage_limit wait=capacity harness=claude reset=none until=none \
+             bound=none",
+            "end reason=login changed",
             "resume attempt=2",
-            "waiting_for_capacity reason=no_reset harness=claude \
-             until=2026-10-18 08:02:00 -07:00",
-            "start reason=usage_limit wait=capacity harness=claude reset=none \
-             until=2026-10-18 08:02:00 -07:00 bound=max_wait",
-            "end reason=capacity expired",
+            REENTERED_USAGE,
+            "waiting_for_capacity reason=no_reset harness=claude until=none",
+            "start reason=usage_limit wait=capacity harness=claude reset=none until=none \
+             bound=none",
+            "end reason=login changed",
             "resume attempt=3",
         ],
-        "a configured 0 is the 60-second floor, twice over: {ev:?}"
+        "{ev:?}"
     );
-    assert_eq!(count(&ev, "reentered "), 0, "nothing said try: {ev:?}");
     assert_eq!(count(&ev, "skipped "), 0, "{ev:?}");
     assert_eq!(count(&ev, "failed "), 0, "{ev:?}");
     assert!(
@@ -780,19 +766,23 @@ fn a_usage_limit_after_a_wait_that_ran_out_waits_again_and_never_refuses() {
     );
 }
 
+/// A 429 on the retry a wait earned, on a step no other login could take
+/// over, is passed up: a 429 states no reset and nothing on this step could
+/// end a wait for it, so it goes back to the recipe runner as the transient
+/// fault it is everywhere else.
 #[test]
-fn a_429_after_a_wait_that_ran_out_is_not_re_entered() {
+fn a_429_after_a_wait_on_a_step_no_login_could_take_over_is_passed_up() {
     let f = Fixture::new();
-    let mut c = ceiling_step(&f);
+    let mut c = no_reset_step(&f);
     c.env("LIMIT_CALLS", "2").env("LIMIT_MESSAGE_2", RATE_429);
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
     assert_eq!(f.count("0"), 2);
     let ev = events(&out);
     assert_eq!(
         ev[2..],
-        ["end reason=capacity expired", "resume attempt=2"],
-        "the 429 is passed up as before; nothing waits for it: {ev:?}"
+        ["end reason=login changed", "resume attempt=2"],
+        "the 429 is passed up; nothing waits for it: {ev:?}"
     );
 }
 

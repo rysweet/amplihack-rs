@@ -1,10 +1,8 @@
 //! Issue #1618: how the usage-limit wait ends other than at the reset.
 //!
-//! - AC4: `max_wait_secs = 0` is raised to the 60-second floor and bounds a
-//!   wait with no reset to wait for at that length before retrying once
-//!   (issue #2911: there are no zero-length waits any more, and a zero no
-//!   longer means "do not wait"). The
-//!   value does not shorten a reset wait, which ends at its reset. A step
+//! - AC4 (issue #2911): a wait whose limit stated no usable reset has no
+//!   deadline, whatever the old length variable says, and ends on an event.
+//!   No setting shortens a reset wait, which ends at its reset. A step
 //!   timeout plays no part (issue #3037).
 //! - AC5: a login that changes during the wait ends it with
 //!   `login changed`, then the retry runs.
@@ -16,68 +14,40 @@
 use crate::issue_1618_fixture::{Fixture, WAIT_PREFIX, describe, events};
 use std::fs;
 
-/// A session limit that states no reset: a capacity wait with no reset row,
-/// so the configured length is the only deadline it has.
+/// A session limit that states no reset: a capacity wait with no deadline.
 const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 
-/// Issue #2911: a configured maximum of zero is raised to the floor of 60
-/// seconds, so it plans a real wait of that length and then retries once.
-///
-/// This used to assert a wait of zero seconds, ending at `TEST_NOW` itself:
-/// a zero was read as "do not wait" in all but name. The floor is applied
-/// where the value is read (`settings::from_effective`, which raises it to
-/// `plan::MIN_WAIT_SECS`), because each expiry of the bound runs the step's
-/// agent again, and a chain of very short ones is the busy loop the pacing
-/// rule exists to prevent. To turn waiting off a config must now set
-/// `recipe.usage_limit_wait = false`; no length means "do not wait".
-///
-/// The fixture's virtual clock keeps the 60-second wait instant in real time.
-///
-/// The limit here states no reset, because only such a wait has an outer
-/// bound for the floor to apply to.
+/// Issue #2911: a wait whose limit stated no reset has no deadline, and the
+/// variable that used to bound it is not read, at any value. A login change
+/// ends the wait and the step retries once.
 #[test]
-fn ac4_a_zero_maximum_is_raised_to_the_sixty_second_floor_and_retries_once() {
-    let f = Fixture::new();
-    let mut c = f.step();
-    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0")
-        .env("LIMIT_MESSAGE", NO_RESET_TEXT);
-    let out = f.run(&mut c);
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(
-        events(&out),
-        vec![
-            "waiting_for_capacity reason=no_reset harness=claude \
-             until=2026-10-18 08:01:00 -07:00",
-            "start reason=usage_limit wait=capacity harness=claude reset=none \
-             until=2026-10-18 08:01:00 -07:00 bound=max_wait",
-            "end reason=capacity expired",
-            "resume attempt=2",
-        ]
-    );
-    assert_eq!(f.count("0"), 2);
+fn ac4_a_wait_with_no_reset_has_no_deadline_whatever_the_old_variable_says() {
+    for value in ["0", "600", "86400"] {
+        let f = Fixture::new();
+        let mut c = f.step();
+        c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", value)
+            .env("LIMIT_MESSAGE", NO_RESET_TEXT);
+        let out = f.run_with_a_login_change_per_open_wait(&mut c);
+        assert!(out.status.success(), "{value}: {}", describe(&out));
+        assert_eq!(
+            events(&out),
+            vec![
+                "waiting_for_capacity reason=no_reset harness=claude until=none",
+                "start reason=usage_limit wait=capacity harness=claude reset=none until=none \
+                 bound=none",
+                "end reason=login changed",
+                "resume attempt=2",
+            ],
+            "{value}"
+        );
+        assert_eq!(f.count("0"), 2, "{value}");
+    }
 }
 
+/// The old variable does not shorten a reset wait either: the wait ends at
+/// its reset.
 #[test]
-fn ac4_a_smaller_maximum_names_the_bound() {
-    let f = Fixture::new();
-    let mut c = f.step();
-    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "600")
-        .env("LIMIT_MESSAGE", NO_RESET_TEXT);
-    let out = f.run(&mut c);
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(
-        events(&out)[1],
-        "start reason=usage_limit wait=capacity harness=claude reset=none \
-         until=2026-10-18 08:10:00 -07:00 bound=max_wait"
-    );
-}
-
-/// The same smaller maximum does not
-/// shorten a reset wait. It used to end this one at 08:10 with `max
-/// reached` and run the agent again twenty minutes before the reset it was
-/// waiting for; the wait now ends at the reset.
-#[test]
-fn a_smaller_maximum_does_not_shorten_a_reset_wait() {
+fn the_old_variable_does_not_shorten_a_reset_wait() {
     let f = Fixture::new();
     let mut c = f.step();
     c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "600");
@@ -93,20 +63,6 @@ fn a_smaller_maximum_does_not_shorten_a_reset_wait() {
         ]
     );
     assert_eq!(f.count("0"), 2);
-}
-
-#[test]
-fn ac4_a_larger_maximum_changes_nothing() {
-    let f = Fixture::new();
-    let mut c = f.step();
-    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "86400");
-    let out = f.run(&mut c);
-    assert!(out.status.success(), "{}", describe(&out));
-    assert!(
-        events(&out)[0].ends_with("until=2026-10-18 08:32:00 -07:00 bound=reset+margin"),
-        "{:?}",
-        events(&out)
-    );
 }
 
 /// Issue #3037: a step timeout does not end a limit

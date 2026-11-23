@@ -156,22 +156,17 @@ fn a_stop_signal_ends_a_wait_blocked_on_file_events_at_once() {
 
 /// A weekly limit whose reset is days away, with nothing on the host to end
 /// the wait early, is waited for once, to its reset, and the agent runs
-/// again there and not before.
-/// The configured outer bound plays no part: it is set to its floor here,
-/// and the wait still runs to the reset. Before, such a wait ended at the
-/// bound and relaunched the agent against the spent login every time it
-/// passed.
+/// again there and not before. No timer cuts the wait short and relaunches
+/// the agent against the spent login.
 #[test]
 fn a_weekly_limit_runs_the_agent_once_at_its_reset_and_not_before() {
     let f = Fixture::new();
     fs::create_dir_all(f.home.join(".claude")).unwrap();
     let mut c = f.step();
-    c.env_remove("CLAUDE_CONFIG_DIR")
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60")
-        .env(
-            "LIMIT_MESSAGE",
-            "You've hit your weekly limit · resets Oct 20, 12am (America/Los_Angeles)",
-        );
+    c.env_remove("CLAUDE_CONFIG_DIR").env(
+        "LIMIT_MESSAGE",
+        "You've hit your weekly limit · resets Oct 20, 12am (America/Los_Angeles)",
+    );
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     let ev = events(&out);

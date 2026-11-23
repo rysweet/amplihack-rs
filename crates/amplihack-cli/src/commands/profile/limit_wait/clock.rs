@@ -2,6 +2,9 @@
 
 use std::time::{Duration, Instant};
 
+/// The shortest real block `poll(2)` can make.
+const MIN_REAL: Duration = Duration::from_millis(1);
+
 /// Wall time, or with the debug-only test seams a virtual clock that starts
 /// at `TEST_NOW` and moves only while the wait blocks, `TEST_SCALE` times as
 /// fast as real time.
@@ -40,15 +43,24 @@ impl Clock {
     /// timeout ends exactly at the time it was asked for.
     ///
     /// Only a test's scale makes a block stand for less real time than the
-    /// shortest wait `poll(2)` can make, a millisecond. Such a block checks
-    /// without blocking and moves the clock by the whole of `d`, so a test
-    /// clock reaches a reset days away without a millisecond per progress
-    /// line.
-    pub(super) fn block<T>(&mut self, d: Duration, f: impl FnOnce(Duration) -> T) -> T {
+    /// shortest wait `poll(2)` can make, a millisecond. Such a block moves
+    /// the clock by the whole of `d`. On the way to a deadline it checks
+    /// without blocking, so a test clock reaches a reset days away without a
+    /// millisecond per progress line. A wait with no deadline (`deadline`
+    /// false, issue #2911) has nothing far off to reach and ends only on an
+    /// event, so its block still gives that event a millisecond of real time
+    /// to arrive: a test's writer can make one, and a test wait that nothing
+    /// ends is a slow loop rather than a hot one.
+    pub(super) fn block<T>(
+        &mut self,
+        d: Duration,
+        deadline: bool,
+        f: impl FnOnce(Duration) -> T,
+    ) -> T {
         let began = Instant::now();
         let real = self.real(d);
-        if real < Duration::from_millis(1) {
-            let out = f(Duration::ZERO);
+        if real < MIN_REAL {
+            let out = f(if deadline { Duration::ZERO } else { MIN_REAL });
             let took = began.elapsed();
             self.skew += if self.base.is_some() {
                 d

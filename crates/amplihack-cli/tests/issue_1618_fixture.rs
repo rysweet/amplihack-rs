@@ -258,6 +258,52 @@ impl Fixture {
         }
     }
 
+    /// Runs `c` like [`Self::run_watching`], and makes `event(n)` for the
+    /// `n`th wait (from 1) that has no deadline: one whose limit stated no
+    /// usable reset, which ends only on an event (issue #2911).
+    ///
+    /// The event is made at that wait's first `progress` line, not at its
+    /// `start`: by then the wait has read its baseline, so a login change
+    /// made here is seen as a change rather than taken in as the baseline.
+    /// Waits with a deadline are left to it.
+    pub fn run_with_an_event_per_open_wait(
+        &self,
+        c: &mut Command,
+        mut event: impl FnMut(u32),
+    ) -> Output {
+        let start = format!("{WAIT_PREFIX}start ");
+        let progress = format!("{WAIT_PREFIX}progress ");
+        let mut n = 0u32;
+        let mut armed = false;
+        self.run_watching(c, |line| {
+            if line.starts_with(&start) {
+                armed = line.contains(" until=none ");
+                if armed {
+                    n += 1;
+                }
+            } else if armed && line.starts_with(&progress) {
+                armed = false;
+                event(n);
+            }
+        })
+    }
+
+    /// [`Self::run_with_an_event_per_open_wait`] where each event is a login
+    /// change in the step's config directory (`CLAUDE_CONFIG_DIR`, the
+    /// fixture's default): its `.credentials.json` appears or goes, which
+    /// changes the login fingerprint. Such a wait ends `login changed`.
+    pub fn run_with_a_login_change_per_open_wait(&self, c: &mut Command) -> Output {
+        self.run_with_a_login_change_in(&self.config.clone(), c)
+    }
+
+    /// The same, for a step whose login lives in `dir`: `$HOME/.claude`
+    /// for a step with no `CLAUDE_CONFIG_DIR`, or an inherited profile's
+    /// directory.
+    pub fn run_with_a_login_change_in(&self, dir: &Path, c: &mut Command) -> Output {
+        let dir = dir.to_path_buf();
+        self.run_with_an_event_per_open_wait(c, move |_| toggle_login(&dir))
+    }
+
     pub fn count(&self, step: &str) -> u32 {
         fs::read_to_string(self.records.join(format!("count.{step}")))
             .map(|s| s.trim().parse().unwrap())
@@ -315,6 +361,49 @@ impl Fixture {
     }
 }
 
+/// A login change in `dir`, as a wait's fingerprint sees one.
+///
+/// A directory with no `.credentials.json` gets one; the wait never opens
+/// it, so its content does not matter. One that has one and also keeps its
+/// own `.claude.json` (a profile, or a config directory that has one) keeps
+/// its credentials, so a profile stays logged in, and the account in that
+/// `.claude.json` is changed instead: `accountUuid` gains a new suffix each
+/// time, and every other field is kept. Any other directory loses its
+/// credentials file, which is how `$HOME/.claude` changes: its account is
+/// read from `$HOME/.claude.json`, outside it.
+pub fn toggle_login(dir: &Path) {
+    let creds = dir.join(".credentials.json");
+    if !creds.exists() {
+        fs::create_dir_all(dir).unwrap();
+        private_file(&creds, "{}");
+        return;
+    }
+    let json = dir.join(".claude.json");
+    if !json.exists() {
+        fs::remove_file(&creds).unwrap();
+        return;
+    }
+    let mut v: serde_json::Value = fs::read_to_string(&json)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let account = &mut v["oauthAccount"];
+    if !account.is_object() {
+        *account = serde_json::json!({});
+    }
+    let uuid = account["accountUuid"].as_str().unwrap_or("uuid-login");
+    let next = match uuid.rsplit_once("-changed") {
+        Some((base, n)) => format!("{base}-changed{}", n.parse::<u32>().unwrap_or(0) + 1),
+        None => format!("{uuid}-changed1"),
+    };
+    account["accountUuid"] = serde_json::Value::String(next);
+    // Written aside and renamed, so the wait never reads half a file.
+    let tmp = dir.join(".claude.json.toggle");
+    private_file(&tmp, &v.to_string());
+    fs::rename(&tmp, &json).unwrap();
+}
+
 pub fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).to_string()
 }
@@ -345,12 +434,16 @@ pub fn events(out: &Output) -> Vec<String> {
         .collect()
 }
 
-/// Every `progress` line has exactly the documented shape.
+/// Every `progress` line has exactly the documented shape: seconds to the
+/// deadline, or `none` for a wait that has none (issue #2911).
 pub fn assert_progress_shape(out: &Output) {
     for l in wait_lines(out)
         .iter()
         .filter(|l| l.starts_with("progress "))
     {
+        if l == "progress remaining=none" {
+            continue;
+        }
         let secs = l
             .strip_prefix("progress remaining=")
             .and_then(|r| r.strip_suffix('s'))

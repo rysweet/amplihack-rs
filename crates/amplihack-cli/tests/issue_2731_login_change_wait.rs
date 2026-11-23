@@ -31,13 +31,13 @@
 //! no rotator was running or the step's login was not one the rotator could
 //! move) or when the wait ran out (`failed reason=spend_limit`). Neither
 //! line exists now. Every spend limit with no readable reset starts a
-//! login-change wait, whatever is or is not running, and a wait that
-//! reaches its own deadline retries the step. No closing line is left in
-//! this file: the last, `failed reason=step_timeout`, went with issue #3037,
-//! because a step timeout no longer ends a limit wait. `max_wait_secs` is the length
-//! of one wait rather than a budget for the whole step, and a configured
-//! `0` reads as the 60-second floor, so the tests here that pin a short
-//! wait get 60 seconds of the virtual clock.
+//! login-change wait, whatever is or is not running, and that wait has no
+//! deadline: it ends when the login changes, and on nothing timed. No
+//! closing line is left in this file: the last, `failed reason=step_timeout`,
+//! went with issue #3037, because a step timeout no longer ends a limit
+//! wait. Where nothing in a test would change the login, the test changes
+//! it once the wait is under way, as a person would
+//! (`Fixture::run_with_a_login_change_in`).
 //!
 //! Every wait with no reset to end on also writes a `waiting_for_capacity`
 //! line, naming the reason and the login, immediately before its `start`;
@@ -51,7 +51,7 @@
 
 use crate::issue_1618_fixture::{
     Fixture, SPEND_TEXT, SPEND_WEEKLY_TEXT, TEST_NOW, WAIT_PREFIX, claude_stdout, describe, events,
-    executable, private_file, text, wait_lines,
+    executable, private_file, text, toggle_login, wait_lines,
 };
 use crate::issue_1618_wait_profiles::with_profiles;
 use crate::issue_1801_capacity_wait::{
@@ -64,7 +64,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const MAX_WAIT_ENV: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
 const WAIT_LEDGER_ENV: &str = "AMPLIHACK_USAGE_WAIT_LEDGER";
 const RECIPE_LOG_ENV: &str = "AMPLIHACK_RECIPE_LOG";
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
@@ -73,15 +72,12 @@ const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
 const RESET_START: &str = "start reason=usage_limit harness=claude \
                            reset=2026-10-18 08:30:00 -07:00 \
                            until=2026-10-18 08:32:00 -07:00 bound=reset+margin";
-/// The two lines a spend limit writes on the fixture's virtual clock when
-/// the wait is one minute long: the `waiting_for_capacity` line #2911 added
-/// and the `start` line after it. One minute is what `MAX_WAIT_ENV=0` and
-/// `MAX_WAIT_ENV=60` both ask for, because the configured value is floored
-/// at 60 seconds.
-const SPEND_WAITING_A_MINUTE: &str =
-    "waiting_for_capacity reason=spend_limit harness=claude until=2026-10-18 08:01:00 -07:00";
-const SPEND_START_A_MINUTE: &str = "start reason=spend_limit wait=login_change harness=claude \
-                                    reset=none until=2026-10-18 08:01:00 -07:00 bound=max_wait";
+/// The two lines a spend limit with no reset writes: the
+/// `waiting_for_capacity` line #2911 added and the `start` line after it.
+/// The wait has no deadline, so both say `until=none`.
+const SPEND_WAITING: &str = "waiting_for_capacity reason=spend_limit harness=claude until=none";
+const SPEND_START: &str = "start reason=spend_limit wait=login_change harness=claude \
+                           reset=none until=none bound=none";
 
 /// The stub `claude` these tests use. It is the #1618 stub with one addition:
 /// `SWAP_ON_CALL`, a space-separated list of `<call>:<login>`, runs the
@@ -138,6 +134,11 @@ fn live_login(f: &Fixture) -> Option<String> {
     let raw = fs::read_to_string(rotate_dir(f).join("ledger.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     Some(v.get("live")?.as_str()?.to_string())
+}
+
+/// Where a `$HOME/.claude` step's login lives, for a login change.
+fn home_login(f: &Fixture) -> PathBuf {
+    f.home.join(".claude")
 }
 
 /// A step on `$HOME/.claude` with the swap-capable stub installed.
@@ -233,6 +234,34 @@ fn run_during_wait(f: &Fixture, c: &mut Command, then: impl FnOnce() + Send + 's
     if let Err(panic) = writer.join() {
         std::panic::resume_unwind(panic);
     }
+    out
+}
+
+/// Runs `c`, a step whose login lives in `dir` rather than in `~/.claude`,
+/// and changes that login at the 300th progress line of its wait with no
+/// deadline. Fails unless the step was still on its second attempt then: a
+/// `~/.claude` login change made during the attempts did not end that wait.
+fn run_until_its_own_login_changes(f: &Fixture, c: &mut Command, dir: &Path) -> Output {
+    let start = format!("{WAIT_PREFIX}start ");
+    let progress = format!("{WAIT_PREFIX}progress ");
+    let (mut open, mut seen, mut attempts_by_then) = (false, 0u32, None);
+    let out = f.run_watching(c, |line| {
+        if line.starts_with(&start) {
+            open = line.contains(" until=none ");
+        } else if open && line.starts_with(&progress) {
+            seen += 1;
+            if seen == 300 {
+                attempts_by_then = Some(f.count("0"));
+                toggle_login(dir);
+            }
+        }
+    });
+    assert_eq!(
+        attempts_by_then,
+        Some(2),
+        "the wait with no deadline was still waiting 300 minutes in: {}",
+        describe(&out)
+    );
     out
 }
 
@@ -430,10 +459,8 @@ fn ac2_a_spend_limit_on_a_home_step_waits_for_the_login_to_change() {
     assert_eq!(
         events(&out),
         [
-            "waiting_for_capacity reason=spend_limit harness=claude \
-             until=2026-10-18 14:00:00 -07:00",
-            "start reason=spend_limit wait=login_change harness=claude reset=none \
-             until=2026-10-18 14:00:00 -07:00 bound=max_wait",
+            SPEND_WAITING,
+            SPEND_START,
             "end reason=login changed",
             "resume attempt=2",
         ],
@@ -443,39 +470,44 @@ fn ac2_a_spend_limit_on_a_home_step_waits_for_the_login_to_change() {
     assert_no_account_detail(&f, &out);
 }
 
-/// Issue #2911's own failure, inverted. This used to be
-/// `a_spend_limit_that_nothing_lifts_ends_the_step_naming_it`, and it
-/// asserted `failed reason=spend_limit: usage limit not lifted` and no
-/// retry: a wait that reached its deadline ended the run. That line is
-/// gone, and with it the whole of `FailReason`. The
-/// wait now runs its length and the step tries again, which is the point of
-/// the issue: nothing a limit says may end a run.
-///
-/// `MAX_WAIT_ENV=0` is what pins the floor. It used to mean "do not wait";
-/// it now reads as the 60-second minimum, so the wait is real and one
-/// minute long on the virtual clock. `recipe.usage_limit_wait = false` is
-/// the only way left to turn waiting off.
+/// Issue #2911's own failure, inverted. A spend limit that nothing lifts
+/// used to end the step with `failed reason=spend_limit: usage limit not
+/// lifted`, and later to retry when a timed bound passed. It now has no
+/// deadline: the step is still on its first attempt 400 virtual minutes in,
+/// past the six hours the removed bound gave it, and runs again only when
+/// the login changes, which the test does then.
 #[test]
-fn a_spend_limit_that_nothing_lifts_waits_its_length_and_retries() {
+fn a_spend_limit_that_nothing_lifts_waits_for_the_login_to_change() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", SPEND_TEXT).env(MAX_WAIT_ENV, "0");
-    let out = f.run(&mut c);
+    c.env("LIMIT_MESSAGE", SPEND_TEXT);
+    let progress = format!("{WAIT_PREFIX}progress ");
+    let (mut seen, mut attempts_by_then) = (0u32, None);
+    let out = f.run_watching(&mut c, |line| {
+        if line.starts_with(&progress) {
+            seen += 1;
+            if seen == 400 {
+                attempts_by_then = Some(f.count("0"));
+                toggle_login(&home_login(&f));
+            }
+        }
+    });
     assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(attempts_by_then, Some(1), "no timer ran the step again");
     assert_eq!(
         f.count("0"),
         2,
-        "the wait ran out and the step tried again: {}",
+        "the login changed and the step tried again: {}",
         describe(&out)
     );
     assert_eq!(
         events(&out),
         [
-            SPEND_WAITING_A_MINUTE,
-            SPEND_START_A_MINUTE,
-            "end reason=max reached",
+            SPEND_WAITING,
+            SPEND_START,
+            "end reason=login changed",
             "resume attempt=2",
         ],
         "{}",
@@ -488,10 +520,10 @@ fn a_spend_limit_that_nothing_lifts_waits_its_length_and_retries() {
     );
 }
 
-/// Issue #3037: a step timeout does not end a
-/// login-change wait. It used to be the one thing that still closed such a
-/// wait with `failed reason=step_timeout`; the wait now runs its own length
-/// and the step retries.
+/// Issue #3037: a step timeout does not end a login-change wait. It used to
+/// be the one thing that still closed such a wait with `failed
+/// reason=step_timeout`; the wait now runs until the login changes and the
+/// step retries.
 #[test]
 fn issue_3037_a_step_timeout_does_not_end_a_login_change_wait() {
     let f = with_profiles();
@@ -500,16 +532,11 @@ fn issue_3037_a_step_timeout_does_not_end_a_login_change_wait() {
     let mut c = home_step(&f);
     c.env("LIMIT_MESSAGE", SPEND_TEXT)
         .env("AMPLIHACK_STEP_TIMEOUT", "30");
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_in(&home_login(&f), &mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "the step retried after its wait");
     let ev = events(&out);
-    assert!(
-        ev[0].starts_with("waiting_for_capacity reason=spend_limit harness=claude until="),
-        "{ev:?}"
-    );
-    assert!(ev[1].contains(" wait=login_change "), "{ev:?}");
-    assert!(ev[1].ends_with(" bound=max_wait"), "{ev:?}");
+    assert_eq!(ev[..2], [SPEND_WAITING, SPEND_START], "{ev:?}");
     assert!(ev.iter().any(|e| e == "resume attempt=2"), "{ev:?}");
     assert!(
         ev.iter()
@@ -554,9 +581,7 @@ fn issue_2731_a_shared_home_spend_limit_waits_for_the_swap_instead() {
     );
     let ev = events(&out);
     assert_eq!(
-        ev[0],
-        "waiting_for_capacity reason=spend_limit harness=claude \
-                until=2026-10-18 14:00:00 -07:00",
+        ev[0], SPEND_WAITING,
         "the wait says why it has no reset to end on: {ev:?}"
     );
     assert!(
@@ -588,54 +613,55 @@ fn issue_2731_a_shared_home_spend_limit_waits_for_the_swap_instead() {
 /// healthy because no work is being done. Ending the wait there sends the
 /// step straight back onto the same spent login.
 ///
-/// The cycle lifting nothing used to show as the step ending on
-/// `failed reason=spend_limit`. Issue #2911 removed that line: reaching the
-/// wait's own deadline now retries, so what the cycle not being a swap
-/// costs is the whole of the wait rather than the run, and the end to look
-/// for is `max reached` rather than `rotator capacity` or `login changed`.
+/// Here such a cycle is written once the wait is under way. It is stamped in
+/// real time, after the virtual clock's start of the wait, so it is fresh;
+/// it names the same login live. The wait goes on past it, and only the
+/// login change made long after ends it (issue #2911: the wait has no
+/// deadline, so that is the only end it has).
 #[test]
 fn a_fresh_rotator_cycle_without_a_swap_does_not_end_a_spend_limit_wait() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", SPEND_TEXT).env(MAX_WAIT_ENV, "300");
-    real_clock(&mut c);
-    // 300 s of wait at this scale is half a minute of real time, and the
-    // cycle below lands a little after the wait's baseline settles.
-    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "10");
-    let profiles = f.profiles.clone();
-    let out = run_during_wait(&f, &mut c, move || {
-        // A fresh cycle, measured now, naming the same login live: the
-        // rotator looked and stayed.
-        write_cycle(&profiles, "X", real_now());
+    c.env("LIMIT_MESSAGE", SPEND_TEXT);
+    let progress = format!("{WAIT_PREFIX}progress ");
+    let (mut seen, mut attempts_after_the_cycle) = (0u32, None);
+    let out = f.run_watching(&mut c, |line| {
+        if line.starts_with(&progress) {
+            seen += 1;
+            if seen == 2 {
+                // A fresh cycle, measured now, naming the same login live:
+                // the rotator looked and stayed.
+                write_cycle(&f.profiles, "X", real_now());
+            } else if seen == 200 {
+                attempts_after_the_cycle = Some(f.count("0"));
+                toggle_login(&home_login(&f));
+            }
+        }
     });
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
-        f.count("0"),
-        2,
-        "the wait ran its length and the step tried again: {}",
+        attempts_after_the_cycle,
+        Some(1),
+        "the cycle ran nothing again: {}",
         describe(&out)
     );
+    assert_eq!(f.count("0"), 2, "{}", describe(&out));
     let ev = events(&out);
-    assert!(
-        ev[0].starts_with("waiting_for_capacity reason=spend_limit harness=claude until="),
-        "{ev:?}"
-    );
-    assert!(ev[1].contains(" wait=login_change "), "{ev:?}");
     assert_eq!(
-        ev[ev.len() - 2..],
-        ["end reason=max reached", "resume attempt=2"],
-        "the wait ran to its own deadline: a cycle that swapped nothing \
-         lifted nothing: {ev:?}"
+        ev,
+        [
+            SPEND_WAITING,
+            SPEND_START,
+            "end reason=login changed",
+            "resume attempt=2",
+        ],
+        "a cycle that swapped nothing lifted nothing: {ev:?}"
     );
     assert!(
         !ev.iter().any(|l| l.contains("rotator capacity")),
         "fresh capacity on the live login is not a login change: {ev:?}"
-    );
-    assert!(
-        !ev.iter().any(|l| l.starts_with("failed ")),
-        "the deadline retries the step rather than closing it: {ev:?}"
     );
     assert_eq!(
         live_login(&f).as_deref(),
@@ -653,28 +679,28 @@ fn a_fresh_rotator_cycle_without_a_swap_does_not_end_a_spend_limit_wait() {
 /// `plan::upgrade_spend`. A rotator can be started, or a login can gain
 /// credit, while the step is waiting, and refusing to wait because nothing
 /// can help *now* is exactly the failure the issue reports. So the wait is
-/// made, nothing ends it early, and reaching its deadline retries the step.
+/// made, and with no rotator it lasts until a person changes the login,
+/// which the test does.
 #[test]
 fn a_spend_limit_with_no_rotator_running_still_waits_then_retries() {
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f);
-    // One minute of the virtual clock, so the wait is real but short.
-    c.env("LIMIT_MESSAGE", SPEND_TEXT).env(MAX_WAIT_ENV, "60");
-    let out = f.run(&mut c);
+    c.env("LIMIT_MESSAGE", SPEND_TEXT);
+    let out = f.run_with_a_login_change_in(&home_login(&f), &mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         f.count("0"),
         2,
-        "the wait ran out and the step tried again: {}",
+        "the login changed and the step tried again: {}",
         describe(&out)
     );
     assert_eq!(
         events(&out),
         [
-            SPEND_WAITING_A_MINUTE,
-            SPEND_START_A_MINUTE,
-            "end reason=max reached",
+            SPEND_WAITING,
+            SPEND_START,
+            "end reason=login changed",
             "resume attempt=2",
         ],
         "{}",
@@ -690,10 +716,9 @@ fn a_spend_limit_with_no_rotator_running_still_waits_then_retries() {
 /// `~/.claude` and nowhere else, so this step's login is not one it can
 /// move. Issue #2911 makes the shape of the wait a reading of the *message*
 /// alone (`plan::wait_for_message`), so a spend limit stating no reset is a
-/// login-change wait whatever directory the step runs in. Nothing about
-/// this step's login can end it early, which is what the sequence shows:
-/// the wait runs its whole length and then the step retries, exactly as the
-/// no-rotator case above does.
+/// login-change wait whatever directory the step runs in. The rotator never
+/// changes this step's login, so the change that ends the wait is one made
+/// in the step's own directory, as whoever runs the step would make it.
 #[test]
 fn a_spend_limit_on_a_config_dir_step_waits_too_and_retries() {
     let f = with_profiles();
@@ -701,16 +726,16 @@ fn a_spend_limit_on_a_config_dir_step_waits_too_and_retries() {
     let _rotator = rotator_running(&f);
     // `step()` keeps CLAUDE_CONFIG_DIR: the rotator never changes it.
     let mut c = f.step();
-    c.env("LIMIT_MESSAGE", SPEND_TEXT).env(MAX_WAIT_ENV, "60");
-    let out = f.run(&mut c);
+    c.env("LIMIT_MESSAGE", SPEND_TEXT);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "{}", describe(&out));
     assert_eq!(
         events(&out),
         [
-            SPEND_WAITING_A_MINUTE,
-            SPEND_START_A_MINUTE,
-            "end reason=max reached",
+            SPEND_WAITING,
+            SPEND_START,
+            "end reason=login changed",
             "resume attempt=2",
         ],
         "{}",
@@ -724,22 +749,20 @@ fn a_spend_limit_on_a_config_dir_step_waits_too_and_retries() {
 ///
 /// The reset here is a year out, so the wait is a capacity one and says so
 /// twice: `waiting_for_capacity reason=reset_too_far` and then `wait=capacity`
-/// on the `start` line (issue #2911). Reaching a capacity wait's deadline
-/// used to write `failed reason=capacity_expired` and end the step; it now
-/// retries, and `capacity expired` is only the reason the wait ended.
+/// on the `start` line (issue #2911). Its deadline is that reset, held to
+/// the spend limit's span, and reaching it retries the step.
 #[test]
 fn a_spend_limit_with_a_weekly_reset_is_a_capacity_wait_not_a_login_change_wait() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", SPEND_WEEKLY_TEXT)
-        .env(MAX_WAIT_ENV, "0");
+    c.env("LIMIT_MESSAGE", SPEND_WEEKLY_TEXT);
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     let ev = events(&out);
     // Next year's Oct 8, held to a spend limit's 62-day span, is the wait's
-    // deadline; the configured maximum does not cut it short.
+    // deadline.
     assert_eq!(
         ev[0],
         "waiting_for_capacity reason=reset_too_far harness=claude \
@@ -808,31 +831,29 @@ fn ac3_a_swap_to_a_limited_login_waits_again_keyed_to_it() {
 /// on the retry is the signal being wrong: X and then Y are waited on
 /// again, each time with one `reentered` line. It then said the step's
 /// *budget* ended the chain. Issue #2911 removed the budget, so nothing
-/// ends a chain of limits at all: `max_wait_secs` is the outer bound of one
-/// capacity or login-change wait and a step waits as many times as it meets a
-/// limit. What bounds this
-/// test is therefore the stub, not the product: after `LIMIT_CALLS` the
-/// stub stops reporting a limit.
+/// ends a chain of limits at all: a step waits as many times as it meets a
+/// limit. What bounds this test is therefore the stub, not the product:
+/// after `LIMIT_CALLS` the stub stops reporting a limit.
 ///
 /// The rotator stops swapping after call 3, the fourth attempt waits out
 /// its reset, and the fifth meets the same message read at 08:32, a reset
 /// two minutes past. That is a re-entry as well, and a capacity wait
-/// (`passed_reset`); its deadline retries rather than ending the step,
-/// which is where `failed reason=capacity_expired` used to be written. The
-/// sixth attempt, which the stub no longer limits, succeeds.
+/// (`passed_reset`) with no deadline; the login change the test makes ends
+/// it, where `failed reason=capacity_expired` used to be written. The sixth
+/// attempt, which the stub no longer limits, succeeds.
 #[test]
 fn a_login_that_comes_round_again_is_waited_on_again_and_the_chain_continues() {
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f);
     c.env("SWAP_ON_CALL", "1:Y 2:X 3:Y").env("LIMIT_CALLS", "5");
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_in(&home_login(&f), &mut c);
     assert!(out.status.success(), "{}", describe(&out));
     let ev = events(&out);
     assert_eq!(
         ev[ev.len() - 2..],
-        ["end reason=capacity expired", "resume attempt=6"],
-        "the last wait's deadline retries the step: {ev:?}"
+        ["end reason=login changed", "resume attempt=6"],
+        "the last wait ended on the login change and the step retried: {ev:?}"
     );
     assert_eq!(
         f.count("0"),
@@ -852,23 +873,16 @@ fn a_login_that_comes_round_again_is_waited_on_again_and_the_chain_continues() {
     );
 }
 
-/// The second wait is a reset wait, and
-/// a reset wait is not cut short by `max_wait_secs`. It used to be: this
-/// test pinned the second wait ending at the one-minute maximum with `max
-/// reached` and the agent run again half an hour before the reset, a
-/// re-entry on a timer. It now runs to the reset, the event it waits for.
-/// The first wait here ended before it began (`login changed`), so the
-/// second starts from the same instant and would have had its whole
-/// minute; the configured length is still read, and still ignored by a
-/// reset wait.
+/// The second wait is a reset wait, and it runs to the reset, the event it
+/// waits for, with no timer to cut it short. The first wait here ended
+/// before it began (`login changed`), so the second starts from the same
+/// instant.
 #[test]
-fn the_second_wait_runs_to_its_reset_however_short_the_maximum() {
+fn the_second_wait_runs_to_its_reset() {
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f);
-    c.env("SWAP_ON_CALL", "1:Y")
-        .env("LIMIT_CALLS", "2")
-        .env(MAX_WAIT_ENV, "60");
+    c.env("SWAP_ON_CALL", "1:Y").env("LIMIT_CALLS", "2");
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     let ev = events(&out);
@@ -914,9 +928,10 @@ fn ac5_the_recipe_log_carries_one_start_and_one_end_line_for_each_wait() {
 /// Issue #2911 added `waiting_for_capacity` to that set, because a step
 /// waiting for capacity may wait a long time and an operator reading the
 /// run's log has to be able to tell it from a hung one. It also took
-/// `skipped` and `failed` out of this run altogether: with five limits and
-/// nothing lifting them the step used to end, and it now waits five times
-/// and takes the attempt the stub allows.
+/// `skipped` and `failed` out of this run altogether: with five limits the
+/// step used to end, and it now waits five times and takes the attempt the
+/// stub allows. A wait whose reset has passed has no deadline, and a login
+/// change the test makes ends each of those.
 #[test]
 fn no_other_event_reaches_the_recipe_log() {
     let f = with_profiles();
@@ -924,7 +939,7 @@ fn no_other_event_reaches_the_recipe_log() {
     let log = recipe_log(&f);
     let mut c = home_step(&f);
     c.env("LIMIT_CALLS", "5").env(RECIPE_LOG_ENV, &log);
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_in(&home_login(&f), &mut c);
     assert!(out.status.success(), "{}", describe(&out));
     let lines = log_lines(&log);
     let allowed = ["start ", "waiting_for_capacity ", "end ", "reentered "];
@@ -964,9 +979,9 @@ fn no_other_event_reaches_the_recipe_log() {
 ///
 /// Issue #2911 added the `waiting_for_capacity` line, which carries the
 /// same `account=` as the `start` line, and removed the step's closing
-/// `failed reason=spend_limit`: the wait's deadline retries instead. So a
-/// reader grepping the recipe log for `spend_limit` finds the wait twice
-/// and finds no failure, which is the point.
+/// `failed reason=spend_limit`. So a reader grepping the recipe log for
+/// `spend_limit` finds the wait twice, sees it has no deadline, and finds no
+/// failure, which is the point.
 #[test]
 fn a_login_change_wait_names_its_kind_and_its_account_in_the_log() {
     let f = with_profiles();
@@ -974,19 +989,16 @@ fn a_login_change_wait_names_its_kind_and_its_account_in_the_log() {
     let _rotator = rotator_running(&f);
     let log = recipe_log(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", SPEND_TEXT)
-        .env(MAX_WAIT_ENV, "0")
-        .env(RECIPE_LOG_ENV, &log);
-    let out = f.run(&mut c);
+    c.env("LIMIT_MESSAGE", SPEND_TEXT).env(RECIPE_LOG_ENV, &log);
+    let out = f.run_with_a_login_change_in(&home_login(&f), &mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         log_lines(&log),
         [
-            "waiting_for_capacity reason=spend_limit account=X \
-             until=2026-10-18 08:01:00 -07:00",
-            "start reason=spend_limit wait=login_change account=X reset=none \
-             until=2026-10-18 08:01:00 -07:00 bound=max_wait",
-            "end reason=max reached",
+            "waiting_for_capacity reason=spend_limit account=X until=none",
+            "start reason=spend_limit wait=login_change account=X reset=none until=none \
+             bound=none",
+            "end reason=login changed",
         ],
         "both opening lines name the limit and the login"
     );
@@ -1123,7 +1135,7 @@ fn ac7_an_explicit_config_dir_step_is_unaffected_by_a_home_login_change() {
         .env("OLD_AT", OLD_CYCLE.to_string())
         .env("SWAP_ON_CALL", "1:Y 2:X")
         .env("LIMIT_CALLS", "2");
-    let out = f.run(&mut c);
+    let out = run_until_its_own_login_changes(&f, &mut c, &f.config.clone());
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         live_login(&f).as_deref(),
@@ -1136,9 +1148,10 @@ fn ac7_an_explicit_config_dir_step_is_unaffected_by_a_home_login_change() {
         "one wait, one retry, one capacity wait for the re-entry, one retry"
     );
     // Issue #2857: the retry meets a reset two minutes past. That limit is a
-    // re-entry and waits on capacity. The login change in ~/.claude says
-    // nothing to this step, so nothing ends that wait before its deadline,
-    // and issue #2911 makes reaching the deadline a retry.
+    // re-entry and waits on capacity, with no deadline (issue #2911). The
+    // login change in ~/.claude says nothing to this step, so the wait is
+    // still waiting long after it, and only a change in the step's own
+    // directory ends it.
     let ev = events(&out);
     assert_eq!(
         ev[..3],
@@ -1147,19 +1160,17 @@ fn ac7_an_explicit_config_dir_step_is_unaffected_by_a_home_login_change() {
     );
     assert_eq!(ev[3], "reentered met=usage_limit", "{ev:?}");
     assert_eq!(
-        ev[4],
-        "waiting_for_capacity reason=passed_reset harness=claude \
-         until=2026-10-18 14:32:00 -07:00",
+        ev[4], "waiting_for_capacity reason=passed_reset harness=claude until=none",
         "{ev:?}"
     );
     assert!(
         ev[5].starts_with("start reason=usage_limit wait=capacity ")
-            && ev[5].ends_with("bound=max_wait"),
+            && ev[5].ends_with(" until=none bound=none"),
         "{ev:?}"
     );
     assert_eq!(
         ev[6..],
-        ["end reason=capacity expired", "resume attempt=3"],
+        ["end reason=login changed", "resume attempt=3"],
         "{ev:?}"
     );
 }
@@ -1180,7 +1191,7 @@ fn ac7_an_inherited_profile_step_is_unaffected_by_a_home_login_change() {
         .env("OLD_AT", OLD_CYCLE.to_string())
         .env("SWAP_ON_CALL", "1:Y 2:X")
         .env("LIMIT_CALLS", "2");
-    let out = f.run(&mut c);
+    let out = run_until_its_own_login_changes(&f, &mut c, &f.profiles.join("X"));
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(live_login(&f).as_deref(), Some("X"), "the swaps happened");
     assert_eq!(f.count("0"), 3);
@@ -1188,8 +1199,9 @@ fn ac7_an_inherited_profile_step_is_unaffected_by_a_home_login_change() {
         assert_eq!(f.call("0", n)["PROFILE"], "X", "call {n}");
     }
     // Issue #2857, as for the config-directory step above: the retry's reset
-    // is two minutes past, so the re-entry waits on capacity, says why
-    // (issue #2911), and retries when that wait reaches its deadline.
+    // is two minutes past, so the re-entry waits on capacity, says why, and
+    // has no deadline (issue #2911): only a change in the profile's own
+    // directory ends it.
     let ev = events(&out);
     assert_eq!(
         ev[..3],
@@ -1198,19 +1210,17 @@ fn ac7_an_inherited_profile_step_is_unaffected_by_a_home_login_change() {
     );
     assert_eq!(ev[3], "reentered met=usage_limit", "{ev:?}");
     assert_eq!(
-        ev[4],
-        "waiting_for_capacity reason=passed_reset harness=claude \
-         until=2026-10-18 14:32:00 -07:00",
+        ev[4], "waiting_for_capacity reason=passed_reset harness=claude until=none",
         "{ev:?}"
     );
     assert!(
         ev[5].starts_with("start reason=usage_limit wait=capacity ")
-            && ev[5].ends_with("bound=max_wait"),
+            && ev[5].ends_with(" until=none bound=none"),
         "{ev:?}"
     );
     assert_eq!(
         ev[6..],
-        ["end reason=capacity expired", "resume attempt=3"],
+        ["end reason=login changed", "resume attempt=3"],
         "{ev:?}"
     );
 }

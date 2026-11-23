@@ -3,22 +3,18 @@
 //! only when `recipe.usage_limit_wait` or its variable says so, and `1`/`0`
 //! accepted in the variable. `CI` is not read (issue #2911); a run of the
 //! real binary with `CI=true` is in `tests/issue_1618_wait_settings.rs`.
+//! There is no length setting (issue #2911): a wait ends on an event, and a
+//! host still exporting the old variable is told it is no longer read.
 //! Every load uses a temporary HOME and a supplied environment.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_settings;`.
 
-use super::plan::MIN_WAIT_SECS;
-use super::settings::{SHORT_WAIT_SECS, WaitSettings, from_effective, length_warning};
+use super::settings::{RETIRED_MAX_WAIT_ENV, WaitSettings, from_effective, retired_warning};
 use crate::user_config::{LoadCtx, load};
 use std::fs;
 use std::path::Path;
 
 fn settings(home: &Path, env: &[(&str, &str)]) -> WaitSettings {
-    settings_and_warning(home, env).0
-}
-
-/// The settings and the length warning `resolve` would print for them.
-fn settings_and_warning(home: &Path, env: &[(&str, &str)]) -> (WaitSettings, Option<String>) {
     let lookup = |name: &str| {
         env.iter()
             .find(|(k, _)| *k == name)
@@ -31,9 +27,7 @@ fn settings_and_warning(home: &Path, env: &[(&str, &str)]) -> (WaitSettings, Opt
         env: &lookup,
         migrate: false,
     });
-    let s = from_effective(&effective);
-    let warning = length_warning(&effective, &s);
-    (s, warning)
+    from_effective(&effective)
 }
 
 fn user_file(home: &Path, body: &str) {
@@ -42,17 +36,8 @@ fn user_file(home: &Path, body: &str) {
     fs::write(dir.join("config.toml"), body).unwrap();
 }
 
-/// The schema default (issue #1801).
-const SIX_HOURS: u64 = 21_600;
-
-const ON: WaitSettings = WaitSettings {
-    enabled: true,
-    max_wait_secs: Some(SIX_HOURS),
-};
-const OFF: WaitSettings = WaitSettings {
-    enabled: false,
-    max_wait_secs: Some(SIX_HOURS),
-};
+const ON: WaitSettings = WaitSettings { enabled: true };
+const OFF: WaitSettings = WaitSettings { enabled: false };
 
 /// Issue #2911: with nothing set the wait is on, and `CI` is not one of the
 /// settings. The loader is handed a `CI` of every kind that used to turn the
@@ -85,26 +70,12 @@ fn an_explicit_setting_turns_the_wait_on_or_off() {
 }
 
 #[test]
-fn the_file_sets_both_keys_and_the_variable_outranks_it() {
+fn the_variable_outranks_the_file() {
     let home = tempfile::tempdir().unwrap();
-    user_file(
-        home.path(),
-        "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 600\n",
-    );
-    let file = WaitSettings {
-        enabled: false,
-        max_wait_secs: Some(600),
-    };
-    assert_eq!(settings(home.path(), &[]), file);
-    let env = [
-        ("AMPLIHACK_USAGE_LIMIT_WAIT", "true"),
-        ("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "300"),
-    ];
-    let both = WaitSettings {
-        enabled: true,
-        max_wait_secs: Some(300),
-    };
-    assert_eq!(settings(home.path(), &env), both);
+    user_file(home.path(), "[recipe]\nusage_limit_wait = false\n");
+    assert_eq!(settings(home.path(), &[]), OFF);
+    let env = [("AMPLIHACK_USAGE_LIMIT_WAIT", "true")];
+    assert_eq!(settings(home.path(), &env), ON);
     let off = [("AMPLIHACK_USAGE_LIMIT_WAIT", "0")];
     assert!(!settings(home.path(), &off).enabled);
 }
@@ -117,217 +88,58 @@ fn an_invalid_variable_falls_back_to_the_file() {
     assert_eq!(settings(home.path(), &env), OFF);
 }
 
-#[test]
-fn a_user_file_or_the_variable_can_go_above_the_default() {
-    let home = tempfile::tempdir().unwrap();
-    user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 86400\n");
-    assert_eq!(settings(home.path(), &[]).max_wait_secs, Some(86_400));
-    let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "90000")];
-    assert_eq!(settings(home.path(), &env).max_wait_secs, Some(90_000));
-}
-
-// An invalid maximum in the file or the variable is reported by the loader
-// and ignored; the next setting down applies, ending at the schema default
-// (docs/reference/user-config.md).
-#[test]
-fn an_invalid_maximum_in_the_file_falls_back_to_the_default() {
-    for body in [
-        "[recipe]\nusage_limit_max_wait_secs = -1\n",
-        "[recipe]\nusage_limit_max_wait_secs = \"six hours\"\n",
-        "[recipe]\nusage_limit_max_wait_secs = 1.5\n",
-    ] {
-        let home = tempfile::tempdir().unwrap();
-        user_file(home.path(), body);
-        assert_eq!(
-            settings(home.path(), &[]).max_wait_secs,
-            Some(SIX_HOURS),
-            "{body:?}"
-        );
-    }
-}
-
-#[test]
-fn an_invalid_maximum_variable_falls_back_to_the_file_then_the_default() {
-    let home = tempfile::tempdir().unwrap();
-    for bad in ["", "-5", "abc", "1e3", "99999999999999999999999"] {
-        let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", bad)];
-        assert_eq!(
-            settings(home.path(), &env).max_wait_secs,
-            Some(SIX_HOURS),
-            "{bad:?}"
-        );
-    }
-    user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 600\n");
-    let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "abc")];
-    assert_eq!(settings(home.path(), &env).max_wait_secs, Some(600));
-}
-
-// Issue #2911: the key is the length of *one* wait, not a budget for the
-// whole step, and a configured value below one wait's floor is raised to it
-// rather than dropped. Each expiry of the bound runs the step's agent again,
-// so a bound of a few seconds would be a busy loop of agent launches, which
-// the pacing rule exists to prevent.
+// --- no length setting (issue #2911) --------------------------------------
 //
-// The floor is applied here, where the value is read, so that `lower_only`
-// keeps working. Dropping a too-small value instead would silently raise a
-// project's configured number to the 21 600-second default.
+// A wait whose limit stated no usable reset ends on a login with room or a
+// login change, and a wait for a stated reset ends at that reset. A length
+// setting would be a timer that runs the step's agent again on a login that
+// may still be spent, so there is none.
 
+/// The old key in a config file, at any value that used to mean something,
+/// changes nothing the wait reads, and the wait stays on.
 #[test]
-fn issue_2911_a_length_below_one_poll_interval_is_raised_to_the_floor() {
-    for body in [0u64, 1, 30, 59] {
+fn issue_2911_the_old_length_key_changes_nothing() {
+    for body in ["0", "60", "600", "21600", "86400"] {
         let home = tempfile::tempdir().unwrap();
         user_file(
             home.path(),
             &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
         );
-        assert_eq!(
-            settings(home.path(), &[]).max_wait_secs,
-            Some(MIN_WAIT_SECS),
-            "a configured {body}"
-        );
-        let value = body.to_string();
-        let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", value.as_str())];
-        assert_eq!(
-            settings(home.path(), &env).max_wait_secs,
-            Some(MIN_WAIT_SECS),
-            "the variable set to {body}"
-        );
+        assert_eq!(settings(home.path(), &[]), ON, "a configured {body}");
     }
 }
 
+/// A host that still exports the old variable is told that it is no longer
+/// read and what ends a wait instead, while the wait is on; the line names
+/// the variable and never its value.
 #[test]
-fn issue_2911_a_length_at_or_above_the_floor_is_kept_as_configured() {
-    for body in [MIN_WAIT_SECS, MIN_WAIT_SECS + 1, 600, SIX_HOURS] {
-        let home = tempfile::tempdir().unwrap();
-        user_file(
-            home.path(),
-            &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
-        );
-        assert_eq!(
-            settings(home.path(), &[]).max_wait_secs,
-            Some(body),
-            "a configured {body}"
-        );
-    }
-}
-
-/// A zero no longer means "do not wait": the way to turn the wait off is
-/// `recipe.usage_limit_wait = false`, and that is unaffected by the floor.
-#[test]
-fn issue_2911_turning_the_wait_off_is_its_own_key() {
-    let home = tempfile::tempdir().unwrap();
-    user_file(
-        home.path(),
-        "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 0\n",
-    );
-    let got = settings(home.path(), &[]);
-    assert!(!got.enabled);
-    assert_eq!(got.max_wait_secs, Some(MIN_WAIT_SECS));
-}
-
-// Before #2911 a configured `0` meant "fail at once".
-// It now means a 60-second wait, and a host that still carries one is told
-// so each time a step reads it, rather than finding out from a wait it did
-// not expect.
-
-#[test]
-fn issue_2911_a_length_raised_to_the_floor_is_reported() {
-    for body in [0u64, 59] {
-        let home = tempfile::tempdir().unwrap();
-        user_file(
-            home.path(),
-            &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
-        );
-        let (_, warning) = settings_and_warning(home.path(), &[]);
-        let warning = warning.unwrap_or_else(|| panic!("a configured {body}: no warning"));
-        assert!(warning.starts_with("warning: "), "{warning}");
-        assert!(
-            warning.contains("recipe.usage_limit_max_wait_secs"),
-            "{warning}"
-        );
-        assert!(
-            warning.contains("recipe.usage_limit_wait = false"),
-            "{warning}"
-        );
-        let value = body.to_string();
-        let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", value.as_str())];
-        assert!(
-            settings_and_warning(home.path(), &env).1.is_some(),
-            "the variable set to {body}"
-        );
-    }
-}
-
-/// A length at or above the floor but below the rotator's own cycle is not
-/// raised, and is not silent either. The value is the outer bound of a wait
-/// whose limit stated no reset still ahead, and a step still limited when
-/// such a wait ends runs its agent again, so such a value re-launches the
-/// agent that often for as long as the limit lasts. The line says so, names
-/// the default, and says a wait for a stated reset is not shortened by it.
-#[test]
-fn a_short_length_above_the_floor_is_reported_as_the_poll_it_is() {
-    for body in [MIN_WAIT_SECS, SHORT_WAIT_SECS - 1] {
-        let home = tempfile::tempdir().unwrap();
-        user_file(
-            home.path(),
-            &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
-        );
-        let (settings, warning) = settings_and_warning(home.path(), &[]);
-        assert_eq!(settings.max_wait_secs, Some(body), "not raised: {body}");
-        let warning = warning.unwrap_or_else(|| panic!("a configured {body}: no warning"));
-        assert!(warning.starts_with("warning: "), "{warning}");
-        assert!(
-            warning.contains("recipe.usage_limit_max_wait_secs"),
-            "{warning}"
-        );
-        assert!(
-            warning.contains("runs its agent again"),
-            "the cost is named: {warning}"
-        );
-        assert!(
-            warning.contains("A wait for a stated reset is not shortened by it"),
-            "and what it does not touch: {warning}"
-        );
-        assert!(
-            warning.contains("recipe.usage_limit_wait = false"),
-            "{warning}"
-        );
-    }
-    // The wait off, so the length is never used.
-    let home = tempfile::tempdir().unwrap();
-    user_file(
-        home.path(),
-        "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 120\n",
-    );
-    assert_eq!(settings_and_warning(home.path(), &[]).1, None);
-}
-
-#[test]
-fn issue_2911_no_length_warning_without_cause() {
-    let home = tempfile::tempdir().unwrap();
-    // Nothing configured: the default is above both thresholds.
-    assert_eq!(settings_and_warning(home.path(), &[]).1, None);
-    // A length at or above the short-wait threshold.
-    for body in [SHORT_WAIT_SECS, 21_600] {
-        user_file(
-            home.path(),
-            &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
-        );
-        assert_eq!(settings_and_warning(home.path(), &[]).1, None, "{body}");
-    }
-    // A zero with the wait turned off: the length is never used, so there
-    // is nothing to say.
-    user_file(
-        home.path(),
-        "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 0\n",
-    );
-    assert_eq!(settings_and_warning(home.path(), &[]).1, None);
-    // `CI` does not turn the wait off, so it does not silence the warning
-    // for a zero either (issue #2911).
-    user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 0\n");
+fn issue_2911_a_host_still_exporting_the_old_variable_is_told_it_is_not_read() {
+    let warning = retired_warning(true, &ON).expect("a warning while the wait is on");
+    assert!(warning.starts_with("warning: "), "{warning}");
+    assert!(warning.contains(RETIRED_MAX_WAIT_ENV), "{warning}");
+    assert!(warning.contains("no longer read"), "{warning}");
+    assert!(warning.contains("no timed bound"), "{warning}");
     assert!(
-        settings_and_warning(home.path(), &[("CI", "true")])
-            .1
-            .is_some()
+        warning.contains("amplihack profile switch"),
+        "it says how to make the event: {warning}"
     );
+    assert!(
+        warning.contains("recipe.usage_limit_wait = false"),
+        "{warning}"
+    );
+    assert_eq!(retired_warning(false, &ON), None, "nothing exported");
+    assert_eq!(
+        retired_warning(true, &OFF),
+        None,
+        "the wait is off, so nothing waits"
+    );
+    // The variable no longer reaches the settings at all.
+    let home = tempfile::tempdir().unwrap();
+    for v in ["0", "60", "abc"] {
+        assert_eq!(
+            settings(home.path(), &[(RETIRED_MAX_WAIT_ENV, v)]),
+            ON,
+            "{v}"
+        );
+    }
 }

@@ -4,11 +4,12 @@
 //! The wait blocks until something it could end on may have happened
 //! ([`WaitDeps::block`]): a write to one of the files its checks read, a
 //! stop signal, the exit of the process that started the step, or the
-//! wait's deadline. It reads its files once when it begins, and after that
-//! only after such a write, never on an interval, and it launches nothing. Issue #2911 asks for a wait woken by
-//! limit events, and each check below reads the file that records one: the
-//! rotator's ledger and swap record, the auto-switch readings and ledger,
-//! `.claude.json` and the credentials file (`wake`).
+//! wait's deadline, which only a wait for a stated reset has. It reads its
+//! files once when it begins, and after that only after such a write, never
+//! on an interval, and it launches nothing. Issue #2911 asks for a wait
+//! woken by limit events, and each check below reads the file that records
+//! one: the rotator's ledger and swap record, the auto-switch readings and
+//! ledger, `.claude.json` and the credentials file (`wake`).
 //!
 //! After a write it checks, in order: the rotator's capacity, the login
 //! fingerprint, another login's capacity, then the named login key. One
@@ -52,12 +53,13 @@
 //! is waiting hours for a reset, and because the line is how an operator
 //! sees that the step is waiting rather than hung.
 //!
-//! Where no file event can be had ([`WaitDeps::block`] says so), the wake
-//! for the progress line is the only one left, and the wait reads its files
-//! then; the wait's own line says so once (`wake`).
+//! Where no file event can be had, the wait says so once and reads nothing
+//! more: it cannot see a write, so it ends on its reset, a stop signal or
+//! the end of its session, and a wait with no reset waits for one of the
+//! last two (`wake`). The progress wake never reads a file.
 
 use super::events::{Event, line};
-use super::plan::{Bound, Plan, PlanKind};
+use super::plan::Plan;
 
 /// How often a `progress` line is written.
 pub(crate) const PROGRESS_SECS: i64 = 60;
@@ -70,8 +72,9 @@ pub(crate) trait WaitDeps {
     fn now(&mut self) -> i64;
     /// Blocks until a file the checks read may have changed, a stop signal
     /// arrives, the step's session ends, or `until` (unix seconds) comes,
-    /// whichever is first. Returns whether the files should be read again:
-    /// true after a write to one of them, false when only the time came or a
+    /// whichever is first. `until` is the wait's deadline or its next
+    /// progress line. Returns whether the files should be read again: true
+    /// after a write to one of them, false when only the time came or a
     /// signal or the session's end woke it, which the wait checks itself.
     fn block(&mut self, until: i64) -> bool;
     /// The login fingerprint, or `None` when it could not be read.
@@ -111,16 +114,16 @@ pub(crate) trait WaitDeps {
 }
 
 /// Why the wait ended.
+///
+/// Every end is an event (issue #2911). Only a wait for a stated reset has
+/// a deadline, and reaching it is that reset passing (`reset reached`); a
+/// wait whose limit stated no usable reset has none, so no end here means
+/// that time ran out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum End {
     ResetReached,
-    /// A login-change wait's outer bound passed; the login did not change.
-    MaxReached,
     LoginChanged,
     RotatorCapacity,
-    /// The outer bound of a capacity wait with no reset ahead passed;
-    /// nothing lifted the limit.
-    CapacityExpired,
     /// A reading showed that another stored login has capacity.
     OtherCapacity,
     SessionEnded,
@@ -131,10 +134,8 @@ impl End {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             End::ResetReached => "reset reached",
-            End::MaxReached => "max reached",
             End::LoginChanged => "login changed",
             End::RotatorCapacity => "rotator capacity",
-            End::CapacityExpired => "capacity expired",
             End::OtherCapacity => "login capacity",
             End::SessionEnded => "session ended",
             End::Signal(_) => "signal",
@@ -145,31 +146,23 @@ impl End {
     /// on that retry contradicts it (issue #2857).
     ///
     /// A reset that arrived, the rotator's capacity, a login change and
-    /// another login's room each say *try now*. The rest (a maximum, a
-    /// capacity wait's deadline, the session's end and a stop signal) are
-    /// the wait running out, and claim nothing, so a limit after one of
-    /// them is no contradiction.
+    /// another login's room each say *try now*. The session's end and a stop
+    /// signal claim nothing, and run no retry.
     pub(crate) fn said_try_now(self) -> bool {
         matches!(
             self,
             End::ResetReached | End::RotatorCapacity | End::LoginChanged | End::OtherCapacity
         )
     }
-
-    fn at_deadline(bound: Bound, kind: PlanKind) -> Self {
-        match (bound, kind) {
-            // On a capacity wait the reset is the failed login's own: it has
-            // recovered, so the step is retried.
-            (Bound::ResetMargin, _) => End::ResetReached,
-            (Bound::MaxWait, PlanKind::Reset) => End::MaxReached,
-            (Bound::MaxWait, PlanKind::Capacity) => End::CapacityExpired,
-        }
-    }
 }
 
 /// Waits until `plan.until`, a login change, rotator capacity, another
-/// login's capacity, the end of the step's session or a stop signal. Writes
-/// only `progress` lines; `start`, `end` and `resume` are the caller's.
+/// login's capacity, the end of the step's session or a stop signal. A plan
+/// with no `until` ends only on one of the others. Writes only `progress`
+/// lines; `start`, `end` and `resume` are the caller's.
+///
+/// On a capacity wait the reset is the failed login's own, so reaching it
+/// means that login has recovered and the step is retried.
 pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
     let start = deps.now();
     let mut base = deps.fingerprint();
@@ -186,18 +179,20 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
             return End::SessionEnded;
         }
         let now = deps.now();
-        if now >= plan.until {
-            return End::at_deadline(plan.bound, plan.kind);
+        if plan.until.is_some_and(|until| now >= until) {
+            return End::ResetReached;
         }
         if read && let Some(end) = read_files(plan, start, &mut base, deps) {
             return end;
         }
         if now >= next_progress {
-            let remaining = u64::try_from(plan.until.saturating_sub(now)).unwrap_or(0);
+            let remaining = plan
+                .until
+                .map(|until| u64::try_from(until.saturating_sub(now)).unwrap_or(0));
             deps.log(&line(&Event::Progress { remaining }, &chrono::Local));
             next_progress = now.saturating_add(PROGRESS_SECS);
         }
-        read = deps.block(plan.until.min(next_progress));
+        read = deps.block(plan.until.map_or(next_progress, |u| u.min(next_progress)));
     }
 }
 

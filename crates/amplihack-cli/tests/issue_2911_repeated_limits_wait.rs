@@ -1,18 +1,21 @@
 //! Issue #2911: a second and a third limit in one step each wait. No
-//! `already_waited` refusal and no `max_wait_secs` budget ends the chain.
+//! `already_waited` refusal and no budget ends the chain.
 //!
-//! What a wait that outlasts `max_wait_secs` with no event does depends on
-//! the wait, and both halves are pinned at the end of this file: a wait for
-//! a stated reset does not run the step again before its reset, and a wait
-//! with no reset to wait for does, once, at its outer bound
-//! (docs/reference/usage-limit-waits.md, "The timed parts that remain").
+//! What ends each wait depends on the limit, and both halves are pinned at
+//! the end of this file: a wait for a stated reset runs the step again at
+//! its reset and not before, and a wait with no reset to wait for has no
+//! deadline and runs it again only on an event
+//! (docs/reference/usage-limit-waits.md, "A wait with no deadline").
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, LIMIT_TEXT, claude_stdout, describe, events, wait_lines};
+use crate::issue_1618_fixture::{
+    Fixture, LIMIT_TEXT, WAIT_PREFIX, claude_stdout, describe, events, text, toggle_login,
+    wait_lines,
+};
 
 /// A session limit that states no reset, so its wait is a capacity wait with
-/// no reset row: the configured length is what bounds it.
+/// no deadline: only an event ends it.
 const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 
 fn step(f: &Fixture) -> std::process::Command {
@@ -28,12 +31,15 @@ fn no_reset_step(f: &Fixture) -> std::process::Command {
     c
 }
 
+/// The first limit's reset is waited for. The second and third meet the
+/// same message once its reset has passed, which gives a wait with no
+/// deadline; a login change ends each of those.
 #[test]
 fn three_limits_in_one_step_each_wait_and_the_fourth_attempt_succeeds() {
     let f = Fixture::new();
     let mut c = step(&f);
     c.env("LIMIT_CALLS", "3");
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 4, "{}", describe(&out));
     let ev = events(&out);
@@ -45,29 +51,30 @@ fn three_limits_in_one_step_each_wait_and_the_fourth_attempt_succeeds() {
     assert_eq!(claude_stdout(&out), "attempt 4 output\n");
 }
 
+/// Three limits with no reset in one step: each is a wait with no deadline,
+/// each is ended by a login change, and nothing counts them or ends the
+/// chain.
 #[test]
-fn a_spent_max_wait_budget_does_not_end_the_chain() {
+fn a_chain_of_limits_with_no_reset_each_waits_for_an_event() {
     let f = Fixture::new();
-    // A limit with no reset, so the configured length is what bounds each
-    // wait: it does not bound a
-    // reset wait at all.
     let mut c = no_reset_step(&f);
-    // A budget of one wait length: under the old rule the second limit was
-    // refused because the budget was spent.
-    c.env("LIMIT_CALLS", "3")
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "1800");
-    let out = f.run(&mut c);
+    c.env("LIMIT_CALLS", "3");
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(f.count("0"), 4);
+    assert_eq!(f.count("0"), 4, "{}", describe(&out));
     let ev = events(&out);
-    // Each of the three waits gets the configured length in full. Under the
-    // old rule the value was a total, so the second wait got what the first
-    // had left and the third got a refusal.
     let starts: Vec<&String> = ev.iter().filter(|l| l.starts_with("start ")).collect();
     assert_eq!(starts.len(), 3, "{ev:?}");
     for l in &starts {
-        assert!(l.ends_with(" bound=max_wait"), "{l}");
+        assert!(l.ends_with(" until=none bound=none"), "{l}");
     }
+    assert_eq!(
+        ev.iter()
+            .filter(|l| l.starts_with("end "))
+            .collect::<Vec<_>>(),
+        ["end reason=login changed"; 3],
+        "each wait ended on its event: {ev:?}"
+    );
     assert!(
         !ev.iter().any(|l| l.starts_with("failed")),
         "no total ends the chain: {ev:?}"
@@ -79,11 +86,13 @@ fn no_refusal_or_budget_ending_is_ever_logged() {
     let f = Fixture::new();
     let mut c = step(&f);
     c.env("LIMIT_CALLS", "3");
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     for l in events(&out) {
         for gone in [
             "already_waited",
             "capacity_expired",
+            "capacity expired",
+            "max reached",
             "failed reason=spend_limit",
         ] {
             assert!(!l.contains(gone), "{gone}: {l}");
@@ -91,75 +100,53 @@ fn no_refusal_or_budget_ending_is_ever_logged() {
     }
 }
 
-/// A configured zero is raised to the 60-second floor, so it still buys a
-/// real wait rather than a zero-length one.
-///
-/// This is the pacing rule at its sharpest point. The wait loop polls every
-/// 30 seconds, so a wait shorter than one interval has no wake condition
-/// that could end it and would simply return; a chain of those is a busy
-/// loop, which is what a per-step budget used to be there to stop. The floor
-/// is what makes "every plan ends strictly after now" true for every
-/// configured value and not only for the default.
-///
-/// A zero therefore no longer means "do not wait";
-/// `recipe.usage_limit_wait = false` is how to turn waiting off.
+/// The variable that used to bound a wait with no reset is not read, and a
+/// host that still exports it is told so. The wait it would have bounded has
+/// no deadline.
 #[test]
-fn a_configured_zero_wait_length_is_raised_to_the_floor_and_still_waits() {
+fn the_old_length_variable_is_not_read_and_a_wait_with_no_reset_has_no_deadline() {
     let f = Fixture::new();
-    // The floor applies to the outer bound, which only a wait with no reset
-    // to wait for has.
     let mut c = no_reset_step(&f);
-    c.env("LIMIT_CALLS", "2")
+    c.env("LIMIT_CALLS", "1")
         .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0");
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(f.count("0"), 3, "{}", describe(&out));
-    let ev = events(&out);
-    let starts: Vec<&String> = ev.iter().filter(|l| l.starts_with("start ")).collect();
-    assert_eq!(starts.len(), 2, "{ev:?}");
-    // Every wait is bounded by the configured length, so by the floor: not
-    // by `reset+margin`. No step timeout bounds a wait (issue #3037).
-    for l in &starts {
-        assert!(
-            l.ends_with(" bound=max_wait"),
-            "the configured length is what bounds the wait: {l}"
-        );
-    }
-    // The first wait starts on the fixture's own clock, so its deadline is
-    // exactly 60 seconds past `TEST_NOW` (08:00:00 -07:00): a real minute,
-    // neither `now` nor the 21600-second default. The second wait starts
-    // later by however long the retry took, so only its row is pinned.
+    assert_eq!(f.count("0"), 2, "{}", describe(&out));
     assert!(
-        starts[0].ends_with("until=2026-10-18 08:01:00 -07:00 bound=max_wait"),
-        "a zero must buy the 60-second floor, not a zero-length wait: {}",
-        starts[0]
+        text(&out.stderr).contains(
+            "warning: AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS is no longer read. A usage-limit \
+             wait has no timed bound"
+        ),
+        "{}",
+        describe(&out)
+    );
+    assert_eq!(
+        events(&out),
+        [
+            "waiting_for_capacity reason=no_reset harness=claude until=none",
+            "start reason=usage_limit wait=capacity harness=claude reset=none until=none \
+             bound=none",
+            "end reason=login changed",
+            "resume attempt=2",
+        ]
     );
 }
 
-/// A wait that outlasts `max_wait_secs`
-/// with no event does not run the step again when its limit stated a reset.
-///
-/// The reviewer read the configured length as a timer that re-entered every
-/// wait. For a reset wait it was: a length below the reset's distance ended
-/// the wait at that length and ran the agent again before the reset, so a
-/// step under a short length re-asked the harness on a timer while the one
-/// event it was waiting for was half an hour off. A reset wait now has no
-/// timed bound. With the shortest outer bound the setting allows and a reset
-/// half an hour away, the stub runs once before the wait and once after the
-/// reset, and not at the one-minute mark; the progress lines show the wait
-/// still running long after it.
+/// A wait for a stated reset runs the step again at that reset and not
+/// before: half an hour, with nothing to end it early, is one attempt before
+/// the wait and one after its reset, and the progress lines show the wait
+/// still running within two minutes of it.
 #[test]
-fn a_reset_wait_outlasting_max_wait_secs_does_not_run_the_step_again() {
+fn a_reset_wait_runs_the_step_again_only_at_its_reset() {
     let f = Fixture::new();
     let mut c = step(&f);
-    c.env("LIMIT_CALLS", "1")
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60");
+    c.env("LIMIT_CALLS", "1");
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         f.count("0"),
         2,
-        "one attempt before the wait and one after its reset, none at 60 s: {}",
+        "one attempt before the wait and one after its reset: {}",
         describe(&out)
     );
     assert_eq!(
@@ -170,7 +157,7 @@ fn a_reset_wait_outlasting_max_wait_secs_does_not_run_the_step_again() {
             "end reason=reset reached",
             "resume attempt=2",
         ],
-        "the reset, not the configured length, ended the wait"
+        "the reset ended the wait"
     );
     let remaining: Vec<u64> = wait_lines(&out)
         .iter()
@@ -180,42 +167,60 @@ fn a_reset_wait_outlasting_max_wait_secs_does_not_run_the_step_again() {
         .collect();
     assert!(
         remaining.iter().any(|r| *r < 120),
-        "the wait was still running within two minutes of its reset, half an hour \
-         past the configured 60 seconds: {remaining:?}"
+        "the wait was still running within two minutes of its reset: {remaining:?}"
     );
     assert_eq!(claude_stdout(&out), "attempt 2 output\n");
 }
 
-/// The other half: a wait whose limit gives it no
-/// reset to wait for, and which no event ends, does run the step again once
-/// its outer bound passes.
+/// The other half: a wait whose limit gives it no reset to wait for has no
+/// deadline, so no clock runs the step again. Nothing records when such a
+/// limit lifts, and on this host there is no rotator and no other login, so
+/// the step waits for a person's event however long that takes.
 ///
-/// It does so because nothing records when such a limit lifts: a session
-/// limit with no stated reset writes no block, and on this host there is no
-/// rotator and no other login, so nothing but the outer bound would ever run
-/// the step again without a person. The run is never ended by it, and a
-/// limit on the next attempt starts another wait. This is the one timed
-/// re-entry left (docs/reference/usage-limit-waits.md, "The timed parts
-/// that remain").
+/// Here the step is still on its first attempt after 400 virtual minutes,
+/// past the six hours the removed outer bound used to give it, and the login
+/// change made then is what runs it again.
 #[test]
-fn a_wait_with_no_reset_runs_the_step_again_at_its_outer_bound() {
+fn a_wait_with_no_reset_runs_the_step_again_only_on_an_event() {
     let f = Fixture::new();
     let mut c = no_reset_step(&f);
-    c.env("LIMIT_CALLS", "1")
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60");
-    let out = f.run(&mut c);
+    c.env("LIMIT_CALLS", "1");
+    let progress = format!("{WAIT_PREFIX}progress ");
+    let mut seen = 0u32;
+    let mut attempts_by_then = None;
+    let out = f.run_watching(&mut c, |line| {
+        if line.starts_with(&progress) {
+            seen += 1;
+            if seen == 400 {
+                attempts_by_then = Some(f.count("0"));
+                toggle_login(&f.config);
+            }
+        }
+    });
     assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(
+        attempts_by_then,
+        Some(1),
+        "no attempt ran in 400 minutes of waiting: {}",
+        describe(&out)
+    );
     assert_eq!(f.count("0"), 2, "{}", describe(&out));
     assert_eq!(
         events(&out),
         [
-            "waiting_for_capacity reason=no_reset harness=claude \
-             until=2026-10-18 08:01:00 -07:00",
-            "start reason=usage_limit wait=capacity harness=claude reset=none \
-             until=2026-10-18 08:01:00 -07:00 bound=max_wait",
-            "end reason=capacity expired",
+            "waiting_for_capacity reason=no_reset harness=claude until=none",
+            "start reason=usage_limit wait=capacity harness=claude reset=none until=none \
+             bound=none",
+            "end reason=login changed",
             "resume attempt=2",
         ],
-        "the outer bound ran the step again, and nothing ended it"
+        "the login change, and no timer, ran the step again"
+    );
+    assert!(
+        wait_lines(&out)
+            .iter()
+            .filter(|l| l.starts_with("progress "))
+            .all(|l| l == "progress remaining=none"),
+        "a wait with no deadline has nothing to count down to"
     );
 }

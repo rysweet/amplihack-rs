@@ -147,16 +147,11 @@ fn the_epoch_form_gives_its_reset() {
 /// ends. The one reading left that no wait can help, work prose with no
 /// limit message in it, still ends the step, and is checked last.
 ///
-/// A wait with no reset ahead is bounded by the 60-second floor; a far
-/// reset is waited for, held to its kind's window. The fixture's virtual
-/// clock makes either cost no real time.
+/// A wait with no reset ahead has no deadline and ends on the login change
+/// the test makes; a far reset is waited for, held to its kind's window.
+/// The fixture's virtual clock makes either cost no real time.
 #[test]
 fn limits_a_wait_cannot_outlast_are_waited_for_not_passed_up() {
-    // A wait with no reset still ahead is bounded by its configured maximum
-    // of 60 seconds, the floor `plan::MIN_WAIT_SECS` sets. A stated reset
-    // more than five hours away is waited for instead, held to its kind's
-    // window, and the maximum does not cut it short.
-    const MAX: &str = "2026-10-18 08:01:00 -07:00";
     for (message, why, start_reason, reset, until, bound, end) in [
         // A spend limit with no reset waits for the login itself to change.
         (
@@ -164,9 +159,9 @@ fn limits_a_wait_cannot_outlast_are_waited_for_not_passed_up() {
             "spend_limit",
             "spend_limit wait=login_change",
             "none",
-            MAX,
-            "max_wait",
-            "max reached",
+            "none",
+            "none",
+            "login changed",
         ),
         // Next year's Oct 8, held to a spend limit's 62-day span.
         (
@@ -194,16 +189,15 @@ fn limits_a_wait_cannot_outlast_are_waited_for_not_passed_up() {
             "no_reset",
             "usage_limit wait=capacity",
             "none",
-            MAX,
-            "max_wait",
-            "capacity expired",
+            "none",
+            "none",
+            "login changed",
         ),
     ] {
         let f = Fixture::new();
         let mut c = f.step();
-        c.env("LIMIT_MESSAGE", message)
-            .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60");
-        let out = f.run(&mut c);
+        c.env("LIMIT_MESSAGE", message);
+        let out = f.run_with_a_login_change_per_open_wait(&mut c);
         assert!(out.status.success(), "{why}: {}", describe(&out));
         assert_eq!(f.count("0"), 2, "{why}: the step waits, then retries once");
         assert_eq!(
@@ -260,7 +254,8 @@ fn a_spend_limit_that_states_a_session_reset_waits_for_it() {
 /// once. There are no zero-length waits any more: such a reset is always
 /// `Capacity(PassedReset)`, because the message may be minutes stale and a
 /// time that has been and gone is not something to sleep to, so the step
-/// waits for a reading instead and retries when the wait ends.
+/// waits for an event instead - here a login change - and retries when the
+/// wait ends. It has no deadline: the time it names has been and gone.
 #[test]
 fn a_reset_already_behind_the_clock_waits_for_capacity() {
     let f = Fixture::new();
@@ -268,18 +263,16 @@ fn a_reset_already_behind_the_clock_waits_for_capacity() {
     c.env(
         "LIMIT_MESSAGE",
         "You've hit your session limit · resets 7:55am (America/Los_Angeles)",
-    )
-    .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60");
-    let out = f.run(&mut c);
+    );
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         events(&out),
         vec![
-            "waiting_for_capacity reason=passed_reset harness=claude \
-             until=2026-10-18 08:01:00 -07:00",
+            "waiting_for_capacity reason=passed_reset harness=claude until=none",
             "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-18 07:55:00 -07:00 until=2026-10-18 08:01:00 -07:00 bound=max_wait",
-            "end reason=capacity expired",
+             reset=2026-10-18 07:55:00 -07:00 until=none bound=none",
+            "end reason=login changed",
             "resume attempt=2",
         ]
     );
@@ -299,26 +292,30 @@ fn a_reset_already_behind_the_clock_waits_for_capacity() {
 /// gone.
 ///
 /// So the stub's five limits now produce five waits and six attempts, and the
-/// step succeeds. The chain is paced by the waits costing time, not by a
-/// count: every wait here ends strictly after it began, and the virtual clock
-/// moves only when a wait sleeps, which is why the whole chain is exact. The
-/// test is bounded by `LIMIT_CALLS`, that is, by the stub running out of
-/// limits to report, rather than by anything ending the chain.
+/// step succeeds. The chain is paced by each wait lasting until something
+/// changed, not by a count: a wait for a reset ends at it, and a wait for a
+/// reset already passed has no deadline and ends on the login change the
+/// test makes. The test is bounded by `LIMIT_CALLS`, that is, by the stub
+/// running out of limits to report, rather than by anything ending the
+/// chain.
 ///
-/// The second wait is the re-entry #2857 named, reported once on its own
-/// line: the first wait said *try now* and the limit on its retry
-/// contradicted that.
+/// The second wait is the re-entry #2857 named, reported on its own line:
+/// the first wait said *try now* and the limit on its retry contradicted
+/// that. The first two waits are pinned exactly. When the later ones begin
+/// depends on when the login changes land, and so does whether `8:30am` is
+/// read as just passed or as tomorrow's, so those are pinned by their
+/// shape.
 #[test]
 fn ac7_a_second_limit_is_waited_out_and_never_refused() {
     let f = Fixture::new();
     let mut c = f.step();
     c.env("LIMIT_CALLS", "5");
-    let out = f.run(&mut c);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 6, "five waits, and one attempt after each");
     let ev = events(&out);
     assert_eq!(
-        ev,
+        ev[..8],
         [
             // The limit's own reset, two minutes of margin added.
             "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
@@ -327,40 +324,35 @@ fn ac7_a_second_limit_is_waited_out_and_never_refused() {
             "resume attempt=2",
             // The retry meets the same message, now read at 08:32: a reset
             // two minutes past, which contradicts the wait that said to try
-            // now and waits for capacity rather than ending the step.
+            // now. It waits for capacity, with no deadline, rather than
+            // ending the step.
             "reentered met=usage_limit",
-            "waiting_for_capacity reason=passed_reset harness=claude \
-             until=2026-10-18 14:32:00 -07:00",
+            "waiting_for_capacity reason=passed_reset harness=claude until=none",
             "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 14:32:00 -07:00 bound=max_wait",
-            // Nothing lifted the limit, and the step retries all the same.
-            "end reason=capacity expired",
+             reset=2026-10-18 08:30:00 -07:00 until=none bound=none",
+            "end reason=login changed",
             "resume attempt=3",
-            // From here each 8:30am is tomorrow's, more than five hours off.
-            // A session window lasts five hours, so the stated reset is held
-            // to five hours from the moment it is read, and each wait ends
-            // there: no wait ends on the configured maximum.
-            "waiting_for_capacity reason=reset_too_far harness=claude \
-             until=2026-10-18 19:34:00 -07:00",
-            "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-18 19:32:00 -07:00 until=2026-10-18 19:34:00 -07:00 bound=reset+margin",
-            "end reason=reset reached",
-            "resume attempt=4",
-            "reentered met=usage_limit",
-            "waiting_for_capacity reason=reset_too_far harness=claude \
-             until=2026-10-19 00:36:00 -07:00",
-            "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-19 00:34:00 -07:00 until=2026-10-19 00:36:00 -07:00 bound=reset+margin",
-            "end reason=reset reached",
-            "resume attempt=5",
-            "reentered met=usage_limit",
-            "waiting_for_capacity reason=reset_too_far harness=claude \
-             until=2026-10-19 05:38:00 -07:00",
-            "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-19 05:36:00 -07:00 until=2026-10-19 05:38:00 -07:00 bound=reset+margin",
-            "end reason=reset reached",
-            "resume attempt=6",
-        ]
+        ],
+        "{ev:?}"
+    );
+    let starts: Vec<&String> = ev.iter().filter(|l| l.starts_with("start ")).collect();
+    assert_eq!(starts.len(), 5, "{ev:?}");
+    for l in &starts {
+        assert!(
+            l.ends_with(" bound=reset+margin") || l.ends_with(" until=none bound=none"),
+            "each wait ends at a reset or on an event: {l}"
+        );
+    }
+    for l in ev.iter().filter(|l| l.starts_with("end ")) {
+        assert!(
+            l == "end reason=reset reached" || l == "end reason=login changed",
+            "{l}"
+        );
+    }
+    assert_eq!(
+        ev.last().map(String::as_str),
+        Some("resume attempt=6"),
+        "{ev:?}"
     );
     assert!(
         !ev.iter()

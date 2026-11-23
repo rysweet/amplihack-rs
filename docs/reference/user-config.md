@@ -17,7 +17,7 @@ files.
   - [recipe.verbose](#recipeverbose)
   - [recipe.step_timeout](#recipestep_timeout)
   - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
-  - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
+  - [recipe.usage_limit_wait](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
   - [model.force](#modelforce)
   - [model.tier_map](#modeltier_map)
@@ -64,7 +64,6 @@ recipe.detach = "none"  # default
 recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
 recipe.log_dir = (unset)  # default
 recipe.usage_limit_wait = true  # default
-recipe.usage_limit_max_wait_secs = 21600  # default
 policy.deny_commands = (unset)  # default
 orchestrator.max_depth = 3  # default
 model.force = (unset)  # default
@@ -168,7 +167,6 @@ command, so it never prints `flag`.
 | `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
 | `recipe.usage_limit_wait` | bool | `true` | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
-| `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 (read as 60 when below 60) | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | — | — | user only |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 | `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | — | user only |
@@ -377,44 +375,19 @@ and that is intended: the limit result is passed up at once
 (`skipped reason=disabled`) and the run is recorded as resumable with the
 cause `usage_limit`. The environment variable also accepts `1` and `0`.
 
-`recipe.usage_limit_max_wait_secs` is the outer bound of one wait whose limit
-stated no reset still ahead, and defaults to `21600` (six hours). It is not a
-per-step budget: a step that meets another limit after a wait waits again with
-the same bound, and no count or total ends the chain. It does not shorten a
-wait for a stated reset, which ends at the reset plus 120 seconds, however far
-away, or sooner on room or a login change. See
-[Usage-limit waits](./usage-limit-waits.md#what-max_wait_secs-means).
+No key sets how long a wait lasts. A wait for a stated reset ends at the
+reset plus 120 seconds, however far away, or sooner on room or a login change;
+a wait whose limit stated no usable reset has no deadline and ends when a
+login has room or the login changes. See
+[A wait has no length setting](./usage-limit-waits.md#a-wait-has-no-length-setting).
 
-Because a step still limited when such a wait reaches the bound runs its agent
-again, it is also how often such a step re-asks the harness. Each ask is a
-fresh agent launch, so a short bound is a poll of the harness and not a cheap
-one; the default asks once every six hours. It is the one timer left on a
-wait ([the timed parts that remain](./usage-limit-waits.md#the-timed-parts-that-remain)).
-
-The bound has a floor of 60 seconds, so no configured value makes it a busy
-loop of agent launches, and a configured `0` means 60 seconds and not "do not
-wait". While the wait is on, a
-step that reads a value below 600 seconds, the rotator's own default cycle
-and so the soonest a host with no signal can have learnt anything, says so in
-a warning on standard error, naming the cost; a value below the 60-second
-floor says that too. Neither is refused. To stop steps waiting at all, set
-`recipe.usage_limit_wait` to `false`.
-
-The default is not a ceiling. A user file or
-`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value. A project file
-is `lower only`: it can shorten the length but never raise it above the user or
-default value, so a repository cannot make your runs wait longer.
-
-A value that is not a whole number of seconds from `0` upwards is handled
-like any other invalid value: `amplihack config set` rejects it with exit
-code `2` and writes nothing, a file value is reported when the file loads
-and ignored, and an invalid `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is
-reported by name and ignored. In each case the next layer down, ending at
-the default `21600`, applies.
+`recipe.usage_limit_max_wait_secs` has been removed. A file that still sets
+it gets `recipe.usage_limit_max_wait_secs: unknown key` when it loads, and the
+rest of the file applies; `amplihack config set` refuses the key as unknown
+(exit code `2`). `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is no longer read.
 
 ```sh
 amplihack config set recipe.usage_limit_wait false
-amplihack config set recipe.usage_limit_max_wait_secs 3600
 ```
 
 ### orchestrator.max_depth

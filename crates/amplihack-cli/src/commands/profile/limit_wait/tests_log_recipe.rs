@@ -35,8 +35,19 @@ fn start(shape: Shape, reset: Option<i64>, until: i64, bound: Bound) -> Event {
     Event::Start {
         harness: Harness::Claude,
         reset,
-        until,
+        until: Some(until),
         bound,
+        shape,
+    }
+}
+
+/// A wait with no deadline (issue #2911): its limit stated no usable reset.
+fn unbounded(shape: Shape, reset: Option<i64>) -> Event {
+    Event::Start {
+        harness: Harness::Claude,
+        reset,
+        until: None,
+        bound: Bound::Unbounded,
         shape,
     }
 }
@@ -61,20 +72,20 @@ fn a_reset_waits_start_line_is_unchanged() {
 }
 
 #[test]
-fn a_capacity_waits_start_line_is_unchanged() {
+fn a_capacity_waits_start_line_with_no_reset_has_no_deadline() {
     assert_eq!(
-        stderr(&start(Shape::Capacity, None, T0, Bound::MaxWait)),
+        stderr(&unbounded(Shape::Capacity, None)),
         "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity \
-         harness=claude reset=none until=2026-10-18 08:00:00 -07:00 bound=max_wait"
+         harness=claude reset=none until=none bound=none"
     );
 }
 
 #[test]
 fn a_login_change_waits_start_line_says_so_in_the_same_place() {
     assert_eq!(
-        stderr(&start(Shape::LoginChange, None, T32, Bound::MaxWait)),
+        stderr(&unbounded(Shape::LoginChange, None)),
         "amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change \
-         harness=claude reset=none until=2026-10-18 08:32:00 -07:00 bound=max_wait"
+         harness=claude reset=none until=none bound=none"
     );
 }
 
@@ -85,11 +96,11 @@ fn a_login_change_waits_start_line_says_so_in_the_same_place() {
 /// spend limit that did state a reset.
 #[test]
 fn the_reason_and_the_wait_token_are_not_the_same_field() {
-    let l = stderr(&start(Shape::LoginChange, None, T32, Bound::MaxWait));
+    let l = stderr(&unbounded(Shape::LoginChange, None));
     assert!(l.contains(" reason=spend_limit "), "{l}");
     assert!(l.contains(" wait=login_change "), "{l}");
     for shape in [Shape::Reset, Shape::Capacity] {
-        let l = stderr(&start(shape, None, T32, Bound::MaxWait));
+        let l = stderr(&start(shape, None, T32, Bound::ResetMargin));
         assert!(
             l.contains(" reason=usage_limit "),
             "{shape:?} is a session or weekly limit: {l}"
@@ -107,7 +118,7 @@ fn issue_2911_a_spend_limit_writes_its_token_on_the_wait_and_not_on_an_ending() 
     let l = stderr(&Event::WaitingForCapacity {
         harness: Harness::Claude,
         why: Waiting::SpendLimit,
-        until: T32,
+        until: None,
     });
     assert!(
         l.contains("waiting_for_capacity reason=spend_limit "),
@@ -133,13 +144,9 @@ fn the_recipe_log_start_line_swaps_harness_for_account() {
 #[test]
 fn the_recipe_log_keeps_the_wait_token_where_stderr_has_it() {
     assert_eq!(
-        recipe(
-            &start(Shape::LoginChange, None, T32, Bound::MaxWait),
-            Some("work")
-        )
-        .unwrap(),
+        recipe(&unbounded(Shape::LoginChange, None), Some("work")).unwrap(),
         "amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change \
-         account=work reset=none until=2026-10-18 08:32:00 -07:00 bound=max_wait"
+         account=work reset=none until=none bound=none"
     );
     assert_eq!(
         recipe(
@@ -156,13 +163,17 @@ fn the_recipe_log_keeps_the_wait_token_where_stderr_has_it() {
 #[test]
 fn the_recipe_log_start_line_is_the_stderr_one_with_one_field_replaced() {
     for shape in [Shape::Reset, Shape::Capacity, Shape::LoginChange] {
-        let e = start(shape, Some(T30), T32, Bound::MaxWait);
-        let got = recipe(&e, Some("work")).unwrap();
-        assert_eq!(
-            got,
-            stderr(&e).replace("harness=claude", "account=work"),
-            "{shape:?}"
-        );
+        for e in [
+            start(shape, Some(T30), T32, Bound::ResetMargin),
+            unbounded(shape, None),
+        ] {
+            let got = recipe(&e, Some("work")).unwrap();
+            assert_eq!(
+                got,
+                stderr(&e).replace("harness=claude", "account=work"),
+                "{shape:?}"
+            );
+        }
     }
 }
 
@@ -171,7 +182,7 @@ fn the_reason_token_is_the_same_in_both_sinks() {
     // `reason=` must mean one thing across stderr and the recipe log, so a
     // reader greps once and finds the wait in whichever sink they have.
     for shape in [Shape::Reset, Shape::Capacity, Shape::LoginChange] {
-        let e = start(shape, None, T32, Bound::MaxWait);
+        let e = unbounded(shape, None);
         let (l, s) = (recipe(&e, Some("w")).unwrap(), stderr(&e));
         let token = |line: &str| {
             line.split_whitespace()
@@ -188,11 +199,7 @@ fn a_spend_limits_wait_is_found_by_grepping_for_the_spend_limit() {
     // The field report: a reader looking for why a step stopped searched the
     // recipe log for `spend_limit` and found nothing, because the only line
     // that carried the token was the step's closing line on stderr.
-    let l = recipe(
-        &start(Shape::LoginChange, None, T32, Bound::MaxWait),
-        Some("w"),
-    )
-    .unwrap();
+    let l = recipe(&unbounded(Shape::LoginChange, None), Some("w")).unwrap();
     assert!(l.contains("start reason=spend_limit "), "{l}");
 }
 
@@ -223,7 +230,11 @@ fn a_name_outside_the_rotators_form_is_rejected_not_trimmed() {
         "/absolute/path",
         long.as_str(),
     ] {
-        let l = recipe(&start(Shape::Reset, None, T32, Bound::MaxWait), Some(bad)).unwrap();
+        let l = recipe(
+            &start(Shape::Reset, None, T32, Bound::ResetMargin),
+            Some(bad),
+        )
+        .unwrap();
         assert!(
             l.contains(" account=unknown "),
             "{bad:?} must be rejected, not shortened: {l}"
@@ -235,7 +246,11 @@ fn a_name_outside_the_rotators_form_is_rejected_not_trimmed() {
 #[test]
 fn a_name_in_the_rotators_form_is_written_whole() {
     for good in ["a", "work", "second-2", "team_1.main", &"n".repeat(64)] {
-        let l = recipe(&start(Shape::Reset, None, T32, Bound::MaxWait), Some(good)).unwrap();
+        let l = recipe(
+            &start(Shape::Reset, None, T32, Bound::ResetMargin),
+            Some(good),
+        )
+        .unwrap();
         assert!(l.contains(&format!(" account={good} ")), "{good:?}: {l}");
     }
 }
@@ -243,7 +258,7 @@ fn a_name_in_the_rotators_form_is_written_whole() {
 #[test]
 fn one_line_always_and_nothing_but_printable_ascii() {
     let l = recipe(
-        &start(Shape::Reset, Some(T30), T32, Bound::MaxWait),
+        &start(Shape::Reset, Some(T30), T32, Bound::ResetMargin),
         Some("w"),
     )
     .unwrap();
@@ -259,9 +274,7 @@ fn the_end_line_is_identical_in_both_sinks() {
     for end in [
         End::LoginChanged,
         End::ResetReached,
-        End::MaxReached,
         End::RotatorCapacity,
-        End::CapacityExpired,
         End::SessionEnded,
         End::OtherCapacity,
         End::Signal(libc::SIGTERM),
@@ -284,7 +297,10 @@ fn the_end_line_is_identical_in_both_sinks() {
 #[test]
 fn progress_resume_and_skipped_lines_never_reach_the_recipe_log() {
     for e in [
-        Event::Progress { remaining: 1740 },
+        Event::Progress {
+            remaining: Some(1740),
+        },
+        Event::Progress { remaining: None },
         Event::Resume { attempt: 2 },
         Event::Skipped(Skip::Cannot(NoWait::NoLimitMessage)),
         Event::PromptCutShort,
@@ -330,7 +346,7 @@ fn issue_2857_the_re_entry_line_never_carries_the_login() {
 #[test]
 fn issue_2857_the_re_entry_line_is_the_only_addition_to_what_the_recipe_log_carries() {
     for e in [
-        Event::Progress { remaining: 5 },
+        Event::Progress { remaining: Some(5) },
         Event::Resume { attempt: 2 },
         Event::PromptCutShort,
     ] {
@@ -350,7 +366,7 @@ fn waiting(why: Waiting, until: i64) -> Event {
     Event::WaitingForCapacity {
         harness: Harness::Claude,
         why,
-        until,
+        until: Some(until),
     }
 }
 
@@ -404,4 +420,25 @@ fn issue_2911_every_reason_reaches_the_recipe_log() {
             "{l}"
         );
     }
+}
+
+/// A wait with no deadline says `until=none` in both sinks, so an operator
+/// reading the recipe log sees that nothing timed will end it.
+#[test]
+fn issue_2911_a_waiting_line_with_no_deadline_says_none_in_both_sinks() {
+    let e = Event::WaitingForCapacity {
+        harness: Harness::Claude,
+        why: Waiting::NoReset,
+        until: None,
+    };
+    assert_eq!(
+        recipe(&e, Some("work")).unwrap(),
+        "amplihack.recipe.usage_limit_wait waiting_for_capacity reason=no_reset \
+         account=work until=none"
+    );
+    assert_eq!(
+        stderr(&e),
+        "amplihack.recipe.usage_limit_wait waiting_for_capacity reason=no_reset \
+         harness=claude until=none"
+    );
 }

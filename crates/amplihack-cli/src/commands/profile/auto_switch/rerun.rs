@@ -106,9 +106,10 @@ pub fn nested_candidate(
 
 /// [`nested_candidate`] without the held-key alert: the same choice, made
 /// without writing or printing anything (issue #2694). This is for the
-/// usage-limit wait's 30-second probe only, which asks the same question for
-/// the whole of a wait, so the alert would repeat for hours in the step's
-/// stderr and crowd the runner's evidence tail. The step that is waiting has
+/// usage-limit wait's probe only, which asks the same question after every
+/// write to the files the wait watches for the whole of a wait, so the alert
+/// would repeat for hours in the step's stderr and crowd the runner's
+/// evidence tail. The step that is waiting has
 /// already hit a limit under auto-switch, so the alert for its held-back key
 /// was written once by the rerun check before the wait began.
 ///
@@ -216,8 +217,8 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
     if alert == KeyAlert::Write && own.macos() {
         // Issue #2885: a profile that is out of this choice only because its
         // Keychain could not be read is named, one line each, so the failure
-        // is not a silent skip. The wait's 30-second probe prints nothing,
-        // as it prints nothing about the held key. Off macOS there is no
+        // is not a silent skip. The wait's probe prints nothing, as it
+        // prints nothing about the held key. Off macOS there is no
         // Keychain to fail, and nothing more is read.
         for name in profiles
             .iter()
@@ -533,9 +534,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         Some(sw) => profile_check(sw.store, sw.inherited.as_str()),
         None => waiter.takeover_home(),
     };
-    // Silent: this runs every 30 s for the whole of a wait, and it only
-    // answers whether a move is possible; the retry's own selection below
-    // is the call that moves the step and writes the alert (#2694).
+    // Silent: this runs after each write to the files the wait watches, for
+    // the whole of a wait, and it only answers whether a move is possible;
+    // the retry's own selection below is the call that moves the step and
+    // writes the alert (#2694).
     let probe = |start, now| {
         switch.as_ref().is_some_and(|sw| {
             capacity_candidate(
