@@ -16,8 +16,8 @@ login with room or a login change, and says so
 
 A wait is the last resort. Before any wait an auto-switch step moves to
 another stored login under the auto-switch threshold, and when it does wait,
-the wait also ends when a limit recorded on another login it ran on ends
-([Other logins](#other-logins)).
+the wait also ends when a limit block recorded on another login it could move
+to ends, whether or not it has run there ([Other logins](#other-logins)).
 
 This page owns the tables for limit kinds, the limit record, which wait a
 limit starts and the `waiting_for_capacity` line. The log grammar is in the
@@ -45,7 +45,6 @@ task-oriented guidance is in the
     - [Moving to another login before a wait](#moving-to-another-login-before-a-wait)
     - [The earliest-reset deadline](#the-earliest-reset-deadline)
     - [The login a wait names](#the-login-a-wait-names)
-    - [A reset that names no zone](#a-reset-that-names-no-zone)
 - [The timed parts that remain](#the-timed-parts-that-remain)
 - [A wait has no length setting](#a-wait-has-no-length-setting)
 - [Codex credit exhaustion](#codex-credit-exhaustion)
@@ -206,7 +205,6 @@ reset (00:00 UTC on the 1st of the next month). A `session`, `weekly` or
 | Reset within five hours | reset wait | the reset plus 120 s, a login with room, or a login change | the reset plus 120 s (`reset+margin`) |
 | Reset more than five hours away | capacity wait | the reset plus 120 s, held to the kind's window, a login with room, or a login change | the held reset plus 120 s (`reset+margin`) |
 | Reset not readable | capacity wait | a login with room, or a login change | none (`none`) |
-| Reset stated with no zone | capacity wait | a login with room, or a login change | none (`none`) |
 | Reset already behind the clock | capacity wait | a login with room, or a login change | none (`none`) |
 | A bare `429` that another login could take over | capacity wait | a login with room, or a login change | none (`none`) |
 | Spend limit stating no reset | login-change wait | the login in `~/.claude` changing | none (`none`) |
@@ -308,7 +306,6 @@ amplihack.recipe.usage_limit_wait waiting_for_capacity reason=no_reset account=w
 | `spend_limit` | A spend limit stating no reset. | `none` |
 | `credits` | A credit-exhaustion message. | `none` |
 | `passed_reset` | The stated reset is already behind the clock. | `none` |
-| `reset_without_zone` | The stated reset is a clock time with no zone, which is not read ([A reset that names no zone](#a-reset-that-names-no-zone)). | `none` |
 
 `until` is the wait's deadline, or `none` for a wait that has no deadline
 ([A wait with no deadline](#a-wait-with-no-deadline)). The line carries no
@@ -413,28 +410,50 @@ tried set; then the step waits. A step with auto-switch off, or on
 
 Every limit a step meets records a block on its login in the rotate ledger,
 ending at the reset the message stated
-([The limit record](#the-limit-record)). The rotator wakes when such a
-block ends. A step's wait also ends at the earliest block end recorded on
-another login the step has run on, plus 120 s, when that comes before its
-own deadline or it has none. Its start line then says
-`bound=earliest_reset+margin`, and its `reset=` field is still the step's own
-limit's reset. The retry runs on that login, with no other check. A retry that
-meets a limit records it and goes back to the move-or-wait loop.
+([The limit record](#the-limit-record)), and the rotator records blocks of
+its own. The rotator wakes when a block ends. While auto-switch is on, a
+step's wait also ends at the earliest block end recorded on any other login
+the step could move to, plus 120 s, when that comes before its own deadline
+or it has none. Its start line then says `bound=earliest_reset+margin`, and
+its `reset=` field is still the step's own limit's reset. The retry runs on
+that login.
+
+The logins whose blocks count are:
+
+- every login the step has run on, each of which the
+  [candidate selection](./profile-command.md#candidate-selection) chose for
+  it;
+- every other stored login the candidate selection could move the step onto
+  once its block ends, whether or not the step has run there: a plan login
+  (never an overflow or API-key profile, whose spend the overflow gate
+  decides), not excluded, not holding another account's login nor leased to
+  another directory, and holding its own login.
+
+The inherited login is never one: its own reset already times the wait. In
+the reported run the step had run on one login of 23, so the second list is
+the one that ends its wait.
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-11-21 23:50:00 -08:00 until=2026-11-21 22:32:00 -08:00 bound=earliest_reset+margin
 amplihack.recipe.usage_limit_wait end reason=reset reached
-amplihack.recipe.usage_limit_wait resume attempt=3
+amplihack.recipe.usage_limit_wait resume attempt=2
 amplihack: the earliest recorded reset among this step's logins has passed; rerunning this step under profile "lab" (auto-switch)
 ```
 
-Nothing is predicted from a usage reading. Only logins the step has run on
-count, so the retry lands on a login the candidate selection chose for this
-step. A host the rotator has never run on has no rotate ledger and records
-no block, so its waits end at their own reset. Another login whose window
-resets is still seen through the wait's existing checks: a reading with
-room, or a rotator cycle with capacity. A login-change wait is never
-shortened.
+The retry is not checked first: no reading is taken after the block ends,
+and none is required. That has a cost when the block's end is wrong about
+the login, for example when its weekly window is still used up. The retry
+then spends one whole attempt, with the prompt's tokens, before it meets the
+limit. That limit is recorded like any other, the login joins the step's
+tried set, its new block times the next wait, and the step goes back to the
+move-or-wait loop. A block that has ended cannot end a second wait.
+
+Nothing is predicted from a usage reading. A host the rotator has never run
+on has no rotate ledger and records no block, so its waits end at their own
+reset. With auto-switch off the step may not move, so no other login's block
+ends its wait. Another login whose window resets is still seen through the
+wait's existing checks: a reading with room, or a rotator cycle with
+capacity. A login-change wait is never shortened.
 
 ### The login a wait names
 
@@ -444,21 +463,12 @@ for a `$HOME/.claude` step, the rotator's live login. `unknown` is left for a
 host with no profile store, a `CLAUDE_CONFIG_DIR` step, and a live login
 whose name cannot be read.
 
-### A reset that names no zone
-
-Claude Code prints some limits with a bare clock time, as in
-`... · your 5-hour limit resets 11:50pm`. No zone is guessed, so the reset is
-not read, and the wait says so:
-`waiting_for_capacity reason=reset_without_zone ... until=none`. It is a
-capacity wait, even for a spend-limit line, so a login with room or a login
-change ends it ([#3121](https://github.com/rysweet/amplihack-rs/issues/3121)).
-
 ## The timed parts that remain
 
 | Part | What it is | What it does not do |
 |------|------------|---------------------|
 | The reset deadline | A wait whose limit stated a reset still ahead ends at that reset plus 120 s (`bound=reset+margin`), the reset held to its kind's window. The reset passing is a limit event: the failed login has recovered. | It never applies to a wait whose limit stated no usable reset. |
-| The earliest reset of another login | A wait ends at the earliest end of a limit block recorded on another login the step ran on, plus 120 s, when that comes first (`bound=earliest_reset+margin`), and the retry runs on that login ([The earliest-reset deadline](#the-earliest-reset-deadline)). | It never applies to a login-change wait, and it never makes a deadline later. |
+| The earliest reset of another login | With auto-switch on, a wait ends at the earliest end of a limit block recorded on another login the step could move to, plus 120 s, when that comes first (`bound=earliest_reset+margin`), and the retry runs on that login ([The earliest-reset deadline](#the-earliest-reset-deadline)). | It never applies to a login-change wait, and it never makes a deadline later. |
 | The progress line | The wait wakes once a minute to write `progress remaining=<n>s`, or `progress remaining=none` for a wait with no deadline. | It reads no file, checks no account, launches nothing and ends nothing. |
 
 Nothing else in a wait is timed. Where no file event can be had, the wait
@@ -558,5 +568,6 @@ its credit exhaustion is classed but does not wait
 - On a host the rotator has never run on, no block is recorded, so a wait
   ends at its own reset or on a reading with room, not at another login's
   reset.
-- A reset that names no zone is not read
-  ([#3121](https://github.com/rysweet/amplihack-rs/issues/3121)).
+- The retry after an earliest-reset wait takes no reading first. A block end
+  that was wrong about its login costs one attempt
+  ([The earliest-reset deadline](#the-earliest-reset-deadline)).

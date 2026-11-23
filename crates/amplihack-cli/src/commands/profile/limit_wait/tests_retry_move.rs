@@ -554,7 +554,7 @@ fn a_fallback_reading_does_not_start_the_retry_before_the_wait() {
 //
 // `Waiter::offer_earliest_reset(Option<i64>)` gives the wait about to be
 // planned the earliest end of a limit block recorded on another login the
-// step has run on; the next `after_limit` takes it whatever it does. When
+// step could move to; the next `after_limit` takes it whatever it does. When
 // that instant comes before the wait's own deadline the wait ends there, and
 // `Waiter::reached_earliest_reset()` says so: the retry then runs on that
 // login (`auto_switch::rerun::block_ended_retry`). The flag is cleared

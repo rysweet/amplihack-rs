@@ -35,7 +35,8 @@ fn the_earliest_standing_block_among_the_given_logins_is_returned() {
 
 #[test]
 fn a_login_not_given_is_never_read() {
-    // `c` ends first, but the step never ran on it.
+    // `c` ends first, but the caller did not give it: the step may not
+    // move there.
     let r = with_blocks(&[("a", NOW + 900), ("c", NOW + 100)]);
     assert_eq!(earliest_end(&r.path, &["a"], NOW), Some(("a", NOW + 900)));
     assert_eq!(earliest_end(&r.path, &[], NOW), None);

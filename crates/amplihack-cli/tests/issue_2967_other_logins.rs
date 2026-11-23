@@ -1,22 +1,26 @@
 //! Issue #2967: a step whose login reaches its usage limit continues on
 //! another login the candidate rule allows, whether or not it has waited,
 //! and waits only when none can run it. That wait also ends at the earliest
-//! end of a limit block the rotate ledger records on another login the step
-//! has run on, and the retry runs on that login. The wait line names the
-//! step's own login, and a reset stated with no zone is named as the cause
-//! of a wait rather than left silent. The waits themselves are the ones
-//! #2911 made: no budget, no step timeout, and an ending only on an event.
+//! end of a limit block the rotate ledger records on any other login the
+//! step could move to, whether or not it has run there, and the retry runs
+//! on that login. The wait line names the step's own login. The waits
+//! themselves are the ones #2911 made: no budget, no step timeout, and an
+//! ending only on an event.
 //!
 //! Cases (see `docs/reference/usage-limit-waits.md`, "Other logins"):
 //!
 //! - A: another login under the threshold takes the step with no wait.
 //! - A3: the wait line names the login (`account=X`, not `unknown`).
-//! - B: a reset stated with no zone is not read, and the wait says so
-//!   (`reason=reset_without_zone`).
 //! - E1: with no login left to move to, the wait ends at the earliest end of
 //!   a block recorded on another login the step ran on, when that comes
 //!   first, and the retry runs on that login. A wait with no deadline of its
 //!   own takes one from there.
+//! - E2: the incident's shape. The step has run on one login only, and
+//!   several logins it never ran on are blocked: the wait ends at the
+//!   earliest of their block ends, and the retry runs there. A login the
+//!   candidate rule would never take (excluded, or with no login of its
+//!   own) is passed over, and with auto-switch off no other login's block
+//!   ends the wait.
 //! - C: a limit that arrives after the step has waited moves to a login that
 //!   has room by then, instead of waiting again.
 //! - T: two logins that each report a limit, on a host with no rotate
@@ -44,11 +48,6 @@ use std::process::{Command, Output};
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
 const RECIPE_LOG_ENV: &str = "AMPLIHACK_RECIPE_LOG";
-
-/// The wording seen on the host on 21 November 2026: the session window
-/// named "5-hour limit", and its reset given as a bare clock time with no
-/// zone, which is never read.
-const SPEND_ZONELESS: &str = "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit · your 5-hour limit resets 9:30am";
 
 // --- helpers -----------------------------------------------------------------
 
@@ -264,41 +263,6 @@ fn a3_the_account_in_the_log_is_a_plain_profile_name() {
     }
 }
 
-// --- B: a reset stated with no zone is named, not silent ------------------------
-
-#[test]
-fn b_a_reset_with_no_zone_is_not_read_and_the_wait_says_why() {
-    // No zone is guessed, so the reset is unread. The wait names the cause
-    // on stderr and in the recipe log, and is a capacity wait: a spend limit
-    // whose window reset could not be read is not one that states no reset,
-    // so it does not take the login-change wait that only a login change
-    // ends. Here nothing else can end it, and the login change does.
-    let f = with_profiles();
-    let log = recipe_log(&f);
-    let mut c = nested_x(&f, SPEND_ZONELESS, false);
-    c.env(RECIPE_LOG_ENV, &log);
-    let out = f.run_with_a_login_change_in(&f.profiles.join("X"), &mut c);
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2, "one retry: {}", describe(&out));
-    let ev = events(&out);
-    assert_eq!(
-        ev[0], "waiting_for_capacity reason=reset_without_zone harness=claude until=none",
-        "{ev:?}"
-    );
-    assert!(
-        ev[1].starts_with(
-            "start reason=usage_limit wait=capacity harness=claude reset=none until=none "
-        ),
-        "{ev:?}"
-    );
-    assert_eq!(ev[2..], ["end reason=login changed", "resume attempt=2"]);
-    let lines = log_lines(&log);
-    assert_eq!(
-        lines[0], "waiting_for_capacity reason=reset_without_zone account=X until=none",
-        "{lines:?}"
-    );
-}
-
 // --- E1: no login left, so the earliest reset across logins -------------------
 
 /// Y's limit, resetting at 08:15, fifteen minutes before X's own 08:30.
@@ -404,6 +368,171 @@ fn e1_a_later_block_on_another_login_leaves_the_wait_on_its_own_reset() {
         "the message's reset: {start}"
     );
     assert_eq!(f.call("0", 3)["PROFILE"], "X");
+}
+
+// --- E2: the incident's shape: one login run on, others blocked -------------
+
+/// Adds a stored login `name` with its own login file and account, as
+/// `with_profiles` does for X and Y.
+fn add_login(f: &Fixture, name: &str) {
+    let out = f.run(&mut f.cmd(&["profile", "add", name]));
+    assert!(
+        out.status.success(),
+        "profile add {name}: {}",
+        describe(&out)
+    );
+    let dir = f.profiles.join(name);
+    private_file(
+        &dir.join(".credentials.json"),
+        &format!(r#"{{"claudeAiOauth":{{"accessToken":"SENTINEL-{name}"}}}}"#),
+    );
+    private_file(
+        &dir.join(".claude.json"),
+        &format!(
+            r#"{{"oauthAccount":{{"emailAddress":"{}@example.invalid","accountUuid":"uuid-{name}"}}}}"#,
+            name.to_lowercase()
+        ),
+    );
+}
+
+/// A rotate ledger naming X as live, with a cycle from before the step, and
+/// a standing limit block on each of `blocks`, ending the given number of
+/// seconds from the real clock: what the rotator and other steps record.
+fn blocks_on(f: &Fixture, blocks: &[(&str, i64)]) {
+    let at = real_now();
+    let rotate = f.profiles.join(".auto-switch.d").join("rotate");
+    private_dir(&f.profiles.join(".auto-switch.d"));
+    private_dir(&rotate);
+    let blocked: serde_json::Map<String, serde_json::Value> = blocks
+        .iter()
+        .map(|(name, ends_in)| {
+            (
+                (*name).to_string(),
+                serde_json::json!({"at": at - 60, "until": at + ends_in, "reason": "spend_limit"}),
+            )
+        })
+        .collect();
+    let cycle = TEST_NOW - 3600;
+    let body = serde_json::json!({
+        "version": 1,
+        "live": "X",
+        "alert": null,
+        "last_cycle": {"at": cycle, "measured_at": cycle, "outcome": "swapped", "live_room": true},
+        "overflow_blocked": blocked,
+    });
+    let ledger = rotate.join("ledger.json");
+    let tmp = ledger.with_extension("tmp");
+    private_file(&tmp, &body.to_string());
+    fs::rename(&tmp, &ledger).unwrap();
+}
+
+/// The incident's shape: X, Y, Z and W are stored, the step inherited X and
+/// has run on nothing else, and Y, Z and W are each at their session limit
+/// with a standing block. Z's ends first, 15 minutes on (08:15), before X's
+/// own reset at 08:30; Y's at 08:25 and W's at 09:00. Only X is limited.
+fn one_login_run_on(f: &Fixture, auto_switch: bool) -> Command {
+    add_login(f, "Z");
+    add_login(f, "W");
+    if auto_switch {
+        switch_on(f);
+    }
+    blocks_on(f, &[("Y", 1500), ("Z", 900), ("W", 3600)]);
+    write_readings(
+        f,
+        &[
+            Login::out("Y", 1500),
+            Login::out("Z", 900),
+            Login::out("W", 3600),
+        ],
+    );
+    nested_x(f, LIMIT_TEXT, auto_switch)
+}
+
+/// The deadline of a wait's `start` line, asserted to be `ends_in` seconds
+/// after `TEST_NOW` plus the margin. Blocks are stamped on the real clock and
+/// moved onto the wait's by distance, so a few seconds may be lost.
+fn assert_ends_at_block(start: &str, ends_in: i64) {
+    assert!(start.ends_with(" bound=earliest_reset+margin"), "{start}");
+    let until = instant(between(start, "until", "bound"));
+    let want = TEST_NOW + ends_in + 120;
+    assert!(
+        (want - 5..=want).contains(&until),
+        "until={until}, want {want}: {start}"
+    );
+}
+
+#[test]
+fn e2_with_one_login_run_on_the_wait_ends_at_the_earliest_block_among_logins_never_run_on() {
+    // Before, only logins the step had run on counted: here that is X alone,
+    // so the wait read no block and ran to X's own 08:32. Z, which the step
+    // never ran on, is free again at 08:15, so the step runs there.
+    let f = with_profiles();
+    let out = f.run(&mut one_login_run_on(&f, true));
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "X, then Z: {}", describe(&out));
+    assert_eq!(f.call("0", 1)["PROFILE"], "X");
+    let ev = events(&out);
+    assert_eq!(ev.len(), 3, "{ev:?}");
+    assert!(
+        ev[0].starts_with(
+            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 "
+        ),
+        "the reset X's own message stated: {ev:?}"
+    );
+    assert_ends_at_block(&ev[0], 900);
+    assert_eq!(ev[1..], ["end reason=reset reached", "resume attempt=2"]);
+    assert!(
+        text(&out.stderr).contains(
+            "the earliest recorded reset among this step's logins has passed; rerunning this \
+             step under profile \"Z\" (auto-switch)"
+        ),
+        "{}",
+        describe(&out)
+    );
+    let (profile, dir) = ran_on(&f, 2);
+    assert_eq!(profile, "Z");
+    assert_eq!(dir, f.profiles.join("Z").display().to_string());
+}
+
+#[test]
+fn e2_an_excluded_login_and_one_with_no_login_of_its_own_are_passed_over() {
+    // Z's block ends first, but auto-switch excludes Z; Y's comes next, but
+    // Y holds no login file, so no move could ever run on it. W's 09:00 is
+    // after X's own 08:30, so X's reset times the wait.
+    let f = with_profiles();
+    let mut c = one_login_run_on(&f, true);
+    let out = f.run(&mut f.cmd(&["profile", "auto-switch", "exclude", "Z"]));
+    assert!(out.status.success(), "exclude Z: {}", describe(&out));
+    fs::remove_file(f.profiles.join("Y").join(".credentials.json")).unwrap();
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    let start = &events(&out)[0];
+    assert!(start.ends_with(" bound=reset+margin"), "{start}");
+    assert_eq!(f.count("0"), 2, "{}", describe(&out));
+    assert_eq!(f.call("0", 2)["PROFILE"], "X", "the retry stays on X");
+
+    // With Y's login back, Y's 08:25 is the earliest block a move could use.
+    let f = with_profiles();
+    let mut c = one_login_run_on(&f, true);
+    let out = f.run(&mut f.cmd(&["profile", "auto-switch", "exclude", "Z"]));
+    assert!(out.status.success(), "exclude Z: {}", describe(&out));
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_ends_at_block(&events(&out)[0], 1500);
+    assert_ran_on_y(&f, 2);
+}
+
+#[test]
+fn e2_with_auto_switch_off_no_other_logins_block_ends_the_wait() {
+    // The step may not move, so another login's block end would only rerun
+    // it on X while X is still limited. X's own reset times the wait.
+    let f = with_profiles();
+    let out = f.run(&mut one_login_run_on(&f, false));
+    assert!(out.status.success(), "{}", describe(&out));
+    let start = &events(&out)[0];
+    assert!(start.ends_with(" bound=reset+margin"), "{start}");
+    assert_eq!(f.count("0"), 2, "{}", describe(&out));
+    assert_eq!(f.call("0", 2)["PROFILE"], "X", "the retry stays on X");
 }
 
 // --- C: a limit after the wait was used ----------------------------------------

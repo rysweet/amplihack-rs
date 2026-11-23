@@ -381,7 +381,8 @@ fn a_stated_reset_is_held_to_its_kinds_window() {
 /// this test says what it is.
 ///
 /// Issue #2967 adds one row, and it is a reset too: the end of a limit block
-/// recorded on another login the step has run on ([`super::plan::earliest`]).
+/// recorded on another login the step could move to
+/// ([`super::plan::earliest`]).
 /// It is no clock of the wait's own.
 #[test]
 fn a_deadline_is_the_reset_or_there_is_none() {
@@ -598,7 +599,7 @@ fn issue_2911_the_wait_for_a_passed_reset_waits_for_an_event() {
 // --- issue #2967: the earliest-reset deadline -------------------------------
 //
 // Contract: `earliest(p, other, now) -> Plan`. `other` is the earliest end
-// of a limit block recorded on another login the step has run on, on the
+// of a limit block recorded on another login the step could move to, on the
 // wait's clock (`None` when there is none). It is held to the weekly
 // window, as any reset not read from the message is, and it moves `p`'s deadline
 // to `other + MARGIN`, named `Bound::EarliestReset`

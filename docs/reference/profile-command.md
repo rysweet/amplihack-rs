@@ -12458,9 +12458,10 @@ unless the wait ends on another login's capacity (see
 [Retry login](#retry-login)). When auto-switch ran the step under other
 profiles before running out, their limits only steer auto-switch's choice of
 the next profile: a candidate that resets later does not stretch the wait, and
-a candidate's weekly limit or spend limit does not cancel it, but the end of
-the block a candidate's limit recorded in the rotate ledger ends the wait when
-it comes first, and the retry then runs on that candidate
+a candidate's weekly limit or spend limit does not cancel it. With auto-switch
+on, the end of a limit block the rotate ledger records on any other login
+auto-switch could move the step to, run on or not, ends the wait when it comes
+first, and the retry then runs on that login
 ([The earliest-reset deadline](./usage-limit-waits.md#the-earliest-reset-deadline)). When auto-switch
 moved the step off the inherited profile before the first attempt, the
 inherited profile's limit comes from the usage readings: the latest reset
@@ -12570,8 +12571,7 @@ as the transient transport fault it is, and writes no wait line at all. Every
 | A usage-limit message that states a reset still ahead, within five hours | A [reset wait](#reset-time) for that reset |
 | A weekly limit, a reset more than five hours away, no readable reset or unrecognised wording | A [capacity wait](#capacity-wait) |
 | A message whose stated reset the clock has already passed | A capacity wait, `reason=passed_reset`; see [A reset that has already passed](#a-reset-that-has-already-passed) |
-| A message whose reset is a clock time with no zone, spend limit or not | A capacity wait, `reason=reset_without_zone`; see [A reset that names no zone](./usage-limit-waits.md#a-reset-that-names-no-zone) |
-| A spend limit that states no reset at all | A [login-change wait](#login-change-wait) |
+| A spend limit that states no reset | A [login-change wait](#login-change-wait) |
 | A spend limit that states a weekly reset | A capacity wait, after the step has [blocked its login](#a-spend-limit-blocks-the-login-the-step-ran-under) |
 | Codex's out-of-credits line | A capacity wait, `reason=credits` |
 | A 429 report, and another login could take over | A capacity wait with `reset=none` |
@@ -12671,7 +12671,7 @@ candidate that applies (a tie is named by the earlier row):
 | Candidate | Applies when | `bound=` |
 |-----------|--------------|----------|
 | reset + 120 s, or now + 120 s when the reset has passed | always | `reset+margin` |
-| another login's block end + 120 s | a limit block recorded on another login the step ran on ends before that (issue #2967) | `earliest_reset+margin` |
+| another login's block end + 120 s | auto-switch is on, and a limit block recorded on another login the step could move to ends before that (issue #2967) | `earliest_reset+margin` |
 
 A reset wait has no timed bound but these two. It ends at its reset plus
 120 seconds, or earlier on a login with room or a login change
@@ -12997,7 +12997,6 @@ reset waits on for a login with room or a login change
 | Weekly limit, or a reset more than five hours away | capacity wait | `reset_too_far` |
 | No readable reset, or unrecognised wording | capacity wait | `no_reset` |
 | Reset already behind the clock | capacity wait | `passed_reset` |
-| Reset stated as a clock time with no zone, spend limit or not (issue #2967) | capacity wait | `reset_without_zone` |
 | Spend limit stating a weekly reset | capacity wait | `reset_too_far` |
 | Spend limit stating no reset | [login-change wait](#login-change-wait) | `spend_limit` |
 | Credit exhaustion | capacity wait | `credits` |
@@ -13065,7 +13064,7 @@ A capacity wait's deadline is one of:
 |----------|--------------|----------|
 | the failed login's reset + 120 s, the reset held to its kind's window | the limit message states a reset that is still in the future | `reset+margin` |
 | none (`until=none`) | the limit states no reset still in the future: none readable, credit exhaustion, a reset already passed, or a bare 429 | `none` |
-| another login's block end + 120 s | a limit block recorded on another login the step ran on ends before the row above would end the wait (issue #2967); the `reset=` field keeps the limit's own reset | `earliest_reset+margin` |
+| another login's block end + 120 s | auto-switch is on, and a limit block recorded on another login the step could move to ends before the row above would end the wait (issue #2967); the `reset=` field keeps the limit's own reset | `earliest_reset+margin` |
 
 A stated reset still ahead is the deadline however far away it is: a weekly
 limit days away is waited for once, to its reset. The reset is held to its
@@ -13432,7 +13431,7 @@ too. No other event reaches that sink.
 | `resume` | `attempt=<n>`, counting every attempt in the step |
 | `skipped` | `reason=disabled\|not_supervised\|no_limit_message`; `reason=ci` is no longer written, because `CI` does not turn the wait off (issue #2911) |
 | `failed` | `reason=prompt_cut_short`; the step's piped prompt could not be read to its end, so the step fails whether or not it met a limit (see [usage-limit waits](./usage-limit-waits.md#a-prompt-that-could-not-be-read-to-its-end)). Replaces `skipped reason=piped_prompt` |
-| `waiting_for_capacity` | `reason=reset_too_far\|no_reset\|spend_limit\|credits\|passed_reset\|reset_without_zone harness=<name> until=<time>\|none`, before the wait's `start`; the recipe log has `account=<login>` in place of `harness=`. `until=none` is followed on stderr by a sentence saying the wait has no deadline ([A wait with no deadline](./usage-limit-waits.md#a-wait-with-no-deadline)) |
+| `waiting_for_capacity` | `reason=reset_too_far\|no_reset\|spend_limit\|credits\|passed_reset harness=<name> until=<time>\|none`, before the wait's `start`; the recipe log has `account=<login>` in place of `harness=`. `until=none` is followed on stderr by a sentence saying the wait has no deadline ([A wait with no deadline](./usage-limit-waits.md#a-wait-with-no-deadline)) |
 | `no_file_events` | `reason=unsupported\|watch_failed\|wait_failed`; stderr only, once per wait, where no file event can be had ([A wait with no file events](./usage-limit-waits.md#a-wait-with-no-file-events)) |
 
 `reason=` on a `start` line says **what stopped the step**, not which kind

@@ -157,11 +157,6 @@ pub(crate) enum Waiting {
     /// minutes stale, so the step waits for a reading rather than for a time
     /// that has been and gone (issue #2857).
     PassedReset,
-    /// The message states its reset as a clock time with no zone, as in
-    /// `your 5-hour limit resets 11:50pm` (issue #2967). No zone is guessed,
-    /// so the reset is not read; the line names the cause instead of
-    /// reading as a limit that stated no reset.
-    ResetWithoutZone,
 }
 
 impl Waiting {
@@ -172,7 +167,6 @@ impl Waiting {
             Waiting::SpendLimit => "spend_limit",
             Waiting::Credits => "credits",
             Waiting::PassedReset => "passed_reset",
-            Waiting::ResetWithoutZone => "reset_without_zone",
         }
     }
 }
@@ -248,13 +242,6 @@ pub(crate) fn wait_for_message(message: Option<LimitMessage>, now: i64) -> WaitF
         why,
     };
     match m.reset {
-        // A reset stated with no zone is not read (issue #2967). The message
-        // still names a usage window that resets, so even a spend-limit line
-        // is waited out like the one below that states a readable reset: as
-        // capacity, which a login with room, a login change or another
-        // login's reset ends. A login-change wait would end on the first
-        // alone.
-        None if m.reset_without_zone => capacity(Waiting::ResetWithoutZone),
         // No usage window's reset lifts a spend limit, and no login of the
         // same organisation would either, so this waits for the login
         // itself to change (issue #2731).
@@ -325,8 +312,8 @@ pub(crate) enum Bound {
     /// which is a limit event.
     ResetMargin,
     /// The earliest end of a limit block recorded on another login the step
-    /// has run on, plus [`MARGIN`] (issue #2967): that login recovering is a
-    /// limit event as much as the failed login's own reset is. Set by
+    /// could move to, plus [`MARGIN`] (issue #2967): that login recovering
+    /// is a limit event as much as the failed login's own reset is. Set by
     /// [`earliest`] alone.
     EarliestReset,
     /// No deadline: the limit stated no usable reset, so the wait ends only
@@ -490,8 +477,8 @@ pub(crate) fn plan_login_change() -> Plan {
 /// `p` says may not have one for its own reasons.
 ///
 /// `other` is the earliest end, on the wait's clock, of a limit block the
-/// rotate ledger records on another login the step has run on
-/// (`auto_switch::rerun::earliest_block`). It is held to the weekly window
+/// rotate ledger records on another login the step could move to, whether
+/// or not it has run there (`auto_switch::rerun::earliest_block`). It is held to the weekly window
 /// ([`held`]), as any reset not read from the message is. It counts when it
 /// is strictly after `now` and its deadline comes strictly before `p.until`,
 /// or `p` has none. Then `bound=` reads `earliest_reset+margin`; the plan's

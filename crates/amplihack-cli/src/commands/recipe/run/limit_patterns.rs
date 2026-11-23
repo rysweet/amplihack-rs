@@ -279,12 +279,6 @@ pub(crate) struct LimitMessage {
     /// The reset the message states, not clamped; `None` when it states
     /// none that parses.
     pub(crate) reset: Option<i64>,
-    /// The message states its reset as a clock time with no zone, as in
-    /// `your 5-hour limit resets 11:50pm` (issue #2967). Such a reset is
-    /// never read, because no zone is guessed, so `reset` is `None`; this
-    /// says why, so the wait can name the cause rather than read as a limit
-    /// that stated no reset at all.
-    pub(crate) reset_without_zone: bool,
 }
 
 impl LimitMessage {
@@ -309,22 +303,13 @@ pub(crate) fn limit_message(stderr: &[u8], stdout: &[u8], now: i64) -> Option<Li
     Harness::ALL.iter().find_map(|&h| {
         let p = h.patterns();
         let line = positioned(&err, &out, |l| shaped(p, l))?;
-        let (reset, reset_without_zone) = match p.epoch_marker.and_then(|m| line.strip_prefix(m)) {
-            Some(rest) => (epoch_digits(rest.as_bytes()), false),
-            None => match p.anchor.and_then(|anchor| {
+        let reset = match p.epoch_marker.and_then(|m| line.strip_prefix(m)) {
+            Some(rest) => epoch_digits(rest.as_bytes()),
+            None => p.anchor.and_then(|anchor| {
                 line.to_ascii_lowercase()
                     .find(anchor)
-                    .map(|at| &line[at + anchor.len()..])
-            }) {
-                Some(fragment) => {
-                    let reset = limit_reset::parse(fragment, now);
-                    (
-                        reset,
-                        reset.is_none() && limit_reset::states_no_zone(fragment),
-                    )
-                }
-                None => (None, false),
-            },
+                    .and_then(|at| limit_reset::parse(&line[at + anchor.len()..], now))
+            }),
         };
         Some(LimitMessage {
             harness: h,
@@ -334,7 +319,6 @@ pub(crate) fn limit_message(stderr: &[u8], stdout: &[u8], now: i64) -> Option<Li
                 None => LimitKind::of(line),
             },
             reset,
-            reset_without_zone,
         })
     })
 }

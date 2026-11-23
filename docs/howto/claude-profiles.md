@@ -2174,8 +2174,10 @@ limit is passed back at once.
      in an unattended run with neither, the wait usually still goes to the
      reset;
    - with auto-switch on, the earliest end of a limit block recorded on
-     another login the step ran on, plus two minutes
-     (`bound=earliest_reset+margin`); the step then retries on that login
+     any other login auto-switch could move the step to, whether or not the
+     step has run there, plus two minutes (`bound=earliest_reset+margin`);
+     the step then retries on that login without checking it first, so a
+     block end that was wrong about the login costs one attempt
      ([The earliest-reset deadline](../reference/usage-limit-waits.md#the-earliest-reset-deadline)).
 
    No timer ends a wait. A limit whose message states no usable reset gives

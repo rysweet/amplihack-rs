@@ -10,11 +10,6 @@
 //! compiled-in table. No year, day or zone is ever guessed: anything else
 //! gives no reset.
 //!
-//! A clock time followed by nothing at all, as in `your 5-hour limit resets
-//! 11:50pm`, states no zone and so gives no reset either. [`states_no_zone`]
-//! recognises that form, so a caller can say why the reset was not read
-//! rather than treat the message as one that states no reset (issue #2967).
-//!
 //! Without a date the clock time is placed today in that zone; with one, in
 //! this year. A time up to ten minutes in the past stays (already reached);
 //! an older one moves to tomorrow, or to next year for a dated reset. A time
@@ -36,7 +31,16 @@ const MONTHS: [&[u8]; 12] = [
 
 /// The instant `fragment` names, relative to `now` (Unix seconds).
 pub(super) fn parse(fragment: &str, now: i64) -> Option<i64> {
-    let (date, (hour, minute, rest)) = date_and_clock(fragment)?;
+    let mut end = fragment.len().min(MAX_FRAGMENT);
+    while !fragment.is_char_boundary(end) {
+        end -= 1;
+    }
+    let bytes = &fragment.as_bytes()[..end];
+    let (date, bytes) = match date(bytes) {
+        Some((month, day, rest)) => (Some((month, day)), rest),
+        None => (None, bytes),
+    };
+    let (hour, minute, rest) = clock(bytes)?;
     let tz = Tz::from_str(zone(rest)?).ok()?;
     let today = tz.timestamp_opt(now, 0).single()?.date_naive();
     let at = |date: NaiveDate| resolve(&tz, date.and_hms_opt(hour, minute, 0)?);
@@ -51,32 +55,6 @@ pub(super) fn parse(fragment: &str, now: i64) -> Option<i64> {
         Some(t) if t >= now.saturating_sub(GRACE_SECS) => Some(t),
         _ => at(later?),
     }
-}
-
-/// Whether `fragment` is an optional date and a clock time followed by
-/// nothing but ASCII whitespace: a reset that states no zone, which
-/// [`parse`] never reads because no zone is guessed (issue #2967).
-pub(super) fn states_no_zone(fragment: &str) -> bool {
-    date_and_clock(fragment)
-        .is_some_and(|(_, (_, _, rest))| rest.iter().all(u8::is_ascii_whitespace))
-}
-
-/// The optional date and the clock time at the start of `fragment`, cut to
-/// [`MAX_FRAGMENT`] bytes at a character boundary, with the bytes after the
-/// clock time.
-type DateAndClock<'a> = (Option<(u32, u32)>, (u32, u32, &'a [u8]));
-
-fn date_and_clock(fragment: &str) -> Option<DateAndClock<'_>> {
-    let mut end = fragment.len().min(MAX_FRAGMENT);
-    while !fragment.is_char_boundary(end) {
-        end -= 1;
-    }
-    let bytes = &fragment.as_bytes()[..end];
-    let (date, bytes) = match date(bytes) {
-        Some((month, day, rest)) => (Some((month, day)), rest),
-        None => (None, bytes),
-    };
-    Some((date, clock(bytes)?))
 }
 
 /// `(month 1-12, day, the bytes after "Mon D, ")`.

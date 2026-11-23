@@ -5,7 +5,7 @@
 //!
 //! Wired from `recipe/run/mod.rs` with `#[cfg(test)] mod tests_limit_reset;`.
 
-use super::limit_reset::{parse, states_no_zone};
+use super::limit_reset::parse;
 use chrono::{TimeZone, Timelike};
 use chrono_tz::Tz;
 
@@ -289,38 +289,4 @@ fn the_five_hour_limit_reset_rolls_to_tomorrow_once_it_has_passed() {
         parse("8:20pm (America/Los_Angeles)", LA_2100),
         Some(LA_2020 + DAY)
     );
-}
-
-/// Issue #2967: a clock time followed by nothing names no zone. `parse`
-/// never reads it, since no zone is guessed, and `states_no_zone` says that
-/// is why, so the caller can name the cause.
-#[test]
-fn a_bare_clock_time_states_no_zone_and_gives_no_reset() {
-    for f in [
-        "11:50pm",
-        "11:50pm  ",
-        "8am",
-        "23:50",
-        "Nov 21, 11:50pm",
-        "11:50PM\t",
-    ] {
-        assert_eq!(parse(f, NOW), None, "fragment {f:?}");
-        assert!(states_no_zone(f), "fragment {f:?}");
-    }
-}
-
-#[test]
-fn a_stated_or_malformed_zone_and_a_non_clock_are_not_a_missing_zone() {
-    for f in [
-        "8:30am (America/Los_Angeles)",
-        "8:30am (Mars/Base)",
-        "8:30am UTC",
-        "8:30am tomorrow",
-        "13pm",
-        "soon",
-        "",
-        "tomorrow at 9am",
-    ] {
-        assert!(!states_no_zone(f), "fragment {f:?}");
-    }
 }

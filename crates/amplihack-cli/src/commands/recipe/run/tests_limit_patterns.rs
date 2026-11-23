@@ -48,7 +48,6 @@ fn msg(reset: Option<i64>, spend: bool) -> Option<LimitMessage> {
             LimitKind::Session
         },
         reset,
-        reset_without_zone: false,
     })
 }
 

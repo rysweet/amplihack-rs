@@ -64,8 +64,8 @@
 //! not, an auto-switch step first moves to another login the candidate rule
 //! allows (`auto_switch::rerun`), and waits only when none can run it. That
 //! wait's one deadline moves earlier when a limit block recorded on another
-//! login the step has run on ends sooner (`plan::earliest`), and the retry
-//! then runs on that login. Every wait names its login
+//! login the step could move to ends sooner (`plan::earliest`), and the
+//! retry then runs on that login. Every wait names its login
 //! (`Waiter::note_attempt_login`).
 //!
 //! `Waiter` decides what happens after a limit; the one supervisor loop,
@@ -328,12 +328,15 @@ pub(crate) struct Waiter {
     /// on the inherited profile.
     retry_move: Option<RetryMove>,
     /// The earliest end, on the wait's clock, of a limit block recorded on
-    /// another login this step has run on (issue #2967). Offered by the
+    /// another login this step could move to (issue #2967). Offered by the
     /// supervisor for the one wait it is about to plan and taken by
     /// [`Waiter::after_limit`] on every call, so no later wait inherits it.
     earliest_reset: Option<i64>,
     /// Whether the wait that last ran ended at that instant (issue #2967).
-    /// Written and cleared with `retry_move`.
+    /// Written and cleared with `retry_move`. It is not a second record of
+    /// the deadline: it is computed in one expression where the wait ends,
+    /// from that wait's own plan (`p.bound == Bound::EarliestReset`) and how
+    /// it ended, so it cannot disagree with the bound the start line wrote.
     reached_earliest_reset: bool,
     /// Whether the retry [`Waiter::after_limit`] last asked for was earned
     /// by a wait that ended on a positive signal (issue #2857). Read and
@@ -480,8 +483,8 @@ impl Waiter {
     }
 
     /// Offers the wait about to be planned the earliest end, on the wait's
-    /// clock, of a limit block recorded on another login this step has run
-    /// on (issue #2967); `None` when there is none. The next call to
+    /// clock, of a limit block recorded on another login this step could
+    /// move to (issue #2967); `None` when there is none. The next call to
     /// [`Waiter::after_limit`] takes it, whatever that call does, and moves
     /// the wait's deadline there when it is sooner (`plan::earliest`).
     pub(crate) fn offer_earliest_reset(&mut self, at: Option<i64>) {
