@@ -12471,7 +12471,8 @@ as the transient transport fault it is, and writes no wait line at all. Every
 | A usage-limit message that states a reset still ahead, within five hours | A [reset wait](#reset-time) for that reset |
 | A weekly limit, a reset more than five hours away, no readable reset or unrecognised wording | A [capacity wait](#capacity-wait) |
 | A message whose stated reset the clock has already passed | A capacity wait, `reason=passed_reset`; see [A reset that has already passed](#a-reset-that-has-already-passed) |
-| A spend limit that states no reset | A [login-change wait](#login-change-wait) |
+| A message whose reset is a clock time with no zone, spend limit or not | A capacity wait, `reason=reset_without_zone`; see [A reset that names no zone](./usage-limit-waits.md#a-reset-that-names-no-zone) |
+| A spend limit that states no reset at all | A [login-change wait](#login-change-wait) |
 | A spend limit that states a weekly reset | A capacity wait, after the step has [blocked its login](#a-spend-limit-blocks-the-login-the-step-ran-under) |
 | Codex's out-of-credits line | A capacity wait, `reason=credits` |
 | A 429 report, and another login could take over | A capacity wait with `reset=none` |
