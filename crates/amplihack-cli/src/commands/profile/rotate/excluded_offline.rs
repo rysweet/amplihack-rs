@@ -102,7 +102,9 @@ fn find_live(
             // alone reads a login the swap installed as written since it
             // whenever the swap crossed a second boundary; `live_login_at`
             // is when the move really happened. A ledger from before that
-            // field, or from an older rotator, still has `swapped_at`.
+            // field, from an older rotator, or from a swap that recovery
+            // finished (which cannot tell the install from a later write)
+            // still has `swapped_at`.
             l.hand_suspect.is_none() && untouched_since(home, l.live_login_at.or(l.swapped_at))
         });
     let by_account = (!installed)

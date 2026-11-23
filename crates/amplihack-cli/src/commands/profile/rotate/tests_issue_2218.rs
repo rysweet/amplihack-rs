@@ -210,7 +210,8 @@ mod status_history {
 ///   excluded slot's). Rules 2 and 3 run whatever the ledger names.
 ///   Rule 2 is skipped while the login the last swap installed is untouched:
 ///   its change time is no later than the ledger's `live_login_at`, else,
-///   for a ledger without that field, its `swapped_at`.
+///   for a ledger without that field, its `swapped_at`. A swap that crash
+///   recovery finished records no `live_login_at`.
 /// - `Ctx::set_excluded_dirs(Vec<PathBuf>)` writes the local-only set held
 ///   on `login_identity::Budget`. For a dir in the set, `Reader::bound` takes
 ///   the account from the local `.claude.json` (`~/.claude.json` for
@@ -509,6 +510,93 @@ mod local_proof {
         l.live_login_at = Some(at - 60);
         e.rs.save_ledger(&l).unwrap();
         assert_eq!(proof(&e), Some((n("work"), Match::LocalAccount)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_swap_records_the_install_time_of_the_login_it_moved_in() {
+        // Read right after the exchange, under the refresh locks: nothing
+        // else in the swap writes `~/.claude/.credentials.json`.
+        let (e, _) = fx();
+        assert_eq!(e.swap().unwrap(), n("work"));
+        let l = e.rs.load_ledger().unwrap().unwrap();
+        assert_eq!(l.live.as_deref(), Some("spare"));
+        assert_eq!(l.live_login_at, Some(live_ctime(&e)));
+    }
+
+    #[test]
+    fn a_swap_recovery_finished_after_a_refresh_does_not_skip_rule_2() {
+        // Recovery finishes a swap some time after its exchange, and the
+        // login in `~/.claude` may have been written in between. At `s1` an
+        // outgoing move that failed released the refresh locks with the
+        // incoming login already in place; at `s2` a crash left the time
+        // since the exchange unknown. A change time read by recovery is the
+        // refresh's, and taken as the install time it would read the
+        // refreshed login as untouched since the swap. Recovery records no
+        // install time; the proof falls back to `swapped_at`, the swap's
+        // start, which the refresh is later than.
+        //
+        // Work is excluded only after recovery. Recovery never rolls forward
+        // a swap off an excluded login before `s3`: the ledger still names
+        // it, and `~/.claude.json` still holds its account, so the local
+        // evidence does not match the journal
+        // (`recovery_of_a_swap_moving_an_excluded_login_out_sends_no_request`).
+        use crate::commands::profile::rotate::ledger::Phase;
+        use crate::commands::profile::rotate::swap::RecoverOutcome;
+        for phase in [Phase::S1, Phase::S2] {
+            let (e, _) = fx();
+            e.rs.save_journal(&e.journal(phase)).unwrap();
+            e.exchanged();
+            if phase == Phase::S2 {
+                fs::rename(e.slot("spare"), e.slot("work")).unwrap();
+            }
+            // A token refresh after the exchange: a new file, as in
+            // `a_token_refresh_in_home_after_the_exchange_still_rolls_forward`.
+            let bytes = fs::read(e.live()).unwrap();
+            fs::remove_file(e.live()).unwrap();
+            private(&e.live(), std::str::from_utf8(&bytes).unwrap());
+            let got = e.recover().unwrap();
+            assert!(
+                matches!(got, RecoverOutcome::RolledForward { .. }),
+                "{phase:?}: {got:?}"
+            );
+            let l = e.rs.load_ledger().unwrap().unwrap();
+            assert_eq!(l.live.as_deref(), Some("spare"), "{phase:?}");
+            assert_eq!(l.live_login_at, None, "{phase:?}: no install time");
+            assert!(
+                l.swapped_at.unwrap() < live_ctime(&e),
+                "{phase:?}: the refresh is later than the swap's start"
+            );
+            exclude(&e, &["work"]);
+            // A session still on work writes its account back.
+            set_home_json(&e, "u-work");
+            assert_eq!(
+                proof(&e),
+                Some((n("work"), Match::LocalAccount)),
+                "{phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_swap_recovery_clears_the_install_time_of_an_earlier_swap() {
+        // `finish` loads the ledger and changes only what it sets, so the
+        // field must be cleared, not left as the last swap wrote it.
+        use crate::commands::profile::rotate::ledger::Phase;
+        use crate::commands::profile::rotate::swap::RecoverOutcome;
+        let (e, _) = fx();
+        let mut l = e.rs.load_ledger().unwrap().unwrap();
+        l.live_login_at = Some(live_ctime(&e));
+        e.rs.save_ledger(&l).unwrap();
+        e.rs.save_journal(&e.journal(Phase::S1)).unwrap();
+        e.exchanged();
+        assert!(matches!(
+            e.recover().unwrap(),
+            RecoverOutcome::RolledForward { .. }
+        ));
+        let l = e.rs.load_ledger().unwrap().unwrap();
+        assert_eq!(l.live.as_deref(), Some("spare"));
+        assert_eq!(l.live_login_at, None);
     }
 
     #[test]

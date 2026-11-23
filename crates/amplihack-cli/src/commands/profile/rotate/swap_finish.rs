@@ -13,11 +13,19 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 /// Write `s3` and `s4`; the caller releases its locks before deleting the journal.
+///
+/// `live_login_at` is recorded as the ledger's field of that name (issue
+/// #2218): the install time of the login now in `~/.claude`, which the
+/// swap reads with [`installed_at`] right after its exchange. Recovery
+/// passes `None`, which clears any earlier value: it runs after the
+/// exchange, so a refresh or `claude login` may already have written the
+/// login, and a time read then would hide that write.
 pub(super) fn finish(
     rs: &RotateState,
     home: &Path,
     j: &RotateJournal,
     incoming: &super::login_identity::Bound,
+    live_login_at: Option<i64>,
 ) -> Result<(), ProfileError> {
     let mut j = j.clone();
     if !incoming.current() {
@@ -39,20 +47,27 @@ pub(super) fn finish(
         .then(|| LIVE_KIND_PLATFORM.to_string());
     l.since = Some(j.started_at);
     l.swapped_at = Some(j.started_at);
-    l.live_login_at = installed_at(home);
+    l.live_login_at = live_login_at;
     super::alert::clear_alert(&mut l);
     rs.save_ledger(&l)?;
     step(rs, &mut j, Phase::S4)?;
     Ok(())
 }
 
-/// Issue #2218: the change time of the login now in `~/.claude`, read by
-/// `lstat` with the swap's move already done. `swapped_at` is the swap's
-/// start time, so it is earlier than this whenever the move crossed a
-/// second boundary; only this value says whether a later write (a token
-/// refresh or a `claude login`) has touched the file since. `None` when the
-/// file cannot be stat'd, which leaves the proof on `swapped_at`.
-fn installed_at(home: &Path) -> Option<i64> {
+/// Issue #2218: the change time of the login in `~/.claude`, read by
+/// `lstat`. The swap reads it right after the exchange that moved the
+/// login in, while it still holds Claude's refresh locks. `swapped_at` is
+/// the swap's start time, so it is earlier than this whenever the swap
+/// crossed a second boundary; only this value says whether a later write
+/// (a token refresh or a `claude login`) has touched the file since.
+/// `None` when the file cannot be stat'd, which leaves the proof on
+/// `swapped_at`.
+///
+/// The change time is in whole seconds. A write in the same second as the
+/// exchange has a change time no later than this value, and so does a write
+/// made between the exchange and this read by a process that ignores the
+/// refresh lock. The proof reads the file as untouched after either.
+pub(super) fn installed_at(home: &Path) -> Option<i64> {
     fs::symlink_metadata(home.join(".claude").join(CREDS))
         .ok()
         .map(|m| m.ctime())
