@@ -120,9 +120,9 @@ PR_WORKTREE="$REPO"
 # already recorded in this state directory plus <rounds>, capped by the
 # operator's own budget. An unreadable usage file counts 0 rounds used, which
 # can only make the budget smaller, never larger. An operator budget that is
-# empty or all zeros means no limit, so it is kept as it is and the loop keeps
-# no limit (#3139). A malformed one still becomes the used rounds plus
-# <rounds>. Each value is matched against a pattern before any arithmetic.
+# empty or all zeros means no limit and is passed on as it is (#3139). A
+# malformed one still becomes the used rounds plus <rounds>. Each value is
+# matched against a pattern before any arithmetic.
 LOOP_BUDGET="${RECIPE_VAR_autodrive_budget_loop_rounds:-}"
 if [ -n "$ROUNDS" ]; then
   USED=0; USAGE="${DIR%/}/autodrive-usage.tsv"

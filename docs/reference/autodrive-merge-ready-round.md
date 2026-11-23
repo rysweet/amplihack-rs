@@ -1516,11 +1516,10 @@ counts the merge-ready rounds already recorded in `autodrive-usage.tsv` (the fil
 passes `autodrive_budget_loop_rounds=<used + N>`, never more than the
 operator's own `autodrive_budget_loop_rounds` when that is a positive budget.
 When the operator's `autodrive_budget_loop_rounds` is empty or all zeros (no
-limit), the argument leaves the loop with no limit: the empty or zero value is
-forwarded as is, and the loop runs until the PR is ready or another stop
-applies (#3139). A malformed operator value still becomes `<used + N>`, so it
-fails closed. `autodrive_budget_total_rounds`, the wall-clock budget and the
-other stops (`STUCK`, `HANDOFF`, `USAGE_LIMIT`) still apply. When the
+limit), the argument leaves the loop with no limit: that value is forwarded as
+is (#3139). A malformed operator value still becomes `<used + N>`, so it fails
+closed. `autodrive_budget_total_rounds`, `autodrive_budget_wall_seconds` and
+the other stops (`STUCK`, `HANDOFF`, `USAGE_LIMIT`) still apply. When the
 operator's budget leaves no room, the round stops as `BUDGET_EXHAUSTED` and
 the PR is handed off.
 
