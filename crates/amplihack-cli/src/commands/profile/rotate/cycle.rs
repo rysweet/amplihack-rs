@@ -13,7 +13,7 @@ use super::identify::LiveId;
 use super::identify::excluded_offline::{exclude_paused, unproven_live};
 use super::ledger::{RotateLedger, newer_than};
 use super::log::{msg, shown, shown_of};
-use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_block_reason};
+use super::observe::{Measurement, Snap, live_name, platform_block_reason};
 use super::overflow::Tag;
 use super::overflow_record::{
     self, block_spend_limited, note_home_key, note_live, note_move, note_per_token, refuse_key,
@@ -32,11 +32,15 @@ use std::time::Duration;
 pub(super) const LOCK_WAIT: Duration = Duration::from_secs(2);
 #[path = "cycle_ctx.rs"]
 mod ctx;
+/// Issue #2909: steps 4 and 5, and what a cycle after an event reads.
+#[path = "event_read.rs"]
+pub(super) mod event_read;
 #[path = "cycle_outcome.rs"]
 mod outcome;
 #[path = "cycle_record.rs"]
 mod record;
 pub use ctx::Ctx;
+use event_read::measure_and_decide;
 pub use outcome::{CycleOutcome, Mode};
 /// Steps 4 and 5 of a cycle: measure, then decide.
 pub(super) type MeasureFn = fn(&Ctx, &Snap) -> Result<Measurement, ProfileError>;
@@ -163,6 +167,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         &msg::cycle(name, &live_shown, &others_shown, platform),
     );
     let m = fresh::gate(ctx, &first, m, Reread::Allowed)?;
+    // Issue #2909: what a later event cycle may take figures from.
+    ctx.stored
+        .keep(first.measured_live(), m.probed.as_ref(), m.measured_at);
     ctx.identity_budget.exclude_measurement(measuring.elapsed());
     m.fresh_lines.iter().for_each(|line| out.emit(now(), line));
     let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
