@@ -375,6 +375,8 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "governor.eval_interval_secs = 60",
             "governor.wait_secs = 600",
             "governor.max_reading_age_secs = 3600",
+            // Issue #2912: off unless the user turns it on.
+            "agent.standing = false",
             "sessions.daily_archive = true",
             "sessions.archive_days = 3",
             "sessions.archive_dest = (unset)",

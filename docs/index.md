@@ -171,6 +171,7 @@ amplihack copilot
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
 - [Claude Profiles How-To](howto/claude-profiles.md) - Separate Claude logins per profile, shared sessions, and what a new profile inherits
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
+- [Keep a Session Running After Its Process Exits](howto/keep-sessions-running.md) - Mark a supervised session as standing so it is relaunched with `claude --continue` in its own pane when its process exits
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
 - [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT` or, in lib tests, a per-thread scope and a shared empty default, the `FakeProc` builder, and the guard that fails a test reading host processes

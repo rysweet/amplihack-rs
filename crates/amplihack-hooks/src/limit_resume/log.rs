@@ -55,6 +55,10 @@ pub struct LogEntry {
     pub pane: Option<String>,
     /// How many resume keys were sent.
     pub keys_sent: Option<u8>,
+    /// How many resumes the session's record held when the decision was
+    /// taken (issue #2912). Evidence for an operator reading this file;
+    /// nothing branches on it.
+    pub resumes: Option<u32>,
     /// Why a step failed, or why no key was sent: an `io::ErrorKind` name,
     /// `session-gone`, `no-tmux-pane`, one of
     /// [`super::keys::UNVERIFIED_REASONS`] for `pane-unverified`, or one of
@@ -97,6 +101,7 @@ pub fn format_line(now: i64, entry: &LogEntry) -> String {
         ("swap_live", entry.swap_live.clone()),
         ("pane", entry.pane.clone()),
         ("keys_sent", entry.keys_sent.map(|n| n.to_string())),
+        ("resumes", entry.resumes.map(|n| n.to_string())),
         ("detail", entry.detail.clone()),
     ];
     for (key, value) in extra {

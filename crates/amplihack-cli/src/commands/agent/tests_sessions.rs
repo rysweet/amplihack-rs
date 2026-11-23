@@ -18,7 +18,8 @@
 //! - `index(dirs: &[PathBuf]) -> Result<Index, String>`, `Index { by_id: map
 //!   String -> Vec<(u32, u64)> }`
 //! - `project_dir_names(launch_dir: &Path) -> Vec<String>`,
-//!   `transcript_exists(config_dir: &Path, launch_dir: &Path, id: &str) -> bool`
+//!   `transcript_exists(config_dir: &Path, launch_dir: &Path, id: &str) -> bool`,
+//!   `transcript_path(config_dir: &Path, launch_dir: &Path, id: &str) -> Option<PathBuf>`
 //! - `profile_of_config_dir(home: &Path, config_dir: &Path) -> Option<String>`
 
 use super::sessions::*;
@@ -261,6 +262,25 @@ fn transcripts_are_found_under_either_encoding() {
         "A4 second encoding"
     );
     assert!(!transcript_exists(tmp.path(), launch, ID2));
+}
+
+/// Issue #2912: the transcript the standing-session wrapper reads after a
+/// run is found under either encoding, and only a regular file is one.
+#[test]
+fn the_path_of_a_transcript_is_found_under_either_encoding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = |id| transcript_path(tmp.path(), Path::new("/home/u/src/my.app_x"), id);
+    assert_eq!(path(ID), None, "none yet");
+    let alt = tmp.path().join("projects/-home-u-src-my-app-x");
+    fs::create_dir_all(&alt).unwrap();
+    let f = alt.join(format!("{ID}.jsonl"));
+    fs::write(&f, "{}\n").unwrap();
+    assert_eq!(path(ID), Some(f));
+    assert_eq!(path(ID2), None);
+    assert_eq!(path("not-an-id"), None);
+    // A directory in the transcript's place is not a transcript.
+    fs::create_dir(alt.join(format!("{ID2}.jsonl"))).unwrap();
+    assert_eq!(path(ID2), None, "a directory");
 }
 
 /// The profile a launch ran under, read from the directory its sessions

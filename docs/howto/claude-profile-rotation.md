@@ -1787,7 +1787,7 @@ id. The other outcomes are listed in the
   logs `swap-no-room` and resumes nothing.
 - **Recorded before delivery.** The hook records the wake attempt under the
   lock before sending the first key or exiting with `2`. A partial send
-  counts toward the attempt limit.
+  still counts as the attempt for that limit event.
 - **One wake attempt per limit event.** If an attempt is already recorded
   for the same session, error text and login, the hook logs `duplicate`.
   The login is the one the session stopped on. If the rotator swapped away
@@ -1796,8 +1796,12 @@ id. The other outcomes are listed in the
 - **One wake attempt per wait.** If another hook records an attempt for the
   same session during the wait, the waiting hook logs `duplicate`. If it
   sees a prompt was sent during the wait, it logs `moved-on`.
-- **At most 3 recorded wake attempts per session in 24 hours.** The hook
-  logs `cap` when the session reaches that limit.
+- **No count of wake attempts.** A session is woken every time a login with
+  room follows a limit, however many limits it met that day (issue #2912).
+  The two rules above are what prevent a second wake for one event. Each log
+  line carries `resumes=<n>`, the session's earlier wakes in 24 hours, as
+  evidence only. A session record that cannot be parsed is rewritten and
+  logged as `session-record-reset`; it never stops a wake.
 
 If anything it needs cannot be read, watched or written safely, it does not
 resume.

@@ -205,6 +205,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             profile,
             prompt_file,
             supervise,
+            standing,
+            no_standing,
             governor,
             claude_args,
         } => {
@@ -216,44 +218,50 @@ pub fn dispatch(command: Commands) -> Result<()> {
             // below, so these are copied before the closure takes them.
             let profile_copy = profile.clone();
             let args_copy = claude_args.clone();
-            let launch = move || -> Result<()> {
-                if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
+            // Issue #2912: the wrapper may call this more than once, with
+            // the arguments of a relaunch rather than the user's own, so
+            // the closure takes them instead of holding one copy. Every
+            // call is the same launch otherwise, so a relaunch is started
+            // exactly as the run it continues was.
+            let launch = move |claude_args: &[String]| -> Result<()> {
+                if run_supervised(profile.as_deref(), docker, auto, claude_args)? {
                     return Ok(());
                 }
                 let claude_config_dir =
                     profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
                 profile::autostart_on_launch(docker);
-                profile::capacity_launch_warning(&claude_args);
+                profile::capacity_launch_warning(claude_args);
                 // Issue #1811: after supervision, whose rerun child is the
                 // process that asks; held until the launch returns.
-                let _slot = governor::admit(AdmitRequest::launch(&governor, &claude_args))
+                let _slot = governor::admit(AdmitRequest::launch(&governor, claude_args))
                     .map_err(Denied::report)?;
                 if auto {
-                    validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
+                    validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, claude_args)?;
                     let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                     return auto_mode::run_auto_mode(
                         auto_mode::AutoModeTool::Claude,
                         max_turns,
                         ui,
-                        claude_args,
-                        checkout_repo,
+                        claude_args.to_vec(),
+                        checkout_repo.clone(),
                         working_dir,
-                        prompt_file,
+                        prompt_file.clone(),
                     );
                 }
-                // Always inject --dangerously-skip-permissions to match Python launcher parity.
                 launch::run_launch_profiled(
                     "claude",
                     "claude",
                     docker,
                     false,
                     false,
+                    // Always inject --dangerously-skip-permissions to match
+                    // Python launcher parity.
                     true,
                     false,
                     no_reflection,
                     subprocess_safe,
-                    checkout_repo,
-                    claude_args,
+                    checkout_repo.clone(),
+                    claude_args.to_vec(),
                     // Issue #1276: not the rustyclawd path — nothing has set an override
                     // on amplihack's behalf, so any override in the environment is the
                     // user's instruction.
@@ -270,10 +278,14 @@ pub fn dispatch(command: Commands) -> Result<()> {
                         subprocess_safe,
                         no_reflection,
                         claude_args: &args_copy,
+                        // Issue #2912: `None` defers to `agent.standing`.
+                        // Clap refuses both flags together; `--no-standing`
+                        // would win if it did not.
+                        standing: (standing || no_standing).then_some(!no_standing),
                     },
                     launch,
                 ),
-                None => launch(),
+                None => launch(&args_copy),
             }
         }
         Commands::Copilot {
