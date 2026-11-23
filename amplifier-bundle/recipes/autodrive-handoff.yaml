@@ -9,7 +9,7 @@ description: |
   Extension point for #2592. Any GitHub write added here must sit behind the
   same dry-run check as the writes below: under autodrive_dry_run=true this
   recipe makes no GitHub write and only lists what it would do.
-  docs/reference/autodrive-merge-ready-round.md#hand-off.
+  docs/reference/autodrive-goal-loop.md#hand-off.
 version: "1.0.0"
 tags:
   - "auto-drive"

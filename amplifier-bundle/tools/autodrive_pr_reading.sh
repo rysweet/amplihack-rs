@@ -15,7 +15,8 @@
 #   checks           each check at the head with its state, counts, and
 #                    required_known (false when gh rejects --required)
 #   reviews          GitHub reviews and Crusty round records, each with the
-#                    head it was given at
+#                    head it was given at; a round that could not be read is
+#                    listed with its own error
 #   base             merge base, behind_by, conflict_files (git merge-tree
 #                    --write-tree), and the files the base changed since the
 #                    merge base that the PR also touches
@@ -77,11 +78,12 @@ else
 fi
 
 # --- the pull request -------------------------------------------------------
-HEAD=""; BASE=""; BRANCH=""; URL=""; MSS=""
+HEAD=""; BASE=""; BRANCH=""; URL=""; MSS=""; PR_READ=false
 if goal_is_pr "$PR"; then
   gh pr view "$PR" --json number,state,headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus,isDraft,isCrossRepository,url,reviews \
     > "$S/pr.raw" 2>"$S/pr.err"; rc=$?; gh79 "$rc"
   if [ "$rc" -eq 0 ] && jq -e 'type == "object"' "$S/pr.raw" >/dev/null 2>&1; then
+    PR_READ=true
     put pr "$(jq -c '{number, state, head:.headRefOid, head_branch:.headRefName, base:.baseRefName, mergeable,
       merge_state:.mergeStateStatus, draft:.isDraft, cross_repository:.isCrossRepository, url}' "$S/pr.raw")" ""
     HEAD="$(jq -r '.headRefOid // empty | strings' "$S/pr.raw")"; BASE="$(jq -r '.baseRefName // empty | strings' "$S/pr.raw")"
@@ -117,18 +119,33 @@ else
 fi
 
 # --- reviews: GitHub's and the Crusty rounds' --------------------------------
-CR='[]'
+# One line per round, read once with --slurpfile. The list never goes through
+# argv, where Linux caps one argument at 128 KiB: a long run's rounds would
+# pass that, and the whole section would be lost. A round that cannot be read
+# is listed by name with its error, so it never reads as "no verdict".
+: > "$S/crusty.jsonl"
+round_err() { jq -cn --arg n "${1##*/}" --arg e "$2" '{record:$n, error:$e}' >> "$S/crusty.jsonl"; }
 for f in "$STATE"/crusty-round-*.json; do
-  goal_json_file "$f" 65536 || continue
-  MINOR='[]'
+  [ -e "$f" ] || [ -L "$f" ] || continue
+  goal_json_file "$f" 65536 || { round_err "$f" "the round record is not a regular JSON object file of at most 64 KiB"; continue; }
+  MINOR='[]'; ME=""
   if [ -f "$f.minor" ] && [ ! -L "$f.minor" ]; then
-    MINOR="$(head -c 65536 -- "$f.minor" | jq -c -s '[.[] | objects | {id, summary}] | .[:50]' 2>/dev/null)" || MINOR='[]'
-    [ -n "$MINOR" ] || MINOR='[]'
+    MINOR="$(head -c 65536 -- "$f.minor" | jq -c -s '[.[] | objects | {id, summary}] | .[:50]' 2>/dev/null)" && [ -n "$MINOR" ] \
+      || { MINOR='[]'; ME="the round's minor findings could not be read"; }
+  elif [ -e "$f.minor" ] || [ -L "$f.minor" ]; then
+    ME="the round's minor findings could not be read"
   fi
-  CR="$(jq -c --arg n "${f##*/}" --argjson a "$CR" --argjson m "$MINOR" '$a + [{record:$n, verdict:.crusty_verdict, head:.head_sha, reviewed_head:.reviewed_head_sha, concerns:.concern_count, minor_findings:$m}]' "$f")"
+  jq -c --arg n "${f##*/}" --argjson m "$MINOR" --arg me "$ME" '{record:$n, verdict:.crusty_verdict, head:.head_sha, reviewed_head:.reviewed_head_sha,
+    concerns:.concern_count, minor_findings:$m} + (if $me == "" then {} else {error:$me} end)' "$f" >> "$S/crusty.jsonl" 2>/dev/null \
+    || round_err "$f" "the round record could not be read"
 done
-put reviews "$(jq -cn --argjson cr "$CR" --slurpfile pr "$S/pr.raw" '{github:([($pr[0].reviews // [])[] | {author:(.author.login // null), state, submitted_at:(.submittedAt // null), head:(.commit.oid // null)}]), crusty:$cr}' 2>/dev/null \
-  || jq -cn --argjson cr "$CR" '{github:[], crusty:$cr}')" ""
+# GitHub's reviews come from the pull request read: when that failed they are
+# unknown, not none, and the section says so.
+RVE="the pull request's GitHub reviews could not be read"
+if [ "$PR_READ" = true ] && RV="$(jq -cn --slurpfile cr "$S/crusty.jsonl" --slurpfile pr "$S/pr.raw" '{github:([($pr[0].reviews // [])[] | {author:(.author.login // null),
+    state, submitted_at:(.submittedAt // null), head:(.commit.oid // null)}]), crusty:$cr}' 2>/dev/null)"; then RVE=""
+else RV="$(jq -cn --slurpfile cr "$S/crusty.jsonl" '{github:[], crusty:$cr}')"; fi
+put reviews "$RV" "$RVE"
 
 # --- the base: fetch, merge base, conflicts, overlapping files ---------------
 ref_ok() { case "$1" in ''|-*|*..*) return 1 ;; esac; git check-ref-format "refs/heads/$1" >/dev/null 2>&1; }
@@ -146,8 +163,11 @@ else
     g merge-tree --write-tree --name-only --no-messages "$OB" "$HEAD" > "$S/mt" 2>"$S/mt.err"; mrc=$?
     [ "$mrc" -le 1 ] || BE="git merge-tree failed (exit ${mrc}): $(err "$S/mt.err")"
     [ "$mrc" -eq 1 ] && tail -n +2 "$S/mt" | grep . | sort -u | head -n 200 > "$S/conflicts" || : > "$S/conflicts"
-    g diff --name-only "$MB" "$OB" | sort -u > "$S/based" 2>/dev/null
-    g diff --name-only "$MB" "$HEAD" | sort -u > "$S/prfiles" 2>/dev/null
+    # --no-renames: a renamed file is listed under both its paths, so a base
+    # rename of a file the PR touches still overlaps. Rename detection is
+    # also about 13 times slower over a long range.
+    g diff --name-only --no-renames "$MB" "$OB" | sort -u > "$S/based" 2>/dev/null
+    g diff --name-only --no-renames "$MB" "$HEAD" | sort -u > "$S/prfiles" 2>/dev/null
     comm -12 "$S/based" "$S/prfiles" | head -n 200 > "$S/overlap"
     BJ="$(jq -cn --arg b "$BASE" --arg mb "$MB" --argjson behind "$(g rev-list --count "$HEAD..$OB" 2>/dev/null || echo null)" \
       --argjson ahead "$(g rev-list --count "$OB..$HEAD" 2>/dev/null || echo null)" \

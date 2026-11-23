@@ -10,8 +10,12 @@
 
 #![cfg(target_os = "linux")]
 
-use super::support::{Harness, describe};
+use super::support::{Harness, describe, git};
+use serde_json::json;
 use std::fs;
+
+/// Hands off on the first turn, so the run reads once and ends.
+const HAND_OFF: &str = r#"echo '{"action":"handoff","args":{"owner":"operator","decision":"what next","text":"The operator decides what happens next."},"why":"One reading is enough."}'"#;
 
 fn merge_policy(head_expr: &str) -> String {
     format!(
@@ -185,4 +189,81 @@ fn a_pending_required_check_is_never_merged_even_when_the_agent_asks() {
     let _ = h.drive("auto-drive-to-merge", &["no_merge=false"]);
     assert!(h.merge_calls().is_empty(), "{:?}", h.calls());
     assert_eq!(h.result("001")["outcome"], "checks-not-green");
+}
+
+#[test]
+fn a_base_rename_of_a_file_the_pr_changed_counts_as_overlap() {
+    let h = Harness::new();
+    let tmp = h.base.join("rename-work");
+    git(
+        &h.base,
+        &[
+            "clone",
+            "-q",
+            h.origin.to_str().unwrap(),
+            tmp.to_str().unwrap(),
+        ],
+    );
+    git(&tmp, &["checkout", "-q", "main"]);
+    git(&tmp, &["mv", "widget.txt", "gadget.txt"]);
+    git(&tmp, &["commit", "-qm", "the base renames the widget"]);
+    git(&tmp, &["push", "-q", "origin", "main"]);
+    h.policy(HAND_OFF);
+    let out = h.drive("auto-drive-to-merge", &["no_merge=false"]);
+    let base = &h.reading("001")["goal"]["base"];
+    assert!(base["error"].is_null(), "{base}\n{}", describe(&out));
+    let overlap = base["base_changed_pr_files"].as_array().unwrap();
+    assert!(
+        overlap.iter().any(|f| f == "widget.txt"),
+        "the base renamed a file the PR changed, so it overlaps: {base}"
+    );
+}
+
+#[test]
+fn a_long_crusty_history_keeps_every_round_and_names_the_unreadable_one() {
+    let h = Harness::new();
+    let summary = "The helper re-reads the whole state folder on every call; a cached listing \
+                   would do, but the folder is small and the cost is a few milliseconds a turn.";
+    for n in 1..=130 {
+        let record = json!({"crusty_verdict": "MINOR_ONLY", "head_sha": h.initial_head,
+            "reviewed_head_sha": h.initial_head, "concern_count": 0});
+        fs::write(
+            h.state.join(format!("crusty-round-{n:03}.json")),
+            format!("{record}\n"),
+        )
+        .unwrap();
+        let minor: String = (1..=10)
+            .map(|i| {
+                format!(
+                    "{}\n",
+                    json!({"id": format!("m{n}-{i}"), "summary": summary})
+                )
+            })
+            .collect();
+        fs::write(
+            h.state.join(format!("crusty-round-{n:03}.json.minor")),
+            minor,
+        )
+        .unwrap();
+    }
+    fs::write(
+        h.state.join("crusty-round-999.json"),
+        "{ this is not JSON\n",
+    )
+    .unwrap();
+    h.policy(HAND_OFF);
+    let out = h.drive("auto-drive-to-merge", &["no_merge=false"]);
+    let reviews = &h.reading("001")["goal"]["reviews"];
+    assert!(
+        reviews["error"].is_null(),
+        "{}\n{}",
+        reviews["error"],
+        describe(&out)
+    );
+    let crusty = reviews["crusty"].as_array().unwrap();
+    assert_eq!(crusty.len(), 131, "every round is listed");
+    let failed: Vec<_> = crusty.iter().filter(|r| !r["error"].is_null()).collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["record"], "crusty-round-999.json");
+    assert_eq!(crusty[129]["minor_findings"].as_array().unwrap().len(), 10);
 }

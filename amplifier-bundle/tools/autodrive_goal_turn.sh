@@ -48,8 +48,7 @@ do_reading() {
   fi
   goal_json_file "$gd" 4194304 || jq -cn --arg e "$(goal_clean_line 300 < "$TD/guidance.err" 2>/dev/null)" \
     '{schema_version:1, entries:[], folders:[], newest:"", error:("guidance could not be read: " + $e)}' > "$gd"
-  pl="$(find "${TD%/*}" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | sed 's#.*/##' \
-        | grep -E '^[0-9]+$' | awk -v me="${TD##*/}" '$0 + 0 < me + 0' | sort -n | tail -n 1)"
+  pl="$(goal_turn_numbers "${TD%/*}" | awk -v me="${TD##*/}" '$0 + 0 < me + 0' | tail -n 1)"
   if [ -n "$pl" ]; then
     pd="${TD%/*}/$pl"
     prev="$(jq -cn --argjson t "$((10#$pl))" \

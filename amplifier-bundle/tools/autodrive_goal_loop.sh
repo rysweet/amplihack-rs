@@ -123,13 +123,9 @@ SUBJECT="the goal of ${GOAL_TOOL}"
 # by an agent, is removed, so the report never reads it as this run's end.
 rm -f -- "$STATE/loop-end.json"
 
-highest_turn() {
-  find "$STATE/turns" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | sed 's#.*/##' \
-    | grep -E '^[0-9]{1,9}$' | sort -n | tail -n 1
-}
 # The guidance mark: the newest entry the last reading saw (an earlier run's too).
 MARK=""
-for t in $(find "$STATE/turns" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | sed 's#.*/##' | grep -E '^[0-9]{1,9}$' | sort -rn); do
+for t in $(goal_turn_numbers "$STATE/turns" | sort -rn); do
   [ -f "$STATE/turns/$t/reading.json" ] && [ ! -L "$STATE/turns/$t/reading.json" ] || continue
   MARK="$(jq -r '.guidance_newest // empty | strings' "$STATE/turns/$t/reading.json" 2>/dev/null)"; break
 done
@@ -189,7 +185,7 @@ GUIDE_TARGET=""; GUIDE_DIRS=""
 while :; do
   final_check
   # --- a new turn folder: numbers continue after the highest one -----------
-  n="$(highest_turn)"; n=$(( 10#${n:-0} + 1 ))
+  n="$(goal_turn_numbers "$STATE/turns" | tail -n 1)"; n=$(( 10#${n:-0} + 1 ))
   until mkdir -- "$STATE/turns/$(printf '%03d' "$n")" 2>/dev/null; do
     [ -e "$STATE/turns/$(printf '%03d' "$n")" ] || finish 1 "the turn folder cannot be created"
     n=$((n + 1))
@@ -212,8 +208,7 @@ while :; do
   GUIDE_DIRS="$(jq -r '[.folders[]?.path | strings] | join(":")' "$TD/guidance.json" 2>/dev/null)"
   turn_call reading "$TD" || finish 1 "reading.json could not be written"
   NEWEST="$(jq -r '.guidance_newest // empty | strings' "$TD/reading.json")"; goal_is_entry "$NEWEST" || NEWEST="$MARK"
-  pl="$(find "$STATE/turns" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' | sed 's#.*/##' | grep -E '^[0-9]+$' \
-        | awk -v me="$n" '$0 + 0 < me + 0' | sort -n | tail -n 1)"
+  pl="$(goal_turn_numbers "$STATE/turns" | awk -v me="$n" '$0 + 0 < me + 0' | tail -n 1)"
   if [ -n "$pl" ] && [ -f "$STATE/turns/$pl/record.md" ] && [ ! -L "$STATE/turns/$pl/record.md" ]; then
     head -c 65536 -- "$STATE/turns/$pl/record.md" > "$W/PREV"
   else
@@ -260,9 +255,10 @@ while :; do
     case "$ACTION" in
       continue)
         jq -cn '{outcome:"continued", summary:"no mechanical action; the next turn reads the live state again"}' | goal_atomic_write "$TD/result.json" ;;
-      handoff|ready|stop|wait-owner)
-        if [ "$ACTION" = wait-owner ]; then turn_call wait-owner "$TD"; else turn_call end "$ACTION" "$TD"; fi
-        passed_up "$?" "the ${ACTION} action" ;;
+      wait-owner)
+        turn_call wait-owner "$TD"; passed_up "$?" "the wait-owner action" ;;
+      handoff|ready|stop)
+        turn_call end "$ACTION" "$TD"; passed_up "$?" "the ${ACTION} action" ;;
       *)
         if [[ " $ACTIONS " == *" $ACTION "* ]]; then
           a="$(jq -c '.args.after_merge // [] | if type == "array" and length <= 32 and all(.[]; type == "string") and (map(length) | add // 0) <= 8192 then . else [] end' "$TD/decision.json" 2>/dev/null)"

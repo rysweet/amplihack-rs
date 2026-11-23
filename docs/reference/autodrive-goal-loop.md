@@ -96,7 +96,7 @@ which is why waiting is an action and not part of the agent step.
 | `merge_authority` | `no_merge`, dry run, and the effective authority |
 | `pr` | Head, base, `mergeable`, `mergeStateStatus`, draft, state |
 | `checks` | Each check at the head with its status, counts, and whether `required` could be read |
-| `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at and the round's minor findings, which the agent files as follow-up issues before it merges |
+| `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at and the round's minor findings, which the agent files as follow-up issues before it merges; a round whose record or minor findings could not be read is listed with its `error` |
 | `base` | Merge base, how far behind the PR is, conflicting files from `git merge-tree --write-tree`, and the files the base changed since the merge base that the PR also touches |
 | `repository` | Allowed merge methods; whether strict status checks are required |
 | `guidance` | Name, time, caller, source, new flag and size of each entry |

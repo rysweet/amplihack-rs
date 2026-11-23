@@ -12,9 +12,9 @@
 //! - `amplihack_types::paths::framework_roots_from`: an unbounded ancestor
 //!   scan for `.claude/` and `src/amplihack/.claude/`, so the real framework
 //!   files are found ahead of the fixture's.
-//! - `issue_1743_autodrive_budget`: no lookup at all; it fails on any file
-//!   that names the real `~/.claude` or `~/.amplihack`, and every fixture path
-//!   appears in its stub logs.
+//! - `issue_1743_autodrive_budget` (removed in #3129): no lookup at all; it
+//!   failed on any file that named the real `~/.claude` or `~/.amplihack`,
+//!   and every fixture path appeared in its stub logs.
 //!
 //! [`scratch_base`] therefore rejects a base when any ancestor holds one of
 //! [`FRAMEWORK_MARKERS`], or when the base lies under `$HOME/.claude` or

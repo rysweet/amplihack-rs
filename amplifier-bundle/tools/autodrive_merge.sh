@@ -16,9 +16,8 @@
 #
 #   autodrive_merge_method_known <method>
 #       True for the methods autodrive_merge takes: empty (the repository's
-#       own choice), merge, squash or rebase. This is the one list of them;
-#       autodrive_merge_loop_run.sh checks a run's method with it before any
-#       merge-ready round prompt names the method (#1888).
+#       own choice), merge, squash or rebase. This is the one list of them
+#       (#1888).
 #
 #   autodrive_merge_printable <text> <bytes>
 #       Prints <text> with every byte outside printable ASCII replaced by '?',
@@ -63,8 +62,8 @@
 # the repository allows. A method the repository does not allow is never used
 # and no other method takes its place. The caller's string never reaches the
 # argv: it selects a branch, and the flag is a literal written here. Where the
-# method cannot be settled the result is `refused` (4), which finalisation
-# already hands to an agent step, with a reason naming what was found. The
+# method cannot be settled the result is `refused` (4), with a reason naming
+# what was found, and the loop's agent reads it on the next turn. The
 # chosen method and the reason are recorded on every result line as
 # `merge_method` and `merge_method_reason`.
 

@@ -28,6 +28,7 @@
 #                                and remote images replaced
 #   goal_json_file <file> <max>  0 when <file> is a regular file of at most
 #                                <max> bytes holding one JSON object
+#   goal_turn_numbers <turns>    the turn folder names in <turns>, ascending
 #
 # docs/reference/autodrive-goal-loop.md is the specification.
 
@@ -96,6 +97,11 @@ goal_json_file() {
   size="$(wc -c < "$f" | tr -d '[:space:]')" || return 1
   [ "${size:-0}" -le "$max" ] || return 1
   jq -e 'type == "object"' "$f" >/dev/null 2>&1
+}
+
+goal_turn_numbers() {
+  find "${1:-}" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | sed 's#.*/##' \
+    | grep -E '^[0-9]{1,9}$' | sort -n
 }
 
 # goal_secret_screen <file>: token prefixes, AWS keys, PEM keys, Authorization
