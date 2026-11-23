@@ -11332,8 +11332,10 @@ see [StopFailure in the hook reference](hook-specifications.md#8-stopfailure--li
 The [how-to](../howto/claude-profile-rotation.md#resume-sessions-stopped-by-a-usage-limit)
 shows how to use it. The hook reads the rotate ledger, the
 [swap record](#swap-record) and its own [resume state](#resume-state-directory),
-and may run `tmux` against the session's own pane. From the session's
-transcript it reads only the `timestamp` of the last entry (see
+and may run `tmux` against the session's own pane. When its environment
+names no pane, it also reads the tmux pane ids and ttys from one
+`list-panes` listing, matches them to the session's terminal and drops
+them. From the session's transcript it reads only the `timestamp` of the last entry (see
 [Stop time](#stop-time)). It never moves a login, never reads any other part
 of the transcript, and never opens `.credentials.json`, a token file or
 anything under a profile directory.
@@ -11347,11 +11349,12 @@ The hook resumes a session in one of two ways, never both:
   usage-limit menu in the standing sessions reported in
   [#2695](https://github.com/rysweet/amplihack-rs/issues/2695), so such a
   session gets the keys.
-- **Wake** (outcome `resumed` with `detail=no-tmux-pane`,
+- **Wake** (outcome `not-resumed` with `detail=no-tmux-pane`,
   `pane-unverified`, `pane-not-reading` or `screen-unrecognised`, exit `2`):
-  otherwise it exits `2` with the resume message on stderr. The outcome says
-  why the keys path was not taken. For `screen-unrecognised` a second fixed
-  line precedes the resume message.
+  otherwise it exits `2` with the resume message on stderr. Nothing was
+  typed and nothing was recorded, so the event stays armed and the next room
+  event tries again. The outcome says why the keys path was not taken. For
+  `screen-unrecognised` a second fixed line precedes the resume message.
 
 Every other outcome exits `0` with nothing on stdout or stderr. The hook
 never writes to stdout and never exits with any other status. A panic exits
@@ -11423,20 +11426,21 @@ The checks run in this order. The first one that fails decides the outcome.
 | 6 | The rotator is running: `<root>/.auto-switch.d/rotate/rotate.pid` names a running `amplihack profile rotate watch` process of yours (checked in `/proc`; skipped where there is none), and the ledger, if present, can be read by the trust rules in [Rotator capacity rule](#rotator-capacity-rule). | Exit `0` without waiting, outcome `rotator-down`. |
 | 7 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 7 days and 1 hour are removed. | Exit `0`, outcome `guard-failed`. |
 | 8 | The hook keeps the swap record it noted in step 3 (or that there was none), sets up the [event wait](#event-wait), and reads the swap record once. Then it waits for a record that passes [Capacity for a resume](#capacity-for-a-resume), for at most 7 days from its start. A record that fails is logged (`swap-stale` or `swap-no-room`) and the wait goes on. | Exit `0`, outcome `watch-lost` if the wait cannot be set up or a watch is lost; `moved-on` if you sent a prompt in that session; `session-gone` if the session exited; `no-capacity-timeout` at the 7-day deadline; `guard-failed` if a prompt marker cannot be read safely. |
-| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and, if the hook noted a pane, the pane still [passes its check](#resume-keys) and is [showing a screen the keys answer](#resume-screen); a pane that fails now is dropped and the wake is used instead, with outcome `pane-unverified`, `pane-not-reading` or `screen-unrecognised`. Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
-| 10 | With a pane: send the [resume keys](#resume-keys). | Exit `0`, outcome `resume-keys-failed`, with the number of keys sent. The resume stays recorded and the hook does not exit `2`. |
-| 11 | No further check | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message when there was no keys path: outcome `resumed` with `detail=no-tmux-pane` for no pane, `pane-unverified` for a pane that was not proved to be this session's terminal, `pane-not-reading` for a terminal Claude Code is not reading, `screen-unrecognised` for a proved pane that was not showing a screen the keys answer. |
+| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and the hook has a pane (the named pane, or the single pane on the session's terminal, see [Resume keys](#resume-keys)) that [passes its check](#resume-keys) and is [showing a screen the keys answer](#resume-screen); otherwise the wake is used instead, with outcome `not-resumed`, `pane-unverified`, `pane-not-reading` or `screen-unrecognised`, and the hook reads the event marker and the session's last resume once more, without the lock and writing nothing (`duplicate` if either applies; `guard-failed` is logged and the wake still given if the read fails). On the keys path, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
+| 10 | With a pane: send the [resume keys](#resume-keys). | Exit `0`, outcome `resume-keys-failed`, with the number of keys sent. The hook releases the marker and its session time under the lock, so the event stays armed, and does not exit `2`. If the release fails, `guard-failed` is logged first and the event stays used. |
+| 11 | No further check | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message when there was no keys path: outcome `not-resumed` with `detail=no-tmux-pane` for no pane named or found, `pane-unverified` for a pane that was not proved to be this session's terminal, `pane-not-reading` for a terminal Claude Code is not reading, `screen-unrecognised` for a proved pane that was not showing a screen the keys answer. |
 
 Steps 4 and 5 run once without the lock, so a duplicate session
 exits at once instead of waiting up to 7 days, and again under the lock in
 step 9. The lock is not held while waiting in step 8. The choice between
-keys and the wake is made before the commit, and the marker and session
-record are on disk before the first key or the exit `2`, so a resume that is
-cut short never repeats and a session never gets both.
+keys and the wake is made before any commit. Only the keys path commits: the
+marker and session record are on disk before the first key, and a failed key
+releases them. A wake writes nothing, so a session that was not typed into is
+resumed at the next room event.
 
-A session is resumed at most once per waiting period. When two hooks wait
-for the same session with different events, the first to commit resumes
-it; the other finds a resume after its own start time and ends as
+A session is resumed with keys at most once per waiting period. When two
+hooks wait for the same session with different events, the first to commit
+resumes it; the other finds a resume after its own start time and ends as
 `duplicate`, or, if keys typed `continue` first, as `moved-on`. A new limit
 that starts in the same second as the previous resume may still resume.
 
@@ -11651,9 +11655,12 @@ waiting hook ends as `disabled` at the next swap that would resume it.
 
 #### Resume keys
 
-The hook notes a pane once, when it starts, from its own environment: only
-when `$TMUX` is set and not empty and `$TMUX_PANE` is exactly `%` followed
-by 1 to 9 digits. The pane id is kept in memory only, never written to disk,
+The hook looks for a pane in this order. First it uses its own environment,
+noted once when it starts: only when `$TMUX` is set and not empty and
+`$TMUX_PANE` is exactly `%` followed by 1 to 9 digits. When the environment
+names no pane, it looks the pane up by terminal (see
+[Pane lookup by terminal](#pane-lookup-by-terminal)). Either pane gets the
+same proof below. The pane id is kept in memory only, never written to disk,
 and logged only as the first 12 hex digits of its SHA-256. That tag is a
 correlation aid, not a secret: the salt is a fixed constant and pane ids are
 few, so the tag can be enumerated. It keeps the pane id and the terminal path
@@ -11664,7 +11671,8 @@ written to the log.
 The pane id is checked as a whole against `^%[0-9]+$` before any `tmux`
 call, and is passed as its own argument after `-t`, never through a shell.
 `$TMUX_PANE` is inherited environment, so it is treated as a claim to be
-proved, never as evidence.
+proved, never as evidence. A named pane that is refused never falls back to
+the lookup by terminal.
 
 The pane is used only if it passes this check, made once, right before the
 commit. Claude Code does not always hold the terminal itself (a launcher or
@@ -11693,8 +11701,8 @@ delay, retry or poll. The process ids it used belong to the hook's own
 ancestors under its own user, so a process id reused in that instant is an
 accepted residual risk, not a case the hook guards against.
 
-A failure at step 1, 2 or 3 gives outcome `pane-unverified`, with a `detail`
-from this closed list:
+A failure at step 1, 2 or 3 for a named or found pane gives outcome
+`pane-unverified`, with a `detail` from this closed list:
 
 | `detail` | Cause |
 |----------|-------|
@@ -11706,10 +11714,43 @@ from this closed list:
 | `not-foreground` | The process holding the terminal is not its foreground process group. |
 
 A failure at step 4 gives `pane-not-reading`. Every one of these exits `2`
-with the resume message. None of them tries another pane: the hook never
-runs `list-panes` or `list-clients`. A pane inherited from a shell that
+with the resume message. None of them tries another pane, and the hook never
+runs `list-clients`. A pane inherited from a shell that
 started Claude Code outside that pane, or a pane another session owns, is not
 the terminal of any process in this hook's ancestry, so it fails at step 2.
+
+##### Pane lookup by terminal
+
+When the hook's environment names no pane, for example because Claude Code
+was started with `$TMUX_PANE` unset, the hook finds the pane from the
+session's terminal:
+
+1. It walks its ancestry once, as in step 1 above. If the walk finds no
+   terminal (for example because standard input is a pipe), no pane is found,
+   `tmux` is not run, and the outcome is `not-resumed` with
+   `detail=no-tmux-pane`.
+2. It runs one read-only `tmux list-panes -a -F '#{pane_id} #{pane_tty}'`:
+   fixed arguments, no shell, standard input and standard error closed, and
+   the inherited environment, so `$TMUX` chooses the server and the default
+   server is used otherwise. It reads at most 64 KiB of output.
+3. The output must be one `<pane id> <tty>` line per pane, with exactly one
+   space, a pane id of `%` and digits, and a non-empty tty without
+   whitespace. One trailing newline is allowed. Any other line, including an
+   empty line or a carriage return, or one id with two different ttys, makes
+   the whole listing unusable. Identical repeated lines count once, because
+   `-a` lists a window once for each session it is linked to.
+4. Exactly one pane must have the terminal the walk found. No match, more than
+   one pane id, a failed or oversized listing, or an unusable listing all give
+   `not-resumed` with `detail=no-tmux-pane`.
+5. The single pane is then proved exactly as a named pane is, with one
+   `display-message` call and the same checks and refusal words. This also
+   refuses a pane id reused between the listing and the proof, as
+   `tty-mismatch`.
+
+The listing is held in memory, dropped after matching and never logged. A
+session with a terminal but no named pane costs one `list-panes` per room
+event. A session on a tmux server that `$TMUX` does not name, with `$TMUX`
+unset, is not found and is logged as `not-resumed`.
 
 #### Resume screen
 
@@ -11949,7 +11990,7 @@ and epoch seconds. No pane id is stored.
 | Path | Contents |
 |------|----------|
 | `lock` | Lock file for steps 4 and 9. Waited on for at most 5 seconds. |
-| `events/<sha256 hex>` | One empty marker per limit event. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the login the session stopped on, each written with its length, so no two different payloads share a name. The login the session stopped on is the noted swap record's `from_login` when the swap falls between one second before the [stop time](#stop-time) and the hook's start (`stop - 1 <= swapped_at <= start`). The bound depends on the stop alone, not on when the hook started or on the session's past resumes, so every run of the hook for one stop gets the same name, whatever second it starts in and before and after that stop is resumed; a repeat run is `duplicate` and never resumes the session a second time. The second before the stop is the allowance [Capacity for a resume](#capacity-for-a-resume) gives a hook that starts in the stop's second, so a session resumed through it has its event named for that record's `from_login`. A hook that starts two or more seconds after the stop does not resume on a swap in the second before the stop, but its event is still named for that swap's `from_login`. The cost: a session resumed on that swap in the second before its next stop, which stops again with the same text and whose hook starts two or more seconds late, gets the earlier event's name and is `duplicate`, so it is left stopped rather than sent keys twice. Without a stop time it is `from_login` when the record is after the stop by the rule in [Capacity for a resume](#capacity-for-a-resume) and not later than the hook's start. Otherwise it is the ledger's `live` profile when the hook started. A session that stops on the outgoing login while the rotator swaps, is resumed, and stops again on the new login therefore gets a new event, not `duplicate`. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
+| `events/<sha256 hex>` | One empty marker per limit event resumed with keys. A wake writes none. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the login the session stopped on, each written with its length, so no two different payloads share a name. The login the session stopped on is the noted swap record's `from_login` when the swap falls between one second before the [stop time](#stop-time) and the hook's start (`stop - 1 <= swapped_at <= start`). The bound depends on the stop alone, not on when the hook started or on the session's past resumes, so every run of the hook for one stop gets the same name, whatever second it starts in and before and after that stop is resumed; a repeat run is `duplicate` and never resumes the session a second time. The second before the stop is the allowance [Capacity for a resume](#capacity-for-a-resume) gives a hook that starts in the stop's second, so a session resumed through it has its event named for that record's `from_login`. A hook that starts two or more seconds after the stop does not resume on a swap in the second before the stop, but its event is still named for that swap's `from_login`. The cost: a session resumed on that swap in the second before its next stop, which stops again with the same text and whose hook starts two or more seconds late, gets the earlier event's name and is `duplicate`, so it is left stopped rather than sent keys twice. Without a stop time it is `from_login` when the record is after the stop by the rule in [Capacity for a resume](#capacity-for-a-resume) and not later than the hook's start. Otherwise it is the ledger's `live` profile when the hook started. A session that stops on the outgoing login while the rotator swaps, is resumed, and stops again on the new login therefore gets a new event, not `duplicate`. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
 | `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. The count is evidence for `resume.log` (`resumes=<n>`) and decides nothing. A file that cannot be parsed counts as no earlier resumes: it is rewritten holding only the current resume, and one `session-record-reset` line is logged. |
 | `prompted/<sha256 hex>` | One file per session, named like `sessions/`, holding the epoch seconds of your last prompt in it. Written by the `UserPromptSubmit` hook, replaced atomically. Removed after 7 days and 1 hour (the longest wait plus 1 hour) when a hook starts waiting or commits. A file that cannot be parsed or is not private makes a waiting hook end as `guard-failed`. |
 | `resume.log` | One line per decision from step 3 on, and one per swap record judged stale or without room. |
@@ -11960,7 +12001,7 @@ and epoch seconds. No pane id is stored.
 ```
 2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third
 2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4
-2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane
+2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=not-resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane
 2026-11-09T00:43:12Z resume session=4e1c8b07d26a event=b73ad9052f14 outcome=screen-unrecognised live=work cycle=stayed swap_seq=42 swap_live=spare detail=screen-unknown
 2026-11-09T02:10:55Z resume session=c41d7a9e0b13 event=e9f2b6a01c7d outcome=resume-keys-failed live=spare cycle=stayed swap_seq=43 swap_live=spare pane=0d3a8f61e2b9 keys_sent=2 detail=session-gone
 2026-11-09T02:15:01Z resume session=6a0b3c9d1e42 event=17c5e8d2f0a6 outcome=watch-lost live=spare cycle=stayed detail=NotFound
@@ -11976,10 +12017,10 @@ after `cycle` appear only when they apply:
 |-------|----------|
 | `swap_seq` | The `seq` of the swap record the decision was about. |
 | `swap_live` | That record's `live_login`. |
-| `pane` | The first 12 hex digits of the SHA-256 of the pane id, when keys were sent or tried. |
+| `pane` | The first 12 hex digits of the SHA-256 of the pane id, when keys were sent or tried, or a pane was proved or refused. The log does not say whether the pane came from the environment or from the lookup by terminal. |
 | `keys_sent` | How many of the four keys were sent (0–4). |
-| `resumes` | How many resumes the session's record already held in the last 24 hours when the record was read, in step 5. It does not count the resume this line is about, so the first resume of a session logs `resumes=0`. A record that could not be parsed reads as `0`. Evidence for an operator; nothing branches on it. |
-| `detail` | Why there was no keys path, or why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. For `resumed`, the one fixed word `no-tmux-pane` (the session named no usable pane). For `pane-unverified`, one of `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`. For `screen-unrecognised`, `screen-unreadable` or `screen-unknown`. The value is always one of these fixed words, never text taken from the pane, `tmux`, `/proc` or the environment. |
+| `resumes` | How many key resumes the session's record already held in the last 24 hours when the record was read, in step 5. It does not count the resume this line is about, so the first resume of a session logs `resumes=0`. A record that could not be parsed reads as `0`. Evidence for an operator; nothing branches on it. |
+| `detail` | Why there was no keys path, or why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. For `not-resumed`, the one fixed word `no-tmux-pane` (no pane was named or found). For `pane-unverified`, one of `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`. For `screen-unrecognised`, `screen-unreadable` or `screen-unknown`. The value is always one of these fixed words, never text taken from the pane, `tmux`, `/proc` or the environment. |
 
 Every field holds only `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`; any other
 character is written as `-`. The log never holds message text, error text,
@@ -11989,24 +12030,24 @@ outcome.
 
 | Outcome | Exit | Meaning |
 |---------|------|---------|
-| `resumed-keys` | `0` | A swap record with room arrived, the resume was recorded, and all four keys were sent to the session's pane. |
-| `resumed` | `2` | The same, logged with `detail=no-tmux-pane`, for a session with no usable tmux pane to check: the hook exited `2` and the session was told to continue. |
-| `pane-unverified` | `2` | A pane was named, but it was not proved to be the terminal of this hook's own Claude Code (`detail` says which check failed). The resume was recorded, nothing was typed, and the hook exited `2` with the continue message. A session held on the usage-limit menu stays there, so this outcome in `resume.log` is the sign to continue the session by hand. |
-| `pane-not-reading` | `2` | The pane is this session's terminal, but Claude Code is not the process reading it (for example it is in a background process group behind a wrapper). Nothing was typed; the hook exited `2` with the continue message. |
-| `screen-unrecognised` | `2` | The pane is this session's own terminal, but what it was showing is not a screen the keys answer (`detail=screen-unknown`) or could not be read at all (`detail=screen-unreadable`). Nothing was typed; the hook exited `2` with the unrecognised-screen line and the continue message. See [Resume screen](#resume-screen). |
-| `resume-keys-failed` | `0` | The resume was recorded, but a key failed or the session exited part way; `keys_sent` says how many went. No exit `2` follows. |
+| `resumed-keys` | `0` | A swap record with room arrived, the resume was recorded, and all four keys were sent to the session's pane. This is the only outcome that records the event as used. |
+| `not-resumed` | `2` | Logged with `detail=no-tmux-pane`, when no pane was named or found: the exit `2` wake was given, nothing was typed and nothing was recorded, so the event stays armed and the next room event tries again. If the session runs in tmux, check that the hook reaches the session's own tmux server. |
+| `pane-unverified` | `2` | A pane was named or found, but it was not proved to be the terminal of this hook's own Claude Code (`detail` says which check failed). Nothing was typed or recorded, and the hook exited `2` with the continue message. A session held on the usage-limit menu stays there, so this outcome in `resume.log` is the sign to continue the session by hand. |
+| `pane-not-reading` | `2` | The pane is this session's terminal, but Claude Code is not the process reading it (for example it is in a background process group behind a wrapper). Nothing was typed or recorded; the hook exited `2` with the continue message. |
+| `screen-unrecognised` | `2` | The pane is this session's own terminal, but what it was showing is not a screen the keys answer (`detail=screen-unknown`) or could not be read at all (`detail=screen-unreadable`). Nothing was typed or recorded, so the event stays armed; the hook exited `2` with the unrecognised-screen line and the continue message. See [Resume screen](#resume-screen). |
+| `resume-keys-failed` | `0` | A key failed or the session exited part way; `keys_sent` says how many went. The record of the event is released so the next room event tries again. No exit `2` follows. |
 | `swap-stale` | — | A new swap record was swapped at or before the stop. The hook keeps waiting. Never the final outcome. |
 | `swap-no-room` | — | A new swap record shows the new login at 100% on a window. The hook keeps waiting. Never the final outcome. |
 | `watch-lost` | `0` | The [event wait](#event-wait) could not be set up, or a watch was lost. Never resumes. |
 | `no-capacity-timeout` | `0` | No swap record with room within 7 days. |
 | `moved-on` | `0` | You sent a prompt in that session during the wait, so the hook did not resume it. |
 | `disabled` | `0` | Auto-switch was off when a swap record would have resumed the session. |
-| `duplicate` | `0` | This limit event, or this session since the hook started, was already resumed. |
-| `session-record-reset` | `0` | The session's record of earlier resumes could not be parsed. It was treated as no earlier resumes and rewritten. The session is still resumed, and its own line follows. Logged once, with no record contents. |
+| `duplicate` | `0` | This limit event, or this session since the hook started, was already resumed with keys. Also given instead of a wake when that is found just before the wake. |
+| `session-record-reset` | `0` | The session's record of earlier resumes could not be parsed. It was treated as no earlier resumes; the next resume with keys rewrites it, and until then each run logs this line. The run goes on, and its own line follows. Logged once per run, with no record contents. |
 | `stop-hook-active` | `0` | Claude Code reported a stop hook already running. |
 | `session-gone` | `0` | The Claude Code session that started the hook exited during the wait. |
 | `rotator-down` | `0` | When the hook started, no rotator was running, or its ledger could not be read (for example a newer version). The hook did not wait. |
-| `guard-failed` | `0` | `resume/`, the lock, a marker or the session record could not be used safely. |
+| `guard-failed` | `0` | `resume/`, the lock, a marker or the session record could not be used safely. It can be logged alone before a wake line (the read before the wake failed and the session is still woken) or before `resume-keys-failed` (the release failed and the event stays used). |
 
 #### Resume limits
 
