@@ -44,6 +44,9 @@ mod issue_2912_standing_relaunch;
 #[path = "issue_2912_supervisor_skill.rs"]
 mod issue_2912_supervisor_skill;
 
+#[path = "issue_2912_crash_loop_stop.rs"]
+mod issue_2912_crash_loop_stop;
+
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2556_autodrive_evidence.rs"]

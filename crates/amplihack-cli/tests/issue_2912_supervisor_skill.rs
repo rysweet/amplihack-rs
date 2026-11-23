@@ -44,6 +44,45 @@ pub fn skill_row_for(alert: &str) -> Option<&'static str> {
     alert_forms().into_iter().find(|f| alert.starts_with(f))
 }
 
+/// The evidence column of the row of the skill's "Judge the relaunches"
+/// table whose decision is to stop the session: what the supervisor agent
+/// must see before it stops a crash loop.
+pub fn stop_evidence() -> &'static str {
+    let start = SKILL
+        .find("| What the evidence shows |")
+        .expect("the skill has a table for judging relaunches");
+    SKILL[start..]
+        .lines()
+        .skip(2)
+        .take_while(|l| l.starts_with('|'))
+        .find(|l| l.contains("(#stop-a-crash-loop)"))
+        .and_then(|l| l.split('|').nth(1))
+        .map(str::trim)
+        .expect("a row of the table stops a crash loop")
+}
+
+/// The command the skill's "Stop a crash loop" section runs, as arguments
+/// to `amplihack`, with `NAME` replaced by `name`.
+pub fn stop_command(name: &str) -> Vec<String> {
+    let start = SKILL
+        .find("## Stop a crash loop")
+        .expect("the skill says how to stop a crash loop");
+    let block = SKILL[start..]
+        .split("```bash\n")
+        .nth(1)
+        .and_then(|b| b.split("```").next())
+        .expect("the section has a bash block");
+    let line = block
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("amplihack "))
+        .expect("the block runs an amplihack command");
+    line.split_whitespace()
+        .skip(1)
+        .map(|w| if w == "NAME" { name } else { w }.to_string())
+        .collect()
+}
+
 #[test]
 fn the_skill_is_named_after_its_directory_and_runs_on_every_supervisor_pass() {
     let after = SKILL.strip_prefix("---\n").expect("frontmatter at byte 0");

@@ -197,11 +197,30 @@ resumed by one pass of the supervisor service.
 `crates/amplihack-cli/tests/issue_2912_supervisor_skill.rs` checks the skill
 itself and that these guides name it.
 
-When no supervisor agent uses the skill, nothing reads the record of the
-relaunches. A crash loop then runs until a person reads
-`amplihack agent status`, and a session left stopped in a pane that a shell
-keeps open stays stopped. On a host with standing sessions, run the skill on
-every supervisor pass, or read the status yourself.
+`crates/amplihack-cli/tests/issue_2912_crash_loop_stop.rs` shows the skill's
+stop ending a crash loop. A stand-in for Claude Code exits 1 at once on every
+start, once with a swap record that shows a login with room and once with no
+rotator, so nothing holds a relaunch back. After 20 relaunches the test takes
+one pass of the skill: it matches the alert in `amplihack agent status --json`
+to the skill's row, checks the session's log lines against the evidence the
+skill's table asks for before a stop, and runs the command the skill's
+"Stop a crash loop" section gives. The loop then ends within one more start
+with `reason=superseded`, and a pass of the supervisor service does not bring
+the session back. The test counts every write to `~/.amplihack/agents/` from
+inotify events: one registry write and one log line for each relaunch, plus
+the first launch's registry write, the refusal's log line and the
+unregister's registry write.
+
+When no supervisor agent uses the skill, nothing in amplihack stops a crash
+loop. The supervisor service does not stop it either, because the pane stays
+open while the loop runs. The loop ends only when someone unregisters the
+session, closes the pane or sends `SIGTERM` to the wrapper, as set out under
+[stop a session that keeps exiting](#stop-a-session-that-keeps-exiting).
+Until then it costs one registry write, one supervisor log line and one pane
+line for every relaunch, as fast as Claude Code can start and exit. A session
+left stopped in a pane that a shell keeps open also stays stopped. Mark
+sessions standing only on a host where a supervisor agent uses the skill on
+every pass, or where you read `amplihack agent status` yourself.
 
 ### Read the evidence
 
@@ -349,11 +368,15 @@ never widens the extra directories.
 ## Limits of this feature
 
 - There is no limit on relaunches. A session that cannot start is relaunched
-  as fast as Claude Code can start and exit, with one line in the supervisor
-  log and one registry write for each relaunch, until you or the supervisor
-  agent [stop it](#stop-a-session-that-keeps-exiting). Only a launch that
-  fails before any process exits is not relaunched, because nothing would pace
-  that loop. The loop is noticed only by a reader of the record: the
+  as fast as Claude Code can start and exit, with one registry write, one
+  line in the supervisor log and one line in the pane for each relaunch,
+  until you or the supervisor agent
+  [stop it](#stop-a-session-that-keeps-exiting). Each run's background look
+  for the Claude process ends when the run does, so the loop does not gather
+  threads. Only a launch that fails before any process exits is not
+  relaunched, because nothing would pace that loop; a profile root that
+  cannot be found is one such case, since the launch refuses it too. The
+  loop is noticed only by a reader of the record: the
   `supervise-agent-sessions` skill on a supervisor pass, or you; see
   [who reads the record](#who-reads-the-record).
 - The count of relaunches without a reply rests on the transcript format of

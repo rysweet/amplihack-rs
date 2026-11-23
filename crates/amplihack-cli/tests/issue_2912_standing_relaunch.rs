@@ -42,7 +42,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
-const NAME: &str = "area-docs";
+pub(crate) const NAME: &str = "area-docs";
 const CLAUDE_PID: u32 = 60001;
 
 /// The stand-in session. Run `n` records its arguments, then acts on line
@@ -64,9 +64,12 @@ const CLAUDE_PID: u32 = 60001;
 ///   nothing for `--continue` to carry on.
 /// - `exit:N` exits N at once, having written nothing: a run that started
 ///   and crashed before anything could be recorded of it.
+/// - `spin:N` exits N at once like `exit:N`, and as the last line of the
+///   script it stands for every run after it as well: a session that exits
+///   at once on every start for as long as anything starts it.
 ///
 /// Anything else exits 0.
-fn install_stand_in(fx: &Fx, dir: &Path, script: &[&str]) {
+pub(crate) fn install_stand_in(fx: &Fx, dir: &Path, script: &[&str]) {
     let body = format!(
         r#"#!/bin/sh
 case "$1" in --version) echo '2.1.319 (Claude Code)'; exit 0 ;; esac
@@ -82,6 +85,8 @@ now="${{now%??????}}Z"
 {{ for a in "$@"; do printf '%s ' "$a"; done; echo; }} >> "$d/claude.runs"
 n=$(wc -l < "$d/claude.runs" | tr -d ' ')
 verb=$(sed -n "${{n}}p" "$d/claude.script")
+last=$(sed -n '$p' "$d/claude.script")
+if [ -z "$verb" ]; then case "$last" in spin:*) verb=$last ;; esac; fi
 : > "$d/claude.started"
 echo FAKE-CLAUDE-STARTED >&2
 mkdir -p "$(dirname "$t")"
@@ -98,6 +103,7 @@ case "$verb" in
   wait:*) while [ ! -e "$d/release.$n" ]; do sleep 0.05; done
           : > "$d/exited.$n"; exit "${{verb#wait:}}" ;;
   exit:*) : > "$d/exited.$n"; exit "${{verb#exit:}}" ;;
+  spin:*) exit "${{verb#spin:}}" ;;
   *) : > "$d/exited.$n"; exit 0 ;;
 esac
 "#,
@@ -126,7 +132,7 @@ fn transcript(fx: &Fx, dir: &Path) -> PathBuf {
         .join(format!("{CONV_C}.jsonl"))
 }
 
-fn runs(fx: &Fx) -> Vec<String> {
+pub(crate) fn runs(fx: &Fx) -> Vec<String> {
     fs::read_to_string(fx.records.join("claude.runs"))
         .unwrap_or_default()
         .lines()
@@ -163,7 +169,7 @@ fn skips(run: &str) -> usize {
 }
 
 /// `agent.standing = <on>` in the user file of the fixture's home.
-fn set_standing(fx: &Fx, on: bool) {
+pub(crate) fn set_standing(fx: &Fx, on: bool) {
     let dir = fx.home.join(".amplihack");
     fs::create_dir_all(&dir).unwrap();
     chmod(&dir, 0o700);
@@ -173,7 +179,7 @@ fn set_standing(fx: &Fx, on: bool) {
 }
 
 /// The wrapper command in pane `%7`, with `flags` before the `--`.
-fn wrapped(fx: &Fx, dir: &Path, flags: &[&str], claude_args: &[&str]) -> Command {
+pub(crate) fn wrapped(fx: &Fx, dir: &Path, flags: &[&str], claude_args: &[&str]) -> Command {
     fx.tmux_pane("%7", "area", "main", 4321);
     let mut args = vec!["claude", "--subprocess-safe", "--no-reflection"];
     args.extend(["--supervise", NAME]);
@@ -191,22 +197,25 @@ fn wrapped(fx: &Fx, dir: &Path, flags: &[&str], claude_args: &[&str]) -> Command
 
 /// A running wrapper; dropping it releases every run and kills it, so a
 /// failed test leaves no process behind.
-struct Running<'a> {
+pub(crate) struct Running<'a> {
     fx: &'a Fx,
     child: Option<Child>,
 }
 
 impl<'a> Running<'a> {
-    fn spawn(fx: &'a Fx, mut c: Command) -> Self {
+    pub(crate) fn spawn(fx: &'a Fx, mut c: Command) -> Self {
         Self {
             fx,
             child: Some(spawn_once("amplihack", &mut c)),
         }
     }
+    pub(crate) fn pid(&self) -> u32 {
+        self.child.as_ref().unwrap().id()
+    }
     fn alive(&mut self) -> bool {
         self.child.as_mut().unwrap().try_wait().unwrap().is_none()
     }
-    fn finish(mut self) -> Output {
+    pub(crate) fn finish(mut self) -> Output {
         let mut child = self.child.take().unwrap();
         if !wait_until(|| child.try_wait().unwrap().is_some()) {
             let _ = child.kill();
@@ -253,7 +262,7 @@ fn show_claude(fx: &Fx, dir: &Path) {
 
 /// The rotator's swap record under the fixture's profile root, written the
 /// way the rotator writes it: a new file renamed over the old one.
-fn swap(fx: &Fx, seq: u64, session: u8, mode: u32) -> PathBuf {
+pub(crate) fn swap(fx: &Fx, seq: u64, session: u8, mode: u32) -> PathBuf {
     let rotate = fx.profiles.join(".auto-switch.d").join("rotate");
     fs::create_dir_all(&rotate).unwrap();
     chmod(&fx.profiles.join(".auto-switch.d"), 0o700);
@@ -271,7 +280,7 @@ fn swap(fx: &Fx, seq: u64, session: u8, mode: u32) -> PathBuf {
     dest
 }
 
-fn relaunch_lines(lines: &[String]) -> Vec<&String> {
+pub(crate) fn relaunch_lines(lines: &[String]) -> Vec<&String> {
     lines
         .iter()
         .filter(|l| l.contains(" standing session relaunch "))
@@ -307,7 +316,7 @@ fn fixture(script: &[&str]) -> (Fx, PathBuf) {
 
 /// The session record's `alert`: the record of the last relaunch, or the
 /// reason one was refused. Empty when there is none.
-fn alert(fx: &Fx) -> String {
+pub(crate) fn alert(fx: &Fx) -> String {
     entry(fx)
         .and_then(|e| e["alert"].as_str().map(String::from))
         .unwrap_or_default()

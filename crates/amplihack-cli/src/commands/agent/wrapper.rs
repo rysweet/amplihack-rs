@@ -23,7 +23,7 @@ use anyhow::{anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 const NO_TMUX: &str = "amplihack claude --supervise needs tmux: $TMUX and $TMUX_PANE are not set";
 const PRINT_MODE: &str = "amplihack claude --supervise needs an interactive session; \
@@ -116,21 +116,19 @@ pub fn run_wrapped(
     let mut quiet = None;
     loop {
         // One per run, so the id thread of an earlier run can never say
-        // that this one started.
-        let run = Arc::new(RunWatch::default());
-        watch_for_claude(
+        // that this one started. Dropping it ends that thread.
+        let run = watch_for_claude(
             dir.clone(),
             home.clone(),
             req.name.to_string(),
             launch_id.clone(),
-            Arc::clone(&run),
         );
         // Issue #2912: when this run began. Whether the model wrote a reply
         // to the session's conversation from then on is read once, after
         // the exit, for the record of the relaunch; see `standing::Quiet`.
         let started = SystemTime::now();
         let result = launch(&args);
-        run.over.store(true, Ordering::SeqCst);
+        drop(run);
         let replied = standing.replied(&dir, &home, &cwd, req.name, started);
         let signalled = stopped.load(Ordering::SeqCst);
         if result.is_ok()
@@ -173,25 +171,16 @@ pub fn run_wrapped(
 /// `WARNING:` line to the supervisor log with the last reason; nothing is
 /// written to the terminal (B4).
 ///
-/// Issue #2912: the thread stops at its next tick once `run.over` is set,
-/// silently, as it did when the wrapper exited with its one run. A standing
-/// session's wrapper outlives each run, and without this every relaunch
-/// would leave one more thread scanning the process table each second for
-/// the rest of its two minutes, and writing a warning about a run that had
-/// already ended.
-///
-/// Nothing in the standing-session decision rests on what this thread saw.
-/// It records the conversation, and the record of a relaunch reads that and
-/// the conversation's transcript off the disk after the exit, so a run that
-/// ended between two of these ticks is described by what it wrote rather
-/// than by whether a scan happened to catch it.
-fn watch_for_claude(
-    dir: AgentsDir,
-    home: PathBuf,
-    name: String,
-    launch_id: String,
-    run: Arc<RunWatch>,
-) {
+/// Issue #2912: a standing session's wrapper outlives each run, so the
+/// thread stops, silently, as soon as the [`RunWatch`] it returns is
+/// dropped. The drop wakes it rather than leaving it to its next tick, so a
+/// session that exits at once on every start leaves no sleeping thread per
+/// run behind. Nothing in the standing-session decision rests on what this
+/// thread saw: the record of a relaunch reads the conversation and its
+/// transcript off the disk after the exit.
+fn watch_for_claude(dir: AgentsDir, home: PathBuf, name: String, launch_id: String) -> RunWatch {
+    let over = Arc::new(AtomicBool::new(false));
+    let run = Arc::clone(&over);
     let spawned = std::thread::Builder::new()
         .name("agent-id-watch".into())
         .spawn(move || {
@@ -199,8 +188,7 @@ fn watch_for_claude(
             let dirs = || sessions::config_dirs_from(&home, |k| std::env::var_os(k));
             let mut last_error = None;
             for _ in 0..ID_WATCH_SECS {
-                std::thread::sleep(Duration::from_secs(1));
-                if run.over.load(Ordering::SeqCst) {
+                if !tick(&run) {
                     return;
                 }
                 match find_claude(&root, dirs) {
@@ -221,16 +209,48 @@ fn watch_for_claude(
             });
             not_recorded(&dir, &name, &reason);
         });
-    if let Err(e) = spawned {
-        tracing::debug!("agent: could not start the id thread: {e}");
+    let thread = match spawned {
+        Ok(h) => Some(h.thread().clone()),
+        Err(e) => {
+            tracing::debug!("agent: could not start the id thread: {e}");
+            None
+        }
+    };
+    RunWatch { over, thread }
+}
+
+/// One run's id thread, from the wrapper's side (issue #2912). Dropping it
+/// tells the thread the run is over and wakes it, so the thread ends on
+/// every way out of the run: its return, an early return or a panic.
+pub(super) struct RunWatch {
+    /// The run has returned, so its id thread has nothing left to find.
+    pub(super) over: Arc<AtomicBool>,
+    pub(super) thread: Option<std::thread::Thread>,
+}
+
+impl Drop for RunWatch {
+    fn drop(&mut self) {
+        self.over.store(true, Ordering::SeqCst);
+        if let Some(t) = &self.thread {
+            t.unpark();
+        }
     }
 }
 
-/// What one run's id thread and the wrapper share (issue #2912).
-#[derive(Default)]
-struct RunWatch {
-    /// The run has returned, so its id thread has nothing left to find.
-    over: AtomicBool,
+/// The id thread's one-second tick (D4): `true` when the second has passed,
+/// `false` as soon as `over` is set, during the second or before it.
+pub(super) fn tick(over: &AtomicBool) -> bool {
+    let until = Instant::now() + Duration::from_secs(1);
+    loop {
+        if over.load(Ordering::SeqCst) {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= until {
+            return true;
+        }
+        std::thread::park_timeout(until - now);
+    }
 }
 
 /// Appends the id thread's warning to the supervisor log.
