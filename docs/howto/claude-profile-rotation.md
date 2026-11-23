@@ -139,7 +139,7 @@ real run. Run a dry run first, and again whenever you change a threshold.
 a temporary `HOME`, a fake `claude` and a loopback stand-in for the usage
 service, with no real login and no `CLAUDE_CONFIG_DIR`. It needs `socat`. It
 replays a day on which the live login filled while several others had room, and
-checks ten cases: a dry run that reports the swap to the login below
+checks eleven cases: a dry run that reports the swap to the login below
 `--session-at`; a one-shot cycle that moves `~/.claude` to it with
 `reason=plan-room`; the usage service answering HTTP 429 with a last good
 reading in the history, which gives a `reject:` line and no swap; HTTP 429
@@ -157,7 +157,9 @@ and stays without a note while the live login is below both thresholds; and
 the 23 November replay, where a login with a spend block, failing live probes
 and an old, roomy reading in the history is never swapped to, at 95/98 or at
 85/90, while a rotator from another build is running, and with no block at all
-the old reading still leads to no swap:
+the old reading still leads to no swap; and a login with a session-limit or
+week-limit block, which is passed over as a spend-blocked login is, with a
+`reject: <name> blocked until <time> (<kind>)` line naming the limit:
 
 ```bash
 AMPLIHACK_QA_BINARY=target/debug/amplihack bash tests/qa/claude-profile-rotate-room.sh

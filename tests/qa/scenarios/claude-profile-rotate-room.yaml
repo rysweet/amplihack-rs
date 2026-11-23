@@ -5,7 +5,7 @@ description: >
   executable and a loopback stand-in for the usage and profile endpoints
   (socat, 127.0.0.1 only), replaying 22 November 2026: the live login reached
   100% of its session while several logins had room, alone in its organisation.
-  Ten cases: a dry run that reports the swap to the login with a fresh session;
+  Eleven cases: a dry run that reports the swap to the login with a fresh session;
   a one-shot cycle that moves ~/.claude to it with reason=plan-room and no ALERT;
   HTTP 429 from the usage endpoint with a last good reading in the history,
   where the target is rejected at confirmation and nothing moves (issue #3105:
@@ -29,7 +29,12 @@ description: >
   while a stand-in rotator from another build makes each ledger save take the
   form for older readers: each cycle logs one "reject: llarame blocked until
   <time> (spend limit)" line and the block stays in the ledger, and with no
-  block at all the old reading is rejected at confirmation and nothing moves.
+  block at all the old reading is rejected at confirmation and nothing moves;
+  and a usage block (issue #3105), where a session-limit block on qquinn makes
+  the one-shot cycle at 95/98 move to yyandis instead, with one "reject:
+  qquinn blocked until <time> (session limit)" line and the block kept in the
+  ledger, and a week-limit block on llarame makes the dry run at 85/90 pass it
+  over for qquinn, with one "(week limit)" reject line.
   Needs socat; runs locally and is not part of CI.
 version: "1.0"
 environment:

@@ -8,7 +8,7 @@
 # profile root.
 #
 # It replays 22 November 2026: the live login reached 100% of its session
-# while several logins had room, and the rotator only alerted. Ten cases:
+# while several logins had room, and the rotator only alerted. Eleven cases:
 #
 #   1. dry run: reports the swap to the login with a fresh session (llarame);
 #   2. one-shot cycle: moves ~/.claude to it, reason=plan-room, no ALERT;
@@ -39,6 +39,12 @@
 #      keep the block in the ledger. With no block at all, the old reading
 #      still leads to no swap at 95/98: the target is rejected at
 #      confirmation.
+#  11. a usage block (issue #3105: a standing spend *or usage* block): with a
+#      session-limit block on qquinn, the one-shot cycle at 95/98 moves to
+#      yyandis, logs `reject: qquinn blocked until <time> (session limit)`
+#      and keeps the block in the ledger; with a week-limit block on llarame,
+#      the dry run at 85/90 passes it over for qquinn with a `(week limit)`
+#      reject line.
 #
 # Needs socat and GNU `date -d` (Linux); the handler itself avoids bash 4 only
 # expansions. Runs locally and is not part of CI.
@@ -664,6 +670,59 @@ echo ok > "$FX/usage-mode"
 echo "PASS: case 10: the 23 November replay never swaps to the blocked login or on its old reading, at 95/98 and 85/90"
 evidence ' (reject:|stay:|swap|ALERT:) ' <<< "$replay_log"
 evidence ' (reject:|stay:|swap) ' <<< "$log"
+
+# --- Case 11: a usage block is kept out as a spend block is (issue #3105) ---------------
+# The issue asks that a login with a standing spend *or usage* block is never
+# chosen. Cases 8 and 10 use a spend block; here the ledger holds a usage
+# block instead, on the login each threshold setting would choose first.
+#
+# At the hosts' 95/98, qquinn (88/20) is the first choice (case 9). With a
+# session-limit block on it, the one-shot cycle must pass it over for yyandis
+# (88/71: the same room now, 12, and the next week), move ~/.claude there with
+# reason=threshold, log one `reject: qquinn blocked until <time> (session
+# limit)` line, and keep the block in the ledger it saves.
+new_home usage-blocked
+before="$(live_token)"
+write_block qquinn 600 7200 session_limit
+ledger="$ROOT/.auto-switch.d/rotate/ledger.json"
+qquinn_until() { tr -d ' \n' < "$ledger" | sed -n 's/.*"overflow_blocked":{[^}]*"qquinn":{[^}]*"until":\([0-9]*\).*/\1/p'; }
+until_before="$(qquinn_until)"
+[[ -n "$until_before" ]] || fail "case 11: the setup left no block on qquinn in the ledger"
+run_cli profile rotate "${DEPLOYED[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 11: rotate at 95/98 exited $STATUS"; }
+[[ "$(live_token)" == "qa-yyandis" ]] \
+  || { rotate_log >&2 || true; fail "case 11: ~/.claude holds $(live_token), not qa-yyandis"; }
+usage_log="$(rotate_log)"
+! grep -q " swap $LIVE->qquinn " <<< "$usage_log" \
+  || { echo "$usage_log" >&2; fail "case 11: the rotator swapped to qquinn while its session-limit block stood"; }
+grep -q " swap $LIVE->yyandis .*reason=threshold" <<< "$usage_log" \
+  || { echo "$usage_log" >&2; fail "case 11: no threshold swap line to yyandis"; }
+rejects="$(grep -cE " reject: qquinn blocked until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z \(session limit\)$" <<< "$usage_log" || true)"
+[[ "$rejects" == "1" ]] \
+  || { echo "$usage_log" >&2; fail "case 11: expected one 'reject: qquinn blocked until <time> (session limit)' line, found $rejects"; }
+[[ "$(qquinn_until)" == "$until_before" ]] \
+  || fail "case 11: the ledger the cycle saved holds '$(qquinn_until)' for qquinn's block, not $until_before"
+
+# At 85/90, llarame (0/95) is the first choice (case 1). With a week-limit
+# block on it, the dry run passes it over for qquinn, as case 8 does for a
+# spend block, with one `(week limit)` reject line, and moves nothing.
+new_home week-blocked
+before="$(live_token)"
+write_block llarame 600 7200 week_limit
+run_cli profile rotate --dry-run "${FLAGS[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "case 11: the week-blocked dry run exited $STATUS"; }
+week_out="$(cat "$WORK/stdout")"
+! grep -q "would swap $LIVE->llarame " <<< "$week_out" \
+  || { echo "$week_out" >&2; fail "case 11: the rotator chose llarame while its week-limit block stood"; }
+grep -q "would swap $LIVE->qquinn " <<< "$week_out" \
+  || { echo "$week_out" >&2; fail "case 11: the rotator did not choose qquinn, the next login the ranking gives"; }
+rejects="$(grep -cE "^reject: llarame blocked until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}Z \(week limit\)$" <<< "$week_out" || true)"
+[[ "$rejects" == "1" ]] \
+  || { echo "$week_out" >&2; fail "case 11: expected one 'reject: llarame blocked until <time> (week limit)' line, found $rejects"; }
+[[ "$(live_token)" == "$before" ]] || fail "case 11: the week-blocked dry run moved ~/.claude"
+echo "PASS: case 11: a session-limit or week-limit block keeps a login out, at 95/98 and 85/90, as a spend block does"
+evidence ' (reject:|swap) ' <<< "$usage_log"
+evidence '^(would (swap|stay|alert)|reject: )' <<< "$week_out"
 
 [[ ! -s "$WORK/claude-calls" ]] || fail "claude was started: $(cat "$WORK/claude-calls")"
 echo "ROTATE_ROOM_QA_PASSED"
