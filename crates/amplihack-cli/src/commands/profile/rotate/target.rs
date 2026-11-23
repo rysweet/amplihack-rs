@@ -8,8 +8,10 @@
 //! - Blocked ([`fit_blocked`], issue #3105): a login with a standing block in
 //!   the ledger (`overflow_blocked`) is ruled out until the block's recorded
 //!   end, before any reading is looked at, however much room a reading shows.
-//!   `observe_decide::decide_with` leaves such a login out of every pass, and
-//!   `target_seen::build` records why for the cycle's lines.
+//!   [`standing_block`] is the one test of whether a block stands:
+//!   `observe_decide::decide_with` uses it to leave such a login out of every
+//!   pass, the overflow rule to treat it as having no room, and
+//!   `target_seen::build` to record why for the cycle's lines.
 //! - Eligible ([`fit`]): no spend limit, a usable reading, both windows below
 //!   100%, and a week at or below `--target-week-max`.
 //! - Qualifying ([`relief_floor`], [`upgrade_floor`]): a live login with no
@@ -19,10 +21,13 @@
 //! - Ranked ([`order`]): session below `--session-at` first, then the larger
 //!   room now, then the lower week, then the name in byte order.
 
+use super::super::ledger::OverflowBlock;
 use super::super::settings::Settings;
+use super::super::spend_blocks::kind_label;
 use super::{Measured, Reading, Reason, needs_swap};
 use crate::commands::profile::name::ProfileName;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 /// Points of room a login can use now, `floor(100 - max(session, week))`,
 /// when both windows are from 0 up to below 100; `None` otherwise (a full
@@ -39,6 +44,21 @@ pub fn room_now(session: f64, week: f64) -> Option<u8> {
 /// A standing block on a login: when it ends, and its fixed kind label
 /// (`spend_blocks::kind_label`), never a stored text.
 pub type Block = (i64, &'static str);
+
+/// The block standing on `name` at `now` in the ledger's `overflow_blocked`
+/// map, if any: one whose recorded end is still ahead (`now < until`), so a
+/// block ends exactly at its recorded time. The one test of a standing block
+/// for every pass of the decision (issue #3105).
+pub fn standing_block(
+    blocks: &BTreeMap<String, OverflowBlock>,
+    name: &ProfileName,
+    now: i64,
+) -> Option<Block> {
+    blocks
+        .get(name.as_str())
+        .filter(|b| now < b.until)
+        .map(|b| (b.until, kind_label(&b.reason)))
+}
 
 /// Why a login is not eligible, in the order [`fit_blocked`] checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

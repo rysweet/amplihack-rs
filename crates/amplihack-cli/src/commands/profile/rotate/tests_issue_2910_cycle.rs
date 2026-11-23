@@ -568,7 +568,7 @@ fn ac6_the_cycle_does_not_end_in_an_error_when_no_login_has_room() {
 /// login that answered 429 still ranks on its last good reading, but no swap
 /// is made without a fresh reading, even with the live login full. It is
 /// rejected at confirmation and the cycle ends on the stay note, as a hard
-/// ALERT that holds resumes until a later cycle finds room.
+/// ALERT that pauses session resumes until a later cycle finds room.
 #[test]
 fn ac7_a_login_that_answered_429_is_rejected_at_confirmation_when_the_live_login_is_full() {
     let f = fleet(&["llarame", "qquinn"], &[]);

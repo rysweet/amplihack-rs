@@ -1119,8 +1119,8 @@ timer: it asks again on the next cycle.
 A last good reading can rank a login but never justifies a swap: the swap
 waits for a fresh reading. When the live login has no room and no candidate is
 confirmed, the cycle writes `stay: no candidate confirmed by a fresh reading`
-and a hard ALERT, which holds resumes until a later cycle finds room. When the
-live login still has room, the ALERT is advisory and the cycle stays.
+and a hard ALERT, which pauses session resumes until a later cycle finds room.
+When the live login still has room, the ALERT is advisory and the cycle stays.
 
 When no login has a usable last good reading, the line says how many are
 unknown, and why, and does not claim that no login has capacity:
@@ -3240,10 +3240,32 @@ is on:
    `~/.amplihack/claude-profiles/.auto-switch.d/rotate/ledger.json`.
 3. Start the older rotator: `amplihack profile rotate start`.
 
-While a block is held, the ledger also carries `overflow_blocked` for older
-rotators, so an older rotator refuses it loudly (it logs the failure rather than
-rotating on it) until you restart it, or upgrade it and restart it; this is
-the reason to delete the file in step 2.
+While a block is held, the ledger written for an older rotator also carries
+`overflow_blocked` ([#3105](https://github.com/rysweet/amplihack-rs/issues/3105)).
+What the older rotator does with it depends on when it was built:
+
+- **Before #1659:** it refuses the whole ledger and logs a failed cycle every
+  interval, as described above.
+- **From #1695 to before #2890:** it refuses the ledger in the same way while
+  a block of any kind other than a spend limit is held.
+- **From #1659 to before #1695:** it reads the ledger, ignores
+  `overflow_blocked`, and drops it without any message the next time it
+  saves. The block is then lost, and that rotator can swap to the blocked
+  login. This version cannot prevent that.
+
+Step 2 clears the refusals. To keep blocks from being dropped, do not run a
+rotator from the #1659 to #1695 range beside a newer amplihack that records
+blocks.
+
+A running rotator keeps the rules of the binary it was started from. After you
+install a newer amplihack, restart it so the new rules apply:
+
+```bash
+amplihack profile rotate stop && amplihack profile rotate start
+```
+
+`amplihack install` and a one-shot `amplihack profile rotate` print a line
+asking for this while a rotator from another binary is running.
 
 The ledger holds only bookkeeping, and the next cycle rebuilds it. Deleting
 it also clears the swap hold, so the first cycle may make an upgrade swap

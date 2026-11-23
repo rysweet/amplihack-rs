@@ -6698,9 +6698,10 @@ reading is never made, whatever room the live login has. Before #3105 a
 swap could go ahead unconfirmed when the live login had no room; it woke
 sessions onto logins that could not serve them and used up their resumes, so
 that path is withdrawn. The cost is plain: when the live login has no room and
-every candidate is unknown, the cycle ends on the stay note and a hard ALERT
-(see the [advisory alert](#rotate-advisory-alert) rule), which holds resumes until a later cycle finds room,
-where it used to swap. With room on the live login the ALERT is advisory.
+every candidate is unknown, the cycle no longer swaps. It ends on the stay note
+and a hard ALERT (see the [advisory alert](#rotate-advisory-alert) rule), which
+pauses session resumes until a later cycle finds room. With room on the live
+login the ALERT is advisory.
 
 #### Block reject lines
 

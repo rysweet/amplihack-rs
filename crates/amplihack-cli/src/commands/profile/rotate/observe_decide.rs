@@ -65,9 +65,7 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     let t = (ctx.now)();
     let blocked = |n: &ProfileName| {
         ledger.as_ref().is_some_and(|l| {
-            l.overflow_blocked
-                .get(n.as_str())
-                .is_some_and(|b| t < b.until)
+            target::standing_block(&l.overflow_blocked, n, t).is_some()
                 || (snap.platform() == Some(n)
                     && l.platform_block.as_ref().is_some_and(|b| t < b.until))
         })

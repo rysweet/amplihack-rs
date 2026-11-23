@@ -17,9 +17,8 @@ use super::super::identify::Skip;
 use super::super::ledger::OverflowBlock;
 use super::super::measure::ProbeLabel;
 use super::super::observe::Snap;
-use super::super::spend_blocks::kind_label;
 use super::last_good::{LastGood, last_good};
-use super::target::{Block, NoMove, Unfit, fit_blocked};
+use super::target::{Block, NoMove, Unfit, fit_blocked, standing_block};
 use super::{Measured, Probed, Reading};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::OverflowEntry;
@@ -181,10 +180,7 @@ pub fn build(
     let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
     let mut logins = BTreeMap::new();
     for (name, p) in probes.iter().filter(|(n, _)| !is_overflow(n)) {
-        let block = blocks
-            .get(name.as_str())
-            .filter(|b| now < b.until)
-            .map(|b| (b.until, kind_label(&b.reason)));
+        let block = standing_block(blocks, name, now);
         let label = extra.labels.get(name).copied();
         let basis = match (extra.substitute(name, p), label) {
             (Some(lg), Some(label)) => Basis::LastGood {

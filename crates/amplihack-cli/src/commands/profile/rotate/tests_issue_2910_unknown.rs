@@ -406,7 +406,7 @@ fn reread_unknown(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<Pr
 
 /// Issue #3105 (was D7): with the live login full, a target whose re-read
 /// comes back unknown is rejected, not taken on its stale reading. The cycle
-/// ends on the stay note, as a hard ALERT that holds resumes.
+/// ends on the stay note, as a hard ALERT that pauses session resumes.
 #[test]
 fn an_unknown_reread_is_rejected_even_when_the_live_login_has_no_room() {
     let f = fleet(&["top"], &[]);

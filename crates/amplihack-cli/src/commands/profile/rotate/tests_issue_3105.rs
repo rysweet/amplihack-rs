@@ -1,5 +1,6 @@
 //! Issue #3105, pure units: a standing block rules a login out before any
-//! reading is looked at (`target::fit_blocked`), a kept reading is never
+//! reading is looked at (`target::fit_blocked`), one test says whether a
+//! block stands (`target::standing_block`), a kept reading is never
 //! replaced by an older one (`Stored::keep`), a reading older than one
 //! already held is superseded (`Extra::older_by`, `substitute`,
 //! `reading_used`), the ledger written for an older reader keeps
@@ -18,6 +19,7 @@
 //! type Block = (i64 /* until */, &'static str /* kind_label */)
 //! Unfit::Blocked { until: i64, kind: &'static str }   // first variant
 //! fit_blocked(m: &Measured, block: Option<Block>, week_max: u8) -> Result<u8, Unfit>
+//! standing_block(blocks, name, now) -> Option<Block>   // now < until, fixed label
 //! Stored::times(now: i64) -> Vec<(ProfileName, i64)>   // kept times not after now
 //! Extra::older_by(name, at) -> Option<u64>             // strictly older only
 //! target_msg::blocked(&Seen, &Decision) -> Vec<String> // none for a stay
@@ -27,7 +29,7 @@
 //! login, process or rotator is touched, and the fake process uses a pid
 //! above any the kernel gives.
 
-use super::{Unfit, fit, fit_blocked};
+use super::{Unfit, fit, fit_blocked, standing_block};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate::cycle::event_read::Stored;
 use crate::commands::profile::rotate::decide::last_good::LastGood;
@@ -241,16 +243,36 @@ fn a_block_ends_exactly_at_its_recorded_time() {
         reason: "spend_limit".into(),
     };
     l.overflow_blocked.insert("held".into(), b.clone());
+    let held = n("held");
+    let stands = |l: &RotateLedger, now| standing_block(&l.overflow_blocked, &held, now);
     assert!(active_blocks(&l, NOW).is_empty(), "until == now is expired");
+    assert_eq!(stands(&l, NOW), None, "until == now is expired");
     assert_eq!(active_blocks(&l, NOW - 1).len(), 1);
+    assert_eq!(stands(&l, NOW - 1), Some((NOW, "spend limit")));
     l.overflow_blocked.insert(
         "held".into(),
         OverflowBlock {
             until: NOW + 1,
-            ..b
+            ..b.clone()
         },
     );
     assert_eq!(active_blocks(&l, NOW).len(), 1, "until == now + 1 stands");
+    assert_eq!(stands(&l, NOW), Some((NOW + 1, "spend limit")));
+    assert_eq!(
+        standing_block(&l.overflow_blocked, &n("free"), NOW),
+        None,
+        "a login with no entry has no block"
+    );
+    // The kind is the fixed label, never the stored text.
+    l.overflow_blocked.insert(
+        "held".into(),
+        OverflowBlock {
+            until: NOW + 1,
+            reason: "made_up_kind".into(),
+            ..b
+        },
+    );
+    assert_eq!(stands(&l, NOW), Some((NOW + 1, "a recorded limit")));
 }
 
 // --- U4: a reading older than one already held is superseded -------------------------
