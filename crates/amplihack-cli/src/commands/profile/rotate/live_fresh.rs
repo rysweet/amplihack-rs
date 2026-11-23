@@ -58,8 +58,8 @@
 //! the live reading time at the measurement's start (`fresh::settle`).
 //!
 //! The figures only change the decision, through [`Outlook`] on the cycle's
-//! context, which `decide_measured` reads. They reach the decision rule's
-//! threshold row only ([`with_outlook`]): the plan-room swap and the overflow
+//! context, which `decide_with` reads. They reach the decision rule's
+//! threshold row only ([`with_outlook`]): the overflow
 //! rules always run on the reading as measured. The ledger, the history and
 //! the log lines keep the reading as measured. `Point`, [`Series`] and
 //! [`Outlook`] hold a profile name, times and percentages only: never a
@@ -70,7 +70,7 @@ use super::super::cycle::Ctx;
 use super::super::decide::{Probed, Reading};
 use super::super::fresh_msg;
 use super::super::measure;
-use super::super::observe::{Measurement, Snap, decide_measured};
+use super::super::observe::{Measurement, Snap, decide_with};
 use super::read_at;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
@@ -241,7 +241,9 @@ pub(in crate::commands::profile::rotate) fn step(
     if ctx.live_outlook.is_none() && live == probe {
         return Ok(m);
     }
-    let mut again = decide_measured(ctx, snap, live, probes, m.measured_at)?;
+    // Issue #2910: the cycle's own `Extra`, so the step decides on the same
+    // last good readings as the measurement did.
+    let mut again = decide_with(ctx, snap, live, probes, m.measured_at, &m.seen.extra)?;
     debug_assert_eq!(
         again.failed, m.failed,
         "the live step counts the live probe once"
@@ -299,7 +301,7 @@ fn reread_live(
         return None;
     }
     lines.push(fresh_msg::STALE_LIVE.to_string());
-    let mut p = reread(ctx, name, measure::timeout_quiet());
+    let (mut p, _) = reread(ctx, name, measure::timeout_quiet());
     let failed = p.reading == Reading::Failed || p.unknown || p.still_running || p.carried;
     // The re-read has just run, so a missing observation time means now.
     let at = p.observed_at.unwrap_or(t);
