@@ -330,6 +330,12 @@ fn an_unknown_login_is_adopted_as_default_original() {
     f.assert_each_login_once();
 }
 
+/// Issue #2910: both plan logins sit above the week ceiling at 99%, which is
+/// not a window at 100% and not a recorded block, so the rotator has not seen
+/// that no login has room. The line is therefore the `no capacity known`
+/// wording, with the count that says why, and never `no profile has capacity`.
+/// What this test is about is unchanged: one line per run of the same reason,
+/// and the key clears once a cycle stays without alerting.
 #[test]
 fn a_no_capacity_alert_is_written_once_across_runs() {
     let f = Fixture::new();
@@ -339,12 +345,16 @@ fn a_no_capacity_alert_is_written_once_across_runs() {
         let out = f.ok(&["profile", "rotate"]);
         assert!(!text(&out.stdout).contains("swap "));
     }
-    let alerts = f
-        .log()
-        .lines()
-        .filter(|l| l.contains("ALERT: no profile has capacity live=work s=90% w=40%"))
-        .count();
-    assert_eq!(alerts, 1, "{}", f.log());
+    let known = |l: &&str| {
+        l.contains("ALERT: no capacity known live=work s=90% w=40%")
+            && l.contains("(candidates: 2 above week ceiling 95%)")
+    };
+    assert_eq!(f.log().lines().filter(known).count(), 1, "{}", f.log());
+    assert!(
+        !f.log().contains("no profile has capacity"),
+        "a login above the ceiling is not a login known to have no room: {}",
+        f.log()
+    );
     assert_eq!(ino(&f.home_login()), Some(f.live_ino));
 
     // Once a cycle stays without alerting the key clears and it can recur.
@@ -352,12 +362,14 @@ fn a_no_capacity_alert_is_written_once_across_runs() {
     f.ok(&["profile", "rotate"]);
     f.usage("work", 90, 40);
     f.ok(&["profile", "rotate"]);
-    let alerts = f
-        .log()
-        .lines()
-        .filter(|l| l.contains("ALERT: no profile"))
-        .count();
-    assert_eq!(alerts, 2);
+    let log = f.log();
+    assert_eq!(log.lines().filter(known).count(), 2, "{log}");
+    // Over all four runs, those two are the only no-capacity lines of
+    // either wording: the stay cycle in between wrote none.
+    let no_capacity = |l: &&str| {
+        l.contains("ALERT: no capacity known") || l.contains("ALERT: no profile has capacity")
+    };
+    assert_eq!(log.lines().filter(no_capacity).count(), 2, "{log}");
 }
 
 #[test]

@@ -3,8 +3,6 @@
 //! from `log::msg` with the other lines, and kept here to hold `log.rs`
 //! within its line budget.
 
-use super::decide::Reading;
-use super::log::msg::usage;
 use super::log::timestamp;
 use crate::commands::profile::name::ProfileName;
 
@@ -229,30 +227,4 @@ pub fn alert_step_spend_limit(name: &ProfileName, until: i64) -> String {
 /// either way.
 pub fn step_spend_limit_not_blocked(name: &ProfileName, why: &str) -> String {
     format!("ALERT: login {name} spend limit not blocked ({why})")
-}
-
-#[cfg(test)]
-pub fn alert_no_capacity(live: &ProfileName, reading: &Reading) -> String {
-    alert_no_capacity_for(live.as_str(), reading, &[])
-}
-
-/// As [`alert_no_capacity`], with `-` for a login no profile owns. When any
-/// candidate in `others` failed its probe or is exhausted, the line ends
-/// with ` (candidates: F failed, E exhausted)`: two counts, no names.
-pub fn alert_no_capacity_for(
-    live: &str,
-    reading: &Reading,
-    others: &[(ProfileName, Reading)],
-) -> String {
-    let count = |is: fn(&Reading) -> bool| others.iter().filter(|(_, o)| is(o)).count();
-    let failed = count(|r| matches!(r, Reading::Failed));
-    let exhausted = count(|r| matches!(r, Reading::Exhausted { .. }));
-    let tail = match failed + exhausted {
-        0 => String::new(),
-        _ => format!(" (candidates: {failed} failed, {exhausted} exhausted)"),
-    };
-    format!(
-        "ALERT: no profile has capacity live={live} {}{tail}",
-        usage(&super::log::Shown::from_reading(*reading), " ")
-    )
 }

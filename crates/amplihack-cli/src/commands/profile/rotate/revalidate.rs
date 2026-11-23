@@ -12,7 +12,7 @@ use super::cycle::Ctx;
 use super::decide::Decision;
 use super::fresh::{self, Reread};
 use super::identify::{Account, Skip};
-use super::observe::{Measurement, Snap, decide_measured, snapshot};
+use super::observe::{Measurement, Snap, decide_with, snapshot};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists};
 use crate::commands::profile::name::ProfileName;
@@ -274,7 +274,14 @@ pub fn check(
             .cloned()
             .collect();
         let counted = std::mem::replace(&mut ctx.failed_live, failed_before);
-        let refreshed = decide_measured(ctx, &fresh, probe.clone(), probes, m.measured_at);
+        let refreshed = decide_with(
+            ctx,
+            &fresh,
+            probe.clone(),
+            probes,
+            m.measured_at,
+            &m.seen.extra,
+        );
         ctx.failed_live = counted;
         if refreshed?.decision != m.decision {
             why.push(Changed::Affinity);
@@ -323,7 +330,16 @@ fn reconsider(
     // `failed` equals the count already stored; `cycle.rs` relies on this
     // (see the `Reconsidered` arm).
     let counted = std::mem::replace(&mut ctx.failed_live, failed_before);
-    let retry = decide_measured(ctx, &fresh, probe.clone(), probes, m.measured_at);
+    // Issue #2910: the cycle's own `Extra`, so the retry decides on the same
+    // last good readings, rejections and unconfirmed targets.
+    let retry = decide_with(
+        ctx,
+        &fresh,
+        probe.clone(),
+        probes,
+        m.measured_at,
+        &m.seen.extra,
+    );
     // Issue #1870: no read under the lock; a stale retry target is unknown.
     let retry = retry.and_then(|r| fresh::gate(ctx, &fresh, r, Reread::Never));
     ctx.failed_live = counted;

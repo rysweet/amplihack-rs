@@ -995,15 +995,21 @@ to the invocation, so the authorization read below finds the bound folder.
 Before this, the record held no state folder and every merge run's
 finalisation returned `authorization-unreadable`.
 
-The `autodrive-merge-loop` step of `auto-drive-to-merge.yaml` is given the
-runner-bound `autodrive_state_dir`, the same value the build step receives, so
-a recovery re-run normally writes `finalize-merge.json` to the folder the
-report reads.
+Every step of a drive reads and writes the one runner-bound
+`autodrive_state_dir`. The crusty loop, the merge loop and finalisation each
+receive `{{autodrive_state_dir}}` from their parent recipe and nothing else, in
+`auto-drive-to-merge.yaml`, `auto-drive-light.yaml` and
+`autodrive-merge-loop.yaml`. The recovery re-run in
+`step-03r-finalize-recovery` passes the same bound folder, so
+`finalize-merge.json` is written to the folder the report reads.
 
-One limitation remains. `step-03r-finalize-recovery` still passes the state
-folder from preflight. If the recovery agent chooses a different folder, the
-re-run can merge, but it writes `finalize-merge.json` where the report does
-not look, and the report shows `merge` as `null`.
+A state folder that an agent step reports, such as `build_result.state_dir` or
+a preflight's `state_dir`, is information only. It never decides where records
+go. The runner copies every key of a finished sub-recipe's context back into
+its parent, so a sub-recipe handed any other value would replace the bound
+folder for every later step. Bash steps read `RECIPE_VAR_autodrive_state_dir`
+first and use a reported folder only when a command is run directly, outside
+`amplihack`.
 
 ## Base sync
 

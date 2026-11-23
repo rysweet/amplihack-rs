@@ -2,7 +2,7 @@
 //! that is rotated once it passes 1 MiB, and the message grammar. Messages
 //! hold only profile names, percentages, phases and fixed text.
 
-use super::decide::{Reading, Reason};
+use super::decide::Reason;
 use crate::commands::profile::auto_switch::kit::euid;
 use crate::commands::profile::usage_cmd::sanitize_display;
 use std::fs;
@@ -194,45 +194,10 @@ pub use shown::{Shown, shown, shown_of};
 
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
 pub mod msg {
-    use super::{Reading, Reason, Shown};
+    use super::{Reason, Shown};
     use crate::commands::profile::name::ProfileName;
 
-    /// A percentage as a whole number, rounded down.
-    fn pct(p: f64) -> u64 {
-        if p.is_finite() && p > 0.0 {
-            p.floor() as u64
-        } else {
-            0
-        }
-    }
-
-    /// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
-    /// exhausted shows its stored figures; no session window is `s=0%`, as
-    /// in D1 (#1846), so a weekly-only login never logs a session limit it
-    /// does not have. An unread week is `w=?`, failed `failed`, in flight
-    /// `unknown, still running`. Issue #2889: a measured or exhausted
-    /// reading read before this cycle's measurement began ends
-    /// `{sep}cached=<n>s` (`Shown::age`).
-    pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
-        if r.excluded {
-            return EXCLUDED_NOT_PROBED.to_string();
-        }
-        if r.still_running {
-            return "unknown, still running".to_string();
-        }
-        let week = |w: Option<f64>| w.map_or_else(|| "?".to_string(), |w| format!("{}%", pct(w)));
-        match r.reading {
-            Reading::Measured { session, .. } => {
-                let s = r.session.unwrap_or(session);
-                format!("s={}%{sep}w={}{}", pct(s), week(r.week), r.age(sep))
-            }
-            Reading::Exhausted { session, week: w } => {
-                let s = session.or(r.session).unwrap_or(0.0);
-                format!("s={}%{sep}w={}{}", pct(s), week(w.or(r.week)), r.age(sep))
-            }
-            Reading::Failed => "failed".to_string(),
-        }
-    }
+    pub(in super::super) use super::shown::{pct, usage};
 
     pub fn swap(
         from: &ProfileName,

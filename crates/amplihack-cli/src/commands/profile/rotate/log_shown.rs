@@ -2,6 +2,7 @@
 //! read, so an exhausted login keeps its weekly figure. Display only: no
 //! decision reads it.
 
+use super::super::decide::target_msg::annotate;
 use super::super::decide::{Probed, Reading};
 use super::super::fresh::read_at;
 use super::super::observe::Measurement;
@@ -25,6 +26,12 @@ pub struct Shown {
     /// probe, for a re-read that succeeded, for a reading with no reading
     /// time and for every candidate.
     pub cached: Option<u64>,
+    /// Issue #2910 (D11): why the probe said nothing about the login's room,
+    /// shown as `unknown, <label>` in place of the figures.
+    pub label: Option<&'static str>,
+    /// Issue #2910 (D11): what follows the figures (a block, a week above the
+    /// ceiling, the age of a last good reading), or the label.
+    pub note: Option<String>,
 }
 
 impl Shown {
@@ -37,6 +44,8 @@ impl Shown {
             still_running: p.still_running,
             excluded: false,
             cached: None,
+            label: None,
+            note: None,
         }
     }
 
@@ -54,6 +63,8 @@ impl Shown {
             still_running: false,
             excluded: false,
             cached: None,
+            label: None,
+            note: None,
         }
     }
 
@@ -93,8 +104,15 @@ fn cached_age(live: &Probed, measured_at: i64, now: i64) -> Option<u64> {
 /// `now` is the cycle's own clock, the clock that dates the readings, not
 /// the wall clock the log line is stamped with. Issue #2889: it gives the
 /// live login's `cached=<n>s`, which no candidate ever carries.
+///
+/// Issue #2910 (D11): each candidate carries the reason the cycle saw for it
+/// (`target_msg::annotate`): an unknown reading with its label and any last
+/// good reading, or an active block or a week above the ceiling.
 pub fn shown(m: &Measurement, live_excluded: bool, now: i64) -> (Shown, Vec<(ProfileName, Shown)>) {
-    let (mut live, others) = shown_all(m);
+    let (mut live, mut others) = shown_all(m);
+    for (n, s) in &mut others {
+        annotate(&m.seen, n, s);
+    }
     live.excluded = live_excluded;
     live.cached = m
         .probed
@@ -128,6 +146,54 @@ pub fn shown_of(others: &[(ProfileName, Shown)], name: &ProfileName) -> Shown {
         .iter()
         .find(|(n, _)| n == name)
         .map_or_else(|| Shown::of(&Probed::failed()), |(_, s)| s.clone())
+}
+
+/// A percentage as a whole number, rounded down; 0 for anything below 0 or
+/// not finite. The one rounding of every rotate line, `msg::usage` and the
+/// issue #2910 lines (`decide::target_msg`) alike.
+pub(in crate::commands::profile::rotate) fn pct(p: f64) -> u64 {
+    if p.is_finite() && p > 0.0 {
+        p.floor() as u64
+    } else {
+        0
+    }
+}
+
+/// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
+/// exhausted shows its stored figures; no session window is `s=0%`, as
+/// in D1 (#1846), so a weekly-only login never logs a session limit it
+/// does not have. An unread week is `w=?`, failed `failed`, in flight
+/// `unknown, still running`. Issue #2889: a measured or exhausted
+/// reading read before this cycle's measurement began ends
+/// `{sep}cached=<n>s` (`Shown::age`).
+pub(in crate::commands::profile::rotate) fn usage(r: &Shown, sep: &str) -> String {
+    if r.excluded {
+        return excluded::EXCLUDED_NOT_PROBED.to_string();
+    }
+    // Issue #2910 (D11): an unknown reading with its label, and its last
+    // good reading when one stood in for it.
+    if let Some(label) = r.label {
+        return match &r.note {
+            Some(n) => format!("unknown, {label}, {n}"),
+            None => format!("unknown, {label}"),
+        };
+    }
+    if r.still_running {
+        return "unknown, still running".to_string();
+    }
+    let note = r
+        .note
+        .as_ref()
+        .map_or_else(String::new, |n| format!(" {n}"));
+    let week = |w: Option<f64>| w.map_or_else(|| "?".to_string(), |w| format!("{}%", pct(w)));
+    let (session, w) = match r.reading {
+        Reading::Measured { session, .. } => (r.session.unwrap_or(session), r.week),
+        Reading::Exhausted { session, week: w } => {
+            (session.or(r.session).unwrap_or(0.0), w.or(r.week))
+        }
+        Reading::Failed => return "failed".to_string(),
+    };
+    format!("s={}%{sep}w={}{}{note}", pct(session), week(w), r.age(sep))
 }
 
 /// Issue #2218: what the rotate log says about an excluded profile, which

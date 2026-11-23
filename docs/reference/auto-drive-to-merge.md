@@ -659,11 +659,22 @@ durable run folder they stay after the run ends; a dry run's default state
 directory is in the launch bundle and goes with it. See
 [Kept driver output](autodrive-merge-ready-round.md#kept-driver-output).
 
+A state folder that a step reports (for example `build_result.state_dir` or a
+preflight's `state_dir`) is for information only. The crusty loop, the merge
+loop, finalisation and the finalisation recovery re-run all read and write the
+bound folder, whatever a build or preflight step reports, and the run report
+does not compare a reported folder with it. `auto-drive-light` follows the same
+rule.
+
 Because the default directory is per run, round history and budget usage are
 shared across drives only when each drive passes the same explicit absolute
-`autodrive_state_dir`. Merge permission is read from this run's captured
-invocation, never from files in the shared directory, so an earlier run's
-round files cannot authorise a merge.
+`autodrive_state_dir`. Records stay in the run's own folder otherwise, so the
+crusty loop's skip for a head already reviewed and `auto-drive-light`'s
+previous-escalation marker do not carry over between separate runs.
+
+Merge permission is read from this run's captured invocation, never from files
+in the shared directory, so an earlier run's round files cannot authorise a
+merge.
 
 ## Trusted execution and portability
 
