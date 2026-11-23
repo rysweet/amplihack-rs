@@ -110,27 +110,59 @@ fn session_exhausted_step_waits_for_the_reset_and_the_recipe_finishes() {
 }
 
 /// Every login weekly-exhausted, the reset months away: the governor admits
-/// the step and the supervisor alone decides. It does not wait (the reset is
-/// too far and no login can take over), so the step fails once with the
-/// provider's exit code, never the governor's 80. This pins that one
-/// component decides, rather than two that agree only while their
-/// eligibility rules match.
+/// the step and the supervisor alone decides. Since issue #2911 its decision
+/// is a wait for capacity, named `reset_too_far`: it moves to a login with
+/// room if one appears, and otherwise waits for the reset, held to the
+/// seven-day window, which earns the retry, and the recipe finishes. The exit is never the
+/// governor's 80. This pins that one component decides, rather than two that
+/// agree only while their eligibility rules match.
+///
+/// Before #2911 the supervisor wrote `skipped reason=reset_too_far` and the
+/// step failed once with the provider's exit code. The component that
+/// decides is the same; what it decides changed.
 #[test]
 fn weekly_exhausted_step_is_decided_by_the_supervisor_not_the_governor() {
     let f = Fixture::new();
     f.readings(&[("alpha", 0.0, 100.0), ("beta", 0.0, 100.0)]);
     let (out, steps, calls) = nested_recipe(&f, WEEKLY_TEXT);
-    assert!(!out.status.success(), "{}", full(&out, &steps));
+    assert!(out.status.success(), "{}", full(&out, &steps));
     assert_ne!(out.status.code(), Some(DENIED), "{}", full(&out, &steps));
     assert!(
         !steps.contains("governor: not started") && !text(&out.stderr).contains("not started"),
         "{}",
         full(&out, &steps)
     );
-    assert_eq!(calls, 1, "the step ran once and was not rerun");
+    assert_eq!(calls, 3, "step 1 twice (limited, then rerun), step 2 once");
+    let waits: Vec<&str> = steps
+        .lines()
+        .filter_map(|l| l.strip_prefix("amplihack.recipe.usage_limit_wait "))
+        .filter(|l| !l.starts_with("progress "))
+        .collect();
+    assert_eq!(
+        waits
+            .first()
+            .map(|l| l.starts_with("waiting_for_capacity reason=reset_too_far ")),
+        Some(true),
+        "the supervisor said why it was waiting: {}",
+        full(&out, &steps)
+    );
     assert!(
-        steps.contains("amplihack.recipe.usage_limit_wait skipped reason=reset_too_far"),
-        "the supervisor declined the wait: {}",
+        waits
+            .iter()
+            .any(|l| l.starts_with("start reason=usage_limit wait=capacity ")),
+        "{}",
+        full(&out, &steps)
+    );
+    assert!(
+        waits.contains(&"end reason=reset reached") && waits.contains(&"resume attempt=2"),
+        "{}",
+        full(&out, &steps)
+    );
+    assert!(
+        !waits
+            .iter()
+            .any(|l| l.starts_with("skipped ") || l.starts_with("failed ")),
+        "no limit ends the step: {}",
         full(&out, &steps)
     );
 }

@@ -95,6 +95,11 @@ fn a_candidates_weekly_limit_does_not_stop_the_retry_under_a_profile_with_capaci
 /// likeliest to be limited. The rerun back to X did not use the step's
 /// wait, so X's limit is waited out (for X's 8:30 reset) and the step
 /// succeeds, instead of ending with `skipped reason=already_waited`.
+///
+/// That reason no longer exists at all: issue #2911 removed every refusal
+/// that counted a step's waits, so this test now pins the narrower point
+/// that the wait is a plain reset wait, with no `waiting_for_capacity` line,
+/// because the reset X stated is one the step can use.
 #[test]
 fn a_limit_on_the_retry_under_the_inherited_profile_still_gets_the_wait() {
     assert_eq!(

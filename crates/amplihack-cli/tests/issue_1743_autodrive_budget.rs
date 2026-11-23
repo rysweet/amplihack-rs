@@ -119,7 +119,7 @@ IFS='|' read -r verdict commit sleep_s light items wait_s rc_s <<<"$line"
 # A usage-limit wait, as the real wait reports it: log lines, then its
 # length on the ledger the loop names (profile-command.md#usage-limit-wait).
 if [ "${wait_s:-0}" -gt 0 ]; then
-  echo "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-18 14:00:00 -07:00 bound=max_wait" >&2
+  echo "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=none bound=none" >&2
   sleep "$wait_s"
   printf '%s\n' "$wait_s" >> "$AMPLIHACK_USAGE_WAIT_LEDGER"
   echo "amplihack.recipe.usage_limit_wait end reason=rotator capacity" >&2

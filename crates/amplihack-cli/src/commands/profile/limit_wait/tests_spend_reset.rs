@@ -1,112 +1,167 @@
-//! Issue #2882: the planner rows a spend limit that states a reset passes
-//! through. `plan.rs` logic does not change; the new `Limited::spend_reset`
-//! (see `tests_limited_spend_reset.rs`) is OR-ed into `upgrade`'s `seen`
-//! argument only, so these tests pin what each promotion does with it.
+//! Issue #2882, as #2911 leaves it: what a spend limit that also states a
+//! reset earns.
 //!
-//! - `upgrade` turns `Skip(ResetTooFar)` into a capacity wait carrying the
-//!   stated reset when a login could take over, and leaves it otherwise.
-//! - `upgrade_passed_reset` never reads `spend_reset`: a spend limit whose
-//!   stated reset has passed is `skipped reason=already_waited` (#2857).
-//! - `upgrade_spend` fires only for a spend limit with no reset (#2731).
+//! The three promotions this file used to pin (`upgrade`,
+//! `upgrade_passed_reset`, `upgrade_spend`) are gone. `wait_for_message`
+//! decides each row outright, so the questions those promotions asked -
+//! could another login take over *now*, is a rotator running, is this a
+//! refused re-entry - no longer stand between a spend limit and its wait.
+//! The rows themselves are unchanged in effect, except that the two that
+//! used to end the step now wait.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_spend_reset;`.
 
-use super::plan::{
-    NoWait, WaitFor, upgrade, upgrade_passed_reset, upgrade_spend, wait_for_message,
-};
-use crate::commands::recipe::run::limit_patterns::{self, Harness};
+use super::plan::{WaitFor, Waiting, wait_for_message};
+use crate::commands::recipe::run::limit_patterns::{self, Harness, LimitKind};
 
 /// 2026-10-18 08:00:00 -07:00.
 const NOW: i64 = 1_792_335_600;
 const SPEND_WEEKLY: &str = "You've hit your individual spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 24, 2pm (America/Los_Angeles)";
+const SPEND_SESSION: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your session limit resets 1pm (America/Los_Angeles)";
 const SPEND_NO_RESET: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
+/// The line that ended run `amp-auto-drive-to-merge-mistt-infra-20261121-213610`
+/// on hypatia at 21:45Z on 21 November 2026, quoted in #2911 by the owner's
+/// deputy: Claude Code 2.1.33x's per-member spend cap, which names the
+/// session window by its newer name. Kept here byte for byte, because both
+/// halves of it have to be read correctly for the step to wait: the spend
+/// phrase decides the kind, and "5-hour limit resets" is where the reset is.
+const SPEND_FIVE_HOUR: &str = "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit · your 5-hour limit resets 6:30pm (America/Los_Angeles)";
 
 fn message(text: &str) -> limit_patterns::LimitMessage {
-    limit_patterns::limit_message(text.as_bytes(), b"", NOW).expect("a limit message")
+    message_at(text, NOW)
+}
+
+/// [`message`] read against another instant, for a line whose reset is a
+/// time of day: what it means depends on where the clock stands.
+fn message_at(text: &str, now: i64) -> limit_patterns::LimitMessage {
+    limit_patterns::limit_message(text.as_bytes(), b"", now).expect("a limit message")
 }
 
 #[test]
 fn a_spend_limit_with_a_weekly_reset_reads_as_spend_with_a_far_reset() {
     let m = message(SPEND_WEEKLY);
-    assert!(m.spend);
+    assert!(m.spend());
+    assert_eq!(m.kind, LimitKind::Spend, "spend wins over the window named");
     let reset = m.reset.expect("a stated reset");
     assert!(reset > NOW + 5 * 3600, "far: {reset}");
+}
+
+#[test]
+fn issue_2911_a_far_spend_reset_waits_for_capacity_with_nothing_asked_first() {
+    // Before #2911 this was a capacity wait only when another login had room
+    // at that instant, and `skipped reason=reset_too_far` otherwise. A login
+    // can gain room *during* a wait, and the wait's own wake conditions see
+    // that, so the question is not asked.
+    let m = message(SPEND_WEEKLY);
     assert_eq!(
         wait_for_message(Some(m), NOW),
-        WaitFor::Skip(NoWait::ResetTooFar)
-    );
-}
-
-#[test]
-fn a_far_spend_reset_becomes_a_capacity_wait_when_a_login_could_take_over() {
-    let m = message(SPEND_WEEKLY);
-    let seen = Some((m.harness, m.reset));
-    let w = upgrade(wait_for_message(Some(m), NOW), seen, || true);
-    assert_eq!(
-        w,
         WaitFor::Capacity {
             harness: Harness::Claude,
-            reset: m.reset
+            reset: m.reset,
+            why: Waiting::ResetTooFar,
         }
     );
 }
 
 #[test]
-fn a_far_spend_reset_stays_reset_too_far_when_no_login_could_take_over() {
-    let m = message(SPEND_WEEKLY);
-    let seen = Some((m.harness, m.reset));
-    let w = upgrade(wait_for_message(Some(m), NOW), seen, || false);
-    assert_eq!(w, WaitFor::Skip(NoWait::ResetTooFar));
+fn a_spend_limit_stating_a_near_reset_waits_that_window_out() {
+    let m = message(SPEND_SESSION);
+    let reset = m.reset.expect("a stated session reset");
+    assert_eq!(
+        wait_for_message(Some(m), NOW),
+        WaitFor::Reset {
+            harness: Harness::Claude,
+            reset,
+        },
+        "the session window is what stops work first"
+    );
 }
 
 #[test]
-fn the_takeover_question_is_not_asked_for_a_wait_that_is_not_a_skip() {
-    let w = WaitFor::Reset {
-        harness: Harness::Claude,
-        reset: NOW + 60,
-    };
-    let seen = Some((Harness::Claude, Some(NOW + 60)));
-    assert_eq!(upgrade(w, seen, || panic!("not asked")), w);
+fn issue_2911_a_spend_reset_already_behind_the_clock_waits_for_capacity() {
+    // #2857 used to send this row to `skipped reason=already_waited` on a
+    // re-entry, which ended the step. A reset behind the clock shows that the
+    // stated reset cannot be relied on; it does not show that no wait is
+    // owed, so the step waits for a reading instead.
+    let m = message(SPEND_SESSION);
+    let late = m.reset.expect("a stated session reset") + 60;
+    assert_eq!(
+        wait_for_message(Some(m), late),
+        WaitFor::Capacity {
+            harness: Harness::Claude,
+            reset: m.reset,
+            why: Waiting::PassedReset,
+        }
+    );
 }
 
 #[test]
-fn the_passed_reset_row_never_reads_the_spend_reset() {
-    // A spend limit whose stated reset is behind the clock, on a re-entry
-    // the ordinary rule refuses, is still not lifted into a capacity wait:
-    // `seen` stays `None` for it, whatever `spend_reset` says.
-    let w = WaitFor::Reset {
-        harness: Harness::Claude,
-        reset: NOW - 60,
-    };
-    assert_eq!(upgrade_passed_reset(w, None, true, NOW), w);
-}
-
-#[test]
-fn the_login_change_row_still_needs_a_spend_limit_with_no_reset() {
+fn a_spend_limit_with_no_reset_still_waits_for_the_login_to_change() {
     let none = message(SPEND_NO_RESET);
     assert_eq!(none.reset, None);
-    let w = wait_for_message(Some(none), NOW);
-    assert_eq!(w, WaitFor::Skip(NoWait::SpendLimit));
     assert_eq!(
-        upgrade_spend(w, Some(none.harness), || true),
+        wait_for_message(Some(none), NOW),
         WaitFor::LoginChange {
             harness: Harness::Claude
-        }
+        },
+        "no usage window's reset lifts a spend limit, so no reading can"
     );
-    // A stated reset is not that case: `Limited::spend` is `None` for it.
+}
+
+/// Issue #2911, the deputy's case 1: the message's own words name the
+/// session window as "5-hour limit", and the reset after that phrase is the
+/// one the step waits for. Read at 15:00, so the stated 6:30pm is 3.5 hours
+/// ahead and inside the five-hour ceiling.
+#[test]
+fn issue_2911_an_individual_spend_cap_states_its_five_hour_reset() {
+    // 2026-10-18 15:00:00 -07:00, seven hours after NOW.
+    let at = NOW + 7 * 3600;
+    let m = message_at(SPEND_FIVE_HOUR, at);
     assert_eq!(
-        upgrade_spend(WaitFor::Skip(NoWait::ResetTooFar), None, || true),
-        WaitFor::Skip(NoWait::ResetTooFar)
+        m.kind,
+        LimitKind::Spend,
+        "the spend phrase decides the kind, not the window named"
+    );
+    let reset = m.reset.expect("the reset after \"5-hour limit resets\"");
+    assert!(
+        reset > at && reset <= at + 5 * 3600,
+        "3.5 hours ahead of {at}: {reset}"
+    );
+    assert_eq!(
+        wait_for_message(Some(m), at),
+        WaitFor::Reset {
+            harness: Harness::Claude,
+            reset,
+        },
+        "a reset the step can sleep to is slept to, spend limit or not"
+    );
+}
+
+/// The same line read before that reset is more than five hours away: still
+/// a wait, for capacity, and never an ending (#2911).
+#[test]
+fn issue_2911_an_individual_spend_cap_with_a_far_reset_waits_for_capacity() {
+    let m = message(SPEND_FIVE_HOUR);
+    assert_eq!(
+        wait_for_message(Some(m), NOW),
+        WaitFor::Capacity {
+            harness: Harness::Claude,
+            reset: m.reset,
+            why: Waiting::ResetTooFar,
+        }
     );
 }
 
 #[test]
-fn a_spend_limit_with_no_reset_is_not_promoted_to_capacity() {
-    // No reset: `spend_reset` is `None`, so `seen` stays `None` and the
-    // skip is left to #2731.
-    let m = message(SPEND_NO_RESET);
-    assert_eq!(
-        upgrade(wait_for_message(Some(m), NOW), None, || true),
-        WaitFor::Skip(NoWait::SpendLimit)
-    );
+fn issue_2911_no_shape_of_spend_limit_ends_the_step() {
+    for text in [SPEND_WEEKLY, SPEND_SESSION, SPEND_NO_RESET, SPEND_FIVE_HOUR] {
+        let m = message(text);
+        for now in [NOW, NOW + 86_400, NOW + 40 * 86_400] {
+            let got = wait_for_message(Some(m), now);
+            assert!(
+                !matches!(got, WaitFor::Skip(_)),
+                "{text:?} at {now} gave {got:?}"
+            );
+        }
+    }
 }

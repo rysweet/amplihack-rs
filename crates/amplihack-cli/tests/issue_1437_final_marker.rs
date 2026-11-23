@@ -130,7 +130,12 @@ fn failure_payload_with_stderr(error: &str, output: &str, stderr: &str) -> serde
 }
 
 /// The last marker and the whole log, for a step whose `error` is given whole.
-fn runner_payload(error: &str, output: &str, stderr: &str) -> (serde_json::Value, String) {
+/// Also used by `issue_2911_codex_credits.rs`.
+pub(crate) fn runner_payload(
+    error: &str,
+    output: &str,
+    stderr: &str,
+) -> (serde_json::Value, String) {
     let result = serde_json::json!({
         "recipe_name": "issue-1437-final-marker",
         "success": false,

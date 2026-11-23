@@ -25,9 +25,10 @@ use super::super::daemon::wake::{Blocks, deadline, moved};
 use super::super::ledger::{
     MAX_BLOCK_SECS, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState, for_older_readers,
 };
-use super::super::step_block::note_spend_block;
+use super::super::step_block::note_limit_block;
 use super::{active_blocks, prune_blocks, valid_kind};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::recipe::run::limit_patterns::LimitKind;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
@@ -325,14 +326,20 @@ fn the_same_limit_recorded_again_starts_no_second_cycle() {
     rs.save_ledger(&RotateLedger::default()).unwrap();
     let work = ProfileName::parse("work").unwrap();
     let began = Blocks::of(&rs.load_ledger().unwrap().expect("a ledger"));
-    note_spend_block(t.path(), &work, NOW, NOW + 3600);
+    note_limit_block(t.path(), &work, NOW, Some(NOW + 3600), LimitKind::Spend);
     let first = rs.load_ledger().unwrap().expect("a ledger");
     assert!(
         moved(&began, Some(&first), NOW + 1),
         "the first record is a change"
     );
     let next = Blocks::of(&first);
-    note_spend_block(t.path(), &work, NOW + 60, NOW + 7200);
+    note_limit_block(
+        t.path(),
+        &work,
+        NOW + 60,
+        Some(NOW + 7200),
+        LimitKind::Spend,
+    );
     let second = rs.load_ledger().unwrap().expect("a ledger");
     assert_eq!(first.overflow_blocked, second.overflow_blocked);
     assert!(
