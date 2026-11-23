@@ -9,6 +9,7 @@ use crate::commands::profile::auto_switch::kit::{
 };
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 /// Write `s3` and `s4`; the caller releases its locks before deleting the journal.
@@ -38,10 +39,23 @@ pub(super) fn finish(
         .then(|| LIVE_KIND_PLATFORM.to_string());
     l.since = Some(j.started_at);
     l.swapped_at = Some(j.started_at);
+    l.live_login_at = installed_at(home);
     super::alert::clear_alert(&mut l);
     rs.save_ledger(&l)?;
     step(rs, &mut j, Phase::S4)?;
     Ok(())
+}
+
+/// Issue #2218: the change time of the login now in `~/.claude`, read by
+/// `lstat` with the swap's move already done. `swapped_at` is the swap's
+/// start time, so it is earlier than this whenever the move crossed a
+/// second boundary; only this value says whether a later write (a token
+/// refresh or a `claude login`) has touched the file since. `None` when the
+/// file cannot be stat'd, which leaves the proof on `swapped_at`.
+fn installed_at(home: &Path) -> Option<i64> {
+    fs::symlink_metadata(home.join(".claude").join(CREDS))
+        .ok()
+        .map(|m| m.ctime())
 }
 
 /// `s3`: replaces only `oauthAccount` in `$HOME/.claude.json`, keeping

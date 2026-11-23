@@ -16,9 +16,10 @@
 //! [`may_write_back`] refuses the move-out. The one exception: rule 2 is
 //! skipped when the ledger names a live profile that is not excluded, no
 //! hand change is suspected, and `~/.claude/.credentials.json` has not
-//! changed since the ledger's `swapped_at`. After a move off an excluded
-//! login, its running sessions keep writing its account into
-//! `~/.claude.json`, and without this exception rotation would stall.
+//! changed since the swap installed it (the ledger's `live_login_at`, else
+//! its `swapped_at`). After a move off an excluded login, its running
+//! sessions keep writing its account into `~/.claude.json`, and without
+//! this exception rotation would stall.
 //!
 //! A read that fails gives no match for that rule; nothing is written.
 
@@ -96,9 +97,14 @@ fn find_live(
     // account into `~/.claude.json`, which then says nothing about
     // `~/.claude`.
     let installed = live.is_some()
-        && ledger
-            .as_ref()
-            .is_some_and(|l| l.hand_suspect.is_none() && untouched_since(home, l.swapped_at));
+        && ledger.as_ref().is_some_and(|l| {
+            // The swap's own move lands after `swapped_at`, so that time
+            // alone reads a login the swap installed as written since it
+            // whenever the swap crossed a second boundary; `live_login_at`
+            // is when the move really happened. A ledger from before that
+            // field, or from an older rotator, still has `swapped_at`.
+            l.hand_suspect.is_none() && untouched_since(home, l.live_login_at.or(l.swapped_at))
+        });
     let by_account = (!installed)
         .then(|| local_account(home))
         .flatten()
@@ -199,13 +205,13 @@ pub(in crate::commands::profile::rotate) fn local_account(dir: &Path) -> Option<
 }
 
 /// Whether `~/.claude/.credentials.json` has not changed since the swap
-/// that finished at `swapped_at` (epoch seconds): its change time, read by
+/// installed it at `installed_at` (epoch seconds, the ledger's
+/// `live_login_at`, else its `swapped_at`): its change time, read by
 /// `lstat`, is no later. Any write to it, a session's token refresh or a
 /// hand login, sets the change time, so the answer turns false and rule 2
-/// applies again. A swap time in the future (a clock set back) proves
-/// nothing.
-fn untouched_since(home: &Path, swapped_at: Option<i64>) -> bool {
-    let Some(at) = swapped_at.filter(|at| *at <= now()) else {
+/// applies again. A time in the future (a clock set back) proves nothing.
+fn untouched_since(home: &Path, installed_at: Option<i64>) -> bool {
+    let Some(at) = installed_at.filter(|at| *at <= now()) else {
         return false;
     };
     ino_ctime(&home.join(".claude").join(CREDS)).is_some_and(|(_, _, ctime, _)| ctime <= at)

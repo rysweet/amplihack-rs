@@ -208,6 +208,9 @@ mod status_history {
 ///   `~/.claude.json` matches the excluded profile's record) or `SameBytes`
 ///   (rule 3: `~/.claude/.credentials.json` is byte-identical to the
 ///   excluded slot's). Rules 2 and 3 run whatever the ledger names.
+///   Rule 2 is skipped while the login the last swap installed is untouched:
+///   its change time is no later than the ledger's `live_login_at`, else,
+///   for a ledger without that field, its `swapped_at`.
 /// - `Ctx::set_excluded_dirs(Vec<PathBuf>)` writes the local-only set held
 ///   on `login_identity::Budget`. For a dir in the set, `Reader::bound` takes
 ///   the account from the local `.claude.json` (`~/.claude.json` for
@@ -456,6 +459,55 @@ mod local_proof {
         set_ledger(&e, Some("spare"), None);
         set_home_json(&e, "u-work");
         swapped(&e, -3600);
+        assert_eq!(proof(&e), Some((n("work"), Match::LocalAccount)));
+    }
+
+    /// The change time of the login now in `~/.claude`.
+    fn live_ctime(e: &Env) -> i64 {
+        use std::os::unix::fs::MetadataExt;
+        fs::symlink_metadata(e.live()).unwrap().ctime()
+    }
+
+    /// The ledger of a finished swap, as `swap_finish` writes it, with the
+    /// swap's start `before` seconds ahead of the move it made.
+    fn installed(e: &Env, before: i64) {
+        let at = live_ctime(e);
+        let mut l = e.rs.load_ledger().unwrap().unwrap();
+        l.swapped_at = Some(at - before);
+        l.live_login_at = Some(at);
+        e.rs.save_ledger(&l).unwrap();
+    }
+
+    #[test]
+    fn a_swap_that_crossed_a_second_boundary_still_skips_rule_2() {
+        // `swapped_at` is the swap's start, and the move that puts the
+        // login in `~/.claude` lands after it. Read as the install time, any
+        // swap lasting past the rest of its starting second makes its own
+        // login read as written since the swap, and rotation stalls on the
+        // `~/.claude.json` a session still on work keeps writing.
+        let (e, _) = fx();
+        exclude(&e, &["work"]);
+        set_ledger(&e, Some("spare"), None);
+        set_home_json(&e, "u-work");
+        installed(&e, 1);
+        assert_eq!(proof(&e), None);
+        assert_eq!(requests_for_home(&e), 1, "~/.claude is read as spare's");
+    }
+
+    #[test]
+    fn a_login_written_after_the_install_lets_claude_json_match_again() {
+        // The install time decides, not `swapped_at`: here `swapped_at`
+        // alone would call a login written a minute after the swap
+        // untouched.
+        let (e, _) = fx();
+        exclude(&e, &["work"]);
+        set_ledger(&e, Some("spare"), None);
+        set_home_json(&e, "u-work");
+        let at = live_ctime(&e);
+        let mut l = e.rs.load_ledger().unwrap().unwrap();
+        l.swapped_at = Some(at);
+        l.live_login_at = Some(at - 60);
+        e.rs.save_ledger(&l).unwrap();
         assert_eq!(proof(&e), Some((n("work"), Match::LocalAccount)));
     }
 

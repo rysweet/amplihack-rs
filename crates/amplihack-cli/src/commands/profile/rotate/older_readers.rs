@@ -33,7 +33,11 @@ use super::ledger::{RotateLedger, RotateState};
 ///   advisory ALERT once more; `alert` stays empty, so no hook is blocked;
 /// - `last_cycle.live_room` (issue #2857). Only this binary's usage-limit
 ///   wait reads it, and without it a wait sleeps to its reset instead of
-///   waking on a login change, which is the safe direction.
+///   waking on a login change, which is the safe direction;
+/// - `live_login_at` (issue #2218). Only this binary's local proof of an
+///   excluded live login reads it, and without it that proof falls back to
+///   `swapped_at`, which only ever makes rule 2 apply more often: nothing
+///   is moved on evidence that is not proof.
 pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
     let mut out = l.clone();
     if older {
@@ -52,6 +56,9 @@ pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
         // Issue #1870: only this binary's freshness gate reads it.
         out.swapped_away.clear();
         out.advisory_alert = None;
+        // Issue #2218: only this binary's local proof of an excluded live
+        // login reads it.
+        out.live_login_at = None;
     }
     out
 }
