@@ -450,16 +450,16 @@ and [Recipe Runner Logging](./recipe-runner-logging.md) for full details.
 **Set by:** `amplihack recipe run --step-timeout <SECONDS>`, or from [`recipe.step_timeout`](./user-config.md#recipestep_timeout) in the config files
 **Config key:** `recipe.step_timeout`
 
-Overrides the `timeout_seconds` value defined in individual recipe steps. When set, every step in the recipe uses this value instead of its YAML-defined timeout. A value of `"0"` disables step timeouts entirely, allowing steps to run indefinitely.
+A per-step timeout hint exported to the recipe runner and every step it starts. A value of `"0"` asks for no step timeout. `recipe-runner-rs` does not yet enforce it: the runner enforces only each step's own YAML `timeout:` field, and reads this variable for nothing else (the `--step-timeout` help says the same). A subprocess may honour it; a usage-limit wait does not (below).
 
 This variable is present in the child environment when the user passes `--step-timeout`, when it is already set in the caller's environment (passed on unchanged), or when `recipe.step_timeout` is configured, in that order of precedence. When none applies, YAML-defined `timeout_seconds` values apply as-is (though the default-workflow agent steps no longer define `timeout_seconds`).
 
 ```sh
-# Override all step timeouts to 10 minutes
+# Ask for a 10-minute step timeout
 amplihack recipe run recipe.yaml --step-timeout 600
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=600
 
-# Disable all step timeouts
+# Ask for no step timeout
 amplihack recipe run recipe.yaml --step-timeout 0
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=0
 
@@ -472,7 +472,7 @@ amplihack recipe run recipe.yaml
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 
-**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset, for another login with capacity, or for the login in `~/.claude` to change, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. The deadline is taken from the step's start, not the wait's, so a step that waits several times over, once per login the rotator brings in, is still bounded by it. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
+**Usage-limit wait:** a usage-limit wait does not read this variable. A Claude agent step that waits on a usage limit, for a reset, for another login with capacity, or for the login in `~/.claude` to change, waits on its own terms and then runs the step again, however long the step has already run ([#3037](https://github.com/rysweet/amplihack-rs/issues/3037)). It used to end its wait 60 seconds before this timeout and fail the step with `failed reason=step_timeout`, on the reading that the recipe runner kills a step at this timeout. `recipe-runner-rs` enforces only a step's own YAML `timeout:` field, so that was the only place the variable ended anything. To stop a step waiting, send it a stop signal; to keep steps from waiting at all, set [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait) to `0`. See [The step timeout does not cut a wait](./usage-limit-waits.md#the-step-timeout-does-not-cut-a-wait).
 
 ---
 
@@ -1107,51 +1107,44 @@ backend configuration reference.
 
 **Type:** string (boolean)
 **Values:** `true` or `1` (on) | `false` or `0` (off)
-**Default:** on; off in CI (a `CI` other than empty, `0` or `false` in any case) when nothing sets it
+**Default:** on, in CI as elsewhere (`CI` is not read)
 **Config key:** [`recipe.usage_limit_wait`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
 Turns the usage-limit wait on or off: a recipe agent step that fails on a
 Claude usage limit waits for the reset, or for a login with capacity, and
 runs once more instead of ending the run. A reset more than five hours away
-or an unreadable reset is waited out only by a
-[capacity wait](./profile-command.md#capacity-wait), when another login
-could take over. An organisation spend limit with no reset is waited for
-only by a [login-change wait](./profile-command.md#login-change-wait), on a
-step running on `~/.claude` with a rotator running; on any other step it
-ends the run at once, whatever room other logins have. Overrides the
-config files; empty means unset; an invalid value prints one warning and is
-ignored. See the
+is waited out by a [capacity wait](./profile-command.md#capacity-wait) that
+still ends at that reset. An unreadable reset starts a capacity wait with no
+deadline, and an organisation spend limit with no reset starts a
+[login-change wait](./profile-command.md#login-change-wait) with no deadline;
+each ends when a login has room or the login changes. `false` or `0` turns the
+wait off, and a limit is then passed up at once as `skipped reason=disabled`.
+It is the only usage-limit wait setting: no variable sets how long a wait
+lasts ([AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
+is no longer read). Overrides the config files; empty means unset; an invalid
+value prints one warning and is ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).
 
 ---
 
 ### AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS
 
-**Type:** string (non-negative integer, seconds)
-**Default:** `21600` (six hours)
-**Config key:** [`recipe.usage_limit_max_wait_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
-**Read by:** `amplihack claude -p` when it runs as a recipe agent step
+**Status:** no longer read
+**Config key:** none; `recipe.usage_limit_max_wait_secs` has been removed and is reported as an `unknown key`
 
-Upper bound on the time one step spends waiting out usage limits, across
-every wait it makes. For a wait on a reset it only shortens the wait, and `0`
-means no wait but one more attempt; such a wait never lasts longer than five
-hours and 120 seconds. For a
-[capacity wait](./profile-command.md#capacity-wait) on a weekly or
-unreadable reset, or a
-[login-change wait](./profile-command.md#login-change-wait) on an
-organisation spend limit with no reset, it sets the length of the wait, with
-no five-hour ceiling (a capacity wait still ends sooner at the failed login's
-own reset plus 120 s), and `0` means the step ends at once as a usage limit.
+A usage-limit wait has no length setting: a wait for a stated reset ends at
+that reset, and one whose limit stated no usable reset ends when a login has
+room or the login changes. While the wait is on, a step that finds this
+variable exported with a value prints one warning and otherwise ignores it:
 
-A step that waits again after its login changes draws on the same budget, so
-a chain of waits across several logins lasts no longer in total than the one
-wait the same step would have made before; see
-[One wait per login](./profile-command.md#one-wait-per-login).
+```
+warning: AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS is no longer read. A usage-limit wait has no timed bound: one whose limit stated a reset ends at that reset, and one whose limit stated none ends when a login has room or the login changes (`amplihack profile switch` makes that change). Set recipe.usage_limit_wait = false (AMPLIHACK_USAGE_LIMIT_WAIT=0) to stop steps waiting
+```
 
-The variable may set a value above the default. Overrides the config files;
-empty means unset; an invalid value prints one warning, naming the variable
-only, and is ignored.
+Unset it to clear the warning. To stop steps waiting, set
+[AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait) to `0`. See
+[A wait has no length setting](./usage-limit-waits.md#a-wait-has-no-length-setting).
 
 ---
 

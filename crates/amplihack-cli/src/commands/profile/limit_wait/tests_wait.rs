@@ -1,44 +1,42 @@
 //! `wait` and `line` (issue #1618), driven by a fake `WaitDeps` with its own
-//! virtual clock: the order of checks in each pass (signal, deadline, login
-//! fingerprint, progress), sleep slices of at most one second, the 30-second
-//! fingerprint poll and its stable baseline, and the 60-second progress line.
-//! The other ends (a stop signal, which end wins, the step's session ending,
+//! virtual clock. The fake blocks the way the real wait does (issue #2911):
+//! until the next moment something the wait watches changes, or until the
+//! time the wait asked for, never in slices. The order of checks on each
+//! wake, the fingerprint's baseline and failed reads, the 60-second progress
+//! line, the one read as the wait begins, the absence of any other read
+//! without a write, and a wait with no deadline that no clock ends are
+//! pinned here. The
+//! other ends (a stop signal, which end wins, the step's session ending,
 //! rotator capacity) are in `tests_wait_ends.rs`, which uses `Fake` here.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_wait;`.
 
 use super::plan::{Bound, Plan, PlanKind};
 use super::wait::{End, WaitDeps, wait};
-use std::time::Duration;
 
 /// 2026-10-18 08:00:00 -07:00.
 pub(super) const T0: i64 = 1_792_335_600;
 
 /// Login fingerprint schedule: from virtual second `.0` (relative to T0) on,
-/// the probe returns `.1`.
+/// the probe returns `.1`. `None` is a reading that could not be made.
 type Schedule = Vec<(i64, Option<u8>)>;
 
 pub(super) struct Fake {
-    ms: i64,
+    /// Virtual seconds since T0.
+    secs: i64,
     pub(super) prints: Schedule,
     /// Virtual second from which a signal is pending.
     pub(super) signal_from: Option<(i64, i32)>,
-    signal_seen_at_ms: Option<i64>,
-    sleeps: Vec<Duration>,
-    pub(super) sleeps_after_signal: usize,
-    /// The virtual second of each login fingerprint. `tests_wait_ends`
-    /// derives from this where another login's capacity may be read, so the
-    /// reading's cadence is stated against the checks the wait already
-    /// makes rather than against their interval (issue #2694).
+    /// Each block, as (from, to) in virtual seconds.
+    pub(super) blocks: Vec<(i64, i64)>,
+    /// The virtual second of each login fingerprint.
     pub(super) probes: Vec<i64>,
     logs: Vec<String>,
     /// Virtual second from which the step's parent is gone.
     pub(super) parent_gone_from: Option<i64>,
     /// Virtual second from which the rotator reports fresh capacity.
     pub(super) capacity_from: Option<i64>,
-    /// The virtual second of each reading of the rotator's cycle. The
-    /// other-login source has `other_probes`; this is its counterpart, so a
-    /// wait that must read *neither* can say so about both (issue #2731).
+    /// The virtual second of each reading of the rotator's cycle.
     pub(super) capacity_probes: Vec<i64>,
     /// Virtual second from which another stored login reports capacity.
     pub(super) other_from: Option<i64>,
@@ -48,8 +46,7 @@ pub(super) struct Fake {
     pub(super) login_changed_from: Option<i64>,
     /// The virtual second of each reading of the login key.
     pub(super) login_probes: Vec<i64>,
-    /// The virtual second of each reading of another login's capacity, so a
-    /// test can show the wait adds no cadence of its own (issue #2694).
+    /// The virtual second of each reading of another login's capacity.
     pub(super) other_probes: Vec<i64>,
     /// Virtual second from which the login the retry would use has room, as
     /// the rotator's last cycle records it (issue #2857). It defaults to room
@@ -60,17 +57,18 @@ pub(super) struct Fake {
     /// The virtual second of each question "may this change end the wait",
     /// which is asked only after a login change has been seen.
     pub(super) change_probes: Vec<i64>,
+    /// Virtual seconds at which a watched file is written without anything
+    /// the checks read changing.
+    pub(super) writes: Vec<i64>,
 }
 
 impl Fake {
     pub(super) fn new() -> Self {
         Self {
-            ms: 0,
+            secs: 0,
             prints: vec![(0, Some(1))],
             signal_from: None,
-            signal_seen_at_ms: None,
-            sleeps: Vec::new(),
-            sleeps_after_signal: 0,
+            blocks: Vec::new(),
             probes: Vec::new(),
             logs: Vec::new(),
             parent_gone_from: None,
@@ -82,11 +80,25 @@ impl Fake {
             login_probes: Vec::new(),
             change_room_from: Some(0),
             change_probes: Vec::new(),
+            writes: Vec::new(),
         }
     }
 
     pub(super) fn elapsed(&self) -> i64 {
-        self.ms.div_euclid(1000)
+        self.secs
+    }
+
+    /// Every virtual second at which a watched file is written: a change of
+    /// fingerprint, of either capacity source, of the login key or of the
+    /// room the rotator records, and the bare writes.
+    fn file_writes(&self) -> Vec<i64> {
+        let mut at: Vec<i64> = self.prints.iter().map(|(t, _)| *t).collect();
+        at.extend(self.capacity_from);
+        at.extend(self.other_from);
+        at.extend(self.login_changed_from);
+        at.extend(self.change_room_from);
+        at.extend(self.writes.iter().copied());
+        at
     }
 
     fn progress(&self) -> Vec<&str> {
@@ -102,21 +114,32 @@ impl WaitDeps for Fake {
     type Print = u8;
 
     fn now(&mut self) -> i64 {
-        T0 + self.elapsed()
+        T0 + self.secs
     }
 
-    fn sleep(&mut self, d: Duration) {
+    fn block(&mut self, until: i64) -> bool {
+        let to = until - T0;
+        let now = self.secs;
         assert!(
-            d <= Duration::from_secs(1),
-            "slice of {d:?} is over one second"
+            to > now,
+            "asked to block until {to} at {now}: the wait would spin"
         );
-        assert!(!d.is_zero(), "a zero sleep would spin");
-        assert!(self.sleeps.len() < 200_000, "the wait never ended");
-        if self.signal_seen_at_ms.is_some() {
-            self.sleeps_after_signal += 1;
-        }
-        self.sleeps.push(d);
-        self.ms += d.as_millis() as i64;
+        assert!(self.blocks.len() < 200_000, "the wait never ended");
+        let signal = self.signal_from.map(|(t, _)| t);
+        let file = self.file_writes().into_iter().filter(|t| *t > now).min();
+        let other = [signal, self.parent_gone_from]
+            .into_iter()
+            .flatten()
+            .filter(|t| *t > now)
+            .min();
+        let at = [file, other, Some(to)]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(to);
+        self.secs = at;
+        self.blocks.push((now, at));
+        file == Some(at)
     }
 
     fn fingerprint(&mut self) -> Option<u8> {
@@ -136,12 +159,7 @@ impl WaitDeps for Fake {
 
     fn signal(&mut self) -> Option<i32> {
         let (from, sig) = self.signal_from?;
-        if self.ms >= from * 1000 {
-            self.signal_seen_at_ms.get_or_insert(self.ms);
-            Some(sig)
-        } else {
-            None
-        }
+        (self.secs >= from).then_some(sig)
     }
 
     fn session_ended(&mut self) -> bool {
@@ -178,54 +196,95 @@ pub(super) fn capacity_plan_in(secs: i64, bound: Bound) -> Plan {
     Plan::for_test(T0 + secs, bound, PlanKind::Capacity, None)
 }
 
-/// A login-change plan ending `secs` after `T0` (issue #2731), built by the
-/// real constructor rather than by hand: the flag that suppresses the two
-/// capacity sources is `plan_login_change`'s to set, and a test that could
-/// set it itself would stop proving that the constructor does.
-pub(super) fn login_change_plan_in(secs: i64) -> Plan {
-    let max = u64::try_from(secs).expect("a login-change wait's length is not negative");
-    super::plan::plan_login_change(T0, Some(max), None)
+/// A capacity plan whose limit stated no usable reset, so it has no
+/// deadline (issue #2911), built by the real constructor.
+pub(super) fn open_capacity_plan() -> Plan {
+    super::plan::plan_capacity(T0, None)
+}
+
+/// A login-change plan (issue #2731), which has no deadline (issue #2911),
+/// built by the real constructor rather than by hand: the flag that
+/// suppresses the two capacity sources is `plan_login_change`'s to set, and
+/// a test that could set it itself would stop proving that the constructor
+/// does.
+pub(super) fn login_change_plan() -> Plan {
+    super::plan::plan_login_change()
 }
 
 #[test]
-fn a_zero_length_wait_ends_at_once_without_sleeping() {
+fn a_zero_length_wait_ends_at_once_without_blocking() {
     let mut f = Fake::new();
     assert_eq!(
         wait(&plan_in(0, Bound::ResetMargin), &mut f),
         End::ResetReached
     );
-    assert!(f.sleeps.is_empty(), "{:?}", f.sleeps);
+    assert!(f.blocks.is_empty(), "{:?}", f.blocks);
     assert!(f.progress().is_empty());
 }
 
+/// A deadline is a stated reset, so reaching it is the reset passing,
+/// whatever kind of wait it is.
 #[test]
-fn each_bound_maps_to_its_end_reason() {
-    for (bound, want) in [
-        (Bound::ResetMargin, End::ResetReached),
-        (Bound::MaxWait, End::MaxReached),
-        (Bound::StepTimeout, End::StepTimeout),
+fn a_deadline_reached_is_the_reset_reached() {
+    for plan in [
+        plan_in(75, Bound::ResetMargin),
+        capacity_plan_in(75, Bound::ResetMargin),
     ] {
         let mut f = Fake::new();
-        assert_eq!(wait(&plan_in(75, bound), &mut f), want, "{bound:?}");
-        assert!(
-            f.elapsed() >= 75,
-            "{bound:?} ended early at {}",
-            f.elapsed()
-        );
-        assert!(f.elapsed() <= 76, "{bound:?} overslept to {}", f.elapsed());
-        let mut f = Fake::new();
-        assert_eq!(wait(&plan_in(0, bound), &mut f), want, "{bound:?} zero");
+        assert_eq!(wait(&plan, &mut f), End::ResetReached, "{:?}", plan.kind);
+        assert_eq!(f.elapsed(), 75, "{:?} ended at {}", plan.kind, f.elapsed());
     }
 }
 
+/// Issue #2911: a wait with no deadline is ended by no clock. With nothing
+/// written it wakes only for its progress lines, reads no file at any of
+/// them, and runs until something it waits on happens: here, six hours in,
+/// the step's session ending. Its progress lines have nothing to count down
+/// to, and say so.
 #[test]
-fn sleeps_are_slices_of_at_most_one_second() {
+fn a_wait_with_no_deadline_is_ended_by_no_clock() {
+    let six_hours = 6 * 3600;
+    for plan in [open_capacity_plan(), login_change_plan()] {
+        assert_eq!(plan.until, None);
+        let mut f = Fake::new();
+        f.parent_gone_from = Some(six_hours + 30);
+        assert_eq!(wait(&plan, &mut f), End::SessionEnded);
+        assert_eq!(f.elapsed(), six_hours + 30);
+        let ends: Vec<i64> = f.blocks.iter().map(|(_, to)| *to).collect();
+        let mut want: Vec<i64> = (1..=360).map(|m| m * 60).collect();
+        want.push(six_hours + 30);
+        assert_eq!(ends, want, "one wake a minute, for the progress line");
+        assert_eq!(f.probes, vec![0, 0], "the baseline and the first read");
+        assert_eq!(f.login_probes, vec![0]);
+        let progress = f.progress();
+        assert_eq!(progress.len(), 360);
+        assert!(
+            progress
+                .iter()
+                .all(|l| *l == "amplihack.recipe.usage_limit_wait progress remaining=none"),
+            "{:?}",
+            &progress[..3]
+        );
+    }
+}
+
+/// Issue #2911: with nothing written, a wait reads its files once as it
+/// begins, then wakes for its progress lines and its deadline and for
+/// nothing else, and reads no file at any of them.
+#[test]
+fn with_nothing_written_the_wait_reads_once_and_wakes_only_on_the_clock() {
     let mut f = Fake::new();
-    wait(&plan_in(300, Bound::ResetMargin), &mut f);
-    assert!(!f.sleeps.is_empty());
-    // The assertions in `Fake::sleep` cover each slice; the total is the wait.
-    let total: Duration = f.sleeps.iter().sum();
-    assert!(total >= Duration::from_secs(300) && total < Duration::from_secs(302));
+    assert_eq!(
+        wait(&plan_in(3_600, Bound::ResetMargin), &mut f),
+        End::ResetReached
+    );
+    let ends: Vec<i64> = f.blocks.iter().map(|(_, to)| *to).collect();
+    let want: Vec<i64> = (1..=60).map(|m| m * 60).collect();
+    assert_eq!(ends, want, "one wake a minute, for the progress line");
+    assert_eq!(f.probes, vec![0, 0], "the baseline and the first read");
+    assert_eq!(f.capacity_probes, vec![0]);
+    assert_eq!(f.other_probes, vec![0]);
+    assert_eq!(f.login_probes, vec![0]);
 }
 
 #[test]
@@ -244,28 +303,35 @@ fn a_progress_line_is_written_every_sixty_seconds() {
     assert_eq!(f.logs.len(), 2, "{:?}", f.logs);
 }
 
+/// After the first read, the files are read at the moment of each write,
+/// and at no other time.
 #[test]
-fn the_fingerprint_is_taken_at_the_start_and_every_thirty_seconds() {
+fn the_files_are_read_at_each_write_and_only_then() {
     let mut f = Fake::new();
-    wait(&plan_in(100, Bound::ResetMargin), &mut f);
-    let mut distinct = f.probes.clone();
-    distinct.dedup();
-    assert_eq!(distinct, vec![0, 30, 60, 90]);
+    f.writes = vec![7, 41, 42, 200];
+    wait(&plan_in(300, Bound::ResetMargin), &mut f);
+    assert_eq!(f.probes, vec![0, 0, 7, 41, 42, 200]);
+    assert_eq!(f.capacity_probes, vec![0, 7, 41, 42, 200]);
+    assert_eq!(f.other_probes, vec![0, 7, 41, 42, 200]);
+    assert_eq!(f.login_probes, vec![0, 7, 41, 42, 200]);
 }
 
 #[test]
-fn a_changed_login_ends_the_wait_at_the_second_differing_poll() {
+fn a_changed_login_ends_the_wait_at_the_write_that_changed_it() {
     let mut f = Fake::new();
     f.prints = vec![(0, Some(1)), (45, Some(2))];
     assert_eq!(
         wait(&plan_in(1800, Bound::ResetMargin), &mut f),
         End::LoginChanged
     );
-    assert_eq!(f.elapsed(), 90);
+    assert_eq!(f.elapsed(), 45);
 }
 
+/// A read made part-way through a write is not a reading: it neither ends
+/// the wait nor moves the baseline, and the write that completes the file
+/// is read as the login it names.
 #[test]
-fn one_differing_poll_followed_by_a_matching_one_keeps_waiting() {
+fn a_failed_read_between_two_readings_of_the_same_login_is_no_change() {
     let mut f = Fake::new();
     f.prints = vec![
         (0, Some(1)),
@@ -278,26 +344,27 @@ fn one_differing_poll_followed_by_a_matching_one_keeps_waiting() {
         wait(&plan_in(200, Bound::ResetMargin), &mut f),
         End::ResetReached
     );
-    assert!(f.elapsed() >= 200, "ended early at {}", f.elapsed());
+    assert_eq!(f.elapsed(), 200);
 }
 
 #[test]
-fn a_new_login_must_read_the_same_twice() {
-    // A logout seen at 60 s, then a new login at 90 s and 120 s.
+fn a_new_login_after_a_failed_read_ends_the_wait_when_it_is_read() {
     let mut f = Fake::new();
     f.prints = vec![(0, Some(1)), (45, None), (75, Some(3))];
     assert_eq!(
         wait(&plan_in(1800, Bound::ResetMargin), &mut f),
         End::LoginChanged
     );
-    assert_eq!(f.elapsed(), 120);
+    assert_eq!(f.elapsed(), 75);
 }
 
+/// A part of the fingerprint that appears or disappears is a different
+/// fingerprint (the real one compares each part), so it is a change.
 #[test]
-fn a_part_that_appears_or_disappears_after_the_baseline_counts_as_a_change() {
+fn a_different_reading_after_the_baseline_is_a_change() {
     for prints in [
-        vec![(0, None), (40, Some(1))],
-        vec![(0, Some(1)), (40, None)],
+        vec![(0, Some(1)), (40, Some(2))],
+        vec![(0, Some(2)), (40, Some(1))],
     ] {
         let mut f = Fake::new();
         f.prints = prints.clone();
@@ -306,28 +373,33 @@ fn a_part_that_appears_or_disappears_after_the_baseline_counts_as_a_change() {
             End::LoginChanged,
             "{prints:?}"
         );
-        assert_eq!(f.elapsed(), 90);
+        assert_eq!(f.elapsed(), 40);
     }
 }
 
+/// A baseline that could not be read is taken from the first reading that
+/// can be made, so a failed first read is never itself a change.
 #[test]
-fn a_torn_or_failed_first_read_is_not_a_change() {
-    // The first probe fails or reads a torn file; every later read agrees.
-    for first in [None, Some(9)] {
-        let mut f = Fake::new();
-        f.prints = vec![(0, first), (1, Some(1))];
-        assert_eq!(
-            wait(&plan_in(300, Bound::ResetMargin), &mut f),
-            End::ResetReached,
-            "first read {first:?}"
-        );
-    }
-}
-
-#[test]
-fn an_absent_fingerprint_that_stays_absent_is_no_change() {
+fn a_failed_first_read_takes_the_baseline_from_the_next_reading() {
     let mut f = Fake::new();
-    f.prints = vec![(0, None)];
+    f.prints = vec![(0, None), (1, Some(1)), (90, Some(1))];
+    assert_eq!(
+        wait(&plan_in(300, Bound::ResetMargin), &mut f),
+        End::ResetReached
+    );
+    let mut f = Fake::new();
+    f.prints = vec![(0, None), (1, Some(1)), (90, Some(2))];
+    assert_eq!(
+        wait(&plan_in(300, Bound::ResetMargin), &mut f),
+        End::LoginChanged
+    );
+    assert_eq!(f.elapsed(), 90);
+}
+
+#[test]
+fn a_fingerprint_that_can_never_be_read_is_no_change() {
+    let mut f = Fake::new();
+    f.prints = vec![(0, None), (50, None)];
     assert_eq!(
         wait(&plan_in(200, Bound::ResetMargin), &mut f),
         End::ResetReached

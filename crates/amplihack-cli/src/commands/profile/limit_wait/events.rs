@@ -1,12 +1,13 @@
 //! The wait's log lines (issue #1618): `amplihack.recipe.usage_limit_wait`
 //! followed by the event. Built only from static text, integers and parsed
-//! instants, with one exception: the recipe-log `start` line carries the
-//! login being waited on, which [`recipe_line`] re-validates against the
-//! rotator's own name form before it can reach a file (issue #2731).
+//! instants, with one exception: the recipe-log `start` and
+//! `waiting_for_capacity` lines carry the login being waited on, which
+//! [`recipe_line`] re-validates against the rotator's own name form before
+//! it can reach a file (issues #2731, #2911).
 //!
 //! Tested in `tests_log.rs` and `tests_log_recipe.rs`.
 
-use super::plan::{Bound, NoWait};
+use super::plan::{Bound, NoWait, Waiting};
 use super::wait::End;
 use crate::commands::recipe::run::limit_patterns::Harness;
 use chrono::TimeZone;
@@ -40,10 +41,10 @@ impl Shape {
     ///
     /// `reason` names the limit and `wait` names what the step is waiting
     /// for; the two answer different questions and both are written. A
-    /// login-change wait is started by an organisation spend limit and by
-    /// nothing else (`plan::upgrade_spend`), so a reader grepping the recipe
-    /// log for `spend_limit` finds the wait as well as the step's closing
-    /// line (issue #2731).
+    /// login-change wait is started by a spend limit that states no reset
+    /// and by nothing else (`plan::wait_for_message`), so a reader grepping
+    /// the recipe log for `spend_limit` finds the wait's `start` line beside
+    /// its `waiting_for_capacity` line (issues #2731, #2911).
     fn reason(self) -> &'static str {
         match self {
             Shape::Reset | Shape::Capacity => "usage_limit",
@@ -58,23 +59,23 @@ pub(super) enum Event {
         harness: Harness,
         /// `None` when a capacity wait's limit stated no readable reset.
         reset: Option<i64>,
-        until: i64,
+        /// `None` for a wait with no deadline, written `until=none`: its
+        /// limit stated no usable reset, so it ends only on an event.
+        until: Option<i64>,
         bound: Bound,
         /// Which kind of wait this is; a reset wait's line is unchanged.
         shape: Shape,
     },
     Progress {
-        remaining: u64,
+        /// Seconds to the deadline, or `None` for a wait that has none,
+        /// written `remaining=none`.
+        remaining: Option<u64>,
     },
     End(End),
     Resume {
         attempt: u32,
     },
     Skipped(Skip),
-    /// The last line of a step that ends on a limit no wait lifted. Its text
-    /// keeps the failure class in the recipe runner's 40-line evidence tail
-    /// when progress lines have pushed the harness's own message out.
-    Failed(FailReason),
     /// The retry a wait earned met a limit of its own, so the signal that
     /// ended that wait was wrong and the step waits again (issue #2857).
     /// Written once per re-entry, immediately before the new wait's
@@ -82,6 +83,35 @@ pub(super) enum Event {
     /// contradicted signal from one that follows a new login.
     Reentered {
         met: Met,
+    },
+    /// The step is waiting for capacity rather than for a reset within
+    /// five hours (issue #2911). Written immediately before the wait's
+    /// [`Event::Start`], to the step's stderr and to the run's recipe log, so
+    /// an operator reading either can see that the step is waiting rather
+    /// than hung, which login it is on, why, and until when: a far reset, or
+    /// `until=none` when nothing can be known about when the limit lifts and
+    /// the wait ends only on a login with room or a login change.
+    ///
+    /// Every field is a closed set, an integer or a formatted instant: the
+    /// harness's own words reach neither sink.
+    WaitingForCapacity {
+        harness: Harness,
+        why: Waiting,
+        until: Option<i64>,
+    },
+    /// The step met a limit, but it ends because its prompt was cut short,
+    /// not because of the limit: the attempt was given part of its task, so
+    /// the step fails whether or not it met one, and no retry can be given
+    /// the whole prompt. Written as `failed reason=prompt_cut_short`, a
+    /// failure of the step's input, and never as a skipped wait, which would
+    /// read as a wait refused to a limit.
+    PromptCutShort,
+    /// No file event can be had for this wait (issue #2911), so it cannot
+    /// see a login gain room or change: it ends on its reset, a stop signal
+    /// or the end of its session, and reads no file on a timer instead.
+    /// `why` is a fixed word naming the cause (`wake`).
+    NoFileEvents {
+        why: &'static str,
     },
 }
 
@@ -95,41 +125,24 @@ pub(crate) enum Met {
     RateLimit,
 }
 
-/// Why the step ended on a usage limit after a wait could not lift it.
-#[derive(Clone, Copy)]
-pub(super) enum FailReason {
-    CapacityExpired,
-    /// A login-change wait reached its deadline: no reset lifts an
-    /// organisation spend limit, and no login arrived that might (#2731).
-    SpendLimit,
-    StepTimeout,
-    AlreadyWaited,
-}
-
-impl FailReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            FailReason::CapacityExpired => "capacity_expired",
-            FailReason::SpendLimit => "spend_limit",
-            FailReason::StepTimeout => "step_timeout",
-            FailReason::AlreadyWaited => "already_waited",
-        }
-    }
-}
-
+/// Why no wait was made at all.
 #[derive(Clone, Copy)]
 pub(super) enum Skip {
+    /// The operator set `recipe.usage_limit_wait = false`. `CI` no longer
+    /// turns the wait off, so there is no `ci` reason (issue #2911).
     Disabled,
-    AlreadyWaited,
     NotSupervised,
-    /// Off because this is CI and nothing turned it on.
-    Ci,
-    /// The limit is not one a wait can outlast.
+    /// The output carries no limit message. A prompt cut short is not a
+    /// skip and is written as [`Event::PromptCutShort`].
     Cannot(NoWait),
 }
 
 /// `t` in zone `tz`, as every line writes an instant.
-fn fmt_time<Z: TimeZone>(t: i64, tz: &Z) -> String
+///
+/// `pub(super)` because the sentence the supervisor prints beside the
+/// prompt-loss ending also names an instant, and an instant must read the
+/// same in every line a step writes.
+pub(super) fn fmt_time<Z: TimeZone>(t: i64, tz: &Z) -> String
 where
     Z::Offset: Display,
 {
@@ -139,12 +152,20 @@ where
     }
 }
 
+/// An optional instant as a line writes it: the time, or `none`.
+fn fmt_opt<Z: TimeZone>(t: Option<i64>, tz: &Z) -> String
+where
+    Z::Offset: Display,
+{
+    t.map_or_else(|| "none".to_string(), |t| fmt_time(t, tz))
+}
+
 /// A `start` line's body, with `who` naming the harness or the account.
 fn start_body<Z: TimeZone>(
     shape: Shape,
     who: &str,
     reset: Option<i64>,
-    until: i64,
+    until: Option<i64>,
     bound: Bound,
     tz: &Z,
 ) -> String
@@ -156,25 +177,27 @@ where
         shape.reason(),
         shape.token(),
         who,
-        reset.map_or_else(|| "none".to_string(), |r| fmt_time(r, tz)),
-        fmt_time(until, tz),
+        fmt_opt(reset, tz),
+        fmt_opt(until, tz),
         bound.as_str()
     )
 }
 
 /// The line a wait appends to the run's recipe log, or `None` for an event
 /// that does not belong there (issue #2731). Only a wait's `start` and `end`,
-/// and the `reentered` between two of them (issue #2857), do: the recipe log
-/// says that the step is waiting, on which login, until when, how the wait
-/// ended and whether the step went back into one, and the step's stderr keeps
-/// the rest.
+/// the `reentered` between two of them (issue #2857) and the
+/// `waiting_for_capacity` before a `start` (issue #2911) do: the recipe log
+/// says that the step is waiting, on which login, until when and why, how the
+/// wait ended and whether the step went back into one, and the step's stderr
+/// keeps the rest.
 ///
-/// The `end` and `reentered` lines are the stderr ones. The `start` line is
-/// the stderr one with `harness=` dropped and `account=` put in its place, so
-/// one `grep` over both sinks reads as one stream. `account` is re-validated
-/// here, at the one point where a login name can reach a file: a name outside
-/// the rotator's own form is written as `unknown` whole rather than trimmed
-/// to fit, so two logins can never collapse onto one identity in the log.
+/// The `end` and `reentered` lines are the stderr ones. The `start` and
+/// `waiting_for_capacity` lines are the stderr ones with `harness=` dropped
+/// and `account=` put in its place, so one `grep` over both sinks reads as
+/// one stream. `account` is re-validated here ([`account_field`]), at the one
+/// point where a login name can reach a file: a name outside the rotator's
+/// own form is written as `unknown` whole rather than trimmed to fit, so two
+/// logins can never collapse onto one identity in the log.
 pub(super) fn recipe_line<Z: TimeZone>(e: &Event, account: Option<&str>, tz: &Z) -> Option<String>
 where
     Z::Offset: Display,
@@ -186,17 +209,41 @@ where
             bound,
             shape,
             ..
-        } => {
-            let name = account.filter(|n| amplihack_utils::rotator_status::valid_live_name(n));
-            let who = format!("account={}", name.unwrap_or(UNKNOWN));
-            Some(format!(
-                "{PREFIX} {}",
-                start_body(*shape, &who, *reset, *until, *bound, tz)
-            ))
-        }
+        } => Some(format!(
+            "{PREFIX} {}",
+            start_body(*shape, &account_field(account), *reset, *until, *bound, tz)
+        )),
+        Event::WaitingForCapacity { why, until, .. } => Some(format!(
+            "{PREFIX} {}",
+            capacity_body(*why, &account_field(account), *until, tz)
+        )),
         Event::End(_) | Event::Reentered { .. } => Some(line(e, tz)),
         _ => None,
     }
+}
+
+/// The `account=` field of a recipe-log line, re-validated as
+/// [`recipe_line`] describes.
+fn account_field(account: Option<&str>) -> String {
+    let name = account.filter(|n| amplihack_utils::rotator_status::valid_live_name(n));
+    format!("account={}", name.unwrap_or(UNKNOWN))
+}
+
+/// A `waiting_for_capacity` line's body, with `who` naming the harness or
+/// the account, as [`start_body`] does.
+///
+/// The reason comes first, because that is the question an operator finding
+/// a waiting step asks, and it is the field the tests match on.
+fn capacity_body<Z: TimeZone>(why: Waiting, who: &str, until: Option<i64>, tz: &Z) -> String
+where
+    Z::Offset: Display,
+{
+    format!(
+        "waiting_for_capacity reason={} {} until={}",
+        why.as_str(),
+        who,
+        fmt_opt(until, tz)
+    )
 }
 
 /// The log line for `e`, times in zone `tz`.
@@ -219,20 +266,27 @@ where
             *bound,
             tz,
         ),
-        Event::Progress { remaining } => format!("progress remaining={remaining}s"),
+        Event::Progress { remaining } => match remaining {
+            Some(secs) => format!("progress remaining={secs}s"),
+            None => "progress remaining=none".to_string(),
+        },
         Event::End(end) => format!("end reason={}", end.as_str()),
         Event::Resume { attempt } => format!("resume attempt={attempt}"),
+        Event::WaitingForCapacity {
+            harness,
+            why,
+            until,
+        } => capacity_body(*why, &format!("harness={}", harness.as_str()), *until, tz),
         Event::Skipped(skip) => format!(
             "skipped reason={}",
             match skip {
                 Skip::Disabled => "disabled",
-                Skip::AlreadyWaited => "already_waited",
                 Skip::NotSupervised => "not_supervised",
-                Skip::Ci => "ci",
                 Skip::Cannot(why) => why.as_str(),
             }
         ),
-        Event::Failed(why) => format!("failed reason={}: usage limit not lifted", why.as_str()),
+        Event::PromptCutShort => format!("failed reason={}", NoWait::PromptCutShort.as_str()),
+        Event::NoFileEvents { why } => format!("no_file_events reason={why}"),
         Event::Reentered { met } => format!(
             "reentered met={}",
             match met {

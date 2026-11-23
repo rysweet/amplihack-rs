@@ -24,11 +24,12 @@
 //! there `prompt: false` means the pipe is copied aside and replayed, while
 //! a wrongly found prompt would mean a long wait and then a rerun with no
 //! prompt. What the copy costs when the prompt was in argv after all is a
-//! file and a refused rerun, never a step held up: the copier reads the
-//! caller's pipe on its own thread and is joined only when it is certain to
-//! end (`scratch::Capture::settle`), so a caller that holds that pipe open
-//! for ever ends the step with its limit result and a named reason rather
-//! than hanging it (issue #2816). The ignored test
+//! file, and, if the step meets a limit while its caller still holds the
+//! pipe open, a retry that waits for the caller to close it: the copier
+//! reads the caller's pipe on its own thread and is joined only when it is
+//! certain to end (`scratch::Capture::settle`), and the retry's wait for it
+//! answers stop signals and the end of the session (issues #2816, #3036).
+//! The ignored test
 //! `the_tables_cover_claude_help` (run with `--ignored` where `claude` is
 //! installed) reports drift.
 
@@ -180,17 +181,6 @@ pub(crate) struct ClaudeArgs {
     /// the safe side (see the module comment). Only an unknown option with
     /// two or more values (`<values...>`) can still leave a value counted.
     pub(crate) prompt: bool,
-    /// `--input-format` asks for something other than `text`, so stdin is a
-    /// control channel and not a prompt that ends (issue #2816).
-    ///
-    /// `stream-json` is the shape amplihack's own usage request uses
-    /// (`usage_request::ARGS`): a channel open for as long as the session,
-    /// whose caller holds it open on purpose and writes to it as it goes.
-    /// Copying that would store a session's whole history in the rerun
-    /// directory and replay it to a retry as if it were the prompt, so a
-    /// step reading one keeps the conduct every piped prompt had before
-    /// #2815: nothing is copied, and a usage limit ends it.
-    pub(crate) stream_stdin: bool,
 }
 
 /// Reads Claude's arguments as Commander would.
@@ -210,14 +200,10 @@ pub(crate) fn parse<S: AsRef<str>>(args: &[S]) -> ClaudeArgs {
                 None => (long, None),
             };
             out.print |= name == "print" && inline.is_none();
-            if name == "input-format" {
-                // Commander takes this option's value inline after `=`, else
-                // from the next argument. Anything but `text` — including a
-                // value that is missing altogether — makes stdin a channel
-                // rather than a prompt (issue #2816).
-                let value = inline.or_else(|| args.get(i).map(AsRef::as_ref));
-                out.stream_stdin |= value != Some("text");
-            }
+            // `--input-format` needs nothing of its own here (issue #3036):
+            // a stream channel on stdin is copied and replayed as any piped
+            // input is, so all that matters is that its value is skipped
+            // and never read as the prompt, which `REQUIRED` already does.
             if inline.is_some() {
                 Kind::Flag
             } else {

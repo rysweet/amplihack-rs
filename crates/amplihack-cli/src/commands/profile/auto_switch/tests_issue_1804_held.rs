@@ -200,8 +200,8 @@ fn the_held_key_alert_is_written_once_per_held_set() {
 /// of a wait that may run for hours, and now does so on a reset wait as well
 /// as a capacity wait. It therefore passes `KeyAlert::Silent` and writes
 /// nothing: no held-key ALERT to the step's stderr, no line in the rotate
-/// log and no key-held marker. Repeating that alert every 30 s for hours
-/// would bury the step's own output.
+/// log and no key-held marker. Repeating that alert after every write the
+/// wait sees, for hours, would bury the step's own output.
 ///
 /// The retry's login selection is not silent. It runs once, when the wait
 /// has ended and the step is about to move, so it passes `KeyAlert::Write`
