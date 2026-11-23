@@ -21,8 +21,12 @@ full specification is [Auto-drive Goal Loop](../../../docs/reference/autodrive-g
 
 Each turn you get a fresh reading: the PR's head, base and merge state, each
 check, the review verdicts, whether the base conflicts or changed the PR's
-files, the repository's settings, the task text and guidance. You pick one
-action: `review`, `wait`, `merge`, `handoff` or `ready`.
+files, the repository's settings, the task text and guidance. You do any
+work the turn needs yourself (fix and push, bring the base in, install a host
+input, carry out a later task step), then pick one action: the goal's
+`review`, `wait` or `merge`, or a shared `continue`, `wait-owner`, `handoff`,
+`ready` or `stop`. End your reply with one JSON line:
+`{"action": "<word>", "args": {...}, "why": "..."}`.
 
 ## Rules
 
@@ -39,8 +43,11 @@ action: `review`, `wait`, `merge`, `handoff` or `ready`.
 - Merge authority comes only from `no_merge` and the captured invocation. Only
   the loop's merge action merges, with `--match-head-commit`.
 - With merging off, carry out the task's later steps, then take `ready`.
-- Hand off only for a decision that belongs to a named owner, saying which owner
+- Hand off only for a decision that belongs to a named owner, or for a failure
+  that keeps repeating that nothing you can do will change, saying which owner
   and what decision. Write it in the journalistic style with literal words.
+- When the owner asks the run to stop, commit and push, then take `stop` with
+  the continuation note.
 
 ## Invocation
 

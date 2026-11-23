@@ -28,21 +28,19 @@
 #           field of that object rather than beside it, because a step that
 #           declares parse_json parses the whole of its agent's stdout as
 #           exactly one object.
-#           In part 2 one answer cannot serve every step: the three preflights
-#           and the two readers need shapes that contradict each other, and the
-#           first line does not separate them, since four shipped steps open
-#           with the same pager sentence. So the stand-in carries a dispatch
-#           table, one entry per agent step of the drive, keyed on a substring
-#           of the prompt that occurs in exactly one shipped prompt (or on the
-#           first line where that alone is unambiguous). Each entry says which
-#           step it answers and why that answer is what a competent agent
-#           would report of this fixture, and the facts it rests on are read
-#           rather than asserted: the head, branch and base come from the PR
-#           worktree, the private state directory is the one the driver gave
-#           the drive, and where a step asks for an action rather than a
-#           report (post the Crusty verdict, write the completion decision,
-#           save the measured qa record) the stand-in performs it and then
-#           reports what it did. A prompt matching no entry keeps part 1's
+#           In part 2 one answer cannot serve every step: the build stage's
+#           preflight, its no-merge directive, its PR resolution and the goal
+#           loop's turn (#3129) need shapes that contradict each other. So the
+#           stand-in carries a dispatch table, one entry per agent step of the
+#           drive, keyed on a substring of the prompt that occurs in exactly
+#           one shipped prompt (or on the first line where that alone is
+#           unambiguous). The turn's answer asks for the merge at the head it
+#           read; a second turn hands off, so a fault ends the drive. Each
+#           entry says which step it answers and why that answer is what a
+#           competent agent would report of this fixture, and the facts it
+#           rests on are read rather than asserted: the head, branch and base
+#           come from the PR worktree, and the private state directory is the
+#           one the driver gave the drive. A prompt matching no entry keeps part 1's
 #           fixed answer and is recorded in $WORK/agent-unmatched.jsonl, which
 #           a case of its own reads: part 1's prompts are all there by design,
 #           and a part 2 prompt there is a shipped prompt reworded out from
@@ -408,9 +406,15 @@ case "${1-} ${2-}" in
   # the tool wrote it. All three methods are allowed, as they are in a
   # repository created on GitHub today, so the drive settles on squash and
   # records the merge this scenario has always recorded.
-  "api repos/{owner}/{repo}")
+  "api repos/{owner}/{repo}"|"api repos/qa-owner/qa-repo")
     emit '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}' "$@"
     exit 0 ;;
+  # The goal loop's reading (#3129) names the repository from the PR URL and
+  # asks whether the base requires strict status checks: no ruleset, and no
+  # classic protection (GitHub's own 404 for an unprotected branch).
+  "api repos/qa-owner/qa-repo/rules/branches/main") emit '[]' "$@"; exit 0 ;;
+  "api repos/qa-owner/qa-repo/branches/main/protection/required_status_checks")
+    echo "gh: Branch not protected (HTTP 404)" >&2; exit 1 ;;
   "pr list")
     if [ -e "$state/pr-created" ]; then emit "[$(pr_json)]" "$@"; else emit '[]' "$@"; fi
     exit 0 ;;
@@ -557,38 +561,23 @@ if [ "${QA_RUN_LABEL:-}" = drive ]; then
   j() { jq -nc --arg u "$PR_URL" --arg b "$BRANCH" --arg h "$HEAD_SHA" \
           --arg bs "$BASE_SHA" --arg d "$STATE" --arg r "$REPO" "$@"; }
 
-  # First, because this one prompt quotes a round's own output back at the
-  # agent: a later entry's discriminator could appear inside the quotation.
-  if has '# Loop-health evaluation'; then
-    # loop-health-evaluator/step-02-evaluate-loop-health, the merge-ready
-    # loop's terminator. The prompt states the round's own verdict and the
-    # loop's clean token, in backquotes; DONE is legal only when they are the
-    # same word, and anything else stops the loop rather than spending another
-    # round on a judgement this stand-in cannot make.
-    step=loop-health-evaluator/step-02-evaluate-loop-health
-    tail_of="${input#*own verdict \`}"; round_verdict="${tail_of%%\`*}"
-    tail_of="${tail_of#*equals \`}"; clean_token="${tail_of%%\`*}"
-    if [ -n "$round_verdict" ] && [ "$round_verdict" = "$clean_token" ]; then
-      response="$(j --arg v "$round_verdict" '{loop_verdict:"DONE",not_converging:[],
-        moved:["the round reached its clean verdict"],
-        recommended_action:("the round verdict is " + $v + "; advance to the next phase")}')"
+  # First, because the turn prompt quotes the task text, the reading and the
+  # previous record back at the agent: a later entry's discriminator could
+  # appear inside a quotation.
+  if has 'You are one turn of a goal-driven loop'; then
+    # autodrive-goal-turn/decide (#3129): the loop's one agent step per turn.
+    # Every check passed at this head and merging is allowed, so a competent
+    # agent asks for the merge at the head it read. A second turn means the
+    # merge did not end the goal; the stand-in then hands off rather than
+    # asking again, so a fault ends the drive instead of looping.
+    step=autodrive-goal-turn/decide
+    turns="$root/drive-turns"
+    printf 'x\n' >> "$turns"
+    if [ "$(wc -l < "$turns")" -eq 1 ]; then
+      response="$(j '{action:"merge",args:{head:$h},why:"Every check passed at this head and merging is allowed, so I ask for the merge at the head I read."}')"
     else
-      response="$(j --arg v "$round_verdict" --arg t "$clean_token" \
-        '{loop_verdict:"STUCK",
-          not_converging:[("the round verdict \"" + $v + "\" is not the clean token \"" + $t + "\"")],
-          moved:[],recommended_action:"stop and read the round record"}')"
+      response="$(j '{action:"handoff",args:{owner:"operator",decision:"why the merge did not end the drive",text:"The merge requested on the first turn did not end the drive. The operator decides what happens next."},why:"The goal did not end after the merge."}')"
     fi
-
-  elif has 'Report the QA facts the merge rounds will judge from'; then
-    # auto-drive-to-merge/autodrive-prerequisites. The sandbox's PATH holds
-    # git, gh and jq, and the fixture is a Rust-shaped repository, where
-    # qa-team's own table does not require gadugi. The step reports facts and
-    # names no blocker: since #2569 a repository type, a missing scenario and
-    # an absent tool are facts each merge round judges, not prerequisites that
-    # hold the drive here.
-    step=autodrive-prerequisites
-    response="$(j '{prerequisites:["git","gh","jq"],gadugi_required:false,blockers:[],attempts:[]}')"
-
   elif has 'step-02 decides from your facts'; then
     # autodrive-build/step-01-build-preflight. The stub reports PR 42 OPEN at
     # the branch the build pushed, and the drive runs in that branch's linked
@@ -625,200 +614,6 @@ if [ "${QA_RUN_LABEL:-}" = drive ]; then
       reason:"the PR phase 1 opened is open at this worktree head",
       blockers:[],attempts:[]}')"
 
-  elif opens 'Observe the exact PR from'; then
-    # auto-drive-to-merge/autodrive-check-unmerged, after the crusty phase.
-    step=auto-drive-to-merge/autodrive-check-unmerged
-    response="$(j '{platform_state:"OPEN",action:"confirmed_open",head_sha:$h,
-      blockers:[],attempts:[]}')"
-
-  elif has 'complete-at-head'; then
-    # autodrive-crusty-loop/step-01-crusty-loop-preflight. No Crusty round has
-    # ever run for this PR, so the state folder holds no crusty record and
-    # `complete-at-head` would be untrue: the loop has work to do.
-    step=autodrive-crusty-loop/step-01-crusty-loop-preflight
-    response="$(j '{should_run:"true",skip_reason:"",pr:"42",pr_url:$u,pr_state:"OPEN",
-      branch:$b,head_sha:$h,base_branch:"main",base_sha:$bs,state_dir:$d,repo:$r,
-      reason:"PR 42 is OPEN, the worktree is at its head, and no Crusty round exists at that head",
-      blockers:[],attempts:[]}')"
-
-  elif has '"resolved_concerns":"stable IDs"'; then
-    # autodrive-crusty-round/step-01-round-context.
-    step=autodrive-crusty-round/step-01-round-context
-    response="$(j '{pr:"42",head_sha:$h,resolved_concerns:"",round_label:"round",
-      blockers:[],attempts:[]}')"
-
-  elif has 'crusty-old-engineer'; then
-    # autodrive-crusty-round/step-02-crusty-review. The branch adds the one
-    # text file the task asked for and changes nothing else, so a review of it
-    # raises no concern. step-03 reads crusty_verdict out of this answer.
-    step=autodrive-crusty-round/step-02-crusty-review
-    response="$(j '{crusty_verdict:"CLEAN",concerns:[],reviewed_head_sha:$h,
-      summary:"one added text file, nothing else changed; no concerns"}')"
-
-  elif opens 'Assess what the reviewer changed in this PR worktree'; then
-    # step-02b-assess-review-changes, shared word for word by the crusty round
-    # and the merge round. The reviewer is this same stand-in, which writes
-    # nothing in the PR worktree, so there is nothing to report or restore.
-    step=step-02b-assess-review-changes
-    response='The PR worktree is as the reviewer found it: git status --porcelain is empty, the index is unchanged, HEAD and the branch are unmoved, and there are no untracked files. Nothing needed restoring.'
-
-  elif has "Post this Crusty round's verdict on PR"; then
-    # autodrive-crusty-round/step-03c-post-verdict. The stand-in really posts
-    # the comment through gh, as the step asks, and then reports what it did;
-    # autodrive_crusty_posted.sh records the posted line from this answer, and
-    # a claim with no comment behind it would be a false one.
-    step=autodrive-crusty-round/step-03c-post-verdict
-    posted=false
-    if printf 'Crusty verdict: CLEAN at %s\n\nNo concerns were raised in this round.\n' "$HEAD_SHA" \
-        | gh pr comment "$PR" --body-file - >/dev/null 2>&1; then
-      posted=true
-    fi
-    response="$(j --arg p "$posted" '{verdict_posted:$p,head_sha:$h}')"
-
-  elif has 'autodrive-completion-write'; then
-    # autodrive-crusty-round/step-07-select-next-action. The action is read
-    # from the round record the step names rather than asserted, and it is
-    # written only through the Rust writer, as the step requires.
-    step=autodrive-crusty-round/step-07-select-next-action
-    tail_of="${input#*Read the round record at }"; record="${tail_of%% *}"
-    tail_of="${input#*--private-state \"}"; private_state="${tail_of%%\"*}"
-    action=evaluate
-    why="the round record is not a clean round at the head with no findings"
-    if [ -n "$record" ] && [ -f "$record" ]; then
-      verdict="$(jq -r '.crusty_verdict // ""' "$record" 2>/dev/null)"
-      reviewed="$(jq -r '.reviewed_head_sha // ""' "$record" 2>/dev/null)"
-      at="$(jq -r '.head_sha // ""' "$record" 2>/dev/null)"
-      commits="$(jq -r '.commits_this_round // 1' "$record" 2>/dev/null)"
-      findings=1
-      [ ! -f "${record}.findings" ] || findings="$(wc -c < "${record}.findings" | tr -d ' ')"
-      case "$verdict" in
-        CLEAN|MINOR_ONLY)
-          if [ "$reviewed" = "$at" ] && [ "$commits" = 0 ] && [ "$findings" = 0 ]; then
-            action=complete
-            why="the round record is ${verdict} at ${at}, with no findings and no commit this round"
-          fi ;;
-      esac
-    fi
-    written="no private state was named in the prompt"
-    [ -z "$private_state" ] || written="$(amplihack orch helper autodrive-completion-write \
-      --private-state "$private_state" --action "$action" --reason "$why" 2>&1)"
-    response="Action ${action}: ${why}. Writer: ${written}"
-
-  elif has 'autodrive_record_crusty_loop_done'; then
-    # autodrive-crusty-loop/step-03-record-crusty-phase. The loop ended DONE
-    # on a CLEAN round with no minor finding, so the phase is recorded, and
-    # only through the trusted function in the launch bundle.
-    step=autodrive-crusty-loop/step-03-record-crusty-phase
-    recorded=false
-    tools="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/autodrive_state.sh"
-    if [ -n "$STATE" ] && [ -f "$tools" ] \
-      && ( . "$tools" && autodrive_record_crusty_loop_done "$STATE" ) >/dev/null 2>&1; then
-      recorded=true
-    fi
-    response="$(j --arg rec "$recorded" '{recorded:$rec,reviewed_head_sha:$h,
-      followups:[],blockers:[],attempts:[]}')"
-
-  elif has 'should_run=true only for an observed OPEN PR'; then
-    # autodrive-merge-loop/step-01-merge-loop-preflight. autodrive-build
-    # step-03 carries the same sentence and is matched above by its first
-    # line, and the crusty preflight's version names skip_reason instead.
-    # state_dir must be exactly the directory the runner bound to this
-    # invocation: autodrive-finalize hands it to the authorization helper,
-    # which refuses any other path and hands the PR off instead of merging.
-    step=autodrive-merge-loop/step-01-merge-loop-preflight
-    response="$(j '{should_run:"true",pr:"42",pr_url:$u,pr_state:"OPEN",branch:$b,
-      head_sha:$h,base_branch:"main",base_sha:$bs,state_dir:$d,repo:$r,
-      reason:"PR 42 is OPEN, the linked worktree is at its head, and the private state directory is readable",
-      blockers:[],attempts:[]}')"
-
-  elif has 'Return JSON with base, synced'; then
-    # autodrive-merge-evidence/step-01-sync-with-base. The branch was cut from
-    # main and main has not moved since, so it already contains its base.
-    step=autodrive-merge-evidence/step-01-sync-with-base
-    response="$(j '{base:"main",synced:"true",conflict:"false",head_sha:$h,
-      git_observed:"the branch already contains origin/main; there was nothing to merge",
-      blockers:[],attempts:[]}')"
-
-  elif has 'Judge merge-ready criterion 1 for PR #'; then
-    # autodrive-merge-evidence/step-02-qa-team-scenarios. Since #2569 this step
-    # records a judgement and no longer owns the record: the preceding
-    # step-02a-qa-inputs bash step measures and writes qa-evidence.json, so the
-    # stand-in writes no file here. The fixture's change is feature.txt alone,
-    # which no user, operator or calling program reads, so the judgement is
-    # not_user_facing with that file as its cited reason, and nothing is handed
-    # off. The light path's criterion-1 prompt opens "for the change in", so it
-    # cannot reach this entry.
-    step=autodrive-merge-evidence/step-02-qa-team-scenarios
-    response="$(j '{qa_judgement:"not_user_facing",
-      qa_judgement_notes:"The diff is feature.txt alone, a text file no user, operator or calling program reads, so no scenario exercises it and none is needed. The measurement named no suite command at the merge base. Nothing was blocked and nothing was handed off.",
-      qa_handoff:null,head_sha:$h,blockers:[],attempts:[]}')"
-
-  elif has 'Return JSON with ci_status GREEN'; then
-    # autodrive-merge-evidence/step-03-wait-for-ci. The stub reports the one
-    # check SUCCESS at this head for the whole of part 2.
-    step=autodrive-merge-evidence/step-03-wait-for-ci
-    response="$(j --arg sig "pass@$HEAD_SHA" '{ci_status:"GREEN",ci_total:1,ci_pending:0,
-      ci_failing:0,ci_signal:$sig,head_sha:$h,blockers:[],attempts:[]}')"
-
-  elif has 'Collect complete platform observations'; then
-    # autodrive-merge-round/step-01-platform-facts, reporting what the stub's
-    # own pr view says: open, not a draft, mergeable, approved, one green
-    # check, no conversation thread of any kind.
-    step=autodrive-merge-round/step-01-platform-facts
-    response="$(j '{pr:"42",pr_url:$u,state:"OPEN",is_draft:false,branch:$b,head_sha:$h,
-      base_branch:"main",base_sha:$bs,merge_base:$bs,mergeable:"MERGEABLE",
-      merge_state:"CLEAN",review_decision:"APPROVED",approval_status:"MET",
-      approval_source:"the review decision on the PR itself",approval_blocker:"",
-      required_approvals:"",changes_requested:0,unresolved_threads:0,
-      checks_total:1,checks_pending:0,checks_failing:0,
-      protections:"no classic branch protection and no ruleset on main",
-      blockers:[],attempts:[]}')"
-
-  elif has 'Judge criterion 3 for PR'; then
-    # autodrive-merge-round/step-01b-crusty-evidence. The Crusty round posted
-    # its verdict comment on the PR at this head earlier in this same drive.
-    step=autodrive-merge-round/step-01b-crusty-evidence
-    response="$(j '{crusty_status:"DONE_CLEAN",
-      crusty_reason:"the newest Crusty verdict comment on the PR reads CLEAN at the current head",
-      crusty_reviewed_head_sha:$h,crusty_first_unreviewed_sha:""}')"
-
-  elif has '# merge-ready assessment'; then
-    # autodrive-merge-round/step-02-merge-ready-assessment. The assessment is
-    # posted as a comment, as the step asks, and its closing sentence states
-    # the outcome. Nothing parses this text; step-03 reads it and answers in
-    # one word.
-    step=autodrive-merge-round/step-02-merge-ready-assessment
-    response="Merge-ready assessment of PR #${PR} at ${HEAD_SHA}.
-All 13 criteria are met at this head. Criterion 1: this repository declares no suite command at the merge base and qa-team requires no gadugi scenario for it, so nothing is outstanding and the measured record says so. Criterion 3: the Crusty verdict comment on the PR reads CLEAN at this head. Criterion 8 and the rest: the one CI check at this head passed, the review decision is APPROVED, the merge state is CLEAN with neither a conflict nor a branch out of date with its base, there is no unresolved conversation thread, and the PR description carries the evidence for each criterion.
-This pull request is ready to merge."
-    printf '%s\n' "$response" | gh pr comment "$PR" --body-file - >/dev/null 2>&1 || true
-
-  elif opens 'Read the merge-ready assessment between the markers'; then
-    # autodrive-merge-round/step-03-outcome-reader. Exactly two bare lines and
-    # nothing after them: autodrive_round_word.sh lower-cases the last
-    # non-empty line and strips it to [a-z-], and reads the line before it as
-    # the CI answer.
-    step=autodrive-merge-round/step-03-outcome-reader
-    response='ci: pass
-ready'
-
-  elif has 'Reconcile every minor crusty finding'; then
-    # autodrive-merge-loop/step-02b-file-followups. The Crusty round was CLEAN
-    # with no finding at all, so there is nothing to file and nothing to map.
-    step=autodrive-merge-loop/step-02b-file-followups
-    response="$(j '{mappings:[],blockers:[],attempts:[]}')"
-
-  elif has 'before finalisation and state, in plain words'; then
-    # autodrive-finalize/observe-finalization-entry, before the merge step.
-    step=autodrive-finalize/observe-finalization-entry
-    response="PR #${PR} is open, is not a draft, and its head is ${HEAD_SHA}. It was open when this run started too, so nothing merged it earlier in the run."
-
-  elif has 'State in two or three plain sentences how finalisation'; then
-    # autodrive-finalize/state-outcome, after the merge step. The merge step's
-    # own result is quoted into this prompt; the sentence here is prose about
-    # it and decides nothing.
-    step=autodrive-finalize/state-outcome
-    response="Finalisation of PR #${PR} ended with the result the merge step recorded, which is quoted in this step's own input. This step requested no merge and changed nothing on GitHub."
   fi
 fi
 
@@ -1007,7 +802,7 @@ if [ -n "$BRANCH" ] && make_clone "$WORK/pr-clone" \
     && gitq -C "$WORK/pr-clone" worktree add -q -B "$BRANCH" "$DRIVE_REPO" "origin/$BRANCH"; then
   drive_started=1
   scenario_env drive "$BINDIR/amplihack" recipe run auto-drive-to-merge \
-    -w "$DRIVE_REPO" --no-detach \
+    -w "$DRIVE_REPO" --no-detach -f json \
     -c pr_number=42 -c "repo_path=$DRIVE_REPO" -c base_branch=main \
     -c autodrive_dry_run=false -c no_merge=false \
     -c "task_description=$TASK" \
@@ -1020,9 +815,10 @@ fi
 merge_recorded=0
 awk '$1 == "pr" && $2 == "merge" && $3 == "42" { found = 1 } END { exit !found }' \
   "$WORK/gh-merge.argv" && merge_recorded=1
-# The drive's verdict: the last step prints one typed report object carrying
-# `stop_reason`, which is the drive's own word for how it ended. The wording
-# of the sentence beside it is the product's and is not read here.
+# The drive's verdict: with `-f json` the run prints its report,
+# `autodrive_outcome`, whose `stop_reason` is the drive's own word for how it
+# ended (#3129: the goal loop's end, read by report.rs). The wording of any
+# sentence beside it is the product's and is not read here.
 #
 # One awk reads both files to the end and keeps the last match it saw. A grep
 # piped into a consumer that stops early would, under pipefail, turn the

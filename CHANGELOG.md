@@ -9,7 +9,7 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Changed
 
-- **auto-drive is one goal-driven agent loop (#3129)**: `auto-drive-to-merge` and `auto-drive-light` run the same loop. Each turn an agent reads a fresh reading of the PR, checks, reviews, base and repository settings, plus new guidance, and picks one action: review, wait, merge, hand off or ready. See `docs/reference/autodrive-goal-loop.md`. Closes #1924, #3094, #3109 and #3035; fixes #2342.
+- **auto-drive is one goal-driven agent loop (#3129)**: `auto-drive-to-merge` and `auto-drive-light` run the same loop. Each turn an agent reads a fresh reading of the PR, checks, reviews, base and repository settings, plus new guidance, does any work the turn needs itself, and picks one action: review, wait for checks or for the owner, merge, continue, hand off, report ready or stop. A fresh reading every turn means no stale readiness judgement (#3090), and a legacy state folder no longer stops the run (#3096). See `docs/reference/autodrive-goal-loop.md`. Closes #1924, #3094, #3109 and #3035; fixes #2342, #3090 and #3096.
 - **`stop_reason` values**: `closed`, `stopped` and `failed` are new. `waiting_for_checks`, `no_progress`, `budget_exhausted`, `unreadable` and the `base-behind` form of `not_merged` no longer occur. A merging-off run that reaches readiness and finishes the task's later steps is still `completed`.
 - **New command**: `amplihack recipe guidance show|wait` reads a run's guidance and waits for more without a poll or timer. It is allowed inside recipe runs.
 

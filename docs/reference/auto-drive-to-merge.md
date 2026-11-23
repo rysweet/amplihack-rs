@@ -43,7 +43,8 @@ operator sets and sees.
 | `pr_number`, `repo_path` | The pull request and its checkout. A cross-repository PR is refused. |
 | `task_description` | The task text. Later guidance governs over it where they differ. |
 | `no_merge` | `true` turns merging off. Defaults to `false` for this recipe. |
-| `goal_notes` | Information for the agent, for example a measurement. |
+| `merge_method` | `merge`, `squash` or `rebase`; empty takes the first of squash, merge commit and rebase the repository allows. A method the repository does not allow is never used. |
+| `autodrive_dry_run` | `true` reads and decides but never merges or writes to GitHub. |
 | `autodrive_budget_*` | Accepted and ignored. See [Retired inputs](#retired-inputs). |
 
 ## Merge authority
@@ -114,11 +115,15 @@ amplihack recipe run auto-drive-to-merge -c pr_number=3129 -c no_merge=true
 Send guidance while it runs. The next turn reads it:
 
 ```bash
-echo "Hold: wait for the owner's answer on #3109." | amplihack recipe guide 3129 -
+echo "Hold: wait for the owner's answer on #3109." \
+  | amplihack recipe guide https://github.com/rysweet/amplihack-rs/pull/3129 -
 amplihack recipe guidance show --pr 3129 --pr-repo rysweet/amplihack-rs
 ```
 
-Stop it gracefully: `amplihack recipe stop <session>`.
+Stop it gracefully: send guidance asking it to stop (the agent commits, pushes
+and ends with a continuation note), or run `amplihack recipe stop <session>`.
+
+Read what each turn chose and why: `<autodrive_state_dir>/turns/NNN/record.md`.
 
 ## Related
 

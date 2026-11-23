@@ -10,10 +10,16 @@ doc_type: reference
 # Auto-Drive-Light Recipe
 
 `auto-drive-light` is for small changes. Its build stage is unchanged: it
-resolves or opens the PR, refuses a cross-repository PR (#2538), repairs hooks,
-and measures how large the change is. After that it runs the same
-[goal loop](./autodrive-goal-loop.md) as
+resolves or opens the PR and repairs hooks. It then measures how large the
+change is. After that it runs the same [goal loop](./autodrive-goal-loop.md) as
 [auto-drive-to-merge](./auto-drive-to-merge.md).
+
+A cross-repository PR is refused twice: by the eligibility step when the build
+result names the PR and its `is_cross_repository` is not exactly `false`
+(#2538), and by the goal loop from GitHub's own reading before every turn. When
+the build result does not name the PR, its head and its base, the change is not
+measured (`decision: unmeasured`), and the run carries on; the measurement is
+information, never a reason to end the run.
 
 ## Differences from auto-drive-to-merge
 
