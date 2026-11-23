@@ -185,6 +185,9 @@ fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
         }
         ctx.last_skips = Some(skips);
     }
+    // Issue #2820: from the cycle's first snapshot only, never from
+    // revalidation, and once for each process.
+    ctx.note_unreadable(out, t, msg::unreadable_lines(&snap.unreadable));
 }
 
 /// Fails with `RotatePrototypeRunning` while the external rotator holds

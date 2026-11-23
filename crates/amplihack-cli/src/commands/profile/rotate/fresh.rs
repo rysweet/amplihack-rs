@@ -18,10 +18,8 @@ use super::decide::target_msg::reject;
 use super::decide::target_seen::Extra;
 use super::decide::{Decision, Measured, Probed, Reading, Reason};
 use super::fresh_msg;
-use super::log::Shown;
 use super::measure::{self, ProbeLabel};
 use super::observe::{Measurement, Snap, decide_with};
-use super::swap_back;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeSet;
@@ -310,7 +308,14 @@ pub(super) fn settle_timed(
                         Some(reread) => reread(ctx, &to, remaining),
                         None => (Probed::failed(), None),
                     };
-                    let p = fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines);
+                    let p = reread::fresh_probe(
+                        ctx,
+                        &to,
+                        &probes[i].1,
+                        p,
+                        damped_at.is_some(),
+                        &mut lines,
+                    );
                     if p == Probed::failed() {
                         // D7: a re-read that came back unknown is accepted
                         // only when the live login has no room; one with no
@@ -366,34 +371,4 @@ pub(super) fn settle_timed(
     m.seen.unconfirmed = unconfirmed;
     m.fresh_lines = lines;
     Ok(m)
-}
-
-/// The probe that replaces `old` after a re-read returned `p`, and its log
-/// lines. A failed read is unknown; a successful one is read now.
-fn fresh_probe(
-    ctx: &Ctx,
-    to: &ProfileName,
-    old: &Probed,
-    mut p: Probed,
-    damped: bool,
-    lines: &mut Vec<String>,
-) -> Probed {
-    // Issue #2910: a spend limit is what the login reported, not a failed read.
-    let spent = p.spend_limit && !p.unknown && !p.still_running && !p.carried;
-    if !spent && (p.reading == Reading::Failed || p.unknown || p.still_running || p.carried) {
-        lines.push(fresh_msg::failed(to));
-        return Probed::failed();
-    }
-    // Preserve the evidence time. Only an undated direct result receives
-    // the completion time; the next gate pass validates dated results.
-    p.observed_at.get_or_insert_with(ctx.now);
-    p.carried = false;
-    // Issue #1970: a re-read is made with passive readings off, so it is a
-    // direct reading and never checked as a stale cached one.
-    p.passive = false;
-    lines.push(fresh_msg::stale(to, &Shown::of(old), &Shown::of(&p)));
-    if damped && !swap_back::room(&p.reading, &ctx.settings) {
-        lines.push(fresh_msg::still_damped(to));
-    }
-    p
 }

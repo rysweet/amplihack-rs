@@ -119,8 +119,20 @@ fn liveness_unsupported_blocks_swap() {
         &Liveness::Known(BTreeSet::new()),
         &x
     ));
-    // Everything live: swaps may run, but no unhosted candidate is eligible.
-    assert!(Liveness::Everything.is_live(&x));
+    // Issue #2820: after an unreadable process, swaps may run, and only the
+    // profile it names counts as live.
+    let partial = Liveness::Partial {
+        live: ["X".to_string()].into(),
+        unreadable: vec![super::super::Unreadable {
+            pid: 700_001,
+            exe: "claude".into(),
+            argv: vec!["claude".into()],
+            verdict: super::super::Verdict::Counted(["X".to_string()].into()),
+        }],
+    };
+    assert!(swap_allowed(&r.state, &partial, &x));
+    assert!(partial.is_live(&x));
+    assert!(!partial.is_live(&ProfileName::parse("Y").unwrap()));
 }
 
 #[test]

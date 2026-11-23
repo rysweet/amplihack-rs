@@ -149,6 +149,8 @@ pub fn changed(first: &Snap, fresh: &Snap, decision: &Decision, journal: bool) -
         candidates: _,
         skips: _,
         sees_sessions: _,
+        // Issue #2820: only logs, and only from the cycle's first snapshot.
+        unreadable: _,
         overflow,
         pin,
         ignored,

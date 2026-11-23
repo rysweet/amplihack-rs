@@ -41,6 +41,7 @@ fn base() -> Snap {
         candidates: vec![n("spare"), n("spare2"), n("third")],
         skips: vec![(n("work"), Skip::Live)],
         sees_sessions: true,
+        unreadable: Vec::new(),
         overflow: Vec::new(),
         pin: PinState::None,
         ignored: Vec::new(),

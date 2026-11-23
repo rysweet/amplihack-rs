@@ -4,8 +4,11 @@
 //! nothing about its login (`measure::label_of`).
 
 use super::super::cycle::Ctx;
-use super::super::decide::Probed;
+use super::super::decide::{Probed, Reading};
+use super::super::fresh_msg;
+use super::super::log::Shown;
 use super::super::measure::{self, ProbeLabel};
+use super::super::swap_back;
 use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::ProbeMode;
@@ -84,4 +87,34 @@ pub fn reread_live_as_configured(
     left: Duration,
 ) -> (Probed, Option<ProbeLabel>) {
     reread_configured(ctx, name, left, true)
+}
+
+/// The probe that replaces `old` after a re-read returned `p`, and its log
+/// lines. A failed read is unknown; a successful one is read now.
+pub(super) fn fresh_probe(
+    ctx: &Ctx,
+    to: &ProfileName,
+    old: &Probed,
+    mut p: Probed,
+    damped: bool,
+    lines: &mut Vec<String>,
+) -> Probed {
+    // Issue #2910: a spend limit is what the login reported, not a failed read.
+    let spent = p.spend_limit && !p.unknown && !p.still_running && !p.carried;
+    if !spent && (p.reading == Reading::Failed || p.unknown || p.still_running || p.carried) {
+        lines.push(fresh_msg::failed(to));
+        return Probed::failed();
+    }
+    // Preserve the evidence time. Only an undated direct result receives
+    // the completion time; the next gate pass validates dated results.
+    p.observed_at.get_or_insert_with(ctx.now);
+    p.carried = false;
+    // Issue #1970: a re-read is made with passive readings off, so it is a
+    // direct reading and never checked as a stale cached one.
+    p.passive = false;
+    lines.push(fresh_msg::stale(to, &Shown::of(old), &Shown::of(&p)));
+    if damped && !swap_back::room(&p.reading, &ctx.settings) {
+        lines.push(fresh_msg::still_damped(to));
+    }
+    p
 }

@@ -143,14 +143,82 @@ fn an_unresolvable_path_falls_back_to_its_last_component() {
     assert!(p.scan().is_live(&n("Y")), "doubt counts as live");
 }
 
+/// Issue #2820. One unreadable process must not make every profile live.
+/// The old test asserted that it did; the protection is now decided per
+/// profile (see `tests_unreadable.rs`), so this is a replaced contract and
+/// not a weakened check.
 #[test]
-fn an_unreadable_claude_environment_makes_every_directory_live() {
+fn one_unreadable_process_leaves_the_other_profiles_readable() {
     let p = FakeProc::new();
+    p.process(100, UID, "S (sleeping)", &[&p.config_dir("X")], &p.root);
     let dir = p.process(107, UID, "S (sleeping)", &[], &p.root);
+    fs::write(
+        dir.join("cmdline"),
+        format!("claude\0--settings\0{}\0", p.root.join("Y").display()),
+    )
+    .unwrap();
     fs::remove_file(dir.join("environ")).unwrap();
     fs::create_dir(dir.join("environ")).unwrap(); // read fails
     let l = p.scan();
-    assert!(l.is_live(&n("X")) && l.is_live(&n("Y")) && l.is_live(&n("Z")));
+    assert!(matches!(l, Liveness::Partial { .. }));
+    assert!(l.is_live(&n("X")), "readable process names X");
+    assert!(
+        l.is_live(&n("Y")),
+        "unreadable claude names Y: doubtful is live"
+    );
+    assert!(!l.is_live(&n("Z")), "Z is named by nobody");
+    assert_eq!(l.unreadable().len(), 1);
+    assert_eq!(l.unreadable()[0].pid, 107);
+}
+
+/// A non-dumpable `tailscaled` whose command mentions amplihack is logged
+/// but is no evidence for any profile.
+#[test]
+fn an_unreadable_non_claude_process_mentioning_amplihack_is_not_evidence() {
+    let p = FakeProc::new();
+    let dir = p.process(108, UID, "S (sleeping)", &[], &p.root);
+    fs::write(
+        dir.join("status"),
+        format!("Name:\ttailscaled\nState:\tS\nUid:\t{UID}\t{UID}\t{UID}\t{UID}\n"),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("cmdline"),
+        b"tailscaled\0be-child\0ssh\0--cmd\0amplihack wait\0",
+    )
+    .unwrap();
+    fs::remove_file(dir.join("environ")).unwrap();
+    fs::create_dir(dir.join("environ")).unwrap();
+    let l = p.scan();
+    for name in ["X", "Y", "Z"] {
+        assert!(!l.is_live(&n(name)), "{name}");
+    }
+    assert!(l.supported());
+    assert_eq!(l.unreadable().len(), 1, "logged so an operator can see it");
+}
+
+/// Unreadable processes come out in pid order whatever the directory order.
+#[test]
+fn unreadable_processes_are_sorted_by_pid() {
+    let p = FakeProc::new();
+    for pid in [900, 200, 500] {
+        let dir = p.process(pid, UID, "S (sleeping)", &[], &p.root);
+        fs::remove_file(dir.join("environ")).unwrap();
+        fs::create_dir(dir.join("environ")).unwrap();
+    }
+    let l = p.scan();
+    let pids: Vec<u32> = l.unreadable().iter().map(|u| u.pid).collect();
+    assert_eq!(pids, vec![200, 500, 900]);
+}
+
+/// Nothing unreadable: the plain `Known` shape, no unreadable notes.
+#[test]
+fn nothing_unreadable_stays_known() {
+    let p = FakeProc::new();
+    p.process(100, UID, "S (sleeping)", &[&p.config_dir("X")], &p.root);
+    let l = p.scan();
+    assert!(matches!(l, Liveness::Known(_)));
+    assert!(l.unreadable().is_empty());
 }
 
 #[test]
@@ -216,8 +284,8 @@ fn a_fake_view_and_a_function_answer_as_they_were_built() {
         FakeSessions::unseen().liveness(anywhere),
         Liveness::Unsupported
     );
-    let function: fn(&Path) -> Liveness = |_| Liveness::Everything;
-    assert_eq!(function.liveness(anywhere), Liveness::Everything);
+    let function: fn(&Path) -> Liveness = |_| Liveness::Unsupported;
+    assert_eq!(function.liveness(anywhere), Liveness::Unsupported);
 }
 
 #[test]
