@@ -127,6 +127,14 @@ pub(crate) fn parse_issue_url(url: &str) -> Option<PrRef> {
     parse_github_ref(url, "issues", "issue").ok()
 }
 
+/// The owner and repository of `<owner>/<repo>`, under the same rules as
+/// the URL forms: an owner is a GitHub account name, a repository a GitHub
+/// repository name. `None` for anything else, including a third segment.
+pub(crate) fn parse_repo_slug(slug: &str) -> Option<(String, String)> {
+    let (owner, repo) = slug.split_once('/')?;
+    (valid_owner(owner) && valid_repo(repo)).then(|| (owner.to_string(), repo.to_string()))
+}
+
 /// Whether two GitHub references name the same issue. Owner and repository
 /// are compared whole and without case, never by substring.
 pub(crate) fn same_repo_ref(a: &PrRef, b: &PrRef) -> bool {

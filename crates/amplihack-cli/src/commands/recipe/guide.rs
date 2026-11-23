@@ -73,6 +73,11 @@
 //! does not add guidance by accident. Entries it adds with the flag carry
 //! ` run=<id>` in their caller field and are shown under their own preamble.
 //!
+//! After the entry is stored and logged, every waiter armed beside its folder
+//! (`recipe guidance wait`, issue #3129) is woken through
+//! `run_guidance::wake`. Something unexpected there is one `warning:` line
+//! on stderr; the entry is stored and the exit code stays 0.
+//!
 //! Exit codes: 0 appended; 1 target not found, a folder fails a check, or
 //! the `--file` file cannot be read; 2 usage (text on the command line, `-`
 //! together with `--file`, a terminal on stdin, empty, oversize or invalid
@@ -98,6 +103,11 @@ use crate::run_guidance::fs_safety::{check_dir, ensure_private_chain, untrusted_
 use crate::run_guidance::pr_key::{
     PrRef, parse_issue_url, parse_pr_url, pr_guidance_parent, pr_key, same_repo_ref, state_root,
 };
+// `sanitize_line` is the one escaping pass, shared with `recipe guidance`
+// and the launcher's warnings. Paths reach it from `check_dir`, the work
+// root validator and `run.json`, which build their own text, so it is
+// applied once, to the whole line, just before printing.
+use crate::run_guidance::sanitize::{escaped, needs_escape, sanitize_line};
 use crate::run_guidance::{
     AUTO_DRIVE_DIR, GUIDANCE_DIR, GuideError, HEADER_ROOM, MAX_GUIDANCE_ENTRY_BYTES, Source,
     append_entry, caller_identity, check_text,
@@ -217,6 +227,11 @@ fn guide(
             "recipe guide: warning: the entry was added but guidance.log was not: {}",
             sanitize_line(&error)
         );
+    }
+    // Issue #3129: the entry is stored whether or not a waiter was woken,
+    // so this is a warning and the exit code stays 0.
+    if let Some(warning) = appended.wake_warning {
+        eprintln!("recipe guide: warning: {}", sanitize_line(&warning));
     }
     Ok(())
 }
@@ -358,33 +373,6 @@ fn quoted(value: &str) -> String {
         }
     }
     out.push('"');
-    out
-}
-
-/// Characters that never reach stderr as themselves: control characters,
-/// the bidirectional and zero-width marks, and the line and paragraph
-/// separators, which would end the one line a failure prints.
-fn needs_escape(c: char) -> bool {
-    crate::commands::agent::validate::unsafe_char(c) || matches!(c, '\u{2028}' | '\u{2029}')
-}
-
-fn escaped(c: char) -> String {
-    format!("\\u{{{:04x}}}", c as u32)
-}
-
-/// The last pass over a line before it is printed, on stdout as well as
-/// stderr. Paths reach it from `check_dir`, the work root validator and
-/// `run.json`, which build their own text, so the escaping is applied once
-/// here to all of it.
-fn sanitize_line(message: &str) -> String {
-    let mut out = String::with_capacity(message.len());
-    for c in message.chars() {
-        if needs_escape(c) {
-            out.push_str(&escaped(c));
-        } else {
-            out.push(c);
-        }
-    }
     out
 }
 
