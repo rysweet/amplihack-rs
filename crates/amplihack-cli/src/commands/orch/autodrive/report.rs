@@ -1,24 +1,54 @@
-//! The run report (`autodrive_outcome`, schema version 2, #2575).
+//! The run report (`autodrive_outcome`, schema version 2) for the goal loop
+//! (#3129, D8 and D-9).
 //!
-//! The report never fails and never panics: a badly shaped agent output can
-//! not fail it. `merge` and `stop_reason` come only from JSON written by the
-//! auto-drive tools (`finalize_merge` from the finalize merge step,
-//! `merge_loop_result` from the merge loop step, which reads the loop driver's
-//! own result file). `summary` is the finalisation agent's statement,
-//! verbatim and cut on a character boundary at `MAX_RECORD_BYTES`. Nothing in
-//! the agent's prose decides a field. Notes name what could not be read,
-//! never the contents of what was read.
-//! docs/reference/autodrive-merge-ready-round.md#run-report.
+//! The report never fails, never panics and makes no network call. It reads
+//! two records, only from the state folder the runner bound to this
+//! invocation (`auth.state_dir()`), and only through the private evidence
+//! store:
+//!
+//! - `loop-end.json`, which only the loop driver and its end actions write.
+//!   Its `end` word alone decides `stop_reason`.
+//! - `merge-result.json`, the loop's merge action's own line. It fills only
+//!   the `merge` field and never makes a run `completed` by itself.
+//!
+//! Each must be a regular file, not a link and not shared, of at most
+//! `MAX_RECORD_BYTES`, holding one JSON object whose `run_id` is this run's.
+//! When the context's `autodrive_state_dir` differs from the bound folder,
+//! neither is read. The report creates no folder and never reads a turn
+//! record (`turns/NNN/record.md`): those are for people.
+//!
+//! `completed` comes only from a PR already merged at entry, a `merged` end,
+//! or a `ready` end when the captured invocation does not allow merging. The
+//! record's own `verify_readiness` claim grants nothing. `loop_result` is
+//! always null; the loop lines it came from are retired.
+//!
+//! `summary` is the `autodrive_finalization` context value, verbatim and cut
+//! on a character boundary at `MAX_RECORD_BYTES`. Nothing in an agent's prose
+//! decides a field. Notes name what could not be read, never the contents of
+//! what was read.
+//!
+//! docs/reference/autodrive-goal-loop.md#reported-outcomes.
 use super::{
     authorization::InvocationAuthorization,
     identity::{Binding, MAX_RECORD_BYTES, validate_binding},
+    state::EvidenceStore,
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Map, Value, json};
 
-/// Merge results the finalize merge step writes. Any other result is reported
-/// as a hand-off (never `completed`); a missing or unparseable one is unreadable.
-const MERGE_RESULTS: [&str; 9] = [
+/// The record the loop's merge action writes in the runner-bound state folder.
+pub(crate) const STATE_MERGE_RECORD: &str = "merge-result.json";
+
+/// The record only the loop driver and its end actions write, in the
+/// runner-bound state folder.
+pub(crate) const LOOP_END_RECORD: &str = "loop-end.json";
+
+/// One record's JSON object.
+type Record = Map<String, Value>;
+
+/// Results the loop's merge action writes. Any other result, including the
+/// retired `checks-pending` and `base-behind`, is not echoed.
+const MERGE_RESULTS: [&str; 7] = [
     "merged",
     "not-authorised",
     "authorization-unreadable",
@@ -26,16 +56,36 @@ const MERGE_RESULTS: [&str; 9] = [
     "refused",
     "not-open",
     "message-unavailable",
-    "checks-pending",
-    "base-behind",
 ];
+
+/// Each `end` word the driver writes and the `stop_reason` it gives. `ready`
+/// is not here: the captured invocation decides it. Any other word is
+/// `failed`.
+const END_REASONS: [(&str, &str); 8] = [
+    ("merged", "completed"),
+    ("handoff", "handoff"),
+    ("closed", "closed"),
+    ("stopped", "stopped"),
+    ("refused", "terminal_refusal"),
+    ("failed", "failed"),
+    ("usage_limit", "usage_limit"),
+    ("orphaned", "orphaned"),
+];
+
+/// The most steps a `merged` end can list for after the merge, and the most
+/// bytes they can hold together.
+const MAX_AFTER_MERGE_STEPS: usize = 32;
+const MAX_AFTER_MERGE_BYTES: usize = 8 * 1024;
+
+/// The longest `end` word the report echoes.
+const MAX_END_WORD: usize = 64;
 
 pub(crate) fn report(
     auth: &InvocationAuthorization,
     context: &Map<String, Value>,
     expected_pr: Option<&str>,
 ) -> Value {
-    let mut notes: Vec<&'static str> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
     let (summary, truncated) = summary(context.get("autodrive_finalization"));
     let requested_action = if auth.allows_merge() {
         "merge"
@@ -46,6 +96,7 @@ pub(crate) fn report(
     out.insert("schema_version".into(), json!(2));
     out.insert("run_id".into(), json!(auth.run_id()));
     out.insert("requested_action".into(), json!(requested_action));
+    out.insert("loop_result".into(), Value::Null);
 
     match already_merged(auth, context, expected_pr) {
         Ok(Some(pr)) => {
@@ -53,115 +104,78 @@ pub(crate) fn report(
                 "merge".into(),
                 json!({"result": "already-merged", "pr": pr}),
             );
-            out.insert("loop_result".into(), Value::Null);
+            out.insert("loop_end".into(), Value::Null);
+            out.insert("after_merge_steps".into(), json!([]));
             out.insert("stop_reason".into(), json!("completed"));
             return finish(out, summary, truncated, &notes);
         }
         Ok(None) => {}
-        Err(_) => notes.push("build_result: already-merged preparation was refused"),
+        Err(_) => notes.push("build_result: already-merged preparation was refused".into()),
     }
 
-    let state_dir_ok = state_dir_matches(auth, context);
-    if !state_dir_ok {
-        notes.push("autodrive_state_dir: differs from the runner-assigned state directory");
-    }
-
-    let (loop_result, crusty) = match loop_result(context.get("merge_loop_result")) {
-        Some(result) => (Some(result), false),
-        None => (loop_result(context.get("crusty_loop_result")), true),
-    };
-    let (merge, unknown_merge) = if state_dir_ok {
-        let read = match merge_result(context.get("finalize_merge"), expected_pr) {
-            // #2575 B3: a finalisation re-run by recovery runs in another
-            // process, so its result never reaches this context. Its merge
-            // step wrote the same line, bound to this run, to the state folder.
-            MergeRead::Missing => match state_merge_record(auth) {
-                Some(record) => {
-                    notes.push("finalize_merge: read from the state folder");
-                    merge_result(Some(&record), expected_pr)
-                }
-                None => MergeRead::Missing,
-            },
-            read => read,
-        };
-        match read {
-            MergeRead::Known(map) => (Some(map), false),
-            MergeRead::Unknown => (None, true),
-            MergeRead::Missing => (None, false),
+    let (loop_end, merge) = read_records(auth, context, expected_pr, &mut notes);
+    let end = loop_end.as_ref().and_then(|record| {
+        let word = end_word(record);
+        if word.is_none() {
+            notes.push(format!("{LOOP_END_RECORD}: end is not a word"));
         }
-    } else {
-        (None, false)
-    };
-    let merge_name = merge
+        word
+    });
+    let merge_result = merge
         .as_ref()
         .and_then(|m| m.get("result"))
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-
-    // #2663: the tool wrote `merged` only after GitHub read the PR MERGED at
-    // the expected head, so a merge recorded with its PR and head is
-    // `completed` whatever the loop line says. A step that failed after the
-    // merge, or a loop result lost with it, does not undo the merge.
-    let merged_at_head = merge.as_ref().is_some_and(|m| {
-        m.get("result").and_then(Value::as_str) == Some("merged")
-            && m.contains_key("pr")
-            && m.contains_key("expected_head")
+        .and_then(Value::as_str);
+    // The merge action writes `pr` and `expected_head` with every result.
+    let merged_by_action = merge.as_ref().is_some_and(|m| {
+        merge_result == Some("merged") && m.contains_key("pr") && m.contains_key("expected_head")
     });
-    // #2663 M1: `completed` (a success) means merged. #2575 B2: a WAITING loop
-    // goes to finalisation like DONE, and a pending check is a wait.
-    let stop_reason = match loop_result.as_deref() {
-        _ if merged_at_head => {
-            if !matches!(loop_result.as_deref(), Some("DONE" | "WAITING")) || crusty {
-                notes.push("finalize_merge: merged; loop_result not consulted");
-            }
-            "completed"
+
+    let stop_reason = match end {
+        // The note for a missing or unread record is already in `notes`.
+        None => "failed",
+        Some("ready") if auth.allows_merge() => {
+            notes.push(format!(
+                "{LOOP_END_RECORD}: ready while merging is on is a hand-off"
+            ));
+            "handoff"
         }
-        Some("TERMINAL_REFUSAL" | "TERMINAL_POLICY_REFUSAL") => "terminal_refusal",
-        Some("DONE" | "WAITING") if crusty => {
-            notes.push("merge_loop_result: missing or unreadable");
-            "unreadable"
-        }
-        Some("DONE" | "WAITING") => match merge_name.as_deref() {
-            Some("merged") => "completed",
-            // #2575 B4: a verify-only run (no_merge or dry run) that reached
-            // DONE did what it was asked; it is `completed`, as before
-            // 8794c2df2. A merge run that was refused stays `not_merged`.
-            Some("not-authorised") if requested_action == "verify_readiness" => "completed",
-            Some("not-authorised" | "base-behind") => "not_merged",
-            Some("checks-pending") => "waiting_for_checks",
-            Some(_) => "handoff",
-            None if unknown_merge => {
-                notes.push("finalize_merge: unknown merge result");
-                "handoff"
-            }
+        Some("ready") => "completed",
+        Some(word) => match END_REASONS.iter().find(|(known, _)| *known == word) {
+            Some(&(_, reason)) => reason,
             None => {
-                notes.push("finalize_merge: missing or unreadable");
-                "unreadable"
+                notes.push(format!("{LOOP_END_RECORD}: unknown end word"));
+                "failed"
             }
         },
-        // A crusty STUCK keeps the stop reason it had before #2575.
-        Some("STUCK") if crusty => "no_progress",
-        Some("HANDOFF" | "STUCK") => "handoff",
-        Some("BUDGET_EXHAUSTED") => "budget_exhausted",
-        Some("USAGE_LIMIT") => "usage_limit",
-        Some("ORPHANED") => "orphaned",
-        _ => {
-            if loop_result.is_none() {
-                notes.push("merge_loop_result: missing or unreadable");
-            }
-            "unreadable"
-        }
     };
+    if end == Some("merged") && !merged_by_action {
+        notes.push(format!(
+            "{LOOP_END_RECORD}: merged; the merge was not by this run's merge action"
+        ));
+    }
+    if end != Some("merged") && merge_result == Some("merged") {
+        notes.push(format!(
+            "{STATE_MERGE_RECORD}: merged, but the loop did not end merged"
+        ));
+    }
+    let after_merge_steps = match (end, &loop_end) {
+        (Some("merged"), Some(record)) => after_merge_steps(record, &mut notes),
+        _ => Vec::new(),
+    };
+
     out.insert("merge".into(), merge.map_or(Value::Null, Value::Object));
-    out.insert(
-        "loop_result".into(),
-        loop_result.map_or(Value::Null, Value::String),
-    );
+    out.insert("loop_end".into(), end.map_or(Value::Null, |w| json!(w)));
+    out.insert("after_merge_steps".into(), Value::Array(after_merge_steps));
     out.insert("stop_reason".into(), json!(stop_reason));
     finish(out, summary, truncated, &notes)
 }
 
-fn finish(mut out: Map<String, Value>, summary: String, truncated: bool, notes: &[&str]) -> Value {
+fn finish(
+    mut out: Map<String, Value>,
+    summary: String,
+    truncated: bool,
+    notes: &[String],
+) -> Value {
     out.insert("summary".into(), Value::String(summary));
     if truncated {
         out.insert("summary_truncated".into(), json!(true));
@@ -189,99 +203,203 @@ fn summary(raw: Option<&Value>) -> (String, bool) {
     (text[..end].to_owned(), true)
 }
 
-/// One JSON object from a tool-written context value: the value itself when
-/// the runner already parsed it, else the last line that parses as an object.
-fn tool_object(raw: Option<&Value>) -> Option<Map<String, Value>> {
-    match raw? {
-        Value::Object(map) => Some(map.clone()),
-        Value::String(text) if text.len() <= MAX_RECORD_BYTES => {
-            text.lines()
-                .rev()
-                .find_map(|line| match serde_json::from_str::<Value>(line.trim()) {
-                    Ok(Value::Object(map)) => Some(map),
-                    _ => None,
-                })
-        }
+/// `loop-end.json` and the reduced `merge-result.json`, each only when it is
+/// this run's and readable. Each reason a record is not used goes into
+/// `notes`, except a merge record that is simply absent: a run whose agent
+/// never chose `merge` has none.
+fn read_records(
+    auth: &InvocationAuthorization,
+    context: &Map<String, Value>,
+    expected_pr: Option<&str>,
+    notes: &mut Vec<String>,
+) -> (Option<Record>, Option<Record>) {
+    if !state_dir_matches(auth, context) {
+        notes.push("autodrive_state_dir: differs from the runner-assigned state directory".into());
+        return (None, None);
+    }
+    let Some(dir) = auth.state_dir() else {
+        notes.push("state folder: no runner-assigned state directory".into());
+        return (None, None);
+    };
+    // The report creates nothing: a folder that is missing, or is a link, is
+    // not handed to the store, whose `create` would make it.
+    let store = match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => EvidenceStore::create(dir).ok(),
         _ => None,
+    };
+    let Some(store) = store else {
+        notes.push("state folder: missing or refused".into());
+        return (None, None);
+    };
+    let loop_end = match read_record(&store, LOOP_END_RECORD, auth.run_id()) {
+        Ok(record) => Some(record),
+        Err(why) => {
+            notes.push(format!("{LOOP_END_RECORD}: {}", why.describe()));
+            None
+        }
+    };
+    let merge = match read_record(&store, STATE_MERGE_RECORD, auth.run_id()) {
+        Ok(record) => match merge_field(&record, expected_pr) {
+            Ok(merge) => Some(merge),
+            Err(why) => {
+                notes.push(format!("{STATE_MERGE_RECORD}: {why}"));
+                None
+            }
+        },
+        Err(Unread::Missing) => None,
+        Err(why) => {
+            notes.push(format!("{STATE_MERGE_RECORD}: {}", why.describe()));
+            None
+        }
+    };
+    (loop_end, merge)
+}
+
+/// Why a record in the state folder was not used.
+enum Unread {
+    /// There is no such entry.
+    Missing,
+    /// The store refused it: a link, a shared or special file, one with more
+    /// than one name, or one over `MAX_RECORD_BYTES`.
+    Refused,
+    /// The file is not exactly one JSON object.
+    NotAnObject,
+    /// Its `run_id` is not this run's, or it has none.
+    OtherRun,
+}
+
+impl Unread {
+    fn describe(&self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Refused => "refused (a link, a shared or special file, or over the size limit)",
+            Self::NotAnObject => "not one JSON object",
+            Self::OtherRun => "not this run's",
+        }
     }
 }
 
-/// `loop_result` from a loop line: an upper-case token, or nothing.
-fn loop_result(raw: Option<&Value>) -> Option<String> {
-    let map = tool_object(raw)?;
-    let token = map.get("loop_result")?.as_str()?;
-    (!token.is_empty()
-        && token.len() <= 64
-        && token.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'))
-    .then(|| token.to_owned())
-}
-
-/// The file the finalize merge step writes its result to, in the runner-bound
-/// state folder (#2575 B3).
-pub(crate) const STATE_MERGE_RECORD: &str = "finalize-merge.json";
-
-/// The merge step's result from the runner-bound state folder, only when it
-/// names this run: a record another run left in a reused folder is ignored.
-/// Read through the private evidence store, so a link, a shared file or an
-/// oversized one is never read.
-fn state_merge_record(auth: &InvocationAuthorization) -> Option<Value> {
-    let store = super::state::EvidenceStore::create(auth.state_dir()?).ok()?;
-    let bytes = store.read_private(STATE_MERGE_RECORD).ok()?;
-    let record = tool_object(Some(&Value::String(String::from_utf8(bytes).ok()?)))?;
-    (record.get("run_id").and_then(Value::as_str) == Some(auth.run_id()))
-        .then_some(Value::Object(record))
-}
-
-/// What the finalize merge step's JSON said.
-enum MergeRead {
-    /// A documented result, reduced to its documented fields.
-    Known(Map<String, Value>),
-    /// A string `result` that is not a documented one: never `completed`.
-    Unknown,
-    /// No readable object, no string `result`, another PR's result, or no
-    /// `pr` when one is expected.
-    Missing,
-}
-
-/// The finalize merge step's JSON, reduced to its documented fields.
-fn merge_result(raw: Option<&Value>, expected_pr: Option<&str>) -> MergeRead {
-    let Some(map) = tool_object(raw) else {
-        return MergeRead::Missing;
+/// One record from the private store: exactly one JSON object, compact or
+/// pretty-printed, whose `run_id` is `run_id`.
+fn read_record(
+    store: &EvidenceStore,
+    name: &str,
+    run_id: &str,
+) -> std::result::Result<Record, Unread> {
+    let bytes = store.read_private(name).map_err(|error| {
+        let missing = error
+            .root_cause()
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+        if missing {
+            Unread::Missing
+        } else {
+            Unread::Refused
+        }
+    })?;
+    let Ok(Value::Object(record)) = serde_json::from_slice::<Value>(&bytes) else {
+        return Err(Unread::NotAnObject);
     };
-    let Some(result) = map.get("result").and_then(Value::as_str) else {
-        return MergeRead::Missing;
+    if record.get("run_id").and_then(Value::as_str) != Some(run_id) {
+        return Err(Unread::OtherRun);
+    }
+    Ok(record)
+}
+
+/// The `end` word of a loop-end record: lower-case ASCII letters, digits,
+/// `_` and `-`, starting with a letter, at most `MAX_END_WORD` bytes. Anything
+/// else is not echoed.
+fn end_word(record: &Record) -> Option<&str> {
+    record.get("end").and_then(Value::as_str).filter(|word| {
+        word.len() <= MAX_END_WORD
+            && word.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+            && word
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    })
+}
+
+/// The steps a `merged` end lists for after the merge: text values only, in
+/// order, at most `MAX_AFTER_MERGE_STEPS` of them and `MAX_AFTER_MERGE_BYTES`
+/// together. The list stops at the first step that would pass either cap.
+fn after_merge_steps(record: &Record, notes: &mut Vec<String>) -> Vec<Value> {
+    let Some(raw) = record.get("after_merge") else {
+        return Vec::new();
     };
-    let pr = map.get("pr").and_then(Value::as_u64);
+    let Some(items) = raw.as_array() else {
+        notes.push(format!("{LOOP_END_RECORD}: after_merge is not a list"));
+        return Vec::new();
+    };
+    let mut steps = Vec::new();
+    let mut bytes = 0;
+    let mut skipped = false;
+    for item in items {
+        let Some(step) = item.as_str() else {
+            skipped = true;
+            continue;
+        };
+        if steps.len() == MAX_AFTER_MERGE_STEPS || bytes + step.len() > MAX_AFTER_MERGE_BYTES {
+            notes.push(format!(
+                "{LOOP_END_RECORD}: after_merge cut to {MAX_AFTER_MERGE_STEPS} steps and {} KiB",
+                MAX_AFTER_MERGE_BYTES / 1024
+            ));
+            break;
+        }
+        bytes += step.len();
+        steps.push(Value::String(step.to_owned()));
+    }
+    if skipped {
+        notes.push(format!(
+            "{LOOP_END_RECORD}: after_merge values that are not text were left out"
+        ));
+    }
+    steps
+}
+
+/// The merge action's record reduced to its documented fields, or why it is
+/// not echoed.
+fn merge_field(
+    record: &Record,
+    expected_pr: Option<&str>,
+) -> std::result::Result<Record, &'static str> {
+    let Some(result) = record.get("result").and_then(Value::as_str) else {
+        return Err("no result");
+    };
+    let pr = record.get("pr").and_then(Value::as_u64);
     // A record must name the expected PR; one with no readable `pr` is not
     // trusted when a PR is expected.
     if let Some(expected) = expected_pr.filter(|p| !p.is_empty())
         && (pr.is_none() || expected.parse::<u64>().ok() != pr)
     {
-        return MergeRead::Missing;
+        return Err("names another PR, or none");
     }
     if !MERGE_RESULTS.contains(&result) {
-        return MergeRead::Unknown;
+        return Err("not a merge result the merge action writes");
     }
     let mut out = Map::new();
     out.insert("result".into(), json!(result));
     if let Some(pr) = pr {
         out.insert("pr".into(), json!(pr));
     }
-    if let Some(head) = map
+    if let Some(head) = record
         .get("expected_head")
         .and_then(Value::as_str)
-        .filter(|h| [40, 64].contains(&h.len()) && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        .filter(|h| {
+            [40, 64].contains(&h.len())
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
     {
         out.insert("expected_head".into(), json!(head));
     }
-    if let Some(handoff) = map
+    if let Some(handoff) = record
         .get("handoff")
         .and_then(Value::as_str)
         .filter(|h| matches!(*h, "true" | "false"))
     {
         out.insert("handoff".into(), json!(handoff));
     }
-    MergeRead::Known(out)
+    Ok(out)
 }
 
 /// #2329: the run's `autodrive_state_dir` must equal the runner-assigned one
