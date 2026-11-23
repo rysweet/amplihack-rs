@@ -165,3 +165,30 @@ fn collector_invalid_authoritative_file_never_borrows_completion() {
 fn finalizer_invalid_mode_retains_error_two() {
     Fixture::new().finalizer("invalid").exit(2);
 }
+
+// #2966: the collector used to derive `ci.state` from the terminal-state
+// probe's record: `FAILURE` when the probe had said `BLOCKED_CI`, `UNKNOWN`
+// otherwise. That was a second, older reading of CI beside the live one the
+// `outcome` facts carry, and nothing read it. It is gone, so a stale record of
+// the old probe's blocker cannot turn into a CI fact. The record itself is still
+// carried, as what the probe said, under `prior_terminal_state`.
+#[test]
+fn collector_derives_no_ci_state_from_the_probes_record() {
+    for prior in ["BLOCKED_CI", "FOLLOWUP_CREATED", "MERGED"] {
+        let f = Fixture::new().env(
+            "RECIPE_VAR_terminal_state",
+            json!({"terminal_state": prior}).to_string(),
+        );
+        let r = f.finalizer("collect");
+        r.exit(0);
+        let j = r.json();
+        assert!(
+            j.get("ci").is_none(),
+            "{prior}: the collector must not derive a CI state from the probe's record: {j}"
+        );
+        assert_eq!(
+            j["prior_terminal_state"]["terminal_state"], prior,
+            "{prior}: the probe's record is still carried as what the probe said: {j}"
+        );
+    }
+}

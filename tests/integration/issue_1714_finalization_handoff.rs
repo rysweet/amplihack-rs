@@ -1,5 +1,6 @@
 //! Issue #1714: inside auto-drive, a `default-workflow` build whose
-//! finalization ends `BLOCKED_CI`, or `FAILED_IMPLEMENTATION` or
+//! finalization ends `BLOCKED_CI` (since #2966 only for a cause the run cannot
+//! fix, reported by the assessment; `assessed_ci.rs`), or `FAILED_IMPLEMENTATION` or
 //! `FAILED_REPORTING` while the open-PR check confirmed a published, open PR
 //! (`reporting_handoff.rs` for the reporting-failure exits), hands that PR to the crusty
 //! loop and the merge-ready loop instead of ending the run. A standalone
@@ -28,8 +29,14 @@ mod ancestor_fetch;
 mod ancestor_fetch_ssh;
 #[path = "issue_1714_finalization_handoff/ancestor_handoff.rs"]
 mod ancestor_handoff;
+#[path = "issue_1714_finalization_handoff/assessed_ci.rs"]
+mod assessed_ci;
+#[path = "issue_1714_finalization_handoff/assessed_ci_owner.rs"]
+mod assessed_ci_owner;
 #[path = "issue_1714_finalization_handoff/brick.rs"]
 mod brick;
+#[path = "issue_1714_finalization_handoff/compat_alias.rs"]
+mod compat_alias;
 #[path = "issue_1714_finalization_handoff/fixture.rs"]
 mod fixture;
 #[path = "issue_1714_finalization_handoff/probe.rs"]

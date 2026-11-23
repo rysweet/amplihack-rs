@@ -36,6 +36,8 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "../../amplifier-bundle/tools/workflow_finalization_metadata.sh",
         "../../amplifier-bundle/tools/workflow_finalization_collect.sh",
         "../../amplifier-bundle/tools/workflow_finalization_validate.sh",
+        "../../amplifier-bundle/tools/workflow_finalization_worktree.sh",
+        "../../amplifier-bundle/tools/workflow_finalization_reentry.sh",
         "../../amplifier-bundle/tools/workflow_finalization_complete.sh",
         "../../amplifier-bundle/tools/autodrive_refusal.sh",
         "src/commands/recipe/run/failure_evidence.rs",

@@ -11,10 +11,10 @@
 //!   runner, with the shipped sub-recipe beside it, so what is asserted is
 //!   that the step is attempted on every outcome and that its failure -- the
 //!   agent's, or the sub-recipe's own -- never ends the run;
-//! - the shipped `validate-agentic-finalization` step's own `command:`, with a
-//!   stub `amplihack` in its path, so what is asserted is the call that
-//!   actually reaches `step-recovery run` and the exit the body actually gave
-//!   it.
+//! - the shipped `validate-agentic-finalization` step's own `command:`, and
+//!   `continue-ci-repair`'s (#2966), with a stub `amplihack` in its path, so
+//!   what is asserted is the call that actually reaches `step-recovery run`
+//!   and what the body it ran actually did.
 //!
 //! Nothing here asserts the presence or absence of a word in a file.
 
@@ -198,7 +198,8 @@ fn an_assessment_the_run_cannot_even_resolve_still_lets_the_run_continue() {
 /// without an LLM (#2819 R4). The runner passes the prompt by path -- `-p
 /// "Read and follow the complete instructions in the file <path>. ..."` -- so
 /// the path is taken out of that sentence and the file copied where the case
-/// can read it.
+/// can read it. When `<answer file>.<n>.sh` exists, call `n` runs it first: it
+/// stands for what that session did in the worktree (#2966, crusty round 5).
 const AGENT_STUB: &str = r#"#!/usr/bin/env bash
 prompt_arg=""; out=""
 for ((i = 1; i <= $#; i++)); do
@@ -210,7 +211,10 @@ done
 file="$(printf '%s' "$prompt_arg" | sed -n 's/^.*instructions in the file \(.*\)\. Its contents.*$/\1/p')"
 if [ -n "$file" ] && [ -f "$file" ]; then cat "$file" > "$AGENT_STUB_PROMPT"
 else printf '%s' "$prompt_arg" > "$AGENT_STUB_PROMPT"; fi
-answer="$(cat "$AGENT_STUB_ANSWER")"
+n=$(( $(cat "$AGENT_STUB_ANSWER.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$AGENT_STUB_ANSWER.count"
+cp "$AGENT_STUB_PROMPT" "$AGENT_STUB_PROMPT.$n"
+[ ! -f "$AGENT_STUB_ANSWER.$n.sh" ] || bash "$AGENT_STUB_ANSWER.$n.sh" >&2
+answer="$(cat "$AGENT_STUB_ANSWER.$n" 2>/dev/null || cat "$AGENT_STUB_ANSWER")"
 [ -z "$out" ] || printf '%s' "$answer" > "$out"
 printf '%s\n' "$answer"
 "#;
@@ -220,6 +224,34 @@ printf '%s\n' "$answer"
 /// launcher and runs what it was told to run.
 const LAUNCHER_STUB: &str = r#"#!/usr/bin/env bash
 exec "$@"
+"#;
+
+/// The nested `amplihack recipe run` that `continue-ci-repair` starts (#2966).
+/// It records the call and the `ci_repair_reentry` note it was handed, then
+/// runs the recipe it was given -- the bundle's own assessment recipe --
+/// through the pinned runner, with the same context, so the nested pass is the
+/// shipped recipe with the shipped conditions and the same recorded agent.
+/// First on PATH, so no test reaches the host's own `amplihack` or agent.
+const NESTED_RUN_STUB: &str = r#"#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NESTED_RUN_CALLS"
+[ "$1 $2" = "recipe run" ] || { echo "unexpected amplihack call: $*" >&2; exit 96; }
+recipe="$3"; shift 3
+wd="."; ctx='{}'
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --working-dir) wd="$2"; shift 2 ;;
+    -f) shift 2 ;;
+    --context-from-file)
+      k="${2%%=*}"; f="${2#*=}"
+      [ "$k" != ci_repair_reentry ] || cp "$f" "$NESTED_RUN_NOTE"
+      ctx="$(jq -c --arg k "$k" --rawfile v "$f" '. + {($k): $v}' <<<"$ctx")"; shift 2 ;;
+    -c) ctx="$(jq -c --arg k "${2%%=*}" --arg v "${2#*=}" '. + {($k): $v}' <<<"$ctx")"; shift 2 ;;
+    *) echo "unexpected argument: $1" >&2; exit 96 ;;
+  esac
+done
+cf="$(mktemp "${TMPDIR:-/tmp}/nested-ctx.XXXXXX")"
+printf '%s' "$ctx" > "$cf"
+exec "$PINNED_RUNNER" "$recipe" --working-dir "$wd" --no-auto-stage --output-format json --context-file "$cf"
 "#;
 
 /// What a run of the shipped assessment recipe produced: the prompt the agent
@@ -238,11 +270,53 @@ impl Assessed {
             other => other.to_string(),
         }
     }
+
+    /// The nested `recipe run` calls `continue-ci-repair` made (#2966).
+    fn nested_runs(&self) -> Vec<String> {
+        fs::read_to_string(self.run.dir.path().join("nested-runs.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The prompt the agent was given on its `n`th call (1 is the first pass).
+    fn prompt_of(&self, n: usize) -> String {
+        fs::read_to_string(self.run.dir.path().join(format!("prompt.md.{n}")))
+            .unwrap_or_else(|e| panic!("the agent was not called {n} times: {e}"))
+    }
+
+    /// The `ci_repair_reentry` note the nested run was handed.
+    fn nested_note(&self) -> Value {
+        let text = fs::read_to_string(self.run.dir.path().join("nested-note.json"))
+            .expect("the nested run was handed a note");
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("the note is JSON ({e}): {text}"))
+    }
 }
 
 /// Run the shipped `assess-finalization` step -- the real sub-recipe, with its
 /// real prompt -- over `evidence`, with an agent that answers `answer`.
 fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
+    assess_with_recorded_agent_passes(evidence, answer, &[])
+}
+
+/// The same, with the agent answering `later[i]` on call `i + 2` (a pass
+/// `continue-ci-repair` started) and `first` on every other call.
+fn assess_with_recorded_agent_passes(evidence: &str, first: &str, later: &[&str]) -> Assessed {
+    assess_in_worktree(evidence, first, later, None, &[])
+}
+
+/// The same again, with `worktree` recorded as the run's worktree
+/// (`worktree_setup.worktree_path`), and `actions[i]`, a shell script, run by
+/// the agent on call `i + 1` before it answers.
+fn assess_in_worktree(
+    evidence: &str,
+    first: &str,
+    later: &[&str],
+    worktree: Option<&str>,
+    actions: &[&str],
+) -> Assessed {
+    let answer = first;
     let dir = tempfile::TempDir::new().expect("tempdir");
     let name = "workflow-finalization-assessment";
     fs::copy(bundle_recipe(name), dir.path().join(format!("{name}.yaml")))
@@ -252,20 +326,38 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
     fs::create_dir_all(dir.path().join("bin")).expect("bin dir");
     write_executable(&agent, AGENT_STUB);
     write_executable(&launcher, LAUNCHER_STUB);
+    write_executable(&dir.path().join("bin/amplihack"), NESTED_RUN_STUB);
+    let path_var = format!(
+        "{}:{}",
+        dir.path().join("bin").display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
     let prompt_file = dir.path().join("prompt.md");
     let answer_file = dir.path().join("answer.txt");
     fs::write(&answer_file, answer).expect("record the answer");
+    for (i, text) in later.iter().enumerate() {
+        fs::write(dir.path().join(format!("answer.txt.{}", i + 2)), text)
+            .expect("record a later answer");
+    }
+    for (i, script) in actions.iter().enumerate() {
+        fs::write(dir.path().join(format!("answer.txt.{}.sh", i + 1)), script)
+            .expect("record what a session does");
+    }
+    let mut context = json!({
+        "finalization_evidence": evidence,
+        "finalizer_step_status": r#"{"status":"ok","reporting_failure":"false"}"#,
+        "finalization_assessment": "",
+    });
+    if let Some(path) = worktree {
+        context["worktree_setup"] = json!({"worktree_path": path});
+    }
 
     let marker = dir.path().join("reached-the-validator");
     let recipe = json!({
         "name": "issue-2819-recorded-assessment",
         "version": "1.0.0",
         "description": "the shipped assess-finalization step, driven by a recorded agent",
-        "context": {
-            "finalization_evidence": evidence,
-            "finalizer_step_status": r#"{"status":"ok","reporting_failure":"false"}"#,
-            "finalization_assessment": "",
-        },
+        "context": context,
         "steps": [
             serde_yaml::from_value::<Value>(shipped_step("workflow-finalize", "assess-finalization"))
                 .expect("the shipped step is representable as JSON"),
@@ -290,6 +382,13 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
         .env("AMPLIHACK_LAUNCHER_BINARY", &launcher)
         .env("AGENT_STUB_PROMPT", &prompt_file)
         .env("AGENT_STUB_ANSWER", &answer_file)
+        // #2966: continue-ci-repair finds its helper in the bundle, as in a
+        // real run, and its nested run is the stub above.
+        .env("AMPLIHACK_HOME", workspace_root())
+        .env("PATH", path_var)
+        .env("NESTED_RUN_CALLS", dir.path().join("nested-runs.log"))
+        .env("NESTED_RUN_NOTE", dir.path().join("nested-note.json"))
+        .env("PINNED_RUNNER", pinned_runner())
         .output()
         .expect("run the pinned runner");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
@@ -303,7 +402,7 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
         marker.exists(),
         "the steps after the assessment must still run: {result}"
     );
-    let prompt = fs::read_to_string(&prompt_file).unwrap_or_default();
+    let prompt = fs::read_to_string(dir.path().join("prompt.md.1")).unwrap_or_default();
     Assessed {
         prompt,
         run: Run { dir, result },
@@ -402,6 +501,12 @@ fn the_facts_reach_the_deciding_agent_and_its_answer_is_what_gets_published() {
         .unwrap_or_else(|e| panic!("the assessment must arrive as JSON ({e}): {carried}"));
     assert_eq!(parsed["terminal_state"], "EXISTING_OPEN_PR", "{carried}");
     assert_eq!(parsed["pr_number"], 7, "{carried}");
+    // A decision passes continue-ci-repair unchanged and starts no second pass.
+    assert!(
+        assessed.nested_runs().is_empty(),
+        "a decision must not start the assessment again: {:?}",
+        assessed.nested_runs()
+    );
 
     // 3. And the validator publishes that decision, from the value the real
     //    sub-recipe produced rather than one written here.
@@ -423,13 +528,16 @@ fn the_facts_reach_the_deciding_agent_and_its_answer_is_what_gets_published() {
 // The other end of the same wire, and the mechanism #2847 item 1 is about: an
 // agent that answers with prose rather than the one JSON object leaves the run
 // with facts and no decision. The run does not end at the assessment -- the
-// step is `continue_on_error: true` -- and the prose is carried as it was
-// written, neither dropped nor repaired into something that reads like a
-// decision. `validate-agentic-finalization` then refuses it: an answer that is
-// not the object the prompt asked for names no state, and the validator
-// reports that it has no decision rather than inventing one about a run whose
-// pull request is open and green. Driven with a recorded agent so what fails
-// is the real answer, not a missing CLI.
+// step is `continue_on_error: true` -- and nothing repairs the prose into
+// something that reads like a decision. Since #2966 the prose is first started
+// again: the runner's condition on continue-ci-repair finds no terminal_state,
+// so it runs one fresh pass of the shipped recipe, which here answers the same
+// prose. The nested run's reentered-pass-undecided step fails it, so the step
+// fails for its recovery agent (none here) and the sub-recipe fails. The runner drops a failed
+// sub-recipe's output, so what reaches `validate-agentic-finalization` is no
+// answer at all, and the validator reports that it has no decision rather than
+// inventing one about a run whose pull request is open and green. Driven with a
+// recorded agent so what fails is the real answer, not a missing CLI.
 #[test]
 fn an_agent_that_answers_with_prose_leaves_the_run_with_no_decision() {
     let fx = Fixture::new();
@@ -451,11 +559,40 @@ fn an_agent_that_answers_with_prose_leaves_the_run_with_no_decision() {
         "{}",
         assessed.run.result
     );
-    let carried = assessed.assessment();
+    // The prose was started again once. Prose is no answer the context reader
+    // can hand on, so the pass is told the last answer was null.
     assert_eq!(
-        carried, prose,
-        "the answer is carried as written, so the refusal below is about what \
-         the agent really returned"
+        assessed.nested_runs().len(),
+        1,
+        "one second pass: {:?}",
+        assessed.nested_runs()
+    );
+    // No worktree is recorded here, so the reading beside it says it was not
+    // asked, and it is not what started the pass.
+    let note = assessed.nested_note();
+    assert_eq!(note["previous_answer"], Value::Null, "{note}");
+    assert_eq!(note["worktree"]["state"], "not_asked", "{note}");
+    assert!(
+        assessed
+            .run
+            .result
+            .to_string()
+            .contains("did not decide either"),
+        "the fresh pass failed on the nested run's own condition: {}",
+        assessed.run.result
+    );
+    // The second pass decided nothing either, so the step failed and nothing
+    // that reads like a decision was carried out of the sub-recipe.
+    assert_eq!(
+        assessed.run.status("assess-finalization"),
+        "failed",
+        "{}",
+        assessed.run.result
+    );
+    let carried = assessed.assessment();
+    assert!(
+        carried.is_empty() || carried == prose,
+        "no decision may be carried out of the sub-recipe: {carried}"
     );
 
     // What finalization does with it: no decision, and no verdict of its own.
@@ -489,6 +626,277 @@ fn an_agent_that_answers_with_prose_leaves_the_run_with_no_decision() {
         "the facts must survive the missing decision: {}",
         published.field("evidence_used")
     );
+}
+
+/// A `CI_REPAIR_UNFINISHED` answer from a session that stopped with the head red.
+fn unfinished_answer() -> String {
+    json!({
+        "terminal_state": "CI_REPAIR_UNFINISHED",
+        "action_taken": "none",
+        "pr_number": "7",
+        "reason": "stopped with smoke failing; head abc, 2 green, 1 failing, 0 pending, 0 unknown",
+        "next_action": "reproduce the smoke check locally and fix it",
+    })
+    .to_string()
+}
+
+// #2966, crusty round 3: the runner, not a script, decides that an unfinished
+// repair needs another pass, and that the pass decided. CI_REPAIR_UNFINISHED is
+// the session's own statement; continue-ci-repair's condition starts one fresh
+// pass with that answer as data, and when the pass decides, its answer is what
+// the outer run carries. When the pass is unfinished too, the nested run's
+// reentered-pass-undecided fails it and the step fails, after one pass, for its
+// recovery agent.
+#[test]
+fn an_unfinished_repair_gets_one_fresh_pass_and_its_decision_is_carried() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let decision = json!({
+        "terminal_state": "EXISTING_OPEN_PR",
+        "action_taken": "repaired_ci",
+        "pr_number": "7",
+        "reason": "head def, 3 green, 0 failing, 0 pending, 0 unknown",
+        "next_action": "See pull request #7",
+    })
+    .to_string();
+
+    let assessed = assess_with_recorded_agent_passes(
+        &finished_evidence(&fx.head()),
+        &unfinished_answer(),
+        &[&decision],
+    );
+    assert_eq!(
+        assessed.nested_runs().len(),
+        1,
+        "{:?}",
+        assessed.nested_runs()
+    );
+    let last: Value = serde_json::from_str(&unfinished_answer()).unwrap();
+    let note = assessed.nested_note();
+    assert_eq!(note["previous_answer"], last, "{note}");
+    assert_eq!(note["worktree"]["clean"], "", "{note}");
+    assert!(
+        assessed
+            .prompt_of(2)
+            .contains("reproduce the smoke check locally"),
+        "the fresh session reads the last answer in its reentry block"
+    );
+    assert_eq!(
+        assessed.run.status("assess-finalization"),
+        "completed",
+        "{}",
+        assessed.run.result
+    );
+    let carried: Value = serde_json::from_str(&assessed.assessment())
+        .unwrap_or_else(|e| panic!("a decision is carried ({e}): {}", assessed.assessment()));
+    assert_eq!(carried["terminal_state"], "EXISTING_OPEN_PR");
+    assert_eq!(
+        carried["reason"],
+        "head def, 3 green, 0 failing, 0 pending, 0 unknown"
+    );
+
+    let still = assess_with_recorded_agent(&finished_evidence(&fx.head()), &unfinished_answer());
+    assert_eq!(
+        still.nested_runs().len(),
+        1,
+        "one pass, no loop: {:?}",
+        still.nested_runs()
+    );
+    assert_eq!(
+        still.run.status("assess-finalization"),
+        "failed",
+        "an unfinished fresh pass fails the step for its recovery agent: {}",
+        still.run.result
+    );
+    assert_eq!(still.run.status("after-the-assessment"), "completed");
+}
+
+/// A decision over a finished run, the answer a session gives when it believes
+/// it is done.
+fn finished_decision(reason: &str) -> String {
+    json!({
+        "terminal_state": "EXISTING_OPEN_PR",
+        "action_taken": "repaired_ci",
+        "pr_number": "7",
+        "reason": reason,
+        "next_action": "See pull request #7",
+    })
+    .to_string()
+}
+
+// #2966, crusty round 5, concern 1: a session that decided but left a build
+// artefact in the run's worktree does not end the run. The runner reads the
+// recorded worktree after the session (read-worktree-after-assessment), and
+// continue-ci-repair's condition starts one fresh session with the worktree's
+// entries as evidence beside the last answer. That session clears the file
+// and decides, and its decision is what the outer run carries, so the
+// validator's live probe then finds the worktree clean.
+#[test]
+fn a_worktree_left_dirty_goes_to_a_fresh_session_as_evidence() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let worktree = fx.repo_path();
+    let artefact = std::path::Path::new(&worktree).join("smoke-output.log");
+    let first = finished_decision("head abc, 3 green, 0 failing, 0 pending, 0 unknown");
+    let second = finished_decision("removed smoke-output.log; head abc, 3 green");
+    let leave = format!("printf 'built\\n' > '{}'", artefact.display());
+    let clear = format!("rm -f -- '{}'", artefact.display());
+
+    let assessed = assess_in_worktree(
+        &finished_evidence(&fx.head()),
+        &first,
+        &[&second],
+        Some(&worktree),
+        &[&leave, &clear],
+    );
+
+    assert_eq!(
+        assessed.nested_runs().len(),
+        1,
+        "one fresh session: {:?}",
+        assessed.nested_runs()
+    );
+    let note = assessed.nested_note();
+    assert_eq!(
+        note["previous_answer"],
+        serde_json::from_str::<Value>(&first).unwrap(),
+        "{note}"
+    );
+    assert_eq!(note["worktree"]["clean"], "false", "{note}");
+    assert_eq!(note["worktree"]["state"], "dirty", "{note}");
+    assert_eq!(
+        note["worktree"]["entries"],
+        json!(["?? smoke-output.log"]),
+        "{note}"
+    );
+    assert!(
+        assessed.prompt_of(2).contains("?? smoke-output.log"),
+        "the fresh session reads the entries in its reentry block"
+    );
+    assert_eq!(
+        assessed.run.status("assess-finalization"),
+        "completed",
+        "{}",
+        assessed.run.result
+    );
+    let carried: Value = serde_json::from_str(&assessed.assessment())
+        .unwrap_or_else(|e| panic!("a decision is carried ({e}): {}", assessed.assessment()));
+    assert_eq!(
+        carried,
+        serde_json::from_str::<Value>(&second).unwrap(),
+        "the fresh session's decision is the one carried"
+    );
+    assert!(!artefact.exists(), "the fresh session cleared the file");
+
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(("RECIPE_VAR_finalization_assessment", assessed.assessment()));
+    let published = fx.validate(&as_refs(&envs));
+    assert!(published.success(), "{}", published.describe());
+    assert_eq!(published.field("terminal_state"), "EXISTING_OPEN_PR");
+}
+
+// The other half: when the fresh session leaves the file too, the nested run's
+// reentered-pass-undecided fails it, after one pass, so continue-ci-repair
+// fails for its recovery agent with the worktree it left on the ERROR line.
+// Nothing loops. What then reaches the validator is a decision over a dirty
+// worktree, which its live probe refuses loudly, naming the file. A clean
+// worktree starts no second session.
+#[test]
+fn a_worktree_still_dirty_after_the_fresh_session_goes_to_its_recovery_agent() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let worktree = fx.repo_path();
+    let artefact = std::path::Path::new(&worktree).join("smoke-output.log");
+    let decision = finished_decision("head abc, 3 green, 0 failing, 0 pending, 0 unknown");
+    let leave = format!("printf 'built\\n' > '{}'", artefact.display());
+
+    let still = assess_in_worktree(
+        &finished_evidence(&fx.head()),
+        &decision,
+        &[&decision],
+        Some(&worktree),
+        &[&leave],
+    );
+    assert_eq!(
+        still.nested_runs().len(),
+        1,
+        "one pass, no loop: {:?}",
+        still.nested_runs()
+    );
+    assert_eq!(
+        still.run.status("assess-finalization"),
+        "failed",
+        "a fresh session that left the file fails the step for its recovery agent: {}",
+        still.run.result
+    );
+    let result = still.run.result.to_string();
+    assert!(
+        result.contains("left the worktree not clean") && result.contains("smoke-output.log"),
+        "the recovery agent is told what the session left: {result}"
+    );
+    assert_eq!(still.run.status("after-the-assessment"), "completed");
+
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(("RECIPE_VAR_finalization_assessment", decision.clone()));
+    let refused = fx.validate(&as_refs(&envs));
+    assert!(!refused.success(), "{}", refused.describe());
+    assert_eq!(refused.field("terminal_state"), "FAILED_DIRTY_WORKTREE");
+    assert!(
+        refused
+            .field("terminal_reason")
+            .contains("?? smoke-output.log"),
+        "the refusal names what is left: {}",
+        refused.field("terminal_reason")
+    );
+
+    fs::remove_file(&artefact).expect("clear the file");
+    let clean = assess_in_worktree(
+        &finished_evidence(&fx.head()),
+        &decision,
+        &[],
+        Some(&worktree),
+        &[],
+    );
+    assert!(
+        clean.nested_runs().is_empty(),
+        "a decision over a clean worktree starts no second session: {:?}",
+        clean.nested_runs()
+    );
+}
+
+// #2966, crusty round 3, concern 3: a BLOCKED_CI that leaves out its owner's
+// step is not started again by a check and is not refused. It goes to the
+// validator as the assessment answered it.
+#[test]
+fn an_unowned_blocked_ci_is_not_started_again() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let unowned = json!({
+        "terminal_state": "BLOCKED_CI",
+        "action_taken": "none",
+        "pr_number": "7",
+        "reason": "deploy: the workflow reads secrets.DEPLOY_TOKEN, which the repository does not define",
+        "next_action": "",
+    })
+    .to_string();
+
+    let assessed = assess_with_recorded_agent(&finished_evidence(&fx.head()), &unowned);
+
+    assert!(
+        assessed.nested_runs().is_empty(),
+        "{:?}",
+        assessed.nested_runs()
+    );
+    let carried: Value = serde_json::from_str(&assessed.assessment()).unwrap();
+    assert_eq!(carried, serde_json::from_str::<Value>(&unowned).unwrap());
 }
 
 /// The shipped `validate-agentic-finalization` step's own `command:`.
@@ -557,6 +965,62 @@ fn a_no_decision_exit_reaches_a_recovery_agent_that_can_only_stop_with_the_reaso
     );
 }
 
+// #2966: recovery on `continue-ci-repair` is the opposite case
+// (docs/reference/step-failure-recovery.md). A retry runs the body again, and
+// the body starts one more fresh pass of the bundle's own assessment recipe,
+// which reads the pull request and the worktree live, so a repair made
+// between two runs can change the answer: `retry_after_repair` stays open
+// (no `--no-repair`). `--essential` keeps the step from being passed over as
+// recorded, and `--stop-on-handoff` ends the run on a hand-off. Asserted, as
+// for the validator above, by running the shipped step with a stub in
+// `amplihack`'s place and reading the calls it made.
+#[test]
+fn continue_ci_repair_runs_under_a_recovery_that_can_retry_a_fresh_pass() {
+    let fx = Fixture::new();
+    fx.stub_step_recovery_driver();
+    let command = shipped_step("workflow-finalization-assessment", "continue-ci-repair")["command"]
+        .as_str()
+        .expect("continue-ci-repair has a bash command")
+        .to_owned();
+
+    let outcome = fx.run_step(
+        &command,
+        &[("RECIPE_VAR_step_recovery_dir", fx.repo_path().as_str())],
+    );
+
+    let calls = fx.driver_calls();
+    let call = calls
+        .iter()
+        .find(|call| call.contains("step-recovery run"))
+        .unwrap_or_else(|| panic!("the step must run under step recovery, got {calls:?}"));
+    assert!(
+        call.contains("--step-id continue-ci-repair"),
+        "recovery must be recorded against this step: {call}"
+    );
+    for required in ["--essential", "--stop-on-handoff"] {
+        assert!(call.contains(required), "{required} is missing: {call}");
+    }
+    for withheld in ["--no-repair", "--guard"] {
+        assert!(
+            !call.contains(withheld),
+            "a retry starts a fresh pass that can observe a repair, so `{withheld}` is wrong here: {call}"
+        );
+    }
+    // What recovery ran is the fresh pass: one nested run of the bundle's own
+    // assessment recipe.
+    let passes: Vec<&String> = calls
+        .iter()
+        .filter(|call| call.starts_with("recipe run "))
+        .collect();
+    assert_eq!(passes.len(), 1, "one fresh pass, got {calls:?}");
+    assert!(
+        passes[0].contains("amplifier-bundle/recipes/workflow-finalization-assessment.yaml"),
+        "the pass runs the bundle's own assessment recipe: {}\n{}",
+        passes[0],
+        outcome.describe()
+    );
+}
+
 /// The evidence `collect-finalization-evidence` records, carrying the facts of
 /// the run's outcome under `outcome` the way a real run does.
 fn recorded_evidence(dirty: &str, outcome: Value) -> (&'static str, String) {
@@ -576,8 +1040,12 @@ fn recorded_evidence(dirty: &str, outcome: Value) -> (&'static str, String) {
 
 // Why `--no-repair` is the honest flag, shown rather than argued (#2819 R2).
 // `retry_after_repair` re-runs the same body with the same environment. Every
-// input this body reads was recorded before the first attempt, so repairing
-// the world between the two runs changes nothing it reads.
+// input this body reads, except the worktree, was recorded before the first
+// attempt, so repairing the world between the two runs changes nothing it
+// reads. The worktree is read live (SEC-01), and a dirty one goes to a fresh
+// assessment session before this step runs (crusty round 5): that session can
+// push and decide on the head its commit makes, which a recovery agent here,
+// after the decision, cannot. See the next case.
 //
 // Each case starts from a real failure a recovery agent would be tempted to
 // repair, applies the repair that would fix the run, and runs the shipped
@@ -611,31 +1079,53 @@ fn repairing_the_run_between_two_runs_of_the_step_changes_nothing_it_reports() {
             fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
         },
     );
+}
 
-    // A dirty worktree, recorded as such, under a decision that would
-    // otherwise be a success. The repair is to commit what was uncommitted.
-    assert_a_repair_is_invisible(
-        "the worktree was dirty",
+// Crusty round 5, concern 1. The record of the worktree was collected before
+// assess-finalization, whose sessions commit, push, build and test, and are
+// told to leave the worktree clean. A file the session removed is gone, so the
+// record's `dirty_worktree: "true"` is stale by the time this step runs, and a
+// recorded checkout's live answer is the answer. Before round 5 the stale
+// record ended the run FAILED_DIRTY_WORKTREE even after the session cleared
+// the tree. A tree that is still dirty is refused, naming what is left.
+#[test]
+fn the_worktree_is_read_live_and_its_answer_outranks_the_record() {
+    let fx = Fixture::new();
+    fx.stub_step_recovery_driver();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let scratch = fx.repo.join("scratch.txt");
+    fs::write(&scratch, "build output\n").expect("dirty the worktree");
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(recorded_evidence(
+        "true",
+        json!({"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
+               "remote_head": fx.head(), "pr_number": "7", "pr_state": "OPEN",
+               "pr_head": fx.head(), "checks": "green", "unread": ""}),
+    ));
+    envs.push(assessed("EXISTING_OPEN_PR", "7"));
+
+    let dirty = fx.run_step(&validator_step_command(), &as_refs(&envs));
+    assert_eq!(
+        dirty.field("terminal_state"),
         "FAILED_DIRTY_WORKTREE",
-        |fx| {
-            fx.with_remote();
-            fx.push();
-            fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
-            fs::write(fx.repo.join("scratch.txt"), "uncommitted\n").expect("dirty the worktree");
-            let mut envs = finished_env(&fx.repo_path());
-            envs.push(recorded_evidence(
-                "true",
-                json!({"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
-                       "remote_head": fx.head(), "pr_number": "7", "pr_state": "OPEN",
-                       "pr_head": fx.head(), "checks": "green", "unread": ""}),
-            ));
-            envs.push(assessed("EXISTING_OPEN_PR", "7"));
-            envs
-        },
-        |fx| {
-            fx.git(&["add", "scratch.txt"]);
-            fx.git(&["commit", "-q", "-m", "commit the scratch file"]);
-        },
+        "{}",
+        dirty.describe()
+    );
+    assert!(
+        dirty.field("terminal_reason").contains("?? scratch.txt"),
+        "the refusal names what is left: {}",
+        dirty.describe()
+    );
+
+    fs::remove_file(&scratch).expect("clear the build output");
+    let cleared = fx.run_step(&validator_step_command(), &as_refs(&envs));
+    assert_eq!(
+        cleared.field("terminal_state"),
+        "EXISTING_OPEN_PR",
+        "a cleared worktree is not refused on the record collected before it was cleared: {}",
+        cleared.describe()
     );
 }
 

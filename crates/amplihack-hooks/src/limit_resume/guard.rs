@@ -4,10 +4,15 @@
 //! is resumed (issue #2912): a resume follows a login with room, so the
 //! count is evidence for the log and never a refusal.
 //!
+//! Only a resume that reached the session is recorded (issue #3104): the
+//! hook commits just before it types into a proved pane, and releases its
+//! own commit if a key then fails. An exit-2 wake records nothing, so the
+//! event stays armed for the next room event.
+//!
 //! ```text
-//! lock                  flock taken around every commit
-//! events/<sha256 hex>   one empty marker per resumed event, kept 7 days
-//! sessions/<sha256 hex> one line per resume: epoch seconds
+//! lock                  flock taken around every commit and release
+//! events/<sha256 hex>   one empty marker per event resumed with keys, kept 7 days
+//! sessions/<sha256 hex> one line per resume with keys: epoch seconds
 //! prompted/<sha256 hex> epoch seconds of the session's last user prompt,
 //!                       kept MAX_WAIT + 1 hour
 //! resume.log            see log.rs
@@ -74,7 +79,9 @@ impl From<io::Error> for CommitError {
 
 /// Where resumes are recorded. `seen` and `resumes` are read-only checks
 /// made before waiting; `commit` repeats both under a lock and records the
-/// resume durably, so only a successful commit may wake the session.
+/// resume durably, so only a successful commit may type into the session.
+/// A marker means the event was resumed with keys; `release` takes back a
+/// commit whose keys did not reach the session.
 pub trait GuardStore {
     /// Whether `event` already has a marker.
     fn seen(&mut self, event: &str) -> io::Result<bool>;
@@ -100,6 +107,17 @@ pub trait GuardStore {
         start: i64,
         now: i64,
     ) -> Result<(), CommitError>;
+    /// Takes back this caller's own [`GuardStore::commit`] of `event` in
+    /// `session` after its keys did not reach the session (issue #3104), so
+    /// the event stays armed for the next room event.
+    ///
+    /// Precondition: `now` is the value this caller passed to `commit`.
+    /// Under the commit's lock, the event's marker is removed (a marker that
+    /// is already absent is success) and then one occurrence of `now` is
+    /// removed from the session's record. Times the commit pruned are not
+    /// restored. A marker that is not a regular file of this user, or a
+    /// record that cannot be parsed, is an error and is left in place.
+    fn release(&mut self, event: &str, session: &str, now: i64) -> io::Result<()>;
 }
 
 /// The on-disk guard for a profile root. Creating one touches nothing.
@@ -452,5 +470,60 @@ impl GuardStore for FsGuard {
         }
         write_private_atomic(&sessions, session, record.as_bytes())?;
         Ok(())
+    }
+
+    fn release(&mut self, event: &str, session: &str, now: i64) -> io::Result<()> {
+        check_key(event)?;
+        check_key(session)?;
+        // No `resume/` means nothing was ever committed: there is nothing
+        // to take back, and nothing is created.
+        let Some(dir) = self.existing_subdir("")? else {
+            return Ok(());
+        };
+        let _lock = lock_exclusive_timeout_with(
+            open_private_nofollow(&dir.join("lock"))?,
+            self.lock_timeout,
+            &*self.clock,
+        )?;
+
+        // The marker first: it is what refuses the event.
+        if let Some(events) = self.existing_subdir("events")? {
+            let marker = events.join(event);
+            match fs::symlink_metadata(&marker) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+                Ok(m) if m.file_type().is_file() && owned_by_euid(&m) => {
+                    // `remove_file` unlinks the name and never follows it.
+                    fs::remove_file(&marker)?;
+                    fsync_dir(&events)?;
+                }
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "event marker is not a regular file of the current user",
+                    ));
+                }
+            }
+        }
+
+        let Some(sessions) = self.existing_subdir("sessions")? else {
+            return Ok(());
+        };
+        let mut times = match self.read_session(&sessions.join(session))? {
+            None => return Ok(()),
+            Some(None) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "session record is malformed",
+                ));
+            }
+            Some(Some(times)) => times,
+        };
+        let Some(at) = times.iter().position(|t| *t == now) else {
+            return Ok(());
+        };
+        times.remove(at);
+        let record: String = times.iter().map(|t| format!("{t}\n")).collect();
+        write_private_atomic(&sessions, session, record.as_bytes())
     }
 }

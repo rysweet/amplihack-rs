@@ -23,7 +23,6 @@ fn keys_are_in_documented_order() {
             "recipe.tmux_session_pattern",
             "recipe.log_dir",
             "recipe.usage_limit_wait",
-            "recipe.usage_limit_max_wait_secs",
             "policy.deny_commands",
             "orchestrator.max_depth",
             // Issue #1619: per-step model tiers and the small-diff combined

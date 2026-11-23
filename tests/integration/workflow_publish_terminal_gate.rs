@@ -276,12 +276,18 @@ fn publish_uses_required_terminal_and_followup_status_vocabulary() {
     let recipe = load_publish_recipe();
     let text = recipe_text(&recipe);
 
+    // #2966: `BLOCKED_CI` is no longer a status the publish gate can reach. A
+    // failing check on the run's own pull request lets the probe continue, so
+    // finalization repairs it; the state now comes only from the assessment, for
+    // a cause the run cannot fix. What a red check does at the publish gate is
+    // shown by behaviour, in `default_workflow_terminal_state`
+    // (`failing_checks_continue_to_ci_repair`, in the probe's `exit` mode), so
+    // this vocabulary no longer pins the token.
     for status in [
         "MERGED",
         "CLOSED_OBSOLETE",
         "NO_DIFF_SUCCESS",
         "FOLLOWUP_CREATED",
-        "BLOCKED_CI",
     ] {
         assert!(
             text.contains(status),
