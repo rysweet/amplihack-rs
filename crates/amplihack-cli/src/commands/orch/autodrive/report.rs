@@ -284,21 +284,19 @@ fn merge_result(raw: Option<&Value>, expected_pr: Option<&str>) -> MergeRead {
     MergeRead::Known(out)
 }
 
-/// #2329: a state directory the child reports must equal the runner-assigned
-/// one by `Path` equality, with no join, canonicalisation or symlink
-/// resolution. Absent or empty counts as absent; checked only when the runner
-/// bound a directory to this invocation.
+/// #2329: the run's `autodrive_state_dir` must equal the runner-assigned one
+/// by `Path` equality, with no join, canonicalisation or symlink resolution.
+/// Absent or empty counts as absent; checked only when the runner bound a
+/// directory to this invocation.
+///
+/// #3053: a folder an agent step reports, such as `build_result.state_dir`, is
+/// information only and is not compared. Every record this report reads is
+/// opened from `auth.state_dir()`, never from a reported folder.
 fn state_dir_matches(auth: &InvocationAuthorization, context: &Map<String, Value>) -> bool {
     let Some(assigned) = auth.state_dir() else {
         return true;
     };
-    let preparation = tool_object(context.get("build_result"));
-    [
-        context.get("autodrive_state_dir"),
-        preparation.as_ref().and_then(|p| p.get("state_dir")),
-    ]
-    .into_iter()
-    .all(|reported| require_assigned_state_dir(reported, assigned))
+    require_assigned_state_dir(context.get("autodrive_state_dir"), assigned)
 }
 
 fn require_assigned_state_dir(reported: Option<&Value>, assigned: &std::path::Path) -> bool {
