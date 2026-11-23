@@ -747,6 +747,90 @@ fn merge_loop_run_refuses_a_bad_round_count() {
     }
 }
 
+fn budget(fx: &Fx, args: &[&str]) -> Output {
+    let mut c = fx.bash();
+    c.arg(fx.tools().join("autodrive_budget.sh")).args(args);
+    c.output().expect("run autodrive_budget.sh")
+}
+
+fn record_round(fx: &Fx, n: u32) {
+    let state = fx.state.to_string_lossy().into_owned();
+    let label = format!("round-{n}");
+    let out = budget(fx, &["add", &state, "merge-ready", &label, "round", "1"]);
+    assert_eq!(out.status.code(), Some(0), "{label}: {}", show(&out));
+}
+
+fn budget_args(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .filter(|a| a.starts_with("autodrive_budget_loop_rounds="))
+        .cloned()
+        .collect()
+}
+
+fn real_check(fx: &Fx, received: &str) -> Output {
+    let state = fx.state.to_string_lossy().into_owned();
+    budget(
+        fx,
+        &["check", &state, "merge-ready", "pre", "?", PR, received],
+    )
+}
+
+#[test]
+fn merge_loop_run_keeps_no_limit_for_more_rounds() {
+    for op in ["0", ""] {
+        let Some(fx) = loop_fixture() else { return };
+        record_round(&fx, 1);
+        record_round(&fx, 2);
+        fake_loop(&fx, "0", Some("DONE"));
+        let out = run_tool(&fx, &["1"], &[("autodrive_budget_loop_rounds", op)]);
+        assert_eq!(out.status.code(), Some(0), "{op:?}: {}", show(&out));
+        assert_eq!(
+            last_json(&out, "loop_result")["loop_result"],
+            json!("DONE"),
+            "{op:?}: {}",
+            show(&out)
+        );
+        let received = budget_args(&loop_argv(&fx));
+        let want = format!("autodrive_budget_loop_rounds={op}");
+        assert_eq!(
+            received,
+            std::slice::from_ref(&want),
+            "{op:?}: no loop limit (#3139)"
+        );
+        // The round the re-run asked for is recorded, then the real rule decides.
+        record_round(&fx, 3);
+        let check = real_check(&fx, &want);
+        assert_eq!(check.status.code(), Some(0), "{op:?}: {}", show(&check));
+        assert!(
+            !stdout(&check).contains("autodrive_budget_loop_rounds"),
+            "{op:?}: {}",
+            show(&check)
+        );
+    }
+}
+
+#[test]
+fn merge_loop_run_more_rounds_keep_a_positive_budget_cap() {
+    let Some(fx) = loop_fixture() else { return };
+    record_round(&fx, 1);
+    record_round(&fx, 2);
+    fake_loop(&fx, "0", Some("DONE"));
+    let out = run_tool(&fx, &["1"], &[("autodrive_budget_loop_rounds", "2")]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(
+        budget_args(&loop_argv(&fx)),
+        ["autodrive_budget_loop_rounds=2"],
+        "the operator's positive budget still caps"
+    );
+    let check = real_check(&fx, "autodrive_budget_loop_rounds=2");
+    assert_eq!(check.status.code(), Some(10), "{}", show(&check));
+    assert!(
+        stdout(&check).contains("autodrive_budget_loop_rounds"),
+        "{}",
+        show(&check)
+    );
+}
+
 #[test]
 fn merge_loop_run_asks_for_n_more_rounds() {
     let Some(fx) = loop_fixture() else { return };
@@ -1073,8 +1157,8 @@ fn out_of_date_branch_is_synced_by_a_merge_then_merged() {
     assert!(
         loop_argv(&fx)
             .iter()
-            .any(|a| a == "autodrive_budget_loop_rounds=1"),
-        "exactly one more round: {:?}",
+            .any(|a| a == "autodrive_budget_loop_rounds="),
+        "no operator budget, so one more round keeps no limit (#3139): {:?}",
         loop_argv(&fx)
     );
     assert_eq!(

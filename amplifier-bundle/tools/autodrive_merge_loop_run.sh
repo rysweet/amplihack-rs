@@ -21,7 +21,9 @@
 # without running the loop. The loop budget counts merge-ready rounds across
 # runs that share the state directory, so the tool passes
 # autodrive_budget_loop_rounds=<rounds already used + N>, never more than the
-# operator's own autodrive_budget_loop_rounds when one is set. Without it the
+# operator's own autodrive_budget_loop_rounds when that is a positive budget.
+# When the operator's autodrive_budget_loop_rounds is empty or 0 (no limit),
+# <rounds> leaves the loop with no limit (#3139). Without <rounds> the
 # operator's budget passes through unchanged.
 #
 # Prints one loop line (JSON) read from the driver's own result file; the
@@ -117,7 +119,10 @@ PR_WORKTREE="$REPO"
 # #2575 M1: <rounds> more rounds is a loop budget of the merge-ready rounds
 # already recorded in this state directory plus <rounds>, capped by the
 # operator's own budget. An unreadable usage file counts 0 rounds used, which
-# can only make the budget smaller, never larger.
+# can only make the budget smaller, never larger. An operator budget that is
+# empty or all zeros means no limit and is passed on as it is (#3139). A
+# malformed one still becomes the used rounds plus <rounds>. Each value is
+# matched against a pattern before any arithmetic.
 LOOP_BUDGET="${RECIPE_VAR_autodrive_budget_loop_rounds:-}"
 if [ -n "$ROUNDS" ]; then
   USED=0; USAGE="${DIR%/}/autodrive-usage.tsv"
@@ -126,11 +131,15 @@ if [ -n "$ROUNDS" ]; then
     [[ "$USED" =~ ^[0-9]{1,9}$ ]] || USED=0
   fi
   WANT=$((10#$USED + ROUNDS))
-  if [[ "$LOOP_BUDGET" =~ ^[0-9]{1,12}$ ]] && [ "$((10#$LOOP_BUDGET))" -gt 0 ] && [ "$((10#$LOOP_BUDGET))" -lt "$WANT" ]; then
-    WANT="$((10#$LOOP_BUDGET))"
+  if [ -z "$LOOP_BUDGET" ] || [[ "$LOOP_BUDGET" =~ ^0{1,12}$ ]]; then
+    SHOWN="none"
+  else
+    if [[ "$LOOP_BUDGET" =~ ^[0-9]{1,12}$ ]] && [ "$((10#$LOOP_BUDGET))" -lt "$WANT" ]; then
+      WANT="$((10#$LOOP_BUDGET))"
+    fi
+    LOOP_BUDGET="$WANT"; SHOWN="$WANT"
   fi
-  LOOP_BUDGET="$WANT"
-  echo "INFO: ${ROUNDS} more merge-ready round(s): ${USED} used, loop budget ${LOOP_BUDGET} [autodrive-merge-loop]" >&2
+  echo "INFO: ${ROUNDS} more merge-ready round(s): ${USED} used, loop budget ${SHOWN} [autodrive-merge-loop]" >&2
 fi
 
 # #2575: the loop result is read from the driver's own result file, never
