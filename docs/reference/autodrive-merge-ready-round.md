@@ -1203,6 +1203,30 @@ rejects merge commits. The sync step changes nothing, never rebases and never
 force-pushes. The hand-off names the repository's maintainers, to allow a
 merge commit, or the operator, to rebase by hand.
 
+### What the tests show
+
+Each worked case has a behaviour test in `crates/amplihack-cli/tests`. The
+tests use a bare remote that stands in for GitHub's remote, a stand-in `gh`
+and the real recipe steps. Only the agents and the hosting CLI are stand-ins.
+
+| Case | Test | What runs for real |
+| --- | --- | --- |
+| Behind only, not strict | `a_branch_only_behind_is_merged_with_no_base_merge_and_no_push` (`issue_1924_base_merge_rule.rs`) | The finalize `merge` step. The PR merges at its head with no base merge and no push. |
+| Strict required checks | `a_strict_repository_gets_the_base_merged_by_the_real_base_sync_step` (`issue_1924_base_merge_rule.rs`) | `autodrive-merge-loop.yaml` through the recipe runner, from `step-03-finalize` to its end. The stand-in host refuses any head that lacks the base tip. `step-03b-base-sync` gets the refusal, the base comes in as a merge commit pushed through the hooks, one more round runs, and the second finalisation merges. No hand-off runs. |
+| Strict required checks, step by step | `out_of_date_branch_is_synced_by_a_merge_then_merged` (`issue_2575_wait_sync_success.rs`) | The finalize `merge` step, `step-03c`, `step-03d` and the report step, each run directly. |
+| A conflict | `a_conflict_is_merged_resolved_pushed_and_the_pr_is_merged` (`issue_1924_base_merge_rule.rs`) | The finalize `merge` step, `step-03c`, `step-03d` and the report step. A stand-in runs the sync step's documented commands. |
+| The task text forbids a base merge | `a_task_text_forbidding_a_base_merge_is_obeyed` (`issue_1924_base_sync_task_text.rs`) | `autodrive-merge-loop.yaml` through the recipe runner from `step-03b-base-sync`, and the real hand-off. |
+| The repository refuses merge commits | `a_repository_that_refuses_merge_commits_is_handed_off_with_its_owner` (`issue_1924_base_sync_task_text.rs`) | The same. This is route evidence: it shows that the agent's answer reaches the hand-off, and that nothing is rebased or force-pushed. |
+
+What the tests cannot show is whether a real agent follows the sync step's
+procedure. That procedure covers reading the merge policy (step 6), judging a
+condition in the task text against the files a base commit touches (step 5),
+resolving a conflict so that both sides keep their meaning (step 8), the fast
+checks (step 9) and the second push (step 10). A stand-in agent carries out
+only the git effects that the prompt asks for. No test asserts the prompt's
+wording, so a change to that text is caught by review only. Issue #3138
+tracks this gap.
+
 ### What the recovery re-run does
 
 A finalisation recovery re-run (`step-03r`) runs in a separate process after

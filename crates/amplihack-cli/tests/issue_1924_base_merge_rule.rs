@@ -15,18 +15,33 @@
 //!
 //! What these tests cannot show: whether a real agent follows the prompt.
 //! A stand-in only carries out the git effects the prompt asks for, so that
-//! part is checked by review. No test here reads recipe YAML or prompt text.
-//! Nor does T3 check that crusty-covers declines to cover the merged and
-//! hand-resolved head; that would need a Crusty record fixture.
+//! part is checked by review. No assertion here inspects recipe YAML or
+//! prompt wording; T2 loads the real loop recipe only to run it. Nor does T3
+//! check that crusty-covers declines to cover the merged and hand-resolved
+//! head; that would need a Crusty record fixture.
 //!
-//! - T1: a branch only behind is merged as it is: no base merge, no push.
+//! - T1: a branch only behind, in a repository that is not strict, is merged
+//!   as it is: no base merge, no push.
+//! - T2: a strict repository (it will not merge a head that lacks the base
+//!   tip). The real `autodrive-merge-loop.yaml` runs through the real runner
+//!   from finalisation to its end: base-behind, the real `step-03b-base-sync`
+//!   step hands the refusal to a stand-in agent that merges the base and
+//!   pushes through the hooks, one more round, and the second finalisation
+//!   merges at the synced head. No hand-off.
 //! - T3: the base moves into a conflict; the stand-in merges, resolves,
 //!   commits and pushes through the hooks; the PR is then merged.
 //! - R-msg, R-hostile: the report carries the base sync's own reason (the
 //!   named owner and decision) as inert, printable text.
 
 use super::*;
+use recipe_runner_rs::adapters::Adapter;
+use recipe_runner_rs::agent_resolver::AgentResolver;
+use recipe_runner_rs::models::{Recipe, RecipeResult, StepResult, StepStatus, StepType};
+use recipe_runner_rs::parser::RecipeParser;
+use recipe_runner_rs::runner::{ExecutionListener, RecipeRunner};
+use std::collections::HashMap;
 use std::fs;
+use std::sync::{Arc, Mutex};
 
 const OWNER_SENTENCE: &str =
     "the maintainers of acme-infra must allow a merge commit, or the operator must rebase by hand";
@@ -190,6 +205,380 @@ fn a_branch_only_behind_is_merged_with_no_base_merge_and_no_push() {
     let merges = fx.merge_calls();
     assert_eq!(merges.len(), 1, "{merges:?}");
     let report = report_step(&fx, &[("finalize_merge", &result.to_string())]);
+    assert_eq!(
+        last_json(&report, "stop_reason")["stop_reason"],
+        json!("completed")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T2: a strict repository, through the real merge loop recipe
+// ---------------------------------------------------------------------------
+
+const HEAD_REF: &str = "feat/issue-2575";
+const BASE_SYNC_STEP: &str = "step-03b-base-sync";
+const STRICT_TASK: &str = "Review and merge PR #2575.";
+
+#[derive(Default)]
+struct StrictTrace {
+    active: String,
+    /// Steps that ran. The runner announces a skipped step too, so a step
+    /// counts as run only when it completes with a status other than
+    /// `Skipped`. Steps of the sub-recipes are included.
+    ran: Vec<String>,
+    prompts: Vec<(String, String)>,
+    /// The JSON line the finalize `merge` step printed, each time it ran.
+    merge_results: Vec<Value>,
+}
+
+struct StrictSteps(Arc<Mutex<StrictTrace>>);
+impl ExecutionListener for StrictSteps {
+    fn on_step_start(&self, id: &str, _kind: StepType) {
+        self.0.lock().unwrap().active = id.to_owned();
+    }
+    fn on_step_complete(&self, result: &StepResult) {
+        if result.status != StepStatus::Skipped {
+            self.0.lock().unwrap().ran.push(result.step_id.clone());
+        }
+    }
+}
+
+/// GitHub's side of a repository with strict required status checks, read
+/// from the bare remote whenever a step may call `gh`. The PR head is what
+/// the remote branch holds. A head that lacks the base tip is refused when
+/// the merge is requested and then reads `BEHIND`; a head that contains it
+/// reads `CLEAN` and merges.
+fn strict_host_reads_origin(fx: &Fx, origin: &Path) {
+    let head = git_in(origin, &["rev-parse", &format!("refs/heads/{HEAD_REF}")]);
+    fx.set("server_head", &head);
+    let up_to_date = amplihack_git::command_in(origin)
+        .args(["merge-base", "--is-ancestor", "refs/heads/main", &head])
+        .status()
+        .unwrap()
+        .success();
+    if up_to_date {
+        fx.set("merge_state", "CLEAN");
+        for f in ["merge_rc", "merge_state_after"] {
+            let _ = fs::remove_file(fx.fake.join(f));
+        }
+    } else {
+        fx.set("merge_state", "BEHIND");
+        fx.set("merge_rc", "1");
+        fx.set("merge_state_after", "BEHIND");
+    }
+}
+
+struct StrictAgents<'a> {
+    fx: &'a Fx,
+    origin: PathBuf,
+    trace: Arc<Mutex<StrictTrace>>,
+}
+
+impl StrictAgents<'_> {
+    /// The compliant base-sync agent. Its world: the repository requires an
+    /// up-to-date branch and accepts a merge commit, and the task text sets
+    /// no condition. It can act on GitHub's refusal only when its prompt
+    /// carries it, as finalisation's tool reported it in this run. Without
+    /// that the branch is only behind, and the rule leaves that alone.
+    fn base_sync(&self, prompt: &str) -> String {
+        let refusal = self
+            .trace
+            .lock()
+            .unwrap()
+            .merge_results
+            .last()
+            .and_then(|v| v["reason"].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        if refusal.is_empty() || !prompt.contains(&refusal) {
+            return json!({
+                "synced": "false",
+                "reason": "the branch is only behind its base and nothing calls for the base",
+                "head_sha": ""
+            })
+            .to_string();
+        }
+        let repo = &self.fx.repo;
+        git_in(repo, &["fetch", "-q", "origin", "--", "main"]);
+        git_in(repo, &["merge", "-q", "--no-edit", "origin/main"]);
+        git_in(repo, &["push", "-q", "origin", &format!("HEAD:{HEAD_REF}")]);
+        json!({
+            "synced": "true",
+            "reason": "merged origin/main with a merge commit: the repository requires an \
+                       up-to-date branch and accepts a merge commit",
+            "head_sha": git_in(repo, &["rev-parse", "HEAD"])
+        })
+        .to_string()
+    }
+}
+
+impl Adapter for StrictAgents<'_> {
+    fn execute_agent_step(
+        &self,
+        prompt: &str,
+        _agent: Option<&str>,
+        _system: Option<&str>,
+        _mode: Option<&str>,
+        _cwd: &str,
+        _model: Option<&str>,
+        _timeout: Option<u64>,
+    ) -> anyhow::Result<String> {
+        let id = {
+            let mut t = self.trace.lock().unwrap();
+            let id = t.active.clone();
+            t.prompts.push((id.clone(), prompt.to_owned()));
+            id
+        };
+        match id.as_str() {
+            BASE_SYNC_STEP => Ok(self.base_sync(prompt)),
+            _ => Ok("observed PR #2575 and changed nothing".to_owned()),
+        }
+    }
+
+    fn execute_bash_step(
+        &self,
+        command: &str,
+        cwd: &str,
+        _timeout: Option<u64>,
+        env: &HashMap<String, String>,
+    ) -> anyhow::Result<String> {
+        strict_host_reads_origin(self.fx, &self.origin);
+        let dir = if Path::new(cwd).is_dir() {
+            Path::new(cwd)
+        } else {
+            self.fx.repo.as_path()
+        };
+        let mut c = self.fx.bash();
+        c.arg("-c")
+            .arg(command)
+            .current_dir(dir)
+            .envs(env)
+            .env("REPO_PATH", &self.fx.repo)
+            .stdin(Stdio::null());
+        let out = c.output()?;
+        let active = self.trace.lock().unwrap().active.clone();
+        anyhow::ensure!(out.status.success(), "bash step {active}: {}", show(&out));
+        let text = String::from_utf8(out.stdout)?;
+        if active == "merge" {
+            let line = text
+                .lines()
+                .rev()
+                .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+                .find(|v| v.get("result").is_some());
+            if let Some(v) = line {
+                self.trace.lock().unwrap().merge_results.push(v);
+            }
+        }
+        Ok(text)
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn name(&self) -> &str {
+        "issue-1924-strict-host"
+    }
+}
+
+/// The real merge loop recipe, cut to start at the first finalisation.
+fn loop_from_finalisation() -> Recipe {
+    let path = repo_root().join("amplifier-bundle/recipes/autodrive-merge-loop.yaml");
+    let mut recipe = RecipeParser::new()
+        .parse(&fs::read_to_string(path).unwrap())
+        .unwrap();
+    let start = recipe
+        .steps
+        .iter()
+        .position(|s| s.id == "step-03-finalize")
+        .expect("the finalisation step");
+    recipe.steps.drain(..start);
+    recipe
+}
+
+/// Runs the loop from finalisation, after a merge-ready loop that ended DONE
+/// at `head`.
+fn strict_drive(fx: &Fx, head: &str) -> (RecipeResult, Arc<Mutex<StrictTrace>>) {
+    let agents = fx.root.join("agents");
+    private_dir(&agents.join("core"));
+    for name in ["builder", "reviewer"] {
+        fs::write(
+            agents.join(format!("core/{name}.md")),
+            "---\nname: fixture\ndescription: scripted test agent\n---\nReturn fixture facts.\n",
+        )
+        .unwrap();
+    }
+    let trace = Arc::new(Mutex::new(StrictTrace::default()));
+    let runner = RecipeRunner::new(StrictAgents {
+        fx,
+        origin: fx.root.join("origin.git"),
+        trace: Arc::clone(&trace),
+    })
+    .with_working_dir(fx.repo.to_str().unwrap())
+    .with_auto_stage(false)
+    .with_default_search(false)
+    .with_recipe_search_dirs(vec![repo_root().join("amplifier-bundle/recipes")])
+    .with_agent_resolver(AgentResolver::new(Some(vec![agents])))
+    .with_listener(Box::new(StrictSteps(Arc::clone(&trace))));
+    let preflight = json!({
+        "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
+        "branch": HEAD_REF, "head_sha": head, "base_branch": "main",
+        "base_sha": "", "state_dir": fx.state, "repo": fx.repo,
+        "reason": "fixture", "blockers": [], "attempts": []
+    });
+    let done =
+        json!({"loop":"merge-ready","loop_result":"DONE","round_label":"round-1"}).to_string();
+    let context: HashMap<String, Value> = HashMap::from([
+        ("repo_path".into(), json!(fx.repo)),
+        ("pr_number".into(), json!(PR)),
+        ("task_description".into(), json!(STRICT_TASK)),
+        ("no_merge".into(), json!("false")),
+        ("autodrive_dry_run".into(), json!("false")),
+        ("autodrive_state_dir".into(), json!(fx.state)),
+        (
+            "autodrive_invocation_file".into(),
+            json!(fx.state.join("invocation.json")),
+        ),
+        ("merge_loop_preflight".into(), preflight),
+        ("merge_loop_result".into(), json!(done)),
+        (
+            "merge_loop_outcome".into(),
+            json!({"outcome": "done", "finalise": "true"}),
+        ),
+    ]);
+    let result = runner.execute(&loop_from_finalisation(), Some(context));
+    (result, trace)
+}
+
+/// T2, the third case of bb:0's condition: a strict=true repository gets the
+/// base merged. The branch is only behind (no conflict), and the repository
+/// requires an up-to-date branch.
+#[test]
+fn a_strict_repository_gets_the_base_merged_by_the_real_base_sync_step() {
+    let Some((fx, head1)) = behind_base_fixture() else {
+        return;
+    };
+    let origin = fx.root.join("origin.git");
+    let marker = install_pre_push_marker(&fx);
+    let main_tip = git_in(&origin, &["rev-parse", "refs/heads/main"]);
+    fake_loop(&fx, "0", Some("DONE"));
+
+    let (result, trace) = strict_drive(&fx, &head1);
+    assert!(result.success, "{result:?}");
+    let trace = trace.lock().unwrap();
+
+    // The route: finalise, base sync, one round, finalise again. No
+    // recovery re-run and no hand-off, in the loop or in finalisation.
+    for step in [
+        "step-03-finalize",
+        BASE_SYNC_STEP,
+        "step-03c-sync-round",
+        "step-03d-sync-outcome",
+        "step-03e-finalize-again",
+    ] {
+        assert!(
+            trace.ran.iter().any(|s| s == step),
+            "{step} must run: {:?}",
+            trace.ran
+        );
+    }
+    for step in [
+        "step-03r-finalize-recovery",
+        "step-03f-sync-handoff",
+        "handoff",
+        "hand-off",
+    ] {
+        assert!(
+            !trace.ran.iter().any(|s| s == step),
+            "{step} must not run: {:?}",
+            trace.ran
+        );
+    }
+
+    // 1. The first finalisation: GitHub refused, and the read-back says
+    //    BEHIND. The reason names the up-to-date rule, not a conflict.
+    assert_eq!(trace.merge_results.len(), 2, "{:?}", trace.merge_results);
+    let first = &trace.merge_results[0];
+    assert_eq!(first["result"], json!("base-behind"), "{first}");
+    assert_eq!(first["handoff"], json!("false"), "{first}");
+    assert_eq!(first["expected_head"], json!(head1), "{first}");
+    let refusal = first["reason"].as_str().unwrap_or_default();
+    assert!(
+        refusal.contains("up to date"),
+        "the reason names the up-to-date rule: {first}"
+    );
+    assert!(
+        !refusal.contains("conflict"),
+        "a strict refusal is not reported as a conflict: {first}"
+    );
+    let sync_prompt = trace
+        .prompts
+        .iter()
+        .find(|(id, _)| id == BASE_SYNC_STEP)
+        .map(|(_, p)| p.as_str())
+        .unwrap_or_default();
+    assert!(
+        sync_prompt.contains(refusal) && sync_prompt.contains(STRICT_TASK),
+        "the base sync was handed GitHub's refusal and the task text: {sync_prompt}"
+    );
+
+    // 2. The base came in as a merge commit, pushed through the hooks as a
+    //    fast-forward of the remote branch.
+    let head2 = git_in(&fx.repo, &["rev-parse", "HEAD"]);
+    assert_ne!(head2, head1);
+    let parents = git_in(&fx.repo, &["show", "-s", "--format=%P", &head2]);
+    let parents: Vec<&str> = parents.split_whitespace().collect();
+    assert_eq!(
+        parents,
+        vec![head1.as_str(), main_tip.as_str()],
+        "a merge commit of the PR head and the main tip"
+    );
+    assert_eq!(
+        git_in(&origin, &["rev-parse", &format!("refs/heads/{HEAD_REF}")]),
+        head2,
+        "the synced head is on the remote"
+    );
+    git_in(&origin, &["merge-base", "--is-ancestor", &head1, &head2]);
+    assert!(marker.exists(), "the push went through the hooks");
+    let reflog = git_in(&fx.repo, &["reflog", "--format=%gs"]);
+    assert!(!reflog.contains("rebase"), "{reflog}");
+    let base_sync = &result.context["base_sync"];
+    assert_eq!(base_sync["synced"], json!("true"), "{base_sync}");
+    assert_eq!(base_sync["head_sha"], json!(head2), "{base_sync}");
+
+    // 3. Exactly one more round, which assessed the synced head.
+    assert!(
+        loop_argv(&fx)
+            .iter()
+            .any(|a| a == "autodrive_budget_loop_rounds=1"),
+        "exactly one more round: {:?}",
+        loop_argv(&fx)
+    );
+    let outcome = &result.context["sync_loop_outcome"];
+    assert_eq!(outcome["outcome"], json!("done"), "{outcome}");
+    assert_eq!(outcome["finalise"], json!("true"), "{outcome}");
+
+    // 4. The second finalisation merged at the synced head.
+    let second = &trace.merge_results[1];
+    assert_eq!(second["result"], json!("merged"), "{second}");
+    assert_eq!(second["expected_head"], json!(head2), "{second}");
+    assert_eq!(
+        result.context["finalize_merge"]["result"],
+        json!("merged"),
+        "the loop's own finalize_merge is the second result"
+    );
+    let merges = fx.merge_calls();
+    assert_eq!(merges.len(), 2, "{merges:?}");
+    for (m, want) in merges.iter().zip([&head1, &head2]) {
+        let i = m.iter().position(|a| a == "--match-head-commit").unwrap();
+        assert_eq!(&m[i + 1], want, "{m:?}");
+    }
+    for c in fx.gh_calls() {
+        let line = c.join(" ");
+        assert!(
+            !line.contains("--force") && !line.contains("+refs") && !line.contains("--admin"),
+            "{line}"
+        );
+    }
+    let report = report_step(&fx, &[("finalize_merge", &second.to_string())]);
     assert_eq!(
         last_json(&report, "stop_reason")["stop_reason"],
         json!("completed")
