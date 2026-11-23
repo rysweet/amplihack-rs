@@ -395,3 +395,43 @@ fn a_value_that_is_not_an_array_is_reported_and_ignored() {
         e.diagnostics
     );
 }
+
+// ── Issue #2912: agent.standing ─────────────────────────────────────────────
+
+#[test]
+fn agent_standing_is_off_with_no_file() {
+    let fx = Fx::new();
+    assert_eq!(super::agent_standing(&fx.home), Ok(false));
+}
+
+#[test]
+fn agent_standing_follows_the_user_file() {
+    let fx = Fx::new();
+    fx.user("[agent]\nstanding = true\n");
+    assert_eq!(super::agent_standing(&fx.home), Ok(true));
+    fx.user("[agent]\nstanding = false\n");
+    assert_eq!(super::agent_standing(&fx.home), Ok(false));
+}
+
+/// A value the key cannot hold is an error naming the cause; the caller reads
+/// it as `false` and warns, so a bad value never turns relaunching on.
+#[test]
+fn agent_standing_with_an_invalid_value_is_an_error_not_true() {
+    let fx = Fx::new();
+    fx.user("[agent]\nstanding = \"yes please\"\n");
+    assert!(super::agent_standing(&fx.home).is_err());
+}
+
+/// A cloned repository cannot mark a session standing.
+#[test]
+fn a_project_scoped_agent_standing_has_no_effect() {
+    let fx = Fx::new();
+    fx.project("[agent]\nstanding = true\n");
+    let e = fx.load(&[]);
+    assert_eq!(e.entry("agent.standing").value, Some(Value::Bool(false)));
+    assert!(
+        !e.diagnostics.is_empty(),
+        "the ignored project value is reported"
+    );
+    assert_eq!(super::agent_standing(&fx.home), Ok(false));
+}

@@ -11425,15 +11425,15 @@ The checks run in this order. The first one that fails decides the outcome.
 | 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`. Nothing is logged. |
 | 3 | `stop_hook_active` is absent, `null` or `false` (any other non-boolean value counts as `true`). Before this check the hook reads the ledger once, for its `live` profile. When the check passes, it reads the [stop time](#stop-time), notes the current swap record and the session's last resume, and works out the login the session stopped on for the [event key](#resume-state-directory). When it fails, none of the transcript, the swap record or the resume state is read. | Exit `0`, outcome `stop-hook-active`. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
-| 5 | This session has resumed fewer than 3 times in the last 24 hours. | Exit `0`, outcome `cap`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
+| 5 | The session's record of earlier resumes is read, and its count is kept for the log. No count refuses a resume. A record that cannot be parsed is treated as no earlier resumes, and one `session-record-reset` line is logged. | Exit `0`, outcome `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
 | 6 | The rotator is running: `<root>/.auto-switch.d/rotate/rotate.pid` names a running `amplihack profile rotate watch` process of yours (checked in `/proc`; skipped where there is none), and the ledger, if present, can be read by the trust rules in [Rotator capacity rule](#rotator-capacity-rule). | Exit `0` without waiting, outcome `rotator-down`. |
 | 7 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 7 days and 1 hour are removed. | Exit `0`, outcome `guard-failed`. |
 | 8 | The hook keeps the swap record it noted in step 3 (or that there was none), sets up the [event wait](#event-wait), and reads the swap record once. Then it waits for a record that passes [Capacity for a resume](#capacity-for-a-resume), for at most 7 days from its start. A record that fails is logged (`swap-stale` or `swap-no-room`) and the wait goes on. | Exit `0`, outcome `watch-lost` if the wait cannot be set up or a watch is lost; `moved-on` if you sent a prompt in that session; `session-gone` if the session exited; `no-capacity-timeout` at the 7-day deadline; `guard-failed` if a prompt marker cannot be read safely. |
-| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and, if the hook noted a pane, the pane still [passes its check](#resume-keys) and is [showing a screen the keys answer](#resume-screen); a pane that fails now is dropped and the wake is used instead, with outcome `pane-unverified`, `pane-not-reading` or `screen-unrecognised`. Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
+| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and, if the hook noted a pane, the pane still [passes its check](#resume-keys) and is [showing a screen the keys answer](#resume-screen); a pane that fails now is dropped and the wake is used instead, with outcome `pane-unverified`, `pane-not-reading` or `screen-unrecognised`. Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
 | 10 | With a pane: send the [resume keys](#resume-keys). | Exit `0`, outcome `resume-keys-failed`, with the number of keys sent. The resume stays recorded and the hook does not exit `2`. |
 | 11 | No further check | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message when there was no keys path: outcome `resumed` with `detail=no-tmux-pane` for no pane, `pane-unverified` for a pane that was not proved to be this session's terminal, `pane-not-reading` for a terminal Claude Code is not reading, `screen-unrecognised` for a proved pane that was not showing a screen the keys answer. |
 
-Steps 4 and 5 run once without the lock, so a duplicate or capped session
+Steps 4 and 5 run once without the lock, so a duplicate session
 exits at once instead of waiting up to 7 days, and again under the lock in
 step 9. The lock is not held while waiting in step 8. The choice between
 keys and the wake is made before the commit, and the marker and session
@@ -11445,6 +11445,17 @@ for the same session with different events, the first to commit resumes
 it; the other finds a resume after its own start time and ends as
 `duplicate`, or, if keys typed `continue` first, as `moved-on`. A new limit
 that starts in the same second as the previous resume may still resume.
+
+##### No resume cap
+
+The hook has no limit on how many times it resumes one session. A resume
+happens only when a login with room is live, so each one follows real
+capacity, and the event marker and the last-resume rule above stop duplicates.
+A session that hits four limits in a day is resumed four times. Earlier
+versions refused a fourth resume in 24 hours, which left a supervisor session
+stopped for hours after a login had room again. The session record keeps the
+resume times and `resume.log` shows their count as `resumes=<n>`, as evidence
+only.
 
 ##### Moved on
 
@@ -11560,8 +11571,8 @@ to report. It does not retry or wait.
 Claude Code may write the error entry after the hook starts, or not at all.
 The last entry is then older than the stop, which can only lower the
 threshold, so the session may get one `continue` it did not need; it never
-waits for a swap it should have taken. The resume cap, the last-resume rule
-and the room check still apply.
+waits for a swap it should have taken. The last-resume rule and the room
+check still apply.
 
 #### Swap record
 
@@ -11943,9 +11954,9 @@ and epoch seconds. No pane id is stored.
 
 | Path | Contents |
 |------|----------|
-| `lock` | Lock file for steps 4, 5 and 9. Waited on for at most 5 seconds. |
+| `lock` | Lock file for steps 4 and 9. Waited on for at most 5 seconds. |
 | `events/<sha256 hex>` | One empty marker per limit event. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the login the session stopped on, each written with its length, so no two different payloads share a name. The login the session stopped on is the noted swap record's `from_login` when the swap falls between one second before the [stop time](#stop-time) and the hook's start (`stop - 1 <= swapped_at <= start`). The bound depends on the stop alone, not on when the hook started or on the session's past resumes, so every run of the hook for one stop gets the same name, whatever second it starts in and before and after that stop is resumed; a repeat run is `duplicate` and never resumes the session a second time. The second before the stop is the allowance [Capacity for a resume](#capacity-for-a-resume) gives a hook that starts in the stop's second, so a session resumed through it has its event named for that record's `from_login`. A hook that starts two or more seconds after the stop does not resume on a swap in the second before the stop, but its event is still named for that swap's `from_login`. The cost: a session resumed on that swap in the second before its next stop, which stops again with the same text and whose hook starts two or more seconds late, gets the earlier event's name and is `duplicate`, so it is left stopped rather than sent keys twice. Without a stop time it is `from_login` when the record is after the stop by the rule in [Capacity for a resume](#capacity-for-a-resume) and not later than the hook's start. Otherwise it is the ledger's `live` profile when the hook started. A session that stops on the outgoing login while the rotator swaps, is resumed, and stops again on the new login therefore gets a new event, not `duplicate`. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
-| `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. A file that cannot be parsed counts as the cap being reached and is left unchanged. |
+| `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. The count is evidence for `resume.log` (`resumes=<n>`) and decides nothing. A file that cannot be parsed counts as no earlier resumes: it is rewritten holding only the current resume, and one `session-record-reset` line is logged. |
 | `prompted/<sha256 hex>` | One file per session, named like `sessions/`, holding the epoch seconds of your last prompt in it. Written by the `UserPromptSubmit` hook, replaced atomically. Removed after 7 days and 1 hour (the longest wait plus 1 hour) when a hook starts waiting or commits. A file that cannot be parsed or is not private makes a waiting hook end as `guard-failed`. |
 | `resume.log` | One line per decision from step 3 on, and one per swap record judged stale or without room. |
 | `resume.log.1` | The previous log. `resume.log` is renamed to it when it passes 64 KiB. |
@@ -11973,6 +11984,7 @@ after `cycle` appear only when they apply:
 | `swap_live` | That record's `live_login`. |
 | `pane` | The first 12 hex digits of the SHA-256 of the pane id, when keys were sent or tried. |
 | `keys_sent` | How many of the four keys were sent (0–4). |
+| `resumes` | How many resumes the session's record already held in the last 24 hours when the record was read, in step 5. It does not count the resume this line is about, so the first resume of a session logs `resumes=0`. A record that could not be parsed reads as `0`. Evidence for an operator; nothing branches on it. |
 | `detail` | Why there was no keys path, or why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. For `resumed`, the one fixed word `no-tmux-pane` (the session named no usable pane). For `pane-unverified`, one of `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`. For `screen-unrecognised`, `screen-unreadable` or `screen-unknown`. The value is always one of these fixed words, never text taken from the pane, `tmux`, `/proc` or the environment. |
 
 Every field holds only `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`; any other
@@ -11996,7 +12008,7 @@ outcome.
 | `moved-on` | `0` | You sent a prompt in that session during the wait, so the hook did not resume it. |
 | `disabled` | `0` | Auto-switch was off when a swap record would have resumed the session. |
 | `duplicate` | `0` | This limit event, or this session since the hook started, was already resumed. |
-| `cap` | `0` | The session already resumed 3 times in 24 hours. |
+| `session-record-reset` | `0` | The session's record of earlier resumes could not be parsed. It was treated as no earlier resumes and rewritten. The session is still resumed, and its own line follows. Logged once, with no record contents. |
 | `stop-hook-active` | `0` | Claude Code reported a stop hook already running. |
 | `session-gone` | `0` | The Claude Code session that started the hook exited during the wait. |
 | `rotator-down` | `0` | When the hook started, no rotator was running, or its ledger could not be read (for example a newer version). The hook did not wait. |
@@ -12012,7 +12024,6 @@ outcome.
 | Swap record size | 4096 bytes |
 | Clock skew allowed | 300 s |
 | Keys per resume | 4 |
-| Resumes per session | 3 per 24 hours |
 | Resumes per limit event | 1 |
 | Resume lock wait | 5 s |
 | Event marker retention | 7 days |

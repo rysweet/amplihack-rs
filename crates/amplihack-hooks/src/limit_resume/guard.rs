@@ -1,7 +1,8 @@
-//! The loop guard: at most one resume per limit event, one per waiting
-//! period of a session, and at most `MAX_RESUMES_PER_SESSION` per session
-//! in 24 hours, kept on disk under
-//! `<root>/.auto-switch.d/resume/`:
+//! The loop guard: at most one resume per limit event and one per waiting
+//! period of a session, kept on disk under
+//! `<root>/.auto-switch.d/resume/`. There is no cap on how often a session
+//! is resumed (issue #2912): a resume follows a login with room, so the
+//! count is evidence for the log and never a refusal.
 //!
 //! ```text
 //! lock                  flock taken around every commit
@@ -16,7 +17,6 @@
 //! foreign-owned or group/other-accessible path is refused, never chmod-ed
 //! or followed. Only hashes and integers are written.
 
-use super::MAX_RESUMES_PER_SESSION;
 use amplihack_utils::clock::{Clock, SystemClock};
 use amplihack_utils::rotator_status::MAX_WAIT;
 use amplihack_utils::secure_files::{
@@ -41,17 +41,29 @@ const DAY_SECS: i64 = 86_400;
 const MAX_SESSION_BYTES: u64 = 4096;
 const MAX_PROMPTED_BYTES: u64 = 64;
 
-/// Why a commit did not record a resume.
+/// Why a commit did not record a resume. There is no count among these:
+/// the per-event marker and the since-start rule are the only duplicate
+/// guards (issue #2912).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitError {
-    /// The session already has `MAX_RESUMES_PER_SESSION` resumes in the last
-    /// 24 hours, or its record is malformed.
-    Cap,
     /// The event already has a marker, or the session was resumed after
     /// this hook's start.
     Duplicate,
     /// The state could not be read or written safely.
     Io,
+}
+
+/// What [`GuardStore::resumes`] found in a session's record.
+///
+/// Neither field refuses a resume. `count` is evidence for the log line
+/// (`resumes=<n>`), and `malformed` says the record could not be parsed, so
+/// it is read as no earlier resumes and the next commit rewrites it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Resumes {
+    /// Resumes recorded in the 24 hours before `now`.
+    pub count: u32,
+    /// The record could not be parsed.
+    pub malformed: bool,
 }
 
 impl From<io::Error> for CommitError {
@@ -66,11 +78,11 @@ impl From<io::Error> for CommitError {
 pub trait GuardStore {
     /// Whether `event` already has a marker.
     fn seen(&mut self, event: &str) -> io::Result<bool>;
-    /// Resumes recorded for `session` in the 24 hours before `now`.
-    fn resumes(&mut self, session: &str, now: i64) -> io::Result<u32>;
+    /// Resumes recorded for `session` in the 24 hours before `now`, and
+    /// whether its record could be parsed. Read for the log only.
+    fn resumes(&mut self, session: &str, now: i64) -> io::Result<Resumes>;
     /// The latest resume recorded for `session`, at any age; `None` when it
-    /// has none or its record is malformed (which [`Self::resumes`] already
-    /// reads as the cap).
+    /// has none or its record is malformed.
     fn last_resume(&mut self, session: &str) -> io::Result<Option<i64>>;
     /// Creates `resume/` and `resume/prompted/` before a wait, so a prompt
     /// sent during the first-ever wait is recorded, and prunes old prompt
@@ -192,11 +204,24 @@ impl FsGuard {
 
     /// The session's resume times; `Ok(None)` when it has no record and
     /// `Ok(Some(None))` when the record is malformed.
+    ///
+    /// A record longer than [`MAX_SESSION_BYTES`] cannot hold a list this
+    /// hook wrote, so it is malformed rather than an error, and it is never
+    /// read into memory (V6). The size is checked only for a private
+    /// regular file of this user; anything else falls through to the read,
+    /// which refuses it.
     fn read_session(&self, file: &Path) -> io::Result<Option<Option<Vec<i64>>>> {
+        match fs::symlink_metadata(file) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Ok(m) if m.is_file() && private_record(&m) && m.len() > MAX_SESSION_BYTES => {
+                return Ok(Some(None));
+            }
+            _ => {}
+        }
         let Some((raw, meta)) = read_bounded_nofollow(file, MAX_SESSION_BYTES)? else {
             return Ok(None);
         };
-        if !owned_by_euid(&meta) || meta.mode() & 0o077 != 0 || meta.nlink() != 1 {
+        if !private_record(&meta) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "session record is not private",
@@ -241,6 +266,12 @@ impl FsGuard {
             }
         }
     }
+}
+
+/// A session record must be a regular file of this user, with no group or
+/// other bits and exactly one link.
+fn private_record(m: &fs::Metadata) -> bool {
+    owned_by_euid(m) && m.mode() & 0o077 == 0 && m.nlink() == 1
 }
 
 /// One positive epoch-seconds value per line; anything else is malformed.
@@ -297,15 +328,22 @@ impl GuardStore for FsGuard {
         }
     }
 
-    fn resumes(&mut self, session: &str, now: i64) -> io::Result<u32> {
+    fn resumes(&mut self, session: &str, now: i64) -> io::Result<Resumes> {
         check_key(session)?;
         let Some(sessions) = self.existing_subdir("sessions")? else {
-            return Ok(0);
+            return Ok(Resumes::default());
         };
         Ok(match self.read_session(&sessions.join(session))? {
-            None => 0,
-            Some(None) => MAX_RESUMES_PER_SESSION,
-            Some(Some(times)) => recent(&times, now).len() as u32,
+            None => Resumes::default(),
+            Some(None) => Resumes {
+                count: 0,
+                malformed: true,
+            },
+            Some(Some(times)) => Resumes {
+                // Saturating, so a record of any length is a number (V6).
+                count: u32::try_from(recent(&times, now).len()).unwrap_or(u32::MAX),
+                malformed: false,
+            },
         })
     }
 
@@ -381,17 +419,16 @@ impl GuardStore for FsGuard {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
+        // A record that cannot be parsed means no earlier resumes (#2912).
+        // It is rewritten below holding only this resume, so a damaged file
+        // never leaves a session stopped. The hook logs the reset.
         let times = match self.read_session(&sessions.join(session))? {
-            None => Vec::new(),
-            Some(None) => return Err(CommitError::Cap),
+            None | Some(None) => Vec::new(),
             Some(Some(times)) if times.iter().any(|t| *t > start) => {
                 return Err(CommitError::Duplicate);
             }
             Some(Some(times)) => recent(&times, now),
         };
-        if times.len() as u32 >= MAX_RESUMES_PER_SESSION {
-            return Err(CommitError::Cap);
-        }
 
         // `create_new` (O_CREAT|O_EXCL) never follows a symlink: a planted
         // one makes the open fail with AlreadyExists.
