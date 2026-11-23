@@ -17,8 +17,7 @@ const ENABLED_VAR: &str = "AMPLIHACK_USAGE_LIMIT_WAIT";
 const MAX_VAR: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
 /// A session limit that states no reset. Its wait is a capacity wait whose
 /// only deadline is the configured outer bound, so it is the wait on which a
-/// configured maximum can be seen: since round 6 of the review of PR #2992 a
-/// reset wait ignores the value.
+/// configured maximum can be seen: a reset wait ignores the value.
 const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 
 fn assert_today(f: &Fixture, out: &std::process::Output) {
@@ -98,7 +97,7 @@ fn the_config_maximum_bounds_the_wait() {
     assert_eq!(events(&out)[2], "end reason=capacity expired");
 }
 
-/// Round 6 of the review of PR #2992: the same configured maximum does not
+/// The same configured maximum does not
 /// bound a reset wait, which ends at its reset.
 #[test]
 fn the_config_maximum_does_not_bound_a_reset_wait() {

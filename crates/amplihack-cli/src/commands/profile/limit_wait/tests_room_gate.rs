@@ -63,6 +63,8 @@ use crate::test_support::{EnvGuard, env_lock};
 use std::cell::Cell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // --- the gate -----------------------------------------------------------------
 
@@ -499,8 +501,48 @@ fn swapped_during_the_attempt(e: &Env, w: &mut Waiter, room_on_b: Option<bool>) 
     e.rotator_cycle_room("b", 2, None, "swapped", false, room_on_b);
 }
 
+/// Another thread writing the auto-switch readings file every few
+/// milliseconds, as an auto-switch reading does, until the guard is dropped.
+///
+/// The wait reads its files only after a write to one of them (issue #2911),
+/// so a test whose stand-in probe is to be asked needs a write to wake the
+/// wait. The writes change nothing the wait compares: the stand-in probe is
+/// the only thing that reads what they mean.
+pub(super) struct ReadingsWritten {
+    stop: Arc<AtomicBool>,
+    writer: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for ReadingsWritten {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(w) = self.writer.take() {
+            w.join().expect("the readings writer ends");
+        }
+    }
+}
+
+pub(super) fn readings_written(e: &Env) -> ReadingsWritten {
+    let dir = e.store.root().join(".auto-switch.d");
+    fs::create_dir_all(&dir).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let writer = std::thread::spawn(move || {
+        while !flag.load(Ordering::Relaxed) {
+            let _ = fs::write(dir.join("usage.json"), b"{}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    });
+    ReadingsWritten {
+        stop,
+        writer: Some(writer),
+    }
+}
+
 /// The wait that runs, in place of the retry at once, ends here: another login
-/// reports capacity, which is what a test needs to end a wait that sleeps.
+/// reports capacity, which is what a test needs to end a wait that blocks. A
+/// test using it also holds [`readings_written`], the write that wakes the
+/// wait to ask.
 /// `probed` counts how many times it was read, which is how a test tells that
 /// the wait ran from that it never did.
 fn probe_counting<'a>(probed: &'a Cell<u32>) -> impl Fn(i64, i64) -> bool + 'a {
@@ -514,6 +556,7 @@ fn probe_counting<'a>(probed: &'a Cell<u32>) -> impl Fn(i64, i64) -> bool + 'a {
 fn a_swap_onto_a_login_with_room_during_the_attempt_retries_at_once() {
     guarded(|| {
         let e = env();
+        let _writes = readings_written(&e);
         let mut w = waiter(&e, None);
         swapped_during_the_attempt(&e, &mut w, Some(true));
         let probed = Cell::new(0);
@@ -531,6 +574,7 @@ fn a_swap_onto_a_login_without_room_during_the_attempt_does_not_retry_at_once() 
     guarded(|| {
         for (what, room) in [("reads full", Some(false)), ("records no room bit", None)] {
             let e = env();
+            let _writes = readings_written(&e);
             let mut w = waiter(&e, None);
             swapped_during_the_attempt(&e, &mut w, room);
             let probed = Cell::new(0);
@@ -550,6 +594,7 @@ fn a_login_change_wait_still_retries_at_once_onto_a_login_without_room() {
     guarded(|| {
         for room in [Some(false), None] {
             let e = env();
+            let _writes = readings_written(&e);
             let mut w = waiter(&e, None);
             swapped_during_the_attempt(&e, &mut w, room);
             let probed = Cell::new(0);
@@ -573,6 +618,7 @@ fn a_login_change_wait_still_retries_at_once_onto_a_login_without_room() {
 fn a_manual_switch_during_the_attempt_retries_at_once_without_a_room_reading() {
     guarded(|| {
         let e = env();
+        let _writes = readings_written(&e);
         let mut w = waiter(&e, None);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
@@ -589,6 +635,7 @@ fn a_manual_switch_during_the_attempt_retries_at_once_without_a_room_reading() {
 fn a_manual_switch_that_recorded_no_room_during_the_attempt_runs_the_wait() {
     guarded(|| {
         let e = env();
+        let _writes = readings_written(&e);
         let mut w = waiter(&e, None);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
@@ -612,6 +659,7 @@ fn a_manual_switch_that_recorded_no_room_during_the_attempt_runs_the_wait() {
 fn a_retry_after_a_wait_that_said_try_now_is_reported_once_and_consumed() {
     guarded(|| {
         let e = env();
+        let _writes = readings_written(&e);
         let mut w = waiter(&e, None);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
@@ -642,7 +690,7 @@ fn a_retry_that_skipped_the_wait_because_the_login_had_room_also_said_try_now() 
 /// so, not because anything said the login was usable: a limit after it is
 /// no contradiction, so it writes no `reentered` line.
 ///
-/// Round 6 of the review of PR #2992: only a capacity or login-change wait
+/// Only a capacity or login-change wait
 /// has an outer bound, so this is a capacity wait with no reset. A reset
 /// wait used to be cut short by a configured length; it now ends at its
 /// reset, which does say to try.
@@ -667,12 +715,12 @@ fn a_retry_after_a_wait_that_ran_out_said_nothing() {
     });
 }
 
-/// Round 6 of the review of PR #2992: a reset wait is not cut short by the
+/// A reset wait is not cut short by the
 /// configured length. With the shortest outer bound the setting allows and
 /// a reset half an hour away, the wait runs to its reset, and a reset that
 /// arrived does say *try now*.
 #[test]
-fn round_6_a_reset_wait_runs_past_the_configured_length_to_its_reset() {
+fn a_reset_wait_runs_past_the_configured_length_to_its_reset() {
     guarded(|| {
         let e = env();
         let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
@@ -711,6 +759,7 @@ fn round_6_a_reset_wait_runs_past_the_configured_length_to_its_reset() {
 fn a_finish_clears_what_an_earlier_retry_set() {
     guarded(|| {
         let e = env();
+        let _writes = readings_written(&e);
         let mut w = waiter(&e, None);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
@@ -885,7 +934,7 @@ fn issue_2911_a_capacity_wait_that_runs_out_retries() {
     });
 }
 
-/// Issue #3037, review of PR #2992: the step timeout does not end a limit
+/// Issue #3037: the step timeout does not end a limit
 /// wait. One already behind the clock used to end this wait at once and
 /// fail the step while the limit still stood. Nothing enforces that
 /// variable on a step - recipe-runner-rs enforces only a step's YAML

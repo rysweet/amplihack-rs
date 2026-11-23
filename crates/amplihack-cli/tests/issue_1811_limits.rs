@@ -111,9 +111,9 @@ fn session_exhausted_step_waits_for_the_reset_and_the_recipe_finishes() {
 
 /// Every login weekly-exhausted, the reset months away: the governor admits
 /// the step and the supervisor alone decides. Since issue #2911 its decision
-/// is a wait for capacity, named `reset_too_far`: a reset that far is not
-/// one the step can sleep to, so it waits for a login with room, its own
-/// deadline earns the retry, and the recipe finishes. The exit is never the
+/// is a wait for capacity, named `reset_too_far`: it moves to a login with
+/// room if one appears, and otherwise waits for the reset, held to the
+/// seven-day window, which earns the retry, and the recipe finishes. The exit is never the
 /// governor's 80. This pins that one component decides, rather than two that
 /// agree only while their eligibility rules match.
 ///
@@ -154,7 +154,7 @@ fn weekly_exhausted_step_is_decided_by_the_supervisor_not_the_governor() {
         full(&out, &steps)
     );
     assert!(
-        waits.contains(&"end reason=capacity expired") && waits.contains(&"resume attempt=2"),
+        waits.contains(&"end reason=reset reached") && waits.contains(&"resume attempt=2"),
         "{}",
         full(&out, &steps)
     );

@@ -232,10 +232,13 @@ fn a_record_that_could_not_be_written_still_plans_the_wait() {
         "nothing stored: {l}"
     );
     let ev = events(&out);
-    // Since #2911 the wait says why it has no reset to end on, and a reset
+    // Since #2911 the wait says why it is waiting for capacity, and a reset
     // a year away is `reset_too_far`: the word that used to end such a run.
-    let why =
-        format!("waiting_for_capacity reason=reset_too_far harness=claude until={FLOORED_UNTIL}");
+    // The wait still ends at that reset, held to the 62-day span a spend
+    // limit's record is held to.
+    let why = "waiting_for_capacity reason=reset_too_far harness=claude \
+               until=2026-12-19 07:02:00 -08:00"
+        .to_string();
     assert_eq!(ev.first(), Some(&why), "{ev:?}: {}", describe(&out));
     assert!(
         ev.get(1)

@@ -21,10 +21,10 @@ description: >
   switch` records no room bit and still wakes the wait unless it says
   `live_room: false`. The limit states a reset five minutes in the past. Case
   A's two waits each run the 60-second floor the binary applies to one wait's
-  length, so case A takes about two minutes; case B's held-back cases are
-  bounded by a step timeout below the planner's lead, so they end at once and
-  also pin that the step timeout still binds a capacity wait now that every
-  limit-shaped ending retries. No debug-only clock seam is needed.
+  length, and each of case B's held-back cases runs one such wait to its end
+  (`capacity expired`) before the retry, because the step timeout no longer
+  ends a limit wait (issue #3037). The scenario takes about six minutes. No
+  debug-only clock seam is needed.
   Everything runs under `env -i` with a scratch HOME,
   so the real ~/.claude and ~/.amplihack are never read or written, and no
   agent, account, rotator or network call is made. CI's Install Smoke Test job
@@ -34,7 +34,7 @@ description: >
   that adds it.
 version: "1.0"
 config:
-  timeout: 300000
+  timeout: 600000
 environment:
   requires: []
 agents:
@@ -51,7 +51,7 @@ steps:
     action: execute
     params:
       command: tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh
-    timeout: 280000
+    timeout: 580000
   - name: all-wait-wakes-on-room-cases-pass
     agent: cli-agent
     action: validate_exit_code

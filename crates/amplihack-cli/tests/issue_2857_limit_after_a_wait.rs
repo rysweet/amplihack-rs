@@ -15,7 +15,7 @@
 //! `skipped reason=already_waited`, `failed reason=already_waited` and
 //! `failed reason=capacity_expired` no longer exist; `max_wait_secs` is the
 //! outer bound of one capacity or login-change wait rather than a total for
-//! the step, and since round 6 of the review of PR #2992 it does not shorten a
+//! the step, and it does not shorten a
 //! reset wait; and a reset already behind the clock is a capacity wait for
 //! every limit, not only for a re-entry the old rule would have refused. What
 //! paces a chain of limits now is that every wait costs time. Nothing bounds
@@ -56,7 +56,12 @@
 //! Everything runs on the fixture's virtual clock, so no test sleeps, and
 //! nothing is asked of a delay. The rotator is a stub ledger: the stub `claude`
 //! writes the rotate ledger's cycle during the attempt it plays, stamped on the
-//! virtual clock, which is what the wait's capacity reading sees. Nothing reads
+//! virtual clock, which is what the wait's capacity reading sees when it reads
+//! its files as it begins. The virtual clock does not move while an attempt
+//! runs, so a cycle stamped a few seconds after `TEST_NOW` is still fresh to
+//! the next wait as well; a retry that is to wait for its own reset therefore
+//! records a cycle of its own with no room, as a rotator that measured the
+//! limited login would. Nothing reads
 //! or writes the real `~/.claude`, `~/.amplihack` or a real rotator.
 
 #![cfg(unix)]
@@ -219,7 +224,7 @@ fn a_429_on_the_retry_a_rotator_wake_earned_waits_again_and_says_so_once() {
     );
     assert_eq!(
         ev[5],
-        waiting_for("no_reset", "2026-10-18 14:00:30 -07:00"),
+        waiting_for("no_reset", "2026-10-18 14:00:00 -07:00"),
         "a 429 states no reset, and the wait says so before it starts: {ev:?}"
     );
     assert!(
@@ -270,7 +275,10 @@ fn a_usage_limit_message_on_the_retry_is_planned_as_the_first_wait_was() {
             "LIMIT_MESSAGE_2",
             "You've hit your session limit · resets 9:00am (America/Los_Angeles)",
         )
-        .env("ROOM_ON_CALL", room_on(1, 5, true));
+        .env(
+            "ROOM_ON_CALL",
+            format!("{} {}", room_on(1, 5, true), room_on(2, 0, false)),
+        );
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 3);
@@ -307,12 +315,12 @@ fn a_usage_limit_message_on_the_retry_is_planned_as_the_first_wait_was() {
 // rule would have refused.
 //
 // The timeline of the virtual clock, from 08:00:00 (`TEST_NOW`), which the
-// tests below rely on and which a poll of 30 s fixes:
+// tests below rely on:
 //
-//   call 1, 08:00:00  a weekly limit: a capacity wait, woken at the first poll
-//                     by the rotator's cycle call 1 wrote (30 s spent);
-//   call 2, 08:00:30  "resets 9:00am", an hour ahead: a reset wait to 09:02:00
-//                     (3690 s spent, 3720 s in all);
+//   call 1, 08:00:00  a weekly limit: a capacity wait, ended as it begins by
+//                     the rotator's cycle with room that call 1 wrote;
+//   call 2, 08:00:00  "resets 9:00am", an hour ahead: call 2 records a cycle
+//                     with no room, and the reset wait runs to 09:02:00;
 //   call 3, 09:02:00  "resets 9:00am" again: the reset is two minutes behind.
 
 const NINE_AM: &str = "You've hit your session limit · resets 9:00am (America/Los_Angeles)";
@@ -336,7 +344,8 @@ fn passed_reset_capacity_start(until: &str, bound: &str) -> String {
 }
 
 /// Calls 1 to 3 as the timeline above: `ROOM_ON_CALL` names the rotator's cycle
-/// call 1 wrote, and the retry of call 2 and call 3 each state `NINE_AM`.
+/// call 1 wrote and the one with no room call 2 wrote, and the retry of call 2
+/// and call 3 each state `NINE_AM`.
 fn passed_reset_step(f: &Fixture, calls_limited: u32) -> Command {
     let mut c = home_step(f);
     c.env("LIMIT_CALLS", calls_limited.to_string());
@@ -353,18 +362,23 @@ fn a_reset_that_has_already_passed_is_waited_for_as_capacity_and_the_wake_retrie
     // so the rotator here only supplies the readings that wake the waits.
     //
     // `max_wait_secs` is 7200, the length of each wait rather than a total for
-    // the step. The first wait is woken after 30 s by call 1's cycle; the
-    // second is a reset wait to 09:02:00; the third is a capacity wait for the
-    // reset that is now two minutes behind the clock, planned for its own full
-    // 7200 s, which is 11:02:00, and woken after 30 s by call 3's cycle.
+    // the step. The first wait is ended by call 1's cycle; the second is a
+    // reset wait to 09:02:00; the third is a capacity wait for the reset that
+    // is now two minutes behind the clock, planned for its own full 7200 s,
+    // which is 11:02:00, and ended by call 3's cycle.
     let f = with_profiles();
     let _rotator = rotator_running(&f);
     let mut c = passed_reset_step(&f, 3);
     c.env(MAX_WAIT_ENV, "7200").env(
         "ROOM_ON_CALL",
         // Call 3's cycle is stamped after its wait starts (09:02:00 is
-        // `TEST_NOW + 3720`), so the wait wakes at its first poll.
-        format!("{} {}", room_on(1, 5, true), room_on(3, 4000, true)),
+        // `TEST_NOW + 3720`), so the wait ends on it.
+        format!(
+            "{} {} {}",
+            room_on(1, 5, true),
+            room_on(2, 0, false),
+            room_on(3, 4000, true)
+        ),
     );
     let out = f.run(&mut c);
     assert!(
@@ -644,7 +658,7 @@ fn a_chain_of_limits_is_paced_by_each_wait_costing_time_and_nothing_counts_them(
     );
 }
 
-/// Issue #3037, review of PR #2992: the step timeout no longer ends a chain
+/// Issue #3037: the step timeout no longer ends a chain
 /// of waits. This test used to be the guard that it still did: with a
 /// 3900-second timeout the third wait ended at 09:04:00, a minute before it,
 /// with `failed reason=step_timeout` while the limit still stood. Nothing
@@ -656,8 +670,10 @@ fn issue_3037_a_step_timeout_does_not_end_a_wait_for_a_passed_reset() {
     let f = with_profiles();
     let _rotator = rotator_running(&f);
     let mut c = passed_reset_step(&f, 3);
-    c.env("AMPLIHACK_STEP_TIMEOUT", "3900")
-        .env("ROOM_ON_CALL", room_on(1, 5, true));
+    c.env("AMPLIHACK_STEP_TIMEOUT", "3900").env(
+        "ROOM_ON_CALL",
+        format!("{} {}", room_on(1, 5, true), room_on(2, 0, false)),
+    );
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
@@ -698,8 +714,8 @@ const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 /// bound (`capacity expired`) and the step retries.
 ///
 /// It used to be the stock message's reset wait, cut short by the
-/// configured length (`max reached`). Since round 6 of the review of PR
-/// #2992 a reset wait has no outer bound and runs to its reset, which does
+/// configured length (`max reached`). A reset wait now has no outer bound
+/// and runs to its reset, which does
 /// say to try, so the wait that runs out is now a capacity wait.
 fn ceiling_step(f: &Fixture) -> Command {
     executable(&f.tools.join("claude"), STUB);

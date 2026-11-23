@@ -299,7 +299,7 @@ fn a_piped_prompt_is_rerun_by_auto_switch_with_the_same_prompt() {
     assert!(wait_lines(&out).iter().all(|l| !l.starts_with("skipped")));
 }
 
-/// Issue #3036, review of PR #2992 (round 5): an auto-switch rerun whose
+/// Issue #3036: an auto-switch rerun whose
 /// prompt is still arriving runs at once, under the candidate, with no wait
 /// of any kind.
 ///

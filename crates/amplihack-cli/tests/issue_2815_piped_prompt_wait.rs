@@ -19,8 +19,8 @@
 //! Issue #3036 removes two endings these tests used to pin. An
 //! `--input-format` stream channel is copied and replayed like any piped
 //! prompt, and a copy the disk refused carried on in memory, so in both a
-//! limit is waited out and the rerun reads the same bytes. Since the review
-//! of PR #2992 the copy is kept in memory from the start, so no capture file
+//! limit is waited out and the rerun reads the same bytes. The copy is now
+//! kept in memory from the start, so no capture file
 //! is written at all, and a step whose copy cannot be set up is not run;
 //! `issue_2911_prompt_loss_ending.rs` pins that and the one ending left.
 
@@ -420,7 +420,7 @@ fn a_held_open_captured_pipe_does_not_hang_the_step() {
 /// limit, the wait runs to the stated reset, and the retry is due while the
 /// caller still holds the pipe and has written nothing.
 ///
-/// Review of PR #2992 (round 5): the retry starts at once, from the copy
+/// The retry starts at once, from the copy
 /// already held, and would read the rest as it arrived. Nothing waits on
 /// the caller's pipe. Issue #2816 ended the step here with `skipped
 /// reason=piped_prompt`, a limit ending a step for a prompt that was merely
@@ -467,7 +467,7 @@ fn a_held_open_captured_pipe_with_a_limit_retries_at_once_from_the_copy_held() {
     );
 }
 
-/// Review of PR #2992 (round 5): a retry that starts while the prompt is
+/// A retry that starts while the prompt is
 /// still arriving is given all of it, the part held when it started and
 /// the part written after, byte for byte and in order.
 ///
@@ -686,7 +686,7 @@ fn an_attempt_that_succeeds_on_a_cut_short_prompt_does_not_make_the_step_succeed
 /// first attempt's held-back stdout. Before issue #2816 the flag was read
 /// only by `for_attempt(2)`, so the step announced a wait, waited up to
 /// `max_wait_secs`, and then ended in an error with that output discarded.
-/// Before the review of PR #2992 the ending was `skipped reason=piped_prompt`,
+/// The ending used to be `skipped reason=piped_prompt`,
 /// which read as a wait refused to a limit; it is a lost prompt.
 #[test]
 fn a_capture_lost_before_the_limit_refuses_the_rerun_instead_of_waiting() {

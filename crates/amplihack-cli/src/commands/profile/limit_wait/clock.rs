@@ -1,9 +1,10 @@
 //! The usage-limit wait's clock (issue #1618).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Wall time, or with the debug-only test seams a virtual clock that starts
-/// at `TEST_NOW` and moves only when the wait sleeps.
+/// at `TEST_NOW` and moves only while the wait blocks, `TEST_SCALE` times as
+/// fast as real time.
 pub(super) struct Clock {
     base: Option<i64>,
     scale: f64,
@@ -28,10 +29,43 @@ impl Clock {
             .saturating_add(skew)
     }
 
-    pub(super) fn sleep(&mut self, d: Duration) {
-        let real = d.div_f64(self.scale).min(Duration::from_secs(1));
-        std::thread::sleep(real);
-        self.skew += if self.base.is_some() { d } else { d - real };
+    /// The real time that `d` on this clock stands for.
+    pub(super) fn real(&self, d: Duration) -> Duration {
+        d.div_f64(self.scale)
+    }
+
+    /// Runs `f`, which blocks for at most the real time it is given, with
+    /// the real time `d` on this clock stands for, and moves the clock by
+    /// however long `f` took, and never past `d`: a block that ran to its
+    /// timeout ends exactly at the time it was asked for.
+    ///
+    /// Only a test's scale makes a block stand for less real time than the
+    /// shortest wait `poll(2)` can make, a millisecond. Such a block checks
+    /// without blocking and moves the clock by the whole of `d`, so a test
+    /// clock reaches a reset days away without a millisecond per progress
+    /// line.
+    pub(super) fn block<T>(&mut self, d: Duration, f: impl FnOnce(Duration) -> T) -> T {
+        let began = Instant::now();
+        let real = self.real(d);
+        if real < Duration::from_millis(1) {
+            let out = f(Duration::ZERO);
+            let took = began.elapsed();
+            self.skew += if self.base.is_some() {
+                d
+            } else {
+                d.saturating_sub(took)
+            };
+            return out;
+        }
+        let out = f(real);
+        let took = began.elapsed();
+        let seen = took.mul_f64(self.scale).min(d);
+        self.skew += if self.base.is_some() {
+            seen
+        } else {
+            seen.saturating_sub(took)
+        };
+        out
     }
 }
 

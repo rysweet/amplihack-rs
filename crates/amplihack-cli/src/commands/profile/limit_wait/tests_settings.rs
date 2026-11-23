@@ -177,9 +177,9 @@ fn an_invalid_maximum_variable_falls_back_to_the_file_then_the_default() {
 
 // Issue #2911: the key is the length of *one* wait, not a budget for the
 // whole step, and a configured value below one wait's floor is raised to it
-// rather than dropped. The wait loop polls every 30 seconds, so a shorter
-// wait has no wake condition that could end it: a chain of those is the busy
-// loop the pacing rule exists to prevent.
+// rather than dropped. Each expiry of the bound runs the step's agent again,
+// so a bound of a few seconds would be a busy loop of agent launches, which
+// the pacing rule exists to prevent.
 //
 // The floor is applied here, where the value is read, so that `lower_only`
 // keeps working. Dropping a too-small value instead would silently raise a
@@ -238,7 +238,7 @@ fn issue_2911_turning_the_wait_off_is_its_own_key() {
     assert_eq!(got.max_wait_secs, Some(MIN_WAIT_SECS));
 }
 
-// Review of PR #2992: before #2911 a configured `0` meant "fail at once".
+// Before #2911 a configured `0` meant "fail at once".
 // It now means a 60-second wait, and a host that still carries one is told
 // so each time a step reads it, rather than finding out from a wait it did
 // not expect.
@@ -271,13 +271,12 @@ fn issue_2911_a_length_raised_to_the_floor_is_reported() {
     }
 }
 
-/// Review of PR #2992: a length at or above the floor but below the
-/// rotator's own cycle is not raised, and is not silent either. The value
-/// is the outer bound of a capacity or login-change wait, and a step still
-/// limited when such a wait ends runs its agent again, so such a value
-/// re-launches the agent that often for as long as the limit lasts. The
-/// line says so, names the default, and says a wait for a reset is not
-/// shortened by it (round 6 of the review).
+/// A length at or above the floor but below the rotator's own cycle is not
+/// raised, and is not silent either. The value is the outer bound of a wait
+/// whose limit stated no reset still ahead, and a step still limited when
+/// such a wait ends runs its agent again, so such a value re-launches the
+/// agent that often for as long as the limit lasts. The line says so, names
+/// the default, and says a wait for a stated reset is not shortened by it.
 #[test]
 fn a_short_length_above_the_floor_is_reported_as_the_poll_it_is() {
     for body in [MIN_WAIT_SECS, SHORT_WAIT_SECS - 1] {
@@ -299,7 +298,7 @@ fn a_short_length_above_the_floor_is_reported_as_the_poll_it_is() {
             "the cost is named: {warning}"
         );
         assert!(
-            warning.contains("A wait for a reset is not shortened by it"),
+            warning.contains("A wait for a stated reset is not shortened by it"),
             "and what it does not touch: {warning}"
         );
         assert!(

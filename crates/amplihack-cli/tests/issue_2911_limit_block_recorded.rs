@@ -2,7 +2,7 @@
 //! writes `overflow_blocked[login]` with the reset from the message, in the
 //! shape older readers accept. A session block ends at most five hours after
 //! it is written and a weekly block at most seven days after, whatever reset
-//! the message states (security review of PR #2992).
+//! the message states.
 
 #![cfg(unix)]
 

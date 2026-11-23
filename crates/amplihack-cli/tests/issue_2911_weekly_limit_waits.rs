@@ -82,15 +82,13 @@ fn the_same_limit_waits_with_no_rotator_running() {
 /// The hardest case the issue reports: one stored login, so there is no other
 /// login that could ever take over, and no rotator. Every start gate that
 /// used to be consulted would refuse here, and the run ended `reset_too_far`.
-/// Now the step waits its one wait out and retries, and says why it waited.
+/// Now the step waits for the weekly reset, held to its seven-day window,
+/// and runs again there, once: the configured maximum, set to its floor,
+/// does not cut the wait short and re-run the agent against the spent login.
 #[test]
 fn with_one_stored_login_a_weekly_limit_waits_rather_than_ending() {
     let f = crate::issue_1618_fixture::Fixture::new();
     let mut c = home_step(&f);
-    real_clock(&mut c);
-    // Nothing here can give a login room, so the wait runs its own length.
-    // 60 seconds is the floor a configured length is raised to, and the
-    // virtual clock `real_clock` sets runs it in a fraction of that.
     c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60");
     let out = f.run(&mut c);
     let ev = events(&out);
@@ -102,10 +100,10 @@ fn with_one_stored_login_a_weekly_limit_waits_rather_than_ending() {
     );
     assert_eq!(
         ev.iter()
-            .filter(|l| l.starts_with("end reason=capacity expired"))
-            .count(),
-        1,
-        "the wait reached its own deadline: {ev:?}"
+            .filter(|l| l.starts_with("end "))
+            .collect::<Vec<_>>(),
+        ["end reason=reset reached"],
+        "one wait, to the reset: {ev:?}"
     );
     assert!(
         ev.iter().any(|l| l.starts_with("resume attempt=2")),

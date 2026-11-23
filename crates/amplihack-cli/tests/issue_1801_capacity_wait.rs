@@ -14,11 +14,12 @@
 //!   waits: refusing to wait because no login has room *this instant* is
 //!   exactly the `reset_too_far` failure issue #2911 reports, and a login can
 //!   gain room while the step waits.
-//! - AC4, AC14: `usage_limit_max_wait_secs` is the outer bound of one capacity
-//!   wait, not a budget for the step, and a configured `0` reads as the
-//!   60-second floor. Reaching it runs the step again: the one timed
-//!   re-entry left, declared in docs/reference/usage-limit-waits.md ("The
-//!   timed parts that remain") and removed by #3098.
+//! - AC4, AC14: `usage_limit_max_wait_secs` is the outer bound of one wait
+//!   whose limit stated no reset still ahead, not a budget for the step, and
+//!   a configured `0` reads as the 60-second floor. Reaching it runs the step
+//!   again (docs/reference/usage-limit-waits.md, "The timed parts that
+//!   remain"). A weekly limit's reset is waited for to that reset, held to
+//!   the seven-day window, and the bound plays no part in it.
 //!   `recipe.usage_limit_wait = false` is how to turn waiting off.
 //! - AC15: a retry that hits the limit again gets a wait of its own, as long
 //!   as the first, and reaching a wait's maximum starts the next attempt.
@@ -60,8 +61,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
 const MAX_WAIT_ENV: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
 const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
-/// `WEEKLY_TEXT` read at `TEST_NOW`: October 8 has passed, so it is next year's.
-pub(crate) const WEEKLY_RESET: &str = "2027-10-08 00:00:00 -07:00";
+/// `WEEKLY_TEXT` read at `TEST_NOW`: October 8 has passed, so it is next
+/// year's, and the wait holds it to the seven-day window from `TEST_NOW`.
+const WEEKLY_HELD: &str = "2026-10-25 08:00:00 -07:00";
+/// That held reset plus the two-minute margin: a weekly wait's deadline.
+const WEEKLY_UNTIL: &str = "2026-10-25 08:02:00 -07:00";
 /// The shortest wait a configured maximum can ask for, `plan::MIN_WAIT_SECS`
 /// (issue #2911). Used wherever a test wants a real wait that nothing will
 /// lift, so the step reaches its retry in sixty virtual seconds.
@@ -276,8 +280,10 @@ fn assert_waits_for_capacity(ev: &[String], at: usize, why: &str) {
     );
 }
 
-/// The step waited for capacity, naming `why`, and ran again when the
-/// wait's maximum passed; `calls` is how many times the stub ran in all.
+/// The step waited for capacity, naming `why`, and ran again when the wait
+/// ended; `calls` is how many times the stub ran in all. A far reset
+/// (`reset_too_far`) ends at that reset, held to its window; a limit with no
+/// usable reset ends at the wait's maximum.
 ///
 /// Issue #2911: each scenario asserted with this used to end the run at once
 /// with `skipped reason=<why>`, because no login had room at the moment the
@@ -288,12 +294,14 @@ fn assert_waited_then_retried(f: &Fixture, out: &Output, why: &str, calls: u32) 
     assert_eq!(f.count("0"), calls, "{why}: {}", describe(out));
     let ev = events(out);
     assert_waits_for_capacity(&ev, 0, why);
+    let end = if why == "reset_too_far" {
+        "end reason=reset reached"
+    } else {
+        "end reason=capacity expired"
+    };
     assert_eq!(
         ev[2..],
-        [
-            "end reason=capacity expired".to_string(),
-            format!("resume attempt={calls}"),
-        ],
+        [end.to_string(), format!("resume attempt={calls}")],
         "{why}: {}",
         describe(out)
     );
@@ -319,9 +327,9 @@ pub(crate) fn assert_no_account_detail(f: &Fixture, out: &Output) {
 /// AC1: a weekly limit on a `$HOME/.claude` step waits for capacity, and the
 /// rotator's next cycle ends the wait.
 ///
-/// Issue #2911 added one line to the sequence: the wait has no reset it can
-/// end on, so it says `waiting_for_capacity reason=reset_too_far` before its
-/// own `start`.
+/// Issue #2911 added one line to the sequence: `waiting_for_capacity
+/// reason=reset_too_far` before its own `start`. The wait's deadline is the
+/// weekly reset, held to its window, not the outer bound.
 #[test]
 fn ac1_a_home_step_waits_on_a_weekly_limit_and_the_rotator_ends_the_wait() {
     let f = with_profiles();
@@ -339,7 +347,7 @@ fn ac1_a_home_step_waits_on_a_weekly_limit_and_the_rotator_ends_the_wait() {
         ev[1].starts_with("start reason=usage_limit wait=capacity harness=claude reset=2"),
         "{ev:?}"
     );
-    assert!(ev[1].ends_with(" bound=max_wait"), "{ev:?}");
+    assert!(ev[1].ends_with(" bound=reset+margin"), "{ev:?}");
     assert_eq!(ev[2..], ["end reason=rotator capacity", "resume attempt=2"]);
     assert_eq!(
         f.call("0", 2)["PROFILE"],
@@ -593,20 +601,19 @@ fn ac14_a_zero_maximum_reads_as_the_sixty_second_floor() {
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env(MAX_WAIT_ENV, "0");
+    c.env("LIMIT_MESSAGE", NO_RESET_TEXT).env(MAX_WAIT_ENV, "0");
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "S24: one wait, one retry, no probe call");
     assert_eq!(
         events(&out),
         vec![
-            "waiting_for_capacity reason=reset_too_far harness=claude \
+            "waiting_for_capacity reason=no_reset harness=claude \
              until=2026-10-18 08:01:00 -07:00"
                 .to_string(),
-            format!(
-                "start reason=usage_limit wait=capacity harness=claude reset={WEEKLY_RESET} \
-                 until=2026-10-18 08:01:00 -07:00 bound=max_wait"
-            ),
+            "start reason=usage_limit wait=capacity harness=claude reset=none \
+             until=2026-10-18 08:01:00 -07:00 bound=max_wait"
+                .to_string(),
             "end reason=capacity expired".to_string(),
             "resume attempt=2".to_string(),
         ],
@@ -621,19 +628,21 @@ fn ac14_a_zero_maximum_reads_as_the_sixty_second_floor() {
 /// runs that issue reports. Nothing has lifted the limit at that point, but
 /// nothing says the next attempt must meet it either, so the step runs again;
 /// `end reason=capacity expired` stays as the name of the wait's ending, and
-/// the retry is announced after the last progress line.
+/// the retry is announced after the last progress line. Only a limit with
+/// no usable reset has a maximum.
 #[test]
 fn reaching_the_maximum_retries_instead_of_ending_the_step() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env(MAX_WAIT_ENV, "120");
+    c.env("LIMIT_MESSAGE", NO_RESET_TEXT)
+        .env(MAX_WAIT_ENV, "120");
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "one wait, then the retry");
     let ev = events(&out);
-    assert_waits_for_capacity(&ev, 0, "reset_too_far");
+    assert_waits_for_capacity(&ev, 0, "no_reset");
     assert!(
         ev[1].ends_with("until=2026-10-18 08:02:00 -07:00 bound=max_wait"),
         "{ev:?}"
@@ -657,12 +666,13 @@ fn ac4_a_config_file_maximum_bounds_one_wait_and_the_step_retries() {
     let _rotator = rotator_running(&f);
     f.write_config("[recipe]\nusage_limit_max_wait_secs = 300\n");
     let mut c = home_step(&f);
-    c.env_remove(MAX_WAIT_ENV);
+    c.env_remove(MAX_WAIT_ENV)
+        .env("LIMIT_MESSAGE", NO_RESET_TEXT);
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "one wait, then the retry");
     let ev = events(&out);
-    assert_waits_for_capacity(&ev, 0, "reset_too_far");
+    assert_waits_for_capacity(&ev, 0, "no_reset");
     assert!(
         ev[1].starts_with("start reason=usage_limit wait=capacity "),
         "{ev:?}"
@@ -673,27 +683,60 @@ fn ac4_a_config_file_maximum_bounds_one_wait_and_the_step_retries() {
     );
     assert_eq!(ev[2..], ["end reason=capacity expired", "resume attempt=2"]);
     assert!(
-        text(&out.stderr).contains("You've hit your weekly limit"),
+        text(&out.stderr).contains(NO_RESET_TEXT),
         "the limited attempt's own message still reaches the step's stderr"
     );
     assert_no_account_detail(&f, &out);
 }
 
-/// One capacity wait is six hours by default, the schema's value. Issue
-/// #2911: the step retries when that wait ends, so the run now succeeds, and
-/// the `start` line follows the `waiting_for_capacity` line.
+/// One capacity wait with no usable reset is six hours by default, the
+/// schema's value. Issue #2911: the step retries when that wait ends, so the
+/// run now succeeds, and the `start` line follows the `waiting_for_capacity`
+/// line.
 #[test]
 fn the_default_maximum_is_six_hours() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
-    let out = f.run(&mut home_step(&f));
+    let mut c = home_step(&f);
+    c.env("LIMIT_MESSAGE", NO_RESET_TEXT);
+    let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     let ev = events(&out);
-    assert_waits_for_capacity(&ev, 0, "reset_too_far");
+    assert_waits_for_capacity(&ev, 0, "no_reset");
     assert!(
         ev[1].ends_with("until=2026-10-18 14:00:00 -07:00 bound=max_wait"),
         "{ev:?}"
+    );
+}
+
+/// A weekly limit is waited for to its reset, held to the seven-day window,
+/// and a configured maximum does not cut it short: the step runs again at
+/// the reset, once, and not every time the maximum passes.
+#[test]
+fn a_weekly_limit_is_waited_for_to_its_reset_whatever_the_maximum() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let mut c = home_step(&f);
+    c.env(MAX_WAIT_ENV, MIN_WAIT);
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "the limited attempt and one at the reset");
+    assert_eq!(
+        events(&out),
+        [
+            format!(
+                "waiting_for_capacity reason=reset_too_far harness=claude until={WEEKLY_UNTIL}"
+            ),
+            format!(
+                "start reason=usage_limit wait=capacity harness=claude reset={WEEKLY_HELD} \
+                 until={WEEKLY_UNTIL} bound=reset+margin"
+            ),
+            "end reason=reset reached".to_string(),
+            "resume attempt=2".to_string(),
+        ],
+        "{}",
+        describe(&out)
     );
 }
 
@@ -705,17 +748,18 @@ fn a_user_maximum_above_six_hours_is_honoured() {
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env(MAX_WAIT_ENV, "28800");
+    c.env("LIMIT_MESSAGE", NO_RESET_TEXT)
+        .env(MAX_WAIT_ENV, "28800");
     let out = f.run(&mut c);
     let ev = events(&out);
-    assert_waits_for_capacity(&ev, 0, "reset_too_far");
+    assert_waits_for_capacity(&ev, 0, "no_reset");
     assert!(
         ev[1].ends_with("until=2026-10-18 16:00:00 -07:00 bound=max_wait"),
         "{ev:?}"
     );
 }
 
-/// Issue #3037, review of PR #2992: a step timeout does not end a capacity
+/// Issue #3037: a step timeout does not end a capacity
 /// wait. This step used to stop at `failed reason=step_timeout` with no
 /// retry while its limit still stood. Nothing enforces that variable on a
 /// step - recipe-runner-rs enforces only a step's YAML `timeout:` - so the
@@ -789,7 +833,8 @@ fn starts(ev: &[String]) -> Vec<&String> {
 /// it ended the step with `failed reason=capacity_expired`. The maximum is
 /// the outer bound of one wait now, so the second wait is as long as the first and
 /// its deadline lies later than the first wait's, which a remaining budget
-/// could not produce; when it ends the step simply runs again.
+/// could not produce; when it ends the step simply runs again. The limit
+/// states no reset, so the maximum is what bounds each wait.
 #[test]
 fn ac15_a_retry_on_the_same_login_after_a_wake_waits_again_at_full_length() {
     let f = with_profiles();
@@ -797,7 +842,9 @@ fn ac15_a_retry_on_the_same_login_after_a_wake_waits_again_at_full_length() {
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     // X, then the retry on X, then the attempt the second wait earns.
-    c.env("LIMIT_CALLS", "2").env(MAX_WAIT_ENV, "120");
+    c.env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE", NO_RESET_TEXT)
+        .env(MAX_WAIT_ENV, "120");
     real_clock(&mut c);
     let profiles = f.profiles.clone();
     let out = run_during_wait(&f, &mut c, move || {
@@ -831,7 +878,7 @@ fn ac15_a_retry_on_the_same_login_after_a_wake_waits_again_at_full_length() {
         "{ev:?}"
     );
     assert!(
-        text(&out.stderr).contains("You've hit your weekly limit"),
+        text(&out.stderr).contains(NO_RESET_TEXT),
         "the runner's classifier must still see the limit"
     );
 }
@@ -842,7 +889,8 @@ fn ac15_a_retry_on_the_same_login_after_a_wake_waits_again_at_full_length() {
 ///
 /// Issue #2911: that second wait is a full `max_wait_secs` of its own, and
 /// when nothing lifts Y's limit either the step retries rather than ending
-/// with `failed reason=capacity_expired`.
+/// with `failed reason=capacity_expired`. The limit states no reset, so the
+/// maximum is what bounds each wait.
 #[test]
 fn ac15_a_retry_on_a_login_this_step_has_not_waited_on_waits_again() {
     let f = with_profiles();
@@ -850,7 +898,9 @@ fn ac15_a_retry_on_a_login_this_step_has_not_waited_on_waits_again() {
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     // X, then the retry on Y, then the attempt the second wait earns.
-    c.env("LIMIT_CALLS", "2").env(MAX_WAIT_ENV, "120");
+    c.env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE", NO_RESET_TEXT)
+        .env(MAX_WAIT_ENV, "120");
     real_clock(&mut c);
     let out = run_with_rotator_cycle_during_wait(&f, &mut c);
     assert!(out.status.success(), "{}", describe(&out));

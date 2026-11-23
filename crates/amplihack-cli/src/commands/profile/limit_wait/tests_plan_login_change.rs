@@ -61,7 +61,7 @@ fn issue_2911_the_shortest_length_is_one_floor_and_never_zero() {
     );
 }
 
-/// Issue #3037, review of PR #2992: nothing but the wait's own length sets
+/// Issue #3037: nothing but the wait's own length sets
 /// this deadline. The step timeout once had a row here, which ended the
 /// wait early and failed the step while its spend limit still stood.
 #[test]

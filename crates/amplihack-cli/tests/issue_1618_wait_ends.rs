@@ -3,7 +3,7 @@
 //! - AC4: `max_wait_secs = 0` is raised to the 60-second floor and bounds a
 //!   wait with no reset to wait for at that length before retrying once
 //!   (issue #2911: there are no zero-length waits any more, and a zero no
-//!   longer means "do not wait"). Since round 6 of the review of PR #2992 the
+//!   longer means "do not wait"). The
 //!   value does not shorten a reset wait, which ends at its reset. A step
 //!   timeout plays no part (issue #3037).
 //! - AC5: a login that changes during the wait ends it with
@@ -26,16 +26,15 @@ const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 /// This used to assert a wait of zero seconds, ending at `TEST_NOW` itself:
 /// a zero was read as "do not wait" in all but name. The floor is applied
 /// where the value is read (`settings::from_effective`, which raises it to
-/// `plan::MIN_WAIT_SECS`), because the wait loop polls every 30 seconds: a
-/// wait shorter than one poll interval has no wake condition that could end
-/// it and would simply return, and a chain of those is the busy loop the
-/// pacing rule exists to prevent. To turn waiting off a config must now set
+/// `plan::MIN_WAIT_SECS`), because each expiry of the bound runs the step's
+/// agent again, and a chain of very short ones is the busy loop the pacing
+/// rule exists to prevent. To turn waiting off a config must now set
 /// `recipe.usage_limit_wait = false`; no length means "do not wait".
 ///
 /// The fixture's virtual clock keeps the 60-second wait instant in real time.
 ///
 /// The limit here states no reset, because only such a wait has an outer
-/// bound for the floor to apply to (round 6 of the review of PR #2992).
+/// bound for the floor to apply to.
 #[test]
 fn ac4_a_zero_maximum_is_raised_to_the_sixty_second_floor_and_retries_once() {
     let f = Fixture::new();
@@ -73,12 +72,12 @@ fn ac4_a_smaller_maximum_names_the_bound() {
     );
 }
 
-/// Round 6 of the review of PR #2992: the same smaller maximum does not
+/// The same smaller maximum does not
 /// shorten a reset wait. It used to end this one at 08:10 with `max
 /// reached` and run the agent again twenty minutes before the reset it was
 /// waiting for; the wait now ends at the reset.
 #[test]
-fn round_6_a_smaller_maximum_does_not_shorten_a_reset_wait() {
+fn a_smaller_maximum_does_not_shorten_a_reset_wait() {
     let f = Fixture::new();
     let mut c = f.step();
     c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "600");
@@ -110,7 +109,7 @@ fn ac4_a_larger_maximum_changes_nothing() {
     );
 }
 
-/// Issue #3037, review of PR #2992: a step timeout does not end a limit
+/// Issue #3037: a step timeout does not end a limit
 /// wait. This step used to stop a minute before a 30-second timeout, with
 /// `failed reason=step_timeout` while its limit still stood, on the reading
 /// that the recipe runner kills a step at that time. It does not:

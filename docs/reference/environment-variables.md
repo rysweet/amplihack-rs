@@ -1133,20 +1133,18 @@ ignored. See the
 **Config key:** [`recipe.usage_limit_max_wait_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-The outer bound of one capacity or login-change wait. It is not a per-step
-budget: a step that meets another limit after a wait waits again with the same
-bound, and nothing ends the chain. It does not shorten a wait on a reset, which
-ends at the reset (plus 120 s) or sooner on room or a login change. A
-[capacity wait](./profile-command.md#capacity-wait) for a login with room, and
-a [login-change wait](./profile-command.md#login-change-wait) on an
-organisation spend limit with no reset, last up to this bound, with no
-five-hour ceiling; a capacity wait still ends sooner at the failed login's own
-reset plus 120 s.
+The outer bound of one wait whose limit stated no reset still ahead. It is not
+a per-step budget: a step that meets another limit after a wait waits again
+with the same bound, and nothing ends the chain. It does not shorten a wait on
+a stated reset, which ends at the reset (plus 120 s), however far away, or
+sooner on room or a login change. A [capacity wait](./profile-command.md#capacity-wait)
+with no usable reset, and a [login-change wait](./profile-command.md#login-change-wait)
+on an organisation spend limit with no reset, last up to this bound.
 
 Because a step still limited when such a wait reaches the bound runs its agent
 again, it is also how often such a step re-asks the harness, and each ask is a
-fresh agent launch. It is the one timed bound left on a wait, kept for now;
-see [the timed parts that remain](./usage-limit-waits.md#the-timed-parts-that-remain).
+fresh agent launch. It is the one timer left on a wait; see
+[the timed parts that remain](./usage-limit-waits.md#the-timed-parts-that-remain).
 
 The length has a floor of 60 seconds. `0` means 60 seconds, not "do not wait";
 set `AMPLIHACK_USAGE_LIMIT_WAIT=false` to turn waiting off. A value below 600

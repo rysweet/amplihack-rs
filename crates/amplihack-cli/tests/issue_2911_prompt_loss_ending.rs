@@ -1,4 +1,4 @@
-//! Issue #2911, review of PR #2992: the one ending left to a step that has
+//! Issue #2911: the one ending left to a step that has
 //! met a limit is a lost prompt, and it is reached only when the prompt
 //! itself could not be read to its end.
 //!

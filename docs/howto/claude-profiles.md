@@ -2179,8 +2179,8 @@ to turn it on there). A failure that is not a usage limit is passed back at once
    If it hits the limit again, on the same login or another, it waits again.
    A limit never ends the step, and no count or budget bounds the chain. Each
    wait is paced by its own deadline, which is always in the future, and a
-   wait that has no reset to end on writes a `waiting_for_capacity` line
-   saying so; see
+   capacity or login-change wait writes a `waiting_for_capacity` line
+   saying why; see
    [Usage-limit waits](../reference/usage-limit-waits.md). Only the step
    timeout, a stop signal or the session ending stops the chain.
    When the wait ended because something said to try again (the reset
@@ -2233,9 +2233,10 @@ Three things follow, and all of them apply only to a step that runs on
   any other.
 
 - **Each wait has the full outer bound.** `recipe.usage_limit_max_wait_secs`
-  (six hours by default) is the outer bound of one capacity or login-change
-  wait, not a total for the step. A wait for a reset ignores it and ends at
-  the reset. Raise it to lengthen each capacity or login-change wait.
+  (six hours by default) is the outer bound of one wait whose limit stated no
+  reset still ahead, not a total for the step. A wait for a stated reset,
+  near or days away, ignores it and ends at the reset. Raise it to lengthen
+  each wait that has no reset to end on.
 
 
 Before this, such a step slept until its **own** account's reset, however
@@ -2367,7 +2368,7 @@ pinned to a profile may finish on another account unless you hold it.
 
 When the wait reaches its deadline with no login having capacity, the step
 runs again. If it meets the limit again, it waits again, and each wait writes
-a `waiting_for_capacity` line that names why it has no reset to end on:
+a `waiting_for_capacity` line that names why it is waiting for capacity:
 
 ```
 amplihack.recipe.usage_limit_wait waiting_for_capacity reason=no_reset harness=claude until=2026-10-31 15:43:00 -07:00
@@ -2421,7 +2422,7 @@ A usage limit always starts a wait. The run ends with no wait only when:
 A piped prompt is copied aside in memory and replayed to every retry, an
 `--input-format` channel included, so no step ends on a limit for want of a
 copy. A prompt still arriving when the retry is due is fed to the retry as it
-arrives, and the retry starts at once (issue #3036, review of PR #2992). A
+arrives, and the retry starts at once (issue #3036). A
 step whose copy cannot be set up, which happens only to a process out of file
 descriptors or threads, is not run.
 
@@ -2643,17 +2644,18 @@ export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600
 ```
 
 The maximum defaults to `21600` seconds (six hours). It is the outer bound of
-a wait for another login or for a login change: such a wait ends sooner when a
+a wait whose limit stated no reset still ahead: such a wait ends sooner when a
 login has room or the login changes, and otherwise at the maximum, when the
-step runs once more. It does not shorten a wait for a reset, which ends at the
-reset plus two minutes. It is not a budget for the step: each wait gets the
-whole maximum, and nothing ends the chain. `0` is read as 60 seconds, not as
-"do not wait"; set `recipe.usage_limit_wait` to `false` to turn waiting off.
-The maximum is the one timed bound left on a wait, kept for now; see
+step runs once more. It does not shorten a wait for a stated reset, which
+ends at the reset plus two minutes however far away it is; a weekly limit is
+waited for once, to its reset. It is not a budget for the step: each wait gets
+the whole maximum, and nothing ends the chain. `0` is read as 60 seconds, not
+as "do not wait"; set `recipe.usage_limit_wait` to `false` to turn waiting
+off. It is the one timer left on a wait; see
 [the timed parts that remain](../reference/usage-limit-waits.md#the-timed-parts-that-remain).
 
-To wait longer than six hours for another login, raise it in your user
-file or the variable:
+To wait longer than six hours on a limit with no stated reset, raise it in
+your user file or the variable:
 
 ```bash
 amplihack config set recipe.usage_limit_max_wait_secs 43200   # twelve hours

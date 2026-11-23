@@ -1,11 +1,24 @@
 //! The wait itself (issue #1618), over a `WaitDeps` so tests drive it with
-//! their own clock. Each pass checks, in order: a stop signal, the end of
-//! the session that started the step, the deadline, the login fingerprint,
-//! the rotator's capacity and another login's capacity (both every 30 s),
-//! and the progress line (every 60 s), then sleeps at most one second.
-//! Another login's capacity ends a wait of any kind, not only a capacity
-//! wait (issue #2694): a step whose own reset is hours away still moves to
-//! a login with room as soon as one is seen.
+//! their own clock.
+//!
+//! The wait blocks until something it could end on may have happened
+//! ([`WaitDeps::block`]): a write to one of the files its checks read, a
+//! stop signal, the exit of the process that started the step, or the
+//! wait's deadline. It reads its files once when it begins, and after that
+//! only after such a write, never on an interval, and it launches nothing. Issue #2911 asks for a wait woken by
+//! limit events, and each check below reads the file that records one: the
+//! rotator's ledger and swap record, the auto-switch readings and ledger,
+//! `.claude.json` and the credentials file (`wake`).
+//!
+//! After a write it checks, in order: the rotator's capacity, the login
+//! fingerprint, another login's capacity, then the named login key. One
+//! rotator write both swaps the login and records the cycle's room, and such
+//! a wait ends `rotator capacity`, the reason auto-drive and operators read.
+//! Another login's capacity ends a wait of any kind, not only a capacity wait
+//! (issue #2694): a step whose own reset is hours away still moves to a login
+//! with room as soon as one is seen, unless its own login changed in the
+//! same write. A stop signal, the end of the step's session and the deadline
+//! are checked on every wake, before the files.
 //!
 //! The one exception is a login-change wait (issue #2731), where both
 //! capacity sources are skipped: it is waiting for an organisation spend
@@ -13,57 +26,41 @@
 //! reading reports credit. The plan says so with
 //! [`Plan::capacity_may_end`].
 //!
-//! The login baseline is the first value two probes in a row agree on, and
-//! a change is a different value that two probes in a row agree on, so a
-//! torn or failed read of `.claude.json`, first or later, never ends the
-//! wait.
+//! # The login fingerprint
 //!
-//! That rule costs the fingerprint its first poll interval: a swap landing
-//! before two probes have agreed is absorbed into the baseline, because to
-//! the fingerprint it is indistinguishable from a torn first read. Both are
-//! "the first reading differs from the stable one that follows", and no
-//! comparison of opaque values can tell them apart. For a `$HOME/.claude`
-//! step the wait therefore also watches [`WaitDeps::login_changed`], the
-//! named login key, which is anchored on a reading taken *before the
-//! attempt was launched* and so has no baseline to settle. That is the
-//! check that ends a login-change wait when the rotator swaps in the
-//! wait's first seconds (issue #2731) — the one case where the fingerprint
-//! is the only other exit.
+//! The baseline is the fingerprint read when the wait starts. A change is a
+//! later reading that differs from it. A reading that could not be made,
+//! such as a `.claude.json` read while another process is half-way through
+//! writing it, is not a reading: it neither changes the baseline nor ends
+//! the wait, and the write that completes the file wakes the wait again. A
+//! baseline that could not be read is taken from the first reading that
+//! can.
 //!
-//! It is read last of the four, after both capacity sources, so it renames
-//! no end that already had a name: a swapping rotator cycle moves the key
-//! and reports capacity in the same write, and such a wait still ends
-//! `rotator capacity` as it always has.
+//! For a `$HOME/.claude` step the wait also watches
+//! [`WaitDeps::login_changed`], the named login key, which is anchored on a
+//! reading taken *before the attempt was launched*, so a swap the
+//! fingerprint's baseline absorbed is seen too. It is read last, so it
+//! renames no end that already had a name.
 //!
-//! # The 30-second pass is the interim mechanism
+//! # The progress line
 //!
-//! The events a wait ends on (a login with room, a rotator cycle, a login
-//! change) arrive as writes to files: the rotate ledger, the auto-switch
-//! readings, the swap record, `.claude.json` and the credentials file. The
-//! loop finds them by reading those files every [`POLL_SECS`], and checks the
-//! stop signal and the session every second. It runs no `/usage` probe and
-//! launches no agent: a pass is a handful of file reads. It also decides
-//! nothing about when the step runs again. That is set by an event, a
-//! reset, or the outer bound `plan` declares, and the interval only sets how
-//! soon after its write an event is noticed.
+//! A `progress` line is written every [`PROGRESS_SECS`] while the wait
+//! lasts, so the wait wakes then too. That wake reads no file, checks no
+//! account and launches nothing: it writes the line and blocks again. It is
+//! there because a supervisor that watches a child for output (the idle
+//! watchdog, `AMPLIHACK_IDLE_TIMEOUT_SECS`) would otherwise end a step that
+//! is waiting hours for a reset, and because the line is how an operator
+//! sees that the step is waiting rather than hung.
 //!
-//! It is still a poll, and it is kept as the interim bound #2909 allows
-//! while limits become events. The wait cannot yet block on file events
-//! instead: `amplihack_utils::file_event::Waiter` is Linux-only and retries
-//! `poll(2)` on `EINTR`, so a stop signal could not end a wait blocked in
-//! it, and the step must answer one at once. PR #3012 adds the interrupt the
-//! waiter lacks. Replacing this pass with a blocking wait on those files is
-//! #3098.
+//! Where no file event can be had ([`WaitDeps::block`] says so), the wake
+//! for the progress line is the only one left, and the wait reads its files
+//! then; the wait's own line says so once (`wake`).
 
 use super::events::{Event, line};
 use super::plan::{Bound, Plan, PlanKind};
-use std::time::Duration;
 
-/// How often the login fingerprint, the rotator's record and the readings
-/// are read again: the interim pass described in the module docs (#3098).
-const POLL_SECS: i64 = 30;
 /// How often a `progress` line is written.
-const PROGRESS_SECS: i64 = 60;
+pub(crate) const PROGRESS_SECS: i64 = 60;
 
 /// What the wait needs from the world.
 pub(crate) trait WaitDeps {
@@ -71,17 +68,22 @@ pub(crate) trait WaitDeps {
     type Print: Eq;
     /// Unix seconds.
     fn now(&mut self) -> i64;
-    fn sleep(&mut self, d: Duration);
+    /// Blocks until a file the checks read may have changed, a stop signal
+    /// arrives, the step's session ends, or `until` (unix seconds) comes,
+    /// whichever is first. Returns whether the files should be read again:
+    /// true after a write to one of them, false when only the time came or a
+    /// signal or the session's end woke it, which the wait checks itself.
+    fn block(&mut self, until: i64) -> bool;
+    /// The login fingerprint, or `None` when it could not be read.
     fn fingerprint(&mut self) -> Option<Self::Print>;
     /// The login in `$HOME/.claude` is no longer the one this step's
     /// attempt ran on (issue #2731); always false for a step whose login
     /// the rotator never changes.
     ///
     /// Unlike [`WaitDeps::fingerprint`] this needs no baseline: it is
-    /// anchored on a login key read before the attempt was launched, so a
-    /// swap landing at any point after that is seen, including inside the
-    /// first poll interval. It compares names the rotator itself wrote and
-    /// fails closed, so a reading that cannot be made is not a change.
+    /// anchored on a login key read before the attempt was launched. It
+    /// compares names the rotator itself wrote and fails closed, so a
+    /// reading that cannot be made is not a change.
     fn login_changed(&mut self) -> bool;
     /// A stop signal received, if any.
     fn signal(&mut self) -> Option<i32>;
@@ -97,8 +99,9 @@ pub(crate) trait WaitDeps {
     ///
     /// Asked only once a change has been seen, and last in the conjunction,
     /// so a wait that sees no change makes no extra reading. A change the
-    /// answer holds back is not forgotten: the wait keeps polling and ends
-    /// on the change at the first poll where the answer is yes.
+    /// answer holds back is not forgotten: the wait keeps its baseline and
+    /// ends on the change at the first wake where the answer is yes, which
+    /// is the rotator's next write to its ledger.
     ///
     /// It has no default body on purpose. An implementor that forgot it
     /// would fail open, which is the one direction this must not fail in,
@@ -112,12 +115,11 @@ pub(crate) trait WaitDeps {
 pub(crate) enum End {
     ResetReached,
     /// A login-change wait's outer bound passed; the login did not change.
-    /// Since round 6 of the review of PR #2992 no reset wait can end this
-    /// way, because a reset wait has no outer bound.
     MaxReached,
     LoginChanged,
     RotatorCapacity,
-    /// A capacity wait's outer bound passed; nothing lifted the limit.
+    /// The outer bound of a capacity wait with no reset ahead passed;
+    /// nothing lifted the limit.
     CapacityExpired,
     /// A reading showed that another stored login has capacity.
     OtherCapacity,
@@ -170,11 +172,12 @@ impl End {
 /// only `progress` lines; `start`, `end` and `resume` are the caller's.
 pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
     let start = deps.now();
-    // The previous probe, and the value two probes in a row agreed on.
-    let mut last = deps.fingerprint();
-    let mut baseline: Option<Option<D::Print>> = None;
-    let mut next_poll = start.saturating_add(POLL_SECS);
+    let mut base = deps.fingerprint();
     let mut next_progress = start.saturating_add(PROGRESS_SECS);
+    // The files are read once as the wait begins, for anything written
+    // between the limit and the watches being made, and then only after a
+    // write.
+    let mut read = true;
     loop {
         if let Some(sig) = deps.signal() {
             return End::Signal(sig);
@@ -186,61 +189,57 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
         if now >= plan.until {
             return End::at_deadline(plan.bound, plan.kind);
         }
-        if now >= next_poll {
-            let probe = deps.fingerprint();
-            match baseline.take() {
-                None if probe == last => baseline = Some(std::mem::replace(&mut last, probe)),
-                None => last = probe,
-                Some(base) => {
-                    // Issue #2857: the fingerprint says the login moved, not
-                    // that the one it moved to can be used. The baseline is
-                    // put back when the room gate says no, so the change is
-                    // still a change at the next poll and ends the wait as
-                    // soon as the login now live has room.
-                    if probe != base && probe == last && deps.change_may_end() {
-                        return End::LoginChanged;
-                    }
-                    baseline = Some(base);
-                    last = probe;
-                }
-            }
-            // Both capacity sources, or neither (#2731). They are read on
-            // a reset wait as well as a capacity wait (#2694): whether the
-            // step may move at all is `other_capacity`'s own decision, and
-            // it is false for a step with no auto-switch candidate. A
-            // login-change wait reads neither, because neither reports what
-            // it is waiting for; the fingerprint above and the login key
-            // below are what end it.
-            if plan.capacity_may_end() {
-                if deps.rotator_capacity(start) {
-                    return End::RotatorCapacity;
-                }
-                if deps.other_capacity(start) {
-                    return End::OtherCapacity;
-                }
-            }
-            // The named login key last, so it changes no wait's reported
-            // reason. A rotator cycle that swaps moves this key and sets
-            // `rotator_capacity` in the same write, and that end is the
-            // one such a wait has always reported; checking the key first
-            // would relabel it `login changed`. What the key adds is the
-            // case no capacity source speaks for: a login-change wait,
-            // where both are suppressed and the fingerprint's baseline has
-            // not settled yet (issue #2731).
-            // Issue #2857: gated on room, as the fingerprint above is. The
-            // key is read first, so a wait that sees no change still asks
-            // nothing about room.
-            if deps.login_changed() && deps.change_may_end() {
-                return End::LoginChanged;
-            }
-            next_poll = now.saturating_add(POLL_SECS);
+        if read && let Some(end) = read_files(plan, start, &mut base, deps) {
+            return end;
         }
         if now >= next_progress {
             let remaining = u64::try_from(plan.until.saturating_sub(now)).unwrap_or(0);
             deps.log(&line(&Event::Progress { remaining }, &chrono::Local));
             next_progress = now.saturating_add(PROGRESS_SECS);
         }
-        let left = plan.until.saturating_sub(now);
-        deps.sleep(Duration::from_secs(u64::try_from(left.min(1)).unwrap_or(1)));
+        read = deps.block(plan.until.min(next_progress));
     }
+}
+
+/// The checks made after a write to one of the wait's files, in their
+/// order; `Some` with the end they found.
+fn read_files<D: WaitDeps>(
+    plan: &Plan,
+    start: i64,
+    base: &mut Option<D::Print>,
+    deps: &mut D,
+) -> Option<End> {
+    // Both capacity sources, or neither (#2731). They are read on a reset
+    // wait as well as a capacity wait (#2694): whether the step may move at
+    // all is `other_capacity`'s own decision, and it is false for a step
+    // with no auto-switch candidate. A login-change wait reads neither,
+    // because neither reports what it is waiting for.
+    let capacity = plan.capacity_may_end();
+    if capacity && deps.rotator_capacity(start) {
+        return Some(End::RotatorCapacity);
+    }
+    // Issue #2857: the fingerprint says the login moved, not that the one
+    // it moved to can be used. The baseline is kept when the room gate says
+    // no, so the change still ends the wait at the first wake where the
+    // login now live has room.
+    if let Some(probe) = deps.fingerprint() {
+        match base {
+            None => *base = Some(probe),
+            Some(b) => {
+                if probe != *b && deps.change_may_end() {
+                    return Some(End::LoginChanged);
+                }
+            }
+        }
+    }
+    if capacity && deps.other_capacity(start) {
+        return Some(End::OtherCapacity);
+    }
+    // The named login key last, so it changes no wait's reported reason,
+    // and gated on room as the fingerprint is (issue #2857). The key is read
+    // first, so a wait that sees no change asks nothing about room.
+    if deps.login_changed() && deps.change_may_end() {
+        return Some(End::LoginChanged);
+    }
+    None
 }

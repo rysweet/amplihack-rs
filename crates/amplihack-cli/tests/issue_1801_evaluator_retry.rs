@@ -13,7 +13,8 @@
 //!   the run log has a `waiting_for_capacity` line, a capacity start line and
 //!   `end reason=rotator capacity`, and the run is never classed
 //!   `usage_limit`.
-//! - expiry: a wait that nothing lifts ends `capacity expired` and step-02
+//! - expiry: a wait whose limit states no reset and that nothing lifts ends
+//!   `capacity expired` and step-02
 //!   retries all the same (issue #2911), so the run still exits 0 with its
 //!   verdict. This used to end the run: the wait wrote `failed
 //!   reason=capacity_expired` and the runner classed it `usage_limit`. A
@@ -199,9 +200,10 @@ fn g1_a_limited_evaluator_step_is_retried_and_returns_its_verdict() {
 /// limit".
 ///
 /// Nothing here can end the wait early: the rotator's ledger names a cycle
-/// from before the step and no reading shows a login with room, so the wait
-/// runs its length. That length is the 60-second floor a configured `0` now
-/// reads as, on the fixture's virtual clock, so it costs no real time.
+/// from before the step and no reading shows a login with room, and the
+/// limit states no reset, so the wait runs its length. That length is the
+/// 60-second floor a configured `0` now reads as, on the fixture's virtual
+/// clock, so it costs no real time.
 #[test]
 fn g1_an_evaluator_wait_that_expires_retries_and_returns_its_verdict() {
     in_quiet_process(
@@ -213,7 +215,13 @@ fn g1_an_evaluator_wait_that_expires_retries_and_returns_its_verdict() {
             let _rotator = rotator_running(&f);
             let out = f.run(&mut evaluator_cmd(
                 &f,
-                &[("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0")],
+                &[
+                    ("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0"),
+                    (
+                        "LIMIT_MESSAGE",
+                        "You've hit your session limit · try again later",
+                    ),
+                ],
             ));
 
             assert!(out.status.success(), "{}", describe(&out));

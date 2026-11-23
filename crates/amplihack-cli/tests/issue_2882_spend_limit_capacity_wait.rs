@@ -9,7 +9,8 @@
 //!   capacity wait (`wait=capacity harness=claude reset=<stated>`), ends on
 //!   the rotator's capacity and retries once.
 //! - With no running rotator, and with one stored login, the step waits all
-//!   the same and the wait's own deadline earns the retry. Both used to end
+//!   the same, for the stated reset, which earns the retry; the configured
+//!   maximum does not cut that wait short. Both used to end
 //!   the run with `skipped reason=reset_too_far`, which is the failure
 //!   #2911 reports: a login can gain room while a step waits, and the
 //!   wait's own wake conditions see that, so refusing to start one because
@@ -36,17 +37,18 @@ use std::process::{Command, Output};
 /// Claude's individual spend limit with a weekly reset days after `TEST_NOW`.
 pub(crate) const SPEND_FAR: &str = "You've hit your individual spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 24, 2pm (America/Los_Angeles)";
 
-/// The outer bound of one capacity wait here, in seconds, as a string. Since
-/// #2911 this is the shortest a configured value may ask for: `MIN_WAIT_SECS` floors
-/// it where it is read, so a configured `0` would wait this long too.
+/// The outer bound of one wait with no usable reset here, in seconds, as a
+/// string. Since #2911 this is the shortest a configured value may ask for:
+/// `MIN_WAIT_SECS` floors it where it is read, so a configured `0` would wait
+/// this long too. A wait for `SPEND_FAR`'s stated reset does not read it.
 const ONE_WAIT: &str = "60";
 /// `SPEND_FAR`'s reset, read at the fixture's `TEST_NOW`.
 const STATED_RESET: &str = "2026-10-24 14:00:00 -07:00";
-/// `TEST_NOW + 60 s` and `TEST_NOW + 120 s`: the deadlines of the first and
-/// of a second `ONE_WAIT` wait. The fixture's clock moves only as a wait
-/// sleeps, so both are exact.
+/// That reset plus the two-minute margin: the deadline of a wait for it.
+const STATED_UNTIL: &str = "2026-10-24 14:02:00 -07:00";
+/// `TEST_NOW + 60 s`: the deadline of a `ONE_WAIT` wait. The fixture's clock
+/// moves only as a wait blocks, so it is exact.
 const FIRST_UNTIL: &str = "2026-10-18 08:01:00 -07:00";
-const SECOND_UNTIL: &str = "2026-10-18 08:02:00 -07:00";
 /// `TEST_NOW + 5 h`: the ceiling a reset wait is clamped to, which no line
 /// about `SPEND_FAR` may name.
 const FIVE_HOURS_ON: &str = "2026-10-18 13:00:00 -07:00";
@@ -66,17 +68,17 @@ fn one_minute_waits(c: &mut Command) -> &mut Command {
 }
 
 /// The lines one `SPEND_FAR` capacity wait writes when nothing ends it
-/// early: why it is waiting, the wait itself, its deadline and the retry it
-/// earns. Until #2911 there was one line, `skipped reason=reset_too_far`,
-/// and no retry.
-fn capacity_wait(until: &str, attempt: u32) -> Vec<String> {
+/// early: why it is waiting, the wait itself, which ends at the stated reset
+/// and not at the configured maximum, and the retry it earns. Until #2911
+/// there was one line, `skipped reason=reset_too_far`, and no retry.
+fn capacity_wait(attempt: u32) -> Vec<String> {
     vec![
-        format!("waiting_for_capacity reason=reset_too_far harness=claude until={until}"),
+        format!("waiting_for_capacity reason=reset_too_far harness=claude until={STATED_UNTIL}"),
         format!(
             "start reason=usage_limit wait=capacity harness=claude reset={STATED_RESET} \
-             until={until} bound=max_wait"
+             until={STATED_UNTIL} bound=reset+margin"
         ),
-        "end reason=capacity expired".to_string(),
+        "end reason=reset reached".to_string(),
         format!("resume attempt={attempt}"),
     ]
 }
@@ -90,12 +92,7 @@ fn assert_waited_then_retried(f: &Fixture, out: &Output) {
         "the wait earned one retry: {}",
         describe(out)
     );
-    assert_eq!(
-        events(out),
-        capacity_wait(FIRST_UNTIL, 2),
-        "{}",
-        describe(out)
-    );
+    assert_eq!(events(out), capacity_wait(2), "{}", describe(out));
 }
 
 /// A far spend reset waits for capacity and the rotator's next cycle ends
@@ -143,7 +140,7 @@ fn the_wait_names_the_stated_reset_not_the_five_hour_default() {
     one_minute_waits(&mut c);
     let out = f.run(&mut c);
     let ev = events(&out);
-    let start = capacity_wait(FIRST_UNTIL, 2).swap_remove(1);
+    let start = capacity_wait(2).swap_remove(1);
     assert_eq!(ev.get(1), Some(&start), "{ev:?}: {}", describe(&out));
     assert!(
         !ev.iter().any(|l| l.contains(FIVE_HOURS_ON)),
@@ -151,8 +148,8 @@ fn the_wait_names_the_stated_reset_not_the_five_hour_default() {
     );
 }
 
-/// With no running rotator the step waits all the same, reaches the wait's
-/// deadline and retries.
+/// With no running rotator the step waits all the same, reaches the stated
+/// reset and retries.
 ///
 /// Until #2911 this ended the run with `skipped reason=reset_too_far`,
 /// because nothing could move another login in *yet*. That is the heart of
@@ -168,8 +165,8 @@ fn without_a_running_rotator_the_step_still_waits() {
     assert_waited_then_retried(&f, &out);
 }
 
-/// With one stored login the step waits all the same, reaches the wait's
-/// deadline and retries.
+/// With one stored login the step waits all the same, reaches the stated
+/// reset and retries.
 ///
 /// Until #2911 this ended the run with `skipped reason=reset_too_far`: no
 /// second login could take over. A second login can be added, or the one
@@ -238,9 +235,21 @@ fn a_retry_that_meets_the_limit_again_waits_again() {
         "two waits, two retries: {}",
         describe(&out)
     );
-    let expected: Vec<String> = capacity_wait(FIRST_UNTIL, 2)
-        .into_iter()
-        .chain(capacity_wait(SECOND_UNTIL, 3))
-        .collect();
-    assert_eq!(events(&out), expected, "{}", describe(&out));
+    let ev = events(&out);
+    assert_eq!(ev[..4], capacity_wait(2), "{}", describe(&out));
+    assert_eq!(
+        ev.iter().filter(|l| l.starts_with("start ")).count(),
+        2,
+        "the retry's limit starts a second wait: {ev:?}"
+    );
+    assert_eq!(
+        ev.last().map(String::as_str),
+        Some("resume attempt=3"),
+        "{ev:?}"
+    );
+    assert!(
+        !ev.iter()
+            .any(|l| l.starts_with("failed ") || l.starts_with("skipped ")),
+        "{ev:?}"
+    );
 }

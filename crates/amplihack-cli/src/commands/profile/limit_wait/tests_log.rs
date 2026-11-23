@@ -80,14 +80,14 @@ fn every_other_event_has_its_documented_fields() {
             "skipped reason=not_supervised",
         ),
         // Issue #2911: `spend_limit`, `reset_too_far` and `no_reset` are no
-        // longer skips. They name why a *wait* has no reset to end on, on
+        // longer skips. They name why a *wait* is for capacity, on
         // the `waiting_for_capacity` line below, so the tokens an operator
         // greps for still appear and now mean "waiting" rather than "ended".
         (
             Event::Skipped(Skip::Cannot(NoWait::NoLimitMessage)),
             "skipped reason=no_limit_message",
         ),
-        // Review of PR #2992: a prompt cut short is a failure of the step's
+        // A prompt cut short is a failure of the step's
         // input, not a skipped wait, and says so.
         (Event::PromptCutShort, "failed reason=prompt_cut_short"),
         (Event::Skipped(Skip::Ci), "skipped reason=ci"),
@@ -151,7 +151,7 @@ fn a_capacity_start_line_with_no_reset_says_none() {
 
 // --- waiting_for_capacity (issue #2911) ----------------------------------
 //
-// A wait that has no reset it can end on says so plainly, on stderr and in
+// A capacity or login-change wait says so plainly, on stderr and in
 // the run's recipe log, naming the harness or the login and why. Such a step
 // may wait a long time, and an operator reading either sink must be able to
 // see that it is waiting for capacity rather than hung. The reason comes
@@ -261,7 +261,7 @@ fn issue_2857_an_instant_the_zone_cannot_write_is_written_as_seconds() {
     assert!(l.is_ascii() && !l.contains('\n'), "{l:?}");
 }
 
-/// Issue #3037, review of PR #2992: no line the wait writes says the step
+/// Issue #3037: no line the wait writes says the step
 /// failed on a limit. `capacity_expired`, `spend_limit` and `already_waited`
 /// went in #2911; the last closing line, `failed reason=step_timeout`, went
 /// with the step-timeout row, because nothing enforces that variable on a

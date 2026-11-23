@@ -1,4 +1,4 @@
-//! Issue #2911, review of PR #2992: a step ended by a lost prompt after a
+//! Issue #2911: a step ended by a lost prompt after a
 //! usage limit is resumed at that step by a plain relaunch of the same
 //! command, with no `--resume` flag and no edit to the recipe or the run's
 //! history.

@@ -53,17 +53,15 @@
 #     So a wait that runs to its end now ends `capacity expired`, where before
 #     it ended `reset reached`.
 #   * AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS is the outer bound of one capacity
-#     wait, not a budget for the step, and it is floored at 60 seconds, because the wait
-#     loop polls every 30 seconds and a shorter wait has no wake condition
-#     that could end it. The two seconds this scenario used to ask for would
-#     be raised to 60 in any case, so it asks for 60 plainly.
+#     wait with no reset still ahead, not a budget for the step, and it is
+#     floored at 60 seconds, so no value makes it a busy loop of agent
+#     launches. The two seconds this scenario used to ask for would be raised
+#     to 60 in any case, so it asks for 60 plainly.
 #
-# The cost of that floor is wall clock, and it falls on case A, whose point is
-# that a second limit really does wait: its two waits take a minute each. Case
-# B needs only to tell an early wake from no wake, so its held-back cases are
-# bounded by the step timeout instead and stay instant (see case B below). The
-# scenario therefore takes a little over two minutes, inside the timeout the
-# gadugi wrapper already allows.
+# The cost of that floor is wall clock. Case A's two waits take a minute each,
+# and each of case B's four held-back cases runs its one-minute wait to its
+# end, because nothing else ends a wait now: the step timeout does not
+# (issue #3037). The scenario therefore takes about six minutes.
 #
 # Every scenario command runs under `env -i` with an explicit allowlist (see
 # scenario_env below): no token, key or setting from the caller's environment
@@ -140,10 +138,10 @@ NOW="$(date +%s)"
 LIMIT_EPOCH=$(( NOW - 300 ))
 # The outer bound of one capacity wait, lowered from its 21600-second default
 # so a wait that nothing ends early ends on `bound=max_wait` in a minute rather
-# than in six hours. It is the one timed bound left on a wait, kept as an
-# interim bound (docs/reference/usage-limit-waits.md, #3098); a reset wait
-# has none. 60 is the floor the binary applies (two poll intervals of the wait
-# loop), so asking for less would be raised to it anyway (issue #2911).
+# than in six hours. It is the one timed bound left on a wait
+# (docs/reference/usage-limit-waits.md); a wait for a stated reset has none.
+# 60 is the floor the binary applies, so asking for less would be raised to
+# it anyway (issue #2911).
 MAX_WAIT_SECS=60
 
 # scenario_env <config-dir|home> <command...>: runs the command with only the
@@ -158,9 +156,6 @@ MAX_WAIT_SECS=60
 #   LIMIT_CALLS, LIMIT_EPOCH            the stub's own inputs
 #   AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS the outer bound of one wait, lowered to the
 #                                       binary's own 60-second floor
-#   AMPLIHACK_STEP_TIMEOUT              the step's own bound, set only by the
-#                                       case B cases that need one; empty
-#                                       reads as unset, as it does anywhere
 #   AMPLIHACK_NONINTERACTIVE            the shape a recipe step runs in
 #   AMPLIHACK_NO_FRESHNESS_CHECK,
 #   AMPLIHACK_SKIP_AUTO_INSTALL,
@@ -188,7 +183,6 @@ scenario_env() {
     LIMIT_CALLS="${LIMIT_CALLS:-1}" \
     LIMIT_EPOCH="$LIMIT_EPOCH" \
     AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS="$MAX_WAIT_SECS" \
-    AMPLIHACK_STEP_TIMEOUT="${STEP_TIMEOUT:-}" \
     AMPLIHACK_NONINTERACTIVE=1 \
     AMPLIHACK_NO_FRESHNESS_CHECK=1 \
     AMPLIHACK_SKIP_AUTO_INSTALL=1 \
@@ -290,9 +284,8 @@ A_REFUSED="$(count_in 'already_waited' "$WORK/a.err")"
 # Issue #2911: the operator-visible line a wait with no reset to end on
 # writes, with its reason from the closed set. Two waits, so two lines.
 A_WAITING="$(count_in 'amplihack.recipe.usage_limit_wait waiting_for_capacity reason=passed_reset ' "$WORK/a.err")"
-# Nothing a limit does ends the step any more. Only the step's own timeout,
-# a stop signal or the end of its session writes a closing line, and none of
-# the three happens here.
+# Nothing a limit does ends the step any more. Only a stop signal or the end
+# of its session writes a closing line, and neither happens here.
 A_FAILED="$(count_in 'amplihack.recipe.usage_limit_wait failed reason=' "$WORK/a.err")"
 A_SKIPPED="$(count_in 'amplihack.recipe.usage_limit_wait skipped reason=' "$WORK/a.err")"
 A_ORDER="$(grep -n 'amplihack.recipe.usage_limit_wait \(resume attempt=2\|reentered \|start \)' "$WORK/a.err" 2>/dev/null \
@@ -341,40 +334,25 @@ fi
 #   a manual switch that says no room
 #                    -> no `login changed`
 #
-# Telling the two groups apart needs the wait to stop for some reason other
-# than the login change, and after #2911 nothing a limit does stops it: a
-# reset already behind the clock is now a wait for capacity, and reaching a
-# capacity wait's own deadline retries the step instead of ending it. Waiting
-# the full MAX_WAIT_SECS in each of the four held-back cases would add four
-# minutes to a smoke test.
-#
-# So the held-back cases are bounded by the one bound a limit cannot remove:
-# the step's own timeout. AMPLIHACK_STEP_TIMEOUT is set below the 60-second
-# lead the planner keeps before it, so the plan's deadline is already behind
-# the clock when the wait starts and the wait ends `step timeout` at once.
-# That is instant, and it also pins the thing #2911 makes load-bearing: with
-# every limit-shaped ending now retrying, the step timeout is the only bound
-# left on a capacity wait, and it must still bind. If a held-back change had
-# woken the wait we would see `login changed` and a second attempt instead.
-#
-# The waking cases get no step timeout, because the change they are testing
-# for is read before the wait begins and a deadline already behind the clock
-# would finish the step before it could be seen.
-STEP_TIMEOUT_FOR_HELD_BACK=30
-
+# The two groups are told apart by how the wait ends. A woken wait ends
+# `login changed` before it begins, and the retry runs. A held-back change
+# wakes nothing: the limit's reset is already behind the clock, so the wait
+# is a capacity wait with no reset to end on, and it runs its one-minute
+# outer bound, ends `capacity expired`, and the retry runs. Either way the
+# step succeeds on its second attempt; only the reason differs. The step
+# timeout used to cut the held-back waits short, and it no longer ends a
+# limit wait (issue #3037).
 run_swap_case() {
   local name="$1" body="$2" wakes="$3"
-  local want other step_timeout want_rc want_calls
+  local want other want_rc=0 want_calls=2
   if [ "$wakes" = wakes ]; then
-    want="login changed"; other="step timeout"
-    step_timeout=""; want_rc=0; want_calls=2
+    want="login changed"; other="capacity expired"
   else
-    want="step timeout"; other="login changed"
-    step_timeout="$STEP_TIMEOUT_FOR_HELD_BACK"; want_rc=1; want_calls=1
+    want="capacity expired"; other="login changed"
   fi
   reset_records
   write_initial_ledger
-  LIMIT_CALLS=1 LEDGER_BODY="$body" STEP_TIMEOUT="$step_timeout" \
+  LIMIT_CALLS=1 LEDGER_BODY="$body" \
     scenario_env home "$BIN" claude --subprocess-safe -- -p step \
     >"$WORK/$name.out" 2>"$WORK/$name.err" </dev/null && rc=0 || rc=$?
   local calls got wrong diag

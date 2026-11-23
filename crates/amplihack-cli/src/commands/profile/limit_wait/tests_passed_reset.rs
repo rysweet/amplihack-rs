@@ -26,7 +26,7 @@ use super::events::Met;
 use super::plan::{WaitFor, Waiting, wait_for_message};
 use super::scratch::Replay;
 use super::tests_fingerprint::{Env, env};
-use super::tests_room_gate::{guarded, signals, waiter};
+use super::tests_room_gate::{guarded, readings_written, signals, waiter};
 use super::{AfterLimit, Resumed, Waiter};
 use crate::commands::recipe::run::limit_patterns::{self, Harness};
 use std::cell::Cell;
@@ -124,6 +124,7 @@ fn issue_2911_the_lift_does_not_depend_on_how_the_attempt_came_to_run() {
 fn a_capacity_wait_for_a_passed_reset_runs_on_a_login_already_waited_on() {
     guarded(|| {
         let e = env();
+        let _writes = readings_written(&e);
         live(&e, "a");
         let mut w = waiter(&e, Some(600));
         w.note_attempt_login();
@@ -192,6 +193,7 @@ fn issue_2911_a_capacity_wait_that_nothing_lifts_waits_its_length_and_retries() 
 fn a_reset_still_ahead_is_an_ordinary_reset_wait() {
     guarded(|| {
         let e = env();
+        let _writes = readings_written(&e);
         live(&e, "a");
         let mut w = waiter(&e, None);
         w.note_attempt_login();

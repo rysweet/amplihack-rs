@@ -42,8 +42,8 @@
 #   2. a held-open stdin pipe with the prompt in argv: the #1618 guard, which
 #      copies nothing.
 #  2b. a held-open stdin pipe with a bare `-p`, which the supervisor does
-#      copy: the same guard on the capture path (issues #2816, #3036, review
-#      of PR #2992). The step must not wait on a pipe nobody closes. It
+#      copy: the same guard on the capture path (issues #2816, #3036). The
+#      step must not wait on a pipe nobody closes. It
 #      waits out its limit and runs the retry at once, from the copy already
 #      held, with the scenario still holding the pipe until the step ends.
 #   3. a one-step recipe through `amplihack recipe run` and the pinned recipe
@@ -315,8 +315,8 @@ else
   fl no_piped_prompt_refusal "the run still refused the wait with piped_prompt; $DIAG"
 fi
 
-# 6. No copy of the prompt is left on disk. Since the review of PR #2992 the
-#    copy is kept in memory and none is written; the check stays so that a
+# 6. No copy of the prompt is left on disk. The copy is now kept in memory
+#    and none is written; the check stays so that a
 #    change which wrote one again would have to remove it.
 LEFT="$(find "$HOME_DIR/.amplihack/rerun" -maxdepth 1 -name '*.in' -print 2>/dev/null | tr '\n' ' ')"
 if [ -z "$LEFT" ]; then
@@ -375,11 +375,11 @@ fi
 # its wait and blocked for ever, deaf to SIGTERM and with nothing in the log
 # saying what it was waiting for. #2816 refused the retry by name instead,
 # with `skipped reason=piped_prompt`, which ended the step on a limit for a
-# prompt that was merely late. The round-4 fix for #3036 waited for the
+# prompt that was merely late. The first fix for #3036 waited for the
 # caller to close the pipe, with a `waiting_for_prompt` line, and this case
-# then hung at the ceiling (Actions run 45059566162). Since the review of
-# PR #2992 the retry starts at once from the copy already held and is fed
-# the rest as it arrives, so nothing waits on the caller's pipe.
+# then hung at the ceiling (Actions run 45059566162). The retry now starts
+# at once from the copy already held and is fed the rest as it arrives, so
+# nothing waits on the caller's pipe.
 #
 # The scenario holds its end of the pipe until the step has exited, so a
 # wait of any kind for it hangs this case at the ceiling rather than

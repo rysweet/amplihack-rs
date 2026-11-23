@@ -38,7 +38,7 @@ fn a_spend_limit_with_no_reset_waits_and_retries_with_no_rotator() {
     assert!(!ev.iter().any(|l| l.starts_with("failed")), "{ev:?}");
 }
 
-/// Issue #3036, review of PR #2992: a spend limit on a step whose input is an
+/// Issue #3036: a spend limit on a step whose input is an
 /// `--input-format` channel waits and retries like any other.
 ///
 /// This test used to pin the opposite: the channel was never copied, so the

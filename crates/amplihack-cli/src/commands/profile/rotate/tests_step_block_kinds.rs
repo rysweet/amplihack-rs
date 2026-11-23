@@ -92,7 +92,7 @@ fn every_kind_with_a_stated_reset_is_stored_with_the_spend_reason() {
     }
 }
 
-// Security review of PR #2992: the step cannot tell the harness's own limit
+// The step cannot tell the harness's own limit
 // message from a model that printed one as its last line, so a forged
 // session or weekly message could otherwise hold a healthy login out of
 // rotation until any reset inside the 62-day span rule. Each window kind is

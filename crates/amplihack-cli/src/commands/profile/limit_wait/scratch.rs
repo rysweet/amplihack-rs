@@ -9,7 +9,7 @@
 //! that pipe into the first attempt's own stdin pipe and keeps every byte
 //! of it in memory, so a later attempt can read the same bytes.
 //!
-//! The copy is kept in memory and nowhere else (review of PR #2992). It
+//! The copy is kept in memory and nowhere else. It
 //! used to go to a private file in the rerun directory, with memory taking
 //! over only once the disk refused it (issue #3036). A copy split that way
 //! was lost when the part on disk could not be read back, and the copier's
@@ -43,9 +43,9 @@
 //! an `EPIPE` from the attempt's end of the pipe is always a real attempt
 //! that stopped reading, which is why the copier may report it.
 //!
-//! The second is that nothing waits for the copier before a rerun (review
-//! of PR #2992). A rerun starts at once, from the copy already held: a
-//! feeder thread gives it every byte kept so far from the first, then each
+//! The second is that nothing waits for the copier before a rerun. A rerun
+//! starts at once, from the copy already held: a feeder thread gives it
+//! every byte kept so far from the first, then each
 //! further byte as the copier keeps it, and closes its pipe when the copier
 //! reaches the end of the source. A rerun therefore reads exactly what the
 //! first attempt read, in the same order, and reaches the end of its stdin
@@ -98,8 +98,7 @@ use std::thread::JoinHandle;
 ///
 /// Two answers, and neither is "wait". A prompt still arriving on a pipe
 /// its caller has not closed is [`Replay::Ready`]: the rerun is fed the copy
-/// already held and then the rest as it arrives, as the first attempt was
-/// (review of PR #2992).
+/// already held and then the rest as it arrives, as the first attempt was.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Replay {
     /// A rerun can read the input: it is stored, it is being stored as it
@@ -145,9 +144,9 @@ pub(crate) enum RerunStdin {
     /// the step started at.
     File { file: fs::File, start: u64 },
     /// A pipe or socket with no capture: `/dev/null` for a rerun, as its
-    /// contents went to attempt 1. Since the review of PR #2992 an attempt
-    /// runs on such a stdin only when the prompt is in argv: a piped prompt
-    /// is always captured, or the step is not run.
+    /// contents went to attempt 1. An attempt runs on such a stdin only
+    /// when the prompt is in argv: a piped prompt is always captured, or the
+    /// step is not run.
     Pipe,
     /// A closed descriptor: `/dev/null`.
     Null,
@@ -238,7 +237,7 @@ impl RerunStdin {
     }
 
     /// Lets the copier finish, once the step has finished, when it is
-    /// certain to end: the caller has closed the pipe (review of PR #2992).
+    /// certain to end: the caller has closed the pipe.
     ///
     /// Nothing before this joins the copier, so a report it makes (an
     /// attempt that stopped reading, a source that failed) could otherwise
@@ -264,7 +263,7 @@ impl RerunStdin {
     /// the attempt reaches end of file only once that pipe is dropped, and
     /// the supervisor asks this only after the attempt has exited. It is the
     /// one way a captured prompt is lost, because every byte the copier
-    /// reads is kept (review of PR #2992), so it is also the question a
+    /// reads is kept, so it is also the question a
     /// decision about a rerun asks before a wait. `false` for every other
     /// kind of stdin, and for a capture whose source is still being read or
     /// has ended properly.
@@ -321,8 +320,7 @@ const COPY_BUF: usize = 64 * 1024;
 ///
 /// `eprintln!` panics when stderr cannot be written, and the copier is the
 /// one thread whose panic would cost a prompt. Its lines are reports, and a
-/// report that cannot be made must not end the copy it reports on (review
-/// of PR #2992).
+/// report that cannot be made must not end the copy it reports on.
 fn say(line: std::fmt::Arguments<'_>) {
     let _ = writeln!(io::stderr(), "{line}");
 }
@@ -346,11 +344,11 @@ pub(super) struct CopyState {
     /// anything, so this is a report and not a failure.
     reader_gone: AtomicBool,
     /// Every byte of the prompt read so far, in order: the copy a rerun is
-    /// given (review of PR #2992).
+    /// given.
     bytes: Mutex<Vec<u8>>,
     /// Signalled whenever `bytes` grows or the copy ends, either way, so a
     /// rerun's feeder can give its attempt the rest of the prompt as it
-    /// arrives (review of PR #2992). Every change it announces is made
+    /// arrives. Every change it announces is made
     /// with `bytes` locked, so a feeder that has just looked cannot miss
     /// one.
     grew: Condvar,
@@ -400,7 +398,7 @@ impl CopyState {
 
     /// The kept bytes from offset `at`, at most [`COPY_BUF`] of them, once
     /// there are any; `None` once the copy has ended with nothing left past
-    /// `at` (review of PR #2992).
+    /// `at`.
     ///
     /// Waits while the copy has nothing past `at` and has not ended, which
     /// is a wait for the caller to write more or to close the pipe: the
@@ -564,7 +562,7 @@ impl Capture {
     ///
     /// Refuses a prompt cut short, because a partial prompt is a shortened
     /// task and no caller may be given one. Never refuses a prompt that is
-    /// still arriving, and never waits for one (review of PR #2992).
+    /// still arriving, and never waits for one.
     fn for_attempt(&mut self, n: u32) -> io::Result<Stdio> {
         if n == 1
             && let Some(first) = self.first.take()
@@ -590,7 +588,7 @@ impl Capture {
     }
 
     /// Whether a rerun can be given this step's prompt (issues #2816,
-    /// #3036, review of PR #2992). Never waits and never joins the copier.
+    /// #3036). Never waits and never joins the copier.
     ///
     /// [`Replay::Never`] is left for a prompt that no rerun can ever be
     /// given, which is a prompt cut short: the source could not be read to
@@ -626,8 +624,8 @@ impl Capture {
 
     /// Joins the copier at the end of the step, when it is certain to end
     /// ([`Capture::can_end`]), so that every line it writes is written
-    /// before the step's result and a late failure of the source is seen
-    /// (review of PR #2992). A caller still holding the pipe is not waited
+    /// before the step's result and a late failure of the source is seen.
+    /// A caller still holding the pipe is not waited
     /// for, and neither is a copier never let go, which reads nothing and
     /// ends when the capture is dropped.
     ///
@@ -658,7 +656,7 @@ impl Capture {
     }
 }
 
-/// A rerun's stdin for a captured prompt (review of PR #2992): the read end
+/// A rerun's stdin for a captured prompt: the read end
 /// of a pipe, and a feeder thread that writes the kept copy into the other
 /// end from its first byte, then each further byte as the copier keeps it,
 /// and closes it when the copy ends.
@@ -713,8 +711,8 @@ fn fed_from_copy(state: Arc<CopyState>) -> io::Result<Stdio> {
 /// never a rerun: a writer that is about to close reads as one that may
 /// never, and so does a copy of the descriptor that some other process is
 /// holding (every `fork` holds one of each of its parent's descriptors
-/// until it `exec`s). Since the review of PR #2992 nothing about a rerun
-/// depends on it: [`Capture::settle`] asks it once the step has finished.
+/// until it `exec`s). Nothing about a rerun depends on it:
+/// [`Capture::settle`] asks it once the step has finished.
 fn no_writer_left(watch: &fs::File) -> bool {
     let mut fds = libc::pollfd {
         fd: watch.as_raw_fd(),
@@ -746,7 +744,7 @@ pub(crate) fn capture_own_prompt() -> io::Result<RerunStdin> {
 /// them could not be made, which happens only to a process out of file
 /// descriptors or threads. Nothing has then been read from `source`, and
 /// the caller must not run the step: an attempt run on a prompt of which no
-/// copy is kept could not be repeated after a limit (review of PR #2992).
+/// copy is kept could not be repeated after a limit.
 /// Nothing here refuses a prompt for its size or its contents.
 pub(crate) fn capture_prompt(source: fs::File) -> io::Result<RerunStdin> {
     refused_setup()?;
@@ -810,8 +808,8 @@ pub(super) fn run_copier<S: Read + AsRawFd>(
 
 /// Debug-only seam: `AMPLIHACK_TEST_FAIL_PROMPT_COPY=1` makes the copy's
 /// setup fail as it does in a process out of file descriptors (`EMFILE`),
-/// so a test can check that such a step is not run at all (review of PR
-/// #2992). The real cause cannot be arranged from outside a test without
+/// so a test can check that such a step is not run at all. The real cause
+/// cannot be arranged from outside a test without
 /// starving the test's own process of descriptors. Compiled out of release
 /// builds, as the usage-limit wait's test clock and
 /// `AMPLIHACK_TEST_FAIL_ATTEMPT` are, so no installed binary reads this
@@ -834,7 +832,7 @@ fn refused_setup() -> io::Result<()> {
 ///
 /// The prompt is opaque bytes throughout: never decoded and never printed.
 /// Each block is kept before it is forwarded, so whatever the attempt was
-/// given, a rerun is given too (review of PR #2992). A first attempt that
+/// given, a rerun is given too. A first attempt that
 /// exits without reading closes its end, and the `EPIPE` that follows only
 /// stops the copy to the child; the kept copy still receives all of it, and
 /// [`CopyState::reader_gone`] reports the early close.

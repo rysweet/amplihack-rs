@@ -95,12 +95,18 @@ pub(super) enum Event {
         until: i64,
     },
     /// The step met a limit, but it ends because its prompt was cut short,
-    /// not because of the limit (review of PR #2992): the attempt was given
-    /// part of its task, so the step fails whether or not it met one, and
-    /// no retry can be given the whole prompt. Written as `failed
-    /// reason=prompt_cut_short`, a failure of the step's input, and never
-    /// as a skipped wait, which would read as a wait refused to a limit.
+    /// not because of the limit: the attempt was given part of its task, so
+    /// the step fails whether or not it met one, and no retry can be given
+    /// the whole prompt. Written as `failed reason=prompt_cut_short`, a
+    /// failure of the step's input, and never as a skipped wait, which would
+    /// read as a wait refused to a limit.
     PromptCutShort,
+    /// No file event can be had for this wait (issue #2911), so it reads its
+    /// files at each progress line instead of after each write. `why` is a
+    /// fixed word naming the cause (`wake`).
+    NoFileEvents {
+        why: &'static str,
+    },
 }
 
 /// Which limit met the retry a wait earned (issue #2857). A closed set, so
@@ -127,9 +133,9 @@ pub(super) enum Skip {
 
 /// `t` in zone `tz`, as every line writes an instant.
 ///
-/// `pub(super)` because the two sentences the supervisor prints beside an
-/// ending also name an instant, and an instant must read the same in every
-/// line a step writes (review of PR #2992).
+/// `pub(super)` because the sentence the supervisor prints beside the
+/// prompt-loss ending also names an instant, and an instant must read the
+/// same in every line a step writes.
 pub(super) fn fmt_time<Z: TimeZone>(t: i64, tz: &Z) -> String
 where
     Z::Offset: Display,
@@ -264,6 +270,7 @@ where
             }
         ),
         Event::PromptCutShort => format!("failed reason={}", NoWait::PromptCutShort.as_str()),
+        Event::NoFileEvents { why } => format!("no_file_events reason={why}"),
         Event::Reentered { met } => format!(
             "reentered met={}",
             match met {

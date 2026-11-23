@@ -199,7 +199,7 @@ fn a_capacity_wait_still_leaves_a_retry_move() {
 /// be read to its end - the retry cannot run, and announcing it anyway
 /// would put `resume attempt=2` in the run log for an attempt that never
 /// happens. The wait ends with `Finish` and `failed reason=prompt_cut_short`
-/// instead (a lost prompt, not a limit ending: review of PR #2992), and the
+/// instead (a lost prompt, not a limit ending), and the
 /// caller passes the limited attempt's own result up.
 ///
 /// Both announcing paths are covered: the retry-before-wait return, taken
@@ -255,7 +255,7 @@ fn a_retry_is_not_announced_when_the_step_can_never_be_given_its_prompt() {
     });
 }
 
-/// Review of PR #2992 (round 5): the retry a wait earns asks once whether
+/// The retry a wait earns asks once whether
 /// its prompt can be given to it, and runs. Nothing waits on the caller's
 /// pipe, on either of the paths that announce a retry, and no time passes
 /// beyond the limit wait itself.

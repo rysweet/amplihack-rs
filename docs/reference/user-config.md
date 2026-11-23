@@ -373,24 +373,23 @@ in the environment or a file, it is on, except in CI: any `CI` that is
 not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
 in CI too. The environment variable also accepts `1` and `0`.
 
-`recipe.usage_limit_max_wait_secs` is the outer bound of one capacity or
-login-change wait, and defaults to `21600` (six hours). It is not a per-step
-budget: a step that meets another limit after a wait waits again with the same
-bound, and no count or total ends the chain. It does not shorten a wait for a
-reset, which ends at the reset plus 120 seconds or sooner on room or a login
-change, and a [capacity wait](./profile-command.md#capacity-wait) still ends
-sooner on room or at the failed login's own reset plus 120 seconds. See
+`recipe.usage_limit_max_wait_secs` is the outer bound of one wait whose limit
+stated no reset still ahead, and defaults to `21600` (six hours). It is not a
+per-step budget: a step that meets another limit after a wait waits again with
+the same bound, and no count or total ends the chain. It does not shorten a
+wait for a stated reset, which ends at the reset plus 120 seconds, however far
+away, or sooner on room or a login change. See
 [Usage-limit waits](./usage-limit-waits.md#what-max_wait_secs-means).
 
 Because a step still limited when such a wait reaches the bound runs its agent
 again, it is also how often such a step re-asks the harness. Each ask is a
 fresh agent launch, so a short bound is a poll of the harness and not a cheap
-one; the default asks once every six hours. It is the one timed bound left on
-a wait, kept for now
-([the timed parts that remain](./usage-limit-waits.md#the-timed-parts-that-remain)).
+one; the default asks once every six hours. It is the one timer left on a
+wait ([the timed parts that remain](./usage-limit-waits.md#the-timed-parts-that-remain)).
 
-The bound has a floor of 60 seconds, twice the wait's poll interval, so a
-configured `0` means 60 seconds and not "do not wait". While the wait is on, a
+The bound has a floor of 60 seconds, so no configured value makes it a busy
+loop of agent launches, and a configured `0` means 60 seconds and not "do not
+wait". While the wait is on, a
 step that reads a value below 600 seconds, the rotator's own default cycle
 and so the soonest a host with no signal can have learnt anything, says so in
 a warning on standard error, naming the cost; a value below the 60-second

@@ -147,36 +147,46 @@ fn the_epoch_form_gives_its_reset() {
 /// ends. The one reading left that no wait can help, work prose with no
 /// limit message in it, still ends the step, and is checked last.
 ///
-/// Each wait is bounded by the 60-second floor and the fixture's virtual
-/// clock, so the chain costs no real time.
+/// A wait with no reset ahead is bounded by the 60-second floor; a far
+/// reset is waited for, held to its kind's window. The fixture's virtual
+/// clock makes either cost no real time.
 #[test]
 fn limits_a_wait_cannot_outlast_are_waited_for_not_passed_up() {
-    // Every wait here is bounded by its configured maximum of 60 seconds,
-    // the floor `plan::MIN_WAIT_SECS` sets.
-    const UNTIL: &str = "2026-10-18 08:01:00 -07:00";
-    for (message, why, start_reason, reset, end) in [
+    // A wait with no reset still ahead is bounded by its configured maximum
+    // of 60 seconds, the floor `plan::MIN_WAIT_SECS` sets. A stated reset
+    // more than five hours away is waited for instead, held to its kind's
+    // window, and the maximum does not cut it short.
+    const MAX: &str = "2026-10-18 08:01:00 -07:00";
+    for (message, why, start_reason, reset, until, bound, end) in [
         // A spend limit with no reset waits for the login itself to change.
         (
             SPEND_TEXT,
             "spend_limit",
             "spend_limit wait=login_change",
             "none",
+            MAX,
+            "max_wait",
             "max reached",
         ),
-        // A weekly reset is more than five hours away: next year's Oct 8.
+        // Next year's Oct 8, held to a spend limit's 62-day span.
         (
             SPEND_WEEKLY_TEXT,
             "reset_too_far",
             "usage_limit wait=capacity",
-            "2027-10-08 00:00:00 -07:00",
-            "capacity expired",
+            "2026-12-19 07:00:00 -08:00",
+            "2026-12-19 07:02:00 -08:00",
+            "reset+margin",
+            "reset reached",
         ),
+        // Next year's Oct 8, held to the seven-day weekly window.
         (
             WEEKLY_TEXT,
             "reset_too_far",
             "usage_limit wait=capacity",
-            "2027-10-08 00:00:00 -07:00",
-            "capacity expired",
+            "2026-10-25 08:00:00 -07:00",
+            "2026-10-25 08:02:00 -07:00",
+            "reset+margin",
+            "reset reached",
         ),
         // No reset that parses at all.
         (
@@ -184,6 +194,8 @@ fn limits_a_wait_cannot_outlast_are_waited_for_not_passed_up() {
             "no_reset",
             "usage_limit wait=capacity",
             "none",
+            MAX,
+            "max_wait",
             "capacity expired",
         ),
     ] {
@@ -197,10 +209,10 @@ fn limits_a_wait_cannot_outlast_are_waited_for_not_passed_up() {
         assert_eq!(
             events(&out),
             [
-                format!("waiting_for_capacity reason={why} harness=claude until={UNTIL}"),
+                format!("waiting_for_capacity reason={why} harness=claude until={until}"),
                 format!(
-                    "start reason={start_reason} harness=claude reset={reset} until={UNTIL} \
-                     bound=max_wait"
+                    "start reason={start_reason} harness=claude reset={reset} until={until} \
+                     bound={bound}"
                 ),
                 format!("end reason={end}"),
                 "resume attempt=2".to_string(),
@@ -325,24 +337,27 @@ fn ac7_a_second_limit_is_waited_out_and_never_refused() {
             "end reason=capacity expired",
             "resume attempt=3",
             // From here each 8:30am is tomorrow's, more than five hours off.
+            // A session window lasts five hours, so the stated reset is held
+            // to five hours from the moment it is read, and each wait ends
+            // there: no wait ends on the configured maximum.
             "waiting_for_capacity reason=reset_too_far harness=claude \
-             until=2026-10-18 20:32:00 -07:00",
+             until=2026-10-18 19:34:00 -07:00",
             "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-19 08:30:00 -07:00 until=2026-10-18 20:32:00 -07:00 bound=max_wait",
-            "end reason=capacity expired",
+             reset=2026-10-18 19:32:00 -07:00 until=2026-10-18 19:34:00 -07:00 bound=reset+margin",
+            "end reason=reset reached",
             "resume attempt=4",
+            "reentered met=usage_limit",
             "waiting_for_capacity reason=reset_too_far harness=claude \
-             until=2026-10-19 02:32:00 -07:00",
+             until=2026-10-19 00:36:00 -07:00",
             "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-19 08:30:00 -07:00 until=2026-10-19 02:32:00 -07:00 bound=max_wait",
-            "end reason=capacity expired",
+             reset=2026-10-19 00:34:00 -07:00 until=2026-10-19 00:36:00 -07:00 bound=reset+margin",
+            "end reason=reset reached",
             "resume attempt=5",
-            // The fifth wait reaches that reset, which is now within the
-            // wait's own length, so the step is retried on its arrival.
+            "reentered met=usage_limit",
             "waiting_for_capacity reason=reset_too_far harness=claude \
-             until=2026-10-19 08:32:00 -07:00",
+             until=2026-10-19 05:38:00 -07:00",
             "start reason=usage_limit wait=capacity harness=claude \
-             reset=2026-10-19 08:30:00 -07:00 until=2026-10-19 08:32:00 -07:00 bound=reset+margin",
+             reset=2026-10-19 05:36:00 -07:00 until=2026-10-19 05:38:00 -07:00 bound=reset+margin",
             "end reason=reset reached",
             "resume attempt=6",
         ]

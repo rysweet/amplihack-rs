@@ -17,10 +17,10 @@
 //!   not compile.
 //! - it is asked only after a change has been seen, last in the conjunction,
 //!   so a wait that sees no change makes no extra reading;
-//! - a change that is held back is not forgotten: the wait keeps polling and
-//!   ends on the change at the first poll where the gate opens, so a gate that
-//!   closed for good on the first change would pass every "does not end" test
-//!   and fail the "ends when room appears" ones;
+//! - a change that is held back is not forgotten: the wait keeps its baseline
+//!   and ends on the change at the first write after which the gate opens, so
+//!   a gate that closed for good on the first change would pass every "does
+//!   not end" test and fail the "ends when room appears" ones;
 //! - nothing else moves: the signal, the deadline, the session's end, the
 //!   rotator's capacity and another login's capacity keep their order and
 //!   their meaning, and `RotatorCapacity` stays ahead of `LoginChanged`.
@@ -55,7 +55,7 @@ fn a_fingerprint_change_onto_a_login_without_room_does_not_end_the_wait() {
 }
 
 /// The positive control: the same fingerprint schedule with room ends the wait
-/// at the second poll that agrees, as it always did.
+/// at the write that changed it.
 #[test]
 fn the_same_fingerprint_change_onto_a_login_with_room_still_ends_the_wait() {
     let mut f = Fake::new();
@@ -65,11 +65,11 @@ fn the_same_fingerprint_change_onto_a_login_with_room_still_ends_the_wait() {
         wait(&plan_in(300, Bound::ResetMargin), &mut f),
         End::LoginChanged
     );
-    assert_eq!(f.elapsed(), 90, "the poll two agreeing probes in");
+    assert_eq!(f.elapsed(), 45, "at the write that changed it");
 }
 
 #[test]
-fn a_fingerprint_change_ends_the_wait_at_the_first_poll_where_room_appears() {
+fn a_fingerprint_change_ends_the_wait_at_the_write_that_records_room() {
     let mut f = Fake::new();
     f.prints = vec![(0, Some(1)), (45, Some(2))];
     f.change_room_from = Some(200);
@@ -79,9 +79,8 @@ fn a_fingerprint_change_ends_the_wait_at_the_first_poll_where_room_appears() {
     );
     assert_eq!(
         f.elapsed(),
-        210,
-        "the change was seen at 90 and kept; the room reading at 210 is the \
-         first poll at or after 200"
+        200,
+        "the change was seen at 45 and kept; the rotator's write at 200 records room"
     );
 }
 
@@ -108,11 +107,11 @@ fn the_same_login_key_change_onto_a_login_with_room_still_ends_the_wait() {
         wait(&plan_in(300, Bound::ResetMargin), &mut f),
         End::LoginChanged
     );
-    assert_eq!(f.elapsed(), 30, "at the first poll");
+    assert_eq!(f.elapsed(), 10, "at the write that changed it");
 }
 
 #[test]
-fn a_login_key_change_ends_the_wait_at_the_first_poll_where_room_appears() {
+fn a_login_key_change_ends_the_wait_at_the_write_that_records_room() {
     let mut f = Fake::new();
     f.login_changed_from = Some(10);
     f.change_room_from = Some(100);
@@ -120,7 +119,7 @@ fn a_login_key_change_ends_the_wait_at_the_first_poll_where_room_appears() {
         wait(&plan_in(3000, Bound::ResetMargin), &mut f),
         End::LoginChanged
     );
-    assert_eq!(f.elapsed(), 120, "the first poll at or after 100");
+    assert_eq!(f.elapsed(), 100, "the rotator's write that records room");
 }
 
 #[test]
@@ -153,26 +152,23 @@ fn no_change_means_no_question_about_room() {
 }
 
 #[test]
-fn the_question_is_asked_at_the_poll_that_sees_the_change_and_at_each_poll_after() {
+fn the_question_is_asked_at_the_write_that_shows_the_change_and_at_each_write_after() {
     let mut f = Fake::new();
     f.prints = vec![(0, Some(1)), (45, Some(2))];
     f.change_room_from = None;
+    f.writes = vec![100];
     wait(&plan_in(150, Bound::ResetMargin), &mut f);
     assert_eq!(
         f.change_probes,
-        vec![90, 120],
-        "the fingerprint needs two agreeing probes (60, 90) to call it a change; \
-         the question is asked there and at each later poll, on the poll cadence"
+        vec![45, 100],
+        "asked at the write that changed the login and at each later write"
     );
     let mut f = Fake::new();
     f.login_changed_from = Some(10);
     f.change_room_from = None;
+    f.writes = vec![40, 70];
     wait(&plan_in(100, Bound::ResetMargin), &mut f);
-    assert_eq!(
-        f.change_probes,
-        vec![30, 60, 90],
-        "once per poll, no faster"
-    );
+    assert_eq!(f.change_probes, vec![10, 40, 70], "once per write, no more");
 }
 
 // --- what the gate does not touch ---------------------------------------------------
@@ -185,7 +181,7 @@ fn the_question_is_asked_at_the_poll_that_sees_the_change_and_at_each_poll_after
 fn rotator_capacity_ends_the_wait_whatever_the_change_gate_says() {
     let mut f = Fake::new();
     f.capacity_from = Some(30);
-    f.login_changed_from = Some(10);
+    f.login_changed_from = Some(30);
     f.change_room_from = None;
     assert_eq!(
         wait(&plan_in(300, Bound::ResetMargin), &mut f),
@@ -205,7 +201,7 @@ fn rotator_capacity_ends_the_wait_whatever_the_change_gate_says() {
 fn another_logins_capacity_is_not_held_back_by_the_room_gate() {
     let mut f = Fake::new();
     f.other_from = Some(30);
-    f.login_changed_from = Some(10);
+    f.login_changed_from = Some(30);
     f.change_room_from = None;
     assert_eq!(
         wait(&plan_in(300, Bound::ResetMargin), &mut f),
@@ -217,7 +213,7 @@ fn another_logins_capacity_is_not_held_back_by_the_room_gate() {
 #[test]
 fn a_held_back_change_never_holds_back_a_signal_the_deadline_or_the_sessions_end() {
     let mut f = Fake::new();
-    f.login_changed_from = Some(0);
+    f.login_changed_from = Some(5);
     f.change_room_from = None;
     f.signal_from = Some((40, libc::SIGTERM));
     assert_eq!(
@@ -225,7 +221,7 @@ fn a_held_back_change_never_holds_back_a_signal_the_deadline_or_the_sessions_end
         End::Signal(libc::SIGTERM)
     );
     let mut f = Fake::new();
-    f.login_changed_from = Some(0);
+    f.login_changed_from = Some(5);
     f.change_room_from = None;
     f.parent_gone_from = Some(40);
     assert_eq!(
@@ -233,7 +229,7 @@ fn a_held_back_change_never_holds_back_a_signal_the_deadline_or_the_sessions_end
         End::SessionEnded
     );
     let mut f = Fake::new();
-    f.login_changed_from = Some(0);
+    f.login_changed_from = Some(5);
     f.change_room_from = None;
     assert_eq!(wait(&plan_in(75, Bound::MaxWait), &mut f), End::MaxReached);
 }

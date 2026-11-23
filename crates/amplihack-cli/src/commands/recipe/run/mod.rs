@@ -35,10 +35,6 @@ pub(crate) mod stop_signal;
 mod termination;
 
 pub use context_sources::resolve_context_args;
-/// Review of PR #2992: the usage-limit wait's own tests classify a whole run
-/// result, structured cause included, exactly as the runner's caller does.
-#[cfg(test)]
-pub(crate) use failure_class::classify_run_failure;
 /// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
 /// it and the runner never disagree about what a usage limit is.
 pub(crate) use failure_class::{FailureClass, classify_failure_text};

@@ -11,14 +11,14 @@
 //!   with no limit message in it, and a prompt that could not be read to
 //!   its end.
 //! - **the deadline.** A reset wait ends at its reset plus the margin and
-//!   has no other row: no configured length and no five-hour ceiling
-//!   (round 6 of the review of PR #2992). A capacity wait ends at the
-//!   earlier of its failed login's reset and its outer bound, a tie named by
-//!   the reset row, and a login-change wait at its outer bound. The outer
-//!   bound is the one timed row left, declared in `plan` and removed by
-//!   #3098. Every plan a limit produces ends strictly after `now`: that is
-//!   the pacing rule that replaced #2731's per-step budget. There is no
-//!   step-timeout row (issue #3037).
+//!   has no other row: no configured length and no five-hour ceiling. A
+//!   capacity wait whose limit stated a reset still ahead ends at that
+//!   reset, held to its kind's window, and the outer bound plays no part.
+//!   A capacity wait with no reset ahead, and a login-change wait, end at
+//!   the outer bound, the one timed row left (see `plan`). Every plan a
+//!   limit produces ends strictly after `now`: that is the pacing rule that
+//!   replaced #2731's per-step budget. There is no step-timeout row (issue
+//!   #3037).
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_plan;`.
 
@@ -41,6 +41,11 @@ const SPEND_WEEKLY: &str = "You've hit your org's monthly spend limit · run /us
 const WEEKLY: &str = "You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)";
 const SESSION: &str = "You've hit your session limit · resets 1pm (America/Los_Angeles)";
 const CREDITS: &str = "Your workspace is out of credits. Add credits to continue.";
+/// A weekly reset inside the seven-day window: 2026-10-22 00:00 -07:00.
+const WEEKLY_IN_4_DAYS: &str =
+    "You've hit your weekly limit · resets Oct 22, 12am (America/Los_Angeles)";
+const LA_OCT_22: i64 = 1_792_652_400;
+const SEVEN_DAYS: i64 = 7 * 86_400;
 
 fn wait_for(stderr: &[u8], stdout: &[u8], now: i64) -> WaitFor {
     wait_for_message(limit_patterns::limit_message(stderr, stdout, now), now)
@@ -92,18 +97,16 @@ fn a_spend_limit_that_states_a_near_reset_waits_that_window_out() {
     );
 }
 
+/// A spend limit has no fixed window, so its stated reset is held to the
+/// rotate ledger's span rule, 62 days, and no further.
 #[test]
 fn issue_2911_a_spend_limit_stating_a_far_reset_waits_for_capacity() {
+    let stated = limit_patterns::limit_message(SPEND_WEEKLY.as_bytes(), b"", NOW)
+        .and_then(|m| m.reset)
+        .expect("the line states a weekly reset");
     assert_eq!(
         wait_for(SPEND_WEEKLY.as_bytes(), b"", NOW),
-        capacity_wait(
-            Some(
-                limit_patterns::limit_message(SPEND_WEEKLY.as_bytes(), b"", NOW)
-                    .and_then(|m| m.reset)
-                    .expect("the line states a weekly reset")
-            ),
-            Waiting::ResetTooFar
-        )
+        capacity_wait(Some(stated.min(NOW + 62 * 86_400)), Waiting::ResetTooFar)
     );
 }
 
@@ -111,17 +114,16 @@ fn issue_2911_a_spend_limit_stating_a_far_reset_waits_for_capacity() {
 fn issue_2911_a_reset_beyond_five_hours_waits_for_capacity() {
     // Before #2911 this was `Skip(ResetTooFar)`, which over 72 hours was the
     // reason 217 waits were refused outright and their runs ended.
-    let weekly = limit_patterns::limit_message(WEEKLY.as_bytes(), b"", NOW)
-        .and_then(|m| m.reset)
-        .expect("the line states a weekly reset");
     assert_eq!(
-        wait_for(WEEKLY.as_bytes(), b"", NOW),
-        capacity_wait(Some(weekly), Waiting::ResetTooFar)
+        wait_for(WEEKLY_IN_4_DAYS.as_bytes(), b"", NOW),
+        capacity_wait(Some(LA_OCT_22), Waiting::ResetTooFar),
+        "a genuine weekly reset is waited for as stated"
     );
-    // One second past the cap.
+    // One second past the cap: a capacity wait, whose reset is held to the
+    // session window from now, one second short of the stated 13:00.
     assert_eq!(
         wait_for(SESSION.as_bytes(), b"", NOW - 1),
-        capacity_wait(Some(LA_1300), Waiting::ResetTooFar)
+        capacity_wait(Some(LA_1300 - 1), Waiting::ResetTooFar)
     );
 }
 
@@ -179,8 +181,8 @@ fn model_output_about_usage_limits_is_not_waited_for() {
 /// The whole of what is left of [`NoWait`]: two readings, neither of them a
 /// limit. Issue #2911's first invariant is that no limit can end a step, and
 /// this is the enum that would have to grow for one to. The second is a
-/// lost prompt, which fails a step whether or not it met a limit (review of
-/// PR #2992); `piped_prompt`, which also covered a copy that failed or
+/// lost prompt, which fails a step whether or not it met a limit;
+/// `piped_prompt`, which also covered a copy that failed or
 /// could not be set up, is gone.
 #[test]
 fn issue_2911_only_two_readings_end_a_step_and_neither_is_a_limit() {
@@ -295,14 +297,14 @@ fn a_future_reset_waits_until_reset_plus_margin() {
     );
 }
 
-/// Round 6 of the review of PR #2992: a reset wait has no timed bound. Its
+/// A reset wait has no timed bound. Its
 /// reset is the limit event it waits for, so its deadline is that reset
 /// plus the margin for every reset the router can hand it, and it is never
 /// named `max_wait`. The configured length used to cut it short, so a
 /// length below the reset's distance retried the step on a timer; `plan`
 /// no longer takes one, so no configured value can reach it.
 #[test]
-fn round_6_a_reset_wait_ends_at_its_reset_and_on_no_timer() {
+fn a_reset_wait_ends_at_its_reset_and_on_no_timer() {
     for ahead in [1i64, 60, 61, 600, 1800, 7200, FIVE_HOURS] {
         let got = p(NOW + ahead);
         assert_eq!(
@@ -313,15 +315,11 @@ fn round_6_a_reset_wait_ends_at_its_reset_and_on_no_timer() {
     }
 }
 
-/// Round 6 of the review of PR #2992: there is no five-hour ceiling on a
-/// reset wait. The five-hour rule decides which wait a limit earns, once, in
-/// the router, and a reset beyond it is a capacity wait before it gets here
-/// (`issue_2911_a_reset_beyond_five_hours_waits_for_capacity`). The
-/// reviewer read the old ceiling as what reached a weekly reset in timed
-/// steps; it never saw a weekly reset. The outer bound of the capacity wait
-/// did, and that is declared in `plan` and removed by #3098.
+/// There is no five-hour ceiling on a reset wait. The five-hour rule decides
+/// which wait a limit earns, once, in the router, and a reset beyond it is a
+/// capacity wait before it gets here.
 #[test]
-fn round_6_a_reset_wait_has_no_five_hour_ceiling() {
+fn a_reset_wait_has_no_five_hour_ceiling() {
     let far = NOW + FIVE_HOURS + 3600;
     let got = p(far);
     assert_eq!(
@@ -329,19 +327,49 @@ fn round_6_a_reset_wait_has_no_five_hour_ceiling() {
         (far + MARGIN, Bound::ResetMargin),
         "a reset the router would never send here is still waited for as stated"
     );
-    let weekly = limit_patterns::limit_message(WEEKLY.as_bytes(), b"", NOW)
-        .and_then(|m| m.reset)
-        .expect("the line states a weekly reset");
     assert!(
         matches!(
-            wait_for(WEEKLY.as_bytes(), b"", NOW),
-            WaitFor::Capacity { reset: Some(r), why: Waiting::ResetTooFar, .. } if r == weekly
+            wait_for(WEEKLY_IN_4_DAYS.as_bytes(), b"", NOW),
+            WaitFor::Capacity { reset: Some(r), why: Waiting::ResetTooFar, .. } if r == LA_OCT_22
         ),
         "a weekly reset is a capacity wait, so `plan` never sees it"
     );
 }
 
-/// Issue #3037, review of PR #2992: a deadline is set by the limit's reset
+/// A stated reset is never trusted further than its kind's window: a weekly
+/// limit whose message puts the reset almost a year away (this fixture's Oct
+/// 8, read on Oct 18) is held to seven days, and a session limit to five
+/// hours. The step cannot tell the harness's message from a model that
+/// printed one, so this is what bounds how long a forged message holds it.
+#[test]
+fn a_stated_reset_is_held_to_its_kinds_window() {
+    let stated = limit_patterns::limit_message(WEEKLY.as_bytes(), b"", NOW)
+        .and_then(|m| m.reset)
+        .expect("the line states a weekly reset");
+    assert!(
+        stated > NOW + SEVEN_DAYS,
+        "the fixture's reset is past the window"
+    );
+    assert_eq!(
+        wait_for(WEEKLY.as_bytes(), b"", NOW),
+        capacity_wait(Some(NOW + SEVEN_DAYS), Waiting::ResetTooFar)
+    );
+    assert_eq!(
+        super::plan::held(NOW + 86_400, NOW, Some(limit_patterns::LimitKind::Session)),
+        NOW + FIVE_HOURS
+    );
+    assert_eq!(
+        super::plan::held(NOW + 86_400, NOW, Some(limit_patterns::LimitKind::Weekly)),
+        NOW + 86_400,
+        "a genuine reset inside the window is not shortened"
+    );
+    assert_eq!(
+        super::plan::held(NOW + 30 * 86_400, NOW, None),
+        NOW + SEVEN_DAYS
+    );
+}
+
+/// Issue #3037: a deadline is set by the limit's reset
 /// or by the wait's own length, and by nothing else. The match is
 /// exhaustive on purpose: a row added back for the step timeout, or for any
 /// other clock, does not compile here until this test says what it is.
@@ -458,18 +486,25 @@ fn a_reset_plan_is_of_the_reset_kind() {
     assert_eq!(p(NOW + 1800).kind, PlanKind::Reset);
 }
 
+/// A capacity wait whose limit stated a reset still ahead waits for that
+/// reset, however far away, and the configured outer bound plays no part.
+/// A weekly reset a day away is waited for once, not re-asked every six
+/// hours.
 #[test]
-fn a_capacity_wait_lasts_the_maximum_with_no_five_hour_ceiling() {
-    let got = plan_capacity(NOW, Some(NOW + 86_400), Some(21_600));
-    assert_eq!(
-        (got.until, got.bound, got.kind, got.reset),
-        (
-            NOW + 21_600,
-            Bound::MaxWait,
-            PlanKind::Capacity,
-            Some(NOW + 86_400)
-        )
-    );
+fn a_capacity_wait_with_a_reset_ahead_ends_at_that_reset_and_on_no_timer() {
+    for max in [Some(MIN_WAIT_SECS), Some(21_600), None] {
+        let got = plan_capacity(NOW, Some(NOW + 86_400), max);
+        assert_eq!(
+            (got.until, got.bound, got.kind, got.reset),
+            (
+                NOW + 86_400 + MARGIN,
+                Bound::ResetMargin,
+                PlanKind::Capacity,
+                Some(NOW + 86_400)
+            ),
+            "max {max:?}"
+        );
+    }
     let got = plan_capacity(NOW, None, Some(86_400));
     assert_eq!((got.until, got.reset), (NOW + 86_400, None));
 }
@@ -493,23 +528,24 @@ fn the_capacity_default_is_the_schema_default() {
     assert_eq!(key.default, Some(CAPACITY_DEFAULT_MAX.to_string().as_str()));
 }
 
-// AC5: with the setting unset, a capacity wait lasts the six-hour default.
-// A reset further away does not lengthen it: the wait ends at the default
-// and the step retries.
+// AC5: with the setting unset, a capacity wait with no reset ahead lasts the
+// six-hour default. A reset ahead, however far, is waited for instead.
 #[test]
-fn ac5_an_unset_maximum_gives_a_capacity_wait_of_six_hours() {
+fn ac5_an_unset_maximum_gives_a_capacity_wait_with_no_reset_six_hours() {
     let got = plan_capacity(NOW, None, None);
     assert_eq!(
         (got.until, got.bound, got.kind),
         (NOW + 21_600, Bound::MaxWait, PlanKind::Capacity)
     );
     let got = plan_capacity(NOW, Some(NOW + 3 * 86_400), None);
-    assert_eq!((got.until, got.bound), (NOW + 21_600, Bound::MaxWait));
+    assert_eq!(
+        (got.until, got.bound),
+        (NOW + 3 * 86_400 + MARGIN, Bound::ResetMargin)
+    );
 }
 
-// The six-hour capacity default never reaches a reset wait, and since round
-// 6 of the review of PR #2992 neither does a configured outer bound: a reset
-// wait ends at its reset plus margin.
+// Neither the six-hour default nor a configured outer bound reaches a reset
+// wait: it ends at its reset plus margin.
 #[test]
 fn the_capacity_default_does_not_bound_a_reset_wait() {
     let got = p(NOW + 4 * 3600);
@@ -536,11 +572,10 @@ fn capacity_maximum_boundaries() {
     }
 }
 
-// R1: the failed login's own reset ends a capacity wait when it comes before
-// the maximum, so a reset between five hours and the maximum is retried at
-// the reset rather than failing at the maximum.
+// R1: the failed login's own reset ends a capacity wait, before the maximum
+// or after it.
 #[test]
-fn a_capacity_wait_ends_at_the_failed_logins_reset_before_the_maximum() {
+fn a_capacity_wait_ends_at_the_failed_logins_reset() {
     let reset = NOW + 5 * 3600 + 1800;
     let got = plan_capacity(NOW, Some(reset), None);
     assert_eq!(
@@ -552,11 +587,11 @@ fn a_capacity_wait_ends_at_the_failed_logins_reset_before_the_maximum() {
             Some(reset)
         )
     );
-    let got = plan_capacity(NOW, Some(NOW + 21_600 - MARGIN), Some(21_600));
+    let got = plan_capacity(NOW, Some(NOW + 21_600), Some(600));
     assert_eq!(
         (got.until, got.bound),
-        (NOW + 21_600, Bound::ResetMargin),
-        "a tie with the maximum is named by the reset, which retries"
+        (NOW + 21_600 + MARGIN, Bound::ResetMargin),
+        "a reset beyond the maximum is still the deadline"
     );
     let got = plan_capacity(NOW, Some(NOW - 10), Some(600));
     assert_eq!(

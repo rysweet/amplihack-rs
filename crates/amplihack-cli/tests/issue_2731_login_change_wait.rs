@@ -273,7 +273,7 @@ fn ac1_a_swap_during_the_failing_attempt_ends_the_wait_before_it_begins() {
     f.assert_isolated("0");
 }
 
-/// Issue #3037, review of PR #2992: the same swap with a step timeout
+/// Issue #3037: the same swap with a step timeout
 /// already behind the clock. This step used to stop at `failed
 /// reason=step_timeout` instead of taking the retry the swap earned, on the
 /// reading that the recipe runner kills a step at that time. It does not -
@@ -488,7 +488,7 @@ fn a_spend_limit_that_nothing_lifts_waits_its_length_and_retries() {
     );
 }
 
-/// Issue #3037, review of PR #2992: a step timeout does not end a
+/// Issue #3037: a step timeout does not end a
 /// login-change wait. It used to be the one thing that still closed such a
 /// wait with `failed reason=step_timeout`; the wait now runs its own length
 /// and the step retries.
@@ -738,15 +738,18 @@ fn a_spend_limit_with_a_weekly_reset_is_a_capacity_wait_not_a_login_change_wait(
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     let ev = events(&out);
+    // Next year's Oct 8, held to a spend limit's 62-day span, is the wait's
+    // deadline; the configured maximum does not cut it short.
     assert_eq!(
         ev[0],
         "waiting_for_capacity reason=reset_too_far harness=claude \
-         until=2026-10-18 08:01:00 -07:00",
+         until=2026-12-19 07:02:00 -08:00",
         "{ev:?}: {}",
         describe(&out)
     );
     assert!(
-        ev[1].starts_with("start reason=usage_limit wait=capacity harness=claude reset=2"),
+        ev[1].starts_with("start reason=usage_limit wait=capacity harness=claude reset=2")
+            && ev[1].ends_with(" bound=reset+margin"),
         "{ev:?}: {}",
         describe(&out)
     );
@@ -756,7 +759,7 @@ fn a_spend_limit_with_a_weekly_reset_is_a_capacity_wait_not_a_login_change_wait(
     );
     assert_eq!(
         ev[2..],
-        ["end reason=capacity expired", "resume attempt=2"],
+        ["end reason=reset reached", "resume attempt=2"],
         "{ev:?}"
     );
 }
@@ -849,7 +852,7 @@ fn a_login_that_comes_round_again_is_waited_on_again_and_the_chain_continues() {
     );
 }
 
-/// Round 6 of the review of PR #2992: the second wait is a reset wait, and
+/// The second wait is a reset wait, and
 /// a reset wait is not cut short by `max_wait_secs`. It used to be: this
 /// test pinned the second wait ending at the one-minute maximum with `max
 /// reached` and the agent run again half an hour before the reset, a

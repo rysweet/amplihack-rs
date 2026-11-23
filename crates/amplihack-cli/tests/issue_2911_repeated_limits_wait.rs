@@ -1,13 +1,11 @@
 //! Issue #2911: a second and a third limit in one step each wait. No
 //! `already_waited` refusal and no `max_wait_secs` budget ends the chain.
 //!
-//! Round 6 of the review of PR #2992 asked what a wait that outlasts
-//! `max_wait_secs` with no event does. The answer depends on the wait, and
-//! both halves are pinned at the end of this file: a reset wait does not run
-//! the step again before its reset, and a wait with no reset to wait for
-//! does, once, at its outer bound, which is the declared interim timer
-//! (docs/reference/usage-limit-waits.md, "The timed parts that remain";
-//! #3098).
+//! What a wait that outlasts `max_wait_secs` with no event does depends on
+//! the wait, and both halves are pinned at the end of this file: a wait for
+//! a stated reset does not run the step again before its reset, and a wait
+//! with no reset to wait for does, once, at its outer bound
+//! (docs/reference/usage-limit-waits.md, "The timed parts that remain").
 
 #![cfg(unix)]
 
@@ -51,7 +49,7 @@ fn three_limits_in_one_step_each_wait_and_the_fourth_attempt_succeeds() {
 fn a_spent_max_wait_budget_does_not_end_the_chain() {
     let f = Fixture::new();
     // A limit with no reset, so the configured length is what bounds each
-    // wait: since round 6 of the review of PR #2992 it does not bound a
+    // wait: it does not bound a
     // reset wait at all.
     let mut c = no_reset_step(&f);
     // A budget of one wait length: under the old rule the second limit was
@@ -109,7 +107,7 @@ fn no_refusal_or_budget_ending_is_ever_logged() {
 fn a_configured_zero_wait_length_is_raised_to_the_floor_and_still_waits() {
     let f = Fixture::new();
     // The floor applies to the outer bound, which only a wait with no reset
-    // to wait for has (round 6 of the review of PR #2992).
+    // to wait for has.
     let mut c = no_reset_step(&f);
     c.env("LIMIT_CALLS", "2")
         .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0");
@@ -138,7 +136,7 @@ fn a_configured_zero_wait_length_is_raised_to_the_floor_and_still_waits() {
     );
 }
 
-/// Round 6 of the review of PR #2992: a wait that outlasts `max_wait_secs`
+/// A wait that outlasts `max_wait_secs`
 /// with no event does not run the step again when its limit stated a reset.
 ///
 /// The reviewer read the configured length as a timer that re-entered every
@@ -151,7 +149,7 @@ fn a_configured_zero_wait_length_is_raised_to_the_floor_and_still_waits() {
 /// reset, and not at the one-minute mark; the progress lines show the wait
 /// still running long after it.
 #[test]
-fn round_6_a_reset_wait_outlasting_max_wait_secs_does_not_run_the_step_again() {
+fn a_reset_wait_outlasting_max_wait_secs_does_not_run_the_step_again() {
     let f = Fixture::new();
     let mut c = step(&f);
     c.env("LIMIT_CALLS", "1")
@@ -197,11 +195,10 @@ fn round_6_a_reset_wait_outlasting_max_wait_secs_does_not_run_the_step_again() {
 /// rotator and no other login, so nothing but the outer bound would ever run
 /// the step again without a person. The run is never ended by it, and a
 /// limit on the next attempt starts another wait. This is the one timed
-/// re-entry left, kept as the interim bound #2909 allows and removed by
-/// #3098 (docs/reference/usage-limit-waits.md, "The timed parts that
-/// remain").
+/// re-entry left (docs/reference/usage-limit-waits.md, "The timed parts
+/// that remain").
 #[test]
-fn round_6_a_wait_with_no_reset_runs_the_step_again_at_its_outer_bound() {
+fn a_wait_with_no_reset_runs_the_step_again_at_its_outer_bound() {
     let f = Fixture::new();
     let mut c = no_reset_step(&f);
     c.env("LIMIT_CALLS", "1")

@@ -433,7 +433,7 @@ pub(crate) fn sweep_rerun(dir: &Path) {
 /// The supervisor pid in a name the rerun scratch directory owns: an
 /// attempt's output buffer `<pid>-<n>.out`, or the captured prompt of a
 /// step whose prompt came on a pipe, `<pid>-0.in` (issue #2815). The
-/// captured prompt is kept in memory since the review of PR #2992, so only
+/// captured prompt is now kept in memory, so only
 /// an earlier version writes `<pid>-0.in`; the name is still swept so that
 /// such a file is not left behind. Every other name belongs to someone else
 /// and is left alone.

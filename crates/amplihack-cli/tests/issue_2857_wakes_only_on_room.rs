@@ -559,11 +559,12 @@ fn a_manual_switch_that_recorded_no_room_does_not_end_a_wait() {
 /// on the first change would pass every "does not wake" case above and fail
 /// this one, so it is the case that says the rule is *room*, not *quiet*.
 ///
-/// The reason is `login changed`, not `rotator capacity`. Both ledger records
-/// name the same login, so the fingerprint moved once, at the first record, and
-/// the room gate held that change back. The second record opens the gate, and
-/// the held-back change is read before the capacity check. Either way the wait
-/// ends at the first poll after room is recorded and not before.
+/// Both ledger records name the same login, so the fingerprint moved once, at
+/// the first record, and the room gate held that change back. The second
+/// record is a fresh cycle with room, which the rotator's capacity check reads
+/// before the fingerprint, so the wait ends `rotator capacity`; the held-back
+/// change would have ended it at the same write. Either way the wait ends at
+/// the write that records room and not before.
 #[test]
 fn a_wait_that_did_not_wake_for_a_full_login_wakes_when_room_appears() {
     let f = with_profiles();
@@ -577,7 +578,11 @@ fn a_wait_that_did_not_wake_for_a_full_login_wakes_when_room_appears() {
     });
     let out = run_in_stages(&f, &mut c, vec![full, room]);
     assert!(out.status.success(), "{}", describe(&out));
-    assert_ends(&out, &f, ["end reason=login changed", "resume attempt=2"]);
+    assert_ends(
+        &out,
+        &f,
+        ["end reason=rotator capacity", "resume attempt=2"],
+    );
     assert!(
         progress_lines(&out) >= 4,
         "the wait ran past the full login's record before the room record woke it: {}",

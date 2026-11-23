@@ -255,7 +255,7 @@ fn the_age_rule_applies_only_to_names_that_parse() {
 //
 // Contract: `capture_prompt(source)` takes a duplicate of the step's stdin
 // (a pipe) and returns `RerunStdin::Captured`, which keeps the copy in
-// memory and nowhere else (review of PR #2992). It returns an error only
+// memory and nowhere else. It returns an error only
 // when what the copy needs (a second description of the source, the first
 // attempt's pipe, the copier thread) cannot be made, and has then read
 // nothing; the supervisor does not run such a step. That path is pinned
@@ -295,8 +295,8 @@ fn captured(source: fs::File) -> RerunStdin {
 /// The whole prompt a rerun is given.
 ///
 /// `replay` answers at once and never waits: a prompt still arriving is
-/// `Ready`, because the rerun's feeder gives it the rest as it arrives
-/// (review of PR #2992). So nothing here asks twice. `cat` reads the
+/// `Ready`, because the rerun's feeder gives it the rest as it arrives.
+/// So nothing here asks twice. `cat` reads the
 /// rerun's stdin to its end, which comes when the copier reaches the end of
 /// the source, and the caller of this helper has closed it or will.
 fn settled(policy: &mut RerunStdin) -> Vec<u8> {
@@ -335,7 +335,7 @@ fn an_attempt_that_never_reads_its_prompt_does_not_stop_the_capture() {
     assert_eq!(settled(&mut policy), prompt);
 }
 
-/// Review of PR #2992: every byte the copier forwards to the attempt is
+/// Every byte the copier forwards to the attempt is
 /// kept, in order, before it is forwarded. So whatever the attempt was
 /// given, a rerun is given too, and there is no second store whose failure
 /// could cost a rerun: the copy cannot be lost while the prompt is read.
@@ -450,7 +450,7 @@ impl std::os::fd::AsRawFd for PanicsOnRead {
     }
 }
 
-/// Review of PR #2992: a copier that panics is a prompt cut short, not a
+/// A copier that panics is a prompt cut short, not a
 /// failed copy of a prompt the attempt was given whole.
 ///
 /// The attempt's pipe closes wherever the copier stopped, and the attempt
@@ -681,7 +681,7 @@ fn a_capture_replays_the_whole_prompt() {
     assert!(!policy.prompt_cut_short(), "a whole capture is not lost");
 }
 
-/// Review of PR #2992 (round 5): a prompt still arriving is fed to a rerun
+/// A prompt still arriving is fed to a rerun
 /// as it arrives, and nothing waits for the caller to finish.
 ///
 /// The copier ends at the end of the source, and the source is a pipe
@@ -741,7 +741,7 @@ fn a_prompt_still_arriving_is_fed_to_a_rerun_as_it_arrives() {
     assert_eq!(settled(&mut policy), prompt, "a later rerun reads it all");
 }
 
-/// Review of PR #2992 (round 5): a rerun's stdin never ends early while the
+/// A rerun's stdin never ends early while the
 /// caller holds the pipe, and a rerun that does not read it costs nothing.
 ///
 /// The rerun here never reads: its stdin is dropped at once, as an agent

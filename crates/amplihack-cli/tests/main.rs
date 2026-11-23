@@ -449,6 +449,8 @@ mod issue_2911_prompt_loss_resumes;
 mod issue_2911_repeated_limits_wait;
 #[path = "issue_2911_spend_limit_no_reset.rs"]
 mod issue_2911_spend_limit_no_reset;
+#[path = "issue_2911_wait_wakes_on_events.rs"]
+mod issue_2911_wait_wakes_on_events;
 #[path = "issue_2911_weekly_limit_waits.rs"]
 mod issue_2911_weekly_limit_waits;
 #[path = "issue_439_no_per_step_timeout.rs"]

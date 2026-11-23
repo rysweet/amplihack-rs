@@ -892,7 +892,7 @@ the step rather than report the attempt's result as the step's.
 A caller that has not closed the pipe when a rerun is due holds nothing up.
 The rerun starts at once, fed what has arrived and then the rest as it
 arrives, and reaches the end of its stdin when the caller closes the pipe, as
-the first attempt did (issue #3036, review of PR #2992). Nothing waits on the
+the first attempt did (issue #3036). Nothing waits on the
 caller's pipe, so a caller that never closes it holds up only an attempt that
 reads it. An `--input-format` channel is copied and replayed like any other
 piped prompt.

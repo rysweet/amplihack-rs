@@ -59,13 +59,10 @@ use super::ledger::{MAX_BLOCKS, OverflowBlock, RotateState, prune_blocks, spend_
 use super::log::msg;
 use super::spend_blocks::valid_span;
 use crate::commands::profile::auto_switch::kit::{State, exists};
-use crate::commands::profile::limit_wait::plan::FIVE_HOURS;
+use crate::commands::profile::limit_wait::plan::window;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::recipe::run::limit_patterns::LimitKind;
 use std::path::Path;
-
-/// The weekly window's length: the longest a weekly block may last.
-const SEVEN_DAYS: i64 = 7 * 86_400;
 
 /// Why a block was not stored. A closed set of fixed strings: the ALERT
 /// lines interpolate one of these, a parsed [`ProfileName`], a
@@ -141,7 +138,8 @@ fn resolved_until(until: Option<i64>, at: i64, kind: LimitKind) -> Option<i64> {
 /// The loader's span rule is applied to the reset as stated, before the
 /// kind's window shortens it, so a reset the loader would refuse is still
 /// reported as out of range. The window then gives the end that is stored:
-/// the stated reset or [`ceiling`] from `at`, whichever comes first.
+/// the stated reset or the kind's [`window`] from `at`, whichever comes
+/// first. The usage-limit wait holds a stated reset to the same windows.
 fn bounded(at: i64, until: i64, kind: LimitKind) -> Result<i64, &'static str> {
     // A reset the clock has already gone past is named separately:
     // `valid_span` refuses it for the same reason it refuses a reset beyond
@@ -154,25 +152,10 @@ fn bounded(at: i64, until: i64, kind: LimitKind) -> Result<i64, &'static str> {
     if !valid_span(&OverflowBlock::spend_limit_until(at, until)) {
         return Err(OUT_OF_RANGE);
     }
-    Ok(match ceiling(kind) {
+    Ok(match window(kind) {
         Some(window) => until.min(at.saturating_add(window)),
         None => until,
     })
-}
-
-/// The longest a block of `kind` may last, or `None` for a kind with no
-/// fixed window.
-///
-/// A session window is five hours and a weekly window seven days, so no
-/// genuine reset of either lies further away than that. A spend or credit
-/// limit lifts on a billing date or when someone adds funds, which has no
-/// fixed distance, so it keeps the loader's 62-day span rule alone.
-fn ceiling(kind: LimitKind) -> Option<i64> {
-    match kind {
-        LimitKind::Session => Some(FIVE_HOURS),
-        LimitKind::Weekly => Some(SEVEN_DAYS),
-        LimitKind::Spend | LimitKind::Credits => None,
-    }
 }
 
 /// Steps 3 to 7, for an end [`bounded`] has already checked.
