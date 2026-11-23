@@ -19,9 +19,16 @@
 //! - `check_pane_owned` validates the pane id, walks the ancestry once, asks
 //!   tmux only after a holder is known, and hands the holder to
 //!   `check_pane_held`; nothing walks twice.
+//! - `find_pane_with(view, hook_pid, parent, euid, env_pane, list, tty)`
+//!   (#3104): an environment pane takes exactly that path and a refusal
+//!   never falls back. With no environment pane, a walk that finds no
+//!   terminal is `None` and asks tmux nothing; otherwise one listing, the
+//!   single pane on the holder's terminal, then the same proof with the same
+//!   refusal words.
 //! - `Outcome::{PaneUnverified, PaneNotReading}` are `pane-unverified` and
-//!   `pane-not-reading`; `Outcome::wakes()` holds for `Resumed` and those
-//!   two, and `exit_code()` is 2 exactly when `wakes()` holds.
+//!   `pane-not-reading`; `Outcome::wakes()` holds for `NotResumed`, those
+//!   two and `ScreenUnrecognised`, and `exit_code()` is 2 exactly when
+//!   `wakes()` holds. A wake records nothing.
 //!
 //! No test talks to a tmux server, reads the real `/proc` tree for a
 //! decision, or touches a real home.
@@ -29,7 +36,7 @@
 use amplihack_hooks::limit_resume::guard::{FsGuard, GuardStore};
 use amplihack_hooks::limit_resume::keys::{
     Key, MAX_ANCESTRY, Pane, PaneCheck, ProcEntry, ProcView, RESUME_KEYS, ScreenCheck,
-    UNVERIFIED_REASONS, check_pane_with, parse_stat, tty_ancestor,
+    UNVERIFIED_REASONS, check_pane_with, find_pane_with, parse_stat, tty_ancestor,
 };
 use amplihack_hooks::limit_resume::log::{LogEntry, append, format_line};
 use amplihack_hooks::limit_resume::{Deps, Event, Outcome, RESUME_MSG, run_with, run_with_io};
@@ -40,6 +47,7 @@ use amplihack_utils::rotator_status::swap_record::{
 };
 use amplihack_utils::secure_files::write_private_atomic;
 use serde_json::json;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -322,7 +330,7 @@ fn the_new_outcomes_have_their_names() {
 #[test]
 fn exit_2_and_the_wake_message_follow_one_predicate() {
     let all = [
-        Outcome::Resumed,
+        Outcome::NotResumed,
         Outcome::ResumedKeys,
         Outcome::ResumeKeysFailed,
         Outcome::PaneUnverified,
@@ -340,6 +348,7 @@ fn exit_2_and_the_wake_message_follow_one_predicate() {
         Outcome::GuardFailed,
         Outcome::Disabled,
         Outcome::NotLimit,
+        Outcome::ScreenUnrecognised,
     ];
     for o in all {
         assert_eq!(o.exit_code() == 2, o.wakes(), "{o:?}");
@@ -348,9 +357,10 @@ fn exit_2_and_the_wake_message_follow_one_predicate() {
     assert_eq!(
         waking,
         [
-            Outcome::Resumed,
+            Outcome::NotResumed,
             Outcome::PaneUnverified,
-            Outcome::PaneNotReading
+            Outcome::PaneNotReading,
+            Outcome::ScreenUnrecognised
         ]
     );
 }
@@ -540,32 +550,50 @@ fn a_session_not_reading_the_terminal_is_named_and_sends_nothing() {
 }
 
 #[test]
-fn no_tmux_still_takes_the_wake_path_and_is_logged_as_resumed() {
+fn no_tmux_pane_takes_the_wake_path_and_is_logged_as_not_resumed() {
     let r = root();
     let mut d = deps(&r, PaneCheck::None);
-    assert_eq!(run(&mut d), Outcome::Resumed);
+    assert_eq!(run(&mut d), Outcome::NotResumed);
     assert!(d.sent.is_empty());
+    let log = log_of(&r);
+    assert!(log.contains("outcome=not-resumed"), "{log}");
+    assert!(log.contains("detail=no-tmux-pane"), "{log}");
+    assert!(
+        !log.contains("outcome=resumed "),
+        "never logged as resumed: {log}"
+    );
+    assert_eq!(Outcome::NotResumed.as_str(), "not-resumed");
 }
 
 #[test]
-fn a_refused_pane_is_still_committed_once_so_the_duplicate_guard_applies() {
-    // D7 ordering: the verdict is taken before the guard commit, and all
-    // three wake outcomes pass through the same commit.
+fn a_refused_pane_records_nothing_so_the_next_room_event_can_resume() {
+    // #3104: only a resume that reached the session is recorded.
     for check in [
         PaneCheck::None,
         PaneCheck::Unverified("not-foreground"),
         PaneCheck::NotReading,
     ] {
         let r = root();
-        let mut d = deps(&r, check);
+        let mut d = deps(&r, check.clone());
         run(&mut d);
         let events = r
             .path()
             .join(".auto-switch.d")
             .join("resume")
             .join("events");
-        assert_eq!(fs::read_dir(events).unwrap().count(), 1);
+        let n = fs::read_dir(events).map_or(0, |d| d.count());
+        assert_eq!(n, 0, "{check:?}: a wake leaves the event armed");
     }
+    // A pane that was reached still writes exactly one marker.
+    let r = root();
+    let mut d = deps(&r, PaneCheck::Ready(pane("%3")));
+    run(&mut d);
+    let events = r
+        .path()
+        .join(".auto-switch.d")
+        .join("resume")
+        .join("events");
+    assert_eq!(fs::read_dir(events).unwrap().count(), 1);
 }
 
 #[test]
@@ -689,4 +717,161 @@ fn a_valid_pane_id_on_another_terminal_never_gets_keys() {
     let t = standing_session();
     let c = check_pane_with(&t, 500, 400, UID, Some(pane("%99")), b"/dev/pts/12\n");
     assert_eq!(reason(c), "tty-mismatch");
+}
+
+// ── Finding the pane of a session by its terminal (#3104) ───────────────────
+
+/// Records which tmux questions were asked, in order.
+#[derive(Default)]
+struct Asked(RefCell<Vec<String>>);
+
+impl Asked {
+    fn log(&self) -> Vec<String> {
+        self.0.borrow().clone()
+    }
+}
+
+fn discover(
+    t: &Tree,
+    env: Option<Pane>,
+    listing: io::Result<Vec<u8>>,
+    tty_answer: Vec<u8>,
+    asked: &Asked,
+) -> PaneCheck {
+    find_pane_with(
+        t,
+        500,
+        400,
+        UID,
+        env,
+        || {
+            asked.0.borrow_mut().push("list".into());
+            listing
+        },
+        |p: &Pane| {
+            asked.0.borrow_mut().push(format!("tty({})", p.id()));
+            Ok(tty_answer)
+        },
+    )
+}
+
+fn listing_of(id: &str) -> io::Result<Vec<u8>> {
+    Ok(format!("%1 /dev/pts/1\n{id} {TTY}\n").into_bytes())
+}
+
+#[test]
+fn a_pane_found_by_terminal_is_proved_like_an_environment_pane() {
+    let asked = Asked::default();
+    let got = discover(
+        &standing_session(),
+        None,
+        listing_of("%7"),
+        tty_line(),
+        &asked,
+    );
+    match got {
+        PaneCheck::Ready(p) => assert_eq!(p.id(), "%7"),
+        other => panic!("expected Ready, got {other:?}"),
+    }
+    assert_eq!(
+        asked.log(),
+        ["list", "tty(%7)"],
+        "one listing, then one proof"
+    );
+}
+
+#[test]
+fn a_found_pane_whose_proof_names_another_tty_is_a_mismatch() {
+    let asked = Asked::default();
+    let got = discover(
+        &standing_session(),
+        None,
+        listing_of("%7"),
+        b"/dev/pts/9\n".to_vec(),
+        &asked,
+    );
+    assert_eq!(reason(got), "tty-mismatch");
+}
+
+#[test]
+fn a_found_pane_whose_holder_is_not_foreground_is_refused() {
+    let mut t = standing_session();
+    t.0.insert(300, proc_entry(200, 300, 999, Some(TTY)));
+    let asked = Asked::default();
+    let got = discover(&t, None, listing_of("%7"), tty_line(), &asked);
+    assert_eq!(reason(got), "not-foreground");
+}
+
+#[test]
+fn a_found_pane_the_session_is_not_reading_is_not_reading() {
+    let mut t = standing_session();
+    t.0.insert(400, proc_entry(300, 400, 300, Some("pipe:[2]")));
+    let asked = Asked::default();
+    let got = discover(&t, None, listing_of("%7"), tty_line(), &asked);
+    assert!(matches!(got, PaneCheck::NotReading), "{got:?}");
+}
+
+#[test]
+fn a_refused_environment_pane_never_falls_back_to_discovery() {
+    let asked = Asked::default();
+    let got = discover(
+        &standing_session(),
+        Some(pane("%3")),
+        listing_of("%7"),
+        b"/dev/pts/9\n".to_vec(),
+        &asked,
+    );
+    assert_eq!(reason(got), "tty-mismatch");
+    assert_eq!(asked.log(), ["tty(%3)"], "the listing is never asked for");
+}
+
+#[test]
+fn a_walk_that_finds_no_terminal_gives_none_and_runs_nothing() {
+    let mut t = Tree::default();
+    t.0.insert(500, proc_entry(400, 300, 300, Some("pipe:[1]")));
+    t.0.insert(400, proc_entry(300, 300, 300, Some("pipe:[2]")));
+    t.0.insert(300, proc_entry(1, 300, 300, Some("pipe:[3]")));
+    t.0.insert(1, proc_entry(0, 1, -1, None));
+    let asked = Asked::default();
+    let got = discover(&t, None, listing_of("%7"), tty_line(), &asked);
+    assert!(matches!(got, PaneCheck::None), "{got:?}");
+    assert!(asked.log().is_empty(), "tmux is not run: {:?}", asked.log());
+}
+
+#[test]
+fn a_walk_that_cannot_read_the_tree_gives_none_and_runs_nothing() {
+    let asked = Asked::default();
+    let got = discover(&Tree::default(), None, listing_of("%7"), tty_line(), &asked);
+    assert!(matches!(got, PaneCheck::None), "{got:?}");
+    assert!(asked.log().is_empty());
+}
+
+#[test]
+fn a_failed_or_unmatched_listing_gives_none_and_asks_nothing_more() {
+    for listing in [
+        Err(io::Error::other("tmux failed")),
+        Ok(b"%1 /dev/pts/1\n".to_vec()),
+        Ok(b"garbage\n".to_vec()),
+        Ok(format!("%7 {TTY}\n%8 {TTY}\n").into_bytes()),
+        Ok(Vec::new()),
+    ] {
+        let asked = Asked::default();
+        let got = discover(&standing_session(), None, listing, tty_line(), &asked);
+        assert!(matches!(got, PaneCheck::None), "{got:?}");
+        assert_eq!(asked.log(), ["list"], "no proof is asked for");
+    }
+}
+
+#[test]
+fn a_session_not_in_the_window_listing_is_never_typed_into_another_pane() {
+    // The only pane listed is on another terminal.
+    let asked = Asked::default();
+    let got = discover(
+        &standing_session(),
+        None,
+        Ok(b"%1 /dev/pts/1\n%2 /dev/pts/2\n".to_vec()),
+        tty_line(),
+        &asked,
+    );
+    assert!(matches!(got, PaneCheck::None), "{got:?}");
 }

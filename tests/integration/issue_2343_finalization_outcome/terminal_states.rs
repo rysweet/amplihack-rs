@@ -88,6 +88,74 @@ fn pending_checks_do_not_stop_the_decided_success_from_naming_its_pull_request()
     fx.assert_gh_reads_only();
 }
 
+// #2966: the assessment may bring the pull request's CI to green itself before
+// it decides, so `action_taken` names one of four things it did. The validator
+// reports the action it was given, in the record, beside the pull request it
+// names; the action changes neither the state nor the pull request.
+#[test]
+fn every_action_the_assessment_may_take_is_reported_as_taken() {
+    for action in [
+        "none",
+        "pushed_branch",
+        "opened_pull_request",
+        "repaired_ci",
+    ] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.push();
+        fx.gh_pr_at(&fx.head(), green_rollup());
+        let mut envs = finished_env(&fx.repo_path());
+        envs.push(assessment("EXISTING_OPEN_PR", action, "7"));
+
+        let outcome = fx.validate(&as_refs(&envs));
+
+        assert_hands_pr_on(&outcome);
+        let evidence = outcome.field("evidence_used");
+        assert!(
+            evidence.contains(&format!("assessment_action={action},")),
+            "{action}: the action the assessment took is in the record: {evidence}"
+        );
+        fx.assert_gh_reads_only();
+    }
+}
+
+// #2966, the stale reading. The facts the run collected were read before the
+// assessment repaired the head, so a record can say `checks=failing` beside an
+// assessment that pushed a fix and decided on the repaired head. The validator
+// reports the decision it was given and quotes both: it never reads the checks
+// again behind the assessment's back (#2343), and a recorded reading does not
+// overrule what the assessment read after its last write. The assessment's own
+// `reason` carries that later reading.
+#[test]
+fn facts_recorded_before_a_repair_are_quoted_and_do_not_overrule_the_assessment() {
+    let fx = Fixture::new();
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(recorded_evidence(&fx, "failing", "smoke=COMPLETED/FAILURE"));
+    envs.push(assessment_raw(serde_json::json!({
+        "terminal_state": "EXISTING_OPEN_PR",
+        "action_taken": "repaired_ci",
+        "pr_number": "7",
+        "reason": "head 0123456789abcdef: success=1 failing=0 pending=0 unknown=0, read after the last write",
+        "next_action": "See pull request #7",
+    })));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_hands_pr_on(&outcome);
+    let record = outcome.field("evidence_used");
+    assert!(
+        record.contains("outcome.checks=failing")
+            && record.contains("assessment_action=repaired_ci"),
+        "both the recorded reading and the repair are in the record: {record}"
+    );
+    assert!(
+        outcome.field("terminal_reason").contains("failing=0"),
+        "the assessment's own reading after the repair is the reason: {}",
+        outcome.field("terminal_reason")
+    );
+    fx.assert_gh_not_called("the validator does not read the checks again");
+}
+
 // #1726: a context file that is absent, or present and unreadable, is absence
 // of bookkeeping, not invalidity. The run's facts are still gathered and the
 // result still names the real gap. What a lost file does cost is the

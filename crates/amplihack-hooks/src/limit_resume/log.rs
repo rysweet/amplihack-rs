@@ -2,7 +2,7 @@
 //! auto-switch and limit checks.
 //!
 //! ```text
-//! 2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare cycle=swapped
+//! 2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=not-resumed live=spare cycle=swapped detail=no-tmux-pane
 //! ```
 //!
 //! Since #2085 a line may end with the swap record it was decided on, the
@@ -56,11 +56,12 @@ pub struct LogEntry {
     /// How many resume keys were sent.
     pub keys_sent: Option<u8>,
     /// How many resumes the session's record held when the decision was
-    /// taken (issue #2912). Evidence for an operator reading this file;
-    /// nothing branches on it.
+    /// taken (issue #2912). Only a resume delivered with keys is recorded
+    /// (issue #3104), so this counts delivered key resumes. Evidence for an
+    /// operator reading this file; nothing branches on it.
     pub resumes: Option<u32>,
     /// Why a step failed, or why no key was sent: an `io::ErrorKind` name,
-    /// `session-gone`, `no-tmux-pane`, one of
+    /// `session-gone`, `no-tmux-pane` for `not-resumed`, one of
     /// [`super::keys::UNVERIFIED_REASONS`] for `pane-unverified`, or one of
     /// [`super::keys::UNRECOGNISED_REASONS`] for `screen-unrecognised`.
     pub detail: Option<String>,

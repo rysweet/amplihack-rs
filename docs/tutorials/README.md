@@ -111,8 +111,9 @@ python .claude/skills/multitask/orchestrator.py workstreams.json \
 ### [Workflow Terminal-State Closure](workflow-terminal-state-closure.md)
 
 Walkthrough of how `default-workflow` proves terminal completion, how the
-agentic finalizer reports states such as `BLOCKED_CI` and `HOLLOW_SUCCESS`, and
-how to rerun when finalization fails closed.
+agentic finalizer repairs a red CI and reports `BLOCKED_CI` only for a cause it
+cannot fix, how it reports states such as `HOLLOW_SUCCESS`, and how to rerun
+when finalization fails closed.
 
 **Topics Covered**:
 

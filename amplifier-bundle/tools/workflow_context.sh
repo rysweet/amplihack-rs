@@ -79,7 +79,7 @@ _workflow_context_get() {
   done
   return 2
 }
-_workflow_context_roots='verdict_json implementation allow_no_op doc_review_feedback precommit_results local_testing_gate agentic_finalizer_narrative implementation_terminal_evidence verification_terminal_evidence finalizer_step_status finalization_evidence finalization_assessment workflow_result repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence'
+_workflow_context_roots='verdict_json implementation allow_no_op doc_review_feedback precommit_results local_testing_gate agentic_finalizer_narrative implementation_terminal_evidence verification_terminal_evidence finalizer_step_status finalization_evidence finalization_assessment worktree_after_assessment workflow_result repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence'
 for _wc_key in $_workflow_context_roots; do
   _wc_name="$(_workflow_context_upper "$_wc_key")"
   if [[ ${!_wc_name+x} ]]; then _workflow_context_store "$_wc_name" "${!_wc_name}"; fi
@@ -116,6 +116,8 @@ _workflow_context_contract() {
       _wc_cohort=metadata; _wc_type=object; _wc_legacy=$(_workflow_context_upper "$1") ;;
     implementation_terminal_evidence|verification_terminal_evidence|finalizer_step_status|finalization_evidence|finalization_assessment|workflow_result)
       _wc_cohort=finalization; _wc_type=object; _wc_legacy=$(_workflow_context_upper "$1") ;;
+    # #2966: read-worktree-after-assessment's reading. It selects no tier.
+    worktree_after_assessment) _wc_cohort=finalization; _wc_type=object; _wc_legacy=WORKTREE_AFTER_ASSESSMENT ;;
     *) return 3 ;;
   esac
 }

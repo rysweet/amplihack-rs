@@ -21,8 +21,12 @@ This also applies to Crusty rereviews between merge-ready rounds. See the
 For the merge-ready loop, `loop_ci_signal` is `<pass|pending|fail|none>@<head>`.
 When it is `pending@<head>` and the head has not changed, the verdict is
 `CONTINUE`, never `STUCK`: a required check still running is a wait, not a
-lack of progress. Repeated rounds with no movement and no pending signal,
-including `fail@<head>`, are still `STUCK`. A round whose only open item is a
+lack of progress. `fail@<head>` is `CONTINUE` too, with CI repair named in
+`recommended_action` (#2966): a red CI the run can fix is work to do, not a
+reason to stop. It is `STUCK` only when the evidence names a cause the run
+cannot fix, such as a missing secret or a workflow run awaiting approval, and
+the verdict then names that cause and the human step. Other repeated rounds
+with no movement are judged as before. A round whose only open item is a
 pending check does not reach the evaluator at all; it ends the loop
 `WAITING`. See
 [A pending check is a wait](autodrive-merge-ready-round.md#a-pending-check-is-a-wait-not-a-lack-of-progress).

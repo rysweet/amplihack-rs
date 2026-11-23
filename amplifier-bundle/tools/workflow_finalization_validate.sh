@@ -33,12 +33,16 @@
 # changes them: it may make no GitHub write, so it cannot push the branch or
 # open the pull request the facts are missing, and may start no recipe, so it
 # cannot produce an assessment where there was none. Repairing the run's
-# outcome belongs to assess-finalization, which is allowed exactly those two
-# actions and then decides on what it did.
+# outcome belongs to assess-finalization, which is allowed exactly three
+# actions (push, open the pull request, bring CI to green: #2966) and then
+# decides on what it read after the last. BLOCKED_CI reaches this file only as
+# its decision, for a cause the run cannot fix; red CI is never a blocker here.
 #
 # The facts themselves are obtained and rendered by
 # workflow_finalization_facts.sh, which this file requires to be sourced
 # first: gather_outcome_facts, outcome_facts_line and corrupt_evidence_note.
+# The live worktree probe is workflow_finalization_worktree.sh's
+# probe_recorded_worktree, required the same way.
 
 validate_finalization() {
   if ! command -v jq >/dev/null 2>&1; then
@@ -53,7 +57,7 @@ validate_finalization() {
   local outcome_present="false" outcome_branch="" outcome_local_head="" outcome_remote=""
   local outcome_remote_head="" outcome_pr_number="" outcome_pr_url="" outcome_pr_state=""
   local outcome_pr_head="" outcome_checks="" outcome_unread=""
-  local assessment_state="" assessment_action="" assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
+  local assessment_state="" assessment_state_quoted="" assessment_action="" assessment_action_status=0 assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
   finalization_evidence="$(workflow_context_read finalization_evidence || :)"
   # A selected field that is present but corrupt is not absence. It is not a
   # terminal state of its own and it never ends the run; it is reported beside
@@ -148,31 +152,26 @@ FIELDS
   [ -n "$prior_terminal_state" ] || prior_terminal_state="$evidence_prior_terminal_state"
   [ "$evidence_hollow_success" != "true" ] || hollow_success_detected="true"
 
+  # What assess-finalization says it did. It labels the record and decides
+  # nothing: the worktree probe below runs whatever it says (SEC-01), so an
+  # absent value is simply `none`. A value outside the vocabulary, or one of the
+  # wrong type, is quoted as `unrecognised` (SEC-12, #2966).
+  assessment_action_status=0
+  assessment_action="$(workflow_finalization_field finalization_assessment action_taken)" || assessment_action_status=$?
+  if [ "$assessment_action_status" != 0 ] && [ "$assessment_action_status" != 2 ]; then
+    assessment_action="unrecognised"
+  elif [ -z "$assessment_action" ]; then
+    assessment_action="none"
+  fi
+  _finalization_action_allowed "$assessment_action" || assessment_action="unrecognised"
+
   # 2. Blockers about the local checkout, which no published outcome can
   #    answer. gh is deliberately absent (#2343): without it the outcome
-  #    cannot be read, which the facts say in words instead.
-  if [ "$evidence_dirty_worktree" = "true" ]; then
-    fail_result "FAILED_DIRTY_WORKTREE" "collected evidence reported a dirty worktree" "Commit, stash, or remove uncommitted changes before finalization." "finalization_evidence.git.dirty_worktree=true"
-  fi
-  target_dir="$(workflow_finalization_metadata worktree_path || :)"
-  [ -n "$target_dir" ] || target_dir="$(workflow_finalization_metadata repo_path || :)"
-  target_dir_explicit="true"
-  [ -n "$target_dir" ] || { target_dir="."; target_dir_explicit="false"; }
-  # Live worktree probe unless the collected record answered the question, and
-  # it answers it only by saying exactly "true" (handled above) or exactly
-  # "false" (#969, R2, R4). Anything else is not an answer and never stands in
-  # for one: empty, "unknown", "yes", "1", a JSON number rendered as "0". R4
-  # reproduced the cost of treating one of those as a negative -- a worktree
-  # with uncommitted changes whose record read "1" published EXISTING_OPEN_PR
-  # -- so a record that does not say true or false sends the question to the
-  # worktree, which can always answer it.
-  if [ "$evidence_dirty_worktree" != "false" ]; then
-    if command -v git >/dev/null 2>&1 && [ -d "$target_dir" ] && git -C "$target_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      if [ -n "$(git -C "$target_dir" status --porcelain)" ]; then
-        fail_result "FAILED_DIRTY_WORKTREE" "dirty worktree prevents terminal success" "Commit, stash, or remove uncommitted changes before finalization." "git.dirty_worktree=true"
-      fi
-    fi
-  fi
+  #    cannot be read, which the facts say in words instead. The worktree probe
+  #    (workflow_finalization_worktree.sh) asks the recorded checkout live, and
+  #    its answer outranks the pre-assessment record; it sets the target_dir
+  #    and target_dir_explicit the facts below are gathered from.
+  probe_recorded_worktree
   case ",$evidence_tooling_missing," in
     *,git,*|*,jq,*)
       fail_result "FAILED_MISSING_TOOLING" "collected evidence reported missing deterministic tooling: $evidence_tooling_missing" "Run finalization from an environment with required git and jq tooling available." "finalization_evidence.tooling.missing=$evidence_tooling_missing"
@@ -180,10 +179,11 @@ FIELDS
   esac
 
   # A deterministic terminal probe that already named a blocker is answered
-  # from its own record, without asking the remote again.
+  # from its own record, and never handed off. BLOCKED_CI is not among them
+  # (#2966): red CI is repaired, and a stale record of it decides nothing.
   case "$prior_terminal_state" in
-    BLOCKED_CI|FAILED_MEANINGFUL_DIFF|FAILED_CLOSED_UNMERGED|FAILED_PR_METADATA_UNAVAILABLE|FAILED_INVALID_INPUT|FAILED_WRONG_BRANCH)
-      finalization_fail_or_handoff "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
+    FAILED_MEANINGFUL_DIFF|FAILED_CLOSED_UNMERGED|FAILED_PR_METADATA_UNAVAILABLE|FAILED_INVALID_INPUT|FAILED_WRONG_BRANCH)
+      fail_result "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
       ;;
   esac
 
@@ -211,11 +211,9 @@ FIELDS
   #    facts carry; no URL is ever adopted from the assessment's own text, the
   #    canonical one is built for the remote the facts report.
   assessment_state="$(workflow_finalization_field finalization_assessment terminal_state || :)"
-  assessment_action="$(workflow_finalization_field finalization_assessment action_taken || :)"
   assessment_pr="$(workflow_finalization_field finalization_assessment pr_number || :)"
   assessment_reason="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment reason || :)")"
   assessment_next="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment next_action || :)")"
-  case "$assessment_action" in ''|none) assessment_action="none" ;; *) assessment_action="$(_finalization_outcome_clean "$assessment_action")" ;; esac
   # What came back, kept only to quote it back when it is not a pull request
   # number, the way an unusable terminal_state is quoted below: cleaned of
   # control characters and cut to 40 characters, since a pull request number is
@@ -238,11 +236,27 @@ FIELDS
     [ "$outcome_pr_state" != "OPEN" ] || publish_state_override="true"
   fi
 
-  evidence_used="$(outcome_facts_line),assessment_state=${assessment_state:-none},assessment_action=$assessment_action,reporting_failure=$reporting_failure"
+  # The state is quoted the same way as the action (SEC-12, #2966): free text
+  # here could forge a field of the record people and the next loop read.
+  if [ -z "$assessment_state" ]; then
+    assessment_state_quoted="none"
+  elif _finalization_state_allowed "$assessment_state"; then
+    assessment_state_quoted="$assessment_state"
+  else
+    assessment_state_quoted="unrecognised"
+  fi
+  evidence_used="$(outcome_facts_line),assessment_state=$assessment_state_quoted,assessment_action=$assessment_action,reporting_failure=$reporting_failure"
   evidence_used="$evidence_used$(corrupt_evidence_note)"
   open_pr_confirmed_facts="$evidence_used"
 
   if _finalization_state_allowed "$assessment_state"; then
+    # #2966: a BLOCKED_CI missing its cause or its owner's step is reported, not
+    # refused. These name what is missing; the recovery agent completes the owner
+    # and the step in its hand-off (docs/reference/step-failure-recovery.md).
+    if [ "$assessment_state" = BLOCKED_CI ]; then
+      [ -n "${assessment_reason//[[:space:]]/}" ] || assessment_reason="assess-finalization reported BLOCKED_CI but named no failing check and no cause"
+      [ -n "${assessment_next//[[:space:]]/}" ] || assessment_next="assess-finalization named no owner and no step: read the failing check on the pull request, then name who must act and the exact step they must take"
+    fi
     [ -n "$assessment_reason" ] || assessment_reason="assess-finalization reported $assessment_state on the run's outcome"
     [ -n "$assessment_next" ] || assessment_next="See the finalization assessment."
     # #2819 R1: a state whose definition is an open pull request, reported

@@ -16,11 +16,14 @@
 #
 #   _finalization_state_allowed / _finalization_state_is_success
 #                     the published terminal vocabulary, as two predicates
+#   _finalization_action_allowed
+#                     the actions assess-finalization may report taking
 #   _finalization_state_names_pr
 #                     the states whose definition IS an open pull request
 #   emit_without_jq   the literal object for a host with no jq
 #   emit_result       one complete, validated JSON object on stdout
-#   fail_result       emit a non-success result, announce it, exit 1
+#   fail_result       emit a non-success result, announce it on one line
+#                     (state, reason and next action), exit 1
 #   classify_success  emit a success result and exit 0
 
 emit_without_jq() {
@@ -57,7 +60,18 @@ fail_result() {
   terminal_failure="true"
   finalizer_output_valid="false"
   emit_result
-  echo "ERROR: workflow finalization failed closed: $terminal_state: $terminal_reason" >&2
+  # #2966: one line carrying the state, the reason and the step a person must
+  # take, so the human step of an unfixable cause survives step recovery's
+  # excerpt of this output. The fields are printed as data with printf '%s',
+  # and any C0 control character or DEL is removed from the assembled line, so a
+  # reason cannot start a second line on this channel or carry a 7-bit escape
+  # sequence. The two-byte UTF-8 forms of the C1 controls are not removed: the
+  # shared cleaner (_finalization_outcome_clean) leaves them too.
+  {
+    LC_ALL=C printf 'ERROR: workflow finalization failed closed: %s: %s; next action: %s' \
+      "$terminal_state" "$terminal_reason" "$required_next_action" | LC_ALL=C tr -d '\001-\037\177'
+    printf '\n'
+  } >&2
   exit 1
 }
 
@@ -90,6 +104,18 @@ _finalization_state_allowed() {
 _finalization_state_is_success() {
   case "${1-}" in
     EXISTING_OPEN_PR|IMPLEMENTED_VERIFIED|ALLOW_NO_OP|NO_DIFF_SUCCESS) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# #2966 (SEC-12). The actions assess-finalization may report having taken
+# before it decided: none, pushing the branch, opening the pull request, or
+# bringing its CI to green. Like the lists above this is a vocabulary check and
+# not a judgement. It keeps the value the validator quotes in evidence_used to
+# a known token, so free text cannot add a field to that record.
+_finalization_action_allowed() {
+  case "${1-}" in
+    none|pushed_branch|opened_pull_request|repaired_ci) return 0 ;;
     *) return 1 ;;
   esac
 }

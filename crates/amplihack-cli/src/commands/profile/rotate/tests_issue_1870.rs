@@ -678,13 +678,14 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
 }
 
 /// A target the gate rejects is unknown for the rest of the cycle, whatever
-/// its probe read before. Here an earlier gate accepted `spare` unconfirmed
-/// (the live login had no room then); under the lock the live login has room,
-/// so the gate rejects it, and the decision must not come back to it on its
-/// stale figures: the gate settles instead of ending the cycle in
-/// `GateUnsettled` (issue #2910).
+/// its probe read before. Here `spare`'s probe failed this cycle with a
+/// label (HTTP 429), and the decision chose it on its stale figures; the gate
+/// rejects it without a read, and the decision must not come back to it: the
+/// gate settles instead of ending the cycle in `GateUnsettled` (issue #2910).
+/// Issue #3105 removed the earlier gate's unconfirmed acceptance this test
+/// used to start from; the failed probe now stands for it.
 #[test]
-fn a_rejected_unconfirmed_target_is_not_chosen_again_on_its_stale_reading() {
+fn a_rejected_target_is_not_chosen_again_on_its_stale_reading() {
     use crate::commands::profile::rotate::measure::ProbeLabel;
     let e = env();
     let c = gate_ctx(&e, None);
@@ -703,10 +704,11 @@ fn a_rejected_unconfirmed_target_is_not_chosen_again_on_its_stale_reading() {
         "without the gate the stale reading wins: {:?}",
         m.decision
     );
-    m.seen
-        .extra
-        .unconfirmed
-        .insert(n("spare"), ProbeLabel::Http429);
+    // The probe failed in this cycle, with the label its error earned.
+    if let Some((_, probes)) = m.probed.as_mut() {
+        probes[0].1 = Probed::failed();
+    }
+    m.seen.extra.labels.insert(n("spare"), ProbeLabel::Http429);
     let got = fresh::settle(
         &c,
         m,

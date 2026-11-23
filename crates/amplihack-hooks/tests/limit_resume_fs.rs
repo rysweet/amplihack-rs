@@ -37,6 +37,7 @@ use amplihack_utils::secure_files::{
 };
 use serde_json::json;
 use std::fs;
+use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier, Mutex, mpsc};
@@ -744,9 +745,11 @@ fn entry(outcome: Outcome, live: Option<&str>) -> LogEntry {
 
 #[test]
 fn log_line_matches_the_documented_format() {
+    let mut e = entry(Outcome::NotResumed, Some("spare"));
+    e.detail = Some("no-tmux-pane".into());
     assert_eq!(
-        format_line(NOW, &entry(Outcome::Resumed, Some("spare"))),
-        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare cycle=swapped\n"
+        format_line(NOW, &e),
+        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=not-resumed live=spare cycle=swapped detail=no-tmux-pane\n"
     );
     assert_eq!(
         format_line(NOW, &entry(Outcome::NoCapacityTimeout, None)),
@@ -756,10 +759,11 @@ fn log_line_matches_the_documented_format() {
 
 #[test]
 fn the_resume_count_is_logged_as_evidence_when_set() {
-    let mut e = entry(Outcome::Resumed, Some("spare"));
+    let mut e = entry(Outcome::NotResumed, Some("spare"));
     e.resumes = Some(4);
+    e.detail = Some("no-tmux-pane".into());
     let line = format_line(NOW, &e);
-    assert!(line.contains(" resumes=4"), "{line}");
+    assert!(line.contains(" resumes=4 detail=no-tmux-pane\n"), "{line}");
     assert!(line.ends_with('\n'));
     let mut e = entry(Outcome::SessionRecordReset, None);
     e.resumes = None;
@@ -783,14 +787,14 @@ fn log_fields_are_restricted_to_a_safe_alphabet() {
     assert_eq!(sanitize(""), "-");
     let line = format_line(
         NOW,
-        &entry(Outcome::Resumed, Some("x\ny=z outcome=resumed")),
+        &entry(Outcome::NotResumed, Some("x\ny=z outcome=resumed")),
     );
     assert_eq!(line.matches('\n').count(), 1, "{line:?}");
     assert!(
         line.ends_with("live=x-y-z-outcome-resumed cycle=swapped\n"),
         "{line:?}"
     );
-    let mut e = entry(Outcome::Resumed, None);
+    let mut e = entry(Outcome::NotResumed, None);
     e.cycle = Some("stayed cycle=x\n".into());
     let line = format_line(NOW, &e);
     assert_eq!(line.matches('\n').count(), 1, "{line:?}");
@@ -856,6 +860,9 @@ struct DiskDeps {
     prompt_after: Option<i64>,
     armed: bool,
     swaps: u64,
+    /// A proved pane on the menu, and a `send_keys` that records and succeeds.
+    keys: bool,
+    sent: Vec<Key>,
 }
 
 impl DiskDeps {
@@ -868,7 +875,14 @@ impl DiskDeps {
             prompt_after,
             armed: false,
             swaps: 0,
+            keys: false,
+            sent: Vec::new(),
         }
+    }
+
+    fn with_keys(mut self) -> Self {
+        self.keys = true;
+        self
     }
 }
 
@@ -957,13 +971,21 @@ impl Deps for DiskDeps {
         None
     }
     fn pane_check(&mut self) -> PaneCheck {
+        if self.keys {
+            return PaneCheck::Ready(
+                Pane::parse(Some("/tmp/tmux-1000/default,1,0"), Some("%3")).unwrap(),
+            );
+        }
         PaneCheck::None
     }
     fn screen_check(&mut self, _pane: &Pane) -> ScreenCheck {
-        panic!("no pane, so no screen is read")
+        assert!(self.keys, "no pane, so no screen is read");
+        ScreenCheck::Held
     }
-    fn send_keys(&mut self, _pane: &Pane, _key: Key) -> std::io::Result<()> {
-        panic!("no pane, so no keys")
+    fn send_keys(&mut self, _pane: &Pane, key: Key) -> std::io::Result<()> {
+        assert!(self.keys, "no pane, so no keys");
+        self.sent.push(key);
+        Ok(())
     }
     fn session_alive_now(&mut self) -> bool {
         true
@@ -973,7 +995,7 @@ impl Deps for DiskDeps {
 #[test]
 fn resume_state_holds_no_message_text_or_session_id() {
     let r = root();
-    let mut d = DiskDeps::new(r.path(), None);
+    let mut d = DiskDeps::new(r.path(), None).with_keys();
     let input: HookInput = serde_json::from_value(json!({
         "hook_event_name": "StopFailure",
         "session_id": "SESSION-SENTINEL-7781",
@@ -982,7 +1004,7 @@ fn resume_state_holds_no_message_text_or_session_id() {
         "last_assistant_message": "MSG-SENTINEL-9932 You've hit your weekly limit"
     }))
     .unwrap();
-    assert_eq!(run_with(&input, &mut d), Outcome::Resumed);
+    assert_eq!(run_with(&input, &mut d), Outcome::ResumedKeys);
 
     let bytes = all_bytes_under(&resume_dir(r.path()));
     for s in [
@@ -997,7 +1019,7 @@ fn resume_state_holds_no_message_text_or_session_id() {
         assert!(!contains(&bytes, s), "{s} reached the resume state");
     }
     let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
-    assert!(log.contains("outcome=resumed "), "{log}");
+    assert!(log.contains("outcome=resumed-keys "), "{log}");
     assert!(log.contains("spare"), "the swap's login is logged: {log}");
     assert!(log.contains(&format!(
         "session={}",
@@ -1103,16 +1125,16 @@ fn malformed_or_public_prompt_marker_is_an_error() {
 #[test]
 fn prompt_after_the_hook_started_ends_the_wait_on_disk() {
     for (prompt, want) in [
-        (None, Outcome::Resumed),
+        (None, Outcome::ResumedKeys),
         (Some(NOW + 10), Outcome::MovedOn),
-        (Some(NOW - 10), Outcome::Resumed),
+        (Some(NOW - 10), Outcome::ResumedKeys),
     ] {
         let r = root();
         private_dir(&resume_dir(r.path()));
         if let Some(t) = prompt {
             record_prompt_at(r.path(), Some("s1"), t);
         }
-        let mut d = DiskDeps::new(r.path(), None);
+        let mut d = DiskDeps::new(r.path(), None).with_keys();
         let input: HookInput = serde_json::from_value(json!({
             "hook_event_name": "StopFailure",
             "session_id": "s1",
@@ -1201,6 +1223,8 @@ struct SwapDeps {
     clock: i64,
     wake: fn(&Path),
     woken: bool,
+    keys: bool,
+    sent: Vec<Key>,
 }
 
 impl Deps for SwapDeps {
@@ -1243,13 +1267,21 @@ impl Deps for SwapDeps {
         transcript.and_then(|p| read_stop_time(p, start))
     }
     fn pane_check(&mut self) -> PaneCheck {
+        if self.keys {
+            return PaneCheck::Ready(
+                Pane::parse(Some("/tmp/tmux-1000/default,1,0"), Some("%3")).unwrap(),
+            );
+        }
         PaneCheck::None
     }
     fn screen_check(&mut self, _pane: &Pane) -> ScreenCheck {
-        panic!("no pane, so no screen is read")
+        assert!(self.keys, "no pane, so no screen is read");
+        ScreenCheck::Held
     }
-    fn send_keys(&mut self, _pane: &Pane, _key: Key) -> std::io::Result<()> {
-        panic!("no pane, so no keys")
+    fn send_keys(&mut self, _pane: &Pane, key: Key) -> std::io::Result<()> {
+        assert!(self.keys, "no pane, so no keys");
+        self.sent.push(key);
+        Ok(())
     }
     fn session_alive_now(&mut self) -> bool {
         true
@@ -1273,6 +1305,8 @@ fn run_on_disk(r: &tempfile::TempDir, wake: fn(&Path)) -> Outcome {
         clock: NOW,
         wake,
         woken: false,
+        keys: true,
+        sent: Vec::new(),
     };
     run_with(&limit_event(), &mut d)
 }
@@ -1286,7 +1320,7 @@ fn no_resume_marker(root: &Path) -> bool {
 fn issue_2085_a_private_swap_record_on_disk_resumes() {
     let r = root();
     let out = run_on_disk(&r, |root| write_swap(root, 1, NOW + 61, 0o600));
-    assert_eq!(out, Outcome::Resumed);
+    assert_eq!(out, Outcome::ResumedKeys);
     assert!(!no_resume_marker(r.path()));
 }
 
@@ -1371,6 +1405,8 @@ fn run_late_start(r: &tempfile::TempDir, transcript_mode: u32) -> Outcome {
         clock: NOW,
         wake: |_| {},
         woken: false,
+        keys: true,
+        sent: Vec::new(),
     };
     let input: HookInput = serde_json::from_value(json!({
         "hook_event_name": "StopFailure",
@@ -1386,10 +1422,10 @@ fn run_late_start(r: &tempfile::TempDir, transcript_mode: u32) -> Outcome {
 #[test]
 fn issue_2236_a_swap_between_the_transcript_stop_and_a_late_start_resumes() {
     let r = root();
-    assert_eq!(run_late_start(&r, 0o600), Outcome::Resumed);
+    assert_eq!(run_late_start(&r, 0o600), Outcome::ResumedKeys);
     assert!(!no_resume_marker(r.path()));
     let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
-    assert!(log.contains("outcome=resumed"), "{log}");
+    assert!(log.contains("outcome=resumed-keys"), "{log}");
     assert!(!log.contains("SECRET-2236-MARKER"), "{log}");
     assert!(!log.contains("transcript"), "{log}");
 }
@@ -1455,4 +1491,129 @@ fn the_prompted_dir_prepare_makes_can_be_watched() {
     let r = root();
     FsGuard::new(r.path()).prepare(NOW).unwrap();
     assert!(check_watch_dir(&resume_dir(r.path()).join("prompted")).is_ok());
+}
+
+// ── FsGuard::release: undoing this caller's own commit (#3104) ──────────────
+
+fn session_lines(r: &Path) -> Vec<String> {
+    fs::read_to_string(resume_dir(r).join("sessions").join(sess()))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn release_removes_the_marker_and_one_session_line_and_keeps_the_rest() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW - 1000, NOW - 500).unwrap();
+    g.commit(&ev(2), &sess(), NOW - 400, NOW).unwrap();
+    assert_eq!(session_lines(r.path()).len(), 2);
+
+    g.release(&ev(2), &sess(), NOW).unwrap();
+
+    let d = resume_dir(r.path());
+    assert!(!d.join("events").join(ev(2)).exists(), "marker removed");
+    assert!(d.join("events").join(ev(1)).exists(), "other marker kept");
+    let lines = session_lines(r.path());
+    assert_eq!(
+        lines,
+        [(NOW - 500).to_string()],
+        "only the matching time goes"
+    );
+    assert!(!g.seen(&ev(2)).unwrap());
+}
+
+#[test]
+fn release_of_the_only_resume_leaves_an_empty_record() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
+    g.release(&ev(1), &sess(), NOW).unwrap();
+    let f = resume_dir(r.path()).join("sessions").join(sess());
+    assert_eq!(fs::metadata(&f).unwrap().len(), 0);
+    assert_eq!(mode(&f), 0o600);
+    assert_eq!(g.last_resume(&sess()).unwrap(), None);
+}
+
+#[test]
+fn release_of_an_absent_marker_is_success() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
+    g.release(&ev(1), &sess(), NOW).unwrap();
+    g.release(&ev(1), &sess(), NOW).unwrap();
+}
+
+#[test]
+fn release_before_any_commit_succeeds_and_creates_nothing() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.release(&ev(1), &sess(), NOW).unwrap();
+    assert!(!resume_dir(r.path()).exists());
+}
+
+#[test]
+fn release_refuses_a_symlinked_marker_and_leaves_it_in_place() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
+    let marker = resume_dir(r.path()).join("events").join(ev(1));
+    fs::remove_file(&marker).unwrap();
+    let target = r.path().join("elsewhere");
+    fs::write(&target, b"x").unwrap();
+    std::os::unix::fs::symlink(&target, &marker).unwrap();
+
+    let e = g.release(&ev(1), &sess(), NOW).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    assert!(fs::symlink_metadata(&marker).is_ok(), "left in place");
+    assert!(target.exists(), "the target is never touched");
+}
+
+#[test]
+fn release_refuses_a_directory_marker_and_leaves_it_in_place() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
+    let marker = resume_dir(r.path()).join("events").join(ev(1));
+    fs::remove_file(&marker).unwrap();
+    fs::create_dir(&marker).unwrap();
+    let e = g.release(&ev(1), &sess(), NOW).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    assert!(marker.is_dir());
+}
+
+#[test]
+fn release_refuses_a_malformed_session_record() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
+    let sessions = resume_dir(r.path()).join("sessions");
+    write_private_atomic(&sessions, &sess(), b"not a number\n").unwrap();
+    let e = g.release(&ev(1), &sess(), NOW).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn release_rejects_a_key_that_is_not_a_hash_name() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
+    assert!(g.release("../x", &sess(), NOW).is_err());
+    assert!(g.release(&ev(1), "../x", NOW).is_err());
+}
+
+#[test]
+fn a_commit_for_the_same_event_succeeds_after_a_release() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
+    assert!(matches!(
+        g.commit(&ev(1), &sess(), NOW, NOW + 1),
+        Err(CommitError::Duplicate)
+    ));
+    g.release(&ev(1), &sess(), NOW).unwrap();
+    g.commit(&ev(1), &sess(), NOW, NOW + 2).unwrap();
+    assert!(g.seen(&ev(1)).unwrap());
 }

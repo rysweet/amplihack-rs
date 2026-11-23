@@ -84,9 +84,16 @@ fi
 . "$here/workflow_finalization_outcome.sh"
 . "$here/workflow_finalization_result.sh"
 . "$here/workflow_finalization_handoff.sh"
-# The validator's fact helpers, which it calls from inside validate_finalization.
+# The validator's fact helpers and its worktree probe, both called from
+# inside validate_finalization. The probe's reader also backs the `worktree`
+# mode, which read-worktree-after-assessment runs (#2966).
 . "$here/workflow_finalization_facts.sh"
+. "$here/workflow_finalization_worktree.sh"
 . "$here/workflow_finalization_validate.sh"
+# #2966: one more pass of the CI repair, run between the assessment and the
+# validator (continue-ci-repair). It reads no answer field; it needs only the
+# context and metadata readers sourced above.
+. "$here/workflow_finalization_reentry.sh"
 . "$here/workflow_finalization_complete.sh"
 
 # Sets FINALIZATION_BASE_BRANCH from the run's pull request when --base was
@@ -123,9 +130,11 @@ resolve_finalization_base() {
 case "$mode" in
   collect) run_finalization_cleanup; collect_evidence ;;
   validate) validate_finalization ;;
+  reassess) continue_ci_repair ;;
+  worktree) report_worktree ;;
   complete) complete_workflow ;;
   *)
-    echo "ERROR: workflow_agentic_finalization.sh requires mode: collect, validate, or complete" >&2
+    echo "ERROR: workflow_agentic_finalization.sh requires mode: collect, validate, reassess, worktree, or complete" >&2
     exit 2
     ;;
 esac

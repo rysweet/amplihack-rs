@@ -1,7 +1,9 @@
 //! A failing check on the run's open PR is a negative CI signal. The facts
-//! reader classes the rollup as `failing`, and `BLOCKED_CI` is the state
-//! decided on it -- whatever this run's own `verification_completed` says,
-//! which neither the reader nor the validator consults since #2343. An
+//! reader classes the rollup as `failing`. Since #2966 a failing check is
+//! repaired before finalization decides, so `BLOCKED_CI` is the state the
+//! assessment reports only for a cause the run cannot fix, and the validator
+//! reports it as given -- whatever this run's own `verification_completed`
+//! says, which neither the reader nor the validator consults since #2343. An
 //! unclassifiable check is not "CI has not reported yet" either: it reads as
 //! `unknown`, and local pre-commit evidence can never turn it into a success.
 

@@ -297,8 +297,10 @@ fn rotate_log_grammar_is_documented() {
         // Issue #2910: the target rule, its notes and its lines.
         "ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)",
         "reason=plan-room",
-        " unconfirmed (<label>)",
         "reject: <name> <reason>",
+        // Issue #3105: the block and the superseded reading.
+        "reject: <name> blocked until <utc_minute> (<kind>)",
+        "reject: <name> reading <n>s older than one already held",
         "stay: live room <R>, best other login has room <M>, a move needs <N>",
         "stay: held after last swap (<S>s of <H>s): <name> is at s=<n>%, at or above --session-at",
         "stay: no candidate confirmed by a fresh reading",

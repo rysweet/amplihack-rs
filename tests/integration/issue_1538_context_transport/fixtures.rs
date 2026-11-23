@@ -113,6 +113,39 @@ impl Run {
     }
 }
 
+/// A clean Git work tree for the run to record as its worktree. Finalization
+/// probes the recorded worktree live on every run (#2966, SEC-01), and a folder
+/// that is not a work tree has not been shown clean, so the fixture records a
+/// real one: one commit and nothing uncommitted. It is a folder of its own
+/// because the fixture's other files, in the temporary folder, would be
+/// untracked in it.
+fn clean_worktree(dir: &std::path::Path) {
+    fs::create_dir(dir).unwrap();
+    let commit = [
+        "-c",
+        "user.name=Finalization Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "initial fixture",
+    ];
+    for args in [&["init", "--quiet"][..], &commit[..]] {
+        let output = amplihack_git::command_in(dir)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+    }
+}
+
 pub struct Fixture {
     pub temp: TempDir,
     env: Vec<(String, String)>,
@@ -129,7 +162,9 @@ impl Fixture {
         #[cfg(not(unix))]
         fs::copy(env!("CARGO_BIN_EXE_amplihack"), bin.join("amplihack.exe")).unwrap();
         let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-        let isolated_repo = temp.path().display().to_string();
+        let worktree = temp.path().join("worktree");
+        clean_worktree(&worktree);
+        let isolated_repo = worktree.display().to_string();
         Self {
             temp,
             env: vec![
