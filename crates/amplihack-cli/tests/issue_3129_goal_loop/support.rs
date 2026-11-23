@@ -127,7 +127,7 @@ esac
 "##;
 
 pub const STUB_AGENT: &str = r##"#!/usr/bin/env bash
-if [ "${1:-}" = "--version" ]; then echo "2.0.0 (Claude Code)"; exit 0; fi
+if [ "${1:-}" = "--version" ]; then echo "2.1.329 (Claude Code)"; exit 0; fi
 cat > /dev/null
 turn=""
 for d in $(ls -1d "$STUB_STATE_DIR"/turns/*/ 2>/dev/null | sort); do

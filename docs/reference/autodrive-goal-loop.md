@@ -50,7 +50,8 @@ auto-drive-to-merge
                             final?   one gh pr view: merged, closed, refused
                             read     reading.json + guidance
                             turn     autodrive-goal-turn recipe (one agent step)
-                            act      review | wait | merge | handoff | ready
+                            act      review | wait | merge (the goal's actions)
+                                     continue | wait-owner | handoff | ready | stop (shared)
                             record   record.md
   autodrive-report                                             (short)
 ```
@@ -73,8 +74,9 @@ limit.
    fix and push through the hooks, bring the base in, install a host input, or
    carry out a later task step. It ends by naming one next action and its
    arguments.
-3. Mechanical action. The action the agent named runs: `review`, `wait`,
-   `merge`, `handoff` or `ready`.
+3. Mechanical action. The action the agent named runs: one of the goal's
+   actions (`review`, `wait`, `merge`) or a shared one (`continue`,
+   `wait-owner`, `handoff`, `ready`, `stop`).
 4. Record. The turn record is written.
 
 Each turn takes one action. If the action word is missing or unknown, no
@@ -119,8 +121,17 @@ The agent picks one. The word is used only to dispatch the mechanical step.
 | `review` | One Crusty round (`autodrive-crusty-round`). Its verdict is evidence in the next reading. Nothing requires the reviewed head to equal the current head. |
 | `wait` | Waits for an event: the checks at the head to complete (`gh pr checks <pr> --watch`, with `--required` when asked), or the owner's answer. |
 | `merge` | Merges with an allowed merge method and `--match-head-commit`. Authority comes only from the captured authorisation. |
-| `handoff` | Posts one PR comment naming the owner, the decision and the evidence. The run ends. |
-| `ready` | Posts one PR comment that the PR is ready. The run ends. |
+| `continue` | Nothing mechanical; the next turn reads the live state again. The agent chooses it after it pushed, installed something or did a task step. |
+| `wait-owner` | Waits for the owner's answer: `amplihack recipe guidance wait` with no command. args: `owner`, `question`. |
+| `handoff` | Posts one PR comment naming the owner, the decision and the evidence. The run ends. args: `owner`, `decision`, `text`. |
+| `ready` | Posts one PR comment that the PR is ready. The run ends. args: `text`, and `owner` when someone other than the operator decides. |
+| `stop` | The owner asked the run to stop. Posts the continuation note. The run ends as `stopped`. args: `owner`, `text`. |
+
+The agent ends its reply with one JSON object on its own line:
+`{"action": "<word>", "args": {...}, "why": "..."}`. The turn tool saves it as
+`decision.json`; `args` is at most 64 KiB and `why` at most 16 KiB. A reply
+with no such object, or a word outside `^[a-z][a-z0-9-]{0,31}$`, runs no
+mechanical action.
 
 Work the agent does inside its own step, before it names the action:
 
@@ -380,21 +391,60 @@ the tool exit 2.
 | `act <word> <turn_dir>` | Carries out the action and writes `result.json` |
 | `publish <body_file>` | Posts the hand-off or ready text |
 
-`goal.json` has schema 1 and a required `summary`. `result.json` has `outcome`
-and `summary`. The shared words `handoff`, `ready` and `stop` are reserved. The
-driver rejects a goal tool whose action or final words collide with them before
-turn 1, and exits 2.
+`goal.json` has schema 1 and a required `summary`. Three optional fields are
+read by the driver:
 
-The driver writes `loop-end.json` with `end`, `subject` and `detail`. Only the
-driver and its end actions write it. The driver removes any `loop-end.json` the
-agent leaves in the turn.
+| Field | Use |
+|-------|-----|
+| `subject` | A short name for the goal, copied into `loop-end.json` |
+| `guidance_target` | A target `amplihack recipe guidance show|wait` accepts (an `https://` pull request URL). The driver reads that folder's guidance into the reading and gives the turn run the folder in `AMPLIHACK_RUN_GUIDANCE_DIRS`. |
+| `worktree` | The absolute folder the agent works in, when it is not the run's checkout |
 
-The driver's exit codes: 0 for an end, 1 for an error, 2 for a usage error or a
-refused contract, 75 and 79 passed up unchanged.
+`act <word> <turn_dir>` reads the agent's `decision.json` and this turn's
+`goal.json` and `reading.json` from the turn folder. `result.json` has
+`outcome` and `summary`. The shared words `continue`, `wait-owner`, `handoff`,
+`ready` and `stop` are reserved. The driver rejects a goal tool whose action
+words collide with them before turn 1, and exits 2.
+
+The goal tool runs with `AUTODRIVE_GOAL_CONTRACT=1`, `AUTODRIVE_STATE_DIR`,
+`AUTODRIVE_REPO`, `AUTODRIVE_WORKTREE`, `AUTODRIVE_LOOP_HOME`,
+`AUTODRIVE_INVOCATION_FILE` and `AUTODRIVE_TASK_FILE`, and the run's own
+`RECIPE_VAR_*` context. The turn run gets none of the `AUTODRIVE_*` variables.
+
+The driver writes `loop-end.json` with `end`, `run_id`, `subject`, `detail`,
+`turn` and `time`; a `merged` end adds `after_merge` and a `ready` end adds
+`verify_readiness`. Only the driver writes it. The driver removes any
+`loop-end.json` left by an earlier run when it starts, and any the agent leaves
+in a turn.
+
+The driver is started by the `autodrive-goal-loop` recipe:
+
+```
+autodrive_goal_loop.sh --goal-tool <name.sh> --goal-file <bundle-relative path>
+  --state-dir <dir> --repo <dir> [--task-file <f>] [--notes-file <f>]
+  [--invocation <invocation.json>] [--once]
+```
+
+`--once` runs one turn and returns; the one-release recipe aliases use it.
+The driver's exit codes: 0 for an end (or one `--once` turn), 1 for an error or
+a turn run that failed, 2 for a usage error or a refused contract (no turn
+runs), 75 and 79 passed up unchanged. It prints exactly one JSON line on
+stdout.
 
 The auto-drive goal tools are `autodrive_pr_goal.sh` (actions `review wait merge`)
 and `autodrive_pr_reading.sh`. The goal text is
-`amplifier-bundle/skills/auto-drive-to-merge/goal-merge-pr.md`.
+`amplifier-bundle/skills/auto-drive-to-merge/goal-merge-pr.md`. The outcomes of
+its actions:
+
+| Action | Outcomes |
+|--------|----------|
+| `review` | `reviewed`, `review-failed` |
+| `wait` | `checks-complete`, `checks-pending`, `guidance-arrived`, `wait-error` |
+| `merge` | `merged`, `not-authorised`, `authorization-unreadable`, `checks-not-green`, `refused`, `not-open`, `message-unavailable`, `invalid-head`, `head-mismatch` |
+
+The shared outcomes are `continued`, `no-action`, `skipped-guidance`,
+`turn-failed`, `ended`, `invalid-args`, `refused-secret`, `guidance-arrived`
+and `wait-error`.
 
 ## Files
 
@@ -421,13 +471,13 @@ Rust:
 
 ## Trade-offs
 
-- **Hot loop.** Nothing in code stops a loop whose agent keeps choosing to
-  continue. Each turn costs one agent call.
-- **Merged by others counts as completed.** A pull request someone else merges
-  ends the loop as `completed`; the report says who merged it.
-- **Pending checks report as `checks-not-green`.** The merge action does not
-  tell a pending required check from a failing one. The goal text tells the
-  agent to `wait` on pending checks before it chooses `merge`.
+- Nothing in code stops a loop whose agent keeps choosing to continue. Each
+  turn costs one agent call.
+- A pull request someone else merges ends the loop as `completed`; the report
+  says the merge was not by this run's merge action.
+- The merge action does not tell a pending required check from a failing one:
+  both are `checks-not-green`. The goal text tells the agent to `wait` on
+  pending checks before it chooses `merge`.
 
 ## Known limits
 

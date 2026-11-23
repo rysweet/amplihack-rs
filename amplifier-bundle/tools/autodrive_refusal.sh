@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # autodrive_refusal.sh — is a child's failure a terminal policy refusal?
 #
-# Sourced by autodrive_loop.sh from its own directory, never executed. It
+# Sourced by autodrive_goal_loop.sh (and the autodrive_escalate.sh alias) from
+# its own directory, never executed. It
 # defines functions only: no top-level commands, no shell-option changes.
 #
 # Issue #1437: the loop used to grep a child's transcript for the guard's
@@ -29,6 +30,13 @@
 #                                      nothing; sets TERMINAL_WHY.
 #   child_failure_summary <rc> <log>   prints `rc=<n> class=<c> retryable=<r>`
 #                                      plus ` signal=<s>` when there is one.
+#   log_body <log>                     the log without input echoes.
+#   usage_limit_failure <rc> <log>     0 when a non-zero exit carries a
+#                                      column-0 failure_class marker whose
+#                                      top-level class is usage_limit (#1801).
+#
+# log_body and usage_limit_failure moved here from autodrive_escalate.sh
+# (#3129), which now sources this file so its callers keep them.
 #
 # Docs: docs/reference/auto-drive-to-merge.md#autodrive_refusalsh
 
@@ -102,4 +110,28 @@ child_failure_summary() { # child_failure_summary <rc> <log>
   classify_child "${2:-}" >/dev/null
   printf 'rc=%s class=%s retryable=%s%s\n' "$rc" "$CHILD_FAILURE_CLASS" "$CHILD_FAILURE_RETRYABLE" \
     "${CHILD_FAILURE_SIGNAL:+ signal=${CHILD_FAILURE_SIGNAL}}"
+}
+
+# log_body <log_file>: the log without input echoes, as terminal_refusal reads
+# it. workflow_hook_repair.sh keeps a copy, which a test holds equal to this.
+log_body() {
+  awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }' "$1" 2>/dev/null \
+    | grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)'
+}
+
+# usage_limit_failure <rc> <log>: a non-zero exit and a column-0 failure_class
+# marker in log_body whose top-level class is usage_limit (#1801). jq when
+# installed, else anchored to the runner's alphabetical key order, so a class
+# nested in evidence cannot match.
+usage_limit_failure() {
+  local m=""
+  [ "${1:-0}" != "0" ] && [ -f "${2:-}" ] || return 1
+  m="$(log_body "$2" | grep -E '^amplihack\.recipe\.failure_class \{')"
+  [ -n "$m" ] || return 1
+  if command -v jq >/dev/null 2>&1; then
+    m="$(printf '%s\n' "$m" | jq -R -r 'ltrimstr("amplihack.recipe.failure_class ") | (fromjson? // null) | select(type == "object" and .class == "usage_limit") | .class' 2>/dev/null)"
+  else
+    m="$(printf '%s\n' "$m" | grep -E '^amplihack\.recipe\.failure_class \{"action":"[a-z_]+","attempt":[0-9]+,"class":"usage_limit"')"
+  fi
+  [ -n "$m" ]
 }

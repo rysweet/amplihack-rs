@@ -1,0 +1,84 @@
+name: "autodrive-goal-loop"
+description: |
+  The shared goal-driven agent loop (#3129). Each turn an agent reads a fresh
+  reading of the live state, the goal text and the task text, does any
+  agentic work itself, and names one next action; the driver
+  (tools/autodrive_goal_loop.sh) runs that action. Fixed code only reads
+  state and dispatches: it never decides that a run ends because of how the
+  run is going. A goal supplies a goal tool and a goal text under goal
+  contract v1. auto-drive-to-merge and auto-drive-light run it with the
+  pull request goal. Specification: docs/reference/autodrive-goal-loop.md.
+version: "1.0.0"
+author: "Amplihack Team"
+tags:
+  - "auto-drive"
+  - "goal-loop"
+  - "issue-3129"
+recursion:
+  max_depth: 6
+  max_total_steps: 4
+context:
+  # Goal contract v1: a script in the bundle's tools/ folder and a goal text
+  # path relative to the bundle root. Both resolve only in the launch bundle.
+  goal_tool: ""
+  goal_file: ""
+  # "true" runs one turn and returns (the one-release recipe aliases).
+  goal_once: "false"
+  task_description: ""
+  # Information for the agent, never instructions (auto-drive-light passes
+  # its eligibility measurement here).
+  goal_notes: ""
+  repo_path: "."
+  step_recovery_dir: ""
+  autodrive_state_dir: ""
+  autodrive_invocation_file: ""
+  autodrive_authorization: ""
+  no_merge: "true"
+  autodrive_dry_run: "false"
+  # Retired (#3129): accepted for one release and ignored. Nothing reads them.
+  autodrive_budget_loop_rounds: ""
+  autodrive_budget_total_rounds: ""
+  autodrive_budget_wall_seconds: ""
+  autodrive_finalization: ""
+steps:
+  - id: "goal-loop"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "ERROR: autodrive-goal-loop: AMPLIHACK_HOME must be the absolute launch-bundle home" >&2; exit 2 ;; esac
+      T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
+      for f in autodrive_goal_loop.sh recipe_context_value.sh; do
+        [ -f "$T/$f" ] && [ ! -L "$T/$f" ] || { echo "ERROR: autodrive-goal-loop: $f is missing from the launch bundle" >&2; exit 2; }
+      done
+      # The retired budget keys: one plain note in the run's output and log,
+      # never their values (#3129 D14).
+      for k in $(compgen -e); do
+        case "$k" in RECIPE_VAR_autodrive_budget_*) [ -z "${!k}" ] || {
+          NOTE="auto-drive: the autodrive_budget_* keys are retired (#3129) and have no effect; this loop has no round or time budget. They are accepted for one release."
+          printf '%s\n' "$NOTE"; printf '%s\n' "$NOTE" >&2; break; } ;; esac
+      done
+      W="$(mktemp -d)" || exit 1
+      trap 'rm -rf -- "$W"' EXIT
+      . "$T/recipe_context_value.sh"
+      # #1570: long values may live only in the context file, so they are read
+      # with write_context_value and never as RECIPE_VAR_*.
+      write_context_value task_description "$W/task" 2>/dev/null || : > "$W/task"
+      write_context_value goal_notes "$W/notes" 2>/dev/null || : > "$W/notes"
+      ONCE=(); [ "${RECIPE_VAR_goal_once:-false}" != true ] || ONCE=(--once)
+      set -- bash "$T/autodrive_goal_loop.sh" --goal-tool "${RECIPE_VAR_goal_tool:-}" --goal-file "${RECIPE_VAR_goal_file:-}" \
+        --state-dir "${RECIPE_VAR_autodrive_state_dir:-}" --repo "${RECIPE_VAR_repo_path:-.}" \
+        --task-file "$W/task" --notes-file "$W/notes" --invocation "${RECIPE_VAR_autodrive_invocation_file:-}" \
+        ${ONCE[@]+"${ONCE[@]}"}
+      if [ -n "${RECIPE_VAR_step_recovery_dir:-}" ]; then
+        amplihack orch helper step-recovery run --essential --stop-on-handoff --step-id goal-loop \
+          --dir "$RECIPE_VAR_step_recovery_dir" \
+          --goal "Drive the goal loop: each turn reads the live state, an agent step names the next action, and the driver runs it until the goal ends, a hand-off, or the owner stops the run." \
+          -- "$@"
+      else
+        "$@"
+      fi
+    output: "autodrive_finalization"
+output:
+  format: "markdown"
+  template: |
+    Goal loop: {{autodrive_finalization}}
