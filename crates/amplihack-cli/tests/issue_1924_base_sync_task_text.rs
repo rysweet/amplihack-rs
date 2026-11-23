@@ -294,18 +294,7 @@ fn drive(task: &str, world: World) -> Drive {
         origin_head: f.git_text(&origin, &["rev-parse", "refs/heads/feature/2808"]),
         pr_head: f.git_text(&f.pr, &["rev-parse", "HEAD"]),
         pr_reflog: f.git_text(&f.pr, &["reflog", "--format=%gs"]),
-        git_config: fs::read_to_string(f.pr.join(".git"))
-            .ok()
-            .and_then(|p| p.strip_prefix("gitdir: ").map(|d| d.trim().to_owned()))
-            .map(|d| {
-                let dir = if Path::new(&d).is_absolute() {
-                    PathBuf::from(d)
-                } else {
-                    f.pr.join(d)
-                };
-                fs::read_to_string(dir.join("../../config")).unwrap_or_default()
-            })
-            .unwrap_or_default(),
+        git_config: f.git_text(&f.pr, &["config", "--local", "--list"]),
         result,
         trace,
         gh_log,
@@ -396,8 +385,9 @@ fn a_repository_that_refuses_merge_commits_is_handed_off_with_its_owner() {
         );
     }
     assert!(!d.gh_log.contains("pr merge"), "{}", d.gh_log);
+    // `git config --list` prints keys in lower case (`core.hookspath`).
     assert!(
-        !d.git_config.contains("hooksPath"),
+        !d.git_config.to_ascii_lowercase().contains("core.hookspath"),
         "hooks were not bypassed: {}",
         d.git_config
     );

@@ -16,6 +16,8 @@
 //! What these tests cannot show: whether a real agent follows the prompt.
 //! A stand-in only carries out the git effects the prompt asks for, so that
 //! part is checked by review. No test here reads recipe YAML or prompt text.
+//! Nor does T3 check that crusty-covers declines to cover the merged and
+//! hand-resolved head; that would need a Crusty record fixture.
 //!
 //! - T1: a branch only behind is merged as it is: no base merge, no push.
 //! - T3: the base moves into a conflict; the stand-in merges, resolves,
@@ -140,20 +142,10 @@ fn report_keeps_a_hostile_base_sync_reason_inert_and_printable() {
 /// A pre-push hook in the PR clone that records each push it let through.
 fn install_pre_push_marker(fx: &Fx) -> PathBuf {
     let marker = fx.root.join("pre-push-ran");
-    let hook = fx.repo.join(".git/hooks/pre-push");
-    let hook = if hook.parent().is_some_and(Path::is_dir) {
-        hook
-    } else {
-        // A linked worktree keeps its hooks in the common git directory.
-        let common = git_in(&fx.repo, &["rev-parse", "--git-common-dir"]);
-        let common = if Path::new(&common).is_absolute() {
-            PathBuf::from(common)
-        } else {
-            fx.repo.join(common)
-        };
-        fs::create_dir_all(common.join("hooks")).unwrap();
-        common.join("hooks/pre-push")
-    };
+    // `fx.repo` is a plain `git init` repository, never a linked worktree.
+    let hooks = fx.repo.join(".git/hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("pre-push");
     fs::write(
         &hook,
         format!("#!/bin/sh\necho pushed >> '{}'\nexit 0\n", marker.display()),
