@@ -882,8 +882,18 @@ mod live_freshness_step {
         T
     }
 
-    fn never_reread(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-        panic!("the live freshness step re-read live login {name}")
+    fn never_reread(
+        c: &Ctx,
+        who: &ProfileName,
+        left: Duration,
+    ) -> (
+        Probed,
+        Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+    ) {
+        fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+            panic!("the live freshness step re-read live login {name}")
+        }
+        (hook_body(c, who, left), None)
     }
 
     fn frozen() -> Probed {

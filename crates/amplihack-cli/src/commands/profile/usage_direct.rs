@@ -75,36 +75,82 @@ pub(super) const REFRESH_BUDGET: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(20);
 
 /// The fixed failure texts. None holds a path, a token or a response body.
+///
+/// Each reason is declared once, in the `reasons!` list below, which makes
+/// the text constant (`reason::NO_FILE`), the [`reason::Reason`] variant and
+/// [`reason::Reason::ALL`] from the same line. A reason cannot have a
+/// constant without a variant, and a `match` on `Reason` with no wildcard,
+/// as `rotate::probe_reading::direct_label` has, does not compile until a
+/// new reason is classified there (issue #2910). Two reasons sharing a text
+/// would give `parse` an unreachable arm, which clippy's `-D warnings`
+/// refuses and the round trip in `rotate/tests_issue_2910_label.rs` fails.
 pub(super) mod reason {
-    pub const NO_FILE: &str = "no credentials file";
-    pub const REFUSED: &str = "credentials refused";
-    pub const NO_TOKEN: &str = "no oauth token";
-    pub const EXPIRED: &str = "token expired";
-    pub const TIMEOUT: &str = "timeout";
-    pub const TRANSPORT: &str = "transport";
-    pub const UNPARSEABLE: &str = "unparseable";
-    pub const CREDITS_ON: &str = "usage credits on";
-    pub const REFRESH_BUSY: &str = "refresh busy";
-    pub const REFRESH_REFUSED: &str = "refresh refused";
-    pub const REFRESH_FAILED: &str = "refresh failed";
-    pub const REFRESH_NOT_SAVED: &str = "refresh not saved";
-    /// Issue #2271: the token is at or past its `expiresAt` and the login
-    /// holds no usable refresh token, so nothing can renew it. [`read`]
-    /// returns it before any request, whether or not refresh is allowed.
-    pub const NO_REFRESH_TOKEN: &str = "no refresh token";
-    /// The credentials file is there and private, but its content is not a
-    /// login this read recognises: not JSON, not the expected shape, or a
-    /// token field holding a value [`Token`] rejects. This is not a verdict
-    /// on the login (the format is not a documented contract and can drift),
-    /// so unlike [`NO_TOKEN`] it is never final: `usage_source` falls back
-    /// to `claude` and the rotator warns about it.
-    pub const UNREADABLE_CREDS: &str = "unreadable credentials";
-    pub const HTTP_401: &str = "http 401";
-    pub const HTTP_403: &str = "http 403";
-    pub const HTTP_429: &str = "http 429";
-    pub const HTTP_3XX: &str = "http 3xx";
-    pub const HTTP_4XX: &str = "http 4xx";
-    pub const HTTP_5XX: &str = "http 5xx";
+    macro_rules! reasons {
+        ($($(#[$doc:meta])* $konst:ident = $variant:ident: $text:literal;)+) => {
+            /// One failure reason of a direct read. Its text is
+            /// [`Reason::as_str`]; the constant of the same name holds the
+            /// same text.
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            pub enum Reason {
+                $($variant,)+
+            }
+
+            impl Reason {
+                /// Every reason, in the order declared.
+                #[cfg(test)]
+                pub const ALL: &'static [Reason] = &[$(Reason::$variant,)+];
+
+                /// The fixed text of the reason.
+                pub const fn as_str(self) -> &'static str {
+                    match self {
+                        $(Reason::$variant => $text,)+
+                    }
+                }
+
+                /// The reason whose text is `text`; `None` for any other text.
+                pub fn parse(text: &str) -> Option<Reason> {
+                    match text {
+                        $($text => Some(Reason::$variant),)+
+                        _ => None,
+                    }
+                }
+            }
+
+            $($(#[$doc])* pub const $konst: &str = Reason::$variant.as_str();)+
+        };
+    }
+
+    reasons! {
+        NO_FILE = NoFile: "no credentials file";
+        REFUSED = Refused: "credentials refused";
+        NO_TOKEN = NoToken: "no oauth token";
+        EXPIRED = Expired: "token expired";
+        TIMEOUT = Timeout: "timeout";
+        TRANSPORT = Transport: "transport";
+        UNPARSEABLE = Unparseable: "unparseable";
+        CREDITS_ON = CreditsOn: "usage credits on";
+        REFRESH_BUSY = RefreshBusy: "refresh busy";
+        REFRESH_REFUSED = RefreshRefused: "refresh refused";
+        REFRESH_FAILED = RefreshFailed: "refresh failed";
+        REFRESH_NOT_SAVED = RefreshNotSaved: "refresh not saved";
+        /// Issue #2271: the token is at or past its `expiresAt` and the login
+        /// holds no usable refresh token, so nothing can renew it. [`read`]
+        /// returns it before any request, whether or not refresh is allowed.
+        NO_REFRESH_TOKEN = NoRefreshToken: "no refresh token";
+        /// The credentials file is there and private, but its content is not a
+        /// login this read recognises: not JSON, not the expected shape, or a
+        /// token field holding a value [`Token`] rejects. This is not a verdict
+        /// on the login (the format is not a documented contract and can drift),
+        /// so unlike [`NO_TOKEN`] it is never final: `usage_source` falls back
+        /// to `claude` and the rotator warns about it.
+        UNREADABLE_CREDS = UnreadableCreds: "unreadable credentials";
+        HTTP_401 = Http401: "http 401";
+        HTTP_403 = Http403: "http 403";
+        HTTP_429 = Http429: "http 429";
+        HTTP_3XX = Http3xx: "http 3xx";
+        HTTP_4XX = Http4xx: "http 4xx";
+        HTTP_5XX = Http5xx: "http 5xx";
+    }
 }
 
 /// Refreshes holding a lock right now, in this process.

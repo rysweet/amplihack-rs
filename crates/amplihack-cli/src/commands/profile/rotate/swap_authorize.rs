@@ -81,6 +81,48 @@ pub fn check_snapshot(
     Ok(())
 }
 
+/// The refusal of a crossing the rotator's decision did not allow (S4).
+pub const CROSS_REFUSED: &str =
+    "the incoming login is in a different organisation from the live login";
+
+/// Issue #2910 (S4): after authorisation, a rotator swap (`may_cross` is
+/// `Some`) compares the organisations of the two logins authorisation read,
+/// with no further read. A confirmed crossing the decision did not allow is
+/// refused; one it allowed goes ahead with the crossing warning the cycle
+/// writes, and an unknown organisation on either side goes ahead as before.
+/// A hand switch passes `None` and is not checked. The swap runs it on both
+/// authorisation reads, the first and the one the swap acts on.
+///
+/// It applies the decision's own rule (`affinity_pool::org_check`, the rule
+/// of `affinity_pool::pool`), so on the organisations the decision saw it
+/// never refuses. It refuses only when authorisation reads an organisation
+/// the decision did not see and no earlier check caught the change:
+/// revalidation reconsiders a target whose organisation changed while the
+/// cycle measured, and `check_snapshot` refuses a login with a uuid whose
+/// organisation changed after that. What is left is a login with no uuid,
+/// which `Account::same` compares by e-mail alone, that changes organisation
+/// under the lock. The refusal moves nothing, and the next cycle decides on a
+/// snapshot that reads the new organisation, so that login is then a
+/// crossing and the next qualifying login is chosen
+/// (`tests_issue_2910_deployed`).
+pub fn check_org(authorized: &Authorized, may_cross: Option<bool>) -> Result<(), ProfileError> {
+    use super::observe::affinity::affinity_pool::{OrgCheck, org_check};
+    let Some(may_cross) = may_cross else {
+        return Ok(());
+    };
+    fn org(b: &Bound) -> Option<&str> {
+        b.account().and_then(Account::org)
+    }
+    match org_check(
+        org(&authorized.outgoing),
+        org(&authorized.incoming),
+        may_cross,
+    ) {
+        OrgCheck::Same | OrgCheck::Cross => Ok(()),
+        OrgCheck::Refuse => Err(refused(CROSS_REFUSED)),
+    }
+}
+
 /// Trusted accounts and ownership dependencies accepted for one swap.
 pub struct Authorized {
     /// The login being filed under the outgoing profile.

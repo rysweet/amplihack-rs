@@ -1,9 +1,22 @@
 //! The decision rule (D1-D5): a pure function of the settings, the live
-//! reading, the candidates' readings, the last swap time and the clock.
+//! reading, the candidates' readings, the last swap time and the clock. Issue
+//! #2910: the choice of target is the one rule in `target`.
 
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
+
+// Issue #2910: the one rule for choosing a swap target, and what it needs.
+#[path = "last_good.rs"]
+pub(super) mod last_good;
+#[path = "target.rs"]
+pub(super) mod target;
+#[path = "target_confirm.rs"]
+pub(super) mod target_confirm;
+#[path = "target_msg.rs"]
+pub(super) mod target_msg;
+#[path = "target_seen.rs"]
+pub(super) mod target_seen;
 
 /// What one probe showed, reduced to what the rule needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -255,8 +268,8 @@ pub enum Reason {
     OverflowIn,
     /// A move off an overflow profile onto a plan login with capacity.
     OverflowOut,
-    /// A move to the plan login with the most room when no threshold swap
-    /// meets `--margin` (issue #1804); see `plan_room`.
+    /// Issue #2910 (D15): a relief move onto a plan login that has room but
+    /// is at or above `--session-at` or `--week-at`; see `target::swap_reason`.
     PlanRoom,
     /// Issue #2211: a threshold swap decided on the live login's projected
     /// session use, or on a failed or stale reading near the threshold; see
@@ -285,7 +298,9 @@ pub enum Decision {
         to: ProfileName,
         reason: Reason,
     },
-    /// A threshold is reached and no candidate has enough headroom.
+    /// A threshold is reached and the rotator does not move: no candidate
+    /// qualifies, or the best one is held (D3). `target::no_move` says which,
+    /// and the cycle writes a stay note or the no-target line accordingly.
     Alert,
 }
 
@@ -299,16 +314,19 @@ pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
     }
 }
 
-/// The candidate with the most headroom; ties go to the first name. Failed
-/// and exhausted candidates are never chosen.
-pub(super) fn best(candidates: &[Measured]) -> Option<(&ProfileName, u8)> {
-    candidates
-        .iter()
-        .filter(|c| !matches!(c.reading, Reading::Exhausted { .. }))
-        .filter_map(|c| c.reading.headroom().map(|h| (&c.name, h)))
-        .min_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.as_str().cmp(b.0.as_str())))
-}
-
+/// The decision rule on [`target`] (issue #2910): one eligibility test, one
+/// qualifying rule and one ranking for every pass.
+///
+/// - Past a threshold (or failed, or with no room): a threshold swap to the
+///   top of [`target::ranked`] at [`target::relief_floor`]. A swap that the
+///   hold stops (D3: the live login has room, the rotator swapped less than
+///   `--hold` ago, and the target is at or above `--session-at`) is the
+///   ALERT, as is no qualifying login; [`target::no_move`] says which. The
+///   reason is always `threshold` here: the cycle relabels a target past a
+///   threshold as `plan-room` afterwards ([`target::swap_reason`]), so the
+///   failed-probe and projected rules still see a threshold swap.
+/// - Below both thresholds: an upgrade to the top of the ranking at
+///   [`target::upgrade_floor`] once the hold has run out, else a stay.
 pub fn decide(
     s: &Settings,
     live: &Reading,
@@ -316,27 +334,35 @@ pub fn decide(
     swapped_at: Option<i64>,
     now: i64,
 ) -> Decision {
-    let live_h = i32::from(live.headroom().unwrap_or(0));
-    let best = best(candidates);
-    let gain = best.map(|(_, h)| i32::from(h) - live_h);
+    let lr = target::live_room(live, false);
     if needs_swap(s, live) {
-        return match (best, gain) {
-            (Some((to, _)), Some(g)) if g >= i32::from(s.margin) => Decision::Swap {
-                to: to.clone(),
-                reason: Reason::Threshold,
-            },
-            _ => Decision::Alert,
+        let ranked = target::ranked(s, candidates, target::relief_floor(lr, s.margin));
+        let Some((to, _)) = ranked.first() else {
+            return Decision::Alert;
+        };
+        if matches!(lr, target::LiveRoom::Room(_))
+            && target::past_session_at(s, candidates, to)
+            && target::held_move(s.hold, swapped_at, now)
+        {
+            return Decision::Alert;
+        }
+        return Decision::Swap {
+            to: (*to).clone(),
+            reason: Reason::Threshold,
         };
     }
-    let held = held(s.hold, swapped_at, now);
-    match (best, gain) {
-        (Some((to, _)), Some(g)) if !held && g > 0 && g >= i32::from(s.upgrade_margin) => {
-            Decision::Swap {
-                to: to.clone(),
-                reason: Reason::Upgrade,
-            }
-        }
-        _ => Decision::Stay,
+    let target::LiveRoom::Room(room) = lr else {
+        return Decision::Stay;
+    };
+    if held(s.hold, swapped_at, now) {
+        return Decision::Stay;
+    }
+    match target::ranked(s, candidates, target::upgrade_floor(room, s.upgrade_margin)).first() {
+        Some((to, _)) => Decision::Swap {
+            to: (*to).clone(),
+            reason: Reason::Upgrade,
+        },
+        None => Decision::Stay,
     }
 }
 

@@ -125,9 +125,10 @@ profile it names has a login or a different account, and never writes to
 |------|---------|---------|
 | `--session-at` | 85 | Swap when live session use reaches this %. |
 | `--week-at` | 90 | Swap when live weekly use reaches this %. |
-| `--margin` | 5 | A threshold swap needs this many more points of headroom. |
+| `--target-week-max` | 95 | Never swap to a login whose weekly use is above this %. The test uses the figure as read, so a login at 95.0 is allowed and one at 95.4 is above 95 and is not. |
+| `--margin` | 5 | While the live login still has room, a swap needs a login with this many more points of room (at least 1). |
 | `--upgrade-margin` | 30 | Swap early when a profile has this many more points of headroom. |
-| `--hold` | 3600 | Seconds after a swap during which no early swap happens. |
+| `--hold` | 3600 | Seconds after the last swap (a rotator swap or a `profile switch`) during which no early swap happens, and no swap onto a login at or above `--session-at` while the live login has room. |
 | `--overflow-wait` | 1800 | Use an overflow profile only when the next plan reset is further away than this many seconds. |
 | `--interval` | 600 | Seconds between checks (`start` and `watch` only). |
 
@@ -159,8 +160,8 @@ directory.
 - It is used only after the user marks it with
   `amplihack profile overflow add <name>`; the mark is consent to per-token
   billing. Do not mark it without asking. The rotator uses it last (tier 10):
-  plan logins with capacity, then plan logins below 100% with session use
-  below `--session-at` (`plan-room`), then
+  plan logins with capacity, then plan logins below 100% with their week at
+  or below `--target-week-max` (`plan-room`), then
   credit overflow, then the API key, and only when every plan login was
   measured, none is below 100% on both windows, the earliest plan reset is further away than
   `--overflow-wait` and its login check passes. It moves `~/.claude` off it
@@ -197,7 +198,10 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | 
 
 | ALERT | What to tell the user |
 |-------|-----------------------|
-| `no profile has capacity` | Every account is near its limit. Wait for a reset or add a profile. If it ends with `(candidates: <F> failed, ...)` and every candidate failed, the probes failed rather than the accounts: run `amplihack profile usage`. |
+| `no profile has capacity` | Every other plan login is known to be full or blocked, by a fresh reading or a last good one. Wait for a reset (the line gives the earliest block end as `blocked until <time>`) or add a profile. |
+| `no capacity known` | The rotator could not show that no login has room. The line counts why, for example `(candidates: 6 unknown (HTTP 429), 3 failed)`: `unknown` logins were not read (rate-limited, transport, identity unavailable, timeout, still running, probe error), `failed` logins have an expired or refused token, and `above week ceiling` logins are over `--target-week-max`. The probes failed, not the accounts, when they are unknown: run `amplihack profile usage`. Never tell the user no account has capacity from this line. |
+| `stay: live room <R>, ...` (not an ALERT) | The live login has room and no other login has `--margin` more. Nothing is wrong. `only a login in another organisation has room` means a login with room exists elsewhere, and the rotator moves to it once the live login has no room. `live room unknown` means the live probe failed: run `amplihack profile usage` for the live login. A `held after last swap` note means `--hold` is keeping a login at or above `--session-at` from taking over for now. |
+| `reject: <name> <reason>` (not an ALERT) | A target's fresh reading showed no room, so the rotator tried the next one. |
 | `no login in ~/.claude` | Log in with plain `claude` first. |
 | `the account in ~/.claude is not the one the ledger names` | Someone ran `/login` in `~/.claude`. Log the named profile in again with `amplihack profile login <name>`, then delete `<root>/.auto-switch.d/rotate/ledger.json`. |
 | `rotate recovery is inconsistent` | Follow manual recovery below. |
@@ -211,13 +215,19 @@ the rotator moves work onto it only when no measured plan login, the live one
 included, is below 100% on both windows, and the next plan reset is known
 and more than `--overflow-wait` seconds away (default 1800). Until then the
 plan-room swap (`reason=plan-room`) moves `~/.claude` to the plan-room target
-with the most room. A target is a plan login below 100% on both windows with
-session use below `--session-at`; a login at or above `--session-at` is never
-a target, however far below 100% it reads. Targets are ranked by the most
-weekly room, then the most session room, then name. With no target the
-rotator stays and writes the ALERT, and credits stay unused while any plan
-login is below 100%. It moves work back in the first cycle in which a plan
-login has capacity or is a plan-room target. Auto-switch follows the
+with the most room it can use now. A target is a plan login below 100% on both
+windows with its week at or below `--target-week-max` (95%), no recorded
+block and a valid token; a login above the ceiling is never a target, however
+low its session reads. Targets are ranked by session use below `--session-at`
+first, then the most room, then the lowest weekly use, then name. While the
+live login has room, a target needs `--margin` more room than it, and a
+target at or above `--session-at` is also held for `--hold` seconds after the
+rotator's last swap. When the live login has no room, any target qualifies.
+With no target the rotator stays and writes the ALERT or a `stay:` line, and
+credits stay unused while any plan login is below 100%. It moves work back in
+the first cycle in which a plan login has capacity or is a plan-room
+target. Before a swap, the target is confirmed by a fresh reading, and a
+probe that was rate-limited (HTTP 429) is unknown, never exhausted. Auto-switch follows the
 same rule through the same gate, whatever its own threshold: it uses an
 overflow profile only when no plan profile is below 100% on both windows and
 the next plan reset is beyond the wait. Earlier releases used credits once
@@ -353,7 +363,7 @@ is a plan-room target and never moves back. Check with
 rotator first, because older binaries read that line as corrupt).
 
 Order: plan logins with capacity, then plan logins past a threshold but
-below 100% with session use below `--session-at` (`reason=plan-room`), then
+below 100% with their week at or below `--target-week-max` (`reason=plan-room`), then
 marked credit overflow tiers 1-9, then
 the marked API-key tier (10). The rotator moves onto the API key only under
 the same `--overflow-wait` gate, only when no credit profile can be used and

@@ -1,7 +1,7 @@
 //! Issue #2211: the figures that stand in for the live reading in the
 //! decision, and how they reach it. Pure functions of their arguments: no
 //! file, process or clock. The live step (`step` in `live_fresh.rs`) builds
-//! the [`Outlook`]; `observe::decide_measured` decides on it under
+//! the [`Outlook`]; `observe::decide_with` decides on it under
 //! organisation affinity (`observe::affinity::outlook`) and puts that
 //! through [`with_outlook`]. See "Rotate live reading freshness" in
 //! docs/reference/profile-command.md.
@@ -66,8 +66,8 @@ impl Outlook {
 ///
 /// `real` is the overflow-aware verdict on `real_reading`, as measured,
 /// restricted by organisation affinity (#2136). `on_outlook` is the
-/// decision on the outlook's figures, made with the cycle's one affinity
-/// `Need`, worked out on `real_reading` (`observe::affinity::outlook`, or
+/// decision on the outlook's figures, made with no confirmed crossing allowed
+/// (`may_cross` false; `observe::affinity::outlook`, or
 /// `outlook_failed` for a failed reading). So the outlook never makes a
 /// confirmed organisation crossing, nor makes one sooner.
 ///
@@ -83,7 +83,7 @@ impl Outlook {
 ///   warning, so no swap is lost. A stay on the outlook, which affinity
 ///   gives when only a confirmed crossing has capacity, leaves `real`.
 ///
-/// So the plan-room swap and the moves onto overflow never run on a
+/// So the moves onto overflow never run on a
 /// projected or substituted figure, and nothing here moves work onto
 /// credits or the API key.
 pub fn with_outlook(

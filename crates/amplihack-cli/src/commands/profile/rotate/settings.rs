@@ -25,6 +25,11 @@ pub struct Settings {
     /// nothing moves onto an overflow profile, because that move costs
     /// money and the plan login may come back in minutes.
     pub overflow_unknown_reset: bool,
+    /// Issue #2910: the highest weekly use, in percent, at which a login may
+    /// still be a swap target. Inclusive: a login at exactly this figure is
+    /// eligible. Independent of `week_at`, and not part of the overflow
+    /// [`Gate`], so auto-switch is unchanged.
+    pub target_week_max: u8,
 }
 
 /// One setting: its flag, its variable, its default and its range.
@@ -84,6 +89,13 @@ const OVERFLOW_UNKNOWN_RESET: Spec = Spec {
     default: 0,
     min: 0,
     max: Some(1),
+};
+const TARGET_WEEK_MAX: Spec = Spec {
+    flag: "--target-week-max",
+    var: "AMPLIHACK_ROTATE_TARGET_WEEK_MAX",
+    default: 95,
+    min: 1,
+    max: Some(100),
 };
 const INTERVAL: Spec = Spec {
     flag: "--interval",
@@ -161,6 +173,7 @@ pub fn resolve(
         overflow_unknown_reset: OVERFLOW_UNKNOWN_RESET
             .resolve(tune.overflow_unknown_reset.as_deref(), env)?
             == 1,
+        target_week_max: pct(&TARGET_WEEK_MAX, &tune.target_week_max)?,
     })
 }
 
@@ -203,6 +216,7 @@ impl Settings {
                 OVERFLOW_UNKNOWN_RESET.flag,
                 u64::from(self.overflow_unknown_reset),
             ),
+            (TARGET_WEEK_MAX.flag, u64::from(self.target_week_max)),
         ] {
             args.push(flag.to_string());
             args.push(v.to_string());

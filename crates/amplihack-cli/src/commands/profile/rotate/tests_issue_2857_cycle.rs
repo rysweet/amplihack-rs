@@ -147,11 +147,15 @@ fn c_a_swap_onto_a_login_with_room_records_room_from_the_target_by_name() {
     assert!(v.fresh_room(start), "{v:?}");
 }
 
-// --- (d) The swap the issue is about: no plan-room swap onto a full login -------
+// --- (d) The swap the issue was about, as issue #2910 rules it ------------------
 
 /// `work` is exhausted and the only other login reads 98% session: it has room
 /// by the 100% rule and is past `--session-at`. Before #2857 the rotator swapped
-/// onto it (the plan-room pass 2), and the wait it woke ended in a 429.
+/// onto it (the plan-room pass 2), and the wait it woke ended in a 429. Issue
+/// #2910 changed this expectation (ruling D2): a live login with no room moves
+/// to any eligible login, so the swap is made again; the record of room on the
+/// new live login is still the strict one (`room_under`), so the swap does not
+/// read as fresh room for the usage-limit wait (E16, a filed follow-up).
 fn measure_only_a_full_login_left(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", rd(98.0, 50.0, None))]);
@@ -159,14 +163,14 @@ fn measure_only_a_full_login_left(ctx: &Ctx, snap: &Snap) -> Result<Measurement,
 }
 
 #[test]
-fn d_the_rotator_does_not_swap_onto_a_login_at_98_percent_and_records_no_room() {
+fn d_the_rotator_swaps_onto_a_login_at_98_percent_and_records_no_room() {
     let e = env();
     let start = limit_hit();
     let got = run(&e, measure_only_a_full_login_left);
     let log = log_of(&e);
-    assert_ne!(got, CycleOutcome::Swapped, "{log}");
-    assert_eq!(ino_at(&e.live()), Some(e.l), "work stays live: {log}");
-    assert!(!log.contains("reason=plan-room"), "{log}");
+    assert_eq!(got, CycleOutcome::Swapped, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.t), "spare is live: {log}");
+    assert!(log.contains("reason=plan-room"), "{log}");
     let v = wait_view(&e);
     assert!(!v.fresh_room(start), "{v:?}");
     assert_ne!(v.live_room, Some(true), "{v:?}");
@@ -174,11 +178,11 @@ fn d_the_rotator_does_not_swap_onto_a_login_at_98_percent_and_records_no_room() 
 
 /// The positive control for the case above: the same cycle with the other login
 /// under `--session-at` but short of capacity (its week is past `--week-at`) is
-/// still a plan-room swap, and it records room, because the writer and the
-/// chooser share one definition of room.
+/// still a plan-room swap, and it records room. Issue #2910: the fixture's week
+/// moved from 97 to 94, under the week ceiling (F1).
 fn measure_a_plan_room_login_left(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(60.0, 97.0, None))]);
+    let probes = probes_for(snap, &[("spare", rd(60.0, 94.0, None))]);
     decide_measured(ctx, snap, exh(100.0, 20.0), probes, at)
 }
 

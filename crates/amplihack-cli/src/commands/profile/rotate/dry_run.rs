@@ -4,14 +4,14 @@
 
 use super::cycle::event_read::measure_and_decide;
 use super::cycle::{Ctx, CycleOutcome};
-use super::decide::Decision;
+use super::decide::{Decision, target_msg};
 use super::fresh::{self, Reread};
 use super::handfix;
 use super::identify::excluded_offline;
 use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
 use super::observe::{Measurement, live_alert, live_name, platform_block_reason, snapshot};
-use super::overflow_record::{alert_line, target_check};
+use super::overflow_record::target_check;
 use super::pin::{self, Gate as PinGate};
 use super::prelude::ledger_stop;
 use super::seed;
@@ -137,12 +137,12 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded, (ctx.now)());
     let Measurement {
         live,
-        others,
         decision,
         note,
         new_blocks,
         tag,
         key_held,
+        seen,
         ..
     } = m;
     let t = now();
@@ -156,24 +156,29 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         );
     }
     let outcome = would(&decision);
+    // A stay note is printed as `would stay (<the note without its prefix>)`,
+    // whether it came from damping or from the issue #2910 ALERT branch.
+    let would_stay = |t: &str| format!("would stay ({})", t.strip_prefix("stay: ").unwrap_or(t));
     match decision {
         Decision::Stay => match note {
-            Some(n) => out.emit(
-                0,
-                &format!("would stay ({})", n.strip_prefix("stay: ").unwrap_or(&n)),
-            ),
+            Some(n) => out.emit(0, &would_stay(&n)),
             None => out.emit(0, "would stay"),
         },
         Decision::Alert => {
             let reason = || platform_block_reason(ctx);
-            let (_, line) = alert_line(&snap, tag, &live, &others, &key_held, reason);
-            out.emit(
-                0,
-                &format!(
+            let s = &ctx.settings;
+            let line = target_msg::alert_line(&snap, tag, &live, &key_held, &seen, s, reason);
+            let text = &line.text;
+            // Issue #2910 (D10): a stay note is a stay, not an ALERT.
+            let shown = if line.stay {
+                would_stay(text)
+            } else {
+                format!(
                     "would alert: {}",
-                    line.strip_prefix("ALERT: ").unwrap_or(&line)
-                ),
-            );
+                    text.strip_prefix("ALERT: ").unwrap_or(text)
+                )
+            };
+            out.emit(0, &shown);
         }
         Decision::Swap { to, reason } => {
             let from = match name {
@@ -190,14 +195,9 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
                 out.emit(0, &msg::would_refuse(&to, &why));
                 return Ok(CycleOutcome::Alerted);
             }
-            let target = super::log::shown_of(&others_shown, &to);
-            out.emit(
-                0,
-                &format!(
-                    "would {}",
-                    msg::swap(&from, &to, &live_shown, &target, reason)
-                ),
-            );
+            let shown = super::log::shown_of(&others_shown, &to);
+            let line = target_msg::swap_line(&seen, &from, &to, &live_shown, shown, reason);
+            out.emit(0, &format!("would {line}"));
         }
     }
     Ok(outcome)

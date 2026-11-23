@@ -14,11 +14,20 @@
 //! reading reports is still open, the reading never shows less use than the
 //! login has now: a login it shows full is still full, and a login it shows
 //! with room may have less room now. The first is decided on as it stands.
-//! The second is never swapped to on the stored figure. A stored reading has
-//! no reading time in this cycle (`carried`), so the freshness gate
+//! The second is not swapped to on the stored figure alone. A stored reading
+//! has no reading time in this cycle (`carried`), so the freshness gate
 //! (`fresh::gate`, issue #1870) reads the chosen target again before the
 //! swap and decides again on what that read finds. A target that has filled
 //! up is replaced by the next, read the same way, within the gate's limits.
+//! A re-read that says nothing about the login is handled by the issue #2910
+//! confirmation (`target_confirm`) as for any stale reading: the swap goes
+//! ahead `unconfirmed` on the stored figure only when the live login has no
+//! room now, and the target is rejected otherwise (`tests_issue_2909_confirm`).
+//!
+//! A stored reading is never replaced by a last good reading (issue #2910):
+//! it is not a probe of this cycle, so it has no probe label. Only the
+//! readings this watch's own probes took are kept ([`Stored::keep`] reads
+//! `Measurement::probed`, which a last good reading never enters).
 //!
 //! A stored reading stands for a login only while it was read no more than
 //! `--interval` seconds ago and every window it reports has a known reset
@@ -33,12 +42,13 @@
 //! by a cycle that reads every login: their readings never enter a decision,
 //! and the read is only for the token refresh it may make.
 
+use super::super::decide::target_seen::Extra;
 use super::super::decide::{Probed, Win};
 use super::super::fresh::read_at;
 use super::super::identify::{LiveId, Skip};
 use super::super::log::wake_msg;
-use super::super::measure::{self, Live};
-use super::super::observe::{Measurement, Probes, Snap, decide_measured};
+use super::super::measure::{self, Gathered, Live};
+use super::super::observe::{Measurement, Probes, Snap, decide_with};
 use super::Ctx;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
@@ -47,6 +57,9 @@ use std::collections::HashMap;
 #[cfg(test)]
 #[path = "tests_issue_2909_reads.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "tests_issue_2909_confirm.rs"]
+mod tests_confirm;
 
 /// The last reading this watch took of each login, and when it was taken.
 /// Held in memory for the life of the watch process only: nothing is written,
@@ -128,6 +141,13 @@ impl Stored {
 /// Steps 4 and 5 of a cycle: measure without the lock, then decide. An
 /// event cycle (`Ctx::event`) reads as [`event_reads`] says; every other
 /// cycle reads the live login and every candidate.
+///
+/// Issue #2910: the decision is made with the cycle's [`Extra`], built from
+/// the labels of the probes this cycle made that said nothing, with one read
+/// of the usage history for their last good readings. A stored reading is
+/// not a probe of this cycle, so it has no label and is never replaced by a
+/// last good reading: it is decided on as it stands, and the freshness gate
+/// reads it again before any swap to it.
 pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let measured_at = (ctx.now)();
     let platform = snap.platform();
@@ -156,16 +176,25 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
         .filter(|(_, reason)| matches!(reason, Skip::NoAccount))
         .map(|(name, _)| name.clone())
         .collect();
-    let (probe, mut probes, line) = if ctx.event {
+    let ((probe, mut probes, labels), line) = if ctx.event {
         event_reads(ctx, live, &to_probe, measured_at)
     } else {
-        let (probe, probes) = measure::measure_ordered(ctx, live, &to_probe, &unbound, measured_at);
-        (probe, probes, None)
+        let gathered = measure::measure_ordered(ctx, live, &to_probe, &unbound, measured_at);
+        (gathered, None)
     };
     if let Some(p) = platform.filter(|p| snap.candidates.contains(p)) {
         probes.push((p.clone(), Probed::platform()));
     }
-    let mut m = decide_measured(ctx, snap, probe, probes, measured_at)?;
+    // Issue #2910: the cycle's one read of the usage history, for the last
+    // good readings of the candidates whose probe said nothing.
+    let extra = Extra::for_cycle(
+        ctx.store.root(),
+        labels,
+        &snap.decision_overflow(),
+        snap.measured_live(),
+        measured_at,
+    );
+    let mut m = decide_with(ctx, snap, probe, probes, measured_at, &extra)?;
     // Written after the cycle line, before the freshness gate's lines.
     m.fresh_lines.extend(line);
     Ok(m)
@@ -173,7 +202,8 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
 
 /// An event cycle's reads: the live login, and each of `candidates` that has
 /// no [`Stored::usable`] reading, within `--interval`. Every candidate comes
-/// back, in the order of `candidates`, with the
+/// back, in the order of `candidates`, with the labels of the reads that said
+/// nothing (issue #2910; a stored reading has none) and the
 /// [`wake_msg::stored`] line when any of them was taken from a stored
 /// reading rather than read.
 fn event_reads(
@@ -181,17 +211,17 @@ fn event_reads(
     live: Live<'_>,
     candidates: &[ProfileName],
     measured_at: i64,
-) -> (Probed, Vec<(ProfileName, Probed)>, Option<String>) {
+) -> (Gathered, Option<String>) {
     let max_age = i64::try_from(ctx.settings.interval).unwrap_or(i64::MAX);
     let (to_read, stored) = ctx.stored.split(candidates, measured_at, max_age);
     let own = usize::from(live.probed());
     let line =
         (!stored.is_empty()).then(|| wake_msg::stored(own + to_read.len(), own + candidates.len()));
-    let (probe, read) = measure::measure_ordered(ctx, live, &to_read, &[], measured_at);
+    let (probe, read, labels) = measure::measure_ordered(ctx, live, &to_read, &[], measured_at);
     let mut got: HashMap<ProfileName, Probed> = read.into_iter().chain(stored).collect();
     let others = candidates
         .iter()
         .filter_map(|c| got.remove(c).map(|p| (c.clone(), p)))
         .collect();
-    (probe, others, line)
+    ((probe, others, labels), line)
 }
