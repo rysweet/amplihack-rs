@@ -1264,8 +1264,153 @@ the rotator is stopping, no new refresh starts: a read that needs one
 gives `refresh busy` and takes no lock. Reads still running after that
 are abandoned, and reads not yet started are not run.
 
-Cycles never overlap: the rotator waits for `--interval` seconds after a
-cycle ends before it starts the next one.
+Cycles never overlap: the rotator starts the next cycle only after the
+previous one ends, when a [wake](#rotate-wake) arrives or `--interval` seconds
+have passed, whichever is first.
+
+#### Rotate wake
+
+`rotate watch` does not poll. After a cycle it blocks until the first of
+these, then runs a cycle:
+
+| Wake | When | Log line |
+|------|------|----------|
+| Limit event | The blocks recorded in `ledger.json` in the [state directory](#rotate-state-directory) differ from those the last cycle began with. A [step](#a-spend-limit-blocks-the-login-the-step-ran-under) or hook that meets a limit records a block there, so the rotator acts within one cycle of the record. `profile overflow clear` removing a block counts too | `wake: ledger changed` |
+| Reset | The earliest `until` among the `overflow_blocked` and platform block records falls due, so the login comes back when its reset passes | `wake: reset due` |
+| Interval | `--interval` seconds have passed with neither of the above | `wake: interval` |
+| Signal | `SIGTERM` or `SIGINT` ends the wait at once, so `rotate stop` returns inside its 10 seconds however long the wait was; both signals are handled as in [Rotate signals](#rotate-signals) | none; the rotator stops |
+
+These log lines are fixed text, defined once in the rotator's source.
+`wake: interval` is written only when the previous wake had a different
+reason, as the `idle` latch does, so a quiet rotator does not write one line
+per tick.
+
+The wait ends at the earlier of `now + --interval` and the earliest future
+reset. A reset beyond the interval never lengthens a wait, and one already
+past does not count: the next cycle removes it. The exception is a reset that
+fell due while the previous cycle ran: that cycle still held the login out, so
+the next one runs at once, logged as `wake: reset due`. The cycle's own save
+removes such a block from the ledger, so the rotator judges this from the
+blocks as they stood when that cycle began, not from the ledger it saved. A
+clock jump cannot
+lengthen a wait either. With `--interval 1` the rotator still ticks every
+second.
+
+A ledger write wakes the rotator only when it changes the blocks in force:
+the `overflow_blocked` records and the platform block that have not reached
+their `until`. On each change to the file the rotator loads the ledger and
+compares those blocks with the ones the last cycle began with. Who wrote the
+file does not matter, and nor do its bytes. The rotator's own saves of its
+cycle records keep the blocks as they were, so they do not wake it, and it
+keeps no record of what it wrote. A block removed by a prune has reached its
+`until`, so it is in force in neither and is not a change. A ledger that
+cannot be loaded runs a cycle, which reports why; no writer saves over a
+ledger it cannot load, so this costs one cycle.
+
+A writer records a block under the rotate lock, and a cycle holds that lock
+only from its check before a swap to its last save, not while it measures. A
+block recorded while a cycle measures is therefore kept by that cycle's own
+save, although the cycle decided without it. Because the rotator compares
+with the blocks the cycle began with, not with the blocks it saved, the next
+cycle runs at once, logged as `wake: ledger changed`. A block the cycle
+recorded itself differs too, and costs one extra cycle. A writer that does
+not take the lock can still lose its record to a cycle's save; the step and
+hook writers take it.
+
+No timer coalesces a burst of records. The number of cycles events can cause
+is bounded by the blocks instead. Every writer keeps a block that is in force
+as it is: a step's record, the API-key block and the rotator's own spend
+block are each written once and never extended. A login therefore adds at
+most one block per reset window, and so starts at most one cycle when its
+block is recorded and one when the block falls due. Every block written while
+a cycle runs is taken by the one cycle after it. Twenty-five runs that meet
+one login's limit together cost one cycle: the first record adds the block,
+and the other twenty-four find it in force and write nothing.
+
+If the ledger watch is lost or its queue overflows, the rotator rebuilds it,
+logs `wake: watch rebuilt`, and then loads the ledger and compares its blocks
+as for any other change, so a record that arrived while events were lost
+still runs a cycle. Where no watch can be made it logs
+`wake: unavailable (<cause>), using --interval` once, and where one stops
+working it logs `wake: lost (<cause>), using --interval` once. Either way it
+waits by interval as before, and neither ends the rotator. `<cause>` is fixed
+text:
+
+| `<cause>` | Meaning |
+|-----------|---------|
+| `not supported here` | Not Linux: there is no inotify or pidfd |
+| `inotify watch limit reached` | `fs.inotify.max_user_watches` is used up |
+| `descriptor or inotify instance limit reached` | The process's descriptor limit or `fs.inotify.max_user_instances` is used up |
+| `permission denied`, `not found`, `already exists`, `disk full`, `I/O error` | Any other failure, by its kind |
+
+A paused rotator still wakes, takes the `paused` branch and logs through the
+same `idle` latch as before, so repeated wakes do not fill the log.
+
+A cycle that follows a limit event or a reset reads less than an interval
+cycle. It reads the live login, and takes each other login's figures from the
+last reading this rotator took of it, while that reading can still stand for
+the login:
+
+- it was taken no more than `--interval` seconds ago, so the cycle never
+  decides on figures older than an interval cycle would have used; and
+- every window it reports has a known reset that is still to come, so a
+  login whose window has reset since, which is how a login comes back, is
+  read again.
+
+A login with no such reading is read, as in every cycle. A login skipped as
+`no account` is read in a cycle only for the token refresh the read can make,
+since its reading never enters a decision, so it is left to the next interval
+cycle. When the cycle took any figures from a kept reading, it writes
+`wake: read <r> of <t> logins, the others from their last reading` after its
+`cycle` line. `<t>` counts the live login, when it is probed, and every
+candidate; `<r>` counts the ones it read.
+
+This is safe because a login's use within one window only rises until that
+window resets. While every window a kept reading reports is still open, the
+reading never shows less use than the login has now. A login it shows full is
+still full, and the cycle decides on it as it stands. A login it shows with
+room may have less room now, so the cycle does not swap to it on that figure
+alone: a kept reading has no reading time in the cycle that takes it, and the
+[confirmation](#rotate-confirmation) reads the chosen target again before the
+swap, logged as `reread: <name> reading stale ...; fresh ...`, and decides
+again on what that read finds. A target that has filled up is rejected and the
+next is tried, read the same way, within the confirmation's limits of three
+re-reads or rejections and one probe deadline a cycle. When that read says
+nothing about the login (an HTTP 429 or a timeout, for example), the
+confirmation treats the kept target as it treats any reading it could not
+refresh: the swap goes ahead on the kept figure, with ` unconfirmed (<label>)`
+on the `swap` line, only when the live login has no room now, and the target
+is rejected while the live login has room. The check under the lock before a
+swap takes no reading, so a kept target that the confirmation has not read is
+made unknown there and is not swapped to.
+
+Each login is therefore read for its figures at most once per `--interval`,
+however many events arrive, as well as once when a window it reported resets
+and once before it becomes the target. The live login is read in every cycle.
+A cycle after an interval wake reads every login, so a quiet rotator still
+reads each login once per `--interval`. The kept readings are held in the
+rotator's memory only: a rotator that starts reads every login in its first
+cycle, and the one-shot `rotate` and `--dry-run` read every login.
+
+Kept readings and [last good readings](#last-good-reading) are separate. The
+rotator keeps only readings its own probes took, never a last good reading
+that stood in for a failed probe. A kept reading is not a probe of the cycle
+that takes it, so it has no [label](#rotate-unknown-readings) and the cycle
+never replaces it with a last good reading. Like a
+[passive reading](#passive-readings), a kept reading at most 300 seconds old
+is written to the [usage history](#usage-history) under the time of the cycle
+that took it. A later last good reading drawn from that point has the figures
+the login last showed, and its age may be understated by up to 300 seconds.
+
+The rotator wakes on a block whoever records it, whatever `reason` the block
+carries. Today the writers of a block are the rotator itself, the API-key
+block and a step that meets a spend limit
+([#2893](https://github.com/rysweet/amplihack-rs/pull/2893)). The one
+function that records any usage, spend or credit limit for the login a step
+ran under belongs to
+[#2911](https://github.com/rysweet/amplihack-rs/issues/2911), and the
+`limit-resume` hook calls it under
+[#2912](https://github.com/rysweet/amplihack-rs/issues/2912).
 
 #### What is read
 
@@ -5681,7 +5826,7 @@ amplihack profile rotate owner [clear]
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
 | `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no rotate state, moves nothing, and never refreshes a token or starts `claude`: every read is a direct read with refresh off, so an expired login shows as unmeasured with its [cause](#identity-read-causes), and the dry run can pick a different target than a real cycle that would have refreshed that login. It prints `would refresh: expired login in ~/.claude` when a real cycle would refresh the live login, and the `would` lines of [seeding](#seeding-a-record) for a live profile with no record. It skips both the [prototype check](#rotate-prototype-coexistence) and [journal recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Makes the same [hand-change](#rotate-hand-change-recovery) identity reads as a real cycle, never writes `hand_suspect`, and reports the result as `would recover: <recovered line>`, `would note: <note>`, or `would alert: <ALERT line>` with its `fix` lines; see the dry-run table there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
-| `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log, apart from the [owner marker](#rotate-owner) when it runs supervised. |
+| `rotate watch` | Runs a cycle in the foreground until `SIGTERM` or `SIGINT`, and wakes for the next one on a [limit event](#rotate-wake): a change to the ledger, or the earliest recorded reset. `--interval` is only the outer bound of that wait. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log, apart from the [owner marker](#rotate-owner) when it runs supervised. |
 | `rotate watch --supervised[=UNIT]` | As `rotate watch`, and records itself as the [rotation owner](#rotate-owner) so that launches do not start a second rotator. `UNIT` names the service manager unit, for example `--supervised=amplihack-rotator.service`; the `=` is required. Without `UNIT` the name is found as described in [Owner unit name](#owner-unit-name). A `watch` that systemd runs as a service records itself without the flag: `INVOCATION_ID` is set and the unit is found in `/proc/self/cgroup` as in step 2 of [Owner unit name](#owner-unit-name). Like any `watch`, it refuses with status 1 when another verified rotator is running, and then writes no marker; stop that rotator with `rotate stop` before starting the unit. `rotate start --supervised` is refused with `RotateRefused` (`--supervised applies to rotate watch only`, status 1). |
 | `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
@@ -5827,6 +5972,11 @@ lines on failure. Output holds profile names, times and fixed text only.
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | `0`-`604800` (seconds); see [Rotate overflow](#rotate-overflow) |
 | `--overflow-unknown-reset 0\|1` | `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET` | `0` | `1` lets a plan reset that no reading reports count as further away than `--overflow-wait`, so it can move work onto an overflow profile and **spend money**; see [Overflow decision](#overflow-decision) |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
+
+`--interval` is the longest the rotator waits between cycles. A
+[limit event or a recorded reset](#rotate-wake) ends the wait sooner; with
+neither, a cycle still runs once per interval. It stays as that outer bound
+while limits arrive as events, and a later change may remove it.
 
 A flag beats its variable, and the variable beats the default. An empty
 variable counts as unset. Values are unsigned decimal integers: a sign,
@@ -8215,6 +8365,16 @@ spend, session or weekly limit is not moved to before its reset. The
 `session limit`, `week limit`, `credit limit`, or `a recorded limit` for any
 other kind a ledger holds), never the stored text.
 
+Every block, whatever its kind, also counts towards the earliest reset the
+rotator [wakes at](#rotate-wake), so a watching rotator runs a cycle when the
+block ends rather than at its next `--interval`. The other bounds on a block
+are unchanged (a valid profile name, a span of at most 62 days, at most 256
+records). A binary from before the reader accepted every kind refuses a
+ledger holding any reason other than `spend_limit`. Widening the reader is
+not a schema change, so the ledger `version` stays `1` and this refusal is a
+stated compatibility trade-off: stop the rotator and upgrade every binary
+that uses the root before a limit of another kind can be recorded.
+
 A `spend_limit` reading on a plan profile is a failed probe, as it always
 was. A `spend_limit` reading on a live overflow profile does not count
 towards the three failed live probes.
@@ -10090,9 +10250,10 @@ A ledger with no overflow activity is byte-identical to one written before
 these fields existed. The rotator rejects the ledger as `RotateInconsistent`,
 with the message `rotate ledger: invalid overflow field` and without echoing
 the value, when a block key fails the [name rules](#name-rules), `reason` is
-not `spend_limit`, `at` is not above `0`, `until` is not later than `at`,
-`until` is more than 62 days after `at` (a sum that would overflow counts as
-more), there are more than 256 blocks, or `last_cycle.overflow` is not `in`,
+not a [limit-kind token](#overflow-spend-limit-block), `at` is not above `0`,
+`until` is not later than `at`, `until` is more than 62 days after `at` (a sum
+that would overflow counts as more), there are more than 256 blocks, or
+`last_cycle.overflow` is not `in`,
 `out` or `on`. The rotator writes `until` as 00:00 UTC on the 1st of the
 month after `at`, which always meets this rule; the wider window lets a
 later reader keep a block whose end came from elsewhere. An unknown key
@@ -10265,6 +10426,9 @@ run and prints their `reread:` lines; see
 | `revalidate: ~/.claude.json held no account; read again` | Retained diagnostic wording for the bounded retry of trusted credential identity. Session JSON supplies no identity evidence. |
 | `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
+| `wake: ledger changed` / `wake: reset due` / `wake: interval` | `watch` only: why the wait after the last cycle ended, written before the next cycle; see [Rotate wake](#rotate-wake). `wake: interval` is written only when the previous wake had another reason. |
+| `wake: read <r> of <t> logins, the others from their last reading` | `watch` only: a cycle after a limit event or a reset read `<r>` of the `<t>` logins it decides on and took the others' figures from their last reading; written after the `cycle` line. See [Rotate wake](#rotate-wake). |
+| `wake: watch rebuilt` / `wake: unavailable (<cause>), using --interval` / `wake: lost (<cause>), using --interval` | `watch` only: the ledger watch was lost and rebuilt, could not be made, or stopped working. `<cause>` is fixed text; see [Rotate wake](#rotate-wake). Each is written at most once per process, and none ends the rotator. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
 | `ALERT: auto-switch is off while the live login is exhausted (<profile>: <reason>)` | `watch` with auto-switch turned off, while the live login has no capacity left; see [Exhausted while off](#exhausted-while-off). Written on every cycle while the condition holds, and does not change what the cycle does. |
