@@ -403,22 +403,27 @@ fn a_new_or_moved_platform_block_is_a_change() {
     );
 }
 
-/// An older amplihack refuses a ledger whose `overflow_blocked` reason is
-/// anything but `spend_limit`, so while one runs the field must still be
-/// left out whatever kind of limit it holds. Pinned with the new kinds, so
-/// the guarantee does not rest on the old literal.
+/// Issue #3105 reverses the #2890 trade-off this test used to pin: a block
+/// of any kind is kept in the ledger written beside a rotator from another
+/// binary, because a block a step records for a plan login cannot be derived
+/// again, and dropping it let the rotator swap to a spend-blocked login. An
+/// older amplihack that refuses the kind refuses the ledger loudly until it
+/// is restarted, rather than losing the block in silence. Pinned with the
+/// new kinds, so the guarantee does not rest on the old literal.
 #[test]
-fn an_older_reader_never_sees_a_block_of_any_kind() {
+fn an_older_reader_is_given_every_block_of_any_kind() {
     for reason in [
+        "spend_limit",
         "session_limit",
         "week_limit",
         "credit_limit",
         "odd_but_valid",
     ] {
         let l = ledger_with("spare", block(reason, NOW, NOW + 600));
-        assert!(
-            for_older_readers(&l, true).overflow_blocked.is_empty(),
-            "{reason}"
+        assert_eq!(
+            for_older_readers(&l, true).overflow_blocked,
+            l.overflow_blocked,
+            "{reason}: kept for an older reader"
         );
         assert_eq!(
             for_older_readers(&l, false).overflow_blocked.len(),

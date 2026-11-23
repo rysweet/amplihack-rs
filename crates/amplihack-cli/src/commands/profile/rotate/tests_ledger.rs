@@ -690,20 +690,41 @@ fn a_ledger_written_beside_an_older_rotator_is_one_it_can_read() {
     serde_json::from_slice::<OldLedger>(&older).expect("the old reader accepts it");
 }
 
-/// Issue #1606: the overflow fields are left out for an older rotator too,
-/// which would otherwise reject the ledger, and the full form keeps them.
+/// Issue #1606: the overflow tag is left out for an older rotator too,
+/// which would otherwise reject the ledger, and the full form keeps it. With
+/// no block held, the older form is one a rotator from before #1659 reads.
 #[test]
 fn a_ledger_with_overflow_data_written_beside_an_older_rotator_is_one_it_can_read() {
-    let at = utc(2026, 10, 26, 12, 0, 0);
     let mut l = ledger();
     l.last_cycle.as_mut().unwrap().overflow = Some("on".into());
-    l.overflow_blocked.insert("cred".into(), ob(at));
     let full = for_older_readers(&l, false);
     assert_eq!(full, l, "nothing is dropped without an older rotator");
     let older = serde_json::to_vec(&for_older_readers(&l, true)).unwrap();
     serde_json::from_slice::<OldLedger>(&older).expect("the old reader accepts it");
     let raw = String::from_utf8(older).unwrap();
     assert!(!raw.contains("overflow"), "{raw}");
+}
+
+/// Issue #3105 reverses the #2890 trade-off: while a block is held, the
+/// older form keeps `overflow_blocked`, so a rotator from before #1659
+/// refuses the ledger loudly rather than losing the block in silence. The
+/// overflow tag is still left out.
+#[test]
+fn a_held_block_is_kept_beside_an_older_rotator_which_refuses_it_loudly() {
+    let at = utc(2026, 10, 26, 12, 0, 0);
+    let mut l = ledger();
+    l.last_cycle.as_mut().unwrap().overflow = Some("on".into());
+    l.overflow_blocked.insert("cred".into(), ob(at));
+    let kept = for_older_readers(&l, true);
+    assert_eq!(kept.overflow_blocked, l.overflow_blocked, "the block stays");
+    assert_eq!(kept.last_cycle.as_ref().unwrap().overflow, None);
+    let older = serde_json::to_vec(&kept).unwrap();
+    assert!(
+        serde_json::from_slice::<OldLedger>(&older).is_err(),
+        "an older reader refuses the block rather than dropping it"
+    );
+    let raw = String::from_utf8(older).unwrap();
+    assert!(raw.contains("\"overflow_blocked\""), "{raw}");
 }
 
 /// Issue #1804: the rotator's `no_room` record is set on every measuring

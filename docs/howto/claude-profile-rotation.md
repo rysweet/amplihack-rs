@@ -142,7 +142,7 @@ replays a day on which the live login filled while several others had room, and
 checks nine cases: a dry run that reports the swap to the login below
 `--session-at`; a one-shot cycle that moves `~/.claude` to it with
 `reason=plan-room`; the usage service answering HTTP 429 with a last good
-reading in the history, which gives an `unconfirmed (HTTP 429)` swap; HTTP 429
+reading in the history, which gives a `reject:` line and no swap; HTTP 429
 with no history, which gives one `no capacity known` ALERT and leaves
 `~/.claude` unchanged; HTTP 429 with an identity read that fails, which moves
 nothing; readings on which the live login still has room and nothing it may
@@ -898,10 +898,11 @@ Before any swap based on usage, the target is confirmed by a fresh reading. A
 login read directly in this cycle is not read again. A stored or carried
 reading is read again once. If the fresh reading shows no room, the rotator
 writes `reject: <name> <reason>` and tries the next target. If the fresh
-reading cannot be taken (a 429, for instance) and the live login has no
-room, the rotator swaps anyway, on the last reading it trusted, and says so
-in the `swap` line (`unconfirmed (HTTP 429)`); if the live login still has
-room it does not, and tries the next target. If the targets are rejected only
+reading cannot be taken (a 429, for instance), or is older than one already
+held, the rotator never swaps on it, whatever room the live login has: it
+writes a `reject:` line and tries the next target. A login with a standing
+block is never a target, and the rotator writes
+`reject: <name> blocked until <time> (<kind>)`. If the targets are rejected only
 because their re-reads were unknown, they are still eligible, and the rotator
 stays and writes `stay: no candidate confirmed by a fresh reading`. If the
 fresh readings showed them full, they are no longer eligible, and the cycle
@@ -1109,15 +1110,11 @@ is at most 5 hours old and its weekly reset has not passed. It is shown as
 `last s=<n>%,w=<n>% <m>m ago`. The rotator adds no retry loop and no backoff
 timer: it asks again on the next cycle.
 
-A swap on a last good reading is made only when the live login has no room,
-because staying would stop work for certain. The `swap` line says so:
-
-```
-2026-11-22T00:02:06Z swap rrowan->llarame live s=100% w=71% target s=78% w=92% last 41m ago reason=plan-room unconfirmed (HTTP 429)
-```
-
-When the live login still has room, an unknown login is not a reason to leave it
-for, and the cycle stays.
+A last good reading can rank a login but never justifies a swap: the swap
+waits for a fresh reading. When the live login has no room and no candidate is
+confirmed, the cycle writes `stay: no candidate confirmed by a fresh reading`
+and a hard ALERT, which holds resumes until a later cycle finds room. When the
+live login still has room, the ALERT is advisory and the cycle stays.
 
 When no login has a usable last good reading, the line says how many are
 unknown, and why, and does not claim that no login has capacity:
@@ -3236,6 +3233,11 @@ is on:
    root set, it is `~/.amplihack/claude-profiles`, so the file is
    `~/.amplihack/claude-profiles/.auto-switch.d/rotate/ledger.json`.
 3. Start the older rotator: `amplihack profile rotate start`.
+
+While a block is held, the ledger also carries `overflow_blocked` for older
+rotators, so an older rotator refuses it loudly (it logs the failure rather than
+rotating on it) until you restart it, or upgrade it and restart it; this is
+the reason to delete the file in step 2.
 
 The ledger holds only bookkeeping, and the next cycle rebuilds it. Deleting
 it also clears the swap hold, so the first cycle may make an upgrade swap
