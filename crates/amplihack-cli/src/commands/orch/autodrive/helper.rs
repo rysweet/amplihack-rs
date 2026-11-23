@@ -22,13 +22,14 @@ pub enum Operations {
     },
     /// Report whether the captured invocation allows a merge (#2575).
     ///
-    /// Prints `{"allows_merge":bool,"run_id":"..."}`, plus `"pr_selected":bool`
-    /// when `--pr` is given: false when the operator selected another PR by
-    /// number or URL at launch. Any error exits 2, prints nothing on standard
-    /// output and names the record path or both state folders on standard
-    /// error; the finalize merge step then reports `authorization-unreadable`,
-    /// does not merge and fails loudly so the merge loop's recovery step can
-    /// re-run finalisation (#2959).
+    /// Prints `{"allows_merge":bool,"no_merge":bool,"dry_run":bool,
+    /// "run_id":"..."}`, plus `"pr_selected":bool` when `--pr` is given: false
+    /// when the operator selected another PR by number or URL at launch.
+    /// `no_merge` and `dry_run` are the captured flags behind `allows_merge`
+    /// (#3129). Any error exits 2, prints nothing on standard output and names
+    /// the record path or both state folders on standard error; the loop's
+    /// merge action then reports `authorization-unreadable` and does not
+    /// merge (#2959).
     Authorization {
         #[arg(long)]
         invocation: PathBuf,
@@ -126,7 +127,15 @@ fn authorization(
         bound.display()
     );
     EvidenceStore::create(directory)?;
-    let mut out = serde_json::json!({"allows_merge": auth.allows_merge(), "run_id": auth.run_id()});
+    // #3129: `no_merge` and `dry_run` are the captured flags behind
+    // `allows_merge`, printed so the loop's reading can say why merging is
+    // off. They grant nothing; `allows_merge` stays the merge action's input.
+    let mut out = serde_json::json!({
+        "allows_merge": auth.allows_merge(),
+        "no_merge": auth.no_merge(),
+        "dry_run": auth.dry_run(),
+        "run_id": auth.run_id(),
+    });
     if let Some(pr) = pr {
         out["pr_selected"] = auth.selects_pr(pr).into();
     }
@@ -164,6 +173,52 @@ mod tests_2959 {
         assert!(text.contains(&bound.display().to_string()), "{text}");
         assert!(text.contains(&other.display().to_string()), "{text}");
         assert!(!other.exists(), "a refused mismatch creates nothing");
+    }
+
+    /// #3129: the printed object carries the captured `no_merge` and
+    /// `dry_run` flags beside `allows_merge`, `run_id` and `pr_selected`,
+    /// and `allows_merge` is still true only when both are false.
+    #[test]
+    fn the_answer_carries_the_captured_no_merge_and_dry_run_flags() {
+        for (no_merge, dry_run) in [(false, false), (true, false), (false, true), (true, true)] {
+            let temp = crate::test_support::tempdir_outside_framework_roots();
+            let root = temp.path();
+            fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+            let bound = root.join("bound-state");
+            let mut auth = InvocationAuthorization::capture(
+                "auto-drive-to-merge",
+                &BTreeMap::from([
+                    ("pr_number".into(), "7".into()),
+                    ("no_merge".into(), no_merge.to_string()),
+                    ("autodrive_dry_run".into(), dry_run.to_string()),
+                ]),
+            )
+            .unwrap();
+            auth.bind_policy(format!("trusted-launch-bundle:sha256:{}", "a".repeat(64)));
+            auth.bind_state_dir(bound.clone());
+            let invocation = root.join("invocation.json");
+            fs::write(&invocation, serde_json::to_string(&auth).unwrap()).unwrap();
+            fs::set_permissions(&invocation, fs::Permissions::from_mode(0o600)).unwrap();
+
+            let answer = authorization(&invocation, &bound, None).unwrap();
+            assert_eq!(
+                answer,
+                serde_json::json!({
+                    "allows_merge": !no_merge && !dry_run,
+                    "no_merge": no_merge,
+                    "dry_run": dry_run,
+                    "run_id": auth.run_id(),
+                }),
+                "no_merge={no_merge} dry_run={dry_run}"
+            );
+            for (pr, selected) in [(7, true), (8, false)] {
+                let answer = authorization(&invocation, &bound, Some(pr)).unwrap();
+                assert_eq!(answer["pr_selected"], selected, "{answer}");
+                assert_eq!(answer["no_merge"], no_merge, "{answer}");
+                assert_eq!(answer["dry_run"], dry_run, "{answer}");
+                assert_eq!(answer["allows_merge"], !no_merge && !dry_run, "{answer}");
+            }
+        }
     }
 
     /// #2959: a record that is not there is an error that names the path.

@@ -1,6 +1,6 @@
 //! The small shell tokeniser shared by the PreToolUse command guards: the
-//! auto-drive merge guard (#1551), the tmux server guard (#1733) and the
-//! tail-follow guard (#1794).
+//! tmux server guard (#1733) and the tail-follow guard (#1794). The
+//! auto-drive merge guard (#1551) that also used it was removed in #2340.
 //!
 //! This is not a shell parser and does not try to be one. It splits a command
 //! line into simple commands of unquoted words, finds each command's program

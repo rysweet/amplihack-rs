@@ -2,8 +2,10 @@
 //!
 //! These are internal Rust APIs, not commands agents must use. No helper in
 //! this suite contacts a hosting service or performs a merge. The parsed
-//! readiness record and its reducer were retired in #2575; the report reads
-//! only tool-written JSON (see report_v2_tests.rs).
+//! readiness record and its reducer were retired in #2575; since #3129 the
+//! report reads only the loop driver's `loop-end.json` and the merge action's
+//! `merge-result.json` from the runner-bound state folder (see
+//! report_goal_tests.rs and report_v2_tests.rs).
 
 use crate::commands::orch::autodrive::{
     authorization::InvocationAuthorization, report::report, state::EvidenceStore,
@@ -331,20 +333,46 @@ fn already_merged_preparation_requires_fresh_bound_platform_confirmation() {
     assert_ne!(result["stop_reason"], "completed", "{result}");
 }
 
+/// Writes `body`, as the loop driver and the merge action do, into the
+/// private state folder `dir`.
+#[cfg(unix)]
+fn put_record(dir: &std::path::Path, name: &str, body: &Value) {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(dir.join(name))
+        .unwrap();
+    std::io::Write::write_all(&mut file, format!("{body}\n").as_bytes()).unwrap();
+}
+
+#[cfg(unix)]
 #[test]
 fn report_ignores_merge_output_when_the_state_directory_is_not_the_assigned_one() {
     let dir = tempfile::tempdir().unwrap();
     let assigned = dir.path().join("assigned");
+    EvidenceStore::create(&assigned).unwrap();
     let mut auth = authorization("false", "false");
     auth.bind_state_dir(assigned.clone());
-    let merged = json!({"result":"merged","pr":2329,"handoff":"false"}).to_string();
-    let done = json!({"loop":"merge-ready","loop_result":"DONE"}).to_string();
+    // #3129: the records the report reads, both bound to this run, in the
+    // runner-assigned folder: the merge action's result and the driver's end.
+    put_record(
+        &assigned,
+        "merge-result.json",
+        &json!({"result":"merged","pr":2329,"expected_head":HEAD,"handoff":"false","run_id":auth.run_id()}),
+    );
+    put_record(
+        &assigned,
+        "loop-end.json",
+        &json!({"end":"merged","run_id":auth.run_id(),"subject":"PR 2329","detail":"fixture"}),
+    );
     for (label, reported) in [
         ("matching", Some(json!(assigned))),
         ("empty", Some(json!(""))),
         ("absent", None),
     ] {
-        let mut context = json!({"merge_loop_result": done, "finalize_merge": merged});
+        let mut context = json!({});
         if let Some(value) = reported {
             context["autodrive_state_dir"] = value;
         }
@@ -361,7 +389,7 @@ fn report_ignores_merge_output_when_the_state_directory_is_not_the_assigned_one(
         ("object", json!({"path": assigned})),
         ("number", json!(7)),
     ] {
-        let context = json!({"merge_loop_result": done, "finalize_merge": merged, "autodrive_state_dir": reported});
+        let context = json!({"autodrive_state_dir": reported});
         let result = report(&auth, context.as_object().unwrap(), Some("2329"));
         assert_ne!(result["stop_reason"], "completed", "{label}: {result}");
         assert!(result["merge"].is_null(), "{label}: {result}");
@@ -375,15 +403,13 @@ fn report_ignores_merge_output_when_the_state_directory_is_not_the_assigned_one(
     // #3053: a folder the build step reports is information only. A different
     // build_result.state_dir no longer stops a merge the run's own folder
     // recorded.
-    let context = json!({"merge_loop_result": done, "finalize_merge": merged, "build_result": {"state_dir": "/elsewhere"}});
+    let context = json!({"build_result": {"state_dir": "/elsewhere"}});
     let result = report(&auth, context.as_object().unwrap(), Some("2329"));
     assert_eq!(result["stop_reason"], "completed", "{result}");
     assert_eq!(result["merge"]["result"], "merged", "{result}");
     // The run's own autodrive_state_dir is still compared when the build
     // reports another folder too.
     let context = json!({
-        "merge_loop_result": done,
-        "finalize_merge": merged,
         "build_result": {"state_dir": "/elsewhere"},
         "autodrive_state_dir": dir.path().join("other"),
     });

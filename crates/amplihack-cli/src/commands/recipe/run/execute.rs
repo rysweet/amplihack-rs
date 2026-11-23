@@ -78,16 +78,17 @@ pub const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
 
 /// #2663 M1: a top-level drive succeeds only when it merged. `outcome` is the
 /// `autodrive_outcome` built by `report()`; success is an allow-list of the
-/// single `stop_reason` value `completed` (merged in this run, already merged
-/// at entry, or, since #2575 B4, a verify-only run that reached `DONE` or
-/// `WAITING`). A missing, non-string or any other value is a failure.
+/// single `stop_reason` value `completed` (the loop driver ended the run
+/// `merged`, the PR was already merged at entry, or, since #2575 B4 and now
+/// #3129, a run with merging off ended `ready`). A missing, non-string or any
+/// other value is a failure.
 ///
 /// #2769: "a run" here means a top-level drive, `auto-drive-to-merge` or
 /// `auto-drive-light`, as [`trusted::is_top_level_drive`] names them. A nested
 /// `autodrive-*` sub-recipe merges nothing and is judged by its own steps; the
 /// caller applies this only where it belongs.
 ///
-/// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
+/// docs/reference/autodrive-goal-loop.md#reported-outcomes.
 ///
 /// [`trusted::is_top_level_drive`]: crate::commands::orch::autodrive::trusted::is_top_level_drive
 pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
@@ -110,7 +111,7 @@ pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
 /// stay exactly as #2663 wrote them, and a nested `autodrive-*` sub-recipe
 /// gets neither of them.
 ///
-/// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
+/// docs/reference/autodrive-goal-loop.md#reported-outcomes.
 pub(crate) fn apply_autodrive_outcome(
     run_result: &mut RecipeRunResult,
     outcome: &serde_json::Value,
@@ -1417,18 +1418,19 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 // one the defect showed: a sub-recipe that did not merge is
                 // no longer failed, and a sub-recipe that merged and then
                 // failed at a later step is no longer raised to success. The
-                // second half is observable in one place, the separate
-                // `amplihack recipe run autodrive-finalize` process that
-                // `step-03r-finalize-recovery` starts in
-                // `autodrive-merge-loop.yaml`; a `type: recipe` step runs in
-                // process and never re-enters this function, so it carried
-                // neither half before. That caller reads the merge from
-                // `finalize-merge.json`, keyed by run id, rather than from
-                // the child's exit status, and the `merge` step writes that
-                // record before any step that could fail after it.
+                // second half is observable in the separate
+                // `amplihack recipe run autodrive-goal-turn` processes that
+                // the goal loop's driver starts, one per turn (#3129); a
+                // `type: recipe` step runs in process and never re-enters
+                // this function. No merge is read from a turn's exit status.
+                // The loop's merge action records its own result in
+                // `merge-result.json`, and the driver alone writes
+                // `loop-end.json`, ending `merged` only after its own reading
+                // of GitHub. Both are bound to the run id in the
+                // runner-bound state folder, where the top-level drive's
+                // `report()` reads them.
                 // The inserts below stay unconditional: the outcome remains
-                // data for the loop script and the completion helpers
-                // whatever the invocation.
+                // data in the run result whatever the invocation.
                 if trusted::is_top_level_drive(&invocation_name) {
                     apply_autodrive_outcome(&mut run_result, &outcome);
                 }
