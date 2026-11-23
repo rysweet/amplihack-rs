@@ -1,8 +1,8 @@
 # Usage-limit waits and limit records
 
-A recipe agent step that meets a usage, spend or credit limit does not end
-because of it. It records the limit for the login it ran under, waits, and
-runs the step again. No count, budget or clock ends that chain: not the
+A supervised recipe agent step that meets a usage, spend or credit limit does
+not end because of it. It records the limit for the login it ran under, waits,
+and runs the step again. No count, budget or clock ends that chain: not the
 number of limits, not the time spent waiting, and not the step timeout. What
 still ends a step is set out [below](#what-ends-a-step-and-what-does-not).
 This page owns the tables for limit kinds, the limit record, which wait a
@@ -15,6 +15,7 @@ the [how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
 ## Contents
 
 - [What ends a step and what does not](#what-ends-a-step-and-what-does-not)
+    - [A step that is not supervised](#a-step-that-is-not-supervised)
     - [The step timeout does not cut a wait](#the-step-timeout-does-not-cut-a-wait)
     - [A prompt piped to the step](#a-prompt-piped-to-the-step)
     - [A prompt that could not be read to its end](#a-prompt-that-could-not-be-read-to-its-end)
@@ -29,7 +30,7 @@ the [how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
 
 ## What ends a step and what does not
 
-A limit never ends a step. These do:
+A limit never ends a supervised step. These end a step that has met one:
 
 | Ending | Reason |
 |--------|--------|
@@ -37,7 +38,14 @@ A limit never ends a step. These do:
 | The session ends | Nothing is left to continue. |
 | `recipe.usage_limit_wait = false` | The operator turned the wait off, so the limit result is passed up at once (`skipped reason=disabled`). |
 | `skipped reason=no_limit_message` | The output carried no message in a harness's limit shape, so it is not a limit. |
-| `skipped reason=piped_prompt` | The step holds no whole copy of its prompt for a retry to read: the prompt could not be read to its end, so its attempt was given part of its task and the step fails whether or not it meets a limit, or the copy itself failed or could not be set up for want of file descriptors ([below](#a-prompt-that-could-not-be-read-to-its-end)). |
+| `failed reason=prompt_cut_short` | The step's prompt came on a pipe and could not be read to its end, so its attempt was given part of its task. This is a lost prompt, not a limit ending: the step fails whether or not it meets a limit ([below](#a-prompt-that-could-not-be-read-to-its-end)). |
+
+The last row is the one ending left that is not a stop, the end of the
+session or the operator's choice. It used to be `skipped reason=piped_prompt`,
+which also ended a step whose attempt had been given its whole prompt, when
+the copy kept for a retry failed or could not be set up. Neither can happen
+now: the copy is kept in memory, and a step whose copy cannot be set up is not
+run at all ([below](#a-prompt-piped-to-the-step)).
 
 There is no retry count and no wall-clock budget. A step that meets a second,
 third or tenth limit waits for each, and nothing counts the waits or totals
@@ -53,6 +61,23 @@ often that happens. The
 each wait is how an operator tells such a step from a hung one, a stop signal
 ends it, and `recipe.usage_limit_wait = false` is how a run opts out of
 waiting altogether.
+
+### A step that is not supervised
+
+Everything on this page is done by the supervisor, and a step it never
+supervised does none of it. When the supervisor cannot start at all (Docker or
+auto mode, no profile store, no private scratch directory, no stop-signal
+handler, or a first attempt that never spawned), the step writes
+`skipped reason=not_supervised` and runs once as a plain launch, as it did
+before steps were supervised. That launch waits for nothing, so its result, a
+limit included, is passed up as the harness gave it, and the recipe runner
+classes it from the harness's own words. The conditions are listed in the
+[profile reference](./profile-command.md#stdin-handling) under standing down.
+#2911 does not change them.
+
+A step whose prompt comes on a pipe and whose copy cannot be set up is
+different: it is not run at all ([below](#a-prompt-piped-to-the-step)). It
+meets no limit, so nothing on this page applies to it.
 
 ### The step timeout does not cut a wait
 
@@ -81,58 +106,83 @@ none of the bundled recipes sets one on an agent step.
 
 ### A prompt piped to the step
 
-A recipe agent step is given its prompt on a pipe. The supervisor copies it
-aside as it arrives, so every retry reads the same bytes from the first one.
-Three cases that used to end a step on a limit, with
-`skipped reason=piped_prompt`, now wait like any other
-([#3036](https://github.com/rysweet/amplihack-rs/issues/3036)):
+A recipe agent step is given its prompt on a pipe. The supervisor keeps a copy
+of it in memory as it arrives, so every retry reads the same bytes from the
+first one. Nothing is written to disk. The cases that used to end a step on a
+limit with `skipped reason=piped_prompt` no longer do
+([#3036](https://github.com/rysweet/amplihack-rs/issues/3036), and the review
+of [#2992](https://github.com/rysweet/amplihack-rs/pull/2992)):
 
 | Case | What happens now |
 |------|------------------|
 | stdin is an `--input-format` stream channel | It is copied and replayed like any piped prompt. Every supervised attempt's standard output is held back until the step finishes, and the output of an attempt that is run again is discarded, so the caller has seen nothing of an attempt that met a limit; a retry given the same input from its first byte is the same step from the caller's side. |
-| the disk will not take the copy | The copy carries on in memory from the first byte the disk refused, and a retry is given the part on disk followed by the part in memory. Standard error names the disk's error once. Memory is used only after the disk has refused the copy. |
-| the prompt is still arriving when the retry is due | The retry waits for it. The step writes `amplihack.recipe.usage_limit_wait waiting_for_prompt` once, to standard error and to the recipe log, answers stop signals and the end of its session as a wait does, and starts the retry as soon as the caller closes the pipe. An auto-switch rerun under another profile waits for it the same way. |
+| the disk will not take the copy | No disk is involved. The copy is kept in memory from its first byte, so there is no store to refuse it. |
+| the copy fails part way: a panic, a final flush, or a part on disk that cannot be read back | Every byte the copier reads is kept in memory before it is passed to the attempt, so whatever the attempt was given, a retry is given too. There is no flush and no part on disk. A copier that panics closes the attempt's pipe where it stopped, so the attempt may have been given part of its task: that is a prompt cut short ([below](#a-prompt-that-could-not-be-read-to-its-end)), not a lost copy. |
+| the copy cannot be set up, which happens only to a process out of file descriptors or threads | The step is not run. Nothing is read from the pipe, and the step fails at once with `this step was not run: its prompt comes on a pipe, and the copy of it that a retry would read could not be set up (…)`. No attempt runs that a retry could not repeat, so no limit can end it. The line carries no limit marker, because no limit was met. |
+| the prompt is still arriving when the retry is due | The retry starts at once. It is fed the copy already held, from its first byte, and then each further byte as the caller writes it, and it reaches the end of its input when the caller closes the pipe, as the first attempt did. Nothing waits on the caller's pipe: a caller that holds it open can hold up only an attempt that reads it, and an attempt that does not read its input runs and ends. An auto-switch rerun under another profile starts the same way. |
 
 ```
 amplihack.recipe.usage_limit_wait end reason=reset reached
-amplihack.recipe.usage_limit_wait waiting_for_prompt
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
+Before the review of [#2992](https://github.com/rysweet/amplihack-rs/pull/2992)
+the retry waited, in the supervisor, for the caller to close the pipe, and
+wrote `waiting_for_prompt` while it did. A caller that never closed it held
+the step for ever; the 2815 Gadugi scenario, which holds the pipe open for
+the whole step, hung at its ceiling on that. The line is no longer written.
+
 ### A prompt that could not be read to its end
 
-`skipped reason=piped_prompt` is the one ending left that a step which has
-met a limit can reach. It is reached only when the step holds no whole copy
-of its prompt, so a retry would have nothing to read and no wait could give
-it any. Two kinds of failure lead there.
+`failed reason=prompt_cut_short` is the one ending left that a step which has
+met a limit can reach, and it is a prompt-loss failure, not a limit ending.
+It is reached only when the prompt itself could not be read to its end:
 
-- **The attempt was given part of its task.** A read of the step's standard
-  input fails part way through, or the thread that copies it cannot start.
-  The attempt in hand reaches the end of its input having been given only
-  part of its task. The supervisor names the failure on standard error as it
-  happens and refuses to report that attempt's success as the step's, so
-  such a step fails whether or not it meets a limit, and no retry can be
-  given more than it was.
-- **The attempt was given the whole task, and no whole copy of it
-  survives.** The copier panicked, its final flush failed, or the part of
-  the prompt the disk held before it refused the rest cannot be read back;
-  or the descriptors the copy itself needs (a second description of
-  standard input, the pipe that feeds the first attempt) could not be made,
-  which happens only to a process out of file descriptors, and the first
-  attempt then read the caller's pipe directly, as every piped step did
-  before [#2815](https://github.com/rysweet/amplihack-rs/issues/2815). A
-  limit on that attempt then ends the step: the limit is why a retry is
-  needed, and the lost copy is why none can run. The sentence below names
-  the cause.
+- a read of the step's standard input failed part way through, or
+- the copier panicked part way through it, which closes the attempt's pipe
+  wherever the copier stopped.
 
-Neither is a refusal to wait for a limit. An `--input-format` stream
-channel, a copy the disk refused and a prompt still arriving were the cases
-that did refuse, and they now wait ([above](#a-prompt-piped-to-the-step)).
+Either way the attempt reaches the end of its input having been given only
+part of its task, and it cannot tell that from a whole prompt. The supervisor
+names the failure on standard error as it happens and refuses to report that
+attempt's success as the step's, so such a step fails whether or not it meets
+a limit. No retry can be given more than the attempt was, so no wait can earn
+one. The limit is not why the step ends; it is only why a retry would have
+been needed.
 
-Such a step still hands the run what it needs to resume. Beside the event it
-writes a sentence containing the words *usage limit*, so the recipe runner's
-classifier answers `usage_limit` ("temporary and NOT a work failure") rather
-than `indeterminate`, and one of three lines saying when the limit lifts:
+A step whose prompt was read whole never reaches this ending, however many
+limits it meets: each one is waited out and every retry reads the same bytes.
+`issue_2911_prompt_loss_ending` pins both sides, along with the step whose copy
+cannot be set up, which is not run.
+
+This is not a case a capacity wait could help. The step's copy of its
+prompt was not lost; the prompt itself was, before it reached the copy, so a
+retry after any wait would be given the same part of the task. The cases in
+which a step used to end on a limit with no copy left (a copy that failed,
+or one that could not be set up) are gone, as the table above shows.
+
+When a limit also stands, the run learns of it as data, not from words. The
+supervisor reports every limit an attempt meets to the recipe runner over
+its recovery channel, as `Outcome::UsageLimit` for that step
+([#2334](https://github.com/rysweet/amplihack-rs/pull/2334)), before
+anything about a wait or this ending is decided. When the step fails, the
+runner writes that into the run's result as `failure_cause`
+(`{"class":"usage_limit","origin":{...}}`); `amplihack recipe run` classes
+the run `usage_limit` from that field ("temporary and NOT a work failure")
+and records the run as resumable. A relaunch resumes at the step, and the
+runner, which holds the whole prompt, sends it again; if the limit still
+stands, that step waits for capacity like any other. The agentic layer that
+decides on a relaunch reads the classification as JSON.
+
+Beside the event the step also writes a sentence for the person reading the
+log: that the step failed because its prompt was lost, not because of its
+usage limit, and that the limit is reported to the runner as the step's
+recorded cause. The classification does not depend on it:
+`limit_wait::tests_ending_evidence` classifies the run with and without the
+sentence and gets `usage_limit` both times, and gets `indeterminate` from
+the step's own lines when no cause was recorded. The sentence is followed by
+one of three lines saying when the limit lifts, which the recorded cause
+does not carry:
 
 | What the step knows | What it writes | Reset hint |
 |---------------------|----------------|------------|
@@ -144,8 +194,12 @@ The first form is the one the runner's reset reader takes a time from, so the
 verdict reads "Wait for the reset and resume" with the time in it. A past
 reset is deliberately not written in that form, because a supervising loop
 would schedule a resume for a moment already gone. This is pinned by
-`limit_wait::tests_ending_evidence`, which classifies the ending exactly as
-the runner would.
+`limit_wait::tests_ending_evidence`.
+
+A step whose prompt is cut short and that meets no limit writes no wait line.
+It fails with `amplihack: this step's prompt was cut short on its way to the
+attempt, so the attempt was not given the whole task and its result is not
+this step's result`.
 
 ## Limit kinds
 
@@ -359,8 +413,10 @@ follow-up issue.
 
 ## Removed endings
 
-These paths no longer end a step. The wait and retry described above replace
-them, and the closing-line reasons are no longer written.
+These paths no longer end a step on a limit. The wait and retry described
+above replace them, and the closing-line reasons are no longer written.
+`skipped reason=piped_prompt` is not written at all: each case it covered is
+listed on its own row.
 
 | Was | Now |
 |-----|-----|
@@ -373,7 +429,10 @@ them, and the closing-line reasons are no longer written.
 | `failed reason=spend_limit` after a login-change wait reaches its deadline | the step retries |
 | the `max_wait_secs` per-step budget ending the chain | not a budget |
 | `failed reason=step_timeout` and `bound=step_timeout` | not written; the step timeout does not cut a wait ([#3037](https://github.com/rysweet/amplihack-rs/issues/3037)) |
-| `skipped reason=piped_prompt` for an `--input-format` channel, a copy the disk refused, or a prompt still arriving | the copy is replayed, kept in memory, or waited for ([#3036](https://github.com/rysweet/amplihack-rs/issues/3036)) |
+| `skipped reason=piped_prompt` for an `--input-format` channel, a copy the disk refused, or a prompt still arriving | the copy is replayed, kept in memory, or fed to the retry as it arrives ([#3036](https://github.com/rysweet/amplihack-rs/issues/3036), review of [#2992](https://github.com/rysweet/amplihack-rs/pull/2992)) |
+| `skipped reason=piped_prompt` for a copy that failed (a panic, a flush, a part on disk that could not be read back) | not possible: the copy is kept in memory, and a copier that panics is a prompt cut short |
+| `skipped reason=piped_prompt` for a copy that could not be set up | the step is not run, so no limit is met |
+| `skipped reason=piped_prompt` for a prompt cut short | `failed reason=prompt_cut_short`: the step still ends, as a lost prompt that fails whether or not it met a limit, not as a skipped wait |
 
 An operator who greps for `reset_too_far`, `no_reset` or `spend_limit` still
 finds them as the `reason=` of a `waiting_for_capacity` line.
@@ -391,8 +450,12 @@ finds them as the `reason=` of a `waiting_for_capacity` line.
 - A recipe step's own YAML `timeout:` is enforced by the runner and kills a
   step that is waiting, as it kills any step. None of the bundled recipes
   sets one on an agent step.
-- A prompt kept in memory after the disk refused it is not capped. A cap would
-  be a budget that ends a step on a limit.
+- A piped prompt is kept in memory for the life of the step, and the copy is
+  not capped. A cap would be a budget that ends a step on a limit. An
+  `--input-format` channel its caller keeps writing to grows the copy for as
+  long as it writes.
+- A step the supervisor cannot start runs once unsupervised and does not wait
+  ([above](#a-step-that-is-not-supervised)).
 - Output carrying both an authentication failure and the credits phrase classes
   `environmental` first, and does not wait. That fails closed.
 - A pinned step with a spend limit that no login change lifts waits in cycles

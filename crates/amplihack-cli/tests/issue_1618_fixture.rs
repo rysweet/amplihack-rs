@@ -34,7 +34,8 @@ pub const WEEKLY_TEXT: &str =
 /// - counts its calls per `$STEP` in `$RECORD_DIR/count.<step>`;
 /// - records argv, `pwd -P`, `HOME`, `CLAUDE_CONFIG_DIR`, the inherited
 ///   profile and whether it read stdin in `call.<step>.<n>`, and copies all
-///   of stdin to `stdin.<step>.<n>` (not read with `$SKIP_STDIN`). The stub
+///   of stdin to `stdin.<step>.<n>` (not read with `$SKIP_STDIN`, nor on its
+///   first `$SKIP_STDIN_CALLS` calls in a step). The stub
 ///   calls no digest tool: `sha256sum` is not on this `PATH` on every host,
 ///   and a "command not found" line on its stderr reads to amplihack as an
 ///   environmental failure, not a usage limit (issue #2931).
@@ -52,7 +53,7 @@ esac
 step="${STEP:-0}"
 n=$(( $(cat "$RECORD_DIR/count.$step" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$RECORD_DIR/count.$step"
-if [ -n "$SKIP_STDIN" ]; then sum=skipped; else cat > "$RECORD_DIR/stdin.$step.$n"; sum=recorded; fi
+if [ -n "$SKIP_STDIN" ] || [ "$n" -le "${SKIP_STDIN_CALLS:-0}" ]; then sum=skipped; else cat > "$RECORD_DIR/stdin.$step.$n"; sum=recorded; fi
 {
   printf 'ARGV='
   for a in "$@"; do printf '%s|' "$a"; done

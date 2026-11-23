@@ -2414,15 +2414,15 @@ A usage limit always starts a wait. The run ends with no wait only when:
 - the prompt came on a pipe and could not be read to its end, so the attempt
   was given only part of its task and the step fails whether or not it met a
   limit (auto-switch then does not rerun the step under another profile
-  either);
-- the prompt came on a pipe and no whole copy of it survives for a retry:
-  the copy failed, or could not be set up because the process was out of
-  file descriptors. Nothing is left for a retry to read.
+  either). The run learns of the limit from the step's recorded cause, not
+  from its log, and a relaunch resumes the step with its whole prompt.
 
-A piped prompt is copied aside and replayed to every retry, an
-`--input-format` channel included. A copy the disk refuses carries on in
-memory, and a prompt still arriving when the retry is due is waited for,
-with a `waiting_for_prompt` line (issue #3036).
+A piped prompt is copied aside in memory and replayed to every retry, an
+`--input-format` channel included, so no step ends on a limit for want of a
+copy. A prompt still arriving when the retry is due is fed to the retry as it
+arrives, and the retry starts at once (issue #3036, review of PR #2992). A
+step whose copy cannot be set up, which happens only to a process out of file
+descriptors or threads, is not run.
 
 Model output that merely mentions a usage limit never starts a wait.
 
@@ -2666,13 +2666,15 @@ and the variables in
 - **Standard output is held back.** While the wait is on, a recipe step's
   standard output is printed when the step ends, even for steps that never
   hit a limit. Error output still streams.
-- **Piped input is replayed from a copy, when one can be made.** A recipe
-  agent step is given its prompt on stdin, so the supervisor copies that
-  prompt to a private file as it arrives and gives every attempt the same
-  bytes. The rerun reads a file given as stdin again from the start. Where
-  the copy cannot be made, or the caller never closes the pipe so there is
-  no whole copy of the prompt to replay, the rerun is refused with a named
-  reason and the step ends with the limited attempt's own result.
+- **Piped input is replayed from a copy kept in memory.** A recipe agent
+  step is given its prompt on stdin, so the supervisor keeps a copy of that
+  prompt in memory as it arrives and gives every attempt the same bytes. A
+  rerun whose caller has not yet closed the pipe waits for the rest of the
+  prompt. Where the copy cannot be set up at all, which happens only to a
+  process out of file descriptors or threads, the step is not run. Where the
+  prompt itself cannot be read to its end, the step fails whether or not it
+  met a limit, with `failed reason=prompt_cut_short`, and if a limit also
+  stands it says when the limit lifts so the step can be sent again.
 - **`~/.amplihack` must be private.** Held-back output goes under
   `~/.amplihack/rerun/` (or `<root>/.auto-switch.d/rerun/` with
   auto-switch on). If `~/.amplihack` is not owned by you or others can

@@ -287,7 +287,7 @@ fn progress_resume_and_skipped_lines_never_reach_the_recipe_log() {
         Event::Progress { remaining: 1740 },
         Event::Resume { attempt: 2 },
         Event::Skipped(Skip::Cannot(NoWait::NoLimitMessage)),
-        Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
+        Event::PromptCutShort,
     ] {
         assert_eq!(
             recipe(&e, Some("work")),
@@ -332,7 +332,7 @@ fn issue_2857_the_re_entry_line_is_the_only_addition_to_what_the_recipe_log_carr
     for e in [
         Event::Progress { remaining: 5 },
         Event::Resume { attempt: 2 },
-        Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
+        Event::PromptCutShort,
     ] {
         assert_eq!(recipe(&e, Some("work")), None);
     }

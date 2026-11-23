@@ -18,8 +18,11 @@
 //!
 //! Issue #3036 removes two endings these tests used to pin. An
 //! `--input-format` stream channel is copied and replayed like any piped
-//! prompt, and a capture file the disk refuses carries on in memory, so in
-//! both a limit is waited out and the rerun reads the same bytes.
+//! prompt, and a copy the disk refused carried on in memory, so in both a
+//! limit is waited out and the rerun reads the same bytes. Since the review
+//! of PR #2992 the copy is kept in memory from the start, so no capture file
+//! is written at all, and a step whose copy cannot be set up is not run;
+//! `issue_2911_prompt_loss_ending.rs` pins that and the one ending left.
 
 #![cfg(unix)]
 
@@ -146,8 +149,8 @@ fn the_other_prompt_shapes_on_stdin_are_captured_too() {
 
 #[test]
 fn a_prompt_in_argv_is_not_captured() {
-    // `-p step` carries the prompt: stdin is not copied, so no capture file
-    // is made and the existing argv path is unchanged.
+    // `-p step` carries the prompt: stdin is not copied, and the existing
+    // argv path is unchanged.
     let f = Fixture::new();
     let mut child = start(&f, &["-p", "step"]);
     let feeder = feed(&mut child, b"not the prompt\n".to_vec());
@@ -409,66 +412,122 @@ fn a_held_open_captured_pipe_does_not_hang_the_step() {
     );
 }
 
-/// Issue #2816: a captured pipe the caller never closes ends the step with
-/// its limit result, and says why.
+/// Issue #2816: a captured pipe the caller never closes does not hold the
+/// step, with a limit any more than without one.
 ///
 /// `a_held_open_captured_pipe_does_not_hang_the_step` above is the same
-/// shape without a limit, and it never reaches the copier at all. This one
-/// does: the attempt reports a usage limit, the wait runs to the stated
-/// reset, and only then is the stored prompt needed. There is none yet -
-/// the caller is still holding the pipe and has written nothing.
+/// shape without a limit. This one has one: the attempt reports a usage
+/// limit, the wait runs to the stated reset, and the retry is due while the
+/// caller still holds the pipe and has written nothing.
 ///
-/// Issue #3036, review of PR #2992: the retry waits for it. This used to
-/// end the step with the limit result and `skipped reason=piped_prompt`,
-/// a limit ending a step for a prompt that was merely late. The step now
-/// says `waiting_for_prompt`, keeps answering stop signals and the end of
-/// its session as a limit wait does (so issue #1618's rule, never blocked
-/// deaf on a pipe nobody closes, still holds), and runs the retry as soon
-/// as the caller closes the pipe.
+/// Review of PR #2992 (round 5): the retry starts at once, from the copy
+/// already held, and would read the rest as it arrived. Nothing waits on
+/// the caller's pipe. Issue #2816 ended the step here with `skipped
+/// reason=piped_prompt`, a limit ending a step for a prompt that was merely
+/// late; the round-4 fix waited for the caller instead, with a
+/// `waiting_for_prompt` line, and a caller that never closed its pipe held
+/// the step for ever, which the 2815 Gadugi scenario caught. The pipe is
+/// held open here until the step has ended, so a wait of any kind for it
+/// would hang the test rather than pass it.
 #[test]
-fn issue_3036_a_held_open_captured_pipe_with_a_limit_waits_for_its_prompt() {
+fn a_held_open_captured_pipe_with_a_limit_retries_at_once_from_the_copy_held() {
     let f = Fixture::new();
     let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
     // The agent is told not to read its stdin: the caller writes nothing.
     let (read, write) = std::io::pipe().expect("a pipe");
     c.env("SKIP_STDIN", "1")
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(read)));
-    // Held open until the step says it is waiting for its prompt.
-    let mut held = Some(write);
-    let waiting = "amplihack.recipe.usage_limit_wait waiting_for_prompt";
-    let out = f.run_watching(&mut c, |line| {
-        if line == waiting {
-            held = None;
-        }
-    });
-    assert!(
-        held.is_none(),
-        "the step never said it was waiting\n{}",
-        describe(&out)
-    );
+    // Held open, never written, for the whole of the step.
+    let out = f.run_watching(&mut c, |_| {});
+    drop(write);
 
     assert!(
         out.status.success(),
-        "the retry ran once its prompt had arrived\n{}",
+        "the retry ran with the caller still holding the pipe\n{}",
         describe(&out)
     );
     assert_eq!(f.count("0"), 2, "one retry\n{}", describe(&out));
     let err = text(&out.stderr);
     assert!(
-        !err.contains("skipped reason=piped_prompt") && !err.contains("cannot be run again"),
-        "a late prompt does not end the step\n{}",
+        !err.contains("skipped reason=piped_prompt")
+            && !err.contains("prompt_cut_short")
+            && !err.contains("waiting_for_prompt"),
+        "a late prompt neither ends nor holds the step\n{}",
         describe(&out)
     );
     let ev = events(&out);
-    assert_eq!(ev.len(), 4, "{ev:?}");
+    assert_eq!(ev.len(), 3, "{ev:?}");
     assert!(ev[0].starts_with("start reason=usage_limit "), "{ev:?}");
     assert_eq!(ev[1], "end reason=reset reached", "{ev:?}");
-    assert_eq!(ev[2], "waiting_for_prompt", "{ev:?}");
-    assert_eq!(ev[3], "resume attempt=2", "{ev:?}");
+    assert_eq!(ev[2], "resume attempt=2", "{ev:?}");
     assert_eq!(
         leftovers(&f),
         Vec::<String>::new(),
         "no capture left behind"
+    );
+}
+
+/// Review of PR #2992 (round 5): a retry that starts while the prompt is
+/// still arriving is given all of it, the part held when it started and
+/// the part written after, byte for byte and in order.
+///
+/// The first attempt does not read its stdin (`SKIP_STDIN_CALLS=1`) and
+/// meets a limit, so the copier alone has taken the first half off the
+/// pipe. The caller writes the second half only once the step has
+/// announced the retry, a condition the step reports rather than a delay,
+/// and then closes the pipe. The retry reads its stdin to the end, and its
+/// record must hash to the whole prompt.
+#[test]
+fn a_retry_started_while_the_prompt_is_still_arriving_reads_all_of_it() {
+    let f = Fixture::new();
+    let bytes = prompt();
+    let half = bytes.len() / 2;
+    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    let (read, mut write) = std::io::pipe().expect("a pipe");
+    c.env("SKIP_STDIN_CALLS", "1")
+        .stdin(Stdio::from(std::os::fd::OwnedFd::from(read)));
+    // The first half is written on a thread, since it is more than a pipe
+    // holds and the copier takes it only once the first attempt runs.
+    let first_half = bytes[..half].to_vec();
+    let mut writer = Some(std::thread::spawn(move || {
+        write.write_all(&first_half).unwrap();
+        write
+    }));
+    let second_half = bytes[half..].to_vec();
+    let resume = "amplihack.recipe.usage_limit_wait resume attempt=2";
+    let mut finished: Option<std::thread::JoinHandle<()>> = None;
+    let out = f.run_watching(&mut c, |line| {
+        if line == resume
+            && let Some(w) = writer.take()
+        {
+            let mut write = w.join().unwrap();
+            let rest = second_half.clone();
+            finished = Some(std::thread::spawn(move || {
+                write.write_all(&rest).unwrap();
+            }));
+        }
+    });
+    assert!(
+        writer.is_none(),
+        "the retry was never announced\n{}",
+        describe(&out)
+    );
+    finished.unwrap().join().unwrap();
+
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "one retry\n{}", describe(&out));
+    assert_eq!(f.call("0", 1)["STDIN"], "skipped");
+    assert_eq!(
+        f.call("0", 2)["STDIN"],
+        sha256_hex(&bytes),
+        "the retry read the whole prompt, both halves, in order\n{}",
+        describe(&out)
+    );
+    let err = text(&out.stderr);
+    assert!(
+        !err.contains("waiting_for_prompt") && !err.contains("prompt_cut_short"),
+        "{}",
+        describe(&out)
     );
 }
 
@@ -611,75 +670,6 @@ fn an_attempt_that_succeeds_on_a_cut_short_prompt_does_not_make_the_step_succeed
     );
 }
 
-/// Issues #2816, #3036: a capture file that cannot be written says why, the
-/// attempt in hand still gets its whole prompt, and so does the rerun the
-/// limit's wait earns.
-///
-/// `AMPLIHACK_TEST_REFUSE_CAPTURE_WRITE=1` gives the copier a read-only
-/// description of the capture file, so every write to it fails as a full
-/// disk, a quota or a failing device would. None of those can be arranged
-/// from outside a test.
-///
-/// Before #3036 the step then ended with `skipped reason=piped_prompt`: a
-/// full disk was a reason for a usage limit to end a run. Now the copier
-/// names its error the moment it meets it and carries the copy on in
-/// memory, the limit is waited out, and the rerun reads the same bytes.
-#[test]
-fn a_capture_file_that_cannot_be_written_names_its_error_and_the_rerun_still_runs() {
-    let f = Fixture::new();
-    let bytes = prompt();
-    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
-    c.env("AMPLIHACK_TEST_REFUSE_CAPTURE_WRITE", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = c.spawn().expect("start amplihack");
-    let feeder = feed(&mut child, bytes.clone());
-    let out = finish(child, "the step hung on a capture it could not write");
-    feeder.join().unwrap();
-
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2, "the step ran again\n{}", describe(&out));
-    assert_eq!(
-        f.call("0", 1)["STDIN"],
-        sha256_hex(&bytes),
-        "the attempt still read the whole prompt, byte for byte\n{}",
-        describe(&out)
-    );
-    assert_eq!(
-        f.call("0", 2)["STDIN"],
-        sha256_hex(&bytes),
-        "and so did the rerun, from memory\n{}",
-        describe(&out)
-    );
-    let err = text(&out.stderr);
-    assert!(
-        err.contains("could not be stored on disk for a rerun ("),
-        "the copier names its error\n{}",
-        describe(&out)
-    );
-    assert!(
-        err.contains("kept in memory instead"),
-        "and says nothing is lost by it\n{}",
-        describe(&out)
-    );
-    assert!(
-        !err.contains("could not be read to its end"),
-        "the prompt itself was read fine\n{}",
-        describe(&out)
-    );
-    let ev = events(&out);
-    assert_eq!(ev.len(), 3, "one wait, then the retry: {ev:?}");
-    assert!(ev[0].starts_with("start reason=usage_limit "), "{ev:?}");
-    assert_eq!(ev[1], "end reason=reset reached");
-    assert_eq!(ev[2], "resume attempt=2");
-    assert_eq!(
-        leftovers(&f),
-        Vec::<String>::new(),
-        "no capture left behind"
-    );
-}
-
 /// Issue #2816: a capture already known to be lost refuses the rerun when
 /// the limit is seen, not after the wait.
 ///
@@ -691,12 +681,13 @@ fn a_capture_file_that_cannot_be_written_names_its_error_and_the_rerun_still_run
 /// copier say on stderr; the limit result is non-zero already, so what the
 /// step returns is unchanged by it.
 ///
-/// The supervisor must then do what it does for a capture that was never
-/// made: write `skipped reason=piped_prompt` and pass the limit result up,
-/// with the first attempt's held-back stdout. Before this change the flag
-/// was read only by `for_attempt(2)`, so the step announced a wait, waited
-/// up to `max_wait_secs`, and then ended in an error with that output
-/// discarded.
+/// The supervisor must then end the step with the prompt-loss ending,
+/// `failed reason=prompt_cut_short`, and pass the limit result up, with the
+/// first attempt's held-back stdout. Before issue #2816 the flag was read
+/// only by `for_attempt(2)`, so the step announced a wait, waited up to
+/// `max_wait_secs`, and then ended in an error with that output discarded.
+/// Before the review of PR #2992 the ending was `skipped reason=piped_prompt`,
+/// which read as a wait refused to a limit; it is a lost prompt.
 #[test]
 fn a_capture_lost_before_the_limit_refuses_the_rerun_instead_of_waiting() {
     let f = Fixture::new();
@@ -717,8 +708,13 @@ fn a_capture_lost_before_the_limit_refuses_the_rerun_instead_of_waiting() {
     assert_eq!(f.count("0"), 1, "no rerun\n{}", describe(&out));
     let err = text(&out.stderr);
     assert!(
-        err.contains("skipped reason=piped_prompt"),
-        "the refusal is logged\n{}",
+        err.contains("failed reason=prompt_cut_short"),
+        "the lost prompt is logged\n{}",
+        describe(&out)
+    );
+    assert!(
+        !err.contains("skipped reason=piped_prompt"),
+        "and not as a skipped wait\n{}",
         describe(&out)
     );
     assert!(
@@ -728,7 +724,7 @@ fn a_capture_lost_before_the_limit_refuses_the_rerun_instead_of_waiting() {
     );
     assert_eq!(
         events(&out),
-        vec!["skipped reason=piped_prompt".to_string()],
+        vec!["failed reason=prompt_cut_short".to_string()],
         "no wait was ever started\n{}",
         describe(&out)
     );

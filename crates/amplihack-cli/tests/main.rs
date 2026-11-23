@@ -439,6 +439,8 @@ mod issue_2911_codex_credits;
 mod issue_2911_forged_limit_message;
 #[path = "issue_2911_limit_block_recorded.rs"]
 mod issue_2911_limit_block_recorded;
+#[path = "issue_2911_prompt_loss_ending.rs"]
+mod issue_2911_prompt_loss_ending;
 #[path = "issue_2911_repeated_limits_wait.rs"]
 mod issue_2911_repeated_limits_wait;
 #[path = "issue_2911_spend_limit_no_reset.rs"]

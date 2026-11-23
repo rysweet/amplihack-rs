@@ -94,12 +94,13 @@ pub(super) enum Event {
         why: Waiting,
         until: i64,
     },
-    /// The retry a wait earned is waiting for the rest of the step's
-    /// prompt, which is still arriving on a pipe its caller has not closed
-    /// (issue #3036). Written once, to the step's stderr and to the run's
-    /// recipe log, so an operator can see that the step is waiting for its
-    /// input rather than hung. It used to end the step instead.
-    WaitingForPrompt,
+    /// The step met a limit, but it ends because its prompt was cut short,
+    /// not because of the limit (review of PR #2992): the attempt was given
+    /// part of its task, so the step fails whether or not it met one, and
+    /// no retry can be given the whole prompt. Written as `failed
+    /// reason=prompt_cut_short`, a failure of the step's input, and never
+    /// as a skipped wait, which would read as a wait refused to a limit.
+    PromptCutShort,
 }
 
 /// Which limit met the retry a wait earned (issue #2857). A closed set, so
@@ -119,8 +120,8 @@ pub(super) enum Skip {
     NotSupervised,
     /// Off because this is CI and nothing turned it on.
     Ci,
-    /// The output carries no limit message, or the prompt could not be read
-    /// to its end, so no retry can be given the whole of it.
+    /// The output carries no limit message. A prompt cut short is not a
+    /// skip and is written as [`Event::PromptCutShort`].
     Cannot(NoWait),
 }
 
@@ -196,7 +197,7 @@ where
             "{PREFIX} {}",
             capacity_body(*why, &account_field(account), *until, tz)
         )),
-        Event::End(_) | Event::Reentered { .. } | Event::WaitingForPrompt => Some(line(e, tz)),
+        Event::End(_) | Event::Reentered { .. } => Some(line(e, tz)),
         _ => None,
     }
 }
@@ -262,7 +263,7 @@ where
                 Skip::Cannot(why) => why.as_str(),
             }
         ),
-        Event::WaitingForPrompt => "waiting_for_prompt".to_string(),
+        Event::PromptCutShort => format!("failed reason={}", NoWait::PromptCutShort.as_str()),
         Event::Reentered { met } => format!(
             "reentered met={}",
             match met {

@@ -61,30 +61,29 @@ pub(crate) const MIN_WAIT_SECS: u64 = 60;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NoWait {
     /// The output has no line in any harness's own limit-message shape.
+    /// Logged as `skipped reason=no_limit_message`.
     NoLimitMessage,
-    /// The prompt came on a pipe and no whole copy of it can ever be given
-    /// to a rerun (issue #2815). A piped prompt that was copied is replayed
-    /// and never reaches this reason; the name is kept because it is the
-    /// logged value callers already match on.
+    /// The step's prompt came on a pipe and could not be read to its end:
+    /// the source failed, or the copier panicked part way through it
+    /// (issues #2816, #3036). The attempt in hand was given part of its
+    /// task, so the step fails whether or not it met a limit, and no retry
+    /// can be given more. It is a lost prompt, not a limit ending, and is
+    /// logged as `failed reason=prompt_cut_short`, never as a skipped wait
+    /// (review of PR #2992). The supervisor says so in words beside the
+    /// event, with the limit's reset (`ending::prompt_lost_note`).
     ///
-    /// Since issue #3036 one case reaches it: the prompt could not be read to
-    /// its end (the source failed, or the thread copying it could not start
-    /// or failed), or the descriptors the copy needs could not be made. The
-    /// attempt in hand was given part of its task, so the step fails whether
-    /// or not it met a limit, and no retry can be given more. An
-    /// `--input-format` stream channel, a copy the disk refused and a prompt
-    /// still arriving no longer reach it: the first two are copied and
-    /// replayed, and the third is waited for. The supervisor says which case
-    /// it is in words beside the event (`ending::no_retry_note`), because
-    /// the reason alone does not.
-    PipedPrompt,
+    /// It replaces `piped_prompt`, which also covered a copy that failed or
+    /// could not be set up. Neither can end a step on a limit any more: the
+    /// copy is kept in memory, so every byte the copier reads is a byte a
+    /// retry is given, and a step whose copy cannot be set up is not run.
+    PromptCutShort,
 }
 
 impl NoWait {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             NoWait::NoLimitMessage => "no_limit_message",
-            NoWait::PipedPrompt => "piped_prompt",
+            NoWait::PromptCutShort => "prompt_cut_short",
         }
     }
 }

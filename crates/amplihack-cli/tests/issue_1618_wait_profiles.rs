@@ -299,19 +299,20 @@ fn a_piped_prompt_is_rerun_by_auto_switch_with_the_same_prompt() {
     assert!(wait_lines(&out).iter().all(|l| !l.starts_with("skipped")));
 }
 
-/// Issue #3036, review of PR #2992: an auto-switch rerun whose prompt is
-/// still arriving waits for it and then runs, under the candidate, with no
-/// limit wait in between.
+/// Issue #3036, review of PR #2992 (round 5): an auto-switch rerun whose
+/// prompt is still arriving runs at once, under the candidate, with no wait
+/// of any kind.
 ///
-/// The caller holds the pipe open and writes nothing until the step says
-/// `waiting_for_prompt`. The rerun used to be refused at that point
-/// (`auto-switch: no rerun under profile "Y": ... still arriving`), which
-/// sent the step into a wait for X's reset instead, and a step whose
-/// inherited profile had never run had no wait to fall back on and ended
-/// on its limit. Now the rerun waits for the prompt as the retry a wait
-/// earns does, and runs on Y the moment the caller closes the pipe.
+/// The caller holds the pipe open, writing nothing, for the whole of the
+/// step. The rerun used to be refused here (`auto-switch: no rerun under
+/// profile "Y": ... still arriving`), which sent the step into a wait for
+/// X's reset, and a step whose inherited profile had never run had no wait
+/// to fall back on and ended on its limit. Round 4 waited for the caller
+/// instead, which held the step for as long as the caller held the pipe.
+/// Now the rerun is fed the copy already held and the rest as it arrives,
+/// so it starts at once and nothing waits on the caller.
 #[test]
-fn issue_3036_an_auto_switch_rerun_waits_for_a_late_prompt_and_then_runs() {
+fn issue_3036_an_auto_switch_rerun_runs_at_once_on_a_pipe_still_held_open() {
     let f = with_profiles();
     switch_on(&f);
     let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
@@ -324,19 +325,9 @@ fn issue_3036_an_auto_switch_rerun_waits_for_a_late_prompt_and_then_runs() {
         .env("LIMIT_CALLS", "1")
         .env("SKIP_STDIN", "1")
         .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(read)));
-    // Held open until the step says it is waiting for its prompt.
-    let mut held = Some(write);
-    let waiting = "amplihack.recipe.usage_limit_wait waiting_for_prompt";
-    let out = f.run_watching(&mut c, |line| {
-        if line == waiting {
-            held = None;
-        }
-    });
-    assert!(
-        held.is_none(),
-        "the step never said it was waiting for its prompt\n{}",
-        describe(&out)
-    );
+    // Held open, never written, for the whole of the step.
+    let out = f.run_watching(&mut c, |_| {});
+    drop(write);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         f.count("0"),
@@ -358,8 +349,8 @@ fn issue_3036_an_auto_switch_rerun_waits_for_a_late_prompt_and_then_runs() {
     );
     assert_eq!(
         events(&out),
-        vec!["waiting_for_prompt"],
-        "no limit wait: the rerun ran once the prompt had arrived\n{}",
+        Vec::<String>::new(),
+        "no wait of any kind: the rerun ran at once\n{}",
         describe(&out)
     );
 }

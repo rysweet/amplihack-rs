@@ -2,17 +2,27 @@
 //! limit can still reach: a prompt that could not be read to its end
 //! (review of PR #2992, issue #3036).
 //!
-//! That ending is not the limit's - the step fails whether or not it meets
-//! one, because its attempt was given less than its task - but it does end
-//! a step whose limit still stands, so it is handed up as a *temporary*
-//! fault with the time the limit clears, and a supervising loop resumes the
-//! run instead of recording work that failed. That rests entirely on the
-//! words the ending writes: the classifier reads the step's evidence, and
-//! `skipped reason=piped_prompt` carries no limit marker of its own.
+//! That ending is a lost prompt, not a limit ending: the step fails whether
+//! or not it meets a limit, because its attempt was given less than its
+//! task, and it is logged as `failed reason=prompt_cut_short`, never as a
+//! skipped wait. It does end a step whose limit still stands, though, so it
+//! is handed up as a *temporary* fault, and the run is resumed at the step,
+//! whose whole prompt the runner sends again, instead of being recorded as
+//! work that failed.
+//!
+//! That rests on data, not on the words the ending writes (review of PR
+//! #2992, round 5). The supervisor reports the limit to the runner over the
+//! recovery channel, the runner writes it into the run's result as
+//! `failure_cause`, and the classifier reads that field. These tests build
+//! that result and classify it with and without the sentence, so a reworded
+//! sentence cannot change the verdict and a lost cause cannot hide behind
+//! the sentence.
 //!
 //! The step-timeout ending this file also pinned is gone (issue #3037): a
 //! step timeout no longer ends a limit wait, so there is no such ending to
-//! classify.
+//! classify. So is the piped-prompt ending for a copy that failed or could
+//! not be set up: the copy is kept in memory, and a step whose copy cannot
+//! be set up is not run (`limit_wait::scratch`).
 //!
 //! So the property is pinned here rather than described. The ending is
 //! reduced to the lines the supervisor itself writes and classified exactly
@@ -21,12 +31,12 @@
 //! The lines themselves are built in `ending.rs`. Wired from
 //! `limit_wait/mod.rs` with `#[cfg(test)] mod tests_ending_evidence;`.
 
-use super::ending::no_retry_note;
-use super::events::{Event, Skip, fmt_time, line};
-use super::plan::NoWait;
+use super::ending::prompt_lost_note;
+use super::events::{Event, fmt_time, line};
+use crate::commands::recipe::RecipeRunResult;
 use crate::commands::recipe::run::failure_evidence::usage_limit_reset_hint;
 use crate::commands::recipe::run::limit_patterns;
-use crate::commands::recipe::run::{FailureClass, classify_failure_text};
+use crate::commands::recipe::run::{FailureClass, classify_failure_text, classify_run_failure};
 
 /// 2026-10-18 08:30:00 -07:00, the reset the fixtures elsewhere use.
 const RESET: i64 = 1_792_337_400;
@@ -38,59 +48,153 @@ const NOW: i64 = RESET - 1800;
 const CAUSE: &str = "its piped prompt could not be read to its end, so neither this attempt \
                      nor a later one can be given the whole of it";
 
-/// Everything a piped-prompt ending writes, in the order it writes it.
-fn piped_prompt_ending(reset: Option<i64>, now: i64) -> String {
+/// Everything the prompt-loss ending writes, in the order it writes it.
+fn prompt_lost_ending(reset: Option<i64>, now: i64) -> String {
     format!(
         "{}\n{}",
-        no_retry_note(CAUSE, reset, now),
-        line(
-            &Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
-            &chrono::Local
-        ),
+        prompt_lost_note(CAUSE, reset, now),
+        line(&Event::PromptCutShort, &chrono::Local),
     )
 }
 
 fn endings(reset: Option<i64>, now: i64) -> [(&'static str, String); 1] {
-    [("piped prompt", piped_prompt_ending(reset, now))]
+    [("prompt cut short", prompt_lost_ending(reset, now))]
 }
 
-/// A step that ends this way is a temporary fault the run resumes from, not
-/// work that failed.
+/// Review of PR #2992: the ending says which it is. It is a lost prompt,
+/// and the limit is not why the step ends, so neither the sentence nor the
+/// event reads as a wait refused to a limit.
 #[test]
-fn the_ending_hands_the_runner_a_usage_limit() {
+fn the_ending_names_a_lost_prompt_and_not_a_limit_ending() {
     for reset in [Some(RESET), Some(NOW - 1), None] {
         for (what, text) in endings(reset, NOW) {
-            assert_eq!(
-                classify_failure_text(&text).0,
-                FailureClass::UsageLimit,
-                "{what} with reset={reset:?}:\n{text}"
+            assert!(
+                text.contains("failed because its prompt was lost, not because of its usage limit"),
+                "{what}:\n{text}"
             );
+            assert!(
+                text.contains("fails whether or not it meets a limit"),
+                "{what}:\n{text}"
+            );
+            assert!(
+                text.lines()
+                    .any(|l| l.ends_with("usage_limit_wait failed reason=prompt_cut_short")),
+                "{what}:\n{text}"
+            );
+            assert!(!text.contains("skipped"), "{what}:\n{text}");
+            assert!(!text.contains("piped_prompt"), "{what}:\n{text}");
         }
     }
 }
 
-/// Why the sentence beside the event may not be reworded into one that
-/// drops the words *usage limit*: the event line alone carries no marker,
-/// so the sentence is the only thing keeping the ending out of
-/// `indeterminate` - "we do not know" - which a supervising loop reads as
-/// terminal.
+/// The lines a prompt-cut-short step writes besides the ending's sentence:
+/// the copier's report of the failed read, and `finish`'s refusal of the
+/// attempt's success. Neither names the limit.
+const LOSS_LINES: &str = "amplihack: this step's prompt could not be read to its end (Bad file \
+     descriptor (os error 9)), so the attempt reading it is given only what arrived before \
+     that: a prompt cut short, which it cannot tell from a whole one\n\
+     amplihack: this step's prompt was cut short on its way to the attempt, so the attempt \
+     was not given the whole task and its result is not this step's result";
+
+/// The run result the recipe runner reports for a run whose one agent step
+/// ended with `stderr`, and, when `recorded` is set, the structured cause
+/// the runner writes for a step the supervisor reported as limited
+/// (`failure_cause`, issue #2334). The shape is the runner's own JSON.
+fn run_result(stderr: &str, recorded: bool) -> RecipeRunResult {
+    let mut v = serde_json::json!({
+        "recipe_name": "default-workflow",
+        "success": false,
+        "step_results": [{
+            "step_id": "step-08-implement",
+            "status": "failed",
+            "error": "agent step exited with status 1",
+            "recent_stderr": stderr.lines().collect::<Vec<_>>(),
+        }],
+    });
+    if recorded {
+        v["failure_cause"] = serde_json::json!({
+            "class": "usage_limit",
+            "origin": {"invocation_path": "default-workflow", "step_id": "step-08-implement"},
+        });
+    }
+    serde_json::from_value(v).expect("the runner's result shape")
+}
+
+/// A step that ends this way is a temporary fault the run resumes from, not
+/// work that failed, and that verdict comes from the cause the supervisor
+/// recorded, not from the sentence (review of PR #2992, round 5).
+///
+/// The same run is classified with the whole ending and with the sentence
+/// removed. Both are `usage_limit`: the sentence decides nothing.
 #[test]
-fn the_event_line_alone_would_not_be_classified_as_a_usage_limit() {
-    let skipped = line(
-        &Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
-        &chrono::Local,
+fn the_run_is_classed_a_usage_limit_from_the_recorded_cause_not_the_sentence() {
+    for reset in [Some(RESET), Some(NOW - 1), None] {
+        for (what, ending) in endings(reset, NOW) {
+            let with_sentence = format!("{LOSS_LINES}\n{ending}");
+            let without_sentence = format!(
+                "{LOSS_LINES}\n{}",
+                line(&Event::PromptCutShort, &chrono::Local)
+            );
+            for (which, stderr) in [
+                ("with the sentence", &with_sentence),
+                ("without it", &without_sentence),
+            ] {
+                let verdict = classify_run_failure(&run_result(stderr, true), "");
+                assert_eq!(
+                    verdict.class,
+                    FailureClass::UsageLimit,
+                    "{what} {which}, reset={reset:?}: {}",
+                    verdict.reasoning()
+                );
+            }
+        }
+    }
+}
+
+/// The other half of the property above: with no recorded cause, the lines
+/// a prompt-cut-short step writes about itself do not make the run a usage
+/// limit. Without the sentence the run is `indeterminate`, so what makes it
+/// resumable is the cause the supervisor recorded, which no rewording of a
+/// log line can remove.
+#[test]
+fn without_the_recorded_cause_the_step_s_own_lines_do_not_class_a_usage_limit() {
+    let lines = format!(
+        "{LOSS_LINES}\n{}",
+        line(&Event::PromptCutShort, &chrono::Local)
     );
+    let verdict = classify_run_failure(&run_result(&lines, false), "");
     assert_eq!(
-        classify_failure_text(&skipped).0,
+        verdict.class,
         FailureClass::Indeterminate,
-        "{skipped}"
+        "{}",
+        verdict.reasoning()
+    );
+    let recorded = classify_run_failure(&run_result(&lines, true), "");
+    assert_eq!(recorded.class, FailureClass::UsageLimit);
+    assert_eq!(
+        recorded.signal,
+        Some("durable scoped usage-limit evidence"),
+        "{}",
+        recorded.reasoning()
     );
 }
 
-/// The ending leaves the layer above one question: when is it worth
-/// starting this step again? It answers in the one form the runner's own
-/// reader takes a reset from, so the verdict a supervising loop reads names
-/// the time.
+/// The event line names the loss and not the limit, so on its own it reads
+/// as no limit at all. That is right: the limit is not why the step ends,
+/// and the run learns of it from the recorded cause.
+#[test]
+fn the_event_line_alone_is_not_a_usage_limit() {
+    let failed = line(&Event::PromptCutShort, &chrono::Local);
+    assert_eq!(
+        classify_failure_text(&failed).0,
+        FailureClass::Indeterminate,
+        "{failed}"
+    );
+}
+
+/// The recorded cause says that the step stopped on a limit but not when
+/// the limit lifts. The ending says that, in the one form the runner's own
+/// reader takes a reset from, so the verdict a person reads names the time.
 #[test]
 fn each_ending_states_the_reset_where_the_runner_reads_one() {
     let want = fmt_time(RESET, &chrono::Local);

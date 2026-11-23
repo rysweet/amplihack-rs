@@ -12,9 +12,10 @@
 //! step may wait as many times as it meets one, and the chain is paced by
 //! the waits costing time rather than by a count or a budget. A wait with no
 //! reset it can end on says so plainly, as `waiting_for_capacity`, naming
-//! the login and why. What still ends a step is a stop signal, the end of
-//! its session, the wait turned off, output with no limit message in it,
-//! and a piped prompt of which no whole copy is left for a retry.
+//! the login and why. What still ends a step that met a limit is a stop
+//! signal, the end of its session, the wait turned off, output with no
+//! limit message in it, and a prompt that could not be read to its end,
+//! which is a lost prompt and not a limit ending.
 //!
 //! No clock ends a limit wait. `$AMPLIHACK_STEP_TIMEOUT` used to: the wait
 //! ended a minute before it and the step failed, on the reading that the
@@ -25,19 +26,35 @@
 //! it.
 //!
 //! A prompt that could not be read to its end fails its step whether or not
-//! a limit is met, because the attempt was given less than its task; it is
-//! one of the inputs no retry can be given (issue #3036). The others are a
-//! copy that failed (the copier panicked, its final flush failed, or the
-//! part the disk held cannot be read back) and a copy that could not be set
-//! up because the process was out of file descriptors: in both the attempt
-//! was given the whole task, but no whole copy survives, so a limit on it
-//! ends the step. None is a refusal to wait: there is no prompt for a retry
-//! to read, so there is no retry for a wait to earn. Such a step hands the
-//! run what it needs to resume: a sentence naming why no retry can run, the
-//! words that class the failure `usage_limit`, and when the limit lifts.
-//! The event line alone carries none of that. `ending` builds the sentence
-//! and says why each part of it is there; `tests_ending_evidence` pins it
-//! by classifying the ending exactly as the recipe runner would.
+//! a limit is met, because the attempt was given less than its task, and no
+//! retry can be given more (issue #3036). It is the one input no retry can
+//! be given, and it is a prompt-loss failure rather than a limit ending: a
+//! step that meets one ends with `failed reason=prompt_cut_short`, never a
+//! skipped wait (review of PR #2992). A copy that failed or could not be set
+//! up used to end a step on a limit too. Neither can now: the copy is kept
+//! in memory, so every byte the copier reads is a byte a retry is given,
+//! and a step whose copy cannot be set up (a process out of descriptors or
+//! threads) is not run at all (`scratch`). So no step ends on a limit for
+//! want of a copy of its prompt, and a capacity wait would give the one
+//! that remains nothing: its prompt is gone, not late.
+//!
+//! A step whose prompt was cut short and that met a limit hands the run
+//! what it needs to resume as data. Its limit was reported to the recipe
+//! runner over the recovery channel (`Outcome::UsageLimit`, issue #2334)
+//! the moment the attempt met it, the runner writes that into the run's
+//! result as `failure_cause`, the run is classed `usage_limit` from that
+//! field, and a relaunch resumes at the step, whose whole prompt the runner
+//! sends again. `ending` writes a sentence beside the event line for the
+//! person reading the log, naming the loss and when the limit lifts;
+//! `tests_ending_evidence` pins that the classification does not depend on
+//! that sentence.
+//!
+//! A prompt that is merely late is not lost, and nothing waits for it. A
+//! retry, or an auto-switch rerun, starts at once and is fed the copy
+//! already held and then the rest as the caller writes it, as the first
+//! attempt was (`scratch`, review of PR #2992). The supervisor never waits
+//! on the caller's pipe, so a caller that holds it open can hold up only an
+//! attempt that reads it.
 //!
 //! Each wait's `start`, `waiting_for_capacity` and `end` also reach the run's
 //! recipe log, so a waiting step is visible there and not just in its own
@@ -111,7 +128,7 @@ use super::store::ProfileStore;
 use amplihack_utils::rotator_status::Ledger;
 use anyhow::Result;
 use clock::Clock;
-use ending::no_retry_is_possible;
+use ending::the_prompt_was_lost;
 pub(crate) use events::Met;
 use events::{Event, Shape, Skip, log, recipe_line};
 use fingerprint::{Fingerprint, Source, Watch};
@@ -270,9 +287,10 @@ pub(crate) struct Waiter {
     /// The process that started this step, read before any attempt runs.
     parent: libc::pid_t,
     /// Why no wait can help this step, whatever the limit says, and the
-    /// static words that say which case it is. The words are printed when a
-    /// limit actually ends the step, never when the block is set, so a step
-    /// that meets no limit says nothing (review of PR #2992).
+    /// static words that say which case it is. The words are printed when
+    /// the step that met a limit ends this way, never when the block is set,
+    /// so a step that meets no limit says nothing (review of PR #2992). Only
+    /// [`NoWait::PromptCutShort`] is ever set here.
     blocked: Option<(NoWait, &'static str)>,
     /// What this step's Claude arguments ask for, which is how the
     /// supervisor knows whether stdin carries anything it must keep and
@@ -375,17 +393,17 @@ impl Waiter {
     }
 
     /// Never wait for this step, for `why`. `cause` is the static sentence
-    /// [`Waiter::after_limit`] prints when a limit does end the step this
-    /// way: `why` is the logged reason an operator greps for, and a reason
-    /// alone does not say which of the cases it covers happened here, nor
-    /// what has to be done about it (review of PR #2992).
+    /// [`Waiter::after_limit`] prints when the step ends this way: `why` is
+    /// the logged reason an operator greps for, and a reason alone does not
+    /// say what happened here, nor what has to be done about it (review of
+    /// PR #2992).
     pub(crate) fn block(&mut self, why: NoWait, cause: &'static str) {
         self.blocked = Some((why, cause));
     }
 
     /// `WaitFor::Skip` for the reason set by `block`, if any. Passed to
     /// `after_limit` when no limit of the inherited profile is known, so the
-    /// refusal is still logged.
+    /// ending is still logged.
     pub(crate) fn blocked_skip(&self) -> Option<WaitFor> {
         self.blocked.map(|(why, _)| WaitFor::Skip(why))
     }
@@ -443,16 +461,13 @@ impl Waiter {
     /// step on `$HOME/.claude` or under an explicit login stays put.
     ///
     /// `replay()` is asked, at the moment a retry is about to be announced,
-    /// what the step's input can give one (issues #2816, #3036). It is asked
-    /// here, and not before the wait, because a prompt still arriving on a
-    /// pipe when the limit is seen has normally arrived by the time a wait
-    /// of hours ends. One that has not ([`scratch::Replay::Arriving`]) is
-    /// waited for: the retry starts once its caller closes the pipe, and
-    /// until then the step says `waiting_for_prompt` and answers stop
-    /// signals and the end of its session as a wait does. Only an input no
-    /// retry can ever be given ([`scratch::Replay::Never`], a prompt that
-    /// could not be read to its end) ends the step, with the limit result
-    /// and `skipped reason=piped_prompt` (see [`ending::no_retry_note`]).
+    /// whether the step's input can be given to one (issues #2816, #3036).
+    /// It never waits: a prompt still arriving is fed to the retry as it
+    /// arrives (review of PR #2992). Only an input no retry can ever be
+    /// given ([`scratch::Replay::Never`], a prompt that could not be read to
+    /// its end) ends the step, with the attempt's result and `failed
+    /// reason=prompt_cut_short` (see [`ending::prompt_lost_note`]): a lost
+    /// prompt, not a limit ending.
     ///
     /// `resumed` says how the attempt that hit this limit came to run
     /// (issue #2857). [`Resumed::AfterASignal`] means a wait had just ended
@@ -468,8 +483,8 @@ impl Waiter {
     /// reaching its deadline retries the step. `$AMPLIHACK_STEP_TIMEOUT`
     /// plays no part (issue #3037). What still ends a step is a stop signal,
     /// the end of its session, the wait turned off, output with no limit
-    /// message in it, and a piped prompt of which no whole copy is left for
-    /// a retry.
+    /// message in it, and a prompt that could not be read to its end, which
+    /// fails the step whether or not it met a limit.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -527,20 +542,21 @@ impl Waiter {
             WaitFor::LoginChange { harness } => {
                 (harness, plan_login_change(now, max), Shape::LoginChange)
             }
+            WaitFor::Skip(NoWait::PromptCutShort) => {
+                // Review of PR #2992: the step ends because its prompt was
+                // lost, not because of the limit. Its attempt was given part
+                // of its task, so it fails whether or not it met one, and a
+                // retry would have no whole prompt to read. Say so in words
+                // beside the event, with the reset of the limit this step
+                // actually met (read from `inherited`, since `waiting` is the
+                // block), so the layer that holds the prompt knows to send
+                // the step again and when.
+                let cause = self.blocked.map_or(NO_WHOLE_PROMPT, |(_, cause)| cause);
+                the_prompt_was_lost(cause, inherited.reset(), now);
+                log(&Event::PromptCutShort);
+                return AfterLimit::Finish(None);
+            }
             WaitFor::Skip(why) => {
-                // Review of PR #2992: the step is about to end carrying the
-                // limit's own result, and `skipped reason=piped_prompt`
-                // alone reads as a refusal to wait for a limit. It is not
-                // one: there is no prompt for a retry to read, so there is
-                // no retry for a wait to earn. Say that in words beside the
-                // event, name which case it is, and name what has to happen
-                // instead, because this step cannot do it.
-                if let Some((NoWait::PipedPrompt, cause)) = self.blocked {
-                    // The reset of the limit this step actually met, not of
-                    // the skip: `waiting` is the block, so the reset has to
-                    // be read from `inherited`.
-                    no_retry_is_possible(cause, inherited.reset(), now);
-                }
                 log(&Event::Skipped(Skip::Cannot(why)));
                 return AfterLimit::Finish(None);
             }
@@ -596,7 +612,7 @@ impl Waiter {
         // step then waits as it would have had nothing moved.
         if changed(&self.attempt_login, self.watch.login()) && change_may_end(&p, &self.watch) {
             emit(&Event::End(End::LoginChanged), account);
-            if let Some(finish) = self.prompt_for_the_retry(replay, p.reset, signals) {
+            if let Some(finish) = self.prompt_for_the_retry(replay, p.reset) {
                 return finish;
             }
             log(&Event::Resume {
@@ -648,7 +664,7 @@ impl Waiter {
             | End::LoginChanged
             | End::RotatorCapacity
             | End::OtherCapacity => {
-                if let Some(finish) = self.prompt_for_the_retry(replay, p.reset, signals) {
+                if let Some(finish) = self.prompt_for_the_retry(replay, p.reset) {
                     return finish;
                 }
                 log(&Event::Resume {
@@ -668,108 +684,42 @@ impl Waiter {
     /// can run, or how the step ends instead (issues #2816, #3036).
     ///
     /// A step whose prompt arrives on a pipe is replayed from the copy the
-    /// supervisor kept (issue #2815). A copy whose caller has not finished
-    /// writing is not refused: the retry waits for the rest, saying so once
-    /// on a `waiting_for_prompt` line, and starts as soon as the caller
-    /// closes the pipe. That wait ends early only as a limit wait does, on a
-    /// stop signal or with the step's session, so it is not a way for a
-    /// limit to end a step. It used to be one (issue #3036).
+    /// supervisor kept (issue #2815), and a copy whose caller has not
+    /// finished writing is replayed as it grows, so the retry runs at once
+    /// either way (review of PR #2992). Nothing here waits on the caller's
+    /// pipe. A late prompt used to be waited for here, with a
+    /// `waiting_for_prompt` line, and a caller that never closed its pipe
+    /// held the step for ever (issue #3036, PR #2992 round 5).
     ///
     /// The one input that ends the step is one no retry can ever be given:
     /// a prompt that could not be read to its end. Its attempt was given
-    /// less than its task, so the step fails whether or not it met a limit,
-    /// and the reason is printed because `piped_prompt` alone does not say
-    /// it. `reset` is the limit's own reset, so the layer that has to send
-    /// the step again is told when doing so is worth anything, or that
-    /// nothing here can say (`ending::resumes_at`).
+    /// less than its task, so the step fails whether or not it met a limit:
+    /// a lost prompt, logged as `failed reason=prompt_cut_short`, with the
+    /// reason printed on the line before. `reset` is the limit's own reset,
+    /// so the person reading the log is told when a relaunch will find
+    /// room, or that nothing here can say (`ending::resumes_at`).
     fn prompt_for_the_retry(
         &mut self,
         replay: &mut dyn FnMut() -> scratch::Replay,
         reset: Option<i64>,
-        signals: &Signals,
     ) -> Option<AfterLimit> {
-        match self.wait_for_prompt(replay, signals) {
-            PromptWait::Ready => None,
-            PromptWait::Never(why) => {
+        match replay() {
+            scratch::Replay::Ready => None,
+            scratch::Replay::Never(why) => {
                 eprintln!("amplihack: no retry after the wait: {why}");
-                no_retry_is_possible(NO_WHOLE_PROMPT, reset, self.clock.now());
-                log(&Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)));
+                the_prompt_was_lost(NO_WHOLE_PROMPT, reset, self.clock.now());
+                log(&Event::PromptCutShort);
                 Some(AfterLimit::Finish(None))
             }
-            PromptWait::Signal(sig) => Some(AfterLimit::Finish(Some(128 + sig))),
-            PromptWait::SessionEnded => Some(AfterLimit::Finish(None)),
-        }
-    }
-
-    /// Waits while `replay` says the step's prompt is still arriving, and
-    /// says how that ended (issue #3036).
-    ///
-    /// Shared by the retry a wait earned ([`Waiter::after_limit`]) and the
-    /// auto-switch rerun that runs at once under another profile
-    /// (`auto_switch::rerun`), so neither can end a step for a prompt that
-    /// is merely late. Writes `waiting_for_prompt` once, the first time it
-    /// has to wait, to stderr and to the run's recipe log; a prompt already
-    /// whole returns at once and writes nothing. A stop signal and the end
-    /// of the step's session end it as they end a limit wait, so a caller
-    /// that never closes its pipe cannot hold the step deaf to them. Both
-    /// are looked for before the line is written, so a step already told
-    /// to stop does not announce a wait it will not make, and a second call
-    /// after a stop (the auto-switch rerun asks once per candidate) writes
-    /// nothing.
-    pub(crate) fn wait_for_prompt(
-        &mut self,
-        replay: &mut dyn FnMut() -> scratch::Replay,
-        signals: &Signals,
-    ) -> PromptWait {
-        let account = self.mark();
-        let mut said = false;
-        loop {
-            match replay() {
-                scratch::Replay::Ready => return PromptWait::Ready,
-                scratch::Replay::Never(why) => return PromptWait::Never(why),
-                scratch::Replay::Arriving => {}
-            }
-            if let Some(sig) = signals.received() {
-                return PromptWait::Signal(sig);
-            }
-            // SAFETY: getppid(2) has no preconditions. A parent that exits
-            // re-parents this process, so the id changes.
-            if unsafe { libc::getppid() } != self.parent {
-                return PromptWait::SessionEnded;
-            }
-            if !said {
-                emit(&Event::WaitingForPrompt, account.as_deref());
-                said = true;
-            }
-            self.clock.sleep(PROMPT_POLL);
         }
     }
 }
 
-/// How [`Waiter::wait_for_prompt`] ended (issue #3036).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PromptWait {
-    /// The whole prompt is stored, or needed no storing: a rerun can read it.
-    Ready,
-    /// No rerun can ever be given the prompt, for the reason given.
-    Never(String),
-    /// A stop signal arrived while the prompt was still arriving.
-    Signal(i32),
-    /// The step's session ended while the prompt was still arriving.
-    SessionEnded,
-}
-
-/// How often the retry a wait earned looks again for a prompt that is still
-/// arriving (issue #3036). The question is a zero-timeout `poll(2)` and two
-/// flags, so asking it often costs nothing, and a caller that has finished
-/// writing is seen within this long. It is not a deadline: nothing here
-/// counts the looks or ends the step for their number.
-const PROMPT_POLL: Duration = Duration::from_secs(1);
-
-/// The cause [`ending::no_retry_note`] gives when a retry's input can never
-/// be whole. The specific reason is printed on the line before it.
-const NO_WHOLE_PROMPT: &str = "no whole copy of its piped prompt can be given to a retry, for the \
-                               reason on the line above";
+/// The cause [`ending::prompt_lost_note`] gives when a retry's input can
+/// never be whole, which since the review of PR #2992 means the prompt was
+/// cut short. The specific reason is printed on the line before it.
+const NO_WHOLE_PROMPT: &str = "its piped prompt could not be read to its end, so no retry can be \
+                               given the whole of it, for the reason on the line above";
 
 /// Whether a *login change* may end this wait: the login now live has room
 /// (issue #2857).

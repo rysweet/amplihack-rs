@@ -175,15 +175,18 @@ fn model_output_about_usage_limits_is_not_waited_for() {
 
 /// The whole of what is left of [`NoWait`]: two readings, neither of them a
 /// limit. Issue #2911's first invariant is that no limit can end a step, and
-/// this is the enum that would have to grow for one to.
+/// this is the enum that would have to grow for one to. The second is a
+/// lost prompt, which fails a step whether or not it met a limit (review of
+/// PR #2992); `piped_prompt`, which also covered a copy that failed or
+/// could not be set up, is gone.
 #[test]
 fn issue_2911_only_two_readings_end_a_step_and_neither_is_a_limit() {
     assert_eq!(
         [
             NoWait::NoLimitMessage.as_str(),
-            NoWait::PipedPrompt.as_str()
+            NoWait::PromptCutShort.as_str()
         ],
-        ["no_limit_message", "piped_prompt"]
+        ["no_limit_message", "prompt_cut_short"]
     );
     for text in [SESSION, SPEND, SPEND_SESSION, SPEND_WEEKLY, WEEKLY, CREDITS] {
         for now in [NOW, LA_1300 + 120, NOW + 10 * 86_400] {
@@ -223,7 +226,7 @@ fn issue_2911_the_log_vocabulary_survives_the_move_out_of_skip() {
 fn a_wait_says_whether_it_has_a_reset_to_end_on() {
     assert_eq!(reset_wait(NOW + 60).waiting_for_capacity(), None);
     assert_eq!(
-        WaitFor::Skip(NoWait::PipedPrompt).waiting_for_capacity(),
+        WaitFor::Skip(NoWait::PromptCutShort).waiting_for_capacity(),
         None
     );
     assert_eq!(

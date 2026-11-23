@@ -87,10 +87,9 @@ fn every_other_event_has_its_documented_fields() {
             Event::Skipped(Skip::Cannot(NoWait::NoLimitMessage)),
             "skipped reason=no_limit_message",
         ),
-        (
-            Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
-            "skipped reason=piped_prompt",
-        ),
+        // Review of PR #2992: a prompt cut short is a failure of the step's
+        // input, not a skipped wait, and says so.
+        (Event::PromptCutShort, "failed reason=prompt_cut_short"),
         (Event::Skipped(Skip::Ci), "skipped reason=ci"),
         (
             Event::End(End::CapacityExpired),

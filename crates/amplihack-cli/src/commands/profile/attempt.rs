@@ -118,14 +118,6 @@ impl Signals {
             sig => Some(sig),
         }
     }
-
-    /// Records `sig` as received by this instance only, as if it had been
-    /// delivered. Raising a real signal would reach every `Signals` the test
-    /// process holds, including those of tests running beside it.
-    #[cfg(test)]
-    pub(crate) fn note_received(&self, sig: i32) {
-        self.seen.store(sig, Ordering::Relaxed);
-    }
 }
 
 impl Drop for Signals {
