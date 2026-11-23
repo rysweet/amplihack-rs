@@ -438,7 +438,8 @@ written by `autodrive_crusty_record.sh`.
 `RECIPE_VAR_*` environment variables, never by templating into the command.
 An optional first argument asks for that many further rounds; it must
 match `^[0-9]+$` and be at least `1`, and the tool turns it into a budget of
-the rounds already used plus that number (see
+the rounds already used plus that number, or keeps no limit when the
+operator set none (see
 [`autodrive_merge_loop_run.sh`](#autodrive_merge_loop_runsh)). A
 `merge_method` the merge tool would not take stops the tool with exit `2`
 before the driver starts (see [Merge method](#merge-method)). The step keeps its default `fatal`
@@ -1513,9 +1514,15 @@ The optional argument is a number of further rounds. It must match
 budget counts rounds across runs that share the state directory, so the tool
 counts the merge-ready rounds already recorded in `autodrive-usage.tsv` (the file `autodrive_budget.sh` writes) and
 passes `autodrive_budget_loop_rounds=<used + N>`, never more than the
-operator's own `autodrive_budget_loop_rounds` when one is set. When the
+operator's own `autodrive_budget_loop_rounds` when that is a positive budget.
+When the operator's `autodrive_budget_loop_rounds` is empty or all zeros (no
+limit), the argument leaves the loop with no limit: the empty or zero value is
+forwarded as is, and the loop runs until the PR is ready or another stop
+applies (#3139). A malformed operator value still becomes `<used + N>`, so it
+fails closed. `autodrive_budget_total_rounds`, the wall-clock budget and the
+other stops (`STUCK`, `HANDOFF`, `USAGE_LIMIT`) still apply. When the
 operator's budget leaves no room, the round stops as `BUDGET_EXHAUSTED` and
-the PR is handed off. `autodrive_budget_total_rounds` applies unchanged.
+the PR is handed off.
 
 Before it reads the preflight or touches the state directory, the tool loads
 `autodrive_merge.sh` from beside itself and checks `RECIPE_VAR_merge_method`
