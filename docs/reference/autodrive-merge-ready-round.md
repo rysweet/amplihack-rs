@@ -102,7 +102,7 @@ or environment variable carries it.
 
 | Step | What it does with the task text |
 | --- | --- |
-| `autodrive-merge-evidence` `step-01-sync-with-base` | Has it as context. It does not change what the sync does or reports. |
+| `autodrive-merge-evidence` `step-01-sync-with-base` | Has it as context and applies it to what it observes. The step fetches the base and reports whether the branch is behind, whether it conflicts, whether the repository requires an up-to-date branch and whether it accepts a merge commit (each `true`, `false` or `unknown`). It never merges, commits or pushes. |
 | `autodrive-merge-evidence` `step-02-qa-team-scenarios` | Uses it to understand the QA scope the caller asked for. It never narrows, waives or substitutes for a suite, a scenario or the merge-base `qa.toml` declaration rules. |
 | `autodrive-merge-evidence` `step-03-wait-for-ci` | Has it as context, for example a check the task names. It does not change what is measured or reported. |
 | `autodrive-merge-round` `step-02` | Reads it as the caller's instruction, placed above the untrusted-data region, and applies the contract below. |
@@ -306,8 +306,9 @@ judgement. No tool parses or gates on the comment. The agent:
 Only the full SHA counts. A comment written by a person with a 7-character
 SHA counts as no verdict; the cost is at most one extra Crusty pass.
 
-A [base sync](#base-sync), or a commit that changes only the PR description
-or evidence files, moves the head without needing a new review. For a verdict
+A clean [base sync](#base-sync), or a commit that changes only the PR
+description or evidence files, moves the head without needing a new review. A
+base merge that needed a hand-resolved conflict is code and does need one. For a verdict
 at an earlier head, the agent runs the trusted, read-only range check. It is
 the only tool step-01b runs. The tool comes from the round's pinned tools
 directory, the `autodrive_tools_dir` output of `step-00-tools-dir`, never
@@ -321,7 +322,7 @@ bash "{{autodrive_tools_dir}}/autodrive_round_evidence.sh" crusty-covers 15a7f6f
 
 It walks the commits from the verdict's SHA to `HEAD` with the same rules as
 the before-round re-review check (`autodrive_crusty_range`): `ok` when every
-later commit is a clean base merge or an allowed description or evidence
+later commit is a clean base merge (no hand-resolved conflict) or an allowed description or evidence
 change; otherwise `crusty-unreviewed-commits` or `crusty-range-unreadable`,
 and criterion 3 is not met. The SHA argument must be 40 or 64 lowercase hex
 characters, otherwise the tool prints `crusty-range-unreadable` and exits
@@ -341,6 +342,7 @@ therefore costs a Crusty pass; it never lets an unreviewed commit through.
 | --- | --- | --- |
 | A pre-sync head | One clean merge of the base, base SHA found | `ok` |
 | A pre-sync head | One clean merge of the base, base SHA empty | `crusty-unreviewed-commits:<head>` |
+| A pre-sync head | A base merge with a hand-resolved conflict | `crusty-unreviewed-commits:<head>` |
 | An earlier head | A commit that changes code | `crusty-unreviewed-commits:<head>` |
 | An earlier head | A change to evidence files only | `ok` |
 | A SHA not in this clone, or a shallow clone | any | `crusty-range-unreadable` |
@@ -797,9 +799,10 @@ statements whose default arm is the safe result.
 
 | When | `mergeStateStatus` | Result |
 | --- | --- | --- |
-| Before the merge request | `DIRTY` (conflicts with the base) | `base-behind` (tool exit `8`); `gh pr merge` is not called. |
+| Before the merge request | `DIRTY` (conflicts with the base) | `base-behind` (tool exit `8`), reason `the branch conflicts with its base (mergeStateStatus DIRTY)`; `gh pr merge` is not called. |
 | Before the merge request | anything else | The merge request goes ahead. `BEHIND` alone does not stop it; GitHub decides whether an out-of-date branch may merge. |
-| After GitHub refuses the merge, read once more | `BEHIND` or `DIRTY` | `base-behind` (tool exit `8`). |
+| After GitHub refuses the merge, read once more | `DIRTY` | `base-behind` (tool exit `8`), reason `GitHub declined the merge: the branch conflicts with its base (mergeStateStatus DIRTY)`. |
+| After GitHub refuses the merge, read once more | `BEHIND` | `base-behind` (tool exit `8`), reason `GitHub declined the merge: the repository requires the branch to be up to date with its base (mergeStateStatus BEHIND)`. |
 | After GitHub refuses the merge | anything else, including empty or unknown | `refused` (tool exit `4`). |
 
 `--match-head-commit` accompanies every merge method, so the merge can only
@@ -963,8 +966,11 @@ result and the report shows `merge` as `null` with `stop_reason`
 
 An explicit refusal (exit `79`) never reaches recovery.
 
-`autodrive-finalize.yaml` emits `base-behind` with `handoff false`: the
-merge loop syncs the base instead, except after a recovery re-run (below). It emits `checks-pending` with
+`autodrive-finalize.yaml` emits `base-behind` with `handoff false`: GitHub will
+not merge the branch as it stands (it conflicts, or an up-to-date rule is
+enforced), and the merge loop's base sync brings the base in where the task
+text and the repository allow, resolving any conflict, then assesses once
+more. After a recovery re-run (below) it hands the PR back as a draft. It emits `checks-pending` with
 `handoff true`, so the PR is drafted with a comment naming the checks.
 
 ### The merge result in the state folder
@@ -1013,32 +1019,108 @@ first and use a reported folder only when a command is run directly, outside
 
 ## Base sync
 
-When finalisation returns `base-behind`, `autodrive-merge-loop.yaml` brings
-the base into the branch and assesses once more. These are steps written out
-in sequence, each run once; there is no loop and no counter.
+When finalisation returns `base-behind`, GitHub has already reported a
+conflict or enforced an up-to-date rule. `autodrive-merge-loop.yaml` then
+applies the rule below, brings the base in where it allows, and assesses once
+more. These are steps written out in sequence, each run once; there is no
+loop and no counter.
+
+### The rule for bringing the base in
+
+This section is the single source for the rule. The skill, the recipe prompts
+and the other reference pages carry a short form that points here.
+
+Bring the base into the PR branch only when one of these holds:
+
+1. **A conflict.** GitHub reports `CONFLICTING` or `DIRTY`.
+2. **The repository requires it.** Strict required status checks are on and
+   the branch is `BEHIND`. One narrow case also counts: a ruleset or branch
+   protection names a required check that can run only once the base's
+   workflow change is in the branch.
+3. **The task text asks for it.** For example, "merge the base when a base
+   commit since the merge base touches a PR file". The agent judges this
+   against `git log <merge-base>..origin/<base> --name-only` and the PR's
+   files.
+
+A branch that is only behind its base, and merges cleanly, is left alone. It
+is not a blocker. A moved base alone never justifies a merge: merging it
+restarts the repository's required checks.
+
+The task text is the operator's instruction and wins over this default. It
+can forbid or limit a base merge. It can never authorise skipping the merge
+policy, the hooks or the never-list below.
+
+Every base update is a merge commit that the repository accepts. The agent
+never rebases, force-pushes, uses `--force-with-lease` or `--no-verify`, and
+never changes the PR's base branch.
+
+### What "the repository accepts a merge commit" means
+
+It means the PR branch may carry a base-merge commit, still pass the
+repository's gates, and land by an allowed merge method. The agent judges this
+from `gh api` reads (repository settings, rulesets, branch protection where
+readable) and the repository's own files. No parser or tool decides it.
+
+- Squash merging flattens a base merge. `allow_merge_commit: false` with
+  squash allowed is therefore not a refusal on its own.
+- These count as a refusal: a repository gate or check that rejects merge
+  commits in a PR (for example a `pr_gate.py`); a repository that can land
+  the PR only by replaying it onto a linear history (`required_linear_history`
+  with rebase-only merging); and the task text.
+- A setting that cannot be read is recorded as `unknown`, never as a pass. If
+  the readable facts do not show that a merge commit can land, the agent
+  hands off and names the fact it could not read. An unreadable secondary
+  setting, such as admin-only classic protection, does not block when the
+  readable facts settle the question.
+
+Where the repository accepts no merge commit, the drive says so and hands off.
+It does not rebase.
+
+### Where the rule is applied
+
+| Where | Role |
+| --- | --- |
+| `step-01-sync-with-base` (evidence) | Observes only. It fetches the base, so `refs/remotes/origin/<base>` is fresh, and reports `behind`, `conflict`, `strict`, `merge_commit_accepted`, `overlapping_files`, `head_sha`, `git_observed`, `blockers` and `attempts`. It never merges, rebases, commits or pushes. |
+| `step-02-merge-ready-assessment` (round) | Decides whether the base is needed and why, under the rule, and records it on the `Base sync` line of the write-up. If a merge commit is refused or the task text forbids it, the blocker is a hand-off naming the owner and the decision. |
+| `step-04-address-blockers` (round) | Carries out the decision in `step-02` and judges nothing itself. It merges the base only when the assessment calls for it, with `git merge --no-edit origin/<base>`, resolves conflicts and stages only the resolved files by name. |
+| `step-03b-base-sync` (loop) | On the finalisation path, applies the same rule. Exit `8` already means a conflict or an enforced up-to-date rule, so it checks the task text and the merge policy, then merges. |
+
+A job that the base renamed or removed is not a reason to merge the base. A
+`pull_request` run builds the merge commit, so the missing job is a
+measurement artefact. The assessment treats it as one only when the job passed
+at the head under its base name. It counts the base as required only in the
+narrow case in the rule above.
+
+### The sync steps
 
 | Step | Kind | Runs when | Responsibility |
 | --- | --- | --- | --- |
-| `step-03b-base-sync` | agent (builder) | `finalize_merge.result == 'base-behind'` | Merges the base into the PR branch and pushes. Outputs `{"synced":"true"\|"false","reason":"..."}`. |
+| `step-03b-base-sync` | agent (builder) | `finalize_merge.result == 'base-behind'` | Applies the rule. Merges the base into the PR branch, resolves any conflict, runs the fast checks and pushes. Outputs `{"synced":"true"\|"false","reason":"...","head_sha":"..."}`. |
 | `step-03c-sync-round` | bash | `synced == 'true'` | Runs `autodrive_merge_loop_run.sh 1`: the merge-ready loop for one more round (see [the round budget](#autodrive_merge_loop_runsh)). |
 | `step-03d-sync-outcome` | bash | after `step-03c` | Maps the loop result as `step-02a` does, giving `sync_loop_outcome`. |
 | `step-03e-finalize-again` | sub-recipe | `sync_loop_outcome.finalise == 'true'` | Runs `autodrive-finalize.yaml` once more. |
-| `step-03f-sync-handoff` | sub-recipe | `finalize_merge.result == 'base-behind'` and `synced != 'true'` (including a base sync that returned no JSON), or `sync_loop_outcome.outcome == 'handoff'`, or a second finalisation that returned `base-behind` again | Runs [`autodrive-handoff.yaml`](#hand-off), naming the moving base. |
+| `step-03f-sync-handoff` | sub-recipe | `finalize_merge.result == 'base-behind'` and `synced != 'true'` (including a base sync that returned no JSON), or `sync_loop_outcome.outcome == 'handoff'`, or a second finalisation that returned `base-behind` again | Runs [`autodrive-handoff.yaml`](#hand-off), naming the owner and the decision where the sync step gave them. |
 
 After the second finalisation, any result other than `merged` ends the drive
 with `not merged: <reason>` or a hand-off. A second `base-behind` is not
 synced again: the base moved while the drive assessed it, and the PR is
-handed off with the reason `the branch is out of date with its base: the base
-sync did not finish, or the base moved again after it`, so it is never left
-ready with no drive.
+handed off, so it is never left ready with no drive.
 
-On this route `step-03f` passes that sentence as `handoff_reason`. The text
-the sync produced travels in `handoff_blocker` as
-`{{base_sync.reason}} {{sync_loop_outcome.reason}}`: the base-sync agent's
-reason, then the `step-03d` loop reason. When the one extra round ended
-`UNREADABLE`, that loop reason names the
-[kept driver output](#kept-driver-output). The prompt's instruction to read
-`merge-ready-driver.err` applies on this route as it does on `step-02c`.
+On this route `step-03f` passes `handoff_reason` as `the base sync did not
+bring the base in (see the blocker for the owner and the decision), or the
+base moved again after it`. The text the sync produced travels in
+`handoff_blocker` as `{{base_sync.reason}} {{sync_loop_outcome.reason}}`: the
+base-sync agent's reason, then the `step-03d` loop reason. The agent's reason
+holds the named owner and the decision, so they reach the hand-off with no
+extra field. When the one extra round ended `UNREADABLE`, the loop reason
+names the [kept driver output](#kept-driver-output). The prompt's instruction
+to read `merge-ready-driver.err` applies on this route as it does on
+`step-02c`.
+
+The report step shows the same reason. For a `base-behind` result it prints
+`not merged: <reason>; base sync: <base_sync.reason>`, with the base-sync
+reason reduced to printable ASCII and capped at 1000 bytes. The stop reason
+stays `not_merged`.
 
 ### What the sync step does
 
@@ -1050,21 +1132,107 @@ reason, then the `step-03d` loop reason. When the one extra round ended
    drive does not push to another repository.
 4. Checks `git status --porcelain` in the PR worktree. Unrelated staged or
    modified files give `synced:false`.
-5. Runs `git fetch origin -- <base>` and then `git merge origin/<base>`.
-6. On any conflict, runs `git merge --abort` and gives `synced:false` with the
-   reason `conflicts need review`. Conflict resolution is never pushed
-   without review.
-7. Pushes with `git push origin HEAD:<headRefName>`, with hooks on.
+5. Runs `git fetch origin -- <base>` and reads the task text. Where the text
+   names a condition, the agent judges it against
+   `git log <merge-base>..origin/<base> --name-only` and the PR's files. If
+   the text forbids or limits a base merge in a way this state does not meet,
+   the answer is `synced:false`, quoting the operator's instruction and
+   naming the operator as the one who decides.
+6. Checks the merge policy (repository settings, rulesets, readable branch
+   protection and the repository's PR gates). If the repository accepts no
+   merge commit, the answer is `synced:false`, naming the repository's
+   maintainers (to allow a merge commit) or the operator (to rebase by hand),
+   and the decision.
+7. Runs `git merge --no-edit origin/<base>`.
+8. On a conflict, resolves each conflicted file so that both sides keep their
+   meaning, stages the resolved files by name, confirms no markers remain
+   with `git diff --cached --check`, and commits with `git commit --no-edit`
+   with hooks on.
+9. Runs the fast checks: the repository's pre-commit and pre-push hooks and
+   targeted tests for the files the resolution touched. This is not the full
+   CI suite. Each shell call that runs tests or hooks starts by loading
+   [`git-repo-env.sh`](git-repo-env-helper.md) from
+   `$AMPLIHACK_HOME/amplifier-bundle/tools`. A fix commit may touch only the
+   conflicted files or files the PR already changes.
+10. Pushes with `git push origin HEAD:<headRefName>`, with hooks on. If the
+    remote moved, it fetches, merges and pushes once more, never forcing; if
+    that is refused too, the answer is `synced:false`.
+11. Records in `reason` the method used and why the rule and the repository
+    allow it.
+
+A conflict that needs a decision belonging to a named owner (a product or API
+choice, where neither side can be dropped silently) ends with `git merge
+--abort` and `synced:false`. The reason names the owner, found from the
+commits, the PR or CODEOWNERS, and the decision. There is no fixed string.
 
 The step never uses `rebase`, `--force`, `--force-with-lease`, `--no-verify`,
-`reset --hard`, `git add -A` or `core.hooksPath`. It stages only the merge's
-own result.
+`reset --hard`, `git add -A`, `git add .` or `core.hooksPath`, and never
+changes git config.
 
-A worked case: PR #2575 is `CLEAN` and ready at `15a7f6f4…`, but `main`
-moved and GitHub refuses the merge. The read-back says `BEHIND`, so
-finalisation returns `base-behind`. The sync step merges `origin/main` into
-the branch as a new merge commit and pushes. One more merge-ready round
-assesses the new head, and the second finalisation merges it at that head.
+A resolved conflict is code. Crusty reviews it before the one extra round, and
+that round assesses it before the second finalisation. If either finds
+something, `step-03d` hands off. CI restarts after a base merge, so the extra
+round can end `checks-pending`; that hands off as a draft, as it does today.
+
+### Worked cases
+
+**Behind only, not strict.** PR #2575 is `CLEAN` and ready, but `main` moved.
+The repository does not require an up-to-date branch, and the task text does
+not ask for the base. The base is not merged, nothing is pushed, and
+finalisation merges the PR at the assessed head.
+
+**Strict required checks.** The same PR, but the repository requires an
+up-to-date branch. GitHub refuses the merge and the read-back says `BEHIND`,
+so finalisation returns `base-behind`. The sync step merges `origin/main` as a
+new merge commit and pushes through the hooks. One more round assesses the new
+head, and the second finalisation merges it at that head.
+
+**A conflict.** `main` changes the same lines the PR changes after the round
+said ready. The merge is refused as `DIRTY`, so finalisation returns
+`base-behind`. The sync step merges `origin/main`, resolves the file keeping
+both sides' text, commits, runs the fast checks and pushes. Crusty reviews the
+resolution, the extra round assesses it, and the second finalisation merges
+the PR. The run does not end `not merged: the branch conflicts with its base`.
+
+**The task text forbids a base merge.** Whatever the state, the sync step
+changes nothing and answers `synced:false`, quoting the instruction. The
+hand-off names the operator and the decision.
+
+**The repository refuses merge commits.** A conflict exists, but a PR gate
+rejects merge commits. The sync step changes nothing, never rebases and never
+force-pushes. The hand-off names the repository's maintainers, to allow a
+merge commit, or the operator, to rebase by hand.
+
+### What the tests show
+
+Each worked case has a behaviour test in `crates/amplihack-cli/tests`. The
+tests use a bare remote that stands in for GitHub's remote, a stand-in `gh`
+and the real recipe steps. Only the agents and the hosting CLI are stand-ins.
+
+| Case | Test | What runs for real |
+| --- | --- | --- |
+| Behind only, not strict | `a_branch_only_behind_is_merged_with_no_base_merge_and_no_push` (`issue_1924_base_merge_rule.rs`) | The finalize `merge` step. The PR merges at its head with no base merge and no push. |
+| Strict required checks | `a_strict_repository_gets_the_base_merged_by_the_real_base_sync_step` (`issue_1924_base_merge_rule.rs`) | `autodrive-merge-loop.yaml` through the recipe runner, from `step-03-finalize` to its end. The stand-in host refuses any head that lacks the base tip. `step-03b-base-sync` gets the refusal, the base comes in as a merge commit pushed through the hooks, one more round runs, and the second finalisation merges. No hand-off runs. |
+| Strict required checks, step by step | `out_of_date_branch_is_synced_by_a_merge_then_merged` (`issue_2575_wait_sync_success.rs`) | The finalize `merge` step, `step-03c`, `step-03d` and the report step, each run directly. |
+| A conflict | `a_conflict_is_merged_resolved_pushed_and_the_pr_is_merged` (`issue_1924_base_merge_rule.rs`) | The finalize `merge` step, `step-03c`, `step-03d` and the report step. A stand-in runs the sync step's documented commands. |
+| The task text forbids a base merge | `a_task_text_forbidding_a_base_merge_is_obeyed` (`issue_1924_base_sync_task_text.rs`) | `autodrive-merge-loop.yaml` through the recipe runner from `step-03b-base-sync`, and the real hand-off. |
+| The repository refuses merge commits | `a_repository_that_refuses_merge_commits_is_handed_off_with_its_owner` (`issue_1924_base_sync_task_text.rs`) | The same. This is route evidence: it shows that the agent's answer reaches the hand-off, and that nothing is rebased or force-pushed. |
+
+What the tests cannot show is whether a real agent follows the sync step's
+procedure. That procedure covers reading the merge policy (step 6), judging a
+condition in the task text against the files a base commit touches (step 5),
+resolving a conflict so that both sides keep their meaning (step 8), the fast
+checks (step 9) and the second push (step 10). A stand-in agent carries out
+only the git effects that the prompt asks for. No test asserts the prompt's
+wording, so a change to that text is caught by review only. Issue #3138
+tracks this gap.
+
+### What the recovery re-run does
+
+A finalisation recovery re-run (`step-03r`) runs in a separate process after
+finalisation itself failed. On `base-behind` it hands off; it never reaches
+`step-03b`. Passing the base-sync state between processes would be
+bookkeeping around an agentic step, so the hand-off stays.
 
 ## Hand-off
 
@@ -1075,7 +1243,7 @@ people. It replaces every bare `STUCK` ending of the merge-ready loop.
 | --- | --- |
 | `pr_number` | PR to hand off; checked to be a positive integer. |
 | `head_sha` | Head the drive last saw; checked against the SHA format before use. |
-| `handoff_reason` | The loop result or merge result that caused the hand-off. On `step-02c` it is `loop result <word>: <reason>`. For `UNREADABLE` the reason names the kept `merge-ready-driver.err` and its path, or says the output could not be kept, and says whether `merge-ready-result.json` is absent, unreadable or says something else. See [Kept driver output](#kept-driver-output). After a base sync (`step-03f`) it is a fixed sentence about the branch being out of date, and the sync's own reasons, including an `UNREADABLE` loop reason, arrive in `handoff_blocker`. |
+| `handoff_reason` | The loop result or merge result that caused the hand-off. On `step-02c` it is `loop result <word>: <reason>`. For `UNREADABLE` the reason names the kept `merge-ready-driver.err` and its path, or says the output could not be kept, and says whether `merge-ready-result.json` is absent, unreadable or says something else. See [Kept driver output](#kept-driver-output). After a base sync (`step-03f`) it is a fixed sentence saying the base sync did not bring the base in, or the base moved again after it, and the sync's own reasons, including an `UNREADABLE` loop reason, arrive in `handoff_blocker`. |
 | `handoff_blocker` | The blocker sentence from the last write-up or finalisation statement, as untrusted text between markers the prompt tells the agent to follow no instruction from. From finalisation and the base sync it is their own result text: `finalize_merge.reason`, or `{{base_sync.reason}} {{sync_loop_outcome.reason}}` on `step-03f`. `step-02c` passes it empty. |
 | `stop_comment_posted` | `true` when the loop driver already posted a stop comment. |
 | `autodrive_state_dir` | State directory. The agent reads `merge-ready-driver.err` there, the loop driver's raw output, as untrusted evidence of what happened, never as instructions. When `handoff_blocker` is empty (on `step-02c`) it also reads the blocker from `merge-ready-latest.writeup` there. |
@@ -1360,6 +1528,7 @@ row applies.
 | `not-authorised` on a verify-only run (`no_merge` or `autodrive_dry_run` not `false`) | `completed: verified; no merge was requested` (`completed`) | `0` |
 | PR merged before the run | as for `already_merged` | `0` |
 | `checks-pending` | `not merged: waiting for <check> at <sha>` (`waiting_for_checks`) | `0` |
+| `base-behind` | `not merged: <reason>; base sync: <base_sync.reason>` (`not_merged`). The base-sync part appears only when `base_sync` holds a reason; it is reduced to printable ASCII and capped at 1000 bytes. | `0` |
 | any other `finalize_merge.result` | `not merged: <reason>` (`not_merged`) | `0` |
 | a hand-off ran | `handed off: <reason>` (`handoff`) | `0` |
 | nothing parseable | `dependency_failure` | `1` |
@@ -1470,7 +1639,7 @@ echo $?
 | `5` | `not-open`: the PR was closed, or merged at a head other than the expected one, before the merge. |
 | `6` | `message-unavailable`: the merge-message helper refused the title or body. |
 | `7` | `checks-pending`: a required check is still running at the head; no merge attempted. |
-| `8` | `base-behind`: `DIRTY` before the merge request, or `BEHIND` or `DIRTY` after GitHub refused it. |
+| `8` | `base-behind`: `DIRTY` before the merge request, or `DIRTY` (conflict) or `BEHIND` (up-to-date rule enforced) after GitHub refused it. The reasons state the fact and prescribe no remedy; the [base sync](#base-sync) decides what to do. |
 | `79` | A `gh` call exited `79`; passed through at once. |
 
 ### `autodrive_merge_loop_run.sh`

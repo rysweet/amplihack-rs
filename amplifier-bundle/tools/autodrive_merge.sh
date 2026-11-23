@@ -43,7 +43,9 @@
 #         6  message-unavailable: the merge-message helper refused the title or body
 #         7  checks-pending: a check is still running; no merge attempted
 #         8  base-behind: DIRTY before the merge, or BEHIND/DIRTY read back
-#            after GitHub declined it; the merge loop merges the base in
+#            after GitHub declined it. The reason states the fact only; the
+#            merge loop's base sync decides, under the task text and the
+#            repository's merge policy, whether to bring the base in (#1924)
 #         79 a gh call exited 79 (terminal refusal); passed through at once
 #
 # The merge subject and body come from the trusted launch-bundle copy of
@@ -158,7 +160,7 @@ autodrive_merge() {
 
   ms="$(printf '%s' "$json" | jq -r '.mergeStateStatus // empty | strings' 2>/dev/null)"
   if [ "$ms" = DIRTY ]; then
-    _autodrive_merge_emit base-behind "the branch conflicts with its base (mergeStateStatus DIRTY); the base must be merged in first"
+    _autodrive_merge_emit base-behind "the branch conflicts with its base (mergeStateStatus DIRTY)"
     return 8
   fi
 
@@ -251,8 +253,10 @@ autodrive_merge() {
   if [ "$rc" -ne 0 ]; then
     # Read the PR once more. GitHub may have merged it even though gh exited
     # non-zero; merged at the expected head is merged, whatever the base now
-    # reads (#2663). Otherwise an out-of-date or conflicting branch is
-    # base-behind (the merge loop syncs the base); anything else is refused.
+    # reads (#2663). Otherwise a conflicting branch, or one GitHub will not
+    # merge until it is up to date, is base-behind: the reason states which,
+    # and the merge loop's base sync decides what to do (#1924). Anything
+    # else is refused.
     json="$(gh pr view "$pr" --json state,headRefOid,mergeStateStatus)"; vrc=$?
     [ "$vrc" -eq 79 ] && return 79
     ms=""
@@ -264,8 +268,11 @@ autodrive_merge() {
       ms="$(printf '%s' "$json" | jq -r '.mergeStateStatus // empty | strings' 2>/dev/null)"
     fi
     case "$ms" in
-      BEHIND|DIRTY)
-        _autodrive_merge_emit base-behind "GitHub declined the merge and the branch is out of date with its base (mergeStateStatus ${ms})"
+      DIRTY)
+        _autodrive_merge_emit base-behind "GitHub declined the merge: the branch conflicts with its base (mergeStateStatus DIRTY)"
+        return 8 ;;
+      BEHIND)
+        _autodrive_merge_emit base-behind "GitHub declined the merge: the repository requires the branch to be up to date with its base (mergeStateStatus BEHIND)"
         return 8 ;;
       *)
         _autodrive_merge_emit refused "GitHub declined the merge at the expected head (gh exit ${rc})"

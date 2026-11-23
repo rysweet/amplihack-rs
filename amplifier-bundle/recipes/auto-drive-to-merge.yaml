@@ -43,6 +43,9 @@ context:
   merge_loop_outcome: ""
   sync_loop_outcome: ""
   finalize_merge: ""
+  # #1924, #3094: the merge loop's base sync answer, read by the report for a
+  # base-behind ending so the owner and decision it names reach the message.
+  base_sync: ""
   autodrive_finalization: ""
 steps:
   # Issue #2539: one step-recovery directory per drive, passed to every child
@@ -156,8 +159,9 @@ steps:
     condition: "build_result and build_result.merged_before_run != 'true'"
   # #2663 M1: success means merged. The step reads tool-written JSON only,
   # never the finalisation prose: finalize_merge, then a hand-off from the
-  # merge loop (sync_loop_outcome, then merge_loop_outcome). Every reason
-  # reaches the output through jq --arg.
+  # merge loop (sync_loop_outcome, then merge_loop_outcome). For base-behind
+  # it adds the base sync's reason (#1924). Every reason reaches the output
+  # through jq --arg.
   # docs/reference/autodrive-merge-ready-round.md#report-step-message.
   - id: "autodrive-report"
     type: "bash"
@@ -201,6 +205,12 @@ steps:
               say not_merged not_merged "$R" "not merged: ${WHY:-$R}"
             fi ;;
           checks-pending) say waiting_for_checks not_merged "$R" "not merged: ${WHY:-waiting for required checks}" ;;
+          # #1924, #3094: the base sync's own reason names the owner and the
+          # decision where it stopped. It is agent text, so it is cut to
+          # printable ASCII and 1000 bytes and only ever travels as data.
+          base-behind)
+            BS="$(obj "${RECIPE_VAR_base_sync:-}" | jq -r '.reason // empty | strings' 2>/dev/null | LC_ALL=C tr -cd '\040-\176' | head -c 1000)"
+            say not_merged not_merged "$R" "not merged: ${WHY:-$R}${BS:+; base sync: $BS}" ;;
           *) say not_merged not_merged "$R" "not merged: ${WHY:-$R}" ;;
         esac
         exit 0

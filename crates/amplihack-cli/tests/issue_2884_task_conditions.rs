@@ -427,3 +427,6 @@ fn evidence_recipe_agents_receive_the_task_text() {
         );
     }
 }
+
+#[path = "issue_1924_base_sync_task_text.rs"]
+mod base_sync_task_text;
