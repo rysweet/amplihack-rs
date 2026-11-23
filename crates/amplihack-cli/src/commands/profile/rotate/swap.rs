@@ -261,6 +261,10 @@ pub(super) fn swap_with(
         }
         eprintln!("warning: {}; the swap goes on", describe(e));
     }
+    // Issue #2218: the install time, read before anything else can write
+    // the login. The refresh locks are still held, and they are held until
+    // `finish` has recorded it.
+    let live_login_at = super::swap_finish::installed_at(home);
     step(rs, &mut j, Phase::S1)?;
     let s = store.root().join(from.as_str()).join(CREDS);
     if let Err(e) = move_login(&t, &s, &show) {
@@ -280,7 +284,7 @@ pub(super) fn swap_with(
         .map_err(|_| ProfileError::RotateInconsistent(UNAVAILABLE.into()))?;
     super::swap_authorize::check_record(store, to, incoming.account())
         .map_err(|_| ProfileError::RotateInconsistent(UNAVAILABLE.into()))?;
-    finish(rs, home, &j, &incoming)?;
+    finish(rs, home, &j, &incoming, live_login_at)?;
     drop_locks(store, rs, home, &mut j)?;
     rs.delete_journal()?;
     settle(store, &from, pending);

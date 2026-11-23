@@ -205,7 +205,14 @@ pub(super) fn recover_with(
         return freeze(store, rs, home, j, &why);
     }
     // Moving the outgoing login does not change the incoming binding.
-    finish(rs, home, &j, &auth.incoming)?;
+    // Issue #2218: no install time is recorded. The exchange happened
+    // before this run, and the locks may have been released since (an
+    // outgoing move that failed leaves `~/.claude` to Claude), so the login
+    // may have been refreshed or replaced by hand. Its change time now
+    // would read that write as the install. Without the field the proof of
+    // an excluded live login falls back to `swapped_at`, the swap's start,
+    // which is earlier than any such write.
+    finish(rs, home, &j, &auth.incoming, None)?;
     drop_locks(store, rs, home, &mut j)?;
     rs.delete_journal()?;
     super::swap_expect::settle(store, &from, auth.pending);
