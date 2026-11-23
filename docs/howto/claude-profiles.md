@@ -2174,8 +2174,11 @@ limit is passed back at once.
      in an unattended run with neither, the wait usually still goes to the
      reset;
    - with auto-switch on, the earliest reset among the other stored logins
-     the step could move to, plus two minutes, read from their readings
-     (`bound=earliest_reset+margin`); the step then retries on that login
+     the step could move to, plus two minutes, read from readings no older
+     than five hours and held to the end of any limit block the rotator
+     records on a login (`bound=earliest_reset+margin`); the step then
+     retries on that login unless a block or reading recorded during the
+     wait still holds it out
      ([The earliest-reset deadline](../reference/usage-limit-waits.md#the-earliest-reset-deadline)).
 
    No timer ends a wait. A limit whose message states no usable reset gives

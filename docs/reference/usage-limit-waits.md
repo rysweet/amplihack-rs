@@ -44,6 +44,7 @@ task-oriented guidance is in the
 - [Other logins](#other-logins)
     - [Moving to another login before a wait](#moving-to-another-login-before-a-wait)
     - [The earliest-reset deadline](#the-earliest-reset-deadline)
+        - [Readings and blocks the rotator would refuse](#readings-and-blocks-the-rotator-would-refuse)
     - [When the other logins cannot be read](#when-the-other-logins-cannot-be-read)
     - [The login a wait names](#the-login-a-wait-names)
     - [A reset that names no zone](#a-reset-that-names-no-zone)
@@ -442,8 +443,8 @@ instant is known from that login's reading.
 
 | Rule | |
 |------|---|
-| Which logins count | The eligible set above, without the logins this step has tried. A login with no reading, no reset ahead, or already under the threshold (the move would have taken it) contributes nothing. |
-| A login's instant | The latest `resets_at` among its windows at or above the threshold: it is under the threshold only once all of them have reset. Held to the weekly window, as any reset read from a reading is. |
+| Which logins count | The eligible set above, without the logins this step has tried. A login with no reading, a reading older than five hours, no reset ahead, or already under the threshold (the move would have taken it) contributes nothing. |
+| A login's instant | The latest `resets_at` among its windows at or above the threshold: it is under the threshold only once all of them have reset. When a [limit block](#the-limit-record) recorded in the rotate ledger stands on the login and ends later, the block's end. Held to the weekly window, as any reset read from a reading is. |
 | When it applies | The instant is after now, and its deadline (the instant plus 120 s) comes before the wait's own, or the wait has none. A wait whose limit stated no usable reset therefore gains a deadline here. |
 | What it changes | `until=` and `bound=earliest_reset+margin`. The kind of wait, its `wait=` token, what else may end it, and `reset=`, the reset the step's own limit stated, stay as they were. |
 | What it never touches | A login-change wait: it waits for an organisation's credit, which no other login's window restores. |
@@ -456,13 +457,41 @@ amplihack: the earliest reset among this step's logins has arrived; rerunning th
 ```
 
 A wait that reaches such a deadline ends as `reset reached`, and the retry
-runs on the login whose reset it was, with no fresh reading required,
-because that reset is what the wait was for. That login must still pass the
-checks that need no reading (stored, not excluded, not leased, holding its
-own login), asked from the login the limited attempt ran on, as when the
-login was chosen. If it does not pass, the retry runs on the step's own
-profile and says why
+runs on the login whose reset it was. That login must still pass the checks
+that need no reading (stored, not excluded, not leased, holding its own
+login), asked from the login the limited attempt ran on, as when the login
+was chosen. Nothing recorded about it after the deadline was set may still
+hold it out: neither a limit block that still stands, nor a reading that has
+it at or above the threshold. If either check fails, the retry runs on the
+step's own profile and says why
 ([When the other logins cannot be read](#when-the-other-logins-cannot-be-read)).
+
+#### Readings and blocks the rotator would refuse
+
+The deadline and the retry read the same readings and blocks as the
+rotator, by the rotator's rules
+([#3111](https://github.com/rysweet/amplihack-rs/pull/3111)), so the two
+never disagree on which logins come back:
+
+| Rotator rule | Here |
+|--------------|------|
+| A stored reading older than one session window (five hours) is not ranked | Not read for the deadline. A reading that old has seen its session window reset since it was taken. |
+| A reading older than one already held is never used | The usage file keeps only the newest reading of each login, so no older one can be read. |
+| A login with a standing block is ruled out until the block's recorded end, whatever its reading shows | Its instant is no earlier than the block's end. A block or reading recorded during the wait that still holds the login out keeps the retry off it (`reason=login_still_limited`). |
+| A swap is made only on a reading taken for it | Not required. The step has no reader of its own, and on a host where only the rotator or `amplihack profile usage` writes readings, such a reading may never come, so requiring it would bring back the wait #2967 removed. A rotator that does read the login during the wait ends the wait early through the wait's own check, which needs a reading taken since the wait began. |
+
+A reading older than the deadline's own can only time a wait too early,
+never too late: a window over the threshold does not empty before its reset,
+but a window under it may have filled since. A retry onto a login that has
+filled meets its limit at once, which records a block on it, adds it to the
+step's tried set and returns the step to the move-or-wait loop above.
+
+A rotate ledger that cannot be read holds no login out, as it holds none out
+of the candidate selection. The step names it on stderr, with the error:
+
+```
+amplihack: the rotate ledger cannot be read: <error>; no block it records on another login is known to this step's wait (auto-switch)
+```
 The note above is printed only when the retry changes login. A retry back to
 the step's inherited profile, for a step that was moved off it before it
 waited, is such a change. The other logins are read again for each wait, so
@@ -486,6 +515,7 @@ read" from "no other login had a reset ahead", which writes nothing. On
 | The auto-switch ledger cannot be read | `ledger_unreadable` |
 | The auto-switch usage readings cannot be read | `readings_unreadable` |
 | The login whose reset ended the wait was excluded, leased, given another account, logged out or removed while the step waited (the retry only) | `login_not_eligible` |
+| A limit block on that login, or a reading of it at or above the threshold, recorded after the deadline was set still holds it out (the retry only) | `login_still_limited` |
 
 Before a wait, the lines come before its `start`:
 
@@ -652,10 +682,14 @@ its credit exhaustion is classed but does not wait
 - Where no file event can be had, the wait cannot see a login gain room or
   the login change. It ends at its reset, on a stop signal or when its
   session ends ([A wait with no file events](#a-wait-with-no-file-events)).
-- The earliest-reset deadline reads stored readings, which have no age
-  bound, so a wait can end at a reset an old reading named. The cost is one
-  failed attempt, after which that login is in the step's tried set
-  ([#3093](https://github.com/rysweet/amplihack-rs/issues/3093)).
+- The move before a wait is the ordinary candidate selection, which reads
+  stored readings with no age bound, so a step can move onto a login an old
+  reading showed with room. The cost is one failed attempt, after which that
+  login is in the step's tried set
+  ([#3093](https://github.com/rysweet/amplihack-rs/issues/3093)). The
+  earliest-reset deadline does not share this: it reads no reading older than
+  five hours
+  ([Readings and blocks the rotator would refuse](#readings-and-blocks-the-rotator-would-refuse)).
 - A move does not read session flags, so a resumed session can be moved onto
   a profile that lacks its transcript
   ([#3091](https://github.com/rysweet/amplihack-rs/issues/3091)).

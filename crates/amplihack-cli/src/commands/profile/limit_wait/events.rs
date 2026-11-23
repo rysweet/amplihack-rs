@@ -147,6 +147,11 @@ pub(crate) enum Unconsidered {
     /// excluded, leased, given another account, logged out or removed while
     /// the step waited. Only the retry after a wait meets it.
     LoginNotEligible,
+    /// The login whose reset ended the wait is still held out by a limit
+    /// block on it, or a reading of it at or above the auto-switch
+    /// threshold, recorded after the wait's deadline was set (issue #3105).
+    /// Only the retry after a wait meets it.
+    LoginStillLimited,
 }
 
 impl Unconsidered {
@@ -156,6 +161,7 @@ impl Unconsidered {
             Unconsidered::LedgerUnreadable => "ledger_unreadable",
             Unconsidered::ReadingsUnreadable => "readings_unreadable",
             Unconsidered::LoginNotEligible => "login_not_eligible",
+            Unconsidered::LoginStillLimited => "login_still_limited",
         }
     }
 }

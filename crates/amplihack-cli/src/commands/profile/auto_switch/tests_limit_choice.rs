@@ -7,15 +7,21 @@
 //!   -> Vec<(ProfileName, i64)>`: for each plan profile that passes the
 //!   candidate rule's eligibility (not excluded, not overflow, not leased,
 //!   not hosting another account, `login_ready`), is not `current`, is not in
-//!   `tried`, has a reading and is exhausted by the candidate rule (a window
-//!   at or above the auto-switch threshold), the instant
-//!   `candidate::regains_room` gives, moved onto the wait's clock
-//!   (`wait_now + (instant - fsx::now())`, saturating). Only instants strictly
-//!   after `wait_now` are returned. A login under the threshold, a login with
-//!   no reading or no instant, and a login barred by another rule contribute
-//!   nothing.
+//!   `tried`, has a reading no older than `MAX_READING_AGE_SECS` (one
+//!   session window, the rotator's own bound) and is exhausted by the
+//!   candidate rule (a window at or above the auto-switch threshold), the
+//!   instant `candidate::regains_room` gives, or the end of a standing block
+//!   in the rotate ledger when that is later (`rotate::decide::standing_block`),
+//!   moved onto the wait's clock (`wait_now + (instant - fsx::now())`,
+//!   saturating). Only instants strictly after `wait_now` are returned. A
+//!   login under the threshold, a login with no reading, an older one or no
+//!   instant, and a login barred by another rule contribute nothing.
 //! - `limit_choice::may_run_on(reads, current, login) -> bool`: the same
 //!   eligibility, with no reading asked for.
+//! - `limit_choice::held_since(reads, login, since) -> bool`: a block
+//!   recorded, or a reading taken, after `since` that still holds the login
+//!   out. The retry after an earliest-reset wait is refused on it
+//!   (`reason=login_still_limited`).
 //! - The note the retry after an earliest-reset wait prints reaches the
 //!   step's stderr, which the recipe runner's classifier reads, so it must
 //!   never read as a usage limit, and it is printed only for a move that
@@ -27,7 +33,9 @@
 //!   names it and the error, and never reads as a usage limit.
 
 use super::config::Config;
-use super::limit_choice::{cross_login_reset, may_run_on};
+use super::limit_choice::{
+    MAX_READING_AGE_SECS, blocks_unread_line, cross_login_reset, may_run_on,
+};
 use super::rerun::Reads;
 use super::state::{HostEntry, Ledger, State};
 use super::usage::{Reading, ReadingSource, Window};
@@ -191,6 +199,45 @@ impl World {
         self
     }
 
+    /// Writes `body` as the rotate ledger, private as its reader requires.
+    fn rotate_ledger(self, body: &str) -> Self {
+        let path = amplihack_utils::rotator_status::ledger_path(&self.state.root);
+        let dir = path.parent().unwrap();
+        fs::create_dir_all(dir).unwrap();
+        for d in [dir, dir.parent().unwrap()] {
+            fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        self
+    }
+
+    /// Records a limit block on each `(login, at, until)`, on the real
+    /// clock, as a failed step records one (`rotate::step_block`).
+    fn blocked(self, blocks: &[(&str, i64, i64)]) -> Self {
+        let map: serde_json::Map<String, serde_json::Value> = blocks
+            .iter()
+            .map(|(login, at, until)| {
+                let b = serde_json::json!({"at": at, "until": until, "reason": "spend_limit"});
+                (login.to_string(), b)
+            })
+            .collect();
+        let body = serde_json::json!({"version": 1, "overflow_blocked": map});
+        self.rotate_ledger(&body.to_string())
+    }
+
+    /// Writes the readings to the usage file, where a choice made through
+    /// `with_reads` reads them.
+    fn saved(self) -> Self {
+        self.state
+            .save_usage(&super::state::UsageFile {
+                version: 1,
+                accounts: self.readings.clone(),
+            })
+            .unwrap();
+        self
+    }
+
     fn may_run_on(&self, current: &str, login: &str) -> bool {
         may_run_on(self.reads(), current, &n(login))
     }
@@ -337,6 +384,95 @@ fn the_auto_switch_threshold_decides_which_logins_are_waited_for() {
     assert_eq!(at_95.resets("cur", &[], WAIT_NOW), vec![]);
 }
 
+// --- what the rotator would refuse (issues #3105, #3111) ---------------------------
+//
+// The rotator ranks a login on no stored reading older than one session
+// window, never on a reading older than one it already holds, and never on a
+// login while a recorded block stands on it. The earliest-reset deadline
+// reads the same data by the same rules, so the two cannot disagree on which
+// logins come back.
+
+/// `r`, as if taken `ago` seconds before now. A negative `ago` stamps it
+/// ahead of now.
+fn taken(mut r: Reading, ago: i64) -> Reading {
+    r.observed_at = now().saturating_sub(ago);
+    r
+}
+
+#[test]
+fn the_reading_age_bound_is_the_rotators_one_session_window() {
+    assert_eq!(MAX_READING_AGE_SECS, 18_000);
+    assert_eq!(
+        MAX_READING_AGE_SECS,
+        crate::commands::profile::rotate::decide::LAST_GOOD_MAX_AGE_SECS
+    );
+}
+
+#[test]
+fn a_reading_older_than_one_session_window_contributes_nothing() {
+    // Only the week window is out: a session window this old has reset.
+    let week_out = || reading_with(10.0, 600, 100.0, 1800);
+    let w = World::new(&["cur", "old", "inside", "ahead"])
+        .read("cur", read(100.0, 10.0))
+        .read("old", taken(week_out(), MAX_READING_AGE_SECS + 60))
+        .read("inside", taken(week_out(), MAX_READING_AGE_SECS - 60))
+        .read("ahead", taken(week_out(), -3600));
+    let got = w.resets("cur", &[], WAIT_NOW);
+    assert_eq!(
+        got.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(),
+        ["inside"],
+        "only a reading taken within one session window before now counts: {got:?}"
+    );
+}
+
+#[test]
+fn a_standing_block_holds_the_instant_to_its_end() {
+    let t = now();
+    let exhausted = || reading_with(100.0, 1800, 10.0, 86_400);
+    let w = World::new(&["cur", "later", "sooner", "ended", "roomy"])
+        .read("cur", read(100.0, 10.0))
+        .read("later", exhausted())
+        .read("sooner", exhausted())
+        .read("ended", exhausted())
+        // Under the threshold, so the block is all that holds it out.
+        .read("roomy", read(10.0, 10.0))
+        .blocked(&[
+            ("later", t - 60, t + 3600),
+            ("sooner", t - 60, t + 600),
+            ("ended", t - 7200, t - 60),
+            ("roomy", t - 60, t + 900),
+        ]);
+    let got = w.resets("cur", &[], WAIT_NOW);
+    assert_eq!(got.len(), 3, "{got:?}");
+    let at = |login: &str| got.iter().find(|g| g.0 == login).map(|g| g.1);
+    // A block that ends after the reset holds the login to the block's end.
+    assert!(near(at("later").unwrap(), WAIT_NOW + 3600), "{got:?}");
+    // One that ends first, and one that has ended, leave the reset.
+    assert!(near(at("sooner").unwrap(), WAIT_NOW + 1800), "{got:?}");
+    assert!(near(at("ended").unwrap(), WAIT_NOW + 1800), "{got:?}");
+    // A block never adds a login the readings do not already wait for.
+    assert_eq!(at("roomy"), None, "{got:?}");
+}
+
+#[test]
+fn an_unreadable_rotate_ledger_holds_no_login_out_and_is_named() {
+    let w = World::new(&["cur", "a"])
+        .read("cur", read(100.0, 10.0))
+        .read("a", reading_with(100.0, 1800, 10.0, 86_400))
+        .rotate_ledger("{");
+    let got = w.resets("cur", &[], WAIT_NOW);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(near(got[0].1, WAIT_NOW + 1800), "{got:?}");
+    let line = blocks_unread_line("rotate ledger: invalid JSON at line 1 column 1");
+    assert_eq!(
+        line,
+        "amplihack: the rotate ledger cannot be read: rotate ledger: invalid JSON at line 1 \
+         column 1; no block it records on another login is known to this step's wait \
+         (auto-switch)"
+    );
+    assert_not_a_limit(&line);
+}
+
 // --- may_run_on ---------------------------------------------------------------
 
 #[test]
@@ -432,8 +568,13 @@ impl World {
         with_reads(&self.store(), &self.state, |_| ()).err()
     }
 
+    /// The retry after a wait whose deadline was set 60 seconds ago.
     fn retry_on(&self, from: &str, bound: &str) -> Result<(), NotConsidered> {
-        may_retry_on(&self.store(), &self.state, &n(from), &n(bound))
+        self.retry_since(from, bound, now() - 60)
+    }
+
+    fn retry_since(&self, from: &str, bound: &str, since: i64) -> Result<(), NotConsidered> {
+        may_retry_on(&self.store(), &self.state, &n(from), &n(bound), since)
     }
 }
 
@@ -614,6 +755,63 @@ fn a_retry_whose_logins_cannot_be_read_is_named() {
     let line = NotConsidered::AutoSwitchOff.retry_line(&n("a"), &n("cur"));
     assert!(line.contains("(reason=auto_switch_off)"), "{line}");
     assert_not_a_limit(&line);
+}
+
+#[test]
+fn a_retry_onto_a_login_a_reading_taken_during_the_wait_still_holds_out_is_named() {
+    // The week window filled while the step waited: the reset that set the
+    // deadline does not bring the login under the threshold. A reading of
+    // the same figures taken before the deadline was set is what the
+    // deadline was set from, so it refuses nothing.
+    let t = now();
+    let w = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .read("a", taken(reading_with(10.0, 1800, 95.0, 86_400), 0))
+        .saved();
+    assert_eq!(
+        w.retry_since("cur", "a", t - 60),
+        Err(NotConsidered::LoginStillLimited)
+    );
+    assert_eq!(w.retry_since("cur", "a", t + 60), Ok(()));
+    let line = NotConsidered::LoginStillLimited.retry_line(&n("a"), &n("cur"));
+    assert_eq!(
+        line,
+        "amplihack: the wait ended at the reset of profile \"a\", but this step reruns \
+         under its own profile \"cur\" (reason=login_still_limited): a limit block on \
+         that profile, or a reading of it at or above the auto-switch threshold, came in \
+         while this step waited and still holds it out (auto-switch)"
+    );
+    assert_not_a_limit(&line);
+}
+
+#[test]
+fn a_retry_onto_a_login_a_newer_reading_shows_under_the_threshold_is_allowed() {
+    let w = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .read("a", taken(reading_with(10.0, 1800, 50.0, 86_400), 0))
+        .saved();
+    assert_eq!(w.retry_on("cur", "a"), Ok(()));
+}
+
+#[test]
+fn a_retry_onto_a_login_blocked_during_the_wait_is_named() {
+    // A block recorded after the deadline was set that still stands keeps
+    // the retry off the login. One recorded before had already set the
+    // deadline, and one that has ended holds nothing.
+    let t = now();
+    let standing = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .blocked(&[("a", t - 30, t + 3600)]);
+    assert_eq!(
+        standing.retry_since("cur", "a", t - 60),
+        Err(NotConsidered::LoginStillLimited)
+    );
+    assert_eq!(standing.retry_since("cur", "a", t - 10), Ok(()));
+    drop(standing);
+    let ended = World::new(&["cur", "a"])
+        .auto_switch(true)
+        .blocked(&[("a", t - 30, t - 5)]);
+    assert_eq!(ended.retry_since("cur", "a", t - 60), Ok(()));
 }
 
 #[test]

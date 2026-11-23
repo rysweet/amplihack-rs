@@ -907,10 +907,14 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // than its own deadline (`plan::earliest`). The other logins are
         // read again for each wait, so a wait never carries an instant an
         // earlier one computed. `bound_login` is the login whose reset that
-        // is, which is where the retry runs when the wait reaches it.
+        // is, which is where the retry runs when the wait reaches it, with
+        // the real time the deadline was set: only what is recorded about
+        // that login after it can keep the retry off it
+        // (`limit_choice::held_since`).
+        let planned_at = fsx::now();
         let earliest = earliest_other(switch.as_ref(), &waiter, profile.as_ref(), &tried);
         waiter.offer_earliest_reset(earliest.as_ref().map(|(_, at)| *at));
-        let bound_login = earliest.map(|(login, _)| login);
+        let bound_login = earliest.map(|(login, _)| (login, planned_at));
         // Issue #2816: the retry the wait earns is announced only once its
         // prompt is known not to be cut short. `replay` is asked at that
         // moment and not before, so a source that failed during the wait is
@@ -1021,21 +1025,24 @@ fn finish(attempt: Attempt, code: Option<i32>, stdin: &mut RerunStdin) -> Result
 /// [`room_was_seen`]: crate::commands::profile::limit_wait::RetryMove::room_was_seen
 ///
 /// Issue #2967: after a wait that reached a deadline another login's reset
-/// set, the retry runs on `bound`, that login, and no fresh reading is asked
-/// for, because the reset is what the wait was for. The login must still
-/// pass the checks that need no reading (`limit_choice::may_run_on`); when
-/// it does not, or the logins cannot be read, the retry runs on the step's
-/// own login and says why ([`bound_profile`]). `from` is the profile the
-/// limited attempt ran under, `None` for the inherited one.
+/// set, the retry runs on `bound`, that login, unless something recorded
+/// about it since the deadline was set still holds it out
+/// (`limit_choice::held_since`). The login must also still pass the checks
+/// that need no reading (`limit_choice::may_run_on`). When either fails, or
+/// the logins cannot be read, the retry runs on the step's own login and
+/// says why ([`bound_profile`]). `bound` carries the real time the deadline
+/// was set. `from` is the profile the limited attempt ran under, `None` for
+/// the inherited one.
 fn retry_profile(
     switch: Option<&Switch<'_>>,
     waiter: &Waiter,
-    bound: Option<&ProfileName>,
+    bound: Option<&(ProfileName, i64)>,
     from: Option<&ProfileName>,
 ) -> Option<ProfileName> {
     let sw = switch?;
     if waiter.reached_earliest_reset() {
-        return bound_profile(sw, waiter, from.unwrap_or(&sw.inherited), bound?);
+        let (bound, since) = bound?;
+        return bound_profile(sw, waiter, from.unwrap_or(&sw.inherited), bound, *since);
     }
     let mv = waiter.retry_move()?;
     let Some(pick) = capacity_candidate(
@@ -1102,6 +1109,11 @@ pub(super) enum NotConsidered {
     /// The login whose reset ended the wait may no longer be run on
     /// (`limit_choice::may_run_on`). Only the retry after a wait meets it.
     LoginNotEligible,
+    /// A limit block on the login whose reset ended the wait, or a reading
+    /// of it at or above the threshold, recorded after the deadline was set
+    /// still holds it out (`limit_choice::held_since`, issue #3105). Only
+    /// the retry after a wait meets it.
+    LoginStillLimited,
 }
 
 impl NotConsidered {
@@ -1112,6 +1124,7 @@ impl NotConsidered {
             NotConsidered::LedgerUnreadable(_) => Unconsidered::LedgerUnreadable,
             NotConsidered::ReadingsUnreadable(_) => Unconsidered::ReadingsUnreadable,
             NotConsidered::LoginNotEligible => Unconsidered::LoginNotEligible,
+            NotConsidered::LoginStillLimited => Unconsidered::LoginStillLimited,
         }
     }
 
@@ -1130,6 +1143,11 @@ impl NotConsidered {
             NotConsidered::LoginNotEligible => "that profile was excluded, leased, given \
                                                 another account, logged out or removed \
                                                 while this step waited"
+                .to_string(),
+            NotConsidered::LoginStillLimited => "a limit block on that profile, or a reading \
+                                                 of it at or above the auto-switch threshold, \
+                                                 came in while this step waited and still \
+                                                 holds it out"
                 .to_string(),
         }
     }
@@ -1229,24 +1247,28 @@ fn earliest_other(
 }
 
 /// Whether the retry after an earliest-reset wait may run on `bound`, the
-/// login whose reset ended it. The checks are the ones that need no reading
+/// login whose reset ended it. It must pass the checks that need no reading
 /// (`limit_choice::may_run_on`), asked with `from`, the login the limited
 /// attempt ran on, as the step's login, as `cross_login_reset` was asked
-/// when it chose `bound`. `Err` says why not.
+/// when it chose `bound`. Nothing recorded about it after `since`, the real
+/// time the deadline was set, may still hold it out
+/// (`limit_choice::held_since`). `Err` says why not.
 pub(super) fn may_retry_on(
     store: &ProfileStore,
     state: &State,
     from: &ProfileName,
     bound: &ProfileName,
+    since: i64,
 ) -> Result<(), NotConsidered> {
-    let allowed = with_reads(store, state, |reads| {
-        limit_choice::may_run_on(reads, from.as_str(), bound)
-    })?;
-    if allowed {
-        Ok(())
-    } else {
-        Err(NotConsidered::LoginNotEligible)
-    }
+    with_reads(store, state, |reads| {
+        if !limit_choice::may_run_on(reads, from.as_str(), bound) {
+            Err(NotConsidered::LoginNotEligible)
+        } else if limit_choice::held_since(reads, bound, since) {
+            Err(NotConsidered::LoginStillLimited)
+        } else {
+            Ok(())
+        }
+    })?
 }
 
 /// The note for a retry that moves from `from` to `bound` after an
@@ -1259,9 +1281,10 @@ pub(super) fn earliest_note(from: &ProfileName, bound: &ProfileName) -> Option<S
 }
 
 /// The retry after an earliest-reset wait: `bound`, when the step may still
-/// be run on it, else `None` for the step's own login, with the cause on
-/// stderr and in the run's recipe log ([`NotConsidered`]). `from` is the
-/// login the limited attempt ran on.
+/// be run on it ([`may_retry_on`]), else `None` for the step's own login,
+/// with the cause on stderr and in the run's recipe log ([`NotConsidered`]).
+/// `from` is the login the limited attempt ran on, and `since` the real time
+/// the wait's deadline was set.
 ///
 /// `None` is the inherited environment, which is the profile
 /// `sw.inherited` itself. So the filter at the end maps that profile onto
@@ -1274,8 +1297,9 @@ fn bound_profile(
     waiter: &Waiter,
     from: &ProfileName,
     bound: &ProfileName,
+    since: i64,
 ) -> Option<ProfileName> {
-    if let Err(why) = may_retry_on(sw.store, &sw.state, from, bound) {
+    if let Err(why) = may_retry_on(sw.store, &sw.state, from, bound, since) {
         eprintln!("{}", why.retry_line(bound, &sw.inherited));
         waiter.retry_not_moved(why.why());
         return None;

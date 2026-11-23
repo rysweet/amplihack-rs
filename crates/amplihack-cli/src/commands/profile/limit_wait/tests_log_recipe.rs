@@ -506,11 +506,12 @@ fn the_recipe_log_names_the_steps_own_login_for_such_a_wait() {
 // every line that carries one. The reason is a closed set: the error itself
 // is on the supervisor's own stderr line, never in a wait line.
 
-const EVERY_CAUSE: [Unconsidered; 4] = [
+const EVERY_CAUSE: [Unconsidered; 5] = [
     Unconsidered::AutoSwitchOff,
     Unconsidered::LedgerUnreadable,
     Unconsidered::ReadingsUnreadable,
     Unconsidered::LoginNotEligible,
+    Unconsidered::LoginStillLimited,
 ];
 
 #[test]
@@ -520,6 +521,7 @@ fn issue_2967_the_unread_line_names_each_cause_in_both_sinks() {
         "ledger_unreadable",
         "readings_unreadable",
         "login_not_eligible",
+        "login_still_limited",
     ]) {
         let e = Event::OtherLoginsUnread { why };
         assert_eq!(
@@ -542,6 +544,7 @@ fn issue_2967_the_retry_line_names_each_cause_in_both_sinks() {
         "ledger_unreadable",
         "readings_unreadable",
         "login_not_eligible",
+        "login_still_limited",
     ]) {
         let e = Event::RetryNotMoved { why };
         assert_eq!(

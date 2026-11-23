@@ -42,6 +42,10 @@ struct World {
     tmp: tempfile::TempDir,
     store: ProfileStore,
     log: PathBuf,
+    /// The real time the wait's deadline was set, a minute before the
+    /// world was made: only what is recorded after it can keep a retry off
+    /// the login whose reset ended the wait.
+    planned: i64,
 }
 
 impl World {
@@ -101,6 +105,7 @@ impl World {
             tmp,
             store,
             log,
+            planned: crate::commands::profile::auto_switch::fsx::now() - 60,
         }
     }
 
@@ -244,7 +249,7 @@ fn a_retry_onto_an_eligible_login_moves_and_writes_nothing_to_the_recipe_log() {
     let sw = w.switch("cur");
     let waiter = w.waiter("cur", None, true);
     assert_eq!(
-        bound_profile(&sw, &waiter, &n("cur"), &n("a")),
+        bound_profile(&sw, &waiter, &n("cur"), &n("a"), w.planned),
         Some(n("a"))
     );
     assert_eq!(w.log_lines(), Vec::<String>::new());
@@ -256,7 +261,10 @@ fn a_retry_onto_a_login_logged_out_during_the_wait_stays_and_says_why() {
     let sw = w.switch("cur");
     let waiter = w.waiter("cur", None, true);
     fs::remove_file(w.root().join("a").join(".credentials.json")).unwrap();
-    assert_eq!(bound_profile(&sw, &waiter, &n("cur"), &n("a")), None);
+    assert_eq!(
+        bound_profile(&sw, &waiter, &n("cur"), &n("a"), w.planned),
+        None
+    );
     assert_eq!(
         w.log_lines(),
         [format!("{NOT_MOVED} reason=login_not_eligible account=cur")]
@@ -269,7 +277,10 @@ fn a_retry_onto_a_login_removed_during_the_wait_stays_and_says_why() {
     let sw = w.switch("cur");
     let waiter = w.waiter("cur", None, true);
     fs::remove_dir_all(w.root().join("a")).unwrap();
-    assert_eq!(bound_profile(&sw, &waiter, &n("cur"), &n("a")), None);
+    assert_eq!(
+        bound_profile(&sw, &waiter, &n("cur"), &n("a"), w.planned),
+        None
+    );
     assert_eq!(
         w.log_lines(),
         [format!("{NOT_MOVED} reason=login_not_eligible account=cur")]
@@ -282,7 +293,10 @@ fn a_retry_whose_ledger_became_unreadable_stays_and_says_why() {
     let sw = w.switch("cur");
     let waiter = w.waiter("cur", None, true);
     w.state_file("ledger.json", "{");
-    assert_eq!(bound_profile(&sw, &waiter, &n("cur"), &n("a")), None);
+    assert_eq!(
+        bound_profile(&sw, &waiter, &n("cur"), &n("a"), w.planned),
+        None
+    );
     assert_eq!(
         w.log_lines(),
         [format!("{NOT_MOVED} reason=ledger_unreadable account=cur")]
@@ -295,7 +309,10 @@ fn a_retry_whose_readings_became_unreadable_stays_and_says_why() {
     let sw = w.switch("cur");
     let waiter = w.waiter("cur", None, true);
     w.state_file("usage.json", "{");
-    assert_eq!(bound_profile(&sw, &waiter, &n("cur"), &n("a")), None);
+    assert_eq!(
+        bound_profile(&sw, &waiter, &n("cur"), &n("a"), w.planned),
+        None
+    );
     assert_eq!(
         w.log_lines(),
         [format!(
@@ -310,10 +327,43 @@ fn a_retry_after_auto_switch_was_turned_off_stays_and_says_why() {
     w.auto_switch_off();
     let sw = w.switch("cur");
     let waiter = w.waiter("cur", None, true);
-    assert_eq!(bound_profile(&sw, &waiter, &n("cur"), &n("a")), None);
+    assert_eq!(
+        bound_profile(&sw, &waiter, &n("cur"), &n("a"), w.planned),
+        None
+    );
     assert_eq!(
         w.log_lines(),
         [format!("{NOT_MOVED} reason=auto_switch_off account=cur")]
+    );
+}
+
+#[test]
+fn a_retry_onto_a_login_blocked_during_the_wait_stays_and_says_why() {
+    // Issue #3105: a block recorded on the login after the deadline was set,
+    // which still stands, keeps the retry off it, as it keeps the rotator off
+    // it.
+    let w = World::new(&["cur", "a"]);
+    let sw = w.switch("cur");
+    let waiter = w.waiter("cur", None, true);
+    let t = crate::commands::profile::auto_switch::fsx::now();
+    let path = amplihack_utils::rotator_status::ledger_path(&w.root());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
+    let body = serde_json::json!({
+        "version": 1,
+        "overflow_blocked": {"a": {"at": t - 5, "until": t + 3600, "reason": "spend_limit"}}
+    });
+    fs::write(&path, body.to_string()).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        bound_profile(&sw, &waiter, &n("cur"), &n("a"), w.planned),
+        None
+    );
+    assert_eq!(
+        w.log_lines(),
+        [format!(
+            "{NOT_MOVED} reason=login_still_limited account=cur"
+        )]
     );
 }
 
@@ -328,6 +378,9 @@ fn a_retry_back_to_the_inherited_profile_is_a_move_not_a_fallback() {
     let w = World::new(&["cur", "sub"]);
     let sw = w.switch("cur");
     let waiter = w.waiter("cur", Some("sub"), true);
-    assert_eq!(bound_profile(&sw, &waiter, &n("sub"), &n("cur")), None);
+    assert_eq!(
+        bound_profile(&sw, &waiter, &n("sub"), &n("cur"), w.planned),
+        None
+    );
     assert_eq!(w.log_lines(), Vec::<String>::new());
 }
