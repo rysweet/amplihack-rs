@@ -1,20 +1,19 @@
-//! Issue #2575: merge readiness is an agentic step written up in the PR.
+//! Issue #2575: the merge depends only on GitHub's own conditions and the
+//! captured authorisation.
 //!
-//! Contract: docs/reference/autodrive-merge-ready-round.md.
+//! Contract: docs/reference/autodrive-goal-loop.md.
 //!
-//! - The shape of the merge-ready write-up never decides anything. An agent
-//!   answers one word (`ready`, `not-ready`, `hand-off`);
-//!   `autodrive_round_word` maps it to the loop's one-field round file and an
-//!   unclear word is another round, never `STUCK`.
-//! - `autodrive_round_file` stores the write-up (from standard input), the
-//!   verdict and the head captured before the assessment, privately and never
-//!   through a planted symlink.
-//! - The merge depends only on the captured authorisation, the assessed head,
-//!   GitHub's checks and GitHub accepting `--match-head-commit`
-//!   (`autodrive_merge`, the finalize `merge` step).
-//! - The merge loop step maps the driver's exit itself: 79 and the usage limit
-//!   stay terminal, and the loop result is read from the driver's own result
-//!   file, never from text an agent printed.
+//! - The merge depends only on the captured authorisation, the head the turn
+//!   read, GitHub's checks and GitHub accepting `--match-head-commit`
+//!   (`autodrive_merge`, and since #3129 the goal loop's merge action,
+//!   `autodrive_pr_goal.sh act merge`, which replaced the finalize `merge`
+//!   step).
+//! - `amplihack orch helper autodrive authorization` reports the captured
+//!   permission.
+//!
+//! #3129 retired the merge-ready round's word and record tools, the merge
+//! loop's step-02 and step-02a and the driver they ran; their tests went with
+//! them.
 //!
 //! Every process runs under `isolated("bash")` with HOME, AMPLIHACK_HOME (a
 //! copied bundle), CLAUDE_CONFIG_DIR and the XDG directories in a temporary
@@ -25,12 +24,11 @@
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 
 use crate::support::auto_drive_light::{
-    jq_available, private_dir, private_file, recipe, repo_root, show, stdout,
+    jq_available, private_dir, private_file, repo_root, show, stdout,
 };
 use crate::support::exec_stub::write_executable;
 
@@ -43,36 +41,6 @@ const PROVENANCE: &str = concat!(
     "0123456789abcdef0123456789abcdef",
     "0123456789abcdef0123456789abcdef"
 );
-
-// ---------------------------------------------------------------------------
-// The three write-up shapes reported on #2575. Each round's prose is fed to
-// the drive unchanged; none of them may stop it.
-// ---------------------------------------------------------------------------
-
-/// An attempt with keys the old schema did not know.
-const FIXTURE_UNKNOWN_KEYS: &str = "Merge-ready assessment of PR #2575 (FIXTURE-UNKNOWN-KEYS).\n\
-```json\n\
-{\"criteria\":{\"checks\":{\"status\":\"met\",\"attempts\":[{\"operation\":\"gh pr checks\",\"outcome\":\"ok\",\"cause\":\"none\",\"recovery\":\"none\",\"endpoint\":\"/repos/o/r/pulls/2575\",\"response_status\":200}]}}}\n\
-```\n\
-Blocker: none. Outcome: ready.\n";
-
-/// A NODE_OPTIONS notice printed before the JSON.
-const FIXTURE_NOTICE_FIRST: &str = "\u{2139} NODE_OPTIONS=--max-old-space-size=32768 (saved preference). To change: amplihack config set node.heap_consent <true|false>\n\
-{\"criteria\":{\"qa\":{\"status\":\"met\"}},\"marker\":\"FIXTURE-NOTICE-FIRST\"}\n\
-Outcome: ready.\n";
-
-/// A null where the old schema required text.
-const FIXTURE_NULL_CAUSE: &str = "{\"criteria\":{\"approvals\":{\"status\":\"met\",\"attempts\":[{\"operation\":\"gh pr view\",\"outcome\":\"ok\",\"cause\":null,\"recovery\":null}]}},\"marker\":\"FIXTURE-NULL-CAUSE\"}\n\
-The PR is ready to merge.\n";
-
-const FIXTURES: [(&str, &str); 3] = [
-    (
-        "unknown keys endpoint and response_status",
-        FIXTURE_UNKNOWN_KEYS,
-    ),
-    ("NODE_OPTIONS notice before the JSON", FIXTURE_NOTICE_FIRST),
-    ("null cause", FIXTURE_NULL_CAUSE),
-];
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -188,36 +156,6 @@ if [ "${1:-} ${2:-}" = "orch helper" ]; then
   fi
 fi
 exit 0
-"#;
-
-/// Replaces `autodrive_loop.sh` in the copied bundle for the loop-step
-/// tests: writes `loop_result` (when present) to the driver's own result file
-/// under umask 077, prints `loop_stdout` (text an agent might have printed),
-/// writes `loop_stderr` to standard error (#2849) and exits `loop_rc`. It
-/// also records in `loop-fd4` whether it inherited the kept copy's descriptor,
-/// and in `loop-umask` the umask it was started with.
-const FAKE_LOOP_DRIVER: &str = r#"#!/usr/bin/env bash
-S="$FAKE_STATE"; dir=""; repo=""; prev=""
-for a in "$@"; do [ "$prev" = --state-dir ] && dir="$a"; [ "$prev" = --repo ] && repo="$a"; prev="$a"; done
-printf '%s\n' "$@" > "$S/loop-argv"
-printf '%s\n' "$@" >> "$S/loop-argv-all"; echo "--" >> "$S/loop-argv-all"
-# #2849: whether the driver inherited the kept copy's descriptor. The step
-# closes it on this side of the pipe, so the answer must be `closed`.
-if [ -e /proc/self/fd/4 ]; then echo open > "$S/loop-fd4"; else echo closed > "$S/loop-fd4"; fi
-umask > "$S/loop-umask"
-if [ -f "$S/loop_result" ]; then
-  ( umask 077; jq -cn --arg r "$(cat "$S/loop_result")" \
-      '{loop:"merge-ready",loop_result:$r,round_label:"round-2",reason:"fixture stop"}' > "$dir/merge-ready-result.json" )
-  # A round assessed the worktree's head (step-01a): finalisation's expected head.
-  [ -n "$repo" ] && ( umask 077; git -C "$repo" rev-parse HEAD > "$dir/merge-ready-latest.head" 2>/dev/null )
-fi
-[ -f "$S/loop_stdout" ] && cat "$S/loop_stdout"
-# #2849: what a driver that dies noisily leaves behind. `loop_stderr` is
-# written to standard error after `loop_stdout`; `loop_result_raw` is written
-# verbatim as a partial result file.
-[ -f "$S/loop_stderr" ] && cat "$S/loop_stderr" >&2
-[ -f "$S/loop_result_raw" ] && ( umask 077; cp "$S/loop_result_raw" "$dir/merge-ready-result.json" )
-exit "$(cat "$S/loop_rc" 2>/dev/null || echo 0)"
 "#;
 
 // ---------------------------------------------------------------------------
@@ -338,18 +276,6 @@ impl Fx {
         c
     }
 
-    /// Runs `script` with the round-word tool (and the state helpers it
-    /// relies on) sourced from AMPLIHACK_HOME, feeding `stdin`.
-    fn round_tool(&self, script: &str, args: &[&str], stdin: &[u8]) -> Output {
-        let full = format!(
-            "set -u\n. \"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_state.sh\" || exit 90\n\
-             . \"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_round_word.sh\" || exit 91\n{script}"
-        );
-        let mut c = self.bash();
-        c.arg("-c").arg(full).arg("bash").args(args);
-        feed(c, stdin)
-    }
-
     fn merge_tool(&self, pr: &str, sha: &str) -> Output {
         self.merge_tool_method(pr, sha, "")
     }
@@ -435,272 +361,6 @@ fn last_json(o: &Output, field: &str) -> Value {
         .unwrap_or_else(|| panic!("no JSON line with `{field}`:\n{}", show(o)))
 }
 
-fn mode(path: &Path) -> u32 {
-    std::fs::symlink_metadata(path)
-        .unwrap()
-        .permissions()
-        .mode()
-        & 0o777
-}
-
-fn step_by_prefix(recipe_name: &str, prefix: &str) -> serde_yaml::Value {
-    recipe(recipe_name)["steps"]
-        .as_sequence()
-        .expect("steps")
-        .iter()
-        .find(|s| {
-            s["id"]
-                .as_str()
-                .is_some_and(|id| id == prefix || id.starts_with(&format!("{prefix}-")))
-        })
-        .cloned()
-        .unwrap_or_else(|| panic!("{recipe_name}: no step `{prefix}`"))
-}
-
-fn command_of(recipe_name: &str, prefix: &str) -> String {
-    step_by_prefix(recipe_name, prefix)["command"]
-        .as_str()
-        .unwrap_or_else(|| panic!("{recipe_name}: step `{prefix}` is not a bash step"))
-        .to_string()
-}
-
-// ===========================================================================
-// autodrive_round_word: one word in, one verdict out
-// ===========================================================================
-
-fn word(fx: &Fx, input: &str) -> Value {
-    let out = fx.round_tool("autodrive_round_word \"$1\"", &[input], b"");
-    assert_eq!(out.status.code(), Some(0), "{input:?}: {}", show(&out));
-    last_json(&out, "merge_ready_verdict")
-}
-
-#[test]
-fn round_word_maps_the_three_outcomes() {
-    let Some(fx) = Fx::new() else { return };
-    for (input, w, verdict) in [
-        ("ready", "ready", "MERGE_READY"),
-        ("Ready.", "ready", "MERGE_READY"),
-        ("  READY\n", "ready", "MERGE_READY"),
-        ("not-ready", "not-ready", "NOT_MERGE_READY"),
-        ("Not-Ready", "not-ready", "NOT_MERGE_READY"),
-        ("hand-off", "hand-off", "HANDOFF"),
-        ("`hand-off`", "hand-off", "HANDOFF"),
-    ] {
-        assert_eq!(
-            word(&fx, input),
-            json!({"word": w, "merge_ready_verdict": verdict}),
-            "{input:?}"
-        );
-    }
-}
-
-#[test]
-fn unclear_word_is_not_ready() {
-    let Some(fx) = Fx::new() else { return };
-    for input in [
-        "",
-        "   ",
-        "Probably ready",
-        "ready, but CI is pending",
-        "readynot-ready",
-        "handoff",
-        "Hand off",
-        "MERGE_READY",
-        "{\"merge_ready_verdict\":\"MERGE_READY\"}",
-        "yes",
-        "réady",
-    ] {
-        assert_eq!(
-            word(&fx, input),
-            json!({"word": "not-ready", "merge_ready_verdict": "NOT_MERGE_READY"}),
-            "an unclear answer is another round, never a merge or STUCK: {input:?}"
-        );
-    }
-}
-
-// ===========================================================================
-// autodrive_round_file: private, bounded, never through a symlink
-// ===========================================================================
-
-fn round_file(fx: &Fx, label: &str, verdict: &str, head: &str, writeup: &[u8]) -> Output {
-    fx.round_tool(
-        "autodrive_round_file \"$1\" \"$2\" \"$3\" \"$4\"",
-        &[fx.state.to_str().unwrap(), label, verdict, head],
-        writeup,
-    )
-}
-
-#[test]
-fn round_file_stores_any_prose_shape_verbatim() {
-    let Some(fx) = Fx::new() else { return };
-    for (i, (name, prose)) in FIXTURES.iter().enumerate() {
-        for verdict in ["MERGE_READY", "NOT_MERGE_READY", "HANDOFF"] {
-            let label = format!("round-{i}-{}", verdict.to_lowercase());
-            let out = round_file(&fx, &label, verdict, SHA_A, prose.as_bytes());
-            assert_eq!(out.status.code(), Some(0), "{name}: {}", show(&out));
-            let base = fx.state.join(format!("merge-ready-{label}"));
-            let record: Value = serde_json::from_str(
-                &std::fs::read_to_string(base.with_extension("json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                record,
-                json!({"merge_ready_verdict": verdict}),
-                "the round file holds only the verdict ({name})"
-            );
-            assert_eq!(
-                std::fs::read_to_string(base.with_extension("writeup")).unwrap(),
-                *prose,
-                "{name}"
-            );
-            assert_eq!(
-                std::fs::read_to_string(base.with_extension("head"))
-                    .unwrap()
-                    .trim(),
-                SHA_A
-            );
-            for ext in ["json", "writeup", "head"] {
-                assert_eq!(mode(&base.with_extension(ext)), 0o600, "{label}.{ext}");
-            }
-        }
-    }
-}
-
-#[test]
-fn round_file_accepts_a_sha256_head() {
-    let Some(fx) = Fx::new() else { return };
-    let head = "b".repeat(64);
-    let out = round_file(&fx, "round-1", "MERGE_READY", &head, b"ready\n");
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-}
-
-#[test]
-fn round_word_rejects_label_dot_dot() {
-    let Some(fx) = Fx::new() else { return };
-    let long = "x".repeat(65);
-    for label in ["..", ".", "../escape", "a/b", "", "round 1", long.as_str()] {
-        let out = round_file(&fx, label, "MERGE_READY", SHA_A, b"text");
-        assert_eq!(
-            out.status.code(),
-            Some(2),
-            "label {label:?}: {}",
-            show(&out)
-        );
-    }
-    assert!(
-        !fx.root.join("merge-ready-..json").exists() && !fx.root.join("escape.json").exists(),
-        "nothing is written outside the state directory"
-    );
-}
-
-#[test]
-fn round_file_rejects_bad_verdicts_heads_and_state_dirs() {
-    let Some(fx) = Fx::new() else { return };
-    for verdict in ["", "READY", "merge_ready", "DONE", "MERGE_READY "] {
-        let out = round_file(&fx, "round-1", verdict, SHA_A, b"text");
-        assert_eq!(
-            out.status.code(),
-            Some(2),
-            "verdict {verdict:?}: {}",
-            show(&out)
-        );
-    }
-    let upper = SHA_A.to_uppercase();
-    let (longer, non_hex) = (format!("{SHA_A}0"), "g".repeat(40));
-    for head in [
-        "",
-        "abc",
-        &SHA_A[..39],
-        upper.as_str(),
-        longer.as_str(),
-        non_hex.as_str(),
-    ] {
-        let out = round_file(&fx, "round-1", "MERGE_READY", head, b"text");
-        assert_eq!(out.status.code(), Some(2), "head {head:?}: {}", show(&out));
-    }
-    // A state directory that is a symlink fails autodrive_private_dir.
-    let link = fx.root.join("state-link");
-    symlink(&fx.state, &link).unwrap();
-    let out = fx.round_tool(
-        "autodrive_round_file \"$1\" round-1 MERGE_READY \"$2\"",
-        &[link.to_str().unwrap(), SHA_A],
-        b"text",
-    );
-    assert_eq!(out.status.code(), Some(2), "{}", show(&out));
-    assert!(!fx.state.join("merge-ready-round-1.json").exists());
-}
-
-#[test]
-fn writeup_not_written_through_symlink() {
-    let Some(fx) = Fx::new() else { return };
-    let victim = fx.root.join("victim.txt");
-    std::fs::write(&victim, "untouched\n").unwrap();
-    for ext in ["json", "writeup", "head"] {
-        symlink(&victim, fx.state.join(format!("merge-ready-round-1.{ext}"))).unwrap();
-    }
-    let out = round_file(
-        &fx,
-        "round-1",
-        "NOT_MERGE_READY",
-        SHA_A,
-        b"planted write-up\n",
-    );
-    // Whether the tool sets the planted links aside or replaces them, the
-    // file they point at is never written.
-    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched\n");
-    // A planted link is replaced, not followed, and the round is still stored.
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    {
-        let w = fx.state.join("merge-ready-round-1.writeup");
-        assert!(
-            !std::fs::symlink_metadata(&w)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(std::fs::read_to_string(&w).unwrap(), "planted write-up\n");
-    }
-}
-
-#[test]
-fn round_file_cuts_the_writeup_at_256_kib() {
-    let Some(fx) = Fx::new() else { return };
-    let big = "write-up line about criterion seven\n".repeat(300 * 1024 / 36 + 1);
-    assert!(big.len() > 256 * 1024);
-    let out = round_file(&fx, "round-1", "NOT_MERGE_READY", SHA_A, big.as_bytes());
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let stored = std::fs::read(fx.state.join("merge-ready-round-1.writeup")).unwrap();
-    assert!(
-        stored.len() <= 256 * 1024 + 512,
-        "cut at 256 KiB plus one truncation line, got {} bytes",
-        stored.len()
-    );
-    assert!(stored.len() < big.len());
-    assert!(
-        big.as_bytes().starts_with(&stored[..4096]),
-        "the kept part is a prefix"
-    );
-}
-
-#[test]
-fn round_file_never_takes_the_writeup_from_argv() {
-    let Some(fx) = Fx::new() else { return };
-    // A fifth argument is not the write-up: the body comes from stdin.
-    let out = fx.round_tool(
-        "autodrive_round_file \"$1\" round-1 MERGE_READY \"$2\" 'ARGV-WRITEUP'",
-        &[fx.state.to_str().unwrap(), SHA_A],
-        b"stdin write-up\n",
-    );
-    if out.status.code() == Some(0) {
-        assert_eq!(
-            std::fs::read_to_string(fx.state.join("merge-ready-round-1.writeup")).unwrap(),
-            "stdin write-up\n"
-        );
-    } else {
-        assert_eq!(out.status.code(), Some(2), "{}", show(&out));
-    }
-}
-
 // ===========================================================================
 // autodrive_merge: GitHub's conditions only
 // ===========================================================================
@@ -776,8 +436,8 @@ fn github_refusal_for_protection_or_reviews_is_refused() {
 
 #[test]
 fn failing_checks_prevent_merge_attempt() {
-    // A pending required check is `checks-pending` (#2575 B2); see
-    // issue_2575_wait_sync_success.rs. Only a failing check is not green.
+    // A pending required check is also not green since #3129; see
+    // issue_2575_wait_sync_success.rs.
     let Some(fx) = Fx::new() else { return };
     fx.set("required", "fail");
     let out = fx.merge_tool(PR, SHA_A);
@@ -1379,27 +1039,24 @@ fn the_message_helper_still_gates_every_method() {
 }
 
 // ===========================================================================
-// autodrive-finalize `merge` step: authorisation, assessed head, then GitHub
+// The goal loop's merge action: authorisation, the head this turn read, then
+// GitHub
+//
+// #3129 replaced the finalize `merge` step with the goal loop's merge action,
+// `autodrive_pr_goal.sh act merge <turn_dir>`. It merges only when the head
+// the agent named (`args.head` in decision.json) is the head this turn read
+// (`pr.head` in goal.json), and only under the captured authorisation; then
+// autodrive_merge.sh asks GitHub with --match-head-commit. The outcome goes to
+// the turn's result.json and the merge tool's result, bound to the run, to
+// merge-result.json. Exit 79 and 75 pass up; any other failure is an outcome
+// for the next turn, never a hand-off (merge-result.json always says
+// `"handoff": "false"`).
 // ===========================================================================
 
-struct FinalizeRun {
-    no_merge: &'static str,
-    dry_run: &'static str,
-}
-
-const AUTHORISED: FinalizeRun = FinalizeRun {
-    no_merge: "false",
-    dry_run: "false",
-};
-
-fn finalize_fixture() -> Option<(Fx, String)> {
+fn merge_action_fixture() -> Option<(Fx, String)> {
     let fx = Fx::new()?;
     let head = fx.git_repo();
     fx.set("server_head", &head);
-    private_file(
-        &fx.state.join("merge-ready-latest.head"),
-        &format!("{head}\n"),
-    );
     fx.set(
         "auth_out",
         &json!({"allows_merge": true, "run_id": RUN_ID, "pr_selected": true}).to_string(),
@@ -1407,44 +1064,97 @@ fn finalize_fixture() -> Option<(Fx, String)> {
     Some((fx, head))
 }
 
-fn finalize_merge(fx: &Fx, run: &FinalizeRun) -> Output {
-    finalize_merge_with(fx, run, &[])
+/// One turn's merge action: what the tool did, and the turn folder it wrote.
+struct MergeTurn {
+    out: Output,
+    dir: PathBuf,
 }
 
-/// The finalize merge step with extra `RECIPE_VAR_*` values.
-fn finalize_merge_with(fx: &Fx, run: &FinalizeRun, vars: &[(&str, &str)]) -> Output {
-    let command = command_of("autodrive-finalize", "merge");
-    let invocation = fx.state.join("invocation.json");
+impl MergeTurn {
+    /// The turn's `result.json`: the outcome the next turn's reading carries.
+    fn result(&self) -> Value {
+        let text = std::fs::read_to_string(self.dir.join("result.json"))
+            .unwrap_or_else(|e| panic!("no result.json ({e}): {}", show(&self.out)));
+        serde_json::from_str(text.trim()).expect("result.json is one JSON object")
+    }
+
+    fn outcome(&self) -> Value {
+        self.result()["outcome"].clone()
+    }
+}
+
+/// `merge-result.json` in the state folder: the merge tool's result line,
+/// bound to the run.
+fn merge_record(fx: &Fx) -> Value {
+    let text = std::fs::read_to_string(fx.state.join("merge-result.json"))
+        .expect("the merge action writes merge-result.json");
+    serde_json::from_str(text.trim()).expect("one JSON object")
+}
+
+/// `act merge` in a new turn folder, where the agent named `named` as the
+/// head (`None`: no `args.head`) and the turn read `read` as the PR's head
+/// (`None`: no `pr.head`), with extra `RECIPE_VAR_*` values from the run's
+/// context.
+fn merge_action(
+    fx: &Fx,
+    named: Option<&str>,
+    read: Option<&str>,
+    vars: &[(&str, &str)],
+) -> MergeTurn {
+    let turns = fx.state.join("turns");
+    private_dir(&turns);
+    let n = (1..)
+        .find(|n| !turns.join(format!("{n:03}")).exists())
+        .unwrap();
+    let dir = turns.join(format!("{n:03}"));
+    private_dir(&dir);
+    let args = named.map_or_else(|| json!({}), |h| json!({ "head": h }));
+    private_file(
+        &dir.join("decision.json"),
+        &json!({"action": "merge", "args": args}).to_string(),
+    );
+    let pr = read.map_or_else(|| json!({}), |h| json!({ "head": h }));
+    private_file(
+        &dir.join("goal.json"),
+        &json!({"schema": 1, "summary": "the fixture's reading", "pr": pr}).to_string(),
+    );
     let mut c = fx.bash();
-    c.arg("-c")
-        .arg(command)
+    c.arg(fx.tools().join("autodrive_pr_goal.sh"))
+        .args(["act", "merge"])
+        .arg(&dir)
+        .env("AUTODRIVE_GOAL_CONTRACT", "1")
+        .env("AUTODRIVE_STATE_DIR", &fx.state)
+        .env("AUTODRIVE_REPO", &fx.repo)
+        .env("AUTODRIVE_WORKTREE", &fx.repo)
+        .env("AUTODRIVE_LOOP_HOME", fx.tools())
+        .env(
+            "AUTODRIVE_INVOCATION_FILE",
+            fx.state.join("invocation.json"),
+        )
         .env("RECIPE_VAR_pr_number", PR)
-        .env("RECIPE_VAR_repo_path", &fx.repo)
-        .env("REPO_PATH", &fx.repo)
-        .env("RECIPE_VAR_autodrive_state_dir", &fx.state)
-        .env("RECIPE_VAR_autodrive_invocation_file", &invocation)
-        .env("RECIPE_VAR_no_merge", run.no_merge)
-        .env("RECIPE_VAR_autodrive_dry_run", run.dry_run)
         .current_dir(&fx.repo)
         .stdin(Stdio::null());
     for (k, v) in vars {
         c.env(format!("RECIPE_VAR_{k}"), v);
     }
-    c.output().expect("run finalize merge step")
+    let out = c.output().expect("run the merge action");
+    MergeTurn { out, dir }
 }
 
-fn finalize_result(out: &Output) -> Value {
-    last_json(out, "result")
+/// The merge action at the head both the agent and the reading name.
+fn merge_at(fx: &Fx, head: &str, vars: &[(&str, &str)]) -> MergeTurn {
+    merge_action(fx, Some(head), Some(head), vars)
 }
 
 #[test]
-fn finalize_merges_on_captured_authorisation_assessed_head_and_green_checks() {
-    let Some((fx, head)) = finalize_fixture() else {
+fn merge_action_merges_on_captured_authorisation_read_head_and_green_checks() {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
-    let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let v = finalize_result(&out);
+    let turn = merge_at(&fx, &head, &[]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(turn.outcome(), json!("merged"), "{}", turn.result());
+    let v = merge_record(&fx);
     assert_eq!(v["result"], json!("merged"), "{v}");
     assert_eq!(v["expected_head"], json!(head));
     assert_eq!(v["handoff"], json!("false"));
@@ -1468,89 +1178,78 @@ fn finalize_merges_on_captured_authorisation_assessed_head_and_green_checks() {
 
 #[test]
 fn merge_refused_without_captured_authorization() {
-    let Some((fx, _)) = finalize_fixture() else {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
-    // The helper fails on a merge run (record missing, wrong directory):
-    // exit 2, no stdout. #2959: the step fails loudly with its evidence and
-    // exits 1 before any merge command, so the recovery step takes over. It
-    // is neither a hand-off nor a draft.
+    // The helper fails (record missing, wrong directory): exit 2, no stdout.
+    // The action reports it and merges nothing.
     std::fs::remove_file(fx.fake.join("auth_out")).unwrap();
     fx.set("auth_rc", "2");
-    let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
-    let v = finalize_result(&out);
-    assert_eq!(v["result"], json!("authorization-unreadable"), "{v}");
-    assert_eq!(v["handoff"], json!("false"), "{v}");
-    let err = String::from_utf8_lossy(&out.stderr).to_string();
-    let error_line = err
-        .lines()
-        .find(|l| l.starts_with("ERROR:") && l.contains("authorization-unreadable"))
-        .unwrap_or_else(|| panic!("an ERROR: line with the result name:\n{err}"));
-    assert!(
-        error_line.contains(&fx.state.join("invocation.json").display().to_string()),
-        "names the record path: {error_line}"
-    );
-    assert!(
-        error_line.contains(&fx.state.display().to_string()),
-        "names the state folder: {error_line}"
-    );
-    assert!(
-        error_line.contains("helper exit 2"),
-        "names the helper exit code: {error_line}"
-    );
-    assert!(
-        error_line.contains("missing") || error_line.contains("present"),
-        "says whether the record exists: {error_line}"
+    let turn = merge_at(&fx, &head, &[]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(
+        turn.outcome(),
+        json!("authorization-unreadable"),
+        "{}",
+        turn.result()
     );
     assert_no_merge_attempt(&fx);
 
-    // Exit 0 with no object holding a boolean allows_merge is also unreadable.
+    // Exit 0 with no object holding a boolean allows_merge grants nothing.
+    // The action reads anything but a true allows_merge as no permission, so
+    // the outcome is not-authorised.
     fx.set("auth_rc", "0");
     fx.set("auth_out", r#"{"allows_merge": "yes"}"#);
-    let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
-    let v = finalize_result(&out);
-    assert_eq!(v["result"], json!("authorization-unreadable"), "{v}");
-    assert_eq!(v["handoff"], json!("false"), "{v}");
+    let turn = merge_at(&fx, &head, &[]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(turn.outcome(), json!("not-authorised"), "{}", turn.result());
     assert_no_merge_attempt(&fx);
-
-    // Exit 79 stays terminal: it is a refusal, never sent to recovery.
-    fx.set("auth_rc", "79");
-    let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(79), "{}", show(&out));
-    assert_no_merge_attempt(&fx);
-    fx.set("auth_rc", "0");
 
     // The captured invocation does not allow a merge.
     fx.set(
         "auth_out",
-        &json!({"allows_merge": false, "run_id": RUN_ID}).to_string(),
+        &json!({"allows_merge": false, "run_id": RUN_ID, "pr_selected": true}).to_string(),
     );
-    let out = finalize_merge(&fx, &AUTHORISED);
-    let v = finalize_result(&out);
+    let turn = merge_at(&fx, &head, &[]);
+    assert_eq!(turn.outcome(), json!("not-authorised"), "{}", turn.result());
+    let v = merge_record(&fx);
     assert_eq!(v["result"], json!("not-authorised"), "{v}");
     assert_eq!(v["handoff"], json!("false"), "{v}");
     assert_no_merge_attempt(&fx);
 }
 
+/// Exit 79 from the authorisation read stays terminal: it is a refusal that
+/// passes up, never an outcome for another turn.
+#[test]
+fn the_authorization_helpers_exit_79_passes_up() {
+    let Some((fx, head)) = merge_action_fixture() else {
+        return;
+    };
+    std::fs::remove_file(fx.fake.join("auth_out")).unwrap();
+    fx.set("auth_rc", "79");
+    let turn = merge_at(&fx, &head, &[]);
+    assert_no_merge_attempt(&fx);
+    assert_eq!(turn.out.status.code(), Some(79), "{}", show(&turn.out));
+}
+
 #[test]
 fn merge_refused_for_a_pr_other_than_the_selected_one() {
-    let Some((fx, _)) = finalize_fixture() else {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
     // The helper says the PR is not the one the operator selected, or (an
-    // older helper) says nothing about the selection: never merged.
+    // older helper) says nothing about the selection: never merged. The
+    // action reports both as not-authorised.
     for auth in [
         json!({"allows_merge": true, "run_id": RUN_ID, "pr_selected": false}),
         json!({"allows_merge": true, "run_id": RUN_ID}),
     ] {
         fx.set("auth_out", &auth.to_string());
-        let out = finalize_merge(&fx, &AUTHORISED);
-        assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-        let v = finalize_result(&out);
-        assert_eq!(v["result"], json!("refused"), "{v}");
-        assert_eq!(v["handoff"], json!("true"), "{v}");
+        let turn = merge_at(&fx, &head, &[]);
+        assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+        assert_eq!(turn.outcome(), json!("not-authorised"), "{}", turn.result());
+        let v = merge_record(&fx);
+        assert_eq!(v["result"], json!("not-authorised"), "{v}");
         assert_no_merge_attempt(&fx);
     }
     let auth = fx
@@ -1569,83 +1268,44 @@ fn merge_refused_for_a_pr_other_than_the_selected_one() {
 }
 
 #[test]
-fn verify_only_run_is_not_handed_off_when_the_helper_would_fail() {
-    let Some((fx, _)) = finalize_fixture() else {
-        return;
-    };
-    std::fs::remove_file(fx.fake.join("auth_out")).unwrap();
-    fx.set("auth_rc", "2");
-    let out = finalize_merge(
-        &fx,
-        &FinalizeRun {
-            no_merge: "true",
-            dry_run: "false",
-        },
-    );
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let v = finalize_result(&out);
-    assert_eq!(v["result"], json!("not-authorised"), "{v}");
-    assert_eq!(
-        v["handoff"],
-        json!("false"),
-        "a verify-only run is not a hand-off"
-    );
-    assert_no_merge_attempt(&fx);
-}
-
-#[test]
 fn recipe_context_can_narrow_but_never_grant_merge_permission() {
-    let Some((fx, _)) = finalize_fixture() else {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
-    for run in [
-        FinalizeRun {
-            no_merge: "true",
-            dry_run: "false",
-        },
-        FinalizeRun {
-            no_merge: "false",
-            dry_run: "true",
-        },
-        FinalizeRun {
-            no_merge: "",
-            dry_run: "false",
-        },
-        FinalizeRun {
-            no_merge: "FALSE",
-            dry_run: "false",
-        },
-        FinalizeRun {
-            no_merge: "false",
-            dry_run: "",
-        },
+    for (no_merge, dry_run) in [
+        ("true", "false"),
+        ("false", "true"),
+        ("", "false"),
+        ("FALSE", "false"),
+        ("false", ""),
     ] {
-        let out = finalize_merge(&fx, &run);
-        assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+        let turn = merge_at(
+            &fx,
+            &head,
+            &[("no_merge", no_merge), ("autodrive_dry_run", dry_run)],
+        );
+        assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
         assert_eq!(
-            finalize_result(&out)["result"],
+            turn.outcome(),
             json!("not-authorised"),
-            "no_merge={:?} dry_run={:?}",
-            run.no_merge,
-            run.dry_run
+            "no_merge={no_merge:?} dry_run={dry_run:?}"
         );
         assert_no_merge_attempt(&fx);
     }
 }
 
 #[test]
-fn head_moved_after_assessment_is_handed_off() {
-    let Some((fx, assessed)) = finalize_fixture() else {
+fn head_moved_after_the_reading_is_not_merged() {
+    let Some((fx, assessed)) = merge_action_fixture() else {
         return;
     };
     let moved = fx.commit("committed after the assessment");
     assert_ne!(moved, assessed);
     fx.set("server_head", &moved);
-    let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let v = finalize_result(&out);
-    assert_eq!(v["result"], json!("refused"), "{v}");
-    assert_eq!(v["handoff"], json!("true"));
+    // The agent names the head it assessed; this turn's reading has moved on.
+    let turn = merge_action(&fx, Some(&assessed), Some(&moved), &[]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(turn.outcome(), json!("head-mismatch"), "{}", turn.result());
     assert!(
         fx.gh_calls().is_empty(),
         "a moved head is refused without calling gh: {:?}",
@@ -1655,58 +1315,66 @@ fn head_moved_after_assessment_is_handed_off() {
 
 #[test]
 fn missing_or_malformed_assessed_head_never_merges() {
-    let Some((fx, _)) = finalize_fixture() else {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
-    let head_file = fx.state.join("merge-ready-latest.head");
-    for content in [None, Some("not-a-sha\n"), Some("\n")] {
-        let _ = std::fs::remove_file(&head_file);
-        if let Some(c) = content {
-            private_file(&head_file, c);
-        }
-        let out = finalize_merge(&fx, &AUTHORISED);
-        let v = finalize_result(&out);
-        assert_ne!(v["result"], json!("merged"), "{content:?}: {v}");
-        assert_eq!(v["handoff"], json!("true"), "{content:?}: {v}");
+    let upper = head.to_uppercase();
+    // The head the agent names, then the head the turn read: missing, not a
+    // SHA, or empty.
+    for (named, read) in [
+        (None, Some(head.as_str())),
+        (Some("not-a-sha"), Some(head.as_str())),
+        (Some(""), Some(head.as_str())),
+        (Some(upper.as_str()), Some(head.as_str())),
+        (Some(head.as_str()), None),
+        (Some(head.as_str()), Some("not-a-sha")),
+        (Some(head.as_str()), Some("")),
+    ] {
+        let turn = merge_action(&fx, named, read, &[]);
+        assert_ne!(
+            turn.outcome(),
+            json!("merged"),
+            "{named:?} {read:?}: {}",
+            turn.result()
+        );
         assert_no_merge_attempt(&fx);
     }
 }
 
 #[test]
-fn failing_checks_at_finalisation_are_handed_off() {
-    let Some((fx, _)) = finalize_fixture() else {
+fn failing_checks_at_the_merge_action_are_not_merged() {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
     fx.set("required", "fail");
-    let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let v = finalize_result(&out);
-    assert_eq!(v["result"], json!("checks-not-green"));
-    assert_eq!(v["handoff"], json!("true"));
+    let turn = merge_at(&fx, &head, &[]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(turn.outcome(), json!("checks-not-green"));
+    assert_eq!(merge_record(&fx)["result"], json!("checks-not-green"));
     assert_no_merge_attempt(&fx);
 }
 
 #[test]
-fn github_refusal_at_finalisation_is_handed_off() {
-    let Some((fx, _)) = finalize_fixture() else {
+fn github_refusal_at_the_merge_action_is_refused() {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
     fx.set("server_head", SHA_B); // moved on the server only
-    let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let v = finalize_result(&out);
-    assert_eq!(v["result"], json!("refused"));
-    assert_eq!(v["handoff"], json!("true"));
+    let turn = merge_at(&fx, &head, &[]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(turn.outcome(), json!("refused"));
+    assert_eq!(merge_record(&fx)["result"], json!("refused"));
 }
 
 #[test]
-fn finalize_passes_the_given_method_and_reports_it() {
-    let Some((fx, head)) = finalize_fixture() else {
+fn merge_action_passes_the_given_method_and_reports_it() {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
-    let out = finalize_merge_with(&fx, &AUTHORISED, &[("merge_method", "merge")]);
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let v = finalize_result(&out);
+    let turn = merge_at(&fx, &head, &[("merge_method", "merge")]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(turn.outcome(), json!("merged"), "{}", turn.result());
+    let v = merge_record(&fx);
     assert_eq!(v["result"], json!("merged"), "{v}");
     assert_eq!(v["merge_method"], json!("merge"), "{v}");
     assert!(!v["merge_method_reason"].as_str().unwrap_or("").is_empty());
@@ -1718,28 +1386,28 @@ fn finalize_passes_the_given_method_and_reports_it() {
 }
 
 #[test]
-fn finalize_without_a_method_follows_the_repository() {
-    let Some((fx, _)) = finalize_fixture() else {
+fn merge_action_without_a_method_follows_the_repository() {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
     repo_allows(&fx, true, false, false);
-    let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    assert_eq!(finalize_result(&out)["merge_method"], json!("merge"));
+    let turn = merge_at(&fx, &head, &[]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(merge_record(&fx)["merge_method"], json!("merge"));
     assert!(fx.merge_calls()[0].contains(&"--merge".to_string()));
 }
 
 #[test]
-fn finalize_hands_off_an_unsettled_method_with_what_was_found() {
-    let Some((fx, _)) = finalize_fixture() else {
+fn merge_action_refuses_an_unsettled_method_with_what_was_found() {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
     repo_allows(&fx, true, true, false);
-    let out = finalize_merge_with(&fx, &AUTHORISED, &[("merge_method", "rebase")]);
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let v = finalize_result(&out);
+    let turn = merge_at(&fx, &head, &[("merge_method", "rebase")]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(turn.outcome(), json!("refused"), "{}", turn.result());
+    let v = merge_record(&fx);
     assert_eq!(v["result"], json!("refused"), "{v}");
-    assert_eq!(v["handoff"], json!("true"), "{v}");
     assert!(
         v["reason"]
             .as_str()
@@ -1752,12 +1420,12 @@ fn finalize_hands_off_an_unsettled_method_with_what_was_found() {
 
 #[test]
 fn gh_exit_79_passes_through_merge_step() {
-    let Some((fx, _)) = finalize_fixture() else {
+    let Some((fx, head)) = merge_action_fixture() else {
         return;
     };
     fx.set("rc79_on", "checks");
-    let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(79), "{}", show(&out));
+    let turn = merge_at(&fx, &head, &[]);
+    assert_eq!(turn.out.status.code(), Some(79), "{}", show(&turn.out));
     assert_no_merge_attempt(&fx);
 }
 
@@ -1840,7 +1508,14 @@ fn authorization_helper_reports_captured_merge_permission() {
         assert_eq!(out.status.code(), Some(0), "{}", show(&out));
         assert_eq!(
             last_json(&out, "allows_merge"),
-            json!({"allows_merge": allows, "run_id": RUN_ID})
+            // #3129: the answer also carries the captured flags behind
+            // allows_merge.
+            json!({
+                "allows_merge": allows,
+                "no_merge": no_merge,
+                "dry_run": dry_run,
+                "run_id": RUN_ID
+            })
         );
     }
 }
@@ -1855,7 +1530,13 @@ fn authorization_helper_reports_whether_the_pr_was_selected() {
         assert_eq!(out.status.code(), Some(0), "{}", show(&out));
         assert_eq!(
             last_json(&out, "allows_merge"),
-            json!({"allows_merge": true, "run_id": RUN_ID, "pr_selected": selected})
+            json!({
+                "allows_merge": true,
+                "no_merge": false,
+                "dry_run": false,
+                "run_id": RUN_ID,
+                "pr_selected": selected
+            })
         );
     }
     // A selection by URL binds the merge too.
@@ -1907,617 +1588,8 @@ fn authorization_helper_refuses_unbound_or_unreadable_invocations() {
     );
 }
 
-// ===========================================================================
-// autodrive-merge-loop step-02 and step-02a: exit mapping and loop result
-// ===========================================================================
-
-struct LoopCase {
-    rc: &'static str,
-    result: Option<&'static str>,
-    printed: Option<String>,
-    /// Text the stub driver writes to standard error (#2849).
-    stderr: Option<String>,
-}
-
-/// Puts the stub loop driver in the copied bundle and sets its fixture files
-/// for one run, clearing what the run before left behind.
-fn stage_loop_driver(fx: &Fx, case: &LoopCase) {
-    write_executable(
-        &fx.tools().join("autodrive_loop.sh"),
-        FAKE_LOOP_DRIVER,
-        0o755,
-    );
-    fx.set("loop_rc", case.rc);
-    for f in ["loop_result", "loop_stdout", "loop_stderr", "loop-fd4"] {
-        let _ = std::fs::remove_file(fx.fake.join(f));
-    }
-    let _ = std::fs::remove_file(fx.state.join("merge-ready-result.json"));
-    if let Some(r) = case.result {
-        fx.set("loop_result", r);
-    }
-    if let Some(p) = &case.printed {
-        fx.set("loop_stdout", p);
-    }
-    if let Some(e) = &case.stderr {
-        fx.set("loop_stderr", e);
-    }
-}
-
-/// The preflight JSON a loop step reads its PR, repo and state directory from.
-fn loop_preflight(fx: &Fx) -> String {
-    json!({
-        "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
-        "branch": "feat/issue-2575", "head_sha": SHA_A, "base_branch": "main",
-        "base_sha": SHA_B, "state_dir": fx.state, "repo": fx.repo,
-        "reason": "fixture", "blockers": [], "attempts": []
-    })
-    .to_string()
-}
-
-/// The environment and working directory every loop-step run needs.
-fn loop_env(c: &mut Command, fx: &Fx, preflight: &str) {
-    c.env("RECIPE_VAR_merge_loop_preflight", preflight)
-        .env("RECIPE_VAR_task_description", "issue 2575 fixture task")
-        .env("RECIPE_VAR_autodrive_state_dir", &fx.state)
-        .env("RECIPE_VAR_pr_number", PR)
-        .env("RECIPE_VAR_no_merge", "false")
-        .env("RECIPE_VAR_autodrive_dry_run", "false")
-        .env(
-            "RECIPE_VAR_autodrive_invocation_file",
-            fx.state.join("invocation.json"),
-        )
-        .env("REPO_PATH", &fx.repo)
-        .current_dir(&fx.repo)
-        .stdin(Stdio::null());
-}
-
-/// The commands of `step-02` and `step-02a`. `autodrive-merge-loop.yaml` is
-/// 21 KB of YAML that no run changes, so it is read and parsed once for the
-/// whole test binary rather than twice for every step run.
-fn loop_commands() -> &'static (String, String) {
-    static CMDS: OnceLock<(String, String)> = OnceLock::new();
-    CMDS.get_or_init(|| {
-        (
-            command_of("autodrive-merge-loop", "step-02"),
-            command_of("autodrive-merge-loop", "step-02a"),
-        )
-    })
-}
-
-/// Runs `step-02` alone. `step-02a` is a second process, so [`loop_step`]
-/// adds it only for the callers that read the outcome it produces.
-fn loop_step_02(fx: &Fx, case: &LoopCase) -> Output {
-    stage_loop_driver(fx, case);
-    let mut c = fx.bash();
-    c.arg("-c").arg(&loop_commands().0);
-    loop_env(&mut c, fx, &loop_preflight(fx));
-    c.output().expect("run merge loop step-02")
-}
-
-/// Runs `step-02a` over the loop line a `step-02` that exited 0 printed.
-fn loop_outcome_step(fx: &Fx, out: &Output) -> Output {
-    let mut c = fx.bash();
-    c.arg("-c")
-        .arg(&loop_commands().1)
-        .env("RECIPE_VAR_merge_loop_result", stdout(out));
-    loop_env(&mut c, fx, &loop_preflight(fx));
-    c.output().expect("run merge loop step-02a")
-}
-
-fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
-    let out = loop_step_02(fx, case);
-    if out.status.code() != Some(0) {
-        return (out, None);
-    }
-    let classified = loop_outcome_step(fx, &out);
-    (out, Some(classified))
-}
-
-fn loop_fixture() -> Option<Fx> {
-    let fx = Fx::new()?;
-    fx.git_repo();
-    Some(fx)
-}
-
-#[test]
-fn step02_keeps_refusal_and_usage_limit_exits() {
-    let Some(fx) = loop_fixture() else { return };
-    for (rc, result, expected) in [
-        ("79", None, 79),
-        ("79", Some("DONE"), 79),
-        ("1", Some("USAGE_LIMIT"), 1),
-        ("75", Some("ORPHANED"), 75),
-        ("2", None, 2),
-        ("3", None, 3),
-    ] {
-        let (out, _) = loop_step(
-            &fx,
-            &LoopCase {
-                rc,
-                result,
-                printed: None,
-                stderr: None,
-            },
-        );
-        assert_eq!(
-            out.status.code(),
-            Some(expected),
-            "driver {rc}/{result:?}: {}",
-            show(&out)
-        );
-    }
-}
-
-#[test]
-fn step02_turns_every_other_loop_ending_into_a_handoff() {
-    let Some(fx) = loop_fixture() else { return };
-    for result in [
-        Some("STUCK"),
-        Some("BUDGET_EXHAUSTED"),
-        Some("HANDOFF"),
-        None,
-    ] {
-        let (out, classified) = loop_step(
-            &fx,
-            &LoopCase {
-                rc: "1",
-                result,
-                printed: None,
-                stderr: None,
-            },
-        );
-        assert_eq!(out.status.code(), Some(0), "{result:?}: {}", show(&out));
-        let classified = classified.unwrap();
-        assert_eq!(classified.status.code(), Some(0), "{}", show(&classified));
-        let v = last_json(&classified, "outcome");
-        assert_eq!(v["outcome"], json!("handoff"), "{result:?}: {v}");
-        assert!(v["reason"].as_str().is_some_and(|r| r.len() <= 1000), "{v}");
-        if result.is_none() {
-            assert!(stdout(&out).contains("UNREADABLE"), "{}", show(&out));
-        }
-    }
-}
-
-#[test]
-fn step02_done_leads_to_finalisation() {
-    let Some(fx) = loop_fixture() else { return };
-    let (out, classified) = loop_step(
-        &fx,
-        &LoopCase {
-            rc: "0",
-            result: Some("DONE"),
-            printed: None,
-            stderr: None,
-        },
-    );
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let v = last_json(&classified.unwrap(), "outcome");
-    assert_eq!(v["outcome"], json!("done"), "{v}");
-}
-
-#[test]
-fn done_result_with_a_failed_driver_exit_is_handed_off() {
-    // The driver writes DONE only on its exit-0 path; a DONE result file left
-    // behind by an exit-1 path is never finalised.
-    let Some(fx) = loop_fixture() else { return };
-    let (out, classified) = loop_step(
-        &fx,
-        &LoopCase {
-            rc: "1",
-            result: Some("DONE"),
-            printed: None,
-            stderr: None,
-        },
-    );
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    assert!(stdout(&out).contains("UNREADABLE"), "{}", show(&out));
-    let v = last_json(&classified.unwrap(), "outcome");
-    assert_eq!(v["outcome"], json!("handoff"), "{v}");
-}
-
-#[test]
-fn agent_printed_loop_result_is_ignored() {
-    let Some(fx) = loop_fixture() else { return };
-    // An agent printed a DONE (or USAGE_LIMIT) line into the driver's output;
-    // the driver's own result file says STUCK.
-    for printed in ["DONE", "USAGE_LIMIT"] {
-        let line =
-            json!({"loop":"merge-ready","loop_result":printed,"round_label":"round-9"}).to_string();
-        let (out, classified) = loop_step(
-            &fx,
-            &LoopCase {
-                rc: "1",
-                result: Some("STUCK"),
-                printed: Some(format!("{line}\n")),
-                stderr: None,
-            },
-        );
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "printed {printed}: {}",
-            show(&out)
-        );
-        let v = last_json(&classified.unwrap(), "outcome");
-        assert_eq!(v["outcome"], json!("handoff"), "printed {printed}: {v}");
-    }
-}
-
-#[test]
-fn step02a_reason_is_bounded() {
-    let Some(fx) = loop_fixture() else { return };
-    let (_, classified) = loop_step(
-        &fx,
-        &LoopCase {
-            rc: "1",
-            result: Some("STUCK"),
-            printed: Some("x".repeat(5000)),
-            stderr: None,
-        },
-    );
-    let v = last_json(&classified.unwrap(), "outcome");
-    assert!(v["reason"].as_str().unwrap().len() <= 1000, "{v}");
-}
-
-// ===========================================================================
-// The loop driver end to end with the real round tools: prose shape never
-// stops the drive, not-ready carries the write-up, hand-off stops the loop.
-// ===========================================================================
-
-/// The fake `amplihack` for the driver: `recipe run <...>/autodrive-merge-round.yaml`
-/// plays the round (word from `plan`, write-up from `writeup-N`) through the
-/// real `autodrive_round_word` and `autodrive_round_file`; the evaluator
-/// answers DONE when the round file says MERGE_READY and CONTINUE otherwise,
-/// and STUCK after six calls so a broken driver cannot loop for ever.
-const DRIVER_AMPLIHACK: &str = r#"#!/usr/bin/env bash
-set -u
-S="$STUB_STATE"
-case "${1:-} ${2:-}" in
-  "recipe show") exit 0 ;;
-  "orch helper")
-    in="$(cat)"
-    if [ "${3:-}" = "extract-json" ]; then
-      f=""; while [ $# -gt 0 ]; do [ "$1" = "--require-field" ] && f="${2:-}"; shift; done
-      printf '%s\n' "$in" | jq -R -c --arg f "$f" 'fromjson? | select(type == "object" and has($f))' 2>/dev/null | tail -n 1
-      exit 0
-    fi
-    if [ "${3:-}" = "extract-field" ]; then
-      f=""; d=""
-      while [ $# -gt 0 ]; do case "$1" in --field) f="${2:-}" ;; --default) d="${2:-}" ;; esac; shift; done
-      v=""
-      [ -n "$in" ] && v="$(printf '%s' "$in" | jq -r --arg f "$f" 'if .[$f] == null then empty else .[$f] end | if type == "string" then . else tojson end' 2>/dev/null)"
-      if [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "$d"; fi
-      exit 0
-    fi
-    printf '%s\n' "$*" >> "$S/helper-calls"
-    exit 0 ;;
-  "recipe run") ;;
-  *) exit 0 ;;
-esac
-name="$(basename -- "${3:-}" .yaml)"
-label=""; prev=""
-for a in "$@"; do
-  case "$prev:$a" in
-    -c:autodrive_round_label=*) label="${a#autodrive_round_label=}" ;;
-    -c:loop_round_label=*) label="${a#loop_round_label=}" ;;
-    --context-from-file:loop_round_label=*) label="$(cat -- "${a#*=}")" ;;
-  esac
-  prev=$a
-done
-if [ "$name" = "loop-health-evaluator" ]; then
-  printf '%s\n' "$label" >> "$S/evaluator-calls"
-  if [ "$(wc -l < "$S/evaluator-calls")" -gt 6 ]; then echo "LOOP_HEALTH: STUCK"; exit 1; fi
-  v="$(jq -r '.merge_ready_verdict // empty' "$STUB_STATE_DIR/merge-ready-$label.json" 2>/dev/null)"
-  verdict=CONTINUE; [ "$v" = MERGE_READY ] && verdict=DONE
-  # The evaluator contract (#2575 B2): a round with no movement since the last
-  # one is STUCK, unless loop_ci_signal says a check is pending at that head.
-  ci=""; prev=""
-  # Both forms: #2582 moved the evaluator's free-text keys, loop_ci_signal
-  # among them, from `-c key=<text>` to `--context-from-file key=<file>`, as
-  # loop_round_label is read above.
-  for a in "$@"; do case "$prev:$a" in
-    -c:loop_ci_signal=*) ci="${a#loop_ci_signal=}" ;;
-    --context-from-file:loop_ci_signal=*) ci="$(cat -- "${a#*=}")" ;;
-  esac; prev=$a; done
-  printf '%s\n' "$ci" >> "$S/evaluator-ci"
-  h="$(git -C "$STUB_REPO" rev-parse HEAD)"
-  last="$(cat "$S/evaluator-head" 2>/dev/null || :)"; printf '%s' "$h" > "$S/evaluator-head"
-  if [ "$verdict" = CONTINUE ] && [ "$h" = "$last" ] && [ "$ci" != "pending@$h" ]; then
-    echo "LOOP_HEALTH: STUCK"; exit 1
-  fi
-  printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: %s\n' "$verdict"
-  exit 0
-fi
-[ "$name" = "autodrive-merge-round" ] || exit 0
-printf '%s\n' "$label" >> "$S/round-calls"
-n="${label#round-}"
-printf '%s\0' "$@" > "$S/round-argv-$n"
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "--context-from-file" ]; then cp -- "${a#*=}" "$S/ctx-$n-${a%%=*}" 2>/dev/null || :; fi
-  prev=$a
-done
-line="$(sed -n "${n}p" "$S/plan")"; [ -n "$line" ] || line="$(tail -n 1 "$S/plan")"
-IFS='|' read -r word commit ci <<<"$line"
-w="$S/writeup-$n"; [ -f "$w" ] || w="$S/writeup"
-head="$(git -C "$STUB_REPO" rev-parse HEAD)"                # step-01a reads the PR worktree
-. "$TOOLS/autodrive_state.sh" || exit 2
-. "$TOOLS/autodrive_round_word.sh" || exit 2
-if [ -n "${ci:-}" ]; then out="$(autodrive_round_word "$word" "$ci" "$head")" || exit 2   # step-03, step-05a
-else out="$(autodrive_round_word "$word")" || exit 2; fi
-v="$(printf '%s' "$out" | jq -r .merge_ready_verdict)"
-sig="$(printf '%s' "$out" | jq -r '.ci_signal // empty')"
-if [ "$commit" = 1 ] && [ "$v" = NOT_MERGE_READY ]; then      # step-04: not-ready only
-  t="$(git -C "$STUB_REPO" write-tree)"
-  c="$(git -C "$STUB_REPO" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "repair $label")"
-  git -C "$STUB_REPO" update-ref HEAD "$c"
-  printf '%s\n' "$label" >> "$S/builder-calls"
-fi
-autodrive_round_file "$STUB_STATE_DIR" "$label" "$v" "$head" ${sig:+"$sig"} < "$w" || exit 2   # step-05
-echo "round ran"
-exit 0
-"#;
-
-const DRIVER_GH: &str = r#"#!/usr/bin/env bash
-set -u
-if [ "${1:-} ${2:-}" = 'pr view' ]; then git -C "$STUB_REPO" rev-parse HEAD; exit $?; fi
-printf '%s\n' "$*" >> "$STUB_STATE/gh-calls"
-exit 0
-"#;
-
-struct Drive {
-    _tmp: tempfile::TempDir,
-    root: PathBuf,
-    bin: PathBuf,
-    stub: PathBuf,
-    state: PathBuf,
-    repo: PathBuf,
-    main: PathBuf,
-    task: PathBuf,
-}
-
-impl Drive {
-    fn new() -> Option<Self> {
-        if !jq_available() {
-            eprintln!("SKIP: jq is not installed");
-            return None;
-        }
-        let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        let p = |n: &str| root.join(n);
-        let (bin, stub, state, repo, main, task) = (
-            p("bin"),
-            p("stub"),
-            p("state"),
-            p("repo"),
-            p("main"),
-            p("task-in"),
-        );
-        for d in [&bin, &stub, &main, &p("home"), &p("claude-config")] {
-            std::fs::create_dir_all(d).unwrap();
-        }
-        private_dir(&state);
-        std::fs::write(&task, "issue 2575 fixture task\n").unwrap();
-        let git = |args: &[&str]| crate::support::quick_change_repo::git(&main, args);
-        git(&["init", "-q"]);
-        git(&["commit", "-q", "--allow-empty", "-m", "init"]);
-        git(&["worktree", "add", "-q", "--detach", repo.to_str().unwrap()]);
-        write_executable(&bin.join("amplihack"), DRIVER_AMPLIHACK, 0o755);
-        write_executable(&bin.join("gh"), DRIVER_GH, 0o755);
-        Some(Drive {
-            _tmp: tmp,
-            root,
-            bin,
-            stub,
-            state,
-            repo,
-            main,
-            task,
-        })
-    }
-
-    /// One line per round: `WORD|COMMIT`; the last line repeats.
-    fn plan(&self, lines: &[&str]) {
-        std::fs::write(self.stub.join("plan"), lines.join("\n") + "\n").unwrap();
-    }
-
-    fn writeup(&self, round: usize, text: &str) {
-        std::fs::write(self.stub.join(format!("writeup-{round}")), text).unwrap();
-    }
-
-    fn run(&self) -> Output {
-        let path = format!(
-            "{}:{}",
-            self.bin.display(),
-            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
-        );
-        let tools = repo_root().join("amplifier-bundle/tools");
-        let mut c = crate::isolated_amplihack::isolated("bash");
-        c.arg(tools.join("autodrive_loop.sh"))
-            .args([
-                "--loop-name",
-                "merge-ready",
-                "--round-recipe",
-                "autodrive-merge-round",
-            ])
-            .args([
-                "--clean-token",
-                "MERGE_READY",
-                "--verdict-field",
-                "merge_ready_verdict",
-            ])
-            .arg("--repo")
-            .arg(&self.repo)
-            .arg("--state-dir")
-            .arg(&self.state)
-            .arg("--task-file")
-            .arg(&self.task)
-            .args([
-                "--context",
-                "repo_path=.",
-                "--context",
-                &format!("pr_number={PR}"),
-            ])
-            .env("PATH", path)
-            .env("HOME", self.root.join("home"))
-            .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
-            .env("TOOLS", &tools)
-            .env("STUB_STATE", &self.stub)
-            .env("STUB_STATE_DIR", &self.state)
-            .env("STUB_REPO", &self.repo)
-            .env("AMPLIHACK_BIN", self.bin.join("amplihack"))
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .current_dir(&self.main)
-            .stdin(Stdio::null());
-        c.output().expect("spawn autodrive_loop.sh")
-    }
-
-    fn lines(&self, name: &str) -> Vec<String> {
-        std::fs::read_to_string(self.stub.join(name))
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-
-    fn result(&self) -> Value {
-        serde_json::from_str(
-            &std::fs::read_to_string(self.state.join("merge-ready-result.json"))
-                .expect("the driver writes merge-ready-result.json"),
-        )
-        .unwrap()
-    }
-
-    fn head(&self) -> String {
-        crate::support::quick_change_repo::git(&self.repo, &["rev-parse", "HEAD"])
-            .trim()
-            .to_string()
-    }
-}
-
-fn assert_never_stuck_on_shape(out: &Output) {
-    let all = show(out);
-    for refused in [
-        "invalid agent round evidence",
-        "CandidateRecord",
-        "unknown field",
-    ] {
-        assert!(
-            !all.contains(refused),
-            "the write-up is never parsed ({refused}):\n{all}"
-        );
-    }
-}
-
-#[test]
-fn prose_shape_does_not_stop_drive() {
-    for (name, prose) in FIXTURES {
-        let Some(d) = Drive::new() else { return };
-        d.plan(&["ready|0"]);
-        d.writeup(1, prose);
-        let head = d.head();
-        let out = d.run();
-        assert_never_stuck_on_shape(&out);
-        assert_eq!(out.status.code(), Some(0), "{name}: {}", show(&out));
-        assert_eq!(d.result()["loop_result"], json!("DONE"), "{name}");
-        assert_eq!(d.lines("round-calls"), ["round-1"], "{name}");
-        assert_eq!(
-            std::fs::read_to_string(d.state.join("merge-ready-latest.writeup")).unwrap(),
-            prose,
-            "{name}: the latest write-up is kept verbatim for finalisation and hand-off"
-        );
-        assert_eq!(
-            std::fs::read_to_string(d.state.join("merge-ready-latest.head"))
-                .unwrap()
-                .trim(),
-            head,
-            "{name}: finalisation's expected head is the assessed head"
-        );
-        assert!(
-            !d.lines("helper-calls")
-                .iter()
-                .any(|c| c.contains("complete-loop")),
-            "no loop receipt is written: {:?}",
-            d.lines("helper-calls")
-        );
-    }
-}
-
-#[test]
-fn not_ready_runs_another_round_with_prior_writeup() {
-    for (name, prose) in FIXTURES {
-        let Some(d) = Drive::new() else { return };
-        d.plan(&["not-ready|1", "ready|0"]);
-        d.writeup(1, prose);
-        d.writeup(2, "Round two: all 13 criteria met. Outcome: ready.\n");
-        let out = d.run();
-        assert_never_stuck_on_shape(&out);
-        assert_eq!(out.status.code(), Some(0), "{name}: {}", show(&out));
-        assert_eq!(d.lines("round-calls"), ["round-1", "round-2"], "{name}");
-        assert_eq!(d.result()["loop_result"], json!("DONE"), "{name}");
-        let prior = std::fs::read_to_string(d.stub.join("ctx-2-prior_writeup"))
-            .unwrap_or_else(|_| panic!("{name}: round two receives prior_writeup from a file"));
-        assert!(prior.contains(prose.trim_end()), "{name}: {prior:?}");
-        let first = std::fs::read_to_string(d.stub.join("ctx-1-prior_writeup")).unwrap_or_default();
-        assert!(
-            first.trim().is_empty(),
-            "round one has no prior write-up: {first:?}"
-        );
-        // The write-up never travels on argv.
-        let marker = prose.lines().next().unwrap();
-        for n in [1, 2] {
-            let argv = std::fs::read(d.stub.join(format!("round-argv-{n}"))).unwrap();
-            assert!(
-                !String::from_utf8_lossy(&argv).contains(marker),
-                "{name}: the write-up is on round {n}'s argv"
-            );
-        }
-    }
-}
-
-#[test]
-fn unclear_word_is_another_round() {
-    let Some(d) = Drive::new() else { return };
-    d.plan(&["probably fine|1", "ready|0"]);
-    d.writeup(1, "I think it is mostly there.\n");
-    d.writeup(2, "Outcome: ready.\n");
-    let out = d.run();
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    assert_eq!(d.lines("round-calls"), ["round-1", "round-2"]);
-    assert_eq!(d.result()["loop_result"], json!("DONE"));
-}
-
-#[test]
-fn handoff_word_stops_the_loop_before_the_evaluator() {
-    let Some(d) = Drive::new() else { return };
-    d.plan(&["hand-off|0"]);
-    d.writeup(
-        1,
-        "Blocked: the required reviewer has left the project. Outcome: hand-off.\n",
-    );
-    let out = d.run();
-    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
-    assert_eq!(d.result()["loop_result"], json!("HANDOFF"));
-    assert!(
-        d.lines("evaluator-calls").is_empty(),
-        "a hand-off is recorded before the evaluator runs"
-    );
-    assert_eq!(d.lines("round-calls"), ["round-1"]);
-    assert_eq!(
-        std::fs::read_to_string(d.state.join("merge-ready-latest.writeup")).unwrap(),
-        "Blocked: the required reviewer has left the project. Outcome: hand-off.\n",
-        "the hand-off reads the blocker from the latest write-up"
-    );
-}
-
 // #2575 B1, B2 and M1 (Crusty's review of PR #2637): pending checks wait,
 // a missing Crusty record runs Crusty, the base sync, and success means
 // merged. A child module, so it shares the fakes and fixtures above.
 #[path = "issue_2575_wait_sync_success.rs"]
 mod wait_sync_success;
-
-// #2849 item 1: the loop driver's output is kept in the PR's state folder and
-// an UNREADABLE hand-off names it. A child module, so it shares the stub
-// driver and the loop-step fixtures above.
-#[path = "issue_2849_loop_driver_evidence.rs"]
-mod loop_driver_evidence;
