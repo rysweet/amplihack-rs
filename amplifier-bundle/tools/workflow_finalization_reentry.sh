@@ -7,8 +7,9 @@
 # of workflow-finalization-assessment.yaml runs.
 #
 # Why it exists. assess-finalization is one agent session, and a session can
-# end before its work does: it crashes, it is cut off, it answers in prose, or
-# it says the CI repair is unfinished (CI_REPAIR_UNFINISHED). continue_ci_repair
+# end before its work does: it crashes, it is cut off, it answers in prose, it
+# says the CI repair is unfinished (CI_REPAIR_UNFINISHED), or it leaves the
+# run's worktree dirty after its own commits and builds. continue_ci_repair
 # starts the assessment once more, in a fresh session, and prints that
 # session's answer.
 #
@@ -16,7 +17,8 @@
 # has no loop and counts nothing. The decisions are made elsewhere:
 #   - whether a pass is needed: the runner, by continue-ci-repair's condition
 #     (the answer names no terminal_state, or names CI_REPAIR_UNFINISHED, the
-#     session's own statement that it has not decided);
+#     session's own statement that it has not decided, or
+#     read-worktree-after-assessment did not find the recorded worktree clean);
 #   - whether the fresh pass decided: the runner again, by the same condition on
 #     reentered-pass-undecided, the step that fails the nested run when it holds;
 #   - whether to start another pass after that: continue-ci-repair's recovery
@@ -32,7 +34,12 @@
 # returned as 1, with one ERROR line for the recovery agent. The line says
 # whether the nested run's reentered-pass-undecided step failed or the run
 # failed some other way, as the runner recorded it, and carries the pass's
-# answer as a JSON string, so its control characters are escaped.
+# answer as a JSON string, so its control characters are escaped, and the
+# nested run's own worktree reading as JSON.
+#
+# The note the pass gets is {previous_answer, worktree}: the last answer, and
+# what read-worktree-after-assessment found after it (null when it did not
+# run). Both are data for the session, which reads `git status` itself.
 #
 # Requires workflow_context.sh and workflow_finalization_metadata.sh to be
 # sourced first, as the dispatcher does. The recipe it runs is the bundle's own,
@@ -44,7 +51,7 @@
 FINALIZATION_REENTRY_TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 
 continue_ci_repair() {
-  local scratch recipe previous repo_path rc=0 answer why
+  local scratch recipe previous worktree repo_path rc=0 answer why after
   local -a ctx
   command -v jq >/dev/null 2>&1 || { echo "ERROR: #2966: continue-ci-repair requires jq" >&2; return 1; }
   recipe="${FINALIZATION_REENTRY_TOOLS_DIR%/*}/recipes/workflow-finalization-assessment.yaml"
@@ -54,12 +61,11 @@ continue_ci_repair() {
   # The note is never empty, even when the last session left no readable
   # answer: the nested run skips continue-ci-repair because ci_repair_reentry
   # is set, so an empty note would let it start a pass of its own.
-  previous="$(workflow_context_read finalization_assessment 2>/dev/null || :)"
-  if [ -n "$previous" ]; then
-    printf '%s' "$previous" | jq -c '{previous_answer: .}' >"$scratch/note"
-  else
-    printf '{"previous_answer":null}' >"$scratch/note"
-  fi
+  # Each part is one JSON value or null, so the note is always one object.
+  previous="$(workflow_context_read finalization_assessment 2>/dev/null | jq -cs 'if length == 1 then .[0] else null end' 2>/dev/null || :)"
+  worktree="$(workflow_context_read worktree_after_assessment 2>/dev/null | jq -cs 'if length == 1 and (.[0] | type) == "object" then .[0] else null end' 2>/dev/null || :)"
+  jq -nc --argjson p "${previous:-null}" --argjson w "${worktree:-null}" '{previous_answer: $p, worktree: $w}' >"$scratch/note" \
+    || printf '{"previous_answer":null,"worktree":null}' >"$scratch/note"
   ctx=(--context-from-file "ci_repair_reentry=$scratch/note")
   workflow_context_read finalization_evidence >"$scratch/evidence" 2>/dev/null || : >"$scratch/evidence"
   workflow_context_read finalizer_step_status >"$scratch/step-status" 2>/dev/null || : >"$scratch/step-status"
@@ -67,8 +73,11 @@ continue_ci_repair() {
   [ ! -s "$scratch/step-status" ] || ctx+=(--context-from-file "finalizer_step_status=$scratch/step-status")
   repo_path="$(workflow_finalization_metadata repo_path || :)"
   [ -z "$repo_path" ] || ctx+=(-c "repo_path=$repo_path")
+  # The nested pass reads the same recorded worktree after its session.
+  workflow_context_read worktree_setup >"$scratch/worktree-setup" 2>/dev/null || : >"$scratch/worktree-setup"
+  [ ! -s "$scratch/worktree-setup" ] || ctx+=(--context-from-file "worktree_setup=$scratch/worktree-setup")
   [ -z "${RECIPE_VAR_base_branch:-}" ] || ctx+=(-c "base_branch=$RECIPE_VAR_base_branch")
-  echo "INFO: #2966: assess-finalization did not decide (no terminal_state, or CI_REPAIR_UNFINISHED); starting it again in a fresh session" >&2
+  echo "INFO: #2966: assess-finalization did not decide (no terminal_state, or CI_REPAIR_UNFINISHED), or left the run's worktree not clean; starting it again in a fresh session" >&2
   (
     while IFS= read -r v; do
       case "$v" in RECIPE_VAR_*|AMPLIHACK_CONTEXT_FILE) unset "$v" ;; esac
@@ -82,8 +91,11 @@ continue_ci_repair() {
   why="the fresh assessment run failed before it reached a decision"
   if jq -e 'any(.step_results[]?; .step_id == "reentered-pass-undecided" and .status == "failed")' \
     "$scratch/pass.json" >/dev/null 2>&1; then
-    why="the fresh assess-finalization session did not decide either"
+    why="the fresh assess-finalization session did not decide either, or left the worktree not clean"
   fi
+  after="$(jq -c '[.step_results[]? | select(.step_id == "read-worktree-after-assessment") | .output
+                   | select(. != null) | if type == "string" then (try fromjson catch .) else . end] | last // null' \
+    "$scratch/pass.json" 2>/dev/null || :)"
   rm -rf -- "$scratch"
   case "$rc" in
     0) printf '%s\n' "$answer"; return 0 ;;
@@ -93,7 +105,7 @@ continue_ci_repair() {
     echo "ERROR: #2966: the fresh assessment run was stopped by a signal (exit $rc)" >&2
     return "$rc"
   fi
-  printf 'ERROR: #2966: %s (nested run exit %s); its answer, as data: %s\n' \
-    "$why" "$rc" "$(printf '%s' "$answer" | jq -Rsc '.[0:2000]')" >&2
+  printf 'ERROR: #2966: %s (nested run exit %s); its answer, as data: %s; the worktree after it, as data: %s\n' \
+    "$why" "$rc" "$(printf '%s' "$answer" | jq -Rsc '.[0:2000]')" "$(printf '%s' "${after:-null}" | LC_ALL=C cut -c1-2000)" >&2
   return 1
 }

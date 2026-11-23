@@ -123,7 +123,9 @@ fn unusable_run_scope_is_never_read_and_never_decided() {
 // success. #2966: the prior-probe blocker here is one the probe still reports.
 // `BLOCKED_CI` is not among them any more, since a red check is repaired before
 // finalization decides, so a stale record of it blocks nothing (the
-// issue_1714_finalization_handoff `assessed_ci` cases).
+// issue_1714_finalization_handoff `assessed_ci` cases). Since crusty round 5 a
+// recorded checkout's live answer outranks the collected record, so the
+// collected-dirty case dirties the checkout the record describes.
 #[test]
 fn blockers_keep_their_state_and_are_not_masked_by_a_claimed_success() {
     let claimed = assessment("EXISTING_OPEN_PR", "none", "7");
@@ -150,6 +152,9 @@ fn blockers_keep_their_state_and_are_not_masked_by_a_claimed_success() {
     for (name, context, expected) in cases {
         let fx = Fixture::new();
         fx.gh_view(&open_pr(green_rollup()));
+        if expected == "FAILED_DIRTY_WORKTREE" {
+            std::fs::write(fx.repo.join("left-behind.txt"), "dirty\n").expect("dirty file");
+        }
         let mut envs = with_url(&fx);
         envs.push(context);
         envs.push(claimed.clone());

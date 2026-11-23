@@ -3,13 +3,14 @@
 //!
 //! Round 3 moved every decision out of the re-entry brick. The runner decides
 //! when a pass is needed (`continue-ci-repair`'s condition: no terminal_state,
-//! or `CI_REPAIR_UNFINISHED`) and whether the fresh pass decided (the same
-//! condition on `reentered-pass-undecided` in the nested run). The step's
-//! recovery agent decides whether to start another. What is left in
-//! `continue_ci_repair` (`workflow_finalization_reentry.sh`, the dispatcher's
-//! `reassess` mode) is mechanics: start the bundle's own assessment recipe
-//! once, hand it the last answer as data, print what the pass answered, and
-//! pass on the nested run's exit code.
+//! `CI_REPAIR_UNFINISHED`, or, since round 5, a recorded worktree that
+//! `read-worktree-after-assessment` did not find clean) and whether the fresh
+//! pass finished (the same condition on `reentered-pass-undecided` in the
+//! nested run). The step's recovery agent decides whether to start another.
+//! What is left in `continue_ci_repair` (`workflow_finalization_reentry.sh`,
+//! the dispatcher's `reassess` mode) is mechanics: start the bundle's own
+//! assessment recipe once, hand it the last answer and the worktree reading as
+//! data, print what the pass answered, and pass on the nested run's exit code.
 //!
 //! These cases pin exactly that, and nothing more: one nested run per call,
 //! no field of any answer read, and the exit codes. They run the real
@@ -31,7 +32,8 @@ use crate::issue_1641_finalization_open_pr::fixture::{Fixture, Outcome, write_ex
 /// `answer-last`) as the output of the nested `assess-finalization` step and
 /// exits `rc-<n>` (else 0). When `undecided-<n>` exists, its result also
 /// records `reentered-pass-undecided` as failed, as the runner does when that
-/// step's condition held.
+/// step's condition held. When `worktree-<n>` exists, its content is recorded
+/// as the output of the nested `read-worktree-after-assessment` step.
 const AMPLIHACK_STUB: &str = r#"#!/usr/bin/env bash
 d="$GH_FIXTURE_DIR"
 n=$(( $(cat "$d/amp-count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/amp-count"
@@ -40,13 +42,17 @@ compgen -e | grep -c '^RECIPE_VAR_' > "$d/amp-recipe-vars-$n" || :
 prev=""
 for a in "$@"; do
   if [ "$prev" = --context-from-file ]; then
-    case "$a" in ci_repair_reentry=*) cp "${a#*=}" "$d/note-$n.json" ;; esac
+    case "$a" in
+      ci_repair_reentry=*) cp "${a#*=}" "$d/note-$n.json" ;;
+      worktree_setup=*) cp "${a#*=}" "$d/worktree-setup-$n.json" ;;
+    esac
   fi
   prev="$a"
 done
 ans="$(cat "$d/answer-$n" 2>/dev/null || cat "$d/answer-last" 2>/dev/null || :)"
 guard='[]'
-[ ! -f "$d/undecided-$n" ] || guard='[{"step_id":"reentered-pass-undecided","status":"failed","output":""}]'
+[ ! -f "$d/worktree-$n" ] || guard="$(jq -c '[{step_id: "read-worktree-after-assessment", status: "completed", output: .}]' "$d/worktree-$n")"
+[ ! -f "$d/undecided-$n" ] || guard="$(jq -c '. + [{step_id: "reentered-pass-undecided", status: "failed", output: ""}]' <<<"$guard")"
 jq -nc --arg o "$ans" --argjson g "$guard" '{success: true, step_results: ([{step_id: "assess-finalization", status: "completed", output: $o}] + $g)}'
 exit "$(cat "$d/rc-$n" 2>/dev/null || echo 0)"
 "#;
@@ -189,7 +195,8 @@ fn one_pass_is_started_from_the_bundle_recipe_and_its_answer_printed() {
 // The last answer is handed to the pass as data. An answer the context reader
 // cannot read as one object (a crash, prose) is handed on as null, and the
 // note is never empty, so the nested run always knows it is a re-entry and
-// skips continue-ci-repair.
+// skips continue-ci-repair. With no worktree reading recorded, `worktree` is
+// null.
 #[test]
 fn the_last_answer_is_handed_to_the_pass_as_data() {
     let r = Reentry::new();
@@ -198,15 +205,79 @@ fn the_last_answer_is_handed_to_the_pass_as_data() {
     let outcome = r.run(Some(&unfinished()));
     assert!(outcome.success(), "{}", outcome.describe());
     let want: Value = serde_json::from_str(&unfinished()).unwrap();
-    assert_eq!(r.note(1), json!({"previous_answer": want}));
+    assert_eq!(
+        r.note(1),
+        json!({"previous_answer": want, "worktree": null})
+    );
 
-    for first in [None, Some("I could not finish.")] {
+    for first in [None, Some("I could not finish."), Some("{} {}")] {
         let r = Reentry::new();
         r.answer(0, &decision());
         let outcome = r.run(first);
         assert!(outcome.success(), "{first:?}: {}", outcome.describe());
-        assert_eq!(r.note(1), json!({"previous_answer": null}), "{first:?}");
+        assert_eq!(
+            r.note(1),
+            json!({"previous_answer": null, "worktree": null}),
+            "{first:?}"
+        );
     }
+}
+
+/// `read-worktree-after-assessment`'s reading of a worktree a session left
+/// dirty.
+fn dirty_reading() -> Value {
+    json!({
+        "clean": "false",
+        "state": "dirty",
+        "path": "/work/tree",
+        "detail": "",
+        "entries": ["?? target/build.log"],
+    })
+}
+
+// Crusty round 5, concern 1: a worktree the session left dirty is evidence for
+// a fresh session, not the end of the run. The brick hands the reading on
+// beside the last answer, and hands the nested run the recorded worktree so
+// it reads the same checkout after its own session. A decision is handed on
+// as it is: the runner started this pass because of the worktree, not the
+// answer, and the brick judges neither.
+#[test]
+fn the_worktree_reading_and_the_recorded_worktree_are_handed_to_the_pass() {
+    let r = Reentry::new();
+    r.answer(1, &decision());
+    let setup = json!({"worktree_path": "/work/tree", "branch_name": "feat/x"});
+    let envs = [
+        ("RECIPE_VAR_repo_path".to_owned(), r.fx.repo_path()),
+        (
+            "RECIPE_VAR_finalization_evidence".to_owned(),
+            json!({"schema_version": 1}).to_string(),
+        ),
+        (
+            "RECIPE_VAR_finalizer_step_status".to_owned(),
+            r#"{"status":"ok","reporting_failure":"false"}"#.to_owned(),
+        ),
+        ("RECIPE_VAR_finalization_assessment".to_owned(), decision()),
+        (
+            "RECIPE_VAR_worktree_after_assessment".to_owned(),
+            dirty_reading().to_string(),
+        ),
+        ("RECIPE_VAR_worktree_setup".to_owned(), setup.to_string()),
+    ];
+    let refs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let outcome = r.fx.run_dispatcher("reassess", &refs);
+    assert!(outcome.success(), "{}", outcome.describe());
+    let previous: Value = serde_json::from_str(&decision()).unwrap();
+    assert_eq!(
+        r.note(1),
+        json!({"previous_answer": previous, "worktree": dirty_reading()})
+    );
+    let handed: Value = serde_json::from_str(
+        &fs::read_to_string(r.dir().join("worktree-setup-1.json"))
+            .expect("the nested run is handed the recorded worktree"),
+    )
+    .unwrap();
+    assert_eq!(handed, setup);
+    assert_eq!(r.calls().len(), 1, "one pass: {:?}", r.calls());
 }
 
 // Crusty round 3, concern 2: the brick does not judge an answer. What the pass
@@ -237,10 +308,11 @@ fn the_brick_reads_no_field_of_the_answer() {
 }
 
 // Crusty round 3, concern 1: there is no loop. When the fresh pass did not
-// decide either, the nested run fails (its reentered-pass-undecided step) and
-// so does this step, after exactly one pass, for its recovery agent. The
-// ERROR line carries the pass's answer as a JSON string for that agent to
-// read; nothing is printed for the validator.
+// decide either, or left the worktree not clean, the nested run fails (its
+// reentered-pass-undecided step) and so does this step, after exactly one
+// pass, for its recovery agent. The ERROR line carries the pass's answer as a
+// JSON string, and the nested run's own worktree reading as JSON, for that
+// agent to read; nothing is printed for the validator.
 #[test]
 fn a_fresh_pass_that_did_not_decide_fails_the_step_after_one_pass() {
     let r = Reentry::new();
@@ -258,7 +330,29 @@ fn a_fresh_pass_that_did_not_decide_fails_the_step_after_one_pass() {
     let quoted = serde_json::to_string(&unfinished()).unwrap();
     assert!(
         outcome.stderr.contains(&format!(
-            "ERROR: #2966: the fresh assess-finalization session did not decide either (nested run exit 1); its answer, as data: {quoted}"
+            "ERROR: #2966: the fresh assess-finalization session did not decide either, or left the worktree not clean (nested run exit 1); its answer, as data: {quoted}; the worktree after it, as data: null"
+        )),
+        "{}",
+        outcome.describe()
+    );
+
+    // Round 5: a pass that decided but left the worktree dirty fails the same
+    // way, and the line carries what the nested run read.
+    let r = Reentry::new();
+    r.answer(1, &decision());
+    fs::write(r.dir().join("worktree-1"), dirty_reading().to_string()).unwrap();
+    r.undecided(1);
+    let outcome = r.run(Some(&decision()));
+    assert_eq!(
+        outcome.output.status.code(),
+        Some(1),
+        "{}",
+        outcome.describe()
+    );
+    assert!(
+        outcome.stderr.contains(&format!(
+            "; the worktree after it, as data: {}",
+            dirty_reading()
         )),
         "{}",
         outcome.describe()

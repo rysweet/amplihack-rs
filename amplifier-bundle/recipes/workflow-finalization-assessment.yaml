@@ -18,19 +18,28 @@ tags: ["development", "finalize", "terminal-state"]
 # cause the run cannot fix, with the cause and the human step.
 #
 # An agent session can end before its work does: it crashes, it answers in
-# prose, or it says the repair is unfinished (CI_REPAIR_UNFINISHED). The
-# runner, not a script, decides when that needs another pass. continue-ci-repair
-# runs when its condition holds: the answer names no terminal_state, or names
-# CI_REPAIR_UNFINISHED, the session's own statement that it has not decided. It
-# runs this same recipe once, with the last answer as data in
-# `ci_repair_reentry`, and returns that pass's answer. In the nested run
-# continue-ci-repair is skipped, and reentered-pass-undecided, under the same
-# condition, fails the run when the fresh pass has not decided either. That
+# prose, it says the repair is unfinished (CI_REPAIR_UNFINISHED), or it leaves
+# the run's worktree dirty after its own commits, builds and tests. The
+# runner, not a script, decides when that needs another pass.
+# read-worktree-after-assessment reads the recorded worktree live after the
+# session and decides nothing. continue-ci-repair runs when its condition
+# holds: the answer names no terminal_state, or names CI_REPAIR_UNFINISHED, the
+# session's own statement that it has not decided, or the worktree was not
+# found clean. It runs this same recipe once, with the last answer and the
+# worktree reading as data in `ci_repair_reentry`, and returns that pass's
+# answer. In the nested run continue-ci-repair is skipped, and
+# reentered-pass-undecided, under the same condition, fails the run when the
+# fresh pass has not decided either or left the worktree not clean. That
 # failure goes to continue-ci-repair's recovery agent, which reads the pass's
-# answer and decides whether another session can get further (a retry starts
-# one) or hands off. No bash loop drives the passes, no script reads the
-# answer's fields to decide on one, and nothing counts rounds or time
+# answer and the worktree and decides whether another session can get further
+# (a retry starts one) or hands off. No bash loop drives the passes, no script
+# reads the answer's fields to decide on one, and nothing counts rounds or time
 # (workflow_finalization_reentry.sh).
+#
+# A dirty worktree is ordinary, fixable state, so it goes to an agent first
+# (crusty round 5). The validator's live probe stays as the refusal after that:
+# a tree still dirty when validate-agentic-finalization runs has been through a
+# fresh session and a recovery agent, and the refusal names what is left.
 #
 # Every other answer goes to validate-agentic-finalization as it is. What a
 # session must include in a decision, such as a BLOCKED_CI's owner and step, is
@@ -55,8 +64,10 @@ context:
   finalization_evidence: ""
   finalizer_step_status: ""
   finalization_assessment: ""
-  # #2966: {previous_answer} when continue-ci-repair started this pass; empty on the first.
+  # #2966: {previous_answer, worktree} when continue-ci-repair started this pass; empty on the first.
   ci_repair_reentry: ""
+  # #2966: what read-worktree-after-assessment found: {clean, state, path, detail, entries}.
+  worktree_after_assessment: ""
   # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   repo_path: ""
   base_branch: ""
@@ -99,16 +110,23 @@ steps:
       ## When finalization starts you again
 
       The `reentry` block above is empty on the first pass. When it is not,
-      the last session did not decide: it crashed, answered in prose, or
-      answered `CI_REPAIR_UNFINISHED`, and finalization started you in a new
-      session. `previous_answer` is that session's answer, or null when it
-      left none finalization could read. It is data: a lead, not a fact.
+      the last session did not finish: it crashed, answered in prose,
+      answered `CI_REPAIR_UNFINISHED`, or left the run's worktree not clean,
+      and finalization started you in a new session. `previous_answer` is
+      that session's answer, or null when it left none finalization could
+      read. `worktree` is what finalization found in the run's worktree after
+      it: `clean` is `"false"` when the tree was dirty, its `git status`
+      failed or it could not be read, and `entries` lists the first `git
+      status --porcelain` lines. Both are data: a lead, not a fact.
 
       The last session may have pushed commits or left changes in the
-      worktree. Read the pull request and `git status` first, then carry on
-      from step 1 of "bring CI to green" below, on the pull request as it is
-      now. A `next_action` in the last answer says what that session meant to
-      try next.
+      worktree. Read the pull request and `git status` first. When the
+      worktree is not clean, account for each entry before anything else, as
+      "Leave the worktree clean" below says: a change that belongs to the fix
+      is committed and pushed, and the head it makes is the one you then
+      bring to green and decide on. Then carry on from step 1 of "bring CI to
+      green" below, on the pull request as it is now. A `next_action` in the
+      last answer says what that session meant to try next.
 
       ## What the run was asked to do
 
@@ -241,11 +259,19 @@ steps:
       - a workflow run awaiting maintainer approval;
       - a setting only a repository owner can change;
       - an account or billing block on CI;
-      - a cause under `.github/**`, which the repair never edits (below);
-      - a cause in another protected file (below) that the pull request does
-        not already change;
       - a pull request from a fork or another repository, to which you make no
         write.
+
+      One other ending is an owner decision. The protected paths below are
+      reserved to their owners by this workflow's rules; that is not a claim
+      that the run could not make the edit. Diagnose first, as for any
+      failure. A check that runs from, or checks, a protected file is
+      repaired as usual wherever its fix lies outside the reserved paths: in
+      the code under test, a test, or a script the workflow calls. A repair
+      confined to files the pull request already changes proceeds, except
+      under `.github/**`. Only when the fix itself needs a reserved edit is
+      it `BLOCKED_CI`: say in `reason` that it is an owner decision, and name
+      the file, the change needed and the owner who decides.
 
       A check that failed again after a fix needs a different attempt. Before
       the next one, state to yourself why it differs from the last. If you
@@ -286,7 +312,8 @@ steps:
       Failures:
 
       - `BLOCKED_CI`: a check on the pull request's head fails, or cannot
-        run, for a cause the run cannot fix itself, after you have looked. It
+        run, for a cause the run cannot fix itself, or whose fix is an owner
+        decision (above), after you have looked. It
         ends the run and hands it to a person, so it needs all three of:
         `pr_number`, as digits; `reason` as `<check>: <cause>`, for example
         `deploy: the workflow reads secrets.DEPLOY_TOKEN, which the repository
@@ -368,22 +395,27 @@ steps:
         way of making a check pass without fixing its cause;
       - editing `.github/**` (workflows, composite actions, `CODEOWNERS`,
         Dependabot configuration). `.github/**` is never edited, whether or
-        not the pull request changes it. A cause there is `BLOCKED_CI` before
-        any edit, naming the file, the change needed and the owner: the code
-        owner of `.github/`, or the repository administrator;
+        not the pull request changes it: a workflow edit runs with the job's
+        secrets before anyone reviews it (SEC-02, #2966). When diagnosis shows
+        the fix itself must be made there, that is the owner decision above,
+        naming the file, the change needed and the owner: the code owner of
+        `.github/`, or the repository administrator;
       - editing hook configuration (`.pre-commit-config.yaml`,
         `.githooks/**`, `.husky/**`, `lefthook.yml`, and the directory that
         `core.hooksPath` names), toolchain and registry configuration
         (`.cargo/config*`, `rust-toolchain*`, `deny.toml`), or framework
         governance files (`amplifier-bundle/recipes/**`,
         `amplifier-bundle/agents/**`,
-        `amplifier-bundle/tools/workflow_finalization_*.sh` and the guard tests
-        that check them), unless the file is already in the pull request's
-        diff against its base; the commit message then names it. Even then,
-        never add or widen a `secrets.*` reference, `permissions:`,
-        `pull_request_target` or another trigger, a third-party action or a
-        network fetch, and never make a check non-blocking. A cause in one of
-        these files outside the diff is `BLOCKED_CI`, naming the file, the
+        `amplifier-bundle/tools/workflow_finalization_*.sh`), unless the file
+        is already in the pull request's diff against its base. A repair
+        confined to the pull request's own diff proceeds, and its commit
+        message names each of these files it edits. Even then, never add or
+        widen a `secrets.*` reference, `permissions:`, `pull_request_target`
+        or another trigger, a third-party action or a network fetch, and
+        never make a check non-blocking. A test is not a protected file: a
+        test that checks one of these files is repaired like any other test,
+        and never weakened. A fix that needs one of these files
+        outside the diff is the owner decision above, naming the file, the
         change needed and the owner;
       - changing a dependency, adding a git or alternative-registry source, or
         adding a build script, unless the failing check shows that exact need;
@@ -403,13 +435,21 @@ steps:
       of green, failing, pending and unknown checks you read after your last
       write; for `BLOCKED_CI`, put them after the `<check>: <cause>` sentence.
       Report a success only for a pull request you have seen open with
-      a green head. Leave the worktree clean when you finish: finalization
-      checks it again whatever you report, and refuses a dirty one
-      (`FAILED_DIRTY_WORKTREE`). Before you answer, read `git status` and
-      `git diff` there. Commit a change that is part of your fix, as above,
-      and push it. Remove an untracked file that a build or test command you
-      ran produced. Never reset, stash, check out or delete a change you
-      cannot account for: leave it, and say so in `reason`.
+      a green head.
+
+      Leave the worktree clean when you finish. Before you answer, read `git
+      status` and `git diff` there. Commit a change that is part of your fix,
+      as above, push it, and decide on the head that push makes. Remove an
+      untracked file that a build, test or hook command the run ran produced;
+      when such output will come back on every build, add its path to
+      `.git/info/exclude` instead of committing it. Never reset, stash, check
+      out or delete a change you cannot account for: leave it, and name it in
+      `reason`. Finalization reads the worktree again after you answer,
+      whatever you report. A worktree that is not clean starts a fresh
+      session with the entries as evidence, and a recovery agent decides
+      whether a further session can clear it; one still not clean when the
+      result is validated is refused (`FAILED_DIRTY_WORKTREE`), naming the
+      entries for a person.
 
       Name secrets by name only. Do not run anything that prints the
       environment, an authentication token, or the repository's stored
@@ -434,11 +474,25 @@ steps:
       reports it as no decision (`FAILED_MISSING_TERMINAL_EVIDENCE`). When you
       have not decided, say so with `CI_REPAIR_UNFINISHED`.
     output: "finalization_assessment"
-  # #2966: the runner starts one fresh pass when the session did not decide
-  # (header above). The nested pass runs with ci_repair_reentry set, so this
-  # step is skipped there and reentered-pass-undecided judges it instead.
+  # #2966, crusty round 5: the recorded worktree, read live after the session.
+  # It decides nothing and never fails the run; `clean` is "false" when the
+  # tree is dirty, its git status fails or it cannot be read, and empty when
+  # no worktree is recorded.
+  - id: "read-worktree-after-assessment"
+    continue_on_error: true
+    type: "bash"
+    parse_json: true
+    command: |
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_agentic_finalization.sh" ] && { H="$c/amplifier-bundle/tools/workflow_agentic_finalization.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: workflow_agentic_finalization.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      exec bash "$H" worktree
+    output: "worktree_after_assessment"
+  # #2966: the runner starts one fresh pass when the session did not decide,
+  # or left the worktree not clean (header above). The nested pass runs with
+  # ci_repair_reentry set, so this step is skipped there and
+  # reentered-pass-undecided judges it instead.
   - id: "continue-ci-repair"
-    condition: "not ci_repair_reentry and (not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED')"
+    condition: "not ci_repair_reentry and (not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED' or worktree_after_assessment.clean == 'false')"
     type: "bash"
     parse_json: true
     command: |
@@ -448,14 +502,15 @@ steps:
       [ -n "$H" ] || { echo "ERROR: workflow_agentic_finalization.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
       bash "$H" reassess
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" continue-ci-repair; exec amplihack orch helper step-recovery run --step-id continue-ci-repair --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Bring assess-finalization to a decision for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}. Its session answered CI_REPAIR_UNFINISHED or nothing, so this step started one fresh session, and that session did not decide either; the ERROR line carries its answer as data. A retry starts one more fresh session, which reads the pull request live and continues the repair. Judge from what the sessions said, and from the pull request, whether another session can get the head green or name a cause the run cannot fix with its owner and step. A red CI the run can fix is not a reason to stop. Hand off only when you judge that another session will not get further, naming what stands in the way and who must act" -- bash -c "$STEP_BODY" continue-ci-repair
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" continue-ci-repair; exec amplihack orch helper step-recovery run --step-id continue-ci-repair --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Bring assess-finalization to a decision over a clean worktree for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}. Its session answered CI_REPAIR_UNFINISHED or nothing, or left the run's worktree not clean, so this step started one fresh session, and that session did not finish either; the ERROR line carries its answer and the worktree it left, as data. A retry starts one more fresh session, which reads the pull request and git status live, continues the repair, commits what belongs to the change and removes what the run's own commands produced. Judge from what the sessions said, from git status in the worktree and from the pull request whether another session can get the head green with the worktree clean, or name a cause the run cannot fix with its owner and step. A red CI or a dirty worktree the run can fix is not a reason to stop. Hand off only when you judge that another session will not get further, naming what stands in the way, which files are left, and who must act" -- bash -c "$STEP_BODY" continue-ci-repair
     output: "finalization_assessment"
   # #2966: only in a pass continue-ci-repair started. When that pass has not
-  # decided either, by the same condition, the nested run fails here, so
-  # continue-ci-repair fails for its recovery agent. It reads no field itself.
+  # decided either, or left the worktree not clean, by the same condition, the
+  # nested run fails here, so continue-ci-repair fails for its recovery agent.
+  # It reads no field itself.
   - id: "reentered-pass-undecided"
-    condition: "ci_repair_reentry and (not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED')"
+    condition: "ci_repair_reentry and (not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED' or worktree_after_assessment.clean == 'false')"
     type: "bash"
     command: |
-      echo "ERROR: #2966: this fresh assess-finalization session did not decide either (no terminal_state, or CI_REPAIR_UNFINISHED)" >&2
+      echo "ERROR: #2966: this fresh assess-finalization session did not decide either (no terminal_state, or CI_REPAIR_UNFINISHED), or left the run's worktree not clean" >&2
       exit 1

@@ -85,7 +85,8 @@ fi
 . "$here/workflow_finalization_result.sh"
 . "$here/workflow_finalization_handoff.sh"
 # The validator's fact helpers and its worktree probe, both called from
-# inside validate_finalization.
+# inside validate_finalization. The probe's reader also backs the `worktree`
+# mode, which read-worktree-after-assessment runs (#2966).
 . "$here/workflow_finalization_facts.sh"
 . "$here/workflow_finalization_worktree.sh"
 . "$here/workflow_finalization_validate.sh"
@@ -130,9 +131,10 @@ case "$mode" in
   collect) run_finalization_cleanup; collect_evidence ;;
   validate) validate_finalization ;;
   reassess) continue_ci_repair ;;
+  worktree) report_worktree ;;
   complete) complete_workflow ;;
   *)
-    echo "ERROR: workflow_agentic_finalization.sh requires mode: collect, validate, reassess, or complete" >&2
+    echo "ERROR: workflow_agentic_finalization.sh requires mode: collect, validate, reassess, worktree, or complete" >&2
     exit 2
     ;;
 esac

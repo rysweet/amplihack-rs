@@ -134,6 +134,27 @@
 #                                       agent, which hands off. Exit 81, with the
 #                                       step named in the record.
 #
+# Two cases for a session whose own commands left output in the worktree.
+# Crusty round 5 found that the validator's live probe ended such a run
+# FAILED_DIRTY_WORKTREE with no agent asked to clear it. read-worktree-after-
+# assessment reads the worktree after each session, and the runner's condition
+# starts a fresh session with the entries in its `reentry` block. The stand-in
+# clears the file it recognises as its own build output (smoke-output.log)
+# when that block lists it, unless the case's script says `litter` for that
+# pass, which writes it.
+#   dirty_worktree_goes_to_a_fresh_session
+#                                       the first pass decides EXISTING_OPEN_PR
+#                                       and leaves smoke-output.log; the fresh
+#                                       pass is shown it, removes it and decides
+#                                       again. EXISTING_OPEN_PR, exit 0, no
+#                                       hand-off, worktree clean.
+#   dirty_worktree_left_again_goes_to_recovery
+#                                       both passes leave it. The nested run
+#                                       fails on its own condition, so
+#                                       continue-ci-repair goes to its recovery
+#                                       agent, which hands off with the file
+#                                       named. Exit 81.
+#
 # The baseline (opt in): AMPLIHACK_2966_BASELINE_REF=origin/main extracts that
 # ref's amplifier-bundle with `git archive` into a separate temporary folder and
 # runs the first case against it. It is the reproduction of the report: the run
@@ -474,6 +495,17 @@ case "$role" in
     plan="$(cat "$dir/script-assess" 2>/dev/null)"; [ -n "$plan" ] || plan=normal
     act="$(printf '%s' "$plan" | cut -d, -f"$pass")"
     [ -n "$act" ] || act="${plan##*,}"
+    # Shown a worktree the last session left dirty, it first clears the build
+    # output it recognises, as the prompt asks; a `litter` pass writes it
+    # instead, as a session whose own build left it behind (crusty round 5).
+    if [ "$act" = litter ]; then
+      printf 'built\n' > smoke-output.log
+    elif [ -n "$reentry" ]; then
+      printf '%s' "$reentry" | jq -r '.worktree.entries[]? // empty' 2>/dev/null \
+        | while IFS= read -r entry; do
+            [ "$entry" != "?? smoke-output.log" ] || rm -f -- smoke-output.log
+          done
+    fi
     case "$act" in
       # A session that dies before it answers.
       crash) echo "the agent session ended unexpectedly" >&2; exit 1 ;;
@@ -987,8 +1019,60 @@ else
   die "repeated_crash_goes_to_recovery: cannot set up the case"
 fi
 
+# --- O: case 10, a worktree left dirty goes to a fresh session --------------
+# Crusty round 5, concern 1: the first session decides but leaves its build
+# output behind. The run does not end FAILED_DIRTY_WORKTREE: the runner starts
+# a fresh session with the entry in its reentry block, which clears it and
+# decides again.
+if dir="$(new_case dirty_worktree_goes_to_a_fresh_session fixable repair litter,normal)"; then
+  run_case "$dir"
+  problems=()
+  check_common "$dir"
+  expect_exit "$dir" 0
+  expect_calls "$dir" assess 2
+  expect_calls "$dir" recover 0
+  expect_reentries "$dir" first,EXISTING_OPEN_PR
+  jq -e '.worktree.clean == "false" and (.worktree.entries | index("?? smoke-output.log"))' \
+    "$dir/reentry-2.json" >/dev/null 2>&1 \
+    || problems+=("the fresh session's reentry block did not list the file the first session left")
+  [ ! -e "$dir/worktree/smoke-output.log" ] || problems+=("the build output is still in the worktree")
+  [ -z "$(scenario_env "$dir" git -C "$dir/worktree" status --porcelain 2>&1)" ] \
+    || problems+=("the worktree is not clean at the end")
+  expect_result "$dir" terminal_state EXISTING_OPEN_PR
+  expect_result "$dir" terminal_success true
+  expect_no_handoff "$dir"
+  verdict dirty_worktree_goes_to_a_fresh_session "$dir" "the first session left smoke-output.log; a fresh session was shown it, cleared it and decided; EXISTING_OPEN_PR, exit 0, no hand-off"
+else
+  dump_case "$WORK/case-dirty_worktree_goes_to_a_fresh_session"
+  die "dirty_worktree_goes_to_a_fresh_session: cannot set up the case"
+fi
+
+# --- P: case 11, a worktree left dirty again goes to the recovery agent ------
+# The fresh session leaves the file too. The nested run fails on its own
+# condition after one pass, so continue-ci-repair fails for its recovery agent
+# with the worktree on the failure line; this stand-in hands off.
+if dir="$(new_case dirty_worktree_left_again_goes_to_recovery fixable repair litter)"; then
+  run_case "$dir"
+  problems=()
+  check_common "$dir"
+  expect_exit "$dir" 81
+  expect_calls "$dir" assess 2
+  expect_calls "$dir" recover 1
+  expect_reentries "$dir" first,EXISTING_OPEN_PR
+  grep -q '"step_id":"continue-ci-repair"' "$dir"/recovery/*.jsonl 2>/dev/null \
+    || problems+=("the hand-off record does not name continue-ci-repair")
+  grep -q "left the worktree not clean" "$dir/run.err" \
+    || problems+=("the run's stderr does not say the fresh session left the worktree not clean")
+  grep -q 'smoke-output.log' "$dir/run.err" \
+    || problems+=("the failure line does not name the file left")
+  verdict dirty_worktree_left_again_goes_to_recovery "$dir" "both sessions left smoke-output.log; continue-ci-repair went to its recovery agent with the file named; exit 81"
+else
+  dump_case "$WORK/case-dirty_worktree_left_again_goes_to_recovery"
+  die "dirty_worktree_left_again_goes_to_recovery: cannot set up the case"
+fi
+
 echo "cases passed: $passed"
-if [ "$fail" -eq 0 ] && [ "$passed" -eq 9 ]; then
+if [ "$fail" -eq 0 ] && [ "$passed" -eq 11 ]; then
   echo "issue 2966 red CI at finalisation is repaired, and an unfixable cause is handed to its owner"
   echo "ALL_CASES_PASSED"
   exit 0

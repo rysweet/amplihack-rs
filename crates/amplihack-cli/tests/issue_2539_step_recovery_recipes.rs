@@ -46,8 +46,9 @@ const CONVERTED: [(&str, &str, &str); 8] = [
         "validate-agentic-finalization",
         "validate-agentic-finalization",
     ),
-    // #2966: the re-entry into the CI repair, the assessment recipe's second
-    // step. A bash step wrapped in place.
+    // #2966: the re-entry into the CI repair, the assessment recipe's third
+    // step, after the agent and the worktree reading. A bash step wrapped in
+    // place.
     (
         "workflow-finalization-assessment",
         "continue-ci-repair",

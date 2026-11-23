@@ -192,17 +192,22 @@ A published pull request whose head the run left not green, with the repair
 unfinished and no cause named that the run cannot fix, is not
 `FAILED_IMPLEMENTATION` (#2966). The assessment answers `CI_REPAIR_UNFINISHED`,
 and the runner starts it again, once, in a new session. A crash or a prose
-answer is started again the same way. The pass logs one line on stderr:
+answer is started again the same way, and so is a session that left the run's
+worktree dirty (an untracked build artefact, a hook-generated file), whatever
+it answered: `read-worktree-after-assessment` reads the worktree after the
+session and the new session is given its entries. The pass logs one line on
+stderr:
 
 ```text
-INFO: #2966: assess-finalization did not decide (no terminal_state, or CI_REPAIR_UNFINISHED); starting it again in a fresh session
+INFO: #2966: assess-finalization did not decide (no terminal_state, or CI_REPAIR_UNFINISHED), or left the run's worktree not clean; starting it again in a fresh session
 ```
 
-When that session did not decide either, `continue-ci-repair` fails with a line
-that carries the session's answer as a JSON string:
+When that session did not decide either, or left the worktree dirty too,
+`continue-ci-repair` fails with a line that carries the session's answer as a
+JSON string and the worktree it left as JSON:
 
 ```text
-ERROR: #2966: the fresh assess-finalization session did not decide either (nested run exit 1); its answer, as data: "..."
+ERROR: #2966: the fresh assess-finalization session did not decide either, or left the worktree not clean (nested run exit 1); its answer, as data: "..."; the worktree after it, as data: {"clean":"false","state":"dirty",...}
 ```
 
 It goes to its recovery agent, which judges whether another session is useful

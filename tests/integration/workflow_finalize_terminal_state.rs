@@ -300,9 +300,14 @@ fn agentic_finalizer_prompt_requests_human_narrative_not_machine_json() {
 fn validation_step_reports_the_assessment_and_reads_no_agent_prose() {
     let recipe = load_finalize_recipe();
     let command = step_command(&recipe, "validate-agentic-finalization");
-    let validator = crate::issue_1641_finalization_open_pr::fixture::tool_text(
+    // The live worktree probe was split out of the validator (#2966); it is the
+    // validator's code, sourced beside it, so both are read.
+    let validator = [
         "workflow_finalization_validate.sh",
-    );
+        "workflow_finalization_worktree.sh",
+    ]
+    .map(crate::issue_1641_finalization_open_pr::fixture::tool_text)
+    .join("\n");
 
     assert!(
         step_index(&recipe, "assess-finalization")
@@ -438,10 +443,12 @@ fn the_ci_repair_step_works_in_the_runs_worktree_and_is_not_wrapped() {
 // session can end before its work does. The runner decides when that needs
 // another pass: `continue-ci-repair` runs when the answer names no
 // terminal_state or names CI_REPAIR_UNFINISHED, and starts one fresh pass of
-// this same recipe with `ci_repair_reentry` set. In that nested pass it is
-// skipped, and `reentered-pass-undecided`, under the same condition with the
-// note set, fails the run, so no pass nests another and no script loop drives
-// them. `continue-ci-repair` is wrapped in step recovery without `--no-repair`:
+// this same recipe with `ci_repair_reentry` set. Since crusty round 5 it also
+// runs when `read-worktree-after-assessment`, which reads the recorded
+// worktree live after the session and decides nothing, did not find it clean.
+// In that nested pass it is skipped, and `reentered-pass-undecided`, under the
+// same condition with the note set, fails the run, so no pass nests another
+// and no script loop drives them. `continue-ci-repair` is wrapped in step recovery without `--no-repair`:
 // a retry starts another pass, which reads the pull request live. The steps
 // live here and not in workflow-finalize, which is at its brick budget. The
 // conditions' behaviour is exercised through the pinned runner in
@@ -468,6 +475,7 @@ fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
         ids,
         [
             "assess-finalization",
+            "read-worktree-after-assessment",
             "continue-ci-repair",
             "reentered-pass-undecided"
         ]
@@ -475,13 +483,15 @@ fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
     assert_eq!(
         recipe["recursion"]["max_total_steps"].as_u64(),
         Some(5),
-        "one run of the recipe is three steps, within its budget"
+        "one run of the recipe is four steps, within its budget"
     );
-    assert_eq!(
-        recipe["context"]["ci_repair_reentry"].as_str(),
-        Some(""),
-        "the re-entry note is declared, empty on the first pass"
-    );
+    for key in ["ci_repair_reentry", "worktree_after_assessment"] {
+        assert_eq!(
+            recipe["context"][key].as_str(),
+            Some(""),
+            "`{key}` is declared, empty on the first pass"
+        );
+    }
 
     let agent = &steps[0];
     assert_eq!(
@@ -497,16 +507,33 @@ fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
         "the agent step reads why it was started again, as data"
     );
 
-    // One undecided answer, read by the runner in both places: the outer run
+    // The worktree reading: it never fails the run, and its answer is data
+    // for the runner's conditions below.
+    let reading = &steps[1];
+    assert_eq!(reading["continue_on_error"].as_bool(), Some(true));
+    assert_eq!(reading["parse_json"].as_bool(), Some(true));
+    assert_eq!(
+        reading["output"].as_str(),
+        Some("worktree_after_assessment")
+    );
+    assert!(
+        reading["command"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("bash \"$H\" worktree"),
+        "{reading:?}"
+    );
+
+    // One unfinished pass, read by the runner in both places: the outer run
     // starts a pass on it, the nested run fails on it.
-    let undecided = "(not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED')";
-    let reentry = &steps[1];
+    let undecided = "(not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED' or worktree_after_assessment.clean == 'false')";
+    let reentry = &steps[2];
     assert_eq!(
         reentry["condition"].as_str(),
         Some(format!("not ci_repair_reentry and {undecided}").as_str())
     );
     assert_eq!(
-        steps[2]["condition"].as_str(),
+        steps[3]["condition"].as_str(),
         Some(format!("ci_repair_reentry and {undecided}").as_str())
     );
     assert_eq!(reentry["output"].as_str(), Some("finalization_assessment"));
@@ -538,6 +565,11 @@ fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
 // them naming the same paths, keeps `.github/**` out of the exception, and keeps
 // any wording that makes the rule depend on the token's scope out of the
 // prompts.
+//
+// Crusty round 5, concern 2: the reservations are policy, so the text calls a
+// stop under them an owner decision, made after diagnosis rather than declared
+// before any edit, and says that a repair confined to the pull request's own
+// diff proceeds. A test is not a protected file.
 const PROTECTED_PATHS: [&str; 12] = [
     ".github/**",
     ".pre-commit-config.yaml",
@@ -645,7 +677,7 @@ fn the_ci_repair_never_edits_github_and_names_the_same_protected_paths_everywher
             between(
                 agent_sections[0],
                 "These paths are not edited unless",
-                "\n\nA failure caused",
+                "\n\nA repair confined",
                 "agent exception",
             ),
         ),
@@ -669,6 +701,48 @@ fn the_ci_repair_never_edits_github_and_names_the_same_protected_paths_everywher
         named_paths(prompt_rules),
         named_paths(agent_sections[0]),
         "the assessment prompt and the agent's Protected Paths name the same paths"
+    );
+
+    for (what, text) in [
+        ("assessment prompt", flat(&prompt)),
+        ("agent Protected Paths", flat(agent_sections[0])),
+    ] {
+        assert!(
+            text.contains("owner decision"),
+            "{what} must call a stop under a protected path an owner decision"
+        );
+        assert!(
+            text.contains("A repair confined to"),
+            "{what} must say that a repair confined to the pull request's own diff proceeds"
+        );
+        assert!(
+            text.contains("A test is not a protected file"),
+            "{what} must keep tests out of the protected paths"
+        );
+        assert!(
+            !text.contains("before any edit"),
+            "{what} must not declare BLOCKED_CI before diagnosis"
+        );
+        assert!(
+            !text.contains("guard tests that check them"),
+            "{what} must not reserve tests"
+        );
+    }
+    let cannot_fix = flat(between(
+        &prompt,
+        "These are examples of causes the run cannot fix:",
+        "A check that failed again after a fix",
+        "assessment prompt",
+    ));
+    let examples = flat(between(
+        &cannot_fix,
+        "These are examples",
+        "One other ending is an owner decision",
+        "assessment prompt examples",
+    ));
+    assert!(
+        !examples.contains("protected") && !examples.contains(".github"),
+        "a protected path is an owner decision, not listed as a cause the run cannot fix: {examples}"
     );
 
     let step22 = step_prompt(&load_finalize_recipe(), "step-22-ensure-mergeable");

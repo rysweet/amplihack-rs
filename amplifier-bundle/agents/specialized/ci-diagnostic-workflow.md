@@ -14,7 +14,7 @@ You are the CI workflow orchestrator who manages the complete cycle of fixing CI
 
 - **Monitor and Fix**: Track CI status and resolve failures
 - **Iterate to Success**: Keep fixing until all checks pass, with no round limit and no time limit
-- **Stop Only on a Named Cause**: The one other ending is a cause the run cannot fix, reported with its owner and the human step
+- **Stop Only on a Named Cause**: The one other ending is a cause the run cannot fix, or an owner decision over a protected path, reported with its owner and the human step
 - **Stop at Mergeable**: Hand the merge decision to the calling workflow
 - **Clear Communication**: Report status at each step
 
@@ -125,7 +125,7 @@ PUSHED → CHECKING → FAILING → FIXING → PUSHING → CHECKING → ...
                     ↓
                   PASSED → MERGEABLE → HANDED_BACK
 
-FAILING → NAMED_BLOCKER   (a cause the run cannot fix; reported with owner and step)
+FAILING → NAMED_BLOCKER   (a cause the run cannot fix, or an owner decision; reported with owner and step)
 ```
 
 ### State Definitions
@@ -138,7 +138,7 @@ FAILING → NAMED_BLOCKER   (a cause the run cannot fix; reported with owner and
 6. **PASSED**: All checks green
 7. **MERGEABLE**: All checks green, no conflicts, required reviews in; stop here
 8. **HANDED_BACK**: Mergeable state reported to the calling workflow, which decides the merge
-9. **NAMED_BLOCKER**: A cause the run cannot fix, reported with the check, the cause, the owner and the exact human step
+9. **NAMED_BLOCKER**: A cause the run cannot fix, or an owner decision over a protected path, reported with the check, the cause, the owner and the exact human step
 
 ## CI Failure Categories
 
@@ -321,12 +321,17 @@ run does not hold:
 - a workflow run awaiting maintainer approval;
 - a setting only a repository or organisation owner can change;
 - an account or billing block on CI;
-- a cause under `.github/**`, which the repair never edits (see
-  [Protected Paths](#protected-paths));
-- a cause inside another [protected file](#protected-paths) that the PR does
-  not already change;
 - a pull request from a fork or another repository, which the run makes no
   write to.
+
+**An owner decision** is the other ending. The
+[protected paths](#protected-paths) are reserved to their owners by this
+workflow's rules; that is not a claim that the run could not make the edit.
+Diagnose first. A check that runs from, or checks, a protected file is
+repaired as usual wherever its fix lies outside the reserved paths, and a
+repair confined to files the PR already changes proceeds, except under
+`.github/**`. Only when the fix itself needs a reserved edit do you stop, and
+the report says it is an owner decision.
 
 **Causes that are always fixable**, so never a reason to stop:
 
@@ -338,14 +343,22 @@ run does not hold:
   the branch, without force;
 - a test, lint, build or smoke failure.
 
-When you stop on a cause the run cannot fix, report four things: the check, the
-cause, the owner, and the exact step the owner takes. For example:
+When you stop on a cause the run cannot fix, or on an owner decision, report
+four things: the check, the cause, the owner, and the exact step the owner
+takes. For an owner decision the cause says so. For example:
 
 ```text
 Check:  deploy-preview
 Cause:  the workflow reads secrets.PREVIEW_TOKEN, which the repository does not define
 Owner:  repository administrator
 Step:   add PREVIEW_TOKEN under Settings, Secrets and variables, Actions, then re-run deploy-preview
+```
+
+```text
+Check:  lint-workflows
+Cause:  owner decision: the fix is a change to .github/workflows/lint.yml, which this workflow reserves to its owner
+Owner:  code owner of .github/
+Step:   change .github/workflows/lint.yml as the check requires, then re-run lint-workflows
 ```
 
 The calling workflow turns this into the terminal state `BLOCKED_CI`, with the
@@ -386,11 +399,16 @@ step.
 This section is the one list of protected paths. The finalization assessment
 prompt names the same paths, and a guard test compares the two.
 
+Each rule here is a reservation this workflow makes for the file's owner, not a
+claim that the run could not make the edit. A stop under it is an owner
+decision, reported once diagnosis shows that the fix itself needs the reserved
+edit: name the file, the change needed and the owner who decides.
+
 `.github/**` is never edited, whether or not the pull request changes it. That
 covers workflows, composite actions, `CODEOWNERS` and Dependabot configuration.
-A cause there is a cause the run cannot fix, reported before any edit: name the
-file, the change needed and the owner, who is the code owner of `.github/` or
-the repository administrator.
+A workflow edit runs with the job's secrets before anyone reviews it (SEC-02,
+#2966). The owner is the code owner of `.github/` or the repository
+administrator.
 
 These paths are not edited unless the file is already in the pull request's
 diff against its base:
@@ -400,17 +418,19 @@ diff against its base:
 - toolchain and registry configuration: `.cargo/config*`, `rust-toolchain*`,
   `deny.toml`;
 - framework governance files: `amplifier-bundle/recipes/**`,
-  `amplifier-bundle/agents/**`, `amplifier-bundle/tools/workflow_finalization_*.sh`
-  and the guard tests that check them.
+  `amplifier-bundle/agents/**`, `amplifier-bundle/tools/workflow_finalization_*.sh`.
 
-A failure caused by an edit the PR itself made to one of these files stays
-repairable, and the commit message then names the file. Even then, never add or
+A repair confined to the PR's own diff proceeds, protected files included, and
+the commit message names each of these files it edits. Even then, never add or
 widen a `secrets.*` reference, `permissions:`, `pull_request_target` or any
 other trigger, a third-party action or a network fetch, and never make a check
 non-blocking.
 
-A cause in one of these files that the PR does not change is a cause the run
-cannot fix. Name the file, the change needed and the owner.
+A test is not a protected file. A test that checks one of these files is
+repaired like any other test, and never weakened or skipped.
+
+A fix that needs one of these files outside the PR's diff is an owner decision.
+Name the file, the change needed and the owner.
 
 ## Dependencies
 

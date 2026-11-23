@@ -10,6 +10,24 @@ use super::assessed::{assessed, clean_evidence, completion, decided};
 use super::fixtures::*;
 use serde_json::{Value, json};
 
+/// A fixture for a blocker case, with an untracked file in the worktree it
+/// records when the blocker is the dirty worktree. The record's
+/// `dirty_worktree` was collected before assess-finalization; a recorded
+/// checkout is asked live and its answer outranks the record (#2966, crusty
+/// round 5), so a case about the dirty-worktree blocker dirties the checkout
+/// the record describes.
+fn for_blocker(state: &str) -> Fixture {
+    let f = Fixture::new();
+    if state == "FAILED_DIRTY_WORKTREE" {
+        std::fs::write(
+            f.temp.path().join("worktree/left-behind.txt"),
+            "uncommitted\n",
+        )
+        .expect("dirty the recorded worktree");
+    }
+    f
+}
+
 /// Validate, require the exit code, and require the terminal state and its
 /// success flag to agree with it. Returns the result for further assertions.
 fn validate(f: Fixture, state: &str, code: i32) -> Value {
@@ -172,7 +190,7 @@ fn validator_legacy_hard_blockers_are_not_bypassed_by_completion() {
         ),
     ] {
         validate(
-            Fixture::new()
+            for_blocker(state)
                 .env("FINALIZATION_EVIDENCE", evidence.to_string())
                 .env("IMPLEMENTATION_COMPLETED", "true")
                 .env("VERIFICATION_COMPLETED", "true"),
@@ -221,13 +239,13 @@ fn validator_hard_blockers_are_not_bypassed_by_a_claimed_success_assessment() {
                 .extend(blocker.as_object().unwrap().clone());
             let mut context = assessed(completion(true), claim, "");
             context["finalization_evidence"] = evidence.clone();
-            let canonical = Fixture::new()
+            let canonical = for_blocker(state)
                 .env("RECIPE_VAR_finalization_evidence", evidence.to_string())
                 .env(
                     "RECIPE_VAR_finalization_assessment",
                     decided(claim, "").to_string(),
                 );
-            for f in [Fixture::new().file(context), canonical] {
+            for f in [for_blocker(state).file(context), canonical] {
                 let j = validate(f, state, 1);
                 assert_eq!(j["terminal_failure"], "true");
             }

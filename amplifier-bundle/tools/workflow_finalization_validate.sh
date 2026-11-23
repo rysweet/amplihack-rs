@@ -167,13 +167,10 @@ FIELDS
 
   # 2. Blockers about the local checkout, which no published outcome can
   #    answer. gh is deliberately absent (#2343): without it the outcome
-  #    cannot be read, which the facts say in words instead.
-  if [ "$evidence_dirty_worktree" = "true" ]; then
-    fail_result "FAILED_DIRTY_WORKTREE" "collected evidence reported a dirty worktree" "Commit, stash, or remove uncommitted changes before finalization." "finalization_evidence.git.dirty_worktree=true"
-  fi
-  # The live worktree probe (workflow_finalization_worktree.sh). It asks the
-  # recorded checkout whether a clean worktree has been shown, and sets the
-  # target_dir and target_dir_explicit the facts below are gathered from.
+  #    cannot be read, which the facts say in words instead. The worktree probe
+  #    (workflow_finalization_worktree.sh) asks the recorded checkout live, and
+  #    its answer outranks the pre-assessment record; it sets the target_dir
+  #    and target_dir_explicit the facts below are gathered from.
   probe_recorded_worktree
   case ",$evidence_tooling_missing," in
     *,git,*|*,jq,*)

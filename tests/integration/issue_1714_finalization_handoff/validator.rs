@@ -213,7 +213,10 @@ fn non_ci_failures_with_the_flag_still_fail_closed() {
         "a failure with no pull request names none"
     );
 
+    // The dirty worktree is the recorded checkout itself: its live answer
+    // outranks the collected record (#2966, crusty round 5).
     let fx = Fixture::new();
+    std::fs::write(fx.repo.join("left-behind.txt"), "dirty\n").expect("dirty file");
     let mut envs = prior_state_env(&fx, "FAILED_MEANINGFUL_DIFF", "134");
     envs.push((
         "FINALIZATION_EVIDENCE_GIT_DIRTY_WORKTREE",

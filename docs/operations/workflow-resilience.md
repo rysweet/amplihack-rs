@@ -34,7 +34,7 @@ exposed these concrete failure modes:
 | --- | --- | --- |
 | Brittle parsing | A shell step inferred success from a PR URL, status string, or partial command output. | Only structured JSON/key-value evidence can prove terminal success. |
 | Missing or stale PR metadata | `pr_number` or `pr_url` points to the wrong branch, stale head SHA, closed PR, or unavailable provider metadata. | PR identity must match repo, branch, base, and head SHA before PR state is trusted. |
-| Dirty worktree misclassification | Generated artifacts or unstaged edits are treated as harmless no-diff work. | Dirty worktree blocks success with `FAILED_DIRTY_WORKTREE`. |
+| Dirty worktree misclassification | Generated artifacts or unstaged edits are treated as harmless no-diff work. | Dirty worktree blocks success. At finalization it first goes to a fresh assessment session with the entries as evidence (#2966); a tree still dirty after that ends with `FAILED_DIRTY_WORKTREE`, naming the entries. |
 | Closed-unmerged PR handling | A closed PR without merge evidence is treated as completed while branch diff remains. | Finalization returns `FAILED_CLOSED_UNMERGED` unless local obsolete/no-diff proof supports `CLOSED_OBSOLETE`. |
 | Remaining meaningful diff | Branch changes remain but no valid PR, merge, follow-up, or verified implementation path proves closure. | Finalization returns `FAILED_MEANINGFUL_DIFF` rather than treating the branch as a no-op success. |
 | Missing tooling | Required `git`, `jq`, provider CLI, or provider auth is unavailable on a path that depends on it. | Finalization returns `FAILED_MISSING_TOOLING`, `FAILED_PR_METADATA_UNAVAILABLE`, or `BLOCKED_MANUAL_PROVIDER`; it does not silently skip required proof. |
@@ -93,7 +93,7 @@ agentic finalizer described in
 | Open PR with green checks | Success with `terminal_state=EXISTING_OPEN_PR`; merge according to repository policy. |
 | Open PR with pending checks | The assessment waits for them with `gh pr checks --watch`, then decides on what they report. Pending is not success. |
 | Open PR with failing checks the run can fix | Repaired in a loop with no round or time limit; success once the head is green. CI gating remains active and nothing is skipped to get past it. |
-| Open PR with a failing check the run cannot fix (missing secret, run awaiting maintainer approval, owner-only setting, account or billing block, a fix under `.github/**`, which the repair never edits) | Failure with `terminal_state=BLOCKED_CI`, the check and cause as the reason, and the owner and exact step as the next action. The run exits `81` after step recovery hands it off. |
+| Open PR with a failing check the run cannot fix (missing secret, run awaiting maintainer approval, owner-only setting, account or billing block), or whose fix needs an edit this workflow reserves to an owner (anything under `.github/**`, or another protected file outside the pull request's diff), found after diagnosis | Failure with `terminal_state=BLOCKED_CI`, the check and cause as the reason (an owner decision says so), and the owner and exact step as the next action. The run exits `81` after step recovery hands it off. |
 | Closed unmerged PR with remaining branch diff | Failure with `terminal_state=FAILED_CLOSED_UNMERGED`; user action is required. |
 | Meaningful branch diff without terminal publication or verification proof | Failure with `terminal_state=FAILED_MEANINGFUL_DIFF`. |
 | Missing or ambiguous PR state | Failure; ambiguity is not treated as success. |
@@ -205,9 +205,9 @@ and has no round limit. Before relying on it:
   and no administration or secrets permission. As a further safeguard, do not
   add the `workflow` scope. The repair rule does not depend on it: `.github/**` is
   never edited, whether or not the pull request changes it, so a red check
-  whose fix is under `.github/` ends the run `BLOCKED_CI` before any edit,
-  naming the file and its owner (the code owner of `.github/`, or the
-  repository administrator).
+  whose fix, after diagnosis, must be made under `.github/` ends the run
+  `BLOCKED_CI` as an owner decision, naming the file and its owner (the code
+  owner of `.github/`, or the repository administrator).
 - Protect the base branch: require a review, dismiss stale approvals when new
   commits are pushed, and forbid force-push and deletion. The repair rules
   forbid force-push and merging without an approval on the current head, but

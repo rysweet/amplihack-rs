@@ -198,7 +198,8 @@ fn an_assessment_the_run_cannot_even_resolve_still_lets_the_run_continue() {
 /// without an LLM (#2819 R4). The runner passes the prompt by path -- `-p
 /// "Read and follow the complete instructions in the file <path>. ..."` -- so
 /// the path is taken out of that sentence and the file copied where the case
-/// can read it.
+/// can read it. When `<answer file>.<n>.sh` exists, call `n` runs it first: it
+/// stands for what that session did in the worktree (#2966, crusty round 5).
 const AGENT_STUB: &str = r#"#!/usr/bin/env bash
 prompt_arg=""; out=""
 for ((i = 1; i <= $#; i++)); do
@@ -212,6 +213,7 @@ if [ -n "$file" ] && [ -f "$file" ]; then cat "$file" > "$AGENT_STUB_PROMPT"
 else printf '%s' "$prompt_arg" > "$AGENT_STUB_PROMPT"; fi
 n=$(( $(cat "$AGENT_STUB_ANSWER.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$AGENT_STUB_ANSWER.count"
 cp "$AGENT_STUB_PROMPT" "$AGENT_STUB_PROMPT.$n"
+[ ! -f "$AGENT_STUB_ANSWER.$n.sh" ] || bash "$AGENT_STUB_ANSWER.$n.sh" >&2
 answer="$(cat "$AGENT_STUB_ANSWER.$n" 2>/dev/null || cat "$AGENT_STUB_ANSWER")"
 [ -z "$out" ] || printf '%s' "$answer" > "$out"
 printf '%s\n' "$answer"
@@ -301,6 +303,19 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
 /// The same, with the agent answering `later[i]` on call `i + 2` (a pass
 /// `continue-ci-repair` started) and `first` on every other call.
 fn assess_with_recorded_agent_passes(evidence: &str, first: &str, later: &[&str]) -> Assessed {
+    assess_in_worktree(evidence, first, later, None, &[])
+}
+
+/// The same again, with `worktree` recorded as the run's worktree
+/// (`worktree_setup.worktree_path`), and `actions[i]`, a shell script, run by
+/// the agent on call `i + 1` before it answers.
+fn assess_in_worktree(
+    evidence: &str,
+    first: &str,
+    later: &[&str],
+    worktree: Option<&str>,
+    actions: &[&str],
+) -> Assessed {
     let answer = first;
     let dir = tempfile::TempDir::new().expect("tempdir");
     let name = "workflow-finalization-assessment";
@@ -324,17 +339,25 @@ fn assess_with_recorded_agent_passes(evidence: &str, first: &str, later: &[&str]
         fs::write(dir.path().join(format!("answer.txt.{}", i + 2)), text)
             .expect("record a later answer");
     }
+    for (i, script) in actions.iter().enumerate() {
+        fs::write(dir.path().join(format!("answer.txt.{}.sh", i + 1)), script)
+            .expect("record what a session does");
+    }
+    let mut context = json!({
+        "finalization_evidence": evidence,
+        "finalizer_step_status": r#"{"status":"ok","reporting_failure":"false"}"#,
+        "finalization_assessment": "",
+    });
+    if let Some(path) = worktree {
+        context["worktree_setup"] = json!({"worktree_path": path});
+    }
 
     let marker = dir.path().join("reached-the-validator");
     let recipe = json!({
         "name": "issue-2819-recorded-assessment",
         "version": "1.0.0",
         "description": "the shipped assess-finalization step, driven by a recorded agent",
-        "context": {
-            "finalization_evidence": evidence,
-            "finalizer_step_status": r#"{"status":"ok","reporting_failure":"false"}"#,
-            "finalization_assessment": "",
-        },
+        "context": context,
         "steps": [
             serde_yaml::from_value::<Value>(shipped_step("workflow-finalize", "assess-finalization"))
                 .expect("the shipped step is representable as JSON"),
@@ -544,7 +567,11 @@ fn an_agent_that_answers_with_prose_leaves_the_run_with_no_decision() {
         "one second pass: {:?}",
         assessed.nested_runs()
     );
-    assert_eq!(assessed.nested_note(), json!({"previous_answer": null}));
+    // No worktree is recorded here, so the reading beside it says it was not
+    // asked, and it is not what started the pass.
+    let note = assessed.nested_note();
+    assert_eq!(note["previous_answer"], Value::Null, "{note}");
+    assert_eq!(note["worktree"]["state"], "not_asked", "{note}");
     assert!(
         assessed
             .run
@@ -647,7 +674,9 @@ fn an_unfinished_repair_gets_one_fresh_pass_and_its_decision_is_carried() {
         assessed.nested_runs()
     );
     let last: Value = serde_json::from_str(&unfinished_answer()).unwrap();
-    assert_eq!(assessed.nested_note(), json!({"previous_answer": last}));
+    let note = assessed.nested_note();
+    assert_eq!(note["previous_answer"], last, "{note}");
+    assert_eq!(note["worktree"]["clean"], "", "{note}");
     assert!(
         assessed
             .prompt_of(2)
@@ -682,6 +711,163 @@ fn an_unfinished_repair_gets_one_fresh_pass_and_its_decision_is_carried() {
         still.run.result
     );
     assert_eq!(still.run.status("after-the-assessment"), "completed");
+}
+
+/// A decision over a finished run, the answer a session gives when it believes
+/// it is done.
+fn finished_decision(reason: &str) -> String {
+    json!({
+        "terminal_state": "EXISTING_OPEN_PR",
+        "action_taken": "repaired_ci",
+        "pr_number": "7",
+        "reason": reason,
+        "next_action": "See pull request #7",
+    })
+    .to_string()
+}
+
+// #2966, crusty round 5, concern 1: a session that decided but left a build
+// artefact in the run's worktree does not end the run. The runner reads the
+// recorded worktree after the session (read-worktree-after-assessment), and
+// continue-ci-repair's condition starts one fresh session with the worktree's
+// entries as evidence beside the last answer. That session clears the file
+// and decides, and its decision is what the outer run carries, so the
+// validator's live probe then finds the worktree clean.
+#[test]
+fn a_worktree_left_dirty_goes_to_a_fresh_session_as_evidence() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let worktree = fx.repo_path();
+    let artefact = std::path::Path::new(&worktree).join("smoke-output.log");
+    let first = finished_decision("head abc, 3 green, 0 failing, 0 pending, 0 unknown");
+    let second = finished_decision("removed smoke-output.log; head abc, 3 green");
+    let leave = format!("printf 'built\\n' > '{}'", artefact.display());
+    let clear = format!("rm -f -- '{}'", artefact.display());
+
+    let assessed = assess_in_worktree(
+        &finished_evidence(&fx.head()),
+        &first,
+        &[&second],
+        Some(&worktree),
+        &[&leave, &clear],
+    );
+
+    assert_eq!(
+        assessed.nested_runs().len(),
+        1,
+        "one fresh session: {:?}",
+        assessed.nested_runs()
+    );
+    let note = assessed.nested_note();
+    assert_eq!(
+        note["previous_answer"],
+        serde_json::from_str::<Value>(&first).unwrap(),
+        "{note}"
+    );
+    assert_eq!(note["worktree"]["clean"], "false", "{note}");
+    assert_eq!(note["worktree"]["state"], "dirty", "{note}");
+    assert_eq!(
+        note["worktree"]["entries"],
+        json!(["?? smoke-output.log"]),
+        "{note}"
+    );
+    assert!(
+        assessed.prompt_of(2).contains("?? smoke-output.log"),
+        "the fresh session reads the entries in its reentry block"
+    );
+    assert_eq!(
+        assessed.run.status("assess-finalization"),
+        "completed",
+        "{}",
+        assessed.run.result
+    );
+    let carried: Value = serde_json::from_str(&assessed.assessment())
+        .unwrap_or_else(|e| panic!("a decision is carried ({e}): {}", assessed.assessment()));
+    assert_eq!(
+        carried,
+        serde_json::from_str::<Value>(&second).unwrap(),
+        "the fresh session's decision is the one carried"
+    );
+    assert!(!artefact.exists(), "the fresh session cleared the file");
+
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(("RECIPE_VAR_finalization_assessment", assessed.assessment()));
+    let published = fx.validate(&as_refs(&envs));
+    assert!(published.success(), "{}", published.describe());
+    assert_eq!(published.field("terminal_state"), "EXISTING_OPEN_PR");
+}
+
+// The other half: when the fresh session leaves the file too, the nested run's
+// reentered-pass-undecided fails it, after one pass, so continue-ci-repair
+// fails for its recovery agent with the worktree it left on the ERROR line.
+// Nothing loops. What then reaches the validator is a decision over a dirty
+// worktree, which its live probe refuses loudly, naming the file. A clean
+// worktree starts no second session.
+#[test]
+fn a_worktree_still_dirty_after_the_fresh_session_goes_to_its_recovery_agent() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let worktree = fx.repo_path();
+    let artefact = std::path::Path::new(&worktree).join("smoke-output.log");
+    let decision = finished_decision("head abc, 3 green, 0 failing, 0 pending, 0 unknown");
+    let leave = format!("printf 'built\\n' > '{}'", artefact.display());
+
+    let still = assess_in_worktree(
+        &finished_evidence(&fx.head()),
+        &decision,
+        &[&decision],
+        Some(&worktree),
+        &[&leave],
+    );
+    assert_eq!(
+        still.nested_runs().len(),
+        1,
+        "one pass, no loop: {:?}",
+        still.nested_runs()
+    );
+    assert_eq!(
+        still.run.status("assess-finalization"),
+        "failed",
+        "a fresh session that left the file fails the step for its recovery agent: {}",
+        still.run.result
+    );
+    let result = still.run.result.to_string();
+    assert!(
+        result.contains("left the worktree not clean") && result.contains("smoke-output.log"),
+        "the recovery agent is told what the session left: {result}"
+    );
+    assert_eq!(still.run.status("after-the-assessment"), "completed");
+
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(("RECIPE_VAR_finalization_assessment", decision.clone()));
+    let refused = fx.validate(&as_refs(&envs));
+    assert!(!refused.success(), "{}", refused.describe());
+    assert_eq!(refused.field("terminal_state"), "FAILED_DIRTY_WORKTREE");
+    assert!(
+        refused
+            .field("terminal_reason")
+            .contains("?? smoke-output.log"),
+        "the refusal names what is left: {}",
+        refused.field("terminal_reason")
+    );
+
+    fs::remove_file(&artefact).expect("clear the file");
+    let clean = assess_in_worktree(
+        &finished_evidence(&fx.head()),
+        &decision,
+        &[],
+        Some(&worktree),
+        &[],
+    );
+    assert!(
+        clean.nested_runs().is_empty(),
+        "a decision over a clean worktree starts no second session: {:?}",
+        clean.nested_runs()
+    );
 }
 
 // #2966, crusty round 3, concern 3: a BLOCKED_CI that leaves out its owner's
@@ -798,8 +984,12 @@ fn recorded_evidence(dirty: &str, outcome: Value) -> (&'static str, String) {
 
 // Why `--no-repair` is the honest flag, shown rather than argued (#2819 R2).
 // `retry_after_repair` re-runs the same body with the same environment. Every
-// input this body reads was recorded before the first attempt, so repairing
-// the world between the two runs changes nothing it reads.
+// input this body reads, except the worktree, was recorded before the first
+// attempt, so repairing the world between the two runs changes nothing it
+// reads. The worktree is read live (SEC-01), and a dirty one goes to a fresh
+// assessment session before this step runs (crusty round 5): that session can
+// push and decide on the head its commit makes, which a recovery agent here,
+// after the decision, cannot. See the next case.
 //
 // Each case starts from a real failure a recovery agent would be tempted to
 // repair, applies the repair that would fix the run, and runs the shipped
@@ -833,31 +1023,53 @@ fn repairing_the_run_between_two_runs_of_the_step_changes_nothing_it_reports() {
             fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
         },
     );
+}
 
-    // A dirty worktree, recorded as such, under a decision that would
-    // otherwise be a success. The repair is to commit what was uncommitted.
-    assert_a_repair_is_invisible(
-        "the worktree was dirty",
+// Crusty round 5, concern 1. The record of the worktree was collected before
+// assess-finalization, whose sessions commit, push, build and test, and are
+// told to leave the worktree clean. A file the session removed is gone, so the
+// record's `dirty_worktree: "true"` is stale by the time this step runs, and a
+// recorded checkout's live answer is the answer. Before round 5 the stale
+// record ended the run FAILED_DIRTY_WORKTREE even after the session cleared
+// the tree. A tree that is still dirty is refused, naming what is left.
+#[test]
+fn the_worktree_is_read_live_and_its_answer_outranks_the_record() {
+    let fx = Fixture::new();
+    fx.stub_step_recovery_driver();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let scratch = fx.repo.join("scratch.txt");
+    fs::write(&scratch, "build output\n").expect("dirty the worktree");
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(recorded_evidence(
+        "true",
+        json!({"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
+               "remote_head": fx.head(), "pr_number": "7", "pr_state": "OPEN",
+               "pr_head": fx.head(), "checks": "green", "unread": ""}),
+    ));
+    envs.push(assessed("EXISTING_OPEN_PR", "7"));
+
+    let dirty = fx.run_step(&validator_step_command(), &as_refs(&envs));
+    assert_eq!(
+        dirty.field("terminal_state"),
         "FAILED_DIRTY_WORKTREE",
-        |fx| {
-            fx.with_remote();
-            fx.push();
-            fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
-            fs::write(fx.repo.join("scratch.txt"), "uncommitted\n").expect("dirty the worktree");
-            let mut envs = finished_env(&fx.repo_path());
-            envs.push(recorded_evidence(
-                "true",
-                json!({"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
-                       "remote_head": fx.head(), "pr_number": "7", "pr_state": "OPEN",
-                       "pr_head": fx.head(), "checks": "green", "unread": ""}),
-            ));
-            envs.push(assessed("EXISTING_OPEN_PR", "7"));
-            envs
-        },
-        |fx| {
-            fx.git(&["add", "scratch.txt"]);
-            fx.git(&["commit", "-q", "-m", "commit the scratch file"]);
-        },
+        "{}",
+        dirty.describe()
+    );
+    assert!(
+        dirty.field("terminal_reason").contains("?? scratch.txt"),
+        "the refusal names what is left: {}",
+        dirty.describe()
+    );
+
+    fs::remove_file(&scratch).expect("clear the build output");
+    let cleared = fx.run_step(&validator_step_command(), &as_refs(&envs));
+    assert_eq!(
+        cleared.field("terminal_state"),
+        "EXISTING_OPEN_PR",
+        "a cleared worktree is not refused on the record collected before it was cleared: {}",
+        cleared.describe()
     );
 }
 

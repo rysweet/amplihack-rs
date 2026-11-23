@@ -38,8 +38,13 @@ description: >
   recovery agent, with both decisions on record; a BLOCKED_CI without the
   owner's step is reported as BLOCKED_CI with the gap named, never refused as
   no decision; and two passes in a row that answer prose send
-  continue-ci-repair to its recovery agent, exit 81. Every case allows at most one pull request comment, the "Ready for Final
-  Review" note. With
+  continue-ci-repair to its recovery agent, exit 81. Two more cases cover a
+  session whose own build left output in the worktree (crusty round 5): the
+  runner starts a fresh session with the entry in its reentry block, which
+  clears it and decides, and the run ends EXISTING_OPEN_PR with exit 0 and a
+  clean worktree; when the fresh session leaves it too, continue-ci-repair goes
+  to its recovery agent with the file named, exit 81. Every case allows at
+  most one pull request comment, the "Ready for Final Review" note. With
   AMPLIHACK_2966_BASELINE_REF set, the driver runs the first fixture against the
   bundle that ref held and confirms the reported behaviour: BLOCKED_CI, exit 81,
   and the repair step never started. What the scenario does not cover is an
@@ -123,3 +128,13 @@ assertions:
     params:
       target: stdout
       expected: "PASS: repeated_crash_goes_to_recovery - "
+  - name: dirty-worktree-goes-to-a-fresh-session
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: dirty_worktree_goes_to_a_fresh_session - "
+  - name: dirty-worktree-left-again-goes-to-recovery
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: dirty_worktree_left_again_goes_to_recovery - "
