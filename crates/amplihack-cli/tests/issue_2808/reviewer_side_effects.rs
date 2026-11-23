@@ -192,6 +192,9 @@ fn the_review_never_takes_the_context_keys_it_owns_from_the_caller() {
             .current_dir(&f.pr)
             .env("AMPLIHACK_BIN", &stub)
             .env("ARGV_OUT", &argv)
+            // The calling recipe's own pull request number, which the goal
+            // tool reads from RECIPE_VAR_pr_number only (#1561).
+            .env("RECIPE_VAR_pr_number", "2808")
             .arg(tools.join("autodrive_loop.sh"))
             .args(["--loop-name", "crusty"])
             .args(["--round-recipe", "autodrive-crusty-round"])
