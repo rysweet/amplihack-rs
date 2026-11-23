@@ -170,25 +170,33 @@ decides on what it did.
 A CI failure the run can fix never reaches this step (#2966). The probe lets
 failing checks continue, `step-22-ensure-mergeable` repairs them, and
 `assess-finalization` waits for what is pending and continues the repair before
-it decides. When an assessment session ends short of a decision (a crash, a
-prose answer, an unfinished repair), `continue-ci-repair` starts it again
-before this step runs. `BLOCKED_CI` therefore arrives here only when the assessment judged
-the cause one the run cannot fix, such as a missing secret or a workflow run
-awaiting maintainer approval. The step's goal text says so, and the move is
-`handoff` to the owner the assessment named, with the check, the cause and the
-exact step. `--no-repair` stays right for it: the cause is recorded, and a retry
-would read the same bytes.
+it decides. When an assessment session ends without deciding (a crash, a
+prose answer, `CI_REPAIR_UNFINISHED`), the runner's condition on
+`continue-ci-repair` starts it again before this step runs. `BLOCKED_CI`
+therefore arrives here only when the assessment judged the cause one the run
+cannot fix, such as a missing secret or a workflow run awaiting maintainer
+approval. The step's goal text says so, and the move is `handoff` to the owner
+the assessment named, with the check, the cause and the exact step. When the
+assessment left the cause or the owner's step out, the validator reports
+`BLOCKED_CI` anyway, with a sentence naming what is missing, and the goal text
+asks the recovery agent to read the failing check and complete the owner and
+the step in its hand-off: the missing sentence is the agent's to complete, not
+the reason for the hand-off. `--no-repair` stays right for it: the cause is
+recorded, and a retry would read the same bytes.
 
 `continue-ci-repair` is the opposite case and is not `--no-repair`. Its command
-runs the assessment again, which reads the pull request live and may repair it,
-so a retry can observe a repair. It fails when the session it started for an
-answer that was not a decision answers something that is still not one (no
-readable answer, a `BLOCKED_CI` without its cause or its owner's step, an
-`EXISTING_OPEN_PR` with no number, or changes left in a worktree recorded
-clean), or when the nested run itself failed. It keeps no progress fingerprint
-and counts no passes: whether another session is useful is its recovery
-agent's judgement. A retry starts one, told the reason; a handoff ends the run
-with the reason on record. See
+runs the assessment once more, which reads the pull request live and may
+repair it, so a retry can observe a repair. It runs only when the runner's
+condition finds no terminal state in the answer, or `CI_REPAIR_UNFINISHED`. It
+fails when that fresh session did not decide either, which the nested run's
+own `reentered-pass-undecided` step detects under the same condition, or when
+the nested run itself failed. The command has no loop and reads no field of
+the answer; its ERROR line carries the fresh session's answer as a JSON string
+for the recovery agent to read. Whether another session is useful is that
+agent's judgement: a retry starts one; a handoff ends the run with the reason
+on record. Each such decision is a record here, so the passes are visible to
+the operator and to the agent's next call, and a session that fails the same
+way after a retry is a recurrence, for which only a hand-off is offered. See
 [When the assessment stops short](./default-workflow-agentic-finalization.md#when-the-assessment-stops-short).
 
 Making the step read live instead would not rescue the retry. The terminal

@@ -56,8 +56,12 @@
 #                         progress it waits out with `gh pr checks --watch`
 #                         first, and reads the pull request again.
 #             recover     the step-recovery agent ("Recover a failed workflow
-#                         step"). It hands off, to the default owner, with the
-#                         step the failure line asked for.
+#                         step"). The case's script-recover names its choice
+#                         for each call, comma-separated, the last repeating:
+#                         `handoff` (the default) hands off to the default
+#                         owner with the step the failure line asked for;
+#                         `retry` chooses retry_after_repair when the evidence
+#                         file allows it, and hands off otherwise.
 #             the rest    the cleanup, the quality audit, the narrative and the
 #                         adjudicator each get one line of prose.
 #           A prompt matching none of these is recorded as `unmatched`, and every
@@ -90,31 +94,42 @@
 #                                       green head and reports EXISTING_OPEN_PR.
 #                                       Exit 0, no push, no hand-off.
 #
-# Five cases for an assessment session that ends short of a decision. The first
-# review of the fix found that the repair lives in one agent session, so any of
-# these still ended the run. continue-ci-repair now starts the session again,
-# with the reason and the last answer in the prompt's `reentry` block. The
-# stand-in reads that block as an agent would and records what it was shown:
-# `no_answer` when the last answer was unreadable, the last answer's
-# terminal_state otherwise, or `worktree` when the block lists paths.
+# Five cases for an assessment session that ends short of a decision, or for
+# a decision that leaves something out. Crusty round 1 found that the repair
+# lives in one agent session, so any of these ended the run; round 3 moved every
+# decision out of script. The runner's condition on continue-ci-repair starts
+# one fresh pass when the answer names no terminal_state or names
+# CI_REPAIR_UNFINISHED; the nested run's reentered-pass-undecided fails when
+# that pass has not decided either; and continue-ci-repair's recovery agent
+# decides whether to start another. The stand-in reads the prompt's `reentry`
+# block as an agent would and records what it was shown: `no_answer` when the
+# last answer was unreadable, the last answer's terminal_state otherwise.
 #   crashed_assessment_is_started_again the first pass exits 1 with no answer; a
 #                                       second pass (`no_answer`) repairs and
 #                                       pushes. EXISTING_OPEN_PR, exit 0.
-#   unfinished_repair_is_continued      two passes answer CI_REPAIR_UNFINISHED
-#                                       and change nothing; both are continued,
-#                                       the third repairs. EXISTING_OPEN_PR,
-#                                       exit 0.
-#   unowned_blocked_ci_is_asked_again   BLOCKED_CI with the cause and an empty
-#                                       owner's step; the second pass, shown the
-#                                       BLOCKED_CI answer, names it. Exit 81
-#                                       with the step on the failure line.
-#   leftover_file_is_cleaned            the repairing pass leaves an untracked
-#                                       file; the second pass is shown it
-#                                       (`worktree`) and removes it.
+#   unfinished_repair_is_continued      the first pass and the fresh pass both
+#                                       answer CI_REPAIR_UNFINISHED; the step
+#                                       fails for its recovery agent, which
+#                                       retries; the third pass repairs.
 #                                       EXISTING_OPEN_PR, exit 0.
+#   endless_unfinished_is_stopped_by_recovery
+#                                       every pass answers CI_REPAIR_UNFINISHED.
+#                                       The recovery agent retries once, sees
+#                                       its own record on the next failure and
+#                                       hands off. Exit 81, two records, both
+#                                       naming continue-ci-repair: nothing loops
+#                                       out of sight.
+#   unowned_blocked_ci_is_reported_not_refused
+#                                       BLOCKED_CI with the cause and an empty
+#                                       owner's step. No pass is started and
+#                                       the validator does not refuse it: the
+#                                       run ends exit 81 on BLOCKED_CI, with
+#                                       the sentence naming the missing step on
+#                                       the failure line, never on
+#                                       FAILED_MISSING_TERMINAL_EVIDENCE.
 #   repeated_crash_goes_to_recovery     every pass answers prose (the runner
-#                                       retries each once itself); the session
-#                                       started again answers prose too, so
+#                                       retries each once itself); the fresh
+#                                       pass answers prose too, so
 #                                       continue-ci-repair fails for its recovery
 #                                       agent, which hands off. Exit 81, with the
 #                                       step named in the record.
@@ -416,8 +431,17 @@ case "$role" in
     fi
     needs="${excerpt#*next action: }"
     [ "$needs" != "$excerpt" ] || needs="read the failure line in the recovery record"
-    jq -nc --arg o "$owner" --arg n "$needs" \
-      '{step_recovery:{choice:"handoff",reason:"the step reports a blocker the run cannot repair",owner:$o,needs:$n}}'
+    call="$(grep -c '^recover	' "$dir/agent-calls.log")"
+    plan="$(cat "$dir/script-recover" 2>/dev/null)"; [ -n "$plan" ] || plan=handoff
+    choice="$(printf '%s' "$plan" | cut -d, -f"$call")"
+    [ -n "$choice" ] || choice="${plan##*,}"
+    if [ "$choice" = retry ] && [ -n "$ev" ] && [ -f "$ev" ] \
+      && jq -e '.allowed_choices | index("retry_after_repair")' "$ev" >/dev/null 2>&1; then
+      jq -nc '{step_recovery:{choice:"retry_after_repair",reason:"the fresh session stopped short; another can continue the repair",repair:"no local change: a retry starts a fresh assessment session that reads the pull request live"}}'
+    else
+      jq -nc --arg o "$owner" --arg n "$needs" \
+        '{step_recovery:{choice:"handoff",reason:"the step reports a blocker the run cannot repair",owner:$o,needs:$n}}'
+    fi
     ;;
   repair)
     if [ "$(cat "$dir/script-repair" 2>/dev/null)" = repair ]; then
@@ -443,8 +467,7 @@ case "$role" in
     pass="$(grep -c '^assess	' "$dir/agent-calls.log")"
     reentry="$(printf '%s\n' "$input" | awk '/^```reentry/ { f = 1; next } /^```/ { f = 0 } f')"
     why=first
-    [ -z "$reentry" ] || why="$(printf '%s' "$reentry" | jq -r \
-      'if ((.worktree_status // []) | length) > 0 then "worktree" else (.previous_answer.terminal_state // "no_answer") end' \
+    [ -z "$reentry" ] || why="$(printf '%s' "$reentry" | jq -r '.previous_answer.terminal_state // "no_answer"' \
       2>/dev/null || echo unreadable)"
     printf '%s\t%s\n' "$pass" "$why" >> "$dir/reentry.log"
     [ -z "$reentry" ] || printf '%s\n' "$reentry" > "$dir/reentry-$pass.json"
@@ -468,8 +491,6 @@ case "$role" in
         jq -nc --arg r "$QA_DEPLOY_CAUSE" '{terminal_state:"BLOCKED_CI",action_taken:"none",pr_number:"7",reason:$r,next_action:""}'
         exit 0 ;;
     esac
-    # Asked back to tidy what a pass of its own left: it knows the file it made.
-    [ "$why" != worktree ] || rm -f -- smoke-output.log
     pushed=none
     facts="$(view)"
     if printf '%s' "$facts" | jq -e '[.statusCheckRollup[] | select(.status != "COMPLETED")] | length > 0' >/dev/null; then
@@ -481,8 +502,6 @@ case "$role" in
       pushed=repaired_ci
       facts="$(view)"
     fi
-    # `litter`: the repair's own build leaves an untracked file behind.
-    [ "$act" != litter ] || printf 'smoke output\n' > smoke-output.log
     head="$(printf '%s' "$facts" | jq -r '.headRefOid')"
     counts="$(printf '%s' "$facts" | jq -r '[.statusCheckRollup[] | .conclusion] | "success=\(map(select(. == "SUCCESS")) | length) failing=\(map(select(. == "FAILURE")) | length) pending=0 unknown=0"')"
     if printf '%s' "$facts" | jq -e '[.statusCheckRollup[] | select(.name == "deploy" and .conclusion == "FAILURE")] | length > 0' >/dev/null; then
@@ -547,10 +566,11 @@ qa_git() {
 # `pending`; the repair script is what the stand-in CI repair step does,
 # `repair` or `leave`. The assess script is what each assessment pass does, in
 # order, one entry per agent call (`normal`, `crash`, `prose`, `unfinished`,
-# `unowned`, `litter`); the default is
-# `normal`. Prints the case folder.
+# `unowned`); the default is `normal`. The recover script is what each
+# step-recovery call chooses (`handoff`, `retry`); the default is `handoff`.
+# Prints the case folder.
 new_case() {
-  local id="$1" mode="$2" script="$3" assess="${4:-normal}" dir
+  local id="$1" mode="$2" script="$3" assess="${4:-normal}" recover="${5:-handoff}" dir
   dir="$WORK/case-$id"
   mkdir -p "$dir/home/.config" "$dir/home/profiles" "$dir/tmp" "$dir/work" "$dir/launch" || return 1
   : > "$dir/gitconfig"
@@ -558,6 +578,7 @@ new_case() {
   printf '%s' "$mode" > "$dir/mode"
   printf '%s' "$script" > "$dir/script-repair"
   printf '%s' "$assess" > "$dir/script-assess"
+  printf '%s' "$recover" > "$dir/script-recover"
   qa_git "$dir" init -q --bare -b main "$dir/origin.git" || return 1
   qa_git "$dir" init -q -b main "$dir/seed" || return 1
   printf 'issue 2966 QA\n' > "$dir/seed/README.md"
@@ -866,77 +887,89 @@ else
   die "crashed_assessment_is_started_again: cannot set up the case"
 fi
 
-# --- K: case 6, an unfinished repair is continued, however often -------------
-# Two passes in a row stop unfinished and change nothing; neither ends the run,
-# because an unfinished repair has no cap. The third finishes it.
-if dir="$(new_case unfinished_repair_is_continued fixable leave unfinished,unfinished,normal)"; then
+# --- K: case 6, an unfinished repair is continued by the runner and recovery --
+# The first pass and the fresh pass the runner starts both stop unfinished and
+# change nothing. The nested run fails on its own condition, so the step goes
+# to its recovery agent, which retries; the third pass finishes the repair. No
+# script loop starts any pass (crusty round 3).
+if dir="$(new_case unfinished_repair_is_continued fixable leave unfinished,unfinished,normal retry)"; then
   run_case "$dir"
   problems=()
   check_common "$dir"
   expect_exit "$dir" 0
   expect_calls "$dir" assess 3
-  expect_calls "$dir" recover 0
+  expect_calls "$dir" recover 1
   expect_reentries "$dir" first,CI_REPAIR_UNFINISHED,CI_REPAIR_UNFINISHED
-  jq -e '.previous_answer.terminal_state == "CI_REPAIR_UNFINISHED"' "$dir/reentry-3.json" >/dev/null 2>&1 \
-    || problems+=("the third pass was not handed the second pass's answer")
+  grep -q '"choice":"retry_after_repair"' "$dir"/recovery/*.jsonl 2>/dev/null \
+    || problems+=("the recovery record does not hold the retry that started the third pass")
+  grep -q '"step_id":"continue-ci-repair"' "$dir"/recovery/*.jsonl 2>/dev/null \
+    || problems+=("the recovery record does not name continue-ci-repair")
   expect_result "$dir" terminal_state EXISTING_OPEN_PR
   expect_result "$dir" terminal_success true
   expect_no_handoff "$dir"
-  verdict unfinished_repair_is_continued "$dir" "two passes stopped unfinished and were continued; the third repaired the CI; EXISTING_OPEN_PR, exit 0"
+  verdict unfinished_repair_is_continued "$dir" "two sessions stopped unfinished; the runner started the second, the recovery agent retried for the third, which repaired the CI; EXISTING_OPEN_PR, exit 0"
 else
   dump_case "$WORK/case-unfinished_repair_is_continued"
   die "unfinished_repair_is_continued: cannot set up the case"
 fi
 
-# --- L: case 7, a BLOCKED_CI that names no owner's step is asked again -------
-if dir="$(new_case unowned_blocked_ci_is_asked_again unfixable leave unowned,normal)"; then
+# --- L: case 7, an endless unfinished repair is seen and stopped -------------
+# Crusty round 3, concern 1: a session that answers CI_REPAIR_UNFINISHED every
+# time must not loop where nothing can see it. Each pass after the first is a
+# recovery decision on record; this stand-in retries once and, shown its own
+# earlier record, hands off.
+if dir="$(new_case endless_unfinished_is_stopped_by_recovery fixable leave unfinished retry,handoff)"; then
   run_case "$dir"
   problems=()
   check_common "$dir"
   expect_exit "$dir" 81
-  expect_calls "$dir" assess 2
-  expect_calls "$dir" recover 1
-  expect_reentries "$dir" first,BLOCKED_CI
-  [ ! -s "$dir/push.log" ] || problems+=("a push was made for a cause no push can fix")
-  case "$(cat "$dir/run.err")" in
-    *"failed closed: BLOCKED_CI: $DEPLOY_CAUSE; next action: $DEPLOY_STEP"*) ;;
-    *) problems+=("the run's stderr lacks the failure line with the owner's step the second pass named") ;;
-  esac
-  case "$(cat "$dir/run.err")" in
-    *FAILED_MISSING_TERMINAL_EVIDENCE*) problems+=("the unowned answer was reported as no decision instead of asked again") ;;
-  esac
-  verdict unowned_blocked_ci_is_asked_again "$dir" "BLOCKED_CI without the owner's step was asked again; the second pass named it; exit 81 with the step on record"
+  expect_calls "$dir" assess 3
+  expect_calls "$dir" recover 2
+  n="$(cat "$dir"/recovery/*.jsonl 2>/dev/null | grep -c '"step_id":"continue-ci-repair"')"
+  [ "${n:-0}" = 2 ] || problems+=("$n recovery records name continue-ci-repair, want 2 (a retry and a hand-off)")
+  grep -q '"choice":"handoff"' "$dir"/recovery/*.jsonl 2>/dev/null \
+    || problems+=("no hand-off on record")
+  [ ! -s "$dir/push.log" ] || problems+=("a push was made by passes that repaired nothing")
+  verdict endless_unfinished_is_stopped_by_recovery "$dir" "every session stopped unfinished; the recovery agent retried once, then handed off; exit 81 with both decisions on record"
 else
-  dump_case "$WORK/case-unowned_blocked_ci_is_asked_again"
-  die "unowned_blocked_ci_is_asked_again: cannot set up the case"
+  dump_case "$WORK/case-endless_unfinished_is_stopped_by_recovery"
+  die "endless_unfinished_is_stopped_by_recovery: cannot set up the case"
 fi
 
-# --- M: case 8, a file the repair left behind is cleaned, not fatal ----------
-if dir="$(new_case leftover_file_is_cleaned fixable leave litter,normal)"; then
+# --- M: case 8, a BLOCKED_CI that names no owner's step is reported, not refused
+# Crusty round 3, concern 3: a missing sentence is not a refusal. No pass is
+# started for it, and the validator reports the assessment's BLOCKED_CI with a
+# sentence that names what is missing; the run ends on the cause, never on
+# FAILED_MISSING_TERMINAL_EVIDENCE.
+if dir="$(new_case unowned_blocked_ci_is_reported_not_refused unfixable leave unowned)"; then
   run_case "$dir"
   problems=()
   check_common "$dir"
-  expect_exit "$dir" 0
-  expect_calls "$dir" assess 2
-  expect_calls "$dir" recover 0
-  expect_reentries "$dir" first,worktree
-  jq -e '.worktree_status | any(test("smoke-output\\.log"))' "$dir/reentry-2.json" >/dev/null 2>&1 \
-    || problems+=("the second pass was not shown the file left behind")
-  [ ! -e "$dir/worktree/smoke-output.log" ] || problems+=("the file left behind is still in the worktree")
-  expect_result "$dir" terminal_state EXISTING_OPEN_PR
-  expect_result "$dir" terminal_success true
-  expect_no_handoff "$dir"
-  verdict leftover_file_is_cleaned "$dir" "the repair left an untracked file; a second pass removed it; EXISTING_OPEN_PR, exit 0, no FAILED_DIRTY_WORKTREE"
+  expect_exit "$dir" 81
+  expect_calls "$dir" assess 1
+  expect_calls "$dir" recover 1
+  expect_reentries "$dir" first
+  [ ! -s "$dir/push.log" ] || problems+=("a push was made for a cause no push can fix")
+  case "$(cat "$dir/run.err")" in
+    *"failed closed: BLOCKED_CI: $DEPLOY_CAUSE; next action: assess-finalization named no owner and no step"*) ;;
+    *) problems+=("the run's stderr lacks the BLOCKED_CI failure line naming the missing step") ;;
+  esac
+  case "$(cat "$dir/run.err")" in
+    *FAILED_MISSING_TERMINAL_EVIDENCE*) problems+=("the unowned answer was refused as no decision") ;;
+  esac
+  grep -q '"step_id":"validate-agentic-finalization"' "$dir"/recovery/*.jsonl 2>/dev/null \
+    || problems+=("the hand-off record does not name validate-agentic-finalization")
+  verdict unowned_blocked_ci_is_reported_not_refused "$dir" "BLOCKED_CI without the owner's step was reported as BLOCKED_CI with the gap named; no pass started; exit 81 on the cause"
 else
-  dump_case "$WORK/case-leftover_file_is_cleaned"
-  die "leftover_file_is_cleaned: cannot set up the case"
+  dump_case "$WORK/case-unowned_blocked_ci_is_reported_not_refused"
+  die "unowned_blocked_ci_is_reported_not_refused: cannot set up the case"
 fi
 
 # --- N: case 9, a pass that again decides nothing goes to step recovery -----
-# The first pass answers prose, and so does the session started again for it.
-# The re-entry step asks once and then fails for its own recovery agent, which
-# judges whether another session is useful; this stand-in hands off with the
-# reason. No fingerprint or pass count is involved (crusty round 2).
+# The first pass answers prose, and so does the fresh pass the runner starts for
+# it. The nested run fails on its own condition, so the step fails for its
+# recovery agent, which judges whether another session is useful; this
+# stand-in hands off with the reason.
 if dir="$(new_case repeated_crash_goes_to_recovery fixable leave prose)"; then
   run_case "$dir"
   problems=()
@@ -946,9 +979,9 @@ if dir="$(new_case repeated_crash_goes_to_recovery fixable leave prose)"; then
   expect_passes "$dir" first,no_answer
   grep -q '"step_id":"continue-ci-repair"' "$dir"/recovery/*.jsonl 2>/dev/null \
     || problems+=("the hand-off record does not name continue-ci-repair")
-  grep -q "the new session's answer is still not one finalization reports" "$dir/run.err" \
-    || problems+=("the run's stderr does not say the second pass decided nothing either")
-  verdict repeated_crash_goes_to_recovery "$dir" "the session started again answered prose too; continue-ci-repair went to its recovery agent; exit 81"
+  grep -q "the fresh assess-finalization session did not decide either" "$dir/run.err" \
+    || problems+=("the run's stderr does not say the fresh pass decided nothing either")
+  verdict repeated_crash_goes_to_recovery "$dir" "the fresh session answered prose too; continue-ci-repair went to its recovery agent; exit 81"
 else
   dump_case "$WORK/case-repeated_crash_goes_to_recovery"
   die "repeated_crash_goes_to_recovery: cannot set up the case"

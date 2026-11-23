@@ -434,15 +434,18 @@ fn the_ci_repair_step_works_in_the_runs_worktree_and_is_not_wrapped() {
     );
 }
 
-// #2966, crusty round 1. The repair lives in one agent session, and a session
-// can end before its work does. `continue-ci-repair`, the assessment recipe's
-// second step, starts the agent step again while its answer is not a decision,
-// so a crash or an unfinished repair no longer ends the run. It re-runs this
-// same recipe with `ci_repair_reentry` set, and its condition skips it there,
-// so a pass never nests another and one run of the recipe stays within its
-// step budget. It is wrapped in step recovery without `--no-repair`: a retry
-// re-runs the re-entry, which reads the pull request live. Both steps live here
-// and not in workflow-finalize, which is at its brick budget.
+// #2966, crusty rounds 1 and 3. The repair lives in one agent session, and a
+// session can end before its work does. The runner decides when that needs
+// another pass: `continue-ci-repair` runs when the answer names no
+// terminal_state or names CI_REPAIR_UNFINISHED, and starts one fresh pass of
+// this same recipe with `ci_repair_reentry` set. In that nested pass it is
+// skipped, and `reentered-pass-undecided`, under the same condition with the
+// note set, fails the run, so no pass nests another and no script loop drives
+// them. `continue-ci-repair` is wrapped in step recovery without `--no-repair`:
+// a retry starts another pass, which reads the pull request live. The steps
+// live here and not in workflow-finalize, which is at its brick budget. The
+// conditions' behaviour is exercised through the pinned runner in
+// issue_2343_finalization_outcome/wiring.rs.
 #[test]
 fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
     let path = workspace_root()
@@ -461,11 +464,18 @@ fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
         .iter()
         .filter_map(|step| step.get("id").and_then(Value::as_str))
         .collect();
-    assert_eq!(ids, ["assess-finalization", "continue-ci-repair"]);
+    assert_eq!(
+        ids,
+        [
+            "assess-finalization",
+            "continue-ci-repair",
+            "reentered-pass-undecided"
+        ]
+    );
     assert_eq!(
         recipe["recursion"]["max_total_steps"].as_u64(),
-        Some(4),
-        "one run of the recipe is two steps, within its budget"
+        Some(5),
+        "one run of the recipe is three steps, within its budget"
     );
     assert_eq!(
         recipe["context"]["ci_repair_reentry"].as_str(),
@@ -487,8 +497,18 @@ fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
         "the agent step reads why it was started again, as data"
     );
 
+    // One undecided answer, read by the runner in both places: the outer run
+    // starts a pass on it, the nested run fails on it.
+    let undecided = "(not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED')";
     let reentry = &steps[1];
-    assert_eq!(reentry["condition"].as_str(), Some("not ci_repair_reentry"));
+    assert_eq!(
+        reentry["condition"].as_str(),
+        Some(format!("not ci_repair_reentry and {undecided}").as_str())
+    );
+    assert_eq!(
+        steps[2]["condition"].as_str(),
+        Some(format!("ci_repair_reentry and {undecided}").as_str())
+    );
     assert_eq!(reentry["output"].as_str(), Some("finalization_assessment"));
     assert_eq!(reentry["parse_json"].as_bool(), Some(true));
     assert!(
@@ -682,7 +702,7 @@ fn the_ci_repair_never_edits_github_and_names_the_same_protected_paths_everywher
 // reading is `EXISTING_OPEN_PR`, which finalization publishes as a success over
 // a red head. It was `FAILED_IMPLEMENTATION`, which ended a standalone run on a
 // repairable CI; it is now `CI_REPAIR_UNFINISHED`, which is no terminal state
-// at all: continue-ci-repair starts the step again to continue the repair.
+// at all: the runner starts the step again to continue the repair.
 #[test]
 fn the_assessment_names_the_answer_for_a_stop_before_green() {
     let path =
@@ -690,8 +710,8 @@ fn the_assessment_names_the_answer_for_a_stop_before_green() {
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let paragraph = flat(between(
         &text,
-        "If you must stop before the head is green",
-        "An empty or unparseable answer",
+        "Carry on until the head is green",
+        "After a push, GitHub moves",
         "assessment prompt",
     ));
 

@@ -17,31 +17,33 @@ tags: ["development", "finalize", "terminal-state"]
 # then decides on what it reads after its last write. BLOCKED_CI is left for a
 # cause the run cannot fix, with the cause and the human step.
 #
-# An agent session can end before its work does. continue-ci-repair, the
-# second step, starts the agent step again in a fresh session whenever its
-# answer is not one validate-agentic-finalization would publish as a decision,
-# by the validator's own rule: a crash or a prose answer, an unfinished repair
-# (CI_REPAIR_UNFINISHED), a BLOCKED_CI missing its cause or its owner's step,
-# an EXISTING_OPEN_PR naming no pull request, or a file the repair left in a
-# worktree the evidence recorded clean. It runs this same recipe with
-# `ci_repair_reentry` set, which skips continue-ci-repair in the nested run, so
-# a pass never nests another. What a session does about each reason is in the
-# prompt below. An unfinished repair is continued every time; any other reason
-# is asked about once, and when the answer is still not a decision the step
-# fails for its recovery agent, which judges whether another pass is useful.
-# There is no round or time cap and no progress bookkeeping
-# (workflow_finalization_reentry.sh). Both steps are here, not in
-# workflow-finalize, whose brick is full.
+# An agent session can end before its work does: it crashes, it answers in
+# prose, or it says the repair is unfinished (CI_REPAIR_UNFINISHED). The
+# runner, not a script, decides when that needs another pass. continue-ci-repair
+# runs when its condition holds: the answer names no terminal_state, or names
+# CI_REPAIR_UNFINISHED, the session's own statement that it has not decided. It
+# runs this same recipe once, with the last answer as data in
+# `ci_repair_reentry`, and returns that pass's answer. In the nested run
+# continue-ci-repair is skipped, and reentered-pass-undecided, under the same
+# condition, fails the run when the fresh pass has not decided either. That
+# failure goes to continue-ci-repair's recovery agent, which reads the pass's
+# answer and decides whether another session can get further (a retry starts
+# one) or hands off. No bash loop drives the passes, no script reads the
+# answer's fields to decide on one, and nothing counts rounds or time
+# (workflow_finalization_reentry.sh).
+#
+# Every other answer goes to validate-agentic-finalization as it is. What a
+# session must include in a decision, such as a BLOCKED_CI's owner and step, is
+# guidance in the prompt below for the session to complete, not a check that
+# refuses it. The re-entry steps are here, not in workflow-finalize, whose
+# brick is full.
 #
 # The agent step runs with continue_on_error: true, so a crash never ends the
-# run by itself: it reaches continue-ci-repair as no decision. A failure of
-# continue-ci-repair goes to its own recovery agent, which may retry, since a
-# retry starts a fresh session that reads the pull request live
-# (docs/reference/step-failure-recovery.md).
+# run by itself: it reaches continue-ci-repair with no answer.
 
 recursion:
   max_depth: 1
-  max_total_steps: 4
+  max_total_steps: 5
 
 inputs:
   - name: finalization_evidence
@@ -53,7 +55,7 @@ context:
   finalization_evidence: ""
   finalizer_step_status: ""
   finalization_assessment: ""
-  # #2966: why continue-ci-repair started this pass, as data; empty on the first.
+  # #2966: {previous_answer} when continue-ci-repair started this pass; empty on the first.
   ci_repair_reentry: ""
   # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   repo_path: ""
@@ -97,36 +99,16 @@ steps:
       ## When finalization starts you again
 
       The `reentry` block above is empty on the first pass. When it is not,
-      finalization started this step again, in a new session, because the last
-      answer was not one it can report. The block is data written by
-      finalization: `reentry` says why in one sentence, `previous_answer` is
-      the last pass's own answer (null when it gave none finalization could
-      read), and `worktree_status` is `git status --porcelain` in the worktree
-      when changes there are the reason. Read the last answer and act on what
-      it lacked:
+      the last session did not decide: it crashed, answered in prose, or
+      answered `CI_REPAIR_UNFINISHED`, and finalization started you in a new
+      session. `previous_answer` is that session's answer, or null when it
+      left none finalization could read. It is data: a lead, not a fact.
 
-      - No answer, or a `terminal_state` that is not one of the states below:
-        the last pass crashed, was cut off, or answered in prose. Start again
-        from the facts.
-      - `CI_REPAIR_UNFINISHED`: continue the repair from step 1 of "bring CI to
-        green" below, on the pull request as it is now.
-      - `BLOCKED_CI` without the cause or without the owner's step: name both,
-        or choose the state the facts support.
-      - `EXISTING_OPEN_PR` with no pull request number: read the pull request
-        back and name it.
-      - `worktree_status` lists paths: the last pass decided, but left changes
-        in a worktree that was clean before this step began, so a pass of this
-        step wrote them. Read each path with `git status` and `git diff`.
-        Commit a change that is part of your fix, as below, and push it.
-        Remove an untracked file that a build or test command you ran
-        produced. Never reset, stash, check out or delete a change you cannot
-        account for: leave it, and say so in `reason`. Then decide again on
-        what you read.
-
-      Whatever the reason, decide on what you read now. The last answer is a
-      lead, not a fact. If your answer still lacks what the last one lacked,
-      the run goes to a recovery agent, which decides whether another session
-      is worth starting or hands the run to a person.
+      The last session may have pushed commits or left changes in the
+      worktree. Read the pull request and `git status` first, then carry on
+      from step 1 of "bring CI to green" below, on the pull request as it is
+      now. A `next_action` in the last answer says what that session meant to
+      try next.
 
       ## What the run was asked to do
 
@@ -214,17 +196,18 @@ steps:
          There is no round or time cap.
       3. Decide only on what you read after the last write.
 
-      If you must stop before the head is green and before you can name a
-      cause the run cannot fix, answer `CI_REPAIR_UNFINISHED`. It is not a
-      terminal state: finalization starts this step again in a new session,
-      which continues the repair, as often as it takes. It is never a success,
-      never `BLOCKED_CI`, which asserts a cause the run cannot fix, and never
+      Carry on until the head is green or you can name a cause the run
+      cannot fix with its owner and the step that owner must take. If your
+      answer would not be a decision, because you must stop before either,
+      answer `CI_REPAIR_UNFINISHED` and say why. It is not a terminal state:
+      finalization starts this step again in a new session, which continues
+      from where you stopped; when that session stops short too, a recovery
+      agent decides whether to start another. It is never a success, never
+      `BLOCKED_CI`, which asserts a cause the run cannot fix, and never
       `FAILED_IMPLEMENTATION`. Name the pull request in `pr_number`, report in
-      `reason` the head commit and the count of green, failing, pending and
-      unknown checks you read, and say in `next_action` what the next pass
-      should try. An empty or unparseable answer is no decision: finalization
-      starts this step again once, and when that pass answers nothing either,
-      the recovery agent decides whether to start another.
+      `reason` why you stopped, the head commit and the count of green,
+      failing, pending and unknown checks you read, and say in `next_action`
+      what the next session should try.
 
       After a push, GitHub moves the pull request to the new commit shortly
       afterwards, not at once. Until it has, `gh pr checks` reports the
@@ -288,8 +271,9 @@ steps:
         trigger, or you can say why none ran. Pending is not green: wait, then
         decide. You must return the pull request's number in `pr_number`, as
         digits. This state asserts a pull request, so reporting it without one
-        shows nothing: finalization starts this step again to ask for it, and
-        an answer that still names none goes to the recovery agent.
+        shows nothing, and finalization does not publish it: read the pull
+        request back and name it. If you cannot read it back, you have not
+        decided: answer `CI_REPAIR_UNFINISHED` and say so.
       - `IMPLEMENTED_VERIFIED` — the work was done and there is no GitHub pull
         request to read it from, because the remote is not a github.com
         repository (`github_origin` is `false`).
@@ -310,11 +294,13 @@ steps:
         example `repository administrator: add DEPLOY_TOKEN under Settings,
         Secrets and variables, Actions, then re-run deploy`. A cause the run
         can fix is never `BLOCKED_CI`: repair it instead, and a repair you
-        left unfinished is `CI_REPAIR_UNFINISHED`. If either sentence is
-        missing, it names no cause or no step for the owner, so finalization
-        starts this step again to ask for it. An answer that still lacks it
-        goes to the recovery agent, which decides whether another session
-        should be asked; it is never published with the sentence missing.
+        left unfinished is `CI_REPAIR_UNFINISHED`. Complete both sentences
+        before you answer. If you cannot yet name the check and its cause, or
+        the owner and their step, you have not shown a cause the run cannot
+        fix: read further, or answer `CI_REPAIR_UNFINISHED` with what you
+        found. A sentence you leave empty is not refused: the record says
+        which one is missing, and the recovery agent that hands the run on
+        has to work it out from the check instead of you.
       - `FAILED_IMPLEMENTATION` — nothing was published, there is no pull
         request, or the only pull request is at a commit unrelated to the local
         head, and `task.description` did ask for a change. A pull request
@@ -336,9 +322,9 @@ steps:
 
       Not a terminal state:
 
-      - `CI_REPAIR_UNFINISHED` — you stopped with the head not green and no
-        cause named that the run cannot fix (above). Finalization starts this
-        step again to continue the repair.
+      - `CI_REPAIR_UNFINISHED`: you have not decided yet (above). The head
+        is not green and you have not named a cause the run cannot fix with
+        its owner and step. Finalization starts this step again to carry on.
 
       Do not infer success from earlier steps completing, from the task
       description sounding finished, or from optimism. When a fact you need is
@@ -418,9 +404,12 @@ steps:
       write; for `BLOCKED_CI`, put them after the `<check>: <cause>` sentence.
       Report a success only for a pull request you have seen open with
       a green head. Leave the worktree clean when you finish: finalization
-      checks it again whatever you report. A file you leave starts this step
-      again to clean it (`worktree_status`, above), and one that is not yours
-      to remove goes to the recovery agent and then to its owner.
+      checks it again whatever you report, and refuses a dirty one
+      (`FAILED_DIRTY_WORKTREE`). Before you answer, read `git status` and
+      `git diff` there. Commit a change that is part of your fix, as above,
+      and push it. Remove an untracked file that a build or test command you
+      ran produced. Never reset, stash, check out or delete a change you
+      cannot account for: leave it, and say so in `reason`.
 
       Name secrets by name only. Do not run anything that prints the
       environment, an authentication token, or the repository's stored
@@ -439,15 +428,17 @@ steps:
            "next_action": "what a human or the next loop should do"}
 
       `action_taken` names your last write: `repaired_ci` when you brought CI
-      to green, `none` when you wrote nothing. A `terminal_state` outside the
-      list above is no decision at all: finalization starts this step again
-      once, and when that pass decides nothing either, the recovery agent
-      decides whether to start another.
+      to green, `none` when you wrote nothing. An empty or unparseable answer
+      is treated like `CI_REPAIR_UNFINISHED`: finalization starts this step
+      again. A `terminal_state` outside the list above is not: finalization
+      reports it as no decision (`FAILED_MISSING_TERMINAL_EVIDENCE`). When you
+      have not decided, say so with `CI_REPAIR_UNFINISHED`.
     output: "finalization_assessment"
-  # #2966: a pass that is not a decision is started again; header above. The
-  # nested pass runs with ci_repair_reentry set, so it skips this step.
+  # #2966: the runner starts one fresh pass when the session did not decide
+  # (header above). The nested pass runs with ci_repair_reentry set, so this
+  # step is skipped there and reentered-pass-undecided judges it instead.
   - id: "continue-ci-repair"
-    condition: "not ci_repair_reentry"
+    condition: "not ci_repair_reentry and (not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED')"
     type: "bash"
     parse_json: true
     command: |
@@ -457,5 +448,14 @@ steps:
       [ -n "$H" ] || { echo "ERROR: workflow_agentic_finalization.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
       bash "$H" reassess
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" continue-ci-repair; exec amplihack orch helper step-recovery run --step-id continue-ci-repair --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Bring assess-finalization to a decision for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}. This step started a fresh session once because the answer was not one finalization publishes, and the new answer still is not; the ERROR line names what each lacked: no readable answer, a BLOCKED_CI without its cause or its owner's step, an EXISTING_OPEN_PR with no number, or changes left in a worktree that was clean. Judge whether another session can supply it. A retry starts one, which reads the pull request live and is told the reason. A red CI the run can fix, or a missing sentence, is not a reason to stop: hand off, naming the gap and its owner, only when you judge that another session will not reach a decision" -- bash -c "$STEP_BODY" continue-ci-repair
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" continue-ci-repair; exec amplihack orch helper step-recovery run --step-id continue-ci-repair --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Bring assess-finalization to a decision for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}. Its session answered CI_REPAIR_UNFINISHED or nothing, so this step started one fresh session, and that session did not decide either; the ERROR line carries its answer as data. A retry starts one more fresh session, which reads the pull request live and continues the repair. Judge from what the sessions said, and from the pull request, whether another session can get the head green or name a cause the run cannot fix with its owner and step. A red CI the run can fix is not a reason to stop. Hand off only when you judge that another session will not get further, naming what stands in the way and who must act" -- bash -c "$STEP_BODY" continue-ci-repair
     output: "finalization_assessment"
+  # #2966: only in a pass continue-ci-repair started. When that pass has not
+  # decided either, by the same condition, the nested run fails here, so
+  # continue-ci-repair fails for its recovery agent. It reads no field itself.
+  - id: "reentered-pass-undecided"
+    condition: "ci_repair_reentry and (not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED')"
+    type: "bash"
+    command: |
+      echo "ERROR: #2966: this fresh assess-finalization session did not decide either (no terminal_state, or CI_REPAIR_UNFINISHED)" >&2
+      exit 1

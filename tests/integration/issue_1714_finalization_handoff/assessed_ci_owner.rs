@@ -1,26 +1,22 @@
-//! #2966: a `BLOCKED_CI` that names no owner is no decision where a person is
-//! the destination, and still a hand-off where one is not.
+//! #2966, crusty round 3: a `BLOCKED_CI` that leaves out its cause or its
+//! owner's step is reported as `BLOCKED_CI`, never refused.
 //!
 //! `BLOCKED_CI` is the one terminal state whose published definition is a
 //! person's next move: a check that fails, or cannot run, for a cause the run
 //! cannot fix, with the cause in `reason` and the step its owner must take in
-//! `next_action`. Reported without one of them, it ends the run with no cause
-//! or no step for the owner. The validator's placeholder sentences would hide
-//! that, so it asks the same question it asks of a pull-request state that
-//! names no pull request -- whether the decision named what it asserts. It
-//! re-judges no fact and reads no check.
-//!
-//! Inside auto-drive the state does not end the run: the pull request goes to
-//! the merge-ready loop, which repairs it, and nobody is waiting on the two
-//! sentences. The hand-off therefore still happens, carrying the gap in place
-//! of them, because stopping a drive over a missing sentence is the failure
-//! mode #2966 exists to remove.
+//! `next_action`. Completing both sentences is guidance in the assessment
+//! prompt, for the agent to do. Rounds 1 and 2 also made the validator refuse
+//! a decision without them (`FAILED_MISSING_TERMINAL_EVIDENCE`), so a run
+//! could end over a missing sentence rather than over the cause. That refusal
+//! is gone. The validator reports the decision the assessment made, with a
+//! sentence that names what was left out in place of a generic placeholder,
+//! and the validator step's recovery agent completes the owner and the step
+//! in its hand-off. Inside auto-drive the pull request is handed on as for any
+//! `BLOCKED_CI`.
 
 use serde_json::json;
 
-use crate::issue_1641_finalization_open_pr::builders::{
-    assert_no_decision, assessment_raw, check_run_named,
-};
+use crate::issue_1641_finalization_open_pr::builders::{assessment_raw, check_run_named};
 
 use super::fixture::*;
 use super::validator::{assert_handed_off, with_flag};
@@ -29,13 +25,8 @@ const CAUSE: &str =
     "deploy: the workflow reads the secret DEPLOY_TOKEN, which the repository does not define";
 const HUMAN_STEP: &str = "repository administrator: add the DEPLOY_TOKEN secret under Settings, Secrets and variables, Actions, then re-run the failed deploy check";
 
-/// Every way the two sentences can be missing, with what the record must say.
-const UNOWNED: [(&str, &str, &str); 4] = [
-    ("", HUMAN_STEP, "no cause"),
-    (CAUSE, "", "no step for its owner"),
-    ("", "", "no cause and no step for its owner"),
-    ("   ", " ", "no cause and no step for its owner"),
-];
+/// Every way the two sentences can be missing.
+const UNOWNED: [(&str, &str); 4] = [("", HUMAN_STEP), (CAUSE, ""), ("", ""), ("   ", " ")];
 
 /// A `BLOCKED_CI` as the agent could return it, with either sentence left out.
 /// `reason` carries the cause and `next_action` the step its owner must take.
@@ -56,41 +47,58 @@ fn unowned_env(fx: &Fixture, reason: &str, next: &str, pr: &str) -> Vec<(&'stati
     envs
 }
 
-// #2966, from the step-17b review. Standalone, BLOCKED_CI ends the run for a
-// person, so the cause and that person's step are part of the decision. Without
-// them the validator's placeholder sentences would stand in, and the run would
-// end at exit 81 pointing back at the assessment with no owner and no step. The
-// decision contradicts its own definition, which is no decision: the recovery
-// agent's to close.
+/// The sentence the record carries for each one the assessment left out.
+const NO_CAUSE: &str =
+    "assess-finalization reported BLOCKED_CI but named no failing check and no cause";
+const NO_STEP: &str = "assess-finalization named no owner and no step: read the failing check on the pull request, then name who must act and the exact step they must take";
+
+fn expected(reason: &str, next: &str) -> (String, String) {
+    let blank = |s: &str| s.trim().is_empty();
+    (
+        if blank(reason) { NO_CAUSE } else { reason }.to_owned(),
+        if blank(next) { NO_STEP } else { next }.to_owned(),
+    )
+}
+
+// Standalone: the decision is reported as BLOCKED_CI, which fails the step
+// for its recovery agent like any BLOCKED_CI, and the record says which
+// sentence the assessment left out. It is not FAILED_MISSING_TERMINAL_EVIDENCE
+// and carries no placeholder pointing back at the assessment.
 #[test]
-fn a_blocked_ci_without_a_cause_or_an_owners_step_is_no_decision() {
-    for (reason, next, missing) in UNOWNED {
+fn a_blocked_ci_without_a_cause_or_an_owners_step_is_reported_not_refused() {
+    for (reason, next) in UNOWNED {
         let fx = Fixture::new();
         let envs = unowned_env(&fx, reason, next, "7");
 
         let outcome = validate(&fx, &as_refs(&envs));
 
         let why = format!("reason={reason:?} next_action={next:?}");
-        assert_no_decision(&outcome, &why);
+        assert_eq!(
+            outcome.field("terminal_state"),
+            "BLOCKED_CI",
+            "{why}: the assessment's decision is what is reported\n{}",
+            outcome.describe()
+        );
         assert_no_handoff_key(&outcome, &why);
         assert_eq!(
             outcome.output.status.code(),
             Some(1),
-            "{why}: no decision fails the step\n{}",
+            "{why}: BLOCKED_CI fails the step for its recovery agent\n{}",
             outcome.describe()
         );
         assert!(
-            outcome
-                .stderr
-                .contains("failed closed: FAILED_MISSING_TERMINAL_EVIDENCE: "),
+            outcome.stderr.contains("failed closed: BLOCKED_CI: "),
             "{why}: the one-line failure names the state\n{}",
             outcome.describe()
         );
-        let terminal_reason = outcome.field("terminal_reason");
         assert!(
-            terminal_reason.contains("BLOCKED_CI") && terminal_reason.contains(missing),
-            "{why}: the record says what the decision left out: {terminal_reason}"
+            !outcome.stderr.contains("FAILED_MISSING_TERMINAL_EVIDENCE"),
+            "{why}: a missing sentence is not a refusal\n{}",
+            outcome.describe()
         );
+        let (want_reason, want_next) = expected(reason, next);
+        assert_eq!(outcome.field("terminal_reason"), want_reason, "{why}");
+        assert_eq!(outcome.field("required_next_action"), want_next, "{why}");
         assert!(
             !outcome
                 .field("required_next_action")
@@ -101,12 +109,11 @@ fn a_blocked_ci_without_a_cause_or_an_owners_step_is_no_decision() {
     }
 }
 
-// Inside auto-drive the same answer still carries the pull request to the
-// merge-ready loop, which is where the repair continues. The drive is not
-// stopped over a missing sentence; the gap is recorded in place of it.
+// Inside auto-drive the same answer carries the pull request to the
+// merge-ready loop as BLOCKED_CI, with the same sentences.
 #[test]
-fn inside_auto_drive_an_unowned_blocked_ci_still_hands_the_pull_request_on() {
-    for (reason, next, missing) in UNOWNED {
+fn inside_auto_drive_an_unowned_blocked_ci_hands_the_pull_request_on() {
+    for (reason, next) in UNOWNED {
         let fx = Fixture::new();
         let envs = unowned_env(&fx, reason, next, "7");
 
@@ -114,24 +121,34 @@ fn inside_auto_drive_an_unowned_blocked_ci_still_hands_the_pull_request_on() {
 
         let why = format!("reason={reason:?} next_action={next:?}");
         assert_handed_off(&outcome, "7", &why);
-        let terminal_reason = outcome.field("terminal_reason");
-        assert!(
-            terminal_reason.contains("BLOCKED_CI") && terminal_reason.contains(missing),
-            "{why}: the hand-off records what the decision left out: {terminal_reason}"
-        );
+        let (want_reason, want_next) = expected(reason, next);
+        assert_eq!(outcome.field("terminal_reason"), want_reason, "{why}");
+        assert_eq!(outcome.field("required_next_action"), want_next, "{why}");
     }
 }
 
-// With the flag but no pull request to hand on, there is nothing for the loops
-// to review, so the answer is no decision whatever the flag says.
+// With the flag but no pull request named, there is nothing for the loops to
+// review: the decision is still reported as BLOCKED_CI, and nothing is handed
+// on.
 #[test]
-fn an_unowned_blocked_ci_that_names_no_pull_request_is_no_decision() {
+fn an_unowned_blocked_ci_that_names_no_pull_request_is_reported_without_a_handoff() {
     let fx = Fixture::new();
     let envs = unowned_env(&fx, "", "", "");
 
     let outcome = validate(&fx, &with_flag(&envs));
 
-    assert_no_decision(&outcome, "no pull request named");
+    assert_eq!(
+        outcome.field("terminal_state"),
+        "BLOCKED_CI",
+        "{}",
+        outcome.describe()
+    );
+    assert_eq!(
+        outcome.output.status.code(),
+        Some(1),
+        "{}",
+        outcome.describe()
+    );
     assert_no_handoff_key(&outcome, "no pull request named");
     assert!(
         !outcome.stderr.contains(HANDOFF_INFO),
@@ -140,11 +157,10 @@ fn an_unowned_blocked_ci_that_names_no_pull_request_is_no_decision() {
     );
 }
 
-// The other side: both sentences present is still the decision it always was,
-// handed on with the cause and the step. Guards the rule above against widening
-// into a refusal of ordinary BLOCKED_CI answers.
+// The other side: both sentences present are reported as given, handed on
+// with the cause and the step.
 #[test]
-fn a_blocked_ci_with_both_sentences_is_still_the_decision() {
+fn a_blocked_ci_with_both_sentences_is_reported_as_given() {
     let fx = Fixture::new();
     let envs = unowned_env(&fx, CAUSE, HUMAN_STEP, "7");
 

@@ -123,7 +123,7 @@ step status, not through an agent's stdout.
 | `collect-finalization-evidence` | Deterministic shell/JSON | Read Git status, branch/base diff, provider-safe change-request metadata, CI state, implementation and verification markers, publish result, prior recipe state, missing tooling, observed phases, and the facts of what the run produced (`outcome`). | `finalization_evidence` (typed JSON, `schema_version: 1`) |
 | `agentic-finalizer` | Agentic | Produce a human-readable narrative explaining the run and the recommended next action for operators. | `agentic_finalizer_narrative` (opaque text artifact) |
 | `finalizer-step-status` | Deterministic shell/JSON | Record whether the narrative step itself completed or failed, as typed state. | `finalizer_step_status` (`{status, reporting_failure}`) |
-| `assess-finalization` | Agentic (sub-recipe) | Decide the run's terminal state from the collected facts. It waits for pending checks, and closes a gap with one of three actions when that is what is missing: push the run branch, open the pull request, or bring CI to green (#2809, #2966). Its second step, `continue-ci-repair`, starts the agent step again while the answer is not one finalization reports. See [When the assessment stops short](#when-the-assessment-stops-short). | `finalization_assessment` (`{terminal_state, action_taken, pr_number, reason, next_action}`) |
+| `assess-finalization` | Agentic (sub-recipe) | Decide the run's terminal state from the collected facts. It waits for pending checks, and closes a gap with one of three actions when that is what is missing: push the run branch, open the pull request, or bring CI to green (#2809, #2966). When a session did not decide (its answer names no terminal state, or names `CI_REPAIR_UNFINISHED`), the runner's condition on the second step, `continue-ci-repair`, starts one fresh session. See [When the assessment stops short](#when-the-assessment-stops-short). | `finalization_assessment` (`{terminal_state, action_taken, pr_number, reason, next_action}`) |
 | `validate-agentic-finalization` | Deterministic shell/JSON | Apply the blockers about the local checkout, confirm the facts were gathered, and report the terminal state the assessment decided. | `workflow_result` (normalized terminal result) |
 | `workflow-complete` | Deterministic shell/JSON | Emit the human-readable summary and canonical result JSON, including the reporting-vs-implementation distinction. | `workflow_completion` |
 
@@ -475,15 +475,16 @@ failure was an ordinary fixable one.
 The loop runs at three points. The recipe runner has no loop construct,
 recursion through sub-recipes is capped, and step recovery re-runs a command
 once and refuses a recurrence. The repair itself therefore runs inside agent
-sessions, and a bash step that starts a new session runs whenever one ends
-short of a decision. No step was added to `workflow-finalize`, which is at its
-brick budget. The third point is a step of the assessment's own sub-recipe.
+sessions. When a session ends without deciding, the runner's step condition
+starts one new session, and step recovery's agent decides whether to start any
+after that. No step was added to `workflow-finalize`, which is at its brick
+budget. The third point is a step of the assessment's own sub-recipe.
 
 | Point | Step | What it does |
 | --- | --- | --- |
 | Main repair | `step-22-ensure-mergeable` (the `ci-diagnostic-workflow` agent) | Runs when checks fail, because the probe no longer ends the run on them. Its goal is every check green on the PR head, with each cause fixed in the run's worktree and pushed without force. It waits with `gh pr checks --watch`. It ends on green, or on a named cause the run cannot fix, with its owner and the human step. It merges only when `no_merge` is `"false"` and an approval covers the current head; with any other value, including an empty one, it stops at merge-ready and the calling workflow decides. |
 | Check again and continue | `assess-finalization` | Waits for pending checks, continues the repair if a check still fails for a fixable cause, and decides on what it reads after that. It is the one point that can base the terminal state on current facts after a repair. |
-| Start the session again | `continue-ci-repair`, the second step of `workflow-finalization-assessment` | Runs after the agent step. When the answer is not one finalization reports, it runs the assessment again in a new session, with the reason as data, until a session decides. See [When the assessment stops short](#when-the-assessment-stops-short). |
+| Start the session again | `continue-ci-repair`, the second step of `workflow-finalization-assessment` | Runs when the runner's condition finds no terminal state in the answer, or `CI_REPAIR_UNFINISHED`. It runs the assessment once more in a new session, with the last answer as data. Any further session is a decision of its recovery agent. See [When the assessment stops short](#when-the-assessment-stops-short). |
 
 Detailed guidance for the loop is in the
 [`ci-diagnostic-workflow`](../../amplifier-bundle/agents/specialized/ci-diagnostic-workflow.md)
@@ -529,46 +530,37 @@ The assessment reports it with two sentences:
 | `reason` | `<check>: <cause>` | `deploy-preview: the workflow reads secrets.PREVIEW_TOKEN, which the repository does not define` |
 | `next_action` | `<owner>: <exact step>` | `repository administrator: add PREVIEW_TOKEN under Settings, Secrets and variables, Actions, then re-run deploy-preview` |
 
-Both sentences are required. A `BLOCKED_CI` with no `reason`, no
-`next_action`, or neither names no owner and no step, so `continue-ci-repair`
-first asks again: it starts the assessment in a new session with the reason
-(`it reported BLOCKED_CI with no step for its owner`, for example) and the last
-answer as data. The rule that decides this is the same
-`_finalization_decision_unowned` the validator uses. When the new session's
-answer still lacks a sentence, `continue-ci-repair` fails for its recovery
-agent, which judges whether another session can supply it (a retry starts one)
-or hands off with the gap named. Such an answer is never printed for the
-validator, so a missing sentence does not become a terminal state by itself,
-inside auto-drive or outside it.
+Both sentences are guidance for the assessment to complete, not a check that
+refuses its answer. The prompt asks the session to write both before it
+answers, and to answer `CI_REPAIR_UNFINISHED` instead when it cannot yet name
+the check and its cause, or the owner and their step, because then it has not
+shown a cause the run cannot fix.
 
-Behaviour change from crusty's second review of #2966: before it, an answer
-that still lacked a sentence after a pass that changed nothing in the worktree
-reached the validator, which reported it as no decision and, inside auto-drive,
-handed the pull request to the merge-ready loop with the gap recorded. Both
-outcomes are now the recovery agent's judgement. A handoff it chooses ends the
-run, and the drive, exit `81` with the gap on record.
+A `BLOCKED_CI` that still leaves a sentence out is reported as `BLOCKED_CI`.
+The validator writes a sentence that names what is missing in place of the
+empty one:
 
-The validator keeps its own copy of the rule for an answer that reaches it
-without passing through `continue-ci-repair`, because the placeholder sentences
-it would otherwise substitute point back at the assessment and tell that
-person nothing. It reads such an answer the same way as a pull-request state
-that names no pull request: no decision, reported as
-`FAILED_MISSING_TERMINAL_EVIDENCE`; inside auto-drive, with a pull request
-number, the pull request is handed to the merge-ready loop with the gap
-recorded in place of the two sentences. Without a pull request number to hand
-on, the answer is no decision whatever the flag says. This is one rule applied
-in two places, not a further gate: `continue-ci-repair` sends the answer back
-to an agent, and the validator's copy only keeps placeholders off a state that
-reached it another way.
+| Missing | Sentence in the record |
+| --- | --- |
+| `reason` | `assess-finalization reported BLOCKED_CI but named no failing check and no cause` |
+| `next_action` | `assess-finalization named no owner and no step: read the failing check on the pull request, then name who must act and the exact step they must take` |
 
-The rule is `_finalization_decision_unowned` and `_finalization_unowned_or_handoff`
-in `workflow_finalization_result.sh`; neither re-judges a fact or reads a check.
-`_finalization_decision_unowned` does not read `pr_number`.
-`_finalization_unowned_or_handoff` needs one only to hand the pull request on:
-`finalization_try_handoff_open_pr` refuses the hand-off without it, which gives
-the no-decision outcome in the paragraph above. A `BLOCKED_CI` that carries
-both sentences and no pull request is still published, and fails closed with
-no hand-off, as below.
+The run then ends as for any `BLOCKED_CI` ([below](#how-a-run-ends-when-it-cannot-fix-the-cause)):
+standalone, `validate-agentic-finalization` fails for its recovery agent,
+whose goal tells it to read the failing check and complete the owner and the
+step in its hand-off; inside auto-drive, with a pull request number, the pull
+request is handed to the merge-ready loop. A missing sentence decides nothing.
+The run ends on the cause the assessment judged the run cannot fix.
+
+Behaviour change from crusty's third review of #2966. Rounds 1 and 2 made the
+missing sentence a reason to start the assessment again, and then a refusal:
+`continue-ci-repair` asked once more, failed for its recovery agent when the
+answer still lacked it, and the validator reported an unowned answer that
+reached it as `FAILED_MISSING_TERMINAL_EVIDENCE`. A run could therefore end
+because a sentence was missing rather than because the cause was unfixable.
+`_finalization_decision_unowned` and `_finalization_unowned_or_handoff` are
+removed from `workflow_finalization_result.sh`, and the re-entry no longer
+reads the answer's fields.
 
 `pr_number` is required with it. Without a pull request number the state
 cannot be handed on, and finalization fails closed with no hand-off.
@@ -581,11 +573,13 @@ cannot carry further. The assessment then answers `CI_REPAIR_UNFINISHED`. That
 is not a terminal state, a success, `BLOCKED_CI` (which asserts a cause the run
 cannot fix) or `FAILED_IMPLEMENTATION`. It names the pull request in
 `pr_number`, puts the head commit and the per-class check counts in `reason`,
-and says in `next_action` what the next pass should try.
-`continue-ci-repair` then starts the assessment again, in a new session that
-continues the repair, as often as it takes. Unlike every other reason to ask
-again, `CI_REPAIR_UNFINISHED` is never sent to the recovery agent: it is the
-session's own statement that the repair goes on.
+and says in `next_action` what the next pass should try. The prompt asks for
+the same answer whenever the session's answer would not otherwise be a
+decision, for example an open pull request it could not read back.
+`continue-ci-repair` then starts the assessment again, once, in a new session
+that continues the repair. When that session stops unfinished too, the step's
+recovery agent decides whether to start another
+([When the assessment stops short](#when-the-assessment-stops-short)).
 Between #2966 and its first review this answer was `FAILED_IMPLEMENTATION`,
 which ended a standalone run on a CI it could still fix. Without an answer
 named for this case, the nearest reading was `EXISTING_OPEN_PR`, which
@@ -594,83 +588,77 @@ finalization publishes as a success over a red head.
 ### When the assessment stops short
 
 `assess-finalization` is one agent session, and a session can end before its
-work does. Before the first review of #2966, each of those endings reached the
-validator as no decision, or as `FAILED_IMPLEMENTATION` for an unfinished
-repair, and the run ended exit `81` on a red CI it could still fix.
-`continue-ci-repair`, the second step of `workflow-finalization-assessment.yaml`,
-starts the assessment again instead. Its body is the dispatcher's `reassess`
-mode, `continue_ci_repair` in `workflow_finalization_reentry.sh`. It runs the
-bundle's own `workflow-finalization-assessment.yaml` again with
-`amplihack recipe run`, never a copy from the worktree under repair. The new
-pass gets the recorded evidence, the reporting step's status and a
-`ci_repair_reentry` note, all through files. It gets no `RECIPE_VAR_*` of the
-calling step. The note makes the nested run skip `continue-ci-repair`, so a
-pass never nests another.
+work does: it crashes, is cut off, answers in prose, or answers
+`CI_REPAIR_UNFINISHED`. Before the first review of #2966, each of those
+endings reached the validator as no decision, or as `FAILED_IMPLEMENTATION`
+for an unfinished repair, and the run ended exit `81` on a red CI it could
+still fix.
 
-The step asks one question of the answer, the validator's own: would
-`validate-agentic-finalization` publish it as the assessment's decision? It
-uses the validator's predicates (`_finalization_state_allowed`,
-`_finalization_decision_unowned`, `_finalization_state_names_pr` with
-`_finalization_pr_number_valid`, and the worktree the validator's probe reads),
-so the two cannot disagree. It judges no fact, reads no check, makes no write
-and keeps no class vocabulary. When the answer is not a decision, the note
-carries one fixed sentence saying why (`reentry`), the last answer
-(`previous_answer`, null when it was unreadable), and the worktree's
-`git status --porcelain` when changes there are the reason
-(`worktree_status`). None of the sentences quotes the agent.
+Three parts handle it now, and none of them is a script judging the answer:
 
-| The last answer | `reentry` | What the prompt asks the new session to do |
+| Decision | Made by | How |
 | --- | --- | --- |
-| Not one JSON object: the session crashed, was cut off or answered in prose | `it returned no answer finalization can read` | Start again from the facts. |
-| A `terminal_state` finalization does not publish | `its terminal_state is not one finalization publishes` | Start again from the facts. |
-| `CI_REPAIR_UNFINISHED` | `it reported CI_REPAIR_UNFINISHED, so the CI repair goes on` | Continue the repair on the pull request as it is now. |
-| `BLOCKED_CI` without its cause or its owner's step | `it reported BLOCKED_CI with no cause`, `with no step for its owner`, or `with no cause and no step for its owner` | Name both, or choose the state the facts support. |
-| `EXISTING_OPEN_PR` without a pull request number | `it reported EXISTING_OPEN_PR and named no pull request number` | Read the pull request back and name it. |
-| A decision, but the recorded worktree has changes and the evidence recorded it clean before the assessment ran | `it left changes in the recorded worktree, which was clean before the assessment ran` | Commit what belongs to the fix and push it, remove an untracked file its own build or test command produced, and leave anything it cannot account for. |
+| A pass is needed | The recipe runner | `continue-ci-repair` runs when its `condition:` holds: the answer names no `terminal_state` (a crash, prose, nothing), or names `CI_REPAIR_UNFINISHED`, the session's own statement that it has not decided. |
+| The fresh pass decided | The recipe runner, in the nested run | `reentered-pass-undecided` runs under the same condition with `ci_repair_reentry` set, and fails the nested run when it holds. |
+| Another pass after that | `continue-ci-repair`'s recovery agent | The step fails, and its recovery agent (`--essential --stop-on-handoff`, without `--no-repair`) reads the fresh session's answer and decides: a retry starts one more session; a hand-off ends the run exit `81`, with the reason on record. |
 
-What a session does about each case is written in the prompt ("When
-finalization starts you again"), keyed on the last answer, not in the script.
-Any other answer is a decision. The step prints it unchanged as
-`finalization_assessment`, and `validate-agentic-finalization` reports it. A
-first pass that decides costs one `git status` and no new session.
+`continue-ci-repair`'s body is the dispatcher's `reassess` mode,
+`continue_ci_repair` in `workflow_finalization_reentry.sh`. It runs the bundle's
+own `workflow-finalization-assessment.yaml` once with `amplihack recipe run`,
+never a copy from the worktree under repair. The pass gets the recorded
+evidence, the reporting step's status and a `ci_repair_reentry` note,
+`{"previous_answer": <the last answer, or null>}`, all through files. It gets
+no `RECIPE_VAR_*` of the calling step. The note is never empty, so the nested
+run always skips `continue-ci-repair`, and a pass never nests another. The
+function has no loop, reads no field of any answer and counts nothing. When
+the nested run succeeds it prints the pass's answer unread as
+`finalization_assessment`. When the nested run fails, it prints nothing and
+returns `1` with one line for the recovery agent:
 
-When the asking stops:
+```text
+ERROR: #2966: the fresh assess-finalization session did not decide either (nested run exit 1); its answer, as data: "<the answer as a JSON string>"
+```
 
-- A decision ends it.
-- `CI_REPAIR_UNFINISHED` is the session's own statement that the repair goes
-  on, so it is started again every time a pass returns it.
-- Any other answer that is not a decision is asked about once. When the session
-  started for it answers something that is again not a decision, and not
-  `CI_REPAIR_UNFINISHED`, the step prints nothing and fails with
-  `ERROR: #2966: assess-finalization was started again because <reason>, and the new session's answer is still not one finalization reports: <reason>; step recovery judges whether another pass can reach a decision`.
-  It goes to its own recovery agent (`--essential --stop-on-handoff`, without
-  `--no-repair`), which judges whether another pass is useful. A retry runs the
-  step again, which starts a fresh session that reads the pull request live and
-  is told the reason. A handoff ends the run exit `81`, with the reason on
-  record. A pass that continued a repair is an answer in its own right, so a
-  missing decision after one is asked about once again.
+When the nested run failed some other way, before `reentered-pass-undecided`
+could judge the pass, the line begins
+`ERROR: #2966: the fresh assessment run failed before it reached a decision`
+instead. Which of the two it was comes from the runner's record of the nested
+steps, not from the answer. The answer is JSON-encoded, so a control character
+in it is escaped. A nested run that exits `79` (a policy refusal), `75` (an
+orphan stop) or `128+n` (a signal) passes that code on and is not retried.
 
-Nothing counts passes, there is no cap, and nothing is compared between
-passes. Until crusty's second review the step kept a fingerprint, `HEAD` and
-`git status --porcelain` in the recorded worktree, and stopped asking after a
-pass that left it unchanged. That could not see a pass that only pushed or
-waited, and it sent an unowned `BLOCKED_CI`, an unnamed pull request or a
-leftover file to the validator, which could only refuse them. The fingerprint
-and the class tokens (`no_decision`, `repair_unfinished`,
-`blocked_ci_unowned`, `pr_unnamed`, `worktree_dirty`) are gone; whether to ask
-again is the recovery agent's judgement.
+What a session does with a re-entry is guidance in the prompt ("When
+finalization starts you again"): read the pull request and `git status` first,
+then carry on from step 1 of "bring CI to green", using the last answer's
+`next_action` as a lead. Every other answer, including a `BLOCKED_CI` that
+leaves out a sentence and an `EXISTING_OPEN_PR` that names no pull request,
+goes to `validate-agentic-finalization` as it is.
 
-A nested run that exits `79` (a policy refusal), `75` (an orphan stop) or
-`128+n` (a signal) passes that code on and is not retried. Any other failure of
-the nested run itself fails the step for its recovery agent.
+Each pass after the first is a record in the step-recovery directory, so the
+operator, the report step and the recovery agent's next call all see it.
+Recovery has no attempt counter. It does refuse a retry when the same failure
+signature comes back after a retry, and then offers only a hand-off; a
+session that answers the same thing twice is therefore stopped there, and any
+other repetition is the recovery agent's to judge from the earlier records it
+is shown.
 
-The dirty-worktree reason is narrow on purpose. It applies only when the
-evidence recorded the worktree exactly clean (`git.dirty_worktree` is
-`false`). Every path that is dirty now was then written after the evidence was
-collected, by a pass of the assessment. A tree the evidence already recorded
-dirty, or recorded neither way, predates the assessment, and whose work that is
-cannot be told from here. It is not sent to an agent to clean, and the
-validator still refuses it `FAILED_DIRTY_WORKTREE`.
+Behaviour change from crusty's third review. Rounds 1 and 2 drove the passes
+with a `while :` loop in `continue_ci_repair` and decided in the script whether
+an answer was a decision: `_reentry_gap` and `_reentry_normalize` checked the
+terminal-state vocabulary, a `BLOCKED_CI`'s two sentences, an
+`EXISTING_OPEN_PR`'s number and the recorded worktree, and the note carried a
+fixed reason sentence and the worktree's `git status`. That loop and those
+checks are removed. Two consequences:
+
+- An answer that names a state outside the published vocabulary is not
+  started again. The validator reports it as no decision
+  (`FAILED_MISSING_TERMINAL_EVIDENCE`); the prompt tells a session that has
+  not decided to say so with `CI_REPAIR_UNFINISHED`.
+- A file a pass left in the worktree is not handed back to a new session. The
+  prompt asks every session to read `git status` before it answers, to commit
+  what is part of its fix and remove what its own build produced. A decision
+  over a dirty worktree is refused by the validator's live probe
+  (`FAILED_DIRTY_WORKTREE`), as before #2966.
 
 ### What "green" means for the loop
 
@@ -779,27 +767,20 @@ Three checks stay in the validator, and none reads CI:
   validator runs `git status --porcelain` there, whatever the collected record
   says and whatever `action_taken` reports. The record was collected before the
   assessment, which may write, and a write that left a file behind need not be
-  reported, so the probe does not depend on the assessment's own account. A
-  file the repair left in a worktree the evidence recorded clean does not
-  reach the probe first: `continue-ci-repair` hands it back to a new
-  assessment session to commit or remove (`worktree_status`, see
-  [When the assessment stops short](#when-the-assessment-stops-short)), and
-  if the session leaves it there, the step's recovery agent judges whether
-  another session can clean it or hands the run to its owner. A dirty tree the
-  evidence already recorded still ends the run `FAILED_DIRTY_WORKTREE` here.
-  So does a recorded worktree that is missing or not a work tree, and a
+  reported, so the probe does not depend on the assessment's own account.
+  Leaving the worktree clean is guidance in the assessment prompt; a file a
+  pass leaves behind ends the run `FAILED_DIRTY_WORKTREE` here, as does a
+  dirty tree the evidence already recorded. So does a recorded worktree that is missing or not a work tree, and a
   `git status` that fails there, because neither shows a clean worktree.
   Without a recorded path the probe runs against `.` only when the record does
   not say exactly `false`.
-- **A decision that names what it asserts.** A state whose definition is an
-  open pull request has to name one, and `BLOCKED_CI`, where it ends the run
-  for a person, has to carry the cause and that person's step. Either is asked
-  for again first (`continue-ci-repair`). An answer that still lacks it is no
-  decision, not a verdict: the run goes to the recovery agent as
-  `FAILED_MISSING_TERMINAL_EVIDENCE`. Inside auto-drive, where the
-  state hands the pull request to the merge-ready loop instead of ending the
-  run, the hand-off still happens and records the gap. This asks only whether
-  the decision named the thing it asserts; it re-judges no fact.
+- **A decision that names its pull request.** A state whose definition is an
+  open pull request has to name one (#2819 R1). An `EXISTING_OPEN_PR` without
+  a number is no decision, not a verdict: the run goes to the recovery agent
+  as `FAILED_MISSING_TERMINAL_EVIDENCE`. This asks only whether the decision
+  named the thing it asserts; it re-judges no fact. A `BLOCKED_CI` without its
+  cause or its owner's step is not refused: it is reported with a sentence
+  naming what is missing ([What `BLOCKED_CI` means now](#what-blocked_ci-means-now)).
 - **Quoted vocabulary.** `action_taken` must be `none`, `pushed_branch`,
   `opened_pull_request` or `repaired_ci`. An empty value becomes `none`; it
   labels the record and decides nothing. The terminal state is quoted as
@@ -856,14 +837,28 @@ Known limits of the design:
 - A crash or usage limit in `step-22-ensure-mergeable` fails that step and ends
   the run. A resumed run re-enters the step, because the probe no longer ends it
   at publish.
-- A failure the agent wrongly judges fixable keeps looping, as intended: there
-  is no cap. That includes sessions that keep answering `CI_REPAIR_UNFINISHED`,
-  which are started again each time. The operator can stop the run, and the
-  auto-drive usage budget still bounds a drive.
-- `continue-ci-repair` asks once about an answer that is not a decision (other
-  than `CI_REPAIR_UNFINISHED`). A transient crash that strikes the session
-  started for it too is therefore not asked a third time by the step, but by
-  its recovery agent, which may retry.
+- A failure the agent wrongly judges fixable keeps looping inside the session,
+  as intended: there is no cap. Sessions that keep answering
+  `CI_REPAIR_UNFINISHED` are not looped in script: after the one fresh pass the
+  runner starts, every further session is a recovery decision on record, which
+  the recovery agent may stop with a hand-off. The operator can stop the run,
+  and the auto-drive usage budget still bounds a drive.
+- A transient crash that strikes the fresh session too fails
+  `continue-ci-repair`; its recovery agent may retry.
+
+### Record against the #2809 inventory
+
+Issue #2809 lists every bash step that can end a run, to be removed or
+replaced by an agentic step. #2966 (PR #3020) changes two of its entries. The
+record of it on the issue is the comment at
+<https://github.com/rysweet/amplihack-rs/issues/2809#issuecomment-7079663332>
+(22 November 2026). Neither entry is marked done, because the PR is not merged
+and each entry still holds gates outside #2966's scope.
+
+| Inventory entry | What this change does | What remains in the entry |
+| --- | --- | --- |
+| Item 1, finalisation verdicts (`validate-agentic-finalization` and its helpers) | The run-ending CI verdict is replaced by an agentic judgement: `assess-finalization` repairs a red CI and names a cause the run cannot fix. The validator no longer answers a stale `prior_terminal_state=BLOCKED_CI`, and no longer refuses a `BLOCKED_CI` that leaves out a sentence. The re-entry into the repair has no script loop and reads no answer field. | The validator still answers five probe states from the record (`FAILED_MEANINGFUL_DIFF`, `FAILED_CLOSED_UNMERGED`, `FAILED_PR_METADATA_UNAVAILABLE`, `FAILED_INVALID_INPUT`, `FAILED_WRONG_BRANCH`), refuses an `EXISTING_OPEN_PR` that names no pull request, and refuses a dirty worktree. |
+| Item 7, `workflow-terminal-state.yaml` | The probe no longer reads the pull request's checks: the `failing_checks` field and its `BLOCKED_CI` refusal are removed, and a failing or pending check takes the continue path. | The probe's other refusals: `FAILED_INVALID_INPUT`, `FAILED_WRONG_BRANCH`, `FAILED_CLOSED_UNMERGED`, `FAILED_MEANINGFUL_DIFF` and `FAILED_PR_METADATA_UNAVAILABLE`. |
 
 ## Terminal Classification
 
@@ -991,10 +986,10 @@ Tests assert on those SHAs and identifiers, never on wording.
 | A check is failing for a cause the run cannot fix | `BLOCKED_CI` | `outcome.pr`, `outcome.checks=failing`, and a `reason` naming the check and the cause. |
 | PR open at the run's head, CI pending | Not a terminal state: the assessment waits, then decides | `outcome.checks=pending` when the evidence was collected. |
 | PR open at the run's head, every check green or none reported | `EXISTING_OPEN_PR` (a success) | `outcome.pr`, `outcome.pr_state=OPEN` and `outcome.checks=green` or `none`. |
-| The repair was left unfinished, with no cause named that the run cannot fix | Not a terminal state: `CI_REPAIR_UNFINISHED` starts the assessment again, and the state follows from the pass that decides | The decision of that pass. |
-| The assessment crashed, or answered prose | Not a terminal state: it is started again once. When the session started for it decides nothing either, `continue-ci-repair` goes to its recovery agent, which judges whether to start another | The recovery record names `continue-ci-repair` and the line saying the new session's answer is still not a decision. |
-| `EXISTING_OPEN_PR` decided with no pull request named | Not a terminal state: asked again once, then the recovery agent judges. Only an answer that reaches the validator without passing through `continue-ci-repair` is `FAILED_MISSING_TERMINAL_EVIDENCE` (no decision) | The recovery record, or the facts and a reason quoting the `pr_number` that came back. |
-| `BLOCKED_CI` decided with no cause or no owner's step | Not a terminal state: asked again once, then the recovery agent judges. Only an answer that reaches the validator without passing through `continue-ci-repair` is `FAILED_MISSING_TERMINAL_EVIDENCE` (no decision), or, inside auto-drive with a pull request number, handed to the merge-ready loop | The recovery record, or the facts and a reason naming which of the two sentences was missing. |
+| The repair was left unfinished, with no cause named that the run cannot fix | Not a terminal state: `CI_REPAIR_UNFINISHED` makes the runner start one fresh pass, and the state follows from the pass that decides. When that pass is unfinished too, `continue-ci-repair`'s recovery agent decides whether to start another | The decision of that pass, or the recovery record naming `continue-ci-repair`. |
+| The assessment crashed, or answered prose | Not a terminal state: the runner starts one fresh pass. When it decides nothing either, `continue-ci-repair` goes to its recovery agent, which judges whether to start another | The recovery record names `continue-ci-repair`, and the line carries the fresh session's answer. |
+| `EXISTING_OPEN_PR` decided with no pull request named | `FAILED_MISSING_TERMINAL_EVIDENCE` (no decision) | The facts and a reason quoting the `pr_number` that came back. |
+| `BLOCKED_CI` decided with no cause or no owner's step | `BLOCKED_CI`, not refused; the recovery agent completes the owner and the step in its hand-off. Inside auto-drive, with a pull request number, handed to the merge-ready loop | A reason or next action naming which of the two sentences the assessment left out. |
 
 A real failure ends the run as before and exits `1`. The change removes the
 failures that were not real.

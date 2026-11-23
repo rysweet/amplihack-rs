@@ -89,9 +89,9 @@ fi
 . "$here/workflow_finalization_facts.sh"
 . "$here/workflow_finalization_worktree.sh"
 . "$here/workflow_finalization_validate.sh"
-# #2966: the re-entry into the CI repair, run between the assessment and the
-# validator (continue-ci-repair). It classifies with the result brick's
-# vocabulary, so it is sourced after it.
+# #2966: one more pass of the CI repair, run between the assessment and the
+# validator (continue-ci-repair). It reads no answer field; it needs only the
+# context and metadata readers sourced above.
 . "$here/workflow_finalization_reentry.sh"
 . "$here/workflow_finalization_complete.sh"
 

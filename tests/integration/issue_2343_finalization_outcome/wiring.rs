@@ -210,7 +210,9 @@ done
 file="$(printf '%s' "$prompt_arg" | sed -n 's/^.*instructions in the file \(.*\)\. Its contents.*$/\1/p')"
 if [ -n "$file" ] && [ -f "$file" ]; then cat "$file" > "$AGENT_STUB_PROMPT"
 else printf '%s' "$prompt_arg" > "$AGENT_STUB_PROMPT"; fi
-answer="$(cat "$AGENT_STUB_ANSWER")"
+n=$(( $(cat "$AGENT_STUB_ANSWER.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$AGENT_STUB_ANSWER.count"
+cp "$AGENT_STUB_PROMPT" "$AGENT_STUB_PROMPT.$n"
+answer="$(cat "$AGENT_STUB_ANSWER.$n" 2>/dev/null || cat "$AGENT_STUB_ANSWER")"
 [ -z "$out" ] || printf '%s' "$answer" > "$out"
 printf '%s\n' "$answer"
 "#;
@@ -222,22 +224,32 @@ const LAUNCHER_STUB: &str = r#"#!/usr/bin/env bash
 exec "$@"
 "#;
 
-/// The nested `amplihack recipe run` that `continue-ci-repair` starts when the
-/// first answer is not a decision (#2966). It stands for a second pass by the
-/// same recorded agent: it records the call and the `ci_repair_reentry` note it
-/// was handed, and answers the recorded answer again as the output of the
-/// nested `assess-finalization` step. First on PATH, so no test reaches the
-/// host's own `amplihack` or agent.
+/// The nested `amplihack recipe run` that `continue-ci-repair` starts (#2966).
+/// It records the call and the `ci_repair_reentry` note it was handed, then
+/// runs the recipe it was given -- the bundle's own assessment recipe --
+/// through the pinned runner, with the same context, so the nested pass is the
+/// shipped recipe with the shipped conditions and the same recorded agent.
+/// First on PATH, so no test reaches the host's own `amplihack` or agent.
 const NESTED_RUN_STUB: &str = r#"#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$NESTED_RUN_CALLS"
-prev=""
-for a in "$@"; do
-  if [ "$prev" = --context-from-file ]; then
-    case "$a" in ci_repair_reentry=*) cp "${a#*=}" "$NESTED_RUN_NOTE" ;; esac
-  fi
-  prev="$a"
+[ "$1 $2" = "recipe run" ] || { echo "unexpected amplihack call: $*" >&2; exit 96; }
+recipe="$3"; shift 3
+wd="."; ctx='{}'
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --working-dir) wd="$2"; shift 2 ;;
+    -f) shift 2 ;;
+    --context-from-file)
+      k="${2%%=*}"; f="${2#*=}"
+      [ "$k" != ci_repair_reentry ] || cp "$f" "$NESTED_RUN_NOTE"
+      ctx="$(jq -c --arg k "$k" --rawfile v "$f" '. + {($k): $v}' <<<"$ctx")"; shift 2 ;;
+    -c) ctx="$(jq -c --arg k "${2%%=*}" --arg v "${2#*=}" '. + {($k): $v}' <<<"$ctx")"; shift 2 ;;
+    *) echo "unexpected argument: $1" >&2; exit 96 ;;
+  esac
 done
-jq -nc --rawfile o "$AGENT_STUB_ANSWER" '{success: true, step_results: [{step_id: "assess-finalization", status: "completed", output: $o}]}'
+cf="$(mktemp "${TMPDIR:-/tmp}/nested-ctx.XXXXXX")"
+printf '%s' "$ctx" > "$cf"
+exec "$PINNED_RUNNER" "$recipe" --working-dir "$wd" --no-auto-stage --output-format json --context-file "$cf"
 "#;
 
 /// What a run of the shipped assessment recipe produced: the prompt the agent
@@ -266,6 +278,12 @@ impl Assessed {
             .collect()
     }
 
+    /// The prompt the agent was given on its `n`th call (1 is the first pass).
+    fn prompt_of(&self, n: usize) -> String {
+        fs::read_to_string(self.run.dir.path().join(format!("prompt.md.{n}")))
+            .unwrap_or_else(|e| panic!("the agent was not called {n} times: {e}"))
+    }
+
     /// The `ci_repair_reentry` note the nested run was handed.
     fn nested_note(&self) -> Value {
         let text = fs::read_to_string(self.run.dir.path().join("nested-note.json"))
@@ -277,6 +295,13 @@ impl Assessed {
 /// Run the shipped `assess-finalization` step -- the real sub-recipe, with its
 /// real prompt -- over `evidence`, with an agent that answers `answer`.
 fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
+    assess_with_recorded_agent_passes(evidence, answer, &[])
+}
+
+/// The same, with the agent answering `later[i]` on call `i + 2` (a pass
+/// `continue-ci-repair` started) and `first` on every other call.
+fn assess_with_recorded_agent_passes(evidence: &str, first: &str, later: &[&str]) -> Assessed {
+    let answer = first;
     let dir = tempfile::TempDir::new().expect("tempdir");
     let name = "workflow-finalization-assessment";
     fs::copy(bundle_recipe(name), dir.path().join(format!("{name}.yaml")))
@@ -295,6 +320,10 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
     let prompt_file = dir.path().join("prompt.md");
     let answer_file = dir.path().join("answer.txt");
     fs::write(&answer_file, answer).expect("record the answer");
+    for (i, text) in later.iter().enumerate() {
+        fs::write(dir.path().join(format!("answer.txt.{}", i + 2)), text)
+            .expect("record a later answer");
+    }
 
     let marker = dir.path().join("reached-the-validator");
     let recipe = json!({
@@ -336,6 +365,7 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
         .env("PATH", path_var)
         .env("NESTED_RUN_CALLS", dir.path().join("nested-runs.log"))
         .env("NESTED_RUN_NOTE", dir.path().join("nested-note.json"))
+        .env("PINNED_RUNNER", pinned_runner())
         .output()
         .expect("run the pinned runner");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
@@ -349,7 +379,7 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
         marker.exists(),
         "the steps after the assessment must still run: {result}"
     );
-    let prompt = fs::read_to_string(&prompt_file).unwrap_or_default();
+    let prompt = fs::read_to_string(dir.path().join("prompt.md.1")).unwrap_or_default();
     Assessed {
         prompt,
         run: Run { dir, result },
@@ -476,10 +506,11 @@ fn the_facts_reach_the_deciding_agent_and_its_answer_is_what_gets_published() {
 // agent that answers with prose rather than the one JSON object leaves the run
 // with facts and no decision. The run does not end at the assessment -- the
 // step is `continue_on_error: true` -- and nothing repairs the prose into
-// something that reads like a decision. Since #2966 (crusty round 1) the prose
-// is first started again: continue-ci-repair runs a second pass, which here
-// answers the same prose and changes nothing, so the step fails for its
-// recovery agent (none here) and the sub-recipe fails. The runner drops a failed
+// something that reads like a decision. Since #2966 the prose is first started
+// again: the runner's condition on continue-ci-repair finds no terminal_state,
+// so it runs one fresh pass of the shipped recipe, which here answers the same
+// prose. The nested run's reentered-pass-undecided step fails it, so the step
+// fails for its recovery agent (none here) and the sub-recipe fails. The runner drops a failed
 // sub-recipe's output, so what reaches `validate-agentic-finalization` is no
 // answer at all, and the validator reports that it has no decision rather than
 // inventing one about a run whose pull request is open and green. Driven with a
@@ -505,16 +536,23 @@ fn an_agent_that_answers_with_prose_leaves_the_run_with_no_decision() {
         "{}",
         assessed.run.result
     );
-    // The prose was started again once, with the reason as data.
+    // The prose was started again once. Prose is no answer the context reader
+    // can hand on, so the pass is told the last answer was null.
     assert_eq!(
         assessed.nested_runs().len(),
         1,
         "one second pass: {:?}",
         assessed.nested_runs()
     );
-    assert_eq!(
-        assessed.nested_note()["reentry"],
-        "it returned no answer finalization can read"
+    assert_eq!(assessed.nested_note(), json!({"previous_answer": null}));
+    assert!(
+        assessed
+            .run
+            .result
+            .to_string()
+            .contains("did not decide either"),
+        "the fresh pass failed on the nested run's own condition: {}",
+        assessed.run.result
     );
     // The second pass decided nothing either, so the step failed and nothing
     // that reads like a decision was carried out of the sub-recipe.
@@ -561,6 +599,118 @@ fn an_agent_that_answers_with_prose_leaves_the_run_with_no_decision() {
         "the facts must survive the missing decision: {}",
         published.field("evidence_used")
     );
+}
+
+/// A `CI_REPAIR_UNFINISHED` answer from a session that stopped with the head red.
+fn unfinished_answer() -> String {
+    json!({
+        "terminal_state": "CI_REPAIR_UNFINISHED",
+        "action_taken": "none",
+        "pr_number": "7",
+        "reason": "stopped with smoke failing; head abc, 2 green, 1 failing, 0 pending, 0 unknown",
+        "next_action": "reproduce the smoke check locally and fix it",
+    })
+    .to_string()
+}
+
+// #2966, crusty round 3: the runner, not a script, decides that an unfinished
+// repair needs another pass, and that the pass decided. CI_REPAIR_UNFINISHED is
+// the session's own statement; continue-ci-repair's condition starts one fresh
+// pass with that answer as data, and when the pass decides, its answer is what
+// the outer run carries. When the pass is unfinished too, the nested run's
+// reentered-pass-undecided fails it and the step fails, after one pass, for its
+// recovery agent.
+#[test]
+fn an_unfinished_repair_gets_one_fresh_pass_and_its_decision_is_carried() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let decision = json!({
+        "terminal_state": "EXISTING_OPEN_PR",
+        "action_taken": "repaired_ci",
+        "pr_number": "7",
+        "reason": "head def, 3 green, 0 failing, 0 pending, 0 unknown",
+        "next_action": "See pull request #7",
+    })
+    .to_string();
+
+    let assessed = assess_with_recorded_agent_passes(
+        &finished_evidence(&fx.head()),
+        &unfinished_answer(),
+        &[&decision],
+    );
+    assert_eq!(
+        assessed.nested_runs().len(),
+        1,
+        "{:?}",
+        assessed.nested_runs()
+    );
+    let last: Value = serde_json::from_str(&unfinished_answer()).unwrap();
+    assert_eq!(assessed.nested_note(), json!({"previous_answer": last}));
+    assert!(
+        assessed
+            .prompt_of(2)
+            .contains("reproduce the smoke check locally"),
+        "the fresh session reads the last answer in its reentry block"
+    );
+    assert_eq!(
+        assessed.run.status("assess-finalization"),
+        "completed",
+        "{}",
+        assessed.run.result
+    );
+    let carried: Value = serde_json::from_str(&assessed.assessment())
+        .unwrap_or_else(|e| panic!("a decision is carried ({e}): {}", assessed.assessment()));
+    assert_eq!(carried["terminal_state"], "EXISTING_OPEN_PR");
+    assert_eq!(
+        carried["reason"],
+        "head def, 3 green, 0 failing, 0 pending, 0 unknown"
+    );
+
+    let still = assess_with_recorded_agent(&finished_evidence(&fx.head()), &unfinished_answer());
+    assert_eq!(
+        still.nested_runs().len(),
+        1,
+        "one pass, no loop: {:?}",
+        still.nested_runs()
+    );
+    assert_eq!(
+        still.run.status("assess-finalization"),
+        "failed",
+        "an unfinished fresh pass fails the step for its recovery agent: {}",
+        still.run.result
+    );
+    assert_eq!(still.run.status("after-the-assessment"), "completed");
+}
+
+// #2966, crusty round 3, concern 3: a BLOCKED_CI that leaves out its owner's
+// step is not started again by a check and is not refused. It goes to the
+// validator as the assessment answered it.
+#[test]
+fn an_unowned_blocked_ci_is_not_started_again() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let unowned = json!({
+        "terminal_state": "BLOCKED_CI",
+        "action_taken": "none",
+        "pr_number": "7",
+        "reason": "deploy: the workflow reads secrets.DEPLOY_TOKEN, which the repository does not define",
+        "next_action": "",
+    })
+    .to_string();
+
+    let assessed = assess_with_recorded_agent(&finished_evidence(&fx.head()), &unowned);
+
+    assert!(
+        assessed.nested_runs().is_empty(),
+        "{:?}",
+        assessed.nested_runs()
+    );
+    let carried: Value = serde_json::from_str(&assessed.assessment()).unwrap();
+    assert_eq!(carried, serde_json::from_str::<Value>(&unowned).unwrap());
 }
 
 /// The shipped `validate-agentic-finalization` step's own `command:`.

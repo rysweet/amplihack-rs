@@ -582,9 +582,9 @@ mod recipe_step_body;
 #[path = "issue_2343_finalization_outcome.rs"]
 mod issue_2343_finalization_outcome;
 
-// Issue #2966, crusty round 1: an assessment pass that ends short of a decision
-// (a crash, prose, an unfinished repair, a BLOCKED_CI with no owner's step, a
-// file the repair left) is started again by continue-ci-repair instead of
-// ending the run. Runs the real dispatcher with a stub nested `recipe run`.
+// Issue #2966, crusty rounds 1 to 3: continue-ci-repair's body starts one fresh
+// assessment pass, hands it the last answer as data, prints its answer and
+// passes on the nested run's exit code, with no loop and no answer field read.
+// Runs the real dispatcher with a stub nested `recipe run`.
 #[path = "issue_2966_ci_repair_reentry.rs"]
 mod issue_2966_ci_repair_reentry;

@@ -20,9 +20,6 @@
 #                     the actions assess-finalization may report taking
 #   _finalization_state_names_pr
 #                     the states whose definition IS an open pull request
-#   _finalization_decision_unowned / _finalization_unowned_or_handoff
-#                     the states whose definition IS a person's next move, and
-#                     what becomes of one that named no person
 #   emit_without_jq   the literal object for a host with no jq
 #   emit_result       one complete, validated JSON object on stdout
 #   fail_result       emit a non-success result, announce it on one line
@@ -135,54 +132,4 @@ _finalization_state_names_pr() {
     EXISTING_OPEN_PR) return 0 ;;
     *) return 1 ;;
   esac
-}
-
-# #2966. The same rule for the one state whose published definition IS a person's
-# next move. BLOCKED_CI asserts a cause the run cannot fix, so it carries the
-# cause (`reason`) and the step its owner must take (`next_action`); reported
-# without either, it ends the run naming nobody, and the validator's placeholder
-# sentences would hide that behind a pointer back at the assessment. As with a
-# pull-request state that names no pull request, the decision contradicts its
-# own definition, which is no decision for the recovery agent to close. This
-# asks only whether the decision named what it asserts: it re-judges no fact
-# and reads no check.
-#
-# It is one rule applied in two places, not two gates. continue-ci-repair
-# (#2966, workflow_finalization_reentry.sh) applies it to the assessment's
-# answer first: it asks a new session for the missing sentence, and when that
-# session still names none the step fails for its recovery agent, which judges
-# whether to ask again. It never prints an unowned BLOCKED_CI, so the validator
-# meets one only from an answer that did not pass through that step, and this
-# check is what keeps the placeholder sentences off it then.
-#
-# _finalization_decision_unowned <state> <reason> <next> -> prints what is
-# missing and returns 0 when the state needs an owner and was given none.
-_finalization_decision_unowned() {
-  local reason="${2-}" next="${3-}" missing=""
-  case "${1-}" in BLOCKED_CI) ;; *) return 1 ;; esac
-  [ -n "${reason//[[:space:]]/}" ] || missing="no cause"
-  [ -n "${next//[[:space:]]/}" ] || missing="${missing:+$missing and }no step for its owner"
-  [ -n "$missing" ] || return 1
-  printf '%s\n' "$missing"
-}
-
-# _finalization_unowned_or_handoff <state> <missing> <evidence>
-# What becomes of such a decision. It never returns.
-#
-# Inside auto-drive the state does not end the run: the pull request goes to the
-# merge-ready loop, which reviews and repairs it, and no person is waiting on
-# the sentences the assessment left empty. The hand-off therefore still happens,
-# as it did before this check existed, with the gap recorded in place of them;
-# refusing it would stop a whole drive over a missing sentence, which is the
-# failure mode #2966 exists to remove. Everywhere else a person is the
-# destination, so the decision is reported as no decision and the recovery agent
-# closes it.
-_finalization_unowned_or_handoff() {
-  local reason next
-  reason="assess-finalization reported $1, which names a cause the run cannot fix, but gave $2"
-  next="Run finalization again so assess-finalization reports the failing check, the cause the run cannot fix and the step its owner must take, or the state the facts do support; re-running this step alone reads the same recorded answer."
-  if declare -F finalization_try_handoff_open_pr >/dev/null 2>&1; then
-    finalization_try_handoff_open_pr "$1" "$reason" "$next" "$3" || :
-  fi
-  fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$reason" "$next" "$3"
 }

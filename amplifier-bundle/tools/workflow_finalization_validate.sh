@@ -253,11 +253,12 @@ FIELDS
   open_pr_confirmed_facts="$evidence_used"
 
   if _finalization_state_allowed "$assessment_state"; then
-    # #2966: BLOCKED_CI ends the run for a person, so _finalization_decision_unowned
-    # asks before the placeholders below stand in for the owner it never named.
-    # Where the state does not end the run, the hand-off still happens.
-    if no_decision="$(_finalization_decision_unowned "$assessment_state" "$assessment_reason" "$assessment_next")"; then
-      _finalization_unowned_or_handoff "$assessment_state" "$no_decision" "$evidence_used"
+    # #2966: a BLOCKED_CI missing its cause or its owner's step is reported, not
+    # refused. These name what is missing; the recovery agent completes the owner
+    # and the step in its hand-off (docs/reference/step-failure-recovery.md).
+    if [ "$assessment_state" = BLOCKED_CI ]; then
+      [ -n "${assessment_reason//[[:space:]]/}" ] || assessment_reason="assess-finalization reported BLOCKED_CI but named no failing check and no cause"
+      [ -n "${assessment_next//[[:space:]]/}" ] || assessment_next="assess-finalization named no owner and no step: read the failing check on the pull request, then name who must act and the exact step they must take"
     fi
     [ -n "$assessment_reason" ] || assessment_reason="assess-finalization reported $assessment_state on the run's outcome"
     [ -n "$assessment_next" ] || assessment_next="See the finalization assessment."

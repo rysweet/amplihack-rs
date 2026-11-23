@@ -372,15 +372,15 @@ steps:
       # assess-finalization decided on the facts; it derives none of its own.
       # #2966: a red CI the run can fix never reaches here: step-22 and the
       # assessment repair it first. A failure reported here is a named cause the
-      # run cannot fix (BLOCKED_CI with owner and human step) or another blocker,
-      # and step recovery hands it to that owner (exit 81).
+      # run cannot fix (BLOCKED_CI; the goal below has the recovery agent name a
+      # missing owner and step) or another blocker, handed to its owner (exit 81).
       # #2819 R2: --no-repair -- a retry re-reads the same recorded decision and
       # evidence, and the recovery agent may make no GitHub write and no recipe.
       # Repairing the outcome is the assessment's job. See step-failure-recovery.md.
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" validate
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --essential --stop-on-handoff --no-repair --dir "$RECIPE_VAR_step_recovery_dir" --goal "Report the terminal state assess-finalization decided for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}; every input is already recorded, so name the owner of the gap rather than trying to repair it. A CI blocker that reaches this step is one the assessment judged the run cannot fix: hand it to its owner with the exact step they must take" -- bash -c "$STEP_BODY" validate-agentic-finalization
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --essential --stop-on-handoff --no-repair --dir "$RECIPE_VAR_step_recovery_dir" --goal "Report the terminal state assess-finalization decided for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}; every input is already recorded, so name the owner of the gap rather than trying to repair it. A CI blocker that reaches this step is one the assessment judged the run cannot fix: hand it to its owner with the exact step they must take. When the failure line says the assessment named no failing check, owner or step, read the failing check on the pull request and name them in your hand-off; the missing sentence is yours to complete, not the reason for the hand-off" -- bash -c "$STEP_BODY" validate-agentic-finalization
     output: "workflow_result"
   - id: "step-recovery-report"  # #2539: a recorded handoff ends the run here with exit 81; with recovery off the output says so
     type: "bash"

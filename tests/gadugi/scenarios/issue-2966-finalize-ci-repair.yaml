@@ -29,14 +29,16 @@ description: >
   fourth checks that a check still in progress is waited on: the assessment
   runs `gh pr checks --watch`, reads the settled green head and reports
   EXISTING_OPEN_PR, with exit 0 and no push. Five more cases cover an
-  assessment session that ends short of a decision, which the first review of
-  the fix found still ended the run: a session that crashes is started again
-  and the second pass repairs the CI; two sessions that stop with the repair
-  unfinished are continued and the third repairs it; a BLOCKED_CI without the
-  owner's step is asked again and the second pass names it; a file the repair
-  left behind is handed back and removed; and two passes in a row that answer
-  prose and change nothing send continue-ci-repair to its recovery agent, exit
-  81. Every case allows at most one pull request comment, the "Ready for Final
+  assessment session that ends short of a decision, or a decision that leaves
+  something out. The runner's condition starts one fresh pass, and step
+  recovery's agent decides on any after that: a session that crashes is started
+  again and the second pass repairs the CI; two sessions that stop with the
+  repair unfinished lead to a recovery retry, and the third repairs it; sessions
+  that are always unfinished are retried once and then handed off by the
+  recovery agent, with both decisions on record; a BLOCKED_CI without the
+  owner's step is reported as BLOCKED_CI with the gap named, never refused as
+  no decision; and two passes in a row that answer prose send
+  continue-ci-repair to its recovery agent, exit 81. Every case allows at most one pull request comment, the "Ready for Final
   Review" note. With
   AMPLIHACK_2966_BASELINE_REF set, the driver runs the first fixture against the
   bundle that ref held and confirms the reported behaviour: BLOCKED_CI, exit 81,
@@ -106,16 +108,16 @@ assertions:
     params:
       target: stdout
       expected: "PASS: unfinished_repair_is_continued - "
-  - name: unowned-blocked-ci-is-asked-again
+  - name: endless-unfinished-is-stopped-by-recovery
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: unowned_blocked_ci_is_asked_again - "
-  - name: leftover-file-is-cleaned
+      expected: "PASS: endless_unfinished_is_stopped_by_recovery - "
+  - name: unowned-blocked-ci-is-reported-not-refused
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: leftover_file_is_cleaned - "
+      expected: "PASS: unowned_blocked_ci_is_reported_not_refused - "
   - name: repeated-crash-goes-to-recovery
     type: output_contains
     params:
