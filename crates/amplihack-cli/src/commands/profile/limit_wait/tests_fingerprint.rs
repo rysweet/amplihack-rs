@@ -282,9 +282,23 @@ fn an_untrusted_claude_json_counts_as_absent() {
     private(&target, &account(Some("uuid-a"), "x@example.invalid", 0));
     symlink(&target, &path).unwrap();
     assert!(absent == probe(&w), "symlink");
+}
+
+/// A `.claude.json` that is there but does not parse is what a read made
+/// half-way through another process's write looks like, so it is no
+/// reading at all, not an absent account: the wait neither ends on it nor
+/// takes it as its baseline (issue #2911).
+#[test]
+fn an_unparseable_claude_json_is_no_reading() {
+    let e = env();
+    let w = e.profile("a");
+    let path = e.dir("a").join(".claude.json");
+    fs::remove_file(&path).unwrap();
+    private(&path, "{\"oauthAccount\": {\"accountUu");
+    assert!(w.probe().is_none(), "a half-written file");
     fs::remove_file(&path).unwrap();
     private(&path, "not json");
-    assert!(absent == probe(&w), "unparseable");
+    assert!(w.probe().is_none(), "unparseable");
 }
 
 #[test]

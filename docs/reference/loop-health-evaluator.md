@@ -820,19 +820,18 @@ Step-02 runs through `amplihack claude -p`, so its supervisor applies the
 runner sees the failure:
 
 1. The first attempt fails on a usage limit.
-2. The supervisor waits. A limit that resets within five hours gets a reset
-   wait. A weekly limit, or one with no readable reset, gets a
-   [capacity wait](profile-command.md#capacity-wait) when another stored
-   login could take over and a rotator is running, for up to six hours by
-   default. An organisation spend limit with no reset gets a
-   [login-change wait](profile-command.md#login-change-wait) when step-02
-   runs on `~/.claude`. Inside a recipe run `AMPLIHACK_RECIPE_RUN_ID` stops
-   launches from starting the rotator, so start one before auto-drive;
-   without one neither a capacity wait nor a login-change wait is started
-   and the step fails at once on the usage limit. Those two kinds need the
-   rotator for the same reason: only it moves a login into `~/.claude`, so
-   with none running there is nothing for them to wait for. A reset wait
-   needs no rotator — it waits out the limit the step already has.
+2. The supervisor waits, whatever the limit. A limit that resets within five
+   hours gets a reset wait. A weekly limit, one with no readable reset, a
+   reset already behind the clock or credit exhaustion gets a
+   [capacity wait](profile-command.md#capacity-wait), which ends at a stated
+   reset still ahead and otherwise has no deadline. An organisation spend
+   limit with no reset gets a
+   [login-change wait](profile-command.md#login-change-wait), which has no
+   deadline. None of them needs a rotator to start. Inside a recipe run
+   `AMPLIHACK_RECIPE_RUN_ID` stops launches from starting the rotator, so
+   start one before auto-drive if you want a login moved into `~/.claude`;
+   without one a wait with no deadline lasts until a person switches the
+   login (`amplihack profile switch`) or stops the run.
 3. A reset or capacity wait ends on `rotator capacity`, `login changed`,
    `login capacity` or `reset reached`, and step-02 runs once more with the
    same prompt. On `rotator capacity`, `login changed` and `reset reached`
@@ -852,10 +851,13 @@ The retry happens inside the step, so `loop-health-evaluator.yaml` is
 unchanged. The caller sees one completed evaluator run with an ordinary
 `LOOP_HEALTH:` line, and the step's stderr holds the
 `amplihack.recipe.usage_limit_wait` `start`, `end` and `resume` lines.
-Step-02 waits at most once for each login it runs on, and all of its waits
-share one `max_wait_secs` budget, so the total time it can spend waiting is
-what it always was; see
-[One wait per login](profile-command.md#one-wait-per-login).
+Step-02 waits for every limit it meets and then runs again; nothing counts
+its waits or caps their total. No timer ends a wait: a wait for a stated
+reset ends at that reset, and one whose limit stated no usable reset has no
+deadline and ends when a login has room or the login changes. Nothing bounds
+the chain but the limit lifting, a stop signal or the end of the session; the
+step timeout does not cut a wait (issue #3037). See
+[Usage-limit waits](usage-limit-waits.md).
 
 ### The wait is visible in the recipe log
 
@@ -873,7 +875,7 @@ step's own stderr uses, so a capacity or login-change wait carries its
 spend limit starts, reads `reason=spend_limit`:
 
 ```
-amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change account=work reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
+amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change account=work reset=none until=none bound=none
 amplihack.recipe.usage_limit_wait end reason=login changed
 ```
 
@@ -885,11 +887,11 @@ line complete. The full rules are in
 
 The time a wait spends is appended to the ledger
 `AMPLIHACK_USAGE_WAIT_LEDGER` names and so is left out of auto-drive's wall
-budget. A step-02 that waits across several logins can therefore hold the
-drive for up to `max_wait_secs` of wall time without the budget moving. That
-is the same bargain every kind of wait makes, and the per-step budget is what
-bounds it; see
-[One wait per login](profile-command.md#one-wait-per-login).
+budget. A step-02 that waits across several logins, or in a wait with no
+deadline, can therefore hold the drive for hours of wall time without the
+budget moving. That is the same bargain every kind of wait makes. A stop signal ends it; the step
+timeout does not. See
+[Usage-limit waits](usage-limit-waits.md).
 
 These lines are informational and nothing in this recipe reads them. The
 detached run copies each step's own output into the same log, so an agent
@@ -900,11 +902,11 @@ runner's `amplihack.recipe.failure_class` marker.
 
 ### When the wait does not lift the limit
 
-When the wait is skipped (for example `reset_too_far` with a single stored
-login), expires (`capacity expired`, `max reached` on a login-change wait,
-`step timeout`) or has none left for step-02's current login
-(`already_waited`),
-step-02 fails and the recipe runner writes its
+A usage limit does not fail step-02: it waits (a
+`waiting_for_capacity` line says why when no reset is known) and runs again.
+When the wait is turned off (`recipe.usage_limit_wait = false`), or the
+step's prompt could not be read to its end, step-02 fails and the recipe
+runner writes its
 `amplihack.recipe.failure_class` marker with `"class":"usage_limit"`.
 Step-02 does not set `continue_on_error`, so the runner stops the recipe
 there: step-03 and step-04 do not run and no verdict is produced. The

@@ -12,17 +12,34 @@
 //! The credentials file is never opened, so an OAuth token refresh is not a
 //! change.
 //!
-//! Every read error counts as absent and is never reported. A fingerprint
-//! is only compared: it has no `Debug`, `Display` or `Clone`.
+//! Every read error counts as absent and is never reported, with one
+//! exception: a `.claude.json` that is there but does not parse, which is
+//! what a read made while another process is half-way through writing it
+//! looks like. That makes the whole fingerprint unreadable ([`Watch::probe`]
+//! returns `None`), and the wait treats it as no reading at all rather than
+//! as a login that changed (`wait`). A fingerprint is only compared: it has
+//! no `Debug`, `Display` or `Clone`.
+//!
+//! [`Watch::files`] lists every file the wait's checks read, which is what
+//! the wait blocks on (`wake`).
 
-use super::super::auto_switch::{self, CREDS};
+use super::super::auto_switch;
+use super::super::auto_switch::kit::{
+    CLAUDE_JSON, CREDS, HOME_USAGE, MAX_CLAUDE_JSON, STATE_DIR, USAGE,
+};
 use super::super::fsx;
 use super::super::name::ProfileName;
 use super::super::rotate::identify::Account;
 use super::super::store::ProfileStore;
+use amplihack_utils::rotator_status::swap_record::{SWAP_FILE, rotate_dir};
 use amplihack_utils::rotator_status::{CycleStatus, Ledger, read_cycle, read_ledger, swap_record};
+use amplihack_utils::secure_files::read_bounded_nofollow;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+/// The ledger's file name, in the auto-switch state directory and in the
+/// rotate directory alike.
+const LEDGER: &str = "ledger.json";
 
 #[derive(PartialEq, Eq)]
 pub(crate) struct Fingerprint {
@@ -136,7 +153,9 @@ impl Watch {
         }
     }
 
-    /// The fingerprint now; `None` only when no directory is watched.
+    /// The fingerprint now; `None` when no directory is watched, and when
+    /// `.claude.json` is there but does not parse, which is a read made
+    /// part-way through a write rather than a login.
     pub(crate) fn probe(&self) -> Option<Fingerprint> {
         let dir = self.dir()?;
         let (ledger, json_dir) = match &self.kind {
@@ -146,9 +165,50 @@ impl Watch {
         };
         Some(Fingerprint {
             ledger,
-            identity: identity(json_dir),
+            identity: identity(json_dir).ok()?,
             creds: fsx::exists(&dir.join(CREDS)),
         })
+    }
+
+    /// Every file the wait's checks read for this watch, as `(directory,
+    /// name)`: the fingerprint's, the login key's, the rotator's and the
+    /// auto-switch readings'. The wait blocks on writes to these and reads
+    /// nothing on a timer (issue #2911).
+    pub(crate) fn files(&self) -> Vec<(PathBuf, &'static str)> {
+        let mut out = Vec::new();
+        if let Some(dir) = self.dir() {
+            out.push((dir.to_path_buf(), CREDS));
+        }
+        let root = match &self.kind {
+            Kind::Profile { root, .. } => {
+                if let Some(dir) = self.dir() {
+                    out.push((dir.to_path_buf(), CLAUDE_JSON));
+                }
+                Some(root.as_path())
+            }
+            Kind::ConfigDir => {
+                if let Some(dir) = self.dir() {
+                    out.push((dir.to_path_buf(), CLAUDE_JSON));
+                }
+                None
+            }
+            Kind::Home { json, root } => {
+                out.push((json.clone(), CLAUDE_JSON));
+                if let Some(root) = root {
+                    let rotate = rotate_dir(root);
+                    out.push((rotate.clone(), LEDGER));
+                    out.push((rotate, SWAP_FILE));
+                }
+                root.as_deref()
+            }
+        };
+        if let Some(root) = root {
+            let state = root.join(STATE_DIR);
+            for name in [LEDGER, USAGE, HOME_USAGE] {
+                out.push((state.clone(), name));
+            }
+        }
+        out
     }
 
     /// The **login key**: the name of the login a `$HOME/.claude` step would
@@ -223,11 +283,23 @@ impl Watch {
     }
 }
 
+/// A `.claude.json` that is there but does not parse.
+struct HalfWritten;
+
 /// The account in `dir/.claude.json`, from a private regular file only.
-fn identity(dir: &Path) -> Option<Account> {
-    let (v, meta) = auto_switch::read_claude_json(dir)?;
+///
+/// `Ok(None)` when there is no account to read: no file, a file that is not
+/// a private regular file, or one with no account in it. `Err` only when the
+/// file is there and is not JSON, which is what a read made during a write
+/// looks like; the write that completes it wakes the wait again.
+fn identity(dir: &Path) -> Result<Option<Account>, HalfWritten> {
+    let Ok(Some((raw, meta))) = read_bounded_nofollow(&dir.join(CLAUDE_JSON), MAX_CLAUDE_JSON)
+    else {
+        return Ok(None);
+    };
     if meta.uid() != fsx::euid() || fsx::writable_by_others(&meta) {
-        return None;
+        return Ok(None);
     }
-    Account::from_value(&v)
+    let v: serde_json::Value = serde_json::from_slice(&raw).map_err(|_| HalfWritten)?;
+    Ok(v.is_object().then(|| Account::from_value(&v)).flatten())
 }

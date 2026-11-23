@@ -1,15 +1,22 @@
-//! Issue #2890: a step's spend-limit failure records the login it ran under
-//! as blocked until the reset the message states, as data in the rotate
-//! ledger (`overflow_blocked`), and `rotate status` shows it.
+//! Issue #2890, generalised by #2911: a step's limit records the login it
+//! ran under as blocked until the reset the message states, as data in the
+//! rotate ledger (`overflow_blocked`), and `rotate status` shows it. The
+//! emitter is `note_limit_block(root, login, at, until, kind)`, called for
+//! every limit kind the supervisor sees; the record itself is unchanged on
+//! the wire, `reason=spend_limit` whatever the kind, so a host still running
+//! the previous release loads a ledger this writer touched.
 //!
 //! - A message stating a parsable reset in range writes one block keyed on
 //!   the login, `reason=spend_limit`, `until - at` equal to the stated
 //!   distance, with one ALERT line in the rotate log.
-//! - A message stating no reset writes nothing and keeps #2731.
+//! - A spend limit stating no reset falls back to the month boundary the
+//!   rotator already assumes for one (#2911); it used to write nothing.
 //! - A stated reset out of range is reported on stderr and not stored; the
 //!   ledger still loads (`rotate status` exits 0).
 //! - A step with no rotate ledger creates none.
-//! - Recording never changes the step's own outcome or exit code.
+//! - Recording never delays, refuses or ends the step. Since #2911 the
+//!   limit is waited out and the step's exit code is its retry's, so what
+//!   is pinned is that the record changes neither it nor the wait's lines.
 //! - `rotate status` prints `blocked logins: <name> (blocked until <time>)`.
 
 #![cfg(unix)]
@@ -42,8 +49,7 @@ fn home_step(f: &Fixture, message: &str) -> Command {
     fs::create_dir_all(f.home.join(".claude")).unwrap();
     let mut c = f.step();
     c.env_remove("CLAUDE_CONFIG_DIR")
-        .env("LIMIT_MESSAGE", message)
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0");
+        .env("LIMIT_MESSAGE", message);
     c
 }
 
@@ -103,21 +109,79 @@ fn a_second_failing_step_neither_extends_the_block_nor_alerts_again() {
     );
 }
 
+/// The month boundary a spend limit that states no reset is blocked until:
+/// the 1st of the next calendar month, 00:00 UTC, which is the assumption
+/// the rotator has always made for one. `rotate::spend_blocks::spend_reset`
+/// is the code, and `rotate/tests_step_block_kinds.rs` pins it; this is the
+/// same boundary read from the other side.
+fn next_month_utc(at: i64) -> i64 {
+    use chrono::{Datelike, TimeZone, Utc};
+    let t = chrono::DateTime::from_timestamp(at, 0).expect("the recorded instant");
+    let (y, m) = if t.month() == 12 {
+        (t.year() + 1, 1)
+    } else {
+        (t.year(), t.month() + 1)
+    };
+    Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0)
+        .single()
+        .expect("a month boundary")
+        .timestamp()
+}
+
+/// Issue #2911: a spend limit that states no reset is recorded as well,
+/// against the month boundary the rotator already assumes for one. Until
+/// #2911 the emitter needed a stated reset and this wrote nothing; only a
+/// limit of another kind with no stated reset writes nothing now, because a
+/// block with an invented end would keep a healthy login out of rotation.
+///
+/// The step itself keeps #2731: this is no capacity wait but a wait for the
+/// login in `$HOME/.claude` to change.
 #[test]
-fn a_spend_limit_with_no_reset_writes_no_block() {
+fn a_spend_limit_with_no_reset_blocks_until_the_monthly_reset() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
-    let out = f.run(&mut home_step(&f, SPEND_TEXT));
+    // The login-change wait has no deadline (issue #2911): the test changes
+    // the login once it is under way.
+    let out = f.run_with_a_login_change_in(&f.home.join(".claude"), &mut home_step(&f, SPEND_TEXT));
     let l = ledger(&f);
-    let blocked = l.get("overflow_blocked").and_then(|b| b.as_object());
-    assert!(blocked.is_none_or(|b| b.is_empty()), "{l}");
-    assert!(
-        !rotate_log(&f).contains("spend limit"),
+    let b = &l["overflow_blocked"]["X"];
+    assert!(b.is_object(), "no block for X: {l}\n{}", describe(&out));
+    let mut keys: Vec<&str> = b.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["at", "reason", "until"],
+        "the record an older reader must still load: {b}"
+    );
+    assert_eq!(b["reason"], "spend_limit");
+    let (at, until) = (b["at"].as_i64().unwrap(), b["until"].as_i64().unwrap());
+    assert_eq!(
+        until,
+        next_month_utc(at),
+        "the monthly reset assumed for it"
+    );
+    assert_eq!(
+        rotate_log(&f)
+            .matches("ALERT: login X hit its spend limit; blocked until ")
+            .count(),
+        1,
         "{}",
         rotate_log(&f)
     );
-    assert!(!out.status.success(), "{}", describe(&out));
+    let ev = events(&out);
+    assert_eq!(
+        ev.first().map(String::as_str),
+        Some("waiting_for_capacity reason=spend_limit harness=claude until=none"),
+        "{ev:?}: {}",
+        describe(&out)
+    );
+    assert!(
+        ev.get(1)
+            .is_some_and(|l| l.starts_with("start reason=spend_limit wait=login_change")),
+        "{ev:?}: {}",
+        describe(&out)
+    );
 }
 
 #[test]
@@ -147,7 +211,7 @@ fn a_stated_reset_out_of_range_is_reported_and_not_stored() {
 ///
 /// This is the one place the two halves of the change could have been tied
 /// together by a check ("only wait if the block was stored") and they are
-/// deliberately not. `note_spend_block` returns `()` so that no caller can
+/// deliberately not. `note_limit_block` returns `()` so that no caller can
 /// read its outcome, and the planner never asks whether a block exists.
 /// What follows from that is stated rather than hidden: the blocked login
 /// is not recorded, so the takeover count and the wake condition still
@@ -168,13 +232,23 @@ fn a_record_that_could_not_be_written_still_plans_the_wait() {
         "nothing stored: {l}"
     );
     let ev = events(&out);
+    // Since #2911 the wait says why it is waiting for capacity, and a reset
+    // a year away is `reset_too_far`: the word that used to end such a run.
+    // The wait still ends at that reset, held to the 62-day span a spend
+    // limit's record is held to.
+    let why = "waiting_for_capacity reason=reset_too_far harness=claude \
+               until=2026-12-19 07:02:00 -08:00"
+        .to_string();
+    assert_eq!(ev.first(), Some(&why), "{ev:?}: {}", describe(&out));
     assert!(
-        ev[0].starts_with("start reason=usage_limit wait=capacity harness=claude"),
+        ev.get(1)
+            .is_some_and(|l| l.starts_with("start reason=usage_limit wait=capacity harness=claude")),
         "the wait is planned whatever happened to the record: {ev:?}: {}",
         describe(&out)
     );
     assert!(
-        !ev.iter().any(|l| l.contains("reason=reset_too_far")),
+        !ev.iter()
+            .any(|l| l.starts_with("skipped ") || l.starts_with("failed ")),
         "a refused record never turns the wait back into a skip: {ev:?}"
     );
 }
@@ -186,13 +260,42 @@ fn a_step_with_no_rotate_ledger_creates_none() {
     assert!(!ledger_path(&f).exists(), "{}", describe(&out));
 }
 
+/// The emitter cannot delay, refuse or end a step, and since #2911 there is
+/// no terminal path left to read that off: the limit is waited out and the
+/// step's exit code is its retry's. So the invariant is pinned by
+/// comparison. The same step, once on a root holding a rotate ledger to
+/// write a block into and once on a root holding none, ends with the same
+/// code and writes the same wait lines.
+///
+/// It used to assert `Some(1)`, the code the limited attempt returned when
+/// the supervisor skipped the wait instead of starting one.
 #[test]
 fn recording_the_block_does_not_change_the_steps_exit_code() {
-    let f = with_profiles();
-    x_is_live(&f);
-    let out = f.run(&mut home_step(&f, SPEND_FAR));
-    // No rotator running: the skip, and the step's own exit code, stand.
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    let recorded = with_profiles();
+    x_is_live(&recorded);
+    let with = recorded.run(&mut home_step(&recorded, SPEND_FAR));
+    assert!(
+        ledger(&recorded)["overflow_blocked"]["X"].is_object(),
+        "the block was written, so the comparison means something: {}",
+        describe(&with)
+    );
+    let plain = with_profiles();
+    let without = plain.run(&mut home_step(&plain, SPEND_FAR));
+    assert!(!ledger_path(&plain).exists(), "{}", describe(&without));
+    assert_eq!(
+        with.status.code(),
+        without.status.code(),
+        "{}\n{}",
+        describe(&with),
+        describe(&without)
+    );
+    assert_eq!(
+        events(&with),
+        events(&without),
+        "{}\n{}",
+        describe(&with),
+        describe(&without)
+    );
 }
 
 #[test]

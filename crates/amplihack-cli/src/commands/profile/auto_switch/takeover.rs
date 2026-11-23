@@ -43,9 +43,12 @@ fn live_profile(store: &ProfileStore) -> Option<String> {
 /// holds only while a rotator is running with auto-switch on, and another
 /// stored login could take over from the profile live there. A running
 /// rotator with auto-switch off is idle: it records no cycle and makes no
-/// swap, so it does not count. Without a rotating rotator a far reset stays
-/// `reset_too_far`, failing at once as before. The store is read only when the
-/// check is called, which is when a limit is seen.
+/// swap, so it does not count. Since #2911 a usage limit waits whatever this
+/// answers; it now gates only a bare 429 ([`plan::rate_limit_capacity`]),
+/// which goes back to the recipe runner when no login could take over. The
+/// store is read only when the check is called, which is when that 429 is seen.
+///
+/// [`plan::rate_limit_capacity`]: crate::commands::profile::limit_wait::plan::rate_limit_capacity
 pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
     Box::new(move || {
         store.as_ref().is_some_and(|s| {
@@ -55,29 +58,14 @@ pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
     })
 }
 
-/// Whether a rotator is running with auto-switch on for a `$HOME/.claude`
-/// step, and nothing else (issue #2731). A login-change wait needs only
-/// this: the rotator is the one thing that moves a login into `~/.claude`,
-/// and which login it moves in is its own choice, so neither the stored
-/// readings nor the "another login could take over" rules say anything about
-/// whether such a wait can end. With no rotator the step fails at once, as
-/// it did before.
-pub(crate) fn home_rotator(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
-    Box::new(move || {
-        store
-            .as_ref()
-            .is_some_and(|s| rotate::daemon::rotating(s.root()))
-    })
-}
-
 /// The takeover check for a step that inherited profile `own`. No `/usage`
 /// probe is made, so that step's wait ends only on a fresh reading, a rotator
 /// cycle, a login change in its own directory or its own reset. In an
 /// unattended recipe run no rotator starts and a `claude -p` step has no
 /// status line, so without a running rotator nothing may record a reading and
 /// the wait would run to its maximum. The check therefore holds only while a
-/// rotator is running with auto-switch on, as [`home_check`] does, and a far reset stays
-/// `reset_too_far`, failing at once as before.
+/// rotator is running with auto-switch on, as [`home_check`] does. Since #2911 it
+/// gates only a bare 429, never a usage limit, which waits regardless.
 pub(crate) fn profile_check(store: &ProfileStore, own: &str) -> bool {
     rotate::daemon::rotating(store.root()) && could_take_over(Some(store), Some(own))
 }
@@ -108,8 +96,9 @@ pub(super) fn could_take_over_at(
 /// login or a usable overflow profile ([`OverflowPool::could_select`]), and
 /// passing the login checks ([`login_ready`]). Both rules are the ones
 /// `nested_candidate` applies, read from the same [`OverflowInputs`], so an
-/// unmarked API-key profile never counts (issue #1804) and a wait never
-/// starts for a login the probe could not choose. `None` on any read error.
+/// unmarked API-key profile never counts (issue #1804) and the check never
+/// counts a login the probe could not choose. `None` on any read error, so a
+/// bare 429 then starts no wait.
 ///
 /// [`OverflowPool::could_select`]: super::candidate::OverflowPool::could_select
 fn another_login(store: &ProfileStore, own: Option<&str>, home: Option<&Path>) -> Option<bool> {
@@ -190,10 +179,10 @@ pub(super) fn is_fresh(observed_at: i64, start: i64, now: i64) -> bool {
 /// freshness skip above. `alert` is the caller's, because this has two
 /// callers that want different things of it (issue #2694):
 ///
-/// - the wait's 30-second probe passes [`KeyAlert::Silent`], since over a
-///   multi-hour wait it asks hundreds of times and the held-key ALERT, the
-///   rotate-log line and the key-held marker write would repeat for hours in
-///   the step's stderr;
+/// - the wait's probe passes [`KeyAlert::Silent`], since over a multi-hour
+///   wait it asks after every write to the files the wait watches, and the
+///   held-key ALERT, the rotate-log line and the key-held marker write would
+///   repeat for hours in the step's stderr;
 /// - the retry's single selection once the wait is over passes
 ///   [`KeyAlert::Write`], as it did before #2694: it runs once and it is the
 ///   call that moves the step, so its held-back key is worth a line.
