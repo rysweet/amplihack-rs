@@ -731,12 +731,15 @@ if [ "${QA_RUN_LABEL:-}" = drive ]; then
       reason:"PR 42 is OPEN, the linked worktree is at its head, and the private state directory is readable",
       blockers:[],attempts:[]}')"
 
-  elif has 'Return JSON with base, synced'; then
-    # autodrive-merge-evidence/step-01-sync-with-base. The branch was cut from
-    # main and main has not moved since, so it already contains its base.
+  elif has 'Return JSON with base, behind, conflict, strict'; then
+    # autodrive-merge-evidence/step-01-sync-with-base. Since #1924 this step
+    # only observes the branch against its base and merges nothing. The
+    # branch was cut from main and main has not moved since, so it is not
+    # behind and cannot conflict.
     step=autodrive-merge-evidence/step-01-sync-with-base
-    response="$(j '{base:"main",synced:"true",conflict:"false",head_sha:$h,
-      git_observed:"the branch already contains origin/main; there was nothing to merge",
+    response="$(j '{base:"main",behind:"false",conflict:"false",strict:"false",
+      merge_commit_accepted:"true",overlapping_files:[],head_sha:$h,
+      git_observed:"the branch already contains origin/main; nothing was merged",
       blockers:[],attempts:[]}')"
 
   elif has 'Judge merge-ready criterion 1 for PR #'; then
