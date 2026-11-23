@@ -28,8 +28,6 @@ mod home_line;
 #[cfg(unix)]
 pub(super) mod kit;
 #[cfg(unix)]
-mod limit_choice;
-#[cfg(unix)]
 mod liveness;
 #[cfg(unix)]
 mod mv;
@@ -69,8 +67,6 @@ mod tests_exhausted_reset;
 mod tests_home_line;
 #[cfg(all(test, unix))]
 mod tests_issue_1804;
-#[cfg(all(test, unix))]
-mod tests_limit_choice;
 #[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]

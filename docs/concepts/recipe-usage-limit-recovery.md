@@ -2,7 +2,7 @@
 title: Recovery after a recipe usage limit
 description: How relaunched recipe trees reuse verified work after a usage-limit stop.
 doc_type: explanation
-last_updated: 2026-11-23
+last_updated: 2026-11-11
 ---
 
 # Recovery after a recipe usage limit
@@ -33,7 +33,7 @@ its partial output is never treated as a completed result.
 
 | Mechanism | When it applies | What it restores |
 | --- | --- | --- |
-| Same-process login move, or wait and retry | The running process survives until a login can run the step | Reruns the blocked agent step on another login at once, or after the earliest reset across the step's logins, within the existing execution; see [Other logins](../reference/usage-limit-waits.md#other-logins) |
+| Same-process usage-limit wait/retry | The running process survives until capacity returns | Retries the blocked agent step within the existing execution |
 | Durable relaunch recovery | A new process starts after an eligible usage-limit stop | Validated step results, typed context changes, and required artifacts across the recipe tree |
 | `resume_checkpoint` | A caller selects an existing workflow checkpoint | The workflow's declared checkpoint behavior; it does not discover an earlier run or supply missing outputs |
 

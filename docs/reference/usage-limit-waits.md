@@ -16,8 +16,8 @@ login with room or a login change, and says so
 
 A wait is the last resort. Before any wait an auto-switch step moves to
 another stored login under the auto-switch threshold, and when it does wait,
-the wait also ends when the first of the other logins it could move to comes
-back under that threshold ([Other logins](#other-logins)).
+the wait also ends when a limit recorded on another login it ran on ends
+([Other logins](#other-logins)).
 
 This page owns the tables for limit kinds, the limit record, which wait a
 limit starts and the `waiting_for_capacity` line. The log grammar is in the
@@ -44,8 +44,6 @@ task-oriented guidance is in the
 - [Other logins](#other-logins)
     - [Moving to another login before a wait](#moving-to-another-login-before-a-wait)
     - [The earliest-reset deadline](#the-earliest-reset-deadline)
-        - [Readings and blocks the rotator would refuse](#readings-and-blocks-the-rotator-would-refuse)
-    - [When the other logins cannot be read](#when-the-other-logins-cannot-be-read)
     - [The login a wait names](#the-login-a-wait-names)
     - [A reset that names no zone](#a-reset-that-names-no-zone)
 - [The timed parts that remain](#the-timed-parts-that-remain)
@@ -399,193 +397,68 @@ On 21 November 2026 a recipe step logged
 `start reason=usage_limit account=unknown ... bound=reset+margin` and waited
 nearly two hours for its own login's reset while other stored logins could
 have run it ([#2967](https://github.com/rysweet/amplihack-rs/issues/2967)).
-The rules below answer that. None adds a timer, a polling loop, a count or a
-gate: each reads files the supervisor already reads, at moments it already
-reads them.
+None of the rules below adds a timer, a polling loop, a count or a gate.
 
 ### Moving to another login before a wait
 
-Whenever an attempt of an auto-switch step meets a usage limit, the
-supervisor first looks for another stored login by the ordinary
-[candidate selection](./profile-command.md#candidate-selection): under the
-auto-switch threshold (90% by default, `amplihack profile auto-switch
-threshold <1-100>`), not excluded, not leased, not hosting another account,
-within [organisation affinity](./profile-organisation-affinity.md), ready for
-a launch, and not already tried by this step. When it finds one the step runs
-again there at once, with no `start` or `end` line.
-
-This is asked for every limit, whether or not the step has already waited.
-Before #2967 a step that had waited once was never moved again, so a limit on
-the retry its wait earned left it waiting while another login had room. A
-move is not a wait and writes no mark. The moves end because each one adds a
-login to the step's tried set, so a step makes at most one move per stored
-login, and then waits.
-
-The threshold is the one bound for "this login can run the step". The
-`usable now` count of `amplihack profile usage` uses the rotator's own bound
-(session below 95% by default), so it can count a login at 92% that a step
-does not move to. Raise the auto-switch threshold to make the two agree.
-
-A step stays where it is, and goes on to wait, when auto-switch is off, which
-is the operator's standing instruction. A step on `~/.claude` does not move
-itself: a running rotator swaps the login there, at once when a limit is
-recorded ([#3012](https://github.com/rysweet/amplihack-rs/issues/3012)), and
-with no rotator it waits
-([#3122](https://github.com/rysweet/amplihack-rs/issues/3122)).
+Whenever an attempt of an auto-switch step meets a usage limit, the step
+first moves to another stored login by the ordinary
+[candidate selection](./profile-command.md#candidate-selection), whether or
+not it has already waited. Before #2967 a step that had waited once was
+never moved again. The moves end because each one adds a login to the step's
+tried set; then the step waits. A step with auto-switch off, or on
+`~/.claude`, does not move itself.
 
 ### The earliest-reset deadline
 
-When no login can take the step, it waits, and the wait also ends at the
-earliest moment another login it could move to comes back under the
-threshold, when that is before the wait's own deadline. A login's window
-resetting writes no file, so no file event would end the wait there; the
-instant is known from that login's reading.
-
-| Rule | |
-|------|---|
-| Which logins count | The eligible set above, without the logins this step has tried. A login with no reading, a reading older than five hours, no reset ahead, or already under the threshold (the move would have taken it) contributes nothing. |
-| A login's instant | The latest `resets_at` among its windows at or above the threshold: it is under the threshold only once all of them have reset. When a [limit block](#the-limit-record) recorded in the rotate ledger stands on the login and ends later, the block's end. Held to the weekly window, as any reset read from a reading is. |
-| When it applies | The instant is after now, and its deadline (the instant plus 120 s) comes before the wait's own, or the wait has none. A wait whose limit stated no usable reset therefore gains a deadline here. |
-| What it changes | `until=` and `bound=earliest_reset+margin`. The kind of wait, its `wait=` token, what else may end it, and `reset=`, the reset the step's own limit stated, stay as they were. |
-| What it never touches | A login-change wait: it waits for an organisation's credit, which no other login's window restores. |
+Every limit a step meets records a block on its login in the rotate ledger,
+ending at the reset the message stated
+([The limit record](#the-limit-record)). The rotator wakes when such a
+block ends. A step's wait also ends at the earliest block end recorded on
+another login the step has run on, plus 120 s, when that comes before its
+own deadline or it has none. Its start line then says
+`bound=earliest_reset+margin`, and its `reset=` field is still the step's own
+limit's reset. The retry runs on that login, with no other check. A retry that
+meets a limit records it and goes back to the move-or-wait loop.
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-11-21 23:50:00 -08:00 until=2026-11-21 22:32:00 -08:00 bound=earliest_reset+margin
 amplihack.recipe.usage_limit_wait end reason=reset reached
-amplihack.recipe.usage_limit_wait resume attempt=2
-amplihack: the earliest reset among this step's logins has arrived; rerunning this step under profile "lab" (auto-switch)
+amplihack.recipe.usage_limit_wait resume attempt=3
+amplihack: the earliest recorded reset among this step's logins has passed; rerunning this step under profile "lab" (auto-switch)
 ```
 
-A wait that reaches such a deadline ends as `reset reached`, and the retry
-runs on the login whose reset it was. That login must still pass the checks
-that need no reading (stored, not excluded, not leased, holding its own
-login), asked from the login the limited attempt ran on, as when the login
-was chosen. Nothing recorded about it after the deadline was set may still
-hold it out: neither a limit block that still stands, nor a reading that has
-it at or above the threshold. If either check fails, the retry runs on the
-step's own profile and says why
-([When the other logins cannot be read](#when-the-other-logins-cannot-be-read)).
-
-#### Readings and blocks the rotator would refuse
-
-The deadline and the retry read the same readings and blocks as the
-rotator, by the rotator's rules
-([#3111](https://github.com/rysweet/amplihack-rs/pull/3111)), so the two
-never disagree on which logins come back:
-
-| Rotator rule | Here |
-|--------------|------|
-| A stored reading older than one session window (five hours) is not ranked | Not read for the deadline. A reading that old has seen its session window reset since it was taken. |
-| A reading older than one already held is never used | The usage file keeps only the newest reading of each login, so no older one can be read. |
-| A login with a standing block is ruled out until the block's recorded end, whatever its reading shows | Its instant is no earlier than the block's end. A block or reading recorded during the wait that still holds the login out keeps the retry off it (`reason=login_still_limited`). |
-| A swap is made only on a reading taken for it | Not required. The step has no reader of its own, and on a host where only the rotator or `amplihack profile usage` writes readings, such a reading may never come, so requiring it would bring back the wait #2967 removed. A rotator that does read the login during the wait ends the wait early through the wait's own check, which needs a reading taken since the wait began. |
-
-A reading older than the deadline's own can only time a wait too early,
-never too late: a window over the threshold does not empty before its reset,
-but a window under it may have filled since. A retry onto a login that has
-filled meets its limit at once, which records a block on it, adds it to the
-step's tried set and returns the step to the move-or-wait loop above.
-
-A rotate ledger that cannot be read holds no login out, as it holds none out
-of the candidate selection. The step names it on stderr, with the error:
-
-```
-amplihack: the rotate ledger cannot be read: <error>; no block it records on another login is known to this step's wait (auto-switch)
-```
-The note above is printed only when the retry changes login. A retry back to
-the step's inherited profile, for a step that was moved off it before it
-waited, is such a change. The other logins are read again for each wait, so
-no wait is timed by an instant an earlier one computed.
-
-### When the other logins cannot be read
-
-The other logins are read from the auto-switch ledger and usage readings,
-under the auto-switch setting. When that read fails, the step goes on as it
-would without them: the wait keeps its own deadline, or the retry runs on the
-step's own profile. Nothing is retried and no gate is added. The step says why,
-once on stderr in words, with the error, and once as a wait line that also
-reaches the [recipe log](./profile-command.md#the-wait-in-the-recipe-log)
-with `account=` added. A reader can then tell "the logins could not be
-read" from "no other login had a reset ahead", which writes nothing. On
-21 November 2026 the two looked the same.
-
-| Cause | `reason=` |
-|-------|-----------|
-| Auto-switch was turned off while the step ran | `auto_switch_off` |
-| The auto-switch ledger cannot be read | `ledger_unreadable` |
-| The auto-switch usage readings cannot be read | `readings_unreadable` |
-| The login whose reset ended the wait was excluded, leased, given another account, logged out or removed while the step waited (the retry only) | `login_not_eligible` |
-| A limit block on that login, or a reading of it at or above the threshold, recorded after the deadline was set still holds it out (the retry only) | `login_still_limited` |
-
-Before a wait, the lines come before its `start`:
-
-```
-amplihack: this step's other logins were not read for its wait (reason=auto_switch_off): auto-switch was turned off while this step ran; no other login's reset can end this wait early (auto-switch)
-amplihack.recipe.usage_limit_wait other_logins_unread reason=auto_switch_off
-amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-11-21 23:50:00 -08:00 until=2026-11-21 23:52:00 -08:00 bound=reset+margin
-```
-
-After a wait that ended at another login's reset, they come after its
-`resume`:
-
-```
-amplihack.recipe.usage_limit_wait end reason=reset reached
-amplihack.recipe.usage_limit_wait resume attempt=2
-amplihack: the wait ended at the reset of profile "lab", but this step reruns under its own profile "work" (reason=login_not_eligible): that profile was excluded, leased, given another account, logged out or removed while this step waited (auto-switch)
-amplihack.recipe.usage_limit_wait retry_not_moved reason=login_not_eligible
-```
-
-For an unreadable file the stderr sentence carries the error after the
-cause, as in `the auto-switch ledger cannot be read: auto-switch state is
-inconsistent: .auto-switch.d/ledger.json: invalid JSON at line 1 column 1`.
-The wait line carries the fixed `reason=` only.
-
-A step that started with auto-switch off never had another login to
-consider, and a step whose wait is off has no wait to bound, so neither
-writes these lines. A ledger that is already unreadable when the step starts
-stops the launch under its profile (`error: auto-switch state is
-inconsistent`) before any limit is met, so `ledger_unreadable` comes only
-from a ledger that became unreadable while the step ran.
+Nothing is predicted from a usage reading. Only logins the step has run on
+count, so the retry lands on a login the candidate selection chose for this
+step. A host the rotator has never run on has no rotate ledger and records
+no block, so its waits end at their own reset. Another login whose window
+resets is still seen through the wait's existing checks: a reading with
+room, or a rotator cycle with capacity. A login-change wait is never
+shortened.
 
 ### The login a wait names
 
-Every wait line in the recipe log names the login the failed attempt ran on
-in `account=`: the profile the supervisor launched it under, else the
-inherited profile, else, for a `$HOME/.claude` step, the rotator's live
-login. Before #2967 every step under a stored profile logged
-`account=unknown`. `unknown` is now left for a host with no profile store, a
-`CLAUDE_CONFIG_DIR` step, and a live login whose name cannot be read. The
-name is a local profile name, never an account name or e-mail address.
+`account=` in the recipe log names the login the failed attempt ran on: the
+profile the supervisor launched it under, else the inherited profile, else,
+for a `$HOME/.claude` step, the rotator's live login. `unknown` is left for a
+host with no profile store, a `CLAUDE_CONFIG_DIR` step, and a live login
+whose name cannot be read.
 
 ### A reset that names no zone
 
-Claude Code prints some limits with a bare clock time:
-
-```
-You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit · your 5-hour limit resets 11:50pm
-```
-
-No zone is guessed, so this reset is not read. The wait says so rather than
-read as a limit that stated no reset:
-
-```
-amplihack.recipe.usage_limit_wait waiting_for_capacity reason=reset_without_zone account=work until=none
-amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity account=work reset=none until=none bound=none
-```
-
-It is a capacity wait, even for a spend-limit line: the message names a
-usage window that resets, so a login with room, a login change or another
-login's reset ([The earliest-reset deadline](#the-earliest-reset-deadline))
-ends it. Only a spend limit that names no reset at all takes the
-login-change wait. A reset that names a zone the table does not know is a
-stated zone, not a missing one, and is handled as before #2967.
+Claude Code prints some limits with a bare clock time, as in
+`... · your 5-hour limit resets 11:50pm`. No zone is guessed, so the reset is
+not read, and the wait says so:
+`waiting_for_capacity reason=reset_without_zone ... until=none`. It is a
+capacity wait, even for a spend-limit line, so a login with room or a login
+change ends it ([#3121](https://github.com/rysweet/amplihack-rs/issues/3121)).
 
 ## The timed parts that remain
 
 | Part | What it is | What it does not do |
 |------|------------|---------------------|
 | The reset deadline | A wait whose limit stated a reset still ahead ends at that reset plus 120 s (`bound=reset+margin`), the reset held to its kind's window. The reset passing is a limit event: the failed login has recovered. | It never applies to a wait whose limit stated no usable reset. |
-| The earliest reset of another login | A wait ends at the first reset among the other logins the step could move to, plus 120 s, when that comes first (`bound=earliest_reset+margin`). That login recovering is a limit event too, and the retry runs on it ([The earliest-reset deadline](#the-earliest-reset-deadline)). | It never applies to a login-change wait, and it never makes a deadline later. |
+| The earliest reset of another login | A wait ends at the earliest end of a limit block recorded on another login the step ran on, plus 120 s, when that comes first (`bound=earliest_reset+margin`), and the retry runs on that login ([The earliest-reset deadline](#the-earliest-reset-deadline)). | It never applies to a login-change wait, and it never makes a deadline later. |
 | The progress line | The wait wakes once a minute to write `progress remaining=<n>s`, or `progress remaining=none` for a wait with no deadline. | It reads no file, checks no account, launches nothing and ends nothing. |
 
 Nothing else in a wait is timed. Where no file event can be had, the wait
@@ -682,24 +555,8 @@ its credit exhaustion is classed but does not wait
 - Where no file event can be had, the wait cannot see a login gain room or
   the login change. It ends at its reset, on a stop signal or when its
   session ends ([A wait with no file events](#a-wait-with-no-file-events)).
-- The move before a wait is the ordinary candidate selection, which reads
-  stored readings with no age bound, so a step can move onto a login an old
-  reading showed with room. The cost is one failed attempt, after which that
-  login is in the step's tried set
-  ([#3093](https://github.com/rysweet/amplihack-rs/issues/3093)). The
-  earliest-reset deadline does not share this: it reads no reading older than
-  five hours
-  ([Readings and blocks the rotator would refuse](#readings-and-blocks-the-rotator-would-refuse)).
-- A move does not read session flags, so a resumed session can be moved onto
-  a profile that lacks its transcript
-  ([#3091](https://github.com/rysweet/amplihack-rs/issues/3091)).
-- A reset that names no zone is not read; the wait names the cause
-  (`reset_without_zone`) and is a capacity wait with no deadline of its own
+- On a host the rotator has never run on, no block is recorded, so a wait
+  ends at its own reset or on a reading with room, not at another login's
+  reset.
+- A reset that names no zone is not read
   ([#3121](https://github.com/rysweet/amplihack-rs/issues/3121)).
-- The recipe heartbeat of a waiting step still reads `working`; the wait's
-  own `waiting_for_capacity`, `start` and `progress` lines say that it is
-  waiting and until when
-  ([#3120](https://github.com/rysweet/amplihack-rs/issues/3120)).
-- A step on `~/.claude` with no rotator running waits for its own login's
-  reset even when a stored profile has room
-  ([#3122](https://github.com/rysweet/amplihack-rs/issues/3122)).

@@ -12458,9 +12458,9 @@ unless the wait ends on another login's capacity (see
 [Retry login](#retry-login)). When auto-switch ran the step under other
 profiles before running out, their limits only steer auto-switch's choice of
 the next profile: a candidate that resets later does not stretch the wait, and
-a candidate's weekly limit or spend limit does not cancel it. A login the step
-has not tried that resets sooner ends the wait earlier, and the retry then runs
-on that login
+a candidate's weekly limit or spend limit does not cancel it, but the end of
+the block a candidate's limit recorded in the rotate ledger ends the wait when
+it comes first, and the retry then runs on that candidate
 ([The earliest-reset deadline](./usage-limit-waits.md#the-earliest-reset-deadline)). When auto-switch
 moved the step off the inherited profile before the first attempt, the
 inherited profile's limit comes from the usage readings: the latest reset
@@ -12671,9 +12671,9 @@ candidate that applies (a tie is named by the earlier row):
 | Candidate | Applies when | `bound=` |
 |-----------|--------------|----------|
 | reset + 120 s, or now + 120 s when the reset has passed | always | `reset+margin` |
-| another login's reset + 120 s | a login the step could move to comes back under the auto-switch threshold before that (issue #2967) | `earliest_reset+margin` |
+| another login's block end + 120 s | a limit block recorded on another login the step ran on ends before that (issue #2967) | `earliest_reset+margin` |
 
-A reset wait has no timed bound but these resets. It ends at its reset plus
+A reset wait has no timed bound but these two. It ends at its reset plus
 120 seconds, or earlier on a login with room or a login change
 ([Reasons a wait ends](#reasons-a-wait-ends)). No setting shortens it.
 
@@ -13065,7 +13065,7 @@ A capacity wait's deadline is one of:
 |----------|--------------|----------|
 | the failed login's reset + 120 s, the reset held to its kind's window | the limit message states a reset that is still in the future | `reset+margin` |
 | none (`until=none`) | the limit states no reset still in the future: none readable, credit exhaustion, a reset already passed, or a bare 429 | `none` |
-| another login's reset + 120 s | a login the step could move to comes back under the auto-switch threshold before the row above would end the wait (issue #2967); the `reset=` field keeps the limit's own reset | `earliest_reset+margin` |
+| another login's block end + 120 s | a limit block recorded on another login the step ran on ends before the row above would end the wait (issue #2967); the `reset=` field keeps the limit's own reset | `earliest_reset+margin` |
 
 A stated reset still ahead is the deadline however far away it is: a weekly
 limit days away is waited for once, to its reset. The reset is held to its
@@ -13419,13 +13419,12 @@ The `start` and `end` lines of each wait also go to the run's
 `reentered` line, which is identical in both sinks. The `end` line is
 identical; the `start` line is this one with `harness=` dropped and
 `account=<login>` put where it was. A `waiting_for_capacity` line reaches it
-too, and so do `other_logins_unread` and `retry_not_moved` (issue #2967), with
-`account=<login>` added at the end. No other event reaches that sink.
+too. No other event reaches that sink.
 
 | Event | Fields |
 |-------|--------|
 | `start` (reset wait) | `reason=usage_limit harness=claude reset=<time> until=<time> bound=reset+margin\|earliest_reset+margin` |
-| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time>\|none bound=reset+margin\|earliest_reset+margin\|none`; `until=none bound=none` when the limit stated no reset still ahead and no other login's reset comes first |
+| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time>\|none bound=reset+margin\|earliest_reset+margin\|none`; `until=none bound=none` when the limit stated no reset still ahead and no other login's block end comes first |
 | `start` (login-change wait) | `reason=spend_limit wait=login_change harness=claude reset=none until=none bound=none` |
 | `reentered` | `met=usage_limit\|rate_limit`; once per [re-entry](#a-limit-after-a-wait), before that wait's `start`. `met=usage_limit` is also written for a [passed reset](#a-reset-that-has-already-passed), whose `start` is a capacity wait |
 | `progress` | `remaining=<secs>s`, or `remaining=none` for a wait with no deadline, every 60 s |
@@ -13435,8 +13434,6 @@ too, and so do `other_logins_unread` and `retry_not_moved` (issue #2967), with
 | `failed` | `reason=prompt_cut_short`; the step's piped prompt could not be read to its end, so the step fails whether or not it met a limit (see [usage-limit waits](./usage-limit-waits.md#a-prompt-that-could-not-be-read-to-its-end)). Replaces `skipped reason=piped_prompt` |
 | `waiting_for_capacity` | `reason=reset_too_far\|no_reset\|spend_limit\|credits\|passed_reset\|reset_without_zone harness=<name> until=<time>\|none`, before the wait's `start`; the recipe log has `account=<login>` in place of `harness=`. `until=none` is followed on stderr by a sentence saying the wait has no deadline ([A wait with no deadline](./usage-limit-waits.md#a-wait-with-no-deadline)) |
 | `no_file_events` | `reason=unsupported\|watch_failed\|wait_failed`; stderr only, once per wait, where no file event can be had ([A wait with no file events](./usage-limit-waits.md#a-wait-with-no-file-events)) |
-| `other_logins_unread` | `reason=auto_switch_off\|ledger_unreadable\|readings_unreadable`, before the wait's `start`: the step's other logins could not be read, so no other login's reset can end this wait early. The recipe log adds `account=<login>`. On stderr a sentence naming the cause and the error comes first ([When the other logins cannot be read](./usage-limit-waits.md#when-the-other-logins-cannot-be-read)) |
-| `retry_not_moved` | `reason=auto_switch_off\|ledger_unreadable\|readings_unreadable\|login_not_eligible`, after the `resume` of a wait that ended at another login's reset: the retry runs on the step's own profile, not on that login. The recipe log adds `account=<login>`. On stderr a sentence naming both profiles and the cause comes first |
 
 `reason=` on a `start` line says **what stopped the step**, not which kind
 of wait followed. An organisation spend limit that states no reset, which is
@@ -13632,7 +13629,8 @@ Every token means the same thing in both sinks. The line is the stderr
 `grep amplihack.recipe.usage_limit_wait` over the recipe log and the step's
 stderr together reads as one stream. No
 `failed reason=…` line is written any more (see [Closing line](#closing-line)),
-so a `reason=` here is never a step's closing line.
+so a `reason=` here is always a `start`
+line's.
 
 A login-change wait therefore appears as:
 
@@ -13657,14 +13655,6 @@ One more line can reach it: the `reentered` line of a
 from the step's output, only `met=usage_limit` or `met=rate_limit` from a fixed
 list, so a reader sees that the signal was contradicted, and by which kind of
 limit, and nothing else.
-
-Two more can reach it (issue #2967): `other_logins_unread`, before a wait's
-`start`, and `retry_not_moved`, after the wait. Each says that the step's
-other logins played no part, and why, from a fixed list of reasons:
-`auto_switch_off`, `ledger_unreadable`, `readings_unreadable`, or, for the
-retry only, `login_not_eligible`. Each line ends with `account=<login>`, the
-login the wait was for. The error itself goes to stderr only
-([When the other logins cannot be read](./usage-limit-waits.md#when-the-other-logins-cannot-be-read)).
 
 **The account name.** It is the profile name the rotator records, read at
 runtime from the [rotate ledger](#rotate-state-directory)'s `live` or the

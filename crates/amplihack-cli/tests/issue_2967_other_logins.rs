@@ -1,43 +1,33 @@
 //! Issue #2967: a step whose login reaches its usage limit continues on
-//! another login the candidate rule allows, waits only when none can run it,
-//! and then also ends its wait at the earliest moment another login comes
-//! back under the auto-switch threshold. The wait line names the step's own
-//! login, and a reset stated with no zone is named as the cause of a wait
-//! rather than left silent. The waits themselves are the ones #2911 made: no
-//! budget, no step timeout, and an ending only on an event.
+//! another login the candidate rule allows, whether or not it has waited,
+//! and waits only when none can run it. That wait also ends at the earliest
+//! end of a limit block the rotate ledger records on another login the step
+//! has run on, and the retry runs on that login. The wait line names the
+//! step's own login, and a reset stated with no zone is named as the cause
+//! of a wait rather than left silent. The waits themselves are the ones
+//! #2911 made: no budget, no step timeout, and an ending only on an event.
 //!
 //! Cases (see `docs/reference/usage-limit-waits.md`, "Other logins"):
 //!
 //! - A: another login under the threshold takes the step with no wait.
-//! - A3: the wait line names the login (`account=X`, not `unknown`), with
-//!   auto-switch off (a setting the user chose: the wait is for the own
-//!   reset).
-//! - B: a reset stated with no zone ("... your 5-hour limit resets 9:30am")
-//!   is not read. The wait says so (`reason=reset_without_zone`) and is a
-//!   capacity wait, which another login's reset ends when there is one.
-//! - E1: with no login under the threshold, the wait ends at the earliest
-//!   reset across the other logins when that is first, and the retry runs
-//!   on the login that reset. A wait with no deadline of its own takes one
-//!   from there.
+//! - A3: the wait line names the login (`account=X`, not `unknown`).
+//! - B: a reset stated with no zone is not read, and the wait says so
+//!   (`reason=reset_without_zone`).
+//! - E1: with no login left to move to, the wait ends at the earliest end of
+//!   a block recorded on another login the step ran on, when that comes
+//!   first, and the retry runs on that login. A wait with no deadline of its
+//!   own takes one from there.
 //! - C: a limit that arrives after the step has waited moves to a login that
 //!   has room by then, instead of waiting again.
-//! - T: two logins that each report a limit: the step moves once, then
-//!   waits, and does not cycle between them.
-//! - U: the other logins cannot be considered (here, auto-switch turned
-//!   off while the step ran). The step still waits for its own reset, as it
-//!   must, but says why on stderr and in the recipe log before the wait's
-//!   `start`, so the quiet wait of #2967 cannot recur unexplained. An
-//!   unreadable ledger or readings file reaches the same lines (unit tests in
-//!   `auto_switch/tests_rerun_unread.rs` and `tests_limit_choice.rs`). A
-//!   ledger unreadable from the start fails the launch before any attempt
-//!   runs, so only these tests can reach that case.
+//! - T: two logins that each report a limit, on a host with no rotate
+//!   ledger: the step moves once, then waits on its own reset, and does not
+//!   cycle between them.
 //!
 //! Every case uses fake logins and the fixture's virtual clock (`TEST_NOW`),
-//! which moves only while a wait blocks, and never real time. Readings are
-//! stamped on the real clock, because the pre-wait choice reads
-//! `fsx::now()`; the wait moves a reset onto its own clock by distance, so a
-//! test asserts a range for those, never an exact instant. See
-//! `issue_1618_fixture`.
+//! which moves only while a wait blocks, and never real time. Readings and
+//! blocks are stamped on the real clock; the wait moves an instant onto its
+//! own clock by distance, so a test asserts a range for those, never an
+//! exact instant. See `issue_1618_fixture`.
 
 #![cfg(unix)]
 
@@ -46,7 +36,7 @@ use crate::issue_1618_fixture::{
     wait_lines,
 };
 use crate::issue_1618_wait_profiles::{switch_on, with_profiles};
-use crate::issue_1801_capacity_wait::real_now;
+use crate::issue_1801_capacity_wait::{real_now, x_is_live};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -309,39 +299,40 @@ fn b_a_reset_with_no_zone_is_not_read_and_the_wait_says_why() {
     );
 }
 
-#[test]
-fn b_a_reset_with_no_zone_takes_the_earliest_reset_of_another_login() {
-    // The same message with auto-switch on and Y out for about 15 minutes:
-    // the wait is not left without a deadline; Y's reset ends it and the
-    // retry runs on Y.
-    let f = with_profiles();
-    switch_on(&f);
-    write_readings(&f, &[Login::out("Y", 900)]);
-    let out = f.run(&mut nested_x(&f, SPEND_ZONELESS, true));
-    assert!(out.status.success(), "{}", describe(&out));
-    let ev = events(&out);
-    assert!(
-        ev[0].starts_with("waiting_for_capacity reason=reset_without_zone harness=claude until=2"),
-        "{ev:?}"
-    );
-    assert!(ev[1].ends_with(" bound=earliest_reset+margin"), "{ev:?}");
-    assert_eq!(ev[2..], ["end reason=reset reached", "resume attempt=2"]);
-    assert_ran_on_y(&f, 2);
+// --- E1: no login left, so the earliest reset across logins -------------------
+
+/// Y's limit, resetting at 08:15, fifteen minutes before X's own 08:30.
+const Y_SOONER: &str = "You've hit your session limit · resets 8:15am (America/Los_Angeles)";
+
+/// Y's limit, resetting at 09:30, an hour after X's own.
+const Y_LATER: &str = "You've hit your session limit · resets 9:30am (America/Los_Angeles)";
+
+/// A step that inherited X on a host whose rotator has run (so a limit
+/// records a block), with Y under the threshold: X meets `x_message`, the
+/// step moves to Y, Y meets `y_message`, and no login is left to move to.
+fn x_then_y(f: &Fixture, x_message: &str, y_message: &str) -> Command {
+    switch_on(f);
+    x_is_live(f);
+    write_readings(f, &[Login::room("Y")]);
+    let mut c = nested_x(f, x_message, true);
+    c.env("LIMIT_PROFILE", "")
+        .env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE_Y", y_message);
+    c
 }
 
-// --- E1: no login usable, so the earliest reset across logins -------------------
-
 #[test]
-fn e1_with_no_login_usable_the_wait_ends_at_the_earliest_reset_across_logins() {
-    // X's own reset is 08:30. Y is out until about 08:15, so that is when
-    // the step can run again, on Y, and not 08:32 on X. `reset=` keeps the
-    // reset X's own message stated; `until=` and `bound=` say where the
-    // deadline came from.
+fn e1_with_no_login_left_the_wait_ends_at_the_earliest_reset_across_logins() {
+    // X's own reset is 08:30. Y's limit recorded a block until 08:15, so that
+    // is when the step can run again, on Y, and not 08:32 on X. `reset=`
+    // keeps the reset X's own message stated; `until=` and `bound=` say
+    // where the deadline came from.
     let f = with_profiles();
-    switch_on(&f);
-    write_readings(&f, &[Login::out("Y", 900)]);
-    let out = f.run(&mut nested_x(&f, LIMIT_TEXT, true));
+    let out = f.run(&mut x_then_y(&f, LIMIT_TEXT, Y_SOONER));
     assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 3, "X, Y, then Y again: {}", describe(&out));
+    assert_eq!(f.call("0", 1)["PROFILE"], "X");
+    assert_ran_on_y(&f, 2);
     let ev = events(&out);
     assert_eq!(ev.len(), 3, "{ev:?}");
     let start = &ev[0];
@@ -354,32 +345,31 @@ fn e1_with_no_login_usable_the_wait_ends_at_the_earliest_reset_across_logins() {
     assert!(start.ends_with(" bound=earliest_reset+margin"), "{start}");
     let until = instant(between(start, "until", "bound"));
     assert!(
-        (TEST_NOW + 600 + 120..=TEST_NOW + 900 + 120).contains(&until),
-        "until={until} is Y's reset plus the margin, not X's 08:32: {start}"
+        (TEST_NOW + 900 + 120 - 5..=TEST_NOW + 900 + 120).contains(&until),
+        "until={until} is Y's block end plus the margin, not X's 08:32: {start}"
     );
-    assert_eq!(ev[1..], ["end reason=reset reached", "resume attempt=2"]);
+    assert_eq!(ev[1..], ["end reason=reset reached", "resume attempt=3"]);
     assert!(
         text(&out.stderr).contains(
-            "the earliest reset among this step's logins has arrived; rerunning this step under profile \"Y\" (auto-switch)"
+            "the earliest recorded reset among this step's logins has passed; rerunning this \
+             step under profile \"Y\" (auto-switch)"
         ),
         "{}",
         describe(&out)
     );
-    assert_ran_on_y(&f, 2);
+    assert_ran_on_y(&f, 3);
 }
 
 #[test]
-fn e1_a_wait_with_no_deadline_takes_the_other_logins_reset_however_far() {
+fn e1_a_wait_with_no_deadline_of_its_own_takes_the_block_end() {
     // X's message states no reset that parses, so its own wait would have
-    // no deadline (#2911). Y resets six hours on: there is no five-hour
-    // ceiling, so that is the deadline, and the retry runs on Y.
+    // no deadline (#2911). Y's block ends at 08:15: that is the deadline,
+    // and the retry runs on Y.
     let f = with_profiles();
-    switch_on(&f);
-    write_readings(&f, &[Login::out("Y", 6 * 3600)]);
-    let out = f.run(&mut nested_x(
+    let out = f.run(&mut x_then_y(
         &f,
         "You've hit your session limit · resets later",
-        true,
+        Y_SOONER,
     ));
     assert!(out.status.success(), "{}", describe(&out));
     let ev = events(&out);
@@ -396,42 +386,24 @@ fn e1_a_wait_with_no_deadline_takes_the_other_logins_reset_however_far() {
         "{start}"
     );
     assert!(start.ends_with(" bound=earliest_reset+margin"), "{start}");
-    let until = instant(between(start, "until", "bound"));
-    assert!(
-        (TEST_NOW + 6 * 3600 - 300 + 120..=TEST_NOW + 6 * 3600 + 120).contains(&until),
-        "until={until}: {start}"
-    );
-    assert_eq!(ev[2..], ["end reason=reset reached", "resume attempt=2"]);
-    assert_ran_on_y(&f, 2);
+    assert_eq!(ev[2..], ["end reason=reset reached", "resume attempt=3"]);
+    assert_ran_on_y(&f, 3);
 }
 
 #[test]
-fn e1_a_later_reset_on_another_login_leaves_the_wait_on_its_own_reset() {
-    // Y resets a day on, after X: X's own reset times the wait, as it did.
+fn e1_a_later_block_on_another_login_leaves_the_wait_on_its_own_reset() {
+    // Y's block ends an hour after X's reset: X's own reset times the wait,
+    // as it did, and the retry runs on X.
     let f = with_profiles();
-    switch_on(&f);
-    write_readings(&f, &[Login::out("Y", 86_400)]);
-    let out = f.run(&mut nested_x(&f, LIMIT_TEXT, true));
+    let out = f.run(&mut x_then_y(&f, LIMIT_TEXT, Y_LATER));
     assert!(out.status.success(), "{}", describe(&out));
-    let start = &events(&out)[0];
-    assert!(start.ends_with(" bound=reset+margin"), "{start}");
-    assert_eq!(f.call("0", 2)["PROFILE"], "X");
-}
-
-#[test]
-fn e1_the_failed_logins_own_earlier_reset_stays_a_plain_reset_wait() {
-    // Y resets after X: nothing changes.
-    let f = with_profiles();
-    switch_on(&f);
-    write_readings(&f, &[Login::out("Y", 3500)]);
-    let out = f.run(&mut nested_x(&f, LIMIT_TEXT, true));
     let start = &events(&out)[0];
     assert!(start.ends_with(" bound=reset+margin"), "{start}");
     assert!(
         start.contains("reset=2026-10-18 08:30:00 -07:00"),
         "the message's reset: {start}"
     );
-    assert_eq!(f.call("0", 2)["PROFILE"], "X");
+    assert_eq!(f.call("0", 3)["PROFILE"], "X");
 }
 
 // --- C: a limit after the wait was used ----------------------------------------
@@ -504,7 +476,8 @@ fn t_two_logins_that_each_report_a_limit_move_once_then_wait() {
     // X and Y each report a limit. The step moves from X to Y once; Y is
     // then in the tried set with X, so no move is left and the step waits
     // on X's own reset, then retries on X. It never moves back and forth:
-    // each move adds a login to the tried set.
+    // each move adds a login to the tried set. This host's rotator has never
+    // run, so no block is recorded and nothing moves the deadline.
     let f = with_profiles();
     switch_on(&f);
     let mut c = nested_x(&f, LIMIT_TEXT, true);
@@ -527,88 +500,4 @@ fn t_two_logins_that_each_report_a_limit_move_once_then_wait() {
         "{ev:?}"
     );
     assert_eq!(ev[1..], ["end reason=reset reached", "resume attempt=3"]);
-}
-
-// --- U: the other logins cannot be considered -------------------------------------
-
-/// A `claude` that turns auto-switch off during the step's first attempt,
-/// by putting a prepared `off` toggle file in place, then runs the fixture's
-/// stub. The supervisor reads the setting again when the limit arrives.
-const SWITCH_OFF_CLAUDE: &str = r#"#!/bin/sh
-case "$1" in --version) exec "$REAL_CLAUDE" "$@" ;; esac
-n=$(cat "$RECORD_DIR/count.${STEP:-0}" 2>/dev/null || echo 0)
-if [ "$n" = "0" ]; then
-  cp "$OFF_FROM" "$OFF_TO.tmp" && mv "$OFF_TO.tmp" "$OFF_TO"
-fi
-exec "$REAL_CLAUDE" "$@"
-"#;
-
-#[test]
-fn u_auto_switch_turned_off_during_the_step_is_named_before_the_wait() {
-    // Y is out for about 15 minutes, so with auto-switch on its reset ends
-    // the wait (E1). Auto-switch is turned off while the first attempt runs:
-    // the step then waits for X's own reset, with no retry and no gate
-    // added, and both logs say why. Before, the lines here were the same as
-    // for a step with no other login at all.
-    let f = with_profiles();
-    let toggle = f.profiles.join(".auto-switch");
-    let out = f.run(&mut f.cmd(&["profile", "auto-switch", "off"]));
-    assert!(out.status.success(), "auto-switch off: {}", describe(&out));
-    let off = f.root.join("auto-switch.off");
-    private_file(&off, &fs::read_to_string(&toggle).unwrap());
-    switch_on(&f);
-    write_readings(&f, &[Login::out("Y", 900)]);
-    let dir = f.root.join("switch-off-wrapper");
-    fs::create_dir_all(&dir).unwrap();
-    let wrapper = dir.join("claude");
-    executable(&wrapper, SWITCH_OFF_CLAUDE);
-    let log = recipe_log(&f);
-    let mut c = nested_x(&f, LIMIT_TEXT, true);
-    // The setting comes from the file alone, so turning it off there counts.
-    c.env_remove(TOGGLE_ENV)
-        .env(RECIPE_LOG_ENV, &log)
-        .env("AMPLIHACK_CLAUDE_BINARY_PATH", &wrapper)
-        .env("REAL_CLAUDE", f.tools.join("claude"))
-        .env("OFF_FROM", &off)
-        .env("OFF_TO", &toggle);
-    let out = f.run(&mut c);
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2, "{}", describe(&out));
-    assert_eq!(f.call("0", 2)["PROFILE"], "X", "the retry stays on X");
-
-    assert!(
-        text(&out.stderr).contains(
-            "amplihack: this step's other logins were not read for its wait \
-             (reason=auto_switch_off): auto-switch was turned off while this step ran; \
-             no other login's reset can end this wait early (auto-switch)"
-        ),
-        "{}",
-        describe(&out)
-    );
-    let ev = events(&out);
-    assert_eq!(
-        ev[0], "other_logins_unread reason=auto_switch_off",
-        "{ev:?}"
-    );
-    assert!(
-        ev[1].starts_with(
-            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 "
-        ),
-        "{ev:?}"
-    );
-    assert!(
-        ev[1].ends_with(" bound=reset+margin"),
-        "X's own reset, not Y's: {ev:?}"
-    );
-    assert_eq!(ev[2..], ["end reason=reset reached", "resume attempt=2"]);
-
-    let lines = log_lines(&log);
-    assert_eq!(
-        lines[0], "other_logins_unread reason=auto_switch_off account=X",
-        "{lines:?}"
-    );
-    assert!(
-        lines[1].starts_with("start reason=usage_limit account=X "),
-        "{lines:?}"
-    );
 }

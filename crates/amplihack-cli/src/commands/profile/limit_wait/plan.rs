@@ -324,9 +324,10 @@ pub(crate) enum Bound {
     /// The limit's own reset plus [`MARGIN`]: the recorded reset passing,
     /// which is a limit event.
     ResetMargin,
-    /// The earliest reset across the other logins the step could move to,
-    /// plus [`MARGIN`] (issue #2967): that login recovering is a limit event
-    /// as much as the failed login's own reset is. Set by [`earliest`] alone.
+    /// The earliest end of a limit block recorded on another login the step
+    /// has run on, plus [`MARGIN`] (issue #2967): that login recovering is a
+    /// limit event as much as the failed login's own reset is. Set by
+    /// [`earliest`] alone.
     EarliestReset,
     /// No deadline: the limit stated no usable reset, so the wait ends only
     /// on a login with room or a login change (see the module docs). Written
@@ -478,27 +479,23 @@ pub(crate) fn plan_login_change() -> Plan {
     }
 }
 
-/// `p`, ending at the earliest reset among the other logins the step could
-/// move to when that comes before `p` would end (issue #2967).
+/// `p`, ending at `other` plus [`MARGIN`] when that comes before `p` would
+/// end (issue #2967).
 ///
 /// On 21 November 2026 a step waited two hours for its own login's reset
-/// while other stored logins had room or were about to. A login's window
-/// resetting writes no file, so no file event ends the wait there; the
-/// instant is known from that login's reading, and it is the one more limit
-/// event a wait can have a deadline for. This adds no timer: it only moves
-/// the one deadline a wait already blocks on earlier, and it never gives a
-/// deadline to a wait that `p` says may not have one for its own reasons.
+/// while other stored logins had room or were about to. Another login's
+/// window resetting writes no file this wait watches, so no file event ends
+/// the wait there. This adds no timer: it only moves the one deadline a
+/// wait already blocks on earlier, and never gives a deadline to a wait that
+/// `p` says may not have one for its own reasons.
 ///
-/// `other` is that earliest reset on the wait's clock, from
-/// `auto_switch::limit_choice::cross_login_reset`, which has already left
-/// out every login that is under the threshold now, tried, barred or without a reset
-/// ahead. It is held to the weekly window ([`held`]), as any reset read
-/// from a reading is. It counts when it is strictly after `now` and its
-/// deadline comes strictly before `p.until`, or `p` has none. Then the
-/// deadline becomes `other` plus [`MARGIN`] and `bound=` reads
-/// `earliest_reset+margin`; the plan's kind and its `reset=`, the limit's
-/// own reset, are kept. A wait that ends there retries on the login whose
-/// reset set the deadline (`auto_switch::rerun::retry_profile`).
+/// `other` is the earliest end, on the wait's clock, of a limit block the
+/// rotate ledger records on another login the step has run on
+/// (`auto_switch::rerun::earliest_block`). It is held to the weekly window
+/// ([`held`]), as any reset not read from the message is. It counts when it
+/// is strictly after `now` and its deadline comes strictly before `p.until`,
+/// or `p` has none. Then `bound=` reads `earliest_reset+margin`; the plan's
+/// kind and its `reset=`, the limit's own reset, are kept.
 ///
 /// A login-change wait is returned as it was: it waits for one
 /// organisation's spend limit to be replaced, and no other login's window

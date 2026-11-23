@@ -89,27 +89,6 @@ fn select_by<'a>(
         .or_else(|| unknown.first().copied())
 }
 
-/// When a reading that [`is_exhausted`] stops being so (issue #2967): the
-/// latest `resets_at` among the windows at or above `threshold`, because the
-/// login is under the threshold only once all of them have reset. `None`
-/// when the reading is not exhausted, and when no such window has a reset
-/// ahead. Never an instant at or before `now`.
-///
-/// This is [`is_exhausted`]'s own test read window by window, so a step's
-/// wait is bounded by the same threshold the move before it was made by,
-/// and there is no second bound to keep in step with it.
-pub fn regains_room(r: &Reading, threshold: u8, now: i64) -> Option<i64> {
-    let bars = |w: Option<&Window>| {
-        w.filter(|w| adjusted(Some(w), now) >= f64::from(threshold))
-            .map(|w| w.resets_at)
-            .filter(|at| *at > now)
-    };
-    [bars(r.five_hour.as_ref()), bars(r.seven_day.as_ref())]
-        .into_iter()
-        .flatten()
-        .max()
-}
-
 /// The overflow side of a selection (issue #1606).
 pub struct OverflowPool<'a> {
     /// The overflow profiles in the order they are tried: tier, then file

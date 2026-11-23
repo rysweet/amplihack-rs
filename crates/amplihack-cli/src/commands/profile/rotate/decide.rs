@@ -18,13 +18,6 @@ pub(super) mod target_msg;
 #[path = "target_seen.rs"]
 pub(super) mod target_seen;
 
-// Issue #2967: a step's earliest-reset wait reads other logins by the
-// rotator's own test of a standing block and its own bound on a stored
-// reading's age, so the two cannot disagree on which logins come back.
-pub(in crate::commands::profile) use self::{
-    last_good::LAST_GOOD_MAX_AGE_SECS, target::standing_block,
-};
-
 /// What one probe showed, reduced to what the rule needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Reading {

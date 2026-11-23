@@ -553,15 +553,13 @@ fn a_fallback_reading_does_not_start_the_retry_before_the_wait() {
 // --- issue #2967: the earliest-reset deadline and its retry --------------------
 //
 // `Waiter::offer_earliest_reset(Option<i64>)` gives the wait about to be
-// planned the earliest instant at which another login the step could move to
-// comes back under the auto-switch threshold; the next `after_limit` takes it
-// whatever it does. When that
-// instant comes before the wait's own deadline the wait ends there, and
+// planned the earliest end of a limit block recorded on another login the
+// step has run on; the next `after_limit` takes it whatever it does. When
+// that instant comes before the wait's own deadline the wait ends there, and
 // `Waiter::reached_earliest_reset()` says so: the retry then runs on that
-// login (`auto_switch::rerun::retry_profile`), with no fresh reading
-// required. The flag is cleared wherever `retry_move` is cleared, the
-// retry-before-wait return included, so a value an earlier wait left cannot
-// choose the login of a later retry.
+// login (`auto_switch::rerun::block_ended_retry`). The flag is cleared
+// wherever `retry_move` is cleared, the retry-before-wait return included,
+// so a value an earlier wait left cannot choose the login of a later retry.
 
 #[test]
 fn a_wait_offered_a_sooner_reset_ends_there_and_says_so() {

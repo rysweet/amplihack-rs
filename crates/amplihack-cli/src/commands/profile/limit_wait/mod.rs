@@ -60,13 +60,12 @@
 //! recipe log, so a waiting step is visible there and not just in its own
 //! stderr (`recipe_log`). See docs/reference/usage-limit-waits.md.
 //!
-//! Issue #2967 adds no timer. A wait is the last resort: whenever an
-//! attempt meets a limit, waited or not, an auto-switch step first moves to
-//! another login the candidate rule allows (`auto_switch::rerun`), and only
-//! when none can run it does it wait. That wait's one deadline is moved
-//! earlier when another login the step could still move to drops under the
-//! auto-switch threshold sooner (`plan::earliest`), and a wait that ends
-//! there retries on that login. Every wait names the login it is for
+//! Issue #2967 adds no timer. Whenever an attempt meets a limit, waited or
+//! not, an auto-switch step first moves to another login the candidate rule
+//! allows (`auto_switch::rerun`), and waits only when none can run it. That
+//! wait's one deadline moves earlier when a limit block recorded on another
+//! login the step has run on ends sooner (`plan::earliest`), and the retry
+//! then runs on that login. Every wait names its login
 //! (`Waiter::note_attempt_login`).
 //!
 //! `Waiter` decides what happens after a limit; the one supervisor loop,
@@ -75,7 +74,6 @@
 
 pub(crate) mod claude_args;
 mod clock;
-pub(crate) mod earliest;
 mod ending;
 mod events;
 pub(crate) mod fingerprint;
@@ -92,8 +90,6 @@ mod wake;
 mod tests_changed;
 #[cfg(test)]
 mod tests_claude_args;
-#[cfg(test)]
-mod tests_earliest;
 #[cfg(test)]
 mod tests_fingerprint;
 #[cfg(test)]
@@ -140,8 +136,8 @@ use amplihack_utils::rotator_status::Ledger;
 use anyhow::Result;
 use clock::Clock;
 use ending::the_prompt_was_lost;
+pub(crate) use events::Met;
 use events::{Event, Shape, Skip, log, recipe_line};
-pub(crate) use events::{Met, Unconsidered};
 use fingerprint::{Fingerprint, Source, Watch};
 use marks::Marks;
 use plan::{Bound, NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
@@ -331,17 +327,13 @@ pub(crate) struct Waiter {
     /// login. Written once, when the wait returns; `None` leaves the retry
     /// on the inherited profile.
     retry_move: Option<RetryMove>,
-    /// The earliest instant, on the wait's clock, at which another login
-    /// this step could move to comes back under the auto-switch threshold
-    /// (issue #2967). Offered
-    /// by the supervisor for the one wait it is about to plan
-    /// ([`Waiter::offer_earliest_reset`]) and taken by
-    /// [`Waiter::after_limit`] on every call, so no later wait can inherit
-    /// an instant an earlier one was given.
+    /// The earliest end, on the wait's clock, of a limit block recorded on
+    /// another login this step has run on (issue #2967). Offered by the
+    /// supervisor for the one wait it is about to plan and taken by
+    /// [`Waiter::after_limit`] on every call, so no later wait inherits it.
     earliest_reset: Option<i64>,
-    /// Whether the wait that last ran ended at a deadline another login's
-    /// reset set (issue #2967). Written and cleared with `retry_move`, so it
-    /// only ever describes the wait that just ran.
+    /// Whether the wait that last ran ended at that instant (issue #2967).
+    /// Written and cleared with `retry_move`.
     reached_earliest_reset: bool,
     /// Whether the retry [`Waiter::after_limit`] last asked for was earned
     /// by a wait that ended on a positive signal (issue #2857). Read and
@@ -487,48 +479,20 @@ impl Waiter {
         self.retry_move
     }
 
-    /// Offers the wait about to be planned the earliest instant, on the
-    /// wait's clock, at which another login this step could move to comes
-    /// back under the auto-switch threshold (issue #2967); `None` when there
-    /// is none. The next call
-    /// to [`Waiter::after_limit`] takes it, whatever that call does, and
-    /// moves the wait's deadline there when it is sooner (`plan::earliest`).
+    /// Offers the wait about to be planned the earliest end, on the wait's
+    /// clock, of a limit block recorded on another login this step has run
+    /// on (issue #2967); `None` when there is none. The next call to
+    /// [`Waiter::after_limit`] takes it, whatever that call does, and moves
+    /// the wait's deadline there when it is sooner (`plan::earliest`).
     pub(crate) fn offer_earliest_reset(&mut self, at: Option<i64>) {
         self.earliest_reset = at;
     }
 
-    /// Writes `other_logins_unread reason=<why>` to stderr and to the run's
-    /// recipe log (issue #2967): the step's other logins could not be read
-    /// for the wait about to be planned, so no other login's reset can end
-    /// it early. Without this line an operator could not tell that from no
-    /// other login having a reset ahead, which writes nothing, and the first
-    /// is the quiet wait on the step's own reset that #2967 is about. It
-    /// changes nothing the wait does: no retry, no gate.
-    ///
-    /// The supervisor prints the error itself on the line before; this line
-    /// carries only the closed set, as every wait line does.
-    pub(crate) fn other_logins_unread(&self, why: Unconsidered) {
-        emit(&Event::OtherLoginsUnread { why }, self.mark().as_deref());
-    }
-
-    /// Writes `retry_not_moved reason=<why>` to stderr and to the run's
-    /// recipe log (issue #2967): the wait ended at another login's reset, and
-    /// the retry runs on the step's own login instead of that one, because
-    /// that login may no longer be run on or the logins could not be read.
-    /// The account is the one the wait was for, as on its `end` line. The
-    /// supervisor names both logins on the line before.
-    pub(crate) fn retry_not_moved(&self, why: Unconsidered) {
-        emit(&Event::RetryNotMoved { why }, self.mark().as_deref());
-    }
-
-    /// Whether the wait that last ran ended at a deadline another login's
-    /// reset set: `end reason=reset reached` with `bound=earliest_reset+margin`
-    /// (issue #2967). The retry then runs on that login, with no fresh
-    /// reading required, because that reset is what the wait was for.
-    ///
-    /// Cleared wherever `retry_move` is cleared: as each wait is planned,
-    /// the retry-before-wait return included, so a value an earlier wait
-    /// left can never choose the login of a later retry.
+    /// Whether the wait that last ran ended at the instant
+    /// [`Waiter::offer_earliest_reset`] gave it: `end reason=reset reached`
+    /// with `bound=earliest_reset+margin` (issue #2967). The retry then runs
+    /// on the login whose block ended there. Cleared as each wait is
+    /// planned, so it only ever describes the wait that just ran.
     pub(crate) fn reached_earliest_reset(&self) -> bool {
         self.reached_earliest_reset
     }
@@ -654,10 +618,10 @@ impl Waiter {
                 return AfterLimit::Finish(None);
             }
         };
-        // Issue #2967: another login the step could move to coming back under
-        // the auto-switch threshold is a limit event too, and the one a login's own files never
-        // record. Its instant moves the deadline earlier when it is sooner;
-        // the kind of wait, and so what may end it, is unchanged.
+        // Issue #2967: a block recorded on another login ending is a limit
+        // event too, and one this login's own files never record. Its end
+        // moves the deadline earlier when it is sooner; the kind of wait,
+        // and so what may end it, is unchanged.
         let p = plan::earliest(p, other_reset, now);
         self.marks.record(mark.clone());
         let account = mark.as_deref();
@@ -758,8 +722,7 @@ impl Waiter {
             start: now,
             room_was_seen,
         });
-        // Issue #2967: the earliest reset arrived, so the login whose reset
-        // set the deadline is the one to retry on.
+        // Issue #2967: the other login's block ended, so the retry runs on it.
         self.reached_earliest_reset = end == End::ResetReached && p.bound == Bound::EarliestReset;
         emit(&Event::End(end), account);
         match end {

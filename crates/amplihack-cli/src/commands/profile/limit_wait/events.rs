@@ -1,10 +1,9 @@
 //! The wait's log lines (issue #1618): `amplihack.recipe.usage_limit_wait`
 //! followed by the event. Built only from static text, integers and parsed
-//! instants, with one exception: the recipe-log `start`,
-//! `waiting_for_capacity`, `other_logins_unread` and `retry_not_moved` lines
-//! carry the login being waited on, which [`recipe_line`] re-validates
-//! against the rotator's own name form before it can reach a file (issues
-//! #2731, #2911, #2967).
+//! instants, with one exception: the recipe-log `start` and
+//! `waiting_for_capacity` lines carry the login being waited on, which
+//! [`recipe_line`] re-validates against the rotator's own name form before
+//! it can reach a file (issues #2731, #2911).
 //!
 //! Tested in `tests_log.rs` and `tests_log_recipe.rs`.
 
@@ -114,56 +113,6 @@ pub(super) enum Event {
     NoFileEvents {
         why: &'static str,
     },
-    /// The supervisor could not read the step's other logins for the wait
-    /// about to start, so no other login's reset can end that wait early
-    /// (issue #2967). Written before the wait's [`Event::Start`], to stderr
-    /// and to the run's recipe log, so a reader can tell "the logins could
-    /// not be read" from "no other login had a reset ahead", which writes
-    /// nothing. The supervisor prints the error itself on the line before.
-    OtherLoginsUnread {
-        why: Unconsidered,
-    },
-    /// The wait ended at another login's reset, but the retry runs on the
-    /// step's own login, not that one (issue #2967). Written after the
-    /// wait's `resume`, to stderr and to the run's recipe log; the
-    /// supervisor names both logins on the line before.
-    RetryNotMoved {
-        why: Unconsidered,
-    },
-}
-
-/// Why a wait, or the retry after one, did not consider the step's other
-/// logins (issue #2967). A closed set, so the line carries no word of a file
-/// or an error message: the supervisor prints those on stderr itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Unconsidered {
-    /// Auto-switch was turned off while the step ran.
-    AutoSwitchOff,
-    /// The auto-switch ledger could not be read.
-    LedgerUnreadable,
-    /// The auto-switch usage readings could not be read.
-    ReadingsUnreadable,
-    /// The login whose reset ended the wait may no longer be run on: it was
-    /// excluded, leased, given another account, logged out or removed while
-    /// the step waited. Only the retry after a wait meets it.
-    LoginNotEligible,
-    /// The login whose reset ended the wait is still held out by a limit
-    /// block on it, or a reading of it at or above the auto-switch
-    /// threshold, recorded after the wait's deadline was set (issue #3105).
-    /// Only the retry after a wait meets it.
-    LoginStillLimited,
-}
-
-impl Unconsidered {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Unconsidered::AutoSwitchOff => "auto_switch_off",
-            Unconsidered::LedgerUnreadable => "ledger_unreadable",
-            Unconsidered::ReadingsUnreadable => "readings_unreadable",
-            Unconsidered::LoginNotEligible => "login_not_eligible",
-            Unconsidered::LoginStillLimited => "login_still_limited",
-        }
-    }
 }
 
 /// Which limit met the retry a wait earned (issue #2857). A closed set, so
@@ -236,23 +185,19 @@ where
 
 /// The line a wait appends to the run's recipe log, or `None` for an event
 /// that does not belong there (issue #2731). Only a wait's `start` and `end`,
-/// the `reentered` between two of them (issue #2857), the
-/// `waiting_for_capacity` before a `start` (issue #2911), and the
-/// `other_logins_unread` before a `start` and `retry_not_moved` after an
-/// `end` (issue #2967) do: the recipe log says that the step is waiting, on
-/// which login, until when and why, how the wait ended, whether the step went
-/// back into one, and why its other logins played no part when they could
-/// not, and the step's stderr keeps the rest.
+/// the `reentered` between two of them (issue #2857) and the
+/// `waiting_for_capacity` before a `start` (issue #2911) do: the recipe log
+/// says that the step is waiting, on which login, until when and why, how the
+/// wait ended and whether the step went back into one, and the step's stderr
+/// keeps the rest.
 ///
 /// The `end` and `reentered` lines are the stderr ones. The `start` and
 /// `waiting_for_capacity` lines are the stderr ones with `harness=` dropped
-/// and `account=` put in its place, and the `other_logins_unread` and
-/// `retry_not_moved` lines are the stderr ones with `account=` added at the
-/// end, so one `grep` over both sinks reads as one stream. `account` is
-/// re-validated here ([`account_field`]), at the one point where a login name
-/// can reach a file: a name outside the rotator's own form is written as
-/// `unknown` whole rather than trimmed to fit, so two logins can never
-/// collapse onto one identity in the log.
+/// and `account=` put in its place, so one `grep` over both sinks reads as
+/// one stream. `account` is re-validated here ([`account_field`]), at the one
+/// point where a login name can reach a file: a name outside the rotator's
+/// own form is written as `unknown` whole rather than trimmed to fit, so two
+/// logins can never collapse onto one identity in the log.
 pub(super) fn recipe_line<Z: TimeZone>(e: &Event, account: Option<&str>, tz: &Z) -> Option<String>
 where
     Z::Offset: Display,
@@ -272,9 +217,6 @@ where
             "{PREFIX} {}",
             capacity_body(*why, &account_field(account), *until, tz)
         )),
-        Event::OtherLoginsUnread { .. } | Event::RetryNotMoved { .. } => {
-            Some(format!("{} {}", line(e, tz), account_field(account)))
-        }
         Event::End(_) | Event::Reentered { .. } => Some(line(e, tz)),
         _ => None,
     }
@@ -345,10 +287,6 @@ where
         ),
         Event::PromptCutShort => format!("failed reason={}", NoWait::PromptCutShort.as_str()),
         Event::NoFileEvents { why } => format!("no_file_events reason={why}"),
-        Event::OtherLoginsUnread { why } => {
-            format!("other_logins_unread reason={}", why.as_str())
-        }
-        Event::RetryNotMoved { why } => format!("retry_not_moved reason={}", why.as_str()),
         Event::Reentered { met } => format!(
             "reentered met={}",
             match met {

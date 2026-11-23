@@ -11,17 +11,15 @@
 //! finish on a different account from the one it started on. Only the final
 //! attempt's stdout is printed.
 //!
-//! Issue #2967: a wait is the last resort. Whenever an attempt reports a
-//! usage limit the step first moves to another login the candidate rule
-//! allows, whether or not it has waited before. A wait starts only when none
-//! can run it, and its deadline is then moved to the earliest moment another
-//! login the step could still move to drops under the auto-switch threshold
-//! (`limit_choice::cross_login_reset`), with the retry on that login.
+//! Issue #2967: a step moves to another login on every limit, whether or
+//! not it has waited, and waits only when no login can run it. That wait
+//! also ends at the earliest end of a limit block the rotate ledger records
+//! on another login the step ran on, and the retry then runs on that login
+//! ([`earliest_block`], [`block_ended_retry`]).
 
 use super::candidate::{self, Pool};
 use super::config::{self, Config};
 use super::fsx;
-use super::limit_choice;
 use super::overflow_inputs::OverflowInputs;
 use super::own_login::{OwnLogins, unreadable_note};
 use super::per_token;
@@ -31,10 +29,9 @@ use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
     Attempt, Limited, Signals, note_key_error, run_attempt_with_recovery,
 };
-use crate::commands::profile::limit_wait::earliest::earliest;
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, Replay, RerunStdin};
-use crate::commands::profile::limit_wait::{AfterLimit, Met, Resumed, Unconsidered, Waiter};
+use crate::commands::profile::limit_wait::{AfterLimit, Met, Resumed, Waiter};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate;
 use crate::commands::profile::store::ProfileStore;
@@ -68,14 +65,6 @@ const NOT_RUN_WITHOUT_A_COPY: &str = "this step was not run: its prompt comes on
 /// the rest. It is the one way a captured prompt is lost.
 const PROMPT_CUT_SHORT: &str = "its piped prompt could not be read to its end, so neither this \
                                 attempt nor a later one can be given the whole of it";
-
-/// The note the retry after an earliest-reset wait prints (issue #2967),
-/// followed by the profile whose reset set the wait's deadline, and only
-/// when the step changes login ([`earliest_note`]). It reaches the step's
-/// stderr, which the recipe runner's classifier reads, so it carries no
-/// usage-limit marker (pinned in `tests_limit_choice`), and it names only
-/// the local profile the step moves to.
-pub(super) const NOTE_EARLIEST: &str = "amplihack: the earliest reset among this step's logins has arrived; rerunning this step under profile";
 
 /// A profile for a nested launch.
 #[derive(Debug, PartialEq)]
@@ -166,43 +155,15 @@ pub(super) enum KeyAlert {
 /// Everything a candidate choice is read from, bundled so that [`candidate`]
 /// stays inside clippy's argument limit without an exemption. Shared
 /// references only: the choice reads this state and never writes it.
-#[derive(Clone, Copy)]
-pub(super) struct Reads<'a> {
-    pub(super) state: &'a State,
-    pub(super) ledger: &'a Ledger,
-    pub(super) profiles: &'a [ProfileName],
-    pub(super) readings: &'a BTreeMap<String, Reading>,
-    pub(super) cfg: &'a Config,
+struct Reads<'a> {
+    state: &'a State,
+    ledger: &'a Ledger,
+    profiles: &'a [ProfileName],
+    readings: &'a BTreeMap<String, Reading>,
+    cfg: &'a Config,
 }
 
-/// The eligibility every choice of a login to move to is made under, set
-/// up once by [`with_choice`] (issue #2967). The candidate rule and the
-/// reader of other logins' resets (`limit_choice`) both take it from here,
-/// so neither can admit a login the other refuses.
-pub(super) struct Choice<'c, 'a> {
-    pub(super) reads: Reads<'a>,
-    /// The directory the step runs in: a profile name.
-    pub(super) source_host: &'c str,
-    /// The account the auto-switch ledger says is live in that directory.
-    pub(super) current: &'c str,
-    pub(super) pool: &'c Pool<'a>,
-    pub(super) overflow: &'c OverflowInputs,
-    own: &'c OwnLogins<'c>,
-    /// Free to be moved onto, as far as the caller's skip list and the
-    /// ledger say: not skipped, not hosting another account, not leased.
-    free: &'c dyn Fn(&ProfileName) -> bool,
-    /// `free`, and passing the login checks ([`login_ready`]).
-    pub(super) eligible: &'c dyn Fn(&ProfileName) -> bool,
-}
-
-/// Runs `f` with the eligibility for a move from directory `current`, never
-/// onto a name in `skip`. The one place it is set up.
-pub(super) fn with_choice<T>(
-    reads: Reads<'_>,
-    current: &str,
-    skip: &[String],
-    f: impl FnOnce(&Choice<'_, '_>) -> T,
-) -> T {
+fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) -> Option<Pick> {
     let Reads {
         state,
         ledger,
@@ -225,6 +186,7 @@ pub(super) fn with_choice<T>(
         exclude: &cfg.exclude,
         now,
     };
+    // Free to be moved onto, as far as the caller and the ledger say.
     let free = |c: &ProfileName| {
         let n = c.as_str();
         !skip.iter().any(|s| s == n)
@@ -232,66 +194,30 @@ pub(super) fn with_choice<T>(
             && ledger.leased_to(n).is_none()
     };
     let eligible = |c: &ProfileName| free(c) && login_ready(state, &overflow, &own, c);
-    f(&Choice {
-        reads,
-        source_host,
-        current,
-        pool: &pool,
-        overflow: &overflow,
-        own: &own,
-        free: &free,
-        eligible: &eligible,
-    })
-}
-
-fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) -> Option<Pick> {
-    with_choice(reads, current, skip, |choice| candidate_in(choice, alert))
-}
-
-/// The candidate rule over an eligibility already set up by [`with_choice`].
-fn candidate_in(choice: &Choice<'_, '_>, alert: KeyAlert) -> Option<Pick> {
-    let Choice {
-        reads,
-        source_host,
-        current,
-        pool,
-        overflow,
-        own,
-        free,
-        eligible,
-    } = choice;
-    let Reads {
-        state,
-        ledger,
-        profiles,
-        readings,
-        cfg,
-    } = *reads;
-    let (pool, overflow, current) = (*pool, *overflow, *current);
     let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
     let need = amplihack_utils::organisation_affinity::Need::of(
         on_overflow,
-        !on_overflow && candidate::is_exhausted(readings.get(current), cfg.threshold, pool.now),
+        !on_overflow && candidate::is_exhausted(readings.get(current), cfg.threshold, now),
     );
     let restriction = super::affinity::restrict(
         state,
         ledger,
-        pool,
-        overflow,
+        &pool,
+        &overflow,
         source_host,
         current,
         need,
         eligible,
     );
     let picked = candidate::select_restricted(
-        pool,
+        &pool,
         &overflow.pool(),
         current,
         |p| eligible(p) && restriction.allowed.contains(p),
         |p| restriction.plan_room.contains(p),
     );
     if alert == KeyAlert::Write && picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
-        let held = per_token::key_held(pool, overflow, current, eligible);
+        let held = per_token::key_held(&pool, &overflow, current, eligible);
         per_token::record_key_held(state, &held);
     }
     if alert == KeyAlert::Write && own.macos() {
@@ -313,7 +239,7 @@ fn candidate_in(choice: &Choice<'_, '_>, alert: KeyAlert) -> Option<Pick> {
     // Read again for the detail the reason line gives. A key that went away
     // since the check above is refused like any other failed check.
     let check = overflow.check_note(&state.root, &profile)?;
-    let per_token = per_token::reason(pool, overflow, cfg, current, &profile, check);
+    let per_token = per_token::reason(&pool, &overflow, cfg, current, &profile, check);
     Some(Pick { profile, per_token })
 }
 
@@ -902,19 +828,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             return finish(attempt, None, &mut stdin);
         };
         // Issue #2967: no login can run the step now, so it waits. The wait
-        // is offered the earliest moment another login it could still move
-        // to drops under the threshold, and ends there when that is sooner
-        // than its own deadline (`plan::earliest`). The other logins are
-        // read again for each wait, so a wait never carries an instant an
-        // earlier one computed. `bound_login` is the login whose reset that
-        // is, which is where the retry runs when the wait reaches it, with
-        // the real time the deadline was set: only what is recorded about
-        // that login after it can keep the retry off it
-        // (`limit_choice::held_since`).
-        let planned_at = fsx::now();
-        let earliest = earliest_other(switch.as_ref(), &waiter, profile.as_ref(), &tried);
-        waiter.offer_earliest_reset(earliest.as_ref().map(|(_, at)| *at));
-        let bound_login = earliest.map(|(login, _)| (login, planned_at));
+        // also ends at the earliest end of a limit block recorded on another
+        // login this step has run on, when that comes first, and the retry
+        // then runs on that login ([`earliest_block`]).
+        let block = switch
+            .as_ref()
+            .and_then(|sw| earliest_block(sw, &waiter, &tried));
+        waiter.offer_earliest_reset(block.as_ref().map(|(_, at)| *at));
         // Issue #2816: the retry the wait earns is announced only once its
         // prompt is known not to be cut short. `replay` is asked at that
         // moment and not before, so a source that failed during the wait is
@@ -934,12 +854,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             AfterLimit::Finish(code) => return finish(attempt, code, &mut stdin),
             AfterLimit::Retry => {
                 attempt.discard();
-                profile = retry_profile(
-                    switch.as_ref(),
-                    &waiter,
-                    bound_login.as_ref(),
-                    profile.as_ref(),
-                );
+                profile = match block.filter(|_| waiter.reached_earliest_reset()) {
+                    Some((login, _)) => block_ended_retry(switch.as_ref(), login),
+                    None => retry_profile(switch.as_ref(), &waiter),
+                };
             }
         }
     }
@@ -1023,27 +941,8 @@ fn finish(attempt: Attempt, code: Option<i32>, stdin: &mut RerunStdin) -> Result
 /// retry is issue #2719.
 ///
 /// [`room_was_seen`]: crate::commands::profile::limit_wait::RetryMove::room_was_seen
-///
-/// Issue #2967: after a wait that reached a deadline another login's reset
-/// set, the retry runs on `bound`, that login, unless something recorded
-/// about it since the deadline was set still holds it out
-/// (`limit_choice::held_since`). The login must also still pass the checks
-/// that need no reading (`limit_choice::may_run_on`). When either fails, or
-/// the logins cannot be read, the retry runs on the step's own login and
-/// says why ([`bound_profile`]). `bound` carries the real time the deadline
-/// was set. `from` is the profile the limited attempt ran under, `None` for
-/// the inherited one.
-fn retry_profile(
-    switch: Option<&Switch<'_>>,
-    waiter: &Waiter,
-    bound: Option<&(ProfileName, i64)>,
-    from: Option<&ProfileName>,
-) -> Option<ProfileName> {
+fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<ProfileName> {
     let sw = switch?;
-    if waiter.reached_earliest_reset() {
-        let (bound, since) = bound?;
-        return bound_profile(sw, waiter, from.unwrap_or(&sw.inherited), bound, *since);
-    }
     let mv = waiter.retry_move()?;
     let Some(pick) = capacity_candidate(
         sw.store,
@@ -1081,233 +980,56 @@ fn retry_profile(
     Some(pick.profile)
 }
 
-/// Why a step's wait, or the retry after an earliest-reset wait, could not
-/// consider the step's other stored logins (issue #2967).
+/// The note the retry after an earliest-reset wait prints, followed by the
+/// profile it runs under (issue #2967). It reaches the step's stderr, which
+/// the recipe runner's classifier reads, so it carries no usage-limit
+/// marker (pinned in `tests_rerun_block`).
+pub(super) const NOTE_BLOCK_ENDED: &str = "amplihack: the earliest recorded reset among this step's logins has passed; rerunning this step under profile";
+
+/// The earliest end of a limit block the rotate ledger records on a login
+/// this step has run on, other than its inherited login, moved onto the
+/// wait's clock, and that login (issue #2967).
 ///
-/// The step goes on as it would have without them, waiting for or retrying
-/// on its own login. There is no retry and no gate; the cause is reported.
-/// Each case writes one stderr line that names the cause, and the error for
-/// a file that could not be read ([`NotConsidered::wait_line`],
-/// [`NotConsidered::retry_line`]). It also writes one wait line from a
-/// closed set, which also reaches the run's recipe log
-/// (`Waiter::other_logins_unread`, `Waiter::retry_not_moved`). Without
-/// them, "no other login had a reset ahead", which writes nothing, and "the
-/// logins could not be read" look the same, and the second is the quiet wait
-/// on the step's own reset that #2967 is about. `next_profile` and
-/// `State::load_usage_or_warn` already report the same failures on the
-/// paths they serve.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum NotConsidered {
-    /// Auto-switch was turned off while the step ran. A step that started
-    /// with it off has no `Switch`, never had another login to consider, and
-    /// writes nothing here: that is the operator's standing instruction.
-    AutoSwitchOff,
-    /// The auto-switch ledger could not be read, with the error.
-    LedgerUnreadable(String),
-    /// The usage readings could not be read, with the error.
-    ReadingsUnreadable(String),
-    /// The login whose reset ended the wait may no longer be run on
-    /// (`limit_choice::may_run_on`). Only the retry after a wait meets it.
-    LoginNotEligible,
-    /// A limit block on the login whose reset ended the wait, or a reading
-    /// of it at or above the threshold, recorded after the deadline was set
-    /// still holds it out (`limit_choice::held_since`, issue #3105). Only
-    /// the retry after a wait meets it.
-    LoginStillLimited,
-}
-
-impl NotConsidered {
-    /// The closed-set reason the wait lines write.
-    pub(super) fn why(&self) -> Unconsidered {
-        match self {
-            NotConsidered::AutoSwitchOff => Unconsidered::AutoSwitchOff,
-            NotConsidered::LedgerUnreadable(_) => Unconsidered::LedgerUnreadable,
-            NotConsidered::ReadingsUnreadable(_) => Unconsidered::ReadingsUnreadable,
-            NotConsidered::LoginNotEligible => Unconsidered::LoginNotEligible,
-            NotConsidered::LoginStillLimited => Unconsidered::LoginStillLimited,
-        }
-    }
-
-    /// The cause in words, with the error for a file that could not be read.
-    fn cause(&self) -> String {
-        match self {
-            NotConsidered::AutoSwitchOff => {
-                "auto-switch was turned off while this step ran".to_string()
-            }
-            NotConsidered::LedgerUnreadable(e) => {
-                format!("the auto-switch ledger cannot be read: {e}")
-            }
-            NotConsidered::ReadingsUnreadable(e) => {
-                format!("the auto-switch usage readings cannot be read: {e}")
-            }
-            NotConsidered::LoginNotEligible => "that profile was excluded, leased, given \
-                                                another account, logged out or removed \
-                                                while this step waited"
-                .to_string(),
-            NotConsidered::LoginStillLimited => "a limit block on that profile, or a reading \
-                                                 of it at or above the auto-switch threshold, \
-                                                 came in while this step waited and still \
-                                                 holds it out"
-                .to_string(),
-        }
-    }
-
-    /// The stderr line for a wait whose other logins could not be read.
-    pub(super) fn wait_line(&self) -> String {
-        format!(
-            "amplihack: this step's other logins were not read for its wait (reason={}): {}; \
-             no other login's reset can end this wait early (auto-switch)",
-            self.why().as_str(),
-            self.cause()
-        )
-    }
-
-    /// The stderr line for a retry after an earliest-reset wait that runs
-    /// under `own`, the step's inherited profile, and not under `bound`, the
-    /// profile whose reset ended the wait.
-    pub(super) fn retry_line(&self, bound: &ProfileName, own: &ProfileName) -> String {
-        format!(
-            "amplihack: the wait ended at the reset of profile {:?}, but this step reruns under \
-             its own profile {:?} (reason={}): {} (auto-switch)",
-            bound.as_str(),
-            own.as_str(),
-            self.why().as_str(),
-            self.cause()
-        )
-    }
-}
-
-/// Loads the readings for one choice among the stored logins and runs `f` on
-/// them. `Err` says why they could not be loaded: auto-switch has been
-/// turned off since the step started, or the ledger or the readings cannot
-/// be read. The caller then keeps the step where it is and reports the
-/// cause, so this never fails quietly.
-pub(super) fn with_reads<T>(
-    store: &ProfileStore,
-    state: &State,
-    f: impl FnOnce(Reads<'_>) -> T,
-) -> Result<T, NotConsidered> {
-    let eff = config::effective(&state.root);
-    if !eff.on {
-        return Err(NotConsidered::AutoSwitchOff);
-    }
-    let ledger = state
-        .load_ledger()
-        .map_err(|e| NotConsidered::LedgerUnreadable(e.to_string()))?;
-    let readings = state
-        .try_load_usage()
-        .map_err(|e| NotConsidered::ReadingsUnreadable(e.to_string()))?
-        .accounts;
-    let profiles = profile_names(store);
-    Ok(f(Reads {
-        state,
-        ledger: &ledger,
-        profiles: &profiles,
-        readings: &readings,
-        cfg: &eff.config,
-    }))
-}
-
-/// The earliest moment another login the step could still move to drops
-/// under the auto-switch threshold, and the login it is (issue #2967).
-/// Whether it is sooner than the step's own deadline is the wait's to
-/// decide (`plan::earliest`).
-///
-/// `None` without auto-switch, when the step's wait is off (no wait, so
-/// nothing to bound and nothing is read), and when no such login has a
-/// reset ahead, which writes nothing. It is also `None` when the logins
-/// cannot be read, and then the step says why, on stderr and in the run's
-/// recipe log ([`NotConsidered`]), before the wait's `start` line.
-///
-/// `profile` is the profile the limited attempt ran under, `None` for the
-/// inherited one. The readings are moved onto the wait's clock by
-/// `limit_choice::cross_login_reset`.
-fn earliest_other(
-    switch: Option<&Switch<'_>>,
-    waiter: &Waiter,
-    profile: Option<&ProfileName>,
-    tried: &[String],
-) -> Option<(ProfileName, i64)> {
-    let sw = switch?;
-    if !waiter.enabled() {
-        return None;
-    }
-    let current = profile.unwrap_or(&sw.inherited);
-    let now = waiter.now();
-    match with_reads(sw.store, &sw.state, |reads| {
-        limit_choice::cross_login_reset(reads, current.as_str(), tried, now)
-    }) {
-        Ok(others) => earliest(&others),
-        Err(why) => {
-            eprintln!("{}", why.wait_line());
-            waiter.other_logins_unread(why.why());
-            None
-        }
-    }
-}
-
-/// Whether the retry after an earliest-reset wait may run on `bound`, the
-/// login whose reset ended it. It must pass the checks that need no reading
-/// (`limit_choice::may_run_on`), asked with `from`, the login the limited
-/// attempt ran on, as the step's login, as `cross_login_reset` was asked
-/// when it chose `bound`. Nothing recorded about it after `since`, the real
-/// time the deadline was set, may still hold it out
-/// (`limit_choice::held_since`). `Err` says why not.
-pub(super) fn may_retry_on(
-    store: &ProfileStore,
-    state: &State,
-    from: &ProfileName,
-    bound: &ProfileName,
-    since: i64,
-) -> Result<(), NotConsidered> {
-    with_reads(store, state, |reads| {
-        if !limit_choice::may_run_on(reads, from.as_str(), bound) {
-            Err(NotConsidered::LoginNotEligible)
-        } else if limit_choice::held_since(reads, bound, since) {
-            Err(NotConsidered::LoginStillLimited)
-        } else {
-            Ok(())
-        }
-    })?
-}
-
-/// The note for a retry that moves from `from` to `bound` after an
-/// earliest-reset wait; `None` when the two are one login, so the note
-/// never claims a move that does not happen. `cross_login_reset` never
-/// chooses the step's own login and `may_run_on` refuses it, so `None` is a
-/// check here and not a path the supervisor takes.
-pub(super) fn earliest_note(from: &ProfileName, bound: &ProfileName) -> Option<String> {
-    (from != bound).then(|| format!("{NOTE_EARLIEST} {:?} (auto-switch)", bound.as_str()))
-}
-
-/// The retry after an earliest-reset wait: `bound`, when the step may still
-/// be run on it ([`may_retry_on`]), else `None` for the step's own login,
-/// with the cause on stderr and in the run's recipe log ([`NotConsidered`]).
-/// `from` is the login the limited attempt ran on, and `since` the real time
-/// the wait's deadline was set.
-///
-/// `None` is the inherited environment, which is the profile
-/// `sw.inherited` itself. So the filter at the end maps that profile onto
-/// `None`. It does not mean the login is unchanged: when `bound` is the
-/// inherited profile, `from` is another profile the step was moved to, and
-/// the step moves back. The note is printed for exactly the moves that
-/// happen ([`earliest_note`]).
-fn bound_profile(
+/// The instant is the rotator's own data, read by one function
+/// (`rotate::step_block::earliest_end`). Every limit a step meets records a
+/// block ending at the reset its message stated (`note_limit_block`), and the
+/// rotator wakes at those same ends. Nothing is predicted from a usage
+/// reading. Only logins in `tried` count, so the retry can only land on a
+/// login the candidate rule already moved this step onto. The inherited
+/// login's own reset already times the wait. A host the rotator has never
+/// run on has no ledger and records no block, so its waits end at their own
+/// reset, as before. Whether the instant moves the deadline is the wait's
+/// decision (`plan::earliest`).
+fn earliest_block(
     sw: &Switch<'_>,
     waiter: &Waiter,
-    from: &ProfileName,
-    bound: &ProfileName,
-    since: i64,
-) -> Option<ProfileName> {
-    if let Err(why) = may_retry_on(sw.store, &sw.state, from, bound, since) {
-        eprintln!("{}", why.retry_line(bound, &sw.inherited));
-        waiter.retry_not_moved(why.why());
+    tried: &[String],
+) -> Option<(ProfileName, i64)> {
+    let others: Vec<&str> = tried
+        .iter()
+        .map(String::as_str)
+        .filter(|t| *t != sw.inherited.as_str())
+        .collect();
+    let real_now = fsx::now();
+    let (login, until) = rotate::step_block::earliest_end(waiter.store_root()?, &others, real_now)?;
+    let at = waiter.now().saturating_add(until.saturating_sub(real_now));
+    Some((ProfileName::parse(login).ok()?, at))
+}
+
+/// The retry after a wait that ended where `login`'s block ended
+/// ([`earliest_block`]): `login`, while auto-switch is on (issue #2967).
+///
+/// Nothing else is checked, and no reading taken after the reset is
+/// required. A retry that meets a limit records it, as every attempt does,
+/// and goes back to the move-or-wait loop. That limit's block then times
+/// the next wait.
+fn block_ended_retry(switch: Option<&Switch<'_>>, login: ProfileName) -> Option<ProfileName> {
+    let sw = switch?;
+    if !config::effective(&sw.state.root).on {
         return None;
     }
-    if let Some(note) = earliest_note(from, bound) {
-        eprintln!("{note}");
-    }
-    Some(bound.clone()).filter(|p| *p != sw.inherited)
+    eprintln!("{NOTE_BLOCK_ENDED} {:?} (auto-switch)", login.as_str());
+    Some(login)
 }
 
 /// `<root>/.auto-switch.d/rerun` with auto-switch on, else
@@ -1368,10 +1090,9 @@ fn unsupervised(
 ///
 /// Issue #2967: this is asked for every limit, whether or not the step has
 /// waited. Before, a step that had waited was never moved again, so a limit
-/// on the retry that wait earned made it wait again with another login
-/// under the threshold. A move is not a wait and records no mark. The moves
-/// still end, because `tried` holds every login the step has run on and
-/// grows with each one; then the step waits.
+/// on the retry its wait earned left it waiting with another login under
+/// the threshold. The moves still end, because `tried` holds every login
+/// the step has run on and grows with each one; then the step waits.
 fn next_profile(
     store: &ProfileStore,
     state: &State,
@@ -1411,5 +1132,5 @@ fn next_profile(
 }
 
 #[cfg(test)]
-#[path = "tests_rerun_unread.rs"]
-mod tests_unread;
+#[path = "tests_rerun_block.rs"]
+mod tests_block;
