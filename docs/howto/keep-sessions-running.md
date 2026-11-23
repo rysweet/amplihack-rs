@@ -16,7 +16,9 @@ pane, to the supervisor log and to the session's own record, with the number of
 relaunches since the model last replied. Whether a session that keeps exiting
 is a crash loop, and whether to stop it, is for you or the supervisor agent to
 judge from that evidence:
-[when a session keeps exiting](#when-a-session-keeps-exiting).
+[when a session keeps exiting](#when-a-session-keeps-exiting). The agent step
+that reads the record and decides is the bundled `supervise-agent-sessions`
+skill: [who reads the record](#who-reads-the-record).
 
 ## Contents
 
@@ -24,6 +26,7 @@ judge from that evidence:
 - [What counts as you ending the session](#what-counts-as-you-ending-the-session)
 - [What happens after a limit](#what-happens-after-a-limit)
 - [When a session keeps exiting](#when-a-session-keeps-exiting)
+  - [Who reads the record](#who-reads-the-record)
 - [Stop a session that keeps exiting](#stop-a-session-that-keeps-exiting)
 - [Read the relaunch line](#read-the-relaunch-line)
 - [What is carried into the relaunch](#what-is-carried-into-the-relaunch)
@@ -75,7 +78,8 @@ Claude Code start to pace it. The error is printed in the pane, a `refused`
 line with `reason=launch-failed` goes to the pane and the supervisor log, and
 the session's record gets an `ALERT` and stays `active`, so the
 [supervisor's own recovery](./supervise-agent-sessions.md#what-happens-on-a-terminal-loss)
-is the next thing to try:
+is the next thing to try. Who acts on it is set out under
+[who reads the record](#who-reads-the-record):
 
 ```text
 ALERT coordinator: not relaunched: the launch failed without an exit status from Claude Code, so no process exited to be relaunched; the error is in the pane, and the session was left for the supervisor
@@ -97,8 +101,8 @@ The wrapper reads the rotator's swap record at the moment of exit.
   relaunch. It writes a `refused` line with `reason=gone` in the pane and the
   supervisor log, puts the cause on the session's record as an `ALERT`, and
   leaves the record `active`, so the supervisor's recovery starts the session
-  again. If that run also exits while no login has room, its wrapper waits
-  again.
+  again; see [who reads the record](#who-reads-the-record). If that run also
+  exits while no login has room, its wrapper waits again.
 - The session record changed during the wait, because the supervisor rebuilt
   the session in another window, or ended, stopped or unregistered it: the
   wrapper logs one refusal with `reason=superseded` and does not relaunch. Two
@@ -168,6 +172,36 @@ ALERT coordinator: relaunched in its pane at 2026-11-21T21:40:07Z after it exite
 Each relaunch replaces the record of the one before; the supervisor log keeps
 every line. Nothing in the wrapper reads the count. A reply ends the chain, and
 the next relaunch without one starts a new chain at 1.
+
+### Who reads the record
+
+Two readers act on what a standing session leaves behind. Neither is the
+wrapper.
+
+| Record | Reader | What the reader does |
+|--------|--------|----------------------|
+| A `not relaunched: …` alert, from `launch-failed` or `gone`, on a session left `active` | `amplihack agent supervise`, the supervisor service | Resumes the session at its next pass once the pane has closed and no Claude Code runs its conversation, within its limit of 3 resumes in an hour |
+| The same alert, still there after a pass | The `supervise-agent-sessions` skill | Finds why nothing started the session: the service is not running, the pane was kept open by a shell (`skipped: tmux session exists`), or the cause of the failed launch is still there. It starts the session again or hands it to the owner |
+| A `relaunched in its pane at …` alert and the `relaunch` lines in the log | The `supervise-agent-sessions` skill | Judges from the record, the log, the pane and the transcript whether the session is a crash loop, and [stops it](#stop-a-session-that-keeps-exiting) if it is |
+
+The skill is bundled with amplihack under
+`amplifier-bundle/skills/supervise-agent-sessions/` and is installed with the
+other bundled skills. A supervisor agent runs it on every pass. It is an
+agent's judgement, so it holds no count and no timer either.
+
+Tests tie the readers to what the wrapper writes. In
+`crates/amplihack-cli/tests/issue_2912_standing_relaunch.rs`, every alert a
+run of the wrapper leaves on the record is checked against the skill's table
+of alert forms, and a session left `active` by `launch-failed` or `gone` is
+resumed by one pass of the supervisor service.
+`crates/amplihack-cli/tests/issue_2912_supervisor_skill.rs` checks the skill
+itself and that these guides name it.
+
+When no supervisor agent runs the skill, nothing reads the record of the
+relaunches. A crash loop then runs until a person reads
+`amplihack agent status`, and a session left stopped in a pane that a shell
+keeps open stays stopped. On a host with standing sessions, run the skill on
+every supervisor pass, or read the status yourself.
 
 ### Read the evidence
 
@@ -319,7 +353,9 @@ never widens the extra directories.
   log and one registry write for each relaunch, until you or the supervisor
   agent [stop it](#stop-a-session-that-keeps-exiting). Only a launch that
   fails before any process exits is not relaunched, because nothing would pace
-  that loop.
+  that loop. The loop is noticed only by a reader of the record: the
+  `supervise-agent-sessions` skill on a supervisor pass, or you; see
+  [who reads the record](#who-reads-the-record).
 - The count of relaunches without a reply rests on the transcript format of
   Claude Code 2.1.330. A change to that format makes a working session read as
   one without replies; see [how a reply is recognised](#how-a-reply-is-recognised).

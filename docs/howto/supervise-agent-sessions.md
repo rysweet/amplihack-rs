@@ -609,6 +609,15 @@ supervisor agent to judge, not a request for recovery. See
 [when a session keeps exiting](./keep-sessions-running.md#when-a-session-keeps-exiting).
 `stopped: restart limit` is a session the supervisor has given up on.
 
+The agent step that reads these alerts is the bundled
+`supervise-agent-sessions` skill, which a supervisor agent runs on every pass.
+It judges the relaunch records, stops a crash loop with
+`amplihack agent unregister`, and finds out why a session with a
+`not relaunched` alert was not resumed: the service is not running, or the
+pane is held open by a shell and this pass writes
+`skipped: tmux session exists`. See
+[who reads the record](./keep-sessions-running.md#who-reads-the-record).
+
 Find out why the session fails before you re-arm it. A session that exits
 with an error closes its tmux window, so run it yourself in a window that
 stays open. First read the recorded options:

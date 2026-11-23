@@ -27,12 +27,14 @@
 //! and a crash loop runs until the script ends with a clean exit, which is
 //! the owner ending the session, or until the supervisor takes the record
 //! away. What a crash loop leaves is evidence on the record for the
-//! supervisor agent.
+//! supervisor agent, whose bundled `supervise-agent-sessions` skill has a
+//! row for every alert these tests see (`issue_2912_supervisor_skill.rs`).
 
 #![cfg(target_os = "linux")]
 
 use crate::issue_1760_fake_proc::Proc;
 use crate::issue_1760_fixture::*;
+use crate::issue_2912_supervisor_skill::skill_row_for;
 use crate::support::exec_stub::write_executable;
 use crate::support::wait::spawn_once;
 use serde_json::{Value, json};
@@ -361,6 +363,34 @@ fn no_refusal(fx: &Fx) {
         !log.iter().any(|l| l.contains(" standing session refused ")),
         "{log:?}"
     );
+}
+
+/// What one pass of the supervisor service does with a session a refusal
+/// left `active`. The pane the service starts runs the wrapper as its
+/// command, so the pane closed when the wrapper returned, and the fake tmux
+/// has no such session; the run's Claude Code has gone from the process
+/// table. The pass resumes the session's own conversation in a new pane,
+/// which is the recovery the refusal leaves the session to.
+fn one_supervisor_pass_resumes_it(fx: &Fx) {
+    fx.remove_proc(CLAUDE_PID);
+    let pass = fx.supervise_once(&["--gap", "0"]);
+    expect_code(&pass, 0);
+    let log = fx.log_lines();
+    let resumed: Vec<_> = log
+        .iter()
+        .filter(|l| l.contains(&format!(" agent={NAME} ")) && l.ends_with(" result=resumed"))
+        .collect();
+    assert_eq!(resumed.len(), 1, "{log:?}");
+    let news = fx.new_sessions();
+    assert_eq!(news.len(), 1, "{news:?}");
+    let pane = news[0].pane_argv();
+    let at = pane.iter().position(|a| a == "--resume").expect("--resume");
+    assert_eq!(pane[at + 1], CONV_C, "{pane:?}");
+    let sup = pane
+        .iter()
+        .position(|a| a == "--supervise")
+        .expect("--supervise");
+    assert_eq!(pane[sup + 1], NAME, "{pane:?}");
 }
 
 /// The one refusal line the log holds, with the test's own message.
@@ -786,6 +816,11 @@ fn every_relaunch_is_left_on_the_record_for_the_supervisor() {
     assert_eq!(e["conversation_id"], CONV_C, "{e}");
     let (note, times) = untimed(&raw);
     assert_eq!(note, quiet_note(7, 2), "{raw}");
+    assert_eq!(
+        skill_row_for(&raw),
+        Some("relaunched in its pane at"),
+        "the supervisor skill reads it: {raw}"
+    );
     assert!(
         times[1] <= times[0],
         "the chain began before this relaunch: {raw}"
@@ -827,7 +862,8 @@ fn a_crash_loop_the_supervisor_unregisters_is_not_relaunched_again() {
 /// Here the stand-in is removed while run 1 is up, so the relaunch's launch
 /// cannot find `claude`. The wrapper refuses once, leaves the reason on the
 /// record, which stays `active` for the supervisor's recovery, and returns
-/// the error.
+/// the error. The supervisor skill has a row for the alert, and the next
+/// pass of the supervisor service resumes the session.
 #[test]
 fn a_launch_that_fails_without_an_exit_status_is_left_for_the_supervisor() {
     let (fx, dir) = fixture(&["hold:1", "hold:0"]);
@@ -854,6 +890,11 @@ fn a_launch_that_fails_without_an_exit_status_is_left_for_the_supervisor() {
          and the session was left for the supervisor",
         "{e}"
     );
+    assert_eq!(
+        skill_row_for(e["alert"].as_str().unwrap_or_default()),
+        Some("not relaunched: the launch failed without an exit status"),
+    );
+    one_supervisor_pass_resumes_it(&fx);
 }
 
 /// Work keeps a session going with no count limit: four crashes after four
@@ -912,7 +953,8 @@ fn no_relaunch_until_a_login_has_room_then_one_on_the_event() {
 /// directory is moved away during the wait, so the watch on the swap record
 /// is lost. The refusal is logged, and its cause is on the session's record
 /// too: the record stays `active` for the supervisor and `amplihack agent
-/// status` shows why.
+/// status` shows why. The supervisor skill has a row for the alert, and the
+/// next pass of the supervisor service resumes the session.
 #[test]
 fn a_wait_for_room_that_loses_its_watch_is_left_on_the_record() {
     let (fx, dir) = fixture(&["hold:1", "hold:0"]);
@@ -950,6 +992,12 @@ fn a_wait_for_room_that_loses_its_watch_is_left_on_the_record() {
         "the status shows it: {}",
         stdout(&status)
     );
+    assert_eq!(
+        skill_row_for(alert),
+        Some("not relaunched: it exited"),
+        "the supervisor skill reads it"
+    );
+    one_supervisor_pass_resumes_it(&fx);
 }
 
 /// A wrapper held for room has no Claude Code to pass a signal to, so the
