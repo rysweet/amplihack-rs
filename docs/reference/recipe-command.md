@@ -486,6 +486,20 @@ run's `guidance/` folder, and every agent step that starts afterwards
 receives it at the end of its prompt. See [amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide)
 for targets, storage, limits and exit codes.
 
+### recipe guidance
+
+```
+amplihack recipe guidance show [<TARGET>] [--pr <N>] [--pr-repo <OWNER/REPO>] [--since <ENTRY>] [--json]
+amplihack recipe guidance wait [--pr <N>] [--pr-repo <OWNER/REPO>] --since <ENTRY> [-- <COMMAND>...]
+```
+
+Reads the guidance a run has received. `show` prints every entry, oldest first,
+with its arrival time and marks entries after `--since` as `NEW`; `--json`
+prints each entry's metadata and no text. `wait` blocks without a poll or timer
+until new guidance arrives or the command finishes. Both work inside recipe runs
+and are what the [auto-drive goal loop](./autodrive-goal-loop.md#guidance) uses.
+See [recipe guidance](./recipe-cli-reference.md#amplihack-recipe-guidance).
+
 ### Run records
 
 On Linux, every `recipe run` attempt that starts a runner writes a record of

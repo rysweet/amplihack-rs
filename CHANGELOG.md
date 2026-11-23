@@ -5,6 +5,29 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [Unreleased] — Auto-drive as one goal-driven agent loop
+
+### Changed
+
+- **auto-drive is one goal-driven agent loop (#3129)**: `auto-drive-to-merge` and `auto-drive-light` run the same loop. Each turn an agent reads a fresh reading of the PR, checks, reviews, base and repository settings, plus new guidance, and picks one action: review, wait, merge, hand off or ready. See `docs/reference/autodrive-goal-loop.md`. Closes #1924, #3094, #3109 and #3035; fixes #2342.
+- **`stop_reason` values**: `closed`, `stopped` and `failed` are new. `waiting_for_checks`, `no_progress`, `budget_exhausted`, `unreadable` and the `base-behind` form of `not_merged` no longer occur. A merging-off run that reaches readiness and finishes the task's later steps is still `completed`.
+- **New command**: `amplihack recipe guidance show|wait` reads a run's guidance and waits for more without a poll or timer. It is allowed inside recipe runs.
+
+### Removed
+
+- The automatic base merge, the `checks-pending` end and the hand-back to draft, the loop-health STUCK and no-progress stops in auto-drive, round and wall-clock budgets as stopping rules, parsed-record readiness gates, and the eligibility escalation in `auto-drive-light`.
+
+### Deprecated
+
+- For one release these keep working as aliases: the recipes `autodrive-merge-loop`, `autodrive-crusty-loop`, `autodrive-merge-round`, `autodrive-merge-evidence` and `autodrive-finalize`; the tools `autodrive_loop.sh`, `autodrive_merge_loop_run.sh`, `autodrive_budget.sh`, `autodrive_progress.sh`, `autodrive_round_word.sh`, `autodrive_escalate.sh`, `autodrive_done_override.sh` and `autodrive_crusty_rereview.sh`. The `autodrive_budget_*` and `light_eligibility` keys are accepted and ignored. Runs in flight keep their pinned bundle.
+
+### Known limit
+
+- Trade-offs: nothing in code stops a hot loop (one agent call per turn); a PR merged by someone else ends as `completed`; a pending required check is reported by the merge action as `checks-not-green`.
+- The agent step is not mechanically prevented from running `gh pr merge`. `--match-head-commit` and branch protection remain the boundary.
+
+---
+
 ## [Unreleased] — Recipe Execution Hardening
 
 ### Removed

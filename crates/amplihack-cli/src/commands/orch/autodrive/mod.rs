@@ -6,5 +6,7 @@ pub mod helper;
 pub mod identity;
 pub(crate) mod private_mode;
 pub(crate) mod report;
+#[cfg(test)]
+mod report_goal_tests;
 pub mod state;
 pub(crate) mod trusted;

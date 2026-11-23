@@ -17,6 +17,7 @@ Command-line reference for `amplihack recipe`.
 - [Removed context keys](#removed-context-keys)
 - [Nested runs and orphan stops](#nested-runs-and-orphan-stops)
 - [amplihack recipe guide](#amplihack-recipe-guide)
+- [amplihack recipe guidance](#amplihack-recipe-guidance)
 - [amplihack recipe validate](#amplihack-recipe-validate)
 - [Recipe text encoding](#recipe-text-encoding)
 - [amplihack recipe show](#amplihack-recipe-show)
@@ -933,6 +934,52 @@ written to /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_am
 If the drive opened this pull request itself and is still running, also give
 the instruction to the drive's run ID or session name, as in the first
 example; the drive's current run does not read the pull request folder.
+
+## amplihack recipe guidance
+
+Read the guidance a run has received, and wait for more. `recipe guide` writes
+it; this command reads it. It is allowed inside recipe runs, so agent and bash
+steps use it.
+
+```bash
+amplihack recipe guidance show [<TARGET>] [--pr <N>] [--pr-repo <OWNER/REPO>] [--since <ENTRY>] [--json]
+amplihack recipe guidance wait [--pr <N>] [--pr-repo <OWNER/REPO>] --since <ENTRY> [-- <COMMAND>...]
+```
+
+### show
+
+Prints every entry from the run's guidance folders, oldest first, with its
+arrival time and folder. With `--since <ENTRY>`, entries after that name are
+marked `NEW`. With `--json` it prints schema 1: for each folder its entries'
+name, timestamp, caller, source, `from_step`, `new` flag and size in bytes. The
+JSON never holds guidance text.
+
+```
+$ amplihack recipe guidance show --pr 3129 --pr-repo rysweet/amplihack-rs
+2026-11-23T18:40:02Z  guidance/0001.md  (earlier)
+2026-11-23T18:55:41Z  guidance/0002.md  NEW
+Hold: wait for the owner's answer on #3109.
+```
+
+### wait
+
+Arms a wake FIFO in the run's `guidance-wake/` folder, reads guidance again so an
+entry that arrived before arming is not missed, then waits. `recipe guide`
+writes one byte to each armed FIFO after storing an entry. With
+`-- <COMMAND>`, the command runs with its stdout sent to stderr, and `wait` ends
+when guidance arrives or the command finishes. It prints one JSON line, for
+example `{"event":"command","exit":0}` or `{"event":"guidance"}`. A command that
+exits 75 or 79 is reported in `exit`, and the status of `wait` itself is 0.
+
+| Exit | Meaning |
+|------|---------|
+| 0 | Guidance arrived, or the command finished |
+| 1 | Error |
+| 2 | Usage error, including a bad `--since` or `--pr`, or `wait` without `--since` |
+| 3 | Could not arm; the command was not started |
+
+`recipe guide` prints one warning line if it could not wake a waiter. Its exit
+codes are unchanged.
 
 ## amplihack recipe validate
 
