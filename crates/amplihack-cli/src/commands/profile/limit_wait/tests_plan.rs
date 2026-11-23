@@ -374,20 +374,26 @@ fn a_stated_reset_is_held_to_its_kinds_window() {
     );
 }
 
-/// Issues #3037 and #2911: a deadline is set by the limit's reset and by
+/// Issues #3037 and #2911: a deadline is set by a limit's reset and by
 /// nothing else, and a wait with no usable reset has none. The match is
 /// exhaustive on purpose: a row added back for the step timeout, for a
 /// configured length or for any other clock does not compile here until
 /// this test says what it is.
+///
+/// Issue #2967 adds one row, and it is a reset too: the end of a limit block
+/// recorded on another login the step could move to
+/// ([`super::plan::earliest`]).
+/// It is no clock of the wait's own.
 #[test]
 fn a_deadline_is_the_reset_or_there_is_none() {
     fn row(b: Bound) -> &'static str {
         match b {
             Bound::ResetMargin => "reset+margin",
+            Bound::EarliestReset => "earliest_reset+margin",
             Bound::Unbounded => "none",
         }
     }
-    for b in [Bound::ResetMargin, Bound::Unbounded] {
+    for b in [Bound::ResetMargin, Bound::EarliestReset, Bound::Unbounded] {
         assert_eq!(b.as_str(), row(b));
     }
     // Each planner's deadline is exactly its own rows, however long the
@@ -588,4 +594,148 @@ fn issue_2911_the_wait_for_a_passed_reset_waits_for_an_event() {
     // And the plan a reset wait would have given, had the planner built one:
     // the margin is what keeps even that above `now`.
     assert_eq!(plan(NOW, past).until, Some(NOW + MARGIN));
+}
+
+// --- issue #2967: the earliest-reset deadline -------------------------------
+//
+// Contract: `earliest(p, other, now) -> Plan`. `other` is the earliest end
+// of a limit block recorded on another login the step could move to, on the
+// wait's clock (`None` when there is none). It is held to the weekly
+// window, as any reset not read from the message is, and it moves `p`'s deadline
+// to `other + MARGIN`, named `Bound::EarliestReset`
+// (`earliest_reset+margin`), when `other` is strictly after `now` and that
+// deadline comes strictly before `p.until`, or `p` has none. The plan's
+// kind, its `reset=` and its login-change flag are kept. A login-change
+// wait is returned as it was. No input adds a deadline later than the one
+// `p` had.
+
+use super::plan::earliest;
+
+const DAY: i64 = 86_400;
+
+#[test]
+fn the_bound_is_named_earliest_reset_plus_margin() {
+    assert_eq!(Bound::EarliestReset.as_str(), "earliest_reset+margin");
+}
+
+#[test]
+fn an_other_reset_before_the_own_one_moves_a_reset_waits_deadline() {
+    let own = plan(NOW, NOW + 1800);
+    let p = earliest(own, Some(NOW + 900), NOW);
+    assert_eq!(p.until, Some(NOW + 900 + MARGIN));
+    assert_eq!(p.bound, Bound::EarliestReset);
+    assert_eq!(p.kind, PlanKind::Reset, "the kind of wait is kept");
+    assert_eq!(p.reset, Some(NOW + 1800), "`reset=` stays the limit's own");
+}
+
+#[test]
+fn an_other_reset_at_or_after_the_own_one_changes_nothing() {
+    let own = plan(NOW, NOW + 1800);
+    // The own deadline is the reset plus the margin, so an other reset at
+    // the own reset ties and keeps the own row.
+    assert_eq!(earliest(own, Some(NOW + 1800), NOW), own);
+    assert_eq!(earliest(own, Some(NOW + 1801), NOW), own);
+    assert_eq!(earliest(own, None, NOW), own);
+}
+
+#[test]
+fn an_other_reset_at_or_before_now_is_ignored() {
+    // A block that has ended holds no login out, and the move before the
+    // wait has already considered that login.
+    for own in [plan(NOW, NOW + 1800), plan_capacity(NOW, None)] {
+        assert_eq!(earliest(own, Some(NOW), NOW), own);
+        assert_eq!(earliest(own, Some(NOW - 1), NOW), own);
+        assert_eq!(earliest(own, Some(i64::MIN), NOW), own);
+    }
+}
+
+#[test]
+fn a_wait_with_no_deadline_takes_the_other_reset_as_its_deadline() {
+    // A limit with no usable reset (none stated, credits, a passed reset,
+    // a bare 429) waits with no deadline; another login recovering is a
+    // limit event it can end on.
+    for reset in [None, Some(NOW - 60)] {
+        let own = plan_capacity(NOW, reset);
+        assert_eq!(own.until, None);
+        let p = earliest(own, Some(NOW + 1200), NOW);
+        assert_eq!(p.until, Some(NOW + 1200 + MARGIN), "own reset {reset:?}");
+        assert_eq!(p.bound, Bound::EarliestReset);
+        assert_eq!(p.kind, PlanKind::Capacity, "still a capacity wait");
+        assert_eq!(p.reset, reset);
+    }
+}
+
+#[test]
+fn a_far_capacity_wait_takes_a_sooner_other_reset() {
+    let own = plan_capacity(NOW, Some(NOW + 3 * DAY));
+    let p = earliest(own, Some(NOW + 1200), NOW);
+    assert_eq!(p.until, Some(NOW + 1200 + MARGIN));
+    assert_eq!(p.bound, Bound::EarliestReset);
+    assert_eq!(p.kind, PlanKind::Capacity);
+}
+
+#[test]
+fn a_capacity_wait_for_a_reset_ahead_and_sooner_than_the_other_is_unchanged() {
+    let own = plan_capacity(NOW, Some(NOW + 600));
+    assert_eq!(earliest(own, Some(NOW + 1200), NOW), own);
+}
+
+#[test]
+fn an_other_reset_further_than_five_hours_still_counts_when_it_is_sooner() {
+    // There is no five-hour ceiling on a wait's deadline (#2911); the other
+    // login's reset counts as the own one would, held to the weekly window.
+    let own = plan_capacity(NOW, Some(NOW + 3 * DAY));
+    let p = earliest(own, Some(NOW + DAY), NOW);
+    assert_eq!(p.until, Some(NOW + DAY + MARGIN));
+}
+
+#[test]
+fn the_other_reset_is_held_to_the_weekly_window() {
+    let own = plan_capacity(NOW, None);
+    let p = earliest(own, Some(i64::MAX), NOW);
+    assert_eq!(p.until, Some(NOW + SEVEN_DAYS + MARGIN));
+}
+
+#[test]
+fn a_login_change_wait_is_returned_as_it_was() {
+    // It waits for an organisation's credit, which no other login's window
+    // restores (#2731).
+    let own = plan_login_change();
+    let p = earliest(own, Some(NOW + 600), NOW);
+    assert_eq!(p, own);
+    assert!(p.is_login_change());
+}
+
+#[test]
+fn the_earliest_plan_is_not_a_login_change_wait_and_room_still_ends_it() {
+    let p = earliest(plan(NOW, NOW + 1800), Some(NOW + 900), NOW);
+    assert!(!p.is_login_change());
+    assert!(p.capacity_may_end(), "a login with room still ends it");
+}
+
+#[test]
+fn no_input_makes_a_deadline_later_than_the_one_the_plan_had() {
+    for own in [
+        plan(NOW, NOW + 1800),
+        plan_capacity(NOW, Some(NOW + 3 * DAY)),
+        plan_capacity(NOW, None),
+    ] {
+        for other in [None, Some(NOW + 1), Some(NOW + 5 * DAY), Some(i64::MAX)] {
+            let p = earliest(own, other, NOW);
+            if let Some(before) = own.until {
+                assert!(p.until.is_some_and(|after| after <= before), "{other:?}");
+            }
+            assert!(p.until.is_none_or(|u| u > NOW), "{other:?}");
+        }
+    }
+}
+
+#[test]
+fn the_earliest_plan_is_checked_arithmetic_at_the_extremes() {
+    for now in [i64::MAX, i64::MIN, i64::MAX - 100, 0] {
+        for other in [i64::MAX, i64::MIN, now, now.saturating_add(1)] {
+            let _ = earliest(plan(now, now.saturating_add(10)), Some(other), now);
+            let _ = earliest(plan_capacity(now, None), Some(other), now);
+        }
+    }
 }

@@ -311,6 +311,11 @@ pub(crate) enum Bound {
     /// The limit's own reset plus [`MARGIN`]: the recorded reset passing,
     /// which is a limit event.
     ResetMargin,
+    /// The earliest end of a limit block recorded on another login the step
+    /// could move to, plus [`MARGIN`] (issue #2967): that login recovering
+    /// is a limit event as much as the failed login's own reset is. Set by
+    /// [`earliest`] alone.
+    EarliestReset,
     /// No deadline: the limit stated no usable reset, so the wait ends only
     /// on a login with room or a login change (see the module docs). Written
     /// `bound=none`, beside `until=none`.
@@ -321,6 +326,7 @@ impl Bound {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Bound::ResetMargin => "reset+margin",
+            Bound::EarliestReset => "earliest_reset+margin",
             Bound::Unbounded => "none",
         }
     }
@@ -457,5 +463,45 @@ pub(crate) fn plan_login_change() -> Plan {
         kind: PlanKind::Reset,
         reset: None,
         login_change: true,
+    }
+}
+
+/// `p`, ending at `other` plus [`MARGIN`] when that comes before `p` would
+/// end (issue #2967).
+///
+/// On 21 November 2026 a step waited two hours for its own login's reset
+/// while other stored logins had room or were about to. Another login's
+/// window resetting writes no file this wait watches, so no file event ends
+/// the wait there. This adds no timer: it only moves the one deadline a
+/// wait already blocks on earlier, and never gives a deadline to a wait that
+/// `p` says may not have one for its own reasons.
+///
+/// `other` is the earliest end, on the wait's clock, of a limit block the
+/// rotate ledger records on another login the step could move to, whether
+/// or not it has run there (`auto_switch::rerun::earliest_block`). It is held to the weekly window
+/// ([`held`]), as any reset not read from the message is. It counts when it
+/// is strictly after `now` and its deadline comes strictly before `p.until`,
+/// or `p` has none. Then `bound=` reads `earliest_reset+margin`; the plan's
+/// kind and its `reset=`, the limit's own reset, are kept.
+///
+/// A login-change wait is returned as it was: it waits for one
+/// organisation's spend limit to be replaced, and no other login's window
+/// restores an organisation's credit (issue #2731). The comparison never
+/// subtracts, so no input overflows.
+pub(crate) fn earliest(p: Plan, other: Option<i64>, now: i64) -> Plan {
+    if p.is_login_change() {
+        return p;
+    }
+    let Some(other) = other.filter(|o| *o > now).map(|o| held(o, now, None)) else {
+        return p;
+    };
+    let until = other.saturating_add(MARGIN);
+    if p.until.is_some_and(|own| own <= until) {
+        return p;
+    }
+    Plan {
+        until: Some(until),
+        bound: Bound::EarliestReset,
+        ..p
     }
 }

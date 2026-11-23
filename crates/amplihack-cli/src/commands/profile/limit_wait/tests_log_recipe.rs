@@ -442,3 +442,51 @@ fn issue_2911_a_waiting_line_with_no_deadline_says_none_in_both_sinks() {
          harness=claude until=none"
     );
 }
+
+// --- issue #2967: a deadline another login's block set -------------------------
+//
+// `bound=earliest_reset+margin` is the one token that tells such a wait from
+// one timed by its own limit: `until=` is the other login's reset plus the
+// margin, `reset=` stays the reset the step's own limit stated, and the
+// `wait=` token is the one the wait's kind always has. The recipe log names
+// the step's own login in `account=`, never the login whose block set the
+// deadline.
+
+/// 2026-10-18 09:00:00 -07:00: the step's own reset, after the other's.
+const T60: i64 = T0 + 3600;
+
+#[test]
+fn a_reset_wait_timed_by_another_logins_reset_says_so_in_bound() {
+    assert_eq!(
+        stderr(&start(Shape::Reset, Some(T60), T32, Bound::EarliestReset)),
+        "amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude \
+         reset=2026-10-18 09:00:00 -07:00 until=2026-10-18 08:32:00 -07:00 \
+         bound=earliest_reset+margin"
+    );
+}
+
+#[test]
+fn a_capacity_wait_with_no_reset_of_its_own_takes_a_deadline_from_another_login() {
+    assert_eq!(
+        stderr(&start(Shape::Capacity, None, T32, Bound::EarliestReset)),
+        "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity \
+         harness=claude reset=none until=2026-10-18 08:32:00 -07:00 \
+         bound=earliest_reset+margin"
+    );
+}
+
+#[test]
+fn the_recipe_log_names_the_steps_own_login_for_such_a_wait() {
+    assert_eq!(
+        recipe(
+            &start(Shape::Reset, Some(T60), T32, Bound::EarliestReset),
+            Some("work")
+        )
+        .as_deref(),
+        Some(
+            "amplihack.recipe.usage_limit_wait start reason=usage_limit account=work \
+             reset=2026-10-18 09:00:00 -07:00 until=2026-10-18 08:32:00 -07:00 \
+             bound=earliest_reset+margin"
+        )
+    );
+}

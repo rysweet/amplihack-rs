@@ -13,10 +13,19 @@
 //! a login gaining room or by a reset passing, rather than counting its
 //! attempts towards an ending.
 //!
-//! What is left is the record itself. Two readers use it: `auto_switch::
-//! rerun`, through `Waiter::used`, to stop choosing another auto-switch
-//! candidate once the step has waited, and the `reentered` line, which says
-//! whether this step has waited on this login before.
+//! What is left is the record itself. One reader uses it: the `reentered`
+//! line, which says whether this step has waited on this login before.
+//!
+//! Issue #2967 removed the other. `auto_switch::rerun` used to read
+//! `Waiter::used` to stop choosing another login once the step had waited,
+//! so a limit on the retry a wait earned left the step waiting again while
+//! other logins had room. A move to a login that can run the step is not
+//! a wait, so a step that has waited may still make one; the moves end
+//! because the rerun loop's `tried` list grows with every login it runs on.
+//!
+//! A step under a stored profile is marked with that profile's name (issue
+//! #2967), so its wait lines say `account=<profile>` rather than
+//! `account=unknown`.
 //!
 //! Tested in `tests_marks.rs`.
 
@@ -31,13 +40,6 @@ pub(crate) struct Marks {
 impl Marks {
     pub(crate) fn new() -> Self {
         Self { waited: Vec::new() }
-    }
-
-    /// Whether this step has waited at all. `auto_switch::rerun` reads it
-    /// through `Waiter::used` to stop choosing another candidate once the
-    /// step has waited.
-    pub(crate) fn used(&self) -> bool {
-        !self.waited.is_empty()
     }
 
     /// Whether this step has already waited on `mark`. It refuses nothing:

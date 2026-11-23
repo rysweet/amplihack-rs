@@ -38,6 +38,10 @@
 #[path = "tests_step_block_kinds.rs"]
 mod kinds;
 
+/// Issue #2967's reader of the same blocks, wired here for the same reason.
+#[path = "tests_step_block_earliest.rs"]
+mod earliest;
+
 use super::control::blocked_logins_line;
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows};
 use super::ledger::{

@@ -12401,15 +12401,17 @@ Claude reads as it always did.
 After an attempt hits a usage limit, in this order:
 
 1. a stop signal already received ends the step with `128` plus the signal;
-2. auto-switch on, the wait unused, and an eligible profile left: rerun
-   under that profile at once. A piped prompt still arriving is fed to the
-   rerun as it arrives, as in step 3;
+2. auto-switch on and an eligible profile left: rerun under that profile at
+   once, whether or not the step has already waited (issue #2967; see
+   [Moving to another login before a wait](./usage-limit-waits.md#moving-to-another-login-before-a-wait)).
+   A piped prompt still arriving is fed to the rerun as it arrives, as in
+   step 3;
 3. auto-switch moved the step off the inherited profile before the first
    attempt only because that profile is over the threshold (no window at
    100%), and no eligible profile is left: rerun under the inherited
    profile at once. This is an auto-switch rerun, made at most once per
-   step: no `start` or `end` is written and the wait stays unused, so a
-   limit on that rerun still goes through steps 4 to 6. A piped prompt is
+   step: no `start` or `end` is written, so a limit on that rerun still goes
+   through steps 4 to 6. A piped prompt is
    replayed from its stored copy, so this rerun is made. A prompt still
    arriving is fed to the rerun as it arrives (see
    [Stdin](#stdin-handling)), so the rerun runs at once. It is refused only
@@ -12456,7 +12458,11 @@ unless the wait ends on another login's capacity (see
 [Retry login](#retry-login)). When auto-switch ran the step under other
 profiles before running out, their limits only steer auto-switch's choice of
 the next profile: a candidate that resets later does not stretch the wait, and
-a candidate's weekly limit or spend limit does not cancel it. When auto-switch
+a candidate's weekly limit or spend limit does not cancel it. With auto-switch
+on, the end of a limit block the rotate ledger records on any other login
+auto-switch could move the step to, run on or not, ends the wait when it comes
+first, and the retry then runs on that login
+([The earliest-reset deadline](./usage-limit-waits.md#the-earliest-reset-deadline)). When auto-switch
 moved the step off the inherited profile before the first attempt, the
 inherited profile's limit comes from the usage readings: the latest reset
 among its windows at 100%. A reset from a reading more than five hours away is
@@ -12481,9 +12487,16 @@ is the [rotate ledger](#rotate-state-directory)'s `live` profile, else the
 [swap record](#swap-record)'s live login. For any other step there is no key.
 The name is read at runtime from the files the rotator writes under its own
 lock, never from `.claude.json`, whose account field may hold an e-mail
-address or a UUID. A step that can read neither file has no key. A host with
-no profile store has no rotator files at all, so every key is absent and every
-recipe-log line says `account=unknown`.
+address or a UUID. A step that can read neither file has no key.
+
+The login key is what the login-change checks compare. The `account=` field
+and the wait's mark name the login more widely (issue #2967): the profile the
+supervisor launched the attempt under, else the inherited profile, else the
+login key. A step under a stored profile is therefore named by that profile,
+where before #2967 it had no key and logged `account=unknown`. A host with no
+profile store, a `CLAUDE_CONFIG_DIR` step, and a `$HOME/.claude` step whose
+key cannot be read still say `account=unknown`
+([The login a wait names](./usage-limit-waits.md#the-login-a-wait-names)).
 
 Each reading carries **which of the two files it came from** along with the
 name. The two are read in order, the cycle ledger first and the swap record
@@ -12658,8 +12671,9 @@ candidate that applies (a tie is named by the earlier row):
 | Candidate | Applies when | `bound=` |
 |-----------|--------------|----------|
 | reset + 120 s, or now + 120 s when the reset has passed | always | `reset+margin` |
+| another login's block end + 120 s | auto-switch is on, and a limit block recorded on another login the step could move to ends before that (issue #2967) | `earliest_reset+margin` |
 
-A reset wait has one row and no other timed bound. It ends at its reset plus
+A reset wait has no timed bound but these two. It ends at its reset plus
 120 seconds, or earlier on a login with room or a login change
 ([Reasons a wait ends](#reasons-a-wait-ends)). No setting shortens it.
 
@@ -13050,6 +13064,7 @@ A capacity wait's deadline is one of:
 |----------|--------------|----------|
 | the failed login's reset + 120 s, the reset held to its kind's window | the limit message states a reset that is still in the future | `reset+margin` |
 | none (`until=none`) | the limit states no reset still in the future: none readable, credit exhaustion, a reset already passed, or a bare 429 | `none` |
+| another login's block end + 120 s | auto-switch is on, and a limit block recorded on another login the step could move to ends before the row above would end the wait (issue #2967); the `reset=` field keeps the limit's own reset | `earliest_reset+margin` |
 
 A stated reset still ahead is the deadline however far away it is: a weekly
 limit days away is waited for once, to its reset. The reset is held to its
@@ -13407,8 +13422,8 @@ too. No other event reaches that sink.
 
 | Event | Fields |
 |-------|--------|
-| `start` (reset wait) | `reason=usage_limit harness=claude reset=<time> until=<time> bound=<bound>` |
-| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time>\|none bound=reset+margin\|none`; `until=none bound=none` when the limit stated no reset still ahead |
+| `start` (reset wait) | `reason=usage_limit harness=claude reset=<time> until=<time> bound=reset+margin\|earliest_reset+margin` |
+| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time>\|none bound=reset+margin\|earliest_reset+margin\|none`; `until=none bound=none` when the limit stated no reset still ahead and no other login's block end comes first |
 | `start` (login-change wait) | `reason=spend_limit wait=login_change harness=claude reset=none until=none bound=none` |
 | `reentered` | `met=usage_limit\|rate_limit`; once per [re-entry](#a-limit-after-a-wait), before that wait's `start`. `met=usage_limit` is also written for a [passed reset](#a-reset-that-has-already-passed), whose `start` is a capacity wait |
 | `progress` | `remaining=<secs>s`, or `remaining=none` for a wait with no deadline, every 60 s |

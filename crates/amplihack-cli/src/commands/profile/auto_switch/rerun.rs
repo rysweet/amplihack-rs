@@ -10,6 +10,13 @@
 //! another login had room (#2694). A step pinned to a profile can therefore
 //! finish on a different account from the one it started on. Only the final
 //! attempt's stdout is printed.
+//!
+//! Issue #2967: a step moves to another login on every limit, whether or
+//! not it has waited, and waits only when no login can run it. That wait
+//! also ends at the earliest end of a limit block the rotate ledger records
+//! on any other login the step could move to, run on or not, and the retry
+//! then runs on that login ([`earliest_block`], [`reset_logins`],
+//! [`block_ended_retry`]).
 
 use super::candidate::{self, Pool};
 use super::config::{self, Config};
@@ -183,9 +190,7 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
     // Free to be moved onto, as far as the caller and the ledger say.
     let free = |c: &ProfileName| {
         let n = c.as_str();
-        !skip.iter().any(|s| s == n)
-            && !ledger.hosts.contains_key(n)
-            && ledger.leased_to(n).is_none()
+        !skip.iter().any(|s| s == n) && unhosted(ledger, n)
     };
     let eligible = |c: &ProfileName| free(c) && login_ready(state, &overflow, &own, c);
     let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
@@ -235,6 +240,14 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
     let check = overflow.check_note(&state.root, &profile)?;
     let per_token = per_token::reason(&pool, &overflow, cfg, current, &profile, check);
     Some(Pick { profile, per_token })
+}
+
+/// Whether the auto-switch ledger leaves directory `n` free to be moved
+/// onto: it hosts no other account's login, and its own account is not live
+/// in another directory. Part of [`candidate`]'s rule, and of the logins an
+/// earliest-reset wait reads ([`reset_logins`]), so the two cannot differ.
+fn unhosted(ledger: &Ledger, n: &str) -> bool {
+    !ledger.hosts.contains_key(n) && ledger.leased_to(n).is_none()
 }
 
 /// The login checks a move onto `c` must pass, apart from the readings and
@@ -597,7 +610,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // Issue #2731: which login this attempt runs on, read before it
         // starts. The rotator reacts to the same exhausted reading that
         // fails it, so the swap often lands while the attempt is failing.
-        waiter.note_attempt_login();
+        // Issue #2967: the login's name is resolved here too, so the wait
+        // is marked with it and its recipe-log lines say `account=<name>`.
+        waiter.note_attempt_login(profile.as_ref());
         let attempt = match run_attempt_with_recovery(
             &exe,
             &args,
@@ -736,15 +751,8 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 // under.
                 let mut refused: Option<ProfileName> = None;
                 if eff.on
-                    && let Some(next) = next_profile(
-                        sw.store,
-                        &sw.state,
-                        &eff.config,
-                        &current,
-                        &tried,
-                        lim,
-                        &waiter,
-                    )
+                    && let Some(next) =
+                        next_profile(sw.store, &sw.state, &eff.config, &current, &tried, lim)
                 {
                     // The limit is recorded; a rerun that can never have a
                     // whole prompt to read is refused rather than given part of
@@ -826,6 +834,14 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {
             return finish(attempt, None, &mut stdin);
         };
+        // Issue #2967: no login can run the step now, so it waits. The wait
+        // also ends at the earliest end of a limit block recorded on any
+        // other login this step could move to, when that comes first, and
+        // the retry then runs on that login ([`earliest_block`]).
+        let block = switch
+            .as_ref()
+            .and_then(|sw| earliest_block(sw, &waiter, &tried));
+        waiter.offer_earliest_reset(block.as_ref().map(|(_, at)| *at));
         // Issue #2816: the retry the wait earns is announced only once its
         // prompt is known not to be cut short. `replay` is asked at that
         // moment and not before, so a source that failed during the wait is
@@ -845,7 +861,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             AfterLimit::Finish(code) => return finish(attempt, code, &mut stdin),
             AfterLimit::Retry => {
                 attempt.discard();
-                profile = retry_profile(switch.as_ref(), &waiter);
+                profile = match block.filter(|_| waiter.reached_earliest_reset()) {
+                    Some((login, _)) => block_ended_retry(switch.as_ref(), login),
+                    None => retry_profile(switch.as_ref(), &waiter),
+                };
             }
         }
     }
@@ -968,6 +987,112 @@ fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<Profile
     Some(pick.profile)
 }
 
+/// The note the retry after an earliest-reset wait prints, followed by the
+/// profile it runs under (issue #2967). It reaches the step's stderr, which
+/// the recipe runner's classifier reads, so it carries no usage-limit
+/// marker (pinned in `tests_rerun_block`).
+pub(super) const NOTE_BLOCK_ENDED: &str = "amplihack: the earliest recorded reset among this step's logins has passed; rerunning this step under profile";
+
+/// The earliest end of a limit block the rotate ledger records on one of
+/// [`reset_logins`], moved onto the wait's clock, and that login (issue
+/// #2967). `None` while auto-switch is off, since the step may not move.
+///
+/// The instant is the rotator's own data, read by one function
+/// (`rotate::step_block::earliest_end`). Every limit a step meets records a
+/// block ending at the reset its message stated (`note_limit_block`), and the
+/// rotator records its own blocks and wakes at those same ends. Nothing is
+/// predicted from a usage reading. The inherited login's own reset already
+/// times the wait. A host the rotator has never run on has no ledger and
+/// records no block, so its waits end at their own reset, as before. Whether
+/// the instant moves the deadline is the wait's decision (`plan::earliest`).
+fn earliest_block(
+    sw: &Switch<'_>,
+    waiter: &Waiter,
+    tried: &[String],
+) -> Option<(ProfileName, i64)> {
+    if !config::effective(&sw.state.root).on {
+        return None;
+    }
+    let logins = reset_logins(sw, tried);
+    let others: Vec<&str> = logins.iter().map(String::as_str).collect();
+    let real_now = fsx::now();
+    let (login, until) = rotate::step_block::earliest_end(waiter.store_root()?, &others, real_now)?;
+    let at = waiter.now().saturating_add(until.saturating_sub(real_now));
+    Some((ProfileName::parse(login).ok()?, at))
+}
+
+/// The logins whose recorded block may end this step's wait, and so the
+/// logins its retry may then run on (issue #2967). The inherited login is
+/// never one: its own reset already times the wait.
+///
+/// - Every login the step has run on. The candidate rule chose each of them
+///   for this step.
+/// - Every other stored login the candidate rule could move the step onto
+///   once that login's block ends, with its readings and its block set
+///   aside: a plan login (`could_select`; never an overflow or API-key
+///   profile, whose spend the overflow gate decides), not excluded, free in
+///   the auto-switch ledger ([`unhosted`]), and holding its own login
+///   ([`login_ready`]). These are the rules of [`candidate`] that do not
+///   change when a block ends, so the retry never lands on a login the
+///   selection would refuse for good.
+///
+/// On 21 November 2026 the step had run on one login of 23. With the first
+/// set alone its wait read no other login's block and still ran to its own
+/// reset; the second set is what the wait reads in that case.
+fn reset_logins(sw: &Switch<'_>, tried: &[String]) -> Vec<String> {
+    let inherited = sw.inherited.as_str();
+    let mut logins: Vec<String> = tried.iter().filter(|t| *t != inherited).cloned().collect();
+    let ledger = match sw.state.load_ledger() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!(
+                "auto-switch: only the logins this step ran on can end its wait at their reset: {e}"
+            );
+            return logins;
+        }
+    };
+    let cfg = config::effective(sw.store.root()).config;
+    let overflow = OverflowInputs::load(&sw.state.root, &cfg, fsx::now());
+    let pool = overflow.pool();
+    let home = usage_cmd::home_dir();
+    let own = OwnLogins::new(sw.store, home.as_deref());
+    for p in profile_names(sw.store) {
+        let n = p.as_str();
+        if n == inherited || logins.iter().any(|l| l == n) {
+            continue;
+        }
+        if pool.is_plan(&p)
+            && pool.could_select(&p)
+            && !cfg.exclude.contains(&p)
+            && unhosted(&ledger, n)
+            && login_ready(&sw.state, &overflow, &own, &p)
+        {
+            logins.push(n.to_string());
+        }
+    }
+    logins
+}
+
+/// The retry after a wait that ended where `login`'s block ended
+/// ([`earliest_block`]): `login`, while auto-switch is on (issue #2967).
+///
+/// Nothing else is checked, and no reading taken after the reset is
+/// required. That is a cost, accepted on purpose: when the block's end was
+/// wrong about the login, for example because its weekly window is still
+/// used up, the retry spends one whole attempt, and with it the prompt's
+/// tokens, before it meets the limit. That retry records the limit, as every
+/// attempt does, and goes back to the move-or-wait loop, where the login is
+/// now in `tried` and its new block times the next wait. Each wrong guess
+/// costs one attempt, and a block that has ended cannot end a second wait.
+fn block_ended_retry(switch: Option<&Switch<'_>>, login: ProfileName) -> Option<ProfileName> {
+    let sw = switch?;
+    if !config::effective(&sw.state.root).on {
+        return None;
+    }
+    eprintln!("{NOTE_BLOCK_ENDED} {:?} (auto-switch)", login.as_str());
+    Some(login)
+}
+
 /// `<root>/.auto-switch.d/rerun` with auto-switch on, else
 /// `$HOME/.amplihack/rerun`.
 fn scratch_dir(state: Option<&State>) -> Result<PathBuf> {
@@ -1022,7 +1147,13 @@ fn unsupervised(
 }
 
 /// Records the limit for the account live in `profile`, then the next
-/// eligible profile, unless the wait was already used for this step.
+/// eligible profile.
+///
+/// Issue #2967: this is asked for every limit, whether or not the step has
+/// waited. Before, a step that had waited was never moved again, so a limit
+/// on the retry its wait earned left it waiting with another login under
+/// the threshold. The moves still end, because `tried` holds every login
+/// the step has run on and grows with each one; then the step waits.
 fn next_profile(
     store: &ProfileStore,
     state: &State,
@@ -1030,7 +1161,6 @@ fn next_profile(
     profile: &ProfileName,
     tried: &[String],
     lim: &Limited,
-    waiter: &Waiter,
 ) -> Option<Pick> {
     // Without the ledger the account is unknown: recording the limit under
     // the profile name could mark the wrong account exhausted.
@@ -1042,9 +1172,6 @@ fn next_profile(
         }
     };
     record_limit(state, &account, lim.ledger_reset);
-    if waiter.used() {
-        return None;
-    }
     match state.load_ledger() {
         Ok(ledger) => {
             let readings = state.load_usage_or_warn().accounts;
@@ -1064,3 +1191,7 @@ fn next_profile(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests_rerun_block.rs"]
+mod tests_block;

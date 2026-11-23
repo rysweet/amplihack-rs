@@ -127,7 +127,7 @@ fn a_capacity_wait_for_a_passed_reset_runs_on_a_login_already_waited_on() {
         let _writes = readings_written(&e);
         live(&e, "a");
         let mut w = waiter(&e);
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         let probed = Cell::new(0);
         let wait = capacity_for(Some(w.now() - 120), Waiting::PassedReset);
@@ -158,7 +158,7 @@ fn issue_2911_a_capacity_wait_for_a_passed_reset_waits_for_an_event_each_time() 
         let e = env();
         live(&e, "a");
         let mut w = waiter(&e);
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         for n in 0..2 {
             let now = w.now();
@@ -187,7 +187,7 @@ fn a_reset_still_ahead_is_an_ordinary_reset_wait() {
         let _writes = readings_written(&e);
         live(&e, "a");
         let mut w = waiter(&e);
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         w.marks.record(Some("a".to_string()));
         let probed = Cell::new(0);
         let wait = WaitFor::Reset {

@@ -185,7 +185,7 @@ fn a_capacity_wait_still_leaves_a_retry_move() {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let wait = capacity_to_reset(&w);
         let after = w.after_limit(
             wait,
@@ -228,7 +228,7 @@ fn a_retry_is_not_announced_when_the_step_can_never_be_given_its_prompt() {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         e.rotator("b"); // the login changed while the attempt was failing
         let mut asked = 0;
         let after = w.after_limit(
@@ -254,7 +254,7 @@ fn a_retry_is_not_announced_when_the_step_can_never_be_given_its_prompt() {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let wait = capacity_to_reset(&w);
         let after = w.after_limit(
             wait,
@@ -290,7 +290,7 @@ fn the_retry_asks_once_for_its_prompt_and_never_waits_for_it() {
         let _log = EnvGuard::set([("AMPLIHACK_RECIPE_LOG", log.to_str().unwrap())]);
         e.rotator("a");
         let mut w = e.waiter();
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         e.rotator("b"); // the login changed while the attempt was failing
         let before = w.now();
         let mut asked = 0;
@@ -319,7 +319,7 @@ fn the_retry_asks_once_for_its_prompt_and_never_waits_for_it() {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let before = w.now();
         let mut asked = 0;
         let wait = capacity_to_reset(&w);
@@ -357,7 +357,7 @@ fn the_retry_before_a_wait_carries_no_earlier_waits_retry_move() {
 
         // First wait: a capacity wait on login `a`, ended at its first poll
         // by a login with room, which is what sets the field.
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let _ = w.after_limit(
             capacity(),
             1,
@@ -371,7 +371,7 @@ fn the_retry_before_a_wait_carries_no_earlier_waits_retry_move() {
         // The attempt that follows is launched on `b` and, while it is
         // failing, the rotator moves `~/.claude` to `c`.
         e.rotator("b");
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         e.rotator("c");
 
         let after = w.after_limit(
@@ -402,7 +402,7 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let wait = capacity_to_reset(&w);
         let _ = w.after_limit(
             wait,
@@ -417,7 +417,7 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
         // A second wait on another login, this time a reset wait that
         // reaches its reset: no capacity wait, and no reading ended it.
         e.rotator("b");
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let wait = reset_wait(&w);
         let _ = w.after_limit(
             wait,
@@ -443,10 +443,10 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
 /// chain the moment the rotator came back round; `reset_too_far` and
 /// `already_waited` between them account for most of the runs #2911
 /// reports. The refusal is gone, so a login that comes round twice is
-/// waited on twice. The record itself stays, because two readers still want
-/// it: `used`, which stops auto-switch choosing another candidate once the
-/// step has waited, and the `reentered` line, which says whether this step
-/// has waited on this login before.
+/// waited on twice. The record itself stays, because the `reentered` line
+/// still wants it: it says whether this step has waited on this login
+/// before. (Its other reader, `used`, which stopped auto-switch choosing
+/// another login once the step had waited, went with issue #2967.)
 #[test]
 fn the_wait_that_returns_early_still_records_its_mark() {
     // No wait runs here at all: both calls take the early return.
@@ -454,7 +454,7 @@ fn the_wait_that_returns_early_still_records_its_mark() {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         e.rotator("b");
         assert!(matches!(
             w.after_limit(
@@ -468,10 +468,6 @@ fn the_wait_that_returns_early_still_records_its_mark() {
             AfterLimit::Retry
         ));
         assert!(
-            w.used(),
-            "the step has waited, as far as auto-switch reads it"
-        );
-        assert!(
             w.marks.waited_on(&Some("a".to_string())),
             "the early return recorded the login it returned on"
         );
@@ -481,7 +477,7 @@ fn the_wait_that_returns_early_still_records_its_mark() {
         // again, and the record of the first wait is what the `reentered`
         // line reads rather than a refusal.
         e.rotator("a");
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         e.rotator("b");
         assert!(
             matches!(
@@ -532,7 +528,7 @@ fn a_fallback_reading_does_not_start_the_retry_before_the_wait() {
         fs::set_permissions(&swap, fs::Permissions::from_mode(0o600)).unwrap();
 
         let mut w = e.waiter();
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         assert!(
             w.attempt_login.as_ref().is_some_and(|(_, n)| n == "a"),
             "the attempt ran on `a`, read from the ledger: {:?}",
@@ -551,5 +547,147 @@ fn a_fallback_reading_does_not_start_the_retry_before_the_wait() {
             "the two readings came from different files, so they are not \
              compared and the step does not retry before its wait"
         );
+    });
+}
+
+// --- issue #2967: the earliest-reset deadline and its retry --------------------
+//
+// `Waiter::offer_earliest_reset(Option<i64>)` gives the wait about to be
+// planned the earliest end of a limit block recorded on another login the
+// step could move to; the next `after_limit` takes it whatever it does. When
+// that instant comes before the wait's own deadline the wait ends there, and
+// `Waiter::reached_earliest_reset()` says so: the retry then runs on that
+// login (`auto_switch::rerun::block_ended_retry`). The flag is cleared
+// wherever `retry_move` is cleared, the retry-before-wait return included,
+// so a value an earlier wait left cannot choose the login of a later retry.
+
+#[test]
+fn a_wait_offered_a_sooner_reset_ends_there_and_says_so() {
+    guarded(|| {
+        let e = env();
+        e.rotator("a");
+        let mut w = e.waiter();
+        assert!(!w.reached_earliest_reset(), "nothing has waited yet");
+        w.note_attempt_login(None);
+        // The own reset is an hour away; another login resets in a minute.
+        let wait = reset_wait(&w);
+        w.offer_earliest_reset(Some(w.now() + 60));
+        let after = w.after_limit(
+            wait,
+            1,
+            &signals(),
+            &|_, _| false,
+            &mut || Replay::Ready,
+            Resumed::Ordinarily,
+        );
+        assert!(
+            matches!(after, AfterLimit::Retry),
+            "the reset is what it waited for"
+        );
+        assert!(w.reached_earliest_reset());
+    });
+}
+
+#[test]
+fn a_wait_offered_a_later_reset_ends_at_its_own_and_is_not_an_earliest_reset_wait() {
+    guarded(|| {
+        let e = env();
+        e.rotator("a");
+        let mut w = e.waiter();
+        w.note_attempt_login(None);
+        let wait = reset_wait(&w);
+        w.offer_earliest_reset(Some(w.now() + 2 * HOUR));
+        let after = w.after_limit(
+            wait,
+            1,
+            &signals(),
+            &|_, _| false,
+            &mut || Replay::Ready,
+            Resumed::Ordinarily,
+        );
+        assert!(matches!(after, AfterLimit::Retry));
+        assert!(!w.reached_earliest_reset());
+    });
+}
+
+#[test]
+fn an_offer_times_one_wait_only() {
+    guarded(|| {
+        let e = env();
+        e.rotator("a");
+        let mut w = e.waiter();
+        w.note_attempt_login(None);
+        let wait = reset_wait(&w);
+        w.offer_earliest_reset(Some(w.now() + 60));
+        let _ = w.after_limit(
+            wait,
+            1,
+            &signals(),
+            &|_, _| false,
+            &mut || Replay::Ready,
+            Resumed::Ordinarily,
+        );
+        assert!(
+            w.reached_earliest_reset(),
+            "the state this test starts from"
+        );
+        // The next wait is offered nothing, so it runs to its own reset.
+        w.note_attempt_login(None);
+        let wait = reset_wait(&w);
+        let _ = w.after_limit(
+            wait,
+            2,
+            &signals(),
+            &|_, _| false,
+            &mut || Replay::Ready,
+            Resumed::Ordinarily,
+        );
+        assert!(
+            !w.reached_earliest_reset(),
+            "the earlier offer did not time the later wait"
+        );
+    });
+}
+
+#[test]
+fn the_retry_before_a_wait_clears_an_earlier_earliest_resets_flag() {
+    guarded(|| {
+        let e = env();
+        e.rotator("a");
+        let mut w = e.waiter();
+        w.note_attempt_login(None);
+        let wait = reset_wait(&w);
+        w.offer_earliest_reset(Some(w.now() + 60));
+        let _ = w.after_limit(
+            wait,
+            1,
+            &signals(),
+            &|_, _| false,
+            &mut || Replay::Ready,
+            Resumed::Ordinarily,
+        );
+        assert!(
+            w.reached_earliest_reset(),
+            "the state this test starts from"
+        );
+        // The next attempt runs on `b`; the rotator moves `~/.claude` to `c`
+        // while it fails, so the step retries at once with no wait.
+        e.rotator("b");
+        w.note_attempt_login(None);
+        e.rotator("c");
+        let after = w.after_limit(
+            login_change(),
+            2,
+            &signals(),
+            &|_, _| false,
+            &mut || Replay::Ready,
+            Resumed::Ordinarily,
+        );
+        assert!(matches!(after, AfterLimit::Retry));
+        assert!(
+            !w.reached_earliest_reset(),
+            "this retry earned no move to the earlier wait's login"
+        );
+        assert!(w.retry_move().is_none());
     });
 }
