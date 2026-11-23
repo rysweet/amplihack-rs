@@ -487,11 +487,13 @@ fn recipe_helper_lookup_snippets_are_identical() {
     // consensus-tdd-impl step5-validate-criticality and
     // step5-require-complete-route). #2575 moved the merge loop's step-02 copy
     // into autodrive_merge_loop_run.sh, which sources the helper from beside
-    // itself. Set from the count in the tree.
+    // itself. #3129 replaced the crusty loop's step-02, which held one copy,
+    // with a one-release alias that sources the helper directly. Set from the
+    // count in the tree.
     assert_eq!(
         copies.len(),
-        9,
-        "expected nine copies of the recipe_context_value.sh lookup, found: {:?}",
+        8,
+        "expected eight copies of the recipe_context_value.sh lookup, found: {:?}",
         copies.iter().map(|(at, _)| at).collect::<Vec<_>>()
     );
     let (first_at, first) = &copies[0];

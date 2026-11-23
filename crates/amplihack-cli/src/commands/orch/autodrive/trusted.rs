@@ -38,12 +38,11 @@ pub fn is_top_level_drive(name: &str) -> bool {
     name == "auto-drive-to-merge" || name == "auto-drive-light"
 }
 
-/// Assets a launch bundle must hold before any loop runs. The finalize and
-/// round tools are here so a bundle without them fails at launch, not after
-/// the crusty and merge-ready loops (the finalize `merge` step sources
-/// `autodrive_merge.sh`, which sources `autodrive_merge_message.sh`; rounds
-/// source `autodrive_round_word.sh`; merge evidence runs
-/// `autodrive_expected_checks.sh`). Listing them here puts them under the
+/// Assets a launch bundle must hold before any loop runs, so a bundle without
+/// one fails at launch rather than mid-run. The goal loop's files (#3129) and
+/// the merge action's (`autodrive_merge.sh`, which sources
+/// `autodrive_merge_message.sh`) are here; so is every file a one-release
+/// alias still names (#3049). Listing them here puts them under the
 /// launch-bundle digest (#2575).
 pub const REQUIRED_ASSETS: &[&str] = &[
     "skills/merge-ready/SKILL.md",
@@ -60,6 +59,22 @@ pub const REQUIRED_ASSETS: &[&str] = &[
     "tools/autodrive_merge.sh",
     "tools/autodrive_round_word.sh",
     "recipes/autodrive-handoff.yaml",
+    // #3129: the shared goal loop and the pull request goal. Every file the
+    // loop runs is here, so a bundle without one fails at launch, under the
+    // launch-bundle digest, before any turn.
+    "recipes/autodrive-goal-loop.yaml",
+    "recipes/autodrive-goal-turn.yaml",
+    "recipes/autodrive-crusty-round.yaml",
+    "tools/autodrive_goal_loop.sh",
+    "tools/autodrive_goal_turn.sh",
+    "tools/autodrive_goal_lib.sh",
+    "tools/autodrive_pr_goal.sh",
+    "tools/autodrive_pr_reading.sh",
+    "tools/autodrive_pr_worktree.sh",
+    "tools/autodrive_refusal.sh",
+    "tools/autodrive_state.sh",
+    "tools/recipe_context_value.sh",
+    "skills/auto-drive-to-merge/goal-merge-pr.md",
 ];
 
 /// A private invocation copy keeps recipes, skills, evaluator and helpers on one release.
