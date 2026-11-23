@@ -5,7 +5,7 @@
 //!
 //! Order of checks (see [`decide::gate`]): auto-switch on, a limit stop
 //! with a usable session id, no `stop_hook_active`, an event not resumed
-//! before, a session under its cap, a rotator that runs (see
+//! before, a rotator that runs (see
 //! [`rotator_status::rotator_down`]). Then the hook takes a snapshot of the
 //! swap record (`rotate/swap.json`), arms its watches ([`Deps::arm`]),
 //! reads the record once, and blocks in [`Deps::wait_event`] until the
@@ -64,6 +64,7 @@ use decide::{Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key}
 use guard::{CommitError, FsGuard, GuardStore};
 use keys::{Key, Pane, PaneCheck, RESUME_KEYS, ScreenCheck};
 use log::LogEntry;
+use std::cell::Cell;
 use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -80,9 +81,6 @@ pub const RESUME_MSG: &str = "amplihack: the login rotator reports a login with 
 pub const UNRECOGNISED_MSG: &str = "amplihack: limit-resume proved this session's terminal but did not recognise what it was \
      showing, so it typed nothing into it. If a usage-limit prompt is still there, press Esc \
      and continue the session by hand.";
-
-/// Resumes allowed per session in any 24 hours.
-pub const MAX_RESUMES_PER_SESSION: u32 = 3;
 
 /// Larger hook payloads are ignored.
 pub const MAX_STDIN_BYTES: u64 = 1024 * 1024;
@@ -138,8 +136,11 @@ pub enum Outcome {
     MovedOn,
     /// This limit event was already resumed.
     Duplicate,
-    /// The session reached its resume cap.
-    Cap,
+    /// Logged only (issue #2912): the session's record of earlier resumes
+    /// could not be parsed, so it is read as no earlier resumes and the
+    /// commit rewrites it. The resume itself goes on and is logged under
+    /// its own outcome.
+    SessionRecordReset,
     /// The payload had `stop_hook_active: true`.
     StopHookActive,
     /// The Claude Code session that started the hook has exited.
@@ -171,7 +172,7 @@ impl Outcome {
             Self::NoCapacityTimeout => "no-capacity-timeout",
             Self::MovedOn => "moved-on",
             Self::Duplicate => "duplicate",
-            Self::Cap => "cap",
+            Self::SessionRecordReset => "session-record-reset",
             Self::StopHookActive => "stop-hook-active",
             Self::SessionGone => "session-gone",
             Self::RotatorDown => "rotator-down",
@@ -405,7 +406,6 @@ fn run_with_affinity<D: Deps + ?Sized>(
         session_ok: session_id_ok(session_id.as_deref()),
         stop_hook_active: *stop_hook_active == Some(true),
         duplicate: false,
-        capped: false,
     };
     match gate(&facts) {
         Gate::Disabled => return Outcome::Disabled,
@@ -447,6 +447,10 @@ fn run_with_affinity<D: Deps + ?Sized>(
         _ => live_at_start,
     };
     let event = event_key(session_id, error, details, message, key_login);
+    // Evidence for every line logged after the session record is read
+    // (#2912). A `Cell` so the logging closure below reads the latest value
+    // without taking the count as an argument at each call.
+    let resumes: Cell<Option<u32>> = Cell::new(None);
     let note = |deps: &mut D, now: i64, outcome: Outcome, n: Note<'_>| {
         let entry = LogEntry {
             session: session[..LOG_KEY_CHARS].to_string(),
@@ -458,6 +462,7 @@ fn run_with_affinity<D: Deps + ?Sized>(
             swap_live: n.swap.map(|r| r.live_login.clone()),
             pane: n.pane.map(Pane::log_tag),
             keys_sent: n.keys_sent,
+            resumes: resumes.get(),
             detail: n.detail,
         };
         deps.log(now, &entry);
@@ -469,24 +474,30 @@ fn run_with_affinity<D: Deps + ?Sized>(
     if stop_hook {
         return finish(deps, start, Outcome::StopHookActive);
     }
-    // Checked here so a duplicate or capped event exits at once; checked
-    // again under the lock by `commit`.
+    // Checked here so a duplicate event exits at once; checked again under
+    // the lock by `commit`.
     match deps.guard().seen(&event) {
         Ok(seen) => facts.duplicate = seen,
         Err(_) => return finish(deps, start, Outcome::GuardFailed),
     }
-    match deps.guard().resumes(&session, start) {
-        Ok(n) => facts.capped = n >= MAX_RESUMES_PER_SESSION,
+    // Read for the log only: no count refuses a resume (#2912).
+    let record = match deps.guard().resumes(&session, start) {
+        Ok(r) => r,
         Err(_) => return finish(deps, start, Outcome::GuardFailed),
+    };
+    resumes.set(Some(record.count));
+    if record.malformed {
+        // Loud and at once, so an operator sees the damaged record even if
+        // the wait that follows ends some other way. The commit rewrites
+        // the file; nothing of its contents is logged.
+        note(deps, start, Outcome::SessionRecordReset, Note::default());
     }
     let resumed_at = match resumed {
         Ok(t) => t,
         Err(_) => return finish(deps, start, Outcome::GuardFailed),
     };
-    match gate(&facts) {
-        Gate::Duplicate => return finish(deps, start, Outcome::Duplicate),
-        Gate::Cap => return finish(deps, start, Outcome::Cap),
-        _ => {}
+    if gate(&facts) == Gate::Duplicate {
+        return finish(deps, start, Outcome::Duplicate);
     }
     if deps.rotator_down(start) {
         return finish(deps, start, Outcome::RotatorDown);
@@ -566,7 +577,6 @@ fn run_with_affinity<D: Deps + ?Sized>(
         Err(e) => {
             let outcome = match e {
                 CommitError::Duplicate => Outcome::Duplicate,
-                CommitError::Cap => Outcome::Cap,
                 CommitError::Io => Outcome::GuardFailed,
             };
             return note(deps, now, outcome, swap(&record));

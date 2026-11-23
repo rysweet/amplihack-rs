@@ -273,14 +273,23 @@ pub fn project_dir_names(launch_dir: &Path) -> Vec<String> {
     names
 }
 
-/// Whether `<config_dir>/projects/<enc>/<id>.jsonl` exists for either
-/// encoding of `launch_dir`.
-pub fn transcript_exists(config_dir: &Path, launch_dir: &Path, id: &str) -> bool {
+/// `<config_dir>/projects/<enc>/<id>.jsonl` for whichever encoding of
+/// `launch_dir` holds a regular file of that name; `None` when neither does
+/// or `id` is not a conversation id. The standing-session wrapper reads the
+/// model's replies from it after a run (issue #2912).
+pub fn transcript_path(config_dir: &Path, launch_dir: &Path, id: &str) -> Option<PathBuf> {
     if validate::conversation_id(id).is_err() {
-        return false;
+        return None;
     }
     let projects = config_dir.join("projects");
     project_dir_names(launch_dir)
         .iter()
-        .any(|enc| projects.join(enc).join(format!("{id}.jsonl")).is_file())
+        .map(|enc| projects.join(enc).join(format!("{id}.jsonl")))
+        .find(|p| fs::metadata(p).is_ok_and(|m| m.is_file()))
+}
+
+/// Whether `<config_dir>/projects/<enc>/<id>.jsonl` exists for either
+/// encoding of `launch_dir`.
+pub fn transcript_exists(config_dir: &Path, launch_dir: &Path, id: &str) -> bool {
+    transcript_path(config_dir, launch_dir, id).is_some()
 }

@@ -13,9 +13,9 @@ use std::io::Write;
 use std::path::Path;
 
 /// The longest text kept from outside, such as a tmux stderr line.
-const MAX_TEXT: usize = 200;
+pub(super) const MAX_TEXT: usize = 200;
 /// Longer than any line the supervisor builds; only a bound on hostile text.
-const MAX_LINE: usize = 4096;
+pub(super) const MAX_LINE: usize = 4096;
 
 /// Control characters and the format characters of
 /// [`validate::unsafe_char`] become `?`; at most `max` characters, cut on a

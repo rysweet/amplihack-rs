@@ -19,12 +19,12 @@ mod wait;
 
 use amplihack_hooks::limit_resume::decide::{event_key, session_key};
 use amplihack_hooks::limit_resume::guard::{
-    CommitError, FsGuard, GuardStore, LOCK_TIMEOUT, PROMPTED_RETENTION_SECS,
+    CommitError, FsGuard, GuardStore, LOCK_TIMEOUT, PROMPTED_RETENTION_SECS, Resumes,
 };
 use amplihack_hooks::limit_resume::keys::{Key, Pane, PaneCheck, ScreenCheck};
 use amplihack_hooks::limit_resume::log::{LOG_MAX_BYTES, LogEntry, append, format_line, sanitize};
 use amplihack_hooks::limit_resume::{
-    Deps, Event, MAX_RESUMES_PER_SESSION, Outcome, check_watch_dir, record_prompt_at, run_with,
+    Deps, Event, Outcome, check_watch_dir, record_prompt_at, run_with,
 };
 use amplihack_types::HookInput;
 use amplihack_utils::clock::Clock;
@@ -177,11 +177,11 @@ fn seen_and_resumes_reflect_commits() {
     let r = root();
     let mut g = FsGuard::new(r.path());
     assert!(!g.seen(&ev(1)).unwrap());
-    assert_eq!(g.resumes(&sess(), NOW).unwrap(), 0);
+    assert_eq!(g.resumes(&sess(), NOW).unwrap().count, 0);
     g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
     assert!(g.seen(&ev(1)).unwrap());
     assert!(!g.seen(&ev(2)).unwrap());
-    assert_eq!(g.resumes(&sess(), NOW).unwrap(), 1);
+    assert_eq!(g.resumes(&sess(), NOW).unwrap().count, 1);
 }
 
 #[test]
@@ -193,64 +193,109 @@ fn same_event_twice_is_duplicate() {
         g.commit(&ev(1), &sess(), NOW + 5, NOW + 5),
         Err(CommitError::Duplicate)
     ));
-    assert_eq!(g.resumes(&sess(), NOW + 5).unwrap(), 1);
+    assert_eq!(g.resumes(&sess(), NOW + 5).unwrap().count, 1);
 }
 
+/// Issue #2912: no count refuses a resume. Ten commits for one session in
+/// one day all succeed, each with its own event marker.
 #[test]
-fn session_cap_is_three_per_24_hours() {
+fn there_is_no_per_session_resume_cap() {
     let r = root();
     let mut g = FsGuard::new(r.path());
-    for i in 0..MAX_RESUMES_PER_SESSION {
-        g.commit(&ev(i), &sess(), NOW + i as i64, NOW + i as i64)
-            .unwrap();
+    for i in 0..10u32 {
+        let t = NOW + i as i64;
+        g.commit(&ev(i), &sess(), t, t).unwrap();
+        assert!(g.seen(&ev(i)).unwrap(), "event {i} leaves its marker");
     }
-    assert!(matches!(
-        g.commit(&ev(99), &sess(), NOW + 10, NOW + 10),
-        Err(CommitError::Cap)
-    ));
-    assert!(
-        !g.seen(&ev(99)).unwrap(),
-        "a capped commit leaves no marker"
-    );
+    assert_eq!(g.resumes(&sess(), NOW + 10).unwrap().count, 10);
 
-    // A day later the old resumes no longer count.
-    let later = NOW + DAY + 10;
-    assert_eq!(g.resumes(&sess(), later).unwrap(), 0);
+    // A day later the old resumes no longer count, and are dropped.
+    let later = NOW + DAY + 100;
+    assert_eq!(g.resumes(&sess(), later).unwrap().count, 0);
     g.commit(&ev(100), &sess(), later, later).unwrap();
     let text = fs::read_to_string(resume_dir(r.path()).join("sessions").join(sess())).unwrap();
     assert_eq!(text, format!("{later}\n"), "expired entries are dropped");
 }
 
 #[test]
-fn sessions_are_capped_independently() {
+fn sessions_are_recorded_independently() {
     let r = root();
     let mut g = FsGuard::new(r.path());
-    for i in 0..MAX_RESUMES_PER_SESSION {
+    for i in 0..5u32 {
         let t = NOW + i as i64;
         g.commit(&ev(i), &sess(), t, t).unwrap();
     }
     g.commit(&ev(50), &session_key("s2"), NOW, NOW).unwrap();
+    assert_eq!(g.resumes(&session_key("s2"), NOW).unwrap().count, 1);
 }
 
 #[test]
-fn malformed_session_file_counts_as_capped_and_is_left_alone() {
+fn the_per_event_duplicate_guard_and_the_since_start_rule_remain() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW + 5).unwrap();
+    assert!(matches!(
+        g.commit(&ev(1), &sess(), NOW + 10, NOW + 10),
+        Err(CommitError::Duplicate)
+    ));
+    // A resume after this hook's start makes a second event a duplicate.
+    assert!(matches!(
+        g.commit(&ev(2), &sess(), NOW, NOW + 6),
+        Err(CommitError::Duplicate)
+    ));
+    assert!(
+        !g.seen(&ev(2)).unwrap(),
+        "a refused commit leaves no marker"
+    );
+}
+
+#[test]
+fn a_malformed_session_record_means_no_prior_resumes_and_is_rewritten() {
     let r = root();
     let mut g = FsGuard::new(r.path());
     g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
     let f = resume_dir(r.path()).join("sessions").join(sess());
-    for junk in [&b"garbage\n"[..], b"123\nabc\n", b"\xff\xfe", b"-1\n"] {
+    for (n, junk) in [&b"garbage\n"[..], b"123\nabc\n", b"\xff\xfe", b"-1\n"]
+        .into_iter()
+        .enumerate()
+    {
         fs::write(&f, junk).unwrap();
-        assert!(
-            g.resumes(&sess(), NOW).unwrap() >= MAX_RESUMES_PER_SESSION,
+        assert_eq!(
+            g.resumes(&sess(), NOW).unwrap(),
+            Resumes {
+                count: 0,
+                malformed: true
+            },
             "{junk:?}"
         );
-        assert!(matches!(
-            g.commit(&ev(7), &sess(), NOW, NOW),
-            Err(CommitError::Cap)
-        ));
-        assert_eq!(fs::read(&f).unwrap(), junk, "never rewritten");
-        assert!(!g.seen(&ev(7)).unwrap());
+        assert_eq!(g.last_resume(&sess()).unwrap(), None, "{junk:?}");
+        let ev_n = ev(10 + n as u32);
+        let t = NOW + 10 + n as i64;
+        g.commit(&ev_n, &sess(), t, t).unwrap();
+        assert_eq!(
+            fs::read_to_string(&f).unwrap(),
+            format!("{t}\n"),
+            "{junk:?}: rewritten holding only the current resume"
+        );
+        assert_eq!(mode(&f), 0o600);
+        assert!(g.seen(&ev_n).unwrap());
     }
+}
+
+#[test]
+fn an_oversized_session_record_is_read_within_a_bound() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
+    let f = resume_dir(r.path()).join("sessions").join(sess());
+    let mut big = String::new();
+    for i in 0..200_000 {
+        big.push_str(&format!("{}\n", NOW - i));
+    }
+    fs::write(&f, big).unwrap();
+    g.resumes(&sess(), NOW)
+        .expect("an oversized record is read, not refused");
+    g.commit(&ev(2), &sess(), NOW + 1, NOW + 1).unwrap();
 }
 
 // ── FsGuard: refusing unsafe paths ──────────────────────────────────────────
@@ -581,7 +626,10 @@ fn eight_racing_hooks_on_one_event_commit_exactly_once() {
             .all(|r| matches!(r, Err(CommitError::Duplicate))),
         "losers must see Duplicate: {results:?}"
     );
-    assert_eq!(FsGuard::new(r.path()).resumes(&sess(), NOW).unwrap(), 1);
+    assert_eq!(
+        FsGuard::new(r.path()).resumes(&sess(), NOW).unwrap().count,
+        1
+    );
 }
 
 #[test]
@@ -599,7 +647,10 @@ fn eight_racing_waiters_for_one_session_wake_it_once() {
         "losers must see Duplicate: {results:?}"
     );
     assert_eq!(
-        FsGuard::new(r.path()).resumes(&sess(), NOW + 100).unwrap(),
+        FsGuard::new(r.path())
+            .resumes(&sess(), NOW + 100)
+            .unwrap()
+            .count,
         1
     );
 }
@@ -620,7 +671,7 @@ fn two_waiters_for_one_session_with_distinct_events_resume_once() {
             "b_first={b_first}: {second:?}"
         );
         assert!(!g.seen(&order[1].0).unwrap(), "the loser leaves no marker");
-        assert_eq!(g.resumes(&sess(), NOW + 105).unwrap(), 1);
+        assert_eq!(g.resumes(&sess(), NOW + 105).unwrap().count, 1);
     }
 }
 
@@ -631,7 +682,7 @@ fn a_waiter_that_started_in_the_second_of_the_last_resume_may_commit() {
     let mut g = FsGuard::new(r.path());
     g.commit(&ev(1), &sess(), NOW, NOW + 100).unwrap();
     g.commit(&ev(2), &sess(), NOW + 100, NOW + 200).unwrap();
-    assert_eq!(g.resumes(&sess(), NOW + 200).unwrap(), 2);
+    assert_eq!(g.resumes(&sess(), NOW + 200).unwrap().count, 2);
 }
 
 // ── FsGuard: retention ──────────────────────────────────────────────────────
@@ -687,6 +738,7 @@ fn entry(outcome: Outcome, live: Option<&str>) -> LogEntry {
         pane: None,
         keys_sent: None,
         detail: None,
+        resumes: None,
     }
 }
 
@@ -703,8 +755,22 @@ fn log_line_matches_the_documented_format() {
 }
 
 #[test]
+fn the_resume_count_is_logged_as_evidence_when_set() {
+    let mut e = entry(Outcome::Resumed, Some("spare"));
+    e.resumes = Some(4);
+    let line = format_line(NOW, &e);
+    assert!(line.contains(" resumes=4"), "{line}");
+    assert!(line.ends_with('\n'));
+    let mut e = entry(Outcome::SessionRecordReset, None);
+    e.resumes = None;
+    let line = format_line(NOW, &e);
+    assert!(line.contains("outcome=session-record-reset"), "{line}");
+    assert!(!line.contains("resumes="), "{line}");
+}
+
+#[test]
 fn log_timestamps_are_utc_iso8601() {
-    let t = |s| format_line(s, &entry(Outcome::Cap, None))[..20].to_string();
+    let t = |s| format_line(s, &entry(Outcome::Duplicate, None))[..20].to_string();
     assert_eq!(t(0), "1970-01-01T00:00:00Z");
     assert_eq!(t(951_782_400), "2000-02-29T00:00:00Z");
     assert_eq!(t(NOW - 34), "2026-10-21T14:12:46Z");
