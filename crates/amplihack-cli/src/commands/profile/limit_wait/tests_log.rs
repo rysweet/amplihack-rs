@@ -90,7 +90,6 @@ fn every_other_event_has_its_documented_fields() {
         // A prompt cut short is a failure of the step's
         // input, not a skipped wait, and says so.
         (Event::PromptCutShort, "failed reason=prompt_cut_short"),
-        (Event::Skipped(Skip::Ci), "skipped reason=ci"),
         (
             Event::End(End::CapacityExpired),
             "end reason=capacity expired",

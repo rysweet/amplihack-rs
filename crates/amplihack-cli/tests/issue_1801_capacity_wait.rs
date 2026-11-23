@@ -1175,14 +1175,17 @@ fn the_wait_turned_off_refuses_first() {
     assert_ran_once_unsupervised(&f, &out);
 }
 
+/// Issue #2911: `CI` used to refuse the wait as `skipped reason=ci` before
+/// anything else was checked. It is not a setting any more, so a limited
+/// step under `CI=true` waits and retries like any other.
 #[test]
-fn ci_refuses_first() {
+fn issue_2911_ci_does_not_refuse_the_wait() {
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f);
-    c.env("CI", "true");
+    c.env("CI", "true").env(MAX_WAIT_ENV, MIN_WAIT);
     let out = f.run(&mut c);
-    assert_ran_once_unsupervised(&f, &out);
+    assert_waited_then_retried(&f, &out, "reset_too_far", 2);
 }
 
 // --- a step with nowhere to go still sleeps to its reset (issue #2694) --------

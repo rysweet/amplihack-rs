@@ -4,10 +4,10 @@
 //! `~/.amplihack/config.toml`, read through the user-config loader.
 //!
 //! Disabled, an unprofiled step behaves exactly as before (D7): one
-//! invocation, the original exit code, no wait line. With no explicit
-//! setting, `CI=true` turns the wait off. Invalid values warn without being
-//! quoted. ST5: no account identity reaches a wait line. See
-//! `issue_1618_fixture`.
+//! invocation, the original exit code, no wait line. `CI=true` does not turn
+//! the wait off (issue #2911); only the key or its variable does. Invalid
+//! values warn without being quoted. ST5: no account identity reaches a wait
+//! line. See `issue_1618_fixture`.
 
 #![cfg(unix)]
 
@@ -67,18 +67,31 @@ fn the_variable_overrides_the_file_in_both_directions() {
     assert_waited(&f, &f.run(&mut c));
 }
 
+/// Issue #2911: a run that meets a limit does not end because of it, and
+/// `CI` is not a setting. It used to turn the wait off by default, and
+/// amplihack's own delegation layer exports `CI=true` to every delegated
+/// `claude -p`, so a recipe run started from one ended at its first limit.
+/// The explicit opt-out still applies under `CI`.
 #[test]
-fn ci_turns_the_wait_off_unless_it_is_set_explicitly() {
-    let f = Fixture::new();
-    let mut c = f.step();
-    c.env("CI", "true");
-    assert_today(&f, &f.run(&mut c));
+fn issue_2911_ci_does_not_turn_the_wait_off() {
+    for ci in ["true", "1", "github"] {
+        let f = Fixture::new();
+        let mut c = f.step();
+        c.env("CI", ci);
+        assert_waited(&f, &f.run(&mut c));
+    }
 
     let f = Fixture::new();
-    f.write_config("[recipe]\nusage_limit_wait = true\n");
+    f.write_config("[recipe]\nusage_limit_wait = false\n");
     let mut c = f.step();
     c.env("CI", "true");
-    assert_waited(&f, &f.run(&mut c));
+    let out = f.run(&mut c);
+    assert_today(&f, &out);
+    assert!(
+        !text(&out.stderr).contains("reason=ci"),
+        "no ci reason is written: {}",
+        describe(&out)
+    );
 }
 
 #[test]

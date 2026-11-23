@@ -812,7 +812,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // profile was refused because the prompt was cut short, and the
         // wait is refused for the same reason, so `after_limit` still writes
         // the ending (`failed reason=prompt_cut_short`, or `skipped
-        // reason=disabled`/`ci`) and never starts a wait.
+        // reason=disabled`) and never starts a wait.
         // A stop signal is honoured here as `after_limit` would honour it.
         // With nothing blocking the wait there is no reset to wait for, and
         // the result is passed up.

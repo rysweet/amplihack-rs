@@ -1,19 +1,35 @@
 //! The usage-limit wait's settings (issue #1618), from the layered user
 //! config (`recipe.usage_limit_wait`, `recipe.usage_limit_max_wait_secs`):
 //! the environment variable, then the project and user `config.toml`, then
-//! the default. With no explicit setting the wait is on, except in CI (a
-//! non-empty `CI` other than `false` or `0`), where it is off: a CI job has
-//! no rotator or second login to wait for, and its own timeout is the
-//! better bound. Setting the key in a user or project file, or the
-//! variable, turns it back on there.
+//! the default. With no explicit setting the wait is on, everywhere.
+//!
+//! `CI` does not turn it off (issue #2911). It used to, by default, on the
+//! reading that a CI job has no rotator or second login to wait for. But a
+//! run that meets a limit must not end because of it, and `CI=true` is
+//! exported by tools that only want to suppress prompts, not to say that
+//! nothing could lift a limit: amplihack's own delegation layer
+//! (`amplihack-delegation`, `platform_cli`) sets it for every delegated
+//! `claude -p`, so a recipe run started from one had the wait silently off
+//! and ended at its first limit. A job that should not wait says so with the
+//! key or the variable.
+//!
+//! `recipe.usage_limit_wait = false` (or `AMPLIHACK_USAGE_LIMIT_WAIT=0`) is
+//! then the one setting that lets a limit end a step, and it does so on
+//! purpose: the operator asked for the limit result to be passed up at once
+//! (`skipped reason=disabled`) rather than waited out. That is configuration,
+//! not a limit ending. The run still learns of the limit as a limit: the
+//! recipe runner classes the failure `usage_limit` and records the run
+//! resumable, so relaunching the same command resumes the step. Nothing in
+//! amplihack writes the key or the variable; only an operator does.
 //!
 //! `recipe.usage_limit_max_wait_secs` is the outer bound of *one* wait whose
 //! limit stated no reset still ahead, not a budget for the whole step (issue
 //! #2911). A wait whose limit stated a reset ahead does not read it: it ends
 //! at that reset, on a login with room or on a login change. A step that
 //! meets limit after limit waits each of them out; nothing counts the waits
-//! or ends the step when a total is reached. The bound is the one timer the
-//! wait has (`plan` says why it is kept). A configured value below
+//! or ends the step when a total is reached. The bound is the one timer that
+//! ends a wait, an interim one (`plan` says why it is kept and that #3098
+//! decides its future). A configured value below
 //! [`plan::MIN_WAIT_SECS`] is raised to it, so that no configured value can
 //! make the bound a busy loop of agent launches. A zero therefore no longer
 //! means "do not wait"; `recipe.usage_limit_wait = false` is how to turn the
@@ -60,15 +76,12 @@ pub(crate) const SHORT_WAIT_SECS: u64 = 600;
 pub(crate) struct WaitSettings {
     pub(crate) enabled: bool,
     pub(crate) max_wait_secs: Option<u64>,
-    /// Off only because this is CI, for the `skipped` reason.
-    pub(crate) off_in_ci: bool,
 }
 
 /// The settings for a step running in `cwd`, from this process's
 /// environment and config files. A bad file value is reported by the
 /// loader, a bad variable here.
 pub(crate) fn resolve(cwd: &Path) -> WaitSettings {
-    let ci = std::env::var("CI").ok();
     let effective = crate::user_config::load_for(cwd);
     for key in [ENABLED_KEY, MAX_WAIT_KEY] {
         // The reason names the variable, never its value.
@@ -76,7 +89,7 @@ pub(crate) fn resolve(cwd: &Path) -> WaitSettings {
             eprintln!("warning: {reason}; ignoring it");
         }
     }
-    let settings = from_effective(&effective, ci.as_deref());
+    let settings = from_effective(&effective);
     if let Some(warning) = length_warning(&effective, &settings) {
         eprintln!("{warning}");
     }
@@ -124,22 +137,16 @@ pub(crate) fn length_warning(effective: &Effective, settings: &WaitSettings) -> 
     ))
 }
 
-/// [`resolve`] from a loaded config and the value of `CI`.
-pub(crate) fn from_effective(effective: &Effective, ci: Option<&str>) -> WaitSettings {
-    let enabled = effective.entry(ENABLED_KEY);
-    let explicit = matches!(
-        enabled.origin,
-        Origin::Env(_) | Origin::Project(_) | Origin::User(_) | Origin::Legacy(_)
-    );
-    let on = enabled
-        .value
-        .as_ref()
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let off_in_ci = on && !explicit && in_ci(ci);
+/// [`resolve`] from a loaded config. Only an explicit `false` turns the
+/// wait off; `CI` is not read (see the module comment).
+pub(crate) fn from_effective(effective: &Effective) -> WaitSettings {
     WaitSettings {
-        enabled: on && !off_in_ci,
-        off_in_ci,
+        enabled: effective
+            .entry(ENABLED_KEY)
+            .value
+            .as_ref()
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         max_wait_secs: effective
             .entry(MAX_WAIT_KEY)
             .value
@@ -147,11 +154,4 @@ pub(crate) fn from_effective(effective: &Effective, ci: Option<&str>) -> WaitSet
             .and_then(Value::as_int)
             .map(|v| v.max(MIN_WAIT_SECS)),
     }
-}
-
-/// Whether `CI` names a CI run: set and, trimmed, neither empty, `0` nor
-/// `false` in any case.
-fn in_ci(ci: Option<&str>) -> bool {
-    ci.map(str::trim)
-        .is_some_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
 }

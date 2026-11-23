@@ -1,7 +1,9 @@
 //! The usage-limit wait's settings (issue #1618): read from `config.toml`
 //! and the environment through the user-config loader, on by default, off
-//! under `CI=true` unless set explicitly, and `1`/`0` accepted in the
-//! variable. Every load uses a temporary HOME and a supplied environment.
+//! only when `recipe.usage_limit_wait` or its variable says so, and `1`/`0`
+//! accepted in the variable. `CI` is not read (issue #2911); a run of the
+//! real binary with `CI=true` is in `tests/issue_1618_wait_settings.rs`.
+//! Every load uses a temporary HOME and a supplied environment.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_settings;`.
 
@@ -11,16 +13,12 @@ use crate::user_config::{LoadCtx, load};
 use std::fs;
 use std::path::Path;
 
-fn settings(home: &Path, env: &[(&str, &str)], ci: Option<&str>) -> WaitSettings {
-    settings_and_warning(home, env, ci).0
+fn settings(home: &Path, env: &[(&str, &str)]) -> WaitSettings {
+    settings_and_warning(home, env).0
 }
 
 /// The settings and the length warning `resolve` would print for them.
-fn settings_and_warning(
-    home: &Path,
-    env: &[(&str, &str)],
-    ci: Option<&str>,
-) -> (WaitSettings, Option<String>) {
+fn settings_and_warning(home: &Path, env: &[(&str, &str)]) -> (WaitSettings, Option<String>) {
     let lookup = |name: &str| {
         env.iter()
             .find(|(k, _)| *k == name)
@@ -33,7 +31,7 @@ fn settings_and_warning(
         env: &lookup,
         migrate: false,
     });
-    let s = from_effective(&effective, ci);
+    let s = from_effective(&effective);
     let warning = length_warning(&effective, &s);
     (s, warning)
 }
@@ -50,46 +48,40 @@ const SIX_HOURS: u64 = 21_600;
 const ON: WaitSettings = WaitSettings {
     enabled: true,
     max_wait_secs: Some(SIX_HOURS),
-    off_in_ci: false,
 };
 const OFF: WaitSettings = WaitSettings {
     enabled: false,
     max_wait_secs: Some(SIX_HOURS),
-    off_in_ci: false,
 };
 
+/// Issue #2911: with nothing set the wait is on, and `CI` is not one of the
+/// settings. The loader is handed a `CI` of every kind that used to turn the
+/// wait off and must still return the wait on; only the key or its variable
+/// turns it off.
 #[test]
-fn the_wait_is_on_by_default_and_off_under_ci() {
+fn issue_2911_the_wait_is_on_by_default_and_ci_does_not_turn_it_off() {
     let home = tempfile::tempdir().unwrap();
-    for ci in [
-        None,
-        Some(""),
-        Some("  "),
-        Some("false"),
-        Some("False"),
-        Some("FALSE"),
-        Some(" false "),
-        Some("0"),
-        Some(" 0"),
-    ] {
-        assert_eq!(settings(home.path(), &[], ci), ON, "CI={ci:?}");
-    }
-    let off_in_ci = WaitSettings {
-        off_in_ci: true,
-        ..OFF
-    };
+    assert_eq!(settings(home.path(), &[]), ON);
     for ci in ["true", "TRUE", "1", "yes", "github", " true "] {
-        assert_eq!(settings(home.path(), &[], Some(ci)), off_in_ci, "CI={ci}");
+        assert_eq!(settings(home.path(), &[("CI", ci)]), ON, "CI={ci}");
+        let off = [("CI", ci), ("AMPLIHACK_USAGE_LIMIT_WAIT", "0")];
+        assert_eq!(
+            settings(home.path(), &off),
+            OFF,
+            "CI={ci} with the variable 0"
+        );
     }
 }
 
 #[test]
-fn an_explicit_setting_wins_over_ci() {
+fn an_explicit_setting_turns_the_wait_on_or_off() {
     let home = tempfile::tempdir().unwrap();
     let env = [("AMPLIHACK_USAGE_LIMIT_WAIT", "1")];
-    assert_eq!(settings(home.path(), &env, Some("true")), ON);
+    assert_eq!(settings(home.path(), &env), ON);
     user_file(home.path(), "[recipe]\nusage_limit_wait = true\n");
-    assert_eq!(settings(home.path(), &[], Some("true")), ON);
+    assert_eq!(settings(home.path(), &[]), ON);
+    user_file(home.path(), "[recipe]\nusage_limit_wait = false\n");
+    assert_eq!(settings(home.path(), &[]), OFF);
 }
 
 #[test]
@@ -102,9 +94,8 @@ fn the_file_sets_both_keys_and_the_variable_outranks_it() {
     let file = WaitSettings {
         enabled: false,
         max_wait_secs: Some(600),
-        off_in_ci: false,
     };
-    assert_eq!(settings(home.path(), &[], None), file);
+    assert_eq!(settings(home.path(), &[]), file);
     let env = [
         ("AMPLIHACK_USAGE_LIMIT_WAIT", "true"),
         ("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "300"),
@@ -112,11 +103,10 @@ fn the_file_sets_both_keys_and_the_variable_outranks_it() {
     let both = WaitSettings {
         enabled: true,
         max_wait_secs: Some(300),
-        off_in_ci: false,
     };
-    assert_eq!(settings(home.path(), &env, None), both);
+    assert_eq!(settings(home.path(), &env), both);
     let off = [("AMPLIHACK_USAGE_LIMIT_WAIT", "0")];
-    assert!(!settings(home.path(), &off, None).enabled);
+    assert!(!settings(home.path(), &off).enabled);
 }
 
 #[test]
@@ -124,19 +114,16 @@ fn an_invalid_variable_falls_back_to_the_file() {
     let home = tempfile::tempdir().unwrap();
     user_file(home.path(), "[recipe]\nusage_limit_wait = false\n");
     let env = [("AMPLIHACK_USAGE_LIMIT_WAIT", "maybe")];
-    assert_eq!(settings(home.path(), &env, None), OFF);
+    assert_eq!(settings(home.path(), &env), OFF);
 }
 
 #[test]
 fn a_user_file_or_the_variable_can_go_above_the_default() {
     let home = tempfile::tempdir().unwrap();
     user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 86400\n");
-    assert_eq!(settings(home.path(), &[], None).max_wait_secs, Some(86_400));
+    assert_eq!(settings(home.path(), &[]).max_wait_secs, Some(86_400));
     let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "90000")];
-    assert_eq!(
-        settings(home.path(), &env, None).max_wait_secs,
-        Some(90_000)
-    );
+    assert_eq!(settings(home.path(), &env).max_wait_secs, Some(90_000));
 }
 
 // An invalid maximum in the file or the variable is reported by the loader
@@ -152,7 +139,7 @@ fn an_invalid_maximum_in_the_file_falls_back_to_the_default() {
         let home = tempfile::tempdir().unwrap();
         user_file(home.path(), body);
         assert_eq!(
-            settings(home.path(), &[], None).max_wait_secs,
+            settings(home.path(), &[]).max_wait_secs,
             Some(SIX_HOURS),
             "{body:?}"
         );
@@ -165,14 +152,14 @@ fn an_invalid_maximum_variable_falls_back_to_the_file_then_the_default() {
     for bad in ["", "-5", "abc", "1e3", "99999999999999999999999"] {
         let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", bad)];
         assert_eq!(
-            settings(home.path(), &env, None).max_wait_secs,
+            settings(home.path(), &env).max_wait_secs,
             Some(SIX_HOURS),
             "{bad:?}"
         );
     }
     user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 600\n");
     let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "abc")];
-    assert_eq!(settings(home.path(), &env, None).max_wait_secs, Some(600));
+    assert_eq!(settings(home.path(), &env).max_wait_secs, Some(600));
 }
 
 // Issue #2911: the key is the length of *one* wait, not a budget for the
@@ -194,14 +181,14 @@ fn issue_2911_a_length_below_one_poll_interval_is_raised_to_the_floor() {
             &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
         );
         assert_eq!(
-            settings(home.path(), &[], None).max_wait_secs,
+            settings(home.path(), &[]).max_wait_secs,
             Some(MIN_WAIT_SECS),
             "a configured {body}"
         );
         let value = body.to_string();
         let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", value.as_str())];
         assert_eq!(
-            settings(home.path(), &env, None).max_wait_secs,
+            settings(home.path(), &env).max_wait_secs,
             Some(MIN_WAIT_SECS),
             "the variable set to {body}"
         );
@@ -217,7 +204,7 @@ fn issue_2911_a_length_at_or_above_the_floor_is_kept_as_configured() {
             &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
         );
         assert_eq!(
-            settings(home.path(), &[], None).max_wait_secs,
+            settings(home.path(), &[]).max_wait_secs,
             Some(body),
             "a configured {body}"
         );
@@ -233,7 +220,7 @@ fn issue_2911_turning_the_wait_off_is_its_own_key() {
         home.path(),
         "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 0\n",
     );
-    let got = settings(home.path(), &[], None);
+    let got = settings(home.path(), &[]);
     assert!(!got.enabled);
     assert_eq!(got.max_wait_secs, Some(MIN_WAIT_SECS));
 }
@@ -251,7 +238,7 @@ fn issue_2911_a_length_raised_to_the_floor_is_reported() {
             home.path(),
             &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
         );
-        let (_, warning) = settings_and_warning(home.path(), &[], None);
+        let (_, warning) = settings_and_warning(home.path(), &[]);
         let warning = warning.unwrap_or_else(|| panic!("a configured {body}: no warning"));
         assert!(warning.starts_with("warning: "), "{warning}");
         assert!(
@@ -265,7 +252,7 @@ fn issue_2911_a_length_raised_to_the_floor_is_reported() {
         let value = body.to_string();
         let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", value.as_str())];
         assert!(
-            settings_and_warning(home.path(), &env, None).1.is_some(),
+            settings_and_warning(home.path(), &env).1.is_some(),
             "the variable set to {body}"
         );
     }
@@ -285,7 +272,7 @@ fn a_short_length_above_the_floor_is_reported_as_the_poll_it_is() {
             home.path(),
             &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
         );
-        let (settings, warning) = settings_and_warning(home.path(), &[], None);
+        let (settings, warning) = settings_and_warning(home.path(), &[]);
         assert_eq!(settings.max_wait_secs, Some(body), "not raised: {body}");
         let warning = warning.unwrap_or_else(|| panic!("a configured {body}: no warning"));
         assert!(warning.starts_with("warning: "), "{warning}");
@@ -312,33 +299,35 @@ fn a_short_length_above_the_floor_is_reported_as_the_poll_it_is() {
         home.path(),
         "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 120\n",
     );
-    assert_eq!(settings_and_warning(home.path(), &[], None).1, None);
+    assert_eq!(settings_and_warning(home.path(), &[]).1, None);
 }
 
 #[test]
 fn issue_2911_no_length_warning_without_cause() {
     let home = tempfile::tempdir().unwrap();
     // Nothing configured: the default is above both thresholds.
-    assert_eq!(settings_and_warning(home.path(), &[], None).1, None);
+    assert_eq!(settings_and_warning(home.path(), &[]).1, None);
     // A length at or above the short-wait threshold.
     for body in [SHORT_WAIT_SECS, 21_600] {
         user_file(
             home.path(),
             &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
         );
-        assert_eq!(
-            settings_and_warning(home.path(), &[], None).1,
-            None,
-            "{body}"
-        );
+        assert_eq!(settings_and_warning(home.path(), &[]).1, None, "{body}");
     }
-    // A zero with the wait turned off, or off because this is CI: the
-    // length is never used, so there is nothing to say.
+    // A zero with the wait turned off: the length is never used, so there
+    // is nothing to say.
     user_file(
         home.path(),
         "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 0\n",
     );
-    assert_eq!(settings_and_warning(home.path(), &[], None).1, None);
+    assert_eq!(settings_and_warning(home.path(), &[]).1, None);
+    // `CI` does not turn the wait off, so it does not silence the warning
+    // for a zero either (issue #2911).
     user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 0\n");
-    assert_eq!(settings_and_warning(home.path(), &[], Some("true")).1, None);
+    assert!(
+        settings_and_warning(home.path(), &[("CI", "true")])
+            .1
+            .is_some()
+    );
 }

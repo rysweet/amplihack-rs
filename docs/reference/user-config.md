@@ -167,7 +167,7 @@ command, so it never prints `flag`.
 | `recipe.detach` | `tmux` or `none` | `none` | — | `--detach`, `--no-detach` | user, project |
 | `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
-| `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
+| `recipe.usage_limit_wait` | bool | `true` | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
 | `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 (read as 60 when below 60) | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | — | — | user only |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
@@ -369,9 +369,13 @@ Whether a recipe agent step that fails on a Claude usage limit waits, for
 the reset, for another login with capacity, or for the login in `~/.claude`
 to change, and runs once more, instead of ending the run. See the
 [usage-limit wait](./profile-command.md#usage-limit-wait). With no setting
-in the environment or a file, it is on, except in CI: any `CI` that is
-not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
-in CI too. The environment variable also accepts `1` and `0`.
+in the environment or a file, it is on. `CI` does not turn it off
+(issue #2911): it used to, but amplihack's delegation layer exports
+`CI=true` to every delegated `claude -p`, so a recipe run started from one
+ended at its first limit. Setting it to `false` is the one way to let a limit end a step,
+and that is intended: the limit result is passed up at once
+(`skipped reason=disabled`) and the run is recorded as resumable with the
+cause `usage_limit`. The environment variable also accepts `1` and `0`.
 
 `recipe.usage_limit_max_wait_secs` is the outer bound of one wait whose limit
 stated no reset still ahead, and defaults to `21600` (six hours). It is not a

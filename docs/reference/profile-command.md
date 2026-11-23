@@ -12306,11 +12306,13 @@ After an attempt hits a usage limit, in this order:
    when no whole copy can ever exist, because the prompt could not be read
    to its end; the reason is named
    (`auto-switch: no rerun under profile …`). The step then goes on to
-   step 4: the log gets `skipped reason=disabled` (or `ci`) from step 4
+   step 4: the log gets `skipped reason=disabled` from step 4
    when the wait is off, else `failed reason=prompt_cut_short` from step 5
    if the prompt could not be read to its end;
-4. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
-   is passed up;
+4. the wait turned off by `recipe.usage_limit_wait = false` or
+   `AMPLIHACK_USAGE_LIMIT_WAIT=0`: `skipped reason=disabled`, and the result
+   is passed up. This is the one configured ending, and it is intended;
+   `CI` does not turn the wait off (issue #2911);
 5. the output carries no limit message in a harness's shape
    (`skipped reason=no_limit_message`), or the prompt is piped and could not
    be read to its end (`failed reason=prompt_cut_short`), so the step fails
@@ -12393,7 +12395,8 @@ wait or stop the retry after it (issue #3037; see
 [The step timeout does not cut a wait](./usage-limit-waits.md#the-step-timeout-does-not-cut-a-wait)).
 
 Only these end a step that met a limit: a stop signal, the end of the
-session, the wait turned off, `skipped reason=no_limit_message` and
+session, the wait turned off by the operator (`skipped reason=disabled`),
+`skipped reason=no_limit_message` and
 `failed reason=prompt_cut_short` (a piped prompt that could not be read to its
 end, which fails the step whether or not it met a limit).
 Every retry runs the step **from the start** with the same prompt, so anything
@@ -12854,7 +12857,7 @@ step once more.
 
 A capacity wait starts for every such limit, on every kind of step, once the
 checks in steps 1 to 5 of [Order of attempts](#order-of-attempts) have passed
-(wait enabled, not CI, a prompt that can be replayed, a limit message in a
+(wait enabled, a prompt that can be replayed, a limit message in a
 harness's shape). It makes no check for a running rotator, for a second stored
 login or for the kind of login the step uses. A login can gain room while the
 wait runs, and the wait sees it. When nothing can end the wait early, it runs
@@ -13307,7 +13310,7 @@ too. No other event reaches that sink.
 | `progress` | `remaining=<secs>s`, every 60 s |
 | `end` | `reason=<end reason>` from the table above |
 | `resume` | `attempt=<n>`, counting every attempt in the step |
-| `skipped` | `reason=disabled\|ci\|not_supervised\|no_limit_message` |
+| `skipped` | `reason=disabled\|not_supervised\|no_limit_message`; `reason=ci` is no longer written, because `CI` does not turn the wait off (issue #2911) |
 | `failed` | `reason=prompt_cut_short`; the step's piped prompt could not be read to its end, so the step fails whether or not it met a limit (see [usage-limit waits](./usage-limit-waits.md#a-prompt-that-could-not-be-read-to-its-end)). Replaces `skipped reason=piped_prompt` |
 | `waiting_for_capacity` | `reason=reset_too_far\|no_reset\|spend_limit\|credits\|passed_reset harness=<name> until=<time>`, before the wait's `start`; the recipe log has `account=<login>` in place of `harness=` |
 
@@ -13629,7 +13632,7 @@ the step's own exit and evidence tail.
 
 | Setting | `config.toml` key | Environment variable | Default |
 |---------|-------------------|----------------------|---------|
-| Enabled | `recipe.usage_limit_wait` | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true`; `false` in CI |
+| Enabled | `recipe.usage_limit_wait` | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` |
 | Maximum wait, seconds | `recipe.usage_limit_max_wait_secs` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | `21600` (6 hours) |
 
 Both are ordinary [user-config](./user-config.md#recipeusage_limit_wait)
@@ -13659,14 +13662,13 @@ it with exit code `2`, and a file or variable value is reported by the
 config loader and ignored, so the next layer down applies. See
 [user-config](./user-config.md#recipeusage_limit_wait).
 `amplihack config get recipe.usage_limit_max_wait_secs` prints `21600` when
-nothing sets it. With no setting in the environment or a file, the wait is off
-in CI, meaning any `CI` that is not, after trimming, empty, `0` or `false`
-in any case: a CI job has no
-second login to wait for, and its own timeout bounds it better. A limit
-then writes `skipped reason=ci` where a supervisor runs. Setting
-`recipe.usage_limit_wait = true` in the user or project `config.toml`, or
-the variable, turns it back on in CI. Settings are read only when
-`AMPLIHACK_NONINTERACTIVE` is exactly `1`.
+nothing sets it. With no setting in the environment or a file, the wait is
+on, in CI as elsewhere: `CI` is not read (issue #2911). It used to turn the
+wait off by default and write `skipped reason=ci`, but amplihack's delegation
+layer exports `CI=true` to every delegated `claude -p`, so a recipe run
+started from one ended at its first limit. A job that should not wait sets
+`recipe.usage_limit_wait = false` or `AMPLIHACK_USAGE_LIMIT_WAIT=0`. Settings
+are read only when `AMPLIHACK_NONINTERACTIVE` is exactly `1`.
 
 ### Limit-resume hook
 

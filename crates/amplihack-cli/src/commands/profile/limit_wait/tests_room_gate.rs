@@ -450,7 +450,6 @@ pub(super) fn waiter(e: &Env, max_wait_secs: Option<u64>) -> Waiter {
         Some(WaitSettings {
             enabled: true,
             max_wait_secs,
-            off_in_ci: false,
         }),
         watch,
         // A prompt in argv: nothing on stdin for the retry to need.

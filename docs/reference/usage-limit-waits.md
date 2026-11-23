@@ -21,6 +21,7 @@ task-oriented guidance is in the
 ## Contents
 
 - [What ends a step and what does not](#what-ends-a-step-and-what-does-not)
+    - [Turning the wait off](#turning-the-wait-off)
     - [A step that is not supervised](#a-step-that-is-not-supervised)
     - [The step timeout does not cut a wait](#the-step-timeout-does-not-cut-a-wait)
     - [A prompt piped to the step](#a-prompt-piped-to-the-step)
@@ -44,12 +45,29 @@ A limit never ends a supervised step. These end a step that has met one:
 |--------|--------|
 | A stop signal | Returns at once, also during a wait. |
 | The session ends | Nothing is left to continue. |
-| `recipe.usage_limit_wait = false` | The operator turned the wait off, so the limit result is passed up at once (`skipped reason=disabled`). |
+| `recipe.usage_limit_wait = false` or `AMPLIHACK_USAGE_LIMIT_WAIT=0` | The operator turned the wait off, so the limit result is passed up at once (`skipped reason=disabled`). This is intended ([below](#turning-the-wait-off)). |
 | `skipped reason=no_limit_message` | The output carried no message in a harness's limit shape, so it is not a limit. |
 | `failed reason=prompt_cut_short` | The step's prompt came on a pipe and could not be read to its end. This is a lost prompt, not a limit ending ([below](#a-prompt-that-could-not-be-read-to-its-end)). |
 
 There is no retry count and no budget. A step that meets a second, third or
 tenth limit waits for each.
+
+### Turning the wait off
+
+`recipe.usage_limit_wait = false` is the one setting that lets a limit end a
+step, and it does so on purpose: it is how a job with a timeout of its own, or
+an operator who would rather relaunch by hand, asks for the limit result at
+once. The run still learns of the limit as a limit. The recipe runner classes
+the failure `usage_limit` and records the run as resumable, so the same
+command launched again resumes at the step. Nothing in amplihack writes the
+key or its variable; only an operator does.
+
+`CI` does not turn the wait off. It used to, by default, and wrote
+`skipped reason=ci`. A step under `CI=true` now waits like any other
+([#2911](https://github.com/rysweet/amplihack-rs/issues/2911)), because `CI`
+is exported by tools that only mean to suppress prompts. The delegation
+layer in amplihack sets it for every delegated `claude -p`, so a recipe run
+started from one ended at its first limit.
 
 ### A step that is not supervised
 
@@ -221,7 +239,8 @@ again.
 
 Where no file event can be had (another platform, or a host out of inotify
 instances), the wait says so once and reads its files at each progress line
-instead:
+instead. If the stop-signal socket could not be made either, it sleeps in
+slices of one second, so that a stop signal is still answered within one:
 
 ```
 amplihack.recipe.usage_limit_wait no_file_events reason=watch_failed
@@ -259,13 +278,23 @@ grep 'usage_limit_wait waiting_for_capacity' "$AMPLIHACK_RECIPE_LOG"
 |------|------------|---------------------|
 | The outer bound | A wait whose limit stated no reset still ahead (none stated, credits, a reset already passed, a bare 429, a spend limit stating none) and that no event ends runs to `max_wait_secs` (default six hours, floor 60 seconds), ends `capacity expired` or `max reached`, and the step runs once more. | It never ends a step, and it never applies to a wait whose limit stated a reset still ahead. |
 | The progress line | The wait wakes once a minute to write `progress remaining=<n>s`. | It reads no file, checks no account and launches nothing. |
+| No file events | Where no file event can be had, the files are read at each progress line ([How a wait wakes](#how-a-wait-wakes)). | It launches nothing. |
+| No stop-signal socket | With no file events and no socket, the wait sleeps in one-second slices. | It reads no file and launches nothing. |
 
 The outer bound is kept because such a limit records nothing about when it
 lifts ([the limit record](#the-limit-record) writes no block for it), and on a
 host with no rotator and no other login nothing but the bound would run the
-step again without a person. Whether those waits should instead wait for a
-person is left to the owner under
-[#3098](https://github.com/rysweet/amplihack-rs/issues/3098).
+step again without a person.
+
+The outer bound is an interim exception to the rule that a wait ends only on
+a limit event. It is not a limit ending, since the step goes on, but it is a
+timer, and each expiry costs an agent launch on a login that may still be
+spent: at most one launch per `max_wait_secs` (six hours by default) for each
+waiting step, for as long as the limit lasts. Whether such a wait should
+instead wait for a person, and so lose the bound, is the owner's decision
+under [#3098](https://github.com/rysweet/amplihack-rs/issues/3098). The bound
+stays declared here until that issue is closed, and this page does not decide
+it.
 
 ## What max_wait_secs means
 
@@ -313,6 +342,7 @@ its credit exhaustion is classed but does not wait
 | `failed reason=spend_limit` after a login-change wait reaches its deadline | the step retries |
 | the `max_wait_secs` per-step budget | the outer bound of one wait with no usable reset |
 | `failed reason=step_timeout`, `bound=step_timeout` | not written ([#3037](https://github.com/rysweet/amplihack-rs/issues/3037)) |
+| `skipped reason=ci`, the wait off by default under `CI` | not written; the step waits ([Turning the wait off](#turning-the-wait-off)) |
 | `skipped reason=piped_prompt` | the copy is kept in memory and replayed; a step whose copy cannot be set up is not run; a prompt cut short is `failed reason=prompt_cut_short` ([#3036](https://github.com/rysweet/amplihack-rs/issues/3036)) |
 
 `reset_too_far`, `no_reset` and `spend_limit` remain as the `reason=` of a

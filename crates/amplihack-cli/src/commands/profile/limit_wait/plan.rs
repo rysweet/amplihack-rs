@@ -28,12 +28,24 @@
 //!   unset, never less than [`MIN_WAIT_SECS`]. Reaching it runs the step
 //!   once more, and a limit on that run starts another wait.
 //!
-//! That outer bound is a timer, not a limit event, and it is the only one.
-//! It is kept for the limits that state nothing to wait for: such a limit
-//! records no block (`rotate::step_block`), so no file records when it
-//! lifts, and on a host with no rotator and no other login nothing but the
-//! bound would run the step again without a person. Whether those waits
-//! should instead wait for a person is the owner's decision under #3098.
+//! That outer bound is a timer, not a limit event, and it is the only timer
+//! that ends a wait. (The wait's other timed wakes, the `progress` line and
+//! the fallbacks where no file event can be had, end nothing and launch
+//! nothing; `wait` and `wake` say why.) It is kept for the limits that state
+//! nothing to wait for: such a limit records no block (`rotate::step_block`),
+//! so no file records when it lifts, and on a host with no rotator and no
+//! other login nothing but the bound would run the step again without a
+//! person.
+//!
+//! It is an interim exception to the rule that a wait ends only on a limit
+//! event, and it is kept on that footing, not as the design. It never ends a
+//! step, but each expiry runs the step's agent again on a login that may
+//! still be spent: at most one launch per bound for each waiting step, for
+//! as long as the limit lasts. Whether such a wait should instead wait for a
+//! person, and so lose the bound, is the owner's decision under #3098. Until
+//! that issue is closed the bound stays declared here and in
+//! `docs/reference/usage-limit-waits.md` ("The timed parts that remain");
+//! this module does not decide it.
 //!
 //! The deadline is the earlier of the rows a wait has, a tie named by the
 //! reset row. All arithmetic saturates.

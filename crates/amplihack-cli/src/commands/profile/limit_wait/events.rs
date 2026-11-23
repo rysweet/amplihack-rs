@@ -122,10 +122,10 @@ pub(crate) enum Met {
 /// Why no wait was made at all.
 #[derive(Clone, Copy)]
 pub(super) enum Skip {
+    /// The operator set `recipe.usage_limit_wait = false`. `CI` no longer
+    /// turns the wait off, so there is no `ci` reason (issue #2911).
     Disabled,
     NotSupervised,
-    /// Off because this is CI and nothing turned it on.
-    Ci,
     /// The output carries no limit message. A prompt cut short is not a
     /// skip and is written as [`Event::PromptCutShort`].
     Cannot(NoWait),
@@ -265,7 +265,6 @@ where
             match skip {
                 Skip::Disabled => "disabled",
                 Skip::NotSupervised => "not_supervised",
-                Skip::Ci => "ci",
                 Skip::Cannot(why) => why.as_str(),
             }
         ),

@@ -109,7 +109,6 @@ impl Env {
                 // the bound of one capacity or login-change wait, never a
                 // budget for the step.
                 max_wait_secs: Some(MIN_WAIT_SECS),
-                off_in_ci: false,
             }),
             watch,
             // A prompt in argv: nothing on stdin for the retry to need.

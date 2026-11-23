@@ -2146,9 +2146,9 @@ repeated. The wait is **on by default** and needs no profiles.
 It applies to the `amplihack claude -p` launch of a recipe step
 (`amplihack recipe run` sets `AMPLIHACK_NONINTERACTIVE=1`), without
 `--profile`, `--docker` or `--auto`. Interactive sessions and launches typed
-at a terminal never wait, and with no setting the wait is off in CI (a
-`CI` other than empty, `0` or `false`; set `recipe.usage_limit_wait = true`
-to turn it on there). A failure that is not a usage limit is passed back at once.
+at a terminal never wait. `CI` does not turn the wait off: a step under
+`CI=true` waits like any other (issue #2911). A failure that is not a usage
+limit is passed back at once.
 
 ### What happens
 
@@ -2409,8 +2409,11 @@ out and the step retried, so the loop gets an ordinary verdict.
 
 A usage limit always starts a wait. The run ends with no wait only when:
 
-- the wait is turned off (`recipe.usage_limit_wait = false`), or the run is in
-  CI with no setting;
+- the wait is turned off by the operator (`recipe.usage_limit_wait = false`,
+  or `AMPLIHACK_USAGE_LIMIT_WAIT=0`). This ending is intended: it is how a job
+  with a timeout of its own asks for the limit result at once. The run is
+  still recorded as resumable with the cause `usage_limit`. `CI` is not such
+  a setting and does not turn the wait off;
 - the output carries no limit message in the harness's own shape, so it is
   not a limit;
 - the prompt came on a pipe and could not be read to its end, so the attempt

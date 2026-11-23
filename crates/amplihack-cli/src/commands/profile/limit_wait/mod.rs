@@ -487,11 +487,12 @@ impl Waiter {
     /// limit produces ends strictly after `now` (see `plan`), and reaching
     /// its deadline retries the step. A wait whose limit stated a reset
     /// still ahead ends at that reset; one with no usable reset may end at
-    /// the outer bound, the one timer left (see `plan`).
-    /// `$AMPLIHACK_STEP_TIMEOUT` plays no part (issue #3037). What still ends
-    /// a step is a stop signal, the end of its session, the wait turned off,
-    /// output with no limit message in it, and a prompt that could not be
-    /// read to its end, which fails the step whether or not it met a limit.
+    /// the outer bound, the one timer that ends a wait (interim; see `plan`).
+    /// `$AMPLIHACK_STEP_TIMEOUT` plays no part (issue #3037), and nor does
+    /// `CI` (`settings`). What still ends a step is a stop signal, the end of
+    /// its session, the wait turned off explicitly by the operator, output
+    /// with no limit message in it, and a prompt that could not be read to
+    /// its end, which fails the step whether or not it met a limit.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -510,12 +511,10 @@ impl Waiter {
         if let Some(sig) = signals.received() {
             return AfterLimit::Finish(Some(128 + sig));
         }
+        // The one configured ending: the operator turned the wait off, so the
+        // limit result is passed up. `CI` does not turn it off (`settings`).
         if !settings.enabled {
-            log(&Event::Skipped(if settings.off_in_ci {
-                Skip::Ci
-            } else {
-                Skip::Disabled
-            }));
+            log(&Event::Skipped(Skip::Disabled));
             return AfterLimit::Finish(None);
         }
         // The mark is the login the failed attempt ran on, read before it
