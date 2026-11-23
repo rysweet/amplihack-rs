@@ -152,7 +152,9 @@ do_act_merge() {
   . "$HERE/autodrive_merge.sh" || { result refused "autodrive_merge.sh could not be loaded; nothing was merged"; return 0; }
   line="$(cd "$WORK" && autodrive_merge "$PR" "$head" "${RECIPE_VAR_merge_method:-}")"; rc=$?
   case "$rc" in 79|75) exit "$rc" ;; esac
-  if ! printf '%s' "$line" | jq -e 'type == "object" and (.result | type == "string")' >/dev/null 2>&1; then
+  # gh's own output can come first; the tool's result is its last JSON line.
+  line="$(printf '%s\n' "$line" | jq -c -R 'fromjson? | select(type == "object" and (.result | type == "string"))' 2>/dev/null | tail -n 1)"
+  if [ -z "$line" ]; then
     result refused "the merge tool exited ${rc} with no result line; nothing is known to be merged"; return 0
   fi
   merge_record "$line"

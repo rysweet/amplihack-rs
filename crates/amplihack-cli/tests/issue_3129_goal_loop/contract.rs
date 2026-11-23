@@ -30,7 +30,8 @@ S='{s}'
 case "${{1:-}}" in
   actions) echo '{actions}' ;;
   final) [ -e "$S/final" ] && cat "$S/final"; exit 0 ;;
-  read) jq -n '{{schema_version:1,summary:"stand-in goal"}}' > "$2/goal.json" ;;
+  read) [ -e "$S/read75" ] && exit 75
+        jq -n '{{schema_version:1,summary:"stand-in goal"}}' > "$2/goal.json" ;;
   act) echo "$2" >> "$S/acts"
        jq -n '{{outcome:"done",summary:"poked"}}' > "$3/result.json" ;;
   publish) cp -- "$2" "$S/published.md" ;;
@@ -249,4 +250,21 @@ fn every_turn_subcommand_refuses_a_turn_folder_outside_turns_or_a_symlink() {
             );
         }
     }
+}
+
+#[test]
+fn exit_75_from_the_goal_tool_passes_up_and_ends_the_run_as_orphaned() {
+    // The recipe run above the loop is gone (#1976): no agent is started and
+    // the run ends at once, with the end recorded.
+    let s = standin("poke");
+    fs::write(s.state.join("read75"), "").unwrap();
+    s.h.policy(POKE_THEN_READY);
+    let out = s.command().output().unwrap();
+    assert!(!out.status.success(), "{}", describe(&out));
+    assert_eq!(s.h.loop_end()["end"], "orphaned");
+    assert_eq!(s.h.turns(), ["001"]);
+    assert!(
+        !s.h.base.join("agent-turns.log").exists(),
+        "no agent was started"
+    );
 }

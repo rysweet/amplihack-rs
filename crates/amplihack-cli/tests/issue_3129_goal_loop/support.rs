@@ -18,9 +18,10 @@
 //! bare remote wherever a test depends on it: the head is the remote's PR
 //! branch, `mergeable` is `git merge-tree --write-tree`, `BEHIND` is the base
 //! having commits the PR lacks (only when `strict` exists). Every call is
-//! appended to `calls.log`. `pr merge` refuses a `--match-head-commit` that is
-//! not the remote's head, and a method the repository does not allow
-//! (merge and squash are allowed, rebase is not). `pr checks --watch` blocks reading
+//! appended to `calls.log`. `pr merge` refuses a `--match-head-commit` that is not
+//! the remote's head, and a method the repository does not allow (by default
+//! merge and squash are allowed and rebase is not; `allow_methods` changes
+//! that). `pr checks --watch` blocks reading
 //! `$GH_STATE/release.fifo`; a test releases it (`fifo_release`), and if the
 //! run exits early the harness's watcher opens the FIFO itself, so nothing
 //! sleeps and nothing times out.
@@ -29,7 +30,8 @@
 //! `$STUB_STATE_DIR/turns/` has a `reading.json` and no `decision.json`, it
 //! is the turn's agent: it runs the test's policy (`$STUB_POLICY`, a bash
 //! snippet) in the repo worktree with `$TURN` set, and prints the snippet's
-//! stdout. For any other agent step it prints `{}`. A policy chooses by a
+//! stdout. For any other agent step it prints `{}`, or the reply a test set
+//! with [`Harness::default_reply`]. A policy chooses by a
 //! fixed rule over `reading.json` and may do fixed work (resolve a conflict,
 //! run the setup script, do the task's later step), exactly what the real
 //! agent is told it may do.
@@ -76,6 +78,7 @@ mss() {
   elif [ -e "$G/strict" ] && behind; then echo BEHIND
   else echo CLEAN; fi
 }
+settings() { if [ -e "$G/repo.json" ]; then cat "$G/repo.json"; else echo '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":false,"default_branch":"main"}'; fi; }
 filter() { local f=""; while [ $# -gt 0 ]; do case "$1" in --jq|-q) f="$2"; shift 2 ;; *) shift ;; esac; done
   if [ -n "$f" ]; then jq -r "$f"; else cat; fi; }
 case "${1:-} ${2:-}" in
@@ -100,7 +103,10 @@ case "${1:-} ${2:-}" in
       prev="$a"
     done
     [ "$want" = "$(head)" ] || { echo "head branch was modified (match-head-commit)" >&2; exit 1; }
-    case "$method" in --merge|--squash) ;; *) echo "merge method not allowed" >&2; exit 1 ;; esac
+    case "$method" in
+      --merge) k=allow_merge_commit ;; --squash) k=allow_squash_merge ;; --rebase) k=allow_rebase_merge ;; *) k=none ;;
+    esac
+    [ "$(settings | jq -r --arg k "$k" '.[$k] // false')" = true ] || { echo "merge method not allowed" >&2; exit 1; }
     pending && { echo "required status checks are expected" >&2; exit 1; }
     : > "$G/merged"; echo merged ;;
   "pr comment")
@@ -119,7 +125,7 @@ case "${1:-} ${2:-}" in
           echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]'
         else echo '[]'; fi ;;
       *protection*) echo "HTTP 404: Branch not protected" >&2; exit 1 ;;
-      *repos/*) echo '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":false,"default_branch":"main"}' | filter "$@" ;;
+      *repos/*) settings | filter "$@" ;;
       *) echo "stand-in gh: unexpected api call: $*" >&2; exit 1 ;;
     esac ;;
   *) echo "stand-in gh: unexpected call: $*" >&2; exit 1 ;;
@@ -130,10 +136,15 @@ pub const STUB_AGENT: &str = r##"#!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then echo "2.1.329 (Claude Code)"; exit 0; fi
 cat > /dev/null
 turn=""
-for d in $(ls -1d "$STUB_STATE_DIR"/turns/*/ 2>/dev/null | sort); do
+# STUB_STATE_GLOB (unquoted on purpose) finds turns when the runner picks the
+# state folder itself; otherwise the test's own folder.
+for d in $(ls -1d ${STUB_STATE_GLOB:-"$STUB_STATE_DIR"}/turns/*/ 2>/dev/null | sort); do
   [ -f "$d/reading.json" ] && [ ! -f "$d/decision.json" ] && turn="${d%/}"
 done
-if [ -z "$turn" ]; then echo '{}'; exit 0; fi
+if [ -z "$turn" ]; then
+  if [ -f "$STUB_LOG/default-reply.json" ]; then cat "$STUB_LOG/default-reply.json"; else echo '{}'; fi
+  exit 0
+fi
 printf '%s\n' "$turn" >> "$STUB_LOG/agent-turns.log"
 export TURN="$turn"
 cd "$STUB_REPO" || exit 1
@@ -299,6 +310,17 @@ impl Harness {
         }
     }
 
+    /// What the stub agent answers for every agent step that is not a turn's
+    /// (the build stage's preflight and PR resolution, for example).
+    pub fn default_reply(&self, reply: &Value) {
+        fs::write(self.base.join("default-reply.json"), format!("{reply}\n")).unwrap();
+    }
+
+    /// The main branch's commit on the remote.
+    pub fn base_head(&self) -> String {
+        self.origin_head("main")
+    }
+
     /// The agent's policy: bash that prints the final JSON object.
     pub fn policy(&self, body: &str) {
         fs::write(&self.policy, body).unwrap();
@@ -306,6 +328,28 @@ impl Harness {
 
     pub fn set_checks(&self, tsv: &str) {
         fs::write(self.gh.join("checks"), tsv).unwrap();
+    }
+
+    /// The repository's allowed merge methods, as `gh api repos/o/r` reports
+    /// them and as the stand-in `pr merge` enforces them.
+    pub fn allow_methods(&self, merge: bool, squash: bool, rebase: bool) {
+        let v = serde_json::json!({"allow_merge_commit": merge, "allow_squash_merge": squash,
+            "allow_rebase_merge": rebase, "default_branch": "main"});
+        fs::write(self.gh.join("repo.json"), v.to_string()).unwrap();
+    }
+
+    /// The merge action's record, `merge-result.json` in the state folder.
+    pub fn merge_result(&self) -> Value {
+        let raw = fs::read_to_string(self.state.join("merge-result.json"))
+            .unwrap_or_else(|e| panic!("no merge-result.json: {e}"));
+        serde_json::from_str(raw.trim()).unwrap()
+    }
+
+    /// The run's report (`autodrive_outcome`) from `--format json` stdout.
+    pub fn outcome(out: &Output) -> Value {
+        let v: Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("stdout is not the run's JSON ({e}): {}", describe(out)));
+        v["autodrive_outcome"].clone()
     }
 
     /// Makes the stand-in PR cross-repository.

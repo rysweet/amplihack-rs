@@ -8,4 +8,4 @@ mod contract;
 mod drive;
 mod goal_tool;
 mod guidance_cli;
-mod support;
+pub(crate) mod support;
