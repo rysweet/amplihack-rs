@@ -1070,11 +1070,11 @@ fn part_c_plain_timeout_trap_in_a_pseudo_terminal() {
 
 // ── (d) Recipe text ──────────────────────────────────────────────────────────
 
-/// The agent steps that run long commands.
-const LONG_COMMAND_STEPS: [(&str, &str); 3] = [
+/// The agent steps that run long commands. (#3129 removed the merge round's
+/// step-04-address-blockers, which was also listed here.)
+const LONG_COMMAND_STEPS: [(&str, &str); 2] = [
     ("workflow-precommit-test", "step-12-run-precommit"),
     ("workflow-precommit-test", "step-13-local-testing"),
-    ("autodrive-merge-round", "step-04-address-blockers"),
 ];
 
 /// Step 12's evidence schema, which the verification step's `jq` gate reads.
@@ -1095,21 +1095,13 @@ const STEP_12_SCHEMA: [&str; 2] = [
 fn part_d_recipe_prompts_say_how_to_run_long_commands() {
     for (recipe, id) in LONG_COMMAND_STEPS {
         let prompt = step_prompt(recipe, id);
-        let required = if recipe == "autodrive-merge-round" {
-            vec![
-                "GIT_TERMINAL_PROMPT=0",
-                "noninteractive execution",
-                "natural completion",
-            ]
-        } else {
-            vec![
-                "GIT_TERMINAL_PROMPT=0",
-                "setsid -w timeout --kill-after=",
-                "timeout --foreground",
-                "</dev/null",
-                "SIGTTIN",
-            ]
-        };
+        let required = [
+            "GIT_TERMINAL_PROMPT=0",
+            "setsid -w timeout --kill-after=",
+            "timeout --foreground",
+            "</dev/null",
+            "SIGTTIN",
+        ];
         for needle in required {
             assert!(
                 prompt.contains(needle),

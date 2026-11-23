@@ -520,10 +520,11 @@ fn every_caller_passes_base_branch_to_default_workflow() {
         }
     }
     // Each entry point reaches default-workflow through a call checked above.
+    // (#3129 removed auto-drive-light's escalation to auto-drive-to-merge, its
+    // one path to default-workflow.)
     for (caller, target, at_least) in [
         ("auto-drive-to-merge", "autodrive-build", 1),
         ("autodrive-build", "default-workflow", 1),
-        ("auto-drive-light", "auto-drive-to-merge", 1),
         ("quick-change", "default-workflow", 1),
         ("smart-orchestrator", "smart-classify-route", 1),
         ("smart-orchestrator", "smart-execute-routing", 1),
