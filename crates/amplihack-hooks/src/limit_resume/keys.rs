@@ -297,10 +297,8 @@ pub fn pane_on_tty(listing: &[u8], holder_tty: &Path) -> Option<Pane> {
     if listing.len() > MAX_LISTING_BYTES || !is_terminal_path(holder_tty) {
         return None;
     }
+    // An empty body is one empty line, which `listing_line` refuses.
     let body = listing.strip_suffix(b"\n").unwrap_or(listing);
-    if body.is_empty() {
-        return None;
-    }
     let mut panes: BTreeMap<&str, &[u8]> = BTreeMap::new();
     for line in body.split(|b| *b == b'\n') {
         let (id, tty) = listing_line(line)?;
@@ -672,14 +670,11 @@ where
     let Ok(holder_pid) = tty_ancestor(view, hook_pid, euid) else {
         return PaneCheck::None;
     };
-    let Some(holder_tty) = view.entry(holder_pid).and_then(|e| e.stdin) else {
-        return PaneCheck::None;
-    };
-    let Ok(listing) = list_panes() else {
-        return PaneCheck::None;
-    };
-    let found = pane_on_tty(&listing, &holder_tty);
-    drop(listing);
+    // The listing lives only for this match; nothing but the id is kept.
+    let found = view
+        .entry(holder_pid)
+        .and_then(|e| e.stdin)
+        .and_then(|tty| pane_on_tty(&list_panes().ok()?, &tty));
     let Some(pane) = found else {
         return PaneCheck::None;
     };
