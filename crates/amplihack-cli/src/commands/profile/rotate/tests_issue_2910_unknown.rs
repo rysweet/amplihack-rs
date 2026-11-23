@@ -1,7 +1,9 @@
 //! Issue #2910 (D6, F5, F7, AC5, AC7, A1, A2, S2, S4, E5, E5b): the
 //! confirmation of the target before a swap, and what an unknown reading
 //! does. Wired from `target_confirm.rs`. Issue #3105 withdraws D7: no target
-//! is taken without a fresh reading, whatever room the live login has.
+//! is taken without a fresh reading on the live login's room alone. Issue
+//! #2820's one exception, a live login with a standing recorded block and a
+//! target whose reading is recent, is tested at the end of the first part.
 //!
 //! The first part tests the pure step. For one stale candidate about to be
 //! chosen, `next` says what to do from the facts of the cycle (a candidate
@@ -9,8 +11,11 @@
 //!
 //! | The stale candidate | Step |
 //! |---------------------|------|
+//! | its probe failed this cycle, live login blocked, reading recent, a label | `AcceptUnconfirmed(label)` |
+//! | this cycle's three re-reads are used, live login blocked, reading recent | `AcceptStale(Count)` |
 //! | this cycle's three re-reads are used | `NotTried(Count)` |
 //! | its probe failed this cycle | `Reject(Unknown(label))`, or `Reject(Unfit(NoReading))` with no label |
+//! | the cycle can read no more, live login blocked, reading recent | `AcceptStale(Time)` |
 //! | the cycle can read no more | `NotTried(Time)` |
 //! | it can be read | `ReadAgain` |
 //!
@@ -23,11 +28,14 @@
 //!
 //! ```text
 //! struct Facts { failed_now: bool, attempts: usize, can_read: bool,
-//!                label: Option<ProbeLabel> }
+//!                live_blocked: bool, label: Option<ProbeLabel>,
+//!                recent: bool }
 //! enum Limit { Count, Time }
 //! enum Why { Unknown(ProbeLabel), Unfit(Unfit), Older(u64) }
-//! enum Step { ReadAgain, Reject(Why), NotTried(Limit) }
+//! enum Step { AcceptUnconfirmed(ProbeLabel), AcceptStale(Limit),
+//!             ReadAgain, Reject(Why), NotTried(Limit) }
 //! next(f: &Facts) -> Step
+//! after_unknown(label: ProbeLabel, f: &Facts) -> Step
 //! ```
 //!
 //! The re-read hook takes the new signature
@@ -59,7 +67,9 @@ fn facts() -> Facts {
         failed_now: false,
         attempts: 0,
         can_read: true,
+        live_blocked: false,
         label: None,
+        recent: false,
     }
 }
 
@@ -148,7 +158,8 @@ fn a_rejection_without_a_read_still_counts_against_the_limit() {
 /// Issue #3105 (was D7 at the cap): a target whose probe failed this cycle
 /// is never taken without a fresh reading. Below the cap it is rejected and
 /// at the cap it is not tried; in neither case is it swapped to. The step
-/// has no input for the live login's room, so that room cannot change it.
+/// has no input for the live login's room: only a standing block on the
+/// live login changes it (issue #2820, tested below), never a full window.
 #[test]
 fn at_the_cap_a_failed_target_is_not_tried_and_never_accepted() {
     for attempts in [MAX_REREADS_PER_CYCLE, MAX_REREADS_PER_CYCLE + 1, 40] {
@@ -158,7 +169,9 @@ fn at_the_cap_a_failed_target_is_not_tried_and_never_accepted() {
                     failed_now: true,
                     attempts,
                     can_read,
+                    live_blocked: false,
                     label,
+                    recent: false,
                 };
                 assert_eq!(next(&f), Step::NotTried(Limit::Count), "{f:?}");
             }
@@ -169,6 +182,92 @@ fn at_the_cap_a_failed_target_is_not_tried_and_never_accepted() {
         ..facts()
     };
     assert_eq!(next(&f), Step::NotTried(Limit::Count));
+}
+
+// --- Issue #2820: a blocked live login is left on a recent reading -----------------------
+
+/// Issue #2820: with a standing block on the live login and a recent reading
+/// for the target, the target is taken on that reading without a fresh one:
+/// a failed probe with a label is accepted before the cap, and a target the
+/// cap or the time limit left unread is accepted at the limit. Any one of
+/// the three facts missing leaves issue #3105's rule as it is.
+#[test]
+fn a_blocked_live_login_takes_a_target_on_its_recent_reading() {
+    let blocked = Facts {
+        live_blocked: true,
+        recent: true,
+        ..facts()
+    };
+    for label in [Http429, Transport] {
+        for attempts in [0, MAX_REREADS_PER_CYCLE, 40] {
+            let f = Facts {
+                failed_now: true,
+                attempts,
+                label: Some(label),
+                ..blocked
+            };
+            assert_eq!(next(&f), Step::AcceptUnconfirmed(label), "{f:?}");
+        }
+    }
+    let f = Facts {
+        attempts: MAX_REREADS_PER_CYCLE,
+        ..blocked
+    };
+    assert_eq!(next(&f), Step::AcceptStale(Limit::Count));
+    let f = Facts {
+        can_read: false,
+        ..blocked
+    };
+    assert_eq!(next(&f), Step::AcceptStale(Limit::Time));
+    // A target that can still be read is read: the move is on a fresh
+    // reading whenever one can be had.
+    assert_eq!(next(&blocked), Step::ReadAgain);
+    // A failed probe with no label has no last good reading to stand on.
+    let f = Facts {
+        failed_now: true,
+        ..blocked
+    };
+    assert_eq!(next(&f), Step::Reject(Why::Unfit(Unfit::NoReading)));
+    // A confirming read that came back unknown.
+    assert_eq!(
+        after_unknown(Http429, &blocked),
+        Step::AcceptUnconfirmed(Http429)
+    );
+}
+
+/// Issue #2820 and #3105 together: without a standing block on the live
+/// login (a full window is not one), or without a recent reading, nothing is
+/// taken without a fresh reading.
+#[test]
+fn without_a_live_block_or_a_recent_reading_nothing_is_taken_unread() {
+    for (live_blocked, recent) in [(false, true), (true, false), (false, false)] {
+        let base = Facts {
+            live_blocked,
+            recent,
+            ..facts()
+        };
+        let f = Facts {
+            failed_now: true,
+            label: Some(Http429),
+            ..base
+        };
+        assert_eq!(next(&f), Step::Reject(Why::Unknown(Http429)), "{f:?}");
+        let f = Facts {
+            attempts: MAX_REREADS_PER_CYCLE,
+            ..base
+        };
+        assert_eq!(next(&f), Step::NotTried(Limit::Count), "{f:?}");
+        let f = Facts {
+            can_read: false,
+            ..base
+        };
+        assert_eq!(next(&f), Step::NotTried(Limit::Time), "{f:?}");
+        assert_eq!(
+            after_unknown(Transport, &base),
+            Step::Reject(Why::Unknown(Transport)),
+            "{base:?}"
+        );
+    }
 }
 
 // --- Re-read hooks: each test has its own statics (tests run in parallel) -------------------
@@ -364,6 +463,9 @@ fn reread_cap(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeL
     (exh(100.0, 10.0), None)
 }
 
+/// The live login is at 100% with no recorded block, so issue #2820's move
+/// on a recent reading does not apply (that is
+/// `prelude::tests_issue_2820_cycle`), and the cap's own rule is checked.
 #[test]
 fn at_most_three_candidates_are_read_and_the_rest_are_counted_as_not_tried() {
     let names = ["c1", "c2", "c3", "c4", "c5"];

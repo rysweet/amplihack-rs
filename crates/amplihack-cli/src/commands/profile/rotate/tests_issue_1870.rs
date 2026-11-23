@@ -572,7 +572,18 @@ fn all_rereads_of_one_gate_share_one_time_limit() {
     let c = gate_ctx(&e, Some(slow_full));
     let s = snap(&c);
     let at = now();
-    let stale = |sess, week| rd(sess, week, Some(at - 60));
+    // The live login is spent, so the readings are older than the last good
+    // age: issue #2820 accepts a recent one at the time limit.
+    let stale = |sess, week| {
+        rd(
+            sess,
+            week,
+            Some(
+                at - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS
+                    - 60,
+            ),
+        )
+    };
     let m = decide_measured(
         &c,
         &s,
@@ -654,7 +665,19 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
         &c,
         &s,
         spent(),
-        vec![(n("spare"), rd(11.0, 20.0, Some(at - 60)))],
+        // Older than the last good age: issue #2820 accepts a recent
+        // reading at the time limit while the live login is spent.
+        vec![(
+            n("spare"),
+            rd(
+                11.0,
+                20.0,
+                Some(
+                    at - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS
+                        - 60,
+                ),
+            ),
+        )],
         at,
     )
     .unwrap();
@@ -682,8 +705,8 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
 /// label (HTTP 429), and the decision chose it on its stale figures; the gate
 /// rejects it without a read, and the decision must not come back to it: the
 /// gate settles instead of ending the cycle in `GateUnsettled` (issue #2910).
-/// Issue #3105 removed the earlier gate's unconfirmed acceptance this test
-/// used to start from; the failed probe now stands for it.
+/// Issue #3105: the failed probe stands for the earlier gate's unconfirmed
+/// acceptance this test used to start from; the next test keeps that start.
 #[test]
 fn a_rejected_target_is_not_chosen_again_on_its_stale_reading() {
     use crate::commands::profile::rotate::measure::ProbeLabel;
@@ -722,6 +745,59 @@ fn a_rejected_target_is_not_chosen_again_on_its_stale_reading() {
         "{:?}",
         got.decision
     );
+    assert!(
+        got.fresh_lines
+            .iter()
+            .any(|l| l.starts_with("reject: spare ")),
+        "{:?}",
+        got.fresh_lines
+    );
+}
+
+/// Issue #2820: a target an earlier gate of the cycle accepted without a
+/// fresh reading is accepted again only while the live login is blocked.
+/// Here the live login has room and no block, so the earlier acceptance
+/// counts as a probe that failed: the gate rejects `spare`, and the decision
+/// does not come back to it.
+#[test]
+fn an_earlier_unconfirmed_target_is_rejected_when_the_live_login_is_not_blocked() {
+    use crate::commands::profile::rotate::measure::ProbeLabel;
+    let e = env();
+    let c = gate_ctx(&e, None);
+    let s = snap(&c);
+    let at = now();
+    let mut m = decide_measured(
+        &c,
+        &s,
+        rd(86.0, 65.0, None),
+        vec![(n("spare"), rd(0.0, 40.0, Some(at - 600)))],
+        at,
+    )
+    .unwrap();
+    assert!(
+        matches!(&m.decision, Decision::Swap { to, .. } if to == &n("spare")),
+        "without the gate the stale reading wins: {:?}",
+        m.decision
+    );
+    assert_eq!(m.seen.live_blocked, None, "the live login has no block");
+    m.seen
+        .extra
+        .unconfirmed
+        .insert(n("spare"), ProbeLabel::Http429.into());
+    let got = fresh::settle(
+        &c,
+        m,
+        Reread::Never,
+        Duration::from_secs(120),
+        |live, probes, extra, at| decide_with(&c, &s, live, probes, at, extra),
+    )
+    .expect("the gate settles, it does not end the cycle in an error");
+    assert!(
+        !matches!(got.decision, Decision::Swap { .. }),
+        "{:?}",
+        got.decision
+    );
+    assert_eq!(got.seen.unconfirmed, None, "{:?}", got.fresh_lines);
     assert!(
         got.fresh_lines
             .iter()

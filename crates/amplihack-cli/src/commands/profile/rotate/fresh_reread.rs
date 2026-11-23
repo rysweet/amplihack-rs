@@ -4,8 +4,14 @@
 //! nothing about its login (`measure::label_of`).
 
 use super::super::cycle::Ctx;
-use super::super::decide::Probed;
+use super::super::decide::last_good::{LAST_GOOD_MAX_AGE_SECS, LastGood};
+use super::super::decide::target_confirm::Unconfirmed;
+use super::super::decide::target_seen::Extra;
+use super::super::decide::{Probed, Reading};
+use super::super::fresh_msg;
+use super::super::log::Shown;
 use super::super::measure::{self, ProbeLabel};
+use super::super::swap_back;
 use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::ProbeMode;
@@ -84,4 +90,87 @@ pub fn reread_live_as_configured(
     left: Duration,
 ) -> (Probed, Option<ProbeLabel>) {
     reread_configured(ctx, name, left, true)
+}
+
+/// The probe that replaces `old` after a re-read returned `p`, and its log
+/// lines. A failed read is unknown; a successful one is read now.
+pub(super) fn fresh_probe(
+    ctx: &Ctx,
+    to: &ProfileName,
+    old: &Probed,
+    mut p: Probed,
+    damped: bool,
+    lines: &mut Vec<String>,
+) -> Probed {
+    // Issue #2910: a spend limit is what the login reported, not a failed read.
+    let spent = p.spend_limit && !p.unknown && !p.still_running && !p.carried;
+    if !spent && (p.reading == Reading::Failed || p.unknown || p.still_running || p.carried) {
+        lines.push(fresh_msg::failed(to));
+        return Probed::failed();
+    }
+    // Preserve the evidence time. Only an undated direct result receives
+    // the completion time; the next gate pass validates dated results.
+    p.observed_at.get_or_insert_with(ctx.now);
+    p.carried = false;
+    // Issue #1970: a re-read is made with passive readings off, so it is a
+    // direct reading and never checked as a stale cached one.
+    p.passive = false;
+    lines.push(fresh_msg::stale(to, &Shown::of(old), &Shown::of(&p)));
+    if damped && !swap_back::room(&p.reading, &ctx.settings) {
+        lines.push(fresh_msg::still_damped(to));
+    }
+    p
+}
+
+/// Issue #2820: when the reading the decision used for a target was taken.
+/// For a failed probe that is the last good reading standing in for it
+/// (`sub`), and nothing without one; nothing for a read still running or
+/// unknown; a carried result's own time, which it may not have; otherwise
+/// the passive reading's time, or `measured_at` for a read made in this
+/// cycle.
+pub(in crate::commands::profile::rotate) fn taken_at(
+    p: &Probed,
+    measured_at: i64,
+    sub: Option<&LastGood>,
+) -> Option<i64> {
+    if p.reading == Reading::Failed {
+        return sub.map(|lg| lg.at);
+    }
+    if p.still_running || p.unknown {
+        return None;
+    }
+    if p.carried {
+        return p.observed_at;
+    }
+    Some(p.observed_at.unwrap_or(measured_at))
+}
+
+/// Issue #2820: whether a reading taken at `at` may stand for a move off a
+/// live login with no room, `t` now: it has a time, is at most
+/// [`LAST_GOOD_MAX_AGE_SECS`] old and not in the future, and is later than
+/// `left_or_damped`, when the target was last left or damped, so the
+/// rotator never swaps straight back onto a login on a reading from before
+/// it left it.
+pub(in crate::commands::profile::rotate) fn recent(
+    at: Option<i64>,
+    left_or_damped: Option<i64>,
+    t: i64,
+) -> bool {
+    at.is_some_and(|at| {
+        t.saturating_sub(LAST_GOOD_MAX_AGE_SECS) <= at
+            && at <= t
+            && left_or_damped.is_none_or(|d| at > d)
+    })
+}
+
+/// Issue #2820: records `to` as accepted by the gate without a fresh
+/// reading, for `why`, so a later gate of the cycle accepts it again while
+/// the live login is still blocked; returns the cycle's `Seen::unconfirmed`.
+pub(super) fn accept(
+    extra: &mut Extra,
+    to: ProfileName,
+    why: Unconfirmed,
+) -> (ProfileName, Unconfirmed) {
+    extra.unconfirmed.insert(to.clone(), why);
+    (to, why)
 }

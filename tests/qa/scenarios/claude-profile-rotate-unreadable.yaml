@@ -1,0 +1,45 @@
+name: claude-profile-rotate-unreadable
+description: >
+  Isolated CLI acceptance test for the rotator when it cannot read every
+  process and the live login is spend-blocked (issue #2820). Runs the
+  candidate amplihack binary against a temporary HOME, a fake Claude
+  executable, a loopback stand-in for the usage and profile endpoints (socat,
+  127.0.0.1 only) and a stand-in process table (AMPLIHACK_TEST_PROC_ROOT, a
+  0700 folder under the run's TMPDIR, this user's uid, pids above pid_max,
+  and an environ that is a directory for a process that is not dumpable).
+  Replays 19 and 23 November 2026: a non-dumpable Tailscale SSH child whose
+  command mentions amplihack, an unreadable claude naming one profile, an
+  unreadable amplihack naming none, a readable claude using another, and an
+  unreadable claude naming none whose session file Claude Code wrote under a
+  third. At --session-at 95 --week-at 98 and at 85/90, the one-shot cycle
+  names each unreadable process once, skips only the three profiles in use,
+  and moves the spend-blocked live login to the login with room; no argument
+  secret (an assignment or a --token value), environment or profile path
+  reaches the log. With HTTP 429 for every
+  candidate and a last good reading, the blocked live login still moves,
+  unconfirmed (HTTP 429), and the swap line says why the live login has no
+  room and until when. The dry run names the same move and moves nothing.
+  A real supervised step (`amplihack claude --subprocess-safe -p`, with a
+  stand-in claude that meets a usage limit four hours from its reset) parks
+  in its usage-limit wait on the blocked live login; the rotator's move ends
+  the wait `rotator capacity` at 95/98 and at 85/90, and the retry runs on
+  the new login. After a move on a last good reading, the wait stays until
+  the next cycle reads the new login with room. No sleep or timer: the driver
+  acts on the step's own wait lines.
+  Needs socat; runs locally and is not part of CI.
+version: "1.0"
+environment:
+  requires: [AMPLIHACK_QA_BINARY]
+agents:
+  - name: cli-agent
+    type: cli
+steps:
+  - name: exercise-rotator-unreadable-processes
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/claude-profile-rotate-unreadable.sh
+    timeout: 600000
+assertions: []
+metadata:
+  tags: [cli, rotation, regression]
+  priority: high

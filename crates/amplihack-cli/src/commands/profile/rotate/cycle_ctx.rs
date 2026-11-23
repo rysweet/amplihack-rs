@@ -68,6 +68,10 @@ pub struct Ctx {
     /// Issue #2885: the unreadable-Keychain lines the last cycle's capacity
     /// write gave ([`Ctx::note_keychain`]).
     pub(in crate::commands::profile::rotate) keychain_notes: Vec<String>,
+    /// Issue #2820: the `unreadable process` lines the last cycle's first
+    /// snapshot gave ([`Ctx::note_unreadable`]). Lines as logged, already
+    /// masked; never the raw arguments.
+    pub(in crate::commands::profile::rotate) unreadable_notes: Vec<String>,
     /// Issue #2211: the live login's recent readings, kept across cycles.
     pub(in crate::commands::profile::rotate) live_series: live::Series,
     /// Issue #2211: this cycle's projected or substituted live figures.
@@ -110,6 +114,7 @@ impl Ctx {
             read_only: false,
             last_seed_note: None,
             keychain_notes: Vec::new(),
+            unreadable_notes: Vec::new(),
             live_series: live::Series::default(),
             live_outlook: None,
             event: false,
@@ -161,10 +166,21 @@ impl Ctx {
         t: i64,
         notes: Vec<String>,
     ) {
-        for line in notes.iter().filter(|n| !self.keychain_notes.contains(n)) {
-            out.emit(t, line);
-        }
-        self.keychain_notes = notes;
+        emit_new(out, t, &mut self.keychain_notes, notes);
+    }
+
+    /// Issue #2820: logs the `unreadable process` lines of a cycle's first
+    /// snapshot (`msg::unreadable_lines`). A line the previous cycle gave is
+    /// not logged again, so a long-lived process is named once; one that
+    /// went away and came back is named again, as is every one after a
+    /// restart of the rotator.
+    pub(in crate::commands::profile::rotate) fn note_unreadable(
+        &mut self,
+        out: &mut Sink,
+        t: i64,
+        lines: Vec<String>,
+    ) {
+        emit_new(out, t, &mut self.unreadable_notes, lines);
     }
 
     pub(in crate::commands::profile::rotate) fn stopping(&self) -> bool {
@@ -172,4 +188,13 @@ impl Ctx {
             .as_ref()
             .is_some_and(|s| s.load(Ordering::Relaxed))
     }
+}
+
+/// Emits each of `lines` that is not in `prev`, then makes `lines` the new
+/// `prev`: the log-once rule of the notes a cycle repeats.
+fn emit_new(out: &mut Sink, t: i64, prev: &mut Vec<String>, lines: Vec<String>) {
+    for line in lines.iter().filter(|l| !prev.contains(l)) {
+        out.emit(t, line);
+    }
+    *prev = lines;
 }

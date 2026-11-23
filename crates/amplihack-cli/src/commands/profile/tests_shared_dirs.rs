@@ -658,9 +658,24 @@ fn liveness_maps_to_mode_and_any_doubt_never_migrates() {
         shared_dirs::mode_from_liveness(&known(&["A"]), &a),
         Mode::LinkOnly(Deferred::LiveSession)
     );
+    // Issue #2820: after an unreadable process the migration is deferred
+    // only for a profile named as live.
+    let partial = |names: &[&str]| Liveness::Partial {
+        live: names.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>(),
+        unreadable: vec![crate::commands::profile::auto_switch::Unreadable {
+            pid: 700_001,
+            exe: "claude".into(),
+            argv: vec!["claude".into()],
+            verdict: crate::commands::profile::auto_switch::Verdict::ProfileUnknown,
+        }],
+    };
     assert_eq!(
-        shared_dirs::mode_from_liveness(&Liveness::Everything, &a),
+        shared_dirs::mode_from_liveness(&partial(&["A"]), &a),
         Mode::LinkOnly(Deferred::LiveSession)
+    );
+    assert_eq!(
+        shared_dirs::mode_from_liveness(&partial(&["B"]), &a),
+        Mode::Migrate
     );
     // On Linux `Unsupported` means the scan failed: retried next call.
     assert_eq!(
