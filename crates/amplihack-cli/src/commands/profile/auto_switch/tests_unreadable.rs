@@ -179,6 +179,22 @@ fn a_symlinked_root_still_names_its_profiles() {
 }
 
 #[test]
+fn a_long_prompt_full_of_paths_names_only_the_profiles_given() {
+    // A prompt on the command line: every `=/...` in it is tried as a path
+    // running to the end of the argument, and none is under the root.
+    let text = "export PATH=/usr/local/bin:/usr/bin:/bin; x=/=/=/tmp/a/b c\n";
+    let prompt = text.repeat(60 * 1024 / text.len());
+    let s = Stand::new(b"");
+    s.args(&[
+        "claude".into(),
+        "-p".into(),
+        prompt,
+        format!("--settings={}", s.p("//Y/settings.json")),
+    ]);
+    assert_eq!(s.judge("claude").unwrap().verdict, counted(&["Y"]));
+}
+
+#[test]
 fn exe_is_the_argv0_basename_and_falls_back_to_comm() {
     let a = Stand::with_args(&["/usr/local/bin/claude".into()]);
     assert_eq!(a.judge("claude").unwrap().exe, "claude");

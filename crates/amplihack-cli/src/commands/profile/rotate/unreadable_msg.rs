@@ -24,8 +24,8 @@ pub fn line(u: &Unreadable) -> String {
     format!(
         "unreadable process {} ({}) \"{}\": {}",
         u.pid,
-        cut(escape(&u.exe), MAX_EXE),
-        cut(escape(&command.join(" ")), MAX_COMMAND),
+        cut(&u.exe, MAX_EXE),
+        cut(&command.join(" "), MAX_COMMAND),
         verdict(&u.verdict)
     )
 }
@@ -47,7 +47,10 @@ pub fn lines(all: &[Unreadable]) -> Vec<String> {
 fn verdict(v: &Verdict) -> String {
     match v {
         Verdict::Counted(names) => {
-            let names: Vec<String> = names.iter().map(|n| escape(n).concat()).collect();
+            let names: Vec<String> = names
+                .iter()
+                .map(|n| n.chars().map(escape).collect())
+                .collect();
             format!("counted as a session on {}", names.join(", "))
         }
         Verdict::NotClaude => "not counted (not a Claude executable)".to_string(),
@@ -71,38 +74,34 @@ fn mask(arg: &str) -> String {
     arg.to_string()
 }
 
-/// `s` as display units, one per character: `"` and `\` behind a
-/// backslash, an ASCII control character or DEL as `\xNN`, any other
-/// control character as `\u{NN}`, the rest as it is.
-fn escape(s: &str) -> Vec<String> {
-    s.chars()
-        .map(|c| match c {
-            '"' => "\\\"".to_string(),
-            '\\' => "\\\\".to_string(),
-            c if u32::from(c) < 0x20 || c == '\x7f' => format!("\\x{:02x}", u32::from(c)),
-            c if c.is_control() => format!("\\u{{{:x}}}", u32::from(c)),
-            c => c.to_string(),
-        })
-        .collect()
+/// One character as its display unit: `"` and `\` behind a backslash, an
+/// ASCII control character or DEL as `\xNN`, any other control character
+/// as `\u{NN}`, the rest as it is.
+fn escape(c: char) -> String {
+    match c {
+        '"' => "\\\"".to_string(),
+        '\\' => "\\\\".to_string(),
+        c if u32::from(c) < 0x20 || c == '\x7f' => format!("\\x{:02x}", u32::from(c)),
+        c if c.is_control() => format!("\\u{{{:x}}}", u32::from(c)),
+        c => c.to_string(),
+    }
 }
 
-/// The units joined, cut to at most `max` characters between whole units,
-/// with `...` after a cut.
-fn cut(units: Vec<String>, max: usize) -> String {
-    let width = |u: &String| u.chars().count();
-    if units.iter().map(width).sum::<usize>() <= max {
-        return units.concat();
-    }
+/// `s` escaped, cut to at most `max` characters between whole units, with
+/// `...` after a cut. Only the characters shown are escaped, so cutting a
+/// command line of 64 KiB costs no more than cutting one of 120 characters.
+fn cut(s: &str, max: usize) -> String {
     let mut out = String::new();
     let mut used = 0;
-    for unit in &units {
-        if used + width(unit) > max {
+    for unit in s.chars().map(escape) {
+        let width = unit.chars().count();
+        if used + width > max {
+            out.push_str("...");
             break;
         }
-        used += width(unit);
-        out.push_str(unit);
+        used += width;
+        out.push_str(&unit);
     }
-    out.push_str("...");
     out
 }
 

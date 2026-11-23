@@ -99,6 +99,17 @@ fn the_command_is_cut_at_120_characters_and_exe_at_32() {
 }
 
 #[test]
+fn text_that_fills_the_width_exactly_is_not_cut() {
+    let mut fits = "a".repeat(116);
+    fits.push('\x1b'); // escapes to four characters: exactly 120
+    let exe = "e".repeat(32);
+    let l = line(&u(4, &exe, &[&fits], Verdict::NotClaude));
+    assert!(l.contains(&format!("({exe})")), "{l}");
+    assert!(l.contains(&format!("\"{}\\x1b\"", "a".repeat(116))), "{l}");
+    assert!(!l.contains("..."), "{l}");
+}
+
+#[test]
 fn the_cut_never_splits_an_escape() {
     let mut arg = "a".repeat(118);
     arg.push('\x1b'); // escapes to four characters and straddles the cut

@@ -17,7 +17,7 @@
 use super::fsx;
 use crate::commands::agent::procfs;
 use std::collections::BTreeSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Components, Path, PathBuf};
 
 /// The most of `/proc/<pid>/cmdline` read. A longer one reads as empty, and
 /// the process is judged by its `status` name alone.
@@ -159,30 +159,51 @@ fn named_profiles(argv: &[String], root: &Path) -> BTreeSet<String> {
 }
 
 /// The profile `path` is, or is under: the first component under `root`
-/// once `path` is resolved. Only an absolute path counts. `root` itself, and
-/// anything outside it, names nothing.
+/// once `path` is resolved, its existing prefix canonicalised ([`resolve`])
+/// and the rest joined on. Only an absolute path counts. `root` itself, and
+/// anything outside it, names nothing. The rest may hold only plain names:
+/// a `..` in a part that does not exist cannot be resolved, so the path
+/// names nothing.
+///
+/// The resolved path is compared with `root` part by part and never built,
+/// so a long argument that leaves `root` costs no more than its first parts.
 fn profile_of(path: &Path, root: &Path) -> Option<String> {
     if !path.is_absolute() {
         return None;
     }
-    let resolved = resolve(path)?;
-    match resolved.strip_prefix(root).ok()?.components().next()? {
-        Component::Normal(name) => name.to_str().map(str::to_string),
-        _ => None,
-    }
-}
-
-/// `path` with its nearest existing ancestor canonicalised and the rest
-/// joined on. The rest may hold only plain names: a `..`, a root or a prefix
-/// in a part that does not exist cannot be resolved, so the path names
-/// nothing.
-fn resolve(path: &Path) -> Option<PathBuf> {
-    let (ancestor, canonical) = path
-        .ancestors()
-        .find_map(|a| a.canonicalize().ok().map(|c| (a, c)))?;
-    let rest = path.strip_prefix(ancestor).ok()?;
-    if !rest.components().all(|c| matches!(c, Component::Normal(_))) {
+    let (canonical, rest) = resolve(path)?;
+    let mut parts = canonical.components().chain(rest);
+    if !root.components().all(|r| parts.next() == Some(r)) {
         return None;
     }
-    Some(canonical.join(rest))
+    let Some(Component::Normal(name)) = parts.next() else {
+        return None;
+    };
+    if parts.any(|p| p == Component::ParentDir) {
+        return None;
+    }
+    name.to_str().map(str::to_string)
+}
+
+/// `path`'s longest existing prefix, canonicalised, and the parts after it.
+///
+/// The prefix is found from the top down, and the search stops at the first
+/// part that does not resolve. A path resolves only when each of its
+/// prefixes does, so this is the prefix a search from the leaf up would
+/// find, but an argument with thousands of parts (a prompt passed on the
+/// command line) costs one lookup for each part that exists, not one for
+/// each part it has.
+fn resolve(path: &Path) -> Option<(PathBuf, Components<'_>)> {
+    let mut rest = path.components();
+    let mut prefix = PathBuf::new();
+    let mut canonical = None;
+    while let Some(part) = rest.clone().next() {
+        prefix.push(part);
+        let Ok(c) = prefix.canonicalize() else {
+            break;
+        };
+        canonical = Some(c);
+        rest.next();
+    }
+    Some((canonical?, rest))
 }
