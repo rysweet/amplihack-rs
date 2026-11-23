@@ -115,6 +115,65 @@ fn a_retry_chosen_again_on_a_recurrence_becomes_a_validator_handoff() {
     assert_eq!(outcome(&o)["source"], "validator");
 }
 
+/// #2966: a step whose command reads live state each time it runs
+/// (`--retry-on-recurrence`, continue-ci-repair) is still offered a retry when
+/// its failure prints the same lines as the last one, as CI that is still
+/// running does. The evidence says it is a recurrence; whether to retry or
+/// hand off stays the agent's judgement.
+#[test]
+fn a_step_that_reads_live_state_is_still_offered_a_retry_on_a_recurrence() {
+    let f = Fixture::new();
+    let tool = same_failure(&f);
+    f.choose(1, retry("the checks were still running"));
+    f.choose(2, retry("the checks were still running"));
+    f.choose(
+        3,
+        json!({"choice": "handoff", "reason": "the agent judged that another session will not get further",
+        "owner": "run-requester", "needs": "read the recovery record"}),
+    );
+
+    let flags = ["--essential", "--stop-on-handoff", "--retry-on-recurrence"];
+    let o = f.run("continue-ci-repair", &flags, &[&tool]);
+    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
+    assert_eq!(runs(&f), 3, "the command ran once, then after each retry");
+
+    let records = f.records("continue-ci-repair");
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        records[0]["failure"]["signature"],
+        records[1]["failure"]["signature"]
+    );
+    assert_eq!(records[1]["recurrence"], true);
+    assert_eq!(
+        (records[1]["choice"].as_str(), records[1]["source"].as_str()),
+        (Some("retry_after_repair"), Some("agent")),
+        "the retry on a recurrence was accepted"
+    );
+    assert_eq!(f.evidence(2)["recurrence"], true);
+    assert!(allowed(&f.evidence(2)).contains(&"retry_after_repair".to_string()));
+    assert_eq!(
+        (records[2]["choice"].as_str(), records[2]["source"].as_str()),
+        (Some("handoff"), Some("agent")),
+        "the hand-off is the agent's, not the validator's"
+    );
+}
+
+#[test]
+fn retry_on_recurrence_is_refused_beside_no_repair_or_guard() {
+    let f = Fixture::new();
+    let tool = same_failure(&f);
+    for flag in ["--no-repair", "--guard"] {
+        let o = f.run(
+            "continue-ci-repair",
+            &["--retry-on-recurrence", flag],
+            &[&tool],
+        );
+        assert_eq!(o.status.code(), Some(2), "{flag}: {}", show(&o));
+    }
+    assert_eq!(runs(&f), 0, "a refused flag set runs nothing");
+    assert!(f.agent_calls().is_empty());
+}
+
 #[test]
 fn a_failure_repaired_in_one_round_is_a_recurrence_in_a_later_round() {
     let f = Fixture::new();

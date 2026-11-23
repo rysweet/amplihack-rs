@@ -297,8 +297,10 @@ fn rotate_log_grammar_is_documented() {
         // Issue #2910: the target rule, its notes and its lines.
         "ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)",
         "reason=plan-room",
-        " unconfirmed (<label>)",
         "reject: <name> <reason>",
+        // Issue #3105: the block and the superseded reading.
+        "reject: <name> blocked until <utc_minute> (<kind>)",
+        "reject: <name> reading <n>s older than one already held",
         "stay: live room <R>, best other login has room <M>, a move needs <N>",
         "stay: held after last swap (<S>s of <H>s): <name> is at s=<n>%, at or above --session-at",
         "stay: no candidate confirmed by a fresh reading",
@@ -330,7 +332,7 @@ fn rotate_log_grammar_is_documented() {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }
     // Issue #2820: the unreadable process lines, and a move off a live login
-    // with no room on a reading the gate left unread. The re-read limit text
+    // with a standing block on a reading the gate left unread. The re-read limit text
     // is checked against `MAX_REREADS_PER_CYCLE` in
     // `rotate::prelude::tests_issue_2820_cycle`, where the constant is seen.
     for line in [
@@ -342,7 +344,7 @@ fn rotate_log_grammar_is_documented() {
         "unreadable processes: <N> more not listed",
         " unconfirmed (time limit)",
         "read <N>m ago",
-        "; live <from> has no room: <why> until <UTC minute | an unknown time>",
+        "; live <from> has no room: <kind> until <UTC minute>",
     ] {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }

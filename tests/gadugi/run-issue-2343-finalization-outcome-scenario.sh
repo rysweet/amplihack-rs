@@ -42,9 +42,16 @@
 #   pending_checks_hand_the_pr_on   branch pushed at the local head, pull
 #                                   request #7 open at that head with a check
 #                                   still in progress, and no implementation or
-#                                   verification booleans at all: the run ends
-#                                   EXISTING_OPEN_PR, terminal_success true,
-#                                   carrying #7 and a next action naming it
+#                                   verification booleans at all, with the
+#                                   decision EXISTING_OPEN_PR supplied: the
+#                                   validator reports it, terminal_success
+#                                   true, carrying #7 and a next action naming
+#                                   it. Since #2966 the assessment waits out
+#                                   pending checks before it decides, so this
+#                                   case does not say that a pending head is a
+#                                   success; it says the validator reports the
+#                                   decision it is given, and does not refuse
+#                                   it on this run's own bookkeeping (#2343)
 #   diverged_pr_head_fails          the same branch and push, but #7 sits at an
 #                                   unrelated commit: the run fails, and the
 #                                   record carries both commit ids and the
@@ -271,7 +278,9 @@ new_case() {
   else
     pr_head="$sha"
   fi
-  # A check still in progress: the state the #2784 run was refused for.
+  # A check still in progress, as in the #2784 run. The decision supplied for it
+  # is reported as given; deciding it is the assessment's, which waits for
+  # pending checks first (#2966).
   jq -nc --arg head "$BRANCH" --arg oid "$pr_head" \
     '{number: 7, url: "https://github.com/owner/repo/pull/7", state: "OPEN",
       headRefName: $head, headRefOid: $oid, isCrossRepository: false,

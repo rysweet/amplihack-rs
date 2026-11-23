@@ -95,6 +95,16 @@ PR to review and readiness work. A failure before a PR exists remains
 incomplete. Receiving steps preserve the cause and resolve outstanding work
 before claiming readiness.
 
+Since #2966 the build repairs red CI itself: `default-workflow` diagnoses,
+fixes, pushes and waits until the checks are green, with no round or time limit.
+A `BLOCKED_CI` that reaches phase 1 therefore means a named cause the run could
+not fix, such as a missing secret or a workflow run awaiting maintainer
+approval. Its `terminal_reason` names the check and the cause, and
+`required_next_action` names the owner and the exact step. The hand-off
+routes (`FINALIZATION_HANDOFF_STATES`, `handoff=merge_ready_loop`) are
+unchanged; only the meaning of the state narrowed. See
+[Red CI at Finalization](default-workflow-agentic-finalization.md#red-ci-at-finalization-2966).
+
 ## Configuration
 
 Pass context with `amplihack recipe run auto-drive-to-merge -c key=value`.
@@ -509,7 +519,8 @@ Missing or unreadable evaluator output is never success. See
 ### No-progress stop and usage budget
 
 For a non-clean crusty round, unchanged head, sorted open-item set, and CI
-signal, with CI no longer pending, produces `STUCK`. For the merge-ready
+signal produce `STUCK` when the CI signal is green or absent. A pending or
+failing signal is not stopped in code. For the merge-ready
 loop, a round whose only open item is a required check still running at the
 head ends the loop `WAITING` and goes to finalisation; it is never counted as
 no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
@@ -517,6 +528,19 @@ no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
 judged `STUCK` and the PR is handed off. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.
 A completed crusty objective is exempt; it does not reach these checks.
+
+A red CI is not a stop on its own (#2966). A crusty round whose head, open
+items and `fail@<head>` signal are all unchanged goes to the evaluator, not to
+the code stop: `autodrive_progress.sh` exempts a failing signal as it exempts a
+pending one. The evaluator judges `fail@<head>` as `CONTINUE` with CI repair
+named in `recommended_action`, and as `STUCK` only when the evidence names a
+cause the run cannot fix, with that cause and the human step. The code stop
+still applies to unchanged rounds whose CI signal is green or absent. A crusty
+round record writes an empty `ci_signal` today (`autodrive_crusty_record.sh`),
+so this exemption reaches a crusty round only once a round supplies a signal;
+the merge-ready loop, whose rounds carry the signal, has no code stop.
+`BUDGET_EXHAUSTED` is the operator's own usage budget for the whole drive, and
+the drive can be resumed with a larger one; it is not a verdict on CI.
 
 ### Budget keys and defaults
 

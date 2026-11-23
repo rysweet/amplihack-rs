@@ -13,7 +13,8 @@
 #       the last row is 0 (not clean and not failed), both SHAs are non-empty and equal, the open
 #       items are equal (by the sha256 of the full set; by the cut text for a
 #       row with no hash), the CI signals are equal and neither says pending
-#       (CI still running is not a stop). Every other case exits 0, so the evaluator decides; an
+#       or fail (CI still running is not a stop, and red CI is the evaluator's
+#       to judge, #2966). Every other case exits 0, so the evaluator decides; an
 #       untrusted progress file is not read (WARNING, exit 0: fails open).
 #   last <state> <loop>
 #       prints the label of the last row, or nothing; exit 3 when the
@@ -128,9 +129,11 @@ ALL="$(full_items "$5")"; CUR="$(items "$ALL")"; HASH="$(items_hash "$ALL")"
 # The hash compares the full set; the cut text is only for display.
 if [ -n "$P_HASH" ] && [ -n "$HASH" ]; then [ "$HASH" = "$P_HASH" ] || exit 0
 else [ "$CUR" = "$P_ITEMS" ] || exit 0; fi
-# A change in CI is progress; CI still running is waited on, never a stop.
+# A change in CI is progress; CI still running is waited on, never a stop. An
+# unchanged red CI is not decided here either: whether it can be repaired is
+# the evaluator's judgement (#2966), so `fail@<head>` goes to it.
 [ "$CI" = "$(safe_ci "$P_CI")" ] || exit 0
-case "$(printf '%s' "$CI" | tr 'a-z' 'A-Z')" in *PENDING*) exit 0 ;; esac
+case "$(printf '%s' "$CI" | tr 'a-z' 'A-Z')" in *PENDING*|*FAIL*) exit 0 ;; esac
 
 REASON="no progress (decided in code): head ${SHA} and open items unchanged since ${P_LABEL}: ${CUR:-none}"
 OUT="${STATE}/${LOOP}-stuck-reason.txt"

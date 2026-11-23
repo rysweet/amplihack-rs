@@ -2,18 +2,20 @@
 //! #2890): whether a block is still in force, and what a blocked plan login
 //! contributes in place of its own reading.
 
+use super::super::decide::target::standing_block;
 use super::super::decide::{Reading, Windows};
 use super::super::ledger::OverflowBlock;
 use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeMap;
 
-/// Whether `name` has a spend block still in force at `now`.
+/// Whether `name` has a spend block still in force at `now`, by the
+/// decision's one test of a standing block (`target::standing_block`).
 pub(crate) fn active(
     blocks: &BTreeMap<String, OverflowBlock>,
     name: &ProfileName,
     now: i64,
 ) -> bool {
-    blocks.get(name.as_str()).is_some_and(|b| now < b.until)
+    standing_block(blocks, name, now).is_some()
 }
 
 /// The reading and windows a plan login with an active spend block

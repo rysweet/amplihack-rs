@@ -1083,27 +1083,33 @@ foreground process group without blocking; with no pidfd it reports the
 session as not running, so the check before each key fails and no key is
 sent. Tests replace `Deps` with a fake that scripts the events.
 
-**How it resumes.** It records the resume under its lock first, then takes
-exactly one path:
+**How it resumes.** It takes exactly one path. Only the keys path records
+the resume, and a wake records nothing:
 
-- **Keys, exit `0`, outcome `resumed-keys`.** When `$TMUX` is set and
-  `$TMUX_PANE` is `%` followed by digits, and the pane is proved to be the
-  terminal of this hook's own Claude Code (checked once, just before the
-  commit; see [Resume keys](profile-command.md#resume-keys): the hook walks
-  up its own ancestry to the nearest process whose standard input is a
-  terminal, the pane's `#{pane_tty}` must be that terminal, that process
+- **Keys, exit `0`, outcome `resumed-keys`.** When the hook has a pane
+  (`$TMUX_PANE` when `$TMUX` is set and it is `%` followed by digits;
+  otherwise the single pane on the session's terminal, found with one
+  read-only `tmux list-panes -a` and given the same proof), and the pane is
+  proved to be the terminal of this hook's own Claude Code (checked once,
+  just before the commit; a named pane that is refused never falls back to
+  the lookup; see [Resume keys](profile-command.md#resume-keys): the hook
+  walks up its own ancestry to the nearest process whose standard input is
+  a terminal, the pane's `#{pane_tty}` must be that terminal, that process
   must be its foreground process group, and Claude Code must be reading it),
   and that pane is showing a screen the keys answer (read once with
   `tmux capture-pane -p`, matched against a closed list of six fixed
-  phrases; see [Resume screen](profile-command.md#resume-screen)),
-  it runs
+  phrases; see [Resume screen](profile-command.md#resume-screen)), it
+  records the resume under its lock, then runs
   `tmux send-keys -t %N Escape`, then `C-u`, then `-l continue`, then
   `Enter`, as four separate commands, each waited on for its exit status.
   Before each key it checks that the session is still running and still in
   the terminal's foreground, so a session that exits or is suspended
-  (Ctrl-Z) gets no more keys. A failure stops the remaining keys and ends as
-  `resume-keys-failed`, still exit `0`. If the session exits or is suspended
-  in the instant before a key, at most that one key is at risk.
+  (Ctrl-Z) gets no more keys. A failure stops the remaining keys, releases
+  the record so the next room event tries again, and ends as
+  `resume-keys-failed`, still exit `0`. If the release fails, a
+  `guard-failed` line comes first and the event stays used. If the session
+  exits or is suspended in the instant before a key, at most that one key
+  is at risk.
   `C-u` clears the whole input line, so text the user typed in the stopped
   session and did not submit is deleted. Only a submitted prompt counts as
   moving on (hook 6 records it); an unsent draft does not stop the resume.
@@ -1114,22 +1120,26 @@ exactly one path:
   why a session with a proved pane gets the keys.
 - **Wake, exit `2`.** Without such a pane and such a screen, it exits `2`
   with a one-line continue message on stderr, which wakes the session. The
-  outcome names why there was no keys path: `resumed` with
-  `detail=no-tmux-pane` when there was no tmux pane to check (a fixed
+  outcome names why there was no keys path: `not-resumed` with
+  `detail=no-tmux-pane` when no pane was named or found (a fixed
   value, never a pane id or socket path), `pane-unverified` when a pane was
-  named but not proved to be this session's own terminal,
+  named or found but not proved to be this session's own terminal,
   `pane-not-reading` when it was the terminal but Claude Code is not the
   process reading it, and `screen-unrecognised` when the pane was proved
   but its screen matched no phrase (`detail=screen-unknown`) or could not
   be read (`detail=screen-unreadable`). `screen-unrecognised` writes one
   further fixed line before the continue message, so the refusal reaches
   the model and not only the log. Otherwise the four differ only in the log
-  line; each is recorded under the same lock, so the duplicate guard
-  applies to all of them.
+  line. None is recorded, so the event stays armed and the next room event
+  tries again. Before it wakes, the hook reads the duplicate rules once
+  more, without the lock, and logs `duplicate` and exits `0` if the event
+  has a marker or another hook resumed the session since this hook started.
+  If that read fails, it logs `guard-failed` and still wakes the session.
 
-A pane that fails its check is never replaced by another one. The hook does
-not list panes or clients, and sends nothing to any pane but the one its own
-environment named.
+A pane that fails its check is never replaced by another one. The hook lists
+panes only when its environment names none, once and read-only, and drops
+the listing after matching. It sends nothing to any pane but its own
+session's.
 
 **What the two checks do not cover.** The proof establishes that the pane is
 the terminal of this hook's own Claude Code; `#{pane_tty}` reports the
@@ -1145,20 +1155,24 @@ therefore receive one extra `continue` turn. See
 [#2695](https://github.com/rysweet/amplihack-rs/issues/2695).
 
 It never sends a digit, `/usage-credits`, `/rate-limit-options` or any text
-other than `continue`, and never sends keys to a pane it did not note at the
-stop. `tmux` is found through `PATH` and uses the server named by `$TMUX`;
-both are trusted because they belong to the same user as the session.
+other than `continue`, and never sends keys to any pane but the one its
+environment names or, when it names none, the single pane on its session's
+terminal, proved either way. `tmux` is found through `PATH` and uses the
+server named by `$TMUX`, or the default server when `$TMUX` is unset; both
+are trusted because they belong to the same user as the session.
 
-**Exit codes.** `2` for the outcomes that wake the session: `resumed`,
+**Exit codes.** `2` for the outcomes that wake the session: `not-resumed`,
 `pane-unverified`, `pane-not-reading` and `screen-unrecognised`. The
-continue message is written for exactly those four. Every other outcome, including
+continue message is written for exactly those four, and none of them is
+recorded. Every other outcome, including
 `resumed-keys`, `resume-keys-failed`, `watch-lost`, `no-capacity-timeout`,
 `moved-on`, `session-gone`, `disabled`, `duplicate`,
 `session-record-reset`, `stop-hook-active`, `rotator-down` and
 `guard-failed`, exits `0` and prints nothing. stdout is always empty.
 
-It resumes at most once per limit event and once per session per wait. There
-is no limit on how many times a session is resumed: each resume follows a
+It resumes with keys at most once per limit event and once per session per
+wait. There is no limit on how many times a session is resumed: each resume
+follows a
 login with room, so a session held by a limit is resumed every time one
 appears. The hook never reads a credentials or token file, and
 reads nothing from the transcript but the last entry's `timestamp`. The

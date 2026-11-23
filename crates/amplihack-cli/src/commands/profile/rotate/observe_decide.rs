@@ -9,10 +9,11 @@
 use super::super::cycle::Ctx;
 use super::super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};
 use super::super::decide::target::{self, LiveRoom, NoMove};
-use super::super::decide::target_seen::{self, Extra, LiveFull, reading_used};
+use super::super::decide::target_seen::{self, Extra, reading_used};
 use super::super::decide::{Decision, Measured, Probed, Reading, Reason, needs_swap};
 use super::super::key_check;
 use super::super::overflow::{OverflowInput, Tag};
+use super::super::spend_blocks::kind_label;
 use super::{Measurement, Snap, affinity, live_name};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
@@ -63,17 +64,16 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     let s = &ctx.settings;
     let ledger = ctx.rs.load_ledger()?;
     let t = (ctx.now)();
-    // The active recorded block on a login: its own, or the API key's.
+    // The standing recorded block on a login (issue #3105's one test): its
+    // own, or the API key's.
     let active_block = |n: &ProfileName| {
         let l = ledger.as_ref()?;
-        l.overflow_blocked
-            .get(n.as_str())
-            .filter(|b| t < b.until)
-            .or_else(|| {
-                l.platform_block
-                    .as_ref()
-                    .filter(|b| snap.platform() == Some(n) && t < b.until)
-            })
+        target::standing_block(&l.overflow_blocked, n, t).or_else(|| {
+            l.platform_block
+                .as_ref()
+                .filter(|b| snap.platform() == Some(n) && t < b.until)
+                .map(|b| (b.until, kind_label(&b.reason)))
+        })
     };
     let blocked = |n: &ProfileName| active_block(n).is_some();
     let on_overflow =
@@ -184,11 +184,11 @@ pub(in crate::commands::profile::rotate) fn decide_with(
         (_, tag) => tag,
     };
     let mut seen = target_seen::build(snap, extra.clone(), &probes, &blocks, s.target_week_max, t);
-    seen.live_no_room = !on_overflow && !live_over && room == LiveRoom::NoRoom;
-    // Issue #2820: why, for the swap line of an unconfirmed move off it.
-    seen.live_full = seen
-        .live_no_room
-        .then(|| LiveFull::of(live_name.and_then(active_block), &probe.windows));
+    // Issue #2820: a live plan login with a standing block may be left for
+    // a target with a recent reading that could not be read again.
+    seen.live_blocked = live_name
+        .filter(|_| !on_overflow && live_blocked)
+        .and_then(active_block);
     seen.may_cross = may_cross;
     if decision == Decision::Alert {
         // Why no move: on the logins the rotator may move to (plan logins it

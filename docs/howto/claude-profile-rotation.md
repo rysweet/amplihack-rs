@@ -139,10 +139,10 @@ real run. Run a dry run first, and again whenever you change a threshold.
 a temporary `HOME`, a fake `claude` and a loopback stand-in for the usage
 service, with no real login and no `CLAUDE_CONFIG_DIR`. It needs `socat`. It
 replays a day on which the live login filled while several others had room, and
-checks nine cases: a dry run that reports the swap to the login below
+checks eleven cases: a dry run that reports the swap to the login below
 `--session-at`; a one-shot cycle that moves `~/.claude` to it with
 `reason=plan-room`; the usage service answering HTTP 429 with a last good
-reading in the history, which gives an `unconfirmed (HTTP 429)` swap; HTTP 429
+reading in the history, which gives a `reject:` line and no swap; HTTP 429
 with no history, which gives one `no capacity known` ALERT and leaves
 `~/.claude` unchanged; HTTP 429 with an identity read that fails, which moves
 nothing; readings on which the live login still has room and nothing it may
@@ -150,10 +150,16 @@ move to qualifies, which says it would stay with the note; the stand-in's own
 guards, where a bad, missing or oversized request is refused and serves no
 fixture; a login carrying a recorded spend block, which is passed over for
 the next login the ranking gives until the block's reset and chosen again
-after it; and the same day at `--session-at 95 --week-at 98`, where every
+after it; the same day at `--session-at 95 --week-at 98`, where every
 login below 95% of its session is in the first tier, so the rotator moves to
 the one with the most room now with no ALERT, records room for a waiting step,
-and stays without a note while the live login is below both thresholds:
+and stays without a note while the live login is below both thresholds; and
+the 23 November replay, where a login with a spend block, failing live probes
+and an old, roomy reading in the history is never swapped to, at 95/98 or at
+85/90, while a rotator from another build is running, and with no block at all
+the old reading still leads to no swap; and a login with a session-limit or
+week-limit block, which is passed over as a spend-blocked login is, with a
+`reject: <name> blocked until <time> (<kind>)` line naming the limit:
 
 ```bash
 AMPLIHACK_QA_BINARY=target/debug/amplihack bash tests/qa/claude-profile-rotate-room.sh
@@ -898,10 +904,16 @@ Before any swap based on usage, the target is confirmed by a fresh reading. A
 login read directly in this cycle is not read again. A stored or carried
 reading is read again once. If the fresh reading shows no room, the rotator
 writes `reject: <name> <reason>` and tries the next target. If the fresh
-reading cannot be taken (a 429, for instance) and the live login has no
-room, the rotator swaps anyway, on the last reading it trusted, and says so
-in the `swap` line (`unconfirmed (HTTP 429)`); if the live login still has
-room it does not, and tries the next target. If the targets are rejected only
+reading cannot be taken (a 429, for instance), or is older than one already
+held, the rotator does not swap on it: it writes a `reject:` line and tries
+the next target. A full live login is not enough to change that. The one
+exception is a live login with a standing block (a spend, session, week or
+credit limit): no work can run on it until the block ends, so the rotator
+moves to the best target on that target's recent reading (at most 5 hours
+old, and taken after the rotator last left it), and the `swap` line ends
+`unconfirmed (<why>); live <from> has no room: <kind> until <time>`. A login with a standing
+block is never a target, and the rotator writes
+`reject: <name> blocked until <time> (<kind>)`. If the targets are rejected only
 because their re-reads were unknown, they are still eligible, and the rotator
 stays and writes `stay: no candidate confirmed by a fresh reading`. If the
 fresh readings showed them full, they are no longer eligible, and the cycle
@@ -1109,15 +1121,14 @@ is at most 5 hours old and its weekly reset has not passed. It is shown as
 `last s=<n>%,w=<n>% <m>m ago`. The rotator adds no retry loop and no backoff
 timer: it asks again on the next cycle.
 
-A swap on a last good reading is made only when the live login has no room,
-because staying would stop work for certain. The `swap` line says so:
-
-```
-2026-11-22T00:02:06Z swap rrowan->llarame live s=100% w=71% target s=78% w=92% last 41m ago reason=plan-room unconfirmed (HTTP 429)
-```
-
-When the live login still has room, an unknown login is not a reason to leave it
-for, and the cycle stays.
+A last good reading can rank a login but, on its own, never justifies a swap:
+the swap waits for a fresh reading. The exception is a live login with a
+standing block, which is left on the target's recent last good reading (see
+above); a waiting step stays parked until a later cycle reads the new login
+with room. When the live login has no room and no candidate is
+confirmed, the cycle writes `stay: no candidate confirmed by a fresh reading`
+and a hard ALERT, which pauses session resumes until a later cycle finds room.
+When the live login still has room, the ALERT is advisory and the cycle stays.
 
 When no login has a usable last good reading, the line says how many are
 unknown, and why, and does not claim that no login has capacity:
@@ -1455,12 +1466,15 @@ swap `~/.claude` to a login with room, then continues the session.
 
 For a session that runs in tmux, the hook answers the usage-limit menu
 itself. It runs inside the session's own process tree, and once the rotator
-reports a login with room it proves that the tmux pane named by
-`$TMUX_PANE` is the terminal of its own Claude Code, then reads that pane
+reports a login with room it finds its pane and proves that the pane is the
+terminal of its own Claude Code. The pane is `$TMUX_PANE` when that is set.
+Otherwise the hook looks for the single pane on its session's terminal with
+one read-only `tmux list-panes -a`. A found pane gets the same proof as a
+named one. The hook then reads that pane
 once to check it is showing a screen the keys answer. It then types Esc,
 Ctrl+U, `continue` and Enter into that pane. Esc is the key that dismisses
 the usage-limit menu and the timed wait, which hold the input. The hook acts
-on its own session's pane only, and never lists or targets any other pane.
+on its own session's pane only, and never targets any other pane.
 Its own run against a live usage limit is not yet confirmed; see
 [The keys it sends](#the-keys-it-sends).
 
@@ -1537,7 +1551,11 @@ rotator puts them back at the end of its next cycle, and sessions started with
 3. The hook notes the session's tmux pane from `$TMUX_PANE`, when `$TMUX`
    is also set and the pane id is `%` followed by digits. The pane id is a
    claim made by inherited environment, not evidence, so the hook proves it
-   later (step 6). The pane id stays in the hook's memory.
+   later (step 6). The pane id stays in the hook's memory. When there is no
+   such pane, the hook looks for one at step 6: it walks up its ancestry to
+   the terminal, runs one read-only `tmux list-panes -a`, and uses the single
+   pane on that terminal. It then proves that pane in the same way. A
+   named pane that is refused never falls back to this lookup.
 4. The hook notes the current swap record,
    `<root>/.auto-switch.d/rotate/swap.json`, or that there is none. It
    starts watching that directory, its own `resume/prompted/` directory and
@@ -1569,23 +1587,25 @@ rotator puts them back at the end of its next cycle, and sessions started with
    the screen once, with `tmux capture-pane -p`, and types nothing unless
    what it read holds one of the phrases in
    [What it looks for on the screen](#what-it-looks-for-on-the-screen). The
-   hook then records the resume on disk under its lock and takes exactly one
-   of two paths:
+   hook then takes exactly one of two paths:
    - **The pane is proved and its screen is one the keys answer.** The hook
-     sends Esc, Ctrl+U, `continue` and Enter, then exits `0`. Outcome
-     `resumed-keys` records key delivery. Check the session for a reply in
+     records the resume on disk under its lock, sends Esc, Ctrl+U, `continue`
+     and Enter, then exits `0`. Outcome `resumed-keys` records key delivery.
+     If a key fails, the hook releases the record, so the next room event
+     tries again. Check the session for a reply in
      the original conversation.
    - **There is no keys path.** The hook sends nothing to any terminal,
+     records nothing, so the event stays armed for the next room event,
      exits `2` and sends this continue message:
      ```
      amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
      ```
-     The outcome says why: `resumed` with `detail=no-tmux-pane` when there
-     was no tmux pane to check, `pane-unverified` when a pane was named but
-     not proved to be this session's terminal, `pane-not-reading` when it
-     was the terminal but Claude Code is not the process reading it, and
-     `screen-unrecognised` when the pane was proved but its screen was not
-     one the keys answer. The last of these adds a line of its own before
+     The outcome says why: `not-resumed` with `detail=no-tmux-pane` when no
+     pane was named or found, `pane-unverified` when a pane was named or
+     found but not proved to be this session's terminal, `pane-not-reading`
+     when it was the terminal but Claude Code is not the process reading it,
+     and `screen-unrecognised` when the pane was proved but its screen was
+     not one the keys answer. The last of these adds a line of its own before
      the continue message, so the refusal is not left to the log.
 
 The hook chooses one delivery path per wake. The proof shows that the keys
@@ -1630,7 +1650,7 @@ A swap record qualifies for a hook wake when all of these hold.
 - `swapped_at` is at or after the stop. The hook uses the last transcript
   entry's time for the stop, or one second before the hook started if that
   is earlier or the transcript time is unavailable.
-- `swapped_at` is later than the session's last recorded wake attempt, if any.
+- `swapped_at` is later than the session's last recorded key resume, if any.
 - The record differs from the one the hook first saw, or it qualifies by
   time and `swapped_at` is no later than the hook's start. This allows a swap
   that finished between the stop and the hook's start to wake the session.
@@ -1726,11 +1746,14 @@ room, check the hook's outcome and the terminal together.
 - `outcome=resumed-keys keys_sent=4` records that tmux accepted all four
   inputs for the proved pane. No further action is needed unless the reply
   does not appear.
-- `outcome=resumed detail=no-tmux-pane` records a wake with the continue
-  message above, for a session with no usable `$TMUX_PANE` (not in tmux, or
-  the pane id is malformed). No key was typed.
-- `outcome=pane-unverified` records that a pane was named but not proved to
-  be this session's terminal. `detail=` is one of `bad-pane-id`,
+- `outcome=not-resumed detail=no-tmux-pane` records a wake with the continue
+  message above, for a session whose pane was neither named by a usable
+  `$TMUX_PANE` nor found on its terminal (not in tmux, a malformed pane id,
+  or a terminal that matches no single pane). No key was typed and nothing
+  was recorded, so the next room event tries again. If the session runs in
+  tmux, check that the hook reaches the session's own tmux server.
+- `outcome=pane-unverified` records that a pane was named or found but not
+  proved to be this session's terminal. `detail=` is one of `bad-pane-id`,
   `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or
   `not-foreground`. `tty-mismatch` is also logged when `tmux` fails or
   prints nothing. Nothing was typed, and a session held on the menu stays
@@ -1743,7 +1766,13 @@ room, check the hook's outcome and the terminal together.
   Nothing was typed. Look at the terminal: if a usage-limit prompt is still
   there, continue the session by hand.
 - `outcome=resume-keys-failed keys_sent=N` records that a key failed or the
-  session exited after `N` of the four keys.
+  session exited after `N` of the four keys. The record of the event is
+  released. A `guard-failed` line before it means the release failed and the
+  event stays used.
+
+Every wake outcome leaves the event armed. A `guard-failed` line on its own
+before a wake line means the hook could not read the resume state and woke
+the session anyway.
 
 A new reply that picks up the prior task in the original conversation
 confirms recovery. For `pane-unverified`, `pane-not-reading`,
@@ -1762,7 +1791,7 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 ```
 2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third
 2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4
-2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane
+2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=not-resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane
 2026-11-09T00:43:12Z resume session=c2d7f0a4e913 event=5e8b36d1f0a7 outcome=pane-unverified live=work cycle=stayed swap_seq=42 swap_live=spare detail=tty-mismatch
 2026-11-09T00:43:12Z resume session=4e1c8b07d26a event=b73ad9052f14 outcome=screen-unrecognised live=work cycle=stayed swap_seq=42 swap_live=spare detail=screen-unknown
 ```
@@ -1781,27 +1810,31 @@ id. The other outcomes are listed in the
 
 - **One record per swap.** Only a swap writes `swap.json`. Stays, ALERTs
   and the passing of time leave it alone.
-- **Newer than the last wake attempt.** The hook compares `swapped_at` with
-  the session's last recorded wake attempt before acting on the swap record.
+- **Newer than the last key resume.** The hook compares `swapped_at` with
+  the session's last recorded key resume before acting on the swap record.
 - **Room by a fresh reading.** A swap onto a login at 100% on either window
   logs `swap-no-room` and resumes nothing.
-- **Recorded before delivery.** The hook records the wake attempt under the
-  lock before sending the first key or exiting with `2`. A partial send
-  still counts as the attempt for that limit event.
-- **One wake attempt per limit event.** If an attempt is already recorded
+- **Recorded before the keys, released if they fail.** The hook records the
+  key resume under the lock before sending the first key, and releases that
+  record if a key fails, so the next room event tries again. A wake (exit `2`)
+  records nothing, so a session that was not typed into stays armed.
+- **One key resume per limit event.** If a resume is already recorded
   for the same session, error text and login, the hook logs `duplicate`.
   The login is the one the session stopped on. If the rotator swapped away
   from it just before the hook started, use the swap record's `from_login`.
   A limit after a swap to another login is a new event.
-- **One wake attempt per wait.** If another hook records an attempt for the
-  same session during the wait, the waiting hook logs `duplicate`. If it
+- **One key resume per wait.** If another hook records a resume for the
+  same session during the wait, the waiting hook logs `duplicate`. The hook
+  reads the same two rules again before it wakes the session, and logs
+  `duplicate` instead of waking when either applies. If it
   sees a prompt was sent during the wait, it logs `moved-on`.
-- **No count of wake attempts.** A session is woken every time a login with
+- **No count of resumes.** A session is resumed every time a login with
   room follows a limit, however many limits it met that day (issue #2912).
-  The two rules above are what prevent a second wake for one event. Each log
-  line carries `resumes=<n>`, the session's earlier wakes in 24 hours, as
-  evidence only. A session record that cannot be parsed is rewritten and
-  logged as `session-record-reset`; it never stops a wake.
+  The two rules above are what prevent a second resume for one event. Each
+  log line carries `resumes=<n>`, the session's earlier delivered key
+  resumes in 24 hours, as evidence only. A session record that cannot be
+  parsed is rewritten and logged as `session-record-reset`; it never stops
+  a resume.
 
 If anything it needs cannot be read, watched or written safely, it does not
 resume.
@@ -1815,9 +1848,9 @@ The hook acts only when Claude Code runs it, on a `StopFailure` event with
 
 - **A limit while a hook for the same session is waiting.** Claude Code
   starts a second hook. Its event differs in the error text or the live
-  login, so it waits as well. The first to act records a wake attempt. The
+  login, so it waits as well. The first to type records a key resume. The
   other logs `duplicate` or `moved-on`.
-- **A limit just after a wake attempt.** The same text on the same live
+- **A limit just after a key resume.** The same text on the same live
   login is the same event, so the hook logs `duplicate`. A limit after the
   rotator swapped to another login is a new event, and the hook waits for
   the next swap.
@@ -3236,6 +3269,33 @@ is on:
    root set, it is `~/.amplihack/claude-profiles`, so the file is
    `~/.amplihack/claude-profiles/.auto-switch.d/rotate/ledger.json`.
 3. Start the older rotator: `amplihack profile rotate start`.
+
+While a block is held, the ledger written for an older rotator also carries
+`overflow_blocked` ([#3105](https://github.com/rysweet/amplihack-rs/issues/3105)).
+What the older rotator does with it depends on when it was built:
+
+- **Before #1659:** it refuses the whole ledger and logs a failed cycle every
+  interval, as described above.
+- **From #1695 to before #2890:** it refuses the ledger in the same way while
+  a block of any kind other than a spend limit is held.
+- **From #1659 to before #1695:** it reads the ledger, ignores
+  `overflow_blocked`, and drops it without any message the next time it
+  saves. The block is then lost, and that rotator can swap to the blocked
+  login. This version cannot prevent that.
+
+Step 2 clears the refusals. To keep blocks from being dropped, do not run a
+rotator from the #1659 to #1695 range beside a newer amplihack that records
+blocks.
+
+A running rotator keeps the rules of the binary it was started from. After you
+install a newer amplihack, restart it so the new rules apply:
+
+```bash
+amplihack profile rotate stop && amplihack profile rotate start
+```
+
+`amplihack install` and a one-shot `amplihack profile rotate` print a line
+asking for this while a rotator from another binary is running.
 
 The ledger holds only bookkeeping, and the next cycle rebuilds it. Deleting
 it also clears the swap hold, so the first cycle may make an upgrade swap

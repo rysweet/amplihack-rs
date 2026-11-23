@@ -333,7 +333,7 @@ fn reconsider(
     // (see the `Reconsidered` arm).
     let counted = std::mem::replace(&mut ctx.failed_live, failed_before);
     // Issue #2910: the cycle's own `Extra`, so the retry decides on the same
-    // last good readings, rejections and unconfirmed targets.
+    // last good readings and rejections.
     let retry = decide_with(
         ctx,
         &fresh,

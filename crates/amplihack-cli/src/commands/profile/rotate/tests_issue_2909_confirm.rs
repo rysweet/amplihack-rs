@@ -8,10 +8,11 @@
 //! - A kept reading has no reading time in the cycle that takes it, so a
 //!   target chosen on it is read again before any swap, and the swap stands
 //!   on what that read finds.
-//! - A kept target whose re-read says nothing (a labelled unknown) is swapped
-//!   to `unconfirmed` only when the live login has no room, as for any
-//!   reading the confirmation could not refresh ("Rotate confirmation");
-//!   while the live login has room it is rejected.
+//! - A kept target whose re-read says nothing (a labelled unknown) is
+//!   rejected, whatever room the live login has, as for any reading the
+//!   confirmation could not refresh ("Rotate confirmation"; issue #3105
+//!   withdrew #2910's D7, which took it unconfirmed when the live login was
+//!   full).
 //! - A kept reading is never replaced by a last good reading: it is a reading
 //!   the login gave, not a probe that said nothing.
 
@@ -137,16 +138,24 @@ fn reread_unknown_no_room(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, O
     (unread(), Some(ProbeLabel::Http429))
 }
 
-/// D7 of issue #2910 applies to a kept reading as to any reading the
-/// confirmation could not refresh: the login was read first, and the swap
-/// line says the move was not confirmed.
+/// Issue #3105 (was D7 of issue #2910): a kept target whose re-read says
+/// nothing is rejected even when the live login is full. The login was read
+/// once, and nothing is swapped on the kept figures.
 #[test]
-fn a_kept_target_whose_reread_says_nothing_is_taken_unconfirmed_when_the_live_login_is_full() {
+fn a_kept_target_whose_reread_says_nothing_is_rejected_when_the_live_login_is_full() {
     let (out, moved, log) = run_on_kept(exh(100.0, 40.0), reread_unknown_no_room);
-    assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(moved, "{log}");
+    assert_eq!(out, CycleOutcome::Alerted, "{log}");
+    assert!(!moved, "{log}");
     assert_eq!(calls(&READ_UNKNOWN_NO_ROOM), ["top"]);
-    assert!(log.contains("unconfirmed (HTTP 429)"), "{log}");
+    assert!(
+        log.contains("reject: top reading unknown (HTTP 429)"),
+        "{log}"
+    );
+    assert!(
+        log.contains("stay: no candidate confirmed by a fresh reading"),
+        "{log}"
+    );
+    assert!(!log.contains("unconfirmed ("), "{log}");
 }
 
 static READ_UNKNOWN_ROOM: Calls = Mutex::new(Vec::new());

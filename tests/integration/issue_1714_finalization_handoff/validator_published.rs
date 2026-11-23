@@ -9,7 +9,7 @@
 use serde_json::json;
 
 use super::fixture::*;
-use super::validator::{assert_failed_closed, assert_handed_off, prior_state_env, with_flag};
+use super::validator::{assert_failed_closed, assert_handed_off, with_flag};
 
 // T1b: the open-PR check with a failing check run.
 #[test]
@@ -62,7 +62,10 @@ fn failed_implementation_on_a_named_pull_request_is_handed_off() {
 fn blocked_ci_without_a_valid_pr_number_fails_closed() {
     for pr in ["", "abc", "0", "#134", "134 ", "99999999999"] {
         let fx = Fixture::new();
-        let envs = prior_state_env(&fx, "BLOCKED_CI", pr);
+        fx.gh_view(&open_pr(json!([check_run("COMPLETED", json!("FAILURE"))])));
+        let mut envs = resumed_env(&fx.repo_path());
+        envs.push(("PR_URL", PR_URL.to_owned()));
+        envs.push(assessment("BLOCKED_CI", "none", pr));
         let outcome = validate(&fx, &with_flag(&envs));
         assert_failed_closed(&outcome, "BLOCKED_CI", &format!("pr={pr:?}"));
         assert!(

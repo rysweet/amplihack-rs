@@ -108,12 +108,15 @@ pub fn recover(run: &Run, attempt: &Attempt, failure: Failure) -> Result<(Record
         .iter()
         .map(|(n, _)| n.clone())
         .collect();
+    // `--retry-on-recurrence`: the step reads live state, so the same output
+    // does not show that a retry cannot help. The record and the evidence
+    // still say it is a recurrence.
     let allowed = allowed_choices(
         !names.is_empty(),
         run.essential,
         run.guard,
         run.no_repair,
-        recurrence,
+        recurrence && !run.retry_on_recurrence,
     );
     let trusted = vec![RUN_REQUESTER.to_string(), run.default_owner.clone()];
     let handed_off = earlier_handoff(&run.dir)?;

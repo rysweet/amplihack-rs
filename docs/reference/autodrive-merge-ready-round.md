@@ -684,9 +684,11 @@ counted as no progress and never leads to `STUCK`.
 Other rounds pass their `ci_signal` to the
 [loop-health evaluator](loop-health-evaluator.md) as `loop_ci_signal`. The
 evaluator's rule: when `loop_ci_signal` is `pending@<head>` and the head has
-not changed, the verdict is `CONTINUE`, never `STUCK`. Repeated rounds with no
-movement and no pending signal, including `fail@<head>`, are still `STUCK`.
-The budget stop still bounds the loop.
+not changed, the verdict is `CONTINUE`, never `STUCK`. So is `fail@<head>`,
+with CI repair named in `recommended_action` (#2966); it is `STUCK` only when the
+evidence names a cause the run cannot fix, with that cause and the human step.
+Other repeated rounds with no movement are judged as before. The budget stop
+still bounds the loop, as the operator's own usage limit, not as a verdict on CI.
 
 ### Loop outcome
 

@@ -7,16 +7,20 @@
 //! history read) and passed to every decision of the cycle, so the decision
 //! itself opens no file and the live step, the gate and revalidation all
 //! decide on the same last good readings. None of these types is persisted.
+//!
+//! Issue #3105: [`Extra`] also holds the newest reading time the rotator
+//! already has for each candidate (the watch's kept readings and the history
+//! points read for the cycle). A dated reading older than that is
+//! superseded: never ranked, never substituted and never swapped on.
 
 use super::super::identify::Skip;
 use super::super::ledger::OverflowBlock;
 use super::super::measure::ProbeLabel;
 use super::super::observe::Snap;
-use super::super::spend_blocks::kind_label;
 use super::last_good::{LastGood, last_good};
-use super::target::{NoMove, Unfit, fit};
+use super::target::{Block, NoMove, Unfit, fit_blocked, standing_block};
 use super::target_confirm::Unconfirmed;
-use super::{Measured, Probed, Reading, Windows};
+use super::{Measured, Probed, Reading};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::OverflowEntry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,45 +34,65 @@ pub struct Extra {
     /// Candidates rejected at confirmation for an unknown reading: their
     /// last good reading is no longer used in this cycle.
     pub rejected: BTreeSet<ProfileName>,
-    /// Candidates the gate accepted without a fresh reading, with why (the
-    /// label of their unknown reading, or the limit that left them unread,
-    /// #2820), so a later gate of the same cycle (under the lock, in
-    /// revalidation) accepts them again rather than reading.
+    /// Issue #2820: candidates the gate accepted without a fresh reading
+    /// off a blocked live login, with why (the label of their unknown
+    /// reading, or the limit that left them unread), so a later gate of the
+    /// same cycle (under the lock, in revalidation) accepts them again
+    /// rather than reading while the live login is still blocked.
     pub unconfirmed: BTreeMap<ProfileName, Unconfirmed>,
     /// Last good readings of the labelled candidates; `None` when the history
     /// was not read, so nothing is substituted.
     pub last_good: Option<BTreeMap<ProfileName, LastGood>>,
+    /// The newest reading time already held for each candidate (issue
+    /// #3105): its kept reading, or its history point if that is newer.
+    pub newest: BTreeMap<ProfileName, i64>,
 }
 
 impl Extra {
     /// The cycle's `Extra`: `labels` from the measurement, and the last good
     /// readings of the labelled candidates that are neither the live login
     /// nor an overflow profile, from one read of the usage history. With no
-    /// such candidate the history is not read.
+    /// such candidate the history is not read. `kept` is when the watch took
+    /// the reading it keeps of each login (`Stored::times`, empty for the
+    /// one-shot `rotate`); with the history points it gives
+    /// [`newest`](Self::newest), for the same candidates.
     pub fn for_cycle(
         root: &Path,
         labels: Vec<(ProfileName, ProbeLabel)>,
+        kept: Vec<(ProfileName, i64)>,
         overflow: &[OverflowEntry],
         live: Option<&ProfileName>,
         now: i64,
     ) -> Self {
+        let candidate = |n: &ProfileName| Some(n) != live && !overflow.iter().any(|e| &e.name == n);
         let labels: BTreeMap<ProfileName, ProbeLabel> = labels.into_iter().collect();
-        let names: Vec<ProfileName> = labels
-            .keys()
-            .filter(|n| Some(*n) != live && !overflow.iter().any(|e| &e.name == *n))
-            .cloned()
-            .collect();
+        let names: Vec<ProfileName> = labels.keys().filter(|n| candidate(n)).cloned().collect();
         let last_good = (!names.is_empty()).then(|| last_good(root, &names, now));
+        let mut newest: BTreeMap<ProfileName, i64> =
+            kept.into_iter().filter(|(n, _)| candidate(n)).collect();
+        for (n, lg) in last_good.iter().flatten() {
+            let at = newest.entry(n.clone()).or_insert(lg.at);
+            *at = (*at).max(lg.at);
+        }
         Self {
             labels,
             last_good,
+            newest,
             ..Self::default()
         }
     }
 
+    /// How many seconds a reading of `name` taken at `at` is older than the
+    /// newest one already held for it; `None` when it is not strictly older.
+    pub fn older_by(&self, name: &ProfileName, at: i64) -> Option<u64> {
+        let newest = *self.newest.get(name)?;
+        (at < newest).then(|| newest.abs_diff(at))
+    }
+
     /// The last good reading that stands in for `name`'s failed probe `p`:
-    /// only for an unknown, labelled probe that read nothing, and never for a
-    /// login rejected at confirmation.
+    /// only for an unknown, labelled probe that read nothing, never for a
+    /// login rejected at confirmation, and never when a newer reading of
+    /// the login is already held (issue #3105).
     pub fn substitute(&self, name: &ProfileName, p: &Probed) -> Option<&LastGood> {
         if p.reading != Reading::Failed || !p.unknown || p.spend_limit {
             return None;
@@ -76,7 +100,8 @@ impl Extra {
         if self.rejected.contains(name) || !self.labels.contains_key(name) {
             return None;
         }
-        self.last_good.as_ref()?.get(name)
+        let lg = self.last_good.as_ref()?.get(name)?;
+        self.older_by(name, lg.at).is_none().then_some(lg)
     }
 }
 
@@ -111,10 +136,10 @@ pub enum Basis {
 pub struct Standing {
     pub basis: Basis,
     /// Its room now, or why it is not eligible, on the reading used (a
-    /// blocked login has no room).
+    /// blocked login is [`Unfit::Blocked`] whatever the reading).
     pub fit: Result<u8, Unfit>,
-    /// An active recorded block: when it ends, and its fixed kind label.
-    pub block: Option<(i64, &'static str)>,
+    /// An active recorded block.
+    pub block: Option<Block>,
 }
 
 /// What the cycle saw, for its lines and for the swap step.
@@ -124,17 +149,18 @@ pub struct Seen {
     /// Every plan login the cycle measured, and every one it skipped without
     /// reading (issue #2910), so a login whose room was never read is counted.
     pub logins: BTreeMap<ProfileName, Standing>,
-    /// The live login has no room now, and is not an overflow profile.
-    pub live_no_room: bool,
     /// The decision may make a confirmed organisation crossing.
     pub may_cross: bool,
     /// Why an ALERT decision did not move.
     pub why: Option<NoMove>,
-    /// The swap target accepted without a fresh reading, with why.
+    /// Issue #2820: the swap target accepted without a fresh reading, with
+    /// why.
     pub unconfirmed: Option<(ProfileName, Unconfirmed)>,
-    /// Issue #2820: why the live login has no room and until when, set
-    /// with `live_no_room`, for the swap line of an unconfirmed move.
-    pub live_full: Option<LiveFull>,
+    /// Issue #2820: the live plan login's standing recorded block (its own,
+    /// or the API key's), set by the caller. Only then may a target be
+    /// accepted without a fresh reading; the swap line of such a move says
+    /// which block and until when.
+    pub live_blocked: Option<Block>,
     /// Candidates left untried at the re-read limit.
     pub not_tried: BTreeSet<ProfileName>,
     /// `--target-week-max`, for the lines.
@@ -144,9 +170,11 @@ pub struct Seen {
 impl Seen {
     /// The readings the cycle records: the capacity file, the no-room marks,
     /// `live_room` and the swap record. A swap target accepted without a fresh
-    /// reading (D7) has no measured figures, whether its probe failed or the
-    /// stale reading it was chosen on stood, so it is recorded as read
-    /// nothing: no swap record, and no room claimed for the login now live.
+    /// reading (issue #2820) has no measured figures, whether its probe
+    /// failed or the stale reading it was chosen on stood, so it is recorded
+    /// as read nothing: no swap record, and no room claimed for the login now
+    /// live, so a waiting step is not woken onto it until a cycle reads it
+    /// with room.
     pub fn recorded(&self, others: &[(ProfileName, Reading)]) -> Vec<(ProfileName, Reading)> {
         let unconfirmed = self.unconfirmed.as_ref().map(|(n, _)| n);
         others
@@ -159,48 +187,22 @@ impl Seen {
     }
 }
 
-/// Issue #2820: why a live plan login has no room, and until when.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LiveFull {
-    /// The block's fixed kind label, or `window at 100%`.
-    pub why: &'static str,
-    /// When it ends: the block's end, or the latest reset of a window at
-    /// 100%; `None` when no reset is known.
-    pub until: Option<i64>,
-}
-
-impl LiveFull {
-    /// From the live login's active recorded `block`, else from its probe's
-    /// `windows`.
-    pub fn of(block: Option<&OverflowBlock>, windows: &Windows) -> Self {
-        if let Some(b) = block {
-            return Self {
-                why: kind_label(&b.reason),
-                until: Some(b.until),
-            };
-        }
-        let until = [windows.session, windows.week]
-            .iter()
-            .flatten()
-            .filter(|w| w.used >= 100.0)
-            .filter_map(|w| w.resets_at)
-            .max();
-        Self {
-            why: "window at 100%",
-            until,
-        }
-    }
-}
-
 /// The reading the decision uses for `name`: the probe's, or the last good
-/// reading standing in for it.
+/// reading standing in for it. A probe dated before a reading already held
+/// for the login (a passive reading older than the watch's kept one) is
+/// superseded and reads as nothing (issue #3105).
 pub fn reading_used(extra: &Extra, name: &ProfileName, p: &Probed) -> Reading {
+    if p.observed_at
+        .is_some_and(|at| extra.older_by(name, at).is_some())
+    {
+        return Reading::Failed;
+    }
     extra.substitute(name, p).map_or(p.reading, |lg| lg.reading)
 }
 
 /// The cycle's [`Seen`] for the plan candidates in `probes` and the plan
-/// logins `snap` skipped as `no account`. `live_no_room`, `may_cross` and
-/// `why` are set by the caller.
+/// logins `snap` skipped as `no account`. `may_cross`, `why` and
+/// `live_blocked` are set by the caller.
 pub fn build(
     snap: &Snap,
     extra: Extra,
@@ -213,10 +215,7 @@ pub fn build(
     let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
     let mut logins = BTreeMap::new();
     for (name, p) in probes.iter().filter(|(n, _)| !is_overflow(n)) {
-        let block = blocks
-            .get(name.as_str())
-            .filter(|b| now < b.until)
-            .map(|b| (b.until, kind_label(&b.reason)));
+        let block = standing_block(blocks, name, now);
         let label = extra.labels.get(name).copied();
         let basis = match (extra.substitute(name, p), label) {
             (Some(lg), Some(label)) => Basis::LastGood {
@@ -231,11 +230,7 @@ pub fn build(
         };
         let mut m = Measured::new(name.clone(), p);
         m.reading = reading_used(&extra, name, p);
-        let fit = if block.is_some() {
-            Err(Unfit::Full)
-        } else {
-            fit(&m, week_max)
-        };
+        let fit = fit_blocked(&m, block, week_max);
         logins.insert(name.clone(), Standing { basis, fit, block });
     }
     // Issue #2910: every plan login the cycle did not read, with the reason
@@ -280,3 +275,6 @@ mod tests_issue_2910_deployed;
 #[cfg(test)]
 #[path = "tests_issue_2910_fixture.rs"]
 pub(in crate::commands::profile::rotate) mod tests_issue_2910_fixture;
+#[cfg(test)]
+#[path = "tests_issue_3105_cycle.rs"]
+mod tests_issue_3105_cycle;

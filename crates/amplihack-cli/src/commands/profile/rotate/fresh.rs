@@ -13,8 +13,8 @@
 
 use super::cycle::Ctx;
 use super::decide::target::{NoMove, Unfit, fit};
-use super::decide::target_confirm::{Facts, Limit, Step, Unconfirmed, Why, next};
-use super::decide::target_msg::reject;
+use super::decide::target_confirm::{Facts, Limit, Step, Unconfirmed, Why, after_unknown, next};
+use super::decide::target_msg::{blocked, reject};
 use super::decide::target_seen::Extra;
 use super::decide::{Decision, Measured, Probed, Reading, Reason};
 use super::fresh_msg;
@@ -125,11 +125,14 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 }
 
 /// Applies the gate to `m`, decided on `snap`. While the chosen target is
-/// stale, `target_confirm::next` says what to do (issue #2910, D6, D7): read
-/// it again (with [`Reread::Allowed`] and a hook) and decide again on the new
-/// figures; accept a target whose probe failed this cycle without a fresh
-/// reading when the live login has no room now; otherwise reject it with a
-/// `reject:` line and decide again, which reaches the next-ranked login.
+/// stale, `target_confirm::next` says what to do (issue #2910, D6): read it
+/// again (with [`Reread::Allowed`] and a hook) and decide again on the new
+/// figures; otherwise reject it with a `reject:` line and decide again, which
+/// reaches the next-ranked login. A read that fails, comes back unknown or is
+/// older than one already held rejects the target too (issue #3105), unless
+/// the live login has a standing block and the target's reading is recent
+/// (issue #2820, `target_confirm`). Then, when the decision looked for a target, one `reject:` line for each
+/// plan login with a standing block; it makes no read.
 /// Each name is read at most once, at most [`MAX_REREADS_PER_CYCLE`] reads and
 /// read-less rejections are made, and the loop is capped at `2n + 1` passes
 /// for `n` probes; a decision that still names a stale target at the cap is
@@ -153,13 +156,15 @@ pub fn gate(
     m: Measurement,
     mode: Reread,
 ) -> Result<Measurement, ProfileError> {
-    settle(
+    let mut m = settle(
         ctx,
         m,
         mode,
         measure::timeout_quiet(),
         |live, probes, extra, at| decide_with(ctx, snap, live, probes, at, extra),
-    )
+    )?;
+    m.fresh_lines.extend(blocked(&m.seen, &m.decision));
+    Ok(m)
 }
 
 /// The other logins' probes, by name.
@@ -246,14 +251,12 @@ pub(super) fn settle_timed(
             return Err(ProfileError::GateUnsettled);
         }
         handled += 1;
-        // A login already accepted without a fresh reading (an earlier gate
-        // of this cycle, before revalidation) is accepted again while the
-        // live login has no room. An unknown one counts as a probe that
-        // failed; one accepted on its reading (#2820) is unknown once the
-        // live login has room, with no `reject:` line.
+        // Issue #2820: a login an earlier gate of this cycle accepted unread
+        // is accepted again while the live login is still blocked; else it
+        // counts as failed (an unknown one) or unknown with no `reject:` line.
         let known = extra.unconfirmed.get(&to).copied();
         if let Some(why) = known
-            && m.seen.live_no_room
+            && m.seen.live_blocked.is_some()
         {
             unconfirmed = Some((to, why));
             break;
@@ -284,22 +287,20 @@ pub(super) fn settle_timed(
                 failed_now,
                 attempts,
                 can_read: !remaining.is_zero(),
-                live_no_room: m.seen.live_no_room,
+                live_blocked: m.seen.live_blocked.is_some(),
                 label: known_label.or_else(|| extra.labels.get(&to).copied()),
                 recent: reread::recent(at, damped_at.max(left_at), t),
             };
             match next(&facts) {
+                // Issue #2820: no read, no line of its own, probe unchanged.
                 Step::AcceptUnconfirmed(label) => {
-                    extra.unconfirmed.insert(to.clone(), label.into());
-                    unconfirmed = Some((to, label.into()));
+                    unconfirmed = Some(reread::accept(&mut extra, to, label.into()));
                     break;
                 }
-                // Issue #2820: no read, no line of its own, probe unchanged.
                 Step::AcceptStale(limit) => {
                     let age = at.map_or(0, |at| u64::try_from(t - at).unwrap_or(0));
                     let why = Unconfirmed::NotTried { limit, age };
-                    extra.unconfirmed.insert(to.clone(), why);
-                    unconfirmed = Some((to, why));
+                    unconfirmed = Some(reread::accept(&mut extra, to, why));
                     break;
                 }
                 Step::Reject(why) => {
@@ -329,7 +330,7 @@ pub(super) fn settle_timed(
                         Some(reread) => reread(ctx, &to, remaining),
                         None => (Probed::failed(), None),
                     };
-                    let p = reread::fresh_probe(
+                    let mut p = reread::fresh_probe(
                         ctx,
                         &to,
                         &probes[i].1,
@@ -337,26 +338,27 @@ pub(super) fn settle_timed(
                         damped_at.is_some(),
                         &mut lines,
                     );
-                    if p == Probed::failed() {
-                        // D7: a re-read that came back unknown is accepted
-                        // only when the live login has no room; one with no
-                        // label failed for a reason about the login (S2), so
-                        // it is never a target on the reading it had.
-                        let why = match label {
-                            Some(l) if m.seen.live_no_room => {
-                                extra.unconfirmed.insert(to.clone(), l.into());
-                                unconfirmed = Some((to, l.into()));
-                                break;
-                            }
-                            Some(l) => {
-                                rejected_unknown = true;
+                    // Issue #3105: a read that says nothing, or is older than
+                    // one held, is never swapped on; one with no label failed
+                    // for a reason about the login (S2). #2820: see `after_unknown`.
+                    let older = p.observed_at.and_then(|at| extra.older_by(&to, at));
+                    if p == Probed::failed() || older.is_some() {
+                        let why = match (older, label) {
+                            (Some(n), _) => Why::Older(n),
+                            (None, Some(l)) => {
+                                if let Step::AcceptUnconfirmed(l) = after_unknown(l, &facts) {
+                                    unconfirmed = Some(reread::accept(&mut extra, to, l.into()));
+                                    break;
+                                }
                                 extra.labels.insert(to.clone(), l);
                                 Why::Unknown(l)
                             }
-                            None => Why::Unfit(Unfit::NoReading),
+                            (None, None) => Why::Unfit(Unfit::NoReading),
                         };
+                        rejected_unknown |= matches!(why, Why::Unknown(_) | Why::Older(_));
                         lines.push(reject(&to, &why, week_max));
                         extra.rejected.insert(to.clone());
+                        p = Probed::failed();
                     } else {
                         accepted.push(to.clone());
                         read = Some(p.clone());
@@ -383,8 +385,9 @@ pub(super) fn settle_timed(
         m = again;
     }
     // D10: a cycle left with nothing because every qualifying login's
-    // reading was unknown is a stay with that note, not the no-target line.
-    if m.decision == Decision::Alert && rejected_unknown && !m.seen.live_no_room {
+    // reading was unknown or superseded is a stay with that note, not the
+    // no-target line, whatever room the live login has (issue #3105).
+    if m.decision == Decision::Alert && rejected_unknown {
         m.seen.why = Some(NoMove::after_rejection(m.seen.why.take()));
     }
     m.seen.extra = extra;

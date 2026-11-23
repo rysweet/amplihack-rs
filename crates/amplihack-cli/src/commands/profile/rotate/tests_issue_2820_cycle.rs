@@ -26,16 +26,16 @@ use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use crate::commands::profile::rotate::decide::target::LiveRoom;
 use crate::commands::profile::rotate::decide::target_confirm::{
-    Facts, Limit, Step, Unconfirmed, next,
+    Facts, Limit, Step, Unconfirmed, after_unknown, next,
 };
 use crate::commands::profile::rotate::decide::target_msg::{unconfirmed, utc_minute};
+use crate::commands::profile::rotate::decide::target_seen::Extra;
 use crate::commands::profile::rotate::decide::target_seen::tests_issue_2910_fixture::{
     BOTH, Fleet, clock, expired, fleet, name, run, run_full, run_tuned, set_clock, stub, unread,
 };
-use crate::commands::profile::rotate::decide::target_seen::{Extra, LiveFull};
-use crate::commands::profile::rotate::decide::{Decision, Probed, Win, Windows};
+use crate::commands::profile::rotate::decide::{Decision, Probed};
 use crate::commands::profile::rotate::fresh::{self, MAX_REREADS_PER_CYCLE, Reread};
-use crate::commands::profile::rotate::ledger::{OverflowBlock, SPEND_LIMIT};
+use crate::commands::profile::rotate::ledger::SPEND_LIMIT;
 use crate::commands::profile::rotate::log::{Sink, msg, open_or_warn};
 use crate::commands::profile::rotate::measure::ProbeLabel;
 use crate::commands::profile::rotate::observe::{decide_with, snapshot};
@@ -531,6 +531,39 @@ fn ac7_with_room_on_the_live_login_the_reread_cap_still_leaves_the_target_unknow
     }
 }
 
+/// AC7 and issue #3105: the live login is full (session at 100%) but has no
+/// recorded block, and every candidate is known only from a last good
+/// reading. Nothing is taken without a fresh reading: the candidates are
+/// rejected and the rotator stays with `no candidate confirmed`. With the
+/// same readings and a spend block on the live login, AC5 (i) moves.
+#[test]
+fn ac7_a_full_live_login_with_no_block_does_not_move_on_last_good_readings() {
+    for (label, s) in BOTH {
+        let f = fleet(&["aa", "bb"], &[]);
+        f.history("aa", 1800, 30, 40);
+        f.history("bb", 1800, 50, 50);
+        let out = run(
+            &f,
+            s(),
+            exh(100.0, 75.0),
+            &[("aa", unread()), ("bb", unread())],
+            &[("aa", ProbeLabel::Http429), ("bb", ProbeLabel::Http429)],
+        );
+        let log = f.log();
+        assert_ne!(out, CycleOutcome::Swapped, "{label}: {log}");
+        assert!(f.live_is("work"), "{label}: {log}");
+        assert!(!log.contains("unconfirmed ("), "{label}: {log}");
+        assert!(
+            log.contains("reject: aa reading unknown (HTTP 429)"),
+            "{label}: {log}"
+        );
+        assert!(
+            log.contains("stay: no candidate confirmed by a fresh reading"),
+            "{label}: {log}"
+        );
+    }
+}
+
 // --- AC8: a waiting step wakes on the move --------------------------------------------
 // The four helpers below are copied from `tests_issue_2910_deployed.rs`,
 // which keeps them private.
@@ -635,14 +668,14 @@ fn facts() -> Facts {
         failed_now: false,
         attempts: 0,
         can_read: true,
-        live_no_room: false,
+        live_blocked: false,
         label: None,
         recent: false,
     }
 }
 
 #[test]
-fn a_recent_reading_is_accepted_at_a_limit_only_when_the_live_login_has_no_room() {
+fn a_recent_reading_is_accepted_at_a_limit_only_when_the_live_login_is_blocked() {
     let capped = Facts {
         attempts: MAX_REREADS_PER_CYCLE,
         ..facts()
@@ -653,7 +686,7 @@ fn a_recent_reading_is_accepted_at_a_limit_only_when_the_live_login_has_no_room(
     };
     for (f, limit) in [(capped, Limit::Count), (timed_out, Limit::Time)] {
         let blocked = Facts {
-            live_no_room: true,
+            live_blocked: true,
             ..f
         };
         assert_eq!(
@@ -667,22 +700,35 @@ fn a_recent_reading_is_accepted_at_a_limit_only_when_the_live_login_has_no_room(
         assert_eq!(
             next(&Facts { recent: true, ..f }),
             Step::NotTried(limit),
-            "the live login has room"
+            "the live login has no block"
         );
     }
-    // D7 is unchanged and comes first.
+    // A failed probe with a label is taken on its recent last good reading
+    // first, before the cap: that reads nothing.
     let failed = Facts {
         failed_now: true,
-        live_no_room: true,
+        live_blocked: true,
         recent: true,
         label: Some(ProbeLabel::Http429),
         attempts: MAX_REREADS_PER_CYCLE,
         ..facts()
     };
     assert_eq!(next(&failed), Step::AcceptUnconfirmed(ProbeLabel::Http429));
+    assert_eq!(
+        next(&Facts {
+            live_blocked: false,
+            ..failed
+        }),
+        Step::NotTried(Limit::Count),
+        "issue #3105: a full live login with no block never takes it"
+    );
+    assert_eq!(
+        after_unknown(ProbeLabel::Transport, &failed),
+        Step::AcceptUnconfirmed(ProbeLabel::Transport)
+    );
     // A target that can be read is read, recent or not.
     let readable = Facts {
-        live_no_room: true,
+        live_blocked: true,
         recent: true,
         ..facts()
     };
@@ -754,46 +800,37 @@ fn taken_at_and_recent_date_the_reading_the_decision_used() {
     assert!(fresh::recent(Some(t - 300), Some(t - 600), t));
 }
 
+/// The decision records the live login's standing block, with its kind and
+/// end, only for a block: a live login that is only full (a window at 100%)
+/// has none, so issue #3105's rule holds for it and nothing is taken unread.
 #[test]
-fn live_full_names_the_block_or_the_window_and_its_reset() {
-    let block = OverflowBlock {
-        at: 10,
-        until: 5_000,
-        reason: SPEND_LIMIT.into(),
-    };
-    let none = Windows::default();
-    assert_eq!(
-        LiveFull::of(Some(&block), &none),
-        LiveFull {
-            why: "spend limit",
-            until: Some(5_000)
-        }
-    );
-    let full = Windows {
-        session: Some(Win {
-            used: 100.0,
-            resets_at: Some(7_000),
-        }),
-        week: Some(Win {
-            used: 60.0,
-            resets_at: Some(9_000),
-        }),
-        no_session_limit: false,
+fn the_decision_records_only_a_standing_block_on_the_live_login() {
+    let f = fleet(&["aa"], &[]);
+    let decide = |live: Probed| {
+        let mut ctx = ctx_with(&f.e, stub);
+        ctx.now = clock;
+        let snap = snapshot(
+            &ctx,
+            &crate::commands::profile::auto_switch::kit::State::new(ctx.store.root()).unwrap(),
+        )
+        .unwrap();
+        let probes = vec![(name("aa"), rd(10.0, 10.0, None))];
+        decide_with(&ctx, &snap, live, probes, clock(), &Extra::default()).unwrap()
     };
     assert_eq!(
-        LiveFull::of(None, &full),
-        LiveFull {
-            why: "window at 100%",
-            until: Some(7_000)
-        }
+        decide(exh(100.0, 50.0)).seen.live_blocked,
+        None,
+        "only full"
     );
-    assert_eq!(
-        LiveFull::of(None, &none),
-        LiveFull {
-            why: "window at 100%",
-            until: None
-        }
-    );
+    assert_eq!(decide(unread()).seen.live_blocked, None, "probe failed");
+    let until = block_live(&f);
+    for live in [exh(100.0, 50.0), rd(10.0, 10.0, None), unread()] {
+        assert_eq!(
+            decide(live).seen.live_blocked,
+            Some((until, "spend limit")),
+            "a block, whatever the probe"
+        );
+    }
 }
 
 // --- The gate, directly: the time limit, no swap back, and C3 --------------------------
@@ -859,7 +896,10 @@ fn at_the_time_limit_a_blocked_live_login_moves_on_a_recent_reading() {
             }
         ))
     );
-    assert_eq!(m.seen.live_full.map(|l| l.why), Some("spend limit"));
+    assert_eq!(
+        m.seen.live_blocked.map(|(_, kind)| kind),
+        Some("spend limit")
+    );
     assert!(
         m.fresh_lines.is_empty(),
         "no read and no line: {:?}",
@@ -896,9 +936,10 @@ fn a_reading_from_before_the_target_was_left_never_moves_back_onto_it() {
 }
 
 /// C3: a target an earlier gate accepted at a limit is not accepted again
-/// once the live login has room: it is unknown, with no `reject:` line.
+/// once the live login is no longer blocked: it is unknown, with no
+/// `reject:` line.
 #[test]
-fn a_target_accepted_at_a_limit_is_unknown_once_the_live_login_has_room() {
+fn a_target_accepted_at_a_limit_is_unknown_once_the_live_login_is_not_blocked() {
     let f = fleet(&["aa"], &[]);
     let mut ctx = ctx_with(&f.e, stub);
     ctx.now = clock;
@@ -924,7 +965,7 @@ fn a_target_accepted_at_a_limit_is_unknown_once_the_live_login_has_room() {
         "without the gate: {:?}",
         m.decision
     );
-    assert!(!m.seen.live_no_room);
+    assert_eq!(m.seen.live_blocked, None);
     m.seen.extra.unconfirmed.insert(
         name("aa"),
         Unconfirmed::NotTried {

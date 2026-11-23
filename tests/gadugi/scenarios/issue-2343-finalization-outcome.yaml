@@ -17,7 +17,10 @@ description: >
   reaches no verdict of its own since #2809: it reports the terminal state
   assess-finalization decided, so each case supplies that decision the way the
   recipe does, through the finalization_assessment context key. It checks that
-  a pull request open at the pushed head ends EXISTING_OPEN_PR carrying #7;
+  the validator reports a decision of EXISTING_OPEN_PR for a pull request open
+  at the pushed head, carrying #7, and does not refuse it on the run's own
+  bookkeeping (since #2966 the assessment waits out pending checks before it
+  decides, so the case supplies that decision and tests the reporting);
   that the same pull request sitting at an unrelated commit fails with both
   commit ids and the pull request number in the record, so the decision was
   reported against the facts; and that the healthy fixture with no assessment

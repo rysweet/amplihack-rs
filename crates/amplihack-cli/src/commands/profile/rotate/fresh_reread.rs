@@ -5,6 +5,8 @@
 
 use super::super::cycle::Ctx;
 use super::super::decide::last_good::{LAST_GOOD_MAX_AGE_SECS, LastGood};
+use super::super::decide::target_confirm::Unconfirmed;
+use super::super::decide::target_seen::Extra;
 use super::super::decide::{Probed, Reading};
 use super::super::fresh_msg;
 use super::super::log::Shown;
@@ -159,4 +161,16 @@ pub(in crate::commands::profile::rotate) fn recent(
             && at <= t
             && left_or_damped.is_none_or(|d| at > d)
     })
+}
+
+/// Issue #2820: records `to` as accepted by the gate without a fresh
+/// reading, for `why`, so a later gate of the cycle accepts it again while
+/// the live login is still blocked; returns the cycle's `Seen::unconfirmed`.
+pub(super) fn accept(
+    extra: &mut Extra,
+    to: ProfileName,
+    why: Unconfirmed,
+) -> (ProfileName, Unconfirmed) {
+    extra.unconfirmed.insert(to.clone(), why);
+    (to, why)
 }
