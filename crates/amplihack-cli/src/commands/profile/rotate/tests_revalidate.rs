@@ -419,8 +419,9 @@ fn an_alert_is_not_cancelled_by_an_unrelated_profile() {
     assert_eq!(outcome, CycleOutcome::Alerted, "{log}");
     assert!(!log.contains(msg::CHANGED), "{log}");
     assert!(
+        // Issue #2910 (D9): the counts leave out a zero count.
         log.contains("ALERT: no profile has capacity live=work ")
-            && log.contains(" (candidates: 0 failed, 3 exhausted)"),
+            && log.contains(" (candidates: 3 exhausted)"),
         "{log}"
     );
 }

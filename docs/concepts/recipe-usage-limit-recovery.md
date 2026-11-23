@@ -69,11 +69,13 @@ The rule has three parts.
    100%) runs over the same set. The second test exists because the first
    rejects a login at 92% that can still run a step. The login that has just
    reported the limit is never chosen.
-3. **The wait is for the earliest reset.** When both tests find nothing, the
-   step waits until the earliest reset across the set, plus a two-minute
-   margin, and then retries on the login that reset. It does not wait for its
-   own login's reset when another login resets first. The five-hour bound,
-   `max_wait_secs` and the step timeout all still apply.
+3. **The wait also ends at the earliest reset.** When both tests find
+   nothing, the step waits. Besides the events every wait ends on, it ends
+   at the earliest reset across the set, plus a two-minute margin, when that
+   comes before its own deadline, and then retries on the login that reset.
+   It does not wait for its own login's reset when another login resets
+   first. That reset is read from the login's reading; it moves the wait's
+   one deadline earlier and adds no timer.
 
 Two observed runs show why each part is needed. One logged `account=unknown`
 and waited two hours for its own login's reset while `amplihack profile usage`
@@ -87,18 +89,18 @@ which names no zone. The agent stopped and the run's heartbeat kept saying
 zone, the message follows the rules above, and the heartbeat says
 `waiting for usage limit until <time>` while a step waits.
 
-Each move marks one more login as tried and spends none of the wait budget, so
-a step makes at most one move per stored login. If two logins report a limit in
-turn, the moves end after those two and the step waits or fails as it did
-before. Four cases keep the wait for the step's own reset, by design: a host
-with auto-switch off, because that setting is a standing instruction; a step on
-`~/.claude` while a rotator runs, because the rotator moves the login; a step
-on `~/.claude` whose live login name cannot be read, because without a name the
-step cannot be marked as having moved; and a step on `~/.claude` that resumes a
-session, because the transcript is under `~/.claude`. The last three fail
-closed: the step waits rather than guess.
+Each move marks one more login as tried, so a step makes at most one move per
+stored login. If two logins report a limit in turn, the moves end after those
+two and the step waits. Four cases keep the step on its own login, by design: a
+host with auto-switch off, because that setting is a standing instruction; a
+step on `~/.claude` while a rotator runs, because the rotator moves the login;
+a step on `~/.claude` whose live login name cannot be read, because without a
+name the step cannot be marked as having moved; and a step on `~/.claude` that
+resumes a session, because the transcript is under `~/.claude`. The last three
+fail closed: the step waits rather than guess.
 
 For the exact rules, log lines and settings, see
+[Other logins](../reference/usage-limit-waits.md#other-logins) and
 [Usage-limit wait](../reference/profile-command.md#usage-limit-wait). For the
 host-side checks, see
 [Steps that move to another login before they wait](../howto/claude-profile-rotation.md#steps-that-move-to-another-login-before-they-wait).

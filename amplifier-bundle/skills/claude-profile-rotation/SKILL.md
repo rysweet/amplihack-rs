@@ -125,9 +125,10 @@ profile it names has a login or a different account, and never writes to
 |------|---------|---------|
 | `--session-at` | 85 | Swap when live session use reaches this %. |
 | `--week-at` | 90 | Swap when live weekly use reaches this %. |
-| `--margin` | 5 | A threshold swap needs this many more points of headroom. |
+| `--target-week-max` | 95 | Never swap to a login whose weekly use is above this %. The test uses the figure as read, so a login at 95.0 is allowed and one at 95.4 is above 95 and is not. |
+| `--margin` | 5 | While the live login still has room, a swap needs a login with this many more points of room (at least 1). |
 | `--upgrade-margin` | 30 | Swap early when a profile has this many more points of headroom. |
-| `--hold` | 3600 | Seconds after a swap during which no early swap happens. |
+| `--hold` | 3600 | Seconds after the last swap (a rotator swap or a `profile switch`) during which no early swap happens, and no swap onto a login at or above `--session-at` while the live login has room. |
 | `--overflow-wait` | 1800 | Use an overflow profile only when the next plan reset is further away than this many seconds. |
 | `--interval` | 600 | Seconds between checks (`start` and `watch` only). |
 
@@ -159,8 +160,8 @@ directory.
 - It is used only after the user marks it with
   `amplihack profile overflow add <name>`; the mark is consent to per-token
   billing. Do not mark it without asking. The rotator uses it last (tier 10):
-  plan logins with capacity, then plan logins below 100% with session use
-  below `--session-at` (`plan-room`), then
+  plan logins with capacity, then plan logins below 100% with their week at
+  or below `--target-week-max` (`plan-room`), then
   credit overflow, then the API key, and only when every plan login was
   measured, none is below 100% on both windows, the earliest plan reset is further away than
   `--overflow-wait` and its login check passes. It moves `~/.claude` off it
@@ -197,7 +198,10 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | 
 
 | ALERT | What to tell the user |
 |-------|-----------------------|
-| `no profile has capacity` | Every account is near its limit. Wait for a reset or add a profile. If it ends with `(candidates: <F> failed, ...)` and every candidate failed, the probes failed rather than the accounts: run `amplihack profile usage`. |
+| `no profile has capacity` | Every other plan login is known to be full or blocked, by a fresh reading or a last good one. Wait for a reset (the line gives the earliest block end as `blocked until <time>`) or add a profile. |
+| `no capacity known` | The rotator could not show that no login has room. The line counts why, for example `(candidates: 6 unknown (HTTP 429), 3 failed)`: `unknown` logins were not read (rate-limited, transport, identity unavailable, timeout, still running, probe error), `failed` logins have an expired or refused token, and `above week ceiling` logins are over `--target-week-max`. The probes failed, not the accounts, when they are unknown: run `amplihack profile usage`. Never tell the user no account has capacity from this line. |
+| `stay: live room <R>, ...` (not an ALERT) | The live login has room and no other login has `--margin` more. Nothing is wrong. `only a login in another organisation has room` means a login with room exists elsewhere, and the rotator moves to it once the live login has no room. `live room unknown` means the live probe failed: run `amplihack profile usage` for the live login. A `held after last swap` note means `--hold` is keeping a login at or above `--session-at` from taking over for now. |
+| `reject: <name> <reason>` (not an ALERT) | A target's fresh reading showed no room, so the rotator tried the next one. |
 | `no login in ~/.claude` | Log in with plain `claude` first. |
 | `the account in ~/.claude is not the one the ledger names` | Someone ran `/login` in `~/.claude`. Log the named profile in again with `amplihack profile login <name>`, then delete `<root>/.auto-switch.d/rotate/ledger.json`. |
 | `rotate recovery is inconsistent` | Follow manual recovery below. |
@@ -211,13 +215,19 @@ the rotator moves work onto it only when no measured plan login, the live one
 included, is below 100% on both windows, and the next plan reset is known
 and more than `--overflow-wait` seconds away (default 1800). Until then the
 plan-room swap (`reason=plan-room`) moves `~/.claude` to the plan-room target
-with the most room. A target is a plan login below 100% on both windows with
-session use below `--session-at`; a login at or above `--session-at` is never
-a target, however far below 100% it reads. Targets are ranked by the most
-weekly room, then the most session room, then name. With no target the
-rotator stays and writes the ALERT, and credits stay unused while any plan
-login is below 100%. It moves work back in the first cycle in which a plan
-login has capacity or is a plan-room target. Auto-switch follows the
+with the most room it can use now. A target is a plan login below 100% on both
+windows with its week at or below `--target-week-max` (95%), no recorded
+block and a valid token; a login above the ceiling is never a target, however
+low its session reads. Targets are ranked by session use below `--session-at`
+first, then the most room, then the lowest weekly use, then name. While the
+live login has room, a target needs `--margin` more room than it, and a
+target at or above `--session-at` is also held for `--hold` seconds after the
+rotator's last swap. When the live login has no room, any target qualifies.
+With no target the rotator stays and writes the ALERT or a `stay:` line, and
+credits stay unused while any plan login is below 100%. It moves work back in
+the first cycle in which a plan login has capacity or is a plan-room
+target. Before a swap, the target is confirmed by a fresh reading, and a
+probe that was rate-limited (HTTP 429) is unknown, never exhausted. Auto-switch follows the
 same rule through the same gate, whatever its own threshold: it uses an
 overflow profile only when no plan profile is below 100% on both windows and
 the next plan reset is beyond the wait. Earlier releases used credits once
@@ -300,18 +310,22 @@ recipe log says so once (`reentered met=usage_limit` or `met=rate_limit`). When
 the limit message states a reset the clock has already passed, which a retry at
 08:32 sees in "resets 8:30am", the second wait is a capacity wait: it ends when
 a login with room is live, not at the reset, and its `start` line shows
-`wait=capacity` with the past time in `reset=`. It does not depend on a rotator
-or on a second login: with neither, nothing ends it early, so it runs to the
-step's remaining `max_wait_secs` budget (default 21600 seconds, shared by all
-its waits) and the step then retries once. A limit on that retry is refused
-because the budget is spent, so the budget ends the chain and no retry count
-applies. If `AMPLIHACK_STEP_TIMEOUT` is reached first, the wait ends with
-`step_timeout` and the step does not retry. A spend limit is never waited out
-this way, even when its message states a session reset. A host with the rotator
-running and a second stored login ends the wait sooner, because a login with
-room ends it. If steps are sitting out the whole budget, start the rotator and
-check `amplihack profile list` for a second login before raising the budget. See
-"A reset that has already passed" in `docs/reference/profile-command.md`.
+`wait=capacity` with the past time in `reset=` and `until=none bound=none`. It
+has no deadline: no timer ends it, and no setting gives it a length. It does
+not depend on a rotator or on a second login to start, but with neither,
+nothing ends it on its own; the step's stderr says so, and a `profile switch`
+ends the wait (a stop signal ends the step instead). A limit on the retry
+after a wait starts another wait, and nothing counts them.
+`AMPLIHACK_STEP_TIMEOUT` does not cut a wait either: only the limit lifting, a
+stop signal or the end of the session ends the chain (issues #2911, #3037). A
+spend limit is never waited out this way, even when its message states a
+session reset. On a host with the rotator running and a second stored login, a
+login with room ends the wait. If steps are sitting in waits with
+`until=none`, start the rotator and check `amplihack profile list` for a
+second login. `recipe.usage_limit_max_wait_secs` has been removed (a config
+file that still sets it gets an `unknown key` warning), and
+`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is no longer read. See "A reset that has already passed" in
+`docs/reference/profile-command.md`.
 
 While on credits the rotator reports capacity, so recipe steps in the
 usage-limit wait rerun and spend credits, provided that cycle also records room
@@ -353,7 +367,7 @@ is a plan-room target and never moves back. Check with
 rotator first, because older binaries read that line as corrupt).
 
 Order: plan logins with capacity, then plan logins past a threshold but
-below 100% with session use below `--session-at` (`reason=plan-room`), then
+below 100% with their week at or below `--target-week-max` (`reason=plan-room`), then
 marked credit overflow tiers 1-9, then
 the marked API-key tier (10). The rotator moves onto the API key only under
 the same `--overflow-wait` gate, only when no credit profile can be used and
@@ -510,16 +524,20 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | `moved-on` | The user sent a prompt in that session during the wait (for example `continue`), so the hook did not wake it. |
 | `disabled` | Auto-switch was off when a swap would have resumed the session. |
 | `duplicate` | A wake attempt was already recorded for that limit event (same session, text and login), or another hook recorded an attempt for the session during the wait. |
-| `cap` | The session reached its limit of 3 recorded wake attempts in 24 hours. Another attempt can be made once an older one ages out. |
+| `session-record-reset` | The session's record of earlier wakes could not be parsed. It was rewritten and treated as no earlier wakes; the session is still woken, and its own line follows. Nothing for the user to do unless it repeats. |
 | `stop-hook-active` | Claude Code reported a stop hook already running; nothing was done. |
 | `guard-failed` | The resume state under `<root>/.auto-switch.d/resume/` could not be used safely. Check its owner and mode (`0700`). |
 
 The hook requires a qualifying swap record and records a wake attempt before
-delivering it, so a partial send counts toward the limit. It records at most
-one attempt per limit event, one per wait and 3 per session in 24 hours. Each
-`resume.log` line also has `cycle=`, the rotator's last cycle outcome, and,
-when they apply, `swap_seq=`, `swap_live=`, `pane=` (a hash, not the pane
-id), `keys_sent=` and `detail=`.
+delivering it, so a partial send still counts as the attempt for that limit
+event. It records at most one attempt per limit event and one per wait. There
+is no count of wake attempts per session (issue #2912): a session is woken
+every time a login with room follows a limit, however many limits it met that
+day. Each `resume.log` line also has `cycle=`, the rotator's last cycle
+outcome, and, when they apply, `resumes=` (the session's earlier wakes in 24
+hours, logged as evidence; nothing is refused on it), `swap_seq=`,
+`swap_live=`, `pane=` (a hash, not the pane id), `keys_sent=` and
+`detail=`.
 
 Claude Code's `autoContinueAtUsageLimit` setting controls whether it starts
 a wait that can continue the conversation when the limit resets. The

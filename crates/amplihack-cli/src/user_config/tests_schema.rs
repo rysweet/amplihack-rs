@@ -23,7 +23,6 @@ fn keys_are_in_documented_order() {
             "recipe.tmux_session_pattern",
             "recipe.log_dir",
             "recipe.usage_limit_wait",
-            "recipe.usage_limit_max_wait_secs",
             "policy.deny_commands",
             "orchestrator.max_depth",
             // Issue #1619: per-step model tiers and the small-diff combined
@@ -41,6 +40,8 @@ fn keys_are_in_documented_order() {
             "governor.eval_interval_secs",
             "governor.wait_secs",
             "governor.max_reading_age_secs",
+            // Issue #2912: documented between the governor and sessions keys.
+            "agent.standing",
             "sessions.daily_archive",
             "sessions.archive_days",
             "sessions.archive_dest",
@@ -102,6 +103,9 @@ fn user_only_keys_are_agent_home_node_log_dir_policy_model_review_governor_and_s
             "governor.eval_interval_secs",
             "governor.wait_secs",
             "governor.max_reading_age_secs",
+            // Issue #2912: a cloned repository must not make amplihack
+            // start agents unattended, so the key is user-only.
+            "agent.standing",
             "sessions.daily_archive",
             "sessions.archive_days",
             "sessions.archive_dest"
@@ -510,4 +514,26 @@ fn the_requirement_names_every_bound_the_validator_enforces() {
     assert!(parse_command_list(&words(MAX_TOKENS + 1)).is_err());
     assert!(parse_command_list(&["a  b".to_string()]).is_err());
     assert!(parse_command_list(&["a\tb".to_string()]).is_err());
+}
+
+/// Issue #2912: the standing key is a plain bool defaulting to off. It is not
+/// a `SessionPattern`: that kind validates tmux session-name placeholders
+/// that mean nothing here.
+#[test]
+fn agent_standing_is_a_user_only_bool_defaulting_to_false() {
+    let def = key_def("agent.standing").expect("agent.standing is a key");
+    assert_eq!(def.scope, Scope::UserOnly);
+    assert!(matches!(def.kind, ValueKind::Bool));
+    assert_eq!(def.default, Some("false"));
+    assert_eq!(
+        parse_cli("agent.standing", "true").unwrap(),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        parse_cli("agent.standing", "false").unwrap(),
+        Value::Bool(false)
+    );
+    for bad in ["maybe", "{recipe}", "", "1"] {
+        assert!(parse_cli("agent.standing", bad).is_err(), "{bad:?}");
+    }
 }

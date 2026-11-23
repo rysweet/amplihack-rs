@@ -85,8 +85,9 @@ pub use for_tests::{swap, swap_by};
 
 /// Runs the swap through `exchange` after structural and trusted-identity
 /// authorization, checked against the accepted snapshot (None in legacy
-/// unit primitives). Returns the outgoing profile; refused authorization
-/// moves no login.
+/// unit primitives) and, for a rotator swap, the decision's `may_cross`
+/// (S4). Returns the outgoing profile; refused authorization moves no
+/// login.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn swap_with(
     store: &ProfileStore,
@@ -97,6 +98,7 @@ pub(super) fn swap_with(
     now: i64,
     reader: Reader<'_>,
     basis: Option<&super::observe::Snap>,
+    may_cross: Option<bool>,
     exchange: &dyn LoginExchange,
 ) -> Result<ProfileName, ProfileError> {
     check_root_private(store.root()).map_err(|e| refused(format!("profile root {e}")))?;
@@ -158,6 +160,7 @@ pub(super) fn swap_with(
         Proof::Live,
     )?;
     super::swap_authorize::check_snapshot(&first, basis, to)?;
+    super::swap_authorize::check_org(&first, may_cross)?;
     // Persist owned locks before final identity requests can block or terminate.
     let mut j = prepare::begin(store, rs, home, &from, to, now, &l, &t)?;
     let checked = authorize(
@@ -171,7 +174,10 @@ pub(super) fn swap_with(
         platform_out,
         reader,
         Proof::Live,
-    );
+    )
+    // S4 again on the read the swap acts on: `same` compares an account with
+    // no uuid by e-mail alone, so it would pass a change of organisation.
+    .and_then(|auth| super::swap_authorize::check_org(&auth, may_cross).map(|()| auth));
     let mut auth = match checked {
         Ok(auth) if first.same(&auth) && auth.current(store) => auth,
         other => {

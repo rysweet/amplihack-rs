@@ -3,10 +3,9 @@
 //! from `log::msg` with the other lines, and kept here to hold `log.rs`
 //! within its line budget.
 
-use super::decide::Reading;
-use super::log::msg::usage;
 use super::log::timestamp;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::recipe::run::limit_patterns::LimitKind;
 
 /// After `profile switch` onto API-key profile `name` (issue #1700).
 pub fn switch_platform_note(name: &ProfileName) -> String {
@@ -212,47 +211,26 @@ pub fn spend_limit_not_blocked(name: &ProfileName, why: &str) -> String {
     format!("ALERT: overflow profile {name} hit its spend limit; not blocked ({why})")
 }
 
-/// A spend block a failed agent step recorded for the login it ran under
-/// (issue #2890). It says `login`, not `overflow profile`: the login is
+/// A block a failed agent step recorded for the login it ran under (issues
+/// #2890, #2911). It says `login`, not `overflow profile`: the login is
 /// usually a plan login, which the rotator's own probe cannot see a spend
-/// limit on. `until` is the reset the message stated.
-pub fn alert_step_spend_limit(name: &ProfileName, until: i64) -> String {
+/// limit on. `until` is the reset the message stated, and `kind` names the
+/// limit in the harness's own vocabulary, through
+/// [`LimitKind::noun`][crate::commands::recipe::run::limit_patterns::LimitKind::noun],
+/// a closed set of fixed words. For [`LimitKind::Spend`] the line is the
+/// one 1.2.193 wrote, byte for byte.
+pub fn alert_step_limit_block(name: &ProfileName, kind: LimitKind, until: i64) -> String {
     format!(
-        "ALERT: login {name} hit its spend limit; blocked until {}",
+        "ALERT: login {name} hit its {}; blocked until {}",
+        kind.noun(),
         timestamp(until)
     )
 }
 
-/// A step's spend limit that could not be stored as a block, and why. `why`
-/// comes from a closed set of fixed strings in `step_block`; no text from
-/// the limit message, and no path, ever reaches it. The step plans its wait
+/// A step's limit that could not be stored as a block, and why. `why` comes
+/// from a closed set of fixed strings in `step_block`; no text from the
+/// limit message, and no path, ever reaches it. The step plans its wait
 /// either way.
-pub fn step_spend_limit_not_blocked(name: &ProfileName, why: &str) -> String {
-    format!("ALERT: login {name} spend limit not blocked ({why})")
-}
-
-#[cfg(test)]
-pub fn alert_no_capacity(live: &ProfileName, reading: &Reading) -> String {
-    alert_no_capacity_for(live.as_str(), reading, &[])
-}
-
-/// As [`alert_no_capacity`], with `-` for a login no profile owns. When any
-/// candidate in `others` failed its probe or is exhausted, the line ends
-/// with ` (candidates: F failed, E exhausted)`: two counts, no names.
-pub fn alert_no_capacity_for(
-    live: &str,
-    reading: &Reading,
-    others: &[(ProfileName, Reading)],
-) -> String {
-    let count = |is: fn(&Reading) -> bool| others.iter().filter(|(_, o)| is(o)).count();
-    let failed = count(|r| matches!(r, Reading::Failed));
-    let exhausted = count(|r| matches!(r, Reading::Exhausted { .. }));
-    let tail = match failed + exhausted {
-        0 => String::new(),
-        _ => format!(" (candidates: {failed} failed, {exhausted} exhausted)"),
-    };
-    format!(
-        "ALERT: no profile has capacity live={live} {}{tail}",
-        usage(&super::log::Shown::from_reading(*reading), " ")
-    )
+pub fn step_limit_block_not_written(name: &ProfileName, kind: LimitKind, why: &str) -> String {
+    format!("ALERT: login {name} {} not blocked ({why})", kind.noun())
 }

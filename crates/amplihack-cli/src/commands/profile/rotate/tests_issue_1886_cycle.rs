@@ -1043,6 +1043,7 @@ fn stay_on_h(_: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
         measured_at: now(),
         probed: None,
         fresh_lines: Vec::new(),
+        seen: Default::default(),
     })
 }
 

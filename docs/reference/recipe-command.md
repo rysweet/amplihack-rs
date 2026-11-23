@@ -690,10 +690,12 @@ The runner's heartbeat for that step would still read `working`, so
 
 The second line replaces the first on the terminal and in the recipe log. Only
 the word `working` changes, and it never appears in a heartbeat for a step that
-is waiting. The time is the wait's `until=` value, and an enclosing step's
-heartbeat states the earliest `until` beneath it when the supervisors can be
-reached from it. A heartbeat for a step that is not waiting, and every other
-line, passes unchanged, byte for byte.
+is waiting. The time is the wait's `until=` value, `none` for a wait with no
+deadline, and an enclosing step's heartbeat states the earliest `until` beneath
+it when the supervisors can be reached from it. A heartbeat for a step that is
+not waiting, and every other line, passes unchanged, byte for byte. The rewrite
+is made as the pump copies the runner's line, so it adds no timer and no
+polling.
 
 `amplihack recipe run` sets `AMPLIHACK_USAGE_LIMIT_WAIT_DIR` for the runner to
 a directory named `usage-limit-wait` in the run's own directory, mode `0700`, in
@@ -701,10 +703,10 @@ which a waiting supervisor keeps a small record for the length of its wait. An
 inherited valid value is reused, and `--dry-run` sets none. Do not set the
 variable by hand. The record's format, the checks a reader makes, and what the
 stderr pump keeps for failure diagnostics are in
-[The heartbeat while waiting](./profile-command.md#the-heartbeat-while-waiting).
+[The heartbeat of a waiting step](./usage-limit-waits.md#the-heartbeat-of-a-waiting-step).
 
-A usage-limit wait may also be an [earliest-reset wait](./profile-command.md#earliest-reset-wait),
-which ends at the earliest reset across all of the step's logins; the heartbeat
+A wait whose deadline another login's reset set
+([The earliest-reset deadline](./usage-limit-waits.md#the-earliest-reset-deadline))
 reads the same.
 
 ---

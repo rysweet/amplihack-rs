@@ -1179,7 +1179,7 @@ mod tests {
         fs::write(&path, "").unwrap();
         let wait_line = "amplihack.recipe.usage_limit_wait start reason=spend_limit \
                          wait=login_change account=work reset=none \
-                         until=2026-10-18 14:00:00 -07:00 bound=max_wait";
+                         until=none bound=none";
         let appender = path.clone();
         let line = wait_line.to_string();
         let mut reader = Chunks::new([

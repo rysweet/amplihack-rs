@@ -17,12 +17,13 @@ files.
   - [recipe.verbose](#recipeverbose)
   - [recipe.step_timeout](#recipestep_timeout)
   - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
-  - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
+  - [recipe.usage_limit_wait](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
   - [model.force](#modelforce)
   - [model.tier_map](#modeltier_map)
   - [Review keys](#review-keys)
   - [Governor keys](#governor-keys)
+  - [agent.standing](#agentstanding)
   - [sessions.daily_archive](#sessionsdaily_archive)
   - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
   - [policy.deny_commands](#policydeny_commands)
@@ -64,7 +65,6 @@ recipe.detach = "none"  # default
 recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
 recipe.log_dir = (unset)  # default
 recipe.usage_limit_wait = true  # default
-recipe.usage_limit_max_wait_secs = 21600  # default
 policy.deny_commands = (unset)  # default
 orchestrator.max_depth = 3  # default
 model.force = (unset)  # default
@@ -167,8 +167,7 @@ command, so it never prints `flag`.
 | `recipe.detach` | `tmux` or `none` | `none` | — | `--detach`, `--no-detach` | user, project |
 | `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
-| `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
-| `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
+| `recipe.usage_limit_wait` | bool | `true` | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
 | `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | — | — | user only |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 | `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | — | user only |
@@ -183,6 +182,7 @@ command, so it never prints `flag`.
 | `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | — | — | user only |
 | `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | — | — | user only |
 | `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | — | — | user only |
+| `agent.standing` | bool | `false` | none | `--standing`, `--no-standing` | user only |
 | `sessions.daily_archive` | bool | `true` | — | — | user only |
 | `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
 | `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
@@ -334,6 +334,10 @@ Unset everywhere, the runner's own default applies (agent steps have no
 timeout). The config value must be at least 1; to disable timeouts for one
 run, pass `--step-timeout 0`.
 
+A usage-limit wait does not read this value: a step timeout does not cut a
+wait or stop the retry after it (see
+[The step timeout does not cut a wait](./usage-limit-waits.md#the-step-timeout-does-not-cut-a-wait)).
+
 A project file can only lower this value below the user file's. When the user
 file does not set it, the project value applies.
 
@@ -365,38 +369,27 @@ Whether a recipe agent step that fails on a Claude usage limit waits, for
 the reset, for another login with capacity, or for the login in `~/.claude`
 to change, and runs once more, instead of ending the run. See the
 [usage-limit wait](./profile-command.md#usage-limit-wait). With no setting
-in the environment or a file, it is on, except in CI: any `CI` that is
-not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
-in CI too. The environment variable also accepts `1` and `0`.
+in the environment or a file, it is on. `CI` does not turn it off
+(issue #2911): it used to, but amplihack's delegation layer exports
+`CI=true` to every delegated `claude -p`, so a recipe run started from one
+ended at its first limit. Setting it to `false` is the one way to let a limit end a step,
+and that is intended: the limit result is passed up at once
+(`skipped reason=disabled`) and the run is recorded as resumable with the
+cause `usage_limit`. The environment variable also accepts `1` and `0`.
 
-`recipe.usage_limit_max_wait_secs` bounds the time one step spends waiting,
-across every wait it makes, and defaults to `21600` (six hours). It shortens
-a wait for a reset, which never lasts beyond the reset plus 120 seconds, and
-sets how long a [capacity wait](./profile-command.md#capacity-wait) for
-another login, or a
-[login-change wait](./profile-command.md#login-change-wait) on an
-organisation spend limit with no reset, lasts. `0` means one more attempt
-with no wait for a reset, and an immediate `usage_limit` failure for a
-capacity or login-change wait. A step that waits again after the login in
-`~/.claude` changes gets only what its earlier waits left; see
-[One wait per login](./profile-command.md#one-wait-per-login).
+No key sets how long a wait lasts. A wait for a stated reset ends at the
+reset plus 120 seconds, however far away, or sooner on room or a login change;
+a wait whose limit stated no usable reset has no deadline and ends when a
+login has room or the login changes. See
+[A wait has no length setting](./usage-limit-waits.md#a-wait-has-no-length-setting).
 
-The default is not a ceiling. A user file or
-`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value, and a capacity
-or login-change wait honours it. A project file is `lower only`: it can shorten the maximum
-but never raise it above the user or default value, so a repository cannot
-make your runs wait longer.
-
-A value that is not a whole number of seconds from `0` upwards is handled
-like any other invalid value: `amplihack config set` rejects it with exit
-code `2` and writes nothing, a file value is reported when the file loads
-and ignored, and an invalid `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is
-reported by name and ignored. In each case the next layer down, ending at
-the default `21600`, applies.
+`recipe.usage_limit_max_wait_secs` has been removed. A file that still sets
+it gets `recipe.usage_limit_max_wait_secs: unknown key` when it loads, and the
+rest of the file applies; `amplihack config set` refuses the key as unknown
+(exit code `2`). `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is no longer read.
 
 ```sh
 amplihack config set recipe.usage_limit_wait false
-amplihack config set recipe.usage_limit_max_wait_secs 3600
 ```
 
 ### orchestrator.max_depth
@@ -524,6 +517,30 @@ amplihack config set governor.enabled true
 amplihack config set governor.max_concurrency 2
 amplihack config set governor.wait_secs 1800
 ```
+
+### agent.standing
+
+Whether a session started with `amplihack claude --supervise NAME` is a
+standing session. When its Claude Code process exits for any reason other
+than you ending it, the wrapper relaunches it in the same pane with
+`claude --continue`. See
+[Keep a session running after its process exits](../howto/keep-sessions-running.md).
+
+The value is `true` or `false`, and the default is `false`.
+
+```sh
+amplihack config set agent.standing true
+```
+
+`--standing` and `--no-standing` on `amplihack claude --supervise` override the
+key for one launch. The key applies to every supervised session of the user
+account; to mark one session and not another, use the flag.
+
+The key is user-only, because it makes amplihack start agents without anyone
+at the keyboard: a project-scoped `agent.standing` is reported and ignored, so
+a cloned repository cannot make your sessions standing. A user file that
+cannot give the key a value (unreadable, not `true` or `false`) is read as
+`false`, with a warning on stderr.
 
 ### sessions.daily_archive
 

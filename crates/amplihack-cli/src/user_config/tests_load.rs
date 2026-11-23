@@ -158,26 +158,27 @@ fn project_cannot_raise_above_the_default_either() {
     assert_eq!(e.entry("orchestrator.max_depth").origin, Origin::Default);
 }
 
-/// Issue #1801: 21600 is a default a project cannot raise, not a ceiling.
+/// Issue #2911: a usage-limit wait has no timed bound, so the key that set
+/// one is not in the schema. A file that still carries it loads, and the key
+/// is reported as unknown rather than obeyed.
 #[test]
-fn a_project_cannot_raise_the_usage_limit_wait_above_its_default() {
+fn the_removed_usage_limit_wait_length_is_reported_as_an_unknown_key() {
     let fx = Fx::new();
-    fx.project("[recipe]\nusage_limit_max_wait_secs = 86400\n");
+    fx.project("[recipe]\nusage_limit_max_wait_secs = 600\nusage_limit_wait = true\n");
     let e = fx.load(&[]);
-    assert_eq!(
-        e.entry("recipe.usage_limit_max_wait_secs").value,
-        Some(Value::Int(21_600))
+    assert!(super::schema::key("recipe.usage_limit_max_wait_secs").is_none());
+    assert!(
+        e.diagnostics.iter().any(|d| {
+            d.key.as_deref() == Some("recipe.usage_limit_max_wait_secs")
+                && d.reason == "unknown key"
+        }),
+        "{:?}",
+        e.diagnostics
     );
-}
-
-#[test]
-fn a_project_can_lower_the_usage_limit_wait() {
-    let fx = Fx::new();
-    fx.project("[recipe]\nusage_limit_max_wait_secs = 600\n");
-    let e = fx.load(&[]);
     assert_eq!(
-        e.entry("recipe.usage_limit_max_wait_secs").value,
-        Some(Value::Int(600))
+        e.entry("recipe.usage_limit_wait").value,
+        Some(Value::Bool(true)),
+        "the rest of the file still loads"
     );
 }
 
@@ -393,4 +394,44 @@ fn a_value_that_is_not_an_array_is_reported_and_ignored() {
         "{:?}",
         e.diagnostics
     );
+}
+
+// ── Issue #2912: agent.standing ─────────────────────────────────────────────
+
+#[test]
+fn agent_standing_is_off_with_no_file() {
+    let fx = Fx::new();
+    assert_eq!(super::agent_standing(&fx.home), Ok(false));
+}
+
+#[test]
+fn agent_standing_follows_the_user_file() {
+    let fx = Fx::new();
+    fx.user("[agent]\nstanding = true\n");
+    assert_eq!(super::agent_standing(&fx.home), Ok(true));
+    fx.user("[agent]\nstanding = false\n");
+    assert_eq!(super::agent_standing(&fx.home), Ok(false));
+}
+
+/// A value the key cannot hold is an error naming the cause; the caller reads
+/// it as `false` and warns, so a bad value never turns relaunching on.
+#[test]
+fn agent_standing_with_an_invalid_value_is_an_error_not_true() {
+    let fx = Fx::new();
+    fx.user("[agent]\nstanding = \"yes please\"\n");
+    assert!(super::agent_standing(&fx.home).is_err());
+}
+
+/// A cloned repository cannot mark a session standing.
+#[test]
+fn a_project_scoped_agent_standing_has_no_effect() {
+    let fx = Fx::new();
+    fx.project("[agent]\nstanding = true\n");
+    let e = fx.load(&[]);
+    assert_eq!(e.entry("agent.standing").value, Some(Value::Bool(false)));
+    assert!(
+        !e.diagnostics.is_empty(),
+        "the ignored project value is reported"
+    );
+    assert_eq!(super::agent_standing(&fx.home), Ok(false));
 }

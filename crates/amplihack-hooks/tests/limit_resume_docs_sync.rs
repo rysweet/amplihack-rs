@@ -7,8 +7,8 @@
 //! Lives in amplihack-hooks rather than the CLI's `tests_docs_sync.rs`
 //! because the CLI does not depend on this crate.
 
+use amplihack_hooks::limit_resume::Outcome;
 use amplihack_hooks::limit_resume::keys::{RESUME_KEYS, UNRECOGNISED_REASONS, UNVERIFIED_REASONS};
-use amplihack_hooks::limit_resume::{MAX_RESUMES_PER_SESSION, Outcome};
 use amplihack_utils::rotator_status::swap_record::MAX_SWAP_BYTES;
 use amplihack_utils::rotator_status::{
     LIMIT_RESUME_TIMEOUT_MARGIN, LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT,
@@ -17,6 +17,10 @@ use amplihack_utils::rotator_status::{
 const REFERENCE: &str = include_str!("../../../docs/reference/profile-command.md");
 const HOWTO: &str = include_str!("../../../docs/howto/claude-profile-rotation.md");
 const HOOK_SPECS: &str = include_str!("../../../docs/reference/hook-specifications.md");
+/// The skill agents load to explain `resume.log` to a user. It has its own
+/// outcome table, which drifted from the hook once already (#2912).
+const SKILL: &str =
+    include_str!("../../../amplifier-bundle/skills/claude-profile-rotation/SKILL.md");
 
 /// The constants table in "Resume limits": `| <name> | <value> |`.
 fn limits_row(name: &str) -> Option<&'static str> {
@@ -49,9 +53,9 @@ fn reference_limits_table_matches_the_constants() {
     // The ledger's skew rule (`MAX_SKEW_SECS`, crate-private in utils).
     assert_eq!(row("Clock skew allowed"), "300 s");
     assert_eq!(row("Keys per resume"), RESUME_KEYS.len().to_string());
-    assert_eq!(
-        row("Resumes per session"),
-        format!("{MAX_RESUMES_PER_SESSION} per 24 hours")
+    assert!(
+        limits_row("Resumes per session").is_none(),
+        "the per-session resume cap is gone (#2912)"
     );
     assert_eq!(row("Resumes per limit event"), "1");
 }
@@ -76,30 +80,83 @@ fn the_polling_rows_are_gone() {
     }
 }
 
+/// Every outcome the hook logs, for the documentation checks below.
+/// `Outcome::NotLimit` is not logged, so it is not here.
+const OUTCOMES: [Outcome; 18] = [
+    Outcome::Resumed,
+    Outcome::ResumedKeys,
+    Outcome::ResumeKeysFailed,
+    Outcome::PaneUnverified,
+    Outcome::PaneNotReading,
+    Outcome::ScreenUnrecognised,
+    Outcome::WatchLost,
+    Outcome::SwapStale,
+    Outcome::SwapNoRoom,
+    Outcome::NoCapacityTimeout,
+    Outcome::MovedOn,
+    Outcome::Duplicate,
+    Outcome::SessionRecordReset,
+    Outcome::StopHookActive,
+    Outcome::SessionGone,
+    Outcome::RotatorDown,
+    Outcome::GuardFailed,
+    Outcome::Disabled,
+];
+
 #[test]
 fn every_outcome_the_hook_logs_is_documented() {
-    for o in [
-        Outcome::Resumed,
-        Outcome::ResumedKeys,
-        Outcome::ResumeKeysFailed,
-        Outcome::PaneUnverified,
-        Outcome::PaneNotReading,
-        Outcome::ScreenUnrecognised,
-        Outcome::WatchLost,
-        Outcome::SwapStale,
-        Outcome::SwapNoRoom,
-        Outcome::NoCapacityTimeout,
-        Outcome::MovedOn,
-        Outcome::Duplicate,
-        Outcome::Cap,
-        Outcome::StopHookActive,
-        Outcome::SessionGone,
-        Outcome::RotatorDown,
-        Outcome::GuardFailed,
-        Outcome::Disabled,
-    ] {
+    for o in OUTCOMES {
         let name = format!("`{}`", o.as_str());
         assert!(REFERENCE.contains(&name), "profile-command.md lacks {name}");
+    }
+}
+
+/// The outcome names in the skill's `| Outcome | What to tell the user |`
+/// table: the first cell of every row, split on ` / ` where one row covers
+/// two outcomes.
+fn skill_outcome_table() -> Vec<&'static str> {
+    let rows = SKILL
+        .lines()
+        .skip_while(|l| !l.starts_with("| Outcome | What to tell the user |"))
+        .skip(2)
+        .take_while(|l| l.starts_with('|'));
+    let mut names = Vec::new();
+    for row in rows {
+        let first = row.split('|').nth(1).expect("a table row has a first cell");
+        for name in first.split(" / ") {
+            let name = name
+                .trim()
+                .strip_prefix('`')
+                .and_then(|n| n.strip_suffix('`'));
+            names.push(name.unwrap_or_else(|| panic!("SKILL.md outcome row `{row}`")));
+        }
+    }
+    names
+}
+
+/// The skill's outcome table names exactly the outcomes the hook logs: none
+/// missing, and none the hook can no longer emit, such as the `cap` the
+/// #2912 change removed. Agents load the skill to explain `resume.log`, so
+/// a stale row tells them to expect a line that never comes.
+#[test]
+fn the_skill_outcome_table_is_the_hooks() {
+    let table = skill_outcome_table();
+    assert!(!table.is_empty(), "SKILL.md has no outcome table");
+    for o in OUTCOMES {
+        assert!(
+            table.contains(&o.as_str()),
+            "SKILL.md's outcome table lacks `{}`",
+            o.as_str()
+        );
+    }
+    for name in &table {
+        assert!(
+            OUTCOMES.iter().any(|o| o.as_str() == *name),
+            "SKILL.md's outcome table names `{name}`, which the hook never logs"
+        );
+    }
+    for stale in ["3 per session", "wake attempts in 24 hours"] {
+        assert!(!SKILL.contains(stale), "SKILL.md still says `{stale}`");
     }
 }
 

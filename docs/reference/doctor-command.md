@@ -148,7 +148,6 @@ Effective config:
   recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
   recipe.log_dir = (unset)  # default
   recipe.usage_limit_wait = true  # default
-  recipe.usage_limit_max_wait_secs = (unset)  # default
   orchestrator.max_depth = 3  # default
   model.force = (unset)  # default
   model.tier_map = (unset)  # default

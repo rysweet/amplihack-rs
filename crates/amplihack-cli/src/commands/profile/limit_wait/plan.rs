@@ -1,60 +1,180 @@
-//! Whether a usage limit can be waited out, and the wait's deadline (issue
-//! #1618). A reset wait needs the harness's own limit message with a reset
-//! at most five hours away. A far or unreadable reset is skipped, because no
-//! amount of waiting is known to help, unless another login could take over:
-//! [`upgrade`] then makes it a capacity wait (issue #1801), as does a reset
-//! already behind the clock met on the retry a wait earned
-//! ([`upgrade_passed_reset`], issue #2857). An organisation
-//! spend limit on a `$HOME/.claude` step becomes a login-change wait instead
-//! ([`upgrade_spend`], issue #2731). The deadline is
-//! the earliest row of the deadline table that applies, a tie named by the
-//! earlier row. All arithmetic saturates. A reset wait's deadline always lies
-//! in `now ..= now + 5 h + 120 s`; a capacity wait has no five-hour ceiling
-//! and also ends at the failed login's own reset plus the margin.
+//! What a usage limit allows, and the wait's deadline (issues #1618, #2911).
+//!
+//! No limit this module reads is refused a wait, and no count or budget here
+//! ends a step that keeps meeting limits. Two readings are left that no wait
+//! can help, and neither is a limit: output with no limit message in it at
+//! all, and a prompt that could not be read to its end ([`NoWait`]).
+//!
+//! # What ends a wait
+//!
+//! A wait ends on a limit event and on nothing else: its reset passing, a
+//! login with room, or the login changing (and, for the step rather than
+//! the limit, a stop signal or the end of its session). No timer ends a
+//! wait. Which of those events a wait has turns on the reset its limit
+//! stated.
+//!
+//! - **A limit that states a reset still ahead** waits for that reset.
+//!   Within five hours it is a reset wait ([`plan`]). Further away it is a
+//!   capacity wait ([`plan_capacity`]), which may also move the retry to
+//!   another login with room, and still ends at its reset plus [`MARGIN`].
+//!   A weekly limit days away is waited for once, to its reset. The reset is
+//!   first held to its kind's window ([`held`]), as the rotate ledger holds
+//!   a block, so a forged or misread message cannot hold a step longer than
+//!   the window it names allows.
+//! - **A limit with no usable reset** (none stated, Codex credits, a reset
+//!   already behind the clock, a bare 429 another login could take over, or
+//!   a spend limit stating none) has no deadline ([`Plan::until`] is
+//!   `None`). Nothing records when such a limit lifts, so the wait waits for
+//!   the events that can be seen: a login with room or a login change. It
+//!   says so plainly as it starts (`waiting_for_capacity ... until=none`),
+//!   so an operator can see that it is waiting and why (issue #2911: "when
+//!   nothing can be known about when room returns, it still waits, and says
+//!   plainly ... that it is waiting for capacity and why").
+//!
+//! The second kind has no timed outer bound, and none may be added. Each
+//! time such a bound passed it would run the step's agent again on a login
+//! that may still be spent: a poll of the harness on a clock, which #2911
+//! rules out ("no wall-clock budget ... remove the paths above rather than
+//! raising their numbers"). A person who wants such a step to run again
+//! makes an event: `amplihack profile switch` for a step on `$HOME/.claude`
+//! (its `switched` record ends the wait as `rotator capacity`), logging the
+//! step's own config directory in to another account, or a stop signal.
+//!
+//! **Every plan with a deadline ends strictly after `now`**, and a plan
+//! with none ends only on an event. That is the pacing rule that replaced
+//! the per-step budget of #2731: a chain of limits is paced by each wait
+//! lasting until something changed, not by a counter that eventually
+//! refuses one, and no plan can make a busy loop of agent launches.
+//!
+//! There is no step-timeout row (issue #3037). `$AMPLIHACK_STEP_TIMEOUT`
+//! is not enforced on a step by the recipe runner, which enforces only a
+//! step's own YAML `timeout:`, so a row built from it ended only steps that
+//! were waiting on a limit.
 
-use crate::commands::recipe::run::limit_patterns::{Harness, LimitMessage};
+use super::super::rotate::ledger::MAX_BLOCK_SECS;
+use crate::commands::recipe::run::limit_patterns::{Harness, LimitKind, LimitMessage};
 
 /// Added to a reset still in the future.
 pub(crate) const MARGIN: i64 = 120;
-/// A reset further away than this is not waited for.
+/// A reset further away than this is not waited for directly: the router
+/// ([`wait_for_message`], [`from_reading`]) makes it a capacity wait. It is
+/// also the session window's length ([`window`]).
 pub(crate) const FIVE_HOURS: i64 = 5 * 3600;
-/// The wait ends this long before the step timeout.
-pub(crate) const STEP_TIMEOUT_LEAD: i64 = 60;
-/// A capacity wait's length when nothing sets one: the schema's default.
-pub(crate) const CAPACITY_DEFAULT_MAX: u64 = 21_600;
+/// The weekly window's length.
+pub(crate) const SEVEN_DAYS: i64 = 7 * 86_400;
 
-/// Why a usage limit is not waited out.
+/// The longest the usage window of a limit of `kind` lasts, or `None` for a
+/// kind with no fixed window.
+///
+/// A session window is five hours and a weekly window seven days, so no
+/// genuine reset of either lies further away. A spend or credit limit lifts
+/// on a billing date or when someone adds funds, which has no fixed
+/// distance. The rotate ledger holds a block to the same windows
+/// (`rotate::step_block`).
+pub(crate) fn window(kind: LimitKind) -> Option<i64> {
+    match kind {
+        LimitKind::Session => Some(FIVE_HOURS),
+        LimitKind::Weekly => Some(SEVEN_DAYS),
+        LimitKind::Spend | LimitKind::Credits => None,
+    }
+}
+
+/// `reset`, held to `kind`'s window from `now`: the reset a wait may end on.
+///
+/// The step cannot tell the harness's own message from a model that printed
+/// one as its last line, so a stated reset is never trusted further than
+/// the window its kind allows. A kind with no window is held to the rotate
+/// ledger's span rule ([`MAX_BLOCK_SECS`]), so no message can hold a step
+/// for longer than a block may last. A genuine reset always falls inside, so
+/// a genuine message is never shortened. `kind` is `None` for a reset read
+/// from the auto-switch readings, which say only that a window is
+/// exhausted; it is held to the longest window, the weekly one.
+pub(crate) fn held(reset: i64, now: i64, kind: Option<LimitKind>) -> i64 {
+    let longest = match kind {
+        Some(k) => window(k).unwrap_or(MAX_BLOCK_SECS),
+        None => SEVEN_DAYS,
+    };
+    reset.min(now.saturating_add(longest))
+}
+
+/// Why no wait can help, whatever the output said.
+///
+/// Both are readings of the *step*, not of a limit: neither says anything
+/// about an account's windows, so no amount of waiting changes either. Every
+/// limit this module can name waits (issue #2911).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NoWait {
-    /// The output has no line in the harness's own limit-message shape.
+    /// The output has no line in any harness's own limit-message shape.
+    /// Logged as `skipped reason=no_limit_message`.
     NoLimitMessage,
-    /// An organisation spend limit that states no reset: none lifts it.
-    SpendLimit,
-    /// The message states no reset that parses.
-    NoReset,
-    /// The stated reset is more than five hours away.
-    ResetTooFar,
-    /// The prompt came on a pipe and no copy of it could be kept, so a
-    /// rerun cannot read it again (issue #2815). A piped prompt that was
-    /// copied is replayed and never reaches this reason; the name is kept
-    /// because it is the logged value callers already match on.
-    PipedPrompt,
+    /// The step's prompt came on a pipe and could not be read to its end:
+    /// the source failed, or the copier panicked part way through it
+    /// (issues #2816, #3036). The attempt in hand was given part of its
+    /// task, so the step fails whether or not it met a limit, and no retry
+    /// can be given more. It is a lost prompt, not a limit ending, and is
+    /// logged as `failed reason=prompt_cut_short`, never as a skipped wait.
+    ///
+    /// It is narrower than the `piped_prompt` ending it replaced, which also
+    /// covered a copy that failed or could not be set up. Neither can end a
+    /// step on a limit any more: the copy is kept in memory, so every byte
+    /// the copier reads is a byte a retry is given, and a step whose copy
+    /// cannot be set up is not run. The run resumes the step through the
+    /// recipe runner's recorded `usage_limit` cause (`ending`).
+    PromptCutShort,
 }
 
 impl NoWait {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             NoWait::NoLimitMessage => "no_limit_message",
-            NoWait::SpendLimit => "spend_limit",
-            NoWait::NoReset => "no_reset",
-            NoWait::ResetTooFar => "reset_too_far",
-            NoWait::PipedPrompt => "piped_prompt",
+            NoWait::PromptCutShort => "prompt_cut_short",
+        }
+    }
+}
+
+/// Why a wait is for capacity rather than for a reset within five hours
+/// (issue #2911).
+///
+/// A closed set, carrying no text from the harness's output. Three of the
+/// names are the ones that used to be logged as a terminal `skipped
+/// reason=...`, kept so that an operator grepping for `reset_too_far`,
+/// `no_reset` or `spend_limit` still finds the step's lines, now attached to
+/// a wait rather than to a step that ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Waiting {
+    /// The stated reset is more than five hours away. The step moves to a
+    /// login with room if one appears, and otherwise waits for that reset,
+    /// held to its kind's window ([`held`]).
+    ResetTooFar,
+    /// The message states no reset that parses.
+    NoReset,
+    /// A spend limit: no usage window's reset lifts one, so the step waits
+    /// for the login itself to change.
+    SpendLimit,
+    /// Codex workspace credits, which state no reset at all.
+    Credits,
+    /// The stated reset is already behind the clock. The message may be
+    /// minutes stale, so the step waits for a reading rather than for a time
+    /// that has been and gone (issue #2857).
+    PassedReset,
+}
+
+impl Waiting {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Waiting::ResetTooFar => "reset_too_far",
+            Waiting::NoReset => "no_reset",
+            Waiting::SpendLimit => "spend_limit",
+            Waiting::Credits => "credits",
+            Waiting::PassedReset => "passed_reset",
         }
     }
 }
 
 /// What a usage-limited attempt allows: a wait for `reset`, a wait for
-/// another login with capacity (issue #1801), or none.
+/// another login with capacity (issue #1801), a wait for the login in
+/// `$HOME/.claude` to change (issue #2731), or, for the two readings that
+/// are not limits at all, none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WaitFor {
     Reset {
@@ -64,33 +184,79 @@ pub(crate) enum WaitFor {
     Capacity {
         harness: Harness,
         reset: Option<i64>,
+        /// Why this limit has no reset the step can wait for.
+        why: Waiting,
     },
-    /// The login in `$HOME/.claude` changing (issue #2731): an organisation
-    /// spend limit that states no reset, on a step the rotator can move.
+    /// The login in `$HOME/.claude` changing (issue #2731): a spend limit
+    /// that states no reset. No reading reports an organisation's credit,
+    /// so such a wait is never ended by one ([`Plan::capacity_may_end`]).
     LoginChange {
         harness: Harness,
-    },
-    /// The earliest reset across the logins the step could run on (issue
-    /// #2967): every one of them is limited, and `reset` is when the first
-    /// of the others can run the step again. Built by [`earliest`] alone.
-    EarliestReset {
-        harness: Harness,
-        reset: i64,
     },
     Skip(NoWait),
 }
 
+impl WaitFor {
+    /// The reset the limit stated, held to its kind's window, whatever the
+    /// wait does with it; `None` when it stated none and for a skip.
+    ///
+    /// Read by the one ending a step that has met a limit can still reach,
+    /// a prompt that could not be read to its end, so it can say when the
+    /// limit lifts rather than only that it has not. A `Capacity` wait keeps
+    /// its limit's reset even when it is too far away to sleep to, and that
+    /// is still the right answer to *when does this clear*.
+    pub(crate) fn reset(self) -> Option<i64> {
+        match self {
+            WaitFor::Reset { reset, .. } => Some(reset),
+            WaitFor::Capacity { reset, .. } => reset,
+            WaitFor::LoginChange { .. } | WaitFor::Skip(_) => None,
+        }
+    }
+
+    /// Why this wait is for capacity, for the `waiting_for_capacity` line;
+    /// `None` for a reset wait and for a skip.
+    pub(crate) fn waiting_for_capacity(self) -> Option<Waiting> {
+        match self {
+            WaitFor::Capacity { why, .. } => Some(why),
+            WaitFor::LoginChange { .. } => Some(Waiting::SpendLimit),
+            WaitFor::Reset { .. } | WaitFor::Skip(_) => None,
+        }
+    }
+}
+
 /// What the attempt's parsed limit message allows at `now`.
+///
+/// Every limit waits. A reset within five hours is a reset wait. A reset
+/// further away is a capacity wait that still ends at that reset, held to
+/// the limit's kind's window ([`held`]). A spend limit stating no reset
+/// waits for the login to change; Codex's credits, a message stating no
+/// reset that parses and a reset already behind the clock each wait for
+/// capacity with no reset to end on. Each is named by its [`Waiting`].
 pub(crate) fn wait_for_message(message: Option<LimitMessage>, now: i64) -> WaitFor {
     let Some(m) = message else {
         return WaitFor::Skip(NoWait::NoLimitMessage);
     };
-    // A spend-limit line that also says when the session or weekly limit
-    // resets is waited out like any other: that limit is what stops work.
+    let capacity = |why| WaitFor::Capacity {
+        harness: m.harness,
+        reset: m.reset,
+        why,
+    };
     match m.reset {
-        None if m.spend => WaitFor::Skip(NoWait::SpendLimit),
-        None => WaitFor::Skip(NoWait::NoReset),
-        Some(r) if r > now.saturating_add(FIVE_HOURS) => WaitFor::Skip(NoWait::ResetTooFar),
+        // No usage window's reset lifts a spend limit, and no login of the
+        // same organisation would either, so this waits for the login
+        // itself to change (issue #2731).
+        None if m.spend() => WaitFor::LoginChange { harness: m.harness },
+        None if m.kind == LimitKind::Credits => capacity(Waiting::Credits),
+        None => capacity(Waiting::NoReset),
+        // A spend-limit line that also says when the session or weekly
+        // window resets is waited out like any other: that window is what
+        // stops work first.
+        Some(r) if r > now.saturating_add(FIVE_HOURS) => WaitFor::Capacity {
+            harness: m.harness,
+            reset: Some(held(r, now, Some(m.kind))),
+            why: Waiting::ResetTooFar,
+        },
+        Some(r) if r <= now => capacity(Waiting::PassedReset),
         Some(reset) => WaitFor::Reset {
             harness: m.harness,
             reset,
@@ -100,178 +266,59 @@ pub(crate) fn wait_for_message(message: Option<LimitMessage>, now: i64) -> WaitF
 
 /// The wait for a limit read from the auto-switch readings rather than an
 /// attempt's output: the inherited account was already exhausted, so the
-/// step never ran under it. `reset` is when its exhausted window resets.
+/// step never ran under it. `reset` is when its exhausted window resets; a
+/// reset beyond five hours is held to the weekly window ([`held`]).
 pub(crate) fn from_reading(harness: Harness, reset: i64, now: i64) -> WaitFor {
+    let capacity = |reset, why| WaitFor::Capacity {
+        harness,
+        reset: Some(reset),
+        why,
+    };
     if reset > now.saturating_add(FIVE_HOURS) {
-        WaitFor::Skip(NoWait::ResetTooFar)
+        capacity(held(reset, now, None), Waiting::ResetTooFar)
+    } else if reset <= now {
+        capacity(reset, Waiting::PassedReset)
     } else {
         WaitFor::Reset { harness, reset }
     }
 }
 
-/// `w`, made a capacity wait when it is a far or unreadable reset and another
-/// login could take over. `seen` is the limit as read.
+/// The capacity wait a bare 429 asks for (issue #2857), or `None` when
+/// nothing could end one.
 ///
-/// The caller passes `Limited::seen` OR-ed with `Limited::spend_reset`
-/// (issue #2882): an individual spend limit belongs to one account, so when
-/// it states a reset days away another login can take the work and the wait
-/// is judged by that login's room, not by the failed login's own reset. A
-/// spend limit that states *no* reset still arrives here as `None`: nothing
-/// a reading could show would lift it, and `upgrade_spend` owns that row
-/// (issue #2731). The two other promotions keep reading `Limited::seen`
-/// alone, so neither this widening nor #2731 can reach them.
+/// This is the one reading left that is not a limit message. A 429 states
+/// no reset and says nothing about an account's windows, so unlike a limit
+/// it is not by itself a reason to hold the step: with no login that could
+/// take over, it goes back to the recipe runner as the transient transport
+/// fault the classifier calls it everywhere else, and no line is written.
 ///
-/// `takeover` reads the profile store, so it runs only for a limit that
-/// qualifies.
-pub(crate) fn upgrade(
-    w: WaitFor,
-    seen: Option<(Harness, Option<i64>)>,
+/// `takeover` reads the profile store, so it is called only here, for the
+/// one reading that needs the answer.
+pub(crate) fn rate_limit_capacity(
+    harness: Harness,
     takeover: impl Fn() -> bool,
-) -> WaitFor {
-    match (w, seen) {
-        (WaitFor::Skip(NoWait::ResetTooFar | NoWait::NoReset), Some((harness, reset)))
-            if takeover() =>
-        {
-            WaitFor::Capacity { harness, reset }
-        }
-        _ => w,
-    }
+) -> Option<WaitFor> {
+    takeover().then_some(WaitFor::Capacity {
+        harness,
+        reset: None,
+        why: Waiting::NoReset,
+    })
 }
 
-/// `w`, made a capacity wait when it is a reset the clock has already passed
-/// on a re-entry the ordinary one-wait-per-login rule would have refused
-/// (issue #2857).
-///
-/// The retry a finished wait earned met a usage limit stating a reset already
-/// behind the clock. [`plan`] gives such a reset a deadline of `now`, which is
-/// how the grace a login's *first* limit gets is spelled: retrying at once is
-/// the right answer there, because the message may be minutes stale. For a
-/// re-entry it is not: the wait would end the moment it began and spend none
-/// of the step's budget. A limit after a wait must go back into a wait and
-/// must not end the step, so the re-entry is planned as a capacity wait
-/// instead. Its deadline is the step's remaining budget, which keeps
-/// `max_wait_secs` a bound on the chain, and it ends early only on a capacity
-/// reading or a login with room, as every capacity wait does. With no
-/// rotator and no second login nothing ends it early, so it runs the budget
-/// out and the retry follows.
-///
-/// The stated reset is carried through for the `start` line, and
-/// [`plan_capacity`] ignores one that is already past.
-///
-/// `reentry_refused` is that narrowing, read from
-/// [`Waiter::ordinarily_refused`]: a retry that merely landed on a login this
-/// step has never waited on is that login's first wait and keeps its grace.
-/// `seen` is the limit as read, and `None` for a spend limit, which no other
-/// login of the same organisation would lift (issue #2731): a spend limit that
-/// also states a passed session reset must stay the reset wait it is, and the
-/// caller refuses it ([`Plan::ends_at_once`]). `now` is the wait's own clock.
-/// The reset is compared with `now` and never subtracted from it.
-///
-/// [`Waiter::ordinarily_refused`]: super::Waiter::ordinarily_refused
-pub(crate) fn upgrade_passed_reset(
-    w: WaitFor,
-    seen: Option<(Harness, Option<i64>)>,
-    reentry_refused: bool,
-    now: i64,
-) -> WaitFor {
-    match (w, seen) {
-        (WaitFor::Reset { harness, reset }, Some(_)) if reentry_refused && reset <= now => {
-            WaitFor::Capacity {
-                harness,
-                reset: Some(reset),
-            }
-        }
-        _ => w,
-    }
-}
-
-/// `w`, made a login-change wait when it is an organisation spend limit
-/// that states no reset on a `$HOME/.claude` step and a rotator is running
-/// (issue #2731). `spend` is the harness of such a limit, and `None` for
-/// every other limit and every step whose login the rotator never changes,
-/// so the promotion cannot reach one. No reset lifts a spend limit and no
-/// login of the same organisation would either, so this waits for the login
-/// to change rather than for a reading to show capacity: [`upgrade`]'s
-/// capacity wait stays exactly as issue #1801 left it.
-///
-/// `rotator` reads files, so it runs only for a limit that qualifies. Only
-/// the rotator moves a login into `~/.claude`, so with none running there is
-/// nothing to wait for and the skip stands.
-pub(crate) fn upgrade_spend(
-    w: WaitFor,
-    spend: Option<Harness>,
-    rotator: impl Fn() -> bool,
-) -> WaitFor {
-    match (w, spend) {
-        (WaitFor::Skip(NoWait::SpendLimit), Some(harness)) if rotator() => {
-            WaitFor::LoginChange { harness }
-        }
-        _ => w,
-    }
-}
-
-/// `w`, made an earliest-reset wait when another login the step could run
-/// on resets sooner than `w` would end (issue #2967).
-///
-/// `other` is the earliest reset among the other eligible logins, on the
-/// wait's clock, and `None` when none of them has one. The caller has
-/// already found that none of them can run the step now, so a wait is due;
-/// this decides only what it is timed by. `other` counts when it is strictly
-/// after `now` and at most five hours ahead, the bound every reset wait has,
-/// and then replaces `w` in three rows:
-///
-/// 1. a reset wait whose own reset is later than `other`;
-/// 2. a reset too far away or unreadable, which would otherwise be skipped;
-/// 3. a capacity wait whose own reset is absent, more than five hours away
-///    or already passed, which would otherwise run to its maximum. A
-///    capacity wait for a reset that is ahead and near is compared as row 1
-///    is.
-///
-/// Everything else is returned as it was. A login-change wait and a spend
-/// limit that states no reset are for an organisation's credit, which no
-/// other login's reset restores (issue #2731), and the remaining skips say
-/// the step cannot be rerun at all.
-///
-/// A reset at or before `now` is ignored: such a login is usable, which the
-/// check before the wait has already considered. The comparison never
-/// subtracts, so no input overflows.
-pub(crate) fn earliest(w: WaitFor, other: Option<i64>, now: i64) -> WaitFor {
-    let ceiling = now.saturating_add(FIVE_HOURS);
-    let Some(other) = other.filter(|o| *o > now && *o <= ceiling) else {
-        return w;
-    };
-    // An own reset that is ahead and within the five-hour bound still wins
-    // when it is no later than the other login's.
-    let own_is_sooner = |own: i64| own > now && own <= ceiling && own <= other;
-    match w {
-        WaitFor::Reset { harness, reset } if other < reset => WaitFor::EarliestReset {
-            harness,
-            reset: other,
-        },
-        WaitFor::Capacity { harness, reset } if !reset.is_some_and(own_is_sooner) => {
-            WaitFor::EarliestReset {
-                harness,
-                reset: other,
-            }
-        }
-        WaitFor::Skip(NoWait::ResetTooFar | NoWait::NoReset) => WaitFor::EarliestReset {
-            harness: Harness::Claude,
-            reset: other,
-        },
-        _ => w,
-    }
-}
-
-/// Which row set the deadline.
+/// What sets the deadline, for the `start` line's `bound=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bound {
+    /// The limit's own reset plus [`MARGIN`]: the recorded reset passing,
+    /// which is a limit event.
     ResetMargin,
-    /// The earliest reset across the step's eligible logins, plus the
-    /// margin (issue #2967): the deadline came from another login's reset,
-    /// not from the reset of the login that failed.
+    /// The earliest reset across the other logins the step could move to,
+    /// plus [`MARGIN`] (issue #2967): that login recovering is a limit event
+    /// as much as the failed login's own reset is. Set by [`earliest`] alone.
     EarliestReset,
-    MaxWait,
-    StepTimeout,
+    /// No deadline: the limit stated no usable reset, so the wait ends only
+    /// on a login with room or a login change (see the module docs). Written
+    /// `bound=none`, beside `until=none`.
+    Unbounded,
 }
 
 impl Bound {
@@ -279,8 +326,7 @@ impl Bound {
         match self {
             Bound::ResetMargin => "reset+margin",
             Bound::EarliestReset => "earliest_reset+margin",
-            Bound::MaxWait => "max_wait",
-            Bound::StepTimeout => "step_timeout",
+            Bound::Unbounded => "none",
         }
     }
 }
@@ -296,7 +342,10 @@ pub(crate) enum PlanKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Plan {
-    pub(crate) until: i64,
+    /// When the wait ends if no event ends it first: the reset plus the
+    /// margin. `None` for a wait whose limit stated no usable reset, which
+    /// ends only on an event (see the module docs).
+    pub(crate) until: Option<i64>,
     pub(crate) bound: Bound,
     pub(crate) kind: PlanKind,
     /// The reset as read, for the log line; a capacity wait may have none.
@@ -329,41 +378,6 @@ impl Plan {
         !self.is_login_change()
     }
 
-    /// Whether this wait would end the moment it began, because the reset it
-    /// waits for has already passed at `now`.
-    ///
-    /// [`plan`] gives such a wait a deadline of `now`, which is how the grace
-    /// a step's first limit on a login gets is spelled: the reset in the
-    /// message may be minutes behind the clock the retry reads, and retrying
-    /// at once is the right answer. The wait sleeps for nothing, so it spends
-    /// none of the step's budget, and a chain of them is bounded by nothing.
-    /// The caller asks this where that matters (issue #2857) and nowhere else.
-    ///
-    /// A capacity wait is never this: it waits for a reading, not for the
-    /// reset, and its deadline is its own. Neither is a login-change wait,
-    /// whose limit stated no reset at all. That is why
-    /// [`upgrade_passed_reset`] answers the same case for a usage limit: the
-    /// plan it builds is a capacity wait, so it reaches the caller's refusal
-    /// as a wait that will cost something, and the budget binds it. What is
-    /// still a reset wait here, and is refused, is a spend limit stating a
-    /// passed session reset, and a reset read from the auto-switch readings
-    /// ([`from_reading`]).
-    pub(crate) fn ends_at_once(&self, now: i64) -> bool {
-        self.kind == PlanKind::Reset && self.reset.is_some_and(|r| r <= now)
-    }
-
-    /// Whether this is the capacity wait a re-entry on a reset the clock had
-    /// already passed was planned as (issue #2857), at `now`.
-    ///
-    /// Such a wait has no reset to end on, so the budget is its only
-    /// deadline. When that deadline is reached the step retries once, as a
-    /// reset wait does at its own deadline: the retry is the check the wait
-    /// was for, and a limit on it is refused by the budget that is now spent.
-    /// Any other capacity wait still ends `capacity expired` at its deadline.
-    pub(crate) fn is_passed_reset_capacity(&self, now: i64) -> bool {
-        self.kind == PlanKind::Capacity && self.reset.is_some_and(|r| r <= now)
-    }
-
     /// A plan with a deadline the caller chooses, for the wait's own tests.
     ///
     /// There is deliberately no way to raise `login_change` here:
@@ -372,7 +386,7 @@ impl Plan {
     #[cfg(test)]
     pub(super) fn for_test(until: i64, bound: Bound, kind: PlanKind, reset: Option<i64>) -> Self {
         Self {
-            until,
+            until: Some(until),
             bound,
             kind,
             reset,
@@ -381,99 +395,47 @@ impl Plan {
     }
 }
 
-/// The deadline for a wait starting at `now` for `reset`, which
-/// [`wait_for_message`] has kept within five hours. `step` is the step's start and
-/// its `AMPLIHACK_STEP_TIMEOUT` in seconds; a timeout of 0 does not apply.
-pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
-    let ceiling = now.saturating_add(FIVE_HOURS);
-    let mut until = if reset <= now {
-        now
-    } else {
-        reset.min(ceiling).saturating_add(MARGIN)
-    };
-    let mut bound = Bound::ResetMargin;
-    let mut consider = |candidate: i64, b: Bound| {
-        if candidate < until {
-            until = candidate;
-            bound = b;
-        }
-    };
-    if let Some(max) = max {
-        consider(now.saturating_add(secs(max)), Bound::MaxWait);
-    }
-    if let Some(end) = step_deadline(now, step) {
-        consider(end, Bound::StepTimeout);
-    }
+/// The deadline for a reset wait starting at `now` for `reset`: the reset
+/// plus the margin, and nothing else.
+///
+/// A reset wait has no timed bound. The router builds one only from a reset
+/// strictly ahead of the clock and within five hours, so its reset is the
+/// limit event it waits for: the wait ends there, or sooner on a login with
+/// room or a login change.
+///
+/// There is no five-hour ceiling here either. The five-hour rule decides
+/// which wait a limit earns, and the router applies it once: a reset beyond
+/// it becomes a capacity wait ([`plan_capacity`]), which still ends at that
+/// reset.
+///
+/// The row is floored at `now + MARGIN`, so the deadline is after `now`
+/// even for a reset no caller should have passed in.
+pub(crate) fn plan(now: i64, reset: i64) -> Plan {
     Plan {
-        until,
-        bound,
+        until: Some(reset.max(now).saturating_add(MARGIN)),
+        bound: Bound::ResetMargin,
         kind: PlanKind::Reset,
         reset: Some(reset),
         login_change: false,
     }
 }
 
-/// The deadline for an earliest-reset wait starting at `now` (issue #2967):
-/// [`plan`]'s table with the reset row named [`Bound::EarliestReset`].
-/// `reset` is the earliest reset across the step's eligible logins, which
-/// [`earliest`] has kept within five hours. The maximum and the step timeout
-/// still win when they are sooner, a tie is named by the earlier row, and no
-/// input makes the wait longer than five hours and the margin.
+/// The deadline for a capacity wait starting at `now`.
 ///
-/// The plan is a [`PlanKind::Reset`] one and never a login-change wait, so a
-/// login with room that the wait's own poll finds still ends it early.
-pub(crate) fn plan_earliest(
-    now: i64,
-    reset: i64,
-    max: Option<u64>,
-    step: Option<(i64, u64)>,
-) -> Plan {
-    let mut p = plan(now, reset, max, step);
-    if p.bound == Bound::ResetMargin {
-        p.bound = Bound::EarliestReset;
-    }
-    p
-}
-
-/// When `step` requires the wait to end, never before `now`; a timeout of 0
-/// does not apply.
-fn step_deadline(now: i64, step: Option<(i64, u64)>) -> Option<i64> {
-    let (start, timeout) = step.filter(|(_, t)| *t > 0)?;
-    Some(
-        start
-            .saturating_add(secs(timeout))
-            .saturating_sub(STEP_TIMEOUT_LEAD)
-            .max(now),
-    )
-}
-
-/// The deadline for a capacity wait starting at `now`: the earliest of the
-/// failed login's own `reset` plus the margin (when still in the future), `max`
-/// from now and the step timeout less its lead, never before `now`. A tie
-/// between the reset and the maximum is named `ResetMargin`, and one between
-/// the maximum and the step timeout `MaxWait`. There is no five-hour ceiling.
-/// Reaching the reset retries the step, because that login has recovered.
-pub(crate) fn plan_capacity(
-    now: i64,
-    reset: Option<i64>,
-    max: Option<u64>,
-    step: Option<(i64, u64)>,
-) -> Plan {
-    let mut until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
-    let mut bound = Bound::MaxWait;
-    if let Some(r) = reset.filter(|r| *r > now) {
-        let end = r.saturating_add(MARGIN);
-        if end <= until {
-            until = end;
-            bound = Bound::ResetMargin;
-        }
-    }
-    if let Some(end) = step_deadline(now, step)
-        && end < until
-    {
-        until = end;
-        bound = Bound::StepTimeout;
-    }
+/// A `reset` still ahead of `now` is the deadline, plus the margin, however
+/// far away it is: the failed login has recovered there, and nothing else
+/// on a timer runs the step before it. A weekly limit days away is waited
+/// for once. The router has already held the reset to its kind's window
+/// ([`held`]).
+///
+/// With no reset ahead (none stated, credits, a reset already passed, a
+/// bare 429) there is no deadline: the wait ends on a login with room or a
+/// login change, and on nothing timed (issue #2911).
+pub(crate) fn plan_capacity(now: i64, reset: Option<i64>) -> Plan {
+    let (until, bound) = match reset.filter(|r| *r > now) {
+        Some(r) => (Some(r.saturating_add(MARGIN)), Bound::ResetMargin),
+        None => (None, Bound::Unbounded),
+    };
     Plan {
         until,
         bound,
@@ -483,35 +445,66 @@ pub(crate) fn plan_capacity(
     }
 }
 
-/// The deadline for a login-change wait starting at `now`: `max` from now,
-/// or the step timeout less its lead when that is earlier, never before
-/// `now`. A tie is named `MaxWait`. There is no reset row, because the limit
-/// stated none, and no five-hour ceiling.
+/// The plan for a login-change wait: no deadline. The limit stated no
+/// reset, and the login changing is the event this wait is for, so it ends
+/// on that and on nothing timed (issue #2911).
 ///
 /// The plan's kind is [`PlanKind::Reset`] on purpose: the kind says what
-/// the deadline means, and reaching this one is `End::MaxReached`, which the
-/// caller turns into `failed reason=spend_limit`. What this wait does *not*
-/// consult is carried by [`Plan::capacity_may_end`] instead: no reading says
-/// whether the next login's organisation has credit, and the rotator picks
-/// what goes into `~/.claude` in any case.
-pub(crate) fn plan_login_change(now: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
-    let mut until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
-    let mut bound = Bound::MaxWait;
-    if let Some(end) = step_deadline(now, step)
-        && end < until
-    {
-        until = end;
-        bound = Bound::StepTimeout;
-    }
+/// ending the wait means, and a login change retries the step under the
+/// login now live, as a reset wait's end does. What this wait does *not*
+/// consult is carried by [`Plan::capacity_may_end`] instead: no reading
+/// says whether the next login's organisation has credit, and the rotator
+/// picks what goes into `~/.claude` in any case.
+pub(crate) fn plan_login_change() -> Plan {
     Plan {
-        until: until.max(now),
-        bound,
+        until: None,
+        bound: Bound::Unbounded,
         kind: PlanKind::Reset,
         reset: None,
         login_change: true,
     }
 }
 
-fn secs(v: u64) -> i64 {
-    i64::try_from(v).unwrap_or(i64::MAX)
+/// `p`, ending at the earliest reset among the other logins the step could
+/// move to when that comes before `p` would end (issue #2967).
+///
+/// On 21 November 2026 a step waited two hours for its own login's reset
+/// while other stored logins were usable or about to be. A login's window
+/// resetting writes no file, so no file event ends the wait there; the
+/// instant is known from that login's reading, and it is the one more limit
+/// event a wait can have a deadline for. This adds no timer: it only moves
+/// the one deadline a wait already blocks on earlier, and it never gives a
+/// deadline to a wait that `p` says may not have one for its own reasons.
+///
+/// `other` is that earliest reset on the wait's clock, from
+/// `auto_switch::limit_choice::cross_login_reset`, which has already left
+/// out every login that is usable now, tried, barred or without a reset
+/// ahead. It is held to the weekly window ([`held`]), as any reset read
+/// from a reading is. It counts when it is strictly after `now` and its
+/// deadline comes strictly before `p.until`, or `p` has none. Then the
+/// deadline becomes `other` plus [`MARGIN`] and `bound=` reads
+/// `earliest_reset+margin`; the plan's kind and its `reset=`, the limit's
+/// own reset, are kept. A wait that ends there retries on the login whose
+/// reset set the deadline (`auto_switch::rerun::retry_profile`).
+///
+/// A login-change wait is returned as it was: it waits for one
+/// organisation's spend limit to be replaced, and no other login's window
+/// restores an organisation's credit (issue #2731). The comparison never
+/// subtracts, so no input overflows.
+pub(crate) fn earliest(p: Plan, other: Option<i64>, now: i64) -> Plan {
+    if p.is_login_change() {
+        return p;
+    }
+    let Some(other) = other.filter(|o| *o > now).map(|o| held(o, now, None)) else {
+        return p;
+    };
+    let until = other.saturating_add(MARGIN);
+    if p.until.is_some_and(|own| own <= until) {
+        return p;
+    }
+    Plan {
+        until: Some(until),
+        bound: Bound::EarliestReset,
+        ..p
+    }
 }

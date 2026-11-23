@@ -281,17 +281,6 @@ pub(crate) static KEYS: &[KeyDef] = &[
         lower_only: false,
     },
     KeyDef {
-        name: "recipe.usage_limit_max_wait_secs",
-        scope: Scope::UserAndProject,
-        kind: ValueKind::Int {
-            min: 0,
-            max: u64::MAX,
-        },
-        env: Some("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS"),
-        default: Some("21600"),
-        lower_only: true,
-    },
-    KeyDef {
         // Issue #2589: the dangerous-command entries this installation adds
         // to the shipped list. User-only, because a cloned repository must
         // not change what any harness denies, and with no variable, because
@@ -381,6 +370,23 @@ pub(crate) static KEYS: &[KeyDef] = &[
     super::schema_governor::GOVERNOR_EVAL_INTERVAL_SECS,
     super::schema_governor::GOVERNOR_WAIT_SECS,
     super::schema_governor::GOVERNOR_MAX_READING_AGE_SECS,
+    KeyDef {
+        name: "agent.standing",
+        // Issue #2912: whether a session started with `amplihack claude
+        // --supervise NAME` is relaunched in its pane with `claude
+        // --continue` when its process exits other than by its owner.
+        //
+        // User-only: it makes amplihack start an agent with nobody at the
+        // keyboard, so a cloned repository must not be able to set it. No
+        // variable: the wrapper is started by a person in a pane, and a
+        // stray variable inherited from a parent run would mark a session
+        // standing that nobody asked to be standing.
+        scope: Scope::UserOnly,
+        kind: ValueKind::Bool,
+        env: None,
+        default: Some("false"),
+        lower_only: false,
+    },
     KeyDef {
         name: "sessions.daily_archive",
         // Turns on a job that removes files from ~/.claude/projects; a

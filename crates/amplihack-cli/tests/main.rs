@@ -38,6 +38,15 @@ mod issue_2808_named_checkout;
 #[path = "issue_2884_task_conditions.rs"]
 mod issue_2884_task_conditions;
 
+#[path = "issue_2912_standing_relaunch.rs"]
+mod issue_2912_standing_relaunch;
+
+#[path = "issue_2912_supervisor_skill.rs"]
+mod issue_2912_supervisor_skill;
+
+#[path = "issue_2912_crash_loop_stop.rs"]
+mod issue_2912_crash_loop_stop;
+
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2556_autodrive_evidence.rs"]
@@ -433,6 +442,28 @@ mod issue_2882_spend_limit_capacity_wait;
 mod issue_2889_freshest_live_reading;
 #[path = "issue_2890_spend_blocked_login.rs"]
 mod issue_2890_spend_blocked_login;
+#[path = "issue_2909_limit_event.rs"]
+mod issue_2909_limit_event;
+#[path = "issue_2911_auto_switch_chosen_profile.rs"]
+mod issue_2911_auto_switch_chosen_profile;
+#[path = "issue_2911_codex_credits.rs"]
+mod issue_2911_codex_credits;
+#[path = "issue_2911_forged_limit_message.rs"]
+mod issue_2911_forged_limit_message;
+#[path = "issue_2911_limit_block_recorded.rs"]
+mod issue_2911_limit_block_recorded;
+#[path = "issue_2911_prompt_loss_ending.rs"]
+mod issue_2911_prompt_loss_ending;
+#[path = "issue_2911_prompt_loss_resumes.rs"]
+mod issue_2911_prompt_loss_resumes;
+#[path = "issue_2911_repeated_limits_wait.rs"]
+mod issue_2911_repeated_limits_wait;
+#[path = "issue_2911_spend_limit_no_reset.rs"]
+mod issue_2911_spend_limit_no_reset;
+#[path = "issue_2911_wait_wakes_on_events.rs"]
+mod issue_2911_wait_wakes_on_events;
+#[path = "issue_2911_weekly_limit_waits.rs"]
+mod issue_2911_weekly_limit_waits;
 #[path = "issue_2967_other_logins.rs"]
 mod issue_2967_other_logins;
 #[path = "issue_439_no_per_step_timeout.rs"]

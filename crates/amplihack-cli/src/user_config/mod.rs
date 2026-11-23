@@ -460,11 +460,28 @@ pub(crate) fn sessions_daily_archive(home: &Path) -> Result<bool, String> {
         .unwrap_or(true))
 }
 
-/// One `sessions.*` key from `<home>/.amplihack/config.toml`, or `None`
-/// when the file does not set it (issue #1746). The command and the
-/// rotator call this each time they need the key, so a running rotator
-/// follows `config set` without a restart, and both always use the same
-/// values.
+/// The key that marks a supervised session as standing (issue #2912).
+pub(crate) const AGENT_STANDING: &str = "agent.standing";
+
+/// `agent.standing` (default `false`), read by the `amplihack claude
+/// --supervise` wrapper to decide whether to relaunch its session with
+/// `claude --continue` after the process exits (issue #2912).
+///
+/// The caller reads an `Err` as `false` and warns, so a file it cannot make
+/// sense of never turns relaunching on.
+pub(crate) fn agent_standing(home: &Path) -> Result<bool, String> {
+    Ok(sessions_key(home, AGENT_STANDING)?
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false))
+}
+
+/// One user-file key from `<home>/.amplihack/config.toml`, or `None` when
+/// the file does not set it (issue #1746). Named for the `sessions.*` keys
+/// it was written for; `agent.standing` reads the same way (issue #2912).
+/// The project file is not read, so only a user-only key belongs here. The
+/// command and the rotator call this each time they need the key, so a
+/// running rotator follows `config set` without a restart, and both always
+/// use the same values.
 ///
 /// Fails closed, because the archive removes files and a wrong DEST splits
 /// the archive: `Err` with the reason when the user file cannot be read or

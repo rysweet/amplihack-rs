@@ -13,13 +13,11 @@ fn p(args: &[&str]) -> ClaudeArgs {
 const PRINT_PROMPT: ClaudeArgs = ClaudeArgs {
     print: true,
     prompt: true,
-    stream_stdin: false,
     session: false,
 };
 const PRINT_ONLY: ClaudeArgs = ClaudeArgs {
     print: true,
     prompt: false,
-    stream_stdin: false,
     session: false,
 };
 
@@ -111,7 +109,6 @@ fn a_prompt_starting_with_a_dash_is_reachable_only_after_double_dash() {
         ClaudeArgs {
             print: false,
             prompt: true,
-            stream_stdin: false,
             session: false,
         }
     );
@@ -160,17 +157,17 @@ fn an_unknown_option_fails_safe_by_taking_the_next_word_as_its_value() {
     assert_eq!(p(&["-p", "--some-new-flag", "--", "x"]), PRINT_PROMPT);
 }
 
-/// Issue #2816: `--input-format` with anything but `text` makes stdin a
-/// control channel, so it is never copied aside as a prompt.
+/// Issue #3036: an `--input-format` value, `stream-json` or `text`, is
+/// skipped and never read as the prompt, so whatever stdin carries is
+/// copied aside and replayed to a retry, a stream channel included.
 ///
 /// `stream-json` is the shape amplihack's own usage request uses
-/// (`usage_request::ARGS`): a long-lived channel whose caller holds it open
-/// for the whole session and writes to it as it goes. Copying that would
-/// store a session's history in the rerun directory and replay it to a
-/// retry as if it were the prompt. The step keeps the conduct it had before
-/// #2815 instead: no copy, and a usage limit ends it.
+/// (`usage_request::ARGS`). Before #3036 such a channel was not copied and a
+/// usage limit ended the step; it is now copied as any piped input is,
+/// because a supervised step's stdout is held back until the step finishes,
+/// so its caller has seen nothing of an attempt that is run again.
 #[test]
-fn an_input_format_channel_is_not_a_prompt_on_stdin() {
+fn an_input_format_value_is_never_the_prompt() {
     for args in [
         &["-p", "--input-format", "stream-json"][..],
         &["-p", "--input-format=stream-json"],
@@ -182,14 +179,11 @@ fn an_input_format_channel_is_not_a_prompt_on_stdin() {
             "stream-json",
             "--verbose",
         ],
-        // A value that is missing altogether reads the same way, which is
-        // the safe side: no copy is what this step did before #2815.
+        // A value that is missing altogether reads the same way: stdin
+        // carries the input, and is copied.
         &["-p", "--input-format"],
     ] {
-        let parsed = p(args);
-        assert!(parsed.stream_stdin, "{args:?}");
-        assert!(!parsed.prompt, "{args:?}");
-        assert!(parsed.print, "{args:?}");
+        assert_eq!(p(args), PRINT_ONLY, "{args:?}");
     }
     // `text` is the default and is a prompt: it is copied as a bare `-p` is.
     for args in [
@@ -197,7 +191,6 @@ fn an_input_format_channel_is_not_a_prompt_on_stdin() {
         &["-p", "--input-format=text"],
     ] {
         let parsed = p(args);
-        assert!(!parsed.stream_stdin, "{args:?}");
         assert!(!parsed.prompt, "{args:?}");
     }
     // A prompt in argv is still found whatever the input format.

@@ -97,6 +97,7 @@ Centralized plugin system that works across all your projects:
 - [Update amplihack with gh's login](howto/update-with-gh-login.md) - Use gh's existing login for release lookup and download, and read a GitHub rate-limit refusal
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
+- [Usage-Limit Waits and Limit Records](reference/usage-limit-waits.md) - A step that meets a usage, spend or credit limit records it for its login, waits for room and continues; what ends a step, the record format, the `waiting_for_capacity` line
 - [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset, for another stored login to show capacity, or for the rotator to move a new login into `~/.claude`, and run once more ([reference](reference/profile-command.md#usage-limit-wait))
 
 ### Configuration
@@ -171,6 +172,7 @@ amplihack copilot
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
 - [Claude Profiles How-To](howto/claude-profiles.md) - Separate Claude logins per profile, shared sessions, and what a new profile inherits
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
+- [Keep a Session Running After Its Process Exits](howto/keep-sessions-running.md) - Mark a supervised session as standing so it is relaunched with `claude --continue` in its own pane when its process exits
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
 - [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT` or, in lib tests, a per-thread scope and a shared empty default, the `FakeProc` builder, and the guard that fails a test reading host processes

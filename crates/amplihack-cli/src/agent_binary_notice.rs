@@ -908,12 +908,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_tmux_server_holds_a_marker_only_with_the_same_value() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
+        // Written by the shared stub writer, which never holds the file open
+        // for writing in this process. A stub written here with
+        // `std::fs::write` can be inherited open by a sibling test's fork and
+        // then fail to run ("text file busy"), which reads as `false`.
         let stub = |name: &str, body: &str| {
             let path = dir.path().join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::test_support::write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
             path
         };
         // Echoes its arguments' variable back as tmux does for a set one.

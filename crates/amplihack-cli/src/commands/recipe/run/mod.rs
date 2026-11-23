@@ -526,6 +526,8 @@ mod tests_heartbeat;
 #[cfg(all(test, unix))]
 mod tests_issue_3049_release_pin;
 #[cfg(test)]
+mod tests_limit_kind;
+#[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]
 mod tests_limit_reset;

@@ -741,13 +741,33 @@ mod evidence {
         CLOCK.get()
     }
 
-    fn reread(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-        CALLS.with_borrow_mut(|v| v.push(name.to_string()));
-        ANSWERS.with_borrow_mut(|v| v.pop_front().expect("unexpected external reread"))
+    fn reread(
+        c: &Ctx,
+        who: &ProfileName,
+        left: Duration,
+    ) -> (
+        Probed,
+        Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+    ) {
+        fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+            CALLS.with_borrow_mut(|v| v.push(name.to_string()));
+            ANSWERS.with_borrow_mut(|v| v.pop_front().expect("unexpected external reread"))
+        }
+        (hook_body(c, who, left), None)
     }
 
-    fn no_read(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
-        panic!("locked revalidation must not read externally")
+    fn no_read(
+        c: &Ctx,
+        who: &ProfileName,
+        left: Duration,
+    ) -> (
+        Probed,
+        Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+    ) {
+        fn hook_body(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
+            panic!("locked revalidation must not read externally")
+        }
+        (hook_body(c, who, left), None)
     }
 
     fn fixture() -> (Env, Ctx, observe::Snap) {
@@ -1661,7 +1681,7 @@ mod production_reader {
             .to_string(),
         );
         isolated(&e, &server, |c| {
-            let live = fresh::reread_live_as_configured(c, &n("work"), Duration::from_secs(5));
+            let (live, _) = fresh::reread_live_as_configured(c, &n("work"), Duration::from_secs(5));
             assert_eq!(
                 live.reading,
                 Reading::Measured {
@@ -1670,7 +1690,7 @@ mod production_reader {
                 }
             );
             assert!(!live.passive);
-            let stored = fresh::reread_as_configured(c, &n("work"), Duration::from_secs(5));
+            let (stored, _) = fresh::reread_as_configured(c, &n("work"), Duration::from_secs(5));
             assert_eq!(
                 stored.reading,
                 Reading::Measured {
@@ -1730,7 +1750,7 @@ mod production_reader {
         let before_stored = fs::read(e.slot("work")).unwrap();
         let live_mtime = fs::metadata(e.live()).unwrap().modified().unwrap();
         isolated(&e, &server, |c| {
-            let p = fresh::reread_live_as_configured(c, &n("work"), Duration::from_secs(5));
+            let (p, _) = fresh::reread_live_as_configured(c, &n("work"), Duration::from_secs(5));
             assert_eq!(p.reading, Reading::Failed);
             assert!(
                 server.seen().is_empty(),
@@ -1751,7 +1771,7 @@ mod production_reader {
             );
             // Positive control: identical expiry on a stored target does
             // refresh, proving the fixture exercises the expiry branch.
-            let p = fresh::reread_as_configured(c, &n("work"), Duration::from_secs(5));
+            let (p, _) = fresh::reread_as_configured(c, &n("work"), Duration::from_secs(5));
             assert_eq!(
                 p.reading,
                 Reading::Measured {

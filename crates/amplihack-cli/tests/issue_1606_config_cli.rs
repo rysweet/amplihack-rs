@@ -26,7 +26,6 @@ const SCHEMA_ORDER: &[&str] = &[
     "recipe.tmux_session_pattern",
     "recipe.log_dir",
     "recipe.usage_limit_wait",
-    "recipe.usage_limit_max_wait_secs",
     "orchestrator.max_depth",
     "sessions.daily_archive",
     "sessions.archive_days",
@@ -356,7 +355,6 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "recipe.tmux_session_pattern = \"amp-{recipe}-{repo}-{ts}\"",
             "recipe.log_dir = (unset)",
             "recipe.usage_limit_wait = true",
-            "recipe.usage_limit_max_wait_secs = 21600",
             // Issue #2589: unset by default; the shipped dangerous-command
             // entries live in code, not in this file.
             "policy.deny_commands = (unset)",
@@ -375,6 +373,8 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "governor.eval_interval_secs = 60",
             "governor.wait_secs = 600",
             "governor.max_reading_age_secs = 3600",
+            // Issue #2912: off unless the user turns it on.
+            "agent.standing = false",
             "sessions.daily_archive = true",
             "sessions.archive_days = 3",
             "sessions.archive_dest = (unset)",

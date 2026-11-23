@@ -6,6 +6,13 @@
 //! inotify queue overflows, the process exits or the deadline passes. It
 //! never sleeps and never polls on an interval.
 //!
+//! Issue #2909: [`Waiter::with_interrupt`] adds one caller-supplied readable
+//! descriptor to the same `poll(2)`. A signal handler that writes a byte to
+//! it ends the wait at once, so a process waiting out a long deadline still
+//! answers SIGTERM promptly. The waiter duplicates the descriptor
+//! (close-on-exec) and drains it, so the caller keeps its own copy and the
+//! next wait does not spin on the same byte.
+//!
 //! Linux only: elsewhere [`Waiter::new`] fails with `Unsupported`, and a
 //! caller has nothing to wait on.
 
@@ -52,7 +59,9 @@ pub enum Woke {
     Lost(usize),
     /// The watched process exited.
     ProcessGone,
-    /// The deadline passed with nothing else.
+    /// The deadline passed with nothing else, or the interrupt descriptor
+    /// given to [`Waiter::with_interrupt`] became readable. The caller
+    /// checks its own stop flag, so the two need not be told apart.
     Deadline,
 }
 
@@ -112,7 +121,7 @@ mod linux {
     use std::collections::VecDeque;
     use std::ffi::CString;
     use std::io;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
     use std::time::Instant;
 
@@ -121,6 +130,8 @@ mod linux {
         libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_IGNORED | libc::IN_UNMOUNT;
     /// Read buffer: one record is at most 16 + NAME_MAX + 1 bytes.
     const BUF_BYTES: usize = 4096;
+    /// The most reads one drain of the interrupt descriptor makes.
+    const MAX_INTERRUPT_READS: usize = 1024;
 
     #[repr(C, align(8))]
     struct EventBuf([u8; BUF_BYTES]);
@@ -134,6 +145,11 @@ mod linux {
         watches: Vec<(i32, Option<&'static str>, u32)>,
         /// Wakes read but not returned yet, most urgent first.
         pending: VecDeque<Woke>,
+        /// Issue #2909: this waiter's own copy of the caller's interrupt
+        /// descriptor, dropped once the far end closes.
+        interrupt: Option<OwnedFd>,
+        /// The interrupt became readable and no wake has reported it yet.
+        interrupted: bool,
     }
 
     fn check(rc: libc::c_int) -> io::Result<libc::c_int> {
@@ -150,6 +166,29 @@ mod linux {
         /// a pidfd for `pid`. Every failure is an error; both descriptors
         /// are close-on-exec.
         pub fn new(watches: &[Watch], pid: u32) -> io::Result<Self> {
+            Self::build(watches, pid, None)
+        }
+
+        /// [`Waiter::new`] with `interrupt` polled beside the watches and
+        /// the pidfd (issue #2909). The descriptor is duplicated with
+        /// `F_DUPFD_CLOEXEC`, so this waiter owns its copy for as long as it
+        /// lives and a child of this process never inherits it. The caller
+        /// keeps the original and may go on writing to or reading from it.
+        pub fn with_interrupt(
+            watches: &[Watch],
+            pid: u32,
+            interrupt: BorrowedFd<'_>,
+        ) -> io::Result<Self> {
+            // SAFETY: fcntl with F_DUPFD_CLOEXEC on a borrowed descriptor
+            // returns a new descriptor or -1; it reads no memory.
+            let raw =
+                check(unsafe { libc::fcntl(interrupt.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
+            // SAFETY: `raw` is a new descriptor that nothing else owns.
+            let owned = unsafe { OwnedFd::from_raw_fd(raw) };
+            Self::build(watches, pid, Some(owned))
+        }
+
+        fn build(watches: &[Watch], pid: u32, interrupt: Option<OwnedFd>) -> io::Result<Self> {
             // SAFETY: inotify_init1 takes flags only.
             let raw = check(unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) })?;
             // SAFETY: `raw` is a new descriptor that nothing else owns.
@@ -193,6 +232,8 @@ mod linux {
                 pidfd,
                 watches: added,
                 pending: VecDeque::new(),
+                interrupt,
+                interrupted: false,
             })
         }
 
@@ -215,26 +256,32 @@ mod linux {
 
         /// Blocks until something happens or `deadline` passes. Events for
         /// other names are read and dropped without returning.
+        ///
+        /// A readable interrupt ([`Waiter::with_interrupt`]) ends the wait
+        /// with [`Woke::Deadline`]. File events found in the same `poll(2)`
+        /// are returned first and the interrupt on the next call, so neither
+        /// is lost.
         pub fn wait(&mut self, deadline: Instant) -> io::Result<Woke> {
             loop {
                 if let Some(w) = self.pending.pop_front() {
                     return Ok(w);
                 }
-                let mut fds = [
-                    libc::pollfd {
-                        fd: self.pidfd.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: self.inotify.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                ];
+                if std::mem::take(&mut self.interrupted) {
+                    return Ok(Woke::Deadline);
+                }
+                let poll = |fd: i32| libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let mut fds = vec![poll(self.pidfd.as_raw_fd()), poll(self.inotify.as_raw_fd())];
+                if let Some(i) = &self.interrupt {
+                    fds.push(poll(i.as_raw_fd()));
+                }
+                let n = fds.len();
                 let timeout = timeout_ms(Instant::now(), deadline);
-                // SAFETY: two valid pollfds; the timeout is 0..=i32::MAX.
-                let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) };
+                // SAFETY: `n` valid pollfds; the timeout is 0..=i32::MAX.
+                let rc = unsafe { libc::poll(fds.as_mut_ptr(), n as libc::nfds_t, timeout) };
                 if rc < 0 {
                     let e = io::Error::last_os_error();
                     if e.kind() == io::ErrorKind::Interrupted {
@@ -249,11 +296,84 @@ mod linux {
                 if fds[0].revents & bad != 0 || fds[1].revents & bad != 0 {
                     return Err(io::Error::other("poll reported an invalid descriptor"));
                 }
+                if n > 2 {
+                    self.take_interrupt(fds[2].revents);
+                }
                 if fds[0].revents != 0 {
                     return Ok(Woke::ProcessGone);
                 }
                 if fds[1].revents != 0 {
                     self.drain()?;
+                }
+            }
+        }
+
+        /// Acts on the interrupt descriptor's `revents`: readable means the
+        /// caller signalled, so the bytes are read away and the next wake
+        /// reports it. Where no further interrupt can arrive the descriptor
+        /// is dropped rather than polled for ever, and the waiter carries on
+        /// with its watches alone.
+        ///
+        /// A readable descriptor is not kept unconditionally: a socket whose
+        /// peer has closed reports `POLLIN | POLLHUP` and keeps reporting it
+        /// once drained, so treating readable as the only case would make
+        /// every later wait return at once. What is there is read and
+        /// reported, and then the descriptor goes.
+        ///
+        /// `POLLERR` is final only on a descriptor that is not readable. A
+        /// socket error is cleared by a read, and the drain has just made
+        /// one, so one transient error does not cost the waiter the
+        /// interrupt that `rotate stop` depends on. A hang-up and an invalid
+        /// descriptor are final either way.
+        fn take_interrupt(&mut self, revents: i16) {
+            let set = |bits: i16| revents & bits != 0;
+            if set(libc::POLLIN) {
+                self.drain_interrupt();
+                self.interrupted = true;
+                if set(libc::POLLHUP | libc::POLLNVAL) {
+                    self.interrupt = None;
+                }
+                return;
+            }
+            if set(libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) {
+                self.interrupt = None;
+            }
+        }
+
+        /// Reads the interrupt descriptor empty without blocking: each read
+        /// is made only after a zero-timeout `poll(2)` says one byte is
+        /// there, so a blocking descriptor is safe. Bounded, so a writer
+        /// faster than this loop cannot hold it here.
+        fn drain_interrupt(&mut self) {
+            let Some(fd) = self.interrupt.as_ref().map(AsRawFd::as_raw_fd) else {
+                return;
+            };
+            let mut buf = [0u8; 64];
+            for _ in 0..MAX_INTERRUPT_READS {
+                let mut one = [libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                }];
+                // SAFETY: one valid pollfd; timeout 0 never blocks.
+                let rc = unsafe { libc::poll(one.as_mut_ptr(), 1, 0) };
+                if rc < 0 {
+                    if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return;
+                }
+                if rc == 0 || one[0].revents & libc::POLLIN == 0 {
+                    return;
+                }
+                // SAFETY: `buf` is 64 writable bytes, and `poll` has just
+                // said a read of this descriptor will not block.
+                let got = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+                if got < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                if got <= 0 {
+                    return;
                 }
             }
         }
@@ -347,6 +467,19 @@ pub struct Waiter {
 impl Waiter {
     /// Always `Unsupported`.
     pub fn new(_watches: &[Watch], _pid: u32) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "file events need Linux",
+        ))
+    }
+
+    /// Always `Unsupported`, as [`Waiter::new`] is.
+    #[cfg(unix)]
+    pub fn with_interrupt(
+        _watches: &[Watch],
+        _pid: u32,
+        _interrupt: std::os::fd::BorrowedFd<'_>,
+    ) -> io::Result<Self> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "file events need Linux",

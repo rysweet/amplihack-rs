@@ -7,7 +7,7 @@
 
 use super::failure_markers::TRANSIENT_MARKERS;
 use super::limit_patterns::{
-    CLAUDE_RATE_LIMIT, Harness, LimitMessage, all_markers, epoch_marker, limit_message,
+    CLAUDE_RATE_LIMIT, Harness, LimitKind, LimitMessage, all_markers, epoch_marker, limit_message,
     limit_message_in, rate_limit, reset_hint,
 };
 use super::{FailureClass, classify_failure_text};
@@ -36,10 +36,18 @@ fn epoch(stderr: &[u8], stdout: &[u8]) -> Option<i64> {
     epoch_marker(stderr, stdout).flatten()
 }
 
+/// A Claude message stating `reset`. `spend` picks the kind this file's
+/// own fixtures carry: every non-spend line here names the session or a
+/// per-model window, which is [`LimitKind::Session`]. The kinds themselves
+/// are covered in `tests_limit_kind.rs`.
 fn msg(reset: Option<i64>, spend: bool) -> Option<LimitMessage> {
     Some(LimitMessage {
         harness: Harness::Claude,
-        spend,
+        kind: if spend {
+            LimitKind::Spend
+        } else {
+            LimitKind::Session
+        },
         reset,
     })
 }
@@ -136,14 +144,14 @@ fn the_real_messages_are_read_from_stderr() {
     );
     // Oct 8 has passed on 2026-10-18, so next year's; the plan refuses it.
     let weekly = limit_message(WEEKLY.as_bytes(), b"", NOW).unwrap();
-    assert!(!weekly.spend);
+    assert!(!weekly.spend());
     assert!(weekly.reset.is_some_and(|r| r > NOW + 300 * 86_400));
 }
 
 #[test]
 fn a_spend_limit_line_carries_the_session_or_weekly_reset_it_states() {
     let weekly = limit_message(SPEND_WEEKLY.as_bytes(), b"", NOW).unwrap();
-    assert!(weekly.spend);
+    assert!(weekly.spend());
     assert!(
         weekly.reset.is_some_and(|r| r > NOW + 300 * 86_400),
         "next Oct 8"
@@ -195,6 +203,25 @@ fn the_epoch_form_states_its_reset_and_a_message_with_no_reset_says_so() {
     );
     let none = "You've hit your session limit · try again later";
     assert_eq!(limit_message(none.as_bytes(), b"", NOW), msg(None, false));
+}
+
+#[test]
+fn issue_2911_an_epoch_line_takes_its_reset_from_the_epoch_digits_only() {
+    // A line in the epoch form states its reset as the digits after `|`.
+    // When they do not parse, the line states no reset, even if a text-form
+    // `resets …` follows: one line carries one form, and the wait for a
+    // line with no reset is the bounded capacity wait.
+    for rest in [
+        "soon · resets 1pm (America/Los_Angeles)",
+        "99999999999999999999 · resets 1pm (America/Los_Angeles)",
+    ] {
+        let line = epoch_line(rest);
+        assert_eq!(
+            limit_message(line.as_bytes(), b"", NOW).map(|m| m.reset),
+            Some(None),
+            "{line}"
+        );
+    }
 }
 
 #[test]

@@ -13,13 +13,14 @@ use super::limit_wait::plan::{self, WaitFor};
 use super::limit_wait::scratch::RerunStdin;
 use super::limit_wait::wait_state;
 use super::name::ProfileName;
-use crate::commands::recipe::run::limit_patterns::{self, Harness};
+use crate::commands::recipe::run::limit_patterns::{self, LimitKind};
 use crate::commands::recipe::run::local_zone;
 use crate::commands::recipe::run::{FailureClass, classify_failure_text};
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -67,18 +68,34 @@ pub(crate) struct Signals {
     int: Arc<AtomicBool>,
     /// The last stop signal seen, or 0.
     seen: AtomicI32,
+    /// The read end of a socket each stop signal writes a byte to, so a
+    /// usage-limit wait blocked on file events wakes on a stop signal at
+    /// once (`limit_wait::wake`). Made here, with the flags, so that every
+    /// wait has one: a supervisor that cannot make it cannot catch stop
+    /// signals, and stands down as it does when the flags cannot be
+    /// registered.
+    interrupt: UnixStream,
     ids: Vec<signal_hook::SigId>,
 }
 
 impl Signals {
     pub(crate) fn register() -> std::io::Result<Self> {
+        let (interrupt, write) = UnixStream::pair()?;
+        interrupt.set_nonblocking(true)?;
+        write.set_nonblocking(true)?;
         let mut s = Self {
             term: Arc::new(AtomicBool::new(false)),
             hup: Arc::new(AtomicBool::new(false)),
             int: Arc::new(AtomicBool::new(false)),
             seen: AtomicI32::new(0),
+            interrupt,
             ids: Vec::new(),
         };
+        // The flags are registered before the socket's writers, so that by
+        // the time a wait woken by the byte checks its flags, the signal's
+        // flag is set: signal-hook runs a signal's actions in the order they
+        // were registered. A failure part way drops `s`, which unregisters
+        // whatever was registered.
         for (sig, flag) in [
             (libc::SIGTERM, Arc::clone(&s.term)),
             (libc::SIGHUP, Arc::clone(&s.hup)),
@@ -86,7 +103,16 @@ impl Signals {
         ] {
             s.ids.push(signal_hook::flag::register(sig, flag)?);
         }
+        for sig in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+            let w = write.try_clone()?;
+            s.ids.push(signal_hook::low_level::pipe::register(sig, w)?);
+        }
         Ok(s)
+    }
+
+    /// The socket a stop signal makes readable (see the field).
+    pub(crate) fn interrupt(&self) -> &UnixStream {
+        &self.interrupt
     }
 
     /// Passes SIGTERM and SIGHUP on to `pid` and remembers every stop signal.
@@ -285,25 +311,11 @@ pub(crate) struct Limited {
     pub(crate) ledger_reset: i64,
     /// Whether, and until when, the usage-limit wait may wait.
     pub(crate) wait: WaitFor,
-    /// The limit as read, for a capacity wait (issue #1801). `None` for a
-    /// spend limit, which keeps its skip whatever reset it states.
-    pub(crate) seen: Option<(Harness, Option<i64>)>,
-    /// The harness of an organisation spend limit that states no reset, for
-    /// a login-change wait (issue #2731); `None` for every other limit.
-    pub(crate) spend: Option<Harness>,
-    /// A spend limit that *also* states a reset that parses, with that reset
-    /// (issues #2882, #2890). `None` for every other limit.
-    ///
-    /// It is a field of its own rather than a widening of [`Self::seen`]
-    /// because the three feed different promotions and must stay disjoint:
-    /// `seen` also reaches `plan::upgrade_passed_reset`, where a spend limit
-    /// whose stated reset has passed must keep its documented
-    /// `already_waited` row (issue #2857), and `spend` reaches
-    /// `plan::upgrade_spend`, which is for a limit that states no reset at
-    /// all (issue #2731). Only `plan::upgrade` reads this one, and the step
-    /// also records the login it ran under as spend-blocked until this
-    /// reset (`rotate::step_block`).
-    pub(crate) spend_reset: Option<(Harness, i64)>,
+    /// What the limit says for the rotator's ledger (issues #2911, #2909):
+    /// the kind of limit, and the reset the message stated, handed to
+    /// `rotate::step_block::note_limit_block`. `None` only when the output
+    /// carried no limit message at all.
+    pub(crate) block: Option<(LimitKind, Option<i64>)>,
 }
 
 /// A failed attempt's output, read once (issue #2857): the stderr tail it
@@ -368,13 +380,7 @@ impl Output {
         Some(Limited {
             ledger_reset,
             wait: plan::wait_for_message(message, now),
-            seen: message.filter(|m| !m.spend).map(|m| (m.harness, m.reset)),
-            spend: message
-                .filter(|m| m.spend && m.reset.is_none())
-                .map(|m| m.harness),
-            spend_reset: message
-                .filter(|m| m.spend)
-                .and_then(|m| m.reset.map(|r| (m.harness, r))),
+            block: message.map(|m| (m.kind, m.reset)),
         })
     }
 }

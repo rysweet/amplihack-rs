@@ -1500,14 +1500,15 @@ fn the_usage_limit_wait_makes_no_request_for_an_excluded_profile() {
     let _rotator = rotator_running(&f);
     fs::create_dir_all(f.home.join(".claude")).unwrap();
     let mut c = f.step();
-    c.env_remove("CLAUDE_CONFIG_DIR")
-        .env(
-            "LIMIT_MESSAGE",
-            "You've hit your session limit · try again later",
-        )
-        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0");
+    c.env_remove("CLAUDE_CONFIG_DIR").env(
+        "LIMIT_MESSAGE",
+        "You've hit your session limit · try again later",
+    );
     ep.configure(&mut c);
-    let out = f.run(&mut c);
+    // The wait has no deadline (issue #2911): the test changes the login
+    // once it is under way, so the step finishes.
+    let out = f.run_with_a_login_change_in(&f.home.join(".claude"), &mut c);
+    assert!(out.status.success(), "{}", describe(&out));
     assert!(
         ep.requests().is_empty(),
         "{:?}\n{}",

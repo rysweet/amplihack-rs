@@ -37,7 +37,7 @@ fn full_ownership_seeds_from_one_reading_and_rotates() {
         serde_json::json!({"account": "uuid-work", "org": "org-work"})
     );
     let ledger = w.f.ledger().unwrap();
-    assert_ne!(ledger["live"], "work", "work at 90% rotates away: {log}");
+    assert_ne!(ledger["live"], "work", "work at 100% rotates away: {log}");
     assert_eq!(
         ino(&w.f.slot("work")),
         Some(w.f.live_ino),

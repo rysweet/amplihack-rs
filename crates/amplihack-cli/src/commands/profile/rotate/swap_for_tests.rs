@@ -1,5 +1,6 @@
 //! The swap as lib tests call it: `swap_with` with the default identity
-//! reader and no snapshot. Kept out of `swap.rs`, which holds no test code.
+//! reader, no snapshot and no organisation rule. Kept out of `swap.rs`,
+//! which holds no test code.
 
 use super::{LoginExchange, Source, swap_with};
 use crate::commands::profile::ProfileError;
@@ -45,6 +46,7 @@ pub fn swap_by(
             read: &read,
             budget: &budget,
         },
+        None,
         None,
         exchange,
     )

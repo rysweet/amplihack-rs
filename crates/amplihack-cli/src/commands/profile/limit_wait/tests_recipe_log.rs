@@ -15,7 +15,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 const START: &str = "amplihack.recipe.usage_limit_wait start reason=usage_limit account=work \
-                     reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait";
+                     reset=none until=none bound=none";
 const END: &str = "amplihack.recipe.usage_limit_wait end reason=login changed";
 
 fn read(p: &Path) -> String {

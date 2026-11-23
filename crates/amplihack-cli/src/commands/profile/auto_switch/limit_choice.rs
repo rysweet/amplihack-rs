@@ -144,8 +144,9 @@ fn within_affinity<'p>(
 /// Only instants strictly after `wait_now` are returned. A usable login, a
 /// login with no reading or no reset ahead, and a login barred by another
 /// rule contribute nothing; the wait's own poll picks such a login up when
-/// its bar lifts. The five-hour bound is the plan's to apply
-/// (`limit_wait::plan::earliest`), not this function's.
+/// its bar lifts. Whether an instant moves a wait's deadline, and the hold
+/// to the weekly window, are the plan's (`limit_wait::plan::earliest`), not
+/// this function's.
 ///
 /// Organisation affinity removes nothing here. It narrows a choice among
 /// logins that have capacity at the same moment, and a login that is the

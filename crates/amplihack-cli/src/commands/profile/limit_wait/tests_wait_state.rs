@@ -13,17 +13,19 @@
 //!   `STEPS_ENV` for a child, `inherited` with `pid` appended. `inherited` is
 //!   parsed strictly, as comma-separated decimal process ids; a malformed
 //!   value is replaced, not repaired.
-//! - `begin(dir, pid, until, expires, steps) -> Option<Guard>`: writes
-//!   `<dir>/<pid>` as `{"v":1,"pid":N,"until":T,"expires":E,"steps":[..]}`,
-//!   integers only, mode `0600`, through a temporary file made with
+//! - `begin(dir, pid, until: Option<i64>, expires, steps) -> Option<Guard>`:
+//!   writes `<dir>/<pid>` as `{"v":1,"pid":N,"until":T,"expires":E,"steps":[..]}`,
+//!   integers only except `until`, which is `null` for a wait with no
+//!   deadline (`until=none`), mode `0600`, through a temporary file made with
 //!   `create_new` and renamed. `None`, and nothing written, when `dir` is not
 //!   valid. Dropping the `Guard` removes the record, on return and on unwind.
-//! - `waiting(dir, pid, now) -> Option<i64>`: the earliest `until` among the
-//!   live records that are `pid`'s own or list `pid` in `steps` (an enclosing
-//!   step's heartbeat names the earliest wait beneath it). A record counts
-//!   only when `v` is 1, its `pid` matches its file name, `now` is before its
-//!   `expires`, its `until` has not passed and its process is alive. An
-//!   unknown key is ignored.
+//! - `waiting(dir, pid, now) -> Option<Option<i64>>`: `Some` when a live
+//!   record is `pid`'s own or lists `pid` in `steps` (an enclosing step's
+//!   heartbeat names the earliest wait beneath it), holding the earliest
+//!   `until` among them, or `None` inside when none of them has a deadline.
+//!   A record counts only when `v` is 1, its `pid` matches its file name,
+//!   `now` is before its `expires`, its `until` has not passed (or is null)
+//!   and its process is alive. An unknown key is ignored.
 //!
 //! The reader opens each file without following links, checks type and owner
 //! on the open descriptor, reads at most 1024 bytes, accepts only file names
@@ -161,7 +163,7 @@ fn a_malformed_inherited_value_is_replaced() {
 #[test]
 fn begin_writes_the_record_with_integers_only_and_mode_0600() {
     let (_tmp, dir) = private();
-    let _guard = begin(&dir, me(), NOW + 60, NOW + 600, &[7, 8]).expect("a valid directory");
+    let _guard = begin(&dir, me(), Some(NOW + 60), NOW + 600, &[7, 8]).expect("a valid directory");
     let path = dir.join(me().to_string());
     let body = fs::read_to_string(&path).unwrap();
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -183,7 +185,7 @@ fn begin_writes_the_record_with_integers_only_and_mode_0600() {
 #[test]
 fn begin_leaves_no_temporary_file_behind() {
     let (_tmp, dir) = private();
-    let _guard = begin(&dir, me(), NOW + 60, NOW + 600, &[]).unwrap();
+    let _guard = begin(&dir, me(), Some(NOW + 60), NOW + 600, &[]).unwrap();
     let names: Vec<_> = fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
@@ -195,16 +197,16 @@ fn begin_leaves_no_temporary_file_behind() {
 fn begin_in_an_invalid_directory_writes_nothing() {
     let (_tmp, dir) = private();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(begin(&dir, me(), NOW + 60, NOW + 600, &[]).is_none());
+    assert!(begin(&dir, me(), Some(NOW + 60), NOW + 600, &[]).is_none());
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
-    assert!(begin(Path::new("relative"), me(), NOW + 60, NOW + 600, &[]).is_none());
+    assert!(begin(Path::new("relative"), me(), Some(NOW + 60), NOW + 600, &[]).is_none());
 }
 
 #[test]
 fn dropping_the_guard_removes_the_record() {
     let (_tmp, dir) = private();
-    let guard = begin(&dir, me(), NOW + 60, NOW + 600, &[]).unwrap();
+    let guard = begin(&dir, me(), Some(NOW + 60), NOW + 600, &[]).unwrap();
     assert!(dir.join(me().to_string()).exists());
     drop(guard);
     assert!(!dir.join(me().to_string()).exists());
@@ -215,7 +217,7 @@ fn the_guard_removes_the_record_on_unwind() {
     let (_tmp, dir) = private();
     let d = dir.clone();
     let result = std::panic::catch_unwind(move || {
-        let _guard = begin(&d, me(), NOW + 60, NOW + 600, &[]).unwrap();
+        let _guard = begin(&d, me(), Some(NOW + 60), NOW + 600, &[]).unwrap();
         panic!("the wait failed");
     });
     assert!(result.is_err());
@@ -227,8 +229,8 @@ fn the_guard_removes_the_record_on_unwind() {
 #[test]
 fn a_live_record_gives_its_until() {
     let (_tmp, dir) = private();
-    let _guard = begin(&dir, me(), NOW + 60, NOW + 600, &[]).unwrap();
-    assert_eq!(waiting(&dir, me(), NOW), Some(NOW + 60));
+    let _guard = begin(&dir, me(), Some(NOW + 60), NOW + 600, &[]).unwrap();
+    assert_eq!(waiting(&dir, me(), NOW), Some(Some(NOW + 60)));
 }
 
 #[test]
@@ -245,7 +247,7 @@ fn a_record_past_its_expiry_is_ignored_even_when_its_process_is_alive() {
         &me().to_string(),
         &record(me(), NOW + 9999, NOW + 600, ""),
     );
-    assert_eq!(waiting(&dir, me(), NOW + 599), Some(NOW + 9999));
+    assert_eq!(waiting(&dir, me(), NOW + 599), Some(Some(NOW + 9999)));
     assert_eq!(waiting(&dir, me(), NOW + 600), None, "expires is exclusive");
     assert_eq!(waiting(&dir, me(), NOW + 601), None);
 }
@@ -298,7 +300,7 @@ fn an_unknown_key_is_ignored_and_a_version_other_than_1_is_not_read() {
             NOW + 600
         ),
     );
-    assert_eq!(waiting(&dir, me(), NOW), Some(NOW + 60));
+    assert_eq!(waiting(&dir, me(), NOW), Some(Some(NOW + 60)));
     write_record(
         &dir,
         &name,
@@ -440,10 +442,68 @@ fn a_crowded_directory_is_scanned_without_recursion_and_returns() {
         &record(me(), NOW + 60, NOW + 600, ""),
     );
     // The record for `me()` itself is read by name, with no scan.
-    assert_eq!(waiting(&dir, me(), NOW), Some(NOW + 60));
+    assert_eq!(waiting(&dir, me(), NOW), Some(Some(NOW + 60)));
     // An enclosing pid has no record of its own, so only the scan could
     // find a nested record; here it finds none and says so.
     assert_eq!(waiting(&dir, 4242, NOW), None);
+}
+
+// --- a wait with no deadline (issue #2911, `until=none`) ----------------------
+
+#[test]
+fn begin_writes_null_for_a_wait_with_no_deadline() {
+    let (_tmp, dir) = private();
+    let _guard = begin(&dir, me(), None, i64::MAX, &[]).unwrap();
+    let body = fs::read_to_string(dir.join(me().to_string())).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["until"], serde_json::Value::Null, "{body}");
+}
+
+#[test]
+fn a_live_record_with_no_deadline_says_waiting_with_none() {
+    let (_tmp, dir) = private();
+    let _guard = begin(&dir, me(), None, i64::MAX, &[]).unwrap();
+    assert_eq!(waiting(&dir, me(), NOW), Some(None));
+    // No time makes it stale while its supervisor is alive.
+    assert_eq!(waiting(&dir, me(), i64::MAX - 1), Some(None));
+}
+
+#[test]
+fn a_record_with_no_deadline_of_a_dead_supervisor_is_not_counted() {
+    let (_tmp, dir) = private();
+    let dead = dead_pid();
+    write_record(
+        &dir,
+        &dead.to_string(),
+        &format!(
+            r#"{{"v":1,"pid":{dead},"until":null,"expires":{},"steps":[]}}"#,
+            i64::MAX
+        ),
+    );
+    assert_eq!(waiting(&dir, dead, NOW), None);
+}
+
+#[test]
+fn a_deadline_beneath_an_enclosing_step_comes_before_none() {
+    let (_tmp, dir) = private();
+    let outer = 4242u32;
+    write_record(
+        &dir,
+        &me().to_string(),
+        &format!(
+            r#"{{"v":1,"pid":{},"until":null,"expires":{},"steps":[{outer}]}}"#,
+            me(),
+            i64::MAX
+        ),
+    );
+    assert_eq!(waiting(&dir, outer, NOW), Some(None), "none alone is none");
+    let other = std::os::unix::process::parent_id();
+    write_record(
+        &dir,
+        &other.to_string(),
+        &record(other, NOW + 100, NOW + 900, &format!("{outer}")),
+    );
+    assert_eq!(waiting(&dir, outer, NOW), Some(Some(NOW + 100)));
 }
 
 // --- waiting: the chain of enclosing steps -------------------------------------
@@ -459,7 +519,7 @@ fn an_enclosing_step_sees_the_earliest_wait_beneath_it() {
         &me().to_string(),
         &record(me(), NOW + 300, NOW + 900, &format!("{outer},{}", me())),
     );
-    assert_eq!(waiting(&dir, outer, NOW), Some(NOW + 300));
+    assert_eq!(waiting(&dir, outer, NOW), Some(Some(NOW + 300)));
 }
 
 #[test]
@@ -479,7 +539,7 @@ fn an_enclosing_step_takes_the_earliest_of_several_waits_beneath_it() {
         &other.to_string(),
         &record(other, NOW + 100, NOW + 900, &format!("{outer}")),
     );
-    assert_eq!(waiting(&dir, outer, NOW), Some(NOW + 100));
+    assert_eq!(waiting(&dir, outer, NOW), Some(Some(NOW + 100)));
 }
 
 #[test]

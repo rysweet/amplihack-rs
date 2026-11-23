@@ -1,10 +1,11 @@
 //! Issue #2967: a step whose login reaches its usage limit continues on
-//! another usable login, waits only when none is usable and then until the
-//! earliest reset across logins, recognises the zone-less spend-limit wording,
-//! names its login in the wait line, and does not say `working` while it waits.
+//! another usable login, waits only when none is usable, and then also ends
+//! its wait at the earliest reset across the other logins; it recognises the
+//! zone-less spend-limit wording, names its login in the wait line, and does
+//! not say `working` while it waits. The waits themselves are the ones #2911
+//! made: no budget, no step timeout, and an ending only on an event.
 //!
-//! Cases (names follow the design, `docs/reference/profile-command.md`
-//! "Moving to another login first" and "Earliest-reset wait"):
+//! Cases (see `docs/reference/usage-limit-waits.md`, "Other logins"):
 //!
 //! - A1, A2: the observed run. The step's own login is out and another is
 //!   usable, yet the run waited for its own reset. A1 is a `$HOME/.claude`
@@ -16,31 +17,35 @@
 //!   reset) on a profile step and on a `$HOME/.claude` step.
 //! - B1, B2, B3: the second observed wording, "You've hit your individual
 //!   spend limit ... your 5-hour limit resets 11:50pm", with no zone, in both
-//!   middle-clause forms. B1: it is a usage limit and its reset times the
-//!   wait. B2: another usable login takes the step with no wait. B3: a `TZ`
-//!   that names no zone leaves the reset unread, as before.
+//!   middle-clause forms. B1: its reset is read and times a reset wait. B2:
+//!   another usable login takes the step with no wait. B3: a `TZ` that names
+//!   no zone leaves the reset unread, so it is a spend limit with no reset,
+//!   which waits for the login to change (#2731, #2911).
 //! - E1: with no login usable, the wait ends at the earliest reset across
-//!   logins, and the retry runs on the login that reset.
-//! - C: a limit that arrives after the step's wait was used moves to a login
-//!   that is usable by then, instead of ending the step.
-//! - T: two logins that each report a limit end the step in a bounded
-//!   number of attempts (the gate C removes must not leave a loop).
+//!   the other logins when that is first, and the retry runs on the login
+//!   that reset. A wait with no deadline of its own takes one from there.
+//! - C: a limit that arrives after the step has waited moves to a login that
+//!   is usable by then, instead of waiting again.
+//! - T: two logins that each report a limit: the step moves once, then
+//!   waits, and does not cycle between them.
 //! - H: while a step waits, the runner's heartbeat for it reads
 //!   `waiting for usage limit until <until>`, and is untouched outside it.
 //!
-//! Every case uses fake logins, the fixture's virtual clock (`TEST_NOW`) and
-//! never real time, except H, which needs a wait that lasts while the
-//! heartbeat is printed and so runs on the scaled real clock and ends on the
-//! wait's own `end` line. Readings are stamped on the real clock, because
-//! the pre-wait choice reads `fsx::now()`; the wait moves a reset onto its
-//! own clock by distance, so a test asserts a range for those, never an
-//! exact instant. See `issue_1618_fixture`.
+//! Every case uses fake logins, the fixture's virtual clock (`TEST_NOW`),
+//! which moves only while a wait blocks, and never real time, except H. H
+//! needs a wait that lasts while the heartbeat is printed and a record the
+//! pump believes, so it runs on the scaled real clock, and the test itself
+//! ends the wait with a login change once it has seen the rewritten lines.
+//! Readings are stamped on the real clock, because the pre-wait choice reads
+//! `fsx::now()`; the wait moves a reset onto its own clock by distance, so a
+//! test asserts a range for those, never an exact instant. See
+//! `issue_1618_fixture`.
 
 #![cfg(unix)]
 
 use crate::issue_1618_fixture::{
     Fixture, LIMIT_TEXT, TEST_NOW, WAIT_PREFIX, claude_stdout, describe, events, executable,
-    private_file, text, wait_lines,
+    private_file, text, toggle_login, wait_lines,
 };
 use crate::issue_1618_wait_profiles::{switch_on, with_profiles};
 use crate::issue_1801_capacity_wait::{real_clock, real_now, rotator_running, x_is_live};
@@ -51,7 +56,6 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
-const MAX_WAIT_ENV: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
 const RECIPE_LOG_ENV: &str = "AMPLIHACK_RECIPE_LOG";
 
 /// The wording seen on the host on 21 November 2026: no zone, and the
@@ -415,8 +419,9 @@ fn a7_a_home_step_with_no_readable_live_name_keeps_the_wait_and_says_unknown() {
 
 #[test]
 fn b1_the_zoneless_spend_limit_is_a_usage_limit_and_its_reset_times_the_wait() {
-    // On main this ended the step at once with `skipped reason=spend_limit`:
-    // the reset had no zone, so none was read.
+    // Before #2967 the reset had no zone, so none was read, and the limit
+    // was a spend limit stating no reset: a wait for the login to change,
+    // which no other login's room or reset could end.
     for message in [SPEND_ZONELESS_ADMIN, SPEND_ZONELESS_VISIT] {
         let f = with_profiles();
         let out = f.run(&mut nested_x(&f, message, false));
@@ -476,20 +481,33 @@ fn b2_a_usable_login_takes_a_zoneless_spend_limit_step_with_no_wait() {
     }
 }
 
+/// The lines of a spend limit that states no reset: a login-change wait with
+/// no deadline (#2731, #2911), ended here by a login change in X's
+/// directory.
+fn login_change_wait() -> Vec<&'static str> {
+    vec![
+        "waiting_for_capacity reason=spend_limit harness=claude until=none",
+        "start reason=spend_limit wait=login_change harness=claude reset=none until=none bound=none",
+        "end reason=login changed",
+        "resume attempt=2",
+    ]
+}
+
 #[test]
 fn b3_a_tz_that_names_no_zone_leaves_the_reset_unread() {
     // `TZ` as a path, or empty, names no zone: no file is read from it, no
-    // zone is guessed, and the spend limit keeps its present handling.
+    // zone is guessed, and the message is a spend limit that states no
+    // reset, as it was before #2967.
     for tz in [":/etc/localtime", "/etc/localtime", "", "../x"] {
         let f = with_profiles();
         let mut c = nested_x(&f, SPEND_ZONELESS_ADMIN, false);
         c.env("TZ", tz);
-        let out = f.run(&mut c);
-        assert_eq!(out.status.code(), Some(1), "TZ={tz:?}: {}", describe(&out));
-        assert_eq!(f.count("0"), 1, "TZ={tz:?}: no rerun");
+        let out = f.run_with_a_login_change_in(&f.profiles.join("X"), &mut c);
+        assert!(out.status.success(), "TZ={tz:?}: {}", describe(&out));
+        assert_eq!(f.count("0"), 2, "TZ={tz:?}: one retry");
         assert_eq!(
             events(&out),
-            ["skipped reason=spend_limit"],
+            login_change_wait(),
             "TZ={tz:?}: {}",
             describe(&out)
         );
@@ -500,9 +518,10 @@ fn b3_a_tz_that_names_no_zone_leaves_the_reset_unread() {
 fn b4_a_spend_limit_that_states_no_reset_keeps_its_present_handling() {
     let f = with_profiles();
     let message = "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit";
-    let out = f.run(&mut nested_x(&f, message, false));
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(events(&out), ["skipped reason=spend_limit"]);
+    let mut c = nested_x(&f, message, false);
+    let out = f.run_with_a_login_change_in(&f.profiles.join("X"), &mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(events(&out), login_change_wait(), "{}", describe(&out));
 }
 
 // --- D13: the message reader's line shape, on its own -------------------------
@@ -555,7 +574,9 @@ fn d13_a_spend_limit_line_followed_by_more_runner_lines_is_read() {
 #[test]
 fn e1_with_no_login_usable_the_wait_ends_at_the_earliest_reset_across_logins() {
     // X's own reset is 08:30. Y is out until about 08:15, so that is when
-    // the step can run again, on Y, and not 08:32 on X.
+    // the step can run again, on Y, and not 08:32 on X. `reset=` keeps the
+    // reset X's own message stated; `until=` and `bound=` say where the
+    // deadline came from.
     let f = with_profiles();
     switch_on(&f);
     write_readings(&f, &[Login::out("Y", 900)]);
@@ -565,25 +586,68 @@ fn e1_with_no_login_usable_the_wait_ends_at_the_earliest_reset_across_logins() {
     assert_eq!(ev.len(), 3, "{ev:?}");
     let start = &ev[0];
     assert!(
-        start.starts_with("start reason=usage_limit harness=claude reset="),
+        start.starts_with(
+            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 "
+        ),
         "{start}"
     );
     assert!(start.ends_with(" bound=earliest_reset+margin"), "{start}");
-    let reset = instant(between(start, "reset", "until"));
     let until = instant(between(start, "until", "bound"));
     assert!(
-        (TEST_NOW + 600..=TEST_NOW + 900).contains(&reset),
-        "reset={reset} is Y's reset, not X's 08:30: {start}"
+        (TEST_NOW + 600 + 120..=TEST_NOW + 900 + 120).contains(&until),
+        "until={until} is Y's reset plus the margin, not X's 08:32: {start}"
     );
-    assert_eq!(until, reset + 120, "reset plus the margin: {start}");
     assert_eq!(ev[1..], ["end reason=reset reached", "resume attempt=2"]);
+    assert!(
+        text(&out.stderr).contains(
+            "the earliest reset among this step's logins has arrived; rerunning this step under profile \"Y\" (auto-switch)"
+        ),
+        "{}",
+        describe(&out)
+    );
     assert_ran_on_y(&f, 2);
 }
 
 #[test]
-fn e1_a_reset_more_than_five_hours_away_does_not_make_an_earliest_reset_wait() {
-    // The five-hour bound applies to the earliest instant: Y resets in a
-    // day, so the wait is X's own, as it was.
+fn e1_a_wait_with_no_deadline_takes_the_other_logins_reset_however_far() {
+    // X's message states no reset that parses, so its own wait would have
+    // no deadline (#2911). Y resets six hours on: there is no five-hour
+    // ceiling, so that is the deadline, and the retry runs on Y.
+    let f = with_profiles();
+    switch_on(&f);
+    write_readings(&f, &[Login::out("Y", 6 * 3600)]);
+    let out = f.run(&mut nested_x(
+        &f,
+        "You've hit your session limit · resets later",
+        true,
+    ));
+    assert!(out.status.success(), "{}", describe(&out));
+    let ev = events(&out);
+    assert_eq!(ev.len(), 4, "{ev:?}");
+    assert!(
+        ev[0].starts_with("waiting_for_capacity reason=no_reset harness=claude until=2"),
+        "a deadline, not until=none: {ev:?}"
+    );
+    let start = &ev[1];
+    assert!(
+        start.starts_with(
+            "start reason=usage_limit wait=capacity harness=claude reset=none until=2"
+        ),
+        "{start}"
+    );
+    assert!(start.ends_with(" bound=earliest_reset+margin"), "{start}");
+    let until = instant(between(start, "until", "bound"));
+    assert!(
+        (TEST_NOW + 6 * 3600 - 300 + 120..=TEST_NOW + 6 * 3600 + 120).contains(&until),
+        "until={until}: {start}"
+    );
+    assert_eq!(ev[2..], ["end reason=reset reached", "resume attempt=2"]);
+    assert_ran_on_y(&f, 2);
+}
+
+#[test]
+fn e1_a_later_reset_on_another_login_leaves_the_wait_on_its_own_reset() {
+    // Y resets a day on, after X: X's own reset times the wait, as it did.
     let f = with_profiles();
     switch_on(&f);
     write_readings(&f, &[Login::out("Y", 86_400)]);
@@ -635,8 +699,8 @@ fn healing_claude(f: &Fixture) -> std::path::PathBuf {
 
 #[test]
 fn c_a_limit_after_the_wait_moves_to_a_login_that_is_usable_by_then() {
-    // On main the step's single wait set `used`, and `next_profile`
-    // returned at once for every later limit: the step ended on X with Y
+    // Before #2967 the step's wait set `used`, and `next_profile` returned
+    // at once for every later limit: the step waited again on X with Y
     // usable.
     let f = with_profiles();
     switch_on(&f);
@@ -673,64 +737,51 @@ fn c_a_limit_after_the_wait_moves_to_a_login_that_is_usable_by_then() {
     );
 }
 
+// --- T: no cycle between logins ------------------------------------------------
+
 #[test]
-fn c_a_move_spends_none_of_the_wait_budget() {
-    // The same sequence with `max_wait_secs` already spent by the first
-    // wait still moves: a move is not a wait.
+fn t_two_logins_that_each_report_a_limit_move_once_then_wait() {
+    // X and Y each report a limit. The step moves from X to Y once; Y is
+    // then in the tried set with X, so no move is left and the step waits
+    // on X's own reset, then retries on X. It never moves back and forth:
+    // each move adds a login to the tried set.
     let f = with_profiles();
     switch_on(&f);
-    write_readings(&f, &[Login::out("Y", 7200)]);
-    let usable = f.root.join("usable.json");
-    private_file(&usable, &readings_body(&[Login::room("Y")]));
-    let wrapper = healing_claude(&f);
     let mut c = nested_x(&f, LIMIT_TEXT, true);
-    c.env("LIMIT_CALLS", "2")
-        .env(MAX_WAIT_ENV, "60")
-        .env("AMPLIHACK_CLAUDE_BINARY_PATH", &wrapper)
-        .env("REAL_CLAUDE", f.tools.join("claude"))
-        .env("HEAL_FROM", &usable)
-        .env("HEAL_TO", usage_file(&f));
+    c.env("LIMIT_PROFILE", "").env("LIMIT_CALLS", "2");
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
-    assert_ran_on_y(&f, 3);
-}
-
-// --- T: termination ------------------------------------------------------------
-
-#[test]
-fn t_two_logins_that_each_report_a_limit_end_the_step_in_a_bounded_number_of_attempts() {
-    // Every call is limited, whichever login runs it. The tried set grows
-    // with each move, a move spends no budget, and the wait budget is
-    // finite, so the step ends.
-    let f = with_profiles();
-    switch_on(&f);
-    let mut c = nested_x(&f, LIMIT_TEXT, true);
-    c.env("LIMIT_PROFILE", "")
-        .env("LIMIT_CALLS", "1000")
-        .env(MAX_WAIT_ENV, "120");
-    let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    let calls = f.count("0");
-    assert!(
-        (2..=6).contains(&calls),
-        "X, then Y, then at most the waits' retries; got {calls}: {}",
+    assert_eq!(
+        f.count("0"),
+        3,
+        "X, Y, then X after the wait: {}",
         describe(&out)
     );
-    let waits = events(&out)
-        .into_iter()
-        .filter(|l| l.starts_with("start "))
-        .count();
-    assert!(waits <= 3, "{:?}", events(&out));
+    assert_eq!(f.call("0", 1)["PROFILE"], "X");
+    assert_ran_on_y(&f, 2);
+    assert_eq!(f.call("0", 3)["PROFILE"], "X", "the retry the wait earned");
+    let ev = events(&out);
+    assert_eq!(ev.len(), 3, "one wait and nothing else: {ev:?}");
+    assert!(
+        ev[0].starts_with("start reason=usage_limit harness=claude reset="),
+        "{ev:?}"
+    );
+    assert_eq!(ev[1..], ["end reason=reset reached", "resume attempt=3"]);
 }
 
 // --- H: the heartbeat ----------------------------------------------------------
 
 /// A recipe runner that runs one agent step in the background, as
 /// `recipe-runner-rs` does, and prints its own heartbeat for it: `working`
-/// lines labelled with the step's process id, from the step's `start` line to
-/// its `end` line (elapsed 7 s), then one more after the step ended
-/// (elapsed 99 s). The step's stderr is copied to the runner's stderr last, so
-/// the wait's own lines are in the recipe run's output.
+/// lines labelled with the step's process id (elapsed 7 s), from the moment
+/// the step's wait-state record exists for as long as it does, then one more
+/// after the step ended (elapsed 99 s). The step's stderr is copied to the
+/// runner's stderr last, so the wait's own lines are in the recipe run's
+/// output.
+///
+/// Waiting on the record rather than on the wait's `start` line keeps the
+/// first heartbeat from coming before the record is written. The wait's
+/// deadline is an hour away, so only the test ends it.
 const HEARTBEAT_RUNNER: &str = r#"#!/bin/sh
 case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 case "$1" in
@@ -742,11 +793,12 @@ err="$RECORD_DIR/step.err"
 STEP=1 "$AMPLIHACK_UNDER_TEST" claude --subprocess-safe -- -p "step 1" </dev/null >> "$RECORD_DIR/runner.out" 2> "$err" &
 pid=$!
 echo "$pid" > "$RECORD_DIR/step.pid"
-until grep -q 'usage_limit_wait start' "$err"; do
+rec="$AMPLIHACK_USAGE_LIMIT_WAIT_DIR/$pid"
+until [ -e "$rec" ]; do
   kill -0 "$pid" 2>/dev/null || break
   sleep 0.1
 done
-while kill -0 "$pid" 2>/dev/null && ! grep -q 'usage_limit_wait end' "$err"; do
+while [ -e "$rec" ]; do
   echo "  [12:00:00] [amplihack:claude:$pid] ... working (7s elapsed, 7s since last output)" >&2
   sleep 0.1
 done
@@ -771,7 +823,23 @@ steps:
     command: "true"
 "#;
 
-fn heartbeat_run(f: &Fixture) -> Output {
+/// The rewritten heartbeats the test waits to see before it ends the wait.
+const HEARTBEATS_BEFORE_THE_END: usize = 3;
+
+/// What `heartbeat_run` saw: the run's output, and how many stderr lines had
+/// been read when the test ended the wait. Every heartbeat among those lines
+/// was copied while the wait certainly lasted.
+struct HeartbeatRun {
+    out: Output,
+    before_the_end: usize,
+}
+
+/// Runs the recipe with [`HEARTBEAT_RUNNER`]. The step's limit states a reset
+/// an hour ahead of the real clock this run uses, and the test ends the wait
+/// itself with a login change in the step's directory once it has read
+/// [`HEARTBEATS_BEFORE_THE_END`] rewritten heartbeats: an event, not a delay
+/// (issue #1973).
+fn heartbeat_run(f: &Fixture) -> HeartbeatRun {
     let runner = f.tools.join("recipe-runner-rs");
     executable(&runner, HEARTBEAT_RUNNER);
     let recipe = f.root.join("recipe.yaml");
@@ -783,16 +851,33 @@ fn heartbeat_run(f: &Fixture) -> Output {
         .env("RECIPE_RUNNER_RS_PATH", &runner)
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env("AMPLIHACK_HOME", f.home.join(".amplihack"))
-        // The epoch form states its reset, ten minutes ahead of the real
-        // clock this run uses; the wait is cut to 30 s of its own clock by
-        // `max_wait_secs`, which at scale 10 is 3 s of real time.
         .env(
             "LIMIT_MESSAGE",
-            format!("Claude AI usage limit reached|{}", real_now() + 600),
-        )
-        .env(MAX_WAIT_ENV, "30");
+            format!("Claude AI usage limit reached|{}", real_now() + 3600),
+        );
     real_clock(&mut c);
-    f.run(&mut c)
+    let config = f.config.clone();
+    let mut read = 0usize;
+    let mut seen = 0usize;
+    let mut before_the_end = None;
+    let out = f.run_watching(&mut c, |line| {
+        read += 1;
+        if before_the_end.is_none()
+            && line.contains("] ... waiting for usage limit until ")
+            && line.contains("(7s elapsed")
+        {
+            seen += 1;
+            if seen == HEARTBEATS_BEFORE_THE_END {
+                before_the_end = Some(read);
+                toggle_login(&config);
+            }
+        }
+    });
+    HeartbeatRun {
+        before_the_end: before_the_end
+            .unwrap_or_else(|| panic!("no rewritten heartbeat was seen: {}", describe(&out))),
+        out,
+    }
 }
 
 #[test]
@@ -802,28 +887,33 @@ fn h_the_heartbeat_of_a_waiting_step_says_it_is_waiting_and_until_when() {
         "h_the_heartbeat_of_a_waiting_step_says_it_is_waiting_and_until_when",
         || {
             let f = Fixture::new();
-            let out = heartbeat_run(&f);
+            let HeartbeatRun {
+                out,
+                before_the_end,
+            } = heartbeat_run(&f);
             assert!(out.status.success(), "{}", describe(&out));
             let stderr = text(&out.stderr);
             let pid = fs::read_to_string(f.records.join("step.pid"))
                 .unwrap()
                 .trim()
                 .to_string();
-            let until = {
-                let start = events(&out)
-                    .into_iter()
-                    .find(|l| l.starts_with("start "))
-                    .unwrap_or_else(|| panic!("a wait starts: {}", describe(&out)));
-                between(&start, "until", "bound").to_string()
-            };
+            let ev = events(&out);
+            let start = ev
+                .iter()
+                .find(|l| l.starts_with("start "))
+                .unwrap_or_else(|| panic!("a wait starts: {}", describe(&out)));
+            let until = between(start, "until", "bound").to_string();
+            assert!(
+                ev.iter().any(|l| l == "end reason=login changed"),
+                "the test's login change ended the wait: {ev:?}"
+            );
+            // Every heartbeat copied before the test ended the wait.
             let during: Vec<&str> = stderr
                 .lines()
+                .take(before_the_end)
                 .filter(|l| l.contains("] ... ") && l.contains("(7s elapsed"))
                 .collect();
-            assert!(
-                !during.is_empty(),
-                "the stub printed heartbeats during the wait: {stderr}"
-            );
+            assert!(during.len() >= HEARTBEATS_BEFORE_THE_END, "{stderr}");
             let want = format!(
                 "  [12:00:00] [amplihack:claude:{pid}] ... waiting for usage limit until {until} (7s elapsed, 7s since last output)"
             );
@@ -842,7 +932,7 @@ fn h_a_heartbeat_outside_a_wait_passes_byte_for_byte() {
         "h_a_heartbeat_outside_a_wait_passes_byte_for_byte",
         || {
             let f = Fixture::new();
-            let out = heartbeat_run(&f);
+            let HeartbeatRun { out, .. } = heartbeat_run(&f);
             let pid = fs::read_to_string(f.records.join("step.pid"))
                 .unwrap()
                 .trim()
@@ -866,7 +956,7 @@ fn h_the_wait_state_directory_is_private_and_gone_after_the_run() {
         "h_the_wait_state_directory_is_private_and_gone_after_the_run",
         || {
             let f = Fixture::new();
-            let out = heartbeat_run(&f);
+            let HeartbeatRun { out, .. } = heartbeat_run(&f);
             assert!(out.status.success(), "{}", describe(&out));
             // Nothing the wait left behind: no `usage-limit-wait` directory
             // survives a run that created it.

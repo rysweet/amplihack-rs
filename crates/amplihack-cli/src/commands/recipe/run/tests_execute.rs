@@ -4561,15 +4561,31 @@ mod wait_heartbeat {
         (result, printed, temp)
     }
 
-    /// The runner keeps a record for its own pid, as a waiting supervisor
-    /// does, then prints heartbeats.
+    /// The process a heartbeat names: the step's supervisor.
+    ///
+    /// The runner prints a heartbeat for a step only while that step's
+    /// supervisor is alive, and the pump checks that it is. The stub runner
+    /// here is not a supervisor and exits at once, and its parent reaps it,
+    /// so its own `$$` may already be gone when the pump reads the line, and
+    /// a test keyed on it measures that race rather than the rewrite. This
+    /// test process stands in for the supervisor: it is alive for the whole
+    /// run, as a step's supervisor is for every heartbeat printed for it.
+    fn supervisor() -> u32 {
+        std::process::id()
+    }
+
+    /// The runner writes a record for [`supervisor`], as a waiting
+    /// supervisor does, through the directory it was given, then prints
+    /// `lines`, in which `{SUP}` stands for that process id.
     fn with_record(lines: &str) -> String {
         let until = now() + 3600;
         let expires = now() + 7200;
+        let sup = supervisor();
+        let lines = lines.replace("{SUP}", &sup.to_string());
         format!(
             "umask 077\n\
              printf '{{\"v\":1,\"pid\":%s,\"until\":%s,\"expires\":%s,\"steps\":[]}}' \
-             \"$$\" {until} {expires} > \"${DIR_ENV}/$$\"\n{lines}"
+             {sup} {until} {expires} > \"${DIR_ENV}/{sup}\"\n{lines}"
         )
     }
 
@@ -4583,7 +4599,7 @@ mod wait_heartbeat {
         let tmp = tempfile::tempdir().unwrap();
         let dir = private_dir(tmp.path(), "wait");
         let body = with_record(&format!(
-            "echo \"  [12:00:00] [amplihack:claude:$$] ... working (3590s elapsed, 3590s since last output)\" >&2\n\
+            "echo \"  [12:00:00] [amplihack:claude:{{SUP}}] ... working (3590s elapsed, 3590s since last output)\" >&2\n\
              echo '  [12:00:00] [amplihack:claude:999999] ... working (10s elapsed, 10s since last output)' >&2\n\
              echo '  [12:00:00] [amplihack:claude:999998] ... waiting for usage limit until 2026-10-18 08:32:00 -07:00 (1s elapsed, 1s since last output)' >&2\n\
              echo '  [12:00:00] [amplihack:claude:999997] ... waiting for usage limit until 2026-10-18 08:32:00 -07:00 (1s elapsed, 1s since last output) {marker}' >&2\n\
@@ -4645,12 +4661,15 @@ mod wait_heartbeat {
     fn an_expired_or_missing_record_leaves_the_heartbeat_as_it_was() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = private_dir(tmp.path(), "wait");
-        // The record expired a minute ago, though its process is alive.
+        // The record expired a minute ago, though its process is alive: the
+        // supervisor is this test process, so only the expiry can be what
+        // leaves the line alone.
         let past = now() - 60;
+        let sup = supervisor();
         let body = format!(
             "umask 077\n\
-             printf '{{\"v\":1,\"pid\":%s,\"until\":{future},\"expires\":{past},\"steps\":[]}}' \"$$\" > \"${DIR_ENV}/$$\"\n\
-             echo \"  [12:00:00] [amplihack:claude:$$] ... working (3590s elapsed, 3590s since last output)\" >&2\n\
+             printf '{{\"v\":1,\"pid\":%s,\"until\":{future},\"expires\":{past},\"steps\":[]}}' {sup} > \"${DIR_ENV}/{sup}\"\n\
+             echo \"  [12:00:00] [amplihack:claude:{sup}] ... working (3590s elapsed, 3590s since last output)\" >&2\n\
              exit 1\n",
             future = now() + 3600
         );
@@ -4671,7 +4690,7 @@ mod wait_heartbeat {
             "printf '\\377\\n' >&2\n\
              echo 'ordinary line' >&2\n\
              i=0; while [ $i -lt 6000 ]; do \
-             echo \"  [12:00:00] [amplihack:claude:$$] ... working (${i}s elapsed, ${i}s since last output)\" >&2; \
+             echo \"  [12:00:00] [amplihack:claude:{SUP}] ... working (${i}s elapsed, ${i}s since last output)\" >&2; \
              i=$((i+1)); done\n\
              echo 'after-flood-marker' >&2\n\
              exit 1\n",

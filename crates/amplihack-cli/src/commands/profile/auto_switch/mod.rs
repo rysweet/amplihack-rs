@@ -116,8 +116,6 @@ pub(super) use overflow_inputs::OverflowInputs;
 pub(super) use overflow_inputs::login_gap;
 #[cfg(unix)]
 pub(super) use state::CREDS;
-#[cfg(unix)]
-pub(super) use swap::read_claude_json;
 #[cfg(all(test, unix))]
 pub(crate) use swap::rerun_owner;
 #[cfg(unix)]

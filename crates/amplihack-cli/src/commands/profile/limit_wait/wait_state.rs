@@ -7,8 +7,15 @@
 //! [`DIR_ENV`]. A supervisor that starts a wait writes `<dir>/<its pid>` and
 //! removes it when the wait ends, on return and on unwind alike ([`Guard`]).
 //! The record is `{"v":1,"pid":N,"until":T,"expires":E,"steps":[..]}`:
-//! integers only, in this and any later version. It holds no path, login
-//! name, account identifier or credential.
+//! integers only, in this and any later version, except that `until` is
+//! `null` for a wait with no deadline (issue #2911, `until=none`). It holds
+//! no path, login name, account identifier or credential.
+//!
+//! The record adds no timer and no polling loop (issue #2967). It is written
+//! once, as the wait starts, and removed once, as it ends. Nothing in the
+//! supervisor reads it, and the one reader, the stderr pump, reads it only
+//! when the recipe runner prints a heartbeat line for the step: the pump
+//! acts on a line it was already copying and starts nothing of its own.
 //!
 //! `steps` is the chain of supervisors this one runs beneath, carried down
 //! in [`STEPS_ENV`], so the heartbeat of an enclosing step can state the
@@ -58,15 +65,18 @@ const MAX_ENTRIES: usize = 64;
 const MAX_CHAIN: usize = 32;
 /// How long past its deadline a record may still be believed. The
 /// supervisor removes its record when the wait ends, so this only bounds
-/// what a supervisor that died without unwinding leaves behind.
+/// what a supervisor that died without unwinding leaves behind. A wait with
+/// no deadline has no such bound: its record is believed while its
+/// supervisor is alive ([`read`]).
 const EXPIRY_SLACK: i64 = 120;
 
 #[derive(Serialize, Deserialize)]
 struct Record {
     v: u64,
     pid: u32,
-    /// The wait's deadline, as the wait's `start` line states it.
-    until: i64,
+    /// The wait's deadline, as the wait's `start` line states it; `None`
+    /// for a wait with no deadline (`until=none`).
+    until: Option<i64>,
     /// When a reader stops believing the record, in Unix seconds.
     expires: i64,
     steps: Vec<u32>,
@@ -227,7 +237,7 @@ impl Drop for Guard {
 pub(crate) fn begin(
     dir: &Path,
     pid: u32,
-    until: i64,
+    until: Option<i64>,
     expires: i64,
     steps: &[u32],
 ) -> Option<Guard> {
@@ -261,7 +271,7 @@ pub(crate) fn begin(
 
 /// The record's bytes, within [`MAX_RECORD`]: a chain too long to fit loses
 /// its outermost supervisors first.
-fn body(pid: u32, until: i64, expires: i64, steps: &[u32]) -> Option<Vec<u8>> {
+fn body(pid: u32, until: Option<i64>, expires: i64, steps: &[u32]) -> Option<Vec<u8>> {
     let mut steps: Vec<u32> = steps.iter().copied().filter(|p| valid_pid(*p)).collect();
     loop {
         let record = Record {
@@ -283,56 +293,69 @@ fn body(pid: u32, until: i64, expires: i64, steps: &[u32]) -> Option<Vec<u8>> {
 }
 
 /// The record for the wait this process is about to make, in the directory
-/// [`DIR_ENV`] names: `until` is the wait's deadline and `wait_now` the
-/// wait's clock when it was planned. `None` when no directory is named or
-/// it is not valid, which is every step outside `amplihack recipe run`.
+/// [`DIR_ENV`] names: `until` is the wait's deadline, `None` for a wait with
+/// none, and `wait_now` the wait's clock when it was planned. `None` when no
+/// directory is named or it is not valid, which is every step outside
+/// `amplihack recipe run`.
 ///
 /// `expires` is on the real clock, because the reader has no other: the
-/// distance to the deadline from now, plus [`EXPIRY_SLACK`].
-pub(crate) fn begin_wait(until: i64, wait_now: i64) -> Option<Guard> {
+/// distance to the deadline from now, plus [`EXPIRY_SLACK`]. A wait with no
+/// deadline never expires by time; [`read`] still requires its supervisor
+/// to be alive.
+pub(crate) fn begin_wait(until: Option<i64>, wait_now: i64) -> Option<Guard> {
     let dir = PathBuf::from(std::env::var_os(DIR_ENV).filter(|v| !v.is_empty())?);
     let steps = std::env::var(STEPS_ENV)
         .ok()
         .and_then(|v| parse_chain(&v))
         .unwrap_or_default();
-    let expires = fsx::now()
-        .saturating_add(until.saturating_sub(wait_now).max(0))
-        .saturating_add(EXPIRY_SLACK);
+    let expires = until.map_or(i64::MAX, |until| {
+        fsx::now()
+            .saturating_add(until.saturating_sub(wait_now).max(0))
+            .saturating_add(EXPIRY_SLACK)
+    });
     begin(&dir, std::process::id(), until, expires, &steps)
 }
 
-/// Until when supervisor `pid` is waiting at `now`: the earliest `until`
-/// among the live records that are `pid`'s own or name `pid` in their
-/// chain, so an enclosing step's heartbeat states the earliest wait beneath
-/// it. `None` when there is none, and for a directory that is not a
+/// Whether supervisor `pid` is waiting at `now`, and until when: `Some`
+/// with the earliest deadline among the live records that are `pid`'s own
+/// or name `pid` in their chain, so an enclosing step's heartbeat states the
+/// earliest wait beneath it. The inner value is `None` when every one of
+/// those waits has no deadline; a deadline always comes before none. `None`
+/// when no such record is live, and for a directory that is not a
 /// [`valid_dir`].
-pub(crate) fn waiting(dir: &Path, pid: u32, now: i64) -> Option<i64> {
+pub(crate) fn waiting(dir: &Path, pid: u32, now: i64) -> Option<Option<i64>> {
     if !valid_pid(pid) || !valid_dir(dir) {
         return None;
     }
     let own = read(dir, pid, now).map(|r| r.until);
     let beneath = beneath(dir, pid, now);
-    [own, beneath].into_iter().flatten().min()
+    let live: Vec<Option<i64>> = own.into_iter().chain(beneath).collect();
+    if live.is_empty() {
+        return None;
+    }
+    Some(live.into_iter().flatten().min())
 }
 
-/// The earliest `until` among the live records of other supervisors that
-/// name `outer` in their chain. Looks at no more than [`MAX_ENTRIES`]
-/// entries and enters no subdirectory.
-fn beneath(dir: &Path, outer: u32, now: i64) -> Option<i64> {
-    fs::read_dir(dir)
-        .ok()?
+/// The deadlines of the live records of other supervisors that name
+/// `outer` in their chain. Looks at no more than [`MAX_ENTRIES`] entries
+/// and enters no subdirectory.
+fn beneath(dir: &Path, outer: u32, now: i64) -> Vec<Option<i64>> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
         .take(MAX_ENTRIES)
         .filter_map(|entry| pid_of(entry.ok()?.file_name().to_str()?))
         .filter(|pid| *pid != outer)
         .filter_map(|pid| read(dir, pid, now))
         .filter(|record| record.steps.contains(&outer))
         .map(|record| record.until)
-        .min()
+        .collect()
 }
 
 /// Supervisor `pid`'s record, when it is live at `now`: version 1, naming
 /// the pid its file name does, not past `expires`, with a deadline still
-/// ahead and a process that is alive.
+/// ahead or none at all, and a process that is alive.
 fn read(dir: &Path, pid: u32, now: i64) -> Option<Record> {
     // No link is followed, and a FIFO put in a record's place cannot block
     // the open or the read.
@@ -357,7 +380,7 @@ fn read(dir: &Path, pid: u32, now: i64) -> Option<Record> {
         && record.pid == pid
         && record.steps.iter().all(|p| valid_pid(*p))
         && now < record.expires
-        && record.until > now
+        && record.until.is_none_or(|until| until > now)
         && alive(pid);
     live.then_some(record)
 }

@@ -476,7 +476,7 @@ fn an_instant_at_or_before_the_waits_clock_is_left_out() {
 
 #[test]
 fn a_reset_a_year_ahead_is_returned_unclamped_and_does_not_overflow() {
-    // The five-hour bound belongs to the plan; this only reports.
+    // Holding the instant to a window belongs to the plan; this only reports.
     let year = 365 * 86_400;
     let w = World::new(&["cur", "a"])
         .read("cur", read(100.0, 10.0))

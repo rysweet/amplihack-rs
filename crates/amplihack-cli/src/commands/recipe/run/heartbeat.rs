@@ -17,8 +17,23 @@
 //!   [21:53:10] [amplihack:claude:41822] ... waiting for usage limit until 2026-11-21 23:52:00 -08:00 (3590s elapsed, 3590s since last output)
 //! ```
 //!
+//! A wait with no deadline (`until=none` on its own lines, issue #2911)
+//! reads `waiting for usage limit until none`, in the words those lines use.
+//!
 //! Only the word `working` is replaced. Everything here is pure: the record
 //! is read by the `lookup` the caller passes, and the zone is the caller's.
+//!
+//! None of this adds a timer, a polling loop, a retry or a gate. The pump
+//! calls [`pump`] for each line the runner writes, as it always copied
+//! them; the runner's own clock decides when a heartbeat line comes, and a
+//! line that is not a heartbeat costs one string match. Nothing here ends,
+//! delays or changes a step: it changes one word of a line a person reads.
+//!
+//! Why the line is rewritten here at all: the pinned runner counts only a
+//! step's standard output as activity and keeps its standard error in a
+//! file, so the `progress` line a waiting supervisor writes once a minute
+//! (`profile::limit_wait::wait`) neither reaches the round log while the
+//! step runs nor resets the heartbeat's `since last output`.
 //!
 //! The form is the one the pinned runner prints (`HeartbeatReport::render`
 //! in `amplihack-recipe-runner`). A line in any other form, including the
@@ -50,8 +65,12 @@ use std::process::Command;
 const LEAD: &str = "] ... ";
 /// The runner's word for a step that is running.
 const WORKING: &str = "working";
-/// What replaces it while the step waits; the time follows.
+/// What replaces it while the step waits; the time, or [`NO_DEADLINE`],
+/// follows.
 const WAITING: &str = "waiting for usage limit until ";
+/// What follows [`WAITING`] for a wait with no deadline, as `until=none`
+/// says it on the wait's own lines.
+const NO_DEADLINE: &str = "none";
 /// How every wait line writes an instant.
 const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S %:z";
 /// The length of an instant written with [`TIME_FORMAT`].
@@ -86,7 +105,11 @@ pub(crate) struct Pumped {
 /// rewritten and buffered as the runner wrote it, a line that is already a
 /// wait line is printed and not buffered, and every other line is printed
 /// and buffered unchanged.
-pub(crate) fn pump<Z: TimeZone>(line: &str, lookup: impl Fn(u32) -> Option<i64>, tz: &Z) -> Pumped
+pub(crate) fn pump<Z: TimeZone>(
+    line: &str,
+    lookup: impl Fn(u32) -> Option<Option<i64>>,
+    tz: &Z,
+) -> Pumped
 where
     Z::Offset: Display,
 {
@@ -103,13 +126,13 @@ where
 }
 
 /// `line` with `working` replaced by the wait wording, when it is the
-/// runner's heartbeat for a supervisor that is waiting. `lookup(pid)` gives
-/// the `until` of that supervisor's live, unexpired wait-state record and
-/// owns freshness. `None` for every other line, which the caller then prints
-/// byte for byte.
+/// runner's heartbeat for a supervisor that is waiting. `lookup(pid)` is
+/// `Some` with the `until` of that supervisor's live, unexpired wait-state
+/// record, itself `None` for a wait with no deadline, and owns freshness.
+/// `None` for every other line, which the caller then prints byte for byte.
 pub(crate) fn rewrite<Z: TimeZone>(
     line: &str,
-    lookup: impl Fn(u32) -> Option<i64>,
+    lookup: impl Fn(u32) -> Option<Option<i64>>,
     tz: &Z,
 ) -> Option<String>
 where
@@ -120,8 +143,11 @@ where
     if !counts(tail) {
         return None;
     }
-    let until = lookup(pid)?;
-    let rewritten = format!("{head}{WAITING}{}{tail}", fmt_time(until, tz));
+    let until = match lookup(pid)? {
+        Some(t) => fmt_time(t, tz),
+        None => NO_DEADLINE.to_string(),
+    };
+    let rewritten = format!("{head}{WAITING}{until}{tail}");
     // An instant the format cannot write as a date is not rewritten, so the
     // result is always a line `is_wait_line` accepts.
     is_wait_line(&rewritten).then_some(rewritten)
@@ -139,13 +165,20 @@ pub(crate) fn is_wait_line(line: &str) -> bool {
     let Some(after) = rest.strip_prefix(WAITING) else {
         return false;
     };
-    let (Some(time), Some(tail)) = (after.get(..TIME_LEN), after.get(TIME_LEN..)) else {
-        return false;
+    let tail = match after.strip_prefix(NO_DEADLINE) {
+        Some(tail) => tail,
+        None => {
+            let (Some(time), Some(tail)) = (after.get(..TIME_LEN), after.get(TIME_LEN..)) else {
+                return false;
+            };
+            if chrono::DateTime::parse_from_str(time, TIME_FORMAT).is_err() {
+                return false;
+            }
+            tail
+        }
     };
     let lowered = head.to_ascii_lowercase();
-    chrono::DateTime::parse_from_str(time, TIME_FORMAT).is_ok()
-        && counts(tail)
-        && !all_markers().iter().any(|m| lowered.contains(m))
+    counts(tail) && !all_markers().iter().any(|m| lowered.contains(m))
 }
 
 /// A heartbeat's opening, the supervisor it is for, and what follows:
@@ -251,10 +284,10 @@ pub(crate) fn wait_dir_of(command: &Command) -> Option<PathBuf> {
     .filter(|p| !p.as_os_str().is_empty())
 }
 
-/// Until when the supervisor `pid` is waiting, by the live records in
-/// `dir`: the pump's `lookup` for [`pump`]. `None` with no directory, and
-/// on a host that is not Unix.
-pub(crate) fn waiting(dir: Option<&Path>, pid: u32) -> Option<i64> {
+/// Whether the supervisor `pid` is waiting, and until when, by the live
+/// records in `dir`: the pump's `lookup` for [`pump`]. `None` with no
+/// directory, and on a host that is not Unix.
+pub(crate) fn waiting(dir: Option<&Path>, pid: u32) -> Option<Option<i64>> {
     #[cfg(unix)]
     {
         let now = std::time::SystemTime::now()

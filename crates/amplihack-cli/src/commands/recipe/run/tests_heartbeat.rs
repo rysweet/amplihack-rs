@@ -43,16 +43,22 @@ const WORKING: &str =
     "  [15:01:10] [amplihack:claude:41822] ... working (3590s elapsed, 3590s since last output)";
 const WAITING: &str = "  [15:01:10] [amplihack:claude:41822] ... waiting for usage limit until 2026-10-18 08:32:00 -07:00 (3590s elapsed, 3590s since last output)";
 
-fn live(pid: u32) -> Option<i64> {
-    (pid == PID).then_some(UNTIL)
+fn live(pid: u32) -> Option<Option<i64>> {
+    (pid == PID).then_some(Some(UNTIL))
 }
 
-fn none(_: u32) -> Option<i64> {
+fn none(_: u32) -> Option<Option<i64>> {
     None
 }
 
-/// A lookup, as `rewrite` takes one: the `until` of a supervisor's record.
-type Lookup<'a> = &'a dyn Fn(u32) -> Option<i64>;
+/// A supervisor waiting with no deadline (`until=none`, issue #2911).
+fn unbounded(pid: u32) -> Option<Option<i64>> {
+    (pid == PID).then_some(None)
+}
+
+/// A lookup, as `rewrite` takes one: whether a supervisor is waiting, and
+/// the `until` of its record, `None` inside for a wait with no deadline.
+type Lookup<'a> = &'a dyn Fn(u32) -> Option<Option<i64>>;
 
 #[test]
 fn a_heartbeat_with_a_live_record_is_rewritten() {
@@ -101,7 +107,7 @@ fn the_pid_looked_up_is_the_one_that_ends_the_label() {
 
 #[test]
 fn every_line_that_is_not_a_heartbeat_of_a_waiting_step_is_left_alone() {
-    let any: Lookup<'_> = &|_| Some(UNTIL);
+    let any: Lookup<'_> = &|_| Some(Some(UNTIL));
     let cases: &[(&str, Lookup<'_>)] = &[
         // No record for that pid: not waiting (or the record expired).
         (WORKING, &none),
@@ -223,15 +229,53 @@ fn a_pid_at_the_i32_limit_is_looked_up_and_one_above_it_is_not() {
             "  [15:01:10] [amplihack:claude:{pid}] ... working (3s elapsed, 3s since last output)"
         )
     };
-    assert!(rewrite(&line(i32::MAX as u64), |_| Some(UNTIL), &LA).is_some());
-    assert!(rewrite(&line(i32::MAX as u64 + 1), |_| Some(UNTIL), &LA).is_none());
-    assert!(rewrite(&line(1), |_| Some(UNTIL), &LA).is_some());
+    assert!(rewrite(&line(i32::MAX as u64), |_| Some(Some(UNTIL)), &LA).is_some());
+    assert!(rewrite(&line(i32::MAX as u64 + 1), |_| Some(Some(UNTIL)), &LA).is_none());
+    assert!(rewrite(&line(1), |_| Some(Some(UNTIL)), &LA).is_some());
 }
 
 #[test]
 fn an_extreme_until_does_not_panic() {
     for until in [i64::MAX, i64::MIN, 0, -1] {
-        let _ = rewrite(WORKING, |_| Some(until), &LA);
+        let _ = rewrite(WORKING, |_| Some(Some(until)), &LA);
+    }
+}
+
+// --- a wait with no deadline (issue #2911) -------------------------------------
+
+const WAITING_NONE: &str = "  [15:01:10] [amplihack:claude:41822] ... waiting for usage limit until none (3590s elapsed, 3590s since last output)";
+
+#[test]
+fn a_heartbeat_of_a_wait_with_no_deadline_says_until_none() {
+    assert_eq!(
+        rewrite(WORKING, unbounded, &LA).as_deref(),
+        Some(WAITING_NONE)
+    );
+    assert!(is_wait_line(WAITING_NONE));
+}
+
+#[test]
+fn the_pump_treats_a_no_deadline_wait_line_as_a_wait_line() {
+    let Pumped { print, buffer } = pump(WORKING, unbounded, &LA);
+    assert_eq!(print, WAITING_NONE);
+    assert_eq!(
+        buffer.as_deref(),
+        Some(WORKING),
+        "the runner's line is kept"
+    );
+    let Pumped { print, buffer } = pump(WAITING_NONE, none, &LA);
+    assert_eq!(print, WAITING_NONE);
+    assert_eq!(buffer, None, "a nested run's wait line is not kept");
+}
+
+#[test]
+fn none_must_be_followed_by_the_counts_alone() {
+    for line in [
+        "  [15:01:10] [amplihack:claude:41822] ... waiting for usage limit until nonesuch (3s elapsed, 3s since last output)",
+        "  [15:01:10] [amplihack:claude:41822] ... waiting for usage limit until none",
+        "  [15:01:10] [amplihack:claude:41822] ... waiting for usage limit until none (3s elapsed, 3s since last output) weekly limit",
+    ] {
+        assert!(!is_wait_line(line), "{line:?}");
     }
 }
 
@@ -310,7 +354,7 @@ fn the_pump_leaves_every_other_line_byte_for_byte_and_buffers_it() {
     for line in [
         "",
         "plain output",
-        "amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=none until=2026-10-18 08:32:00 -07:00 bound=max_wait",
+        "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=none bound=none",
         "You've hit your session limit · resets 8:30am (America/Los_Angeles)",
         "  \u{e9} non-ascii \u{fffd}",
         "  [15:01:10] [amplihack:claude:41822] ... working",
@@ -328,4 +372,70 @@ fn a_rewrite_never_reaches_the_buffer() {
     let Pumped { buffer, .. } = pump(WORKING, live, &LA);
     let kept = buffer.unwrap().to_ascii_lowercase();
     assert!(!kept.contains("waiting for usage limit"), "{kept}");
+}
+
+// --- no timer, no polling (issue #2967 review) ---------------------------------
+//
+// The heartbeat rewrite and the wait-state record must add no timer, no
+// polling loop, no retry and no gate. These two tests are that rule's
+// evidence: the code of both files names no sleep, thread, interval or
+// duration, and the record is looked up only for a line that is already the
+// runner's heartbeat, so the runner's own clock is the only one involved.
+
+/// The code lines of `source`, with `//` comments dropped.
+fn code(source: &str) -> Vec<&str> {
+    source
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| !l.starts_with("//"))
+        .collect()
+}
+
+#[test]
+fn neither_the_rewrite_nor_the_record_has_a_timer_of_its_own() {
+    const FORBIDDEN: &[&str] = &[
+        "sleep",
+        "thread::",
+        "spawn(",
+        "Instant",
+        "Duration",
+        "recv_timeout",
+        "park_timeout",
+        "interval",
+    ];
+    for (name, source) in [
+        ("recipe/run/heartbeat.rs", include_str!("heartbeat.rs")),
+        (
+            "profile/limit_wait/wait_state.rs",
+            include_str!("../../profile/limit_wait/wait_state.rs"),
+        ),
+    ] {
+        for line in code(source) {
+            for word in FORBIDDEN {
+                assert!(!line.contains(word), "{name}: {word:?} in {line:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_record_is_looked_up_only_for_a_runner_heartbeat_line() {
+    let asked = RefCell::new(0u32);
+    let lookup = |_| {
+        *asked.borrow_mut() += 1;
+        Some(Some(UNTIL))
+    };
+    for line in [
+        "",
+        "plain output",
+        "amplihack.recipe.usage_limit_wait progress remaining=60s",
+        "  [15:01:10] [amplihack:claude:41822] child process ended: exit 0 after 5s",
+        "  [15:01:10] [amplihack:claude:41822] ... working",
+        WAITING,
+    ] {
+        let _ = pump(line, lookup, &LA);
+    }
+    assert_eq!(*asked.borrow(), 0, "no line but a heartbeat reads a record");
+    let _ = pump(WORKING, lookup, &LA);
+    assert_eq!(*asked.borrow(), 1, "one heartbeat, one lookup");
 }
