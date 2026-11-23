@@ -65,9 +65,7 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     let t = (ctx.now)();
     let blocked = |n: &ProfileName| {
         ledger.as_ref().is_some_and(|l| {
-            l.overflow_blocked
-                .get(n.as_str())
-                .is_some_and(|b| t < b.until)
+            target::standing_block(&l.overflow_blocked, n, t).is_some()
                 || (snap.platform() == Some(n)
                     && l.platform_block.as_ref().is_some_and(|b| t < b.until))
         })
@@ -175,7 +173,6 @@ pub(in crate::commands::profile::rotate) fn decide_with(
         (_, tag) => tag,
     };
     let mut seen = target_seen::build(snap, extra.clone(), &probes, &blocks, s.target_week_max, t);
-    seen.live_no_room = !on_overflow && !live_over && room == LiveRoom::NoRoom;
     seen.may_cross = may_cross;
     if decision == Decision::Alert {
         // Why no move: on the logins the rotator may move to (plan logins it

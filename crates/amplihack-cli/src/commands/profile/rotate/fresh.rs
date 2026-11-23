@@ -14,7 +14,7 @@
 use super::cycle::Ctx;
 use super::decide::target::{NoMove, Unfit, fit};
 use super::decide::target_confirm::{Facts, Limit, Step, Why, next};
-use super::decide::target_msg::reject;
+use super::decide::target_msg::{blocked, reject};
 use super::decide::target_seen::Extra;
 use super::decide::{Decision, Measured, Probed, Reading, Reason};
 use super::fresh_msg;
@@ -127,11 +127,14 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 }
 
 /// Applies the gate to `m`, decided on `snap`. While the chosen target is
-/// stale, `target_confirm::next` says what to do (issue #2910, D6, D7): read
-/// it again (with [`Reread::Allowed`] and a hook) and decide again on the new
-/// figures; accept a target whose probe failed this cycle without a fresh
-/// reading when the live login has no room now; otherwise reject it with a
-/// `reject:` line and decide again, which reaches the next-ranked login.
+/// stale, `target_confirm::next` says what to do (issue #2910, D6): read it
+/// again (with [`Reread::Allowed`] and a hook) and decide again on the new
+/// figures; otherwise reject it with a `reject:` line and decide again, which
+/// reaches the next-ranked login. A read that fails, comes back unknown or is
+/// older than a reading already held rejects the target too, whatever room
+/// the live login has (issue #3105): no swap is made without a fresh reading.
+/// Then, when the decision looked for a target, one `reject:` line for each
+/// plan login with a standing block; it makes no read.
 /// Each name is read at most once, at most [`MAX_REREADS_PER_CYCLE`] reads and
 /// read-less rejections are made, and the loop is capped at `2n + 1` passes
 /// for `n` probes; a decision that still names a stale target at the cap is
@@ -155,13 +158,15 @@ pub fn gate(
     m: Measurement,
     mode: Reread,
 ) -> Result<Measurement, ProfileError> {
-    settle(
+    let mut m = settle(
         ctx,
         m,
         mode,
         measure::timeout_quiet(),
         |live, probes, extra, at| decide_with(ctx, snap, live, probes, at, extra),
-    )
+    )?;
+    m.fresh_lines.extend(blocked(&m.seen, &m.decision));
+    Ok(m)
 }
 
 /// The other logins' probes, by name.
@@ -221,7 +226,7 @@ pub(super) fn settle_timed(
     // so the log does not read as if the re-read had been accepted.
     let mut accepted: Vec<ProfileName> = Vec::new();
     let mut not_tried = BTreeSet::new();
-    let (mut attempts, mut rejected_unknown, mut unconfirmed) = (0, false, None);
+    let (mut attempts, mut rejected_unknown) = (0, false);
     // Each name is handled at most twice: read (or made unknown), then made
     // unknown. One more pass finds the settled decision.
     let max_handled = 2 * probes.len();
@@ -248,11 +253,7 @@ pub(super) fn settle_timed(
             return Err(ProfileError::GateUnsettled);
         }
         handled += 1;
-        // A login already accepted without a fresh reading (an earlier gate
-        // of this cycle, before revalidation) counts as a probe that failed.
-        let known = extra.unconfirmed.get(&to).copied();
-        let failed_now =
-            known.is_some() || (probes[i].1.reading == Reading::Failed && !probes[i].1.carried);
+        let failed_now = probes[i].1.reading == Reading::Failed && !probes[i].1.carried;
         let mut read = None;
         if !failed_now && (done.contains(&to) || mode == Reread::Never || ctx.reread.is_none()) {
             // Under the lock, with no hook, or a re-read that is still not
@@ -274,15 +275,9 @@ pub(super) fn settle_timed(
                 failed_now,
                 attempts,
                 can_read: !remaining.is_zero(),
-                live_no_room: m.seen.live_no_room,
-                label: known.or_else(|| extra.labels.get(&to).copied()),
+                label: extra.labels.get(&to).copied(),
             };
             match next(&facts) {
-                Step::AcceptUnconfirmed(label) => {
-                    extra.unconfirmed.insert(to.clone(), label);
-                    unconfirmed = Some((to, label));
-                    break;
-                }
                 Step::Reject(why) => {
                     attempts += 1;
                     rejected_unknown |= matches!(why, Why::Unknown(_));
@@ -310,27 +305,25 @@ pub(super) fn settle_timed(
                         Some(reread) => reread(ctx, &to, remaining),
                         None => (Probed::failed(), None),
                     };
-                    let p = fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines);
-                    if p == Probed::failed() {
-                        // D7: a re-read that came back unknown is accepted
-                        // only when the live login has no room; one with no
-                        // label failed for a reason about the login (S2), so
-                        // it is never a target on the reading it had.
-                        let why = match label {
-                            Some(l) if m.seen.live_no_room => {
-                                extra.unconfirmed.insert(to.clone(), l);
-                                unconfirmed = Some((to, l));
-                                break;
-                            }
-                            Some(l) => {
-                                rejected_unknown = true;
+                    let mut p =
+                        fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines);
+                    // Issue #3105: a read that says nothing, or is older than
+                    // a reading already held, is never swapped on. One with
+                    // no label failed for a reason about the login (S2).
+                    let older = p.observed_at.and_then(|at| extra.older_by(&to, at));
+                    if p == Probed::failed() || older.is_some() {
+                        let why = match (older, label) {
+                            (Some(n), _) => Why::Older(n),
+                            (None, Some(l)) => {
                                 extra.labels.insert(to.clone(), l);
                                 Why::Unknown(l)
                             }
-                            None => Why::Unfit(Unfit::NoReading),
+                            (None, None) => Why::Unfit(Unfit::NoReading),
                         };
+                        rejected_unknown |= matches!(why, Why::Unknown(_) | Why::Older(_));
                         lines.push(reject(&to, &why, week_max));
                         extra.rejected.insert(to.clone());
+                        p = Probed::failed();
                     } else {
                         accepted.push(to.clone());
                         read = Some(p.clone());
@@ -357,13 +350,13 @@ pub(super) fn settle_timed(
         m = again;
     }
     // D10: a cycle left with nothing because every qualifying login's
-    // reading was unknown is a stay with that note, not the no-target line.
-    if m.decision == Decision::Alert && rejected_unknown && !m.seen.live_no_room {
+    // reading was unknown or superseded is a stay with that note, not the
+    // no-target line, whatever room the live login has (issue #3105).
+    if m.decision == Decision::Alert && rejected_unknown {
         m.seen.why = Some(NoMove::after_rejection(m.seen.why.take()));
     }
     m.seen.extra = extra;
     m.seen.not_tried = not_tried;
-    m.seen.unconfirmed = unconfirmed;
     m.fresh_lines = lines;
     Ok(m)
 }

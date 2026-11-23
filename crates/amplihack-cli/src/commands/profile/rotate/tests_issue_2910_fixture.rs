@@ -22,7 +22,7 @@
 //!
 //! ```text
 //! target_seen::Extra::for_cycle(root: &Path,
-//!         labels: Vec<(ProfileName, ProbeLabel)>,
+//!         labels: Vec<(ProfileName, ProbeLabel)>, kept: Vec<(ProfileName, i64)>,
 //!         overflow: &[OverflowEntry], live: Option<&ProfileName>, now: i64) -> Extra
 //! observe::decide_with(ctx, snap, probe: Probed, probes: Vec<(ProfileName, Probed)>,
 //!         measured_at: i64, extra: &Extra) -> Result<Measurement, ProfileError>
@@ -101,6 +101,7 @@ pub(in crate::commands::profile::rotate) fn stub(
     let extra = Extra::for_cycle(
         ctx.store.root(),
         labels,
+        ctx.stored.times(at),
         &snap.decision_overflow(),
         snap.measured_live(),
         at,

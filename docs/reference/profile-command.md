@@ -1377,12 +1377,12 @@ again on what that read finds. A target that has filled up is rejected and the
 next is tried, read the same way, within the confirmation's limits of three
 re-reads or rejections and one probe deadline a cycle. When that read says
 nothing about the login (an HTTP 429 or a timeout, for example), the
-confirmation treats the kept target as it treats any reading it could not
-refresh: the swap goes ahead on the kept figure, with ` unconfirmed (<label>)`
-on the `swap` line, only when the live login has no room now, and the target
-is rejected while the live login has room. The check under the lock before a
-swap takes no reading, so a kept target that the confirmation has not read is
-made unknown there and is not swapped to.
+confirmation fails closed: the kept target is rejected with a `reject:` line
+whatever room the live login has, and the next candidate is tried. A kept
+reading is also never replaced by an older one, so a figure that a newer
+reading has overtaken cannot come back as the live reading. The check under
+the lock before a swap takes no reading, so a kept target that the
+confirmation has not read is made unknown there and is not swapped to.
 
 Each login is therefore read for its figures at most once per `--interval`,
 however many events arrive, as well as once when a window it reported resets
@@ -6342,9 +6342,9 @@ pass:
   it is never counted or recorded as exhausted, does not
   [have capacity](#plan-pool), always keeps a move onto
   [overflow](#overflow-decision) out, and is probed again on the next
-  cycle. It can be chosen as a target only on a
-  [last good reading](#last-good-reading) that qualifies, and then only
-  [unconfirmed](#rotate-confirmation) while the live login has no room. See
+  cycle. It can be ranked on a
+  [last good reading](#last-good-reading) that qualifies, but it is swapped
+  to only after a fresh reading [confirms](#rotate-confirmation) it. See
   [Rotate unknown readings](#rotate-unknown-readings) and
   [Failed and exhausted results](#failed-and-exhausted-results).
 
@@ -6412,9 +6412,19 @@ A login is a move target only if all of these hold:
    limit or a weekly limit, from the rotator or from a
    [limit event](#overflow-spend-limit-block)) and no `spend_limit` reading.
    The login is eligible again from the block's `until` time.
+   The block is the first part of the rule: it rules the login out before any
+   reading is looked at, so a roomy, stale or kept reading never overrides it.
+   The cycle writes `reject: <name> blocked until <time> (<kind>)` for it; see
+   [Block reject lines](#block-reject-lines).
 6. It is not failed: it is signed in, and its token has not expired.
 
-Nothing else removes a login. In particular a login at or above
+Nothing else removes a login. A reading older than the newest reading the
+rotator holds for that login (this cycle's probe, the kept reading and the
+usage history are the candidates) is superseded: it is dropped, never ranked
+or swapped on, and the login counts as unknown if nothing newer is left. A
+reading with no time counts as older than any dated one. A failed probe and a
+spend-limit probe carry no figures and never move the newest time forward.
+In particular a login at or above
 `--session-at` is eligible; whether the rotator moves to it is decided by the
 next part and by the [hold](#rotate-hold).
 
@@ -6489,8 +6499,9 @@ Auto-switch keeps its own rule: see
 | `plan-room` | has room but is at or above one of them |
 | `upgrade`, `projected`, `failed-probe`, `overflow-out` | unchanged: the reason names the pass that made the move |
 
-A swap that went ahead without a fresh reading of the target adds
-` unconfirmed (<label>)`; see [Rotate confirmation](#rotate-confirmation).
+A `swap` line never carries a suffix about the target's reading: a target is
+swapped to only after a fresh reading confirms it; see
+[Rotate confirmation](#rotate-confirmation).
 
 ##### Example: the day the live login filled
 
@@ -6608,8 +6619,8 @@ newer time of the line it was written in, and nothing in the point marks it,
 so the rotator cannot tell it from a measured one. The age it shows may
 therefore be understated. The recorded week figure is a lower bound of the
 true one, so such a point can overstate a login's room but never its use; the
-[confirmation](#rotate-confirmation) of the target and the rule that an
-unconfirmed swap needs a live login with no room are what limit that.
+[confirmation](#rotate-confirmation) of the target and the rule that a swap is never made without a fresh reading are what limit
+that.
 
 The history records a point only for a probe that read the login. A login
 whose later probe reported a spend limit or a refused token has no newer
@@ -6669,25 +6680,47 @@ one, is read again once.
 | The fresh reading shows room, and the target still qualifies | The swap goes ahead. |
 | The fresh reading shows no room: a window at 100%, a week above the ceiling, a spend limit | `reject: <name> <reason>`, and the rotator decides again on the new reading, which reaches the next-ranked login. The login is no longer eligible: the new reading counts it as exhausted or above the ceiling. |
 | The fresh reading has no usable figures, including a `NaN`, infinite or negative figure, or the re-read failed for a reason about the login (an expired or refused token, no credentials), which gives no [label](#rotate-unknown-readings) | `reject: <name> no usable reading`. The login is no longer eligible and is counted as failed. |
-| The fresh reading is unknown, and the live login has no room now | The swap goes ahead on the reading the decision used, and the `swap` line adds ` unconfirmed (<label>)`. |
-| The fresh reading is unknown, and the live login still has room | `reject: <name> reading unknown (<label>)`, and the next login is tried. The login is not chosen again in this cycle, but nothing shows it full, so it stays eligible. |
+| The fresh reading is unknown, or the re-read failed, is still running or is carried, or the probe already failed earlier in this cycle (no read is made), whatever room the live login has | `reject: <name> reading unknown (<label>)`, and the next login is tried. The login is not chosen again in this cycle, but nothing shows it full, so it stays eligible. |
+| The fresh reading is older than the newest reading the rotator holds for the login | `reject: <name> reading <n>s older than one already held`, and the next login is tried. |
+| The login has a standing block | Never reached: the block rules the login out before confirmation. See [Block reject lines](#block-reject-lines). |
 
 When the last qualifying login has been rejected, the result depends on
 whether any login is still eligible:
 
 | After the rejections | Outcome |
 |----------------------|---------|
-| A rejected login is still eligible (its re-read was unknown), and the live login has room | A stay with the `stay: no candidate confirmed by a fresh reading` [stay note](#rotate-no-target), unless a login that qualifies on a known reading is [held](#rotate-hold): then the held note, which says when the hold ends. |
+| A rejected login is still eligible (its re-read was unknown or superseded) | A stay with the `stay: no candidate confirmed by a fresh reading` [stay note](#rotate-no-target), unless a login that qualifies on a known reading is [held](#rotate-hold): then the held note, which says when the hold ends. |
 | No login is eligible (every rejection was for a reading that shows no room, a week above the ceiling, a spend limit or no usable figures), and the live login is past a threshold or has no room | The [no-target line](#rotate-no-target). The rejected logins are in its counts as exhausted, above the ceiling or failed. |
 | No login is eligible, and the live login is below both thresholds | A stay with no note: the rejected login was an upgrade or projected-swap target, and nothing forces a move. |
 
-A swap on an unknown reading is allowed only when the live login cannot run
-work: staying would stop work for certain, and the target might have room.
-When the live login can still run work, an unknown reading never justifies
-leaving it. Such a swap writes no swap record (`swap.json`), because the
-record carries the target's measured figures and there are none, so the
-[usage-limit wait](#rotate-stays-and-capacity) does not resume a stopped step
-on it; a later cycle that reads the new live login with room does.
+Confirmation fails closed. A swap on an unknown, failed, carried or superseded
+reading is never made, whatever room the live login has. Before #3105 a
+swap could go ahead unconfirmed when the live login had no room; it woke
+sessions onto logins that could not serve them and used up their resumes, so
+that path is withdrawn. The cost is plain: when the live login has no room and
+every candidate is unknown, the cycle no longer swaps. It ends on the stay note
+and a hard ALERT (see the [advisory alert](#rotate-advisory-alert) rule), which
+pauses session resumes until a later cycle finds room. With room on the live
+login the ALERT is advisory.
+
+#### Block reject lines
+
+A standing block (see [Eligible logins](#eligible-logins)) rules a plan login
+out in every cycle and every decision in it. In a cycle whose decision looks
+for a target (it names one, confirms one, or ends on a no-target or
+no-candidate-confirmed line), the rotator writes one line per blocked plan
+login, after the `cycle` line:
+
+```
+2026-11-26T06:18:21Z reject: held blocked until 2026-11-26T10:40Z (spend limit)
+```
+
+`<kind>` is the fixed label of the block's kind (`spend limit`, `session
+limit`, `week limit`, `credit limit`, or `a recorded limit` for any other),
+and the line holds no probe or response text. These
+lines make no read and do not count against the three re-reads. A block whose
+`until` has passed no longer applies. A cycle that stays because the live
+login is fine writes no block line.
 
 The reasons in a `reject:` line are fixed text:
 
@@ -6697,18 +6730,19 @@ The reasons in a `reject:` line are fixed text:
 | `week above ceiling <n>% on a fresh reading` | The week is above `--target-week-max`. |
 | `spend limit on a fresh reading` | The reading is a spend limit. |
 | `no usable reading` | The reading has no figures, or a figure that is `NaN`, infinite or negative. |
-| `reading unknown (<label>)` | The re-read was unknown, with its label. |
+| `reading unknown (<label>)` | The re-read was unknown, or the probe failed earlier in this cycle, with its label. |
+| `reading <n>s older than one already held` | The re-read is dated `<n>` seconds before the newest reading the rotator holds for the login. |
+| `blocked until <utc_minute> (<kind>)` | The login has a standing block; see [Block reject lines](#block-reject-lines). |
 
 The existing limits on re-reads are unchanged: at most 3 per cycle, one
 shared time limit of one [probe deadline](#probe-deadline), and one re-read
 per candidate. A rejection made without a read counts against the 3, so a
-cycle writes at most three `reject:` lines. Candidates the cap leaves
+cycle writes at most three confirmation `reject:` lines, besides one
+block line per blocked login. Candidates the cap leaves
 untried are logged with the existing `reread: <name> limit reached; treated
 as unknown` line and counted as `not tried (re-read limit 3)`; the next
-cycle goes on from there. A swap on an unknown reading while the live login
-has no room makes no read and writes no `reject:` line, so the cap does not
-apply to it: such a candidate is accepted after three re-reads as well. See
-[Re-reads](#re-reads).
+cycle goes on from there. No candidate is swapped to without a fresh
+reading, after the cap as before it. See [Re-reads](#re-reads).
 
 ```
 2026-11-23T09:14:01Z cycle live=rrowan rrowan:s=88%,w=70% llarame:s=0%,w=40% qquinn:s=10%,w=50%
@@ -7123,8 +7157,8 @@ re-reads per cycle keeps the gate well inside that bound. The decision rule
 can choose an unknown login, but only on its
 [last good reading](#last-good-reading), and the
 [confirmation](#rotate-confirmation) of that choice needs no further read:
-the swap goes ahead unconfirmed because the live login has no room, or the
-login is rejected and is not chosen again in the same cycle. A login that has
+the login is rejected if it is not confirmed, and is not chosen again in the
+same cycle. A login that has
 been read, rejected or left unread by a limit is never read twice, so every
 decision ends the gate or takes one more login out of consideration. If a
 decision still names a stale target once the bound is reached,
@@ -7141,10 +7175,8 @@ exhausted: nothing about it is written to the ledger,
 the [capacity file](#capacity-file) or the
 [usage history](#usage-history). Like any unknown plan login, it keeps the
 cycle off [overflow](#rotate-decision-order). What happens next depends on
-the live login, as [Rotate confirmation](#rotate-confirmation) says. When the
-live login has no room now, the swap goes ahead on the reading the decision
-used and its `swap` line adds ` unconfirmed (<label>)`. Otherwise the target
-is rejected with a `reject:` line, and the decision falls to the next
+the live login, as [Rotate confirmation](#rotate-confirmation) says. The target
+is rejected with a `reject:` line, whatever room the live login has, and the decision falls to the next
 candidate, which is confirmed in turn, or to a stay note or an ALERT under the
 [decision rule](#rotate-decision-rule). A target made unknown by a failed
 re-read is counted as `unknown (<label>)` in the
@@ -8180,7 +8212,7 @@ overflow:
 | Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
 | A plan login, the live one included, has room below 100% on both windows | No overflow. The [plan-room swap](#rotate-plan-room-swap) moves to the first-ranked target, or the cycle stays with a stay note or the [no-target line](#rotate-no-target) when no login qualifies or the only candidates are above `--target-week-max`. Neither credits nor the API key are used while a plan login has room. |
 | A plan candidate's probe in this cycle was [unknown](#rotate-unknown-readings) (rate-limited, failed in transport, identity unavailable, timed out, still running, or `claude` could not be started, written to, read or waited for, or the profile directory was refused just before the spawn), whatever its last good reading shows | As without overflow: the ALERT, or the swap onto the plan candidate that qualifies. That login might have capacity, so such a probe never moves work onto credits or the API key, with or without a last good reading. It is probed again on the next cycle. The [plan-room swap](#rotate-plan-room-swap) is not held when the live login has no room: it costs nothing. |
-| A plan candidate's probe was unknown, and its last good reading shows room | The same as the row above, with a second reason: the login counts as a plan login with room. The [plan-room swap](#rotate-plan-room-swap) can choose it, unconfirmed, when the live login has no room. |
+| A plan candidate's probe was unknown, and its last good reading shows room | The same as the row above, with a second reason: the login counts as a plan login with room. The [plan-room swap](#rotate-plan-room-swap) can rank it, but swaps to it only after a fresh reading confirms it. |
 | A plan profile is skipped as [`directory refused`](#rotate-candidates) | As without overflow. Its login cannot be checked and might have capacity. The skip, and so the hold, comes back on every cycle until the directory is fixed. |
 | An [unmeasured plan login](#rotate-plan-room-swap), and the only usable overflow profile is the API key | No move onto the key. `ALERT: API key not used` names the logins. |
 | No plan login has room, `earliest plan reset - now > overflow-wait`, and an overflow candidate is eligible | Swap to the first eligible one by tier, `reason=overflow-in`: credit tiers 1 to 9, then the marked API-key profile at tier 10 if its [login check](#api-key-login-check) passes. The `--hold` does not apply. |
@@ -10208,7 +10240,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; for an [overflow](#rotate-overflow) cycle, `overflow`; and, for a cycle that measured the login live afterwards, `live_room`, see [Plan room in the ledger](#plan-room-in-the-ledger)), and `overflow_blocked` (the [blocks](#overflow-spend-limit-block), each with a `reason` that is a block kind such as `spend_limit`, `session_limit` or `week_limit`; any kind of 1 to 32 characters from `a-z`, `0-9` and `_` loads). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `live_room`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. The `no-capacity/known`, `no-capacity/stay`, `no-capacity/held` and `no-capacity/unconfirmed` keys are valid keys, none longer than 89 printable bytes. The ledger has no field for last good readings, rejections or the confirmation state: they are worked out again each cycle and never stored. |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; for an [overflow](#rotate-overflow) cycle, `overflow`; and, for a cycle that measured the login live afterwards, `live_room`, see [Plan room in the ledger](#plan-room-in-the-ledger)), and `overflow_blocked` (the [blocks](#overflow-spend-limit-block), kept in the older-rotator form as well, see below; each with a `reason` that is a block kind such as `spend_limit`, `session_limit` or `week_limit`; any kind of 1 to 32 characters from `a-z`, `0-9` and `_` loads). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `live_room`, `overflow`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. `overflow_blocked` is not left out (#3105, which reverses the #2890 trade-off): a block the step records for a plan login cannot be derived again, and losing it let the rotator swap to a login that was spend-blocked. The cost falls on older rotators only, and only while a block is held (an empty map is not written): one built before #1659 refuses the ledger, one built from #1695 to before #2890 refuses any kind other than a spend limit, and both refuse loudly until restarted. One built between #1659 and #1695 ignores the field and drops it when it saves. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. The `no-capacity/known`, `no-capacity/stay`, `no-capacity/held` and `no-capacity/unconfirmed` keys are valid keys, none longer than 89 printable bytes. The ledger has no field for last good readings, rejections or the confirmation state: they are worked out again each cycle and never stored. |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`checking`, `j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at`, `pid`, and optional `identity` containing sanitized full incoming/outgoing accounts authorized before exchange. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
@@ -10372,7 +10404,7 @@ run and prints their `reread:` lines; see
 | Message | Meaning |
 |---------|---------|
 | `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. The line is written after the [live reading freshness](#freshest-live-reading) step, so the live entry shows the figures the cycle decided on, and carries `,cached=<n>s` (whole seconds) when those figures were read before this cycle's measurement began, for example `work:s=5%,w=95%,cached=612s`. Candidate entries show their figures as measured and never carry it. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe did not read it shows `<name>:unknown, <label>` when the cause is one of the [labelled kinds](#rotate-unknown-readings) (`HTTP 429`, `transport`, `timeout`, `still running`, `probe error`; a login whose identity could not be read is not probed, so it is not on this line and is counted in the [no-target line](#rotate-no-target)), and `<name>:failed` for every other cause, never a percentage: its usage is unknown, and it is probed again on the next cycle. When a [last good reading](#last-good-reading) is in use for an unknown candidate the entry ends `, last s=<n>%,w=<n>% <m>m ago`, for example `llarame:unknown, HTTP 429, last s=78%,w=92% 41m ago`; `<m>` is whole minutes, at most 300. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A measured profile that the [target rule](#rotate-target-choice) leaves out carries its reason after its figures: `above ceiling <n>%` when its week is above `--target-week-max`, or `blocked until <YYYY-MM-DDTHH:MMZ> (<kind>)` while it has a recorded block, where `<kind>` is the block's fixed label (`spend limit`, `session limit`, `week limit`, `credit limit`, `API key exhausted`, `API key revoked`, `API key rate limited`, or `a recorded limit` for any other recorded kind), for example `y:s=10%,w=40% blocked until 2026-11-26T00:00Z (week limit)`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. The live figures carry ` cached=<n>s` under the same rule as the `cycle` line, for example `live s=5% w=95% cached=612s`; the target figures never do. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session use](#projected-swap) reached `--session-at`, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those the cycle decided on, as described in [Freshest live reading](#freshest-live-reading). A cycle that decides on a held reading at or above `--session-at` needs a swap on the reading itself, so it is labelled `reason=threshold`, not `reason=projected`. `reason=threshold` means the target is below both `--session-at` and `--week-at`; `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap), onto a target that has room but is at or above one of them. A swap made without a fresh reading of the target, because the live login had no room and the target's re-read was unknown, ends `reason=<reason> unconfirmed (<label>)`, with the [label](#rotate-unknown-readings) of the probe's error, and its target figures are the reading the decision used: the last good reading followed by `last <m>m ago` when the cycle's own probe said nothing, or the stale reading the target was chosen on, with no age, when only its re-read said nothing. For example `target s=78% w=92% last 30m ago reason=plan-room unconfirmed (HTTP 429)`; see [Rotate confirmation](#rotate-confirmation). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. The live figures carry ` cached=<n>s` under the same rule as the `cycle` line, for example `live s=5% w=95% cached=612s`; the target figures never do. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session use](#projected-swap) reached `--session-at`, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those the cycle decided on, as described in [Freshest live reading](#freshest-live-reading). A cycle that decides on a held reading at or above `--session-at` needs a swap on the reading itself, so it is labelled `reason=threshold`, not `reason=projected`. `reason=threshold` means the target is below both `--session-at` and `--week-at`; `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap), onto a target that has room but is at or above one of them. A `swap` line has no suffix: the target was confirmed by a fresh reading; see [Rotate confirmation](#rotate-confirmation). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
@@ -10386,7 +10418,7 @@ run and prints their `reread:` lines; see
 | `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
 | `reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%` | The chosen swap target's reading failed the [freshness gate](#rotate-reading-freshness-and-swap-back-damping) and was read again by the [probe method](#probe-method), with passive readings off. The first figures are those the decision used, the second those of the new read, formatted as in the `swap` line (`w=?` when no weekly window was read). The decision was then made again on the new figures. |
 | `stale live reading; re-read` | The live login's reading was [frozen, old or lagging](#stale-live-reading) and was read again by the configured probe method, with passive readings off. A direct read uses the supplied home's live credentials and never refreshes them. Written at most once per cycle, before the decision. The line holds no name or figures. |
-| `reread: <name> failed; treated as unknown` | The re-read timed out or failed, or the re-read returned a reading that is itself still stale. `<name>` is unknown for this cycle: not recorded as exhausted, counted as `unknown (<label>)` in the [no-target line](#rotate-no-target), and chosen only when the live login has no room now, in which case the `swap` line ends `unconfirmed (<label>)`. After a [`stale live reading; re-read`](#stale-live-reading) line, `<name>` is the live login: its re-read failed or was still stale, and the cycle is decided by the [near-threshold rule](#failed-or-stale-reading-near-the-threshold). |
+| `reread: <name> failed; treated as unknown` | The re-read timed out or failed, or the re-read returned a reading that is itself still stale. `<name>` is unknown for this cycle: not recorded as exhausted, counted as `unknown (<label>)` in the [no-target line](#rotate-no-target), and rejected at [confirmation](#rotate-confirmation) with `reject: <name> reading unknown (<label>)`, whatever room the live login has. After a [`stale live reading; re-read`](#stale-live-reading) line, `<name>` is the live login: its re-read failed or was still stale, and the cycle is decided by the [near-threshold rule](#failed-or-stale-reading-near-the-threshold). |
 | `reread: <name> limit reached; treated as unknown` | The chosen target was stale, but this cycle had already made 3 target re-reads. The separate live re-read does not count toward this limit. `<name>` is unknown for this cycle, and is counted as `not tried (re-read limit 3)`. |
 | `reread: <name> time limit reached; treated as unknown` | The chosen target was stale, but this cycle's target re-reads had already used their shared time limit of one [probe deadline](#probe-deadline). The live re-read has a separate budget. `<name>` is not read and is unknown for this cycle, and is counted as `unknown (timeout)`. |
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
@@ -10394,8 +10426,10 @@ run and prints their `reread:` lines; see
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)` / `ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)` | No login is eligible and the live login is past a threshold or has no room. The first wording is written only when every other plan login is known, by a fresh or last good reading, to have a window at 100%, a spend limit or an active block; a login the cycle skipped before probing it is never read, so it keeps the second wording. The second is written in every other case. `<counts>` lists, in this order and leaving out any zero count, `<N> unknown (<label>)` for each [label](#rotate-unknown-readings) in the order `HTTP 429`, `transport`, `identity unavailable`, `timeout`, `still running`, `probe error`; `<N> not read (<reason>)` for each plan login skipped before any probe, in the wording of that login's `skip:` line (written when the set of skipped logins changes, so often in an earlier cycle); `<N> failed`; `<N> blocked until <time>`, the earliest block end as UTC to the minute; `<N> exhausted`; `<N> above week ceiling <n>%`; and `<N> not tried (re-read limit 3)` for the candidates the cap of three re-reads left unread (one the time limit left unread is `unknown (timeout)`). With nothing to count it is `candidates: none`. The line holds no profile names. The ALERT kind stays `no-capacity`, and the key is `no-capacity` for the first wording and `no-capacity/known` for the second, so a change of wording writes a new line and a change in the counts does not. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)`, or `would alert: no capacity known ...`, without the `ALERT: ` prefix. See [Rotate no target](#rotate-no-target). |
 | `stay: live room <R>, best other login has room <M>, a move needs <N>` | The live login has room, a login is eligible, and none has the `N = R + max(--margin, 1)` room that a move needs. When only a login in another organisation has room, `best other login has room <M>` reads `only a login in another organisation has room`. When the live probe read nothing usable, `<R>` is `unknown` and `<N>` is `--margin`. Written once per key `no-capacity/stay`, advisory when the live reading qualifies (see [Rotate advisory alert](#rotate-advisory-alert)). It is not an ALERT. `--dry-run` prints `would stay (live room <R>, ...)`. |
 | `stay: held after last swap (<S>s of <H>s): <name> is at s=<n>%, at or above --session-at` | The [hold](#rotate-hold) kept the rotator on the live login, which has room, instead of moving to `<name>`. Written once per key `no-capacity/held`, advisory when the live reading qualifies. |
-| `stay: no candidate confirmed by a fresh reading` | Every qualifying login was rejected at [confirmation](#rotate-confirmation), a rejected login is still eligible (its re-read was unknown), and the live login has room. When every rejection showed no room, the no-target line is written instead. Written once per key `no-capacity/unconfirmed`, advisory or hard as the [advisory rule](#rotate-advisory-alert) says. |
+| `stay: no candidate confirmed by a fresh reading` | Every qualifying login was rejected at [confirmation](#rotate-confirmation), at least one of them unknown or superseded, whatever room the live login has. When every rejection showed no room, the no-target line is written instead. Written once per key `no-capacity/unconfirmed`, advisory or hard as the [advisory rule](#rotate-advisory-alert) says. |
 | `reject: <name> <reason>` | A candidate that qualified was rejected by its fresh reading, and the rotator decided again, which reaches the next-ranked login. `<reason>` is `no room on a fresh reading`, `week above ceiling <n>% on a fresh reading`, `spend limit on a fresh reading`, `no usable reading` or `reading unknown (<label>)`. At most three a cycle, because each counts against the three re-reads. See [Rotate confirmation](#rotate-confirmation). |
+| `reject: <name> blocked until <utc_minute> (<kind>)` | A plan login with a standing block, ruled out of the target choice. One line per blocked login in each cycle whose decision looks for a target; no read, so it does not count against the three re-reads. See [Block reject lines](#block-reject-lines). |
+| `reject: <name> reading <n>s older than one already held` | A confirming read was older than the newest reading held for the login, so it was not used. Counts against the three re-reads. |
 | `ALERT: live profile <name> is excluded; no eligible candidate` | ALERT `excluded-live`: the live profile is in the auto-switch `exclude` list and no move off it is possible. The login stays in `~/.claude`, unprobed and unrefreshed. Written once per key. See [Rotate excluded live profile](#rotate-excluded-live-profile). |
 | `note: live profile <name> is excluded; moving off it` | Written before the `swap` line of a move off an excluded live profile. |
 | `refresh: live profile <name> is excluded; token not refreshed` | The [expired-login refresh](#an-expired-live-login) was skipped because a rule under [Local proof of an excluded live login](#local-proof-of-an-excluded-live-login) named `<name>` as the live profile. |

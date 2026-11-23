@@ -564,8 +564,13 @@ fn ac6_the_cycle_does_not_end_in_an_error_when_no_login_has_room() {
 
 // --- The 429 storm (AC7) ------------------------------------------------------------------------------
 
+/// Issue #3105 (was: chosen and swapped to `unconfirmed (HTTP 429)`): a
+/// login that answered 429 still ranks on its last good reading, but no swap
+/// is made without a fresh reading, even with the live login full. It is
+/// rejected at confirmation and the cycle ends on the stay note, as a hard
+/// ALERT that pauses session resumes until a later cycle finds room.
 #[test]
-fn ac7_a_login_that_answered_429_is_chosen_on_its_last_good_reading_when_the_live_login_is_full() {
+fn ac7_a_login_that_answered_429_is_rejected_at_confirmation_when_the_live_login_is_full() {
     let f = fleet(&["llarame", "qquinn"], &[]);
     f.history("llarame", 1800, 78, 92);
     let out = run(
@@ -579,8 +584,8 @@ fn ac7_a_login_that_answered_429_is_chosen_on_its_last_good_reading_when_the_liv
         ],
     );
     let log = f.log();
-    assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("llarame"), "{log}");
+    assert_eq!(out, CycleOutcome::Alerted, "{log}");
+    assert!(f.live_is("work"), "{log}");
     // The probe's own error is in the log, beside the login it was for.
     assert!(
         log.contains("llarame:unknown, HTTP 429, last s=78%,w=92% 30m ago"),
@@ -588,12 +593,16 @@ fn ac7_a_login_that_answered_429_is_chosen_on_its_last_good_reading_when_the_liv
     );
     assert!(log.contains("qquinn:unknown, HTTP 429"), "{log}");
     assert!(
-        log.contains(
-            "swap work->llarame live s=100% w=40% target s=78% w=92% last 30m ago reason=plan-room unconfirmed (HTTP 429)"
-        ),
+        log.contains("reject: llarame reading unknown (HTTP 429)"),
         "{log}"
     );
-    assert!(alerts(&log).is_empty(), "{log}");
+    assert!(
+        log.contains("stay: no candidate confirmed by a fresh reading"),
+        "{log}"
+    );
+    assert!(lines_with(&log, "swap work->").is_empty(), "{log}");
+    let l = f.e.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(l.alert.as_deref(), Some("no-capacity/unconfirmed:work"));
 }
 
 #[test]
