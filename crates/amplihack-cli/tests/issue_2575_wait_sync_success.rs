@@ -1716,3 +1716,6 @@ fn a_merge_github_does_not_read_back_is_refused() {
         show(&report)
     );
 }
+
+#[path = "issue_1924_base_merge_rule.rs"]
+mod base_merge_rule;
