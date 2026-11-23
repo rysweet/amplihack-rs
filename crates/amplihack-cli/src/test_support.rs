@@ -672,6 +672,14 @@ pub(crate) fn write_executable(path: &Path, body: &str) {
     exec_stub::write_executable(path, body, 0o755);
 }
 
+/// [`write_executable`] with the permission bits given, for a stub that must
+/// stay private to its owner (mode 0700). Setuid, setgid and sticky bits are
+/// refused.
+#[cfg(unix)]
+pub(crate) fn write_executable_with_mode(path: &Path, body: &str, mode: u32) {
+    exec_stub::write_executable(path, body, mode);
+}
+
 /// One word of POSIX shell text holding `value` byte for byte (issue #2931):
 /// every path or name a lib test writes into the text of a stub goes through
 /// this. The one definition is `tests/support/exec_stub.rs`.

@@ -140,6 +140,16 @@ fn on_call(call: u32, login: &str, outcome: &str, room: &str) -> String {
 
 /// Replaces the rotate ledger in one rename, private, as the rotator does.
 /// `at` is both the time the cycle was recorded and the time it measured.
+///
+/// The new file is written in the fixture's root, which the wait does not
+/// watch, so the rename is the only event it sees. The wait watches the
+/// rotate directory for any name, and one read pass reads the ledger twice:
+/// for the rotator's capacity, then for the room gate (issue #3124). A temp
+/// file written beside the ledger woke the wait before the rename, and a pass
+/// that straddled the rename read no room first and room second. It then
+/// ended `login changed` where these tests assert `rotator capacity` (PR
+/// #3114's CI). The rotator's own write still has that window; #3124 tracks
+/// it.
 fn write_ledger(profiles: &Path, live: &str, outcome: &str, at: i64, room: Option<bool>) {
     let dir = profiles.join(".auto-switch.d").join("rotate");
     for d in [profiles.join(".auto-switch.d"), dir.clone()] {
@@ -150,7 +160,10 @@ fn write_ledger(profiles: &Path, live: &str, outcome: &str, at: i64, room: Optio
     let body = format!(
         r#"{{"version":1,"live":"{live}","alert":null,"last_cycle":{{"at":{at},"measured_at":{at},"outcome":"{outcome}"{room}}}}}"#
     );
-    let tmp = dir.join("ledger.json.new");
+    let tmp = profiles
+        .parent()
+        .expect("the profile root is inside the fixture")
+        .join("ledger.json.new");
     private_file(&tmp, &body);
     fs::rename(&tmp, dir.join("ledger.json")).unwrap();
 }

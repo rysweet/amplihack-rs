@@ -307,8 +307,12 @@ const PAYLOAD: &[u8] = b"archive payload for 2957";
 
 fn stand_in_gh(root: &Root, mode: GhMode, download: Download, reset: i64) -> GhCommand {
     let script = root.path.join("bin/gh");
-    std::fs::write(&script, GH_SCRIPT).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // The shared stub writer, which never holds the file open for writing in
+    // this process. Written here with `std::fs::write`, a sibling test's fork
+    // can inherit that descriptor and leave the stub "text file busy"; the
+    // failed exec then reads as a `gh` that is not usable, and the lookup
+    // falls back to the anonymous API (issue #1973).
+    crate::test_support::write_executable_with_mode(&script, GH_SCRIPT, 0o700);
 
     let fixture = root.path.join("fixture");
     std::fs::write(fixture.join("release.json"), release_json("v9.9.9")).unwrap();
