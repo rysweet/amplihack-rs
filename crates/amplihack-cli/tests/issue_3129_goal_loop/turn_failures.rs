@@ -3,16 +3,16 @@
 //! Each test runs the real binary, the pinned runner and the real recipes
 //! against the stand-in gh and the stub agent of `support`, and reads only
 //! what the run produced. Each fails on ccb445a9, where any failed turn run
-//! ended the run as `failed` or `usage_limit`.
+//! ended the run as `failed` or `usage_limit`, except the one usage-limit
+//! ending the operator's own setting asks for.
 //!
-//! Nothing sleeps, polls or times out. Where the run must be held while the
-//! test sends guidance, the stub agent blocks on the harness FIFO and the test
-//! releases it (`fifo_release`).
+//! Nothing sleeps, polls or times out, and none of these runs waits for
+//! guidance. The one failure that does, a launch bundle that lost a file a
+//! turn needs, is tested with the stand-in goal in `contract`.
 
 #![cfg(target_os = "linux")]
 
 use super::support::{Harness, MERGE_WHEN_GREEN, PR_BRANCH, describe, git};
-use crate::support::fifo_release;
 use serde_json::json;
 
 /// Turn 1: `$TURN_ONE` (bash), once. Every later turn: merge when green.
@@ -89,68 +89,92 @@ fn a_step_that_fails_after_the_agent_pushed_work_keeps_the_work_and_the_next_tur
     );
 }
 
-/// The agent step fails with a usage limit before it decides. The run does
-/// not end: the next turn starts (its supervised agent step moves login or
-/// waits for the reset), or, where the runner could not supervise the step,
-/// the run waits for the owner's word, which the test sends during the turn.
-/// The message carries the classifier's marker but not the harness's own
-/// limit shape, so no real limit wait starts in the test.
+/// The agent step fails with a usage limit before it decides, with the
+/// operator's limit wait on (the default). The run does not end, and nothing
+/// waits for the owner: the next turn starts at once with the evidence. The
+/// message carries the classifier's marker but not the harness's own limit
+/// shape, so no real limit wait starts in the test.
 #[test]
 fn a_usage_limit_in_a_turn_never_ends_the_run() {
     let h = Harness::new();
     h.policy(&first_turn_then_merge(
         r#"
-  read -r _ < "$STUB_FIFO"
   echo "error: this account reached its usage limit for now" >&2
   exit 1
 "#,
     ));
-    let mut live = fifo_release::start(
-        h.drive_command("auto-drive-to-merge", &["no_merge=false"]),
-        &h.fifo,
-        "the drive",
-    );
-    h.guide("The login has room again; carry on.");
-    let out = live.finish();
+    let out = h.drive("auto-drive-to-merge", &["no_merge=false"]);
     ends_merged_on_turn_two(&h, &out);
     let first = h.result("001");
     assert_eq!(first["failure"]["usage_limit"], json!(true), "{first}");
-    assert!(
-        first["recovery"] == json!("next-turn") || first["recovery"] == json!("owner-wait"),
-        "{first}"
+    assert_eq!(first["failure"]["class"], json!("usage_limit"), "{first}");
+    assert_eq!(
+        first["failure"]["usage_limit_wait"],
+        json!(true),
+        "the operator's setting was read, not the log: {first}"
     );
+    assert_eq!(first["recovery"], json!("next-turn"), "{first}");
     assert_ne!(h.loop_end()["end"], json!("usage_limit"));
 }
 
-/// The agent step fails before it decides, for a reason a fresh turn would
-/// likely meet again at once. The run waits for the owner's word (an event,
-/// no timer); guidance sent during the turn wakes it, and the next turn runs.
+/// R1's one usage-limit ending, kept on purpose: the operator's own
+/// `recipe.usage_limit_wait = false` asks for a limit to be passed up at once.
+/// The driver reads that setting itself (`amplihack config get`), so the
+/// ending follows the setting and not a log line.
 #[test]
-fn a_turn_that_fails_before_its_agent_decides_waits_for_the_owner_and_then_carries_on() {
+fn a_usage_limit_with_the_operators_limit_wait_off_ends_the_run_as_usage_limit() {
     let h = Harness::new();
     h.policy(&first_turn_then_merge(
         r#"
-  read -r _ < "$STUB_FIFO"
+  echo "error: this account reached its usage limit for now" >&2
+  exit 1
+"#,
+    ));
+    let mut c = h.drive_command("auto-drive-to-merge", &["no_merge=false"]);
+    c.env("AMPLIHACK_USAGE_LIMIT_WAIT", "0");
+    let out = c.output().expect("amplihack recipe run");
+    assert_eq!(
+        h.loop_end()["end"],
+        json!("usage_limit"),
+        "{}\n{}",
+        h.loop_end(),
+        describe(&out)
+    );
+    assert_eq!(h.turns(), vec!["001"], "{}", describe(&out));
+    let first = h.result("001");
+    assert_eq!(first["recovery"], json!("ended"), "{first}");
+    assert_eq!(
+        first["failure"]["usage_limit_wait"],
+        json!(false),
+        "{first}"
+    );
+    assert!(h.merge_calls().is_empty(), "{:?}", h.calls());
+}
+
+/// The agent step fails before it decides (R1's pre-decision case). Nothing
+/// waits for the owner: the next turn starts at once, and its agent is given
+/// the failure's evidence. On 47b21de0 this run blocks in the owner wait (or
+/// ends in a hand-off where no wake can be armed) and never reaches turn 2.
+#[test]
+fn a_turn_that_fails_before_its_agent_decides_starts_the_next_turn_with_the_evidence() {
+    let h = Harness::new();
+    h.policy(&first_turn_then_merge(
+        r#"
   echo "the agent process stopped unexpectedly" >&2
   exit 1
 "#,
     ));
-    let mut live = fifo_release::start(
-        h.drive_command("auto-drive-to-merge", &["no_merge=false"]),
-        &h.fifo,
-        "the drive",
-    );
-    h.guide("I fixed the host. Carry on.");
-    let out = live.finish();
+    let out = h.drive("auto-drive-to-merge", &["no_merge=false"]);
     ends_merged_on_turn_two(&h, &out);
     let first = h.result("001");
-    assert_eq!(first["recovery"], json!("owner-wait"), "{first}");
+    assert_eq!(first["recovery"], json!("next-turn"), "{first}");
     assert_eq!(first["failure"]["agent_finished"], json!(false), "{first}");
-    let second = h.reading("002");
     assert!(
-        second["guidance"]
-            .as_array()
-            .is_some_and(|g| g.iter().any(|e| e["new"] == json!(true))),
-        "the owner's word is new to the next turn: {second}"
+        !h.state.join("turns/001/owner-wait.json").exists(),
+        "no owner wait ran"
     );
+    let failure = &h.reading("002")["previous"]["failure"];
+    assert!(failure["class"].is_string(), "{failure}");
+    assert!(failure["completed_steps"].is_array(), "{failure}");
+    assert!(failure["failed_steps"].is_array(), "{failure}");
 }

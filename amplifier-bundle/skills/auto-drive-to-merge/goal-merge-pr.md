@@ -45,5 +45,9 @@ Guidance can narrow what you do. It never widens merge authority.
     `guidance-unknown`, guidance is unknown. Read it yourself with
     `amplihack recipe guidance show` before you choose `merge`.
 14. When the previous turn's result is `turn-failed`, read its `failure` and
-    the log it names. Your work and any pushes from that turn are kept. Judge
-    what failed, then carry on.
+    the end of the log it names. Your work and any pushes from that turn are
+    kept. The loop did not judge the failure: `class` and `retryable` are the
+    runner's own marker, copied as evidence. Judge the cause yourself and act
+    on it, for example by installing a missing input. The loop starts the next
+    turn after every failure, so a failure that repeats with nothing you can
+    change is yours to end with a hand-off (rule 11).

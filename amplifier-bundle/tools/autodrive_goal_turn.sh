@@ -14,7 +14,7 @@
 # Required outcomes (#3129 R2). Every outcome the task text or guidance
 # requires is named by the agent in the decision's `outcomes` list, each with
 # status met, unmet or rejected. The ledger keeps every name ever listed, with
-# its latest status, so a later turn cannot drop one silently; each reading
+# its latest status, and is never truncated, so no name drops out; each reading
 # lists the ledger, and a goal's merge action checks it by name. An outcome
 # the agent rejects is answered in a PR comment with its reason, once per
 # reason.
@@ -217,7 +217,8 @@ do_wait_owner() {
 # whose reason has not been answered yet. A comment that fails the secret
 # screen or cannot be posted leaves the outcome unanswered, and the merge
 # action refuses until a later turn answers it. Exit 0, 1 (the ledger could
-# not be read or written; it is left as it was), 2 usage, 75 and 79 passed up.
+# not be read or written, and is left as it was, or it is now past its read
+# cap), 2 usage, 75 and 79 passed up.
 do_outcomes() {
   local d="$TD/decision.json" old="$TD/.ledger-old" new="$TD/.ledger-new" pend="$TD/.ledger-pending" body="$TD/answer.md" rc=0 prc=0 n
   [ -n "$LEDGER" ] || { echo "ERROR: outcomes needs AUTODRIVE_STATE_DIR" >&2; return 2; }
@@ -230,7 +231,7 @@ do_outcomes() {
         (map(.name) | index($o.name)) as $i
         | {name:$o.name, status:$o.status, evidence:$o.evidence, reason:$o.reason, turn:$t} as $e
         | if $i == null then . + [$e + {answered_reason:""}] else .[$i] |= (. + $e) end)
-      | map(. + {answered:(.status == "rejected" and .reason != "" and (.answered_reason // "") == .reason)}) | .[:256]' "$d" > "$new"; then
+      | map(. + {answered:(.status == "rejected" and .reason != "" and (.answered_reason // "") == .reason)})' "$d" > "$new"; then
     rm -f -- "$old" "$new"; echo "ERROR: the turn's outcomes could not be merged into the ledger; it was left as it is" >&2; return 1
   fi
   jq -c '[.[] | select(.status == "rejected" and (.answered | not))]' "$new" > "$pend"
@@ -255,6 +256,13 @@ do_outcomes() {
     fi
   fi
   jq -c '{schema_version:1, outcomes:.}' "$new" | goal_atomic_write "$LEDGER" || { echo "ERROR: the outcome ledger could not be written" >&2; rc=1; }
+  # Nothing truncates the ledger, so no name can drop out of the merge check.
+  # Its one bound is the 512 KiB read cap: a ledger past it fails closed, and
+  # the turn that grew it says so here.
+  if [ "$rc" -eq 0 ] && ! goal_json_file "$LEDGER" 524288; then
+    echo "ERROR: the outcome ledger now holds $(jq 'length' "$new") names and is over its 512 KiB read cap, so it cannot be read: every later reading reports outcomes_error, and a merge refuses with outcomes-unreadable" >&2
+    rc=1
+  fi
   rm -f -- "$old" "$new" "$new.2" "$pend"
   case "$prc" in 75|79) return "$prc" ;; esac
   return "$rc"

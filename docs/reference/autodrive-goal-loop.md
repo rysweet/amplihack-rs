@@ -101,7 +101,7 @@ which is why waiting is an action and not part of the agent step.
 | `repository` | Allowed merge methods; whether strict status checks are required (`strict_status_checks`, `strict_source`, `strict_unreadable`); `merge_state_behind` as evidence only |
 | `guidance` | Name, time, caller, source, new flag and size of each entry; `guidance_error` when guidance could not be read |
 | `outcomes` | Every required outcome an agent has named in this run, from the run's ledger, with its latest status, evidence, reason, the turn that last judged it and whether a rejection was answered; `outcomes_error` when the ledger could not be read |
-| `previous` | The last turn's number, action and mechanical result; after a failed turn run also its `recovery` and `failure` (class, whether it was retryable, whether the agent finished deciding, the completed steps and the turn log's path) |
+| `previous` | The last turn's number, action and mechanical result; after a failed turn run also its `recovery` and `failure` (the runner's class and whether it was retryable, whether the agent finished deciding, the completed and failed steps, the operator's limit-wait setting for a usage limit, and the turn log's path; see [Failures inside a turn](#failures-inside-a-turn)) |
 | `goal_file` | Path to the goal text |
 | `turns_dir` | Path to the turn records |
 
@@ -227,8 +227,12 @@ entry needs a `reason`.
 - The ledger. After each turn's decision the driver runs
   `autodrive_goal_turn.sh outcomes`, which merges the list into the run's
   ledger, `<autodrive_state_dir>/outcomes.json`. Every name ever listed is
-  kept, with its latest status, up to 256 names. A later turn cannot drop one
-  silently. Each reading lists the ledger under `outcomes`.
+  kept, with its latest status. Nothing truncates the ledger, so a later turn
+  cannot drop a name and no name drops out of the merge check. Its one bound is
+  the 512 KiB read cap. The turn that takes the ledger past it prints an error
+  naming the count, which the driver logs as a warning. After that every
+  reading reports `outcomes_error`, and a merge refuses with
+  `outcomes-unreadable`. Each reading lists the ledger under `outcomes`.
 - The answer. A `rejected` outcome is answered in one PR comment that names it
   and gives the agent's reason. It is posted once for each reason. A comment
   that fails the secret screen or cannot be posted leaves the outcome
@@ -312,28 +316,83 @@ handling runs first: the usage-limit wait, limit-resume and step recovery. If
 the turn run still fails, the driver resets nothing. The agent may have edited,
 committed or pushed before a later step failed, and all of that is kept. The
 turn's `result.json` has outcome `turn-failed`, the `recovery` chosen and the
-`failure`: the runner's class from its last `failure_class` marker, whether
-it was retryable, whether the agent finished deciding, the completed steps and
-the turn log's path. The next turn's reading carries them as `previous`, so a
-fresh agent judges the failure. A decision the failed turn saved is not
-carried out. The guidance mark does not move, so guidance the failed turn was
-given shows as new again.
+`failure`. The next turn's reading carries them as `previous`, so a fresh agent
+judges the failure. A decision the failed turn saved is not carried out. The
+guidance mark does not move, so guidance the failed turn was given shows as new
+again.
 
-What runs before the next turn depends on the failure:
+The `failure` fields are evidence for the agent, and the driver decides
+nothing from them:
 
-| Failure | Recovery |
-|---------|----------|
-| The agent finished deciding (`decide` completed, or `decision.json` was saved) and a later step failed | The next turn starts at once |
-| A usage limit | The next turn starts at once. The runner's supervisor in its agent step moves to a login with room, or waits for the reset or for a login with room ([usage-limit waits](./usage-limit-waits.md)). No timer. |
-| `transient_transport` | The next turn starts at once. The runner has already spent its own retry budget on the call. |
-| Anything else before the agent decided: `environmental`, `work`, `agent_api`, `indeterminate`, or a usage limit the runner could not supervise (`usage_limit_wait skipped reason=not_supervised`) | The run waits for the owner's word, `amplihack recipe guidance wait`, an event with no timer. Guidance that arrived during the turn wakes it at once. Then the next turn starts. If no wake can be armed, the question goes to the operator in a hand-off, as `wait-owner` does. |
-| A usage limit when the operator turned the runner's limit wait off (`recipe.usage_limit_wait = false`, logged `usage_limit_wait skipped reason=disabled`) | The run ends as `usage_limit`. That setting asks for the limit result at once, and the same command resumes the run. |
-| Any failure of a `--once` turn | The driver exits 1. The caller asked for one turn. |
+| Field | Source |
+|-------|--------|
+| `exit` | The turn run's exit status |
+| `class`, `retryable` | The runner's own classification, from the JSON of its last `amplihack.recipe.failure_class` marker line. That line is the runner's structured output (`FAILURE_CLASS_MARKER_PREFIX` in `failure_class.rs`), the same one the trust-boundary check reads (`classify_child` in `autodrive_refusal.sh`). |
+| `completed_steps`, `failed_steps` | The same marker's JSON fields |
+| `agent_finished` | `true` when `decision.json` was saved, or the marker lists `decide` as completed |
+| `usage_limit` | `true` when the marker's class is `usage_limit` |
+| `usage_limit_wait` | For a usage limit, the operator's `recipe.usage_limit_wait`, read with `amplihack config get` in the turn's working folder, as the runner reads it; `null` when it was not read or could not be |
+| `log` | The turn log's path. The agent reads the end of it and judges the cause itself. |
 
-The wait in the fourth row is there because a fault that stopped the agent
-before it could decide would meet the next turn at once, and a loop that
-started turns with no agent able to judge would spin and fill the disk with
-turn folders.
+Nothing in the driver reads the wording of the turn log. The goal text tells
+the agent to read the log, judge the cause and act on it, for example by
+installing a missing input.
+
+What runs before the next turn:
+
+| Case | What runs |
+|------|-----------|
+| Any failure, whether or not the agent had decided: a step after the agent failed, the agent step crashed, a setup or environment fault, a transport fault, `agent_api`, `work`, `indeterminate`, or a usage limit | The next turn starts at once, with the evidence above. |
+| A failure the runner classed `usage_limit`, when the operator's own `recipe.usage_limit_wait` reads `false` | The run ends as `usage_limit` and the driver exits 1. See [The limit wait turned off](#the-limit-wait-turned-off). |
+| The launch bundle no longer holds the turn recipe, the turn tool or the goal tool, as regular files | No turn can run, so the run waits for the owner's word (`amplihack recipe guidance wait`, an event with no timer), then starts the next turn. If no wake can be armed, the question goes to the operator in a hand-off, as `wait-owner` does. This is a fact the driver checks on disk, not a reading of the log. |
+| Any failure of a `--once` turn | The run ends, as `usage_limit` for a usage limit and as `failed` otherwise, and the driver exits 1. The caller asked for one turn. |
+
+Exit 79 and the runner's `structural_refusal` marker are not in this table.
+They are trust-boundary refusals and end the run as `refused` before
+`failed_turn` runs.
+
+### A failure that repeats
+
+A failure that happens on every turn makes the loop start turn after turn, at
+once, with no changed input. This is deliberate. The loop has no counter, no
+timer and no reading of earlier records to stop on, because a counter is the
+brittle ending #3129 removes. Two cases differ in what each turn costs:
+
+- The agent step runs and a later step fails every time, for example a broken
+  publish step. Each turn runs a full agent step. That agent reads
+  `previous.failure` and can act on it, and the goal text tells it to hand off
+  when a failure repeats and nothing it can do changes the cause.
+- The agent step cannot run at all, for example because the agent's own binary
+  is gone, or because a usage limit reaches the driver while the limit wait is
+  on, as it does when the runner could not supervise the step. Each turn then
+  fails within seconds, and each writes a turn folder and takes a fresh
+  reading of GitHub. The loop goes on until the cause clears (the limit resets,
+  or the login changes) or the owner stops the run with
+  `amplihack recipe stop`. No agent runs that could hand off.
+
+The owner can always stop such a run. Guidance cannot end it while no agent
+runs, because only an agent acts on guidance.
+
+### The limit wait turned off
+
+R1 says a usage limit never ends the run. One case still ends it: a failure the
+runner classed `usage_limit` while the operator's own `recipe.usage_limit_wait`
+is `false` (or `AMPLIHACK_USAGE_LIMIT_WAIT=0`). This is kept on purpose, for
+three reasons:
+
+- The setting is the operator's, and nothing in amplihack writes it. Its
+  meaning, in `limit_wait/settings.rs`, is that a limit is to be passed up at
+  once rather than waited out. Ending the run with `usage_limit` passes it up.
+- If the run went on, every next turn's agent step would meet the same limit
+  at once until the reset, with no wait: the loop above at its most wasteful.
+  The operator asked for the limit result at once, not for a run that keeps
+  meeting the limit.
+- Nothing is lost. The runner records the step as resumable, and the same
+  command resumes the run.
+
+The driver reads the setting itself with `amplihack config get`. It does not
+read the runner's log line. If the setting cannot be read, the run is not
+ended for a limit.
 
 ## Turn records
 
@@ -380,7 +439,7 @@ bound state folder, with a matching run ID.
 | `stopped` | The owner stopped the run |
 | `terminal_refusal` | A trust boundary refused |
 | `failed` | A `--once` turn run failed after the runner's recovery |
-| `usage_limit` | A usage limit, with the operator's limit wait turned off |
+| `usage_limit` | A usage limit, with the operator's limit wait turned off, or in a `--once` turn |
 | `orphaned` | Unchanged |
 
 Only `completed` counts as success. A merge counts only when `loop-end.json`
@@ -578,6 +637,10 @@ Rust:
   on a PR with no checks (where `gh pr checks --watch` returns at once), costs
   one agent call per turn. The agent is told to hand off when a failure keeps
   repeating. The operator can use `amplihack recipe stop`.
+- A turn run that fails the same way every turn starts the next turn at once,
+  with no changed input, and does so on purpose
+  ([A failure that repeats](#a-failure-that-repeats)). Where no agent step can
+  run at all, nothing but the cause clearing or `amplihack recipe stop` ends it.
 - `gh pr checks --watch` polls GitHub inside `gh`. The loop adds no poll of its
   own.
 - An operator who passes `--step-timeout` times out the whole loop step.

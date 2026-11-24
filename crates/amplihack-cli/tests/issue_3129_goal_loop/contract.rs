@@ -333,3 +333,44 @@ fi
     assert_eq!(s.h.turns(), ["001", "002"]);
     assert_eq!(s.h.result("001")["outcome"], "continued");
 }
+
+// R1's one wait for the owner's word: the launch bundle no longer holds a file
+// every turn needs, a fact the driver checks on disk. The goal tool is the
+// file here, because the runner refuses every auto-drive turn run while one of
+// its own tools is missing, so no agent could put that back. Guidance sent
+// during the turn wakes the wait at once, and the next turn's agent puts the
+// goal tool back and ends the run.
+#[test]
+fn a_launch_bundle_that_lost_the_goal_tool_waits_for_the_owners_word_then_carries_on() {
+    let s = standin("poke");
+    fs::write(s.state.join("target"), super::support::PR_URL).unwrap();
+    s.h.policy(
+        r#"
+tool="$(jq -r '.goal_file' "$TURN/reading.json")"; tool="${tool%.md}.sh"
+if [ ! -e "$STUB_LOG/t1" ]; then
+  : > "$STUB_LOG/t1"
+  read -r _ < "$STUB_FIFO"
+  mv -- "$tool" "$STUB_LOG/goal-tool.saved"
+  echo "the agent step stopped" >&2
+  exit 1
+fi
+mv -- "$STUB_LOG/goal-tool.saved" "$tool"
+echo '{"action":"ready","args":{"text":"The goal tool is back, and the stand-in goal is ready."},"why":"I put the goal tool back."}'
+"#,
+    );
+    let mut live = crate::support::fifo_release::start(s.command(), &s.h.fifo, "the loop");
+    s.h.guide("I restored the launch bundle. Carry on.");
+    let out = live.finish();
+    assert!(out.status.success(), "{}", describe(&out));
+    let first = s.h.result("001");
+    assert_eq!(first["recovery"], "owner-wait", "{first}");
+    assert_eq!(s.h.turns(), ["001", "002"], "{}", describe(&out));
+    assert!(
+        s.h.reading("002")["guidance"]
+            .as_array()
+            .is_some_and(|g| g.iter().any(|e| e["new"] == true)),
+        "the owner's word is new to the next turn: {}",
+        s.h.reading("002")
+    );
+    assert_eq!(s.h.loop_end()["end"], "ready", "{}", describe(&out));
+}
