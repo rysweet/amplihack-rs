@@ -31,8 +31,8 @@
 use crate::issue_1618_fixture::{Fixture, WEEKLY_TEXT, describe, events, executable, text};
 use crate::issue_1618_wait_profiles::with_profiles;
 use crate::issue_1801_capacity_wait::{
-    assert_no_account_detail, real_clock, rotator_running, run_with_rotator_cycle_during_wait,
-    x_is_live,
+    ROTATOR_ENDINGS, assert_no_account_detail, real_clock, rotator_running,
+    run_with_rotator_cycle_during_wait, x_is_live,
 };
 use crate::support::quiet_process::in_quiet_process;
 use std::fs;
@@ -171,8 +171,16 @@ fn g1_a_limited_evaluator_step_is_retried_and_returns_its_verdict() {
                     .is_some_and(|l| l.starts_with("start reason=usage_limit wait=capacity ")),
                 "the line comes immediately before the wait's own start: {ev:?}"
             );
+            // The rotator's one write ends the wait under either reason, as
+            // in `issue_1801_capacity_wait::ac1` (#3170).
             assert!(
-                ev.iter().any(|l| l == "end reason=rotator capacity"),
+                ev.get(2)
+                    .is_some_and(|l| ROTATOR_ENDINGS.contains(&l.as_str())),
+                "the wait ends on the rotator's write: {ev:?}"
+            );
+            assert_eq!(
+                ev.get(3).map(String::as_str),
+                Some("resume attempt=2"),
                 "{ev:?}"
             );
             assert!(
