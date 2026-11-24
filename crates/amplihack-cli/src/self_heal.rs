@@ -85,6 +85,9 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     // Issue #1808: `cleanup` needs no framework assets, and its dry run must
     // write nothing at all, not even the bundle-compatibility cache.
     "cleanup",
+    // Issue #3220: `directory` only reads the index of installed skills and
+    // agents, and must write nothing, not even the bundle-compatibility cache.
+    "directory",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an
@@ -1176,6 +1179,27 @@ steps:
             0,
             "artifact guard is a read-only safety gate and must not self-heal before scanning"
         );
+    }
+
+    #[test]
+    fn directory_command_skips_startup_self_heal() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+
+        for argv in [
+            &["amplihack", "directory", "find", "kubernetes"][..],
+            &["amplihack", "directory", "list"][..],
+        ] {
+            let calls = Cell::new(0u32);
+            let mut buf = Vec::new();
+            ensure_assets_match_binary_version_with(
+                &args(argv),
+                &mut buf,
+                counting_installer(&calls, crate::VERSION),
+            )
+            .expect("ok");
+            assert_eq!(calls.get(), 0, "{argv:?} must not restage the framework");
+        }
     }
 
     #[test]

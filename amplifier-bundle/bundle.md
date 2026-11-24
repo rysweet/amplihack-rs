@@ -98,7 +98,7 @@ skills:
   pptx: { path: skills/pptx/SKILL.md }
   xlsx: { path: skills/xlsx/SKILL.md }
 
-  # Meta skills (11)
+  # Meta skills (12)
   backlog-curator: { path: skills/backlog-curator/SKILL.md }
   knowledge-extractor: { path: skills/knowledge-extractor/SKILL.md }
   learning-path-builder: { path: skills/learning-path-builder/SKILL.md }
@@ -107,6 +107,7 @@ skills:
   pm-architect: { path: skills/pm-architect/SKILL.md }
   pr-review-assistant: { path: skills/pr-review-assistant/SKILL.md }
   roadmap-strategist: { path: skills/roadmap-strategist/SKILL.md }
+  skill-and-agents-directory: { path: skills/skill-and-agents-directory/SKILL.md }
   storytelling-synthesizer: { path: skills/storytelling-synthesizer/SKILL.md }
   work-delegator: { path: skills/work-delegator/SKILL.md }
   workstream-coordinator: { path: skills/workstream-coordinator/SKILL.md }
@@ -284,7 +285,7 @@ agents:
         Run auto-workflow with task: "Implement user authentication"
         ```
 
-        ### Skills Library (75 total)
+        ### Skills Library (76 total)
 
         | Category | Count | Examples |
         |----------|-------|----------|
@@ -292,7 +293,7 @@ agents:
         | Workflow Skills | 11 | default-workflow, debate, consensus |
         | Technical Skills | 21 | design-patterns, debugging, testing |
         | Document Processing | 4 | PDF, DOCX, XLSX, PPTX |
-        | Meta Skills | 11 | PR review, backlog, roadmaps |
+        | Meta Skills | 12 | PR review, backlog, roadmaps |
 
         ### Hook System (9 hooks)
 

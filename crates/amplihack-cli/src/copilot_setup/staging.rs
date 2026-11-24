@@ -330,6 +330,25 @@ mod tests {
         );
     }
 
+    /// Issue #3220: the bundled `skill-and-agents-directory` skill reaches the
+    /// Copilot skills tree through the existing staging, with no code of its own.
+    #[test]
+    fn stage_skills_stages_the_bundled_directory_skill_for_copilot() {
+        let temp = tempfile::tempdir().unwrap();
+        let copilot_home = temp.path().join(".copilot");
+        let bundle_skills =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/skills");
+
+        stage_skills(&bundle_skills, &copilot_home).unwrap();
+
+        let staged = copilot_home
+            .join("skills")
+            .join("skill-and-agents-directory")
+            .join("SKILL.md");
+        let body = fs::read_to_string(&staged).unwrap();
+        assert!(body.contains("name: skill-and-agents-directory"));
+    }
+
     /// Issue #860: re-staging must not duplicate or lose the `pr-guide` skill —
     /// `reset_markdown_dir` clears stale markdown before each copy, so a second
     /// stage yields exactly the same discoverable SKILL.md.
