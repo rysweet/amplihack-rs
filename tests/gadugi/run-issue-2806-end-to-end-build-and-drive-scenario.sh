@@ -567,14 +567,17 @@ if [ "${QA_RUN_LABEL:-}" = drive ]; then
   if has 'You are one turn of a goal-driven loop'; then
     # autodrive-goal-turn/decide (#3129): the loop's one agent step per turn.
     # Every check passed at this head and merging is allowed, so a competent
-    # agent asks for the merge at the head it read. A second turn means the
-    # merge did not end the goal; the stand-in then hands off rather than
-    # asking again, so a fault ends the drive instead of looping.
+    # agent asks for the merge at the head it read. The task text and guidance
+    # require no outcome, so it lists `outcomes` as an empty list, as the turn
+    # prompt asks: a merge decision that lists none is refused (#3129 R2). A
+    # second turn means the merge did not end the goal; the stand-in then
+    # hands off rather than asking again, so a fault ends the drive instead of
+    # looping.
     step=autodrive-goal-turn/decide
     turns="$root/drive-turns"
     printf 'x\n' >> "$turns"
     if [ "$(wc -l < "$turns")" -eq 1 ]; then
-      response="$(j '{action:"merge",args:{head:$h},why:"Every check passed at this head and merging is allowed, so I ask for the merge at the head I read."}')"
+      response="$(j '{action:"merge",args:{head:$h},outcomes:[],why:"Every check passed at this head and merging is allowed, and the task names no required outcome, so I ask for the merge at the head I read."}')"
     else
       response="$(j '{action:"handoff",args:{owner:"operator",decision:"why the merge did not end the drive",text:"The merge requested on the first turn did not end the drive. The operator decides what happens next."},why:"The goal did not end after the merge."}')"
     fi
