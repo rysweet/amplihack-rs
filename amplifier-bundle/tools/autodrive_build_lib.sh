@@ -10,6 +10,11 @@
 # write to GitHub derives the run branch again from the context and reads the
 # pull request live (build_verify_pr).
 #
+# The run makes no file outside its state folder (S-D3). build_own_pr and
+# build_verify_pr keep gh's stderr, before it is redacted, in a private file
+# in the caller's scratch folder S, else in STATE; ${TMPDIR:-/tmp} is used only
+# by a caller with neither.
+#
 #   build_turn_dir <dir>          goal_check_turn_dir, after making a turn
 #                                 folder this user owns private (0700)
 #   build_valid_branch <name>     git check-ref-format --branch, no leading
@@ -200,7 +205,7 @@ build_own_pr() {
     if goal_is_pr "$n" && [ "$(jq -r '.branch // empty | strings' "$rec")" = "${BUILD_BRANCH:-}" ]; then STATE_PR="$n"; OWN_PR="$n"; OWN_HOW=state; fi
   fi
   if [ -n "${BUILD_BRANCH:-}" ]; then
-    err="$(mktemp "${TMPDIR:-/tmp}/build-pr-list.XXXXXX")" || err=/dev/null
+    err="$(mktemp "${S:-${STATE:-${TMPDIR:-/tmp}}}/build-pr-list.XXXXXX")" || err=/dev/null
     out="$(gh pr list --head "$BUILD_BRANCH" --state open --limit 20 \
       --json number,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,title,body,createdAt 2>"$err")"; rc=$?
     case "$rc" in 79|75) [ "$err" = /dev/null ] || rm -f -- "$err"; return "$rc" ;; esac
@@ -232,7 +237,7 @@ VERIFY_CLASS=""; VERIFY_WHY=""; VERIFY_JSON=""
 build_verify_pr() {
   local n="$1" branch="$2" need_open="$3" err rc state head cross
   VERIFY_CLASS=failed; VERIFY_WHY=""; VERIFY_JSON=""
-  err="$(mktemp "${TMPDIR:-/tmp}/build-pr-view.XXXXXX")" || err=/dev/null
+  err="$(mktemp "${S:-${STATE:-${TMPDIR:-/tmp}}}/build-pr-view.XXXXXX")" || err=/dev/null
   VERIFY_JSON="$(gh pr view "$n" --json number,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,author 2>"$err")"; rc=$?
   case "$rc" in 79|75) [ "$err" = /dev/null ] || rm -f -- "$err"; return "$rc" ;; esac
   if [ "$rc" -ne 0 ] || ! printf '%s' "$VERIFY_JSON" | jq -e 'type == "object"' >/dev/null 2>&1; then

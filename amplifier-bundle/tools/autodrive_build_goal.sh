@@ -186,7 +186,8 @@ apply_text() { # apply_text <pr> <title file> <body file>: pr_text_apply's JSON 
   local line rc
   # shellcheck source=workflow_pr_text.sh
   . "$HERE/workflow_pr_text.sh" || { jq -cn '{result:"unread", differs:[], error:"workflow_pr_text.sh is missing"}'; return 0; }
-  line="$(pr_text_apply "$1" "$2" "$3")"; rc=$?
+  # The live text is read back into the action's scratch folder (S-D3).
+  line="$(TMPDIR="$S" pr_text_apply "$1" "$2" "$3")"; rc=$?
   passup "$rc"
   printf '%s' "$line" | jq -c 'select(type == "object")' 2>/dev/null || jq -cn '{result:"unread", differs:[], error:"the read-back gave no result"}'
 }

@@ -159,8 +159,10 @@ do_loop() {
   # The trap runs after this function returns, so it names a global.
   LOOP_SCRATCH="$scratch"
   trap '[ -z "$LOOP_SCRATCH" ] || rm -rf -- "$LOOP_SCRATCH"' EXIT
+  # write_context_value makes its temporary file in TMPDIR, here the scratch
+  # folder, so the task text never leaves the state folder (S-D3).
   for k in task_description final_requirements; do
-    write_context_value "$k" "$scratch/$k" 2>/dev/null || : > "$scratch/$k"
+    TMPDIR="$scratch" write_context_value "$k" "$scratch/$k" 2>/dev/null || : > "$scratch/$k"
   done
   # The goal tool reads the rest of this run's context from the RECIPE_VAR_*
   # the runner gave this step; nothing here sets one (#1561). The driver runs

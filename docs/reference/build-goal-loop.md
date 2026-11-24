@@ -137,6 +137,12 @@ or is world-writable without the sticky bit is skipped. The folder holds
 records. State files are a cache. They are never an authority for a write to
 GitHub, which always checks live state first.
 
+The run makes no file outside this folder. Each reading and each action keeps
+its scratch files in a private folder inside its turn folder and removes it
+when it ends. These include `gh`'s error text before it is redacted, the claim
+check's error file and the pull request text read back after `open-pr`.
+`publish`, which has no turn folder, keeps its files in the state folder.
+
 A fresh folder is used because `oxidizer-workflow` calls `default-workflow` many
 times in one run and `quality-loop` calls it in a loop. A retry on the same
 branch finds its pull request through the branch, so it does not need the old

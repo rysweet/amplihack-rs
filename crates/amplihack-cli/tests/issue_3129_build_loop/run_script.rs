@@ -229,6 +229,44 @@ fn the_loop_leaves_no_scratch_folder_inside_or_outside_the_state_folder() {
     assert!(inside.is_empty(), "inside it: {inside:?}");
 }
 
+/// A `mktemp` in front of the real one, logging each path it makes.
+const MKTEMP: &str = r##"#!/usr/bin/env bash
+for real in /usr/bin/mktemp /bin/mktemp; do [ -x "$real" ] && break; done
+p="$("$real" "$@")" || exit $?
+printf '%s\n' "$p" >> "$MKTEMP_LOG"
+printf '%s\n' "$p"
+"##;
+
+/// S-D3: the loop makes every temporary file, the task text's included,
+/// inside the state folder. The files are removed on return wherever they are
+/// made, so the log of what `mktemp` made is the evidence.
+#[test]
+fn the_loop_makes_its_temporary_files_inside_the_state_folder() {
+    let s = setup();
+    write_executable(&s.w.bin.join("mktemp"), MKTEMP, 0o755);
+    let log = s.w.base.join("mktemp.log");
+    let out = run_loop(
+        &s,
+        &[
+            ("STUB_END", r#"{"end":"ready"}"#),
+            ("MKTEMP_LOG", log.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let made = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !made.trim().is_empty(),
+        "mktemp was never called: {}",
+        text(&out)
+    );
+    for p in made.lines() {
+        assert!(
+            PathBuf::from(p).starts_with(&s.state),
+            "made outside the state folder: {p}\n{made}"
+        );
+    }
+}
+
 // ---- report: outcomes ---------------------------------------------------
 
 fn report(s: &Setup) -> Value {
