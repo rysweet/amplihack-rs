@@ -3,9 +3,10 @@
 //! Layout evidence is pinned to upstream rust-v0.98.0, rust-v0.147.0 and rust-v0.166.0:
 //! `codex-cli/bin/codex.js`, `codex-cli/scripts/build_npm_package.py`, and
 //! (0.166.0) `codex-rs/install-context/src/lib.rs`.
-//! The host-only implementation is present from 0.147.0, and later stable releases
-//! are taken to keep it (#2353); releases 0.99–0.146 are inconclusive because
-//! experimental host/fallback behavior varied.
+//! The host-only implementation is present from 0.147.0, and every later release,
+//! pre-releases included, is taken to keep it (#2353: a minimum, no maximum);
+//! releases 0.99–0.146 are inconclusive because experimental host/fallback
+//! behavior varied.
 use crate::launch_target::display_untrusted_path;
 use serde::Deserialize;
 use std::{
@@ -239,16 +240,19 @@ fn native_path(resolved: &Path, modern: bool, version: &str) -> Result<PathBuf, 
 }
 
 // Upstream 97576b179487 removes the fallback between 0.146.0 and 0.147.0.
-// Every stable release from 0.147.0 on is taken as the host-only layout (#2353):
-// a fixed upper bound refused each new Codex release until amplihack caught up.
+// There is a minimum and no maximum (#2353; Ryan, 24 Nov 2026): every release
+// from 0.147.0 on is taken as the host-only layout, the newest known behaviour.
+// A fixed upper bound refused each new Codex release until amplihack caught up.
+// A pre-release is judged by its release numbers, so 0.172.0-alpha.1 counts as
+// 0.172.0: refusing it would be a maximum by another name. Releases 0.99 to
+// 0.146 stay inconclusive, because their host and fallback behaviour varied.
 // If a later release changes the layout, the native path or helper check below
 // fails on that installation and names what is missing.
 fn needs_code_mode_host(version: &semver::Version) -> Option<bool> {
-    if !version.pre.is_empty() {
-        None
-    } else if version.major == 0 && version.minor <= 98 {
+    let release = semver::Version::new(version.major, version.minor, version.patch);
+    if release.major == 0 && release.minor <= 98 {
         Some(false)
-    } else if *version >= semver::Version::new(0, 147, 0) {
+    } else if release >= semver::Version::new(0, 147, 0) {
         Some(true)
     } else {
         None
