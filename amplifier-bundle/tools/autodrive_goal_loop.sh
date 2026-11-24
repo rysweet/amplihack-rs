@@ -192,28 +192,11 @@ guidance_show() { # guidance_show <since> <out>: metadata only (never text)
 }
 
 # failed_turn <rc>: a turn run that failed after the runner's own handling
-# (R1). It never resets anything: completed work in the worktree and on the
-# remote is kept. It writes result.json with the failure's evidence, which the
-# next turn's reading carries as `previous`, and then picks the recovery from
-# the class the runner recorded (its last failure_class marker):
-#   - the operator turned the runner's limit wait off (`usage_limit_wait
-#     skipped reason=disabled`): the run ends as usage_limit, as that setting
-#     asks; the same command resumes it.
-#   - the agent finished deciding (`decide` completed, or decision.json was
-#     saved) and a later step failed: the next turn starts at once. The saved
-#     decision's action does not run; the fresh agent decides again.
-#   - any other usage limit, unless the runner said it could not supervise the
-#     step: the next turn starts at once, and the runner's supervisor in its
-#     agent step moves to a login with room or waits for the reset. No timer.
-#   - transient_transport: the runner already spent its own retry budget on
-#     the call; the next turn starts at once.
-#   - anything else (environmental, work, agent_api, indeterminate, or a usage
-#     limit the runner could not supervise) stopped the agent before it could
-#     decide, and a fresh turn would likely meet it again at once. The driver
-#     waits for an event, the owner's word (`recipe guidance wait`, no timer),
-#     and then starts the next turn. Where no wake can be armed, the run hands
-#     the question to the operator, as wait-owner does.
-# Returns 0 when the next turn is to start; every other path ends the run.
+# (R1). It resets nothing, writes the failure's evidence to result.json (the
+# next reading's `previous`), and picks the recovery from the runner's last
+# failure_class marker; the table is in docs/reference/autodrive-goal-loop.md
+# (#failures-inside-a-turn). A saved decision is never carried out. Returns 0
+# when the next turn is to start; every other path ends the run.
 failed_turn() {
   local rc="$1" summary marker completed judged=false limit=false recovery why wrc
   classify_child "$TD/turn.log" >/dev/null
