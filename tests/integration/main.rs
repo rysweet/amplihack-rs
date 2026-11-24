@@ -446,6 +446,12 @@ mod issue_849_skill_mirror_citation;
 #[path = "verus_expert_skill_test.rs"]
 mod verus_expert_skill;
 
+// Agent definitions leave the model to the user: each definition under
+// amplifier-bundle/agents and docs/claude/agents parses, and none sets its
+// model to `inherit`, which would override the user's default for helpers.
+#[path = "agent_definitions_model_test.rs"]
+mod agent_definitions_model;
+
 // PR #1027 (spike/ci-wallclock-parallelize): CI wall-clock parallelization +
 // conditional release-profile contract. Pins the 7 required check names, the
 // removal of `needs: check` from test/install-smoke/cross-compile, the release
