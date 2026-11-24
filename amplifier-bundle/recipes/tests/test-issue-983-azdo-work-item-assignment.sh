@@ -7,14 +7,6 @@
 # tracking. Over time this produced hundreds of orphaned, unassigned Task items.
 #
 # Fix contracts under test:
-#   STATIC:
-#     - The create call no longer hardcodes `--type "Task"`.
-#     - It passes an `--assigned-to` identity (never unassigned).
-#     - It uses `${AZDO_WORK_ITEM_TYPE:-Issue}` for the type.
-#     - It resolves the caller's UPN client-side (`az account show`) rather than
-#       relying on the WIQL-only `@me` macro that create does not expand.
-#     - The silent `2>/dev/null || echo ""` swallow on the create is gone.
-#     - REF_ISSUE_NUM reuse (work-item show) is retained.
 #   DYNAMIC (real step-03 command executed with a stubbed `az`):
 #     - CREATE-OK: default run creates as `Issue`, assigned to the resolved UPN
 #              (from `az account show`), prints URL, exit 0.
@@ -25,8 +17,8 @@
 #              provider's error, and the run carries on with local tracking
 #              (exit 0, tracking_system=local; #3129).
 #     - NO-IDENTITY: when the caller's identity cannot be resolved and no
-#              override is set, the step fails loud (exit non-zero, ERROR) rather
-#              than creating an unassigned item.
+#              override is set, the step names the cause and carries on with
+#              local tracking (exit 0) rather than creating an unassigned item.
 #     - ENV-ABSENCE: with no `az` on PATH, the step legitimately WARNs and falls
 #              back to local tracking (exit 0) — that path must be preserved.
 #
@@ -52,43 +44,9 @@ command -v python3 >/dev/null 2>&1 || { echo "HARNESS-ERROR: python3 required" >
 
 echo "=== Issue #983: ADO work-item assignment + configurable type + fail-loud ==="
 
-# ---------------------------------------------------------------------------
-# STATIC checks against the recipe source.
-# ---------------------------------------------------------------------------
-if ! grep -Eq 'az boards work-item create[^\n]*--type[[:space:]]+"Task"' "${RECIPE}" \
-   && ! grep -Eq -- '--type[[:space:]]+"Task"' "${RECIPE}"; then
-    pass "STATIC-no-task" 'no hardcoded `--type "Task"` remains'
-else
-    fail "STATIC-no-task" 'a hardcoded `--type "Task"` is still present'
-fi
-
-if grep -Fq -- '--assigned-to "$AZDO_WI_ASSIGNEE"' "${RECIPE}"; then
-    pass "STATIC-assigned-to" 'create passes an --assigned-to identity'
-else
-    fail "STATIC-assigned-to" 'create is missing --assigned-to'
-fi
-
-if grep -Fq -- 'az account show' "${RECIPE}" \
-   && grep -Fq -- '${AZDO_ASSIGNED_TO:-}' "${RECIPE}"; then
-    pass "STATIC-assignee-resolve" 'assignee resolved client-side (az account show) with AZDO_ASSIGNED_TO override, not the WIQL @me macro'
-else
-    fail "STATIC-assignee-resolve" 'missing client-side UPN resolution (az account show / ${AZDO_ASSIGNED_TO:-} default)'
-fi
-
-grep -Fq -- '${AZDO_WORK_ITEM_TYPE:-Issue}' "${RECIPE}" \
-    && pass "STATIC-type-default" 'type defaults to Issue with AZDO_WORK_ITEM_TYPE override' \
-    || fail "STATIC-type-default" 'missing ${AZDO_WORK_ITEM_TYPE:-Issue} default'
-
-# The old silent-swallow create pattern must be gone.
-if grep -Eq 'az boards work-item create.*2>/dev/null \|\| echo ""' "${RECIPE}"; then
-    fail "STATIC-no-swallow" 'create still swallows errors via `2>/dev/null || echo ""`'
-else
-    pass "STATIC-no-swallow" 'create no longer swallows errors silently'
-fi
-
-grep -Fq 'az boards work-item show' "${RECIPE}" \
-    && pass "STATIC-reuse" 'REF_ISSUE_NUM reuse (work-item show) retained' \
-    || fail "STATIC-reuse" 'REF_ISSUE_NUM reuse path removed'
+# The STATIC checks that read the recipe's source text were removed under
+# #3129: tests check values and behaviour, never wording (Ryan, 23 Nov 2026).
+# The DYNAMIC cases below run the real step and cover the same contracts.
 
 # ---------------------------------------------------------------------------
 # DYNAMIC fixture: run the REAL step-03-create-issue command with a stub `az`.
@@ -229,9 +187,9 @@ fi
 # where the run can continue). It is never silent (#983).
 run_env_step "create-fail" "Fix the widget alignment bug"
 if [[ ${LAST_RC} -eq 0 ]] \
-   && printf '%s' "${LAST_ERR}" | grep -q 'WARNING: az boards work-item create failed' \
+   && printf '%s' "${LAST_ERR}" | grep -qF 'TF401232: Work item type does not exist.' \
    && printf '%s' "${LAST_OUT}" | grep -q 'tracking_system=local'; then
-    pass "DYN-fail-loud" "genuine create failure is named in a WARNING and the run carries on with local tracking"
+    pass "DYN-fail-loud" "a genuine create failure is reported with the provider's error and the run carries on with local tracking"
 else
     fail "DYN-fail-loud" "rc=${LAST_RC} out='${LAST_OUT}' err='${LAST_ERR}'"
 fi

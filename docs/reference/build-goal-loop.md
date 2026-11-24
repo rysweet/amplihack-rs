@@ -1,7 +1,7 @@
 ---
 title: Build Goal Loop
 description: How default-workflow builds a change and opens its pull request as one goal-driven agent loop. Inputs, outputs, the reading, actions, pull request text, claims, host inputs, run endings, behaviour changes and the 1.2.213 callers.
-last_updated: 2026-11-23
+last_updated: 2026-11-24
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -55,8 +55,8 @@ under [Azure DevOps builds](#azure-devops-builds). The build steps run when
 | `workflow-prep` | The existing recipe, unchanged. Chooses the tracking issue and runs the claim check as information. |
 | `workflow-worktree` | The existing recipe. Step 04 creates the worktree and, for a new branch, links host inputs into it. |
 | `build-goal-setup` | Runs `autodrive_build_run.sh setup`. Creates the state folder, records the run's branch and worktree, and links host inputs into the worktree, which also covers a run on an existing branch. |
-| `build-loop` | Runs `autodrive_build_run.sh loop`, which runs the shared recipe `autodrive-goal-loop` as its own recipe run, with `autodrive_build_goal.sh` as the goal tool and `skills/default-workflow/goal-build-pr.md` as the goal text, and passes it the context the goal tool reads. Output: `build_loop_result`, the loop's end line from `loop-end.json`. A sub-recipe step would merge the loop's context back into the run and its callers, so the build's state folder would replace the `autodrive_state_dir` that `autodrive-build` and `auto-drive-to-merge` read after the build. |
-| `build-report` | Runs `autodrive_build_run.sh report`. Non-fatal, and it runs once, after the loop's last action. Writes `workflow_result` from the loop's end, the pull request's live state and the outcome ledger. Besides the report, it removes only the temporary files the run made outside its state folder and names each one in the log. |
+| `build-loop` | Runs `autodrive_build_run.sh loop`, which calls the shared loop's driver, `tools/autodrive_goal_loop.sh`, the way the `autodrive-goal-loop` recipe's own step calls it, with `autodrive_build_goal.sh` as the goal tool and `skills/default-workflow/goal-build-pr.md` as the goal text. Each turn is then one `amplihack recipe run autodrive-goal-turn` from this step's depth, as under `auto-drive-to-merge`. Output: `build_loop_result`, the loop's end line from `loop-end.json`. A nested run of the loop recipe would put each turn's agent past the session-depth ceiling, and a sub-recipe step would merge the loop's context, `autodrive_state_dir` included, back into the run and its callers. |
+| `build-report` | Runs `autodrive_build_run.sh report`. Non-fatal, and it runs once, after the loop's last action. Writes `workflow_result` from the loop's end, the pull request's live state and the outcome ledger. The run makes no file outside its state folder, so there is nothing else to remove. |
 
 The agent in each turn works on the branch the run created. The worktree and
 branch are never removed by the build run, because callers such as
@@ -100,8 +100,9 @@ Outputs:
 `workflow_result` fields: `end` (`ready`, `merged`, `closed`, `handoff`,
 `stopped` or `none`), `detail`, `turn`, `pr_number`, `pr_url`, `pr_state` and
 `pr_draft` as read from GitHub, `terminal_state`, `terminal_success`,
-`terminal_reason`, `handoff` (always `"false"`), `state_dir`, and `errors`,
-which lists each read that failed. A failed read is recorded in `errors` and
+`terminal_reason`, `handoff` (always `"false"`), `state_dir`, `outcomes` (see
+[Guidance and required outcomes](#guidance-and-required-outcomes)), and
+`errors`, which lists each read that failed. A failed read is recorded in `errors` and
 never changes the end. A GitHub rate-limit exit (79) is recorded the same way.
 
 `terminal_state` keeps the vocabulary that `autodrive-build` step 03 reads
@@ -624,6 +625,14 @@ INFO: candidate #711 rejected by: head_sha (pr=1c7996e2 local=45817ee2)
 - Hook repair on the loop path is gone. A hook failure is the result of the
   agent's own commit.
 - Cleanup after the goal no longer removes the worktree.
+- A loop failure after the first turn, including a usage limit when
+  `usage_limit_wait` is `false`, gives a report of `INCOMPLETE` and a
+  `build-loop` exit of 0 instead of a failed step.
+- `quick-change` no longer falls back to its template when the task's own PR
+  lines fail a check or the PR-text step gives no usable answer. It creates
+  nothing and hands the work to the build loop, which writes the task's lines.
+- Builds whose origin is Azure DevOps run the seven v3 phase steps, as in
+  1.2.213, for this release.
 
 ## Security notes
 
@@ -720,17 +729,17 @@ recorded. No test reads recipe, document or prompt text. They are in
 | Module | What it shows |
 | --- | --- |
 | `goal_tool` | Goal contract v1: the five words and no merge word; `final` prints nothing before a pull request exists or when a read fails, and `merged` for the run's own merged one; the reading names the issue and its source and marks claims `run-branch` or `other-branch`; a failed pull request read is recorded and the read succeeds; host inputs and checks at the current head only; `open-pr` refuses an empty title, a secret and a closing keyword the task never gave, and reports `already-open` for a retry (#3110); `mark-ready` marks the run's own pull request, refuses a cross-repository one, and works with the worktree gone; no action calls `pr merge`; `publish` exits 1 with no pull request and never posts on the issue |
-| `loop_drive` | The build goal through the real shared loop: the pull request opens with the task's title and body byte for byte, is marked ready, the loop ends `ready` with no merge call; a retry continues the pull request its first attempt opened |
+| `loop_drive` | The build goal through the real shared loop: the pull request opens with the task's title and body byte for byte, is marked ready, the loop ends `ready` with no merge call; a retry continues the pull request its first attempt opened; guidance sent while turn 1 decides is new in turn 2's reading and readable by turn 2's agent with `amplihack recipe guidance show`, and turn 1 has neither |
 | `claim_check` | Every claim result exits 0 and keeps its stdout key line; `--json` lists each claim with its head and whether it is the run's own; usage errors exit 2 |
 | `issue_reference` | `tracking_issue_reference` gives `context`, `marked-reference`, `bare-reference` or `none`, and ignores code spans |
 | `pr_ready` | #2787: a head one commit behind is marked ready; run from a checkout on `main` the tool reads the worktree; an own pull request that cannot be validated stays draft and the tool exits 0; a cross-repository pull request is never marked ready |
 | `host_inputs` | #3102: ignored `.venv` and `.venv-*` folders are linked, logged and never staged; a hook that calls `.venv/bin/python` passes in the new worktree |
 | `pr_text` | The read-back: matching text is left alone, CRLF and trailing whitespace are no difference, an altered body is restored with one edit, a difference that remains is reported, a failed read edits nothing |
 | `quick_change` | The task's PR lines reach `gh pr create` exactly and the report goes in a comment; a rewritten body is restored once; without PR lines the 72-character title and 4,000-byte body apply; an unlisted closing keyword, a failed `pr-text` step and a title with an empty body each exit 1 with the check key and create nothing; a failed create exits 1 with no URL |
-| `run_level` | Real runner and stand-in `gh`: the worktree exists when `mark-ready` runs and after the run, and `build-report` runs once after the loop; a `build-report` that fails after the pull request opened leaves the recipe exit 0 with the failure in the log; an Azure DevOps origin takes the v3 route and never starts the loop; a branch only behind a non-strict base gets no base merge; another branch's pull request on the issue is information and the run opens its own |
-| `prep` | `Fixes #N` in the task with no `issue_number` gives issue N and its claim information |
-| `guidance` | Guidance written between turn 1 and turn 2 reaches turn 2 and not turn 1; operator guidance allows a closing line the task did not give; guidance from an agent step does not; `show --operator-only` leaves out agent-step entries in plain and JSON output; a failed guidance read does not widen the list and sets `guidance_unread`; a malformed pull request URL still reads the run's folder; guidance text reaches no kept record |
-| `tools` | The loop's exit table and fallback line, a loop that ends before turn 1, no scratch folder left behind, and the outcome list in the report, including `null` for an unreadable ledger |
+| `run_level` | `default-workflow` run whole through the real runner, with a stand-in `gh` and a stub agent: the worktree exists when `mark-ready` runs and after the run, and `build-report` runs once after the loop; a `build-report` that fails after the pull request opened leaves the recipe exit 0 with the failure in the log; an Azure DevOps origin takes the v3 route and never starts the loop; a branch only behind a non-strict base gets no base merge; another branch's pull request on the issue is information and the run opens its own |
+| `prep` | `workflow-prep` run whole: `Fixes #N` in the task with no `issue_number` gives issue N, and the claim check reports an open pull request on it as information while the run goes on |
+| `guidance` | Operator guidance allows a closing line the task did not give; guidance from an agent step does not; `show --operator-only` leaves out agent-step entries in plain and JSON output; a failed guidance read does not widen the list and sets `guidance_unread`; a malformed pull request URL still reads the run's folder; guidance text reaches no kept record |
+| `run_script` | The loop calls the shared driver with the build goal; the loop's exit table and fallback line, a loop that ends before turn 1, no scratch folder left behind, and the outcome list in the report, including `null` for an unreadable ledger |
 | `routing` | With `build_loop_result` set, reflection and outside-in validation do not run and the summary does |
 | `old_tools` | One 1.2.213 caller's invocation of each changed tool runs against the new bundle |
 
