@@ -18,14 +18,12 @@
 //! | Copilot | no `-p`/`-i`, nothing on stdin             | `NoPromptOnStdin` drop        |
 //! | Copilot | `-i`, or a `-p` pointer given by the caller | `LaunchFormUnsupported` drop |
 //!
-//! Copilot and stdin: the help text of the pinned Copilot CLI (1.0.114)
-//! names piped stdin as a prompt source beside `-i` and `-p` ("combine with
-//! -i, -p, or piped stdin", under `--fleet`). A Copilot launch with no prompt
-//! flag therefore reads its prompt from a piped stdin, and the block follows
-//! it as it does for Claude. Delivery is reported only once the bytes were
-//! written, so a Copilot build that ignored stdin would still not be
-//! reported as having read the guidance; it would record
-//! `trailer_not_written` if the child closed stdin first.
+//! Copilot and stdin: Copilot CLI 1.0.114, launched with no prompt flag and
+//! a piped stdin, takes the whole of stdin as its prompt, including a block
+//! after the caller's text. This was checked against a real Copilot run
+//! (prompt and trailer each asked for a token; both were printed) during the
+//! review of #3162. Delivery is still reported only once the bytes were
+//! written; a child that closed stdin first records `trailer_not_written`.
 
 use super::codex_copilot_rewrite;
 use super::passthrough_rewrite;
@@ -47,11 +45,6 @@ pub(crate) enum GuidanceRoute {
     /// There is guidance, and this launch cannot take it.
     Undeliverable(DropReason),
 }
-
-/// The route of 1.2.215, kept for one release (#3049): Codex `exec … -`
-/// takes the stdin trailer.
-#[allow(dead_code)]
-pub(crate) const CODEX_TRAILER: GuidanceRoute = GuidanceRoute::StdinTrailer;
 
 pub(crate) fn agent_binary_for_tool(tool: &str) -> Option<AgentBinary> {
     match tool {

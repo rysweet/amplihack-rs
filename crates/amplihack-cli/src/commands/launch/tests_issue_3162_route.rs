@@ -9,8 +9,6 @@
 //!
 //! Contract used here:
 //! - `GuidanceRoute::{None, Prompt, StdinTrailer, Undeliverable(DropReason)}`;
-//!   a `#[allow(dead_code)] CODEX_TRAILER` alias keeps the old name for one
-//!   release;
 //! - `guidance_route(tool, &guidance, &rewritten, &args, stdin_has_input)`;
 //! - `DropReason::{NoPromptOnStdin, LaunchFormUnsupported, TrailerNotWritten}`
 //!   with `code()` returning `no_prompt_on_stdin`, `launch_form_unsupported`

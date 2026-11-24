@@ -18,7 +18,7 @@
 //!
 //! Waking (issue #3129): a process that waits for guidance
 //! (`recipe guidance wait`) arms a FIFO in `guidance-wake/` beside the
-//! `guidance/` folder ([`wake`]), and [`append_entry`] writes one byte to
+//! `guidance/` folder ([`wake`]), and [`append_entry_at`] writes one byte to
 //! every armed FIFO after it publishes and logs an entry ([`wait`] is the
 //! waiting side). A wake byte only means "read again"; the waiter decides
 //! from the entries it reads. There is still no timer and no polling loop:
@@ -31,7 +31,7 @@
 //! uses that mark. It still reaches every later agent prompt, which reads
 //! all entries.
 //!
-//! Known limit: the [`MAX_GUIDANCE_DIR_BYTES`] check in [`append_entry`] and
+//! Known limit: the [`MAX_GUIDANCE_DIR_BYTES`] check in [`append_entry_at`] and
 //! the publication of the entry are not one atomic step, and no lock is
 //! taken, so two `recipe guide` commands started at the same moment can both
 //! pass it and leave a folder slightly over the limit. Only the same user can
@@ -483,8 +483,8 @@ fn publish(dir: &Path, tmp: &Path, stamp: &str) -> Result<PathBuf, GuideError> {
 /// reported in [`Appended::log_error`], and a waiter that could not be woken
 /// in [`Appended::wake_warning`], not as an error.
 // `recipe guide` writes through [`append_entry_at`] (one time for every copy,
-// issue #3161); the tests and other callers use this form.
-#[cfg_attr(not(test), allow(dead_code))]
+// issue #3161); only the tests use this form.
+#[cfg(test)]
 pub(crate) fn append_entry(
     guidance_dir: &Path,
     text: &str,
@@ -493,7 +493,7 @@ pub(crate) fn append_entry(
     append_entry_at(guidance_dir, text, caller, chrono::Utc::now())
 }
 
-/// [`append_entry`] with the entry's time given. `recipe guide` writes one
+/// `append_entry` with the entry's time given. `recipe guide` writes one
 /// entry to several folders with one time, so readers of more than one of
 /// them can tell the copies are one entry ([`read_entries`]).
 pub(crate) fn append_entry_at(

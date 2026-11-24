@@ -657,10 +657,14 @@ its pointer records the same `pr_url`, or a `pr_number` whose repository (the
 no worktree) is the same. Owner and repository are compared without regard to
 case. A pull request number alone never matches. Pointers have recorded the pull
 request of the run's context since #761, so runs started by 1.2.215 are found.
-A run whose context names no pull request (one that opened the pull request
-itself) is not found. When no live run is found, the status line says so and
-only the state folder is written. Guidance to such a run goes by its session
-name.
+A run whose pointer records no pull request (a drive that opened the pull
+request itself) is found through its goal record instead: the
+`guidance_target` of the newest `goal.json` under the run folder's
+`autodrive-state/turns/`, read only when the run folder, `autodrive-state`,
+`turns`, the turn folder and the file all pass the trust checks. A drive given
+an `autodrive_state_dir` outside its run folder is not found. When no live run
+is found, the status line says so and only the state folder is written.
+Guidance to such a run goes by its session name.
 
 A run is live when its process record is accepted by the same checks that
 `recipe stop` uses and the recorded process start time still matches the
@@ -1039,12 +1043,12 @@ is never a way for a terminal sequence to reach the terminal.
   no session log, so it cannot be found by session name or from the log
   directory. It is addressable only through the environment (the work root
   in `AMPLIHACK_WORK_ROOT`) or by a pull request URL.
-- **A run whose pointer has no pull request.** A pull request URL reaches
-  every live run whose pointer records the pull request, and every run
-  started later with it in its context. A run whose context named no pull
-  request, such as a drive that opened the pull request itself, has none in
-  its pointer, so it is not found. The status line says no live run was
-  found, and the sender uses the run's session name.
+- **A drive with its state folder outside the run folder.** A run whose
+  pointer records no pull request is found through the goal record in its
+  run folder's `autodrive-state`. A drive started with
+  `-c autodrive_state_dir=<elsewhere>` and no pull request in its context has
+  neither, so it is not found. The status line says no live run was found,
+  and the sender uses the run's session name.
 - **A session log that was rotated or deleted.** The run's pointer is then
   not found, so the run is treated as not live for the pull request.
 - **Large Claude prompts.** When a prompt is too large for one argument, the

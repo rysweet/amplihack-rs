@@ -153,3 +153,94 @@ fn a_number_only_pointer_is_resolved_only_for_its_own_number() {
     };
     assert_eq!(pointer_pr(&by_url, 8).map(|p| p.number), Some(9));
 }
+
+/// A private folder chain `<run>/autodrive-state/turns/<n>` with `goal`
+/// written to `goal.json` in turn `n` when given.
+fn drive_turn(run: &Path, n: &str, goal: Option<serde_json::Value>) {
+    let mut dir = run.to_path_buf();
+    for part in ["autodrive-state", "turns", n] {
+        dir = dir.join(part);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    if let Some(goal) = goal {
+        let path = dir.join("goal.json");
+        fs::write(&path, goal.to_string()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+fn private_run(tmp: &Path) -> std::path::PathBuf {
+    let run = tmp.canonicalize().unwrap().join("run");
+    fs::create_dir_all(&run).unwrap();
+    fs::set_permissions(&run, fs::Permissions::from_mode(0o700)).unwrap();
+    run
+}
+
+/// D8/D11: a drive that opened its pull request records it only in its goal
+/// record. The newest turn that holds a `goal.json` names the pull request.
+#[test]
+fn a_drive_goal_record_names_the_pull_request() {
+    use super::live_runs::goal_pr;
+    let tmp = tempfile::tempdir().unwrap();
+    let run = private_run(tmp.path());
+    drive_turn(
+        &run,
+        "001",
+        Some(serde_json::json!({"schema": 1, "summary": "s",
+            "guidance_target": "https://github.com/o/r/pull/6"})),
+    );
+    drive_turn(
+        &run,
+        "002",
+        Some(serde_json::json!({"schema": 1, "summary": "s",
+            "guidance_target": "https://github.com/o/r/pull/7"})),
+    );
+    // The newest turn has not written its goal record yet.
+    drive_turn(&run, "003", None);
+    let pr = goal_pr(&run).expect("the goal record names a pull request");
+    assert_eq!(
+        (pr.owner.as_str(), pr.repo.as_str(), pr.number),
+        ("o", "r", 7)
+    );
+}
+
+#[test]
+fn a_goal_record_without_a_valid_target_names_nothing() {
+    use super::live_runs::goal_pr;
+    let tmp = tempfile::tempdir().unwrap();
+    let run = private_run(tmp.path());
+    assert!(goal_pr(&run).is_none(), "no autodrive-state");
+    drive_turn(
+        &run,
+        "001",
+        Some(serde_json::json!({"schema": 1, "summary": "s"})),
+    );
+    assert!(goal_pr(&run).is_none(), "no guidance_target");
+    drive_turn(
+        &run,
+        "002",
+        Some(serde_json::json!({"guidance_target": "https://example.com/o/r/pull/7"})),
+    );
+    assert!(goal_pr(&run).is_none(), "not a pull request URL");
+}
+
+#[test]
+fn an_untrusted_goal_record_is_not_read() {
+    use super::live_runs::goal_pr;
+    let tmp = tempfile::tempdir().unwrap();
+    let run = private_run(tmp.path());
+    let goal = serde_json::json!({"guidance_target": "https://github.com/o/r/pull/7"});
+    drive_turn(&run, "001", Some(goal.clone()));
+    let path = run.join("autodrive-state/turns/001/goal.json");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o622)).unwrap();
+    assert!(goal_pr(&run).is_none(), "group-writable goal.json");
+    fs::remove_file(&path).unwrap();
+    let elsewhere = tmp.path().join("planted.json");
+    fs::write(&elsewhere, goal.to_string()).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+    assert!(goal_pr(&run).is_none(), "goal.json is a link");
+    let state = run.join("autodrive-state");
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(goal_pr(&run).is_none(), "world-writable state folder");
+}

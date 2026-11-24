@@ -30,16 +30,22 @@
 //! Nothing here writes or creates anything, and nothing fails: what cannot
 //! be read leaves a run out (not live) or marks it unreachable.
 //!
-//! Known limit: a run whose context names no pull request (a drive that
-//! opened the pull request itself) is not found, and a run whose session log
-//! was removed is not found either. The pull request folder is
-//! still written for those, as before.
+//! A pointer that records no pull request (a drive that opened the pull
+//! request itself) falls back to the drive's goal record: the
+//! `guidance_target` of the newest `goal.json` under the run's own
+//! `autodrive-state/turns/` ([`goal_pr`]). It is read only once the run
+//! folder has passed `accept_recorded`, and it is validated and matched as a
+//! pointer's `pr_url` is.
+//!
+//! Known limits: a drive given its own `autodrive_state_dir` outside the run
+//! folder, and a run whose session log was removed, are not found. The pull
+//! request folder is still written for those, as before.
 
 use super::guide::{RootChecks, accept_recorded};
 use super::guide_records::{self, Pointer};
 use crate::run_guidance::GUIDANCE_DIR;
 use crate::run_guidance::env::pr_ref_from_context;
-use crate::run_guidance::fs_safety::{DirState, dir_state};
+use crate::run_guidance::fs_safety::{DirState, dir_state, untrusted_reason};
 use crate::run_guidance::pr_key::{PrRef, same_repo_ref};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -136,13 +142,29 @@ fn runs_for_pr(pr: &PrRef) -> Vec<(LiveRun, bool)> {
         if !run_dir.is_absolute() || seen.contains(&recorded) {
             continue;
         }
-        if !pointer_pr(&record, pr.number).is_some_and(|found| same_repo_ref(&found, pr)) {
-            continue;
-        }
+        let records_pr = [&record.pr_url, &record.pr_number]
+            .iter()
+            .any(|v| v.as_deref().is_some_and(|v| !v.trim().is_empty()));
+        let accepted = if records_pr {
+            if !pointer_pr(&record, pr.number).is_some_and(|found| same_repo_ref(&found, pr)) {
+                continue;
+            }
+            accept_recorded(&recorded, record.run_id.as_deref(), &mut roots).map(|(dir, _)| dir)
+        } else {
+            // No pull request in the pointer: only a run folder that passes
+            // the checks is read for a goal record.
+            let Ok((dir, _)) = accept_recorded(&recorded, record.run_id.as_deref(), &mut roots)
+            else {
+                continue;
+            };
+            if !goal_pr(&dir).is_some_and(|found| same_repo_ref(&found, pr)) {
+                continue;
+            }
+            Ok(dir)
+        };
         seen.insert(recorded.clone());
         let live = is_live(&run_dir, record.run_id.as_deref());
-        let reachable = accept_recorded(&recorded, record.run_id.as_deref(), &mut roots)
-            .and_then(|(dir, _)| guidance_folder(&dir));
+        let reachable = accepted.and_then(|dir| guidance_folder(&dir));
         let run = LiveRun {
             session: record
                 .session
@@ -154,6 +176,72 @@ fn runs_for_pr(pr: &PrRef) -> Vec<(LiveRun, bool)> {
         runs.push((run, live));
     }
     runs
+}
+
+/// The largest `goal.json` read. The goal loop itself refuses one over 1 MiB.
+const MAX_GOAL_BYTES: u64 = 1024 * 1024;
+
+/// How many of the newest turn folders are tried for a `goal.json`. A turn
+/// folder exists before its goal record is written, so the newest one may
+/// not hold it yet.
+const GOAL_TURNS_TRIED: usize = 3;
+
+/// The pull request a drive's goal record names: the `guidance_target` of
+/// the newest `goal.json` under `<run_dir>/autodrive-state/turns/<n>/`,
+/// through the resolver a pointer's `pr_url` goes through. `None` when the
+/// folders are missing or untrusted, or no record names a valid pull
+/// request. `run_dir` must already have passed `accept_recorded`.
+pub(super) fn goal_pr(run_dir: &Path) -> Option<PrRef> {
+    let state = run_dir.join("autodrive-state");
+    let turns = state.join("turns");
+    for dir in [&state, &turns] {
+        if !matches!(dir_state(dir), Ok(DirState::Trusted)) {
+            return None;
+        }
+    }
+    let mut numbers: Vec<(u64, PathBuf)> = std::fs::read_dir(&turns)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some((name.parse().ok()?, e.path()))
+        })
+        .collect();
+    numbers.sort_by_key(|n| std::cmp::Reverse(n.0));
+    numbers
+        .into_iter()
+        .filter(|(_, dir)| matches!(dir_state(dir), Ok(DirState::Trusted)))
+        .take(GOAL_TURNS_TRIED)
+        .find_map(|(_, dir)| read_goal_target(&dir.join("goal.json")))
+        .and_then(|url| {
+            let context = BTreeMap::from([("pr_url".to_string(), url)]);
+            pr_ref_from_context(&context, Path::new("/"))
+        })
+}
+
+/// The `guidance_target` string of one `goal.json`, read through one handle
+/// opened without following a link and checked by its own metadata.
+fn read_goal_target(path: &Path) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        // O_NONBLOCK: a FIFO planted here must not hang the reader; the
+        // regular-file check below then refuses it.
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if untrusted_reason(&meta, false).is_some() || meta.len() > MAX_GOAL_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_GOAL_BYTES).read_to_end(&mut bytes).ok()?;
+    let goal: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    goal.get("guidance_target")?.as_str().map(str::to_string)
 }
 
 /// The run's guidance folder when it is trusted, or missing under a run
