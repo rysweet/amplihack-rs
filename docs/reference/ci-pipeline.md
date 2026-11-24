@@ -9,7 +9,9 @@ disk before the heavy test job, and scopes caches so required coverage stays
 reliable without exhausting GitHub-hosted runners.
 
 For the broader resource contract (concurrency, timeouts, matrix boundaries) see
-[CI Resource Discipline](ci-resource-discipline.md).
+[CI Resource Discipline](ci-resource-discipline.md). For the rule that decides
+which commits reach a published release, see
+[A release follows green CI on the same commit](#a-release-follows-green-ci-on-the-same-commit).
 
 ## Job graph
 
@@ -86,6 +88,14 @@ It uses the runner's C/C++ toolchain, avoiding the GNU cross-toolchain package
 installation that failed when Ubuntu's package mirrors could not be resolved.
 The target and required check name remain `aarch64-unknown-linux-gnu`.
 
+The two macOS legs of the `ci.yml` build matrix also run
+`cargo check --locked --tests -p amplihack-cli -p amplihack-utils -p amplihack-hooks`.
+The release build compiles neither `cfg(test)` nor `debug_assertions` code,
+so without this step no macOS job compiles the Unix test fixtures or
+`amplihack-utils`' debug-only probe capture path (`binary_finder::to_exit`).
+The step uses the dev profile, which keeps `debug_assertions` on; with
+`--release` that code would not be compiled.
+
 ### Auto Release cross-build legs (`release.yml`)
 
 The **Auto Release** workflow (`.github/workflows/release.yml`) builds a
@@ -115,6 +125,263 @@ native legs passed (issue #939). It is the same drift class first resolved for
 `publish-snapshot.yml` in #935/#948; `release.yml` is now pinned and fully
 covered by the regression guard below — there is no remaining tracked drift.
 
+### A release follows green CI on the same commit
+
+**Auto Release** (`.github/workflows/release.yml`) publishes a release only
+after the `CI` workflow has passed **on the exact commit being released**. It is
+not started by the push to `main`; it is started by CI finishing:
+
+```yaml
+# .github/workflows/release.yml
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+```
+
+Auto Release previously ran on `push: branches: [main]` — a sibling of CI on the
+same event rather than a consumer of its result — so it built and published
+while CI was still deciding. Two releases went out over red CI and were then
+installed on hosts: `v1.2.163` (Auto Release run 43619141276, CI run
+43619141356 failed) and `v1.2.164` (Auto Release run 43647760173, CI run
+43647760163 failed). Issue #2740.
+
+#### What admits a run
+
+The `version-bump` job carries the whole admission rule. `build` and `release`
+reach it through `needs:`, so when `version-bump` is skipped nothing downstream
+starts. All five clauses, read from `github.event.workflow_run`, must hold:
+
+| Clause                                           | What it excludes                                                             |
+| ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `conclusion == 'success'`                        | A CI run that failed, was cancelled, or timed out.                           |
+| `head_branch == 'main'`                          | CI on a topic branch.                                                        |
+| `event == 'push'`                                | CI from `pull_request`, from `merge_group`, CI's twice-weekly `schedule`, and CI's own `workflow_dispatch` run (the `simulate_sccache_missing` fallback test). |
+| `head_repository.full_name == github.repository` | A CI run whose commit came from a fork.                                      |
+| no `[skip ci]` in `head_commit.message`          | A commit whose author asked for no automation.                               |
+
+`workflow_run` is a privileged trigger — the run receives repository secrets and
+a write-capable token — and `ci.yml` runs on `pull_request` in a public
+repository. These clauses are therefore a security boundary, not a convenience
+filter: they are joined with `&&`, and the only other way into the release jobs
+is `github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'`.
+
+Passing all five clauses admits the run, not the commit. One more condition is
+checked inside `version-bump`'s `bump` step, because it cannot be expressed as
+a job-level `if:`: on both entry paths the tested commit must still be the tip
+of `origin/main`. A CI re-run on a superseded commit satisfies every clause in
+the table above, so this is the check that stops it — see
+[What this guarantees](#what-this-guarantees).
+
+The release's own tag push does not start a second release. The tag is pushed
+with `secrets.GITHUB_TOKEN` (`release.yml`), and GitHub creates no workflow run
+for a push authenticated with that token, so `ci.yml`'s `push: tags: ["v*"]`
+trigger does not fire and no `workflow_run` event reaches this workflow. Were
+the push ever moved to a personal access token, the loop would still be closed
+structurally: a tag push's `head_sha` is the stamp commit, which already
+carries its series tag, and `version-bump` short-circuits on a commit that has
+already been released (see
+[Release tags point at a stamp commit](#release-tags-point-at-a-stamp-commit)).
+It then reports the existing version rather than computing a new one, and the
+`release` job finds that tag already on the remote and skips stamping and
+pushing. The tip comparison stops that path sooner still, since a stamp commit
+is a child of `main`'s tip rather than the tip itself. No new tag is created
+and no version number is consumed.
+
+#### Which commit is built
+
+`version-bump` checks out `github.event.workflow_run.head_sha` — the commit CI
+tested — rather than the current head of `main`, and republishes it as its `sha`
+output. `build` and `release` check out that output, so the commit is resolved
+in one place and the three jobs cannot disagree about it. Before stamping, the
+`release` job compares `git rev-parse HEAD` with that output and stops if they
+differ.
+
+Each run records where it came from in its job summary, so a disputed release
+can be traced back to the CI run that admitted it:
+
+```text
+Admitted by CI run 43712904881 · conclusion success
+commit 5bc4defc4 · branch main
+```
+
+A manually dispatched run has no triggering CI run to name, so it records the
+run its lookup matched instead, by URL:
+
+```text
+Admitted by workflow_dispatch · validated by CI run https://github.com/rysweet/amplihack-rs/actions/runs/43712904881
+commit 5bc4defc4 · branch main
+```
+
+Either path therefore names the CI run that admitted the release.
+
+#### What this guarantees
+
+- **Red CI publishes nothing.** When CI on a commit fails, is cancelled or times
+  out, `version-bump` is skipped, `build` and `release` never start, and no tag
+  or release is created. The version number is not consumed either, so the same
+  commit can be released once its CI is green.
+- **A later push decides for itself.** The concurrency group is keyed on the CI
+  run's repository and branch
+  (`${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name || github.repository }}-${{ github.event.workflow_run.head_branch || github.ref_name }}`)
+  with `cancel-in-progress: false`. One release is in flight per branch and a
+  second one queues behind it instead of cancelling it, so a stale run can
+  never stop a newer commit's release part-way through. #1356's invariant holds
+  without cancellation: nothing is written to `main` or to the tag namespace
+  before the `release` job, so a run that never reaches that job leaves nothing
+  behind either way. Queueing cannot resurrect an old commit, because a queued
+  run that finally starts finds that `main` has moved past its commit and
+  publishes nothing (next bullet) — unless that commit already carries a tag of
+  its own, where the repair exemption described there applies and it
+  republishes that same version rather than a newer one. A later commit's own
+  CI therefore decides whether that commit ships.
+- **A commit `main` has moved past publishes nothing.** Re-running CI on an
+  older commit produces a CI completion that satisfies every admission clause
+  above: it succeeded, on `main`, from a `push`, in this repository. Before any
+  tag is created and before the `version` output is written, `version-bump`
+  compares the commit CI tested with the current tip of `origin/main` and stops
+  when they differ:
+
+  ```text
+  CI tested 5bc4defc45a0c2e1f3b8d9a7c6e4f2b1d0a98765 but origin/main is now 8a51b29e8c3d4f5a6b7c8d9e0f1a2b3c4d5e6f70
+  no release published for a commit that main has moved past
+  ```
+
+  The skip is also written to the run's job summary, so a green "Auto Release"
+  run that published nothing says why on its front page.
+
+  A release is therefore skipped, not deferred: if the commit that superseded
+  it fails CI, no release publishes until a later commit lands and passes.
+
+  Without that comparison the older tree is published under a *higher* version
+  number and marked `latest`, and every host running `amplihack update`
+  installs code older than the code it already has. A rising version number
+  does not imply a later commit; this comparison is what binds the two
+  together. The comparison sits just after the next-patch arithmetic, so a
+  skipped run's log prints a `next patch:` line immediately above the skip
+  message; that arithmetic is local to the step and persists nothing.
+
+  For a commit carrying no tag of its own, the job then writes no `version`
+  output, `build` is skipped by
+  `if: needs.version-bump.outputs.version != ''`, `release` skips as a
+  dependant of a skipped job, and `sccache-prune` — which runs under
+  `always()` — skips on its own `needs.build.result != 'skipped'` clause.
+
+  The tip is read from the checkout's `origin/main`, falling back to a single
+  `git ls-remote origin refs/heads/main`; if neither resolves, the job fails
+  visibly rather than skipping quietly, so an infrastructure fault is never
+  mistaken for a superseded commit. The cost of that failure is bounded — the
+  next push to `main` releases normally.
+
+  The comparison covers the manual `workflow_dispatch` path as well, not only
+  the automatic one. A dispatch is admitted only from `refs/heads/main`, but a
+  re-run reuses the original run's `GITHUB_SHA` and `GITHUB_REF`, so a run
+  created at the tip can start days after `main` has moved past it. Tip-ness
+  at creation time is not tip-ness at start time, on either path.
+
+  One case is exempt: a commit that already carries a tag in this series. That
+  short-circuit runs *before* the comparison and must stay there, because it is
+  the repair path for the one failure #1356 cannot prevent — `Push tag`
+  succeeds, `Create GitHub Release` fails, and a public tag is left with no
+  release behind it. The repair is a re-run, which reuses the original SHA, so
+  by the time anyone notices, `main` has moved; behind the comparison the
+  repair would be unreachable from every path, since a dispatch carries the
+  current tip instead. It cannot disturb version ordering — it re-emits the
+  version that commit already holds and mints none — and `make_latest` is
+  `true` only when the released commit is still the tip, so a repair cannot
+  move `latest` backwards.
+- **Every CI completion creates an Auto Release run.** Most skip every job
+  immediately — pull-request CI, merge-group CI, failed CI, the twice-weekly
+  schedule run, and CI's own `workflow_dispatch` run. The release's own `v*` tag
+  push creates no CI run at all, since it is pushed with `GITHUB_TOKEN`. A
+  skipped "Auto Release" entry in the Actions list is the expected shape, not a
+  fault.
+- **Publication trails the merge by one CI duration.** A release appears once CI
+  on that commit has completed, rather than beside it. Nothing waits or polls
+  for it: the Auto Release run is created by CI's completion event, so the delay
+  is CI's own duration and no step sleeps or retries.
+
+#### Releasing by hand
+
+`workflow_dispatch` is held to the same rule, and to one more: it runs only
+from `main`. `version-bump`'s dispatch clause is
+`github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'`,
+so a dispatch from a tag or a topic branch skips every job. Choose the ref in
+the Actions UI or on the command line; there are no workflow inputs and no SHA
+to type:
+
+```bash
+gh workflow run release.yml --ref main
+```
+
+`version-bump` resolves that ref to a SHA and, before computing any version,
+asks for a successful `ci.yml` run on that exact SHA — one started by a `push`
+whose branch was `main`. Because the dispatch is restricted to
+`refs/heads/main`, the SHA it resolves is the tip of `main` at the moment the
+run is created — which is not the same as being the tip when the job starts. A
+re-run of a dispatched run reuses that original SHA, so the tip-of-`main`
+comparison described above applies on this path too, and a dispatch whose
+commit has since been overtaken publishes nothing. To ask the same question
+first, read the SHA from the remote rather than from a possibly stale local
+branch, since that is what the runner resolves:
+
+```bash
+gh api "repos/rysweet/amplihack-rs/actions/workflows/ci.yml/runs?head_sha=$(git rev-parse origin/main)&status=success&per_page=100" \
+  --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main")] | length'
+# Output: 1
+```
+
+A count of `0` ends the job with
+`::error::no successful CI run built <sha>; not publishing a release` — before
+any tag arithmetic, so a rejected dispatch cannot disturb the version series.
+The check runs once, with no retry, sleep or polling; it reads the API only.
+
+The lookup keeps `push` runs on `main` and discards every other event. A
+pull-request run reports the PR head commit as its `head_sha`, but no checkout
+in `ci.yml` sets `ref:`, so it builds `refs/pull/N/merge` — the head merged into
+the base — and is evidence about a different tree from the one being released.
+A `merge_group` run is excluded without losing a reachable case: a merge-queue
+commit that actually lands on `main` gets its own push CI run on `main`, and
+that is the run this lookup finds. Both conditions are needed — `.event ==
+"push"` alone would admit a push run from a fork branch, and `.head_branch ==
+"main"` alone would admit a fork branch that happens to be named `main` — so
+keep them joined with `and`, here and in the workflow.
+
+The check is a safety control rather than an authorization control — anyone who
+can push to `main` can let CI pass and then dispatch. Restricting the dispatch
+to `refs/heads/main` hardens a maintainer-error path, such as dispatching from
+a stale tag or a topic branch, rather than an outsider path. What the check
+rules out is publishing a commit that CI did not build and pass on.
+
+#### Keeping the trigger attached
+
+`workflows: [CI]` matches `ci.yml`'s `name: CI` as a literal string. Renaming
+that workflow detaches Auto Release silently: no run is created and nothing
+reports an error — releases simply stop. Change `name:` in `ci.yml` and
+`workflows:` in `release.yml` in the same commit.
+
+`ci.yml` has no `paths` or `paths-ignore` filter, and the admission rule depends
+on that: `conclusion == 'success'` is read as the full job set having passed.
+Adding a path filter to `ci.yml` would make a success conclusion compatible with
+a commit on which nothing ran, weakening admission without any edit to
+`release.yml`.
+
+Two further properties follow from the trigger itself rather than from any job:
+
+- `workflow_run` trigger definitions are read from the **default branch**, so a
+  change to this trigger cannot be exercised from a pull request. The first run
+  after the merge is its first live test; before that, validation is static —
+  `actionlint` or a YAML parse. No test checks the trigger or the concurrency
+  expression: `ci_workflows_define_concurrency_boundaries` only asserts that
+  each workflow file has a top-level `concurrency:` key at all.
+- `github.ref` is always `refs/heads/main` on the `workflow_run` path, whatever
+  CI ran on; on `workflow_dispatch` it is the ref the operator selected.
+  Conditions that need the released branch read
+  `github.event.workflow_run.head_branch` instead. For the same reason the
+  `sccache-prune` job also requires `needs.build.result != 'skipped'`, so it
+  prunes once per release rather than once per CI completion.
+
 ### Release tags point at a stamp commit
 
 `main` keeps the base version (`MAJOR.MINOR.0`); the patch number comes from
@@ -134,7 +401,9 @@ No checkout persists credentials. In the `release` job the token is passed
 only to the steps that query origin for an existing tag and push the new one,
 never to the step that runs the stamp script. Release artifacts are built from
 the released `main` SHA, so they differ from the tagged stamp commit only in
-the manifests.
+the manifests. That SHA is the commit CI passed on (see
+[A release follows green CI on the same commit](#a-release-follows-green-ci-on-the-same-commit)),
+so every published asset is built from source that CI tested.
 
 ### Bumping the pinned toolchain
 
@@ -265,6 +534,9 @@ test:
   `GITHUB_PATH` and the absolute executable through `RECIPE_RUNNER_RS_PATH`.
   Invalid pins or installation failures stop the job; terminal-state fixtures
   require this real executable and retain their missing-runner failure.
+  Tests that use the shared `pinned_runner` helper accept this executable
+  because its receipt names the pin, so they do not build the runner again
+  (see [Run Tests Against the Pinned Recipe Runner](../howto/run-tests-against-the-pinned-recipe-runner.md)).
 - **`cargo test --workspace --doc --locked`** runs after nextest because nextest
   does not execute doctests — the explicit step preserves that coverage.
 - **`cache-targets: false`** — the workspace links large native artifacts (Kuzu,
@@ -502,6 +774,14 @@ does not offer one on a user-owned repository. See
 > repository-admin rights and is applied through repository settings, not this
 > workflow file.
 
+Branch protection governs what reaches `main`. A separate rule governs what
+reaches a published release: on the automatic path **Auto Release** starts only
+from a successful `CI` run on a `main` push and builds the commit that run
+tested, so the seven required checks also stand between such a commit and its
+release. A `workflow_dispatch` release is held to a successful CI run on the
+same commit, but not to `main`: see
+[A release follows green CI on the same commit](#a-release-follows-green-ci-on-the-same-commit).
+
 ## Action pinning and token permissions
 
 Third-party actions that execute during a job are pinned to a full 40-character
@@ -516,8 +796,26 @@ Because CI triggers on `pull_request` (not `pull_request_target`), fork PRs run
 read-only with no secret access — the explicit block makes that visible and
 stops a future job from inheriting broad default permissions.
 
+That holds for `ci.yml`. **Auto Release** is a different case: it is started by
+`workflow_run`, a privileged trigger, so its run has repository secrets and a
+write-capable token even when the CI run that started it was a read-only fork
+pull request. Nothing from the fork is checked out or executed, because
+`version-bump` admits a run only on a successful `main` push from this
+repository; those clauses are what keeps the privilege from reaching fork
+content, and they are listed in
+[What admits a run](#what-admits-a-run).
+
+`release.yml` scopes its own escalations per job rather than at the top level:
+`version-bump` takes `actions: read` so it can query `ci.yml` run history on the
+manual dispatch path, `build` takes `actions: read` so the sccache composite
+actions can list cache entries, `release` takes `contents: write` to push the
+tag and publish, and `sccache-prune` alone takes `actions: write`.
+
 ## Related references
 
+- [A release follows green CI on the same commit](#a-release-follows-green-ci-on-the-same-commit)
+  (on this page) — the rule that decides which commits **Auto Release**
+  publishes, and how to release by hand.
 - [CI Wall-Clock Parallelization](ci-wallclock-parallelization.md) — parallel
   fan-out job graph and tag-conditional release optimization.
 - [CI Resource Discipline](ci-resource-discipline.md) — concurrency, timeout,

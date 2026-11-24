@@ -222,6 +222,8 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env(
                 crate::isolated_amplihack::PROC_ROOT_ENV,
                 crate::isolated_amplihack::shared_empty_proc_root(),
@@ -1079,12 +1081,13 @@ fn wrapper_accepts_iso_reset_times_and_ignores_input_without_rate_limits() {
     );
 }
 
+/// `epoch` as an RFC 3339 UTC time, formatted here: `date -d @<epoch>` is a
+/// GNU option that BSD `date` does not have (issue #2931).
 fn time_iso(epoch: i64) -> String {
-    let out = Command::new("date")
-        .args(["-u", "-d", &format!("@{epoch}"), "+%Y-%m-%dT%H:%M:%SZ"])
-        .output()
-        .unwrap();
-    text(&out.stdout).trim().to_string()
+    chrono::DateTime::from_timestamp(epoch, 0)
+        .unwrap_or_else(|| panic!("{epoch} is not a representable time"))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
 }
 
 #[test]

@@ -39,6 +39,7 @@ context:
   branch_name: ""
   base_ref: ""
   base_branch: ""
+  forbidden_base_branches: ""  # a base read from the PR must not match these globs (docs/reference/workflow-delivery-inputs.md)
   pr_number: ""
   pr_url: ""
   goal_already_met: "false"
@@ -332,6 +333,14 @@ steps:
         fail_terminal_state "FAILED_WRONG_BRANCH" "target checkout branch '$current_branch' does not match branch_name '$BRANCH_INPUT'"
       fi
       local_head="$(git rev-parse --verify HEAD 2>/dev/null)" || fail_terminal_state "FAILED_INVALID_INPUT" "target checkout HEAD does not resolve"
+      # #2520: no base_branch and a recorded PR: its base, from the publish result or the PR (delivery_run_base).
+      # On failure the discovery below stays, and the scoped match below turns away a PR on another base.
+      if [ -z "$BASE_INPUT" ] && [ -n "$PR_URL_INPUT$PR_NUMBER_INPUT" ] && . "$RV_TOOLS/workflow_delivery_inputs.sh"; then
+        run_repo="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)"
+        if run_base="$(delivery_run_base "" "$(rv_field pr_publish_result base_branch)" "${PR_URL_INPUT:-$PR_NUMBER_INPUT}" "$run_repo" "$BRANCH_INPUT" "${RECIPE_VAR_forbidden_base_branches:-}")"; then
+          BASE_INPUT="origin/$run_base"
+        fi
+      fi
 
       resolve_base_ref() {
         local candidate
@@ -402,7 +411,6 @@ steps:
       pr_json=""
       pr_target=""
       pr_lookup_failed="false"
-      pr_behind="false"
       if [ -n "$PR_URL_INPUT" ] && [ "$PR_URL_INPUT" != "''" ]; then
         if parse_github_pr_url "$PR_URL_INPUT" >/dev/null 2>&1; then
           supports_github_pr_metadata="true"
@@ -460,7 +468,7 @@ steps:
 
       if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ]; then
         pr_fields=(); while IFS= read -r _ml; do pr_fields+=("$_ml"); done < <(
-          printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.isCrossRepository // false | tostring), ([.statusCheckRollup[]? | select((.conclusion? // "") as $c | $c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "CANCELLED")] | length | tostring)'
+          printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (if .isCrossRepository == false then "false" else "true" end)'
         )
         pr_url_result="${pr_fields[0]:-}"
         pr_number_result="${pr_fields[1]:-}"
@@ -471,8 +479,7 @@ steps:
         pr_head_oid="${pr_fields[6]:-}"
         pr_head_owner="${pr_fields[7]:-}"
         pr_head_repo="${pr_fields[8]:-}"
-        pr_cross_repo="${pr_fields[9]:-false}"
-        failing_checks="${pr_fields[10]:-0}"
+        pr_cross_repo="${pr_fields[9]:-true}"
         pr_base_identity="$(parse_github_repo_identity "$pr_url_result" || true)"
         expected_base="$(normalize_base_name "$base_ref")"
         [ -n "$repo_identity" ] || fail_terminal_state "FAILED_INVALID_INPUT" "unable to determine current GitHub repo identity from origin remote"
@@ -503,7 +510,7 @@ steps:
           # check, which needs that commit. A diverged head is still stale.
           pr_head_ahead="false"
           if [ "$ACCEPT_PR_HEAD_AHEAD" = "true" ] && [ "$pr_state" = "OPEN" ] && [[ "$pr_head_oid" =~ ^[0-9a-f]{40}$ ]] \
-              && [ "$pr_cross_repo" != "true" ] && [ "$pr_head_owner/$pr_head_repo" = "$repo_owner/$repo_name" ] \
+              && [ "$pr_cross_repo" = "false" ] && [ "$pr_head_owner/$pr_head_repo" = "$repo_owner/$repo_name" ] \
               && [ "$pr_base_identity" = "$repo_owner/$repo_name" ] \
               && _finalization_pr_head_descends . "$BRANCH_INPUT" "$local_head" "$pr_head_oid"; then
             pr_head_ahead="true"
@@ -515,7 +522,6 @@ steps:
           done
           if [ "$pr_state" = "OPEN" ] && [[ "$pr_head_oid" =~ ^[0-9a-f]{40}$ ]] && [ "$remote_rewound" = "false" ] \
               && git merge-base --is-ancestor "$pr_head_oid" "$local_head" 2>/dev/null; then
-            pr_behind="true"
             echo "INFO: workflow-terminal-state: local HEAD is $(git rev-list --count "${pr_head_oid}..${local_head}") commit(s) ahead of open PR head '$pr_head_oid'; the next push step pushes them (#1467)" >&2
           elif [ "$pr_head_ahead" = "true" ] && [ "$remote_rewound" = "false" ]; then
             echo "INFO: workflow-terminal-state: open PR head '$pr_head_oid' is $(git rev-list --count "${local_head}..${pr_head_oid}") commit(s) ahead of local HEAD, a fast-forward of it; same PR (#1714)" >&2
@@ -525,7 +531,10 @@ steps:
             fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
           fi
         fi
-        if [ "$pr_cross_repo" = "true" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_identity" != "$repo_owner/$repo_name" ]; then
+        if [ "$pr_cross_repo" != "false" ]; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: isCrossRepository is not exactly false, so PR '$pr_url_result' is not a same-repository PR"
+        fi
+        if [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_identity" != "$repo_owner/$repo_name" ]; then
           fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: PR repo '$pr_head_owner/$pr_head_repo' -> '$pr_base_identity' does not match current repo '$repo_owner/$repo_name'"
         fi
 
@@ -545,11 +554,10 @@ steps:
         fail_terminal_state "FAILED_CLOSED_UNMERGED" "closed-unmerged PR still has meaningful diff"
       fi
 
-      # #1467: a PR behind local HEAD reports checks for a superseded commit.
-      if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ] && [ "${failing_checks:-0}" -gt 0 ] && [ "${pr_behind:-false}" != "true" ]; then
-        fail_terminal_state "BLOCKED_CI" "real failing checks block terminal success"
-      fi
-
+      # #2966: checks on an open PR are not read here. A red or pending check is
+      # work for finalization: the run continues with should_finalize and
+      # should_run_ci_wait set, step-22 repairs CI, and assess-finalization
+      # decides on what it reads after the repair.
       if git diff --quiet "${base_ref}..HEAD"; then
         branch_diff_status="no-diff"
         commits_ahead="$(git rev-list --count "${base_ref}..HEAD" 2>/dev/null || echo "0")"

@@ -219,10 +219,9 @@ fn describe_blarify_action(action: BlarifyIndexAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::env_lock;
+    use crate::test_support::{blarify_not_disabled, env_lock};
     use amplihack_types::ProjectDirs;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::time::Duration;
 
@@ -482,6 +481,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let saved_graph_db = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
 
@@ -572,6 +572,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         let src_dir = dir.path().join("src");
@@ -584,15 +585,13 @@ mod tests {
 
         let stub_log = dir.path().join("amplihack-sync.log");
         let stub = dir.path().join("amplihack-sync");
-        fs::write(
+        crate::test_support::write_executable(
             &stub,
-            format!(
+            &format!(
                 "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then echo amplihack-test; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\n",
                 stub_log.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         unsafe {
             std::env::set_var("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub);
             std::env::set_var("AMPLIHACK_BLARIFY_MODE", "sync");
@@ -618,6 +617,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -641,6 +641,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(dir.path().join("src")).unwrap();

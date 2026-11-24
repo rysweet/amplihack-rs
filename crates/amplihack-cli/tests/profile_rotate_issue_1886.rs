@@ -305,9 +305,16 @@ impl Fx {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env(
                 crate::isolated_amplihack::PROC_ROOT_ENV,
                 crate::isolated_amplihack::shared_empty_proc_root(),
+            )
+            // Issue #2935: the exchange is the stand-in on every system.
+            .env(
+                crate::isolated_amplihack::LOGIN_EXCHANGE_ENV,
+                crate::isolated_amplihack::LOGIN_EXCHANGE_STAND_IN,
             )
             .env("HOME", &self.home)
             .env("TMPDIR", std::env::temp_dir())

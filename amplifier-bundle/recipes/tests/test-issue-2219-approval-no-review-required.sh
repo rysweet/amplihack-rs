@@ -100,7 +100,9 @@ case "$1 ${2:-}" in
     printf '%s\n' "${GH_VIEW:-}"; exit 0 ;;
   "api graphql")
     [ "${GH_THREADS:-0}" = fail ] && { echo "gh: graphql read failed" >&2; exit 1; }
-    printf '%s\n' "${GH_THREADS:-0}"; exit 0 ;;
+    printf '%s\n' "${GH_THREADS:-0}"
+    [ "${GH_THREADS_PARTIAL:-false}" = true ] && { echo "gh: later thread page refused" >&2; exit 1; }
+    exit 0 ;;
 esac
 if [ "${1:-}" = api ]; then
   p=""
@@ -111,7 +113,9 @@ if [ "${1:-}" = api ]; then
       printf '%s\n' "${GH_CLASSIC}"; exit 0 ;;
     */rules/branches/*)
       [ "${GH_RULES-0}" = fail ] && http_fail "Not Found"
-      printf '%s\n' "${GH_RULES-0}"; exit 0 ;;
+      printf '%s\n' "${GH_RULES-0}"
+      [ "${GH_RULES_PARTIAL:-false}" = true ] && { echo "gh: later rules page refused" >&2; exit 1; }
+      exit 0 ;;
     */branches/*)
       [ "${GH_PROTECTED:-true}" = fail ] && http_fail "Branch not found"
       printf '%s\n' "${GH_PROTECTED:-true}"; exit 0 ;;
@@ -211,6 +215,20 @@ run_pf GH_CLASSIC=0 GH_RULES=fail GH_VIEW="$(view_line BLOCKED '')"
 expect AC1-rulesets-unreadable-stays-unreadable UNREADABLE unreadable "" \
   "a classic 0 beside a FAILED rulesets read is not 'no ruleset requires a review': the count stays unknown"
 SPLIT_LABELS="${SPLIT_LABELS} AC1-rulesets-unreadable-stays-unreadable"
+
+# A successful first page says nothing about pages that could not be read.
+run_pf GH_CLASSIC=0 GH_RULES=0 GH_RULES_PARTIAL=true GH_VIEW="$(view_line BLOCKED '')"
+expect PAGINATION-rules-partial UNREADABLE unreadable "" \
+  "a failed later rules page cannot turn a partial zero into no required reviews"
+
+run_pf GH_CLASSIC=0 GH_RULES=0 GH_THREADS=0 GH_THREADS_PARTIAL=true GH_VIEW="$(view_line CLEAN '')"
+expect PAGINATION-threads-partial MET required-count 0 \
+  "a failed later conversation page makes the thread count unreadable, preserving independent approval evidence" \
+  unresolved_threads=unreadable
+
+run_pf GH_CLASSIC=0 GH_RULES=0 GH_THREADS="$(printf '0\n2')" GH_VIEW="$(view_line CLEAN '')"
+expect PAGINATION-threads-complete MET required-count 0 \
+  "complete conversation pages include unresolved threads from later pages" unresolved_threads=2
 
 run_pf GH_CLASSIC=0 GH_RULES=fail GH_VIEW="$(view_line CLEAN '')"
 expect AC1-rulesets-unreadable-clean MET merge-state "" \

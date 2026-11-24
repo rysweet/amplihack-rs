@@ -34,6 +34,8 @@ mod mv;
 #[cfg(unix)]
 mod overflow_inputs;
 #[cfg(unix)]
+mod own_login;
+#[cfg(unix)]
 mod per_token;
 #[cfg(unix)]
 pub(super) mod rerun;
@@ -46,6 +48,8 @@ pub(super) mod statusline_entry;
 mod swap;
 #[cfg(unix)]
 pub(super) mod takeover;
+#[cfg(unix)]
+mod unreadable;
 #[cfg(unix)]
 mod usage;
 
@@ -70,11 +74,15 @@ mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;
 #[cfg(all(test, unix))]
+mod tests_own_login;
+#[cfg(all(test, unix))]
 mod tests_platform_candidate;
 #[cfg(all(test, unix))]
 mod tests_record;
 #[cfg(all(test, unix))]
 mod tests_takeover;
+#[cfg(all(test, unix))]
+mod tests_unreadable;
 #[cfg(all(test, unix))]
 mod tests_usage;
 
@@ -105,13 +113,15 @@ pub(super) use liveness::scan;
 #[cfg(all(test, unix))]
 pub(super) use overflow_inputs::OverflowInputs;
 #[cfg(unix)]
-pub(super) use overflow_inputs::can_take_login;
+pub(super) use overflow_inputs::login_gap;
 #[cfg(unix)]
 pub(super) use state::CREDS;
-#[cfg(unix)]
-pub(super) use swap::read_claude_json;
 #[cfg(all(test, unix))]
 pub(crate) use swap::rerun_owner;
+/// Issue #2820: an unreadable process the liveness scan noted, for the
+/// rotate log's `unreadable process` lines.
+#[cfg(unix)]
+pub(super) use unreadable::{Unreadable, Verdict, assignment_name};
 #[cfg(unix)]
 pub(super) use usage::Window;
 #[cfg(all(test, unix))]
@@ -710,7 +720,11 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
         }
         if let Some(file) = file {
             state.save_usage(&file)?;
-            capacity::refresh(&state, &file, &ledger, "usage");
+            // Issue #2885: `profile usage` is where the capacity warning
+            // sends the user, so the Keychain cause is said here, on stderr.
+            for note in capacity::refresh(&state, &file, &ledger, "usage") {
+                eprintln!("{note}");
+            }
         }
         Ok(RecordOutcome::Recorded { written, moved })
     }

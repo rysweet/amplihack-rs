@@ -53,6 +53,11 @@ pub struct LastCycle {
     /// The credit-backed overflow tag (issue #1606): `in`, `out` or `on`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overflow: Option<String>,
+    /// Room on the login live after this cycle, by `plan_room::room_under`
+    /// (issue #2857). Absent when nothing was measured; the wait reads that
+    /// as no room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_room: Option<bool>,
 }
 
 /// Whether `last` was written after a cycle began measuring at
@@ -94,13 +99,10 @@ impl OverflowBlock {
         }
     }
 
-    /// A spend-limit block recorded at `at`.
+    /// A spend-limit block recorded at `at`, ending at the inferred monthly
+    /// reset. [`OverflowBlock::spend_limit_until`] takes a stated end instead.
     pub fn spend_limit(at: i64) -> Self {
-        Self {
-            at,
-            until: spend_reset(at),
-            reason: SPEND_LIMIT.to_string(),
-        }
+        Self::spend_limit_until(at, spend_reset(at))
     }
 }
 
@@ -121,6 +123,9 @@ pub struct RotateLedger {
     pub since: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swapped_at: Option<i64>,
+    /// When the last swap installed the live login: `swap_finish` (#2218).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_login_at: Option<i64>,
     /// The profile swapped out by the last swap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
@@ -177,6 +182,7 @@ impl Default for RotateLedger {
             login_identity: None,
             since: None,
             swapped_at: None,
+            live_login_at: None,
             previous: None,
             alert: None,
             advisory_alert: None,
@@ -215,8 +221,7 @@ pub struct RotateState {
     pub err: PathBuf,
 }
 
-/// A state file amplihack may act on: this user's, and not writable by the
-/// group or others.
+/// A state file amplihack may act on: this user's, and not writable by the group or others.
 pub(super) fn trusted(m: &std::fs::Metadata) -> bool {
     m.uid() == euid() && !writable_by_others(m)
 }

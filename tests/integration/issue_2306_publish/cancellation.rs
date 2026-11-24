@@ -16,10 +16,39 @@ fn wait_for_file(f: &PublishFixture, child: &mut Child, name: &str) {
     }
 }
 
+/// Start `command` with the default action for every signal these tests send.
+///
+/// An ignored disposition survives `exec`, and Bash can neither trap nor
+/// reset a signal that was ignored on entry to a non-interactive shell. The
+/// test binary inherits SIGINT ignored whenever it runs as a background job
+/// of a non-interactive shell, as auto-drive's QA run does, and SIGHUP
+/// ignored under `nohup`. The shell under test would then never see the
+/// signal, and the test would measure its launcher rather than the helper.
+fn with_default_signal_actions(command: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // `signal`, which is async-signal-safe; it touches no memory of the parent.
+    unsafe {
+        command.pre_exec(|| {
+            for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGTERM] {
+                if libc::signal(signal, libc::SIG_DFL) == libc::SIG_ERR {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    command
+}
+
 fn interrupt(f: &PublishFixture, mut command: Command, signal: &str) -> Output {
     let stdout = fs::File::create(f.tmp.path().join("cancel.stdout")).unwrap();
     let stderr = fs::File::create(f.tmp.path().join("cancel.stderr")).unwrap();
-    let mut child = command.stdout(stdout).stderr(stderr).spawn().unwrap();
+    let mut child = with_default_signal_actions(&mut command)
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
     wait_for_file(f, &mut child, "ready");
     assert!(
         Command::new("kill")
@@ -61,7 +90,12 @@ fn interrupt(f: &PublishFixture, mut command: Command, signal: &str) -> Output {
         permissions.lines().all(|l| l.starts_with("-rw-------")),
         "{permissions}"
     );
-    // The blocked executable and its blocking child must both have been reaped.
+    assert_owned_processes_reaped(f);
+    output
+}
+
+/// The blocked executable and its blocking child must both have been reaped.
+fn assert_owned_processes_reaped(f: &PublishFixture) {
     for pid in f.read("owned.pids").lines() {
         assert!(
             !Command::new("kill")
@@ -74,7 +108,6 @@ fn interrupt(f: &PublishFixture, mut command: Command, signal: &str) -> Output {
             "owned process {pid} survived"
         );
     }
-    output
 }
 
 const BLOCK: &str = r#"
@@ -137,7 +170,152 @@ exit "$status"
             f.read("caller-signal"),
             format!("caller-{}", signal.to_lowercase())
         );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.lines().last(),
+            Some(format!("ERROR: gh interrupted by {signal} (exit {expected})").as_str()),
+            "{stderr}"
+        );
     }
+}
+
+/// The terminal line is a courtesy to the caller. When stderr cannot be
+/// written (here: a read-only descriptor, which fails on every platform), a
+/// `set -e` caller must still see the conventional cancellation status and
+/// still run its own trap.
+#[test]
+fn retry_cancellation_keeps_its_status_when_stderr_cannot_be_written() {
+    for (signal, expected) in [("TERM", 143), ("HUP", 129), ("INT", 130)] {
+        let f = PublishFixture::new();
+        executable(&f.bin.join("gh"), &format!("#!/bin/bash\n{BLOCK}"));
+        let mut command = f.command("bash");
+        command
+            .args([
+                "-c",
+                r#"
+set -e
+. "$1/amplifier-bundle/tools/workflow_gh_retry.sh"
+trap 'printf caller-term > "$CASE_ROOT/caller-signal"' TERM
+trap 'printf caller-hup > "$CASE_ROOT/caller-signal"' HUP
+trap 'printf caller-int > "$CASE_ROOT/caller-signal"' INT
+trap 'printf "%s" "$?" > "$CASE_ROOT/caller-exit"' EXIT
+exec 2</dev/null
+_gh_retry_core 'pr create' pr create
+"#,
+                "cancel-test",
+            ])
+            .arg(root());
+        let output = interrupt(&f, command, signal);
+        assert_eq!(
+            output.status.code(),
+            Some(expected),
+            "{signal}: {}",
+            describe(&output)
+        );
+        assert_eq!(f.read("caller-exit"), expected.to_string(), "{signal}");
+        assert_eq!(
+            f.read("caller-signal"),
+            format!("caller-{}", signal.to_lowercase()),
+            "{signal}"
+        );
+    }
+}
+
+/// A signal delivered to the retry helper alone, not to the publisher, ends
+/// the creation attempt with the helper's terminal line. The publisher reports
+/// that line like any other terminal rejection, keeps the conventional status,
+/// and removes its captures.
+#[test]
+fn publisher_reports_the_terminal_line_when_only_the_retry_helper_is_interrupted() {
+    let f = PublishFixture::new();
+    let gh = fs::read_to_string(f.bin.join("gh")).unwrap();
+    // The blocked gh runs under timeout, whose parent is the retry helper.
+    executable(
+        &f.bin.join("gh"),
+        &gh.replace(
+            "  'pr create')",
+            &format!(
+                "  'pr create')\nps -o ppid= -p \"$PPID\" > \"$CASE_ROOT/helper.pid\"\n{BLOCK}"
+            ),
+        ),
+    );
+    let stdout = fs::File::create(f.tmp.path().join("cancel.stdout")).unwrap();
+    let stderr = fs::File::create(f.tmp.path().join("cancel.stderr")).unwrap();
+    let mut child = with_default_signal_actions(&mut f.publish_command())
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
+    wait_for_file(&f, &mut child, "ready");
+    let helper = f.read("helper.pid");
+    assert!(
+        Command::new("kill")
+            .args(["-s", "TERM", helper.trim()])
+            .status()
+            .unwrap()
+            .success(),
+        "helper={helper:?}"
+    );
+    // After the signal the publisher still runs its collision lookup, which is
+    // many process starts, so allow more time than a bare trap exit needs.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("publisher hung: {}", f.read("cancel.stderr"));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = Output {
+        status,
+        stdout: fs::read(f.tmp.path().join("cancel.stdout")).unwrap(),
+        stderr: fs::read(f.tmp.path().join("cancel.stderr")).unwrap(),
+    };
+    assert_eq!(output.status.code(), Some(143), "{}", describe(&output));
+    let result = super::fixture::json(&output);
+    assert_eq!(result["state"], "FAILED_PR_CREATE", "{result}");
+    assert_eq!(result["terminal_status"], "failure", "{result}");
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        message.contains("exit 143") && message.contains("gh interrupted by TERM"),
+        "{message}"
+    );
+    assert!(!describe(&output).contains("ghp_CANCEL_SECRET_ABCDEFGHIJKLMNOP"));
+    assert_eq!(
+        fs::read_dir(f.tmp.path().join("private")).unwrap().count(),
+        0,
+        "owned captures must be removed"
+    );
+    assert_owned_processes_reaped(&f);
+}
+
+/// The cleanup warning is a courtesy too. With stderr unwritable, a `set -e`
+/// caller must still get control back after a capture cannot be removed.
+#[test]
+fn failed_capture_removal_with_unwritable_stderr_does_not_end_a_set_e_caller() {
+    let f = PublishFixture::new();
+    f.shim("rm", "exit 80\n");
+    let mut command = f.command("bash");
+    command
+        .args([
+            "-c",
+            r#"
+set -e
+. "$1/amplifier-bundle/tools/workflow_gh_retry.sh"
+exec 2</dev/null
+gh_remove_capture "$TMPDIR/absent"
+printf reached
+"#,
+            "remove-test",
+        ])
+        .arg(root());
+    let output = command.output().unwrap();
+    assert!(output.status.success(), "{}", describe(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "reached");
 }
 
 #[test]
@@ -184,7 +362,11 @@ exit "$status"
     // then wait for its caller to verify the returned status and caller traps.
     let stdout = fs::File::create(f.tmp.path().join("cancel.stdout")).unwrap();
     let stderr = fs::File::create(f.tmp.path().join("cancel.stderr")).unwrap();
-    let mut child = command.stdout(stdout).stderr(stderr).spawn().unwrap();
+    let mut child = with_default_signal_actions(&mut command)
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
     wait_for_file(&f, &mut child, "ready");
     let owner = f.read("writer-owner.pid");
     let pid = owner.trim();

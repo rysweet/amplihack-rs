@@ -14,17 +14,28 @@
 # number, the live PR state), never log text.
 #
 #   Handed off (FINALIZATION_HANDOFF_STATES):
-#     BLOCKED_CI             the PR exists and its checks are red.
-#     FAILED_IMPLEMENTATION  the PR exists and was confirmed live by the
-#                            open-PR check (open, same-repo, run branch,
-#                            head at or fast-forward of the local HEAD), but
-#                            this run's own evidence does not prove the work
-#                            complete. The crusty loop reviews exactly that.
-#     FAILED_REPORTING       implementation and verification succeeded, the
-#                            reporting step failed, and the open-PR check
-#                            confirmed the PR as above. The reporting
+#     BLOCKED_CI             a check on the PR head fails, or cannot run, for a
+#                            cause the run cannot fix itself, such as a missing
+#                            secret or a run awaiting maintainer approval
+#                            (#2966). A red CI the run can fix is repaired
+#                            before finalization decides, so it never gets
+#                            here. assess-finalization reports the state with
+#                            the cause and the human step, and names the PR.
+#     FAILED_IMPLEMENTATION  assess-finalization decided the work is not
+#                            complete, and named a pull request while doing
+#                            so. The crusty loop reviews exactly that.
+#     FAILED_REPORTING       assess-finalization decided the work is
+#                            published and only the reporting step failed,
+#                            and named the pull request. The reporting
 #                            narrative has no effect on the PR the loops
 #                            review and fix.
+#   Since #2343 the open-PR check that once had to confirm the request live
+#   (open, same-repo, run branch, head at or a fast-forward of the local HEAD)
+#   is gone, with the rest of the bash classifier. open_pr_confirmed_number is
+#   now the number the assessment itself returned, in canonical form: the
+#   agent read the request back after deciding, and that reading is what the
+#   loops are handed. The live state is checked again downstream by
+#   autodrive_build_handoff below, which refuses a PR that is not OPEN.
 #   Never handed off: FAILED_DIRTY_WORKTREE and FAILED_WRONG_BRANCH (the
 #   local checkout is not the PR's), FAILED_MISSING_TOOLING,
 #   FAILED_INVALID_EVIDENCE, FAILED_INVALID_INPUT and
@@ -32,26 +43,33 @@
 #   HOLLOW_SUCCESS (the agent output is empty, so the PR may be too),
 #   FAILED_CLOSED_UNMERGED and FAILED_MEANINGFUL_DIFF (there is no open PR
 #   worth reviewing), FAILED_PR_METADATA_UNAVAILABLE (the PR is unknown)
-#   and INCOMPLETE. Success states need no hand-off. FAILED_IMPLEMENTATION
-#   and FAILED_REPORTING are handed off only through the *_open_pr
-#   functions, which require a PR the open-PR check confirmed.
+#   and INCOMPLETE. Success states need no hand-off. Every handed-off state
+#   goes through the *_open_pr functions, which require the pull request
+#   number the assessment returned (open_pr_confirmed_number).
 #
 #   finalization_handoff_allowed <state>
 #       Return 0 only for exactly one of FINALIZATION_HANDOFF_STATES.
 #   finalization_handoff_flag
 #       Print `true` only when RECIPE_VAR_finalization_handoff is exactly `true`,
 #       else `false`. No bare environment fallback, no case folding, no trimming.
-#   finalization_fail_or_handoff <state> <reason> <next> <evidence>
-#       Drop-in for fail_result; callable only inside validate_finalization.
-#       Hands off with the validator's current pr_number.
 #   finalization_fail_or_handoff_open_pr <state> <reason> <next> <evidence>
-#       As above, but hands off only when the open-PR check confirmed a PR
+#       Drop-in for fail_result; callable only inside validate_finalization.
+#       Hands off only when the assessment named a pull request
 #       (open_pr_confirmed_number/url/facts, set by the validator); otherwise it
 #       fails closed with the run's own PR evidence.
 #   finalization_try_handoff_open_pr <state> <reason> <next> <evidence>
 #       The hand-off half of the above: exits 0 after a hand-off, otherwise
 #       restores the run's own PR evidence and returns 1, so a caller can
 #       emit its own failure (FAILED_REPORTING keeps finalizer_output_valid).
+#   finalization_fail_or_handoff <state> <reason> <next> <evidence>
+#       Deprecated, kept unchanged for one release under the live-install rule
+#       (#3049) and removed in the release after the one that ships #2966.
+#       Nothing in the bundle calls it. It does exactly what it did before
+#       #2966: hands off with the validator's current pr_number (the run's own
+#       pull request), otherwise fails closed through fail_result. A script
+#       written against the earlier release therefore gets the behaviour it
+#       was written for; only the warning on stderr is new. New code calls
+#       finalization_fail_or_handoff_open_pr.
 #   autodrive_build_handoff <resolved_pr>
 #       autodrive-build step-03's decision. Call directly, not in $(...): it
 #       sets HANDOFF_TERMINAL_STATE and HANDOFF_HANDED_OFF. Returns 0 to
@@ -99,11 +117,6 @@ _finalization_handoff_emit() {
   return 1
 }
 
-finalization_fail_or_handoff() {
-  _finalization_handoff_emit "$@" || :
-  fail_result "$@"
-}
-
 finalization_try_handoff_open_pr() {
   local own_number="${pr_number:-}" own_url="${pr_url:-}"
   [ -n "${open_pr_confirmed_number:-}" ] || return 1
@@ -116,6 +129,13 @@ finalization_try_handoff_open_pr() {
 
 finalization_fail_or_handoff_open_pr() {
   finalization_try_handoff_open_pr "$@" || :
+  fail_result "$@"
+}
+
+# The body before #2966, unchanged, behind a deprecation warning (header).
+finalization_fail_or_handoff() {
+  echo "WARNING: #2966: finalization_fail_or_handoff is deprecated and will be removed; call finalization_fail_or_handoff_open_pr" >&2
+  _finalization_handoff_emit "$@" || :
   fail_result "$@"
 }
 

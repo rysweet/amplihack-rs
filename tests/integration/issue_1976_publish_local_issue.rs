@@ -213,6 +213,7 @@ impl Fx {
             .env_clear()
             .env("PATH", format!("{}:{old_path}", self.bin.display()))
             .env("HOME", &self.root)
+            .env("TMPDIR", &self.root)
             .env("STUB_LOG_DIR", &logs)
             .env("REMOTE_HOST_TYPE", "github")
             .env("ISSUE_NUMBER", issue_number)

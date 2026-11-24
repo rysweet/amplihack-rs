@@ -2,7 +2,7 @@
 title: Recipe runner architecture
 description: Execution, supervision, and durable recovery ownership across Amplihack and the Rust runner.
 doc_type: explanation
-last_updated: 2026-11-11
+last_updated: 2026-11-18
 ---
 
 # Recipe Runner Architecture
@@ -15,6 +15,7 @@ it, and how recipe execution stays predictable.
 - [Why external](#why-external)
 - [Binary resolution](#binary-resolution)
 - [Invocation contract](#invocation-contract)
+- [The selected checkout](#the-selected-checkout)
 - [Data flow](#data-flow)
 - [Logging responsibility split](#logging-responsibility-split)
 - [Durable recovery ownership](#durable-recovery-ownership)
@@ -66,6 +67,36 @@ The runner:
 4. Streams live progress, heartbeat, and failure diagnostics to stderr
 5. Writes the final structured result to stdout
 6. Returns exit code 0 on success, 1 on failure
+
+## The selected checkout
+
+The CLI launches the runner in the caller-selected working directory. Recipe
+`repo_path` and step `working_dir` select the appropriate repository and task
+or PR worktree. The default workflow creates or recovers its own task worktree;
+auto-drive works in the registered PR worktree. Nested runs use their selected
+directory too. The runner introduces no private execution copy or path mapping.
+
+This keeps Git operations attached to the repository the caller named. Steps
+can modify that checkout, so development uses the workflow's task worktree,
+and review uses the PR worktree with instructions to leave it unchanged.
+Read-only pre-review evidence and a following agent distinguish reviewer edits
+from existing work. Differences alone do not stop the run.
+
+Command construction retains useful launch environment handling, then applies
+`amplihack_git::scrub` last to remove inherited Git routing. Trusted workflow
+assets are selected independently of cwd. Neither worktrees nor agent guidance
+provide an OS sandbox.
+
+Recovery admission, child outcomes, runtime finalization, and error propagation
+retain their responsibilities. Interrupted runs keep uncommitted and unpushed
+work in the selected checkout/worktree. Removing execution-copy release does
+not authorize deleting legacy repository data. A dry run executes no steps.
+
+The CLI does not trace or journal Git commands and requires no `ptrace`
+privilege. See the [execution reference](../reference/recipe-checkout-isolation.md)
+and [logging reference](../reference/recipe-runner-logging.md#git-commands-a-run-makes).
+
+---
 
 ## Data flow
 

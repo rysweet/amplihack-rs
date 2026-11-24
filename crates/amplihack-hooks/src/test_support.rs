@@ -21,6 +21,12 @@
 use std::ffi::OsString;
 use std::sync::{Mutex, OnceLock};
 
+/// The five profile-redirecting variables and the guards that keep a test's
+/// settings writes inside its own temporary home (issue #2922). One
+/// definition, shared with the other crates' `test_support`.
+#[path = "../../../tests/support/claude_profile_isolation.rs"]
+pub(crate) mod claude_profile_isolation;
+
 /// Returns a reference to the process-wide environment lock.
 ///
 /// All tests in this binary that mutate process environment variables
@@ -28,9 +34,17 @@ use std::sync::{Mutex, OnceLock};
 /// lock for the duration of the mutation. Tests that assert behavior derived
 /// from `current_dir()` should also take this lock so they cannot race those
 /// mutations during parallel execution.
+///
+/// Creating the lock also fires [`claude_profile_isolation::purge_inherited`]
+/// (issue #2922), so a `CLAUDE_CONFIG_DIR` or login profile inherited from the
+/// session that started `cargo test` is gone before the first test that holds
+/// this lock mutates anything. It runs exactly once per process.
 pub(crate) fn env_lock() -> &'static Mutex<()> {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ENV_LOCK.get_or_init(|| Mutex::new(()))
+    ENV_LOCK.get_or_init(|| {
+        claude_profile_isolation::purge_inherited();
+        Mutex::new(())
+    })
 }
 
 /// Restores a process environment variable when dropped.
@@ -66,25 +80,49 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Clears `AMPLIHACK_DISABLE_BLARIFY` for the guard's lifetime.
+///
+/// `setup_blarify_indexing` short-circuits when that variable is `1`, before it
+/// ever consults `AMPLIHACK_BLARIFY_MODE`. An ambient value in the shell that
+/// launched the test run (a developer shell, or the environment a pre-push hook
+/// inherits) therefore silences every mode-specific assertion. Tests that
+/// exercise the blarify setup own the variable instead of inheriting it. The
+/// guard takes no lock of its own: the caller must already hold [`env_lock`]
+/// and keep it for the guard's lifetime.
+pub(crate) fn blarify_not_disabled() -> EnvVarGuard {
+    EnvVarGuard::unset("AMPLIHACK_DISABLE_BLARIFY")
+}
+
 /// Points the hook state root (issue #1963) at a throwaway home directory.
 ///
-/// Sets `HOME` to `home` and removes `AMPLIHACK_HOME`, so the state root
-/// resolves to `<home>/.amplihack` and no test can reach the real
-/// `~/.amplihack`. Both variables are restored on drop. The guard takes no
-/// lock of its own: the caller must already hold [`env_lock`] and keep it for
-/// the guard's lifetime.
+/// Sets `HOME` to `home` and clears every
+/// [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`] entry, so the state
+/// root resolves to `<home>/.amplihack`, no test can reach the real
+/// `~/.amplihack`, and no settings write can follow an inherited
+/// `CLAUDE_CONFIG_DIR` out of `home` (issue #2922). Every variable is restored
+/// on drop. The guard takes no lock of its own: the caller must already hold
+/// [`env_lock`] and keep it for the guard's lifetime.
+///
+/// `AMPLIHACK_HOME` has exactly one owner here, the `_profile` field. Two
+/// guards saving one variable restore it in the wrong order, which is why the
+/// separate `AMPLIHACK_HOME` guard this type used to carry is gone.
+///
+/// Field order is drop order: `HOME` is restored first, then the five.
 #[allow(dead_code)]
 pub(crate) struct IsolatedStateHome {
     _home: EnvVarGuard,
-    _amp: EnvVarGuard,
+    _profile: claude_profile_isolation::ClaudeProfileIsolation,
 }
 
 /// See [`IsolatedStateHome`]. The caller must already hold [`env_lock`].
 #[allow(dead_code)]
 pub(crate) fn isolate_state_home(home: &std::path::Path) -> IsolatedStateHome {
+    // Taken before `HOME` moves, so a settings writer never sees the new
+    // `HOME` alongside an inherited profile.
+    let profile = claude_profile_isolation::ClaudeProfileIsolation::new();
     IsolatedStateHome {
         _home: EnvVarGuard::set("HOME", home),
-        _amp: EnvVarGuard::unset("AMPLIHACK_HOME"),
+        _profile: profile,
     }
 }
 

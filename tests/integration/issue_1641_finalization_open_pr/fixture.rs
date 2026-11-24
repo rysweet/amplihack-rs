@@ -41,6 +41,18 @@ pub fn tool_path(name: &str) -> PathBuf {
     workspace_root().join("amplifier-bundle/tools").join(name)
 }
 
+/// Write `body` to `path` and make it executable. The one place in these
+/// fixtures that creates a stub on `PATH`, so no case repeats the mode.
+pub fn write_executable(path: &std::path::Path, body: &str) {
+    fs::write(path, body).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|e| panic!("chmod {}: {e}", path.display()));
+    }
+}
+
 pub fn tool_text(name: &str) -> String {
     let path = tool_path(name);
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
@@ -122,13 +134,7 @@ impl Fixture {
         for dir in ["home", "scratch", "bin", "remotes"] {
             fs::create_dir_all(tmp.path().join(dir)).expect("fixture dir");
         }
-        let gh = tmp.path().join("bin/gh");
-        fs::write(&gh, GH_STUB).expect("write gh stub");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod gh");
-        }
+        write_executable(&tmp.path().join("bin/gh"), GH_STUB);
         let fixture = Self { tmp, repo };
         fixture.git(&["init", "-q", "-b", "main"]);
         fixture.git(&["config", "user.email", "fixture@example.com"]);

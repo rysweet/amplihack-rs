@@ -225,13 +225,13 @@ amplihack goal-agent-generator execute \
 - Diagnoses failures (test, lint, type errors)
 - Applies targeted fixes
 - Pushes updates and waits for CI re-run
-- Iterates until all checks pass (max 5 iterations)
+- Iterates until every check is green, or a cause the run cannot fix is named
 
 **Key Features**:
 
-- Iterative fix loop with max iterations
+- Iterative fix loop with no round limit
 - Pattern matching for common failures
-- Smart waiting with exponential backoff
+- Waits with `gh pr checks --watch`, with no sleep or backoff of its own
 - Stops at mergeable state; the merge belongs to the calling workflow
 
 **Location**: `~/.amplihack/.claude/agents/amplihack/specialized/ci-diagnostic-workflow.md`

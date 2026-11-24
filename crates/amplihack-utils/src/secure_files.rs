@@ -14,7 +14,6 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -87,11 +86,27 @@ impl Drop for ExclusiveLock {
 /// Takes an exclusive `flock` on `file`, retrying every 100 ms until
 /// `timeout` has passed. A zero timeout tries once. Gives up with
 /// `ErrorKind::TimedOut`.
-#[cfg(unix)]
 pub fn lock_exclusive_timeout(file: fs::File, timeout: Duration) -> io::Result<ExclusiveLock> {
+    lock_exclusive_timeout_with(file, timeout, &crate::clock::SystemClock)
+}
+
+/// [`lock_exclusive_timeout`] with all time taken from `clock`: the wait
+/// starts at `clock.now()`, retries sleep through `clock.sleep`, and the
+/// timeout is measured on that clock. `EINTR` retries at once; other errors
+/// are returned as they are.
+///
+/// A clock whose time never moves forward makes the wait unbounded while the
+/// lock is held, so only tests should pass anything but `SystemClock`.
+#[doc(hidden)]
+#[cfg(unix)]
+pub fn lock_exclusive_timeout_with(
+    file: fs::File,
+    timeout: Duration,
+    clock: &dyn crate::clock::Clock,
+) -> io::Result<ExclusiveLock> {
     use std::os::unix::io::AsRawFd;
     const RETRY: Duration = Duration::from_millis(100);
-    let start = std::time::Instant::now();
+    let start = clock.now();
     loop {
         // SAFETY: the descriptor is owned by `file` and open.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
@@ -103,22 +118,24 @@ pub fn lock_exclusive_timeout(file: fs::File, timeout: Duration) -> io::Result<E
             Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => {}
             _ => return Err(err),
         }
-        let waited = start.elapsed();
+        let waited = clock.now().saturating_duration_since(start);
         if waited >= timeout {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "timed out waiting for an exclusive lock",
             ));
         }
-        std::thread::sleep(RETRY.min(timeout - waited));
+        clock.sleep(RETRY.min(timeout - waited));
     }
 }
 
 /// Not supported off Unix: always `ErrorKind::Unsupported`.
+#[doc(hidden)]
 #[cfg(not(unix))]
-pub fn lock_exclusive_timeout(
+pub fn lock_exclusive_timeout_with(
     _file: fs::File,
-    _timeout: std::time::Duration,
+    _timeout: Duration,
+    _clock: &dyn crate::clock::Clock,
 ) -> io::Result<ExclusiveLock> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

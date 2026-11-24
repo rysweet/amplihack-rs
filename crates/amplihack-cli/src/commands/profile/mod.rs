@@ -20,9 +20,11 @@ mod duplicates;
 pub(in crate::commands::profile) mod expected;
 pub(crate) mod governor_view;
 #[cfg(unix)]
+mod keychain;
+#[cfg(unix)]
 mod kind;
 #[cfg(unix)]
-mod limit_wait;
+pub(crate) mod limit_wait;
 #[cfg(unix)]
 mod organisation;
 /// Issue #2030: Commander option arity, for the `amplihack claude` passthrough rewrite.
@@ -83,7 +85,11 @@ mod tests_fake_http;
 #[cfg(all(test, unix))]
 mod tests_issue_2279_profile;
 #[cfg(all(test, unix))]
+mod tests_keychain;
+#[cfg(all(test, unix))]
 mod tests_kind;
+#[cfg(all(test, unix))]
+mod tests_kind_keychain;
 #[cfg(all(test, unix))]
 mod tests_login_check;
 #[cfg(test)]
@@ -136,6 +142,8 @@ mod tests_usage_view;
 mod tests_verify;
 #[cfg(all(test, unix))]
 mod tests_verify_cmd;
+#[cfg(all(test, unix))]
+mod tests_wait_for_refreshes;
 
 use anyhow::Result;
 /// For `amplihack sessions` (issue #1746): the live check and profile root.
@@ -150,13 +158,16 @@ pub(crate) use auto_switch::{
     statusline_entry::is_amplihack_statusline,
 };
 use clap::Subcommand;
-use name::ProfileName;
+pub(crate) use name::ProfileName;
 #[cfg(test)]
 use root_cmd::{render_list, render_show};
 pub(crate) use root_config::store_from_env;
 pub(crate) use rotate::autostart_on_launch;
 #[cfg(unix)]
 pub(crate) use rotate::warn_foreign_rotator;
+// `refresh_profile_settings` returns `settings_refresh::ProfileRefresh`,
+// which stays unexported: its callers reach its two fields and never name
+// the type, and re-exporting a name nothing writes is a warning here.
 pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
 use std::borrow::Cow;
 use std::ffi::OsStr;
@@ -264,6 +275,18 @@ pub enum ProfileError {
         "profile {0} is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. Run 'amplihack profile login {0}', or run 'amplihack profile kind set {0} api-key' if per-token billing is intended."
     )]
     SubscriptionNoLogin(String),
+    /// Issue #2885: on macOS the profile has no login file and the Keychain
+    /// gave no answer. A refusal of its own, so that a locked Keychain is
+    /// never reported as "no login", and never taken for an API key. The
+    /// cause is one of five fixed texts; nothing `security` printed is here.
+    #[cfg(unix)]
+    #[error(
+        "profile {name} has no login file and the macOS Keychain could not be read ({cause}); launching it could bill the Claude Platform API key per token. Unlock the login Keychain and run again, or run 'amplihack profile kind set {name} api-key' if per-token billing is intended."
+    )]
+    KeychainUnreadable {
+        name: String,
+        cause: keychain::Cause,
+    },
     #[error(
         "profile {0} is an API-key profile; the API-key tier is fixed at 10, so --tier cannot be set"
     )]
@@ -309,7 +332,7 @@ impl ProfileError {
             Self::InvalidSharedSettings(_) => "repair ~/.claude/settings.json and retry",
             Self::InvalidSharedSource(_) => "ensure ~/.claude is a directory and retry",
             Self::SharedAssetLimit(_) => {
-                "reduce oversized files or directories under ~/.claude and retry"
+                "under ~/.claude, shrink what the message reports: the entries of a named folder, an oversized file, or the nesting depth"
             }
             Self::SharedSourceContainsRoot(_) => "choose a profile root outside ~/.claude",
             Self::SeedCleanupFailed { .. } => {
@@ -358,6 +381,10 @@ impl ProfileError {
             Self::RotateDaemon(_) => "run `amplihack profile rotate status`",
             Self::SubscriptionNoLogin(_) => {
                 "amplihack profile login <name>, or: amplihack profile kind set <name> api-key"
+            }
+            #[cfg(unix)]
+            Self::KeychainUnreadable { .. } => {
+                "unlock the login Keychain and run again, or: amplihack profile kind set <name> api-key"
             }
             Self::PlatformTierFixed(_) => {
                 "run `amplihack profile overflow add <name>` without --tier"
@@ -859,9 +886,9 @@ fn unsupported_mode(docker: bool, docker_env: bool, auto: bool) -> Option<Profil
 }
 
 fn docker_env_active() -> bool {
-    crate::docker::DockerDetector
-        .activation_source(false)
-        .is_some()
+    // Refuse the requested mode even when a missing/stopped daemon would
+    // prevent activation; profile validation must precede any disk access.
+    crate::docker::DockerDetector.requested_outside_container(false)
 }
 
 /// Profiles are not applied in Docker; fail closed rather than drop the profile.

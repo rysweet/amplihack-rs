@@ -268,9 +268,10 @@ fn one_shot_fresh_live_reading_stays_and_threshold_still_swaps() {
 ///
 /// The stale passive figure (20%) would stay under `--session-at 70`; the
 /// server's figure for the home credential (90%) swaps. A `would swap` with
-/// `live s=90%` therefore proves the decision used the re-read. The `cycle`
-/// line records the figures as measured, before any re-read, so it still
-/// shows 20%. `<profile-root>/work` holds no credential while `work` is live
+/// `live s=90%` therefore proves the decision used the re-read. Since issue
+/// #2889 the `cycle` line reports the figures the cycle decided on, so it
+/// shows 90% too (see `issue_2889_freshest_live_reading`).
+/// `<profile-root>/work` holds no credential while `work` is live
 /// (a stored copy would mark it parked), so a read of the profile copy could
 /// only fail and could never give 90%.
 ///

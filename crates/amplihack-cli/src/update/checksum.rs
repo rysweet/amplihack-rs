@@ -5,17 +5,27 @@ use sha2::{Digest, Sha256};
 pub(super) fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<()> {
     let checksum_body = super::network::http_get_with_retry(checksum_url)
         .with_context(|| format!("failed to download checksum from {checksum_url}"))?;
+    verify_sha256_bytes(archive_bytes, &checksum_body, checksum_url)
+}
+
+/// Verify an archive against the contents of its `.sha256` file. `label`
+/// names where the checksum came from, for error messages.
+pub(super) fn verify_sha256_bytes(
+    archive_bytes: &[u8],
+    checksum_body: &[u8],
+    label: &str,
+) -> Result<()> {
     let checksum_text =
-        std::str::from_utf8(&checksum_body).context("checksum file is not valid UTF-8")?;
+        std::str::from_utf8(checksum_body).context("checksum file is not valid UTF-8")?;
 
     let expected_hex = checksum_text
         .split_ascii_whitespace()
         .next()
-        .ok_or_else(|| anyhow!("checksum file is empty or malformed: {checksum_url}"))?;
+        .ok_or_else(|| anyhow!("checksum file is empty or malformed: {label}"))?;
 
     if expected_hex.len() != 64 || !expected_hex.chars().all(|c| c.is_ascii_hexdigit()) {
         bail!(
-            "checksum file does not contain a valid SHA-256 hex digest (got {expected_hex:?}): {checksum_url}"
+            "checksum file does not contain a valid SHA-256 hex digest (got {expected_hex:?}): {label}"
         );
     }
 
@@ -31,7 +41,7 @@ pub(super) fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<
     }
 
     tracing::debug!(
-        checksum_url,
+        checksum = label,
         sha256 = actual_hex,
         "archive checksum verified"
     );

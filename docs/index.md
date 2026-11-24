@@ -94,9 +94,11 @@ Centralized plugin system that works across all your projects:
 - [Quick Start](../README.md) - Basic usage and first commands
 - [Stale Wrapper Repair Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn how install/update keeps the Rust binary first and refreshes stale assets
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
+- [Update amplihack with gh's login](howto/update-with-gh-login.md) - Use gh's existing login for release lookup and download, and read a GitHub rate-limit refusal
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
-- [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset and run once more ([reference](reference/profile-command.md#usage-limit-wait))
+- [Usage-Limit Waits and Limit Records](reference/usage-limit-waits.md) - A step that meets a usage, spend or credit limit records it for its login, waits for room and continues; what ends a step, the record format, the `waiting_for_capacity` line
+- [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset, for another stored login to show capacity, or for the rotator to move a new login into `~/.claude`, and run once more ([reference](reference/profile-command.md#usage-limit-wait))
 
 ### Configuration
 
@@ -137,7 +139,9 @@ amplihack copilot
 **Codex**
 
 - [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
+- [Codex agent-step launch flags](reference/launch-flag-injection.md#codex-agent-step-flags) - Sandbox, hook trust, and the directory-check bypass for validated review launch directories
 - [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, installer downgrade guard, and diagnostics
+- [Recipe Context Transport Reference](reference/recipe-context-transport.md) - How `recipe run` hands context to the runner without argv
 - [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
 - [Native plugin probe](reference/codex-native-plugin-probe.md) - Probe time limits, failure classification and error messages
 - [Native installer ownership](concepts/codex-installation-ownership.md) - Packaging, hook ownership, locking, and recovery
@@ -146,13 +150,16 @@ amplihack copilot
 #### General Configuration
 
 - [User Configuration](reference/user-config.md) - Persistent defaults in `~/.amplihack/config.toml` and `.amplihack/config.toml`, and the `amplihack config` command
+- [Dangerous Command Policy](reference/dangerous-command-policy.md) - The single list of dangerous commands amplihack ships, the Claude `permissions.deny` entries, Codex execpolicy rules file and Copilot CLI launch flags written from it, and the `policy.deny_commands` key that adds to it
 - [Config Write Durability](concepts/config-write-durability.md) - Why the first-launch save of `node.heap_consent` skips `fsync` while `config set` and `config unset` keep it
 - [AMPLIHACK_* Environment Variable Audit](reference/amplihack-env-vars.md) - Every `AMPLIHACK_*` name classified as user preference, internal or test-only, with its config key
+- [Model Tiers](reference/model-tiers.md) - How a recipe step's `fast`, `standard` or `strong` tier becomes a model and, on Codex, a reasoning effort: the per-harness mapping, precedence, the fall-back to a harness default, instance and per-step overrides, and the run-summary section that names what each step ran on
+- [Put Recipe Steps on Model Tiers](howto/set-model-tiers.md) - Change one cell of the mapping, fill in a harness column, move one step, force one model everywhere, run small-change reviews as one pass, and read back what a run spent
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
 - [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Keep generated workflow runtime output outside commit worktrees
-- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, when a checkout's build target is removed, linked targets, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
+- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, folders kept because they hold unsaved Git work, when a checkout's build target is removed, linked targets, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
 - [Verify Runtime Asset Resolution](howto/verify-runtime-asset-resolution.md) - Check helper, session, hooks, and multitask asset parity
@@ -165,15 +172,20 @@ amplihack copilot
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
 - [Claude Profiles How-To](howto/claude-profiles.md) - Separate Claude logins per profile, shared sessions, and what a new profile inherits
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
+- [Keep a Session Running After Its Process Exits](howto/keep-sessions-running.md) - Mark a supervised session as standing so it is relaunched with `claude --continue` in its own pane when its process exits
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
 - [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT` or, in lib tests, a per-thread scope and a shared empty default, the `FakeProc` builder, and the guard that fails a test reading host processes
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
+- [Keep Tests from Writing to an Inherited Claude Profile](howto/keep-tests-from-writing-to-an-inherited-claude-profile.md) - The shared helper that clears `CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE`, `AMPLIHACK_CLAUDE_PROFILE_ROOT`, `AMPLIHACK_CLAUDE_AUTO_SWITCH` and `AMPLIHACK_HOME` wherever a test sets `HOME`, `with_config_dir` for tests that need one set, and the behaviour test that leaves a stand-in profile byte-identical (#2922)
 - [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, seed logins in rotate unit tests, re-issue a credential when its account changes, and test the no-record case
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
 - [Keep Tests from Prompting for Git Credentials](howto/keep-tests-from-prompting-for-git.md) - Why git under plain `timeout` stops on `SIGTTIN`, the settings that stop test and amplihack git from prompting, and how to run long commands safely
+- [Keep Shell Test Stubs from Blocking on stdin](howto/keep-test-stubs-from-blocking-on-stdin.md) - Why a multi-mode shell stub dispatches before it reads stdin, which `orch helper` modes take a blob, the null stdin the bundled-tool helper gives every call, and the FIFO check that proves a stub never opens stdin (#2582)
 - [Run recipe::run Tests Inside a Recipe Session](howto/run-recipe-tests-inside-a-recipe-session.md) - How `recipe::run` tests clear the outer run's `AMPLIHACK_*` variables with `clear_outer_run_env()` and `OUTER_RUN_IDENTITY_VARS`, so they pass inside a recipe run (#1984)
-- [Keep Tests Passing Under Host Load](howto/keep-tests-passing-under-host-load.md) - Wait on conditions under one 10-minute ceiling, use the debug-only identity knobs, and prove a fix with all-core CPU load
+- [Keep Recipe Shell Tests out of the Shared Work Root](howto/keep-recipe-shell-tests-out-of-the-shared-work-root.md) - How the recipe shell suites source `recipe-test-env.sh` to clear an inherited `AMPLIHACK_WORK_ROOT`, how a Rust test starts a suite through `isolated()`, and the behaviour test that checks the outside work root stays empty (#2712)
+- [Run Tests Against the Pinned Recipe Runner](howto/run-tests-against-the-pinned-recipe-runner.md) - How runner-backed tests build `recipe-runner-rs` at the pinned revision into a test-private cache, the `RECIPE_RUNNER_RS_PATH` and `RECIPE_RUNNER_QA_BINARY` overrides and their receipt check, and how to prove a test does not use the host runner (#2658)
+- [Keep Tests Passing Under Host Load](howto/keep-tests-passing-under-host-load.md) - Wait on events and conditions under two hang guards, inject a clock, write stubs without `ETXTBSY`, use the debug-only knobs including the probe wait, review event waits, and validate timing policy with an injected clock
 - [Wait Without Leaving Orphan Processes](howto/wait-without-orphan-processes.md) - Wait with `amplihack wait --seconds N` or `wait $pid`, use uutils `timeout` safely, and what the tail-follow guard in the `pre-tool-use` hook denies
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
 - [Profile Organisation Affinity](reference/profile-organisation-affinity.md) - Same-organisation selection, crossing restrictions and session warnings
@@ -181,6 +193,7 @@ amplihack copilot
 - [`amplihack sessions` Reference](reference/sessions-command.md) - Archive old Claude Code session logs out of `~/.claude/projects`, restore one, and the rotator's daily run
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
+- [Update Release Lookup Reference](reference/update-release-lookup.md) - When update uses gh, the commands it runs, the download checks and the 403 and 429 message
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Framework Source Selection](reference/framework-source-selection.md) - Which source install, update and self-heal stage the bundle from, the release tag fetch, the manifest check and file modes
 - [Versioned Install Layout](concepts/versioned-install-layout.md) - Releases under `~/.amplihack/releases`, atomic link switch, in-use cleanup and why an install leaves running recipe runs alone
@@ -225,7 +238,10 @@ Understand the philosophy and architecture behind amplihack.
 - [amplihack-rs Parity Reference](amplihack-rs-parity.md) - Subprocess prompt delivery capabilities, configuration, diagnostics, and Rust API
 - [Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md) - Why large prompts, recipe context and GitHub bodies stay out of argv and environment values (`E2BIG`, `MAX_ARG_STRLEN`)
 - [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md) - Why no contract, prompt or brief text appears in an agent's `/proc/<pid>/cmdline` (#2030)
+- [Recipe Context Transport Reference](reference/recipe-context-transport.md) - `context_file_v1`, the 0600 context file in the runtime folder, the `--set` path for a runner older than the pin, cleanup and errors (#2582)
+- [Stop Background Jobs by PID](howto/stop-background-jobs-by-pid.md) - Stop your own job by `$!` or process group, never by pattern, and time-box tests with the runner's options (#2582)
 - [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) - Per-launch-path channels, the contract file, the Claude Code 2.1.319 version gate, the `amplihack claude` passthrough rewrite and errors
+- [Launcher Output Streams Reference](reference/launcher-output-streams.md) - Launcher notices go to stderr, so stdout of `amplihack <agent> -p` is only the agent's output (#2585)
 - [Check Agent Processes for Prompt Text](howto/check-agent-argv-for-prompt-text.md) - Run the `/proc` check and fix version-gate failures
 - [Large Payload Delivery Reference](reference/large-payload-delivery.md) - `file-reference` mode, sync and async stdin writers, runner value spill, UTF-8 truncation, reasoner bounds, `--prompt-file`, and `workflow_body_file.sh`
 - [`amplihack-turn` Turn Driver Reference](reference/amplihack-turn-api.md) - Agent-generic turn model: `AgentSession` / `Channel` / `NextPrompt`, the `run_session_loop` driver (run-to-completion, no wall-clock cap), and the relocated `SerialTurnDriver` / `CopilotTurnRunner` / `build_turn_argv` / `ToolAllowlist` primitives
@@ -314,6 +330,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - **Planned:** latest-attempt eligibility, nested replay, and compatibility
 - [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
 - [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
+- [Why a Recipe Run Does Not Trace Git Commands](concepts/no-git-command-tracing.md) - Why the ptrace observer and Git-command journal were removed, how named-checkout execution works, and what a tamper-resistant record would require (#2738)
 - [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, and recovery decisions
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
@@ -324,13 +341,25 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Quick-Change Recipe](reference/quick-change-recipe.md) - Single-session recipe for small changes: diff limits, hand-over to default-workflow, routing precedence and the `Workflow:` log line, `-c workflow=`
 - [Auto-Drive-Light Recipe](reference/auto-drive-light.md) - Smaller drive-to-merge recipe for small PRs: eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and the per-finding follow-up model it shares with auto-drive-to-merge
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID
+- [Model Tiers](reference/model-tiers.md) - The tier a recipe agent step declares, the per-harness model and effort it maps to, and the combined review pass for small diffs
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration
+- [Recipe Push Failure Recovery](reference/recipe-push-failure-recovery.md) - How a failed step-15 or step-18c push is judged as a change or environment fault, merged with the remote branch when it is ahead, retried once from a clean environment, and checked by a gate (including a fast-forward check) before the run continues
+- [Step Failure Recovery](reference/step-failure-recovery.md) - How an opted-in recipe step sends its failure to a recovery agent that retries after a repair, runs a declared alternative, continues with a record, or hands off to a named owner; record format, recurrence rule and exit 81 (issue #2539)
+- [Auto-drive Round Push Before Review](reference/auto-drive-round-push.md) - A Crusty round's fix commits reach the pull request head before the next review, a refused push is recovered by the agent, and step recovery pushes an unpushed commit the run made (issue #2923)
+- [Recipe Check Exit Status](reference/recipe-check-exit-status.md) - How test, hook and CI check steps report the real exit status, keep stderr in the step log, and route failures to fix or diagnosis steps (issue #2190)
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
-- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the build → crusty-review → merge-ready loops, how the autodrive recipes read step outputs through `RECIPE_VAR_<output>`, how the `LOOP_HEALTH:` line is read, the no-progress stop and per-run usage budget (`autodrive_budget_*`), and the evidence-gated merge
-- [Crusty Completion Contract](reference/autodrive-crusty-completion.md) - Completion-first dispatch for CLEAN and MINOR_ONLY, decision integrity, and follow-up recording before phase completion
+- [Auto-drive Goal Loop](reference/autodrive-goal-loop.md) - The shared goal-driven agent loop: turns, readings, actions, guidance, turn records, endings, goal contract v1 and known limits (#3129)
+- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Inputs, merge authority, what the agent decides, and how a run ends
+- [Auto-drive Evidence and Outcomes](reference/auto-drive-evidence.md) - The 13 criteria, auto-drive's crusty convergence substitution, the PR write-up and reported outcomes
+- [Merge-ready Round, Merge and Hand-off](reference/autodrive-merge-ready-round.md) - The agentic merge-ready write-up, the one-word outcome, GitHub-only merge conditions, the hand-off recipe, the run report, which invocations the "success means merged" rule judges, and the loop driver's output kept in the state folder for an `UNREADABLE` hand-off (#2575, #2769, #2849)
+- [Auto-drive QA (Criterion 1)](reference/auto-drive-qa.md) - Criterion 1 as a recorded judgement: the measured QA record, the declared QA command from merge-base `qa.toml`, the named recoverable blockers, and how the merge round reads the judgement (#2569)
+- [Auto-drive State Permissions](reference/auto-drive-state-permissions.md) - State folders 0700 and files 0600 under any umask; when the evidence check repairs an entry this user owns (slug folders directly under the auto-drive state root), when it refuses, and the `INFO`/`WARNING` repair log line (#2546)
+- [Verify a PR Without Merging](howto/verify-pr-with-auto-drive.md) - Planned guide; current no_merge=true does not protect final merging
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
-- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the three phases, how the merge round applies the merge-ready criteria (gadugi scenarios run one per process, the crusty loop as criterion 3), the `AUTODRIVE_QA_*` variables, `.amplihack/qa.toml` and how the QA command is chosen and scoped to the changed paths, the evidence-gated merge, and why rounds commit only in the pull request's worktree, and how minor-only crusty verdicts end the crusty loop with a follow-up issue per finding (#1979), and what "CI green" means: every expected check exists at the head SHA and passed (#2186)
+- [Crusty Completion Contract](reference/autodrive-crusty-completion.md) - Completion-first dispatch for CLEAN and MINOR_ONLY, decision integrity, and follow-up recording before phase completion; preflight skip reasons and recoverable assess and round faults
+- [Expected Checks at the Head](reference/autodrive-expected-checks.md) - `autodrive_expected_checks.sh`: CI green means every expected check (required checks and every pull_request workflow job) exists at the head SHA and passed; MISSING, PENDING, RED and UNREADABLE block, and the limits of the expected set (#2186)
+- [Build Preflight Decision](reference/autodrive-build-preflight.md) - `autodrive-build` step-01 reports PR facts (`pr_found`, `pr_state`, `blockers`) and the step-02 condition decides build or reuse: no PR builds, an OPEN or MERGED PR is reused, an incomplete search stops with blockers (#2552)
 - [Git Repository Environment Helper](reference/git-repo-env-helper.md) - `git-repo-env.sh`: the one shell list of `GIT_*` repository selectors and outer-run `AMPLIHACK_*` names, which auto-drive QA steps and the cargo hook clear before running tests, the `git_env_cleared` and `run_env_cleared` evidence fields, and the drift guard (#2033)
 - [Session-Tree Recursion Control](reference/session-tree-recursion-control.md) - where tree state lives, how the depth ceiling is sealed, the `BLOCKED_TERMINAL` exit-79 contract, `session-tree gc` retention, and mixed-version fleets
 - [Read Agent Verdicts with orch helper](howto/parse-agent-verdicts-with-orch-helper.md) - Migrate grep/awk/jq gates to `orch helper extract-json | extract-field | normalise-verdict` and structured `parse_json` conditions
@@ -356,7 +385,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Workflow Runtime Isolation](features/workflow-runtime-isolation.md) - Runtime-root isolation and narrow cleanup for generated workflow artifacts
 - [How to Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Set `AMPLIHACK_RUNTIME_ROOT`, inspect runtime files, and troubleshoot guard failures
 - [Tutorial: Workflow Runtime Isolation](tutorials/workflow-runtime-isolation.md) - Practice the runtime isolation and strict Artifact Guard contract
-- [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, and regression contract
+- [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, the single excluded-runtime-paths list (including `/index.scip`) and the dirty-worktree message, and regression contract
 - [Workflow Commit Identity Reference](reference/workflow-commit-identity.md) - Explicit author/committer identity contract for workflow-created commits
 - [Workflow Identity Preflight Reference](reference/identity-preflight.md) - One-call check, before any step does real work, that the acting `gh` account can write to the target repository (issue #1290)
 - [How to Configure Workflow Commit Identity](howto/configure-workflow-commit-identity.md) - Setup for `AMPLIHACK_GIT_*`, repo-local Git identity, and provider-safe fallbacks
@@ -393,6 +422,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [AppendHandler](reference/append-handler.md) - `AppendResult` class, timestamp filename format, atomic file writes
 - [Rust Runner Execution Reference](reference/rust-runner-execution.md) - Wrapper contract, stderr/stdout streams, JSONL events, environment variables, and security model
 - [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation
+- [Recipe Execution in Named Checkouts](reference/recipe-checkout-isolation.md) - Execution locations, PR-worktree review, agentic assessment, and retained work
+- [Run a Recipe in a Selected Worktree](tutorials/recipe-checkout-isolation.md) - Observe staged, unstaged, and untracked content and writes in a real linked worktree
 - [Recipe Runner Logging Reference](reference/recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, JSONL events, and additive result fields
 - [Recipe Run Correlation Reference](reference/recipe-run-correlation.md) - Stable run IDs, `AMPLIHACK_RECIPE_RUN_ID`, pointer event schema, and final result fields
 - [Observe Recipe Progress Tutorial](tutorials/recipe-progress-transparency.md) - Watch live workflow progress, capture JSON, and debug failed steps
@@ -588,7 +619,7 @@ Execute complex tasks with simple slash commands.
 - [Operations Index](operations/README.md) - Release canaries, cleanup, workflow resilience, downstream validation, and roadmap docs
 - [v0.10.6 Canary Evidence](operations/v0.10.6-canary-evidence.md) - Sanitized install/update/default-workflow evidence contract and current availability limitations
 - [Hygiene Cleanup](operations/hygiene-cleanup.md) - Conservative opt-in cleanup for stale worktrees, detached Cargo targets, and session artifacts
-- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Run folders, the work root, `amplihack cleanup`, and log archive and restore
+- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Run folders, the work root, `amplihack cleanup`, unsaved work that cleanup keeps, and log archive and restore
 - [Workflow Publish and Finalize Resilience](operations/workflow-resilience.md) - Idempotent no-diff, existing-PR, already-merged, and closed-after-merge terminal states
 - [Prompt Delivery Downstream Validation](operations/prompt-delivery-downstream-validation.md) - Simard/RabbitHole-style prompt delivery validation scenarios
 - [Operational Roadmap](operations/operational-roadmap.md) - Curated backlog for fleet rollout, Azure DevOps E2E, release contracts, and observability
@@ -841,6 +872,9 @@ Security guidelines, context preservation, and best practices.
 
 - [Security Recommendations](SECURITY_RECOMMENDATIONS.md) - Essential security practices
 - [XPIA Configuration Reference](reference/xpia-configuration.md) - XPIA prompt-injection scanning is off by default; opt in with `XPIA_ENABLED=true`, and the CWD, commit-on-main and `--no-verify` guards that stay active either way
+- [Dangerous Command Policy](reference/dangerous-command-policy.md) - The single list of dangerous commands amplihack ships, the Claude `permissions.deny` entries, Codex execpolicy rules file and Copilot CLI launch flags written from it, and the `policy.deny_commands` key that adds to it
+- [Why Dangerous Commands Are Denied in the Harness](concepts/dangerous-command-policy.md) - Why the policy uses each harness's own allow/deny mechanism rather than a hook, and what a command-prefix matcher is not
+- [Add Dangerous-Command Deny Rules](howto/add-dangerous-command-deny-rules.md) - Add your own entries with `policy.deny_commands`, apply them, and check what each harness received
 - [Security Context Preservation](SECURITY_CONTEXT_PRESERVATION.md) - Maintain security through sessions
 - [Security Guides](security/README.md) - Comprehensive security documentation
 - [Turn-Failure Error Hygiene](turn-error-hygiene.md) - Bounded, debug-gated turn-failure errors that avoid embedding child output (issue #1092)

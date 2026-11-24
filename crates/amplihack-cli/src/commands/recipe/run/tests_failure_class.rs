@@ -66,6 +66,7 @@ fn transient_verdict() -> FailureVerdict {
         evidence: ISSUE_1267_STDOUT_TAIL.to_string(),
         failed_steps: vec!["step-12-run-precommit".to_string()],
         completed_steps: Vec::new(),
+        structural_refusal: false,
     }
 }
 
@@ -181,6 +182,7 @@ fn an_unknown_model_404_is_environmental_and_names_its_signal() {
         evidence: reported.to_string(),
         failed_steps: vec!["implement".to_string()],
         completed_steps: Vec::new(),
+        structural_refusal: false,
     };
     let reasoning = verdict.reasoning();
     assert!(
@@ -313,7 +315,7 @@ fn verdict_json_names_the_class_the_signal_and_the_action() {
     assert_eq!(FAILURE_CLASS_RESULT_KEY, "failure_classification");
 }
 
-/// `autodrive_escalate.sh` reads a usage-limit marker without `jq` by anchoring
+/// `autodrive_refusal.sh` reads a usage-limit marker without `jq` by anchoring
 /// on the key order `serde_json` writes (#1801). A change to that order, such
 /// as turning on `preserve_order`, must fail here and not silently in the loop.
 #[test]
@@ -324,6 +326,7 @@ fn the_marker_line_starts_with_the_keys_the_shell_check_anchors_on() {
         evidence: "You've hit your weekly limit".to_string(),
         failed_steps: vec!["step-08-implement".to_string()],
         completed_steps: Vec::new(),
+        structural_refusal: false,
     };
     for action in ["retry", "terminal", "terminal_budget_exhausted"] {
         let line = marker_line(&verdict.to_json(3, action));
@@ -1221,10 +1224,11 @@ fn a_transient_fault_mentioning_a_repository_stays_transient() {
 // Issue #2230, comment of 10 Nov: a nested loop sub-recipe (a crusty round or
 // the loop-health evaluator) that hits the 5-hour limit after an earlier wait
 // must stop the auto-drive loop as USAGE_LIMIT, not STUCK. The loop decides
-// that in `autodrive_escalate.sh`'s `usage_limit_failure`, which reads only
-// the nested run's own `amplihack.recipe.failure_class` line. These tests
-// feed it the line this classifier writes for the observed message, with and
-// without `jq` on PATH.
+// that in `usage_limit_failure`, which reads only the nested run's own
+// `amplihack.recipe.failure_class` line. #3129 moved the function from
+// `autodrive_escalate.sh` (now a one-release alias) to `autodrive_refusal.sh`,
+// which the goal loop's driver sources. These tests feed it the line this
+// classifier writes for the observed message, with and without `jq` on PATH.
 
 /// The nested run's log as the loop sees it: the round's own output, the
 /// runner's marker line at column 0, then the run summary.
@@ -1260,7 +1264,7 @@ fn usage_limit_failure(log_text: &str, with_jq: bool) -> bool {
         std::os::unix::fs::symlink(found, bin.join(tool)).expect("link tool");
     }
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../amplifier-bundle/tools/autodrive_escalate.sh");
+        .join("../../amplifier-bundle/tools/autodrive_refusal.sh");
     let bash = ["/bin/bash", "/usr/bin/bash"]
         .into_iter()
         .find(|b| std::path::Path::new(b).is_file())

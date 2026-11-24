@@ -54,6 +54,7 @@ fn decided(measured_at: i64) -> Measurement {
         measured_at,
         probed: None,
         fresh_lines: Vec::new(),
+        seen: Default::default(),
     }
 }
 
@@ -80,6 +81,7 @@ fn a_hand_pin_and_a_record(ctx: &Ctx) {
         measured_at: Some(now()),
         outcome: "stayed".into(),
         overflow: None,
+        live_room: None,
     });
     ctx.rs.save_ledger(&l).unwrap();
 }

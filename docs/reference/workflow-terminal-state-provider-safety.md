@@ -95,7 +95,7 @@ metadata to prove PR-specific states:
 | --- | --- |
 | `MERGED` | PR state is merged, or closed with merge evidence such as `mergedAt`. |
 | `CLOSED_OBSOLETE` | PR is closed without merge evidence and local Git proves no meaningful diff remains. |
-| `BLOCKED_CI` | GitHub status-check metadata contains real failing checks. |
+| `BLOCKED_CI` | Reported by `assess-finalization`, not by the probe (#2966): GitHub status-check metadata shows a check failing, or unable to run, for a cause the run cannot fix itself. The probe lets failing checks continue to repair. |
 
 GitHub metadata must match the local repository and branch:
 
@@ -103,7 +103,7 @@ GitHub metadata must match the local repository and branch:
 - PR base branch equals normalized `base_ref`.
 - PR head SHA equals local `HEAD`.
 - PR head and base repositories match the current GitHub remote.
-- Cross-repository PRs are rejected by the terminal-state proof.
+- Cross-repository PRs are rejected by the terminal-state proof. A PR counts as same-repository only when `isCrossRepository` is exactly `false`; a missing or `null` value is rejected (#2538).
 
 If a GitHub metadata command fails, returns ambiguous data, or cannot prove the
 requested GitHub PR identity, terminal-state validation fails closed when the
@@ -175,7 +175,7 @@ export NODE_OPTIONS=--max-old-space-size=32768
 | `publish_status` | Publish-facing status using the same vocabulary as `terminal_state`. |
 | `should_publish` | Read by later steps as `terminal_state.should_publish`. Internal output, not a caller option. `true` only when the workflow should continue through a publish path for meaningful work. The caller context key `should_publish` was removed by #1976; see [Removed context keys](./recipe-cli-reference.md#removed-context-keys). |
 | `should_finalize` | `true` when finalization should emit a non-mutating final decision. |
-| `should_run_ci_wait` | `true` only when CI waiting remains valid for the active provider path. |
+| `should_run_ci_wait` | `true` only when CI waiting remains valid for the active provider path. It is `true` when checks are failing, because the repair loop waits on the new head after each push (#2966). |
 | `should_merge` | `true` only when merge remains valid for green, active work. |
 | `change_request_url` | Provider change-request URL when metadata identified one; empty for local-only probes. |
 | `change_request_id` | Provider change-request identifier when metadata identified one. |
@@ -290,8 +290,12 @@ Expected behavior:
 
 - GitHub metadata is enabled even if the current remote is missing or ambiguous.
 - The PR URL must identify the same repository and branch as the local checkout.
-- Stale head SHA, mismatched base, cross-repository identity, or failing checks
-  block terminal success.
+- Stale head SHA, mismatched base or cross-repository identity block terminal
+  success.
+- Failing checks do not end the probe (#2966). It reports `terminal_success=false`
+  with `should_finalize=true` and `should_run_ci_wait=true`, and exits `0`, so
+  that finalization repairs them. A failing check blocks terminal success until
+  the head is green.
 
 ### Explicit Azure Repos PR URL
 

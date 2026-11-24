@@ -1,8 +1,48 @@
 #!/usr/bin/env bash
-# Strict finalization classification; hard blockers precede success.
-emit_without_jq() {
-  printf '{"terminal_success":"false","terminal_state":"FAILED_MISSING_TOOLING","terminal_reason":"jq is required to validate finalization evidence","required_next_action":"Install jq or run from an environment with the bundled workflow tooling available.","hollow_success_detected":"false","evidence_used":"tooling.jq=missing","finalizer_schema_version":"1","finalizer_confidence":"low","finalizer_output_valid":"false","reporting_failure":"false","terminal_failure":"true"}\n'
-}
+# Finalization's terminal state (issues #2343, #2809).
+#
+# This file does not decide what the run produced. It does three things:
+#   1. the blockers about the local checkout that no published outcome can
+#      answer: a dirty worktree, missing git or jq, and a prior deterministic
+#      terminal probe that already named a blocker;
+#   2. confirm that the facts of the run's outcome were gathered -- the ones
+#      collect-finalization-evidence recorded, or one live read when it
+#      recorded none;
+#   3. report the terminal state assess-finalization decided on those facts,
+#      refusing to certify only the one decision that contradicts its own
+#      definition: a state that IS an open pull request, naming none.
+#
+# What it does NOT do: compare the local head with a remote head or a pull
+# request head, read a check class as a success or a failure, infer a terminal
+# state from typed completion booleans or from a missing narrative, or re-read
+# the outcome behind the assessment's back. Collecting the facts is
+# workflow_finalization_outcome.sh's job and it only collects; judging them is
+# assess-finalization's (workflow-finalization-assessment.yaml); whether the
+# state it names is one finalization publishes is
+# workflow_finalization_result.sh's. Every exit from here that is not the
+# assessment's own answer is a failure to reach a decision, not a decision: it
+# leaves validate-agentic-finalization failing for its recovery agent, which
+# stops with the reason (docs/reference/step-failure-recovery.md).
+#
+# #2819 R2: that recovery agent cannot repair its way out, and the step is
+# wired `--no-repair` so it is never offered the attempt. Everything this file
+# decides on was recorded before the step first ran -- the decision from
+# finalization_assessment, the facts and the blockers from
+# finalization_evidence -- so a second run of the same body reads the same
+# values and reaches the same end. Nothing the agent is permitted to do
+# changes them: it may make no GitHub write, so it cannot push the branch or
+# open the pull request the facts are missing, and may start no recipe, so it
+# cannot produce an assessment where there was none. Repairing the run's
+# outcome belongs to assess-finalization, which is allowed exactly three
+# actions (push, open the pull request, bring CI to green: #2966) and then
+# decides on what it read after the last. BLOCKED_CI reaches this file only as
+# its decision, for a cause the run cannot fix; red CI is never a blocker here.
+#
+# The facts themselves are obtained and rendered by
+# workflow_finalization_facts.sh, which this file requires to be sourced
+# first: gather_outcome_facts, outcome_facts_line and corrupt_evidence_note.
+# The live worktree probe is workflow_finalization_worktree.sh's
+# probe_recorded_worktree, required the same way.
 
 validate_finalization() {
   if ! command -v jq >/dev/null 2>&1; then
@@ -11,31 +51,33 @@ validate_finalization() {
     exit 1
   fi
 
-  # Issue #969: classification uses typed evidence (FINALIZATION_EVIDENCE) and
-  # typed recipe state (implementation/verification completion, reporter step
-  # status). Sole exception (#1641, step 5): after every blocker, a read-only
-  # `gh pr view` (preceded by `gh pr list` only when no PR ref is known; 60s
-  # timeout each, no retries) may turn FAILED_IMPLEMENTATION into
-  # EXISTING_OPEN_PR/BLOCKED_CI. Inside auto-drive the same check also runs on
-  # the step-3 reporting-failure exits, where it can only hand a confirmed PR
-  # to the loops (#1714), never classify success. Agent prose is NEVER read. Implementation and
-  # reporting failures stay separate so evidence survives a failed reporter.
-
-  # Set only by the open-PR path (#1641, #1714) from gh-confirmed facts;
-  # cleared here so an ambient environment variable can never spoof them.
-  local publish_state_override="" open_pr_confirmed_number="" open_pr_confirmed_url="" open_pr_confirmed_facts=""
-  evidence_status=0
-  finalization_evidence="$(workflow_context_read finalization_evidence)" || evidence_status=$?
-  evidence_invalid="false"
-  case "$evidence_status" in 0|2) ;; *) evidence_invalid="true" ;; esac
-  # Retain invalid-field status instead of turning a failed read into absence.
-  # Missing selected fields stay conservative and never trigger alias fallback.
+  # Set only from the gathered facts and the assessment's answer; cleared here
+  # so an ambient environment variable can never spoof them.
+  local no_decision="" publish_state_override="" open_pr_confirmed_number="" open_pr_confirmed_url="" open_pr_confirmed_facts=""
+  local outcome_present="false" outcome_branch="" outcome_local_head="" outcome_remote=""
+  local outcome_remote_head="" outcome_pr_number="" outcome_pr_url="" outcome_pr_state=""
+  local outcome_pr_head="" outcome_checks="" outcome_unread=""
+  local assessment_state="" assessment_state_quoted="" assessment_action="" assessment_action_status=0 assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
+  finalization_evidence="$(workflow_context_read finalization_evidence || :)"
+  # A selected field that is present but corrupt is not absence. It is not a
+  # terminal state of its own and it never ends the run; it is reported beside
+  # the result so the reason says the evidence could not be read. That is safe
+  # because no blocker rests on this record alone: a dirty_worktree that does
+  # not read as exactly "true" or exactly "false" is probed live against the
+  # worktree below -- the probe fires on an unread field for the same reason it
+  # fires on "yes" or "1", because none of them is an answer (R4) -- git and jq
+  # are proven present by this script running at all, and
+  # prior_terminal_state falls back to the run's own metadata. The terminal
+  # state itself is decided by assess-finalization on facts collected fresh,
+  # not on this record, which is the whole point of #2343: a bookkeeping
+  # artefact must not fail a run that finished its work.
+  evidence_corrupt="false"
   while read -r evidence_name evidence_path evidence_alias; do
     if evidence_value="$(workflow_finalization_field finalization_evidence "$evidence_path" "$evidence_alias")"; then
       printf -v "$evidence_name" '%s' "$evidence_value"
     else
       field_status=$?
-      [ "$field_status" = 2 ] || evidence_invalid="true"
+      [ "$field_status" = 2 ] || evidence_corrupt="true"
       printf -v "$evidence_name" '%s' ''
     fi
   done <<'FIELDS'
@@ -51,8 +93,9 @@ FIELDS
   allow_no_op="$(resolve_allow_no_op)"
   terminal_no_op="$(resolve_terminal_no_op)"
 
-  # Typed status of the reporting/finalization step recorded by the deterministic
-  # finalizer-step-status recipe step (never scraped from agent prose).
+  # Typed status of the reporting step, never scraped from agent prose. Since
+  # #2343 it is a fact for assess-finalization and for the result, not a
+  # terminal state this file reaches on its own.
   finalizer_step_status="$(workflow_finalization_field finalizer_step_status status FINALIZER_STEP_STATUS || :)"
   reporting_failure="$(boolish "$(workflow_finalization_field finalizer_step_status reporting_failure FINALIZER_REPORTING_FAILURE || :)")"
   case "$finalizer_step_status" in
@@ -66,70 +109,18 @@ FIELDS
   finalizer_output_valid="false"
   finalizer_schema_version="1"
   finalizer_confidence="low"
-  terminal_state="FAILED_IMPLEMENTATION"
+  terminal_state="FAILED_MISSING_TERMINAL_EVIDENCE"
   terminal_success="false"
-  terminal_reason="implementation and verification evidence was absent or incomplete"
-  required_next_action="Complete implementation and verification before finalization."
+  terminal_reason="finalization reached no decision"
+  required_next_action="Re-run finalization."
   hollow_success_detected="false"
   evidence_used="implementation_completed=$implementation_completed,verification_completed=$verification_completed"
   terminal_failure="true"
 
-  emit_result() {
-    local field separator publish_state_reached observed_phases missing_evidence
-    publish_state_reached="${publish_state_override:-$(resolve_publish_state_reached)}"
-    observed_phases="workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize"
-    missing_evidence=""
-    # File-backed metadata and diagnostics can exceed argv's per-value limit.
-    # Stream every fixed field, retaining the existing all-String schema, then
-    # validate the assembled object before emitting one complete JSON result.
-    {
-      printf '{'
-      separator=''
-      for field in terminal_success terminal_state terminal_reason required_next_action hollow_success_detected evidence_used finalizer_schema_version finalizer_confidence finalizer_output_valid reporting_failure implementation_completed verification_completed publish_state_reached terminal_no_op terminal_failure pr_url pr_number observed_phases missing_evidence; do
-        printf '%s"%s":' "$separator" "$field"
-        printf '%s' "${!field}" | jq -n --rawfile value /dev/stdin '$value'
-        separator=','
-      done
-      printf '}'
-    } | jq -c .
-  }
-
-  fail_result() {
-    terminal_state="$1"
-    terminal_reason="$2"
-    required_next_action="$3"
-    evidence_used="$4"
-    terminal_success="false"
-    terminal_failure="true"
-    finalizer_output_valid="false"
-    emit_result
-    echo "ERROR: workflow finalization failed closed: $terminal_state: $terminal_reason" >&2
-    exit 1
-  }
-
-  classify_success() {
-    terminal_state="$1"
-    terminal_reason="$2"
-    required_next_action="$3"
-    evidence_used="$4"
-    terminal_success="true"
-    terminal_failure="false"
-    finalizer_output_valid="true"
-    finalizer_confidence="high"
-    hollow_success_detected="false"
-    emit_result
-    exit 0
-  }
-
-  # 1. Reject invalid selected transport/fields before completion or no-op.
-  if [ "$evidence_invalid" = "true" ]; then
-    fail_result "FAILED_INVALID_EVIDENCE" "deterministic finalization evidence contained an invalid object or field" "Rerun collect-finalization-evidence and inspect its structured output." "finalization_evidence=malformed"
-  fi
+  # 1. Selected evidence fields. A whole object that cannot be parsed, or a
+  #    field of the wrong type, marks the evidence corrupt and is then simply
+  #    unread; it decides no terminal state.
   if [ -n "$finalization_evidence" ]; then
-    # Validate the complete array before emitting any delimiters. jq failures in
-    # process substitution do not propagate through set -e, and partial output
-    # could hide an invalid later field. Strings cannot contain the NUL separator;
-    # absent/null and Boolean fields retain their supported semantics.
     if ! evidence_values="$(printf '%s' "$finalization_evidence" | jq -cs '
         if length == 1 and (.[0] | type) == "object" then
           .[0] | [ .git.dirty_worktree, .tooling.missing, .tooling.gh_required,
@@ -140,133 +131,167 @@ FIELDS
               map(if . == null then "" else tostring end)
             else error("invalid finalization evidence field") end
         else error("finalization evidence is not one JSON object") end' 2>/dev/null)"; then
-      fail_result "FAILED_INVALID_EVIDENCE" "deterministic finalization evidence contained an invalid object or field" "Rerun collect-finalization-evidence and inspect its structured output." "finalization_evidence=malformed"
-    fi
-    if ! {
+      evidence_corrupt="true"
+    elif ! {
       IFS= read -rd '' ev_dirty &&
         IFS= read -rd '' ev_missing &&
         IFS= read -rd '' ev_gh &&
         IFS= read -rd '' ev_prior &&
         IFS= read -rd '' ev_hollow
     } < <(printf '%s' "$evidence_values" | jq -j '.[] + "\u0000"' 2>/dev/null); then
-      fail_result "FAILED_INVALID_EVIDENCE" "deterministic finalization evidence could not be completely extracted" "Rerun collect-finalization-evidence and inspect its structured output." "finalization_evidence=malformed"
+      evidence_corrupt="true"
+    else
+      [ -n "$evidence_dirty_worktree" ] || evidence_dirty_worktree="$ev_dirty"
+      [ -n "$evidence_tooling_missing" ] || evidence_tooling_missing="$ev_missing"
+      [ -n "$evidence_gh_required" ] || evidence_gh_required="$ev_gh"
+      [ -n "$evidence_prior_terminal_state" ] || evidence_prior_terminal_state="$ev_prior"
+      [ -n "$evidence_hollow_success" ] || evidence_hollow_success="$ev_hollow"
     fi
-    [ -n "$evidence_dirty_worktree" ] || evidence_dirty_worktree="$ev_dirty"
-    [ -n "$evidence_tooling_missing" ] || evidence_tooling_missing="$ev_missing"
-    [ -n "$evidence_gh_required" ] || evidence_gh_required="$ev_gh"
-    [ -n "$evidence_prior_terminal_state" ] || evidence_prior_terminal_state="$ev_prior"
-    [ -n "$evidence_hollow_success" ] || evidence_hollow_success="$ev_hollow"
   fi
 
   [ -n "$prior_terminal_state" ] || prior_terminal_state="$evidence_prior_terminal_state"
+  [ "$evidence_hollow_success" != "true" ] || hollow_success_detected="true"
 
-  # 2. Hard blockers. These cannot be masked by completion state and are checked
-  #    before any success classification.
-  if [ "$evidence_dirty_worktree" = "true" ]; then
-    fail_result "FAILED_DIRTY_WORKTREE" "collected evidence reported a dirty worktree" "Commit, stash, or remove uncommitted changes before finalization." "finalization_evidence.git.dirty_worktree=true"
+  # What assess-finalization says it did. It labels the record and decides
+  # nothing: the worktree probe below runs whatever it says (SEC-01), so an
+  # absent value is simply `none`. A value outside the vocabulary, or one of the
+  # wrong type, is quoted as `unrecognised` (SEC-12, #2966).
+  assessment_action_status=0
+  assessment_action="$(workflow_finalization_field finalization_assessment action_taken)" || assessment_action_status=$?
+  if [ "$assessment_action_status" != 0 ] && [ "$assessment_action_status" != 2 ]; then
+    assessment_action="unrecognised"
+  elif [ -z "$assessment_action" ]; then
+    assessment_action="none"
   fi
-  target_dir="$(workflow_finalization_metadata worktree_path || :)"
-  [ -n "$target_dir" ] || target_dir="$(workflow_finalization_metadata repo_path || :)"
-  target_dir_explicit="true"
-  [ -n "$target_dir" ] || { target_dir="."; target_dir_explicit="false"; }
-  # Fall back to a live worktree probe only when the deterministic evidence did
-  # not already report a dirty-worktree signal; collected evidence is
-  # authoritative (issue #969, requirement R2).
-  if [ -z "$evidence_dirty_worktree" ] || [ "$evidence_dirty_worktree" = "unknown" ]; then
-    if command -v git >/dev/null 2>&1 && [ -d "$target_dir" ] && git -C "$target_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      if [ -n "$(git -C "$target_dir" status --porcelain)" ]; then
-        fail_result "FAILED_DIRTY_WORKTREE" "dirty worktree prevents terminal success" "Commit, stash, or remove uncommitted changes before finalization." "git.dirty_worktree=true"
-      fi
-    fi
-  fi
+  _finalization_action_allowed "$assessment_action" || assessment_action="unrecognised"
+
+  # 2. Blockers about the local checkout, which no published outcome can
+  #    answer. gh is deliberately absent (#2343): without it the outcome
+  #    cannot be read, which the facts say in words instead. The worktree probe
+  #    (workflow_finalization_worktree.sh) asks the recorded checkout live, and
+  #    its answer outranks the pre-assessment record; it sets the target_dir
+  #    and target_dir_explicit the facts below are gathered from.
+  probe_recorded_worktree
   case ",$evidence_tooling_missing," in
     *,git,*|*,jq,*)
       fail_result "FAILED_MISSING_TOOLING" "collected evidence reported missing deterministic tooling: $evidence_tooling_missing" "Run finalization from an environment with required git and jq tooling available." "finalization_evidence.tooling.missing=$evidence_tooling_missing"
       ;;
   esac
-  if [ "$evidence_gh_required" = "true" ]; then
-    case ",$evidence_tooling_missing," in
-      *,gh,*)
-        fail_result "FAILED_MISSING_TOOLING" "GitHub finalization requires gh, but collected evidence reported gh missing" "Install/authenticate gh or rerun from an environment with GitHub PR tooling available." "finalization_evidence.tooling.gh=missing"
-        ;;
-    esac
-  fi
+
+  # A deterministic terminal probe that already named a blocker is answered
+  # from its own record, and never handed off. BLOCKED_CI is not among them
+  # (#2966): red CI is repaired, and a stale record of it decides nothing.
   case "$prior_terminal_state" in
-    BLOCKED_CI|FAILED_MEANINGFUL_DIFF|FAILED_CLOSED_UNMERGED|FAILED_PR_METADATA_UNAVAILABLE|FAILED_INVALID_INPUT|FAILED_WRONG_BRANCH)
-      finalization_fail_or_handoff "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
+    FAILED_MEANINGFUL_DIFF|FAILED_CLOSED_UNMERGED|FAILED_PR_METADATA_UNAVAILABLE|FAILED_INVALID_INPUT|FAILED_WRONG_BRANCH)
+      fail_result "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
       ;;
   esac
-  if [ "$evidence_hollow_success" = "true" ]; then
-    hollow_success_detected="true"
-    fail_result "HOLLOW_SUCCESS" "collected evidence reported hollow-success signals" "Continue implementation/verification or report the inaccessible/empty agent output." "finalization_evidence.agent_outputs.hollow_success_signals=true"
+
+  # Metadata present but corrupt is swallowed into "" by the reads above, so it
+  # must not direct a live outcome read (#1641). Absent metadata is not corrupt
+  # (#1726): it leaves the reader to discover what it can instead.
+  metadata_corrupt="false"
+  for metadata_key in worktree_path repo_path pr_url pr_number publish_state_reached prior_terminal_state publish_status branch_name remote_host_type; do
+    metadata_status=0
+    (workflow_finalization_metadata "$metadata_key" >/dev/null 2>&1) || metadata_status=$?
+    [ "$metadata_status" != 3 ] || metadata_corrupt="true"
+  done
+
+  # 3. The facts. Nothing here reads them as a success or a failure.
+  gather_outcome_facts
+  if [ "$outcome_present" != "true" ]; then
+    fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" \
+      "the facts of this run's outcome could not be gathered: ${outcome_unread:-the outcome reader produced nothing}" \
+      "Make the run's outcome readable -- a recorded worktree on the run branch -- and finalize again." \
+      "outcome=ungathered$(corrupt_evidence_note)"
   fi
 
-  # 3. Implementation-vs-reporting split (issue #969). A failed reporting step is
-  #    classified distinctly from an implementation failure and preserves the
-  #    durable implementation/verification/PR evidence. Inside auto-drive
-  #    (#1714) a published, open PR on the run branch, confirmed by the open-PR
-  #    check, is handed to the crusty and merge-ready loops on both exits: the
-  #    reporting narrative has no effect on the PR those loops review and fix.
-  #    The check runs only with the hand-off flag, so a standalone run makes no
-  #    extra gh call and fails closed exactly as before. A confirmed PR never
-  #    turns a reporting failure into success here.
-  if [ "$reporting_failure" = "true" ]; then
-    if [ "$(finalization_handoff_flag)" = "true" ] && confirm_open_pr; then
-      remember_confirmed_open_pr
+  # 4. The terminal state assess-finalization decided on those facts. The
+  #    result names the pull request the assessment judged, or the one the
+  #    facts carry; no URL is ever adopted from the assessment's own text, the
+  #    canonical one is built for the remote the facts report.
+  assessment_state="$(workflow_finalization_field finalization_assessment terminal_state || :)"
+  assessment_pr="$(workflow_finalization_field finalization_assessment pr_number || :)"
+  assessment_reason="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment reason || :)")"
+  assessment_next="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment next_action || :)")"
+  # What came back, kept only to quote it back when it is not a pull request
+  # number, the way an unusable terminal_state is quoted below: cleaned of
+  # control characters and cut to 40 characters, since a pull request number is
+  # at most ten digits. It is a sentence for a human and reaches no identity
+  # field of the result.
+  assessment_pr_raw="$(LC_ALL=C printf '%s' "$(_finalization_outcome_clean "$assessment_pr")" | LC_ALL=C cut -c1-40)"
+  # The result names the pull request the assessment judged. A value that is
+  # not a pull request number names none, and an assessment that names none is
+  # taken at its word, so a decision about no pull request is never handed to
+  # the auto-drive loops carrying one (#1714, case 2). Only when nothing
+  # decided does the record fall back to what the facts read.
+  _finalization_pr_number_valid "$assessment_pr" || assessment_pr=""
+  _finalization_state_allowed "$assessment_state" || assessment_pr="$outcome_pr_number"
+  if _finalization_pr_number_valid "$assessment_pr"; then
+    pr_number="$assessment_pr"
+    pr_url=""
+    [ -z "$outcome_remote" ] || pr_url="https://github.com/$outcome_remote/pull/$assessment_pr"
+    open_pr_confirmed_number="$pr_number"
+    open_pr_confirmed_url="$pr_url"
+    [ "$outcome_pr_state" != "OPEN" ] || publish_state_override="true"
+  fi
+
+  # The state is quoted the same way as the action (SEC-12, #2966): free text
+  # here could forge a field of the record people and the next loop read.
+  if [ -z "$assessment_state" ]; then
+    assessment_state_quoted="none"
+  elif _finalization_state_allowed "$assessment_state"; then
+    assessment_state_quoted="$assessment_state"
+  else
+    assessment_state_quoted="unrecognised"
+  fi
+  evidence_used="$(outcome_facts_line),assessment_state=$assessment_state_quoted,assessment_action=$assessment_action,reporting_failure=$reporting_failure"
+  evidence_used="$evidence_used$(corrupt_evidence_note)"
+  open_pr_confirmed_facts="$evidence_used"
+
+  if _finalization_state_allowed "$assessment_state"; then
+    # #2966: a BLOCKED_CI missing its cause or its owner's step is reported, not
+    # refused. These name what is missing; the recovery agent completes the owner
+    # and the step in its hand-off (docs/reference/step-failure-recovery.md).
+    if [ "$assessment_state" = BLOCKED_CI ]; then
+      [ -n "${assessment_reason//[[:space:]]/}" ] || assessment_reason="assess-finalization reported BLOCKED_CI but named no failing check and no cause"
+      [ -n "${assessment_next//[[:space:]]/}" ] || assessment_next="assess-finalization named no owner and no step: read the failing check on the pull request, then name who must act and the exact step they must take"
     fi
-    if [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
-      reporting_reason="implementation and verification succeeded but a reporting/finalization step failed; durable evidence is preserved"
-      reporting_next="Re-run the failed reporting step; implementation and verification evidence is durable and does not need to be redone."
-      reporting_evidence="implementation_completed=true,verification_completed=true,reporting_failure=true"
-      finalization_try_handoff_open_pr "FAILED_REPORTING" "$reporting_reason" "$reporting_next" "$reporting_evidence" || :
-      finalizer_output_valid="true"
-      terminal_state="FAILED_REPORTING"
-      terminal_success="false"
-      terminal_failure="true"
-      terminal_reason="$reporting_reason"
-      required_next_action="$reporting_next"
-      evidence_used="$reporting_evidence"
-      emit_result
-      echo "ERROR: workflow finalization reached non-success terminal state: FAILED_REPORTING: $terminal_reason" >&2
-      exit 1
+    [ -n "$assessment_reason" ] || assessment_reason="assess-finalization reported $assessment_state on the run's outcome"
+    [ -n "$assessment_next" ] || assessment_next="See the finalization assessment."
+    # #2819 R1: a state whose definition is an open pull request, reported
+    # without one, has not been shown. open_pr_confirmed_number is set only from a pull
+    # request number the assessment itself returned in canonical form, so this
+    # refuses exactly the decision that contradicts its own definition; it
+    # does not re-judge the facts, and it never substitutes a number from the
+    # run's own bookkeeping for the one the assessment was asked to read back.
+    # That is no decision, which is the recovery agent's to close, not a
+    # verdict about the run.
+    if _finalization_state_names_pr "$assessment_state" && [ -z "$open_pr_confirmed_number" ]; then
+      no_decision="assess-finalization reported $assessment_state, which is a pull request open at this run's head, but named none"
+      if [ -n "$assessment_pr_raw" ]; then
+        no_decision="$no_decision: it returned pr_number \"$assessment_pr_raw\", which is not a pull request number"
+      else
+        no_decision="$no_decision: it returned an empty pr_number"
+      fi
+      fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$no_decision" \
+        "Run finalization again so assess-finalization reports the number of the open pull request it read, or the state the facts do support; re-running this step alone reads the same recorded answer." \
+        "$evidence_used"
     fi
-    finalization_fail_or_handoff_open_pr "FAILED_IMPLEMENTATION" "reporting failed and durable implementation/verification evidence is absent" "Complete implementation and verification before finalization." "implementation_completed=$implementation_completed,verification_completed=$verification_completed,reporting_failure=true"
+    if _finalization_state_is_success "$assessment_state"; then
+      classify_success "$assessment_state" "$assessment_reason" "$assessment_next" "$evidence_used"
+    fi
+    finalization_fail_or_handoff_open_pr "$assessment_state" "$assessment_reason" "$assessment_next" "$evidence_used"
   fi
 
-  # 4. Success and no-op paths from durable typed evidence.
-  if [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
-    classify_success "IMPLEMENTED_VERIFIED" "implementation and verification evidence is complete" "No action required." "implementation_completed=true,verification_completed=true"
-  fi
-  if [ "$allow_no_op" = "true" ] && [ "$terminal_no_op" = "true" ]; then
-    classify_success "ALLOW_NO_OP" "explicit no-op task with durable allow_no_op evidence" "No action required." "allow_no_op=true,terminal_no_op=true"
-  fi
-
-  # 5. Resumed runs (#1641): with no outputs of its own, a run whose branch has
-  #    a PR confirmed by confirm_open_pr succeeds when every check is green
-  #    (any failing check counts) or CI has not reported (pending/none) and
-  #    this run's verification_completed is true. A failing check is
-  #    BLOCKED_CI; pre-commit evidence never overrides it.
-  if confirm_open_pr; then
-    open_pr_checks="$(printf '%s' "$open_pr_signal" | jq -r '.checks // empty')"
-    run_pr_number="$pr_number"; run_pr_url="$pr_url"
-    pr_number="$(printf '%s' "$open_pr_signal" | jq -r '.pr_number')"
-    pr_url="$(printf '%s' "$open_pr_signal" | jq -r '.pr_url')"
-    publish_state_override="true"
-    open_pr_facts="$(open_pr_facts_from_signal)"
-    # A red check is a negative signal; pre-commit evidence never overrides it.
-    [ "$open_pr_checks" != "failing" ] || finalization_fail_or_handoff "BLOCKED_CI" "open PR #$pr_number for the run branch has a failing CI check" "Fix the failing CI checks on PR #$pr_number before merge." "$open_pr_facts,all_checks=failing,verification_completed=$verification_completed"
-    [ "$open_pr_checks" != "green" ] || classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR whose checks are all green" "No action required." "$open_pr_facts,all_checks=green"
-    case "$verification_completed:$open_pr_checks" in
-      true:pending|true:none)
-        classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR; CI has not reported yet and this run's verification passed" "Watch CI on PR #$pr_number: checks are $open_pr_checks and only this run's pre-commit verification vouches for it; a failing check is BLOCKED_CI." "$open_pr_facts,precommit_passed=true,all_checks=$open_pr_checks" ;;
-    esac
-    # No success: keep the run's own PR evidence, not the confirmed PR's;
-    # the confirmed PR is kept only for the auto-drive hand-off below.
-    pr_number="$run_pr_number"; pr_url="$run_pr_url"; publish_state_override=""
-    remember_confirmed_open_pr
-    echo "WARNING: open PR for the run branch has checks=$open_pr_checks and verification_completed=$verification_completed; no passing verification signal, not classified as EXISTING_OPEN_PR" >&2
-  fi
-
-  # 6. Default: evidence absent. Inside auto-drive a PR confirmed above goes to the loops (#1714).
-  finalization_fail_or_handoff_open_pr "FAILED_IMPLEMENTATION" "implementation/verification evidence was absent or incomplete" "Complete implementation and verification before finalization." "implementation_completed=$implementation_completed,verification_completed=$verification_completed"
+  # 5. No decision. The facts were gathered and nothing judged them: a gap in
+  #    finalization itself, not a verdict about the run. The step is left
+  #    failing for its recovery agent, whose move is to hand off with this
+  #    reason: no repair it may make can put a decision here (#2819 R2).
+  no_decision="assess-finalization reported no terminal state for this run's outcome"
+  [ -z "$assessment_state" ] || no_decision="$no_decision; it returned \"$(_finalization_outcome_clean "$assessment_state")\", which is not a state finalization publishes"
+  [ -z "$outcome_unread" ] || no_decision="$no_decision; the facts it would have judged are incomplete: $outcome_unread"
+  fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$no_decision" \
+    "Run finalization again so assess-finalization decides on the gathered outcome, or report why it cannot; re-running this step alone reads the same recorded answer." \
+    "$evidence_used"
 }
