@@ -167,6 +167,9 @@ pub(super) fn switch_in(
                 now(),
                 ctx.identity_reader(),
                 Some(&first),
+                // A hand switch is the person's choice: no organisation rule.
+                None,
+                ctx.exchange.as_ref(),
             ) {
                 Ok(from) => from,
                 // A swap refusal changes nothing (see `swap::swap`).
@@ -355,6 +358,7 @@ fn record_switch(rs: &RotateState) -> Result<(), ProfileError> {
         measured_at: Some(t),
         outcome: SWITCHED.into(),
         overflow: None,
+        live_room: None,
     });
     rs.save_ledger(&l)
 }

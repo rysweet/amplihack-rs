@@ -1,5 +1,13 @@
-//! Malformed selected evidence must fail before positive completion or no-op.
+//! Malformed selected evidence must be detected as malformed.
+//!
+//! #2343 narrowed what that detection costs, not whether it happens. The
+//! evidence record no longer names a terminal state of its own, and no blocker
+//! rests on it alone, so unreadable evidence does not end the run. What it must
+//! still do is read as unreadable rather than as a clean value, and say so in
+//! the result. These cases assert that guarantee.
+use super::assessed::{carry, recorded_outcome};
 use super::fixtures::*;
+use super::integrity_routes::{clean, fixture};
 use serde_json::{Value, json};
 
 const FIELDS: [&str; 5] = [
@@ -9,117 +17,53 @@ const FIELDS: [&str; 5] = [
     "/prior_terminal_state/terminal_state",
     "/agent_outputs/hollow_success_signals",
 ];
-const OUTPUT: [&str; 19] = [
-    "terminal_success",
-    "terminal_state",
-    "terminal_reason",
-    "required_next_action",
-    "hollow_success_detected",
-    "evidence_used",
-    "finalizer_schema_version",
-    "finalizer_confidence",
-    "finalizer_output_valid",
-    "reporting_failure",
-    "implementation_completed",
-    "verification_completed",
-    "publish_state_reached",
-    "terminal_no_op",
-    "terminal_failure",
-    "pr_url",
-    "pr_number",
-    "observed_phases",
-    "missing_evidence",
-];
 
-fn clean() -> Value {
-    json!({"git":{"dirty_worktree":false},"tooling":{"missing":"","gh_required":false},
-        "prior_terminal_state":{"terminal_state":""},
-        "agent_outputs":{"hollow_success_signals":false}})
-}
-
-fn selected(evidence: Value, route: usize, noop: bool) -> Fixture {
-    let implementation = json!({"implementation_completed":!noop,"terminal_no_op":noop});
-    let verification = json!({"verification_completed":!noop});
-    let f = Fixture::new()
-        .env("FINALIZATION_EVIDENCE", clean().to_string())
-        .env("FINALIZATION_EVIDENCE_GIT_DIRTY_WORKTREE", "false")
-        .env("FINALIZATION_EVIDENCE_TOOLING_MISSING", "")
-        .env("FINALIZATION_EVIDENCE_TOOLING_GH_REQUIRED", "false")
-        .env(
-            "FINALIZATION_EVIDENCE_PRIOR_TERMINAL_STATE_TERMINAL_STATE",
-            "",
-        )
-        .env(
-            "FINALIZATION_EVIDENCE_AGENT_OUTPUTS_HOLLOW_SUCCESS_SIGNALS",
-            "false",
-        )
-        .env(
-            "RECIPE_VAR_finalization_evidence__git__dirty_worktree",
-            "false",
-        )
-        .env("IMPLEMENTATION_COMPLETED", "true")
-        .env("VERIFICATION_COMPLETED", "true")
-        .env("ALLOW_NO_OP", "true")
-        .env("TERMINAL_NO_OP", "true");
-    match route {
-        0 | 1 => f
-            .file(json!({"finalization_evidence":if route == 0 {evidence} else {json!(evidence.to_string())},
-                "implementation_terminal_evidence":implementation,
-                "verification_terminal_evidence":verification,"allow_no_op":noop}))
-            .env("RECIPE_VAR_finalization_evidence", clean().to_string()),
-        2 | 3 => f
-            .env("RECIPE_VAR_finalization_evidence", if route == 2 {
-                evidence.to_string()
-            } else {
-                json!(evidence.to_string()).to_string()
-            })
-            .env("RECIPE_VAR_implementation_terminal_evidence", implementation.to_string())
-            .env("RECIPE_VAR_verification_terminal_evidence", verification.to_string())
-            .env("RECIPE_VAR_allow_no_op", noop.to_string()),
-        _ => unreachable!(),
-    }
-}
-
-fn fixture(evidence: Value, route: usize, noop: bool) -> Fixture {
-    if route == 4 {
-        return Fixture::new()
-            .env("FINALIZATION_EVIDENCE", evidence.to_string())
-            .env("FINALIZATION_EVIDENCE_GIT_DIRTY_WORKTREE", "false")
-            .env("FINALIZATION_EVIDENCE_TOOLING_MISSING", "")
-            .env("FINALIZATION_EVIDENCE_TOOLING_GH_REQUIRED", "false")
-            .env(
-                "FINALIZATION_EVIDENCE_PRIOR_TERMINAL_STATE_TERMINAL_STATE",
-                "",
-            )
-            .env(
-                "FINALIZATION_EVIDENCE_AGENT_OUTPUTS_HOLLOW_SUCCESS_SIGNALS",
-                "false",
-            )
-            .env(
-                "IMPLEMENTATION_COMPLETED",
-                if noop { "false" } else { "true" },
-            )
-            .env(
-                "VERIFICATION_COMPLETED",
-                if noop { "false" } else { "true" },
-            )
-            .env("TERMINAL_NO_OP", "true")
-            .env("ALLOW_NO_OP", "true");
-    }
-    selected(evidence, route, noop)
-}
-
-fn assert_result(f: Fixture, state: &str, exit: i32) {
+/// Exit 1, no success, and no success token borrowed from the typed booleans.
+fn assert_no_borrowed_success(f: Fixture) -> Value {
     let r = f.finalizer("validate");
     let j = r.json();
-    let object = j.as_object().unwrap();
-    assert_eq!(object.len(), OUTPUT.len(), "complete schema: {j}");
-    for field in OUTPUT {
-        assert!(
-            object.get(field).is_some_and(Value::is_string),
-            "String {field}: {j}"
-        );
+    assert_complete_schema(&j);
+    r.exit(1);
+    assert_eq!(j["terminal_success"], "false", "stderr={}", r.stderr);
+    assert_eq!(j["terminal_failure"], "true");
+    assert_eq!(j["finalizer_output_valid"], "false");
+    for success in ["IMPLEMENTED_VERIFIED", "ALLOW_NO_OP", "EXISTING_OPEN_PR"] {
+        assert_ne!(j["terminal_state"], success, "borrowed success: {j}");
     }
+    j
+}
+
+/// Malformed evidence is detected as malformed: the result says the evidence
+/// was unreadable, and no success is borrowed from it.
+///
+/// The `finalization_evidence=unreadable` check is what makes this assertion
+/// bite. Since #2343 unreadable evidence no longer names a terminal state of
+/// its own, so a run that merely reaches no decision proves nothing: a fixture
+/// carrying no assessment at all ends the same way. What can still fail is the
+/// detection itself, if a NUL-bearing, wrong-typed or unparseable field were
+/// read as a clean value instead. Then the result would report no corruption,
+/// and this would catch it.
+fn assert_not_success(f: Fixture) {
+    let j = assert_no_borrowed_success(f);
+    let used = j["evidence_used"].as_str().unwrap();
+    assert!(
+        used.contains("finalization_evidence=unreadable"),
+        "malformed evidence must be reported as unreadable, got {used}"
+    );
+}
+
+/// The typed booleans a run would have to borrow a success from.
+fn borrowing(f: Fixture) -> Fixture {
+    f.env("IMPLEMENTATION_COMPLETED", "true")
+        .env("VERIFICATION_COMPLETED", "true")
+        .env("ALLOW_NO_OP", "true")
+        .env("TERMINAL_NO_OP", "true")
+}
+
+fn assert_result(f: Fixture, state: &str, exit: i32) -> Value {
+    let r = f.finalizer("validate");
+    let j = r.json();
+    assert_complete_schema(&j);
     assert_eq!(
         j["terminal_state"], state,
         "child exit={} stderr={}",
@@ -138,6 +82,28 @@ fn assert_result(f: Fixture, state: &str, exit: i32) {
         j["finalizer_output_valid"],
         if exit == 0 { "true" } else { "false" }
     );
+    // Well-formed evidence is read as such, never reported as unreadable.
+    let used = j["evidence_used"].as_str().unwrap();
+    assert!(!used.contains("finalization_evidence=unreadable"), "{used}");
+    j
+}
+
+/// `evidence` with the outcome the collector records beside it (#2343).
+fn with_outcome(mut evidence: Value) -> Value {
+    evidence["outcome"] = recorded_outcome("");
+    evidence
+}
+
+/// The result of `f` when `state` was decided over the transport it already
+/// uses. The flat legacy aliases (route 4) cannot carry a decision: a run with
+/// no `RECIPE_VAR_*` is on the legacy tier, where the assessment has no alias.
+/// That route must end with no decision, which still proves its evidence was
+/// read.
+fn settled(f: Fixture, route: usize, state: &str, exit: i32) -> Value {
+    match route {
+        4 => assert_result(f, "FAILED_MISSING_TERMINAL_EVIDENCE", 1),
+        _ => assert_result(carry(f, state), state, exit),
+    }
 }
 
 fn malformed_fields(index: usize, values: &[Value]) {
@@ -145,11 +111,7 @@ fn malformed_fields(index: usize, values: &[Value]) {
         for route in 0..5 {
             let mut evidence = clean();
             *evidence.pointer_mut(FIELDS[index]).unwrap() = value.clone();
-            assert_result(
-                fixture(evidence, route, false),
-                "FAILED_INVALID_EVIDENCE",
-                1,
-            );
+            assert_not_success(fixture(evidence, route, false));
         }
     }
 }
@@ -182,11 +144,7 @@ fn retained(route: usize) {
         if two_fields {
             evidence["agent_outputs"]["hollow_success_signals"] = json!("true\0");
         }
-        assert_result(
-            fixture(evidence, route, false),
-            "FAILED_INVALID_EVIDENCE",
-            1,
-        );
+        assert_not_success(fixture(evidence, route, false));
     }
 }
 #[test]
@@ -217,11 +175,7 @@ fn malformed_containers_cannot_borrow_clean_aliases() {
             for route in 0..5 {
                 let mut evidence = clean();
                 evidence[key] = value.clone();
-                assert_result(
-                    fixture(evidence, route, false),
-                    "FAILED_INVALID_EVIDENCE",
-                    1,
-                );
+                assert_not_success(fixture(evidence, route, false));
             }
         }
     }
@@ -230,20 +184,21 @@ fn malformed_containers_cannot_borrow_clean_aliases() {
 #[test]
 fn invalid_selected_transport_cannot_borrow_success() {
     for raw in ["{bad", "null", "[]", "{} {}", "\"{}\" \"{}\""] {
+        // An env transport hands over a value that can be read and judged, so
+        // a container that is not one JSON object is detected as corrupt and
+        // the result says so.
         for f in [
-            Fixture::new().file_raw(raw),
             Fixture::new().env("RECIPE_VAR_finalization_evidence", raw),
             Fixture::new().env("FINALIZATION_EVIDENCE", raw),
         ] {
-            assert_result(
-                f.env("IMPLEMENTATION_COMPLETED", "true")
-                    .env("VERIFICATION_COMPLETED", "true")
-                    .env("ALLOW_NO_OP", "true")
-                    .env("TERMINAL_NO_OP", "true"),
-                "FAILED_INVALID_EVIDENCE",
-                1,
-            );
+            assert_not_success(borrowing(f));
         }
+        // A context file that is not one JSON object is absence, not
+        // corruption (#2343): a transport that was lost or truncated must not
+        // fail a run that finished its work, so there is nothing to report as
+        // unreadable. What still holds is that no success is borrowed from the
+        // typed booleans beside it.
+        assert_no_borrowed_success(borrowing(Fixture::new().file_raw(raw)));
     }
 }
 
@@ -252,35 +207,37 @@ fn invalid_evidence_precedes_explicit_noop_and_later_hollow() {
     for route in 0..5 {
         let mut evidence = clean();
         evidence["git"]["dirty_worktree"] = json!("false\0");
-        assert_result(
-            fixture(evidence.clone(), route, true),
-            "FAILED_INVALID_EVIDENCE",
-            1,
-        );
+        assert_not_success(fixture(evidence.clone(), route, true));
         evidence["agent_outputs"]["hollow_success_signals"] = json!(true);
-        assert_result(
-            fixture(evidence, route, false),
-            "FAILED_INVALID_EVIDENCE",
-            1,
-        );
+        assert_not_success(fixture(evidence, route, false));
     }
 }
 
+// What a well-formed value in the evidence does not change: a clean, absent or
+// null field, and a non-NUL control character in one, are read as evidence and
+// not as corruption, so the decision arrives as made and the hollow-success
+// signal beside the control character is still read intact.
 #[test]
 fn clean_absent_null_and_non_nul_controls_preserve_classification() {
     for route in 0..5 {
         for evidence in [clean(), json!({}), json!({"git":{"dirty_worktree":null}})] {
-            assert_result(fixture(evidence, route, false), "IMPLEMENTED_VERIFIED", 0);
+            let f = fixture(with_outcome(evidence), route, false);
+            let j = settled(f, route, "IMPLEMENTED_VERIFIED", 0);
+            assert_eq!(j["implementation_completed"], "true");
         }
-        assert_result(fixture(clean(), route, true), "ALLOW_NO_OP", 0);
+        let j = settled(
+            fixture(with_outcome(clean()), route, true),
+            route,
+            "ALLOW_NO_OP",
+            0,
+        );
+        assert_eq!(j["terminal_no_op"], "true");
         for control in ["false\n", "false\t\r\u{1}", "\n"] {
-            let mut evidence = clean();
+            let mut evidence = with_outcome(clean());
             evidence["git"]["dirty_worktree"] = json!(control);
-            assert_result(
-                fixture(evidence.clone(), route, false),
-                "IMPLEMENTED_VERIFIED",
-                0,
-            );
+            let f = fixture(evidence.clone(), route, false);
+            let j = settled(f, route, "IMPLEMENTED_VERIFIED", 0);
+            assert_eq!(j["hollow_success_detected"], "false");
             evidence["agent_outputs"]["hollow_success_signals"] = json!(true);
             let f = fixture(evidence, route, false);
             let f = if route == 4 {
@@ -291,7 +248,8 @@ fn clean_absent_null_and_non_nul_controls_preserve_classification() {
             } else {
                 f
             };
-            assert_result(f, "HOLLOW_SUCCESS", 1);
+            let j = settled(f, route, "HOLLOW_SUCCESS", 1);
+            assert_eq!(j["hollow_success_detected"], "true");
         }
     }
 }

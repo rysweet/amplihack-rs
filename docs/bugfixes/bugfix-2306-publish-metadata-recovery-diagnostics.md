@@ -2,7 +2,7 @@
 title: "Draft PR metadata recovery and diagnostics"
 description: "GitHub draft metadata recovery, portable body transport, and sanitized errors through the pinned recipe runner."
 doc_type: reference
-last_updated: 2026-11-10
+last_updated: 2026-11-21
 review_schedule: as-needed
 owner: amplihack
 issue: 2306
@@ -16,9 +16,7 @@ exit status, and sanitized GitHub CLI stderr in both the structured message and
 the pinned recipe runner's serialized `StepResult.error`. Empty stderr receives
 an explicit explanation.
 
-Implementation and local behavior tests are complete. Delivery through required
-CI, review, and merge remains for the subsequent workflow steps. The historical
-trigger on the four reported macOS runs remains unverified.
+The historical trigger on the four reported macOS runs remains unverified.
 
 This reference defines the publishing contract for issue #2306. It complements
 the [existing title selection rules](bugfix-1968-publish-pr-merge-base-title.md)
@@ -36,8 +34,8 @@ does not extend GitHub recovery behavior to Azure DevOps.
 - [Body recovery](#body-recovery)
 - [Results and diagnostics](#results-and-diagnostics)
 - [Portability and diagnosis evidence](#portability-and-diagnosis-evidence)
-- [Local validation evidence](#local-validation-evidence)
-- [Historical attribution and subsequent delivery](#historical-attribution-and-subsequent-delivery)
+- [Test invocation](#test-invocation)
+- [Historical attribution](#historical-attribution)
 - [Behavioral verification contract](#behavioral-verification-contract)
 
 ## Invocation and configuration
@@ -98,7 +96,9 @@ it invents neither a numeric reference nor a suffix for local tracking IDs.
 
 Template titles also pass through normalization, credential redaction and issue-reference
 defusing before capping; their established `Update <scope>` wording remains.
-Template summaries use sanitized scope text.
+Template summaries use sanitized scope text. If that sanitization fails, the step
+warns on stderr with the sanitizer's exit status and uses `branch changes`. The
+warning contains neither the scope text nor any partial sanitizer output.
 
 All accepted titles preserve credential redaction, control removal, reference
 defusing, UTF-8 integrity, and the 200-byte limit including the validated issue
@@ -157,11 +157,16 @@ and `message`. Human-readable warnings and diagnostics use stderr.
 | Already open, already merged, closed after merge, or empty branch | Existing classifications and successful terminal behavior remain intact. |
 | Mandatory gate fails or a closed unmerged PR still has a diff | Existing failure behavior remains enforced with an actionable diagnostic. |
 
-Successful creation is followed by explicit result parsing with the builtin
-`gh_pr_number_from_url` helper. No final `awk` invocation is required. The result
-must be a single GitHub PR URL for the expected repository with a numeric PR
-number. Malformed output reports `FAILED_PR_IDENTITY` and a result-parsing
-diagnostic; it never retries creation or reports that creation itself failed.
+Successful creation is followed by explicit result parsing with Bash builtins. No
+final `awk` invocation is required. The result must be exactly one GitHub PR URL,
+`https://github.com/<owner>/<repo>/pull/<number>`, with a decimal number that has
+a nonzero digit. The repository is compared with `REPO_IDENTITY` without regard to
+case, so `Owner/Repo` matches `owner/repo`; a repository named `pull` still
+parses. Foreign repositories, malformed URLs, extra output and invalid numbers
+report `FAILED_PR_IDENTITY` and leave `pr_url` and `pr_number` empty. The
+rejected value is not echoed, but the message says that a draft PR may exist for
+the branch, so the reader looks it up before creating another. Such a
+rejection never retries creation or reports that creation itself failed.
 
 A terminal command diagnostic contains the stable operation name, original exit
 status, and sanitized stderr. Empty stderr receives an explicit explanation.
@@ -172,16 +177,34 @@ empty-stderr explanation. This is a content contract, not an exact message forma
 
 Creation evidence is captured separately from stdout and retained while the
 scoped collision lookup runs. A failed collision lookup adds context; it cannot
-replace the original creation diagnostic. On `FAILED_PR_CREATE`, creation
-evidence appears in stderr and the structured `message`, and survives into the
-runner's serialized step error. Pre-helper failures also identify the operation
-and status or condition. A final-exit backstop prevents unexplained nonzero
-exits without duplicating an existing terminal diagnostic.
+replace the original creation diagnostic. Retry warnings precede the helper's
+terminal rejection in the creation stderr, and a long warning history must not
+hide it. The publisher reports only that final rejection, sanitized and bounded,
+together with the original creation exit status (for example 23). When a signal
+interrupts the helper alone, its last stderr line is
+`ERROR: gh interrupted by <signal> (exit N)`, so the publisher reports it as it
+reports any other terminal rejection. A signal delivered to the publisher itself
+is different: it exits through its own backstop, which cancels the child and
+removes the capture without reading it, then names the failed operation and
+status. An empty creation stderr reports `empty stderr (no error message)`;
+a capture the step cannot read reports `stderr capture unavailable` instead,
+since that is a different claim.
+On `FAILED_PR_CREATE`, creation evidence appears in stderr and the structured
+`message`, and survives into the runner's serialized step error. Pre-helper
+failures also identify the operation and status or condition. A final-exit
+backstop prevents unexplained nonzero exits without duplicating an existing
+terminal diagnostic.
 
 The shared retry helper retains retry classification, timing, successful stdout,
-and the original command status. Its terminal paths report diagnostics before
-cleanup. Diagnostic formatting or cleanup failures cannot overwrite that status
-or disturb caller traps. No timers or polling delays are added.
+and the original command status. Its terminal paths print the diagnostic and then
+remove their captures. If a capture cannot be removed, `WARNING: gh capture
+cleanup failed` follows the terminal line, so a single-line reader sees that
+warning. The status is still returned, and cleanup failures cannot overwrite it
+or disturb caller traps. An interruption prints its terminal line after cleanup,
+and every caller of the helper receives that line. A write of that line that
+fails with an error (for example to a closed stderr) neither changes the
+cancellation status nor skips the caller's trap; a broken pipe still ends the
+process with SIGPIPE. No timers or polling delays are added.
 
 ### Diagnostic privacy
 
@@ -222,8 +245,8 @@ failure statuses are captured in the `else` arm before subsequent commands can
 overwrite them.
 
 The historical command behind the four reported macOS failures is unknown.
-A blank-title hypothesis alone does not establish it, and `timeout` was present
-on the reported host. An injected failure establishes recovery behavior rather
+A blank-title hypothesis alone does not establish it, and `timeout` was available
+where the failures were reported. An injected failure establishes recovery behavior rather
 than a macOS portability diagnosis. Neither `head -c` nor another utility is
 identified as the cause without platform-backed evidence.
 
@@ -300,42 +323,7 @@ recovery tests prove fault tolerance independently of this body-path diagnosis.
 The source-backed reproducer proves a general compatibility defect; it does
 **not** establish that any reported Mac had an unavailable Darwin temp directory.
 
-### Local validation evidence
-
-- The previous TDD run had 25 failed and 8 passed tests. After implementation,
-  the metadata suite now has **45 passed, zero failed or skipped**, including
-  persistent `awk` failure through the pinned runner, filename-derived exposure,
-  partial sanitizer failure, malformed creation output, and six synchronized
-  cancellation cases, as well as the Apple directory-precedence and JSON-stream cases.
-- The seven runner tests execute the actual step copied from
-  `workflow-publish.yaml` through revision
-  `4d5187eaf95836a549e6e68725f8f853d0dc7034`, with Cargo installation provenance
-  checked against `claude-plugin/recipe-runner.rev`. Assertions require
-  `StepResult.status=failed` and an error containing `gh pr create`, `23`, and
-  `distinctive publish rejection`, or the explicit empty-stderr explanation.
-  The tests also verify credential redaction, successful recovery with parsed
-  results, and a pre-helper `git branch` failure with status 79. No runner
-  production code or pin change was needed.
-- A local GNU Bash 3.2.0(3)-release was built from the official
-  [Bash 3.2 source](https://ftp.gnu.org/gnu/bash/bash-3.2.tar.gz), SHA-256
-  `26c99025b59e30779300b68adb764f824974d267a4d7cc1b347d14a2393f9fb4`.
-  The metadata suite ran with this executable first on PATH. This verifies
-  Bash syntax and semantics, not Darwin libc or every BSD utility.
-- The existing publishing, scope, provider, local-issue, finalization and
-  terminal-state modules passed **71 tests** in an isolated Rust harness.
-  The shared body-file suite passed **10 tests**, including byte-for-byte
-  transport, private permissions, cleanup, UTF-8 truncation and caller survival.
-- `bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh`
-  passed, including the established title-source, template-summary, merge-base,
-  retry, terminal and worktree checks. ShellCheck at warning severity,
-  `git diff --check`, and the recipe brick-budget check passed.
-- `pre-commit run --all-files` passed every hook, including Artifact Guard,
-  the brick budget, `cargo fmt --all --check`, and
-  `cargo clippy --all-targets -- -D warnings`, with Rust 1.97.0. Validation used
-  explicit pinned compiler paths and a private build cache. An earlier attempt
-  exposed ambient Cargo 1.99.1 versus Clippy 1.97.0 mixing metadata; that cache
-  was removed with `cargo clean`. A temporary-storage quota interruption was
-  resolved before the successful final run.
+### Test invocation
 
 The ordinary repository invocation for the new suite is:
 
@@ -344,32 +332,32 @@ cargo test -p amplihack --test integration workflow_publish_pr_metadata
 pre-commit run --all-files
 ```
 
-During this step the same source was also executed through an isolated Cargo
-harness to avoid coupling the behavior tests to unrelated workspace builds.
 All fixtures use temporary repositories, fake executables and local refs.
 No test opens a GitHub PR or contacts GitHub. Cancellation fixtures block on a
 local executable and signal only after a readiness marker confirms private files
 exist and sensitive data has been written; they assert termination, cleanup,
-permissions, statuses and caller trap behavior. This suite passes under both the
-system Bash and the locally built Bash 3.2.0.
+permissions, statuses and caller trap behavior. Each signalled process starts
+with the default action for SIGINT, SIGHUP and SIGTERM: Bash can neither trap
+nor reset a signal ignored on entry, and a background job of a non-interactive
+shell, such as auto-drive's QA run, inherits SIGINT ignored. Without that reset
+the SIGINT cases never end there. The suite has also been run once under a
+locally built GNU Bash 3.2.0, which verifies Bash syntax and semantics, not Darwin
+libc or every BSD utility. No repository script or CI job does this.
 
-### Historical attribution and subsequent delivery
+### Historical attribution
 
 Original logs identifying the failed command in software-factory #180, #122,
 #109, and #114 were not supplied. Attribution remains **unverified**. Neither
 the injected metadata failures nor the reproduced temp-directory defect proves
 the cause of those runs.
 
-Subsequent delivery steps must record the PR containing `Fixes #2306`, required
-CI, final all-files pre-commit result, relevant review resolutions, and merge
-commit. No force-push or hook bypass is authorized. This implementation step
-does not claim that publication, CI, or merge has happened.
-
 ## Behavioral verification contract
 
 Behavior tests use temporary repositories, local base refs, isolated
 configuration, and fake executables on `PATH`. They make no GitHub writes and
-use permanent nonretryable failures without test sleeps.
+use permanent nonretryable failures without test sleeps. The one exception is
+the retry-history test, which replaces the backoff `sleep` with a recorder so it
+can check the delays without waiting.
 
 | Scenario | Required observable behavior |
 | --- | --- |
@@ -394,6 +382,10 @@ Step-error verification extracts the actual step-16 command from
 into a minimal temporary recipe with its required context and executes it through
 the runner pinned by
 [`claude-plugin/recipe-runner.rev`](../../claude-plugin/recipe-runner.rev).
+The tests obtain that runner from the shared helper described in
+[Run Tests Against the Pinned Recipe Runner](../howto/run-tests-against-the-pinned-recipe-runner.md),
+which builds it at the pin into a test-private cache and never uses a runner
+installed on the host.
 Assertions inspect the failed serialized `StepResult.error`, including credential
 redaction, distinctive stderr, and empty stderr. Helper stderr alone or a skipped
 runner execution does not establish this boundary contract.

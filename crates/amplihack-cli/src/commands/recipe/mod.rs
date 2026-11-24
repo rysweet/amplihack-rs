@@ -13,6 +13,12 @@ use std::process::Command;
 
 /// Issue #1606: `recipe run --detach`.
 pub mod detach;
+/// Issue #3129: `recipe guidance show|wait`, reading and waiting for guidance.
+pub mod guidance;
+/// Issue #2535: `recipe guide`, operator guidance for a run's later agent steps.
+pub mod guide;
+/// Issue #2783: the log-pointer records `recipe guide` finds a run by.
+mod guide_records;
 pub mod list;
 mod parse;
 /// Issue #1606: the processes `recipe stop` signals.
@@ -20,6 +26,8 @@ mod parse;
 mod process_tree;
 mod resolve;
 pub mod run;
+/// The run id check, shared by `recipe stop` and `recipe guide`.
+pub(crate) mod run_id;
 /// Issue #2175: the record `recipe stop <run_id>` finds a run by.
 #[cfg(target_os = "linux")]
 mod run_record;

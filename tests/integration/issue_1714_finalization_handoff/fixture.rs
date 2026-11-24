@@ -24,13 +24,12 @@ use tempfile::TempDir;
 use crate::isolated_amplihack::isolated;
 use crate::issue_1641_finalization_open_pr::fixture::LEAK_MARKER;
 pub use crate::issue_1641_finalization_open_pr::fixture::{
-    BRANCH, Fixture, Outcome, PR_URL, as_refs, check_run, green_rollup, open_pr, resumed_env,
+    BRANCH, Fixture, Outcome, PR_URL, as_refs, assessment, check_run, green_rollup, open_pr,
+    resumed_env,
 };
 
 pub const BRICK: &str = "workflow_finalization_handoff.sh";
 pub const HANDOFF_INFO: &str = "INFO: #1714: BLOCKED_CI handed to the merge-ready loop";
-pub const FI_HANDOFF_INFO: &str =
-    "INFO: #1714: FAILED_IMPLEMENTATION handed to the merge-ready loop";
 pub const PR134_URL: &str = "https://github.com/acme/widget/pull/134";
 
 pub fn workspace_root() -> PathBuf {
@@ -194,12 +193,10 @@ case "$sub" in
 esac
 "#;
 
-/// autodrive-build step-03's command body, as the runner would run it.
+/// Controlled adapter for the unchanged optional handoff helper. This tests
+/// helper policy, not execution of the new agent responsibility.
 pub fn step03_command() -> String {
-    step(&recipe_yaml("autodrive-build"), "step-03-resolve-pr")["command"]
-        .as_str()
-        .expect("step-03 is a bash step with a command")
-        .to_owned()
+    include_str!("step03_command.sh").to_owned()
 }
 
 /// A private directory for one step-03 run.

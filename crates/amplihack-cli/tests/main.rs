@@ -24,7 +24,52 @@
 
 #[path = "../../../tests/support/isolated_amplihack.rs"]
 mod isolated_amplihack;
+// Issue #2658: shared pinned recipe-runner-rs resolution.
+#[path = "../../../tests/support/pinned_runner.rs"]
+mod pinned_runner;
 mod support;
+
+#[path = "issue_2922_quiet_child_purge.rs"]
+mod issue_2922_quiet_child_purge;
+
+#[path = "issue_2808_named_checkout.rs"]
+mod issue_2808_named_checkout;
+
+#[path = "issue_2884_task_conditions.rs"]
+mod issue_2884_task_conditions;
+
+#[path = "issue_2912_standing_relaunch.rs"]
+mod issue_2912_standing_relaunch;
+
+#[path = "issue_2912_supervisor_skill.rs"]
+mod issue_2912_supervisor_skill;
+
+#[path = "issue_2912_crash_loop_stop.rs"]
+mod issue_2912_crash_loop_stop;
+
+#[path = "issue_2329_autodrive_outcomes.rs"]
+mod issue_2329_autodrive_outcomes;
+#[path = "issue_2569_criterion1_judgement.rs"]
+mod issue_2569_criterion1_judgement;
+#[path = "issue_2575_agentic_merge_ready.rs"]
+mod issue_2575_agentic_merge_ready;
+// #3129: the goal loop, its shared module and its behaviour tests.
+#[path = "issue_3129_goal_loop/mod.rs"]
+mod issue_3129_goal_loop;
+// #1888: the merge method, through `amplihack recipe run` and the real runner.
+mod issue_1888_merge_method_recipe_run;
+#[path = "issue_2582_context_off_argv.rs"]
+mod issue_2582_context_off_argv;
+#[path = "issue_2582_degraded_runner_no_set.rs"]
+mod issue_2582_degraded_runner_no_set;
+#[path = "issue_2582_real_runner_argv.rs"]
+mod issue_2582_real_runner_argv;
+#[path = "issue_2585_launch_notices_stderr.rs"]
+mod issue_2585_launch_notices_stderr;
+#[path = "issue_2959_invocation_record_lifetime.rs"]
+mod issue_2959_invocation_record_lifetime;
+// #3053, #2996, #2997: every auto-drive step uses the runner-bound state folder.
+mod issue_3053_one_state_folder;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
@@ -107,8 +152,6 @@ mod issue_1358_sccache_installed_before_cargo;
 mod issue_1437_final_marker;
 #[path = "issue_1526_release_version_stamp.rs"]
 mod issue_1526_release_version_stamp;
-#[path = "issue_1551_merge_guard.rs"]
-mod issue_1551_merge_guard;
 #[path = "issue_1552_investigation_report_written.rs"]
 mod issue_1552_investigation_report_written;
 #[path = "issue_1553_max_total_steps_cap.rs"]
@@ -121,8 +164,6 @@ mod issue_1567_nested_profile;
 mod issue_1569_auto_switch;
 #[path = "issue_1570_auto_prompt_file.rs"]
 mod issue_1570_auto_prompt_file;
-#[path = "issue_1570_autodrive.rs"]
-mod issue_1570_autodrive;
 #[path = "issue_1570_autodrive_recipes.rs"]
 mod issue_1570_autodrive_recipes;
 #[path = "issue_1570_body_file.rs"]
@@ -221,8 +262,6 @@ mod issue_1741_recovery_compatibility;
 mod issue_1741_recovery_security;
 #[path = "issue_1741_runner_contract.rs"]
 mod issue_1741_runner_contract;
-#[path = "issue_1743_autodrive_budget.rs"]
-mod issue_1743_autodrive_budget;
 #[path = "issue_1745_home_statusline.rs"]
 mod issue_1745_home_statusline;
 #[path = "issue_1746_daily_archive_rotator.rs"]
@@ -331,6 +370,8 @@ mod issue_1985_codex_agent_step_flags;
 mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
+#[path = "issue_2019_private_binary.rs"]
+mod issue_2019_private_binary;
 #[path = "issue_2042_fake_proc_seam.rs"]
 mod issue_2042_fake_proc_seam;
 #[path = "issue_2042_host_proc_strace.rs"]
@@ -349,6 +390,76 @@ mod issue_2218_excluded;
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]
 mod issue_2336_autodrive_completion;
+#[path = "issue_2535_recipe_guide_cli.rs"]
+mod issue_2535_recipe_guide_cli;
+#[path = "issue_2535_recipe_guide_injection.rs"]
+mod issue_2535_recipe_guide_injection;
+#[path = "issue_2535_recipe_guide_publish.rs"]
+mod issue_2535_recipe_guide_publish;
+#[path = "issue_2538_cross_repo_refusal.rs"]
+mod issue_2538_cross_repo_refusal;
+#[path = "issue_2539_step_recovery_driver.rs"]
+mod issue_2539_step_recovery_driver;
+#[path = "issue_2539_step_recovery_fixture.rs"]
+mod issue_2539_step_recovery_fixture;
+#[path = "issue_2539_step_recovery_init.rs"]
+mod issue_2539_step_recovery_init;
+#[path = "issue_2539_step_recovery_loop.rs"]
+mod issue_2539_step_recovery_loop;
+#[path = "issue_2539_step_recovery_policy.rs"]
+mod issue_2539_step_recovery_policy;
+#[path = "issue_2539_step_recovery_recipes.rs"]
+mod issue_2539_step_recovery_recipes;
+#[path = "issue_2539_step_recovery_recurrence.rs"]
+mod issue_2539_step_recovery_recurrence;
+#[path = "issue_2539_step_recovery_report.rs"]
+mod issue_2539_step_recovery_report;
+#[path = "issue_2539_step_recovery_stop.rs"]
+mod issue_2539_step_recovery_stop;
+#[path = "issue_2539_step_recovery_validation.rs"]
+mod issue_2539_step_recovery_validation;
+#[path = "issue_2658_routing_replay.rs"]
+mod issue_2658_routing_replay;
+#[path = "issue_2731_login_change_wait.rs"]
+mod issue_2731_login_change_wait;
+#[path = "issue_2783_recipe_guide_work_root.rs"]
+mod issue_2783_recipe_guide_work_root;
+#[path = "issue_2815_piped_prompt_wait.rs"]
+mod issue_2815_piped_prompt_wait;
+#[path = "issue_2857_limit_after_a_wait.rs"]
+mod issue_2857_limit_after_a_wait;
+#[path = "issue_2857_wakes_only_on_room.rs"]
+mod issue_2857_wakes_only_on_room;
+#[path = "issue_2882_spend_limit_capacity_wait.rs"]
+mod issue_2882_spend_limit_capacity_wait;
+#[path = "issue_2889_freshest_live_reading.rs"]
+mod issue_2889_freshest_live_reading;
+#[path = "issue_2890_spend_blocked_login.rs"]
+mod issue_2890_spend_blocked_login;
+#[path = "issue_2909_limit_event.rs"]
+mod issue_2909_limit_event;
+#[path = "issue_2911_auto_switch_chosen_profile.rs"]
+mod issue_2911_auto_switch_chosen_profile;
+#[path = "issue_2911_codex_credits.rs"]
+mod issue_2911_codex_credits;
+#[path = "issue_2911_forged_limit_message.rs"]
+mod issue_2911_forged_limit_message;
+#[path = "issue_2911_limit_block_recorded.rs"]
+mod issue_2911_limit_block_recorded;
+#[path = "issue_2911_prompt_loss_ending.rs"]
+mod issue_2911_prompt_loss_ending;
+#[path = "issue_2911_prompt_loss_resumes.rs"]
+mod issue_2911_prompt_loss_resumes;
+#[path = "issue_2911_repeated_limits_wait.rs"]
+mod issue_2911_repeated_limits_wait;
+#[path = "issue_2911_spend_limit_no_reset.rs"]
+mod issue_2911_spend_limit_no_reset;
+#[path = "issue_2911_wait_wakes_on_events.rs"]
+mod issue_2911_wait_wakes_on_events;
+#[path = "issue_2911_weekly_limit_waits.rs"]
+mod issue_2911_weekly_limit_waits;
+#[path = "issue_2967_other_logins.rs"]
+mod issue_2967_other_logins;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -433,3 +544,78 @@ mod issue_2279_doctor;
 
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;
+#[path = "issue_2552_build_preflight_decision.rs"]
+mod issue_2552_build_preflight_decision;
+
+// Issue #1619 (TDD): per-step model tiers reach the harness.
+// `issue_1619_tier_propagation` exercises the real chain through an
+// argv-recording fake harness: tier resolution per harness, the fall-back,
+// both overrides, Codex reasoning effort and the measurement record.
+// `issue_1619_tier_argv_safety` pins that rewriting `--model` disturbs
+// nothing else on the command line.
+#[path = "issue_1619_tier_argv_safety.rs"]
+mod issue_1619_tier_argv_safety;
+#[path = "issue_1619_tier_propagation.rs"]
+mod issue_1619_tier_propagation;
+// `issue_1619_step_tier_diagnostics` pins that what `[step_tiers]` could not
+// act on reaches the operator: the recipe-run process performs no launch of
+// its own, so a line it does not print is a line nobody sees.
+// `issue_1619_real_runner_step_tier` runs fixture recipes through the pinned
+// runner: a `[step_tiers]` override, and a declared tier on Claude, Codex
+// and Copilot.
+#[path = "issue_1619_real_runner_step_tier.rs"]
+mod issue_1619_real_runner_step_tier;
+#[path = "issue_1619_step_tier_diagnostics.rs"]
+mod issue_1619_step_tier_diagnostics;
+// `issue_1619_operator_default_model` pins the condition in the #1619 issue
+// comment of 16 November: an operator's own AMPLIHACK_DEFAULT_MODEL still
+// chooses the Claude column's model with the tier table in place, and never
+// reaches a Codex or Copilot step. `issue_1619_effort_ceiling` pins that a
+// declared per-column ceiling steps a raised effort down rather than failing.
+#[path = "issue_1619_effort_ceiling.rs"]
+mod issue_1619_effort_ceiling;
+#[path = "issue_1619_operator_default_model.rs"]
+mod issue_1619_operator_default_model;
+// Issue #2916: a tier's reasoning effort reaches Claude Code as `--effort`.
+#[path = "issue_2916_claude_effort.rs"]
+mod issue_2916_claude_effort;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One copy follows the call-out.
+#[path = "../../../tests/integration/recipe_step_body.rs"]
+mod recipe_step_body;
+// Issues #2738/#2808: tracing and private execution clones are gone.
+// `issue_2738_support` holds the fixture the stub-runner tests share;
+// `issue_2738_no_ptrace` drives the pinned runner and has none.
+#[path = "issue_2738_drive_shaped_layout.rs"]
+mod issue_2738_drive_shaped_layout;
+#[path = "issue_2738_git_outside_repo.rs"]
+mod issue_2738_git_outside_repo;
+#[path = "issue_2738_no_ptrace.rs"]
+mod issue_2738_no_ptrace;
+#[path = "issue_2738_run_status.rs"]
+mod issue_2738_run_status;
+#[path = "issue_2738_support.rs"]
+mod issue_2738_support;
+
+// Issue #2756: a step reads the user's own global and system Git
+// configuration again, while #2096's repository-routing protection stays.
+#[path = "issue_2756_user_git_config.rs"]
+mod issue_2756_user_git_config;
+
+// Issue #2886: a run removes its own build output when it ends. No platform
+// gate: the behaviour needs no `/proc`.
+#[path = "issue_2886_build_output_cleanup.rs"]
+mod issue_2886_build_output_cleanup;
+
+// Issue #2769: the #2663 outcome rule is the top-level drive's, not every
+// `autodrive-*` sub-recipe's.
+#[path = "issue_2769_autodrive_outcome_scope.rs"]
+mod issue_2769_autodrive_outcome_scope;
+
+// Issue #2885: a macOS profile signed in through the login Keychain has no
+// login file; the guard asks the Keychain (a fake `security`, never the real
+// one) instead of refusing it.
+#[path = "profile_issue_2885.rs"]
+mod profile_issue_2885;

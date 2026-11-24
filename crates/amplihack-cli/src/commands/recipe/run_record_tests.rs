@@ -5,9 +5,8 @@
 //!
 //! The contract these tests set:
 //!
-//! - `VERSION = 1`, `MAX_RECORD = 4096` (bytes), `MAX_RUN_ID = 128` (bytes).
-//! - `validate_run_id(&str) -> bool`: 1 to 128 bytes of `[A-Za-z0-9._-]`,
-//!   not starting with `.`.
+//! - `VERSION = 1`, `MAX_RECORD = 4096` (bytes). The run id check and its
+//!   tests are in `run_id.rs`.
 //! - `write(run_dir, run_id, runner_pid: u32) -> Result<Guard>` writes
 //!   `<run_dir>/procs/<run_id>.json` (dir 0700, file 0600):
 //!   `{"version":1,"run_id","recipe_run":{"pid","start_ticks"},
@@ -154,46 +153,6 @@ fn record(recipe_run: (i32, u64), runner: (i32, u64)) -> Record {
             pgid: runner.0,
             start_ticks: runner.1,
         },
-    }
-}
-
-// --- the run id ---------------------------------------------------------------
-
-#[test]
-fn a_uuid_and_the_allowed_characters_are_valid_ids() {
-    assert_eq!(MAX_RUN_ID, 128);
-    for id in [
-        ID,
-        "a",
-        "A_b-9",
-        "a.b",
-        "no-such-run",
-        &"x".repeat(MAX_RUN_ID),
-    ] {
-        assert!(validate_run_id(id), "{id:?} must be accepted");
-    }
-}
-
-#[test]
-fn ids_that_could_name_another_path_are_invalid() {
-    let long = "x".repeat(MAX_RUN_ID + 1);
-    for id in [
-        "",
-        "../x",
-        "a/b",
-        "/abs",
-        ".",
-        "..",
-        ".hidden",
-        "a\0b",
-        "a b",
-        "a\n",
-        "é",
-        "a\\b",
-        "a\u{1b}[31m",
-        &long,
-    ] {
-        assert!(!validate_run_id(id), "{id:?} must be refused");
     }
 }
 

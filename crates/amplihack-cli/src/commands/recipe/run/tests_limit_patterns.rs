@@ -5,7 +5,11 @@
 //!
 //! Wired from `recipe/run/mod.rs` with `#[cfg(test)] mod tests_limit_patterns;`.
 
-use super::limit_patterns::{Harness, LimitMessage, epoch_marker, limit_message, reset_hint};
+use super::failure_markers::TRANSIENT_MARKERS;
+use super::limit_patterns::{
+    CLAUDE_RATE_LIMIT, Harness, LimitKind, LimitMessage, all_markers, epoch_marker, limit_message,
+    rate_limit, reset_hint,
+};
 use super::{FailureClass, classify_failure_text};
 
 /// 2026-10-18 08:00:00 -07:00.
@@ -31,10 +35,18 @@ fn epoch(stderr: &[u8], stdout: &[u8]) -> Option<i64> {
     epoch_marker(stderr, stdout).flatten()
 }
 
+/// A Claude message stating `reset`. `spend` picks the kind this file's
+/// own fixtures carry: every non-spend line here names the session or a
+/// per-model window, which is [`LimitKind::Session`]. The kinds themselves
+/// are covered in `tests_limit_kind.rs`.
 fn msg(reset: Option<i64>, spend: bool) -> Option<LimitMessage> {
     Some(LimitMessage {
         harness: Harness::Claude,
-        spend,
+        kind: if spend {
+            LimitKind::Spend
+        } else {
+            LimitKind::Session
+        },
         reset,
     })
 }
@@ -131,14 +143,14 @@ fn the_real_messages_are_read_from_stderr() {
     );
     // Oct 8 has passed on 2026-10-18, so next year's; the plan refuses it.
     let weekly = limit_message(WEEKLY.as_bytes(), b"", NOW).unwrap();
-    assert!(!weekly.spend);
+    assert!(!weekly.spend());
     assert!(weekly.reset.is_some_and(|r| r > NOW + 300 * 86_400));
 }
 
 #[test]
 fn a_spend_limit_line_carries_the_session_or_weekly_reset_it_states() {
     let weekly = limit_message(SPEND_WEEKLY.as_bytes(), b"", NOW).unwrap();
-    assert!(weekly.spend);
+    assert!(weekly.spend());
     assert!(
         weekly.reset.is_some_and(|r| r > NOW + 300 * 86_400),
         "next Oct 8"
@@ -190,6 +202,25 @@ fn the_epoch_form_states_its_reset_and_a_message_with_no_reset_says_so() {
     );
     let none = "You've hit your session limit · try again later";
     assert_eq!(limit_message(none.as_bytes(), b"", NOW), msg(None, false));
+}
+
+#[test]
+fn issue_2911_an_epoch_line_takes_its_reset_from_the_epoch_digits_only() {
+    // A line in the epoch form states its reset as the digits after `|`.
+    // When they do not parse, the line states no reset, even if a text-form
+    // `resets …` follows: one line carries one form, and the wait for a
+    // line with no reset is the bounded capacity wait.
+    for rest in [
+        "soon · resets 1pm (America/Los_Angeles)",
+        "99999999999999999999 · resets 1pm (America/Los_Angeles)",
+    ] {
+        let line = epoch_line(rest);
+        assert_eq!(
+            limit_message(line.as_bytes(), b"", NOW).map(|m| m.reset),
+            Some(None),
+            "{line}"
+        );
+    }
 }
 
 #[test]
@@ -287,4 +318,187 @@ fn prose_naming_a_model_limit_is_not_a_limit_message() {
     let out = "Here is the answer.\nThe Opus limit is documented here\n";
     assert_eq!(limit_message(b"", out.as_bytes(), NOW), None);
     assert_eq!(limit_message(out.as_bytes(), b"", NOW), None);
+}
+
+// --- Issue #2857: the 429 the retry after a wait may meet ------------------------
+//
+// `rate_limit(stderr, stdout) -> bool` reads a harness's 429 envelope at one
+// position only, the one `limit_message` reads a usage-limit message at: a
+// whole line on stderr, or the last non-empty line of the stdout tail. It is
+// a separate table, not a marker added to the usage-limit list:
+// `TRANSIENT_MARKERS` already holds these phrases so the recipe runner calls a
+// 429 a transient transport fault that clears in seconds, and widening the
+// usage-limit markers would make every transient 429 in the runner, and in
+// auto-drive's terminal decisions, a usage limit that waits for hours.
+//
+// The position is the whole rule. The same words mid-line, or in an earlier
+// line of model output, are the model's own prose.
+
+const API_429: &str = r#"API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit."}}"#;
+
+#[test]
+fn a_429_line_on_stderr_is_a_rate_limit() {
+    for line in [
+        API_429,
+        "429 Too Many Requests",
+        "rate_limit_error",
+        "rate limit exceeded",
+        "  API Error: 429 Too Many Requests  ",
+        "API ERROR: 429",
+        "Rate Limit Exceeded",
+    ] {
+        assert!(rate_limit(line.as_bytes(), b""), "{line:?}");
+    }
+}
+
+#[test]
+fn the_last_line_of_stdout_counts_when_it_is_the_429() {
+    let out = format!("attempt output\n{API_429}\n\n");
+    assert!(rate_limit(b"", out.as_bytes()));
+    // Surrounding blank lines are not lines.
+    assert!(rate_limit(b"", b"\n\n  429 Too Many Requests \n\n"));
+}
+
+#[test]
+fn a_429_phrase_mid_line_or_in_earlier_output_is_the_models_prose() {
+    for prose in [
+        "The build failed: API Error: 429 was in the log, retrying",
+        "got a 429 Too Many Requests from the proxy, backing off",
+        "I will handle rate_limit_error in the client",
+        "the rate limit exceeded message is documented here",
+    ] {
+        assert!(!rate_limit(prose.as_bytes(), b""), "stderr: {prose:?}");
+        assert!(!rate_limit(b"", prose.as_bytes()), "stdout: {prose:?}");
+    }
+    // A 429 as an earlier line of stdout, with the model's answer after it.
+    let out = format!("{API_429}\nSorry, I could not finish that.\n");
+    assert!(!rate_limit(b"", out.as_bytes()));
+    // The same line as the last one is the control for the case above.
+    let out = format!("Sorry, I could not finish that.\n{API_429}\n");
+    assert!(rate_limit(b"", out.as_bytes()));
+}
+
+/// A stderr line wins wherever it is among stderr's lines, as a usage-limit
+/// message does: the harness writes its own envelope there.
+#[test]
+fn a_429_line_on_stderr_counts_among_other_stderr_lines() {
+    let err = format!("warning: slow network\n{API_429}\nretrying\n");
+    assert!(rate_limit(err.as_bytes(), b""));
+}
+
+#[test]
+fn nothing_and_unrelated_output_is_not_a_rate_limit() {
+    assert!(!rate_limit(b"", b""));
+    assert!(!rate_limit(b"attempt output\n", b"all done\n"));
+    assert!(!rate_limit(b"error: 4290 widgets\n", b""));
+    // A usage-limit message is a different thing, read by `limit_message`.
+    assert!(!rate_limit(SESSION.as_bytes(), b""));
+}
+
+#[test]
+fn rate_limit_survives_invalid_utf8_and_huge_input() {
+    let mut junk = vec![0xffu8; 70 * 1024];
+    junk.extend_from_slice(b"\n429 Too Many Requests");
+    let _ = rate_limit(&junk, b"");
+    assert!(
+        rate_limit(b"", &junk),
+        "the last line of a huge tail still counts"
+    );
+    let _ = rate_limit(&junk, &junk);
+}
+
+/// Where this matters most. A 429 is still the transient transport fault the
+/// recipe runner's classifier calls it, and the usage-limit wait's own reader
+/// of messages still ignores it: nothing but the one position in the
+/// supervisor reads a 429 as a limit.
+#[test]
+fn a_429_is_still_transient_and_never_a_usage_limit_message() {
+    for line in [
+        API_429,
+        "429 Too Many Requests",
+        "rate_limit_error",
+        "rate limit exceeded",
+    ] {
+        assert_eq!(
+            classify_failure_text(line).0,
+            FailureClass::TransientTransport,
+            "{line:?}"
+        );
+        assert_ne!(classify_failure_text(line).0, FailureClass::UsageLimit);
+        assert_eq!(limit_message(line.as_bytes(), b"", NOW), None, "{line:?}");
+        assert_eq!(epoch_marker(line.as_bytes(), b""), None, "{line:?}");
+    }
+    for m in super::limit_patterns::all_markers() {
+        let m = m.to_ascii_lowercase();
+        assert!(
+            !m.contains("429") && !m.contains("rate_limit") && !m.contains("rate limit"),
+            "{m:?}: a 429 phrase was added to the usage-limit markers"
+        );
+    }
+}
+
+// --- Issue #2857: the 429 phrases are one list ---------------------------------------
+//
+// `CLAUDE_RATE_LIMIT` is where the phrases are defined. The recipe runner's
+// transient markers are composed from it, so the position-anchored reader that
+// part 1 uses and the classifier that calls a 429 a transient transport fault
+// cannot drift apart, and no comment has to ask an editor to change both.
+//
+// What the list must never become is a usage-limit marker. A 429 clears in
+// seconds; a usage limit waits hours. Widening the table's visibility for the
+// transient list must not let one reach `all_markers()`.
+
+#[test]
+fn every_429_phrase_is_a_transient_marker() {
+    assert!(!CLAUDE_RATE_LIMIT.is_empty());
+    for phrase in CLAUDE_RATE_LIMIT {
+        assert!(
+            TRANSIENT_MARKERS.contains(phrase),
+            "{phrase:?} is read as a 429 and is not a transient marker"
+        );
+    }
+}
+
+/// SEC-6. Not a member, and not contained in a member's text either way round:
+/// a usage-limit marker inside a 429 phrase would classify that line as a limit.
+#[test]
+fn no_429_phrase_is_a_usage_limit_marker() {
+    for phrase in CLAUDE_RATE_LIMIT {
+        for marker in all_markers() {
+            let (phrase, marker) = (phrase.to_ascii_lowercase(), marker.to_ascii_lowercase());
+            assert!(
+                !phrase.contains(&marker) && !marker.contains(&phrase),
+                "{phrase:?} and the usage-limit marker {marker:?} overlap"
+            );
+        }
+    }
+}
+
+/// Composing the list from two parts must not list a phrase twice, which is
+/// what a half-finished collapse leaves behind.
+#[test]
+fn the_transient_markers_list_no_phrase_twice() {
+    let mut seen = std::collections::HashSet::new();
+    for marker in TRANSIENT_MARKERS.iter() {
+        assert!(seen.insert(*marker), "{marker:?} is listed twice");
+    }
+}
+
+/// `first_match` picks the earliest marker, and the longest at a tie, so the
+/// order the parts are joined in does not matter. These lines pin what each 429
+/// phrase is classified by, which is what the evidence reports to the operator.
+#[test]
+fn the_marker_a_429_line_is_classified_by_is_the_one_that_starts_it() {
+    for (line, marker) in [
+        (API_429, "api error: 429"),
+        ("429 Too Many Requests", "429 too many requests"),
+        ("rate_limit_error", "rate_limit_error"),
+        ("rate limit exceeded", "rate limit exceeded"),
+    ] {
+        assert_eq!(
+            classify_failure_text(line),
+            (FailureClass::TransientTransport, Some(marker)),
+            "{line:?}"
+        );
+    }
 }

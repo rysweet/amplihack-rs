@@ -168,6 +168,8 @@ fn rotate_has_the_documented_flags_and_hides_spawned() {
         "--upgrade-margin",
         "--hold",
         "--interval",
+        // Issue #2910: the ceiling on a login's week use for it to be a target.
+        "--target-week-max",
     ] {
         assert!(flags.iter().any(|f| f == want), "missing {want}: {flags:?}");
     }
@@ -198,8 +200,52 @@ fn reference_and_howto_document_profile_rotate() {
         "AMPLIHACK_ROTATE_UPGRADE_MARGIN",
         "AMPLIHACK_ROTATE_HOLD",
         "AMPLIHACK_ROTATE_INTERVAL",
+        "AMPLIHACK_ROTATE_TARGET_WEEK_MAX",
     ] {
         assert!(REFERENCE.contains(var), "reference is missing {var}");
+        assert!(
+            ENV_VARS.contains(&format!("`{var}`")),
+            "env-vars is missing {var}"
+        );
+    }
+}
+
+/// The usage lines of `rotate`, `rotate start` and `rotate watch` list every
+/// tuning flag, not only the settings table (issue #2910: `--target-week-max`).
+#[test]
+fn reference_usage_lines_list_every_rotate_tuning_flag() {
+    let tuning = [
+        "--session-at",
+        "--week-at",
+        "--margin",
+        "--upgrade-margin",
+        "--hold",
+        "--target-week-max",
+        "--overflow-wait",
+        "--overflow-unknown-reset",
+    ];
+    // The abbreviated `[<tuning flags>]` forms are not the spelled-out synopsis.
+    let usage: Vec<&str> = REFERENCE
+        .lines()
+        .filter(|l| {
+            [
+                "amplihack profile rotate [--dry-run]",
+                "amplihack profile rotate start ",
+                "amplihack profile rotate watch ",
+            ]
+            .iter()
+            .any(|p| l.starts_with(p))
+                && !l.contains("<tuning flags>")
+        })
+        .collect();
+    assert!(
+        usage.len() >= 3,
+        "the reference has the usage lines of rotate, start and watch: {usage:?}"
+    );
+    for line in usage {
+        for flag in tuning {
+            assert!(line.contains(flag), "`{line}` is missing {flag}");
+        }
     }
 }
 
@@ -248,6 +294,22 @@ fn rotate_log_grammar_is_documented() {
         "reason=threshold",
         "ALERT: no profile has capacity",
         "ALERT: no login in ~/.claude; no swap",
+        // Issue #2910: the target rule, its notes and its lines.
+        "ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)",
+        "reason=plan-room",
+        "reject: <name> <reason>",
+        // Issue #3105: the block and the superseded reading.
+        "reject: <name> blocked until <utc_minute> (<kind>)",
+        "reject: <name> reading <n>s older than one already held",
+        "stay: live room <R>, best other login has room <M>, a move needs <N>",
+        "stay: held after last swap (<S>s of <H>s): <name> is at s=<n>%, at or above --session-at",
+        "stay: no candidate confirmed by a fresh reading",
+        "#### Rotate target choice",
+        "#### Rotate hold",
+        "#### Rotate unknown readings",
+        "##### Last good reading",
+        "#### Rotate confirmation",
+        "#### Rotate no target",
         "idle: auto-switch is off",
         "skip: state lock busy",
         "stop: signal received; cycle abandoned",
@@ -269,6 +331,23 @@ fn rotate_log_grammar_is_documented() {
     ] {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }
+    // Issue #2820: the unreadable process lines, and a move off a live login
+    // with a standing block on a reading the gate left unread. The re-read limit text
+    // is checked against `MAX_REREADS_PER_CYCLE` in
+    // `rotate::prelude::tests_issue_2820_cycle`, where the constant is seen.
+    for line in [
+        "#### Unreadable process lines",
+        "unreadable process <pid> (<exe>) \"<command>\": <verdict>",
+        "counted as a session on <a>, <b>",
+        "not counted (not a Claude executable)",
+        "not counted (profile cannot be told)",
+        "unreadable processes: <N> more not listed",
+        " unconfirmed (time limit)",
+        "read <N>m ago",
+        "; live <from> has no room: <kind> until <UTC minute>",
+    ] {
+        assert!(REFERENCE.contains(line), "reference is missing `{line}`");
+    }
 }
 
 /// Rotate revalidation (#1721): the labelled skip line, both `revalidate:`
@@ -279,7 +358,7 @@ fn rotate_revalidation_log_rows_are_documented() {
         "| `skip: state changed during measurement (<labels>)` |",
         "| `revalidate: target <name> no longer eligible (<reason>); reconsidered` |",
         "| `revalidate: ~/.claude.json held no account; read again` |",
-        "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`",
+        "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)`",
         "#### Rotate revalidation",
     ] {
         assert!(REFERENCE.contains(row), "reference is missing `{row}`");

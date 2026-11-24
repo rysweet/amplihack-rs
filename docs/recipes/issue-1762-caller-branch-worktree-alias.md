@@ -339,7 +339,7 @@ The alias is in effect when the resolver's output is not empty and differs from
 | `workflow_pr_head_sync.sh` | Sync the worktree to the PR head | Fetches `origin/<B>`; sets the alias's upstream only when it has none |
 | `workflow_publish_pr.sh` | Create the pull request | `gh pr create --draft --head=<B>` |
 | `workflow_final_status.sh` (two sites), `workflow_pr_ready.sh`, `workflow_terminal_evidence.sh` | Look up the pull request by branch | Look up `<B>` |
-| `workflow_finalization_open_pr.sh`, `workflow_finalization_pr_signal.sh`, `workflow_finalization_collect.sh` | Finalization's open-PR check | Look up `<B>` |
+| `workflow_finalization_outcome.sh`, `workflow_finalization_pr_signal.sh`, `workflow_finalization_collect.sh` | Finalization's outcome read (#2343, which replaced `workflow_finalization_open_pr.sh`) | Look up `<B>` |
 
 ### Push safety
 

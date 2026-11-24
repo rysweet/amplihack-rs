@@ -40,7 +40,6 @@ TRUST="${TOOLS}/autodrive_trust.sh"
 SCOPE="${TOOLS}/autodrive_qa_scope.sh"
 SOURCES="${TOOLS}/autodrive_qa_sources.sh"
 SNAME="${TOOLS}/autodrive_scenario_name.sh"
-GATE="${TOOLS}/autodrive_merge_gate.sh"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 
 harness_error() { echo "HARNESS-ERROR: $*" >&2; exit 2; }
@@ -394,19 +393,19 @@ expect ev-cand-cap "twelve candidates" qa_status=QA_UNRESOLVED \
 if [[ "$OUT" != *"$WORK"* ]]; then pass ev-cand-nohost "the QA_UNRESOLVED record holds no host path"
 else fail ev-cand-nohost "host path leaked: $OUT"; fi
 
-echo "== #1763 evidence: QA_UNRESOLVED with a package.json candidate runs gadugi =="
+echo "== #1763 evidence: QA_UNRESOLVED with a package.json candidate lists scenarios =="
+# The scenarios are listed, never run: criterion 1 is judged by an agent step
+# inside the loop, and the judgement runs the ones this PR changed (#2569).
 repo a/Cargo.toml b/package.json tests/agentic/s.yaml; put tests/agentic/s.yaml $'name: smoke\n'; base
 run_tool
-expect ev-unres-gadugi-pass "gadugi passes; the round stays unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved \
-    gadugi_required=true gadugi_status=PASS gadugi_scenarios_run=1 qa_candidates="a b"
-if calls_of gadugi-test | grep -q '|validate ' && calls_of gadugi-test | grep -q '|run '; then
-    pass ev-unres-gadugi-ran "gadugi-test validate and run were called"
-else fail ev-unres-gadugi-ran "gadugi-test calls: $(calls_of gadugi-test | tr '\n' '|')"; fi
+expect ev-unres-gadugi-pass "scenarios are found; the round stays unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved \
+    gadugi_required=true gadugi_status=FOUND gadugi_scenario_dir_state=detected gadugi_scenario_count=1 \
+    gadugi_scenarios_run=0 qa_scenarios="tests/agentic/s.yaml" qa_candidates="a b"
+expect_calls ev-unres-gadugi-ran "the measurement calls no gadugi-test" gadugi-test ""
 expect_calls ev-unres-gadugi-npm "no suite runs" npm ""
 : > "$CALLS"; run_tool STUB_GADUGI_RC=1
-expect ev-unres-gadugi-fail "gadugi fails; still QA_UNRESOLVED/qa-unresolved" qa_status=QA_UNRESOLVED \
-    qa_reason=qa-unresolved gadugi_required=true gadugi_status=VALIDATE_FAILED
-expect_summary_has ev-unres-gadugi-fail-summary "gadugi"
+expect ev-unres-gadugi-fail "a gadugi-test that would fail changes nothing here" qa_status=QA_UNRESOLVED \
+    qa_reason=qa-unresolved gadugi_required=true gadugi_status=FOUND
 expect_summary_has ev-unres-gadugi-fail-cands "unresolved QA project candidates: a b"
 rm -rf "${REPO:?}/tests"; snap
 : > "$CALLS"; run_tool
@@ -851,21 +850,9 @@ expect_helper gate-head-empty autodrive_gadugi_required "true" "$B" AUTODRIVE_QA
 repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
 PRH="$(git -C "$REPO" rev-parse HEAD)"; git -C "$REPO" update-ref HEAD refs/remotes/origin/main
 expect_helper gate-head-web autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD="$PRH"
-# The one statement that asks, from `GADUGI_REQ="$(` to its `|| GADUGI_REQ="true"`.
-GCOUNT="$(grep -v '^[[:space:]]*#' "$GATE" | grep -c 'autodrive_gadugi_required')"
-GLINE="$(awk '/^[[:space:]]*GADUGI_REQ="\$\(/ { on = 1 } on { print } on && /GADUGI_REQ="true"/ { exit }' "$GATE")"
-if [ "$GCOUNT" = 1 ] && printf '%s' "$GLINE" | grep -q 'autodrive_gadugi_required' \
-   && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE=' \
-   && printf '%s' "$GLINE" | grep -qF 'baseRefName' \
-   && ! printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE:-' \
-   && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_HEAD="$HEAD_SHA"' \
-   && printf '%s' "$GLINE" | grep -qF 'GADUGI_REQ="true"'; then
-    pass gate-line "the gate sets AUTODRIVE_QA_BASE and AUTODRIVE_QA_HEAD from its own baseRefName and headRefOid, fail-closed"
-else fail gate-line "gate line is: ${GLINE:-<none>}"; fi
 
-# ===========================================================================
 echo "== #1763 static constraints =="
-for t in "$TOOL" "$TRUST" "$SCOPE" "$SOURCES" "$SNAME" "$GATE"; do
+for t in "$TOOL" "$TRUST" "$SCOPE" "$SOURCES" "$SNAME"; do
     if [ ! -f "$t" ]; then fail "lines:${t##*/}" "missing"; continue; fi
     n="$(wc -l < "$t" | tr -d ' ')"
     if [ "$n" -le 400 ]; then pass "lines:${t##*/}" "$n lines (<= 400)"; else fail "lines:${t##*/}" "$n lines (> 400)"; fi
@@ -894,9 +881,6 @@ for fn in autodrive_qa_config autodrive_qa_ci autodrive_qa_report; do
     grep -q "^${fn}()" "$SOURCES" && pass "sources-fn:$fn" "defined in autodrive_qa_sources.sh" \
         || fail "sources-fn:$fn" "not defined in autodrive_qa_sources.sh"
 done
-# The merge gate needs only the scope file; the declared sources stay out of it.
-code "$TRUST" | grep -q 'autodrive_qa_sources' && fail trust-sources "autodrive_trust.sh loads the sources file" \
-    || pass trust-sources "the gate path never loads autodrive_qa_sources.sh"
 grep -q 'shellcheck source=autodrive_qa_scope.sh' "$TRUST" && pass trust-directive "autodrive_trust.sh has the shellcheck source= directive" \
     || fail trust-directive "autodrive_trust.sh lacks '# shellcheck source=autodrive_qa_scope.sh'"
 grep -q 'BASH_SOURCE' "$TRUST" && grep -q '_AD_SCOPE_OK' "$TRUST" && pass trust-loader "the loader uses BASH_SOURCE and _AD_SCOPE_OK" \
@@ -913,27 +897,15 @@ else fail tool-bash-c "bash -c appears more than once in autodrive_qa_evidence.s
 if code "$TOOL" | grep -E 'Cargo\.toml|package\.json|pyproject\.toml' >/dev/null; then
     fail tool-markers "autodrive_qa_evidence.sh names a manifest outside comments"
 else pass tool-markers "manifest names stay in the scope helper"; fi
-STEP02="$(awk '/- id: "step-02-qa-team-scenarios"/{on=1} on && /- id: "step-03/{on=0} on' "$RECIPES/autodrive-merge-evidence.yaml")"
-if printf '%s' "$STEP02" | grep -q 'RECIPE_VAR_merge_sync' && printf '%s' "$STEP02" | grep -q 'AUTODRIVE_QA_BASE='; then
-    pass evidence-step02 "evidence step-02 reads base from merge_sync and passes AUTODRIVE_QA_BASE"
-else fail evidence-step02 "evidence step-02 does not wire AUTODRIVE_QA_BASE from RECIPE_VAR_merge_sync"; fi
-ROUND="$RECIPES/autodrive-merge-round.yaml"
-if grep -n 'qa-unresolved' "$ROUND" | grep -q 'qa-config-invalid' \
-   || { grep -q 'qa-unresolved' "$ROUND" && grep -q 'qa-config-invalid' "$ROUND"; }; then
-    if grep -E 'qa-unresolved|qa-config-invalid' -A1 "$ROUND" | grep -q 'AUTODRIVE_QA_COMMAND' \
-       && grep -E 'qa-unresolved|qa-config-invalid' -A1 "$ROUND" | grep -q 'qa.toml'; then
-        pass round-map "the round maps qa-unresolved and qa-config-invalid to the operator action"
-    else fail round-map "the round names the tokens without the AUTODRIVE_QA_COMMAND / qa.toml action"; fi
-else fail round-map "autodrive-merge-round.yaml does not name qa-unresolved and qa-config-invalid"; fi
-if grep -q '"autodrive_qa_scope.sh"' "$REPO_ROOT/crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs"; then
-    pass gate-files "GATE_FILES lists autodrive_qa_scope.sh"
-else fail gate-files "GATE_FILES does not list autodrive_qa_scope.sh"; fi
+# #3129: the merge-evidence step-02 prompt and the merge round's mapping of
+# qa-unresolved and qa-config-invalid went with those recipes, which are
+# one-release aliases now; their checks were removed.
 if grep -q 'test-issue-1763-qa-scope.sh' "$REPO_ROOT/.github/workflows/ci.yml"; then pass ci-wired "CI runs this test"
 else fail ci-wired ".github/workflows/ci.yml does not run test-issue-1763-qa-scope.sh"; fi
 if command -v shellcheck >/dev/null 2>&1; then
     if [ -f "$SCOPE" ] && (cd "$TOOLS" && shellcheck -x -S warning autodrive_qa_scope.sh autodrive_trust.sh autodrive_qa_evidence.sh \
-            autodrive_merge_gate.sh autodrive_merge_message.sh autodrive_qa_sources.sh autodrive_scenario_name.sh) >/dev/null 2>&1; then
-        pass shellcheck "the scope file, autodrive_trust.sh, the evidence tool and the gate are clean at -S warning"
+            autodrive_merge_message.sh autodrive_qa_sources.sh autodrive_scenario_name.sh) >/dev/null 2>&1; then
+        pass shellcheck "the scope file, autodrive_trust.sh, the evidence tool and the squash-message helper are clean at -S warning"
     else fail shellcheck "shellcheck -S warning reports problems (or the scope file is missing)"; fi
 else
     echo "  SKIP[shellcheck]: shellcheck not installed"

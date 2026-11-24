@@ -130,7 +130,12 @@ fn failure_payload_with_stderr(error: &str, output: &str, stderr: &str) -> serde
 }
 
 /// The last marker and the whole log, for a step whose `error` is given whole.
-fn runner_payload(error: &str, output: &str, stderr: &str) -> (serde_json::Value, String) {
+/// Also used by `issue_2911_codex_credits.rs`.
+pub(crate) fn runner_payload(
+    error: &str,
+    output: &str,
+    stderr: &str,
+) -> (serde_json::Value, String) {
     let result = serde_json::json!({
         "recipe_name": "issue-1437-final-marker",
         "success": false,
@@ -143,11 +148,14 @@ fn runner_payload(error: &str, output: &str, stderr: &str) -> (serde_json::Value
     );
     let (code, text) = run_fixture(&stub);
     assert_eq!(code, 1, "structured failed runs exit 1:\n{text}");
+    // The whole log on a failure: without it a run that ended before any
+    // marker was written (a failed runner check, say) cannot be told from
+    // one that classified nothing (issue #2931).
     let last = text
         .lines()
         .filter_map(|line| line.strip_prefix(PREFIX))
         .next_back()
-        .unwrap();
+        .unwrap_or_else(|| panic!("the log holds no `{PREFIX}` line:\n{text}"));
     (serde_json::from_str(last).unwrap(), text)
 }
 

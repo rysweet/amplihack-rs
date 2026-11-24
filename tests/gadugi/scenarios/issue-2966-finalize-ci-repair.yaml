@@ -1,0 +1,140 @@
+name: issue-2966-finalize-ci-repair
+description: >
+  Outside-in QA for issue #2966. An implementation run that reached
+  finalisation with its pull request's CI red ended Failed instead of fixing the
+  CI: the terminal-state probe named the failing check BLOCKED_CI, the
+  validator answered it from the probe's record, step recovery handed off, and
+  the run ended exit 81 (the #2916 run, PR #2947, 22 November 2026; the failing
+  check was an ordinary one, the Install Smoke Test). The owner's ruling is that
+  a red CI means the run iterates until the CI is fixed, and that only a cause
+  the run cannot fix itself ends it, with the cause and the exact step a person
+  must take. The scenario (via
+  tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh) runs the shipped
+  workflow-finalize recipe through `amplihack recipe run` and the pinned recipe
+  runner, with the context default-workflow gives it, against a local bare
+  remote and a linked worktree on the run branch, under env -i with a fresh HOME
+  per case. A stub gh, first on PATH, holds pull request #7 whose checks are read
+  from the tip the bare remote holds for the run branch, so a check turns green
+  only when a fix has been pushed; every call outside its short table exits 96
+  and fails the case. A scripted stand-in for the agent dispatches on a literal
+  phrase of each prompt. The first case checks that a head whose smoke check
+  fails reaches the CI repair step, which fixes and pushes it, and that the run
+  ends EXISTING_OPEN_PR with exit 0 and no hand-off on record. The second checks
+  that when the repair step ends without a push, the assessment finishes the
+  repair itself, reports repaired_ci, and the run still ends a success. The
+  third checks that a check which fails on a secret the repository does not
+  define, which no push can fix, ends the run with exit 81 after one look by the
+  repair step and one by the assessment, with BLOCKED_CI, the check, the cause
+  and the owner's step in the hand-off record and on the failure line. The
+  fourth checks that a check still in progress is waited on: the assessment
+  runs `gh pr checks --watch`, reads the settled green head and reports
+  EXISTING_OPEN_PR, with exit 0 and no push. Five more cases cover an
+  assessment session that ends short of a decision, or a decision that leaves
+  something out. The runner's condition starts one fresh pass, and step
+  recovery's agent decides on any after that: a session that crashes is started
+  again and the second pass repairs the CI; two sessions that stop with the
+  repair unfinished lead to a recovery retry, and the third repairs it; sessions
+  that are always unfinished are retried once and then handed off by the
+  recovery agent, with both decisions on record; a BLOCKED_CI without the
+  owner's step is reported as BLOCKED_CI with the gap named, never refused as
+  no decision; and two passes in a row that answer prose send
+  continue-ci-repair to its recovery agent, exit 81. Two more cases cover a
+  session whose own build left output in the worktree (crusty round 5): the
+  runner starts a fresh session with the entry in its reentry block, which
+  clears it and decides, and the run ends EXISTING_OPEN_PR with exit 0 and a
+  clean worktree; when the fresh session leaves it too, continue-ci-repair goes
+  to its recovery agent with the file named, exit 81. Every case allows at
+  most one pull request comment, the "Ready for Final Review" note. With
+  AMPLIHACK_2966_BASELINE_REF set, the driver runs the first fixture against the
+  bundle that ref held and confirms the reported behaviour: BLOCKED_CI, exit 81,
+  and the repair step never started. What the scenario does not cover is an
+  agent's judgement, which the live run and the review show. CI's Install Smoke
+  Test job runs the driver script directly against the binary it installs; CI
+  does not run gadugi-test, so this file is for running the same cases through
+  gadugi-test by hand.
+version: "1.0"
+config:
+  timeout: 1200000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, workflow-finalize, ci-repair, regression]
+  priority: critical
+  issues: ["2966", "2809", "1722"]
+steps:
+  - name: run-issue-2966-finalize-ci-repair-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh
+    timeout: 1180000
+  - name: all-finalize-ci-repair-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: red-ci-is-repaired
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: red_ci_is_repaired - "
+  - name: assessment-finishes-the-repair
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: assessment_finishes_the_repair - "
+  - name: unfixable-cause-is-handed-to-its-owner
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unfixable_cause_is_handed_to_its_owner - "
+  - name: pending-checks-are-waited-on
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: pending_checks_are_waited_on - "
+  - name: crashed-assessment-is-started-again
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: crashed_assessment_is_started_again - "
+  - name: unfinished-repair-is-continued
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unfinished_repair_is_continued - "
+  - name: endless-unfinished-is-stopped-by-recovery
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: endless_unfinished_is_stopped_by_recovery - "
+  - name: unowned-blocked-ci-is-reported-not-refused
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unowned_blocked_ci_is_reported_not_refused - "
+  - name: repeated-crash-goes-to-recovery
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: repeated_crash_goes_to_recovery - "
+  - name: dirty-worktree-goes-to-a-fresh-session
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: dirty_worktree_goes_to_a_fresh_session - "
+  - name: dirty-worktree-left-again-goes-to-recovery
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: dirty_worktree_left_again_goes_to_recovery - "

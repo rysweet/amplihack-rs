@@ -1,0 +1,97 @@
+name: issue-2785-cleanup-keeps-unsaved-work
+description: >
+  Outside-in QA for issue #2785. A step can leave a repository copy in its
+  temporary folder, with a commit it never pushed or a file it never
+  committed, and the run's own cleanup removed the folder when the run ended,
+  destroying work that existed nowhere else. Before cleanup removes a folder,
+  it now judges whether the folder holds a Git work tree with uncommitted
+  changes, or commits that are not on its upstream. If it does, the folder is
+  kept and one line on stderr names the folder, the work tree and the reason:
+  `amplihack: leaving "<folder>" in place: work tree "<clone>": <reason>`.
+  Otherwise the folder is removed as before. Keeping a folder never ends or
+  fails the run. The scenario (via
+  tests/gadugi/run-issue-2785-cleanup-keeps-unsaved-work-scenario.sh) starts
+  three one-step recipes through `amplihack recipe run` and the pinned recipe
+  runner, each with a work root of its own. The step clones a bare repository
+  that lives in the scenario's own folder, so the clone has a real upstream,
+  and then leaves the clone in one of three states.
+
+  Four cases, each asserted below. Three on the clone's state:
+  `unpushed_commit_survives` (a commit made and not pushed: the folder and the
+  commit are still there, the line says `has unpushed commits`, and the run
+  exits 0), `uncommitted_file_survives` (a file never committed: the folder
+  and the file are still there, the line says `has uncommitted changes`, and
+  the run exits 0) and `clean_clone_is_removed` (nothing changed: the folder
+  is removed as before, no line is printed, and the run exits 0). A line is
+  accepted once or twice, identical each time, because at the end of a run two
+  passes can reach the same folder (the runner's own removal, then the
+  end-of-run sweep) and each says so once. And one on this file:
+  `every_case_this_run_emitted_is_asserted_by_the_descriptor`, which fails the
+  scenario when a case the script emits has no assertion here. CI runs the
+  script directly, so without that check a descriptor left behind costs
+  nothing and quietly understates what runs.
+
+  Everything runs under `env -i` with the scenario's own HOME; the real
+  ~/.claude and ~/.amplihack are never read or written, and nothing reaches
+  the network. The driver runs in CI, in the host-install job, after the
+  pinned recipe runner is installed; it is never run by hand on a shared
+  host. The same contract, and more of it (the work tree below the folder, a
+  `.git` that cannot be checked, a folder inside a dirty repository, the
+  untagged-target and tmp-leftover categories, the report without `--apply`,
+  and saving the work so the next cleanup removes the folder), is covered
+  from inside the crate by
+  crates/amplihack-cli/tests/issue_1808_run_cleanup/unsaved_work.rs.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, cleanup, run-tmp, unsaved-work, regression]
+  priority: high
+  issues: ["2785"]
+steps:
+  - name: run-issue-2785-cleanup-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2785-cleanup-keeps-unsaved-work-scenario.sh
+    timeout: 880000
+  - name: all-cleanup-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+# One assertion per PASS line the script emits, so the descriptor states the
+# scenario in full rather than a subset of it. A case added to the script
+# without a line here leaves the descriptor understating what runs.
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: an-unpushed-commit-keeps-the-folder-and-says-why
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unpushed_commit_survives - "
+  - name: an-uncommitted-file-keeps-the-folder-and-says-why
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: uncommitted_file_survives - "
+  - name: a-clean-pushed-clone-is-removed-without-a-line
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: clean_clone_is_removed"
+  - name: the-descriptor-states-every-case-the-script-emits
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: every_case_this_run_emitted_is_asserted_by_the_descriptor"

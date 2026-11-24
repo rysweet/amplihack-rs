@@ -21,10 +21,28 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+pub(crate) mod autodrive;
 mod autodrive_completion;
 mod named_branch;
 mod select_workflow;
+mod step_recovery;
+pub(crate) use step_recovery::STEP_RECOVERY_HANDOFF_EXIT;
 mod workflow_log_inventory;
+
+// TDD contracts for #2329. The implementation supplies `mod autodrive`;
+// keeping these registered makes missing implementation a visible red test.
+#[cfg(test)]
+#[path = "orch/autodrive/tests.rs"]
+mod autodrive_contract_tests;
+// #2546: repair of the drive's own state written under a loose umask.
+#[cfg(test)]
+#[path = "orch/autodrive/tests_2546_state.rs"]
+mod autodrive_issue_2546_state_tests;
+
+// TDD contracts for #2575: the tolerant schema-version-2 run report.
+#[cfg(test)]
+#[path = "orch/autodrive/report_v2_tests.rs"]
+mod autodrive_report_v2_tests;
 
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
@@ -48,6 +66,11 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Portable auto-drive state, authorization and local Git operations.
+    Autodrive {
+        #[command(subcommand)]
+        operation: autodrive::helper::Operations,
+    },
     /// Prepare driver-owned identity and completion dispatch context.
     AutodriveCompletionPrepare(autodrive_completion::Prepare),
     /// Seal the round evidence before the next-action agent runs.
@@ -59,6 +82,12 @@ pub enum OrchHelperCommands {
     AutodriveCompletionWrite(autodrive_completion::Write),
     /// Validate the decision and complete or launch the convergence evaluator.
     AutodriveCompletionDispatch(autodrive_completion::Dispatch),
+    /// Step failure recovery for recipe steps (issue #2539). Internal: called
+    /// by bundle recipes; see docs/reference/step-failure-recovery.md.
+    StepRecovery {
+        #[command(subcommand)]
+        command: step_recovery::StepRecoveryCommands,
+    },
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -509,6 +538,7 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::Autodrive { operation } => autodrive::helper::run(operation),
         OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
         OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
             autodrive_completion::seal(private_state)
@@ -517,6 +547,7 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         OrchHelperCommands::AutodriveCompletionDispatch(args) => {
             autodrive_completion::dispatch(args)
         }
+        OrchHelperCommands::StepRecovery { command } => step_recovery::run(command),
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {

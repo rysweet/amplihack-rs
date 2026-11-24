@@ -279,6 +279,48 @@ impl Fixture {
         );
     }
 
+    /// Issue #1844: plants a fresh passive (status-line) reading for each
+    /// `(profile, session, week)` in auto-switch's `usage.json`, replacing
+    /// whatever that file held.
+    ///
+    /// Issue #2019: a profile with a fresh reading is answered from this
+    /// file alone. `profile usage` starts no child and opens no socket for
+    /// it, so its row cannot lose a race against the per-probe deadline,
+    /// and a test that needs one probe to pass the deadline can leave the
+    /// rest of the table off the clock.
+    ///
+    /// A reading is stamped `observed_at` now and is accepted only while it
+    /// is no older than the passive age limit (300 s by default, up to 3600
+    /// through `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`): waiting makes
+    /// a reading older, not fresher, and brings its reset times nearer. Call
+    /// this immediately before the command that must read it, not at fixture
+    /// construction, so no setup in between can spend the limit. The reset
+    /// times are hours out and are not what expires.
+    ///
+    /// The commands also need `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
+    /// above 0: [`Self::cmd`] turns passive readings off by default.
+    pub fn passive(&self, readings: &[(&str, u32, u32)]) {
+        let now = chrono::Utc::now().timestamp();
+        let accounts: serde_json::Map<String, serde_json::Value> = readings
+            .iter()
+            .map(|(p, session, week)| {
+                (
+                    (*p).to_string(),
+                    serde_json::json!({
+                        "five_hour": {"used_percentage": session, "resets_at": now + 3 * 3600},
+                        "seven_day": {"used_percentage": week, "resets_at": now + 3 * 86_400},
+                        "observed_at": now,
+                        "source": "statusline",
+                    }),
+                )
+            })
+            .collect();
+        private_file(
+            &self.root.join(".auto-switch.d/usage.json"),
+            &serde_json::json!({"version": 1, "accounts": accounts}).to_string(),
+        );
+    }
+
     /// Issue #1962: what the fake usage endpoint answers for `p`, with both
     /// windows resetting in 3 hours. A dry run reads only this, never `claude`.
     pub fn usage_direct(&self, p: &str, session: u32, week: u32) {
@@ -403,7 +445,14 @@ impl Fixture {
             .current_dir(&self.work_dir)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env(crate::isolated_amplihack::PROC_ROOT_ENV, self.proc_root())
+            // Issue #2935: the exchange is the stand-in on every system.
+            .env(
+                crate::isolated_amplihack::LOGIN_EXCHANGE_ENV,
+                crate::isolated_amplihack::LOGIN_EXCHANGE_STAND_IN,
+            )
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
@@ -657,6 +706,15 @@ pub fn assert_text_has_no_secrets(s: &str) {
 /// when a reading goes stale, as on a loaded host (#2042). `affinity:` lines
 /// (#2136) follow a swap that is not within one organisation; a profile with
 /// no organisation record makes every swap to or from it `unresolved`.
+///
+/// Issue #2889: the live login's figures on a `cycle` or `swap` line end
+/// `cached=<n>s` when the cycle decided on a reading taken before it began
+/// measuring. The suffix is admitted on the live entry alone; no candidate
+/// ever carries it.
+///
+/// Issue #2909: `wake:` says why the watch loop stopped waiting. Its text is
+/// fixed in `rotate/wake_msg.rs`; see "Rotate wake" in
+/// docs/reference/profile-command.md.
 pub fn assert_log_grammar(line: &str, timed: bool) {
     let msg = if timed {
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z (.+)$").unwrap();
@@ -668,7 +726,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|projected|upgrade)|stale live reading; re-read|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|affinity: (crossing|unresolved) \S+->\S+: .+|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)(,cached=\d+s)?|failed|per-token|unknown, still running))?( \S+:(s=\d+%,w=(\d+%|\?)( above ceiling \d+%| blocked until \S+ \((spend limit|session limit|week limit|credit limit|API key exhausted|API key revoked|API key rate limited|a recorded limit)\))?|failed|per-token|unknown, (HTTP 429|transport|identity unavailable|timeout|still running|probe error)(, last s=\d+%,w=\d+% \d+m ago)?))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)( cached=\d+s)?|failed|unknown, still running) target s=\d+% w=(\d+%|\?)( last \d+m ago)? reason=(threshold|projected|upgrade|plan-room|failed-probe|overflow-in|overflow-out)( unconfirmed \((HTTP 429|transport|identity unavailable|timeout|still running|probe error)\))?|stay: .+|reject: \S+ .+|stale live reading; re-read|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|affinity: (crossing|unresolved) \S+->\S+: .+|wake: .+|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");

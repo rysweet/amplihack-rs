@@ -743,11 +743,12 @@ fn without_any_marker() -> String {
 
 /// The `env -u` arguments `agent-binary --shell` prints: every session
 /// marker, then the #1976 parent-watch variables, which a tmux server started
-/// from a recipe step would otherwise hand to every later session.
+/// from a recipe step would otherwise hand to every later session, then the
+/// #2535 guidance folder list, which belongs to the run that set it.
 fn hand_off_unsets() -> String {
     format!(
         "{} -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME \
-         -u AMPLIHACK_AUTODRIVE_STATE_DIR",
+         -u AMPLIHACK_AUTODRIVE_STATE_DIR -u AMPLIHACK_RUN_GUIDANCE_DIRS",
         without_any_marker()
     )
 }

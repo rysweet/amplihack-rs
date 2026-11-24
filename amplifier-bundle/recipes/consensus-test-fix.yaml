@@ -132,6 +132,8 @@ steps:
         "all_passing": true/false
       }
       ```
+
+      Stop only a process you started, by the PID you recorded from `$!`. If you stop a process group, it must be a group you created yourself for the job with `set -m` or `setsid`; never signal a group you did not create. Never choose processes to signal by name or by a command-line pattern. Use the test runner's own per-test time limit instead of stopping a run.
     output: "hook_fixes"
     parse_json: true
 
@@ -177,6 +179,8 @@ steps:
         "ready_to_commit": true/false
       }
       ```
+
+      Stop only a process you started, by the PID you recorded from `$!`. If you stop a process group, it must be a group you created yourself for the job with `set -m` or `setsid`; never signal a group you did not create. Never choose processes to signal by name or by a command-line pattern. Use the test runner's own per-test time limit instead of stopping a run.
     output: "local_testing"
     parse_json: true
 

@@ -84,16 +84,19 @@ workflow proves one of the valid terminal states.
 The terminal state is classified deterministically from typed evidence, not from
 the finalizer's prose. The finalizer contributes a human-readable narrative for
 operators; it is never parsed. The normalized decision is stored in
-`workflow_result`. For example, an open PR with failing required checks returns a
-failure state even though the PR exists and matches the branch:
+`workflow_result`. A failing check is not a failure state in itself: the run
+repairs it (diagnose, fix, push, wait, reassess) until the checks are green.
+An open PR whose check fails for a cause the run cannot fix, such as a secret
+the repository does not define, returns a failure state that names the cause
+and the step a person must take:
 
 ```text
 terminal_success=false
 terminal_state=BLOCKED_CI
-terminal_reason=PR #123 exists and matches this branch, but required CI checks are failing.
-required_next_action=Fix failing CI checks before merge.
+terminal_reason=deploy-preview: the workflow reads secrets.PREVIEW_TOKEN, which the repository does not define
+required_next_action=repository administrator: add PREVIEW_TOKEN under Settings, Secrets and variables, Actions, then re-run deploy-preview
 hollow_success_detected=false
-evidence_used=pr.state=OPEN,pr.head_branch_matches=true,ci.state=FAILURE
+evidence_used=outcome.pr=123,outcome.pr_state=OPEN,outcome.checks=failing,assessment_state=BLOCKED_CI,assessment_action=none
 ```
 
 The finalizer narrative is diagnostic only. Read it separately from the machine
@@ -131,6 +134,12 @@ it is not a completed code-change task.
 ---
 
 ## 5. Understand Hollow Success
+
+> `HOLLOW_SUCCESS` is unchanged by #2343, and still precedes every success
+> classification. What did change is the run beside it: one whose head is
+> pushed and whose pull request is open is no longer reported as a failure for
+> want of bookkeeping. See
+> [The Run's Real Outcome](../reference/default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 If earlier phases exit `0` after empty agent output, inaccessible-codebase
 messages, or setup-only progress, finalization makes the overall recipe fail:
@@ -172,7 +181,8 @@ The rerun must reach one of these outcomes:
 - `CLOSED_OBSOLETE`
 - `SUPERSEDED`
 - `ALLOW_NO_OP`
-- a visible terminal failure such as `BLOCKED_CI` or `FAILED_MEANINGFUL_DIFF`
+- a visible terminal failure such as `BLOCKED_CI` (a cause only a person can fix,
+  named with the step) or `FAILED_MEANINGFUL_DIFF`
 
 ---
 

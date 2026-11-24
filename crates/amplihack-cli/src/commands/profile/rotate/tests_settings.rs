@@ -201,6 +201,9 @@ fn to_args_round_trips_through_resolve() {
             "--hold" => back.hold = v,
             "--overflow-wait" => back.overflow_wait = v,
             "--overflow-unknown-reset" => back.overflow_unknown_reset = v,
+            // Issue #2910: passed on to `rotate start`, so a background
+            // rotator uses the ceiling the starter resolved.
+            "--target-week-max" => back.target_week_max = v,
             "--interval" => interval = v,
             other => panic!("unexpected flag {other}"),
         }
@@ -298,4 +301,123 @@ fn overflow_wait_variable_must_be_a_whole_number_of_seconds() {
     }
     let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "0")]);
     assert_eq!(resolve(&flags(), None, &env).unwrap().overflow_wait, 0);
+}
+
+// --- --target-week-max (issue #2910, D14) ------------------------------------
+//
+// The ceiling on a login's weekly use for it to be a swap target. It is
+// separate from `--week-at`, which says when the live login must leave, and it
+// is a rotator setting only: auto-switch reads the overflow `Gate`, which does
+// not carry it.
+
+#[test]
+fn target_week_max_defaults_to_95() {
+    assert_eq!(
+        resolve(&flags(), None, &no_env()).unwrap().target_week_max,
+        95
+    );
+}
+
+#[test]
+fn target_week_max_flag_beats_variable_beats_default() {
+    let env = env_of(&[("AMPLIHACK_ROTATE_TARGET_WEEK_MAX", "80")]);
+    assert_eq!(resolve(&flags(), None, &env).unwrap().target_week_max, 80);
+    let f = TuneFlags {
+        target_week_max: Some("70".into()),
+        ..flags()
+    };
+    assert_eq!(resolve(&f, None, &env).unwrap().target_week_max, 70);
+}
+
+#[test]
+fn target_week_max_is_one_to_a_hundred_and_refused_outside_that() {
+    let set = |v: &str| TuneFlags {
+        target_week_max: Some(v.into()),
+        ..flags()
+    };
+    for v in ["1", "95", "100"] {
+        assert!(
+            resolve(&set(v), None, &no_env()).is_ok(),
+            "--target-week-max {v}"
+        );
+    }
+    for v in ["0", "101", "-1", "9.5", "ninety", "", "95%"] {
+        let e = err(resolve(&set(v), None, &no_env()));
+        assert!(e.contains("--target-week-max"), "{v:?}: {e}");
+    }
+    let env = env_of(&[("AMPLIHACK_ROTATE_TARGET_WEEK_MAX", "101")]);
+    let e = err(resolve(&flags(), None, &env));
+    assert!(e.contains("AMPLIHACK_ROTATE_TARGET_WEEK_MAX"), "{e}");
+}
+
+/// No cross-check: a ceiling below `--week-at`, or above it, is accepted as
+/// given. The two answer different questions.
+#[test]
+fn target_week_max_is_independent_of_week_at() {
+    for (week_at, max) in [("90", "50"), ("50", "100"), ("100", "1")] {
+        let f = TuneFlags {
+            week_at: Some(week_at.into()),
+            target_week_max: Some(max.into()),
+            ..flags()
+        };
+        let s = resolve(&f, None, &no_env()).unwrap();
+        assert_eq!(
+            (
+                s.week_at.to_string().as_str(),
+                s.target_week_max.to_string().as_str()
+            ),
+            (week_at, max)
+        );
+    }
+}
+
+#[test]
+fn to_args_passes_target_week_max_to_the_background_process() {
+    let f = TuneFlags {
+        target_week_max: Some("88".into()),
+        ..flags()
+    };
+    let s = resolve(&f, None, &no_env()).unwrap();
+    for with_interval in [true, false] {
+        let args = s.to_args(with_interval);
+        let i = args
+            .iter()
+            .position(|a| a == "--target-week-max")
+            .expect("--target-week-max in to_args");
+        assert_eq!(args[i + 1], "88", "{args:?}");
+    }
+}
+
+#[test]
+fn rotate_help_lists_target_week_max_and_the_hold_covers_moves_past_session_at() {
+    use clap::CommandFactory;
+    let mut cmd = crate::Cli::command();
+    let mut out = Vec::new();
+    let rotate = cmd
+        .find_subcommand_mut("profile")
+        .and_then(|p| p.find_subcommand_mut("rotate"))
+        .expect("profile rotate");
+    rotate.write_long_help(&mut out).unwrap();
+    let help = String::from_utf8(out).unwrap();
+    assert!(help.contains("--target-week-max"), "{help}");
+    // D3: `--hold` is no longer described as covering upgrades alone.
+    let hold = help
+        .lines()
+        .skip_while(|l| !l.contains("--hold"))
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        hold.contains("--session-at"),
+        "the --hold help names the new case: {hold}"
+    );
+}
+
+/// The overflow `Gate` auto-switch reads is built from four variables only;
+/// the ceiling is not one of them, so a bad ceiling variable cannot stop
+/// auto-switch.
+#[test]
+fn the_ceiling_is_not_part_of_the_overflow_gate() {
+    let env = env_of(&[("AMPLIHACK_ROTATE_TARGET_WEEK_MAX", "not a number")]);
+    assert!(super::settings::gate_from_env(&env).is_ok());
 }

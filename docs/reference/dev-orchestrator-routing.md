@@ -149,6 +149,7 @@ There is no configuration flag that disables the Development routing invariant.
 | `workflow=<anything else>` | Ignored with `[dev-orchestrator] WARNING: unknown workflow override '<value>' ignored` |
 | `force_single_workstream=true` | Prevents parallel decomposition; a single `Development` workstream runs `default-workflow` or `quick-change` |
 | `strict_delivery` other than empty or `"false"` | Prevents parallel decomposition, as `force_single_workstream=true` does, because parallel workstreams do not carry it ([Where the inputs apply](workflow-delivery-inputs.md#where-the-inputs-apply)) |
+| `base_branch` | Does not affect routing. `smart-orchestrator`, `smart-classify-route` and `smart-execute-routing` declare it (default empty), and `smart-execute-routing` passes it to each `default-workflow` call on a single workstream. `quick-change` clears it before cutting its `quick/` branch, and parallel workstreams do not receive it ([Where the inputs apply](workflow-delivery-inputs.md#where-the-inputs-apply)) |
 | `AMPLIHACK_MAX_DEPTH=0` | Blocks parallel spawning and adapts to single-session execution; the adaptive path always runs `default-workflow` |
 | `AMPLIHACK_AGENT_BINARY` | Chooses the agent backend; does not affect workflow recipe selection |
 | `AMPLIHACK_HOME` | Locates recipe assets; does not affect the routing invariant |

@@ -102,13 +102,27 @@ impl Env {
         );
     }
 
-    /// The rotate ledger with a last cycle that began measuring at
-    /// `measured_at` and was recorded at `at`, as a #1659 rotator writes it.
-    pub(super) fn rotator_cycle_measured(&self, live: &str, at: i64, measured_at: i64) {
+    /// The rotate ledger with a last cycle as a #2857 rotator writes it: it
+    /// recorded `outcome` at `at`, its probe began at `measured_at` (`None`
+    /// leaves the key out, as a rotator from before #1659 does), `alert` is
+    /// the rotator's no-capacity alert, and `room` is `live_room` (`None`
+    /// leaves the key out, as a rotator from before #2857 does).
+    pub(super) fn rotator_cycle_room(
+        &self,
+        live: &str,
+        at: i64,
+        measured_at: Option<i64>,
+        outcome: &str,
+        alert: bool,
+        room: Option<bool>,
+    ) {
+        let alert = if alert { r#""no capacity""# } else { "null" };
+        let measured = measured_at.map_or(String::new(), |m| format!(r#","measured_at":{m}"#));
+        let room = room.map_or(String::new(), |r| format!(r#","live_room":{r}"#));
         private(
             &rotate_ledger(self.store.root()),
             &format!(
-                r#"{{"version":1,"live":"{live}","alert":null,"last_cycle":{{"at":{at},"measured_at":{measured_at},"outcome":"swapped"}}}}"#
+                r#"{{"version":1,"live":"{live}","alert":{alert},"last_cycle":{{"at":{at}{measured},"outcome":"{outcome}"{room}}}}}"#
             ),
         );
     }
@@ -268,9 +282,23 @@ fn an_untrusted_claude_json_counts_as_absent() {
     private(&target, &account(Some("uuid-a"), "x@example.invalid", 0));
     symlink(&target, &path).unwrap();
     assert!(absent == probe(&w), "symlink");
+}
+
+/// A `.claude.json` that is there but does not parse is what a read made
+/// half-way through another process's write looks like, so it is no
+/// reading at all, not an absent account: the wait neither ends on it nor
+/// takes it as its baseline (issue #2911).
+#[test]
+fn an_unparseable_claude_json_is_no_reading() {
+    let e = env();
+    let w = e.profile("a");
+    let path = e.dir("a").join(".claude.json");
+    fs::remove_file(&path).unwrap();
+    private(&path, "{\"oauthAccount\": {\"accountUu");
+    assert!(w.probe().is_none(), "a half-written file");
     fs::remove_file(&path).unwrap();
     private(&path, "not json");
-    assert!(absent == probe(&w), "unparseable");
+    assert!(w.probe().is_none(), "unparseable");
 }
 
 #[test]

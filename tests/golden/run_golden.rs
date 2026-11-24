@@ -7,6 +7,12 @@
 #[path = "../support/isolated_hook.rs"]
 mod isolated_hook;
 
+/// The five profile-redirecting variables (issue #2922). This binary sets
+/// `HOME` with neither `env_lock()` nor a crate `test_support` of its own, so
+/// it fires the purge from its own lock's initialiser.
+#[path = "../support/claude_profile_isolation.rs"]
+mod claude_profile_isolation;
+
 use amplihack_hooks::{
     Hook, PostToolUseHook, PreCompactHook, PreToolUseHook, SessionStartHook, SessionStopHook,
     StopHook, UserPromptSubmitHook,
@@ -107,9 +113,21 @@ impl Drop for TempCwd {
     }
 }
 
+/// The one lock every test in this binary holds while it reads or writes the
+/// process environment.
+///
+/// Creating it also fires [`claude_profile_isolation::purge_inherited`] (issue
+/// #2922), so a `CLAUDE_CONFIG_DIR` or login profile inherited from the
+/// session that started `cargo test` is gone before any hook runs in process.
+/// [`GoldenEnv`] keeps only `isolated_hook::is_kept` names and so drops the
+/// same five already; the purge is what holds for the rest of this binary, and
+/// if that kept list ever grows.
 fn golden_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    LOCK.get_or_init(|| {
+        claude_profile_isolation::purge_inherited();
+        Mutex::new(())
+    })
 }
 
 // ---------------------------------------------------------------------------

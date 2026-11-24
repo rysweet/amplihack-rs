@@ -94,12 +94,35 @@ exec cat >/dev/null
 
 const ACCOUNTS: [&str; 6] = ["ffarmer", "ggrant", "hhale", "jjones", "kkim", "mmoss"];
 
+/// The account whose fake app server never answers, so its read ends only at
+/// the limit.
+const HANGING: &str = "kkim";
+
+/// [`ACCOUNTS`] without [`HANGING`]: each fake answers at once, with figures,
+/// a refusal or an exit.
+const ANSWERING: [&str; 5] = ["ffarmer", "ggrant", "hhale", "jjones", "mmoss"];
+
+/// The read limit of a fixture that holds [`HANGING`]. The product has one
+/// limit for all accounts of a run and no way for a test to supply the
+/// clock, so the accounts that answer must start and answer inside it too,
+/// and a test with the hanging account lasts at least this long. At one
+/// second, and on a busier day at five, a loaded machine had started no fake
+/// when the limit passed, and every account read as timed out (issue #2931,
+/// TIMING). Twenty leaves forty before [`DEADLINE`] calls the command hung.
+const HANG_LIMIT_SECS: u64 = 20;
+
+/// The read limit of a fixture in which every account answers: the largest
+/// the product accepts, so that no answer is ever cut off by the clock.
+const ANSWER_LIMIT_SECS: u64 = 300;
+
 struct Codex {
     f: Fixture,
     root: PathBuf,
     bin: PathBuf,
     run_log: PathBuf,
     pid_dir: PathBuf,
+    /// `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` for every command of the fixture.
+    limit_secs: u64,
 }
 
 fn mkfifo(path: &Path) {
@@ -120,6 +143,8 @@ fn trapped(dir: &Path) {
 
 impl Codex {
     /// The fixture with `names` as Codex accounts under `<tmp>/codex-profiles`.
+    /// The read limit is [`HANG_LIMIT_SECS`] when `names` holds [`HANGING`],
+    /// which only the limit can end, and [`ANSWER_LIMIT_SECS`] otherwise.
     fn with(names: &[&str]) -> Self {
         let f = Fixture::new();
         f.assert_isolated();
@@ -140,10 +165,23 @@ impl Codex {
             bin,
             run_log: base.join("codex-runs.log"),
             pid_dir,
+            limit_secs: if names.contains(&HANGING) {
+                HANG_LIMIT_SECS
+            } else {
+                ANSWER_LIMIT_SECS
+            },
         }
     }
 
+    /// The accounts that answer ([`ANSWERING`]), for tests that say nothing
+    /// about a read that runs out of time.
     fn new() -> Self {
+        Self::with(&ANSWERING)
+    }
+
+    /// Every account ([`ACCOUNTS`]), the hanging one included, for tests of
+    /// the timed-out row and of what is left running after it.
+    fn with_hang() -> Self {
         Self::with(&ACCOUNTS)
     }
 
@@ -157,7 +195,10 @@ impl Codex {
         let mut c = self.f.cmd(&full);
         c.env("CODEX_PROFILES_ROOT", &self.root)
             .env("CODEX_BIN", &self.bin)
-            .env("AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS", "1")
+            .env(
+                "AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS",
+                self.limit_secs.to_string(),
+            )
             .env("CODEX_RUN_LOG", &self.run_log)
             .env("CODEX_PID_DIR", &self.pid_dir)
             .env("FAKE_HOME_STATE", "nosign");
@@ -347,7 +388,7 @@ fn json_stays_an_array_of_claude_rows_and_reads_no_codex() {
 
 #[test]
 fn summary_json_lists_every_account_in_order_with_its_state() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     let out = ok(c.cmd(&["--summary-json"]));
     let v = json(&out);
     assert!(v["profiles"].is_array(), "{v}");
@@ -370,7 +411,10 @@ fn summary_json_lists_every_account_in_order_with_its_state() {
         );
     }
     assert!(rows[3]["error"].is_null());
-    assert_eq!(rows[4]["error"], "timed out after 1s");
+    assert_eq!(
+        rows[4]["error"],
+        format!("timed out after {HANG_LIMIT_SECS}s")
+    );
     assert_eq!(
         rows[5]["error"],
         "codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'"
@@ -433,7 +477,7 @@ fn summary_json_adds_the_same_codex_rows_after_the_summary() {
     let v = json(&out);
     assert!(v["profiles"].is_array(), "the Claude rows keep their key");
     let rows = codex_rows(&v);
-    assert_eq!(field(&rows, "account"), ACCOUNTS);
+    assert_eq!(field(&rows, "account"), ANSWERING);
     assert!(s.find("\"summary\"").unwrap() < s.find("\"codex\"").unwrap());
 }
 
@@ -443,7 +487,7 @@ fn summary_json_adds_the_same_codex_rows_after_the_summary() {
 
 #[test]
 fn the_bar_view_prints_the_codex_block_after_the_claude_output() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     let out = ok(c.cmd(&[]));
     let s = text(&out.stdout);
     let header = format!("Codex accounts under {}\n", c.root.display());
@@ -462,7 +506,7 @@ fn the_bar_view_prints_the_codex_block_after_the_claude_output() {
         "{block}"
     );
     assert!(
-        line_of(block, "kkim").contains("timed out      after 1s"),
+        line_of(block, HANGING).contains(&format!("timed out      after {HANG_LIMIT_SECS}s")),
         "{block}"
     );
     assert!(
@@ -505,7 +549,7 @@ fn utc_applies_to_the_codex_times() {
 
 #[test]
 fn no_login_file_is_opened_and_no_api_key_reaches_codex() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env("OPENAI_API_KEY", OPENAI_SENTINEL)
         .env("CODEX_API_KEY", CODEX_KEY_SENTINEL)
@@ -528,7 +572,7 @@ fn no_login_file_is_opened_and_no_api_key_reaches_codex() {
 
 #[test]
 fn no_codex_process_outlives_the_command() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     // `run` returns only once the command and every process it started,
     // including `kkim`'s app server and its background `sleep 600`, have
     // exited (see its witness pipe). The pid files show the fakes ran.
@@ -539,7 +583,7 @@ fn no_codex_process_outlives_the_command() {
 
 #[test]
 fn every_account_is_started_once() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     ok(c.cmd(&["--summary-json"]));
     let mut runs = c.runs();
     runs.sort();

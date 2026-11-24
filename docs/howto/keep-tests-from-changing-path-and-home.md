@@ -1,8 +1,8 @@
 ---
 title: Keep Tests from Changing PATH and HOME
 type: howto
-updated: 2026-10-30
-related: issue #1765, issue #1787, issue #1699
+updated: 2026-11-09
+related: issue #1765, issue #1787, issue #1699, issue #2019
 ---
 
 # Keep Tests from Changing PATH and HOME
@@ -156,53 +156,47 @@ A test that runs a fake sleeping 2 s and asserts the call returned within
 1 s measures the host's speed as well as the timeout, and fails on a loaded
 host. Write the test so that host speed cannot decide it:
 
-1. The fake waits far longer than the bound. Its last command is
+1. The fake waits far longer than the timeout. Its last command is
    `exec /bin/sleep 60`. `exec` makes `sleep` the direct child, so killing
    the child kills the `sleep`.
-2. The test asserts that the call returned in under 30 s, with the elapsed
-   time in the message.
-3. The test then asserts that the call reported failure, which catches a
+2. The test uses the production timeout, or passes one to the seam, as the
+   trigger. It adds no environment variable to shorten the timeout.
+3. The test asserts the outcome: the call reported failure. That catches a
    call that returned early for another reason, such as a spawn error.
-4. The test uses the production timeout, or passes one to the seam. It adds
-   no environment variable to shorten the timeout.
+4. The test asserts no upper bound on elapsed time. A timeout that fires late
+   on a busy host is correct behaviour.
 
 ```rust
 #[cfg(target_os = "linux")]
 #[test]
 fn version_probe_is_bounded_for_hanging_binaries() {
     use crate::commands::profile::ROOT_ENV;
-    use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, Instant};
 
     let temp = tempfile::tempdir().unwrap();
     let fake = temp.path().join("mmdc");
-    std::fs::write(&fake, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_support::write_executable(&fake, "#!/bin/sh\nexec /bin/sleep 60\n");
     let home = temp.path().to_path_buf();
 
-    let started = Instant::now();
     let ok = version_probe_succeeds(fake.to_str().unwrap(), &|cmd: &mut Command| {
         cmd.env("HOME", &home).env_remove(ROOT_ENV);
     });
-    let elapsed = started.elapsed();
 
-    assert!(
-        elapsed < Duration::from_secs(30),
-        "the probe must stop a hanging binary long before it exits: {elapsed:?}"
-    );
     assert!(!ok, "a timed-out probe must report failure");
 }
 ```
 
-To check that a process-group kill also stopped a background child, have the
-fake start one that writes a marker file after a few seconds, and assert
-after that delay that the marker does not exist. Do not signal a pid read
-from a file: the pid may have been reused by then.
+When the product takes a clock, inject one and advance it instead; see
+[Inject a clock](./keep-tests-passing-under-host-load.md#inject-a-clock).
 
-When you write or change a bound test, raise the timeout it uses to 120 s by
-hand, run the test alone, confirm that it fails on the 30 s bound, and set
-the timeout back by hand. Do not use `git checkout -- <file>` for this; it
-discards the test you are writing.
+To check that a process-group kill also stopped a background child, have the
+fake write the child's pid to a file and open a pidfd for it while it is
+alive, then wait on it with `wait_pid_gone` after the call returns. Do not
+signal a pid read from a file: the pid may have been reused by then. See
+[`wait_pid_gone` and `KillOnDrop`](./keep-tests-passing-under-host-load.md#wait_pid_gone-and-killondrop).
+
+Review tests that assert elapsed bounds individually. Use an injected clock
+for timing policy and the shared hang guard for missing events; see
+[Review event waits](./keep-tests-passing-under-host-load.md#review-event-waits).
 
 ## Keep capture tests separate from timeout tests
 

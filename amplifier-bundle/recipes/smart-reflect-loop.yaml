@@ -32,6 +32,7 @@ steps:
     condition: |
       'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'
     agent: "amplihack:core:reviewer"
+    model: "standard"
     prompt: |
       Evaluate goal achievement after round 1.
 
@@ -129,6 +130,7 @@ steps:
     condition: |
       reflection_1 and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED' or reflection_1.goal_status == 'HOLLOW') and selected_workflow != 'quick-change'
     agent: "amplihack:core:builder"
+    model: "strong"
     prompt: |
       Round 1 was incomplete. Continue from where it left off.
 
@@ -146,6 +148,7 @@ steps:
     condition: |
       round_2_result and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED') and selected_workflow != 'quick-change'
     agent: "amplihack:core:reviewer"
+    model: "standard"
     prompt: |
       Evaluate goal achievement after round 2.
 
@@ -190,6 +193,7 @@ steps:
     condition: |
       reflection_2 and (reflection_2.goal_status == 'PARTIAL' or reflection_2.goal_status == 'NOT_ACHIEVED') and selected_workflow != 'quick-change'
     agent: "amplihack:core:builder"
+    model: "strong"
     prompt: |
       Final round. Complete as much remaining work as possible.
 
@@ -206,6 +210,7 @@ steps:
     type: "agent"
     condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'"
     agent: "amplihack:core:reviewer"
+    model: "standard"
     prompt: |
       Final assessment after all execution rounds.
 

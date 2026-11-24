@@ -17,7 +17,6 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPER="${ROOT}/amplifier-bundle/tools/autodrive_refusal.sh"
-LOOP="${ROOT}/amplifier-bundle/tools/autodrive_loop.sh"
 
 PASSED=0; FAILED=0
 pass() { PASSED=$((PASSED + 1)); echo "  PASS[$1]"; }
@@ -37,7 +36,7 @@ cp "${ROOT}/tests/issue_1437_amplihack_stub.sh" "${WORK}/bin/amplihack" || exit 
 chmod 0755 "${WORK}/bin/amplihack"
 export STUB_STATE="${WORK}/state"
 
-# The helper reads JSON through the loop's own field(); take it from the loop.
+# The helper reads JSON through `amplihack orch helper` (autodrive_marker_field).
 REAL_AMPLIHACK=""
 for c in "${ROOT}/target/debug/amplihack" "${ROOT}/target/release/amplihack" "$(command -v amplihack 2>/dev/null || true)"; do
   [ "${ISSUE_1437_JSON_HELPER:-}" = fallback ] && break
@@ -46,11 +45,9 @@ for c in "${ROOT}/target/debug/amplihack" "${ROOT}/target/release/amplihack" "$(
 done
 export REAL_AMPLIHACK
 echo "  (JSON helper: ${REAL_AMPLIHACK:-POSIX stand-in})"
-sed -n '/^field() {/,/^}/p' "$LOOP" > "${WORK}/field.sh"
-grep -q '^field() {' "${WORK}/field.sh" || { echo "HARNESS-ERROR: no field() in ${LOOP}" >&2; exit 2; }
+# #3129: autodrive_loop.sh is a one-release alias and no longer defines the
+# field() this harness used to copy from it; the helper never called it.
 export AMPLIHACK_BIN="${WORK}/bin/amplihack"
-# shellcheck source=/dev/null
-. "${WORK}/field.sh"
 
 # --- the file itself ----------------------------------------------------------
 check MODE "the helper is sourced, never executed: it must not be executable" test ! -x "$HELPER"

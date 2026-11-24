@@ -5,7 +5,6 @@
 //! - CWD rename/move (mv targeting CWD or parent)
 //! - Direct commits to main/master branch
 //! - Use of --no-verify flag on git commands
-//! - In an auto-drive run, merges outside the merge gate (#1551)
 //! - tmux `kill-server` / `kill-session -a` without `-S` or `-L`, which act
 //!   on the user's own server when `$TMUX` is set (#1733; all shell tools)
 //! - `tail` with a follow option on a device that never ends, such as
@@ -15,12 +14,19 @@
 //!
 //! XPIA is off by default. The other blocks above do not depend on it and
 //! run whether or not XPIA is enabled.
+//!
+//! Merges are not blocked. The auto-drive merge guard (#1551) and its `gh`
+//! shim were removed in #2340, so no mechanical guard stops an agent step
+//! from running `gh pr merge` or calling the merge API. The auto-drive launch
+//! stamp tells every agent step that only the loop's merge action merges, but
+//! that is a directive, not a block. `--match-head-commit` and the
+//! repository's branch protection are the real boundary
+//! (docs/reference/autodrive-goal-loop.md#known-limits).
 
 mod command;
 mod cwd;
 mod git;
 pub mod launcher;
-mod merge_guard;
 mod shell;
 mod tail_follow_guard;
 mod tmux_guard;
@@ -349,9 +355,9 @@ impl Hook for PreToolUseHook {
         // server (or every session on it) because no -S or -L was given. Not
         // gated by any environment variable.
         //
-        // This runs first, above XPIA and the merge guard. Those checks
-        // answer with a bare `{"block": true, "message": …}`, which Claude
-        // Code does not enforce (#1773), and XPIA, when opted in, matches
+        // This runs first, above XPIA. XPIA answers with a bare
+        // `{"block": true, "message": …}`, which Claude Code does not
+        // enforce (#1773), and, when opted in, matches
         // `; rm`, `\; kill…` and a `kill…` line, so it would answer first for
         // `tmux kill-server; rm -rf "$SB"` or a `tmux -C attach <<EOF` heredoc
         // and the command would run. The guard only ever denies, so running
@@ -385,22 +391,6 @@ impl Hook for PreToolUseHook {
         // the runtime hard-fail with "Skill not found", which silently skips
         // the step (e.g. the requirements-clarification phase).
         if let Some(block) = check_skill_redirect(&tool_name, &tool_input) {
-            return Ok(block);
-        }
-
-        // Issue #1551: inside an auto-drive run, refuse a merge typed into the
-        // agent's shell tool. Unlike the `gh` shim this does not depend on
-        // PATH order, which the agent's profile can change. Copilot names the
-        // tool `bash`, Claude Code `Bash`.
-        if tool_name.eq_ignore_ascii_case("bash")
-            && merge_guard::guard_active(
-                std::env::var(merge_guard::MERGE_GUARD_ENV).ok().as_deref(),
-            )
-            && let Some(block) = tool_input
-                .get("command")
-                .and_then(Value::as_str)
-                .and_then(merge_guard::check)
-        {
             return Ok(block);
         }
 
