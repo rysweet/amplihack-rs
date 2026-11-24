@@ -32,18 +32,17 @@
 //! Only a resume that reached the session is recorded (issue #3104). The
 //! exit-2 wake cannot answer Claude Code's usage-limit menu, which holds
 //! the session's input, so it records nothing and the next room event tries
-//! again. The four outcomes that take it are told apart in the log instead
+//! again. The three outcomes that take it are told apart in the log instead
 //! of falling through silently (issue #2695): `not-resumed` when no pane
 //! was named or found, `pane-unverified` when a pane was named or found but
 //! not proved to be the session's own terminal (with the reason in
-//! `detail`), `pane-not-reading` when the terminal is the session's but the
-//! session is not the process reading it, and `screen-unrecognised` when
-//! the terminal is the session's but it was not showing a screen the keys
-//! answer. The last also writes [`UNRECOGNISED_MSG`] before `RESUME_MSG`,
-//! so a refusal to type is not left to the log alone. Before a wake the
-//! hook reads the guard once more, without the lock, and ends as
-//! `duplicate` if another hook has resumed the session with keys since this
-//! one started, so it never wakes a session into a running turn.
+//! `detail`), and `screen-unrecognised` when the terminal is the session's
+//! but it was not showing a screen the keys answer. The last also writes
+//! [`UNRECOGNISED_MSG`] before `RESUME_MSG`, so a refusal to type is not
+//! left to the log alone. Before a wake the hook reads the guard once more,
+//! without the lock, and ends as `duplicate` if another hook has resumed
+//! the session with keys since this one started, so it never wakes a
+//! session into a running turn.
 //!
 //! The hook reads only the toggle, the profile-root pointer, the rotate
 //! ledger, swap record and pid file, the rotator's `/proc/<pid>/cmdline`,
@@ -119,9 +118,6 @@ pub enum Outcome {
     /// prove is the session's own terminal. `detail` carries one of
     /// [`keys::UNVERIFIED_REASONS`].
     PaneUnverified,
-    /// As `NotResumed`, for a session whose pane is its own terminal but
-    /// which is not the process reading it.
-    PaneNotReading,
     /// As `NotResumed`, for a session whose pane was proved but whose
     /// screen held none of [`keys::SCREEN_MARKERS`], or could not be read at
     /// all. `detail` carries one of [`keys::UNRECOGNISED_REASONS`]. The
@@ -179,7 +175,6 @@ impl Outcome {
         match self {
             Self::NotResumed => "not-resumed",
             Self::PaneUnverified => "pane-unverified",
-            Self::PaneNotReading => "pane-not-reading",
             Self::ScreenUnrecognised => "screen-unrecognised",
             Self::ResumedKeys => "resumed-keys",
             Self::ResumeKeysFailed => "resume-keys-failed",
@@ -206,10 +201,7 @@ impl Outcome {
     pub fn wakes(self) -> bool {
         matches!(
             self,
-            Self::NotResumed
-                | Self::PaneUnverified
-                | Self::PaneNotReading
-                | Self::ScreenUnrecognised
+            Self::NotResumed | Self::PaneUnverified | Self::ScreenUnrecognised
         )
     }
 
@@ -271,9 +263,11 @@ pub trait Deps {
     fn screen_check(&mut self, pane: &Pane) -> ScreenCheck;
     /// Sends one key to `pane`; an error when it was not delivered.
     fn send_keys(&mut self, pane: &Pane, key: Key) -> io::Result<()>;
-    /// Whether the session still runs and is in its terminal's foreground,
-    /// checked without blocking.
-    fn session_alive_now(&mut self) -> bool;
+    /// Whether the session still runs and `holder`, the process the pane
+    /// check proved is reading the terminal ([`PaneCheck::Ready`]), is still
+    /// that terminal's foreground process group. Checked without blocking,
+    /// before each key (S4).
+    fn session_alive_now(&mut self, holder: u32) -> bool;
 }
 
 /// Why [`send_resume`] stopped.
@@ -299,10 +293,16 @@ impl SendFailed {
 }
 
 /// Sends [`RESUME_KEYS`] to `pane` in order, checking before each that the
-/// session still runs and is not suspended (S4). Stops at the first failure
-/// (D8); nothing is retried and there is no other way to wake the session.
-pub fn send_resume<D: Deps + ?Sized>(deps: &mut D, pane: &Pane) -> Result<(), SendFailed> {
-    send_resume_affinity(deps, pane, None)
+/// session still runs and that `holder`, the process the pane check proved
+/// is reading the terminal, is still its foreground group and so not
+/// suspended (S4). Stops at the first failure (D8); nothing is retried and
+/// there is no other way to wake the session.
+pub fn send_resume<D: Deps + ?Sized>(
+    deps: &mut D,
+    pane: &Pane,
+    holder: u32,
+) -> Result<(), SendFailed> {
+    send_resume_affinity(deps, pane, holder, None)
 }
 
 /// [`send_resume`], with `continue` replaced by the warning text for
@@ -310,6 +310,7 @@ pub fn send_resume<D: Deps + ?Sized>(deps: &mut D, pane: &Pane) -> Result<(), Se
 fn send_resume_affinity<D: Deps + ?Sized>(
     deps: &mut D,
     pane: &Pane,
+    holder: u32,
     affinity: Option<Affinity>,
 ) -> Result<(), SendFailed> {
     for (sent, key) in (0u8..).zip(RESUME_KEYS) {
@@ -318,7 +319,7 @@ fn send_resume_affinity<D: Deps + ?Sized>(
             (Key::LiteralContinue, Some(Affinity::Unresolved)) => Key::LiteralUnresolved,
             _ => key,
         };
-        if !deps.session_alive_now() {
+        if !deps.session_alive_now(holder) {
             return Err(SendFailed {
                 sent,
                 err: io::Error::other(SESSION_GONE),
@@ -357,8 +358,9 @@ fn swap(r: &SwapRecord) -> Note<'_> {
 /// How this resume reaches the session.
 enum Delivery {
     /// The pane is this session's own terminal and it is showing a screen
-    /// the keys answer: type into it.
-    Keys(Pane),
+    /// the keys answer: type into it, while `holder`, the process the pane
+    /// check proved is reading it, stays in the foreground.
+    Keys { pane: Pane, holder: u32 },
     /// Type nothing. The session gets the exit-2 wake under this outcome,
     /// with this fixed `detail`.
     Wake(Outcome, Option<&'static str>),
@@ -367,19 +369,19 @@ enum Delivery {
 /// Chooses the path for one resume, before any commit (D7), so a session
 /// never gets both keys and an exit-2 wake. Each refusal is its own
 /// outcome with its own reason, so the operator can tell "no tmux" from
-/// "ownership unproven" from "the session is not reading this terminal"
-/// from "that is not a screen the keys answer", without reading the pane.
+/// "ownership unproven" from "that is not a screen the keys answer",
+/// without reading the pane.
 ///
 /// Nothing is typed until both questions are answered: the pane is this
 /// session's terminal, and it is showing a prompt Escape and `continue`
-/// are the right answer to.
+/// are the right answer to. The holder the pane check proved goes with the
+/// pane to the check before each key.
 fn delivery<D: Deps + ?Sized>(deps: &mut D) -> Delivery {
     match deps.pane_check() {
         PaneCheck::None => Delivery::Wake(Outcome::NotResumed, Some(NO_PANE)),
         PaneCheck::Unverified(reason) => Delivery::Wake(Outcome::PaneUnverified, Some(reason)),
-        PaneCheck::NotReading => Delivery::Wake(Outcome::PaneNotReading, None),
-        PaneCheck::Ready(pane) => match deps.screen_check(&pane) {
-            ScreenCheck::Held => Delivery::Keys(pane),
+        PaneCheck::Ready { pane, holder } => match deps.screen_check(&pane) {
+            ScreenCheck::Held => Delivery::Keys { pane, holder },
             ScreenCheck::Unrecognised(reason) => {
                 Delivery::Wake(Outcome::ScreenUnrecognised, Some(reason))
             }
@@ -605,8 +607,8 @@ fn run_with_affinity<D: Deps + ?Sized>(
     }
     // D7: the path is chosen first, so a session never gets both keys and
     // an exit-2 wake. Only the keys path records a resume (#3104).
-    let pane = match delivery(deps) {
-        Delivery::Keys(pane) => pane,
+    let (pane, holder) = match delivery(deps) {
+        Delivery::Keys { pane, holder } => (pane, holder),
         Delivery::Wake(outcome, reason) => {
             // The wake reaches no session held on the menu, so nothing is
             // recorded and the event stays armed for the next room event.
@@ -646,7 +648,7 @@ fn run_with_affinity<D: Deps + ?Sized>(
         }
     }
     *affinity = record.affinity.filter(|a| a.warning().is_some());
-    let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, *affinity) {
+    let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, holder, *affinity) {
         Ok(()) => (Outcome::ResumedKeys, RESUME_KEYS.len() as u8, None),
         Err(f) => (Outcome::ResumeKeysFailed, f.sent, Some(f.detail())),
     };
@@ -740,7 +742,9 @@ fn prompted_dir(root: &Path) -> PathBuf {
 struct SystemDeps {
     root: PathBuf,
     guard: FsGuard,
-    /// The hook's parent when it started: the Claude Code process.
+    /// The hook's parent when it started: the process through which Claude
+    /// Code ran the hook command, not Claude Code itself (#3156). Its pidfd
+    /// ends the wait when it exits. The pane check does not consult it.
     parent: u32,
     /// `$TMUX_PANE` when the hook started, if it is a pane id under `$TMUX`.
     /// When it is `None`, [`Deps::pane_check`] looks the pane up by the
@@ -843,7 +847,7 @@ impl Deps for SystemDeps {
     }
 
     fn pane_check(&mut self) -> PaneCheck {
-        keys::check_pane_owned(self.pane.as_ref(), self.parent)
+        keys::check_pane_owned(self.pane.as_ref())
     }
 
     fn screen_check(&mut self, pane: &Pane) -> ScreenCheck {
@@ -854,11 +858,13 @@ impl Deps for SystemDeps {
         keys::tmux_send(pane, key)
     }
 
-    fn session_alive_now(&mut self) -> bool {
+    fn session_alive_now(&mut self, holder: u32) -> bool {
         match &self.waiter {
-            // S4: alive and still in the foreground, so a Ctrl-Z between
-            // keys stops the rest from reaching the shell.
-            Some(w) => w.process_alive() && keys::foreground_now(self.parent),
+            // S4: alive, and the holder the pane check proved is still in
+            // the foreground, so a Ctrl-Z between keys stops the rest from
+            // reaching the shell. The hook's parent is never the terminal's
+            // foreground group (#3156), so it is not the process asked.
+            Some(w) => w.process_alive() && keys::foreground_now(holder),
             // Without the pidfd the session's liveness is unproven (a pid
             // can be reused), so no key is sent.
             None => false,

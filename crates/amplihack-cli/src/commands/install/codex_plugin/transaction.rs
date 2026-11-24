@@ -70,9 +70,9 @@ fn install_scoped(
     let lock = open_package_lock(root)?;
     lock.lock_exclusive()?;
     path_scope::check()?;
+    recovery_staleness::recover_startup(root, binary, home)?;
     fs::create_dir_all(home)?;
     path_scope::check()?;
-    recover_install(root, binary, home)?;
     let prepared = prepare(root, home, binary, source, hooks_binary)?;
     path_scope::check()?;
     let result = commit(root, home, binary, &prepared);
@@ -132,9 +132,10 @@ fn commit(root: &Path, home: &Path, binary: &Path, prepared: &Prepared) -> Resul
     path_scope::check()?;
     fs::rename(staged.path(), package)?;
     path_scope::check()?;
-    let record = Ownership {
+    let mut record = Ownership {
         schema_version: 1,
         transaction: Some(transaction.clone()),
+        completion: None,
         uninstall_pending: false,
         uninstall_inventory: None,
         codex_home: home.to_path_buf(),
@@ -161,8 +162,13 @@ fn commit(root: &Path, home: &Path, binary: &Path, prepared: &Prepared) -> Resul
         "native Codex registration missing installed identity"
     );
     reconcile_hooks(home, old_hooks, hooks)?;
+    completion_proof::complete(root, home, binary, &mut record)?;
     storage::sync_dependencies(root, home)?;
-    let original = regular_json(ledger)?;
+    let pending =
+        regular_json(&root.join("pending.json"))?.context("Codex commit journal missing")?;
+    preflight(&pending, root, home)?;
+    completion_proof::verify(root, home, binary, &record)?;
+    let original = (!pending["ledger"].is_null()).then(|| pending["ledger"].clone());
     atomic_json(ledger, &serde_json::to_value(&record)?, original)?;
     Ok(())
 }
