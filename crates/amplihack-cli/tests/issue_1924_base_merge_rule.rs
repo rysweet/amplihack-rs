@@ -544,12 +544,12 @@ fn a_strict_repository_gets_the_base_merged_by_the_real_base_sync_step() {
     assert_eq!(base_sync["synced"], json!("true"), "{base_sync}");
     assert_eq!(base_sync["head_sha"], json!(head2), "{base_sync}");
 
-    // 3. Exactly one more round, which assessed the synced head.
+    // 3. One more round with no limit, which assessed the synced head.
     assert!(
         loop_argv(&fx)
             .iter()
-            .any(|a| a == "autodrive_budget_loop_rounds=1"),
-        "exactly one more round: {:?}",
+            .any(|a| a == "autodrive_budget_loop_rounds="),
+        "no operator budget, so one more round keeps no limit (#3139): {:?}",
         loop_argv(&fx)
     );
     let outcome = &result.context["sync_loop_outcome"];
@@ -735,8 +735,8 @@ fn a_conflict_is_merged_resolved_pushed_and_the_pr_is_merged() {
     assert!(
         loop_argv(&fx)
             .iter()
-            .any(|a| a == "autodrive_budget_loop_rounds=1"),
-        "exactly one more round, no new count: {:?}",
+            .any(|a| a == "autodrive_budget_loop_rounds="),
+        "no operator budget, so one more round keeps no limit (#3139): {:?}",
         loop_argv(&fx)
     );
     let first_loop =
