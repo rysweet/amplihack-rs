@@ -90,7 +90,7 @@ amplihack codex [--reset-recovery] [--local-model NAME] [other amplihack options
 | Flag | Description |
 | --- | --- |
 | `--reset-recovery` | Archive a pending Codex recovery journal, then continue launch. |
-| `--local-model NAME` | Launch for a local model. `NAME` is the Codex profile `<user Codex home>/NAME.config.toml`. Also set by `AMPLIHACK_CODEX_LOCAL_MODEL`; the flag wins. An empty value is a usage error. Not allowed with `--docker` or `--auto`; Unix only. |
+| `--local-model NAME` | Launch for a local model. `NAME` is the Codex profile `<user Codex home>/NAME.config.toml`. Also set by `AMPLIHACK_CODEX_LOCAL_MODEL`; the flag wins. Not allowed with `--docker` or `--auto`; Unix only. |
 
 The reset flag must precede native arguments and the explicit `--` separator.
 Amplihack consumes it immediately after parsing, before client resolution,
@@ -120,12 +120,9 @@ The recovery status appears before the unattended task starts; the task returns
 the repository summary. See [recovery steps](../howto/install-codex-plugin.md#recover-an-interrupted-installation)
 and [ownership and archival guarantees](../concepts/codex-installation-ownership.md#journal-archival-and-explicit-reset).
 
-`--local-model NAME` starts Codex with `CODEX_HOME` set to a home amplihack
-builds at `~/.amplihack/codex-local/NAME/` from the profile, with
-`AMPLIHACK_HOOK_TEXT=none` and with `--dangerously-bypass-hook-trust` as the
-first Codex argument. Your `~/.codex` is not modified, and start-up does not
-install or reconcile the Codex plugin. Recipe agent steps cannot add flags, so
-they take the same choice from `AMPLIHACK_CODEX_LOCAL_MODEL`.
+`--local-model NAME` starts Codex on a Codex home that amplihack builds at
+`~/.amplihack/codex-local/NAME/` from the profile, in place of the plugin
+setup described above. Your `~/.codex` is not modified.
 
 ```bash
 amplihack codex --local-model inkling -- exec --output-last-message /tmp/final.txt -

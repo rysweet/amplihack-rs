@@ -1360,8 +1360,9 @@ under every value. In particular, `pre-tool-use` under `none` still denies a
 destructive command with the same decision and exit code.
 
 `limit-resume` runs before the hook dispatcher and never reads the variable.
-Under `none` it still types the resume keys and exits `2` with the same
-stderr line, so a session stopped at a usage limit still resumes.
+Under `none` it still resumes a session stopped at a usage limit, by keys or
+by its exit-2 wake with the same stderr line, exactly as with the variable
+unset.
 
 ### Failures
 
@@ -1373,7 +1374,9 @@ value: `{}` for these fail-open hooks. Telemetry is unchanged.
 The variable passes through every amplihack launcher unchanged. A Claude,
 Copilot or Codex session started inside a session that has
 `AMPLIHACK_HOOK_TEXT=none`, for example by a recipe agent step, therefore
-also gets no hook text. amplihack sets the variable only for local-model Codex
+also gets no hook text, and its stop hook approves without running: lock
+mode, power steering and reflection do not run in that session, and nothing
+at run time says so. amplihack sets the variable only for local-model Codex
 launches and never removes it. Set it yourself, or unset it for one child with
 `env -u AMPLIHACK_HOOK_TEXT`, as you need.
 

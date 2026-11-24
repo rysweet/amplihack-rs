@@ -30,6 +30,7 @@ For the steps to set one up, see
 - [Nested launches](#nested-launches)
 - [Start-up and bootstrap](#start-up-and-bootstrap)
 - [Command line and environment of Codex](#command-line-and-environment-of-codex)
+- [Model tiers](#model-tiers)
 - [Order of a launch](#order-of-a-launch)
 - [Errors](#errors)
 - [What differs in a local session](#what-differs-in-a-local-session)
@@ -84,7 +85,7 @@ and cut to 64 characters.
 | `--subprocess-safe` | Allowed, with its usual meaning: the [generic bootstrap](#start-up-and-bootstrap) is skipped. The generated home is still refreshed. |
 | `--reset-recovery` | Allowed. It still archives a journal under `~/.amplihack/codex/`. It runs at start-up, before the name is checked, so it archives the journal even when the launch then fails on an invalid name. |
 | `--no-reflection` | Allowed. |
-| Arguments after `--` (for example `-c`, `-m`, `-p`, `exec`) | Passed to Codex unchanged, after the hook-trust flag described in [Command line and environment of Codex](#command-line-and-environment-of-codex). |
+| Arguments after `--` (for example `-c`, `-m`, `-p`, `exec`) | Passed to Codex unchanged, after the two additions described in [Command line and environment of Codex](#command-line-and-environment-of-codex). A model tier word (`--model fast`, `standard` or `strong`) is the exception: it is removed, as described in [Model tiers](#model-tiers). |
 
 ## The user Codex home and the profile
 
@@ -174,46 +175,52 @@ The file is built from the profile in four steps.
    has none, `approval_policy = "never"` is set, which is what an ordinary
    launch fills into `~/.codex/config.toml`. This is a default, not an
    override.
-4. **Carry over tables Codex wrote.** `[projects.*]`, `[hooks.state.*]` and
-   `[notice]` are copied from the previous generated `config.toml`, if there is
-   one. Codex writes these itself when you trust a project, trust a hook or
-   dismiss a notice; keeping `[notice]` stops dismissed notices from
-   reappearing. Hook definitions (`[[hooks.PreToolUse]]` and similar) are not
-   carried over.
+4. **Carry over tables Codex wrote.** `[projects.*]` and `[notice]` are
+   copied from the previous generated `config.toml`, if there is one. Codex
+   writes these itself when you trust a project or dismiss a notice; keeping
+   `[notice]` stops dismissed notices from reappearing. Nothing under
+   `[hooks]` is carried over: neither hook definitions
+   (`[[hooks.PreToolUse]]` and similar) nor `[hooks.state]`, where Codex
+   records a hook you trust or switch off in `/hooks`. Every launch bypasses
+   hook trust, so the only effect `[hooks.state]` could have is to switch a
+   hook off, amplihack's included. A handler of yours that you switch off in
+   `/hooks` is therefore on again after the next refresh. To stop running one
+   of your handlers in local sessions, remove it from `~/.codex/hooks.json`.
 
 The output depends only on these inputs, so two launches with the same inputs
-write the same bytes. For the `inkling` profile above, with no previous file,
-the settings are:
+write the same bytes. For the `inkling` profile above, with no previous file
+and a home directory of `/home/you`, the file is:
 
 ```toml
-model = "inkling-2-mini"
-model_provider = "llamacpp-local"
-model_context_window = 65536
-project_doc_max_bytes = 0
-model_instructions_file = "/home/ryan/.amplihack/codex-local/inkling/instructions.md"
-web_search = "disabled"
 approval_policy = "never"
-
-[model_providers.llamacpp-local]
-name = "llama.cpp (local)"
-base_url = "http://127.0.0.1:8080/v1"
-wire_api = "responses"
-stream_idle_timeout_ms = 1800000
-stream_max_retries = 2
+model = "inkling-2-mini"
+model_context_window = 65536
+model_instructions_file = "/home/you/.amplihack/codex-local/inkling/instructions.md"
+model_provider = "llamacpp-local"
+project_doc_max_bytes = 0
+web_search = "disabled"
 
 [features]
+apps = false
+goals = false
 hooks = true
 multi_agent = false
-goals = false
-view_image = false
 plugins = false
-apps = false
+view_image = false
+
+[model_providers.llamacpp-local]
+base_url = "http://127.0.0.1:8080/v1"
+name = "llama.cpp (local)"
+stream_idle_timeout_ms = 1800000
+stream_max_retries = 2
+wire_api = "responses"
 
 [skills.bundled]
 enabled = false
 ```
 
-Compare settings rather than layout: key order within the file is fixed for
+Keys are written in alphabetical order within each table, not in the
+profile's order. Compare settings rather than layout: the layout is fixed for
 given inputs but is not part of this contract.
 
 The setting names were checked against codex-cli 0.166.0, where `codex
@@ -231,7 +238,7 @@ The file holds `PreToolUse` and nothing else:
       {
         "hooks": [
           {
-            "command": "env AMPLIHACK_HOOK_PROTOCOL=codex '/home/ryan/.local/bin/amplihack-hooks' pre-tool-use",
+            "command": "env AMPLIHACK_HOOK_PROTOCOL=codex '/home/you/.local/bin/amplihack-hooks' pre-tool-use",
             "type": "command"
           }
         ]
@@ -239,7 +246,7 @@ The file holds `PreToolUse` and nothing else:
       {
         "hooks": [
           {
-            "command": "/usr/bin/python3 -I /home/ryan/.codex/hooks/codex-guard-adapter.py block-tmux-kill.py",
+            "command": "python3 ~/.codex/hooks/my-guard.py tmux",
             "type": "command"
           }
         ]
@@ -247,7 +254,7 @@ The file holds `PreToolUse` and nothing else:
       {
         "hooks": [
           {
-            "command": "/usr/bin/python3 -I /home/ryan/.codex/hooks/codex-guard-adapter.py worker-bash-guard.py",
+            "command": "python3 ~/.codex/hooks/my-guard.py shell",
             "type": "command"
           }
         ]
@@ -265,10 +272,10 @@ it written as `'\''`, as the Codex plugin's own hook commands are.
 The hooks binary is found as `amplihack install` finds it:
 `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH`, then the directory of the `amplihack`
 executable, then `PATH`, then `~/.local/bin` and `~/.cargo/bin`. The result
-must be an absolute path to a regular, executable file, in valid UTF-8 with no
-control characters. A relative result is an error naming
-`AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH`; it is not made absolute, so a checkout
-cannot supply the guard.
+must be an absolute path to a regular, executable file named
+`amplihack-hooks`, in valid UTF-8 with no control characters. A relative
+result is an error naming `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH`; it is not
+made absolute, so a checkout cannot supply the guard.
 
 **Your PreToolUse groups** from the user Codex home's `hooks.json` follow, in
 their original order and otherwise unchanged, except that handlers which run
@@ -278,21 +285,28 @@ command, split into shell words and with one optional leading `env NAME=value
 
 - a program named `amplihack-hooks`, or an absolute path under
   `~/.amplihack/codex/` ending in `bin/hook` (the Codex plugin's wrapper);
-- followed by `pre-tool-use`.
+- followed by `pre-tool-use`;
+
+and every word, the `env` prefix included, is one the shell takes as it is:
+no whitespace, no control character and none of
+``; & | < > ( ) $ ` \ " ' * ? [ ] { } ~ ! #``. The words are split on
+whitespace only, so a word holding one of these characters may be an operator,
+an expansion or a second command to the shell; such a handler is kept, even
+when the character was quoted.
 
 So on a host whose `~/.codex/hooks.json` has these four PreToolUse handlers:
 
 ```text
-env XPIA_ENABLED=false '/home/ryan/.amplihack/codex/market/plugin/bin/hook' pre-tool-use
-'/home/ryan/.amplihack/codex/market/plugin/bin/hook' pre-tool-use
-/usr/bin/python3 -I /home/ryan/.codex/hooks/codex-guard-adapter.py block-tmux-kill.py
-/usr/bin/python3 -I /home/ryan/.codex/hooks/codex-guard-adapter.py worker-bash-guard.py
+env XPIA_ENABLED=false '/home/you/.amplihack/codex/market/plugin/bin/hook' pre-tool-use
+'/home/you/.amplihack/codex/market/plugin/bin/hook' pre-tool-use
+python3 ~/.codex/hooks/my-guard.py tmux
+python3 ~/.codex/hooks/my-guard.py shell
 ```
 
-the first two are removed and the two Python guards are kept, as in the file
-above. A compound command, a command that cannot be split, and a handler that
-is not a command are kept. A group left with no handlers is dropped. A handler
-that should have been removed but was not runs the guard twice, which is safe.
+the first two are removed and the two guards are kept, as in the file above.
+A compound command, a command that cannot be split, and a handler that is not
+a command are kept. A group left with no handlers is dropped. A handler that
+should have been removed but was not runs the guard twice, which is safe.
 
 Other events from your `hooks.json` (`SessionStart`, `UserPromptSubmit`,
 `PostToolUse`, `Stop`, `SessionEnd`) are not copied.
@@ -352,8 +366,13 @@ reusing, amplihack checks the home without writing to it:
 - `config.toml`, `hooks.json` and the rules file are private regular files and
   not symbolic links;
 - `config.toml` parses and sets `[features]` `hooks = true`;
+- `config.toml` does not switch amplihack's handler off: no `[hooks.state]`
+  entry for the first PreToolUse group of the home's `hooks.json`, keyed by
+  that file's path as `CODEX_HOME` gives it or canonicalised, has an `enabled`
+  value other than `true`, and no such entry is anything but a table;
 - the first PreToolUse group in `hooks.json` is exactly amplihack's entry, and
-  its hooks binary is still an absolute, executable regular file;
+  its hooks binary is still an absolute, executable regular file named
+  `amplihack-hooks`;
 - the rules file's bytes equal what the current policy renders.
 
 If any check fails, the launch stops with an error naming the home and asking
@@ -362,9 +381,9 @@ you to relaunch from outside the session. Codex is not started. Changing
 until you relaunch.
 
 Reuse avoids rewriting `config.toml` under a running outer Codex. Apart from
-`[features]` `hooks`, it does not check the settings in `config.toml`; any
-other setting changed inside the session, such as `web_search`, lasts until
-the next launch from outside it.
+`[features]` `hooks` and amplihack's `[hooks.state]` entry, it does not check
+the settings in `config.toml`; any other setting changed inside the session,
+such as `web_search`, lasts until the next launch from outside it.
 
 ## Start-up and bootstrap
 
@@ -395,35 +414,45 @@ them it does not run.
 
 ## Command line and environment of Codex
 
-**Hook trust.** amplihack puts `--dangerously-bypass-hook-trust` first unless
-the Codex arguments (those after amplihack's own `--`) already contain it. Only
-an occurrence ahead of any `--` among the Codex arguments counts: Codex reads
-what follows such a `--` as positional text, not as a flag. The agent-step
-injection then sees the flag and does not add it again, so it appears exactly
-once for interactive and `exec` launches alike.
+amplihack puts two things before the Codex arguments (those after
+amplihack's own `--`):
+
+- **Hook trust.** `--dangerously-bypass-hook-trust` comes first, unless the
+  Codex arguments already contain it. Only an occurrence ahead of any `--`
+  among the Codex arguments counts: Codex reads what follows such a `--` as
+  positional text, not as a flag. The agent-step injection then sees the flag
+  and does not add it again, so it appears exactly once for interactive and
+  `exec` launches alike.
+- **Hooks on.** `-c features.hooks=true` comes next, always. A trusted
+  project's `.codex/config.toml` takes precedence over the generated
+  `config.toml` but not over the command line, so this keeps hooks on in such
+  a project. A `-c features.hooks=false` or `--disable hooks` that you pass
+  comes later on the command line and still wins.
 
 ```sh
 amplihack codex --local-model inkling
-# → codex --dangerously-bypass-hook-trust
+# → codex --dangerously-bypass-hook-trust -c features.hooks=true
 
 amplihack codex --local-model inkling -- exec --output-last-message /tmp/final.txt -
-# → codex --dangerously-bypass-hook-trust exec --sandbox danger-full-access --output-last-message /tmp/final.txt -
+# → codex --dangerously-bypass-hook-trust -c features.hooks=true exec --sandbox danger-full-access --output-last-message /tmp/final.txt -
 
 amplihack codex --local-model inkling -- --dangerously-bypass-hook-trust exec -
-# → codex --dangerously-bypass-hook-trust exec --sandbox danger-full-access -
+# → codex -c features.hooks=true --dangerously-bypass-hook-trust exec --sandbox danger-full-access -
 ```
 
-When amplihack adds the flag it writes one line to stderr before Codex starts.
-The line names the flag, the profile, the home and the number of your
-PreToolUse handlers carried over. It never contains command text:
+When amplihack adds the hook-trust flag it writes one line to stderr before
+Codex starts. The line names what was added, the profile, the home and the
+number of your PreToolUse handlers carried over. It never contains command
+text:
 
 ```text
-amplihack: codex local model "inkling": added --dangerously-bypass-hook-trust (Codex home "/home/ryan/.amplihack/codex-local/inkling", 2 user PreToolUse handlers carried over)
+amplihack: codex local model "inkling": added --dangerously-bypass-hook-trust and -c features.hooks=true (Codex home "/home/you/.amplihack/codex-local/inkling", 2 user PreToolUse handlers carried over)
 ```
 
 With exactly one handler carried over, the count reads
 `1 user PreToolUse handler carried over`. Any other number, including `0`,
-uses `handlers`.
+uses `handlers`. No line is written when you passed the hook-trust flag
+yourself.
 
 On an `exec` launch the agent-step notice from
 [launch flag injection](./launch-flag-injection.md#codex-agent-step-flags)
@@ -437,7 +466,7 @@ No `--profile` is passed: the model and provider come from the generated
 
 | Variable | Value |
 |---|---|
-| `CODEX_HOME` | the generated home, for example `/home/ryan/.amplihack/codex-local/inkling` |
+| `CODEX_HOME` | the generated home, for example `/home/you/.amplihack/codex-local/inkling` |
 | `AMPLIHACK_HOOK_TEXT` | `none` |
 | `AMPLIHACK_CODEX_LOCAL_MODEL` | the selected name |
 
@@ -447,6 +476,22 @@ run. amplihack's own process environment is not changed.
 An ordinary `amplihack codex` launch passes `CODEX_HOME` and
 `AMPLIHACK_HOOK_TEXT` through exactly as it received them, absent when absent,
 and creates no `codex-local` directory.
+
+## Model tiers
+
+A recipe agent step may declare a [model tier](./model-tiers.md), which the
+recipe runner puts on the command line as `--model fast`, `standard` or
+`strong`. On a local-model launch the profile sets the model and the reasoning
+effort, so amplihack removes the tier word and adds nothing in its place:
+
+- no `-c model_reasoning_effort=…`;
+- no model from `model.force` or `AMPLIHACK_FORCE_MODEL`;
+- no `AMPLIHACK_DEFAULT_MODEL`.
+
+One stderr line says that the tier, or `model.force`, was not applied, and the
+step's record in `model-tiers.jsonl` has `fallback` set to `local_model`. A
+concrete `--model <id>`, such as `--model qwen3`, and any `-c` you pass reach
+Codex unchanged.
 
 ## Order of a launch
 
@@ -480,15 +525,15 @@ Each error exits non-zero and Codex is not started.
 | Not a Unix platform | that local-model launches are Unix only |
 | Docker turned on | `--docker` or `AMPLIHACK_USE_DOCKER` |
 | `--auto` | `--auto` |
-| Profile missing | the expected path, for example `/home/ryan/.codex/inkling.config.toml` |
+| Profile missing | the expected path, for example `/home/you/.codex/inkling.config.toml` |
 | Profile not a regular file, over 1 MiB, or not valid TOML | the path, and the line for a parse error |
 | `features`, `skills` or `skills.bundled` in the profile is not a table | the path and the key |
 | User `hooks.json` malformed, wrong shape, not a regular file or over 1 MiB | the path, and the line and column for a parse error |
-| Hooks binary not found, relative, not a regular file, not executable, not UTF-8 or containing control characters | `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` |
+| Hooks binary not found, relative, not a regular file, not executable, not UTF-8, containing control characters or not named `amplihack-hooks` | `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` |
 | `~/.amplihack` not a directory, not owned by you, or writable by others | the path |
 | A symbolic link at the home, `rules/` or an owned file; a directory with loose permissions | the path |
 | Previous generated `config.toml` does not parse | the path and the line |
-| A reused home fails its checks | the home, and that you should relaunch from outside the session |
+| A reused home fails its checks, including a `config.toml` that switches amplihack's handler off | the home, the check, and that you should relaunch from outside the session |
 
 No message quotes a value from the profile, the generated `config.toml` or
 your `hooks.json`. Paths and names are printed escaped.
@@ -502,9 +547,13 @@ your `hooks.json`. Paths and names are printed escaped.
   In a local session only the PreToolUse hook is registered anyway; the
   variable also covers hooks reached another way, described below.
 - **The command check still runs.** The pre-tool-use hook and the rules file
-  deny a destructive command exactly as in an ordinary session. The generated
-  `config.toml` keeps `[features]` `hooks = true`, so a profile cannot turn
-  the hook off.
+  deny a destructive command as in an ordinary session. Hooks are forced on
+  twice: `[features]` `hooks = true` in the generated `config.toml`, so the
+  profile cannot turn them off, and `-c features.hooks=true` on the command
+  line, so a trusted project's `.codex/config.toml` cannot either. A `-c` or
+  `--disable hooks` you pass after `--` still turns them off. Apart from
+  hooks, a trusted project's `.codex/config.toml` can change settings exactly
+  as in an ordinary session.
 - **Hook trust is bypassed, interactive sessions included.** Codex runs
   amplihack's entry, your carried-over PreToolUse handlers and the hooks of any
   project trusted in the generated home (`.codex/hooks.json` in that project)
@@ -552,8 +601,8 @@ your `hooks.json`. Paths and names are printed escaped.
   the profile file or `hooks.json`, are not carried over.
 - A table that a later Codex starts writing to `config.toml` is lost at each
   refresh until amplihack adds it to the carry-over list.
-- Two launches with the same name at the same moment can lose a trust entry
-  the other session wrote between its read and its write.
+- Two launches with the same name at the same moment can lose a project trust
+  entry the other session wrote between its read and its write.
 
 ## Related
 

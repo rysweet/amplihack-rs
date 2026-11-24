@@ -11,7 +11,8 @@ Use `amplihack codex --local-model <name>` when Codex talks to a model served
 from your own machine. amplihack starts Codex with a Codex home of its own,
 adds no hook text to the model's context and keeps the command-check hook, so
 the first prompt stays small and a destructive command is still blocked.
-Claude, Copilot and ordinary `amplihack codex` sessions are unaffected.
+Claude, Copilot and ordinary `amplihack codex` sessions are unaffected, unless
+they are started from inside a local session.
 
 ## Contents
 
@@ -67,18 +68,10 @@ amplihack codex --local-model inkling
 ```
 
 amplihack builds or refreshes `~/.amplihack/codex-local/inkling/`, prints one
-line to stderr and starts Codex:
-
-```text
-amplihack: codex local model "inkling": added --dangerously-bypass-hook-trust (Codex home "/home/ryan/.amplihack/codex-local/inkling", 2 user PreToolUse handlers carried over)
-```
-
-Codex runs as `codex --dangerously-bypass-hook-trust` with
-`CODEX_HOME=/home/ryan/.amplihack/codex-local/inkling`. Hook trust is bypassed
-so that the command-check hook runs in a new Codex home without a `/hooks`
-review; see
+line to stderr naming the flags it added, and starts Codex on that home. Hook
+trust is bypassed in a local session, so read
 [What differs in a local session](../reference/codex-local-model-launch.md#what-differs-in-a-local-session)
-before you trust a project in that session.
+before you trust a project in it.
 
 Codex options go after `--`, as for any `amplihack codex` launch:
 
@@ -98,11 +91,11 @@ cat "$final_dir/final.txt"
 rm -rf -- "$final_dir"
 ```
 
-Codex runs as
-`codex --dangerously-bypass-hook-trust exec --sandbox danger-full-access --output-last-message <file> -`.
-The `--sandbox` comes from the usual
-[agent-step flags](../reference/launch-flag-injection.md#codex-agent-step-flags);
-pass your own `--sandbox` after `exec` to choose another.
+Codex runs with full access, as any
+[agent step](../reference/launch-flag-injection.md#codex-agent-step-flags)
+does. Pass your own `--sandbox` after `exec` to choose another. The full
+command line is in the
+[reference](../reference/codex-local-model-launch.md#command-line-and-environment-of-codex).
 
 ## Run recipe agent steps on the local model
 
@@ -125,7 +118,9 @@ name, such as a recipe the model runs from that session, reuses the home
 without reading the profile.
 
 `--local-model` on the command line wins over the variable. An empty variable
-counts as unset.
+counts as unset. A [model tier](../reference/codex-local-model-launch.md#model-tiers)
+a step declares is not applied: the profile sets the model and the reasoning
+effort.
 
 ## Check what the session uses
 
@@ -145,53 +140,10 @@ instructions.md
 rules/amplihack-dangerous-commands.rules
 ```
 
-Check amplihack's settings in `config.toml`. The script needs Python 3.11 or
-later for `tomllib`, and prints the settings in a fixed order whatever their
-order in the file:
-
-```sh
-python3 -I - ~/.amplihack/codex-local/inkling/config.toml <<'EOF'
-import json, sys, tomllib
-with open(sys.argv[1], "rb") as f:
-    config = tomllib.load(f)
-features = config.get("features", {})
-for key in ("project_doc_max_bytes", "model_instructions_file", "web_search", "approval_policy"):
-    print(key, "=", json.dumps(config.get(key)))
-for key in ("hooks", "multi_agent", "goals", "view_image", "plugins", "apps"):
-    print(f"features.{key} =", json.dumps(features.get(key)))
-EOF
-```
-
-```text
-project_doc_max_bytes = 0
-model_instructions_file = "/home/ryan/.amplihack/codex-local/inkling/instructions.md"
-web_search = "disabled"
-approval_policy = "never"
-features.hooks = true
-features.multi_agent = false
-features.goals = false
-features.view_image = false
-features.plugins = false
-features.apps = false
-```
-
-`approval_policy` is your profile's value when the profile sets one.
-`features.hooks` is always `true`, even if the profile sets it to `false`. Check
-that `hooks.json` holds only PreToolUse, with amplihack's entry first:
-
-```sh
-python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(list(d["hooks"])); print(d["hooks"]["PreToolUse"][0]["hooks"][0]["command"])' \
-  ~/.amplihack/codex-local/inkling/hooks.json
-```
-
-```text
-['PreToolUse']
-env AMPLIHACK_HOOK_PROTOCOL=codex '/home/ryan/.local/bin/amplihack-hooks' pre-tool-use
-```
-
-Your own PreToolUse handlers from `~/.codex/hooks.json` follow it. The full
-contents of each file are in the
+What amplihack writes in each file is in the
 [reference](../reference/codex-local-model-launch.md#the-generated-codex-home).
+`hooks.json` holds amplihack's entry first, then your own PreToolUse handlers
+from `~/.codex/hooks.json`.
 
 ## Change the model or provider settings
 
@@ -204,8 +156,10 @@ amplihack codex --local-model inkling
 
 Each launch from outside a local session refreshes the home from the profile.
 A change you make by hand to an amplihack setting in the generated
-`config.toml` is undone at the next launch. Projects you trusted, hooks you
-trusted and notices you dismissed in the local session are kept.
+`config.toml` is undone at the next launch. Projects you trusted and notices
+you dismissed in the local session are kept. A handler you switched off in
+`/hooks` is on again after the next launch; to stop running one of your
+handlers in local sessions, remove it from `~/.codex/hooks.json`.
 
 To use a second model, add another profile file, for example
 `~/.codex/qwen.config.toml`, and launch with `--local-model qwen`. Each name
@@ -218,14 +172,6 @@ Drop the flag and clear the variable:
 ```sh
 unset AMPLIHACK_CODEX_LOCAL_MODEL
 amplihack codex
-```
-
-A local session exports `AMPLIHACK_HOOK_TEXT=none` to everything it starts.
-If you start Claude or Copilot from inside one and want amplihack's hook text,
-clear that too:
-
-```sh
-env -u AMPLIHACK_HOOK_TEXT amplihack claude
 ```
 
 ## Remove a generated home
@@ -243,17 +189,17 @@ next local-model launch with that name builds a fresh home.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Error naming `/home/ryan/.codex/inkling.config.toml` | The profile file is missing | Create it, or check the name. With `CODEX_HOME` set, the file is looked up there. |
+| Error naming `~/.codex/inkling.config.toml` | The profile file is missing | Create it, or check the name. With `CODEX_HOME` set, the file is looked up there. |
 | Error about the name rule, naming the flag or `AMPLIHACK_CODEX_LOCAL_MODEL` | The name has a character outside `[A-Za-z0-9._-]`, is longer than 64 characters, or is `.` or `..` | Rename the profile file and use the new name. |
 | Error naming `--docker`, `AMPLIHACK_USE_DOCKER` or `--auto` | These modes are not available with a local model | Drop the option, or unset `AMPLIHACK_USE_DOCKER`. |
-| Error naming `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | The hooks binary was not found, or was found by a relative path | Run `amplihack install`, or set the variable to the absolute path of `amplihack-hooks`. |
+| Error naming `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | The hooks binary was not found, was found by a relative path, or is not named `amplihack-hooks` | Run `amplihack install`, or set the variable to the absolute path of `amplihack-hooks`. |
 | Error naming `~/.codex/hooks.json` | Your `hooks.json` does not parse or has the wrong shape | Fix the file at the line given. |
 | Error naming the generated `config.toml` | The generated file does not parse | Fix it, or delete it and launch again. |
 | Error naming `~/.amplihack` | It is not a directory, is not owned by you, or is writable by others. A symbolic link at `~/.amplihack` is followed and is accepted when its target passes these checks. | Make it a directory you own and remove write permission for others, for example `chmod go-w ~/.amplihack`. amplihack does not change its mode. |
 | Error naming a path under `~/.amplihack/codex-local/` | A directory there has permissions looser than 0700, or the path is a symbolic link | `chmod 700` the directory. For a link, remove it and launch again, and amplihack creates a real directory or file in its place. amplihack does not change modes itself. |
-| A nested launch fails and asks you to relaunch from outside the session | The reused home no longer passes its checks, for example after `policy.deny_commands` changed | Exit the session and launch again from a shell outside it. |
+| A nested launch fails and asks you to relaunch from outside the session | The reused home no longer passes its checks, for example after `policy.deny_commands` changed, or after amplihack's handler was switched off in `/hooks` | Exit the session and launch again from a shell outside it. |
 | Codex reports an unknown setting such as `web_search` | A Codex release renamed a setting amplihack writes | Report it, with your `codex --version`. |
-| No amplihack hook text in a Claude session | `AMPLIHACK_HOOK_TEXT=none` was inherited from a local session | Start Claude with `env -u AMPLIHACK_HOOK_TEXT`. |
+| No amplihack hook text in a Claude or Copilot session | It was started from inside a local session and [inherited](../reference/hook-specifications.md#inheritance) `AMPLIHACK_HOOK_TEXT=none` | Start it with `env -u AMPLIHACK_HOOK_TEXT`. |
 
 For every rule behind these messages, see
 [Codex Local-Model Launches](../reference/codex-local-model-launch.md).

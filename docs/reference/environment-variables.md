@@ -1115,22 +1115,13 @@ backend configuration reference.
 **Set by:** a local-model `amplihack codex` launch, for the Codex process it starts
 
 Makes an `amplihack codex` launch a
-[local-model launch](./codex-local-model-launch.md): Codex runs with its own
-home at `~/.amplihack/codex-local/<name>/`, built from the profile
-`<user Codex home>/<name>.config.toml`, with `AMPLIHACK_HOOK_TEXT=none`. It is
-the environment form of `amplihack codex --local-model <name>`, for recipe
-agent steps, which inherit their environment and cannot add flags. The flag
-wins when both are given. An empty value counts as unset; the value is not
-trimmed. An invalid name is an error and never falls back to an ordinary
-launch. `amplihack claude`, `amplihack copilot` and `amplihack amplifier`
-ignore it.
-
-```sh
-AMPLIHACK_AGENT_BINARY=codex AMPLIHACK_CODEX_LOCAL_MODEL=inkling \
-  amplihack recipe run default-workflow -c task_description="Add a doc comment to fn parse_name in src/name.rs" -c repo_path=.
-```
-
-See [Run amplihack codex with a Local Model](../howto/run-codex-with-a-local-model.md).
+[local-model launch](./codex-local-model-launch.md), built from the profile
+`<user Codex home>/<name>.config.toml`. It is the environment form of
+`amplihack codex --local-model <name>`, for recipe agent steps, which cannot
+add flags. The flag wins when both are given, an empty value counts as unset,
+and an invalid name is an error. Other launchers ignore it. See
+[Selecting a local-model launch](./codex-local-model-launch.md#selecting-a-local-model-launch)
+and [Run amplihack codex with a Local Model](../howto/run-codex-with-a-local-model.md).
 
 ---
 
@@ -1143,18 +1134,10 @@ See [Run amplihack codex with a Local Model](../howto/run-codex-with-a-local-mod
 **Read by:** `amplihack-hooks` for `session-start`, `user-prompt-submit` (and `user-prompt`), `workflow-classification-reminder` and `stop` (and `agentStop`) only
 **Set by:** a local-model `amplihack codex` launch, to `none`, for the Codex process it starts
 
-Under `none` the session-start, user-prompt-submit and
-workflow-classification-reminder hooks add no text to the model's context,
-and the stop hook approves without blocking or adding text. `pre-tool-use`
-still denies a destructive command, and `limit-resume` still resumes a session
-stopped at a usage limit; neither reads the variable. An unknown value
-behaves as `full` and writes one line to stderr naming the variable, never to
-the hook's stdout.
-
-amplihack passes the variable through every launcher unchanged, so a Claude,
-Copilot or Codex session started inside a local-model session inherits
-`none`. Use `env -u AMPLIHACK_HOOK_TEXT` to give one child the full text
-again. Full rules and the output of each hook: see
+Under `none` the hooks that add text to the model's context add none, and
+the stop hook approves without blocking. `pre-tool-use` and `limit-resume` are
+unaffected. An unknown value behaves as `full`. The rules, the output of each
+hook and which sessions inherit the value are in
 [Hook text setting](./hook-specifications.md#hook-text-setting).
 
 ---
