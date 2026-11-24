@@ -312,8 +312,8 @@ pub fn watch(
     ctx.in_flight = Some(std::sync::Mutex::new(super::inflight::InFlight::new(
         super::inflight::max_age(probe_timeout),
     )));
-    // Armed once, and after the stop flag; see `wake::Waker::arm` (#2909).
-    let mut waker = wake::Waker::arm(&rs);
+    // Armed once, after the stop flag, with any test lifetime pipe (#2909, #2095).
+    let mut waker = wake::Waker::arm(&rs, &stop);
     let mut idle = false;
     while !stop.load(Ordering::SeqCst) {
         if !paused(store.root()) {
