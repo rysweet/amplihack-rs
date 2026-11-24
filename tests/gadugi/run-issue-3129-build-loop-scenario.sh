@@ -31,9 +31,10 @@
 #           worktree, pushes with plain `git push` and chooses `continue`;
 #           with the branch pushed and no pull request it chooses `open-pr`
 #           with the title and body the task text gives; then `mark-ready`;
-#           then `ready`. A git step that fails, or a turn past the eighth,
-#           ends in a hand-off naming the operator, so a fault ends the run
-#           instead of looping. Every call is recorded in
+#           then `ready`. It follows state, never a count of turns: a
+#           previous action that failed, a git step that fails, or a reading
+#           it does not expect ends in a hand-off naming the operator, so a
+#           fault ends the run instead of looping. Every call is recorded in
 #           $WORK/agent-calls.jsonl.
 #
 # Cases, from recorded facts only:
@@ -420,8 +421,16 @@ if has 'You are one turn of a goal-driven loop'; then
       text:("The build could not go on: " + $d + ". The operator decides what happens next.")},outcomes:[],
       why:("I read the state and could not take the next step: " + $d + ".")}'
   }
-  if [ "${turn:-0}" -gt 8 ]; then
-    response="$(handoff "the build did not reach ready in eight turns; the last result was ${prev}")"
+  # The policy ends on state, never on a count of turns. A previous action
+  # that failed hands off naming it; each step below that succeeds changes
+  # the state the next turn reads; and a state the policy does not expect
+  # hands off naming it.
+  case "$prev" in
+    none|continued|continue|opened|already-open|reviewed|marked-ready|already-ready|checks-complete|checks-pending|guidance-arrived|skipped-guidance) prev_ok=true ;;
+    *) prev_ok=false ;;
+  esac
+  if [ "$prev_ok" != true ]; then
+    response="$(handoff "the previous action ended ${prev}")"
   elif [ -z "$own" ] && [ -z "$pushed" ]; then
     if [ -z "$wt" ] || [ -z "$br" ]; then
       response="$(handoff "the reading names no worktree or branch for this run")"
@@ -441,8 +450,10 @@ if has 'You are one turn of a goal-driven loop'; then
       '{action:"open-pr",args:{title:$t,body:$b},outcomes:[],why:"The branch is pushed and has no pull request, so I open it with the title and description the task gives."}')"
   elif [ "$prev" != marked-ready ] && [ "$prev" != already-ready ]; then
     response="$(jq -nc '{action:"mark-ready",args:{},outcomes:[],why:"The pull request is open with the task text, so I mark it ready for review."}')"
-  else
+  elif [ "$prev" = marked-ready ] || [ "$prev" = already-ready ]; then
     response="$(jq -nc '{action:"ready",args:{text:"The change is pushed, and its pull request is open and ready for review."},outcomes:[],why:"The pull request is ready for review, so the build is done."}')"
+  else
+    response="$(handoff "the reading is not one this stand-in expects: own pull request '${own}', pushed head '${pushed}', previous result ${prev}")"
   fi
 fi
 

@@ -34,9 +34,9 @@
 #           would act on it. With no pushed branch it commits feature.txt in
 #           the run's worktree and pushes with plain `git push` (`continue`);
 #           with no pull request it chooses `open-pr` with a plain title and
-#           description; then `mark-ready`; then `ready`. A git step that
-#           fails, or a turn past the eighth, hands off, so a fault ends the
-#           build instead of looping.
+#           description; then `mark-ready`; then `ready`. A previous action
+#           that failed, a git step that fails, or a reading it does not
+#           expect hands off, so a fault ends the build instead of looping.
 #           In part 2 one answer cannot serve every step: the build stage's
 #           preflight, its no-merge directive, its PR resolution and the goal
 #           loop's turn (#3129) need shapes that contradict each other. So the
@@ -555,8 +555,9 @@ opens() { case "$first" in "$1"*) return 0 ;; esac; return 1; }
 # and is the one a competent agent would give: commit the task's file in the
 # run's worktree and push with plain `git push`, then open the pull request
 # with a plain title and description, then mark it ready, then end with
-# `ready`. A git step that fails, or a turn past the eighth, hands off to the
-# operator, so a fault ends the build instead of looping.
+# `ready`. The answer follows state, never a count of turns: a previous action
+# that failed, a git step that fails, or a reading it does not expect hands off
+# to the operator, naming it, so a fault ends the build instead of looping.
 if [ "${QA_RUN_LABEL:-}" = build ] && has 'You are one turn of a goal-driven loop'; then
   step=autodrive-goal-turn/decide
   reading="$(printf '%s\n' "$input" | awk '$0 == "<<<UNTRUSTED-READING" { f = 1; next } $0 == "UNTRUSTED-READING>>>" { f = 0 } f')"
@@ -573,8 +574,12 @@ if [ "${QA_RUN_LABEL:-}" = build ] && has 'You are one turn of a goal-driven loo
       text:("The build could not go on: " + $d + ". The operator decides what happens next.")},outcomes:[],
       why:("I read the state and could not take the next step: " + $d + ".")}'
   }
-  if [ "${turn:-0}" -gt 8 ]; then
-    response="$(build_handoff "the build did not reach ready in eight turns; the last result was ${prev}")"
+  case "$prev" in
+    none|continued|continue|opened|already-open|reviewed|marked-ready|already-ready|checks-complete|checks-pending|guidance-arrived|skipped-guidance) prev_ok=true ;;
+    *) prev_ok=false ;;
+  esac
+  if [ "$prev_ok" != true ]; then
+    response="$(build_handoff "the previous action ended ${prev}")"
   elif [ -z "$own" ] && [ -z "$pushed" ]; then
     if [ -z "$wt" ] || [ -z "$br" ]; then
       response="$(build_handoff "the reading names no worktree or branch for this run")"
@@ -592,8 +597,10 @@ if [ "${QA_RUN_LABEL:-}" = build ] && has 'You are one turn of a goal-driven loo
       why:"The branch is pushed and has no pull request, so I open it with a plain title and description."}')"
   elif [ "$prev" != marked-ready ] && [ "$prev" != already-ready ]; then
     response="$(jq -nc '{action:"mark-ready",args:{},outcomes:[],why:"The pull request is open, so I mark it ready for review."}')"
-  else
+  elif [ "$prev" = marked-ready ] || [ "$prev" = already-ready ]; then
     response="$(jq -nc '{action:"ready",args:{text:"The change is pushed, and its pull request is open and ready for review."},outcomes:[],why:"The pull request is ready for review, so the build is done."}')"
+  else
+    response="$(build_handoff "the reading is not one this stand-in expects: own pull request '${own}', pushed head '${pushed}', previous result ${prev}")"
   fi
 fi
 
