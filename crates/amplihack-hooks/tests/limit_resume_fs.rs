@@ -972,9 +972,10 @@ impl Deps for DiskDeps {
     }
     fn pane_check(&mut self) -> PaneCheck {
         if self.keys {
-            return PaneCheck::Ready(
-                Pane::parse(Some("/tmp/tmux-1000/default,1,0"), Some("%3")).unwrap(),
-            );
+            return PaneCheck::Ready {
+                pane: Pane::parse(Some("/tmp/tmux-1000/default,1,0"), Some("%3")).unwrap(),
+                holder: 300,
+            };
         }
         PaneCheck::None
     }
@@ -987,7 +988,7 @@ impl Deps for DiskDeps {
         self.sent.push(key);
         Ok(())
     }
-    fn session_alive_now(&mut self) -> bool {
+    fn session_alive_now(&mut self, _holder: u32) -> bool {
         true
     }
 }
@@ -1268,9 +1269,10 @@ impl Deps for SwapDeps {
     }
     fn pane_check(&mut self) -> PaneCheck {
         if self.keys {
-            return PaneCheck::Ready(
-                Pane::parse(Some("/tmp/tmux-1000/default,1,0"), Some("%3")).unwrap(),
-            );
+            return PaneCheck::Ready {
+                pane: Pane::parse(Some("/tmp/tmux-1000/default,1,0"), Some("%3")).unwrap(),
+                holder: 300,
+            };
         }
         PaneCheck::None
     }
@@ -1283,7 +1285,7 @@ impl Deps for SwapDeps {
         self.sent.push(key);
         Ok(())
     }
-    fn session_alive_now(&mut self) -> bool {
+    fn session_alive_now(&mut self, _holder: u32) -> bool {
         true
     }
 }
