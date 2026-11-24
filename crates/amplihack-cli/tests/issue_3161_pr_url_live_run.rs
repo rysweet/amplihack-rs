@@ -246,3 +246,21 @@ fn b3_a_pointer_whose_run_is_not_live_does_not_stop_the_write() {
     assert_eq!(written[0].2, "pr");
     assert!(f.entries(&run_dir.join("guidance")).is_empty());
 }
+
+#[test]
+fn b3_an_unreadable_log_folder_is_reported_rather_than_read_as_no_live_run() {
+    let f = GuideFixture::new();
+    // A log folder anyone can write to fails the trust rule, so no run can
+    // be looked up. The write still goes to the pull request folder, and the
+    // sender is told the lookup did not happen.
+    fs::create_dir_all(&f.recipe_logs).unwrap();
+    fs::set_permissions(&f.recipe_logs, fs::Permissions::from_mode(0o777)).unwrap();
+    let o = f.guide_text(&[PR_URL], MARKER);
+    assert!(o.status.success(), "{}", show(&o));
+    assert_eq!(written_lines(&o).len(), 1, "{}", show(&o));
+    assert!(
+        stderr(&o).contains("live runs could not be looked up"),
+        "{}",
+        show(&o)
+    );
+}

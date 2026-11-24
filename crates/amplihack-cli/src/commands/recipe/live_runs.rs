@@ -134,7 +134,20 @@ fn runs_for_pr(pr: &PrRef) -> Vec<(LiveRun, bool)> {
     let mut roots = RootChecks::default();
     let mut seen: HashSet<String> = HashSet::new();
     let mut runs = Vec::new();
-    for record in guide_records::scan(&log_dir).records {
+    let scan = guide_records::scan(&log_dir);
+    // A log folder that exists but could not be read hides every run, so the
+    // sender is told rather than shown "no live run". A missing folder just
+    // means no run has been started.
+    if scan.records.is_empty()
+        && scan.skipped == 0
+        && let Some(note) = scan.note.as_deref().filter(|n| *n != "it does not exist")
+    {
+        eprintln!(
+            "recipe guide: warning: live runs could not be looked up, so none was found: {}",
+            crate::run_guidance::sanitize::sanitize_line(note)
+        );
+    }
+    for record in scan.records {
         let Some(recorded) = record.run_dir.clone() else {
             continue;
         };
