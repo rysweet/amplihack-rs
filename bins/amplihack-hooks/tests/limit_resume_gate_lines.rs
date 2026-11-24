@@ -177,11 +177,12 @@ fn disabled_with_an_existing_resume_folder_writes_one_line() {
 }
 
 #[test]
-fn disabled_without_a_resume_folder_creates_nothing() {
+fn disabled_without_a_resume_folder_writes_one_stderr_line_and_creates_nothing() {
+    // A6: with no resume folder the stderr line is the record of the call.
     let rig = Rig::new(LIMIT_MENU, false);
     write_off(&rig);
     let out = rig.run_plain(Some("0"), &payload(json!("rate_limit")));
-    assert_zero_with_no_output(&out);
+    assert_zero_with_one_stderr_line(&out);
     assert!(
         !rig.resume_dir().exists(),
         "auto-switch off must create nothing (FS-5)"

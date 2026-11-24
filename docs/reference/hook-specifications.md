@@ -1182,8 +1182,8 @@ is neither: it exits `0` silently.
 **Every call leaves a line.** Each run writes one line to `resume.log`,
 including the early exits. `disabled` (auto-switch off) is written only
 when a private `resume/` folder already exists. The hook never creates
-one for it, and with no folder the call is a silent exit `0` that records no
-failure and prints nothing. `not-limit` records a stop whose `error` is a known non-limit
+one for it; with no folder the call writes no failure marker and is
+recorded by one fixed stderr line with reason `dir_missing`. `not-limit` records a stop whose `error` is a known non-limit
 value, or input that is not a `StopFailure`; `bad-session-id` a missing,
 oversized or invalid id; `bad-payload` malformed or oversized input;
 `panicked` a caught panic. Every line ends with `error=<value>`, the payload's

@@ -1863,7 +1863,8 @@ which Claude Code did not run the hook.
 Two exceptions, each recorded elsewhere. With auto-switch off, the
 `disabled` line is written only when `resume/` already exists, because the
 hook creates nothing for a host that never opted in. In that case the call
-is a silent exit `0`: no line, no failure marker and no stderr output. When a line cannot be
+is recorded by one fixed stderr line with reason `dir_missing`, and no
+failure marker is written. When a line cannot be
 written, the reason is saved in `resume/log-write-failed` and, on exit `0`,
 one fixed line goes to stderr. To check a quiet day:
 

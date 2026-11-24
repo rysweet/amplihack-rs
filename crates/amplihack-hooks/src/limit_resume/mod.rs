@@ -259,8 +259,9 @@ pub trait Deps {
     fn log(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure>;
     /// As [`Deps::log`], but appends only to a resume folder that already
     /// exists and creates nothing; a missing folder is
-    /// [`LogWriteFailure::DirMissing`]. Used for the early exits, so a host
-    /// that never opted in to auto-switch is left as it is (FS-5).
+    /// [`LogWriteFailure::DirMissing`]. Used for the early exits, so they
+    /// create nothing on a host that never opted in to auto-switch (FS-5);
+    /// the caller still records the failure.
     fn log_existing(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure>;
     /// Whether no rotator can record a cycle (see
     /// [`rotator_status::rotator_down`]).
@@ -445,19 +446,14 @@ fn is_early_exit(outcome: Outcome) -> bool {
 /// changes control flow.
 ///
 /// The early exits ([`is_early_exit`]) write through [`Deps::log_existing`]
-/// and so create no folder. With no resume folder, `disabled` leaves no
-/// record at all: a host that never opted in to auto-switch is left as it is
-/// (FS-5). Every other early exit with no folder is recorded as
-/// `dir_missing`, which reaches stderr.
+/// and so create no folder: a host that never opted in to auto-switch is
+/// left as it is (FS-5). With no resume folder, every early exit, `disabled`
+/// included, is recorded as `dir_missing`, which reaches stderr (A6).
 fn record<D: Deps + ?Sized>(deps: &mut D, now: i64, entry: &LogEntry, failed: &LogFailed) {
     let written = if is_early_exit(entry.outcome) {
         deps.log_existing(now, entry)
     } else {
         deps.log(now, entry)
-    };
-    let written = match written {
-        Err(LogWriteFailure::DirMissing) if entry.outcome == Outcome::Disabled => Ok(()),
-        other => other,
     };
     if let Err(reason) = written
         && failed.get().is_none()
@@ -549,14 +545,14 @@ fn run_with_affinity<D: Deps + ?Sized>(
         duplicate: false,
     };
     let gate_exit = match gate(&facts) {
-        Gate::Disabled => Some((Outcome::Disabled, session_id.as_deref())),
-        Gate::NotLimit => Some((Outcome::NotLimit, session_id.as_deref())),
-        Gate::BadSessionId => Some((Outcome::BadSessionId, None)),
+        Gate::Disabled => Some(Outcome::Disabled),
+        Gate::NotLimit => Some(Outcome::NotLimit),
+        Gate::BadSessionId => Some(Outcome::BadSessionId),
         _ => None,
     };
-    if let Some((outcome, session)) = gate_exit {
+    if let Some(outcome) = gate_exit {
         let now = deps.now();
-        let entry = gate_line(session, outcome, error_field);
+        let entry = gate_line(session_id.as_deref(), outcome, error_field);
         record(deps, now, &entry, log_failed);
         return outcome;
     }

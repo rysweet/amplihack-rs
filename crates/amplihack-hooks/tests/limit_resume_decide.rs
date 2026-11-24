@@ -23,7 +23,8 @@
 //! (b) a stale, unchanged or full record → no resume
 //! (c) repeated distinct limit events → each resumes, with no per-session cap
 //! (d) non-limit error → no action
-//! (e) auto-switch off → exit 0, no output, nothing read
+//! (e) auto-switch off → exit 0, nothing read; no output when the line is
+//!     written, one fixed stderr line when `resume/` is absent
 //! loop: 50 invocations on one event → at most 1 resume
 //! moved-on: the user sent a prompt while waiting → no resume
 //! one wake per session: concurrent waiters with distinct events → 1 resume
@@ -1504,6 +1505,25 @@ fn e_auto_switch_off_prints_nothing() {
     assert_eq!(code, 0);
     assert!(stderr.is_empty(), "the fake's write succeeded");
     assert_only_gate_line(&d, Outcome::Disabled, "rate_limit");
+}
+
+#[test]
+fn e_auto_switch_off_with_no_resume_dir_prints_one_fixed_line() {
+    // A6: with no resume folder, nothing is created and the call is
+    // recorded by one fixed stderr line with reason `dir_missing`.
+    let mut d = Fake::off().then(Act::Swap(fresh(1)));
+    d.log_result = Err(LogWriteFailure::DirMissing);
+    let mut stderr = Vec::new();
+    let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+    assert_eq!(code, 0);
+    let text = String::from_utf8(stderr).unwrap();
+    assert_eq!(
+        text,
+        "amplihack limit-resume: the resume.log line for outcome=disabled was not written \
+         (reason=dir_missing); see resume/log-write-failed\n"
+    );
+    assert!(!text.contains("rate_limit"), "no payload text: {text:?}");
+    assert_eq!(d.existing_logs, 1, "disabled always uses log_existing");
 }
 
 #[test]

@@ -211,8 +211,10 @@ impl LogWriteFailure {
 /// file, so a FIFO in place of the log or the lock cannot make it hang.
 ///
 /// The lock is taken with [`lock_exclusive`], which waits as long as the
-/// holder holds it, with no timeout. The lock file is shared with the guard:
-/// the caller must not hold the guard lock while it logs.
+/// holder holds it, with no timeout. A holder that never releases the lock
+/// therefore hangs the hook; the security requirements accept this risk.
+/// The lock file is shared with the guard: the caller must not hold the
+/// guard lock while it logs.
 ///
 /// Returns why no line was written; the caller records that reason (see
 /// [`mark_failure`]). A failure is never silent.

@@ -443,7 +443,9 @@ fn toggle_file_turns_it_on_too() {
 }
 
 #[test]
-fn auto_switch_off_is_silent_and_creates_nothing() {
+fn auto_switch_off_with_no_resume_dir_writes_one_stderr_line_and_creates_nothing() {
+    // A6 (#3172): with no `resume/` folder the record of the call is one
+    // fixed stderr line, `outcome=disabled` with reason `dir_missing`.
     for toggle in [Some("0"), None] {
         let e = env();
         let _rotator = StandInRotator::start(&e.root);
@@ -452,7 +454,13 @@ fn auto_switch_off_is_silent_and_creates_nothing() {
             private_file(&e.root.join(".auto-switch"), b"enabled=off\n");
         }
         let (out, took) = run(&e, toggle, limit_payload("sess-1").as_bytes());
-        assert_silent_zero(&out);
+        assert_zero_with_one_stderr_line(&out);
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            text.contains("outcome=disabled") && text.contains("reason=dir_missing"),
+            "{text:?}"
+        );
+        assert!(!text.contains("sess-1"), "no payload text: {text:?}");
         assert!(took < Duration::from_secs(10));
         assert!(
             !e.root.join(".auto-switch.d/resume").exists(),
