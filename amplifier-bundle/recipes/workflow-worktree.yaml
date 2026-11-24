@@ -374,7 +374,7 @@ steps:
         AMPLIHACK_RUNTIME_ROOT="${AMPLIHACK_RUNTIME_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/amplihack-runtime/$BRANCH_NAME}"
         mkdir -p "$AMPLIHACK_RUNTIME_ROOT"/{locks,reflection,logs,metrics,provenance}
       fi
-      export AMPLIHACK_RUNTIME_ROOT
+      export AMPLIHACK_RUNTIME_ROOT; HOST_INPUTS="$TOOLS_DIR/workflow_worktree_host_inputs.sh"; [ ! -f "$HOST_INPUTS" ] || bash "$HOST_INPUTS" link "$REPO_PATH" "$WORKTREE_PATH" >&2 || true  # #3102: link the launch checkout's git-ignored .venv folders
 
       echo "" >&2
       echo "=== Worktree Setup Complete ===" >&2

@@ -21,8 +21,9 @@
 #     - OVERRIDE: AZDO_ASSIGNED_TO / AZDO_WORK_ITEM_TYPE are honored.
 #     - REUSE: when the task references AB#N and `work-item show` resolves, the
 #              existing item is reused and NO create happens.
-#     - FAIL-LOUD: a genuine create failure exits non-zero with ERROR and does
-#              NOT fall back to local tracking (no tracking_system=local emitted).
+#     - FAIL-LOUD: a genuine create failure is named in a WARNING with the
+#              provider's error, and the run carries on with local tracking
+#              (exit 0, tracking_system=local; #3129).
 #     - NO-IDENTITY: when the caller's identity cannot be resolved and no
 #              override is set, the step fails loud (exit non-zero, ERROR) rather
 #              than creating an unassigned item.
@@ -223,12 +224,14 @@ else
     fail "DYN-reuse" "rc=${LAST_RC} out='${LAST_OUT}' args='${LAST_ARGS}'"
 fi
 
-# --- FAIL-LOUD: genuine create failure exits non-zero, no local fallback ----
+# --- FAIL-LOUD: a genuine create failure is named, with the provider's error,
+# and the run carries on with local tracking (#3129: a check never ends a run
+# where the run can continue). It is never silent (#983).
 run_env_step "create-fail" "Fix the widget alignment bug"
-if [[ ${LAST_RC} -ne 0 ]] \
-   && printf '%s' "${LAST_ERR}" | grep -q 'ERROR' \
-   && ! printf '%s%s' "${LAST_OUT}" "${LAST_ERR}" | grep -q 'tracking_system=local'; then
-    pass "DYN-fail-loud" "genuine create failure exits non-zero with ERROR, no silent local fallback"
+if [[ ${LAST_RC} -eq 0 ]] \
+   && printf '%s' "${LAST_ERR}" | grep -q 'WARNING: az boards work-item create failed' \
+   && printf '%s' "${LAST_OUT}" | grep -q 'tracking_system=local'; then
+    pass "DYN-fail-loud" "genuine create failure is named in a WARNING and the run carries on with local tracking"
 else
     fail "DYN-fail-loud" "rc=${LAST_RC} out='${LAST_OUT}' err='${LAST_ERR}'"
 fi

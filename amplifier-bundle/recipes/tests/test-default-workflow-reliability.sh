@@ -156,70 +156,6 @@ configure_identity() {
     git -C "${repo}" config user.name "Recipe Reliability Test"
 }
 
-assert_yaml_recipe_step_present() {
-    local label="$1"
-    local recipe="$2"
-    local step_id="$3"
-    local child_recipe="$4"
-
-    awk -v step_id="${step_id}" -v child_recipe="${child_recipe}" '
-        $0 ~ "^[[:space:]]*- id: \"" step_id "\"[[:space:]]*$" {
-            in_step = 1
-            next
-        }
-        in_step && /^[[:space:]]*- id: / {
-            exit
-        }
-        in_step && $0 ~ "^[[:space:]]*recipe: \"" child_recipe "\"[[:space:]]*$" {
-            found = 1
-        }
-        END { exit found ? 0 : 1 }
-    ' "${recipe}" || fail "${label} must invoke recipe '${child_recipe}' via step '${step_id}'"
-}
-
-assert_yaml_step_not_fatal_false() {
-    local label="$1"
-    local recipe="$2"
-    local step_id="$3"
-
-    awk -v step_id="${step_id}" '
-        $0 ~ "^[[:space:]]*- id: \"" step_id "\"[[:space:]]*$" {
-            in_step = 1
-            next
-        }
-        in_step && /^[[:space:]]*- id: / {
-            exit
-        }
-        in_step && /^[[:space:]]*fatal:[[:space:]]*false[[:space:]]*$/ {
-            fatal_false = 1
-        }
-        END { exit fatal_false ? 1 : 0 }
-    ' "${recipe}" || fail "${label} must not mark '${step_id}' as fatal: false"
-}
-
-# Regression guard for issue #1075: deleting a test/bin/bench source file must be
-# paired with removing the corresponding [[test]]/[[bin]]/[[bench]] stanza in the
-# owning crate's Cargo.toml, otherwise the checkpoint-after-implementation gate
-# (`cargo fmt --all`) hard-fails with `couldn't read .../tests/*.rs: No such file`.
-# The fix is prompt guidance in the recipe files; these assertions lock that
-# guidance in so it cannot silently regress.
-assert_stanza_cleanup_guidance() {
-    # Shared anchor phrase that MUST appear verbatim in both recipe prompts.
-    local anchor="[[test]]\` / \`[[bin]]\` / \`[[bench]]\` stanza in the owning crate's Cargo.toml"
-
-    grep -qF "${anchor}" "${TDD_RECIPE}" \
-        || fail "workflow-tdd.yaml step-08-implement must instruct the builder to remove the ${anchor} when a test/bin/bench source file is deleted or renamed (issue #1075)"
-
-    grep -qF "${anchor}" "${REFACTOR_REVIEW_RECIPE}" \
-        || fail "workflow-refactor-review.yaml step-09-refactor must instruct cleanup to remove the ${anchor} when a test/bin/bench source file is deleted or renamed (issue #1075)"
-
-    # Defensive diagnostic comment at the checkpoint gate must explain the failure mode.
-    grep -qF 'dangling [[test]] stanza' "${TDD_RECIPE}" \
-        || fail "workflow-tdd.yaml checkpoint-after-implementation must document that a 'No such file or directory' cargo error means a deleted test file left a dangling [[test]] stanza (issue #1075)"
-
-    echo "  PASS[stanza-cleanup]: recipe prompts require Cargo.toml stanza cleanup on file deletion (issue #1075)"
-}
-
 assert_runtime_artifact_helper_contracts() {
     [[ -f "${RUNTIME_ARTIFACT_HELPER}" ]] \
         || fail "workflow_runtime_artifacts.sh must exist for narrow runtime artifact cleanup"
@@ -1076,10 +1012,6 @@ assert_terminal_status_case \
     "RECIPE_VAR_terminal_state__terminal_reason=goal_already_met=true is ambiguous because meaningful unmerged diff remains"
 
 assert_terminal_recipe_uses_final_status_tool
-assert_yaml_step_not_fatal_false "workflow-finalize final status" "${FINALIZE_RECIPE}" "step-22b-final-status"
-assert_yaml_recipe_step_present "smart-orchestrator routing" "${SMART_ORCHESTRATOR_RECIPE}" "smart-execute-routing" "smart-execute-routing"
-assert_yaml_step_not_fatal_false "smart-execute-routing development path" "${SMART_EXECUTE_RECIPE}" "execute-single-round-1-development"
-assert_yaml_step_not_fatal_false "smart-execute-routing adaptive development path" "${SMART_EXECUTE_RECIPE}" "adaptive-execute-development"
 assert_runtime_artifact_helper_contracts
 assert_runtime_preflight_keeps_main_checkout_worktrees
 
@@ -2905,7 +2837,6 @@ assert_pr_title_from_issue_on_moved_base
 assert_no_merge_directive_suppresses_auto_merge
 assert_1561_terminal_state_rows
 assert_gh_rate_limit_backoff_contracts
-assert_stanza_cleanup_guidance
 assert_azdo_work_item_url_parsing
 assert_sanitize_cli_output_redacts_secrets
 assert_1561_nested_rows

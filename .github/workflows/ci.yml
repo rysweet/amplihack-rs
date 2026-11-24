@@ -827,6 +827,15 @@ jobs:
       - name: "Outside-in: whole build and whole drive (issue #2806)"
         shell: bash
         run: AMPLIHACK_2806_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh
+      # Issue #3129: default-workflow builds a change and opens its pull
+      # request as one goal-driven agent loop, against the binary installed
+      # above and the pinned runner. `gh` and `claude` are stand-ins on a
+      # private PATH and the origin is a folder. The pull request opens with
+      # the task's own text, is marked ready and is never merged; the run's
+      # worktree survives; the #2787 pr-ready cases run at tool level.
+      - name: "Outside-in: the build goal loop (issue #3129)"
+        shell: bash
+        run: AMPLIHACK_3129_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-3129-build-loop-scenario.sh
       # Issue #2966: a red CI at finalisation sends the run back to repair it and
       # never ends it. The shipped workflow-finalize recipe runs against the
       # binary installed above and the pinned runner, with `gh` and `claude` as

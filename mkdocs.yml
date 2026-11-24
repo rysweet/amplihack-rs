@@ -126,6 +126,7 @@ nav:
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
       - Quick-Change Recipe: reference/quick-change-recipe.md
       - Auto-Drive-Light Recipe: reference/auto-drive-light.md
+      - Build Goal Loop: reference/build-goal-loop.md
       - Git Repository Environment Helper: reference/git-repo-env-helper.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Clean Up After Recipe Runs: howto/clean-up-after-recipe-runs.md

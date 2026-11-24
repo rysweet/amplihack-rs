@@ -13,8 +13,9 @@
 # These tests drive the real helpers and the real recipe steps against real git
 # repositories and a fake `gh`. Four properties are under test:
 #
-#   1. an issue already claimed by an open or recently-merged PR stops the run,
-#      and the refusal names the PR and how to continue it instead;
+#   1. an issue already claimed by an open or recently-merged PR is reported
+#      (exit 0, the `claimed` key line) with the PR named, as information for
+#      the run's agent to judge (#3129; it ended the run before);
 #   2. a mere mention is NOT a claim, and our own branch is not a competitor;
 #   3. a check that cannot be made warns and continues — no `gh`, no `jq`, no
 #      network, a rate limit, a 403 or a missing helper must never stop a run
@@ -228,14 +229,14 @@ run() {
   RC=$?
 }
 
-echo "== 1. an issue already claimed by a pull request stops the run =="
+echo "== 1. an issue already claimed by a pull request is reported as a claim =="
 claimed() { # claimed <label> <expected-pr-number>
   local label="$1" num="$2" missing=""
   grep -q "#${num}" <<<"$OUT" || missing="$missing pr-number"
   grep -q '#1084' <<<"$OUT" || missing="$missing issue"
-  grep -q 'existing_branch=' <<<"$OUT" || missing="$missing how-to-continue"
-  if [ "$RC" -eq 1 ] && [ -z "$missing" ]; then
-    pass "$label refuses (exit 1) naming the claiming PR and how to continue it"
+  grep -q '^issue_claim_check: claimed issue=1084 ' <<<"$OUT" || missing="$missing claimed-key-line"
+  if [ "$RC" -eq 0 ] && [ -z "$missing" ]; then
+    pass "$label is reported (exit 0, claimed) naming the claiming PR"
   else
     fail "$label: rc=$RC missing:${missing:-none} out=${OUT:0:400}"
   fi
@@ -325,7 +326,7 @@ grep -q 'BODYTEXT' <<<"$OUT" \
 # This is the case the branch-scoped lookup could never see: no PR exists for
 # OUR head, and a duplicate would have been opened.
 run "$WORK/gh" FAKE_GH=closing_ref -- --head "fix/1084-a-brand-new-branch"
-[ "$RC" -eq 1 ] \
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: claimed issue=1084 ' <<<"$OUT" \
   && pass "a competitor on a DIFFERENT branch is still a claim (the #1361 hole)" \
   || fail "a different-branch competitor was not detected: rc=$RC out=${OUT:0:300}"
 
@@ -389,12 +390,13 @@ claimed "a body keyword on a PR to main when the local origin/HEAD says trunk" 1
 grep -q '^repo view' "$WORK/calls.log" \
   && fail "the API was asked although origin/HEAD -> origin/trunk exists" \
   || pass "a stale local origin/HEAD is used without asking the API"
+# Every result exits 0 since #3129, so the key line is what says no claim.
 run "$WORK/gh" FAKE_GH=own_branch -- --head "fix/1084-mine"
-[ "$RC" -eq 0 ] \
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
   && pass "the run's own branch is excluded via --head" \
   || fail "our own PR was treated as a duplicate: rc=$RC out=${OUT:0:300}"
 run "$WORK/gh" FAKE_GH=merged_old
-[ "$RC" -eq 0 ] \
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
   && pass "a PR merged long ago does not block later work on a reopened issue" \
   || fail "an ancient merge blocked the run: rc=$RC out=${OUT:0:300}"
 
@@ -484,7 +486,7 @@ run "$WORK/gh" FAKE_GH=none
 # piped into `tail`: the #1434 guard forbids early-exit pipeline stages.
 HELP_OUT="$(bash "$CLAIM" --help 2>&1)"
 HELP_LAST="${HELP_OUT##*$'\n'}"
-[ "$HELP_LAST" = "#   1  an existing pull request already claims this issue" ] \
+[ "$HELP_LAST" = "#   2  a usage error: an unknown argument, a missing value, or a malformed --head or --repo" ] \
   && pass "--help ends at the last exit-code line" \
   || fail "--help stops in the wrong place; last line: ${HELP_LAST:0:200}"
 
@@ -589,9 +591,10 @@ if [ -s "$STEP" ]; then
 
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" FAKE_GH=closing_ref AMPLIHACK_HOME="$ROOT" \
         REPO_PATH="$WORK/gh" RECIPE_VAR_issue_number=1084 bash "$STEP" 2>&1)"; RC=$?
-  [ "$RC" -eq 1 ] && grep -q 'already working on issue #1084' <<<"$OUT" \
-    && pass "the recipe step stops a run whose issue is already claimed" \
-    || fail "recipe step did not refuse: rc=$RC out=${OUT:0:300}"
+  [ "$RC" -eq 0 ] && grep -q 'already working on issue #1084' <<<"$OUT" \
+    && grep -q '^issue_claim_check: claimed issue=1084 ' <<<"$OUT" \
+    && pass "the recipe step reports the claim on an already-claimed issue and carries on" \
+    || fail "recipe step did not report the claim: rc=$RC out=${OUT:0:300}"
 
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" FAKE_GH=none AMPLIHACK_HOME="$ROOT" \
         REPO_PATH="$WORK/gh" RECIPE_VAR_issue_number=1084 bash "$STEP" 2>&1)"; RC=$?

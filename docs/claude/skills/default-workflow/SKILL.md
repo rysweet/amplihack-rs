@@ -115,6 +115,20 @@ flowchart TD
     P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
 ```
 
+## Goal Loop (version 4.0.0)
+
+`default-workflow` builds the change and opens its pull request by running the
+shared goal loop. Its steps are `workflow-prep`, `workflow-worktree`,
+`build-goal-setup`, `build-loop`, two steps that restore the caller's context,
+and `build-report`. Each turn an agent reads
+the live state and the task text and chooses one action: `open-pr`,
+`mark-ready`, `review`, `wait` or `prepare-worktree`, or it edits and commits in
+the worktree itself. The run ends when the pull request is open and marked
+ready, merged, closed, or handed to a named owner for a decision. A build never
+merges; `no_merge` and `finalization_handoff` are accepted and ignored. The
+phase recipes below remain for one release for runs that loaded the earlier
+version. See `docs/reference/build-goal-loop.md`.
+
 ## Purpose
 
 This skill provides the standard development workflow for all non-trivial code changes

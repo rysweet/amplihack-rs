@@ -391,16 +391,26 @@ fn pr_ready_helper_fails_closed_when_pr_view_metadata_is_unavailable() {
         tmp.path(),
         "pr view https://github.com/owner/repo/pull/7 --repo owner/repo --json ",
     );
-    assert!(
-        !output.status.success(),
-        "PR-ready helper must fail closed when explicit PR metadata cannot be inspected\nstdout:\n{}\nstderr:\n{}",
+    // #2787: the run's own PR is known, so an unreadable lookup leaves the PR
+    // as it is and never ends a run whose work is done: exit 0, the reason
+    // printed, and no mutation.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "PR-ready helper must leave the PR alone and exit 0 when its metadata cannot be inspected\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("pr_metadata_unavailable"),
-        "scoped validation must fail closed before ambiguous PR mutation, stderr:\n{stderr}"
+        stderr.contains("pr_metadata_unavailable") && stderr.contains("WARNING"),
+        "the failed lookup must be named before any mutation, stderr:\n{stderr}"
+    );
+    let calls = optional_gh_call_log(&tmp.path().join("gh-calls.log"))
+        .unwrap_or_else(|error| panic!("read private GH call log: {error}"));
+    assert!(
+        !calls.lines().any(|l| l.starts_with("pr ready")),
+        "no ready mutation after a failed lookup: {calls}"
     );
     assert!(
         !stderr.contains("https://token@example.com")
@@ -628,15 +638,19 @@ exit 99
         .output()
         .expect("run workflow_pr_ready.sh");
 
-    assert!(
-        !output.status.success(),
-        "PR-ready helper must fail before mutation when PR identity is stale\nstdout:\n{}\nstderr:\n{}",
+    // #2787: a stale identity of the run's own, known PR leaves the PR as it
+    // is (exit 0, the reason printed); it never ends a run whose work is done.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "PR-ready helper must leave a PR with a stale identity alone and exit 0\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no_scoped_pr") || stderr.contains("headRefOid"),
+        (stderr.contains("no_scoped_pr") || stderr.contains("headRefOid"))
+            && stderr.contains("WARNING"),
         "identity failure must explain stale scoped PR metadata, stderr:\n{stderr}"
     );
     let log = fs::read_to_string(&gh_log).expect("read gh log");
@@ -843,13 +857,16 @@ exit 99
         .output()
         .expect("run workflow_pr_ready.sh");
 
-    assert!(
-        !output.status.success(),
-        "PR-ready helper must fail closed when base branch cannot be proven"
+    // #2787: the run's PR is known, so a base that cannot be proven leaves the
+    // PR as it is (exit 0, the reason printed) instead of ending the run.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "PR-ready helper must leave the PR alone and exit 0 when the base cannot be proven"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unable to resolve expected base branch"),
+        stderr.contains("unable to resolve expected base branch") && stderr.contains("WARNING"),
         "missing base proof must be surfaced before mutation, stderr:\n{stderr}"
     );
     let log = fs::read_to_string(&gh_log).expect("read gh log");

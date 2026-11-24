@@ -90,7 +90,9 @@ fn only_autodrive_build_step_02_switches_the_handoff_on() {
 }
 
 // T12: no step can produce the flag at run time, and workflow_result has one
-// producer within the default-workflow call tree.
+// producer within the default-workflow call tree. Since #3129 (default-workflow
+// 4.0.0) that producer is default-workflow's own build-report step;
+// workflow-finalize is no longer in the tree.
 #[test]
 fn no_step_outputs_the_flag_and_workflow_result_has_one_producer() {
     for path in recipe_files() {
@@ -120,7 +122,7 @@ fn no_step_outputs_the_flag_and_workflow_result_has_one_producer() {
         .iter()
         .filter(|name| read(&recipe_path(name)).contains("output: \"workflow_result\""))
         .collect();
-    assert_eq!(producers, ["workflow-finalize"], "call tree: {seen:?}");
+    assert_eq!(producers, ["default-workflow"], "call tree: {seen:?}");
 }
 
 // T6: the allow-list and both hand-off functions are defined only in the brick.

@@ -1579,6 +1579,8 @@ fn scope_helper_accepts_a_head_behind_only_when_asked_and_only_when_open() {
 fn final_status_does_not_count_a_named_pr_behind_local_head_as_published() {
     // workflow_final_status.sh never opts in, so the PR fails the scope check
     // and goes to #1268 adjudication rather than straight to success.
+    // workflow_pr_ready.sh does opt in since #2787: a finished run's own PR
+    // one push behind is marked ready (issue_3129_build_loop::pr_ready).
     let fixture = setup_repo();
     let worktree = create_feature_worktree(&fixture);
     commit_feature_change(&worktree);
@@ -1595,9 +1597,5 @@ fn final_status_does_not_count_a_named_pr_behind_local_head_as_published() {
     assert!(
         !helper.contains("--allow-head-behind"),
         "workflow_final_status.sh must not opt in to --allow-head-behind"
-    );
-    assert!(
-        !helper_text("workflow_pr_ready.sh").contains("--allow-head-behind"),
-        "workflow_pr_ready.sh must not opt in to --allow-head-behind"
     );
 }

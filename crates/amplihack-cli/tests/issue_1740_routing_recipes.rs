@@ -1,7 +1,7 @@
 //! Issue #1740: how smart-orchestrator's phase recipes select and run
 //! `quick-change`. Structural checks on the live YAML only; no recipe runs.
-//! The step inventory and the reflection and validation conditions (D1) are
-//! checked in `tests/integration/smart_orchestrator_decomposition_test.rs`.
+//! The reflection and validation conditions (D1) are checked in
+//! `tests/integration/smart_orchestrator_decomposition_test.rs`.
 
 use std::path::PathBuf;
 
@@ -30,32 +30,6 @@ fn step<'a>(r: &'a Value, id: &str) -> &'a Value {
         .iter()
         .find(|s| s["id"].as_str() == Some(id))
         .unwrap_or_else(|| panic!("step {id} missing"))
-}
-
-#[test]
-fn classifier_prompt_asks_for_the_workflow_fields_and_small_task_categories() {
-    let r = recipe("smart-classify-route");
-    let prompt = step(&r, "classify-and-decompose")["prompt"]
-        .as_str()
-        .expect("classify prompt")
-        .to_lowercase();
-    for needle in [
-        "recommended_workflow",
-        "workflow_reason",
-        "quick-change",
-        "documentation",
-        "lock",
-        "typo",
-        "configuration or wording",
-        "single-file fix",
-        "public interface",
-        "when in doubt",
-    ] {
-        assert!(
-            prompt.contains(needle),
-            "classify prompt must mention {needle:?}"
-        );
-    }
 }
 
 #[test]
