@@ -687,27 +687,33 @@ read in PR 1's code:
 ## Callers in 1.2.213
 
 Runs started on 1.2.213 source `amplifier-bundle/tools` from the live bundle at
-step time. Every argument, function, exit-code meaning and output line those
-runs call still exists after this release, except the one exit-code change
-named in the table.
+step time. Every argument, function and output line those runs call still
+exists after this release. Two exit codes change, and both
+turn a run-ending result into exit 0: the claim check exits 0 for a claim, and
+`workflow_pr_ready.sh` exits 0 with a `WARNING` when the run's pull request is
+known but fails scope or identity validation. No 1.2.213 step reads the result
+either one used to give except to fail the run.
 
 The table was built from `git diff --name-only origin/main...HEAD --
 amplifier-bundle/tools` and checked with `git grep` at the `v1.2.213` tag for
-each tool. The `autodrive_*` tools in that diff belong to the shared loop and
-are not called by 1.2.213 build recipes. 1.2.213's `step-21-pr-ready` runs
+each tool. The `autodrive_build_*` tools, `quick_change_create_pr.sh`,
+`workflow_pr_text.sh` and `workflow_worktree_host_inputs.sh` are new and have
+no 1.2.213 caller. 1.2.213's `step-21-pr-ready` runs
 `bash workflow_pr_ready.sh --base "$base"` and reaches the new worktree lookup
 with the inputs that step provides. A `recipe: default-workflow` step looks the
 recipe up by name in the installed recipe folders when the step runs, so a run
-that reaches such a step after the upgrade runs version 4.0.0. That version
-accepts every v3 context key, and `workflow_result` keeps `terminal_state`,
+that reaches such a step after the upgrade runs version 4.0.0. The exception is
+`autodrive-build`: 1.2.213 gives every `autodrive-*` run a private copy of the
+bundle, so its step 02 keeps running version 3.0.0 with the 1.2.213 tools.
+Version 4.0.0 accepts every v3 context key, and `workflow_result` keeps `terminal_state`,
 `terminal_success`, `handoff` and `pr_number`.
 
 | Tool | Calling step | What is kept |
 | --- | --- | --- |
-| `workflow_issue_claim_check.sh` | `step-03c-issue-claim-check`; `workflow_publish_pr.sh` | `--issue`, `--repo-path`; `--repo` and `--head` from publish; every stdout key line. Exit 0 for a claim is the one change in behaviour |
+| `workflow_issue_claim_check.sh` | `step-03c-issue-claim-check`; `workflow_publish_pr.sh` | `--issue`, `--repo-path`; `--repo` and `--head` from publish; every stdout key line. A claim now exits 0 where it exited 1 |
 | `workflow_issue_tracking.sh` | `step-03` and `step-03b` | Every existing function; one function added |
 | `workflow_publish_pr.sh` | `workflow-publish` | Interface and every `publish_status` except `FAILED_DUPLICATE_CLAIM` |
-| `workflow_pr_ready.sh` | `step-21-pr-ready` | `--base` |
+| `workflow_pr_ready.sh` | `step-21-pr-ready` | `--base`, the `pr_ready_result` line and every other exit. A known pull request that fails scope or identity validation now gives a `WARNING` and exit 0 where it gave exit 1 |
 | `workflow_pr_scope.sh` | many callers | Every argument; stdout JSON keys, reason, message, exit status and first stderr line |
 | `workflow_pr_text.sh` | `workflow-publish` and the build tools | The functions and arguments the 1.2.213 recipes call; output lines |
 | `workflow_worktree_host_inputs.sh` | `workflow-worktree` step 04 | Called with the launch checkout and the new worktree; it only links, and logs each link |
