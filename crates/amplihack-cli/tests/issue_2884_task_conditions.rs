@@ -1,19 +1,22 @@
-//! Issue #2884: the merge step sees the task text and judges each condition the
-//! task states on merging.
+//! Issue #2884: the step that decides on merging sees the task text and
+//! judges each condition the task states on merging.
 //!
-//! Behaviour tests. The real `autodrive-merge-round.yaml` runs through the real
-//! runner library with real bash steps, up to and including the outcome word
-//! (`step-05a-outcome-word`). Only agents and the hosting CLI are stand-ins.
+//! #3129 removed the merge-ready round that made this decision. The goal
+//! loop's turn (`autodrive-goal-turn.yaml`) makes it now: its one agent step
+//! reads the task text and names the next action, and its bash step
+//! (`save-decision`, the real `autodrive_goal_turn.sh decision`) records that
+//! action in the turn folder for the driver.
 //!
-//! The stand-in for `step-02-merge-ready-assessment` is a compliant agent. Its
-//! only inputs are the prompt it is handed and a fixture world of facts. It
-//! looks for the condition in the prompt; if the prompt does not carry the
-//! caller's task text it cannot see the condition and concludes ready, which
-//! is the behaviour before this change. It never reads recipe files and never
-//! matches on wording that this change introduced.
+//! Behaviour tests. The real `autodrive-goal-turn.yaml` runs through the real
+//! runner library with its real bash step. Only the agent and the hosting CLI
+//! are stand-ins.
 //!
-//! The stand-in for `step-03-outcome-reader` reduces the write-up to the word
-//! its closing sentence states, so it does not decide anything itself.
+//! The stand-in for the `decide` step is a compliant agent. Its only inputs
+//! are the prompt it is handed and a fixture world of facts. It looks for the
+//! condition in the prompt; if the prompt does not carry the caller's task
+//! text it cannot see the condition and chooses to merge, which is the
+//! behaviour before #2884. It never reads recipe files and never matches on
+//! the recipe's own wording.
 //!
 //! No assertion here inspects recipe YAML or prompt wording.
 // The 2808 fixture is shared by path rather than copied or made more visible.
@@ -35,17 +38,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 const CONDITION: &str = "a release of acme-infra carrying seed pack 2.3.0 exists";
-const MERGE_STEP: &str = "step-02-merge-ready-assessment";
-const READER_STEP: &str = "step-03-outcome-reader";
-const FIRST_ROUND_STEP: &str = "step-01-platform-facts";
-/// Every agent step of `autodrive-merge-evidence.yaml`. All three render the
-/// task text, so each must be seen exactly once carrying it.
-const EVIDENCE_STEPS: [&str; 3] = [
-    "step-01-sync-with-base",
-    "step-02-qa-team-scenarios",
-    "step-03-wait-for-ci",
-];
-const AFTER_WORD_STEP: &str = "step-04-address-blockers";
+/// The turn's one agent step, which decides on merging.
+const DECIDE_STEP: &str = "decide";
 
 fn task_with_condition() -> String {
     format!(
@@ -62,20 +56,14 @@ struct World {
 #[derive(Default)]
 struct Seen {
     active: String,
-    /// Step id and prompt for every agent step handed out before the round's
-    /// own first step ran, which are the steps of the evidence sub-recipe.
-    evidence_prompts: Vec<(String, String)>,
-    round_started: bool,
+    /// Step id and prompt for every agent step handed out.
+    prompts: Vec<(String, String)>,
 }
 
 struct Listener(Arc<Mutex<Seen>>);
 impl ExecutionListener for Listener {
     fn on_step_start(&self, id: &str, _kind: StepType) {
-        let mut seen = self.0.lock().unwrap();
-        if id == FIRST_ROUND_STEP {
-            seen.round_started = true;
-        }
-        seen.active = id.to_owned();
+        self.0.lock().unwrap().active = id.to_owned();
     }
 }
 
@@ -89,45 +77,23 @@ struct Agents<'a> {
 
 impl Agents<'_> {
     /// The compliant merge-deciding agent. Sees only its prompt and the world.
-    fn assess(&self, prompt: &str) -> String {
-        if self.task.contains(CONDITION) && prompt.contains(&self.task) {
+    fn decide(&self, prompt: &str) -> String {
+        let head = &self.fixture.observed_head;
+        let decision = if self.task.contains(CONDITION) && prompt.contains(&self.task) {
             if self.world.release_exists {
-                return format!(
-                    "Condition: {CONDITION}. Evidence: `gh release list --repo example-org/acme-infra` \
-                     listed a release carrying seed pack 2.3.0.\n\nAll 13 criteria are met; ready to merge."
-                );
+                json!({"action": "merge", "args": {"head": head},
+                    "why": format!("Condition: {CONDITION}. `gh release list --repo example-org/acme-infra` listed a release carrying seed pack 2.3.0.")})
+            } else {
+                json!({"action": "handoff",
+                    "args": {"owner": "the release owner",
+                        "decision": format!("whether to merge while the condition that {CONDITION} does not hold"),
+                        "text": format!("The condition that {CONDITION} does not hold: `gh release list --repo example-org/acme-infra` listed no release carrying seed pack 2.3.0. Only the release owner can clear it.")},
+                    "why": "The task's merge condition does not hold."})
             }
-            return format!(
-                "Condition: {CONDITION}. Evidence: `gh release list --repo example-org/acme-infra` \
-                 listed no release carrying seed pack 2.3.0.\n\n\
-                 Hand-off: the condition that {CONDITION} does not hold, and only the release owner can clear it."
-            );
-        }
-        "All 13 criteria are met; ready to merge.".to_owned()
-    }
-
-    /// Reduces a write-up to the word its closing sentence states.
-    fn read_outcome(&self, prompt: &str) -> String {
-        let marker = "<<<UNTRUSTED-MERGE-READY-WRITEUP";
-        let end = "UNTRUSTED-MERGE-READY-WRITEUP>>>";
-        let body = prompt
-            .split(marker)
-            .nth(1)
-            .and_then(|rest| rest.split(end).next())
-            .unwrap_or("");
-        let closing = body
-            .lines()
-            .rfind(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .to_lowercase();
-        let word = if closing.contains("hand-off") {
-            "hand-off"
-        } else if closing.contains("ready to merge") {
-            "ready"
         } else {
-            "not-ready"
+            json!({"action": "merge", "args": {"head": head}, "why": "The checks are green and the review is clean."})
         };
-        format!("ci: pass\n{word}")
+        format!("I read the reading and the task text.\n{decision}")
     }
 }
 
@@ -142,26 +108,14 @@ impl Adapter for Agents<'_> {
         _model: Option<&str>,
         _timeout: Option<u64>,
     ) -> anyhow::Result<String> {
-        let f = self.fixture;
         let id = {
             let mut seen = self.seen.lock().unwrap();
             let active = seen.active.clone();
-            if !seen.round_started {
-                seen.evidence_prompts
-                    .push((active.clone(), prompt.to_owned()));
-            }
+            seen.prompts.push((active.clone(), prompt.to_owned()));
             active
         };
-        match id.as_str() {
-            MERGE_STEP => Ok(self.assess(prompt)),
-            READER_STEP => Ok(self.read_outcome(prompt)),
-            _ => Ok(json!({
-                "pr": "2884", "head_sha": f.observed_head, "resolved_concerns": "", "blockers": [],
-                "crusty_status": "DONE_CLEAN", "crusty_reviewed_head_sha": f.observed_head,
-                "qa_status": "PASS", "ci_status": "GREEN", "summary": "fixture"
-            })
-            .to_string()),
-        }
+        anyhow::ensure!(id == DECIDE_STEP, "unexpected agent step {id}");
+        Ok(self.decide(prompt))
     }
 
     fn execute_bash_step(
@@ -176,13 +130,7 @@ impl Adapter for Agents<'_> {
             .command("bash")
             .current_dir(cwd)
             .env("AMPLIHACK_HOME", &self.trusted)
-            .env(
-                "AUTODRIVE_LAUNCH_TOOLS",
-                self.trusted.join("amplifier-bundle/tools"),
-            )
-            .env("REPO_PATH", &f.pr)
             .env("AUTODRIVE_STATE_DIR", &f.state)
-            .env("AUTODRIVE_QA_EVIDENCE", f.state.join("qa-evidence.json"))
             .envs(env)
             .args(["-c", command])
             .output()?;
@@ -217,19 +165,12 @@ fn copy_tools(from: &Path, to: &Path) {
     }
 }
 
-/// The real round recipe, cut so that it ends after the outcome word.
-fn round_through_outcome_word() -> Recipe {
-    let path = workspace().join("amplifier-bundle/recipes/autodrive-merge-round.yaml");
-    let mut recipe = RecipeParser::new()
+/// The real turn recipe.
+fn goal_turn() -> Recipe {
+    let path = workspace().join("amplifier-bundle/recipes/autodrive-goal-turn.yaml");
+    RecipeParser::new()
         .parse(&fs::read_to_string(path).unwrap())
-        .unwrap();
-    let end = recipe
-        .steps
-        .iter()
-        .position(|s| s.id == AFTER_WORD_STEP)
-        .expect("step after the outcome word");
-    recipe.steps.truncate(end);
-    recipe
+        .unwrap()
 }
 
 /// A logging stand-in for the hosting CLI: it records its arguments and never
@@ -251,6 +192,8 @@ struct Drive {
     result: RecipeResult,
     seen: Arc<Mutex<Seen>>,
     gh_log: String,
+    /// The turn's decision.json, as `save-decision` wrote it.
+    decision: Value,
 }
 
 fn drive(task: &str, world: World) -> Drive {
@@ -261,14 +204,24 @@ fn drive(task: &str, world: World) -> Drive {
     copy_tools(&workspace().join("amplifier-bundle/tools"), &tools);
     let agents = f.temp.path().join("agents");
     private(&agents.join("core"));
-    for file in ["core/builder.md", "core/reviewer.md"] {
-        fs::write(
-            agents.join(file),
-            "---\nname: fixture\ndescription: scripted test agent\n---\nReturn fixture facts.\n",
-        )
-        .unwrap();
-    }
-    fs::write(f.state.join("qa-evidence.json"), "{}").unwrap();
+    fs::write(
+        agents.join("core/builder.md"),
+        "---\nname: fixture\ndescription: scripted test agent\n---\nReturn fixture facts.\n",
+    )
+    .unwrap();
+    // The driver makes each turn folder private, under its state folder.
+    let turn_dir = f.state.join("turns").join("001");
+    private(&f.state.join("turns"));
+    private(&turn_dir);
+    let goal_text = fs::read_to_string(
+        workspace().join("amplifier-bundle/skills/auto-drive-to-merge/goal-merge-pr.md"),
+    )
+    .unwrap();
+    let reading = json!({"schema_version": 1, "turn": 1,
+        "goal": {"summary": "PR #2884 is open", "pr": {"head": f.observed_head}},
+        "actions": {"goal": ["review", "wait", "merge"],
+            "shared": ["continue", "wait-owner", "handoff", "ready", "stop"]},
+        "merging_allowed": true});
     let seen = Arc::new(Mutex::new(Seen::default()));
     let runner = RecipeRunner::new(Agents {
         fixture: &f,
@@ -280,48 +233,35 @@ fn drive(task: &str, world: World) -> Drive {
     .with_working_dir(f.pr.to_str().unwrap())
     .with_auto_stage(false)
     .with_default_search(false)
-    // The real evidence recipe runs: the task text must reach it from the round.
-    .with_recipe_search_dirs(vec![workspace().join("amplifier-bundle/recipes")])
     .with_agent_resolver(AgentResolver::new(Some(vec![agents])))
     .with_listener(Box::new(Listener(Arc::clone(&seen))));
     let context: HashMap<String, Value> = HashMap::from([
+        ("turn_dir".into(), json!(turn_dir)),
         ("repo_path".into(), json!(f.pr)),
-        ("pr_number".into(), json!("2884")),
-        ("pr_url".into(), json!("https://example.invalid/pull/2884")),
+        ("goal_text".into(), json!(goal_text)),
         ("task_description".into(), json!(task)),
-        ("no_merge".into(), json!("false")),
-        ("reviewed_head_sha".into(), json!(f.observed_head)),
-        ("autodrive_state_dir".into(), json!(f.state)),
-        (
-            "autodrive_qa_evidence".into(),
-            json!(f.state.join("qa-evidence.json")),
-        ),
-        (
-            "autodrive_round_record".into(),
-            json!(f.state.join("round.json")),
-        ),
-        ("autodrive_round_label".into(), json!("round-1")),
-        ("autodrive_tools_dir".into(), json!(tools)),
-        ("autodrive_launch_tools".into(), json!(tools)),
+        ("goal_notes".into(), json!("")),
+        ("turn_reading".into(), json!(reading.to_string())),
+        ("previous_record".into(), json!("")),
     ]);
-    let result = runner.execute(&round_through_outcome_word(), Some(context));
+    let result = runner.execute(&goal_turn(), Some(context));
     let gh_log = fs::read_to_string(gh_log_path).unwrap();
+    let decision = fs::read_to_string(turn_dir.join("decision.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
     Drive {
         result,
         seen,
         gh_log,
+        decision,
     }
 }
 
-/// `step-05a-outcome-word` is a `parse_json` bash step, so its result is stored
-/// as parsed JSON.
-fn outcome_word(result: &RecipeResult) -> &str {
-    result
-        .context
-        .get("merge_ready_word")
-        .and_then(|v| v.get("word"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
+/// The action the turn recorded, from a valid decision only.
+fn action(d: &Drive) -> &str {
+    assert_eq!(d.decision["valid"], json!(true), "{}", d.decision);
+    d.decision["action"].as_str().unwrap_or_default()
 }
 
 /// Case A: an unmet external condition ends in a hand-off naming it, with no merge.
@@ -334,21 +274,14 @@ fn unmet_external_condition_ends_in_hand_off_naming_it_and_does_not_merge() {
         },
     );
     assert!(d.result.success, "{:?}", d.result);
-    assert_eq!(
-        outcome_word(&d.result),
-        "hand-off",
-        "{:?}",
-        d.result.context
-    );
-    let writeup = d
-        .result
-        .context
-        .get("merge_ready_writeup")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    assert_eq!(action(&d), "handoff", "{}", d.decision);
+    let named = [&d.decision["args"]["decision"], &d.decision["args"]["text"]]
+        .iter()
+        .any(|v| v.as_str().unwrap_or_default().contains(CONDITION));
     assert!(
-        writeup.contains(CONDITION),
-        "the recorded write-up must name the condition: {writeup}"
+        named,
+        "the recorded hand-off must name the condition: {}",
+        d.decision
     );
     assert!(
         !d.gh_log.contains("pr merge"),
@@ -357,7 +290,7 @@ fn unmet_external_condition_ends_in_hand_off_naming_it_and_does_not_merge() {
     );
 }
 
-/// Case B: a met condition leaves the outcome ready, as before.
+/// Case B: a met condition leaves the decision to merge, as before.
 #[test]
 fn met_condition_still_ends_ready() {
     let d = drive(
@@ -367,7 +300,7 @@ fn met_condition_still_ends_ready() {
         },
     );
     assert!(d.result.success, "{:?}", d.result);
-    assert_eq!(outcome_word(&d.result), "ready", "{:?}", d.result.context);
+    assert_eq!(action(&d), "merge", "{}", d.decision);
 }
 
 /// Case C: task text that states no merge condition, or none at all, changes nothing.
@@ -381,20 +314,14 @@ fn task_text_without_a_condition_is_a_no_op() {
             },
         );
         assert!(d.result.success, "{task:?}: {:?}", d.result);
-        assert_eq!(
-            outcome_word(&d.result),
-            "ready",
-            "task {task:?}: {:?}",
-            d.result.context
-        );
+        assert_eq!(action(&d), "merge", "task {task:?}: {}", d.decision);
         assert!(!d.gh_log.contains("pr merge"));
     }
 }
 
-/// Case D: the round hands its task text to the evidence recipe, whose agent
-/// steps receive it.
+/// Case D: every agent step of the turn receives the caller's task text, once.
 #[test]
-fn evidence_recipe_agents_receive_the_task_text() {
+fn the_turn_agent_receives_the_task_text() {
     let task = task_with_condition();
     let d = drive(
         &task,
@@ -404,29 +331,10 @@ fn evidence_recipe_agents_receive_the_task_text() {
     );
     assert!(d.result.success, "{:?}", d.result);
     let seen = d.seen.lock().unwrap();
-    let ids: Vec<&str> = seen
-        .evidence_prompts
-        .iter()
-        .map(|(id, _)| id.as_str())
-        .collect();
-    for step in EVIDENCE_STEPS {
-        let prompts: Vec<&String> = seen
-            .evidence_prompts
-            .iter()
-            .filter(|(id, _)| id == step)
-            .map(|(_, prompt)| prompt)
-            .collect();
-        assert_eq!(
-            prompts.len(),
-            1,
-            "{step} must run exactly once before the round's own steps; saw {ids:?}"
-        );
-        assert!(
-            prompts[0].contains(&task),
-            "{step} did not carry the caller's task text"
-        );
-    }
+    let ids: Vec<&str> = seen.prompts.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, [DECIDE_STEP], "the turn has one agent step, run once");
+    assert!(
+        seen.prompts[0].1.contains(&task),
+        "{DECIDE_STEP} did not carry the caller's task text"
+    );
 }
-
-#[path = "issue_1924_base_sync_task_text.rs"]
-mod base_sync_task_text;

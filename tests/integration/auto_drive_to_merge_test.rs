@@ -40,8 +40,12 @@ use crate::isolated_amplihack::isolated;
 // files), so changing it here does not change them.
 pub(crate) const BRICK_LINE_BUDGET: usize = 400;
 
-const AUTODRIVE_RECIPES: [&str; 8] = [
+// #3129: the shared goal loop's recipes come first. The old loop recipes stay
+// listed because they are one-release aliases (#3049).
+const AUTODRIVE_RECIPES: [&str; 10] = [
     "auto-drive-to-merge",
+    "autodrive-goal-loop",
+    "autodrive-goal-turn",
     "autodrive-build",
     "autodrive-crusty-round",
     "autodrive-crusty-loop",
@@ -51,7 +55,15 @@ const AUTODRIVE_RECIPES: [&str; 8] = [
     "autodrive-finalize",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 33] = [
+// #3129: the goal loop's driver, turn tool and library, and the pull request
+// goal's tools, where the merge action and its trust checks now live.
+const AUTODRIVE_TOOLS: [&str; 39] = [
+    "autodrive_goal_loop.sh",
+    "autodrive_goal_turn.sh",
+    "autodrive_goal_lib.sh",
+    "autodrive_pr_goal.sh",
+    "autodrive_pr_reading.sh",
+    "autodrive_round_word.sh",
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -200,15 +212,11 @@ fn composer_delegates_to_the_three_phases_in_order() {
         .iter()
         .filter_map(|s| s.get("recipe").and_then(Value::as_str))
         .collect();
+    // #3129: one goal loop replaced the crusty loop and the merge-ready loop.
     assert_eq!(
         sub,
-        vec![
-            "autodrive-build",
-            "autodrive-crusty-loop",
-            "autodrive-merge-loop"
-        ],
-        "the composer must stay thin: build, then the crusty loop, then the \
-         merge-ready loop — in that order"
+        vec!["autodrive-build", "autodrive-goal-loop"],
+        "the composer must stay thin: build, then the shared goal loop, in that order"
     );
     // Phase 1 must not merge. auto-drive owns the merge decision.
     let build = step(&recipe, "autodrive-build");
@@ -234,77 +242,12 @@ fn composer_delegates_to_the_three_phases_in_order() {
 
 // ── The loop terminator ──────────────────────────────────────────────────────
 
+// #3129 removed the loop-health STUCK stop from the auto-drive loops, so
+// nothing here runs loop-health-evaluator any more (hook repair in the build
+// stage still does). The contract must still never be copied into this
+// workflow: the evaluator's own step ids appear nowhere on its control path.
 #[test]
-fn unresolved_loops_use_the_shared_loop_health_evaluator_contract() {
-    let driver = read(&tool_path("autodrive_loop.sh"));
-    // Resolved to an absolute path in the launch-side bundle (by
-    // autodrive_worktree_guard.sh loop-preflight), never by name under
-    // `--working-dir <PR worktree>`: a name lookup there would load the PR's
-    // own copy of its stop rule (#1528).
-    let guard = read(&tool_path("autodrive_worktree_guard.sh"));
-    assert!(
-        guard.contains("launch_recipe loop-health-evaluator")
-            && driver.contains("read -r HEALTH_RECIPE_PATH")
-            && driver.contains("recipe run \"$HEALTH_RECIPE_PATH\""),
-        "the loop driver must invoke the shared loop-health-evaluator brick from the launch-side bundle"
-    );
-    assert!(
-        driver.contains("recipe run \"$ROUND_RECIPE_PATH\"")
-            && !driver.contains("recipe run \"$ROUND_RECIPE\" ")
-            && !driver.contains("recipe run loop-health-evaluator"),
-        "no recipe may reach `recipe run` by bare name; the reviewed tree would answer the lookup"
-    );
-    for ctx in [
-        "loop_name=",
-        "loop_round_label=",
-        "loop_baseline_ref=",
-        "loop_child_exit_code=",
-    ] {
-        assert!(
-            driver.contains(ctx),
-            "the loop driver must hand `{ctx}` to the evaluator — the evaluator \
-             judges measured evidence, not a prose summary of it"
-        );
-    }
-    // #2582: free-text evidence reaches the evaluator by file, not argv.
-    // eval_ctx_write (autodrive_escalate.sh) writes one file per key and the
-    // driver passes them as `--context-from-file` arguments.
-    let escalate = read(&tool_path("autodrive_escalate.sh"));
-    assert!(
-        driver.contains("eval_ctx_write") && driver.contains("\"${EVAL_CTX_ARGS[@]}\""),
-        "the loop driver must write the evaluator context and pass EVAL_CTX_ARGS"
-    );
-    for key in [
-        "loop_history",
-        "loop_last_round_output",
-        "loop_findings_current",
-        "loop_findings_previous",
-        "loop_test_signal",
-        "loop_ci_signal",
-    ] {
-        assert!(
-            escalate.contains(&format!("\"${{EVAL_CTX}}/{key}\"")),
-            "eval_ctx_write must hand `{key}` to the evaluator — the evaluator \
-             judges measured evidence, not a prose summary of it"
-        );
-    }
-    // Both phases must go through the one driver rather than growing their own.
-    for phase in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
-        let text = format!(
-            "{}{}",
-            recipe_text(phase),
-            read(&tool_path("autodrive_merge_loop_run.sh"))
-        );
-        assert!(
-            text.contains("autodrive_loop.sh"),
-            "{phase} must drive its loop through the shared driver"
-        );
-    }
-    // The contract must be USED, never copied: the evaluator's own step ids
-    // must not appear anywhere in this workflow. The one exception is the
-    // #1512 log reader in autodrive_loop.sh, which must name step-04 to find
-    // the status line its verdict follows.
-    let reader = tool_path("autodrive_loop.sh");
+fn the_loop_health_contract_is_never_copied_into_auto_drive() {
     for path in control_path_files() {
         let text = read(&path);
         for copied in [
@@ -313,9 +256,6 @@ fn unresolved_loops_use_the_shared_loop_health_evaluator_contract() {
             "step-03-resolve-loop-verdict",
             "step-04-enforce-loop-verdict",
         ] {
-            if path == reader && copied == "step-04-enforce-loop-verdict" {
-                continue;
-            }
             assert!(
                 !text.contains(copied),
                 "{} copies the loop-health contract (`{copied}`) instead of \
@@ -352,75 +292,16 @@ fn no_numeric_iteration_cap_anywhere() {
             for token in forbidden {
                 assert!(
                     !lower.contains(token),
-                    "{}:{} introduces `{token}`. Neither loop may be terminated \
-                     by a count — the terminator is loop-health-evaluator.\n  {line}",
+                    "{}:{} introduces `{token}`. No loop may be ended by a count: \
+                     nothing counts turns, rounds or time (#3129).\n  {line}",
                     path.display(),
                     n + 1
                 );
             }
         }
     }
-    // The round counter that does exist is a LABEL. Nothing may compare it.
-    let driver = read(&tool_path("autodrive_loop.sh"));
-    assert!(
-        driver.contains("ROUND is a LABEL"),
-        "the loop driver must state that its round counter is a label"
-    );
-    // Every way a shell can compare a counter to a limit, not just the three
-    // `test` operators that happen to read as "at least". `-lt` / `-eq` bound
-    // a loop just as well from the other side, `(( ROUND > n ))` and
-    // `[[ ${ROUND} -gt n ]]` are the same cap in different syntax, and
-    // `${ROUND}` is the same variable as `$ROUND`.
-    // The matcher must see the label itself and nothing that merely shares
-    // its prefix: `$ROUND_VERDICT` is a different variable.
-    assert!(names_round_label(r#"[ "$ROUND" -gt 5 ]"#));
-    assert!(names_round_label("[[ ${ROUND} -ge 3 ]]"));
-    assert!(names_round_label("(( ROUND > 9 ))"));
-    assert!(names_round_label("((ROUND>9))"));
-    assert!(names_round_label(
-        r#"[ "$ROUND_CLEAN" = x ] || [ $ROUND -lt 2 ]"#
-    ));
-    assert!(!names_round_label(r#"[ "$ROUND_CLEAN" = "true" ]"#));
-    assert!(!names_round_label(r#"[ "$ROUND_VERDICT" != x ]"#));
-    assert!(!names_round_label("(( ROUND_RC > 0 ))"));
-    const COMPARISONS: [&str; 12] = [
-        "-ge", "-gt", "-le", "-lt", "-eq", "-ne", ">=", "<=", "==", "!=", ">", "<",
-    ];
-    for (n, line) in driver.lines().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        if !names_round_label(line) {
-            continue;
-        }
-        for op in COMPARISONS {
-            assert!(
-                !line.contains(op),
-                "autodrive_loop.sh:{} compares the round label against a limit with `{op}`. \
-                 ROUND is a LABEL; the terminator is loop-health-evaluator.\n  {line}",
-                n + 1
-            );
-        }
-    }
-}
-
-// True when `line` names the shell variable `ROUND` itself (`$ROUND`,
-// `${ROUND}`, `((ROUND`, `(( ROUND`), not a longer identifier that merely
-// starts with it such as `$ROUND_VERDICT` or `$ROUND_CLEAN`.
-fn names_round_label(line: &str) -> bool {
-    let continues_identifier = |rest: &str| {
-        rest.chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-    };
-    if line.contains("${ROUND}") {
-        return true;
-    }
-    ["$ROUND", "((ROUND", "(( ROUND"].iter().any(|prefix| {
-        line.match_indices(prefix)
-            .any(|(i, m)| !continues_identifier(&line[i + m.len()..]))
-    })
+    // #3129 removed the old loop driver's round counter, the ROUND label this
+    // test also held free of comparisons, with the driver itself.
 }
 
 #[test]
@@ -444,9 +325,8 @@ fn no_short_timeouts_anywhere() {
             }
         }
     }
-    // The only wait in the workflow is the CI poll, and its interval is 60s.
-    let evidence = recipe_text("autodrive-merge-evidence");
-    assert!(evidence.contains("Poll pending work to its natural terminal state"));
+    // #3129 removed merge-evidence's CI poll: waiting is the goal loop's `wait`
+    // action, `gh pr checks --watch`, with no interval of its own.
     for path in control_path_files() {
         let text = read(&path);
         for (n, line) in text.lines().enumerate() {
@@ -538,51 +418,6 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
             "{step_id} must match the verdict against an exact-token allow-list"
         );
     }
-}
-
-#[test]
-fn advancing_a_phase_requires_both_the_round_verdict_and_the_loop_verdict() {
-    let driver = read(&tool_path("autodrive_loop.sh")).replace(
-        ". \"${LOOP_HOME}/autodrive_loop_record.sh\" || exit 1",
-        &read(&tool_path("autodrive_loop_record.sh")),
-    );
-    assert!(
-        driver.contains("ROUND_CLEAN=\"true\""),
-        "the driver must track whether the round's own verdict was the clean token"
-    );
-    assert!(
-        driver.contains("inconsistent pair never advances a phase"),
-        "a DONE verdict over a non-clean round verdict must never advance a phase"
-    );
-    // A missing round record is never a clean round.
-    assert!(
-        driver.contains("treated as NOT clean"),
-        "a missing or unparseable round record must never be read as clean"
-    );
-}
-
-#[test]
-fn an_unreadable_loop_verdict_is_stuck_never_continue() {
-    let driver = read(&tool_path("autodrive_loop.sh"));
-    assert!(
-        driver.contains("LOOP_VERDICT=\"STUCK\""),
-        "the loop verdict must start at the fail-safe STUCK"
-    );
-    let idx_default = driver
-        .find("LOOP_VERDICT=\"STUCK\"")
-        .expect("fail-safe default");
-    let idx_continue = driver
-        .find("LOOP_VERDICT=\"CONTINUE\"")
-        .expect("CONTINUE branch");
-    assert!(
-        idx_default < idx_continue,
-        "CONTINUE must be reached only by positively reading the marker; the \
-         default must already be STUCK"
-    );
-    assert!(
-        driver.contains("failing safe to STUCK"),
-        "an evaluator that exits 0 with no readable verdict must fail safe to STUCK"
-    );
 }
 
 // ── The two absolute prohibitions ────────────────────────────────────────────
@@ -731,9 +566,12 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
 
 #[test]
 fn exit_79_is_terminal_and_never_retried_into() {
-    let driver = read(&tool_path("autodrive_loop.sh"));
+    // #3129: the goal loop's driver replaced autodrive_loop.sh. Exit 79 from
+    // the goal's reading, the turn run or an action ends the run at once and
+    // is passed up unchanged.
+    let driver = read(&tool_path("autodrive_goal_loop.sh"));
     assert!(
-        driver.contains("AUTODRIVE_EXIT_POLICY_REFUSAL=79"),
+        driver.contains("79) end_run refused \"exit 79 from ${2}: a terminal policy refusal"),
         "the loop driver must name exit 79 as the terminal policy refusal"
     );
     assert!(
@@ -741,52 +579,94 @@ fn exit_79_is_terminal_and_never_retried_into() {
         "the runner's structural_refusal marker must be recognised alongside exit 79 (#1437)"
     );
     assert!(
-        driver.contains("never retried into") || driver.contains("NEVER retried"),
+        driver.contains("never retried"),
         "the driver must document that the guard is never retried into"
     );
-    // The refusal is detected BEFORE the evaluator runs, so not even a model
-    // call is spent deciding whether to re-enter a sealed guard.
+    // The refusal is detected BEFORE any mechanical action runs, so not even
+    // one action is spent after the guard sealed. (The old driver checked it
+    // before its loop-health evaluator, which #3129 removed.)
     let refusal_at = driver
-        .find("if terminal_refusal \"$ROUND_RC\"")
-        .expect("round refusal check");
-    let evaluator_at = driver
-        .find("recipe run \"$HEALTH_RECIPE_PATH\"")
-        .expect("evaluator call");
+        .find("passed_up \"$rc\" \"the turn run\"")
+        .expect("turn run refusal check");
+    let action_at = driver
+        .find("goal_call act \"$ACTION\"")
+        .expect("the mechanical action");
     assert!(
-        refusal_at < evaluator_at,
-        "the terminal refusal must be checked before the evaluator is invoked"
+        refusal_at < action_at,
+        "the terminal refusal must be checked before the turn's action runs"
     );
-    for phase in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
-        let text = recipe_text(phase);
-        assert!(
-            text.contains("exit 79"),
-            "{phase} must surface and propagate the exit-79 policy refusal"
-        );
-    }
+    // The loop recipe surfaces and propagates the refusal: its step exits with
+    // the driver's 79, run directly and under step recovery (the path every
+    // auto-drive takes, since step-recovery-init runs first).
+    exit_79_reaches_the_goal_loop_step(false);
+    exit_79_reaches_the_goal_loop_step(true);
+}
+
+// Runs autodrive-goal-loop's `goal-loop` step against a launch bundle whose
+// driver exits 79, and asserts the step exits 79 too.
+fn exit_79_reaches_the_goal_loop_step(with_recovery: bool) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let tools = tmp.path().join("home/amplifier-bundle/tools");
+    fs::create_dir_all(&tools).expect("tools dir");
+    fs::write(tools.join("autodrive_goal_loop.sh"), "exit 79\n").expect("stub driver");
+    fs::copy(
+        tool_path("recipe_context_value.sh"),
+        tools.join("recipe_context_value.sh"),
+    )
+    .expect("copy recipe_context_value.sh");
+    let recipe = recipe_yaml("autodrive-goal-loop");
+    let body = step_command(&recipe, "goal-loop");
+    let script = if with_recovery {
+        format!(
+            "RECIPE_VAR_step_recovery_dir=\"$(amplihack orch helper step-recovery init)\" || exit 98\n\
+             export RECIPE_VAR_step_recovery_dir\n{body}"
+        )
+    } else {
+        body.to_string()
+    };
+    let bin_dir = Path::new(env!("CARGO_BIN_EXE_amplihack"))
+        .parent()
+        .expect("the binary's folder")
+        .to_path_buf();
+    let path = match std::env::var("PATH") {
+        Ok(p) => format!("{}:{p}", bin_dir.display()),
+        Err(_) => bin_dir.display().to_string(),
+    };
+    let out = isolated("bash")
+        .arg("-c")
+        .arg(script)
+        .current_dir(tmp.path())
+        .env("PATH", path)
+        .env("HOME", tmp.path())
+        .env("TMPDIR", tmp.path())
+        .env("AMPLIHACK_HOME", tmp.path().join("home"))
+        .output()
+        .expect("run the goal-loop step");
+    assert_eq!(
+        out.status.code(),
+        Some(79),
+        "autodrive-goal-loop (step recovery {with_recovery}) must surface and propagate the \
+         exit-79 policy refusal; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
 fn recursion_context_is_propagated_and_the_ceiling_is_never_raised() {
-    let driver = read(&tool_path("autodrive_loop.sh"));
-    for var in [
-        "AMPLIHACK_TREE_ID",
-        "AMPLIHACK_SESSION_DEPTH",
-        "AMPLIHACK_MAX_DEPTH",
-    ] {
-        assert!(driver.contains(var), "{var} must be propagated to children");
+    // #3129: the goal loop's driver starts every turn as a fresh
+    // `amplihack recipe run` from its own step, so the turns inherit the
+    // recursion context unchanged. The old driver's explicit export of the
+    // three variables and its ceiling-change check went with it.
+    let driver = read(&tool_path("autodrive_goal_loop.sh"));
+    for var in ["AMPLIHACK_SESSION_DEPTH=", "AMPLIHACK_MAX_DEPTH="] {
+        assert!(
+            !driver.contains(var),
+            "the driver must never set {var} for its turns"
+        );
     }
     assert!(
-        driver.contains("assert_ceiling_untouched"),
-        "the driver must abort if the inherited depth ceiling changes"
-    );
-    assert!(
-        driver.contains("AUTODRIVE_INHERITED_MAX_DEPTH"),
-        "the inherited ceiling must be captured so a change can be detected"
-    );
-    assert!(
-        driver.contains("SEQUENTIAL AT CONSTANT DEPTH")
-            || driver.contains("sequential at constant depth"),
-        "rounds must run sequentially at constant depth so a long loop never \
+        driver.contains("at constant depth"),
+        "turns must run sequentially at constant depth so a long loop never \
          walks toward the recursion ceiling"
     );
 }
@@ -795,16 +675,13 @@ fn recursion_context_is_propagated_and_the_ceiling_is_never_raised() {
 
 #[test]
 fn a_dead_run_resumes_without_redoing_merged_work_or_reopening_concerns() {
-    for recipe in [
-        "autodrive-build",
-        "autodrive-crusty-loop",
-        "autodrive-merge-loop",
-    ] {
-        let doc = recipe_yaml(recipe);
-        let prompt = field(&steps(&doc)[0], "prompt");
-        assert!(prompt.contains("already") && prompt.contains("MERGED"));
-        assert!(prompt.contains("historical evidence never establishes current readiness"));
-    }
+    // #3129: the crusty and merge-ready loop recipes are one-release aliases
+    // with no agent prompt. The goal loop resumes from live state: every turn
+    // reads the PR afresh.
+    let doc = recipe_yaml("autodrive-build");
+    let prompt = field(&steps(&doc)[0], "prompt");
+    assert!(prompt.contains("already") && prompt.contains("MERGED"));
+    assert!(prompt.contains("historical evidence never establishes current readiness"));
     let review = recipe_yaml("autodrive-crusty-round");
     assert!(field(step(&review, "step-02-crusty-review"), "prompt").contains("NEW evidence"));
 }
@@ -851,15 +728,13 @@ fn no_unauthenticated_input_reaches_control_flow() {
         // agentic step) makes the one exception: the Crusty verdict comment,
         // read and written only by the two agent steps below, which count a
         // comment only from the drive's own login or an OWNER, MEMBER or
-        // COLLABORATOR. No tool or bash step reads a comment.
-        let verdict_prompts: Vec<String> = [
-            ("autodrive-merge-round", "step-01b-crusty-evidence"),
-            ("autodrive-crusty-round", "step-03c-post-verdict"),
-        ]
-        .iter()
-        .filter(|(recipe, _)| path == recipe_path(recipe))
-        .map(|(recipe, id)| field(step(&recipe_yaml(recipe), id), "prompt").to_string())
-        .collect();
+        // COLLABORATOR. No tool or bash step reads a comment. (#3129 removed
+        // the merge round's step-01b-crusty-evidence, the other reader.)
+        let verdict_prompts: Vec<String> = [("autodrive-crusty-round", "step-03c-post-verdict")]
+            .iter()
+            .filter(|(recipe, _)| path == recipe_path(recipe))
+            .map(|(recipe, id)| field(step(&recipe_yaml(recipe), id), "prompt").to_string())
+            .collect();
         for (n, line) in text.lines().enumerate() {
             if line.trim_start().starts_with('#') {
                 continue;
@@ -1324,9 +1199,10 @@ fn the_invocation_guard_scans_yml_files_in_subdirectories() {
 
 #[test]
 fn qa_team_does_not_refuse_model_invocation() {
-    // Step-04 of the merge round calls `Skill(skill="qa-team")` to write
-    // missing gadugi scenarios. If qa-team ever starts refusing agents, that
-    // call fails in every round the way merge-ready's did (issue #1517).
+    // Agent steps call `Skill(skill="qa-team")` (workflow-precommit-test and
+    // workflow-publish). If qa-team ever starts refusing agents, those calls
+    // fail in every run the way merge-ready's did (issue #1517). #3129
+    // removed the merge round's step-04, which also called it.
     let path = workspace_root().join("amplifier-bundle/skills/qa-team/SKILL.md");
     let text = read(&path);
     let front = skill_frontmatter(&text).expect("qa-team SKILL.md must have frontmatter");
@@ -1335,16 +1211,8 @@ fn qa_team_does_not_refuse_model_invocation() {
         .any(|(k, v)| k == "disable-model-invocation" && v.eq_ignore_ascii_case("true"));
     assert!(
         !refuses,
-        "qa-team sets disable-model-invocation: true, but autodrive-merge-round.yaml \
-         step-04 tells an agent to call Skill(skill=\"qa-team\"); that call would be \
-         refused in every round"
-    );
-    let fix_recipe = recipe_yaml("autodrive-merge-round");
-    let fix = field(step(&fix_recipe, "step-04-address-blockers"), "prompt");
-    assert!(
-        fix.contains(r#"Skill(skill="qa-team")"#),
-        "step-04 must still call qa-team by Skill(skill=\"qa-team\"); this guard is \
-         only meaningful while it does"
+        "qa-team sets disable-model-invocation: true, but agent steps call \
+         Skill(skill=\"qa-team\"); that call would be refused in every run"
     );
 }
 
@@ -1373,20 +1241,8 @@ fn criterion_1_follows_the_qa_team_repo_type_table() {
         !skill.contains("Exception: auto-drive-to-merge"),
         "qa-team must not carry an auto-drive exception to its Rust CLI line"
     );
-    let recipe = recipe_yaml("autodrive-merge-round");
-    let fix = squash(field(step(&recipe, "step-04-address-blockers"), "prompt"));
-    for needle in ["repo-type table", "gadugi_required", "cargo test", "pytest"] {
-        assert!(
-            fix.contains(needle),
-            "step-04 must follow qa-team's repo-type table and mention `{needle}`"
-        );
-    }
-    for stale in ["auto-drive-to-merge exception", "every repository type"] {
-        assert!(
-            !fix.contains(stale),
-            "step-04 must not require gadugi everywhere (`{stale}`)"
-        );
-    }
+    // #3129 removed the merge round's step-04, whose prompt applied this
+    // table to criterion 1; its assertions went with it.
 }
 
 // `autodrive_gadugi_required` in autodrive_trust.sh is the one place the
@@ -1591,69 +1447,8 @@ const CRUSTY_FINAL_TOKENS: [&str; 6] = [
     "crusty-head-sha-empty",
 ];
 
-fn squash(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 // Every (recipe, step id, prompt) for a step that runs an agent, across the
 // auto-drive recipes and the loop-health evaluator both loops call.
-
-#[test]
-fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
-    let recipe = recipe_yaml("autodrive-merge-round");
-    let fix = field(step(&recipe, "step-04-address-blockers"), "prompt");
-    for needle in [
-        r#"Skill(skill="qa-team")"#,
-        "gadugi_scenario_dir",
-        "gadugi_status",
-        "NO_SCENARIOS",
-        // The judgement acts on the operator's missing directory instead of
-        // failing every round on it (#2569).
-        "operator-missing",
-        "gadugi-test validate -d",
-        "--scenario",
-        "#207",
-        "gadugi-scenario-dir-outside-repo",
-        "quality-audit-convergence-crusty-not-done-clean",
-        // Every BLOCKED gadugi token has an instruction: an agent cannot
-        // install gadugi-test, so step-04 leaves it to a person.
-        "gadugi-test-missing",
-    ] {
-        assert!(fix.contains(needle), "step-04 must mention `{needle}`");
-    }
-    let lower = squash(&fix.to_ascii_lowercase());
-    assert!(
-        lower.contains("where `gadugi_required` is `true`, write"),
-        "step-04 must write gadugi scenarios only where gadugi is required"
-    );
-    assert!(
-        lower.contains("rust cli or python repository") && lower.contains("cargo test"),
-        "step-04 must send a Rust CLI or Python repository's coverage to its suite command"
-    );
-    assert!(
-        lower.contains("failing scenario"),
-        "step-04 must say a failing scenario is fixed, never deleted"
-    );
-    // One scenario per process (gadugi-agentic-test #207): every run names a
-    // scenario, and none runs a whole directory.
-    let runs: Vec<&str> = fix
-        .lines()
-        .filter(|l| l.contains("gadugi-test run"))
-        .collect();
-    assert!(
-        !runs.is_empty(),
-        "step-04 must tell the agent how to run scenarios"
-    );
-    for line in &runs {
-        assert!(
-            line.contains("--scenario"),
-            "step-04 runs a whole directory in one gadugi-test process:\n  {line}"
-        );
-    }
-    let validate = fix.find("gadugi-test validate -d").unwrap();
-    let run = fix.find("gadugi-test run").unwrap();
-    assert!(validate < run, "step-04 must validate before it runs");
-}
 
 #[test]
 fn crusty_round_records_the_reviewed_head_sha_every_round() {
@@ -1692,54 +1487,8 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
 #[test]
 fn crusty_records_are_trusted_only_through_the_loop_manifest() {
     // Point 4 of #1517: the assessment trusts only records the loop wrote.
-    let driver = read(&tool_path("autodrive_loop.sh")).replace(
-        ". \"${LOOP_HOME}/autodrive_loop_record.sh\" || exit 1",
-        &read(&tool_path("autodrive_loop_record.sh")),
-    );
-    for needle in [
-        "-records.tsv",
-        "hash-object --no-filters --stdin",
-        "env -u GIT_DIR -u GIT_WORK_TREE",
-        "cmp",
-        "umask 077",
-    ] {
-        assert!(
-            driver.contains(needle),
-            "autodrive_loop.sh must write the record manifest with `{needle}`"
-        );
-    }
-    let latest = driver
-        .find("-latest.json\"")
-        .expect("the driver must still copy the round record to <loop>-latest.json");
-    // The ordering is about the WRITE. The driver also READS the manifest
-    // before its first round, to label its rounds after the ones a previous
-    // loop on the same state dir wrote (PR #1520 review), so the first
-    // mention of the file is not the row being written.
-    let append = ">> \"${STATE_DIR}/${LOOP_NAME}-records.tsv\"";
-    assert_eq!(
-        driver.matches(append).count(),
-        1,
-        "autodrive_loop.sh must append its manifest row in exactly one place: `{append}`"
-    );
-    assert!(
-        !driver
-            .replace(append, "")
-            .contains("> \"${STATE_DIR}/${LOOP_NAME}-records.tsv\""),
-        "nothing else in autodrive_loop.sh may write or truncate <loop>-records.tsv; \
-         the manifest is append-only"
-    );
-    let manifest = driver
-        .find(append)
-        .expect("the driver must append to <loop>-records.tsv");
-    let health = driver
-        .find("recipe run \"$HEALTH_RECIPE_PATH\"")
-        .expect("the driver must run loop-health-evaluator");
-    assert!(
-        latest < manifest && manifest < health,
-        "the manifest row must be written after the -latest.json copy and before any \
-         agent (the loop-health evaluator) runs"
-    );
-
+    // #3129 removed the old loop driver that wrote the manifest row and the
+    // merge round that read it; autodrive_crusty_final keeps its contract.
     let state = read(&tool_path("autodrive_state.sh"));
     assert!(
         state.contains("autodrive_crusty_final()"),
@@ -1805,26 +1554,6 @@ fn no_round_minimum_in_any_recipe_or_tool() {
         hits.is_empty(),
         "a recipe or tool asks for a minimum number of crusty rounds:\n{}",
         hits.join("\n")
-    );
-}
-
-/// #2536: the resolver reads `$TOP` under `set -u`; #2340 dropped its
-/// assignment and every merge-readiness step failed "TOP: unbound variable".
-/// Run it, as step-00 does, in a temporary git repository: once with the
-/// install inside that repository (the `"$TOP"/*` match path) and once
-/// with the install outside it.
-#[test]
-fn merge_loop_passes_the_state_dir_to_rounds() {
-    let text = loop_driver("autodrive-merge-loop", "step-02-merge-ready-loop");
-    assert!(
-        text.contains(r#"--context "autodrive_state_dir=${DIR}""#),
-        "the merge loop must pass its state dir to every round"
-    );
-    // The composer must not hand rounds the crusty loop's stdout: on a resumed
-    // run the crusty loop is skipped and that result is empty.
-    assert!(
-        !recipe_text("autodrive-merge-round").contains("crusty_loop_result"),
-        "crusty evidence comes from the state dir, never from crusty_loop_result"
     );
 }
 
@@ -1924,66 +1653,6 @@ fn a_required_count_of_zero_beside_a_review_rule_is_not_read_as_zero() {
     );
 }
 
-#[test]
-fn a_pending_approval_is_cleared_by_the_round_not_sent_to_a_person() {
-    // crusty round-1 on PR #1520: with the count unknown, BLOCKED is also what
-    // a failing required check gives, and an agent can fix that. The tool
-    // reports PENDING then (the PF-pending-* cases in
-    // test-auto-drive-to-merge.sh exercise it, and MERGEREADY-approval-downgrade
-    // shows step-03 still downgrades it). The routing itself is prompt text, so
-    // only the two sentences that carry it are pinned here.
-    let recipe = recipe_yaml("autodrive-merge-round");
-    let assess = squash(field(
-        step(&recipe, "step-02-merge-ready-assessment"),
-        "prompt",
-    ));
-    assert!(
-        assess.contains("For `PENDING` report `approval-pending-other-blockers`"),
-        "step-02 must name a PENDING approval apart from approval-state-unreadable"
-    );
-    let fix = squash(field(step(&recipe, "step-04-address-blockers"), "prompt"));
-    let at = fix
-        .find("**`approval-pending-other-blockers`**")
-        .expect("step-04 must say what to do with approval-pending-other-blockers");
-    let end = fix[at..]
-        .find("- **`changes-requested`**")
-        .map_or(fix.len(), |e| at + e);
-    let bullet = &fix[at..end];
-    assert!(
-        bullet.contains("Clear the other blockers first") && !bullet.contains("needs a person"),
-        "step-04 must clear the other blockers for a PENDING approval, not route it to a person:\n  {bullet}"
-    );
-}
-
-#[test]
-fn the_loop_refuses_before_round_one_when_its_terminator_is_missing() {
-    // A missing `loop-health-evaluator` otherwise costs a full round — a
-    // crusty review and a builder fix pass, with commits pushed — before the
-    // loop dies with "returned STUCK (or an unreadable verdict)", which blames
-    // the loop for a missing dependency.
-    let driver = read(&tool_path("autodrive_loop.sh"));
-    let preflight = driver
-        .find("recipe show \"$HEALTH_RECIPE_PATH\"")
-        .expect("the driver must resolve loop-health-evaluator up front");
-    let first_round = driver
-        .find("recipe run \"$ROUND_RECIPE_PATH\"")
-        .expect("the driver must run the round recipe");
-    assert!(
-        preflight < first_round,
-        "the dependency check must run BEFORE the first round, not after it"
-    );
-    assert!(
-        driver.contains("MISSING_DEPENDENCY"),
-        "the refusal must name the missing dependency as the cause"
-    );
-    let while_loop = driver.find("while :;").expect("the driver must loop");
-    assert!(
-        preflight < while_loop,
-        "the dependency check must sit outside the round loop so it costs one \
-         resolution, not one per round"
-    );
-}
-
 // ── Skill + registration ─────────────────────────────────────────────────────
 
 #[test]
@@ -2020,22 +1689,35 @@ fn skill_is_discoverable_and_states_the_contract() {
         "the skill must be invocable, like dev-orchestrator"
     );
 
+    // #3129 rewrote the skill for the goal loop: the loop-health evaluator,
+    // the merge-ready criteria, the qa-team step, platform confirmation and
+    // resume are gone from it. It states the merge authority and the history
+    // rules, and links the specification, which states the rest.
     for required in [
-        "loop-health",
-        "loop-health-evaluator",
-        "crusty-old-engineer",
-        "merge-ready",
-        "qa-team",
-        "branch protection",
-        "platform confirmation",
-        "79",
-        "Resume",
+        "captured invocation",
+        "--match-head-commit",
+        "Never rebase",
+        "force-push",
+        "docs/reference/autodrive-goal-loop.md",
     ] {
         assert!(
             text.contains(required),
             "the skill must document `{required}`"
         );
     }
+    let spec = read(&workspace_root().join("docs/reference/autodrive-goal-loop.md"));
+    for required in ["branch protection", "--admin", "79"] {
+        assert!(
+            spec.contains(required),
+            "the goal loop specification the skill links must document `{required}`"
+        );
+    }
+    // The agent step is told exit 79 is terminal in its own prompt.
+    assert!(
+        recipe_text("autodrive-goal-turn")
+            .contains("Exit 79 from any command is a terminal refusal"),
+        "the turn prompt must say exit 79 is terminal"
+    );
 
     // The crusty structured verdict contract, added without breaking the
     // skill's standalone use.
@@ -2088,16 +1770,6 @@ fn step_command<'a>(recipe: &'a Value, id: &str) -> &'a str {
     field(step(recipe, id), "command")
 }
 
-/// A loop step's driver code: its command, or for the merge loop (#2575) the
-/// trusted autodrive_merge_loop_run.sh its step-02 runs, where the body moved.
-fn loop_driver(recipe: &str, id: &str) -> String {
-    let command = step_command(&recipe_yaml(recipe), id).to_string();
-    if command.contains("autodrive_merge_loop_run.sh") {
-        return read(&tool_path("autodrive_merge_loop_run.sh"));
-    }
-    command
-}
-
 // The subcommands of autodrive_round_evidence.sh and the function each runs.
 
 // Functions in autodrive_round_evidence.sh that no subcommand dispatches to
@@ -2113,119 +1785,6 @@ fn loop_driver(recipe: &str, id: &str) -> String {
 // function that body calls in turn. The step bodies moved into that tool when
 // the recipe reached its brick budget (PR #1520 review, #1561), so a check on
 // what a step does reads both.
-
-#[test]
-fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
-    // D4, moved by the crusty review of PR #1520: a code commit after the
-    // clean crusty round goes back to crusty BEFORE the next merge round,
-    // from the merge-ready loop's own shell. Nested in a merge round as
-    // step-00c, the crusty loop ran one recipe runner deeper and the
-    // recursion guard refused its rounds with exit 79.
-    let round = recipe_yaml("autodrive-merge-round");
-    for gone in ["step-00b-crusty-range", "step-00c-crusty-rereview"] {
-        assert!(
-            !steps(&round)
-                .iter()
-                .any(|s| s.get("id").and_then(Value::as_str) == Some(gone)),
-            "{gone} must not come back: the crusty re-review runs between merge rounds"
-        );
-    }
-    let order = [
-        "step-00-tools-dir",
-        "merge-evidence",
-        "step-00d-qa-evidence-hash",
-        "step-01-platform-facts",
-        "step-01b-crusty-evidence",
-        "step-02-merge-ready-assessment",
-    ];
-    for pair in order.windows(2) {
-        assert!(
-            step_index(&round, pair[0]) < step_index(&round, pair[1]),
-            "`{}` must run before `{}`",
-            pair[0],
-            pair[1]
-        );
-    }
-
-    // The merge-ready loop passes the re-review, from the loop driver's own
-    // install, as its before-round step.
-    let cmd = loop_driver("autodrive-merge-loop", "step-02-merge-ready-loop");
-    for needle in [
-        "REREVIEW=\"$(dirname \"$LOOP_HELPER\")/autodrive_crusty_rereview.sh\"",
-        "--before-round \"$REREVIEW\"",
-        "ERROR: autodrive-tools-not-found: ${REREVIEW}",
-    ] {
-        assert!(
-            cmd.contains(needle),
-            "autodrive-merge-loop step-02 must contain `{needle}`"
-        );
-    }
-
-    // The re-review measures the range, runs the crusty loop in its own
-    // shell, and records a DONE loop as phase 2 does.
-    let tool = read(&tool_path("autodrive_crusty_rereview.sh"));
-    for needle in [
-        "bash \"$HERE/autodrive_round_evidence.sh\" crusty-range",
-        "bash \"$HERE/autodrive_loop.sh\"",
-        "--loop-name \"crusty\"",
-        "--round-recipe \"autodrive-crusty-round\"",
-        "--clean-token \"CLEAN\"",
-        "--verdict-field \"crusty_verdict\"",
-        "--state-dir \"$DIR\"",
-        "bash \"$HERE/autodrive_crusty_finalize.sh\"",
-        "crusty-rereview-not-needed",
-        "crusty-rereview-done",
-        "crusty-rereview-not-done",
-        "crusty-rereview-refused",
-        "crusty-rereview-unavailable",
-    ] {
-        assert!(
-            tool.contains(needle),
-            "autodrive_crusty_rereview.sh must contain `{needle}`"
-        );
-    }
-    assert!(
-        executable_lines(&tool).all(|l| !runs_a_recipe(l)),
-        "autodrive_crusty_rereview.sh must never start a recipe runner itself; its loop does, at its depth"
-    );
-    let crusty_loop = recipe_yaml("autodrive-crusty-loop");
-    assert!(
-        field(step(&crusty_loop, "step-03-record-crusty-phase"), "prompt")
-            .contains("autodrive_record_crusty_loop_done"),
-        "phase 2 and the re-review must record a DONE crusty loop through one function"
-    );
-    assert!(
-        regex::Regex::new(r"(?m)^autodrive_record_crusty_loop_done\(\)\s*\{")
-            .unwrap()
-            .is_match(&read(&tool_path("autodrive_state.sh"))),
-        "autodrive_state.sh must define autodrive_record_crusty_loop_done()"
-    );
-
-    // The driver runs the step before every round, in its own shell.
-    let driver = read(&tool_path("autodrive_loop.sh"));
-    for needle in [
-        "--before-round)",
-        "exec bash \"$BEFORE_ROUND\" --repo \"$REPO\" --state-dir \"$STATE_DIR\"",
-        "BEFORE_ROUND_FAILED",
-        "before_round_result",
-        "if terminal_refusal \"$BEFORE_RC\" \"$BEFORE_LOG\"",
-    ] {
-        assert!(
-            driver.contains(needle),
-            "autodrive_loop.sh must contain `{needle}`"
-        );
-    }
-    let before_at = driver
-        .find("exec bash \"$BEFORE_ROUND\"")
-        .expect("before-round call");
-    let round_at = driver
-        .find("recipe run \"$ROUND_RECIPE_PATH\"")
-        .expect("round call");
-    assert!(
-        before_at < round_at,
-        "the before-round step must run before the round in each iteration"
-    );
-}
 
 // Lines of shell that are not comments.
 fn executable_lines(text: &str) -> impl Iterator<Item = &str> {
@@ -2278,13 +1837,22 @@ fn no_round_recipe_starts_a_loop_or_a_recipe_run() {
     // steps. With the default ceiling of 3 a `recipe run` from a round step is
     // refused with exit 79. So nothing a round reaches, through sub-recipes or
     // the tools its bash steps run, may start a loop or a recipe runner.
+    // #3129: the goal loop is the loop now, and its review action runs the
+    // Crusty round from the driver's depth. The merge round is a one-release
+    // alias that runs one turn of the goal loop, not a round.
     let loop_recipes = [
         "auto-drive-to-merge",
+        "autodrive-goal-loop",
         "autodrive-crusty-loop",
         "autodrive-merge-loop",
     ];
-    let loop_starters = ["autodrive_loop.sh", "autodrive_crusty_rereview.sh"];
-    for round in ["autodrive-crusty-round", "autodrive-merge-round"] {
+    let loop_starters = [
+        "autodrive_goal_loop.sh",
+        "autodrive_loop.sh",
+        "autodrive_crusty_rereview.sh",
+    ];
+    {
+        let round = "autodrive-crusty-round";
         for reached in recipes_reached_from(round) {
             assert!(
                 !loop_recipes.contains(&reached.as_str()),
@@ -2341,33 +1909,31 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
     // "Recursion context propagation"): `amplihack recipe run` at depth d gives
     // its runner d + 1 (execute.rs, child_depth), the runner gives every step,
     // bash or agent, one more (recipe-runner-rs build_child_env), and a
-    // `type: recipe` step runs inside the same runner. Both loop drivers are
-    // `type: recipe` steps of the composer, so their bash runs as a step of
-    // the composer's runner.
+    // `type: recipe` step runs inside the same runner. The goal loop (#3129)
+    // is a `type: recipe` step of the composer, so its driver runs as a step
+    // of the composer's runner, and the driver's review action starts each
+    // Crusty round from there.
     let composer = recipe_yaml("auto-drive-to-merge");
-    for (phase, loop_step) in [
-        ("autodrive-crusty-loop", "step-02-crusty-loop"),
-        ("autodrive-merge-loop", "step-02-merge-ready-loop"),
-    ] {
-        let s = steps(&composer)
-            .iter()
-            .find(|s| s.get("recipe").and_then(Value::as_str) == Some(phase))
-            .unwrap_or_else(|| panic!("the composer must run {phase}"));
-        assert_eq!(
-            s.get("type").and_then(Value::as_str),
-            Some("recipe"),
-            "{phase} must run inside the composer's runner"
-        );
-        assert!(
-            loop_driver(phase, loop_step).contains("bash \"$LOOP_HELPER\""),
-            "{phase} {loop_step} must run the loop driver in its own shell"
-        );
-    }
+    let phase = "autodrive-goal-loop";
+    let s = steps(&composer)
+        .iter()
+        .find(|s| s.get("recipe").and_then(Value::as_str) == Some(phase))
+        .unwrap_or_else(|| panic!("the composer must run {phase}"));
+    assert_eq!(
+        s.get("type").and_then(Value::as_str),
+        Some("recipe"),
+        "{phase} must run inside the composer's runner"
+    );
+    assert!(
+        step_command(&recipe_yaml(phase), "goal-loop")
+            .contains("bash \"$T/autodrive_goal_loop.sh\""),
+        "{phase} goal-loop must run the loop driver in its own shell"
+    );
     const SHELL: u32 = 0; // a person starts auto-drive from a shell
     let composer_runner = SHELL + 1;
-    let loop_step = composer_runner + 1; // autodrive_loop.sh, its --before-round step and the crusty re-review
+    let loop_step = composer_runner + 1; // autodrive_goal_loop.sh and its goal tool's review action
     let round_runner = loop_step + 1;
-    let round_step = round_runner + 1; // where step-00c's nested crusty loop ran
+    let round_step = round_runner + 1; // where a nested crusty round would run
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let trees = tmp.path().join("trees");
@@ -2483,7 +2049,10 @@ fn a_round_log_that_quotes_the_refusal_is_not_a_refusal() {
         "autodrive_refusal.sh must not eval anything it read from a log"
     );
 
-    let driver = read(&tool_path("autodrive_loop.sh"));
+    // #3129: the goal loop's driver replaced autodrive_loop.sh. Its before-round
+    // step and loop-health evaluator, two of the three old call sites, are
+    // gone; the turn run is where a round ran, so its log is the one call site.
+    let driver = read(&tool_path("autodrive_goal_loop.sh"));
     let code: Vec<&str> = driver
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
@@ -2495,72 +2064,27 @@ fn a_round_log_that_quotes_the_refusal_is_not_a_refusal() {
         "terminal_refusal is defined once, in autodrive_refusal.sh"
     );
     assert!(
-        code.iter()
-            .any(|line| line.contains(". \"${LOOP_HOME}/autodrive_refusal.sh\"")),
-        "autodrive_loop.sh must source autodrive_refusal.sh from beside itself"
+        code.iter().any(|line| line.contains(
+            "for lib in autodrive_goal_lib.sh autodrive_refusal.sh autodrive_state.sh; do"
+        )) && code
+            .iter()
+            .any(|line| line.contains(". \"$LOOP_HOME/$lib\"")),
+        "autodrive_goal_loop.sh must source autodrive_refusal.sh from beside itself"
     );
     assert!(
         !code.iter().any(|line| line.contains("BLOCKED_TERMINAL")),
-        "autodrive_loop.sh must not match the refusal's text"
+        "autodrive_goal_loop.sh must not match the refusal's text"
     );
     let calls: Vec<&&str> = code
         .iter()
         .filter(|line| line.contains("terminal_refusal \""))
         .collect();
-    assert_eq!(calls.len(), 3, "three call sites: {calls:?}");
-    for log in ["\"$BEFORE_LOG\"", "\"$LOG\"", "\"$HEALTH_LOG\""] {
-        assert!(
-            calls.iter().any(|line| line.contains(log)),
-            "terminal_refusal must be called with {log}: {calls:?}"
-        );
-    }
-}
-
-#[test]
-fn merge_round_prompts_state_the_range_rule() {
-    let recipe = recipe_yaml("autodrive-merge-round");
-    let assess = field(step(&recipe, "step-02-merge-ready-assessment"), "prompt");
-    let flat = squash(assess);
     assert!(
-        !flat.contains("is not compared with the current head"),
-        "step-02 still says the reviewed SHA `is not compared with the current head`; \
-         the range rule replaced that line (#1517 D4)"
+        calls.iter().any(|line| line.contains("\"$TD/turn.log\"")),
+        "terminal_refusal must be called with the turn run's log \"$TD/turn.log\", so a \
+         structural_refusal marker with a non-79 exit ends the run as refused (#1437): \
+         {calls:?}"
     );
-    for needle in [
-        "UNREVIEWED_COMMITS",
-        "crusty-review-required",
-        "crusty_first_unreviewed_sha",
-        "crusty-range-unreadable",
-        "base merge",
-    ] {
-        assert!(
-            flat.contains(needle),
-            "the step-02 prompt must state the range rule (`{needle}`)"
-        );
-    }
-    let fix = field(step(&recipe, "step-04-address-blockers"), "prompt");
-    let flat = squash(fix);
-    let lower = flat.to_ascii_lowercase();
-    for needle in ["crusty-review-required", "crusty-range-unreadable"] {
-        assert!(
-            flat.contains(needle),
-            "step-04 must tell the agent not to try to clear `{needle}`"
-        );
-    }
-    for needle in ["rewrite history", "reset", "force-push", "refs"] {
-        assert!(
-            lower.contains(needle),
-            "step-04 must forbid the agent to {needle}"
-        );
-    }
-    for prompt in [assess, fix] {
-        for leak in ["{{crusty_range", "{{qa_evidence_hash"] {
-            assert!(
-                !prompt.contains(leak),
-                "agent prompts never see the raw range or hash step output (`{leak}`)"
-            );
-        }
-    }
 }
 
 #[test]
@@ -2748,18 +2272,13 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
             }
         }
     }
-    for name in [
-        "crusty_round_context",
-        "crusty_evidence",
-        "qa_evidence_hash",
-        "platform_facts",
-        "qa_evidence",
-    ] {
-        assert!(
-            outputs.iter().any(|o| o == name),
-            "expected step output `{name}` in the round recipes"
-        );
-    }
+    // #3129 made the merge round and merge evidence one-release aliases with no
+    // step outputs, so only the Crusty round's outputs remain.
+    let name = "crusty_round_context";
+    assert!(
+        outputs.iter().any(|o| o == name),
+        "expected step output `{name}` in the round recipes"
+    );
     let mut reads = 0;
     let mut bad = Vec::new();
     // autodrive_round_evidence.sh holds merge-round step bodies (PR #1520
@@ -2776,6 +2295,20 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
         (
             "autodrive_round_evidence.sh",
             read(&tool_path("autodrive_round_evidence.sh")),
+        ),
+        // #3129: with the merge round's reads gone, the Crusty round's own
+        // step bodies in its tools carry the reads this scan counts.
+        (
+            "autodrive_crusty_record.sh",
+            read(&tool_path("autodrive_crusty_record.sh")),
+        ),
+        (
+            "autodrive_crusty_concerns_evidence.sh",
+            read(&tool_path("autodrive_crusty_concerns_evidence.sh")),
+        ),
+        (
+            "autodrive_crusty_posted.sh",
+            read(&tool_path("autodrive_crusty_posted.sh")),
         ),
     ];
     for (r, text) in &sources {
@@ -3577,13 +3110,20 @@ fn the_squash_message_suite_passes_and_keeps_its_named_cases() {
 }
 
 #[test]
-fn finalize_supplies_the_squash_message_instead_of_the_platform_default() {
-    // #2575: the finalize `merge` step sources autodrive_merge.sh, which
-    // sources the trusted squash-message helper (#2056).
-    let finalizer = recipe_yaml("autodrive-finalize");
-    let command = field(step(&finalizer, "merge"), "command");
-    assert!(command.contains("amplifier-bundle/tools/autodrive_merge.sh"));
-    assert!(command.contains("[ ! -L \"$M\" ]"));
+fn the_merge_action_supplies_the_squash_message_instead_of_the_platform_default() {
+    // #2575: the merge sources autodrive_merge.sh, which sources the trusted
+    // squash-message helper (#2056). #3129 moved the caller from the finalize
+    // `merge` step to the goal loop's merge action (autodrive_pr_goal.sh act
+    // merge), which sources it from its own launch-bundle tools folder.
+    let action = read(&tool_path("autodrive_pr_goal.sh"));
+    assert!(action.contains(". \"$HERE/autodrive_merge.sh\""));
+    // The finalize step refused a symlinked autodrive_merge.sh
+    // (`[ ! -L "$M" ]`): the launch bundle's tools are regular files only.
+    assert!(
+        action.lines().any(|l| l.contains("autodrive_merge.sh")
+            && (l.contains("[ ! -L") || l.contains("goal_bundle_file"))),
+        "the merge action must refuse a symlinked autodrive_merge.sh before it sources it"
+    );
     let tool = read(&tool_path("autodrive_merge.sh"));
     for needle in [
         "#2056",
@@ -3639,7 +3179,12 @@ fn run_shell_test_copy(
     fs::create_dir_all(bundle.join("recipes/tests")).expect("create scratch recipes");
     fs::create_dir_all(bundle.join("tools")).expect("create scratch tools");
     fs::create_dir_all(bundle.join("skills/auto-drive-to-merge")).expect("create scratch skill");
-    for recipe in AUTODRIVE_RECIPES {
+    // #3129: the shell test also checks for the two recipes that run the goal
+    // loop or hand off from it, which the lists above leave out.
+    for recipe in AUTODRIVE_RECIPES
+        .iter()
+        .chain(&["auto-drive-light", "autodrive-handoff"])
+    {
         fs::write(bundle.join(format!("recipes/{recipe}.yaml")), "").expect("write empty recipe");
     }
     for tool in AUTODRIVE_TOOLS {
@@ -3860,26 +3405,9 @@ fn the_composer_tells_both_loops_whether_pr_number_was_supplied() {
             );
         }
     }
-    for id in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
-        let ctx = step(&recipe, id)
-            .get("context")
-            .and_then(Value::as_mapping)
-            .unwrap_or_else(|| panic!("{id} forwards no context"));
-        assert_eq!(
-            ctx.get(Value::from("autodrive_pr_input"))
-                .and_then(Value::as_str),
-            Some("{{autodrive_pr_input}}"),
-            "{id} must forward the operator's pr_number captured by \
-             autodrive-pr-input, not `{{pr_number}}`, which the crusty loop \
-             overwrites with build_result.pr"
-        );
-        assert_eq!(
-            ctx.get(Value::from("existing_branch"))
-                .and_then(Value::as_str),
-            Some("{{existing_branch}}"),
-            "{id} must forward existing_branch"
-        );
-    }
+    // #3129 removed the crusty and merge-ready loop steps that this test
+    // also held to forwarding autodrive_pr_input and existing_branch. The goal
+    // loop is given the PR that autodrive-goal-pr names.
 }
 
 // The merge gate stays on the launch side, bound to the platform's
@@ -3898,167 +3426,3 @@ fn the_composer_tells_both_loops_whether_pr_number_was_supplied() {
 // child `Command`, never with `std::env::set_var`.
 
 const RANGE_TOKENS: [&str; 2] = ["crusty-unreviewed-commits", "crusty-range-unreadable"];
-
-// ── Issue #2033: repository commands run with the git and run-identity env cleared ──
-
-const GIT_REPO_ENV_LOAD: &str = ". \"{{autodrive_tools_dir}}/git-repo-env.sh\" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env";
-
-#[test]
-fn issue_2033_step_04_loads_the_helper_instead_of_a_partial_unset() {
-    let recipe = recipe_yaml("autodrive-merge-round");
-    let prompt = field(step(&recipe, "step-04-address-blockers"), "prompt");
-    assert!(
-        !prompt.contains("unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE"),
-        "step-04 must not keep the partial GIT_* unset (#2033)"
-    );
-    // The test-running instruction also loads this helper. Check the commit
-    // block independently so prose order cannot select that other call.
-    let commit_block = prompt
-        .split("```bash\n")
-        .skip(1)
-        .filter_map(|section| section.split_once("```").map(|(block, _)| block))
-        .find(|block| {
-            block
-                .lines()
-                .any(|line| line.trim_start().starts_with("git commit "))
-        })
-        .expect("step-04 must contain a fenced bash commit block");
-    let cd = commit_block
-        .lines()
-        .position(|l| l.contains("cd \"{{repo_path}}\""))
-        .expect("step-04 enters the PR worktree");
-    let (load, line) = commit_block
-        .lines()
-        .enumerate()
-        .find(|(_, l)| l.contains("git-repo-env.sh") && l.contains("amplihack_clear_git_repo_env"))
-        .unwrap_or_else(|| panic!("step-04 must source git-repo-env.sh and clear (#2033)"));
-    assert!(
-        line.contains("unset GH_REPO"),
-        "step-04 must keep `unset GH_REPO` on the helper line:\n  {line}"
-    );
-    assert!(
-        line.contains(GIT_REPO_ENV_LOAD),
-        "step-04 must load the helper from the checked tools dir and clear both lists:\n  {line}"
-    );
-    assert!(
-        line.contains("STOP: cannot load git-repo-env.sh from the tools directory (#2033)")
-            && line.contains("exit 1"),
-        "step-04 must stop when the helper cannot be loaded:\n  {line}"
-    );
-    let guard = commit_block
-        .lines()
-        .position(|l| l.contains("autodrive_worktree_guard.sh"))
-        .expect("step-04 checks the PR worktree before committing");
-    assert!(
-        cd < load && load < guard,
-        "step-04 must clear after cd and before the worktree guard (#2033)"
-    );
-    let first_git = commit_block
-        .lines()
-        .enumerate()
-        .find(|(_, l)| {
-            l.trim_start().starts_with("git ") || l.contains("autodrive_worktree_guard.sh")
-        })
-        .map(|(n, _)| n)
-        .expect("step-04 runs git after entering the worktree");
-    assert!(
-        load < first_git,
-        "step-04 must clear before its first git command (#2033)"
-    );
-}
-
-#[test]
-fn issue_2033_step_04_test_runs_load_the_helper_in_the_same_shell_call() {
-    let recipe = recipe_yaml("autodrive-merge-round");
-    let prompt = field(step(&recipe, "step-04-address-blockers"), "prompt");
-    let instruction = prompt
-        .lines()
-        .find(|line| line.contains("**Running tests or hooks**"))
-        .expect("step-04 must instruct the agent how to isolate test and hook runs (#2033)");
-    assert!(
-        instruction.contains("every shell call") && instruction.contains("in that same call"),
-        "step-04 must clear the inherited environment in each shell call that runs tests or hooks:\n  {instruction}"
-    );
-    assert!(
-        instruction.contains(GIT_REPO_ENV_LOAD),
-        "test and hook runs must load the checked helper and clear both lists:\n  {instruction}"
-    );
-    assert!(
-        instruction.contains("[ ! -L \"{{autodrive_tools_dir}}/git-repo-env.sh\" ] &&")
-            && instruction
-                .contains("|| { echo \"STOP: cannot load git-repo-env.sh (#2033)\" >&2; exit 1; }"),
-        "test and hook runs must stop if the helper is a symlink or cannot be loaded:\n  {instruction}"
-    );
-}
-
-#[test]
-fn issue_2033_step_00_tools_dir_requires_the_helper() {
-    let recipe = recipe_yaml("autodrive-merge-round");
-    // Issue #1619: this body was extracted into amplifier-bundle/tools/ for
-    // the brick budget, so the NEED list is read from there.
-    let cmd =
-        crate::recipe_step_body::resolved(field(step(&recipe, "step-00-tools-dir"), "command"));
-    let need: String = cmd
-        .lines()
-        .filter(|l| l.trim_start().starts_with("NEED="))
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(
-        need.split(|c: char| c.is_whitespace() || c == '"')
-            .any(|w| w == "git-repo-env.sh"),
-        "step-00-tools-dir NEED must list git-repo-env.sh so a tools dir without it is refused (#2033):\n{need}"
-    );
-}
-
-#[test]
-fn issue_2033_merge_evidence_steps_clear_before_any_git_command() {
-    let recipe = recipe_yaml("autodrive-merge-evidence");
-    // One lookup per round: the evidence steps load git-repo-env.sh from the
-    // tools directory merge-round's step-00 found, not from a search of their own.
-    let round = recipe_yaml("autodrive-merge-round");
-    let passed = step(&round, "merge-evidence")
-        .get("context")
-        .and_then(|c| c.get("autodrive_tools_dir"))
-        .and_then(Value::as_str);
-    assert_eq!(
-        passed,
-        Some("{{autodrive_tools_dir}}"),
-        "merge-round must pass autodrive_tools_dir to autodrive-merge-evidence (#2033)"
-    );
-    assert!(
-        recipe
-            .get("context")
-            .and_then(|c| c.get("autodrive_tools_dir"))
-            .is_some(),
-        "autodrive-merge-evidence must declare autodrive_tools_dir in its context"
-    );
-    // #2329 made these agent steps. Each agent shell call is a new process
-    // that inherits the agent's environment, so the clearing instruction comes
-    // first in the prompt and applies to every call that runs git, gh or tests.
-    for id in [
-        "step-01-sync-with-base",
-        "step-02-qa-team-scenarios",
-        "step-03-wait-for-ci",
-    ] {
-        let prompt = field(step(&recipe, id), "prompt");
-        let first = prompt.lines().next().unwrap_or_default();
-        assert!(
-            first.contains("(issue #2033)")
-                && first.contains("every shell call")
-                && first.contains("in that same call"),
-            "{id} must clear the inherited environment before any git or gh call:\n  {first}"
-        );
-        assert!(
-            first.contains(GIT_REPO_ENV_LOAD)
-                && first.contains("[ ! -L \"{{autodrive_tools_dir}}/git-repo-env.sh\" ] &&")
-                && first.contains(
-                    "|| { echo \"STOP: cannot load git-repo-env.sh from the tools directory (#2033)\" >&2; exit 1; }"
-                ),
-            "{id} must load the checked helper, refuse a symlink and stop when it cannot be loaded:\n  {first}"
-        );
-        assert!(
-            first.contains("never through the git toplevel"),
-            "{id} must not find tools through the git toplevel (#2033):\n  {first}"
-        );
-    }
-}

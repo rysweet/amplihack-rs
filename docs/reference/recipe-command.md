@@ -486,6 +486,35 @@ run's `guidance/` folder, and every agent step that starts afterwards
 receives it at the end of its prompt. See [amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide)
 for targets, storage, limits and exit codes.
 
+### recipe guidance
+
+```
+amplihack recipe guidance show [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] [--since <ENTRY>] [--json]
+amplihack recipe guidance wait [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] --since <ENTRY> [-- <COMMAND>...]
+```
+
+Reads the guidance a run has received, from the folders
+`AMPLIHACK_RUN_GUIDANCE_DIRS` lists and then the folder of the pull request
+named by `<TARGET>` (a pull request URL) or by `--pr` with `--pr-repo`.
+
+`show` prints every entry, oldest first, as the block an agent step receives,
+with each entry's file name, and marks entries whose names sort after `--since`
+as `NEW`. `--json` prints one line of metadata (schema 1) for each folder and
+entry, and never the text.
+
+`wait` arms a wake FIFO beside each folder, then blocks, with no polling loop
+or timer, until an entry after `--since` arrives or the command finishes. It
+prints one JSON line: `{"event":"guidance","entry":"<ENTRY>"}`,
+`{"event":"command","exit":N}` (with `"signal":S` when a signal ended the
+command), or `{"event":"unarmed"}` with exit code 3 when no FIFO could be armed
+and the command was not started. A command's own exit code, 75 and 79
+included, is reported in `exit` and never passed on.
+
+Both work inside recipe runs and are what the
+[auto-drive goal loop](./autodrive-goal-loop.md#guidance) uses. See
+[recipe guidance](./recipe-cli-reference.md#amplihack-recipe-guidance) for the
+folders read, the JSON fields and the exit codes.
+
 ### Run records
 
 On Linux, every `recipe run` attempt that starts a runner writes a record of

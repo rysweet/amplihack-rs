@@ -49,21 +49,19 @@ mod issue_2912_crash_loop_stop;
 
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
-#[path = "issue_2556_autodrive_evidence.rs"]
-mod issue_2556_autodrive_evidence;
 #[path = "issue_2569_criterion1_judgement.rs"]
 mod issue_2569_criterion1_judgement;
 #[path = "issue_2575_agentic_merge_ready.rs"]
 mod issue_2575_agentic_merge_ready;
-mod issue_2575_finalize_recovery_runner;
+// #3129: the goal loop, its shared module and its behaviour tests.
+#[path = "issue_3129_goal_loop/mod.rs"]
+mod issue_3129_goal_loop;
 // #1888: the merge method, through `amplihack recipe run` and the real runner.
 mod issue_1888_merge_method_recipe_run;
 #[path = "issue_2582_context_off_argv.rs"]
 mod issue_2582_context_off_argv;
 #[path = "issue_2582_degraded_runner_no_set.rs"]
 mod issue_2582_degraded_runner_no_set;
-#[path = "issue_2582_nested_context_off_argv.rs"]
-mod issue_2582_nested_context_off_argv;
 #[path = "issue_2582_real_runner_argv.rs"]
 mod issue_2582_real_runner_argv;
 #[path = "issue_2585_launch_notices_stderr.rs"]
@@ -166,8 +164,6 @@ mod issue_1567_nested_profile;
 mod issue_1569_auto_switch;
 #[path = "issue_1570_auto_prompt_file.rs"]
 mod issue_1570_auto_prompt_file;
-#[path = "issue_1570_autodrive.rs"]
-mod issue_1570_autodrive;
 #[path = "issue_1570_autodrive_recipes.rs"]
 mod issue_1570_autodrive_recipes;
 #[path = "issue_1570_body_file.rs"]
@@ -266,8 +262,6 @@ mod issue_1741_recovery_compatibility;
 mod issue_1741_recovery_security;
 #[path = "issue_1741_runner_contract.rs"]
 mod issue_1741_runner_contract;
-#[path = "issue_1743_autodrive_budget.rs"]
-mod issue_1743_autodrive_budget;
 #[path = "issue_1745_home_statusline.rs"]
 mod issue_1745_home_statusline;
 #[path = "issue_1746_daily_archive_rotator.rs"]

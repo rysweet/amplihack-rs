@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
 # autodrive_merge.sh: the auto-drive merge request, under GitHub's own
-# conditions only (#2575). docs/reference/autodrive-merge-ready-round.md.
+# conditions only (#2575, #3129). docs/reference/autodrive-goal-loop.md.
 #
-# The caller is autodrive-finalize's `merge` step, after it has checked the
-# captured authorisation and that the PR worktree is still at the head the
-# merge-ready round assessed. No agent-written text is read here. The merge
-# needs the PR to be open, its checks green or absent, and GitHub to accept
-# `gh pr merge --match-head-commit <expected sha>`, which also enforces
-# required reviews, branch protection and a head that moved on the server.
+# The caller is the goal loop's merge action (autodrive_pr_goal.sh act merge),
+# after it has checked the captured authorisation and that the head the agent
+# named is the head this turn read. No agent-written text is read here. The
+# merge needs the PR to be open and from this repository, its checks green or
+# absent, and GitHub to accept `gh pr merge --match-head-commit <expected
+# sha>`, which also enforces required reviews, branch protection and a head
+# that moved on the server. Nothing here merges the base in (#1924, #3094) and
+# nothing waits: a pending check is not green, and the loop's agent chooses
+# to wait for it (#3109).
 #
 # This file only DEFINES functions; sourcing it has no other effect.
 #
 #   autodrive_merge_method_known <method>
 #       True for the methods autodrive_merge takes: empty (the repository's
-#       own choice), merge, squash or rebase. This is the one list of them;
-#       autodrive_merge_loop_run.sh checks a run's method with it before any
-#       merge-ready round prompt names the method (#1888).
+#       own choice), merge, squash or rebase. This is the one list of them
+#       (#1888).
 #
 #   autodrive_merge_printable <text> <bytes>
 #       Prints <text> with every byte outside printable ASCII replaced by '?',
@@ -23,29 +25,29 @@
 #       or an error repeats.
 #
 #   autodrive_merge <pr> <expected_sha> [merge_method]
-#       Calls gh once for each, in order: PR state, title, body and
-#       mergeStateStatus (one read), `checks --required` (falling back to all
-#       checks only when gh reports that no required checks exist), the
-#       repository's allowed merge methods, the merge, then either the PR
-#       state after the merge or, after a refusal, the mergeStateStatus once
-#       more.
+#       Calls gh once for each, in order: PR state, title, body,
+#       mergeStateStatus and isCrossRepository (one read), `checks
+#       --required` (falling back to all checks only when gh reports that no
+#       required checks exist), the repository's allowed merge methods, the
+#       merge, then either the PR state after the merge or, after a refusal,
+#       the PR once more.
 #       No retries and no waits: a pending check ends this call with
-#       checks-pending, and the next drive run reads the checks again. A PR
-#       with no checks reported at all goes on to GitHub's own decision.
+#       checks-not-green naming the pending checks, and the loop's agent
+#       chooses to wait. A PR with no checks reported at all goes on to
+#       GitHub's own decision. A refusal returns GitHub's reason as
+#       information; it never merges the base in.
 #       Prints one JSON line {"result":...,"pr":N,"expected_head":"...","reason":"..."}.
 #         0  merged: GitHub reads the PR MERGED at the expected head, whether
 #            before the request, after it, or after gh reported an error
 #            (#2663: GitHub's merge state decides, never a later comparison)
 #         2  bad arguments, or the merge-message helper failed its path checks
-#         3  checks-not-green: a check failed or could not be read; no merge attempted
-#         4  refused: GitHub declined the merge, or did not report it merged
+#         3  checks-not-green: a check failed, is still pending, or could not
+#            be read; no merge attempted
+#         4  refused: a cross-repository PR, a branch that conflicts with its
+#            base (DIRTY), or GitHub declined the merge or did not report it
+#            merged; the reason says which
 #         5  not-open: the PR was not open before the merge
 #         6  message-unavailable: the merge-message helper refused the title or body
-#         7  checks-pending: a check is still running; no merge attempted
-#         8  base-behind: DIRTY before the merge, or BEHIND/DIRTY read back
-#            after GitHub declined it. The reason states the fact only; the
-#            merge loop's base sync decides, under the task text and the
-#            repository's merge policy, whether to bring the base in (#1924)
 #         79 a gh call exited 79 (terminal refusal); passed through at once
 #
 # The merge subject and body come from the trusted launch-bundle copy of
@@ -60,8 +62,8 @@
 # the repository allows. A method the repository does not allow is never used
 # and no other method takes its place. The caller's string never reaches the
 # argv: it selects a branch, and the flag is a literal written here. Where the
-# method cannot be settled the result is `refused` (4), which finalisation
-# already hands to an agent step, with a reason naming what was found. The
+# method cannot be settled the result is `refused` (4), with a reason naming
+# what was found, and the loop's agent reads it on the next turn. The
 # chosen method and the reason are recorded on every result line as
 # `merge_method` and `merge_method_reason`.
 
@@ -92,13 +94,13 @@ autodrive_merge() {
     method_reason="$1"
     _autodrive_merge_emit refused "the merge method could not be settled: $1"
   }
-  # _autodrive_merge_wait <gh pr checks output>: checks-pending, naming the
-  # pending checks with control characters removed and cut at 300 bytes.
-  _autodrive_merge_wait() {
+  # _autodrive_merge_pending <gh pr checks output>: checks-not-green naming
+  # the pending checks with control characters removed and cut at 300 bytes.
+  _autodrive_merge_pending() {
     local names
     names="$(printf '%s\n' "$1" | awk -F '\t' '$2 == "pending" { print $1 }' \
       | tr '\n' ',' | tr -d '\000-\037\177' | sed 's/,$//; s/,/, /g' | head -c 300)"
-    _autodrive_merge_emit checks-pending "waiting for ${names:-required checks} at ${sha}"
+    _autodrive_merge_emit checks-not-green "checks are still pending at ${sha} (${names:-required checks}); nothing was merged, and the loop can wait for them"
   }
   if { [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; } || ! [[ "$pr" =~ ^[1-9][0-9]{0,9}$ ]] || ! [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
     echo "ERROR: autodrive_merge: expected <pr> (a positive integer), <expected_sha> (40 or 64 lowercase hex characters) and an optional <merge_method>" >&2
@@ -122,7 +124,7 @@ autodrive_merge() {
     [ "$(printf '%s' "$1" | jq -r 'select(.state == "MERGED") | .headRefOid // empty | strings' 2>/dev/null)" = "$sha" ]
   }
 
-  json="$(gh pr view "$pr" --json state,title,body,mergeStateStatus,headRefOid)"; rc=$?
+  json="$(gh pr view "$pr" --json state,title,body,mergeStateStatus,headRefOid,isCrossRepository)"; rc=$?
   [ "$rc" -eq 79 ] && return 79
   state=""
   [ "$rc" -eq 0 ] && state="$(printf '%s' "$json" | jq -r '.state // empty' 2>/dev/null)"
@@ -133,6 +135,11 @@ autodrive_merge() {
   if [ "$rc" -ne 0 ] || [ "$state" != OPEN ]; then
     _autodrive_merge_emit not-open "the PR state read before the merge was '${state:-unreadable}' (gh exit ${rc})"
     return 5
+  fi
+  # A cross-repository PR, or one whose field is missing or null, is refused.
+  if [ "$(printf '%s' "$json" | jq -r '.isCrossRepository | tostring' 2>/dev/null)" != false ]; then
+    _autodrive_merge_emit refused "the PR is not a same-repository PR (isCrossRepository is not exactly false); it is never merged here"
+    return 4
   fi
 
   # Checks are read once; a pending check is a wait for the next wake, never
@@ -154,14 +161,14 @@ autodrive_merge() {
   rm -f "$errf"
   case "$rc" in
     0) ;;
-    8) _autodrive_merge_wait "$out"; return 7 ;;
+    8) _autodrive_merge_pending "$out"; return 3 ;;
     *) _autodrive_merge_emit checks-not-green "checks are failing or unreadable (gh exit ${rc})"; return 3 ;;
   esac
 
   ms="$(printf '%s' "$json" | jq -r '.mergeStateStatus // empty | strings' 2>/dev/null)"
   if [ "$ms" = DIRTY ]; then
-    _autodrive_merge_emit base-behind "the branch conflicts with its base (mergeStateStatus DIRTY)"
-    return 8
+    _autodrive_merge_emit refused "the branch conflicts with its base (mergeStateStatus DIRTY); nothing was merged"
+    return 4
   fi
 
   if ! subject="$(autodrive_merge_subject "$json" "$pr")" || ! autodrive_merge_body "$json"; then
@@ -253,10 +260,8 @@ autodrive_merge() {
   if [ "$rc" -ne 0 ]; then
     # Read the PR once more. GitHub may have merged it even though gh exited
     # non-zero; merged at the expected head is merged, whatever the base now
-    # reads (#2663). Otherwise a conflicting branch, or one GitHub will not
-    # merge until it is up to date, is base-behind: the reason states which,
-    # and the merge loop's base sync decides what to do (#1924). Anything
-    # else is refused.
+    # reads (#2663). Otherwise it is refused, with the merge state GitHub
+    # reads as information for the loop's agent.
     json="$(gh pr view "$pr" --json state,headRefOid,mergeStateStatus)"; vrc=$?
     [ "$vrc" -eq 79 ] && return 79
     ms=""
@@ -267,17 +272,8 @@ autodrive_merge() {
       fi
       ms="$(printf '%s' "$json" | jq -r '.mergeStateStatus // empty | strings' 2>/dev/null)"
     fi
-    case "$ms" in
-      DIRTY)
-        _autodrive_merge_emit base-behind "GitHub declined the merge: the branch conflicts with its base (mergeStateStatus DIRTY)"
-        return 8 ;;
-      BEHIND)
-        _autodrive_merge_emit base-behind "GitHub declined the merge: the repository requires the branch to be up to date with its base (mergeStateStatus BEHIND)"
-        return 8 ;;
-      *)
-        _autodrive_merge_emit refused "GitHub declined the merge at the expected head (gh exit ${rc})"
-        return 4 ;;
-    esac
+    _autodrive_merge_emit refused "GitHub declined the merge at the expected head (gh exit ${rc}; mergeStateStatus ${ms:-unreadable})"
+    return 4
   fi
 
   json="$(gh pr view "$pr" --json state,headRefOid)"; rc=$?

@@ -3,17 +3,22 @@
 //!
 //! These tests parse the live YAML, the two new tools and the manifest; no
 //! recipe runs. They cover acceptance test (f) (no design, consensus or
-//! architect steps and no `default-workflow`), the escalation wiring, the
-//! "merge phase reached" condition of test (a), and the prohibited strings.
+//! architect steps and no `default-workflow`), the "merge phase reached"
+//! condition of test (a), and the prohibited strings.
 //!
 //! Issue #1982 moved light mode to the per-finding follow-up model of #1979:
 //! the effective task id (`plan_task_id`, else `#<issue_number>`) is worked
 //! out once by `light-task-id`, through `autodrive_followups.sh resolve-task`
-//! (no copy of the rule lives in the recipe), and forwarded to all three child
-//! recipes; light mode has no marker and no hook inside the loops, the change
+//! (no copy of the rule lives in the recipe), and forwarded to the child
+//! loop; light mode has no marker and no hook inside the loop, the change
 //! is measured only by `light-eligibility`; and `light-report` lists the
 //! issues from `followups.tsv`. The bash bodies of `light-prereqs`,
 //! `light-task-id` and `light-report` are also run, with fakes on `PATH`.
+//!
+//! Issue #3129 replaced the escalation to `auto-drive-to-merge`, the Crusty
+//! loop, the unmerged check and the merge loop with one step, `light-loop`,
+//! which runs the shared goal loop (`autodrive-goal-loop`). The tests of the
+//! escalation and of the light-path condition went with them.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -43,10 +48,8 @@ const STEPS: &[&str] = &[
     "light-open-pr",
     "light-resolve-pr",
     "light-eligibility",
-    "light-escalate",
-    "light-crusty-loop",
-    "light-check-unmerged",
-    "light-merge-loop",
+    "light-goal-pr",
+    "light-loop",
     "light-report",
 ];
 
@@ -61,15 +64,9 @@ const BUILD_STEPS: &[&str] = &[
     "light-open-pr",
 ];
 
-const LIGHT_PATH: &[&str] = &[
-    "light-crusty-loop",
-    "light-check-unmerged",
-    "light-merge-loop",
-];
-
-const LIGHT_COND: &str =
-    "light_eligibility.decision == 'light' and build_result.merged_before_run != 'true'";
-const ESCALATE_COND: &str = "light_eligibility.decision == 'escalate'";
+/// #3129: the goal loop runs on every PR that was not merged before the run;
+/// the eligibility measurement no longer decides what runs.
+const LOOP_COND: &str = "build_result.merged_before_run != 'true'";
 
 /// Never in a bash command of the recipe, nor anywhere in either tool.
 const PROHIBITED: &[&str] = &["--admin", "--no-verify", "SKIP=", "gh pr merge", "eval "];
@@ -144,7 +141,8 @@ fn steps_are_present_in_order() {
 fn recursion_limits_and_no_timeouts() {
     let r = r();
     assert_eq!(r["recursion"]["max_depth"].as_u64(), Some(6));
-    assert_eq!(r["recursion"]["max_total_steps"].as_u64(), Some(200));
+    // #3129: the recipe's own steps only; the loop's turns are separate runs.
+    assert_eq!(r["recursion"]["max_total_steps"].as_u64(), Some(60));
     let text = read("amplifier-bundle/recipes/auto-drive-light.yaml");
     for banned in ["timeout:", "timeout_seconds", "default_step_timeout"] {
         assert!(
@@ -238,86 +236,50 @@ fn agent_responsibilities_preserve_implementation_merge_prohibition() {
 }
 
 #[test]
-fn auto_drive_to_merge_is_called_only_from_light_escalate() {
+fn auto_drive_to_merge_is_never_called() {
+    // #3129: light-escalate, the one step that called auto-drive-to-merge, is
+    // gone. light-loop names the shared goal text, which lives in the
+    // auto-drive-to-merge skill folder; that path is the only mention left.
     let r = r();
     for s in steps(&r) {
         let id = s["id"].as_str().unwrap();
-        let mentions = yaml_text(&s).contains("auto-drive-to-merge");
-        if id == "light-escalate" {
-            assert_eq!(s["type"].as_str(), Some("recipe"));
-            assert_eq!(s["recipe"].as_str(), Some("auto-drive-to-merge"));
-        } else {
-            assert!(!mentions, "step {id} must not name auto-drive-to-merge");
-        }
+        let mentions = yaml_text(&s)
+            .replace("skills/auto-drive-to-merge/goal-merge-pr.md", "")
+            .contains("auto-drive-to-merge");
+        assert!(!mentions, "step {id} must not name auto-drive-to-merge");
     }
 }
 
 #[test]
-fn light_escalate_runs_only_on_escalate_and_passes_the_same_pr_and_state() {
+fn merge_phase_has_no_condition_other_than_an_unmerged_pr() {
+    // Acceptance test (a): nothing but a PR merged before the run stands
+    // between the build and the goal loop (#3129: the loop replaced the
+    // light-only merge loop).
     let r = r();
-    assert_eq!(condition(&r, "light-escalate"), ESCALATE_COND);
-    let ctx = &step(&r, "light-escalate")["context"];
-    assert_eq!(ctx["pr_number"].as_str(), Some("{{build_result.pr}}"));
-    assert_eq!(ctx["existing_branch"].as_str(), Some(""));
-    // #2997: the runner-bound folder; this assertion used to pin the defect.
-    assert_eq!(
-        ctx["autodrive_state_dir"].as_str(),
-        Some("{{autodrive_state_dir}}")
-    );
-    for k in [
-        "task_description",
-        "repo_path",
-        "autodrive_dry_run",
-        "no_merge",
-    ] {
-        assert_eq!(
-            ctx[k].as_str(),
-            Some(format!("{{{{{k}}}}}").as_str()),
-            "light-escalate passes {k} unchanged"
-        );
-    }
-}
-
-#[test]
-fn light_path_steps_run_only_on_light() {
-    let r = r();
-    for id in LIGHT_PATH {
-        assert_eq!(condition(&r, id), LIGHT_COND, "{id}");
-    }
-}
-
-#[test]
-fn merge_phase_has_no_condition_other_than_light() {
-    // Acceptance test (a): with the fake evaluator answering DONE, nothing
-    // else stands between a light CLEAN round and the merge loop.
-    let r = r();
-    let s = step(&r, "light-merge-loop");
+    let s = step(&r, "light-loop");
     assert_eq!(s["type"].as_str(), Some("recipe"));
-    assert_eq!(s["recipe"].as_str(), Some("autodrive-merge-loop"));
-    assert_eq!(s["condition"].as_str(), Some(LIGHT_COND));
+    assert_eq!(s["recipe"].as_str(), Some("autodrive-goal-loop"));
+    assert_eq!(s["condition"].as_str(), Some(LOOP_COND));
 }
 
 #[test]
 fn loops_are_the_unchanged_shared_sub_recipes_on_the_build_result() {
     let r = r();
-    let crusty = step(&r, "light-crusty-loop");
-    assert_eq!(crusty["recipe"].as_str(), Some("autodrive-crusty-loop"));
+    // #3129: one loop, the shared goal loop, on the PR light-goal-pr names
+    // (the operator's pr_number, else the build result's PR).
+    let lp = step(&r, "light-loop");
+    assert_eq!(lp["recipe"].as_str(), Some("autodrive-goal-loop"));
     assert_eq!(
-        crusty["context"]["pr_number"].as_str(),
-        Some("{{build_result.pr}}")
+        lp["context"]["pr_number"].as_str(),
+        Some("{{autodrive_goal_pr}}")
     );
-    // #2997: both loops get the runner-bound folder, never the build's.
+    // #2997: the loop gets the runner-bound folder, never the build's.
     assert_eq!(
-        crusty["context"]["autodrive_state_dir"].as_str(),
-        Some("{{autodrive_state_dir}}")
-    );
-    let merge = step(&r, "light-merge-loop");
-    assert_eq!(
-        merge["context"]["autodrive_state_dir"].as_str(),
+        lp["context"]["autodrive_state_dir"].as_str(),
         Some("{{autodrive_state_dir}}")
     );
     assert_eq!(
-        merge["context"]["autodrive_dry_run"].as_str(),
+        lp["context"]["autodrive_dry_run"].as_str(),
         Some("{{autodrive_dry_run}}")
     );
     assert_eq!(
@@ -363,8 +325,6 @@ fn eligibility_step_measures_records_and_handles_escalation() {
     for needle in [
         "autodrive_light_eligibility.sh",
         "light-eligibility.json",
-        "escalation.json",
-        "previously-escalated",
         "RECIPE_VAR_light_max_lines",
         "RECIPE_VAR_light_max_new_modules",
         "RECIPE_VAR_light_max_public_api",
@@ -414,28 +374,12 @@ fn resolve_pr_refuses_cross_repository_prs_and_existing_branch_without_pr() {
 }
 
 #[test]
-fn check_unmerged_observes_platform_and_retains_failed_attempts() {
-    let s = step(&r(), "light-check-unmerged");
-    assert!(is_agent(&s));
-    let prompt = s["prompt"].as_str().unwrap();
-    for policy in [
-        "OPEN",
-        "verified head",
-        "authenticated interface",
-        "blocker",
-        "Leave the PR open",
-    ] {
-        assert!(prompt.contains(policy));
-    }
-}
-
-#[test]
 fn report_uses_typed_finalization_and_missing_evidence_stays_incomplete() {
+    // #3129: finalisation is gone and the run's outcome is the runner's
+    // report, built from loop-end.json; light-report no longer reads
+    // autodrive_finalization or prints a readiness verdict.
     let s = step(&r(), "light-report");
     let cmd = s["command"].as_str().unwrap();
-    assert!(cmd.contains("RECIPE_VAR_autodrive_finalization"));
-    assert!(cmd.contains("already_merged"));
-    assert!(cmd.contains("dependency_failure"));
     assert!(!cmd.contains("merge_gate_result"));
 }
 
@@ -720,7 +664,9 @@ fn docs_are_linked_and_in_the_nav() {
 // Issue #1982: the effective task id, the prerequisites and the report
 // ===========================================================================
 
-const CHILDREN: &[&str] = &["light-escalate", "light-crusty-loop", "light-merge-loop"];
+/// #3129: the goal loop replaced the escalation, the Crusty loop and the
+/// merge loop as the recipe's one child.
+const CHILDREN: &[&str] = &["light-loop"];
 
 /// The exact line `light-task-id` prints before exit 2.
 const TASK_ID_ERROR: &str =

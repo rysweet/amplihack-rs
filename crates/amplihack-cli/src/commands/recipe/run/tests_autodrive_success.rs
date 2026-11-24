@@ -1,11 +1,12 @@
 //! #2663 M1: an auto-drive run succeeds only when it merged.
 //!
 //! `autodrive_run_succeeded(&autodrive_outcome)` is an allow-list of the one
-//! `stop_reason` value `completed` (merged in this run, or already merged at
-//! entry). The runner applies it after `report()` adds `autodrive_outcome`,
-//! after `run_with_transient_retry` has returned, so a run that did not merge
-//! never starts the whole-run re-attempt (#1267).
-//! docs/reference/autodrive-merge-ready-round.md#success-means-merged.
+//! `stop_reason` value `completed` (merged in this run, already merged at
+//! entry, or a merging-off run that ended ready). The runner applies it after
+//! `report()` adds `autodrive_outcome`, after `run_with_transient_retry` has
+//! returned, so a run that did not merge never starts the whole-run
+//! re-attempt (#1267).
+//! docs/reference/autodrive-goal-loop.md#reported-outcomes.
 
 use super::execute::autodrive_run_succeeded;
 use serde_json::json;
@@ -36,6 +37,10 @@ fn every_other_stop_reason_is_a_failure() {
         "orphaned",
         "terminal_refusal",
         "no_progress",
+        // #3129: the goal loop's other endings.
+        "closed",
+        "stopped",
+        "failed",
         "",
         "bogus",
         "Completed",

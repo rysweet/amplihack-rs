@@ -2,10 +2,10 @@
 
 This module implements local workflow safeguards for issues #2329 and #2575.
 It never contacts a hosting service, decides readiness, or performs a merge.
-The merge-ready agent assesses the PR and writes it up as a PR comment;
-nothing here parses that write-up. The merge is requested by the bundled
-`autodrive_merge.sh` under the conditions in
-`docs/reference/autodrive-merge-ready-round.md`.
+The goal loop's agent judges readiness each turn from a fresh reading;
+nothing here parses its turn records. The merge is requested by the loop's
+merge action, the bundled `autodrive_merge.sh`, under the conditions in
+`docs/reference/autodrive-goal-loop.md`.
 
 - `authorization`: strictly capture explicit invocation inputs before expanding
   defaults. Local recipe defaults cannot select a PR or grant action authority.
@@ -53,20 +53,35 @@ nothing here parses that write-up. The merge is requested by the bundled
   other bits with `fchmod` on the checked descriptor and logs each repair.
   World-writable entries, other owners or groups, symlinks and hard links
   stay refused.
-- `report`: build the run's `autodrive_outcome` (`schema_version` 2). It
-  never fails and never panics. `merge` and `stop_reason` come only from
-  tool-written JSON (`finalize_merge`, `merge_loop_result`); `summary` is the
-  finalization agent's statement verbatim, cut on a character boundary at
-  `MAX_RECORD_BYTES`. `already_merged` keeps its binding, selection,
-  `run_id`, provenance and PR checks; its errors become a fixed `note`
-  that copies no file contents. State is opened only from the authorization's
-  bound state directory, compared lexically; nothing is joined onto a working
-  directory or canonicalised.
+- `report`: build the run's `autodrive_outcome` (`schema_version` 2) for the
+  goal loop (#3129). It never fails, never panics and makes no network call.
+  It reads two records, only from the authorization's bound state directory
+  and only through `EvidenceStore::read_private`: `loop-end.json`, which only
+  the loop driver and its end actions write, and `merge-result.json`, the
+  loop's merge action's result. Each must be a regular, private file within
+  `MAX_RECORD_BYTES`, holding one JSON object whose `run_id` is this run's.
+  If the context's `autodrive_state_dir` is not the bound directory, compared
+  lexically, neither is read. The `end` word alone decides `stop_reason`:
+  `merged` is `completed`; `ready` is `completed` only when the captured
+  invocation does not allow merging, and `handoff` when it does; `handoff`,
+  `closed`, `stopped`, `failed`, `usage_limit` and `orphaned` keep their
+  names; `refused` is `terminal_refusal`; an unknown word or no record is
+  `failed` with a `note`. `merge-result.json` only fills `merge`, and a
+  `merged` end without this run's merged result gets a note that the merge
+  was not by this run's merge action. `loop_end` echoes the end word,
+  `after_merge_steps` lists a merged end's later steps (at most 32 strings,
+  8 KiB in all), and `loop_result` is always null. `summary` is the
+  `autodrive_finalization` context value verbatim, cut on a character
+  boundary at `MAX_RECORD_BYTES`. `already_merged` keeps its binding,
+  selection, `run_id`, provenance and PR checks and is still `completed`.
+  Notes copy no file contents. Turn records (`turns/NNN/record.md`) are never
+  read. See `docs/reference/autodrive-goal-loop.md#reported-outcomes`.
 - `helper`: local CLI operations under `amplihack orch helper autodrive`:
   the `State` and `Worktree` operations, and `authorization --invocation F
   --directory D [--pr N]`, which reads the captured invocation, checks the
-  bound state directory and prints `{"allows_merge":bool,"run_id":...}`, plus
-  `"pr_selected":bool` with `--pr`, exiting `2` on any error.
+  bound state directory and prints `{"allows_merge":bool,"no_merge":bool,
+  "dry_run":bool,"run_id":...}`, plus `"pr_selected":bool` with `--pr`,
+  exiting `2` on any error.
 
 The parsed readiness record, its strict validation, the finalization observation,
 the loop receipt and the `records`, `validation`, `completion`, `outcome`,
@@ -75,10 +90,11 @@ decided by `orch/autodrive_completion/`, unchanged.
 
 `tests.rs` exercises authorization, private state, state-directory binding,
 retired environment entries, `already_merged` and the assigned state
-directory. `report_v2_tests.rs` covers any finalization text, the
-`stop_reason` mapping and an oversized multi-byte summary. The CLI suite
-`issue_2575_agentic_merge_ready.rs` runs the merge-ready round, loop endings,
-merge tool and hand-off against a stub `amplihack` and `gh`, with `HOME`,
+directory. `report_goal_tests.rs` holds the goal loop's report rules, and
+`report_v2_tests.rs` covers any finalisation text, the end-word mapping,
+records of another run or PR, and an oversized multi-byte summary. The CLI suite
+`issue_2575_agentic_merge_ready.rs` runs the goal loop's merge action and its
+trust boundaries against a stub `amplihack` and `gh`, with `HOME`,
 `AMPLIHACK_HOME`, the state directory and `CLAUDE_CONFIG_DIR` in temporary
 directories. `issue_2329_autodrive_outcomes.rs` exercises runner boundaries,
 including `--fresh` and recovery resume with stored authority and the

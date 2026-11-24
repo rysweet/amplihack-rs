@@ -17,6 +17,7 @@ Command-line reference for `amplihack recipe`.
 - [Removed context keys](#removed-context-keys)
 - [Nested runs and orphan stops](#nested-runs-and-orphan-stops)
 - [amplihack recipe guide](#amplihack-recipe-guide)
+- [amplihack recipe guidance](#amplihack-recipe-guidance)
 - [amplihack recipe validate](#amplihack-recipe-validate)
 - [Recipe text encoding](#recipe-text-encoding)
 - [amplihack recipe show](#amplihack-recipe-show)
@@ -934,6 +935,179 @@ If the drive opened this pull request itself and is still running, also give
 the instruction to the drive's run ID or session name, as in the first
 example; the drive's current run does not read the pull request folder.
 
+## amplihack recipe guidance
+
+Read the guidance a run has received, and wait for more. `recipe guide` writes
+guidance; this command reads it and never changes it. It is allowed inside
+recipe runs (`AMPLIHACK_RECIPE_RUN_ID` set), so agent and bash steps use it.
+
+```bash
+amplihack recipe guidance show [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] [--since <ENTRY>] [--json]
+amplihack recipe guidance wait [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] --since <ENTRY> [-- <COMMAND>...]
+```
+
+| Option | Description |
+| --- | --- |
+| `<TARGET>` | A pull request URL, `https://github.com/<owner>/<repo>/pull/<n>`. Any other value is a usage error. |
+| `--pr <N>` | The pull request number: digits only, not starting with `0`, at most 18446744073709551615. Needs `--pr-repo`. |
+| `--pr-repo <OWNER/REPO>` | The repository of `--pr`: a GitHub account name, `/`, a repository name. Needs `--pr`. |
+| `--since <ENTRY>` | An entry file name, such as `20261123T184002.123456789Z-4242-0.md`, or the empty string. An entry is new when its name sorts after this one. Empty, or absent for `show`, makes every entry new. Required for `wait`. |
+| `--json` | `show` only: print one JSON line of metadata instead of the entries. |
+| `-- <COMMAND>...` | `wait` only: a command to run while waiting. |
+
+Name the pull request once, as `<TARGET>` or as `--pr` with `--pr-repo`, or not
+at all.
+
+### Folders read
+
+The command reads these folders, in this order and without duplicates:
+
+1. the folders `AMPLIHACK_RUN_GUIDANCE_DIRS` lists, which `recipe run` sets for
+   the steps of a run;
+2. the pull request's folder, `<state root>/auto-drive/<key>/guidance`, when a
+   pull request is named. The state root is `$AMPLIHACK_STATE_DIR`, or
+   `~/.amplihack/state` when that is unset.
+
+Each folder is checked as the agent-step launcher checks it: the path is
+absolute and ends in `guidance`, and both the folder and its parent pass the
+trust rule (not a symbolic link, owned by you, not writable by group or
+others). A folder that is missing or fails the check stays in the list with its
+state, but only folders that pass are read. Each folder that fails gets one
+warning line on stderr. Entries are read under the launcher's limits, the
+newest kept.
+
+`show` never creates anything.
+
+### show
+
+Without `--json`, `show` prints the entries as the operator-instructions block
+an agent step receives, oldest first. Each entry's header line also carries the
+entry's file name, then `NEW` when the entry is new. Nothing is printed when
+there are no entries.
+
+```
+$ amplihack recipe guidance show --pr 3129 --pr-repo rysweet/amplihack-rs \
+    --since 20261123T184002.123456789Z-4242-0.md
+===== BEGIN OPERATOR INSTRUCTIONS FOR THIS RUN =====
+Operator instructions for this run
+These instructions come from the local operator and apply to this step. Do not copy them into recipe context, task descriptions, command-line arguments, pull request titles, bodies, comments or commit messages.
+
+[1] 2026-11-23T18:40:02.123456789Z from alice (pr) 20261123T184002.123456789Z-4242-0.md
+Keep the public API unchanged.
+
+[2] 2026-11-23T18:55:41.987654321Z from alice (pr) 20261123T185541.987654321Z-4301-0.md NEW
+Hold: wait for the owner's answer on #3109.
+===== END OPERATOR INSTRUCTIONS FOR THIS RUN =====
+```
+
+With `--json`, `show` prints exactly one line, schema 1, shown here across
+several lines. It never holds guidance text: no field is named `text`, and
+`bytes` is only the size of the text.
+
+```json
+{"schema_version":1,
+ "since":"20261123T184002.123456789Z-4242-0.md",
+ "newest":"20261123T185541.987654321Z-4301-0.md",
+ "folders":[{"path":"/home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_3129/guidance",
+             "source":"pr","state":"present"}],
+ "entries":[{"name":"20261123T184002.123456789Z-4242-0.md",
+             "folder":"/home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_3129/guidance",
+             "timestamp":"2026-11-23T18:40:02.123456789Z","caller":"alice","source":"pr",
+             "from_step":false,"new":false,"bytes":30},
+            {"name":"20261123T185541.987654321Z-4301-0.md",
+             "folder":"/home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_3129/guidance",
+             "timestamp":"2026-11-23T18:55:41.987654321Z","caller":"alice","source":"pr",
+             "from_step":false,"new":true,"bytes":43}]}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | `1`. |
+| `since` | The `--since` value, or `""`. |
+| `newest` | The largest entry name read, or `""` when there is none. |
+| `folders[]` | Every folder in the list, in order: `path`; `source`, `pr` when the folder's grandparent is named `auto-drive` and `run` otherwise; `state`, one of `present`, `missing` or `untrusted`; and, only for `untrusted`, `reason`. |
+| `entries[]` | Every entry read, oldest first: `name`, the file name; `folder`; `timestamp`; `caller`; `source`; `from_step`, true when an agent step added it with `recipe guide --from-step`; `new`; and `bytes`, the size of the text in UTF-8 bytes. |
+
+Every line the command prints, JSON included, has control, bidirectional and
+zero-width characters escaped as `\u{..}`, so a path can never add a line or a
+terminal sequence.
+
+### wait
+
+`wait` blocks until an entry newer than `--since` arrives, or until the command
+finishes. It has no timer, no timeout and no polling loop.
+
+1. It arms a wake FIFO in `guidance-wake/` beside each listed folder whose
+   parent exists and passes the trust rule. For the pull request's folder it
+   first creates `<state root>/auto-drive/<key>/` when that is missing, but only
+   when the state root itself exists and passes the trust rule. It never
+   creates the state root.
+2. If no FIFO could be armed, it prints `{"event":"unarmed"}` on stdout and one
+   line on stderr saying why, exits 3, and does not start the command.
+3. It reads the folders again. If an entry is already new, it prints the
+   guidance line and exits 0 without starting the command. Reading after
+   arming means an entry stored just before the wait is not missed.
+4. It starts the command, if one is given, with stdin from `/dev/null`, its
+   stdout sent to stderr so that stdout holds only the result line, and stderr
+   unchanged. The command runs in the same process group, so
+   `amplihack recipe stop` reaches it, and it inherits no wake descriptor.
+   Without a command, `wait` waits for guidance alone.
+5. It waits. `recipe guide` writes one byte to every armed FIFO after it stores
+   an entry. On a byte, `wait` reads the folders again, and a byte with no new
+   entry behind it is ignored. When an entry is new, `wait` sends `SIGTERM` to
+   the command alone, never to its process group, waits for it to exit, and
+   prints the guidance line. When the command finishes first, `wait` prints the
+   command line.
+
+The result is one JSON line on stdout:
+
+| Line | When |
+| --- | --- |
+| `{"event":"guidance","entry":"<ENTRY>"}` | An entry is new. `entry` is the newest entry's file name, the `--since` for the next wait. |
+| `{"event":"command","exit":<N>}` | The command exited with code `N`. |
+| `{"event":"command","exit":<128+S>,"signal":<S>}` | Signal `S` ended the command. |
+| `{"event":"unarmed"}` | No FIFO could be armed. The exit code is 3. |
+
+The command's exit code is reported in `exit`, never passed on: a command that
+exits 75 or 79 still leaves `wait` with exit code 0.
+
+```
+$ amplihack recipe guidance wait --pr 3129 --pr-repo rysweet/amplihack-rs \
+    --since 20261123T185541.987654321Z-4301-0.md -- gh pr checks 3129 --watch
+{"event":"command","exit":0}
+```
+
+### Guidance output and exit codes
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | `show` printed the entries. `wait` saw new guidance, or the command finished, whatever its own exit code. |
+| 1 | Error, such as no usable state root for a named pull request, a command that cannot be started, or an I/O error. |
+| 2 | Usage error: a `<TARGET>` that is not a pull request URL; a bad `--pr`, `--pr-repo` or `--since`; `--pr` without `--pr-repo`; both a URL and `--pr`; or `wait` without `--since`. |
+| 3 | `wait` could not arm a wake FIFO. The command was not started. |
+
+An error or a usage error prints one line on stderr and nothing on stdout.
+
+`recipe guide` writes the wake byte after it stores and logs the entry. It never
+blocks on a waiter and never fails because of one. It removes a FIFO that has
+no reader, which a waiter that ended without cleaning up left behind, and it
+leaves every other name alone. If something unexpected stops a wake, for
+example a `guidance-wake/` folder that fails the trust rule, `recipe guide`
+prints one `recipe guide: warning:` line on stderr. The entry is stored and its
+exit codes are unchanged.
+
+### Guidance known limits
+
+- Newness is by entry name order. Names are stamped before they are published,
+  so an entry stamped before the `--since` mark but published after it is never
+  marked `NEW` and does not end a `wait` that uses that mark. It still reaches
+  every later agent prompt.
+- `wait` signals only the command it started. Processes that command started
+  are not signalled; `amplihack recipe stop` stops the whole tree.
+- After `SIGTERM`, `wait` waits for the command to exit, with no timeout. A
+  command that ignores `SIGTERM` keeps `wait` waiting until
+  `amplihack recipe stop` ends both.
+
 ## amplihack recipe validate
 
 Validate a recipe file containing YAML or JSON without executing it.
@@ -1036,7 +1210,7 @@ amplihack recipe show default-workflow --format yaml
 | `AMPLIHACK_PARENT_RECIPE_PID` | nested `recipe run` | Set by `amplihack recipe run` on its runner child. A nested run that inherits it watches that parent. See [Nested runs and orphan stops](#nested-runs-and-orphan-stops). Treat as read-only. |
 | `AMPLIHACK_PARENT_RECIPE_STARTTIME` | nested `recipe run` | Start time of the parent run, from field 22 of `/proc/<pid>/stat`. Guards against a reused PID. Treat as read-only. |
 | `AMPLIHACK_AUTODRIVE_STATE_DIR` | nested `recipe run` | Set by `autodrive_loop.sh` on each round. An orphaned run writes `orphaned.json` here. `recipe run` removes it from its runner's environment, so only the round's own run writes the file. |
-| `AMPLIHACK_RUN_GUIDANCE_DIRS` | agent-step launcher | Set by `amplihack recipe run` on its runner child: the guidance folders whose entries are added to each agent step's prompt. See [amplihack recipe guide](#what-the-agent-receives). Do not set it by hand. |
+| `AMPLIHACK_RUN_GUIDANCE_DIRS` | agent-step launcher, `recipe guidance` | Set by `amplihack recipe run` on its runner child: the guidance folders whose entries are added to each agent step's prompt, and that [`recipe guidance`](#amplihack-recipe-guidance) reads. See [amplihack recipe guide](#what-the-agent-receives). Do not set it by hand. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | runner | Optional path for structured JSONL lifecycle, heartbeat, output snippet, and failure events. |
 
 See [Environment Variables](./environment-variables.md) for full details.
@@ -1046,7 +1220,8 @@ See [Environment Variables](./environment-variables.md) for full details.
 | Code | Meaning |
 | --- | --- |
 | `0` | Command succeeded |
-| `2` | `recipe guide` only: usage error, such as text given on the command line, both `-` and `--file`, empty, oversize or refused text, a malformed pull request URL, or a call inside a recipe run without `--from-step`. See [Output and exit codes](#output-and-exit-codes). |
+| `2` | `recipe guide` and `recipe guidance` only: usage error, such as text given on the command line, both `-` and `--file`, empty, oversize or refused text, a malformed pull request URL, a bad `--pr` or `--since`, or a `recipe guide` call inside a recipe run without `--from-step`. See [Output and exit codes](#output-and-exit-codes) and [Guidance output and exit codes](#guidance-output-and-exit-codes). |
+| `3` | `recipe guidance wait` only: no wake FIFO could be armed, and the command was not started. |
 | `1` | Command failed, validation failed, recipe execution failed, runner missing, arguments were malformed, or a [removed context key](#removed-context-keys) was passed |
 | `75` | Nested run stopped because its parent `amplihack recipe run` exited. See [Nested runs and orphan stops](#nested-runs-and-orphan-stops). |
 | `128+n` | Run stopped by signal `n`, for example `130` for `SIGINT` and `143` for `SIGTERM` |

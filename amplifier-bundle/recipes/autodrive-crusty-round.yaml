@@ -341,7 +341,11 @@ steps:
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_crusty_posted.sh" || : # #2575 B1: posted-verdict line from step-03c; absent means Crusty runs again
     output: "crusty_round_record_written"
 
+  # #3129: the goal loop runs a round as one review action and owns no
+  # completion state, so the completion decision step runs only for a caller
+  # that supplies one.
   - id: "step-07-select-next-action"
+    condition: "autodrive_completion_state != ''"
     agent: "amplihack:reviewer"
     model: "strong"
     working_dir: "{{repo_path}}"

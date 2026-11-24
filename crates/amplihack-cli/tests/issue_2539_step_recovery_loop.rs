@@ -1,103 +1,75 @@
-//! Issue #2539: an auto-drive loop stops after a round that left a recorded
-//! handoff, so no later round or evaluator meets the same failure again.
+//! Issue #2539 and #2814, on the shared goal loop (#3129): every Crusty round
+//! the loop's `review` action runs gets the run's `step_recovery_dir`, and a
+//! round's `pre-review.*` baseline is reclaimed once the round has returned
+//! and the loop goes on.
 //!
-//! `autodrive_loop.sh` runs under `isolated("bash")` with a stub `amplihack`
-//! first on `PATH`. The stub plays the round recipe and the loop-health
-//! evaluator and passes every `orch helper step-recovery` call, and the
-//! auto-drive completion helpers, to the real binary. A round listed in
-//! `handoff-rounds` records a handoff with the real `step-recovery record`
-//! in the `step_recovery_dir` the loop handed it. Each round commits, so the
-//! no-progress rule never stops the loop first.
+//! The old auto-drive loops stopped after a round that left a recorded
+//! handoff, and their loop-health evaluator stopped them as STUCK. #3129
+//! removed both stops: a Crusty round that fails goes into the next turn's
+//! reading and never ends the run (docs/reference/autodrive-goal-loop.md,
+//! "Failures inside a turn"). The tests of those stops went with them.
+//!
+//! `autodrive_pr_goal.sh act review <turn_dir>` runs under `isolated("bash")`
+//! with a stub `amplihack` as `AMPLIHACK_BIN`. The stub plays the Crusty round
+//! recipe: it writes the round record and a `pre-review.<label>` baseline
+//! beside it, and a round listed in `handoff-rounds` records a handoff with
+//! the real `step-recovery record` in the `step_recovery_dir` it was handed,
+//! then ends with the handoff exit. One action runs one round; nothing here
+//! starts the loop driver.
 
 #![cfg(unix)]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use crate::support::auto_drive_light::{jq_available, show, stdout};
-use crate::support::step_recovery::{HANDOFF_EXIT, private_dir, repo_root};
+use crate::support::auto_drive_light::{jq_available, show};
+use crate::support::step_recovery::{private_dir, repo_root};
 
 const AMPLIHACK_STUB: &str = r#"#!/usr/bin/env bash
 set -u
 S="$STUB_STATE"
-case "${1:-} ${2:-}" in
-  "recipe show") exit 0 ;;
-  "orch helper")
-    case "${3:-}" in step-recovery|autodrive-completion-*) exec "$REAL_AMPLIHACK" "$@" ;; esac
-    in="$(cat)"
-    if [ "${3:-}" = "extract-json" ]; then
-      f=""; while [ $# -gt 0 ]; do [ "$1" = "--require-field" ] && f="${2:-}"; shift; done
-      printf '%s\n' "$in" | jq -R -c --arg f "$f" 'fromjson? | select(type == "object" and has($f))' 2>/dev/null | tail -n 1
-      exit 0
-    fi
-    if [ "${3:-}" = "extract-field" ]; then
-      f=""; d=""
-      while [ $# -gt 0 ]; do case "$1" in --field) f="${2:-}" ;; --default) d="${2:-}" ;; esac; shift; done
-      v=""
-      [ -n "$in" ] && v="$(printf '%s' "$in" | jq -r --arg f "$f" 'if .[$f] == null then empty else .[$f] end | if type == "string" then . else tojson end' 2>/dev/null)"
-      if [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "$d"; fi
-      exit 0
-    fi
-    exit 0 ;;
-  "recipe run") ;;
-  *) exit 0 ;;
-esac
+[ "${1:-} ${2:-}" = "recipe run" ] || { echo "unexpected amplihack call: $*" >&2; exit 3; }
 name="$(basename -- "${3:-}" .yaml)"
-if [ "$name" = "loop-health-evaluator" ]; then
-  label=""; prev=""
-  for a in "$@"; do case "$prev:$a" in -c:loop_round_label=*) label="${a#loop_round_label=}" ;; esac; prev=$a; done
-  printf '%s\n' "$label" >> "$S/evaluator-calls"
-  if [ "$(wc -l < "$S/evaluator-calls")" -ge 3 ]; then echo "LOOP_HEALTH: STUCK"; exit 1; fi
-  printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: CONTINUE\n'
-  exit 0
-fi
-record=""; label=""; srd=""; prev=""
+[ "$name" = "autodrive-crusty-round" ] || { echo "unexpected recipe: $name" >&2; exit 3; }
+record=""; label=""; srd=""; head=""; prev=""
 for a in "$@"; do
   if [ "$prev" = "-c" ]; then
     case "$a" in
       autodrive_round_record=*) record="${a#autodrive_round_record=}" ;;
       autodrive_round_label=*) label="${a#autodrive_round_label=}" ;;
       step_recovery_dir=*) srd="${a#step_recovery_dir=}" ;;
+      reviewed_head_sha=*) head="${a#reviewed_head_sha=}" ;;
     esac
   fi
   prev=$a
 done
 printf '%s\t%s\n' "$label" "$srd" >> "$S/round-calls"
-# The round commits on the PR branch (the loop's --repo); the next round's
-# review generation is made at that head (#2096).
-wd="$STUB_REPO"
-t="$(git -C "$wd" write-tree)"
-c="$(git -C "$wd" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "stub $label")"
-git -C "$wd" update-ref HEAD "$c"
-printf '{"merge_ready_verdict":"CONCERNS","head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s"}\n' "$c" "$c" "$label" > "$record"
-printf 'item-%s\n' "$label" > "$record.findings"
+printf '{"crusty_verdict":"CONCERNS","head_sha":"%s","reviewed_head_sha":"%s","concern_count":1}\n' "$head" "$head" > "$record"
 # #2808 SR-10 / #2814: the round's pre-review baseline, beside the round
-# record, so a test can see which rounds the loop reclaims one for.
+# record, so a test can see which rounds have one reclaimed.
 mkdir -p "$(dirname -- "$record")/pre-review.$label" || exit 2
-if grep -qx "$label" "$S/handoff-rounds" "$S/stop-rounds" 2>/dev/null; then
-  "$REAL_AMPLIHACK" orch helper step-recovery record --dir "$srd" --step-id step-02-merge-ready-assessment \
-    --reason "the assessment failed twice with the same error" --owner run-requester \
+if grep -qx "$label" "$S/handoff-rounds" 2>/dev/null; then
+  "$REAL_AMPLIHACK" orch helper step-recovery record --dir "$srd" --step-id step-02-crusty-review \
+    --reason "the review failed twice with the same error" --owner run-requester \
     --needs "read the round log in the state dir" || exit 2
+  echo "round stopped at the handoff"; exit 81
 fi
-# A --guard or --stop-on-handoff step ends its round with the handoff exit.
-grep -qx "$label" "$S/stop-rounds" 2>/dev/null && { echo "round stopped at the handoff"; exit 81; }
-if grep -qx "$label" "$S/corrupt-rounds" 2>/dev/null; then
-  printf '{not json\n' > "$srd/step-02-merge-ready-assessment.jsonl"; chmod 600 "$srd/step-02-merge-ready-assessment.jsonl"
-fi
+if grep -qx "$label" "$S/failed-rounds" 2>/dev/null; then echo "round failed"; exit 1; fi
 echo "round ran"
 "#;
 
-const GH_STUB: &str = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_STATE/gh-calls\"\n[ \"$1 $2\" = 'pr view' ] && git -C \"$STUB_REPO\" rev-parse HEAD\nexit 0\n";
+const GH_STUB: &str = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_STATE/gh-calls\"\nexit 0\n";
 
-struct Loop {
+struct Goal {
     _tmp: tempfile::TempDir,
     root: PathBuf,
     stub: PathBuf,
+    state: PathBuf,
     recovery: PathBuf,
 }
 
-fn git(dir: &std::path::Path, args: &[&str]) -> String {
+fn git(dir: &Path, args: &[&str]) -> String {
     let o = amplihack_git::command_in(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])
         .args(args)
@@ -112,35 +84,26 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-impl Loop {
+impl Goal {
     fn new() -> Self {
         assert!(
             jq_available(),
-            "jq is not installed; the stub orch helper needs it"
+            "jq is not installed; the goal tool needs it"
         );
         let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let p = |n: &str| root.join(n);
-        for d in [p("bin"), p("stub"), p("cwd"), p("home")] {
+        for d in [p("bin"), p("stub"), p("repo"), p("home")] {
             fs::create_dir_all(d).unwrap();
         }
         private_dir(&p("state"));
+        private_dir(&p("state").join("turns"));
         private_dir(&p("recovery"));
-        fs::write(p("task"), "issue 2539 loop fixture\n").unwrap();
-        git(&p("cwd"), &["init", "-q"]);
-        let tree = git(&p("cwd"), &["write-tree"]);
-        let commit = git(&p("cwd"), &["commit-tree", &tree, "-m", "init"]);
-        git(&p("cwd"), &["update-ref", "HEAD", &commit]);
-        git(
-            &p("cwd"),
-            &[
-                "worktree",
-                "add",
-                "-q",
-                "--detach",
-                p("repo").to_str().unwrap(),
-            ],
-        );
+        fs::write(p("task"), "issue 2539 review fixture\n").unwrap();
+        git(&p("repo"), &["init", "-q"]);
+        let tree = git(&p("repo"), &["write-tree"]);
+        let commit = git(&p("repo"), &["commit-tree", &tree, "-m", "init"]);
+        git(&p("repo"), &["update-ref", "HEAD", &commit]);
         crate::support::exec_stub::write_executable(
             &p("bin").join("amplihack"),
             AMPLIHACK_STUB,
@@ -149,58 +112,55 @@ impl Loop {
         crate::support::exec_stub::write_executable(&p("bin").join("gh"), GH_STUB, 0o755);
         Self {
             stub: p("stub"),
+            state: p("state"),
             recovery: p("recovery"),
             root,
             _tmp: tmp,
         }
     }
 
-    fn run(&self) -> Output {
+    /// A private turn folder `<state>/turns/<n>`, as the driver makes it.
+    fn turn(&self, n: u32) -> PathBuf {
+        let td = self.state.join("turns").join(format!("{n:03}"));
+        private_dir(&td);
+        td
+    }
+
+    /// `autodrive_pr_goal.sh act review <turn_dir>` under goal contract v1.
+    fn review(&self, td: &Path) -> Output {
         let path = format!(
             "{}:/usr/local/bin:/usr/bin:/bin",
             self.root.join("bin").display()
         );
         crate::isolated_amplihack::isolated("bash")
-            .arg(repo_root().join("amplifier-bundle/tools/autodrive_loop.sh"))
-            .args([
-                "--loop-name",
-                "merge-ready",
-                "--round-recipe",
-                "autodrive-merge-round",
-            ])
-            .args([
-                "--clean-token",
-                "MERGE_READY",
-                "--verdict-field",
-                "merge_ready_verdict",
-            ])
-            .arg("--repo")
-            .arg(self.root.join("repo"))
-            .arg("--state-dir")
-            .arg(self.root.join("state"))
-            .arg("--task-file")
-            .arg(self.root.join("task"))
-            .args(["--context", "repo_path=.", "--context", "pr_number=2539"])
-            .arg("--context")
-            .arg(format!("step_recovery_dir={}", self.recovery.display()))
+            .arg(repo_root().join("amplifier-bundle/tools/autodrive_pr_goal.sh"))
+            .args(["act", "review"])
+            .arg(td)
             .env("PATH", path)
             .env("HOME", self.root.join("home"))
+            .env("TMPDIR", self.root.join("home"))
+            .env("AUTODRIVE_GOAL_CONTRACT", "1")
+            .env("AUTODRIVE_STATE_DIR", &self.state)
+            .env("AUTODRIVE_REPO", self.root.join("repo"))
+            .env("AUTODRIVE_WORKTREE", self.root.join("repo"))
+            .env("AUTODRIVE_TASK_FILE", self.root.join("task"))
+            .env("RECIPE_VAR_pr_number", "2539")
+            .env("RECIPE_VAR_step_recovery_dir", &self.recovery)
             .env("STUB_STATE", &self.stub)
-            .env("STUB_REPO", self.root.join("repo"))
             .env("AMPLIHACK_BIN", self.root.join("bin/amplihack"))
             .env(
                 "REAL_AMPLIHACK",
                 crate::support::amplihack_bin::amplihack_bin(),
             )
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .current_dir(self.root.join("cwd"))
+            .current_dir(self.root.join("repo"))
             .output()
-            .expect("spawn autodrive_loop.sh")
+            .expect("spawn autodrive_pr_goal.sh")
     }
 
     /// The `pre-review.*` baselines still in the state directory, sorted.
     fn baselines(&self) -> Vec<String> {
-        let mut found: Vec<String> = fs::read_dir(self.root.join("state"))
+        let mut found: Vec<String> = fs::read_dir(&self.state)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with("pre-review."))
@@ -218,132 +178,64 @@ impl Loop {
     }
 }
 
-fn loop_result(o: &Output) -> serde_json::Value {
-    stdout(o)
-        .lines()
-        .rev()
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .find(|v| v.get("loop_result").is_some())
-        .unwrap_or_else(|| panic!("no loop_result line\n{}", show(o)))
+/// The action's `result.json` outcome word.
+fn outcome(td: &Path, o: &Output) -> String {
+    let text = fs::read_to_string(td.join("result.json"))
+        .unwrap_or_else(|e| panic!("no result.json ({e})\n{}", show(o)));
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    v["outcome"].as_str().unwrap_or_default().to_string()
 }
 
+/// #2539: every round the loop starts gets the run's `step_recovery_dir`, so
+/// a failure repaired in one round is a recurrence in a later one.
 #[test]
-fn a_round_that_records_a_handoff_stops_the_loop_with_exit_81() {
-    let l = Loop::new();
-    fs::write(l.stub.join("handoff-rounds"), "round-2\n").unwrap();
-    let o = l.run();
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
-    let r = loop_result(&o);
-    assert_eq!(r["loop_result"], "STEP_RECOVERY_HANDOFF", "{}", show(&o));
-    let all = format!("{}{}", stdout(&o), String::from_utf8_lossy(&o.stderr));
-    assert!(
-        all.contains("step-02-merge-ready-assessment.jsonl"),
-        "names the record:\n{all}"
-    );
-
-    let rounds = l.lines("round-calls");
-    let labels: Vec<&str> = rounds
-        .iter()
-        .map(|r| r.split('\t').next().unwrap())
-        .collect();
-    assert_eq!(labels, ["round-1", "round-2"], "no round after the handoff");
+fn every_review_round_gets_the_runs_step_recovery_dir() {
+    let g = Goal::new();
+    for n in [1, 2] {
+        let td = g.turn(n);
+        let o = g.review(&td);
+        assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+        assert_eq!(outcome(&td, &o), "reviewed", "{}", show(&o));
+    }
+    let rounds = g.lines("round-calls");
+    assert_eq!(rounds.len(), 2, "one round per review action: {rounds:?}");
     for row in &rounds {
         assert!(
-            row.ends_with(&format!("\t{}", l.recovery.display())),
+            row.ends_with(&format!("\t{}", g.recovery.display())),
             "every round gets the run's step_recovery_dir: {row}"
         );
     }
+}
+
+/// #2808 SR-10, #2814: a round the loop goes on from leaves no baseline
+/// behind, whatever it returned. Since #3129 the loop goes on from every
+/// round that does not end the run with exit 79 or 75, including one that
+/// recorded a handoff: that round's failure is the next turn's reading.
+#[test]
+fn a_review_round_the_loop_goes_on_from_leaves_no_pre_review_baseline() {
+    let g = Goal::new();
+    fs::write(g.stub.join("failed-rounds"), "turn-002\n").unwrap();
+    fs::write(g.stub.join("handoff-rounds"), "turn-003\n").unwrap();
+    for (n, want) in [(1, "reviewed"), (2, "review-failed"), (3, "review-failed")] {
+        let td = g.turn(n);
+        let o = g.review(&td);
+        assert_eq!(o.status.code(), Some(0), "turn {n}: {}", show(&o));
+        assert_eq!(outcome(&td, &o), want, "turn {n}: {}", show(&o));
+        assert!(
+            g.baselines().is_empty(),
+            "turn {n}: the round's baseline must be reclaimed: {:?} {}",
+            g.baselines(),
+            show(&o)
+        );
+    }
     assert_eq!(
-        l.lines("evaluator-calls"),
-        ["round-1"],
-        "no evaluator after the handoff round"
+        g.lines("round-calls").len(),
+        3,
+        "the fixture must run rounds"
     );
-}
-
-#[test]
-fn a_handoff_in_the_first_round_stops_before_any_evaluator() {
-    let l = Loop::new();
-    fs::write(l.stub.join("handoff-rounds"), "round-1\n").unwrap();
-    let o = l.run();
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
-    assert_eq!(l.lines("round-calls").len(), 1);
-    assert!(l.lines("evaluator-calls").is_empty());
-}
-
-#[test]
-fn a_round_that_ended_with_81_at_its_guard_stops_the_loop_through_recovery_stop() {
-    let l = Loop::new();
-    fs::write(l.stub.join("stop-rounds"), "round-1\n").unwrap();
-    let o = l.run();
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
-    assert_eq!(loop_result(&o)["loop_result"], "STEP_RECOVERY_HANDOFF");
-    assert_eq!(l.lines("round-calls").len(), 1);
-    assert!(l.lines("evaluator-calls").is_empty());
-}
-
-#[test]
-fn invalid_recovery_records_stop_the_loop_with_exit_2() {
-    let l = Loop::new();
-    fs::write(l.stub.join("corrupt-rounds"), "round-1\n").unwrap();
-    let o = l.run();
-    assert_eq!(o.status.code(), Some(2), "{}", show(&o));
-    assert_eq!(
-        loop_result(&o)["loop_result"],
-        "INVALID_RECOVERY_RECORDS",
-        "{}",
-        show(&o)
-    );
-    assert!(l.lines("evaluator-calls").is_empty());
-}
-
-#[test]
-fn without_a_handoff_the_loop_runs_on_to_the_evaluators_stop() {
-    let l = Loop::new();
-    let o = l.run();
-    assert_eq!(
-        o.status.code(),
-        Some(1),
-        "evaluator STUCK ends the loop as before:\n{}",
-        show(&o)
-    );
-    assert_eq!(l.lines("evaluator-calls").len(), 3);
-    assert_ne!(loop_result(&o)["loop_result"], "STEP_RECOVERY_HANDOFF");
-}
-
-/// #2814: the loop reclaims a round's `pre-review.*` baseline once that round
-/// has returned and the loop goes on. A round that ends the run on a recorded
-/// handoff keeps its baseline: there the reviewer was interrupted, and the
-/// baseline is the only record of what the worktree held before it ran, which
-/// is what `docs/reference/step-failure-recovery.md` promises the operator.
-#[test]
-fn a_round_that_ends_the_run_on_a_handoff_keeps_its_pre_review_baseline() {
-    let l = Loop::new();
-    fs::write(l.stub.join("handoff-rounds"), "round-2\n").unwrap();
-    let o = l.run();
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
-    assert_eq!(
-        l.baselines(),
-        ["pre-review.round-2"],
-        "the handoff round keeps its baseline and the round before it does not: {}",
-        show(&o)
-    );
-}
-
-/// The same rule read the other way: a round the loop goes on from leaves no
-/// baseline behind, whatever its verdict (#2808 SR-10).
-#[test]
-fn rounds_the_loop_goes_on_from_leave_no_pre_review_baseline() {
-    let l = Loop::new();
-    let o = l.run();
+    // The handoff round really recorded one.
     assert!(
-        !l.lines("round-calls").is_empty(),
-        "the fixture must run rounds: {}",
-        show(&o)
-    );
-    assert!(
-        l.baselines().is_empty(),
-        "every completed round's baseline must be reclaimed: {:?} {}",
-        l.baselines(),
-        show(&o)
+        g.recovery.join("step-02-crusty-review.jsonl").is_file(),
+        "the third round recorded its handoff"
     );
 }

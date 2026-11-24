@@ -3,8 +3,9 @@
 # auto-drive merge supplies (issue #2056, PR #2262).
 #
 # #2329 retired the shell merge gate that first carried this message; since
-# #2575 the merge is requested by autodrive-finalize's `merge` bash step
-# through amplifier-bundle/tools/autodrive_merge.sh, which sources
+# #3129 the merge is requested by the goal loop's merge action
+# (`autodrive_pr_goal.sh act merge`, which replaced autodrive-finalize's
+# `merge` step) through amplifier-bundle/tools/autodrive_merge.sh, which sources
 # amplifier-bundle/tools/autodrive_merge_message.sh. This suite keeps #2262's
 # coverage of what that helper composes and checks that the merge tool uses it:
 #
@@ -25,7 +26,7 @@ exec </dev/null
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd -P)"
 HELPER="${REPO_ROOT}/amplifier-bundle/tools/autodrive_merge_message.sh"
-FINALIZE="${REPO_ROOT}/amplifier-bundle/recipes/autodrive-finalize.yaml"
+MERGE_ACTION="${REPO_ROOT}/amplifier-bundle/tools/autodrive_pr_goal.sh"
 MERGE_TOOL="${REPO_ROOT}/amplifier-bundle/tools/autodrive_merge.sh"
 TEMPLATE="${REPO_ROOT}/amplifier-bundle/skills/merge-ready/pr-description-template.md"
 
@@ -159,10 +160,13 @@ for clause in \
   case "$FP" in *"$clause"*) pass MSG-finalize-prompt "autodrive_merge.sh says: ${clause:0:70}" ;;
     *) fail MSG-finalize-prompt "autodrive_merge.sh lacks: $clause" ;; esac
 done
-case "$(grep -v '^[[:space:]]*#' "$FINALIZE" 2>/dev/null)" in
-  *'amplifier-bundle/tools/autodrive_merge.sh'*) pass MSG-finalize-prompt "the finalize merge step sources autodrive_merge.sh" ;;
-  *) fail MSG-finalize-prompt "the finalize merge step does not source autodrive_merge.sh" ;;
-esac
+# #3129: the merge action sources the merge tool from its own folder, the
+# launch bundle's tools/ (the driver runs the goal tool only from there).
+MA="$(grep -v '^[[:space:]]*#' "$MERGE_ACTION" 2>/dev/null | tr '\n' ' ')"
+for clause in '. "$HERE/autodrive_merge.sh"' 'autodrive_merge "$PR" "$head"'; do
+  case "$MA" in *"$clause"*) pass MSG-finalize-prompt "the merge action says: ${clause}" ;;
+    *) fail MSG-finalize-prompt "the merge action (autodrive_pr_goal.sh) lacks: $clause" ;; esac
+done
 
 echo
 echo "Summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"

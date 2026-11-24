@@ -5,6 +5,32 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [Unreleased] — Auto-drive as one goal-driven agent loop
+
+### Changed
+
+- **auto-drive is one goal-driven agent loop (#3129)**: `auto-drive-to-merge` and `auto-drive-light` run the same loop. Each turn an agent reads a fresh reading of the PR, checks, reviews, base and repository settings, plus new guidance, does any work the turn needs itself, and picks one action: review, wait for checks or for the owner, merge, continue, hand off, report ready or stop. A fresh reading every turn means no stale readiness judgement (#3090), and a legacy state folder no longer stops the run (#3096). See `docs/reference/autodrive-goal-loop.md`. Closes #1924, #3094, #3109 and #3035; fixes #2342, #3090 and #3096.
+- **`stop_reason` values**: `closed`, `stopped` and `failed` are new. `waiting_for_checks`, `no_progress`, `budget_exhausted`, `unreadable` and the `base-behind` form of `not_merged` no longer occur. A merging-off run that reaches readiness and finishes the task's later steps is still `completed`.
+- **A failed turn run does not end the run (#3129)**: the work it did is kept, and the next turn starts at once, whether or not the failed turn's agent had decided. Its agent reads the failure's evidence (the runner's own class, the steps and the log) and judges the cause; the driver reads no log wording. A usage limit ends a run only when the operator's own `recipe.usage_limit_wait` reads `false` (`amplihack config get`). Only a launch bundle that lost the files a turn needs waits for the owner's word. `failed` now comes only from a `--once` turn. The outcome ledger is no longer cut at 256 names.
+- **Required outcomes are checked by name before a merge (#3129)**: the agent lists each required outcome of the task text and guidance, a ledger in the state folder keeps every name, each reading lists it, and the merge action refuses while one is unmet. A rejected outcome is answered in a PR comment with its reason. Guidance that cannot be read again after a decision is unknown, and the merge refuses on it.
+- **`merge_state_behind` is evidence only (#3141)**: a strict-checks policy that was read wins over a `BEHIND` merge state, and a policy that cannot be read stays unknown, with its reason.
+- **New command**: `amplihack recipe guidance show|wait` reads a run's guidance and waits for more without a poll or timer. It is allowed inside recipe runs.
+
+### Removed
+
+- The automatic base merge, the `checks-pending` end and the hand-back to draft, the loop-health STUCK and no-progress stops in auto-drive, round and wall-clock budgets as stopping rules, parsed-record readiness gates, and the eligibility escalation in `auto-drive-light`.
+
+### Deprecated
+
+- For one release these keep working as aliases: the recipes `autodrive-merge-loop`, `autodrive-crusty-loop`, `autodrive-merge-round`, `autodrive-merge-evidence` and `autodrive-finalize`; the tools `autodrive_loop.sh`, `autodrive_merge_loop_run.sh`, `autodrive_budget.sh`, `autodrive_progress.sh`, `autodrive_round_word.sh`, `autodrive_escalate.sh`, `autodrive_done_override.sh` and `autodrive_crusty_rereview.sh`. The `autodrive_budget_*` and `light_eligibility` keys are accepted and ignored. Runs in flight keep their pinned bundle.
+
+### Known limit
+
+- Trade-offs: nothing in code stops a hot loop (one agent call per turn); a PR merged by someone else ends as `completed`; a pending required check is reported by the merge action as `checks-not-green`.
+- The agent step is not mechanically prevented from running `gh pr merge`. `--match-head-commit` and branch protection remain the boundary.
+
+---
+
 ## [Unreleased] — Recipe Execution Hardening
 
 ### Removed

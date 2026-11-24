@@ -49,55 +49,51 @@ fn composer_default_and_build_prohibition_are_separate() {
 }
 
 #[test]
-fn merge_restrictions_reach_shared_loops_and_light_escalation() {
+fn merge_restrictions_reach_the_goal_loop() {
+    // #3129: both drives run one goal loop; light's escalation is gone, so the
+    // restrictions reach exactly that child.
     for name in ["auto-drive-to-merge", "auto-drive-light"] {
         let doc = recipe(name);
-        for target in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
-            let context = &child(&doc, target)["context"];
-            assert_eq!(
-                context["no_merge"].as_str(),
-                Some("{{no_merge}}"),
-                "{name} -> {target}"
-            );
-            assert_eq!(
-                context["autodrive_dry_run"].as_str(),
-                Some("{{autodrive_dry_run}}"),
-                "{name} -> {target}"
-            );
-        }
+        let context = &child(&doc, "autodrive-goal-loop")["context"];
+        assert_eq!(context["no_merge"].as_str(), Some("{{no_merge}}"), "{name}");
+        assert_eq!(
+            context["autodrive_dry_run"].as_str(),
+            Some("{{autodrive_dry_run}}"),
+            "{name}"
+        );
+        assert!(
+            steps(&doc)
+                .iter()
+                .all(|s| s["recipe"].as_str() != Some("auto-drive-to-merge")),
+            "{name} never calls auto-drive-to-merge"
+        );
     }
-    let light = recipe("auto-drive-light");
-    let escalation = &child(&light, "auto-drive-to-merge")["context"];
-    assert_eq!(escalation["no_merge"].as_str(), Some("{{no_merge}}"));
-    assert_eq!(
-        escalation["autodrive_dry_run"].as_str(),
-        Some("{{autodrive_dry_run}}")
-    );
 }
 
 #[test]
-fn finalization_states_its_outcome_in_prose_and_merges_only_from_a_bash_step() {
-    // #2575: the agents observe and state the outcome in plain words; nothing
-    // parses their text. The only merge request is the `merge` bash step.
-    let doc = recipe("autodrive-finalize");
-    assert_eq!(
-        doc["context"]["no_merge"].as_str(),
-        Some("true"),
-        "direct finalization defaults to verification"
+fn the_agent_states_its_choice_unparsed_and_only_bash_steps_reach_the_merge() {
+    // #2575 and #3129: the turn's agent names an action in its own words and
+    // a JSON line; nothing in its text is parsed into a merge. The only merge
+    // request is made by the loop's bash step, through the goal tool's merge
+    // action, under the captured authorisation.
+    let turn = recipe("autodrive-goal-turn");
+    let agents: Vec<&Value> = steps(&turn)
+        .iter()
+        .filter(|s| s["type"].as_str() == Some("agent"))
+        .collect();
+    assert_eq!(agents.len(), 1, "one agent step per turn");
+    assert_eq!(agents[0]["output"].as_str(), Some("turn_decision"));
+    assert_ne!(
+        agents[0]["parse_json"].as_bool(),
+        Some(true),
+        "the reply is not parsed by the runner"
     );
+    let lp = recipe("autodrive-goal-loop");
     assert!(
-        steps(&doc).iter().any(|step| {
-            step["type"].as_str() == Some("agent")
-                && step["output"].as_str() == Some("autodrive_finalization")
-                && step["parse_json"].as_bool() != Some(true)
-        }),
-        "an agent must state the final outcome, unparsed"
-    );
-    assert!(
-        steps(&doc).iter().any(|step| {
-            step["id"].as_str() == Some("merge") && step["type"].as_str() == Some("bash")
-        }),
-        "the merge is requested by a bash step under captured authorization"
+        steps(&lp)
+            .iter()
+            .all(|s| s["type"].as_str() == Some("bash")),
+        "the loop's own steps are bash steps"
     );
     let mut pending = vec!["auto-drive-to-merge".to_string()];
     let mut seen = BTreeSet::new();
@@ -105,7 +101,7 @@ fn finalization_states_its_outcome_in_prose_and_merges_only_from_a_bash_step() {
         if !seen.insert(name.clone()) {
             continue;
         }
-        if name == "autodrive-finalize" {
+        if name == "autodrive-goal-loop" {
             return;
         }
         for step in steps(&recipe(&name)) {
@@ -116,7 +112,7 @@ fn finalization_states_its_outcome_in_prose_and_merges_only_from_a_bash_step() {
             }
         }
     }
-    panic!("the production composer never reaches authorized finalization");
+    panic!("the production composer never reaches the goal loop");
 }
 
 #[test]

@@ -233,17 +233,25 @@ fn alias_behaviour_is_documented_and_linked() {
             "{doc} describes the alias"
         );
     }
+    // CHANGELOG.md keeps one [Unreleased] section per topic; #3129 added its
+    // own, with no Fixed part, above the one that holds #1762.
     let changelog = read(&root.join("CHANGELOG.md"));
-    let unreleased = changelog
+    let unreleased: Vec<&str> = changelog
         .split("\n## [")
-        .find(|s| s.starts_with("Unreleased]"))
-        .expect("CHANGELOG.md has an [Unreleased] section");
-    let fixed = unreleased
-        .split("\n### ")
-        .find(|s| s.starts_with("Fixed"))
-        .expect("[Unreleased] has a Fixed section");
+        .filter(|s| s.starts_with("Unreleased]"))
+        .collect();
     assert!(
-        fixed.contains("#1762"),
+        !unreleased.is_empty(),
+        "CHANGELOG.md has an [Unreleased] section"
+    );
+    let fixed: Vec<&str> = unreleased
+        .iter()
+        .flat_map(|section| section.split("\n### "))
+        .filter(|s| s.starts_with("Fixed"))
+        .collect();
+    assert!(!fixed.is_empty(), "[Unreleased] has a Fixed section");
+    assert!(
+        fixed.iter().any(|f| f.contains("#1762")),
         "CHANGELOG.md [Unreleased] Fixed names #1762"
     );
 }

@@ -639,6 +639,15 @@ pub enum RecipeCommands {
         #[arg(long = "from-step")]
         from_step: bool,
     },
+    /// Read the guidance a run has received, or wait for more
+    ///
+    /// Reads the folders AMPLIHACK_RUN_GUIDANCE_DIRS lists, then the folder
+    /// of the pull request named. Allowed inside recipe runs. JSON output
+    /// never holds guidance text.
+    Guidance {
+        #[command(subcommand)]
+        command: GuidanceCommands,
+    },
     /// Stop a recipe run and its whole process tree: a tmux session started
     /// by `recipe run --detach`, or a run id from its log pointer
     Stop {
@@ -692,6 +701,56 @@ pub enum RecipeCommands {
         /// Hide context variables
         #[arg(long)]
         no_context: bool,
+    },
+}
+
+/// The pull request whose guidance folder `recipe guidance` reads after the
+/// folders `AMPLIHACK_RUN_GUIDANCE_DIRS` lists (issue #3129). Give a URL or
+/// `--pr` with `--pr-repo`, or neither.
+#[derive(clap::Args, Debug, Clone)]
+pub struct PrFolderArgs {
+    /// A pull request URL: https://github.com/<owner>/<repo>/pull/<n>
+    #[arg(value_name = "TARGET")]
+    pub target: Option<String>,
+    /// The pull request number; needs --pr-repo
+    #[arg(long = "pr", value_name = "N")]
+    pub pr: Option<String>,
+    /// The repository of --pr, as <owner>/<repo>
+    #[arg(long = "pr-repo", value_name = "OWNER/REPO")]
+    pub pr_repo: Option<String>,
+}
+
+/// `amplihack recipe guidance` subcommands (issue #3129). See
+/// docs/reference/recipe-cli-reference.md#amplihack-recipe-guidance.
+#[derive(Subcommand, Debug)]
+pub enum GuidanceCommands {
+    /// Print every entry, oldest first, marking those after --since as NEW
+    Show {
+        #[command(flatten)]
+        folder: PrFolderArgs,
+        /// An entry file name; entries whose names sort after it are NEW.
+        /// Empty or absent: every entry is NEW.
+        #[arg(long = "since", value_name = "ENTRY")]
+        since: Option<String>,
+        /// Print one JSON line (schema 1) of metadata, never guidance text
+        #[arg(long = "json")]
+        json: bool,
+    },
+    /// Wait until an entry after --since arrives, or COMMAND finishes
+    ///
+    /// Prints one JSON line: {"event":"guidance","entry":"<name>"},
+    /// {"event":"command","exit":N} or {"event":"unarmed"} (exit 3).
+    Wait {
+        #[command(flatten)]
+        folder: PrFolderArgs,
+        /// An entry file name, or empty: an entry whose name sorts after it
+        /// ends the wait
+        #[arg(long = "since", value_name = "ENTRY", required = true)]
+        since: String,
+        /// A command to run while waiting, after `--`. Its stdout goes to
+        /// stderr; guidance arriving first stops it with SIGTERM.
+        #[arg(last = true, value_name = "COMMAND", value_parser = clap::value_parser!(std::ffi::OsString))]
+        command: Vec<std::ffi::OsString>,
     },
 }
 

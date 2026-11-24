@@ -1,10 +1,12 @@
 //! Portable auto-drive helpers. None of them merges a PR: the only merge path
-//! is the finalize `merge` step (`autodrive_merge.sh`), gated by the captured
-//! invocation that `helper autodrive authorization` reports.
+//! is the goal loop's `merge` action (`autodrive_merge.sh`), gated by the
+//! captured invocation that `helper autodrive authorization` reports.
 pub mod authorization;
 pub mod helper;
 pub mod identity;
 pub(crate) mod private_mode;
 pub(crate) mod report;
+#[cfg(test)]
+mod report_goal_tests;
 pub mod state;
 pub(crate) mod trusted;

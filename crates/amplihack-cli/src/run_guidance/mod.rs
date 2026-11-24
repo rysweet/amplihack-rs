@@ -13,8 +13,23 @@
 //!
 //! Delivery: `recipe run` lists the folders in `AMPLIHACK_RUN_GUIDANCE_DIRS`
 //! ([`env`]); the launcher reads them when an agent step starts
-//! ([`GuidanceForLaunch`]). There is no timer, polling or watcher: an entry
-//! reaches the next agent step that starts after it was written.
+//! ([`GuidanceForLaunch`]), so an entry reaches the next agent step that
+//! starts after it was written.
+//!
+//! Waking (issue #3129): a process that waits for guidance
+//! (`recipe guidance wait`) arms a FIFO in `guidance-wake/` beside the
+//! `guidance/` folder ([`wake`]), and [`append_entry`] writes one byte to
+//! every armed FIFO after it publishes and logs an entry ([`wait`] is the
+//! waiting side). A wake byte only means "read again"; the waiter decides
+//! from the entries it reads. There is still no timer and no polling loop:
+//! the waiter blocks in `poll(2)`, with no timeout, until a byte arrives.
+//!
+//! Known limit: newness is by entry name order. An entry is new when its
+//! name sorts after the mark the reader gives (`--since`). Names are stamped
+//! before they are published, so an entry stamped before a mark but
+//! published after it is never marked `NEW` and does not end a wait that
+//! uses that mark. It still reaches every later agent prompt, which reads
+//! all entries.
 //!
 //! Known limit: the [`MAX_GUIDANCE_DIR_BYTES`] check in [`append_entry`] and
 //! the publication of the entry are not one atomic step, and no lock is
@@ -36,10 +51,23 @@
 //! and commit messages from context and step outputs) cannot copy it.
 
 pub(crate) mod env;
+pub(crate) mod folders;
 pub(crate) mod fs_safety;
 pub(crate) mod pr_key;
+mod render;
+pub(crate) mod sanitize;
 #[cfg(test)]
 mod tests;
+pub(crate) mod wait;
+#[cfg(test)]
+mod wait_tests;
+pub(crate) mod wake;
+#[cfg(test)]
+mod wake_tests;
+pub(crate) mod watch;
+
+pub(crate) use render::{append_block, is_new, render_block, render_block_marked};
+use sanitize::sanitize_line;
 
 use crate::commands::recipe::run_id::validate_run_id;
 use std::fmt;
@@ -187,6 +215,9 @@ pub(crate) struct Appended {
     pub bytes: usize,
     /// Set when the entry was written but `guidance.log` was not.
     pub log_error: Option<String>,
+    /// Set when the entry was written but something unexpected stopped a
+    /// waiter from being woken ([`wake::notify`]).
+    pub wake_warning: Option<String>,
 }
 
 fn is_block_delimiter(line: &str) -> bool {
@@ -311,7 +342,7 @@ pub(crate) fn caller_identity() -> String {
 
 /// Whether `name` is an entry file name:
 /// `^\d{8}T\d{6}\.\d{9}Z-\d+-\d+\.md$`.
-fn is_entry_name(name: &str) -> bool {
+pub(crate) fn is_entry_name(name: &str) -> bool {
     let b = name.as_bytes();
     let digits = |s: &[u8]| !s.is_empty() && s.iter().all(u8::is_ascii_digit);
     if b.len() < 31 || !name.ends_with(".md") {
@@ -424,7 +455,7 @@ fn publish(dir: &Path, tmp: &Path, stamp: &str) -> Result<PathBuf, GuideError> {
 
 /// Appends `text` (already checked by [`check_text`]) to `guidance_dir` as a
 /// new entry written by `caller`, then logs it in `guidance.log` beside the
-/// folder.
+/// folder, then wakes every waiter armed in `guidance-wake/` beside it.
 ///
 /// The parent of `guidance_dir` must exist and pass the trust rule;
 /// `guidance_dir` is created at 0700 when missing.
@@ -435,7 +466,8 @@ fn publish(dir: &Path, tmp: &Path, stamp: &str) -> Result<PathBuf, GuideError> {
 /// [`GuideError::Unsafe`] when a folder fails the trust rule or the folder
 /// would exceed [`MAX_GUIDANCE_DIR_BYTES`], [`GuideError::Io`] otherwise.
 /// Nothing is written on error. A failed log write after the entry exists is
-/// reported in [`Appended::log_error`], not as an error.
+/// reported in [`Appended::log_error`], and a waiter that could not be woken
+/// in [`Appended::wake_warning`], not as an error.
 pub(crate) fn append_entry(
     guidance_dir: &Path,
     text: &str,
@@ -487,10 +519,13 @@ pub(crate) fn append_entry(
     let log_error = log_event(&parent.join(GUIDANCE_LOG), &record)
         .err()
         .map(|e| e.to_string());
+    // After the entry is published and logged, so a woken waiter reads it.
+    let wake_warning = wake::notify(parent);
     Ok(Appended {
         path,
         bytes: text.len(),
         log_error,
+        wake_warning,
     })
 }
 
@@ -521,11 +556,17 @@ pub(crate) fn log_event(log: &Path, record: &serde_json::Value) -> Result<(), Gu
         .map_err(|e| GuideError::Io(format!("cannot write {}: {e}", log.display())))
 }
 
+/// Prints `line` on stderr after [`sanitize_line`]: a path in it can carry
+/// a name chosen by whoever created the folder.
+fn warn(line: &str) {
+    eprintln!("{}", sanitize_line(line));
+}
+
 fn warn_entry(path: &Path, reason: &str) {
-    eprintln!(
+    warn(&format!(
         "amplihack: skipping operator guidance entry {}: {reason}",
         path.display()
-    );
+    ));
 }
 
 /// Parses an entry file: header lines up to the first blank line (unknown
@@ -603,24 +644,26 @@ pub(crate) fn read_entries(dirs: &[PathBuf]) -> Vec<Entry> {
             Ok(fs_safety::DirState::Trusted) => {}
             Ok(fs_safety::DirState::Missing) => continue,
             Ok(fs_safety::DirState::Untrusted(reason)) => {
-                eprintln!(
+                warn(&format!(
                     "amplihack: ignoring operator guidance folder {}: {reason}",
                     dir.display()
-                );
+                ));
                 continue;
             }
             Err(e) => {
-                eprintln!("amplihack: ignoring operator guidance folder: {e}");
+                warn(&format!(
+                    "amplihack: ignoring operator guidance folder: {e}"
+                ));
                 continue;
             }
         }
         let rd = match fs::read_dir(dir) {
             Ok(rd) => rd,
             Err(e) => {
-                eprintln!(
+                warn(&format!(
                     "amplihack: ignoring operator guidance folder {}: {e}",
                     dir.display()
-                );
+                ));
                 continue;
             }
         };
@@ -664,57 +707,6 @@ pub(crate) fn read_entries(dirs: &[PathBuf]) -> Vec<Entry> {
     }
     kept.reverse();
     kept
-}
-
-/// The operator-instructions block for `entries` (empty string for none).
-///
-/// Entries from the operator come first, under the operator preamble.
-/// Entries an agent step wrote ([`Entry::from_step`]) follow under their own
-/// preamble, so a step that was misled into adding one cannot present it as
-/// the operator's. Numbering runs on across both parts.
-pub(crate) fn render_block(entries: &[Entry]) -> String {
-    if entries.is_empty() {
-        return String::new();
-    }
-    use std::fmt::Write as _;
-    let (from_steps, from_operator): (Vec<&Entry>, Vec<&Entry>) =
-        entries.iter().partition(|e| e.is_from_step());
-    let mut out = format!("{BLOCK_BEGIN}\n{BLOCK_TITLE}\n");
-    let mut number = 0_usize;
-    for (preamble, part) in [
-        (BLOCK_PREAMBLE, &from_operator),
-        (STEP_PREAMBLE, &from_steps),
-    ] {
-        if part.is_empty() {
-            continue;
-        }
-        if number > 0 {
-            out.push('\n');
-        }
-        out.push_str(preamble);
-        out.push('\n');
-        for e in part {
-            number += 1;
-            // Writing to a String cannot fail.
-            let _ = writeln!(
-                out,
-                "\n[{number}] {} from {} ({})",
-                e.timestamp,
-                e.caller,
-                e.source.label()
-            );
-            out.push_str(&e.text);
-            out.push('\n');
-        }
-    }
-    out.push_str(BLOCK_END);
-    out.push('\n');
-    out
-}
-
-/// `prompt` with trailing line breaks removed, one blank line, then `block`.
-pub(crate) fn append_block(prompt: &str, block: &str) -> String {
-    format!("{}\n\n{block}", prompt.trim_end_matches(['\n', '\r']))
 }
 
 /// Whether a Codex launch takes the guidance trailer (C4): `exec` is among
@@ -833,7 +825,9 @@ impl GuidanceForLaunch {
         for dir in &self.sources {
             let Some(parent) = dir.parent() else { continue };
             if let Err(e) = log_event(&parent.join(GUIDANCE_LOG), &record) {
-                eprintln!("amplihack: warning: operator guidance was added but not logged: {e}");
+                warn(&format!(
+                    "amplihack: warning: operator guidance was added but not logged: {e}"
+                ));
             }
         }
     }

@@ -353,9 +353,9 @@ they were admitted.
 
 ### Comparing times from one clock
 
-`issue_1743_autodrive_budget` compares ledger values with each other, never
-with the test's own `Instant::now()`. Every value it compares comes from the
-product's clock. Where the test needs to know when a stub step started and
+A test that checks durations compares the product's own recorded values with
+each other, never with the test's own `Instant::now()`, so every value it
+compares comes from one clock. Where the test needs to know when a stub step started and
 ended, the stub writes start and end marks to files, and the test asserts the
 order of those marks.
 

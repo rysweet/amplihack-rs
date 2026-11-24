@@ -9,22 +9,17 @@ description: |
                       when pr_number or existing_branch names an open PR.
     2. ELIGIBILITY  - a bash step measures the PR against the base pinned
                       before the agent ran (autodrive_light_eligibility.sh).
-                      Over any limit, the same PR and state directory are
-                      handed to auto-drive-to-merge, and nothing below runs.
-    3. LIGHT PATH   - the unchanged autodrive-crusty-loop, the #1551
-                      unmerged check and the unchanged autodrive-merge-loop
-                      run on the PR. Light mode adds nothing inside the
-                      loops: minor findings are classified, filed and gated
-                      by autodrive_followups.sh exactly as in
-                      auto-drive-to-merge (#1979, #1982), and the change is
-                      measured only here, before the loops, where the result
-                      decides what runs. The effective task id (plan_task_id,
-                      else #issue_number, through autodrive_followups.sh
-                      resolve-task) is forwarded to every child as
-                      plan_task_id.
+                      The measurement is information for the loop's agent
+                      (#3129); it no longer hands the PR to
+                      auto-drive-to-merge, because both drives run one loop.
+    3. GOAL LOOP    - the shared goal loop (autodrive-goal-loop) with the
+                      pull request goal, as in auto-drive-to-merge. How deep
+                      to review is the agent's judgement.
 
-  The merge criteria and the merge gate are those of auto-drive-to-merge,
-  unchanged. Contract: docs/reference/auto-drive-light.md
+  no_merge defaults to true, so a light run is merging-off unless the
+  operator says otherwise; it then ends at `ready` after the task's later
+  steps. Contract: docs/reference/auto-drive-light.md and
+  docs/reference/autodrive-goal-loop.md
 version: "1.0.0"
 author: "Amplihack Team"
 tags:
@@ -36,7 +31,7 @@ tags:
   - "issue-1802"
 recursion:
   max_depth: 6
-  max_total_steps: 200
+  max_total_steps: 60
 context:
   base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
@@ -75,6 +70,7 @@ context:
   light_escalation_result: ""
   crusty_loop_result: ""
   autodrive_unmerged_check: ""
+  autodrive_goal_pr: ""
   autodrive_finalization: ""
   light_summary: ""
 steps:
@@ -395,18 +391,25 @@ steps:
       # #2997: the runner-bound folder. build_result.state_dir is used only when
       # this command is run directly, outside amplihack.
       PR="$(b pr)"; HEAD_SHA="$(b head_sha)"; BASE_SHA="$(b base_sha)"; DIR="${RECIPE_VAR_autodrive_state_dir:-$(b state_dir)}"
-      [[ "$PR" =~ ^[0-9]{1,10}$ ]] && [[ "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && [[ "$BASE_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
-        || die "build_result is missing the PR, head or base"
-      # #2538: refuse a cross-repository PR in code, before any cached decision is
-      # reused or any state is written. light-resolve-pr observes the field (#2329
-      # keeps platform reads in agent steps); only a typed, exact false is accepted.
-      printf '%s' "${RECIPE_VAR_build_result:-}" | jq -e '.is_cross_repository == false' >/dev/null 2>&1 \
-        || die "light-cross-repo: PR #$PR is not a same-repository PR (build_result.is_cross_repository is not exactly false)"
+      # #2538: a PR that build_result names must be a same-repository PR; only a
+      # typed, exact false is accepted. The goal loop also refuses a
+      # cross-repository PR from GitHub's own reading, before every turn.
+      if [[ "$PR" =~ ^[0-9]{1,10}$ ]]; then
+        printf '%s' "${RECIPE_VAR_build_result:-}" | jq -e '.is_cross_repository == false' >/dev/null 2>&1 \
+          || die "light-cross-repo: PR #$PR is not a same-repository PR (build_result.is_cross_repository is not exactly false)"
+      fi
+      # #3129: the measurement is information for the loop's agent. Without the
+      # PR, head and base nothing is measured, and the run carries on.
+      if ! { [[ "$PR" =~ ^[0-9]{1,10}$ ]] && [[ "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && [[ "$BASE_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; }; then
+        echo "AUTODRIVE_LIGHT_ELIGIBILITY=unmeasured reason=build-result-incomplete" >&2
+        printf '%s\n' '{"decision":"unmeasured","reason":"build_result did not name the PR, head and base, so the change was not measured"}'
+        exit 0
+      fi
       case "$DIR" in /*) ;; *) die "no absolute state folder (autodrive_state_dir, or build_result.state_dir outside a drive)" ;; esac
       autodrive_private_dir "$DIR" || exit 1
       umask 077
       put() { local t; t="$(mktemp "$DIR/.$1.XXXXXX")" || return 1; cat > "$t" && mv -f -- "$t" "$DIR/$1"; }
-      ELIG="$DIR/light-eligibility.json"; ESC="$DIR/escalation.json"
+      ELIG="$DIR/light-eligibility.json"
       LIMITS="$(jq -nc --argjson l "$((10#${LIM[1]}))" --argjson n "$((10#${LIM[3]}))" --argjson a "$((10#${LIM[5]}))" \
         --argjson s "$((10#${LIM[7]}))" --argjson r "$((10#${LIM[9]}))" \
         '{lines: $l, new_modules: $n, public_api: $a, schema: $s, recipe_contract: $r}')"
@@ -429,98 +432,53 @@ steps:
             '{decision: "escalate", reason: $r, base: $b, head: $h, limits: $lim}')"
         fi
       fi
-      if [ -e "$ESC" ] || [ -L "$ESC" ]; then
-        J="$(printf '%s' "$J" | jq -c '.decision = "escalate" | .reason = "previously-escalated"')"
-      fi
       printf '%s' "$J" | jq -e '(.decision == "light" or .decision == "escalate") and (.reason | type == "string")' >/dev/null 2>&1 \
         || die "the eligibility measurement could not be read"
       printf '%s\n' "$J" | put light-eligibility.json || die "light-eligibility.json could not be written"
       DECISION="$(printf '%s' "$J" | jq -r .decision)"; REASON="$(printf '%s' "$J" | jq -r .reason)"
-      if [ "$DECISION" = "escalate" ] && [ ! -e "$ESC" ] && [ ! -L "$ESC" ]; then
-        printf '%s' "$J" | jq -c --arg b "$BASE_SHA" --arg h "$HEAD_SHA" '{reason: .reason, measurements: ., base_sha: $b, head_sha: $h}' \
-          | put escalation.json || die "escalation.json could not be written"
-      fi
       echo "AUTODRIVE_LIGHT_ELIGIBILITY=${DECISION} reason=${REASON}" >&2
       printf '%s\n' "$J"
     output: "light_eligibility"
-  - id: "light-escalate"
+  # #3129: the shared goal loop, as in auto-drive-to-merge. The eligibility
+  # measurement reaches the agent as information (goal_notes).
+  - id: "light-goal-pr"
+    type: "bash"
+    command: |
+      P="${RECIPE_VAR_pr_number:-}"
+      [ -n "$P" ] || P="$(printf '%s' "${RECIPE_VAR_build_result:-}" | amplihack orch helper extract-field --field pr --default '' 2>/dev/null)"
+      [[ "$P" =~ ^[1-9][0-9]{0,9}$ ]] && printf '%s' "$P"
+      exit 0
+    output: "autodrive_goal_pr"
+  - id: "light-loop"
     type: "recipe"
-    condition: "light_eligibility.decision == 'escalate'"
-    recipe: "auto-drive-to-merge"
+    recipe: "autodrive-goal-loop"
+    condition: "build_result.merged_before_run != 'true'"
     context:
-      base_branch: "{{base_branch}}"
-      task_description: "{{task_description}}"
+      goal_tool: "autodrive_pr_goal.sh"
+      goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
+      goal_notes: "{{light_eligibility}}"
       repo_path: "{{repo_path}}"
-      pr_number: "{{build_result.pr}}"
-      existing_branch: ""
-      # #2997: the runner-bound folder, as in auto-drive-to-merge (#3053).
-      autodrive_state_dir: "{{autodrive_state_dir}}"
-      autodrive_dry_run: "{{autodrive_dry_run}}"
-      no_merge: "{{no_merge}}"
-      plan_task_id: "{{light_task_id}}"
-    output: "light_escalation_result"
-  - id: "light-crusty-loop"
-    type: "recipe"
-    condition: "light_eligibility.decision == 'light' and build_result.merged_before_run != 'true'"
-    recipe: "autodrive-crusty-loop"
-    context:
-      repo_path: "{{repo_path}}"
-      pr_number: "{{build_result.pr}}"
-      autodrive_pr_input: "{{autodrive_pr_input}}"
-      existing_branch: "{{existing_branch}}"
-      pr_url: "{{build_result.pr_url}}"
-      task_description: "{{task_description}}"
-      # #2997: the runner-bound folder, as in auto-drive-to-merge (#3053).
-      autodrive_state_dir: "{{autodrive_state_dir}}"
-      plan_task_id: "{{light_task_id}}"
-      no_merge: "{{no_merge}}"
-      autodrive_dry_run: "{{autodrive_dry_run}}"
-  - id: "light-check-unmerged"
-    type: "agent"
-    condition: "light_eligibility.decision == 'light' and build_result.merged_before_run != 'true'"
-    agent: "amplihack:core:builder"
-    model: "fast"
-    parse_json: true
-    prompt: |
-      Observe the exact PR in {{build_result}} after crusty. Confirm it remains OPEN on the verified head. Recover a failed command through an equivalent authenticated interface and record each failure and recovery. A missing observation or unexpected earlier merge is a blocker, never readiness. Leave the PR open. Return concrete observations, attempts, blockers and observed state. Do not bypass failed criteria or repository protections.
-    output: "autodrive_unmerged_check"
-  - id: "light-merge-loop"
-    type: "recipe"
-    condition: "light_eligibility.decision == 'light' and build_result.merged_before_run != 'true'"
-    recipe: "autodrive-merge-loop"
-    context:
-      repo_path: "{{repo_path}}"
-      pr_number: "{{build_result.pr}}"
-      autodrive_pr_input: "{{autodrive_pr_input}}"
-      existing_branch: "{{existing_branch}}"
-      pr_url: "{{build_result.pr_url}}"
+      pr_number: "{{autodrive_goal_pr}}"
       task_description: "{{task_description}}"
       # #2997: the runner-bound folder, as in auto-drive-to-merge (#3053).
       autodrive_state_dir: "{{autodrive_state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
-      plan_task_id: "{{light_task_id}}"
       no_merge: "{{no_merge}}"
       merge_method: "{{merge_method}}"
-      build_result: "{{build_result}}"
+      plan_task_id: "{{light_task_id}}"
   - id: "light-report"
     type: "bash"
-    parse_json: true
     command: |
-      # #2575: autodrive_finalization is the finalisation agent's prose; it is
-      # carried as text, never parsed. autodrive_outcome is the run report.
-      VALUE="${RECIPE_VAR_autodrive_finalization:-}"
-      if [ -n "$VALUE" ]; then jq -cn --arg s "$VALUE" '{summary:$s}'; exit 0; fi
-      MERGED_BEFORE="$(printf '%s' "${RECIPE_VAR_build_result:-}" | amplihack orch helper extract-field --field merged_before_run --default false)" || exit 1
-      if [ "$MERGED_BEFORE" = true ]; then
-        printf '%s' '{"readiness":"incomplete","action":"already_merged","platform_state":"merged","stop_reason":"completed"}'
+      E="${RECIPE_VAR_autodrive_state_dir:-}/loop-end.json"
+      if [ -f "$E" ] && [ ! -L "$E" ]; then
+        jq -c '{loop_end:.end, detail, turn}' "$E" 2>/dev/null || echo '{"loop_end":null}'
       else
-        echo "ERROR: finalization evidence missing; readiness is incomplete" >&2
-        printf '%s' '{"readiness":"incomplete","action":"not_requested","platform_state":"unknown","stop_reason":"dependency_failure"}'
-        exit 1
+        echo '{"loop_end":null}'
       fi
     output: "light_summary"
 output:
   format: "markdown"
   template: |
-    Light outcome: {{autodrive_finalization}}
-    Escalation: {{light_escalation_result}}
+    Light outcome: {{light_summary}}
+    Eligibility: {{light_eligibility}}
+    Goal loop: {{autodrive_finalization}}
