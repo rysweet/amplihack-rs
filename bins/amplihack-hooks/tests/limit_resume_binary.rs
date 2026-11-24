@@ -1,7 +1,8 @@
 //! Issue #1658 (D): `amplihack-hooks limit-resume` at the process boundary.
 //!
 //! Protocol: exit 2 with exactly `RESUME_MSG\n` on stderr to wake the
-//! session, otherwise exit 0 with nothing on stdout or stderr. Stdout is
+//! session, otherwise exit 0. On exit 0 stderr is empty, except that one fixed
+//! line records a log line that could not be written (#3172). Stdout is
 //! always empty. The subcommand is dispatched outside `run_hook`, which
 //! always prints JSON.
 //!
@@ -305,6 +306,17 @@ fn run_with_swap_record(
     finish(child, start)
 }
 
+/// Exit 0, nothing on stdout, and exactly one line on stderr: the fixed record
+/// of a call whose line could not be written (#3172). It never carries
+/// payload text, and never changes the exit code.
+fn assert_zero_with_one_stderr_line(out: &Output) {
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty());
+    let text = String::from_utf8(out.stderr.clone()).expect("stderr is text");
+    assert_eq!(text.lines().count(), 1, "{text:?}");
+    assert!(text.ends_with('\n'), "{text:?}");
+}
+
 fn assert_silent_zero(out: &Output) {
     assert_eq!(
         out.status.code(),
@@ -431,7 +443,9 @@ fn toggle_file_turns_it_on_too() {
 }
 
 #[test]
-fn auto_switch_off_is_silent_and_creates_nothing() {
+fn auto_switch_off_with_no_resume_dir_writes_one_stderr_line_and_creates_nothing() {
+    // A6 (#3172): with no `resume/` folder the record of the call is one
+    // fixed stderr line, `outcome=disabled` with reason `dir_missing`.
     for toggle in [Some("0"), None] {
         let e = env();
         let _rotator = StandInRotator::start(&e.root);
@@ -440,7 +454,13 @@ fn auto_switch_off_is_silent_and_creates_nothing() {
             private_file(&e.root.join(".auto-switch"), b"enabled=off\n");
         }
         let (out, took) = run(&e, toggle, limit_payload("sess-1").as_bytes());
-        assert_silent_zero(&out);
+        assert_zero_with_one_stderr_line(&out);
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            text.contains("outcome=disabled") && text.contains("reason=dir_missing"),
+            "{text:?}"
+        );
+        assert!(!text.contains("sess-1"), "no payload text: {text:?}");
         assert!(took < Duration::from_secs(10));
         assert!(
             !e.root.join(".auto-switch.d/resume").exists(),
@@ -450,7 +470,7 @@ fn auto_switch_off_is_silent_and_creates_nothing() {
 }
 
 #[test]
-fn unresolvable_root_is_silent() {
+fn unresolvable_root_writes_one_fixed_stderr_line() {
     let e = env();
     let mut cmd_env = Env {
         sandbox: HookSandbox::new(),
@@ -458,33 +478,26 @@ fn unresolvable_root_is_silent() {
         root: PathBuf::from("relative/root"),
     };
     let (out, _) = run(&cmd_env, Some("1"), limit_payload("s").as_bytes());
-    assert_silent_zero(&out);
+    assert_zero_with_one_stderr_line(&out);
     cmd_env.root = PathBuf::from("/a/../b");
     let (out, _) = run(&cmd_env, Some("1"), limit_payload("s").as_bytes());
-    assert_silent_zero(&out);
+    assert_zero_with_one_stderr_line(&out);
 }
 
 #[test]
-fn garbage_and_malformed_stdin_are_silent() {
+fn garbage_and_malformed_stdin_leave_one_stderr_line_and_create_nothing() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
-    for stdin in [
-        b"".to_vec(),
-        b"not json".to_vec(),
-        b"\xff\xfe\x00".to_vec(),
-        json!({"hook_event_name": "StopFailure", "session_id": "s", "error": 429})
-            .to_string()
-            .into_bytes(),
-    ] {
+    for stdin in [b"".to_vec(), b"not json".to_vec(), b"\xff\xfe\x00".to_vec()] {
         let (out, _) = run(&e, Some("1"), &stdin);
-        assert_silent_zero(&out);
+        assert_zero_with_one_stderr_line(&out);
     }
     assert!(!e.root.join(".auto-switch.d/resume/events").exists());
 }
 
 #[test]
-fn more_than_one_mib_of_stdin_is_silent() {
+fn more_than_one_mib_of_stdin_leaves_one_stderr_line_and_creates_nothing() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
@@ -497,12 +510,12 @@ fn more_than_one_mib_of_stdin_is_silent() {
     })
     .to_string();
     let (out, _) = run(&e, Some("1"), payload.as_bytes());
-    assert_silent_zero(&out);
+    assert_zero_with_one_stderr_line(&out);
     assert!(!e.root.join(".auto-switch.d/resume").exists());
 }
 
 #[test]
-fn non_limit_errors_are_silent() {
+fn non_limit_errors_leave_one_stderr_line_each_and_create_nothing() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
@@ -514,10 +527,10 @@ fn non_limit_errors_are_silent() {
             "last_assistant_message": "You've hit your weekly limit"
         });
         let (out, _) = run(&e, Some("1"), payload.to_string().as_bytes());
-        assert_silent_zero(&out);
+        assert_zero_with_one_stderr_line(&out);
     }
-    // A stop that is not a usage limit is decided before anything is
-    // written or logged.
+    // The gate line has no resume folder to go to, and the hook never
+    // creates one for it: the stderr line is the record (#3172).
     assert!(!e.root.join(".auto-switch.d/resume").exists());
 }
 
@@ -577,7 +590,7 @@ fn no_rotator_running_is_a_silent_rotator_down() {
 }
 
 #[test]
-fn unsafe_resume_dir_is_silent_and_untouched() {
+fn unsafe_resume_dir_is_untouched_and_leaves_one_stderr_line() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
@@ -585,7 +598,7 @@ fn unsafe_resume_dir_is_silent_and_untouched() {
     fs::create_dir(&resume).unwrap();
     fs::set_permissions(&resume, fs::Permissions::from_mode(0o777)).unwrap();
     let (out, _) = run(&e, Some("1"), limit_payload("s").as_bytes());
-    assert_silent_zero(&out);
+    assert_zero_with_one_stderr_line(&out);
     assert_eq!(
         fs::metadata(&resume).unwrap().permissions().mode() & 0o777,
         0o777

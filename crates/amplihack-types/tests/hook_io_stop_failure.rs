@@ -267,3 +267,28 @@ fn live_claude_code_2_1_306_payload_parses() {
         other => panic!("expected StopFailure, got {other:?}"),
     }
 }
+
+/// Issue #3172 (S-I3): a non-string `error` reads as absent, never as a parse
+/// error, so it reaches the limit rule as `None` and the call still gets its
+/// gate line.
+#[test]
+fn a_non_string_error_reads_as_absent_without_a_parse_error() {
+    for error in [
+        json!(42),
+        json!({"a": 1}),
+        json!([1, 2]),
+        json!(true),
+        json!(null),
+    ] {
+        let input = parse(json!({
+            "hook_event_name": "StopFailure",
+            "session_id": "s-1",
+            "error": error
+        }))
+        .unwrap_or_else(|e| panic!("{error}: {e}"));
+        match input {
+            HookInput::StopFailure { error, .. } => assert_eq!(error, None),
+            other => panic!("expected StopFailure, got {other:?}"),
+        }
+    }
+}

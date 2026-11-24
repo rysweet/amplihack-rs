@@ -1,0 +1,10 @@
+{
+  "_source": "StopFailure payload shape for Claude Code 2.1.329 (hook schema read from the installed binary, read-only). Values are placeholders; no captured text. A sample from the factory host replaces this when one exists. The test replaces transcript_path with a path under its own temporary folder.",
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/placeholder/transcript.jsonl",
+  "cwd": "/placeholder/project",
+  "hook_event_name": "StopFailure",
+  "error": "rate_limit",
+  "error_details": "placeholder error details",
+  "last_assistant_message": "placeholder message"
+}

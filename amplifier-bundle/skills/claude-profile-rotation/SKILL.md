@@ -528,7 +528,11 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | `rotator-down` | The rotator was not running (or its ledger was unreadable) when the limit hit; start it. |
 | `session-gone` | The session exited while the hook waited; nothing was done. |
 | `moved-on` | The user sent a prompt in that session during the wait (for example `continue`), so the hook did not wake it. |
-| `disabled` | Auto-switch was off when a swap would have resumed the session. |
+| `disabled` | Auto-switch was off. Written at the start of the call only when `resume/` already exists; otherwise a silent exit `0` with no line and no stderr. |
+| `not-limit` | The stop was not a usage limit: `error=` is a known non-limit value, or the input was not a `StopFailure`. Nothing to do unless `error=` names a value that is a usage limit. |
+| `bad-session-id` | `session_id` was missing, oversized or invalid (`session=-`). |
+| `bad-payload` | Standard input was malformed or over 1 MiB. |
+| `panicked` | The hook panicked. It exited `0`; report it. |
 | `duplicate` | A key resume was already recorded for that limit event (same session, text and login), or another hook resumed the session during the wait. |
 | `session-record-reset` | The session's record of earlier resumes could not be parsed. It was treated as no earlier resumes; the next resume with keys rewrites it, and until then each run logs this line. The run goes on, and its own line follows. Nothing for the user to do unless it repeats after a `resumed-keys` line. |
 | `stop-hook-active` | Claude Code reported a stop hook already running; nothing was done. |
@@ -544,7 +548,12 @@ day. Each `resume.log` line also has `cycle=`, the rotator's last cycle
 outcome, and, when they apply, `resumes=` (the session's delivered key resumes in 24
 hours, logged as evidence; nothing is refused on it), `swap_seq=`,
 `swap_live=`, `pane=` (a hash, not the pane id), `keys_sent=` and
-`detail=`.
+`detail=`. Every line ends with `error=`, the payload's `error` value
+reduced to `[a-z_]`. Every call leaves a line, so a limit stop with none
+means Claude Code did not run the hook. If a line could not be written, read
+`resume/log-write-failed` (the reason is one of `dir_missing`,
+`dir_unprivate`, `lock_failed`, `open_failed` or `write_failed`); on exit `0`
+the hook also prints one fixed line on stderr.
 
 Claude Code's `autoContinueAtUsageLimit` setting controls whether it starts
 a wait that can continue the conversation when the limit resets. The
