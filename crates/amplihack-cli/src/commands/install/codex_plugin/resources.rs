@@ -1,5 +1,14 @@
 //! Canonical resource validation, copying and digest identity.
 use super::*;
+/// Codex has a fixed budget for the skill list it shows the model, so skills
+/// whose folder name ends in `-analyst` are not packaged for Codex (#3195).
+/// Claude and Copilot installs do not use this filter and keep them.
+pub(super) fn left_out_of_codex(directory: &Path) -> bool {
+    directory.join("SKILL.md").is_file()
+        && directory
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().ends_with("-analyst"))
+}
 pub(super) fn copy_tree(
     source: &Path,
     destination: &Path,
@@ -46,6 +55,9 @@ pub(super) fn copy_tree(
             #[cfg(not(unix))]
             bail!("symlink resource packaging requires Unix");
         } else if kind.is_dir() {
+            if left_out_of_codex(&e.path()) {
+                continue;
+            }
             copy_tree(&e.path(), &target, boundary, depth + 1)?;
         } else {
             ensure!(kind.is_file(), "unsupported skill resource type");
@@ -187,7 +199,7 @@ pub(super) fn validate_skill_names(
     }
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
+        if entry.file_type()?.is_dir() && !left_out_of_codex(&entry.path()) {
             validate_skill_names(&entry.path(), names, depth + 1)?;
         }
     }
