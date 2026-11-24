@@ -134,19 +134,23 @@ fi
 # #3160: each minor finding shows its outcome from the run's outcome ledger,
 # joined on the name minor:<id> for display only: fixed or filed when that
 # entry is met with that treatment, else open. A ledger that cannot be read
-# shows every finding open; the rest of the reading is kept.
+# shows every finding open; the rest of the reading is kept. The ledger is
+# indexed by name once here (the last entry of a name wins), so each round
+# looks its findings up instead of scanning the whole ledger per finding.
 if [ -n "$STATE" ] && goal_json_file "$STATE/outcomes.json" 524288 \
-  && jq -c '.outcomes | if type == "array" then . else [] end' "$STATE/outcomes.json" > "$S/ledger.json" 2>/dev/null; then :
-else echo '[]' > "$S/ledger.json"; fi
-MINOR_JQ='($led[0] // []) as $L
+  && jq -c '.outcomes | if type == "array" then . else [] end
+    | reduce (.[] | objects | select(.name | type == "string")) as $x ({}; .[$x.name] = $x)' \
+    "$STATE/outcomes.json" > "$S/ledger.json" 2>/dev/null; then :
+else echo '{}' > "$S/ledger.json"; fi
+MINOR_JQ='($led[0] // {}) as $L
   | [.[] | objects | {id, summary}] | .[:50]
   | map(. as $m
     | (if $m.id == null then null else ($m.id | tostring | .[0:64]) end) as $id
-    | (try ([$L[] | objects | select(.name == ("minor:" + ($id // "")))] | last) catch null) as $e
-    | (if ($e | type) == "object" and $e.status == "met" and ($e.treatment == "fixed" or $e.treatment == "filed") then $e.treatment else "open" end) as $o
+    | $L["minor:" + ($id // "")] as $e
+    | (if $e.status == "met" and ($e.treatment == "fixed" or $e.treatment == "filed") then $e.treatment else "open" end) as $o
     | {id:$id, summary:$m.summary, outcome:$o}
-      + (if ($e | type) == "object" and ($e.evidence | type) == "string" and $e.evidence != "" then {evidence:($e.evidence | .[0:300])} else {} end)
-      + (if ($e | type) == "object" and ($e.reason | type) == "string" and $e.reason != "" then {reason:($e.reason | .[0:300])} else {} end))'
+      + (if ($e.evidence | type) == "string" and $e.evidence != "" then {evidence:($e.evidence | .[0:300])} else {} end)
+      + (if ($e.reason | type) == "string" and $e.reason != "" then {reason:($e.reason | .[0:300])} else {} end))'
 : > "$S/crusty.jsonl"
 round_err() { jq -cn --arg n "${1##*/}" --arg e "$2" '{record:$n, error:$e}' >> "$S/crusty.jsonl"; }
 for f in "$STATE"/crusty-round-*.json; do
