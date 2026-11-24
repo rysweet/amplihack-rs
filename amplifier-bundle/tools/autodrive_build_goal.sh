@@ -35,9 +35,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || exit 2
 # shellcheck source=autodrive_build_lib.sh
 . "$HERE/autodrive_build_lib.sh" || { echo "ERROR: autodrive_build_goal.sh: autodrive_build_lib.sh is missing beside it" >&2; exit 2; }
 STATE="${AUTODRIVE_STATE_DIR:-}"; STATE="${STATE%/}"
-# The run's repo_path, else the driver's launch checkout (goal contract v1).
+# The run's repo_path when it is absolute, else the driver's launch checkout
+# (goal contract v1), from which the driver runs this tool; a relative
+# repo_path was resolved by the step that started the driver.
 LAUNCH="${RECIPE_VAR_repo_path:-}"
-if [ -z "$LAUNCH" ]; then LAUNCH="${AUTODRIVE_REPO:-.}"; fi
+case "$LAUNCH" in /*) ;; *) [ -z "${AUTODRIVE_REPO:-}" ] || LAUNCH="$AUTODRIVE_REPO" ;; esac
+if [ -z "$LAUNCH" ]; then LAUNCH="."; fi
 LAUNCH="$(cd "$LAUNCH" 2>/dev/null && pwd -P)" || { echo "ERROR: autodrive_build_goal.sh: the launch checkout cannot be entered" >&2; exit 2; }
 ACTIONS="open-pr mark-ready review wait prepare-worktree"
 TD=""; WORD=""; S=""

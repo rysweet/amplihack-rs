@@ -28,15 +28,15 @@
 #                    of the loop recipe would put the turn's agent past the
 #                    session-depth ceiling, and a sub-recipe step would merge
 #                    the loop's context, autodrive_state_dir included, back
-#                    into this run and its callers. The goal tool reads this
-#                    run's context: repo_path (made absolute), worktree_setup
-#                    and goal_notes (final_requirements) are exported from the
-#                    values write_context_value finds (#1570), and the task
-#                    text goes to the driver as a file. Its scratch folder is
-#                    made inside the state folder and removed on exit. The
-#                    loop counts as started when a turn's reading.json is a
-#                    regular file (not a link) or loop-end.json is a JSON
-#                    object file.
+#                    into this run and its callers. The task text and
+#                    final_requirements go to the driver as files
+#                    (write_context_value, #1570); the goal tool reads the
+#                    rest of the context from the RECIPE_VAR_* the runner gave
+#                    this step, and this tool sets none (#1561). Its scratch
+#                    folder is made inside the state folder and removed on
+#                    exit. The loop counts as started when a turn's
+#                    reading.json is a regular file (not a link) or
+#                    loop-end.json is a JSON object file.
 #                      loop run exit   stdout                       exit
 #                      0               loop-end.json, or the        0
 #                                      fallback line with exit 0
@@ -159,16 +159,12 @@ do_loop() {
   # The trap runs after this function returns, so it names a global.
   LOOP_SCRATCH="$scratch"
   trap '[ -z "$LOOP_SCRATCH" ] || rm -rf -- "$LOOP_SCRATCH"' EXIT
-  for k in task_description final_requirements worktree_setup; do
+  for k in task_description final_requirements; do
     write_context_value "$k" "$scratch/$k" 2>/dev/null || : > "$scratch/$k"
   done
-  # The build goal tool reads this run's context from RECIPE_VAR_* (the step
-  # inherits default-workflow's). These four are set from the values the
-  # tool needs whichever channel held them (#1570): the launch checkout as an
-  # absolute path, worktree_setup, and final_requirements as the goal notes.
-  export RECIPE_VAR_repo_path="$repo"
-  RECIPE_VAR_worktree_setup="$(head -c 65536 -- "$scratch/worktree_setup")"; export RECIPE_VAR_worktree_setup
-  RECIPE_VAR_goal_notes="$(head -c 65536 -- "$scratch/final_requirements")"; export RECIPE_VAR_goal_notes
+  # The goal tool reads the rest of this run's context from the RECIPE_VAR_*
+  # the runner gave this step; nothing here sets one (#1561). The driver runs
+  # it from the launch checkout with AUTODRIVE_REPO set.
   set -- --goal-tool autodrive_build_goal.sh --goal-file skills/default-workflow/goal-build-pr.md \
     --state-dir "$sd" --repo "$repo" --task-file "$scratch/task_description" --notes-file "$scratch/final_requirements"
   [ -z "${RECIPE_VAR_step_recovery_dir:-}" ] || set -- "$@" --recovery-dir "$RECIPE_VAR_step_recovery_dir"

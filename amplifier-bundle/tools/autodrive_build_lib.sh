@@ -50,8 +50,9 @@
 #                                 65,536 bytes) into <out>
 #   build_allow_text <out> [pr_url]
 #                                 the text that may name mentions and closing
-#                                 keywords: the task text, goal notes,
-#                                 closing_reference, then the operator's
+#                                 keywords: the task text, goal notes and
+#                                 final_requirements, closing_reference,
+#                                 then the operator's
 #                                 guidance from `amplihack recipe guidance
 #                                 show --operator-only [pr_url]`. pr_url is
 #                                 passed only when it is a GitHub pull request
@@ -324,7 +325,10 @@ build_allow_text() {
   local out="$1" url="${2:-}" rc bin="${AMPLIHACK_BIN:-amplihack}"
   BUILD_GUIDANCE_UNREAD=""
   build_task_text "$out"
+  # goal_notes under the shared loop's recipe; final_requirements when the
+  # build step runs the driver itself.
   { printf '\n'; printf '%s\n' "${RECIPE_VAR_goal_notes:-}" | head -c 65536
+    printf '%s\n' "${RECIPE_VAR_final_requirements:-}" | head -c 65536
     printf '%s\n' "${RECIPE_VAR_closing_reference:-}" | head -c 4096; } >> "$out"
   # The run's guidance folders (AMPLIHACK_RUN_GUIDANCE_DIRS) and, when the
   # recorded URL is a GitHub pull request, that pull request's folder. A URL

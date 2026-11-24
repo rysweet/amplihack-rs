@@ -45,9 +45,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || exit 2
 TD="${1:-}"
 build_turn_dir "$TD" || exit 2
 STATE="${AUTODRIVE_STATE_DIR:-}"; STATE="${STATE%/}"
-# The run's repo_path, else the driver's launch checkout (goal contract v1).
+# The run's repo_path when it is absolute, else the driver's launch checkout
+# (goal contract v1), from which the driver runs this tool; a relative
+# repo_path was resolved by the step that started the driver.
 LAUNCH="${RECIPE_VAR_repo_path:-}"
-if [ -z "$LAUNCH" ]; then LAUNCH="${AUTODRIVE_REPO:-.}"; fi
+case "$LAUNCH" in /*) ;; *) [ -z "${AUTODRIVE_REPO:-}" ] || LAUNCH="$AUTODRIVE_REPO" ;; esac
+if [ -z "$LAUNCH" ]; then LAUNCH="."; fi
 LAUNCH="$(cd "$LAUNCH" 2>/dev/null && pwd -P)" || LAUNCH="$PWD"
 S="$(mktemp -d "$TD/.reading.XXXXXX")" || exit 1
 trap 'rm -rf -- "$S"' EXIT

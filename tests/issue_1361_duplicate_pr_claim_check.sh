@@ -33,10 +33,10 @@
 set -uo pipefail
 # Issue #1764: no git this script runs may wait on a credential prompt.
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 # An enclosing run may export these; each one makes the claim check skip, which
 # would leave nothing here to test.
 unset ALLOW_EXISTING_PR AMPLIHACK_ALLOW_EXISTING_PR AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK
-exec </dev/null
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLAIM="$ROOT/amplifier-bundle/tools/workflow_issue_claim_check.sh"
