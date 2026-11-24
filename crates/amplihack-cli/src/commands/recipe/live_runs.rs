@@ -43,10 +43,12 @@
 
 use super::guide::{RootChecks, accept_recorded};
 use super::guide_records::{self, Pointer};
-use crate::run_guidance::GUIDANCE_DIR;
+use crate::commands::cleanup::run_dir::RunReport;
 use crate::run_guidance::env::pr_ref_from_context;
 use crate::run_guidance::fs_safety::{DirState, dir_state, untrusted_reason};
 use crate::run_guidance::pr_key::{PrRef, same_repo_ref};
+use crate::run_guidance::sanitize::sanitize_line;
+use crate::run_guidance::{GUIDANCE_DIR, Source};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -270,6 +272,49 @@ fn guidance_folder(run_dir: &Path) -> Result<PathBuf, String> {
         Ok(DirState::Untrusted(reason)) => Err(format!("{}: {reason}", dir.display())),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// The end a run recorded in its `run.json`, ready for a line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunEnd {
+    /// `ended_at`, sanitised and at most [`MAX_END_CHARS`] characters.
+    pub at: String,
+    /// `outcome` (`success`, `failure`, `interrupted`), sanitised and
+    /// bounded the same way; `not recorded` when empty.
+    pub outcome: String,
+}
+
+/// The most characters of a recorded `ended_at` or `outcome` shown.
+const MAX_END_CHARS: usize = 64;
+
+fn end_field(value: &str) -> String {
+    sanitize_line(&value.trim().chars().take(MAX_END_CHARS).collect::<String>())
+}
+
+/// The end recorded by the run whose guidance folder is `guidance_dir`
+/// (PR #3190 review): an entry left unread when its run ended is reported
+/// as such, not only as "not yet read".
+///
+/// `None` when the folder is not a run's (a pull request's state folder,
+/// which a later run reads), or its `run.json` cannot be read or records no
+/// end. Only an end the run wrote is reported, never one inferred from a
+/// process that has gone. `run.json` is read without following a link and
+/// up to its size cap, as everywhere else.
+pub(crate) fn run_end(guidance_dir: &Path) -> Option<RunEnd> {
+    if Source::of(guidance_dir) != Source::Run {
+        return None;
+    }
+    let report = RunReport::read(guidance_dir.parent()?).ok()?;
+    let at = report.ended_at.filter(|at| !at.trim().is_empty())?;
+    let outcome = if report.outcome.trim().is_empty() {
+        "not recorded".to_string()
+    } else {
+        end_field(&report.outcome)
+    };
+    Some(RunEnd {
+        at: end_field(&at),
+        outcome,
+    })
 }
 
 /// Whether the run in `run_dir` is running now. See the module docs.

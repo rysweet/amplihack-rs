@@ -240,6 +240,11 @@ fn a_entry_appended_mid_run_reaches_the_next_codex_exec_step_as_a_trailer() {
 // written never received the guidance, so nothing is recorded. The test holds
 // amplihack's stdin open, so the forwarder is still waiting on it when the
 // child exits and the trailer is never written; no timer is involved.
+//
+// The caller writes a prompt line first and the child reads it before it
+// closes stdin, so the step had a prompt and the drop is
+// `trailer_not_written`. Without a prompt it would be `no_prompt_on_stdin`
+// (PR #3190 review: the block follows text or is not written).
 #[test]
 fn codex_child_that_closes_stdin_early_records_no_injection() {
     let f = GuideFixture::new();
@@ -265,9 +270,11 @@ fn codex_child_that_closes_stdin_early_records_no_injection() {
         .stderr(std::process::Stdio::piped());
     let mut child = c.spawn().expect("start amplihack");
     // Kept open until amplihack has exited.
-    let held_stdin = child.stdin.take().unwrap();
+    let mut held_stdin = child.stdin.take().unwrap();
+    std::io::Write::write_all(&mut held_stdin, b"codex prompt\n").expect("write the prompt");
     let o = child.wait_with_output().unwrap();
     drop(held_stdin);
+    assert_eq!(f.record("prompt.early"), "codex prompt\n", "{}", show(&o));
 
     assert!(o.status.success(), "{}", show(&o));
     assert!(

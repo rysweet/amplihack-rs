@@ -1,29 +1,44 @@
 //! Where an agent launch puts the run's operator guidance (issues #2535 and
 //! #3162), and how a launch that cannot take it is named in the drop record.
 //!
-//! The decision is pure: it takes whether the caller's stdin has input
-//! instead of looking at the process, so every launch form can be tested.
+//! The decision is pure: it takes whether the caller's stdin may hold a
+//! prompt instead of looking at the process, so every launch form can be
+//! tested.
 //!
 //! | Tool    | Launch form                                | Route                         |
 //! |---------|--------------------------------------------|-------------------------------|
 //! | Claude  | `-p <text>` (rewritten to stdin)           | `Prompt`                      |
-//! | Claude  | `-p`/`--print`, prompt already on stdin    | `StdinTrailer`                |
+//! | Claude  | `-p`/`--print`, stdin may hold a prompt    | `StdinTrailer`                |
 //! | Claude  | `-p`/`--print`, nothing on stdin           | `NoPromptOnStdin` drop        |
 //! | Claude  | interactive                                | `LaunchFormUnsupported` drop  |
-//! | Codex   | `exec … -`, prompt on stdin                | `StdinTrailer`                |
+//! | Codex   | `exec … -`, stdin may hold a prompt        | `StdinTrailer`                |
 //! | Codex   | `exec … -`, nothing on stdin               | `NoPromptOnStdin` drop        |
 //! | Codex   | any other form                             | `LaunchFormUnsupported` drop  |
 //! | Copilot | `-p <text>` (prompt file)                  | `Prompt`                      |
-//! | Copilot | no `-p`/`-i`, prompt on stdin              | `StdinTrailer`                |
+//! | Copilot | no `-p`/`-i`, stdin may hold a prompt      | `StdinTrailer`                |
 //! | Copilot | no `-p`/`-i`, nothing on stdin             | `NoPromptOnStdin` drop        |
 //! | Copilot | `-i`, or a `-p` pointer given by the caller | `LaunchFormUnsupported` drop |
 //!
-//! Copilot and stdin: Copilot CLI 1.0.114, launched with no prompt flag and
-//! a piped stdin, takes the whole of stdin as its prompt, including a block
-//! after the caller's text. This was checked against a real Copilot run
-//! (prompt and trailer each asked for a token; both were printed) during the
-//! review of #3162. Delivery is still reported only once the bytes were
-//! written; a child that closed stdin first records `trailer_not_written`.
+//! "May hold a prompt" is all the route can know before the child starts:
+//! `fstat` says stdin is a pipe, a socket or a non-empty file, not what is
+//! in it. A terminal, `/dev/null` or an empty file holds nothing, and the
+//! launch is a `NoPromptOnStdin` drop at once. For the rest, the decision
+//! is made by reading: the forwarder writes the block only after it has
+//! copied a byte of the caller's stdin that is not white space
+//! (`spawn_stdin_forwarder_with_trailer`). A pipe that reaches its end
+//! empty or blank, or that has given no text when the step exits, gets no
+//! block, and the launch records `NoPromptOnStdin` then, after the step
+//! (PR #3190 review). It is never reported as read.
+//!
+//! Copilot and stdin: Copilot CLI 1.0.114 and 1.0.115, launched with no
+//! prompt flag and a piped stdin, took the whole of stdin as their prompt,
+//! including a block after the caller's text (prompt and trailer each asked
+//! for a token; both were printed). The check is
+//! `tests/issue_3162_copilot_stdin_live.rs`, which is run by hand against
+//! the installed Copilot because it needs a signed-in Copilot and a model
+//! call; run it after a Copilot upgrade. Delivery is still reported only
+//! once the bytes were written; a child that closed stdin first records
+//! `trailer_not_written`.
 
 use super::codex_copilot_rewrite;
 use super::passthrough_rewrite;
@@ -38,9 +53,10 @@ pub(crate) enum GuidanceRoute {
     /// After the `-p` prompt: on stdin (Claude) or in the prompt file
     /// (Copilot). Reported as soon as the agent starts.
     Prompt,
-    /// After the caller's stdin, which holds the prompt (Claude print mode,
-    /// Codex `exec … -`, Copilot with no prompt flag). Reported only after
-    /// the child exits, and only if every byte was written.
+    /// After the caller's stdin, which may hold the prompt (Claude print
+    /// mode, Codex `exec … -`, Copilot with no prompt flag). Written only
+    /// after text has been copied from it; reported only after the child
+    /// exits, and only if every byte was written.
     StdinTrailer,
     /// There is guidance, and this launch cannot take it.
     Undeliverable(DropReason),
@@ -56,10 +72,10 @@ pub(crate) fn agent_binary_for_tool(tool: &str) -> Option<AgentBinary> {
     }
 }
 
-/// Whether a stdin with input takes the trailer, or the launch is a drop
-/// because nothing is there.
-fn on_stdin(stdin_has_input: bool) -> GuidanceRoute {
-    if stdin_has_input {
+/// Whether a stdin that may hold a prompt takes the trailer, or the launch
+/// is a drop because nothing can be there.
+fn on_stdin(stdin_may_hold_prompt: bool) -> GuidanceRoute {
+    if stdin_may_hold_prompt {
         GuidanceRoute::StdinTrailer
     } else {
         GuidanceRoute::Undeliverable(DropReason::NoPromptOnStdin)
@@ -72,7 +88,7 @@ pub(crate) fn guidance_route(
     guidance: &GuidanceForLaunch,
     rewritten: &passthrough_rewrite::Rewritten,
     original_args: &[String],
-    stdin_has_input: bool,
+    stdin_may_hold_prompt: bool,
 ) -> GuidanceRoute {
     if guidance.block().is_none() {
         return GuidanceRoute::None;
@@ -81,7 +97,7 @@ pub(crate) fn guidance_route(
     match agent_binary_for_tool(tool) {
         Some(AgentBinary::Claude) if rewritten.stdin_payload.is_some() => GuidanceRoute::Prompt,
         Some(AgentBinary::Claude) if passthrough_rewrite::claude_print_mode(original_args) => {
-            on_stdin(stdin_has_input)
+            on_stdin(stdin_may_hold_prompt)
         }
         Some(AgentBinary::Copilot)
             if codex_copilot_rewrite::copilot_has_prompt_text(original_args) =>
@@ -91,13 +107,13 @@ pub(crate) fn guidance_route(
         Some(AgentBinary::Copilot)
             if !codex_copilot_rewrite::copilot_has_prompt_flag(original_args) =>
         {
-            on_stdin(stdin_has_input)
+            on_stdin(stdin_may_hold_prompt)
         }
         Some(AgentBinary::Codex)
             if rewritten.stdin_payload.is_none()
                 && crate::run_guidance::codex_trailer_applies(original_args) =>
         {
-            on_stdin(stdin_has_input)
+            on_stdin(stdin_may_hold_prompt)
         }
         _ => unsupported,
     }

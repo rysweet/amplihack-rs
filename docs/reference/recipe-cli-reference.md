@@ -797,15 +797,44 @@ guidance.
 | Agent CLI | Where the block goes |
 | --- | --- |
 | Claude Code, `launch`, RustyClawd, prompt in argv | End of the prompt sent on stdin, after the `-p` text. When input is also piped to `amplihack`, the block comes after that input. |
-| Claude Code in print mode (`-p` or `--print` with no prompt text), prompt already on stdin | The runner's own form, such as `amplihack claude -- --system-prompt-file <file> -p --add-dir .`. After the caller's stdin closes, the block is written to Claude's stdin, so it follows the step's prompt. The stderr line above and the `guidance_injected` record are written after Claude exits, and only if the block was written in full. |
+| Claude Code in print mode (`-p` or `--print` with no prompt text), prompt already on stdin | The runner's own form, such as `amplihack claude -- --system-prompt-file <file> -p --add-dir .`. After the caller's stdin closes, the block is written to Claude's stdin, so it follows the step's prompt. The block is written only if the caller's stdin gave at least one byte that is not white space; see [Stdin that gives no text](#stdin-that-gives-no-text). The stderr line above and the `guidance_injected` record are written after Claude exits, and only if the block was written in full. |
 | GitHub Copilot CLI, prompt in argv | End of the `-p <text>` prompt, before it is written to the private prompt file. |
-| GitHub Copilot CLI, no `-p` or `-i`, prompt piped on stdin | After the caller's stdin closes, as for Claude print mode. The help of the pinned Copilot CLI (1.0.114) names piped stdin as a prompt source beside `-i` and `-p`. Delivery is reported only once the block was written in full. With nothing on stdin the launch is recorded as a `no_prompt_on_stdin` drop. |
+| GitHub Copilot CLI, no `-p` or `-i`, prompt piped on stdin | After the caller's stdin closes, as for Claude print mode. The help of the pinned Copilot CLI (1.0.114) names piped stdin as a prompt source beside `-i` and `-p`, and Copilot CLI 1.0.114 and 1.0.115 were seen to read a block after the piped prompt. That depends on Copilot, so it is checked by a test run by hand against the installed Copilot, not in CI; see [Checking Copilot's stdin](#checking-copilots-stdin). Delivery is reported only once the block was written in full. With nothing on stdin the launch is recorded as a `no_prompt_on_stdin` drop. |
 | GitHub Copilot CLI, `-i`, or a `-p` file reference the caller gave | No guidance; recorded as a `launch_form_unsupported` drop. |
-| Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written. The stderr line above and the `guidance_injected` record are written after Codex exits, and only if the block was written and flushed to Codex's stdin in full. If Codex closed its stdin first, neither is written and the launch is recorded as a `trailer_not_written` drop. With nothing on stdin, it is a `no_prompt_on_stdin` drop. Other Codex forms receive no guidance and are recorded as drops. |
+| Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written, if that stdin gave text. The stderr line above and the `guidance_injected` record are written after Codex exits, and only if the block was written and flushed to Codex's stdin in full. If Codex closed its stdin first, neither is written and the launch is recorded as a `trailer_not_written` drop. With nothing on stdin, it is a `no_prompt_on_stdin` drop. Other Codex forms receive no guidance and are recorded as drops. |
 
 Every runner agent step therefore takes guidance, whether its prompt arrives in
 argv or already on stdin, and the block always comes after the step's own
 prompt.
+
+#### Stdin that gives no text
+
+Before the agent starts, the launcher can only tell what kind of file its
+stdin is. A terminal, `/dev/null` or an empty file cannot hold a prompt, and
+the launch is recorded as a `no_prompt_on_stdin` drop at once. A pipe, a
+socket or a non-empty file may hold one, but its type says nothing about what
+is in it. For those the launcher decides by reading: it copies the caller's
+stdin to the agent as it arrives, and writes the block after it only if at
+least one copied byte was not white space. A pipe that closes empty, or with
+only blank lines, gives the agent exactly what it gave, with no block, and the
+launch is recorded as a `no_prompt_on_stdin` drop when the agent exits. The
+same happens when the agent exits before an open pipe has given any text. The
+guidance is then never the agent's whole prompt, and the entry is not
+reported as read.
+
+#### Checking Copilot's stdin
+
+Whether Copilot reads a block after a piped prompt is Copilot's behaviour, not
+amplihack's. `crates/amplihack-cli/tests/issue_3162_copilot_stdin_live.rs`
+starts the real launcher with the real Copilot CLI, a piped prompt that asks
+for one token and guidance that asks for another, and checks that Copilot's
+answer holds both and that the step recorded the entry as read. It needs a
+signed-in Copilot and makes one model call, so it is marked `#[ignore]` and
+is run by hand after a Copilot upgrade:
+
+```console
+$ cargo test -p amplihack-cli --test cli_integration -- --ignored issue_3162_copilot_stdin_live
+```
 
 ### When a step cannot take guidance
 
@@ -813,7 +842,7 @@ When guidance exists for a step and the step cannot take it, the launcher does
 two things. It prints one line on stderr, which is the run's log:
 
 ```text
-amplihack: warning: operator guidance was not delivered to claude (claude -p, prompt expected on stdin): no_prompt_on_stdin: the step reads its prompt from standard input, and standard input held nothing
+amplihack: warning: operator guidance was not delivered to claude (claude -p, prompt expected on stdin): no_prompt_on_stdin: the step reads its prompt from standard input, and standard input gave no text
 ```
 
 It also appends a `guidance_dropped` record to the
@@ -829,7 +858,7 @@ step id is not exported to the agent process, so it is not named.
 
 | Reason code | Meaning |
 | --- | --- |
-| `no_prompt_on_stdin` | A launch that reads its prompt from stdin (Claude print mode with no prompt text, Codex `exec … -`, Copilot with no prompt flag) whose stdin is a terminal, `/dev/null` or empty. No forwarder is started, so the launch does not wait. |
+| `no_prompt_on_stdin` | A launch that reads its prompt from stdin (Claude print mode with no prompt text, Codex `exec … -`, Copilot with no prompt flag) whose stdin gave no text. When stdin is a terminal, `/dev/null` or an empty file, this is known at launch: no forwarder is started, so the launch does not wait. When stdin is a pipe or a file that gave nothing but white space, or no text before the agent exited, the drop is recorded after the agent exits; see [Stdin that gives no text](#stdin-that-gives-no-text). |
 | `trailer_not_written` | The block was to follow the prompt on stdin, but the tool closed its stdin before the whole block was written. |
 | `launch_form_unsupported` | The launch form has no place for the block, such as an interactive Claude launch, a Copilot `-i` launch or a `-p` file reference the caller gave, or a Codex form other than `exec … -`. |
 
@@ -897,12 +926,12 @@ successful write means the pipe accepted the bytes, not that Codex read them.
 `entries` and `bytes` are totals for the step. `entry_names` lists only the
 entries read from this log's folder, and is how a read is told from an unread
 entry (see [Read state](#read-state)). A record without `entry_names`, written
-by 1.2.215 or earlier, proves no particular entry was read.
+by a launcher of 1.2.219 or earlier, proves no particular entry was read.
 
 A step that could not take guidance writes:
 
 ```json
-{"event":"guidance_dropped","ts":"2026-11-12T09:20:11.554013873Z","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81","tool":"claude","launch_form":"claude -p, prompt expected on stdin","agent":"builder","reason":"no_prompt_on_stdin","detail":"the step reads its prompt from standard input, and standard input held nothing","entries":2}
+{"event":"guidance_dropped","ts":"2026-11-12T09:20:11.554013873Z","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81","tool":"claude","launch_form":"claude -p, prompt expected on stdin","agent":"builder","reason":"no_prompt_on_stdin","detail":"the step reads its prompt from standard input, and standard input gave no text","entries":2}
 ```
 
 `agent` is left out when the command line gives none. `launch_form` is a fixed
@@ -939,6 +968,20 @@ status: appended; not yet read
 The status is `appended; not yet read` until an agent step has read the entry.
 The command writes the entry and returns, so for a new entry this is the
 status it prints. The line does not promise when the entry will be read.
+"Read" means the block was written in full to an agent step's input; it does
+not mean the agent acted on it (see [Read state](#read-state)).
+
+When the target is a run (a session name, run folder name or correlation ID)
+whose `run.json` already records its end, the status says so, with the end
+time and outcome the run recorded:
+
+```text
+status: appended; not yet read; the run ended at 2026-11-24T18:59:41Z (success)
+```
+
+No step of that run started after the entry was written. Only an end the run
+recorded is reported; a run that stopped without recording one is shown as
+`appended; not yet read`.
 
 For a pull request URL the first line says `guidance saved for pull
 request` rather than `guidance appended` and ends `pr` rather than `run`. One
@@ -969,7 +1012,7 @@ each folder written:
 
 ```text
 status: appended; not yet read
-dropped by claude (claude -p, prompt expected on stdin) agent builder in run 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15: no_prompt_on_stdin: the step reads its prompt from standard input, and standard input held nothing
+dropped by claude (claude -p, prompt expected on stdin) agent builder in run 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15: no_prompt_on_stdin: the step reads its prompt from standard input, and standard input gave no text
 ```
 
 The format is `dropped by TOOL (LAUNCH_FORM)[ agent AGENT] in run RUN_ID:
@@ -1069,12 +1112,27 @@ is never a way for a terminal sequence to reach the terminal.
 
 An entry is read when a `guidance_injected` record in its folder's
 `guidance.log` lists its name in `entry_names`. Otherwise it is not yet read.
+
+"Read" means delivered to a step, not acted on. The launcher writes the record
+once the block was written in full to the agent's input: when the agent starts,
+for a prompt in argv, or after the agent exits, for a block after a prompt on
+stdin. Nothing records whether the agent followed the instructions; to judge
+that, read the step's output or the run's log.
+
+An entry that no step has read when its run ends stays not yet read. When every
+run folder holding the entry belongs to a run whose `run.json` records its end,
+`show` adds that end to the line, as
+`entry <name>: not yet read; the run ended at <ended_at> (<outcome>)`, and
+`show --json` gives `run_ended` on the entry. This is the case of a run that
+finished before any later agent step started. Only an end the run recorded is
+used; an entry held only in a pull request's state folder has no run end,
+because the next run started for the pull request reads that folder.
 The status is worked out from the log each time it is asked for, so no other
 file holds it. Entries that were also written to a second folder (the run
 folder and the state folder get the same entry name) count as read when either
-copy is listed. Records from 1.2.215 or earlier have no `entry_names`, so they
-leave every entry not yet read. This understates reads and never overstates
-them.
+copy is listed. Records from a launcher of 1.2.219 or earlier have no
+`entry_names`, so they leave every entry not yet read. This understates reads
+and never overstates them.
 
 A `guidance.log` that exists but cannot be read (a symbolic link, a file not
 owned by you or writable by others, or a read error) says nothing about reads
@@ -1204,7 +1262,8 @@ newest kept.
 Without `--json`, `show` prints the entries as the operator-instructions block
 an agent step receives, oldest first. Each entry's header line also carries the
 entry's file name, then `NEW` when the entry is new. After the block, one line
-for each entry says `entry <name>: read`, `entry <name>: not yet read` or
+for each entry says `entry <name>: read`, `entry <name>: not yet read`,
+`entry <name>: not yet read; the run ended at <ended_at> (<outcome>)` or
 `entry <name>: read state unknown (log unreadable)` (see
 [Read state](#read-state)), then one line for each drop recorded since the last
 injection in a folder, printed once, in the format
@@ -1226,7 +1285,7 @@ Hold: wait for the owner's answer on #3109.
 ===== END OPERATOR INSTRUCTIONS FOR THIS RUN =====
 entry 20261123T184002.123456789Z-4242-0.md: read
 entry 20261123T185541.987654321Z-4301-0.md: not yet read
-dropped by claude (claude -p, prompt expected on stdin) agent builder in run 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15: no_prompt_on_stdin: the step reads its prompt from standard input, and standard input held nothing
+dropped by claude (claude -p, prompt expected on stdin) agent builder in run 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15: no_prompt_on_stdin: the step reads its prompt from standard input, and standard input gave no text
 ```
 
 With `--json`, `show` prints exactly one line, schema 1, shown here across
@@ -1253,8 +1312,9 @@ several lines. It never holds guidance text: no field is named `text`, and
            "reason":"no_prompt_on_stdin"}]}
 ```
 
-The output stays at schema 1 because the change only adds fields: `read` on
-each entry, `log_error` on a folder and the top-level `drops` array. A consumer
+The output stays at schema 1 because the change only adds fields: `read` and
+`run_ended` on each entry, `log_error` on a folder and the top-level `drops`
+array. A consumer
 that reads the existing keys is not affected. A consumer that reads `read`
 must treat `null` as unknown, not as false.
 
@@ -1264,7 +1324,7 @@ must treat `null` as unknown, not as false.
 | `since` | The `--since` value, or `""`. |
 | `newest` | The largest entry name read, or `""` when there is none. |
 | `folders[]` | Every folder in the list, in order: `path`; `source`, `pr` when the folder's grandparent is named `auto-drive` and `run` otherwise; `state`, one of `present`, `missing` or `untrusted`; and, only for `untrusted`, `reason`; and, only for a `present` folder whose `guidance.log` exists but could not be read, `log_error`, the cause. Drops in such a folder are unknown and none are listed. |
-| `entries[]` | Every entry read, oldest first: `name`, the file name; `folder`; `timestamp`; `caller`; `source`; `from_step`, true when an agent step added it with `recipe guide --from-step`; `new`; `read`, true when `entry_names` in that folder's `guidance.log` (or in the log of another folder holding the same entry) lists it, `null` when none lists it and the log of at least one of those folders could not be read, and false otherwise; and `bytes`, the size of the text in UTF-8 bytes. |
+| `entries[]` | Every entry read, oldest first: `name`, the file name; `folder`; `timestamp`; `caller`; `source`; `from_step`, true when an agent step added it with `recipe guide --from-step`; `new`; `read`, true when `entry_names` in that folder's `guidance.log` (or in the log of another folder holding the same entry) lists it, `null` when none lists it and the log of at least one of those folders could not be read, and false otherwise (true means delivered to a step, not acted on); `run_ended`, present only when every run folder holding the entry belongs to a run whose `run.json` records its end, as `{"at": <ended_at>, "outcome": <outcome>}`; and `bytes`, the size of the text in UTF-8 bytes. |
 | `drops[]` | One for each `guidance_dropped` record since the last `guidance_injected` record in a folder: `folder`; `ts`; `step_run_id`; `tool`; `launch_form`; `agent`, left out when unknown; and `reason`, the code. The array is empty when there are none. |
 
 Every line the command prints, JSON included, has control, bidirectional and

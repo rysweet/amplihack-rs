@@ -63,6 +63,9 @@ mod issue_3162_stdin_prompt_guidance;
 // #3162: guidance reaches an agent step of a nested recipe, real runner.
 #[path = "issue_3162_nested_recipe_guidance.rs"]
 mod issue_3162_nested_recipe_guidance;
+// PR #3190 review: Copilot reads a block after a stdin prompt (run by hand).
+#[path = "issue_3162_copilot_stdin_live.rs"]
+mod issue_3162_copilot_stdin_live;
 // #1888: the merge method, through `amplihack recipe run` and the real runner.
 mod issue_1888_merge_method_recipe_run;
 #[path = "issue_2582_context_off_argv.rs"]

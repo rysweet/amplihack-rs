@@ -1,7 +1,8 @@
 //! Issue #3162: which launch forms take operator guidance, and how.
 //!
-//! `guidance_route` is pure: it takes whether the caller's stdin has input
-//! instead of looking at the process. The runner starts a Claude agent step as
+//! `guidance_route` is pure: it takes whether the caller's stdin may hold a
+//! prompt instead of looking at the process. Whether it did is decided later
+//! by reading it (the forwarder's `saw_text`). The runner starts a Claude agent step as
 //! `claude -- --system-prompt-file <file> -p --add-dir .` with the prompt
 //! already on stdin, so the rewrite produces no `stdin_payload` and the block
 //! has to follow the caller's stdin (`StdinTrailer`), as it already does for
@@ -9,7 +10,7 @@
 //!
 //! Contract used here:
 //! - `GuidanceRoute::{None, Prompt, StdinTrailer, Undeliverable(DropReason)}`;
-//! - `guidance_route(tool, &guidance, &rewritten, &args, stdin_has_input)`;
+//! - `guidance_route(tool, &guidance, &rewritten, &args, stdin_may_hold_prompt)`;
 //! - `DropReason::{NoPromptOnStdin, LaunchFormUnsupported, TrailerNotWritten}`
 //!   with `code()` returning `no_prompt_on_stdin`, `launch_form_unsupported`
 //!   and `trailer_not_written`;
@@ -40,11 +41,11 @@ fn with_guidance() -> (tempfile::TempDir, GuidanceForLaunch) {
     (tmp, GuidanceForLaunch::from_dirs(vec![dir]))
 }
 
-fn route(tool: &str, args: &[&str], stdin_has_input: bool) -> GuidanceRoute {
+fn route(tool: &str, args: &[&str], stdin_may_hold_prompt: bool) -> GuidanceRoute {
     let (_tmp, g) = with_guidance();
     let args = s(args);
     let rewritten = rewrite_claude_passthrough(&args).unwrap();
-    guidance_route(tool, &g, &rewritten, &args, stdin_has_input)
+    guidance_route(tool, &g, &rewritten, &args, stdin_may_hold_prompt)
 }
 
 const RUNNER_FORM: [&str; 5] = ["--system-prompt-file", "/f", "-p", "--add-dir", "."];

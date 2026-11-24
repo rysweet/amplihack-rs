@@ -95,7 +95,7 @@
 
 use super::detach::MAX_DETACHED_SESSION_CHARS;
 use super::guide_records::{self, Pointer};
-use super::live_runs::live_runs_for_pr;
+use super::live_runs::{live_runs_for_pr, run_end};
 use crate::command_error::exit_error;
 use crate::commands::cleanup::run_dir::{RUN_JSON, RunReport};
 use crate::commands::cleanup::work_root;
@@ -187,6 +187,13 @@ fn guide(
         live_runs,
         no_live_run,
     } = resolve_target(target)?;
+    // PR #3190 review: a run named by session or id may already have ended;
+    // the sender is told what its `run.json` records rather than left to
+    // wait for a step that will not start.
+    let ended = match source {
+        Source::Run if live_runs.is_empty() => run_end(&dir),
+        _ => None,
+    };
     // Issue #3161: each live run's own folder first, then the destination.
     // One time for every copy, so a reader of several of them sees one entry.
     let mut folders: Vec<(PathBuf, Source)> =
@@ -237,13 +244,19 @@ fn guide(
     }
     // Issue #3162: the sender is told the truth. No step has read an entry
     // that was just written; a step that reads it records `entry_names`,
-    // which `recipe guidance show` reports as `read`.
+    // which `recipe guidance show` reports as `read`. "Read" means the block
+    // was written in full to a step's input, not that the agent acted on it.
     let status = if no_live_run {
-        "appended; not yet read; no live run for this pull request reads it until one starts with it in its context"
+        "appended; not yet read; no live run for this pull request reads it until one starts with it in its context".to_string()
+    } else if let Some(end) = ended {
+        format!(
+            "appended; not yet read; the run ended at {} ({})",
+            end.at, end.outcome
+        )
     } else {
-        "appended; not yet read"
+        "appended; not yet read".to_string()
     };
-    println!("status: {status}");
+    println!("{}", sanitize_line(&format!("status: {status}")));
     // Launches since the last read that could not take the guidance, in
     // each folder written. One fan-out launch logs one drop in every folder
     // it read, so a line is printed once.

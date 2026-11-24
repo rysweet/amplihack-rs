@@ -417,9 +417,16 @@ fn run_launch_core(
     // Issue #3162: a prompt that is already on the caller's stdin (the
     // runner's `claude -- … -p …` agent steps, Codex `exec … -`, Copilot
     // with no prompt flag) takes the block after it. Stdin is looked at only
-    // when there is guidance to place.
-    let stdin_has_input = guidance.block().is_some() && caller_stdin_has_input();
-    let guidance_route = guidance_route(tool, &guidance, &rewritten, &extra_args, stdin_has_input);
+    // when there is guidance to place. `fstat` says only that stdin may hold
+    // a prompt; the forwarder decides by reading it (see below).
+    let stdin_may_hold_prompt = guidance.block().is_some() && caller_stdin_may_hold_input();
+    let guidance_route = guidance_route(
+        tool,
+        &guidance,
+        &rewritten,
+        &extra_args,
+        stdin_may_hold_prompt,
+    );
     // What a drop record names: never argv text (issue #3162).
     let guidance_label = step_label(tool, &extra_args);
     if let GuidanceRoute::Undeliverable(reason) = guidance_route {
@@ -659,7 +666,7 @@ fn run_launch_core(
         // (Codex `exec … -`, Claude print mode, Copilot with no prompt flag)
         // is always forwarded when guidance follows it, with the block after.
         let forward_caller_stdin =
-            (rewritten.stdin_payload.is_some() && caller_stdin_has_input()) || stdin_trailer;
+            (rewritten.stdin_payload.is_some() && caller_stdin_may_hold_input()) || stdin_trailer;
         if rewritten.stdin_payload.is_some() || stdin_trailer {
             cmd.stdin(std::process::Stdio::piped());
         }
@@ -753,23 +760,29 @@ fn run_launch_core(
 
         // Wait for child or signal
         let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
-        // PR #2567 M2: the writer sets its flag before it closes the child's
-        // stdin, and the child exits only after that EOF, so the flag is
-        // final here. It is read before the writer is joined or detached.
-        let trailer_delivered = stdin_trailer
-            && stdin_writer
-                .as_ref()
-                .is_some_and(|writer| writer.delivered());
-        if trailer_delivered {
-            report_guidance_injection(&guidance);
-        } else if stdin_trailer {
-            // Issue #3162: the block was due after the caller's prompt and
-            // did not reach the child; the sender is told, not only this log.
-            report_guidance_drop(
-                &guidance,
-                &guidance_label,
-                crate::run_guidance::DropReason::TrailerNotWritten,
-            );
+        // PR #2567 M2: the writer sets its flags before it closes the child's
+        // stdin, and the child exits only after that EOF, so they are final
+        // here. They are read before the writer is joined or detached.
+        if stdin_trailer {
+            match stdin_writer.as_ref() {
+                Some(writer) if writer.delivered() => report_guidance_injection(&guidance),
+                // PR #3190 review: the pipe gave no text, so there was no
+                // prompt to follow and the block was not written. Seen by
+                // reading the pipe, not guessed from its file type.
+                Some(writer) if !writer.saw_text() => report_guidance_drop(
+                    &guidance,
+                    &guidance_label,
+                    crate::run_guidance::DropReason::NoPromptOnStdin,
+                ),
+                // Issue #3162: the block was due after the caller's prompt
+                // and did not reach the child; the sender is told, not only
+                // this log.
+                _ => report_guidance_drop(
+                    &guidance,
+                    &guidance_label,
+                    crate::run_guidance::DropReason::TrailerNotWritten,
+                ),
+            }
         }
         let written = match stdin_writer {
             // The child has exited. A forwarder still blocked on a caller
@@ -976,8 +989,14 @@ pub(crate) fn prompt_then_piped_input_header(prompt: &str) -> Vec<u8> {
 
 /// amplihack's stdin is a pipe, a socket or a non-empty regular file, as
 /// opposed to a terminal, `/dev/null` or an empty file.
+///
+/// This says only that stdin *may* hold input: a pipe or socket is reported
+/// whether or not anything was or will be written to it, and a non-empty
+/// file may hold only white space. Where the answer matters for operator
+/// guidance, the forwarder settles it by reading
+/// ([`amplihack_utils::payload_delivery::StdinWriter::saw_text`]).
 #[cfg(unix)]
-fn caller_stdin_has_input() -> bool {
+fn caller_stdin_may_hold_input() -> bool {
     use std::os::unix::fs::FileTypeExt;
     // `/dev/stdin` names fd 0 on Linux and macOS; metadata follows it to the
     // pipe or file itself.
@@ -991,7 +1010,7 @@ fn caller_stdin_has_input() -> bool {
 }
 
 #[cfg(not(unix))]
-fn caller_stdin_has_input() -> bool {
+fn caller_stdin_may_hold_input() -> bool {
     false
 }
 

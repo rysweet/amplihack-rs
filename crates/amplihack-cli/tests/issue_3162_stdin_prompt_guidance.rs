@@ -15,7 +15,13 @@
 //! - (c) a launch with no prompt on stdin (`/dev/null`) cannot take guidance:
 //!   the drop is recorded in the run's guidance folder, and `recipe guide`
 //!   and `recipe guidance show` report it, naming the tool and a reason
-//!   code. The entry stays not yet read.
+//!   code. The entry stays not yet read, and once the run has ended both
+//!   readers say that it ended (PR #3190 review).
+//! - (d) PR #3190 review: a pipe on stdin that closes empty, or with only
+//!   blank lines, looks like a prompt to `fstat` but holds none. The block
+//!   is not written (the agent gets exactly the caller's bytes, so the
+//!   guidance never becomes its whole prompt), the launch records
+//!   `no_prompt_on_stdin`, and the entry stays not yet read.
 //!
 //! The assertions compare values (positions, counts, JSON fields, line
 //! prefixes and reason codes). None compares prose.
@@ -33,23 +39,26 @@ const MARKER: &str = "MARKER-3162-place-and-launch-nothing-in-this-pass";
 const SESSION: &str = "factory-fill-pass";
 
 /// Step one, a block on `$RELEASE_FIFO`, then step two. `$STEP_TWO_STDIN`
-/// is `pipe` (the prompt is already on stdin) or `null` (nothing on stdin).
-/// Both steps use the form the real runner starts.
+/// is `pipe` (the prompt is already on stdin), `null` (`/dev/null`),
+/// `empty` (a pipe that closes with nothing in it) or `blank` (a pipe that
+/// holds only white space). Both steps use the form the real runner starts.
 const TWO_STDIN_STEPS: &str = r#"
 printf '%s\n' "agent: amplihack:core:builder" > "$RECORD_DIR/builder.md"
 printf 'step one prompt\n' | STEP=s.1 "$AMP_BIN" claude --subprocess-safe -- \
   --system-prompt-file "$RECORD_DIR/builder.md" -p --add-dir . \
   > "$RECORD_DIR/out.s.1" 2> "$RECORD_DIR/err.s.1" || exit 11
 read _ < "$RELEASE_FIFO"
-if [ "$STEP_TWO_STDIN" = null ]; then
+step_two() {
   STEP=s.2 "$AMP_BIN" claude --subprocess-safe -- \
-    --system-prompt-file "$RECORD_DIR/builder.md" -p --add-dir . < /dev/null \
-    > "$RECORD_DIR/out.s.2" 2> "$RECORD_DIR/err.s.2" || exit 12
-else
-  printf 'step two prompt\n' | STEP=s.2 "$AMP_BIN" claude --subprocess-safe -- \
     --system-prompt-file "$RECORD_DIR/builder.md" -p --add-dir . \
-    > "$RECORD_DIR/out.s.2" 2> "$RECORD_DIR/err.s.2" || exit 12
-fi
+    > "$RECORD_DIR/out.s.2" 2> "$RECORD_DIR/err.s.2"
+}
+case "$STEP_TWO_STDIN" in
+  null) step_two < /dev/null || exit 12 ;;
+  empty) : | step_two || exit 12 ;;
+  blank) printf '\n  \t\n' | step_two || exit 12 ;;
+  *) printf 'step two prompt\n' | step_two || exit 12 ;;
+esac
 "#;
 
 struct Held {
@@ -233,17 +242,87 @@ fn c_a_step_with_no_prompt_on_stdin_records_the_drop_for_the_sender() {
         held.f.record("corr_id.run").trim()
     );
 
-    // The next `recipe guide` to the same run tells its sender, by line.
+    // PR #3190 review: the run has ended, and the reader says so rather
+    // than leave the entry only "not yet read".
+    assert_eq!(
+        shown["entries"][0]["run_ended"]["outcome"], "success",
+        "{shown}"
+    );
+
+    // The next `recipe guide` to the same run tells its sender, by line,
+    // that the run it named has already ended.
     let next = held.f.guide_text(&[SESSION], "a second note");
     assert!(next.status.success(), "{}", show(&next));
-    assert_eq!(
-        status_lines(&next),
-        ["appended; not yet read"],
+    let status = status_lines(&next);
+    assert_eq!(status.len(), 1, "{}", show(&next));
+    assert!(
+        status[0].starts_with("appended; not yet read; the run ended at "),
         "{}",
         show(&next)
     );
+    assert!(status[0].ends_with(" (success)"), "{}", show(&next));
     let lines = drop_lines(&next);
     assert_eq!(lines.len(), 1, "{}", show(&next));
     assert!(lines[0].contains("claude"), "{}", lines[0]);
     assert!(lines[0].contains("no_prompt_on_stdin"), "{}", lines[0]);
+}
+
+// ---------------------------------------------------------------------------
+// (d) a pipe that gives no text: no block, and the drop reaches the sender
+// ---------------------------------------------------------------------------
+
+/// Runs step two with `stdin` (`empty` or `blank`) after guidance was sent,
+/// and checks that the agent got exactly `given`, with no block, and that
+/// the launch recorded `no_prompt_on_stdin` and nothing as read.
+fn a_pipe_with_no_text_gets_no_block(stdin: &str, given: &str) {
+    let mut held = start(stdin);
+    let o = held.f.guide_text(&[SESSION], MARKER);
+    assert!(o.status.success(), "{}", show(&o));
+    let run = held.live.finish();
+    assert!(run.status.success(), "{}", fifo_release::describe(&run));
+
+    // The agent got the caller's bytes and nothing else: the guidance is
+    // not its whole prompt.
+    assert_eq!(held.f.record("prompt.s.2"), given);
+
+    // Nothing is claimed as read; the drop is recorded with its code.
+    let log = held.f.log(&held.run_guidance);
+    assert!(
+        log.iter().all(|l| l["event"] != "guidance_injected"),
+        "{log:?}"
+    );
+    let drops: Vec<_> = log
+        .iter()
+        .filter(|l| l["event"] == "guidance_dropped")
+        .collect();
+    assert_eq!(drops.len(), 1, "{log:?}");
+    assert_eq!(drops[0]["tool"], "claude");
+    assert_eq!(drops[0]["reason"], "no_prompt_on_stdin", "{}", drops[0]);
+    assert_eq!(
+        drops[0]["launch_form"], "claude -p, prompt expected on stdin",
+        "{}",
+        drops[0]
+    );
+    assert!(
+        held.f.record("err.s.2").contains("no_prompt_on_stdin"),
+        "{}",
+        held.f.record("err.s.2")
+    );
+
+    // The reader says the same.
+    let shown = guidance_show_json(&held.f);
+    assert_eq!(shown["entries"][0]["read"], false, "{shown}");
+    let reported = shown["drops"].as_array().expect("drops is an array");
+    assert_eq!(reported.len(), 1, "{shown}");
+    assert_eq!(reported[0]["reason"], "no_prompt_on_stdin", "{shown}");
+}
+
+#[test]
+fn d_an_empty_pipe_on_stdin_gets_no_block_and_records_the_drop() {
+    a_pipe_with_no_text_gets_no_block("empty", "");
+}
+
+#[test]
+fn d_a_blank_pipe_on_stdin_gets_no_block_and_records_the_drop() {
+    a_pipe_with_no_text_gets_no_block("blank", "\n  \t\n");
 }

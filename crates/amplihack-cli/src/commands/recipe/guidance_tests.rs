@@ -329,3 +329,141 @@ fn a_readable_log_in_another_copy_proves_the_entry_read_despite_an_unreadable_on
     assert!(v["folders"][0].get("log_error").is_some(), "{v}");
     assert!(v["folders"][1].get("log_error").is_none(), "{v}");
 }
+
+/// A run folder `runs/<name>` with a guidance folder and a `run.json`
+/// holding `report`.
+fn run_folder(root: &Path, name: &str, report: &str) -> PathBuf {
+    let run_dir = root.join("runs").join(name);
+    let guidance = run_dir.join(GUIDANCE_DIR);
+    fs::create_dir_all(&guidance).unwrap();
+    let path = run_dir.join("run.json");
+    fs::write(&path, report).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    guidance
+}
+
+const ENDED: &str =
+    r#"{"schema_version":1,"run_id":"r1","ended_at":"2026-11-24T18:59:41Z","outcome":"success"}"#;
+const RUNNING: &str = r#"{"schema_version":1,"run_id":"r2","outcome":""}"#;
+
+/// PR #3190 review: an entry that no step read before its run ended says
+/// so, in plain `show` and in JSON. Nothing is inferred: only the end the
+/// run's `run.json` records is reported.
+#[test]
+fn an_unread_entry_of_a_run_that_recorded_its_end_says_the_run_ended() {
+    let (_t, root) = private_root();
+    let run = run_folder(&root, "r1", ENDED);
+    let list = vec![Folder {
+        path: run.clone(),
+        check: DirCheck::Trusted,
+    }];
+    let entries = vec![entry(FIRST, &run, "alice", "hold")];
+    assert_eq!(
+        read_and_drop_lines(&list, &entries),
+        [format!(
+            "entry {FIRST}: not yet read; the run ended at 2026-11-24T18:59:41Z (success)"
+        )]
+    );
+    let v = serde_json::to_value(show_json(&list, &entries, "")).unwrap();
+    assert_eq!(v["entries"][0]["read"], false, "{v}");
+    assert_eq!(
+        v["entries"][0]["run_ended"],
+        serde_json::json!({"at": "2026-11-24T18:59:41Z", "outcome": "success"}),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_run_with_no_recorded_end_or_a_read_entry_adds_nothing() {
+    let (_t, root) = private_root();
+    // No end recorded: the run may still start a step.
+    let running = run_folder(&root, "r2", RUNNING);
+    let list = vec![Folder {
+        path: running.clone(),
+        check: DirCheck::Trusted,
+    }];
+    let entries = vec![entry(FIRST, &running, "alice", "hold")];
+    assert_eq!(
+        read_and_drop_lines(&list, &entries),
+        [format!("entry {FIRST}: not yet read")]
+    );
+    let v = serde_json::to_value(show_json(&list, &entries, "")).unwrap();
+    assert!(v["entries"][0].get("run_ended").is_none(), "{v}");
+
+    // Read before the run ended: `read`, with no suffix.
+    let ended = run_folder(&root, "r1", ENDED);
+    let log = ended
+        .parent()
+        .unwrap()
+        .join(crate::run_guidance::GUIDANCE_LOG);
+    fs::write(
+        &log,
+        format!("{{\"event\":\"guidance_injected\",\"entry_names\":[\"{FIRST}\"]}}\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&log, fs::Permissions::from_mode(0o600)).unwrap();
+    let list = vec![Folder {
+        path: ended.clone(),
+        check: DirCheck::Trusted,
+    }];
+    let entries = vec![entry(FIRST, &ended, "alice", "hold")];
+    assert_eq!(
+        read_and_drop_lines(&list, &entries),
+        [format!("entry {FIRST}: read")]
+    );
+}
+
+/// A copy in a run that has not recorded an end means a step of that run
+/// may still read it, so the entry is not said to be stranded.
+#[test]
+fn a_copy_in_a_run_with_no_recorded_end_keeps_the_plain_status() {
+    let (_t, root) = private_root();
+    let ended = run_folder(&root, "r1", ENDED);
+    let running = run_folder(&root, "r2", RUNNING);
+    let list = vec![
+        Folder {
+            path: ended.clone(),
+            check: DirCheck::Trusted,
+        },
+        Folder {
+            path: running.clone(),
+            check: DirCheck::Trusted,
+        },
+    ];
+    let mut e = entry(FIRST, &ended, "alice", "hold");
+    e.also_in.push((running.clone(), FIRST.to_string()));
+    assert_eq!(
+        read_and_drop_lines(&list, std::slice::from_ref(&e)),
+        [format!("entry {FIRST}: not yet read")]
+    );
+    let v = serde_json::to_value(show_json(&list, &[e], "")).unwrap();
+    assert!(v["entries"][0].get("run_ended").is_none(), "{v}");
+}
+
+/// A pull request's folder is read by a later run, so it has no run end.
+#[test]
+fn a_pull_request_folder_has_no_run_end() {
+    let (_t, root) = private_root();
+    let pr = root
+        .join(AUTO_DRIVE_DIR)
+        .join("https___github.com_o_r_1")
+        .join(GUIDANCE_DIR);
+    fs::create_dir_all(&pr).unwrap();
+    fs::write(pr.parent().unwrap().join("run.json"), ENDED).unwrap();
+    assert!(super::super::live_runs::run_end(&pr).is_none());
+}
+
+/// The recorded values are a claim and are printed escaped and bounded.
+#[test]
+fn a_recorded_end_is_escaped_and_bounded() {
+    let (_t, root) = private_root();
+    let long = "x".repeat(500);
+    let report = format!(
+        r#"{{"schema_version":1,"run_id":"r3","ended_at":"2026\u001b]0;t\u0007","outcome":"{long}"}}"#
+    );
+    let run = run_folder(&root, "r3", &report);
+    let end = super::super::live_runs::run_end(&run).expect("an end is recorded");
+    assert!(!end.at.contains('\u{1b}'), "{:?}", end.at);
+    assert!(end.at.contains("\\u{001b}"), "{:?}", end.at);
+    assert_eq!(end.outcome.chars().count(), 64, "{:?}", end.outcome);
+}

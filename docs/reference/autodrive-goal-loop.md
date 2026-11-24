@@ -278,7 +278,9 @@ amplihack recipe guidance show --pr 3129 --pr-repo rysweet/amplihack-rs
 ```
 
 Entries that arrived after the previous reading are marked `NEW`, and each entry
-is marked `read` or `not yet read`. With `--json` the command prints each
+is marked `read` or `not yet read`. `read` means the block was delivered to an
+agent step, not that the agent acted on it; an unread entry whose run has
+recorded its end also shows that end. With `--json` the command prints each
 entry's metadata, including `read`, and a `drops` array for steps that could not
 take guidance, and no text. Guidance text is never put into JSON, context, argv
 or logs.

@@ -21,7 +21,7 @@
 //! arm a waiter and did not start the command. An error or usage failure
 //! prints one stderr line and nothing on stdout.
 
-use super::live_runs::runs_to_read_for_pr;
+use super::live_runs::{RunEnd, run_end, runs_to_read_for_pr};
 use crate::cli_subcommands::{GuidanceCommands, PrFolderArgs};
 use crate::command_error::exit_error;
 use crate::run_guidance::env::{DirCheck, check_guidance_dir};
@@ -261,8 +261,34 @@ struct EntryJson<'a> {
     /// Issue #3162: `true` when a `guidance_injected` record in a folder
     /// that holds the entry (or a copy of it) names it; `null` when none
     /// does and the log of at least one of those folders could not be read;
-    /// `false` otherwise.
+    /// `false` otherwise. `true` means the block was written in full to an
+    /// agent step's input, not that the agent acted on it.
     read: Option<bool>,
+    /// PR #3190 review: present when every run folder holding the entry is
+    /// that of a run whose `run.json` records its end. Absent when a run
+    /// folder holding it records none, or only a pull request's folder
+    /// holds it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_ended: Option<RunEndJson>,
+}
+
+/// The end a run recorded, as `run.json` gives it (sanitised).
+#[derive(Debug, Serialize)]
+struct RunEndJson {
+    at: String,
+    outcome: String,
+}
+
+/// The recorded end of the runs holding `entry`, when every run folder that
+/// holds it records one: the first such folder's. `None` when no run folder
+/// holds it or one of them records no end.
+fn entry_run_end(entry: &Entry) -> Option<RunEnd> {
+    let mut ends = std::iter::once(entry.dir.as_path())
+        .chain(entry.also_in.iter().map(|(d, _)| d.as_path()))
+        .filter(|dir| Source::of(dir) == Source::Run)
+        .map(run_end);
+    let first = ends.next()??;
+    ends.all(|end| end.is_some()).then_some(first)
 }
 
 /// One `guidance_dropped` record. Every value comes from a closed table or
@@ -360,6 +386,10 @@ fn show_json<'a>(list: &[Folder], entries: &'a [Entry], since: &'a str) -> ShowJ
             new: is_new(&e.name, since),
             bytes: e.text.len(),
             read: states.read(e),
+            run_ended: entry_run_end(e).map(|end| RunEndJson {
+                at: end.at,
+                outcome: end.outcome,
+            }),
         })
         .collect();
     let drops = drops_of(list, &mut states)
@@ -386,16 +416,24 @@ fn show_json<'a>(list: &[Folder], entries: &'a [Entry], since: &'a str) -> ShowJ
 }
 
 /// The lines plain `show` prints after the block (issue #3162): whether each
-/// entry has been read, then each drop since the last read, once.
+/// entry has been read, then each drop since the last read, once. An entry
+/// not yet read whose run has recorded its end says so (PR #3190 review):
+/// no later step of that run started to read it.
 fn read_and_drop_lines(list: &[Folder], entries: &[Entry]) -> Vec<String> {
     let mut states = LogStates::default();
     let mut lines: Vec<String> = entries
         .iter()
         .map(|e| {
             let state = match states.read(e) {
-                Some(true) => "read",
-                Some(false) => "not yet read",
-                None => "read state unknown (log unreadable)",
+                Some(true) => "read".to_string(),
+                Some(false) => match entry_run_end(e) {
+                    Some(end) => format!(
+                        "not yet read; the run ended at {} ({})",
+                        end.at, end.outcome
+                    ),
+                    None => "not yet read".to_string(),
+                },
+                None => "read state unknown (log unreadable)".to_string(),
             };
             format!("entry {}: {state}", e.name)
         })

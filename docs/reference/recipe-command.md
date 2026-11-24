@@ -490,7 +490,8 @@ request's state folder. The command refuses, naming the session, when a live
 run for the pull request cannot be reached.
 
 The output is the written path line (one for each folder), then
-`status: appended; not yet read`, then one `dropped by …` line for each step
+`status: appended; not yet read` (with the run's recorded end added when the
+target run has already ended), then one `dropped by …` line for each step
 that recorded it could not take guidance. See
 [amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide)
 for targets, storage, limits and exit codes.
@@ -512,9 +513,12 @@ writes.
 `show` prints every entry, oldest first, as the block an agent step receives,
 with each entry's file name, and marks entries whose names sort after `--since`
 as `NEW`. Each entry also shows `read` or `not yet read`, and drops recorded by
-steps that could not take guidance follow the entries. `--json` prints one line
-of metadata (schema 1) for each folder and entry, with `read` on each entry and
-a `drops` array, and never the text.
+steps that could not take guidance follow the entries. `read` means the block
+was delivered to an agent step, not that the agent acted on it. An unread entry
+whose run has recorded its end also shows that end. `--json` prints one line
+of metadata (schema 1) for each folder and entry, with `read` (and
+`run_ended`, when it applies) on each entry and a `drops` array, and never the
+text.
 
 `wait` arms a wake FIFO beside each folder, then blocks, with no polling loop
 or timer, until an entry after `--since` arrives or the command finishes. It

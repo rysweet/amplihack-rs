@@ -6,8 +6,8 @@
 //!
 //! - `guidance_injected`, whose `entry_names` lists the entries of this
 //!   folder that went into an agent step's prompt. A record without the
-//!   field (written by 1.2.215 and earlier) proves nothing about any
-//!   particular entry, so it marks none as read;
+//!   field (written by every launcher up to 1.2.219) proves nothing about
+//!   any particular entry, so it marks none as read;
 //! - `guidance_dropped`, written when a launch had guidance but no prompt it
 //!   could follow. Its fields come from closed tables ([`DropReason`] and the
 //!   launcher's launch-form labels), plus the run id and a sanitised agent
@@ -32,7 +32,10 @@ pub(crate) const MAX_LOG_BYTES: u64 = 4 * 1024 * 1024;
 /// that readers match on, and a fixed sentence for people.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DropReason {
-    /// The launch reads its prompt from stdin and stdin held nothing.
+    /// The launch reads its prompt from stdin and stdin gave no text: a
+    /// terminal, `/dev/null` or an empty file (known at launch), or a pipe
+    /// or file that gave nothing but white space before the step exited
+    /// (known by reading it).
     NoPromptOnStdin,
     /// The launch form has no prompt that guidance can follow.
     LaunchFormUnsupported,
@@ -54,7 +57,7 @@ impl DropReason {
     pub(crate) fn detail(self) -> &'static str {
         match self {
             Self::NoPromptOnStdin => {
-                "the step reads its prompt from standard input, and standard input held nothing"
+                "the step reads its prompt from standard input, and standard input gave no text"
             }
             Self::LaunchFormUnsupported => {
                 "this launch form has no prompt that operator guidance can follow"

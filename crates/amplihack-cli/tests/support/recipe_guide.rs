@@ -69,7 +69,10 @@ for arg in "$@"; do
   prev=$arg
 done
 if [ -n "$CODEX_CLOSE_STDIN" ]; then
-  # Stops reading at once: closes stdin and exits without reaching EOF.
+  # Reads the first line of its prompt, then stops reading: closes stdin
+  # and exits without reaching EOF.
+  IFS= read -r first || true
+  printf '%s\n' "$first" > "$RECORD_DIR/prompt.$step"
   exec 0<&-
   exit 0
 fi
@@ -353,10 +356,17 @@ impl GuideFixture {
 
     /// An isolated `amplihack` command with the fixture's environment.
     pub fn amplihack(&self, args: &[&str]) -> Command {
+        self.amplihack_at(&amplihack_bin(), args)
+    }
+
+    /// [`Self::amplihack`] with another `amplihack` binary, such as an older
+    /// release (PR #3190 review: a run started by an older release and read
+    /// by this one).
+    pub fn amplihack_at(&self, bin: &Path, args: &[&str]) -> Command {
         // `HOME`, `TMPDIR`, the profile root and the process table come from
         // the private environment, so the child's temp dir is the fixture
         // root whatever this process's own `TMPDIR` is (issue #2931).
-        let mut c = self.env.command(amplihack_bin());
+        let mut c = self.env.command(bin);
         c.args(args)
             .current_dir(&self.root)
             .env("PATH", self.path_var())
