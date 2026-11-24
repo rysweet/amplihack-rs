@@ -74,6 +74,8 @@ fn rotate_has_the_planned_files() {
         "wake_blocks.rs",
         // Issue #2909, item 3: what a cycle after an event reads.
         "event_read.rs",
+        // Issue #2095: the test-only lifetime pipe.
+        "lifetime.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }
