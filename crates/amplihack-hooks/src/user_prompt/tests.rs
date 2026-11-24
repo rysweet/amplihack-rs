@@ -607,3 +607,72 @@ fn prompt_is_noted_for_a_waiting_limit_resume_hook_only_when_resume_dir_exists()
     assert!(text.trim_end().parse::<i64>().unwrap() > 0, "{text:?}");
     assert!(!text.contains("prompt-session"));
 }
+
+/// Writes `content` as the project's preferences file and loads it through the
+/// per-prompt path. The project file takes precedence over `AMPLIHACK_ROOT`
+/// and `~/.amplihack`, so the host's own preferences cannot affect the result.
+fn load_preferences_fixture(content: &str) -> (Option<String>, bool) {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let base = crate::test_support::scratch_base::scratch_base();
+    let project = tempfile::tempdir_in(&base).unwrap();
+    let context_dir = project.path().join(".claude/context");
+    fs::create_dir_all(&context_dir).unwrap();
+    fs::write(context_dir.join("USER_PREFERENCES.md"), content).unwrap();
+    preferences::load_user_preferences_with_patterns(&ProjectDirs::new(project.path()))
+}
+
+#[test]
+fn shipped_preferences_file_has_no_learned_patterns() {
+    let shipped = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../amplifier-bundle/context/USER_PREFERENCES.md"),
+    )
+    .unwrap();
+
+    let (_, has_learned_patterns) = load_preferences_fixture(&shipped);
+
+    assert!(!has_learned_patterns);
+}
+
+#[test]
+fn ordinary_line_under_learned_patterns_sets_the_flag() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Verbosity | balanced |
+
+## Learned Patterns
+
+Prefer small pull requests.
+";
+
+    let (_, has_learned_patterns) = load_preferences_fixture(content);
+
+    assert!(has_learned_patterns);
+}
+
+#[test]
+fn comment_only_learned_patterns_before_next_section_leaves_the_flag_unset() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Verbosity | balanced |
+
+## Learned Patterns
+
+<!--
+Learned behaviours are added here.
+## Not a heading
+-->
+
+## Managing Preferences
+
+Use the customise command to change these.
+";
+
+    let (_, has_learned_patterns) = load_preferences_fixture(content);
+
+    assert!(!has_learned_patterns);
+}
