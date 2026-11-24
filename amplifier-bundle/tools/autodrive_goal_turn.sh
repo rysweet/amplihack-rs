@@ -6,7 +6,18 @@
 #   autodrive_goal_turn.sh end <handoff|ready|stop> <turn_dir>
 #                                                   end.md, screened, published -> result.json
 #   autodrive_goal_turn.sh wait-owner <turn_dir>    wait for the owner's answer -> result.json
+#   autodrive_goal_turn.sh outcomes <turn_dir>      the decision's required outcomes -> the
+#                                                   run's ledger, <state>/outcomes.json; a
+#                                                   rejected one is answered in a comment
 #   autodrive_goal_turn.sh record <turn_dir>        record.md, for people; nothing parses it
+#
+# Required outcomes (#3129 R2). Every outcome the task text or guidance
+# requires is named by the agent in the decision's `outcomes` list, each with
+# status met, unmet or rejected. The ledger keeps every name ever listed, with
+# its latest status, so a later turn cannot drop one silently; each reading
+# lists the ledger, and a goal's merge action checks it by name. An outcome
+# the agent rejects is answered in a PR comment with its reason, once per
+# reason.
 #
 # Every subcommand re-checks <turn_dir> (autodrive_goal_lib.sh) and exits 2
 # when it is not a private turn folder. The driver passes the rest through
@@ -25,11 +36,35 @@ umask 077
 SUB="${1:-}"; WORD=""
 case "$SUB" in
   end) WORD="${2:-}"; TD="${3:-}"; [ "$#" -eq 3 ] || { echo "usage: $0 end <handoff|ready|stop> <turn_dir>" >&2; exit 2; } ;;
-  reading|decision|wait-owner|record) TD="${2:-}"; [ "$#" -eq 2 ] || { echo "usage: $0 $SUB <turn_dir>" >&2; exit 2; } ;;
-  *) echo "usage: $0 reading|decision|end|wait-owner|record ... <turn_dir>" >&2; exit 2 ;;
+  reading|decision|wait-owner|outcomes|record) TD="${2:-}"; [ "$#" -eq 2 ] || { echo "usage: $0 $SUB <turn_dir>" >&2; exit 2; } ;;
+  *) echo "usage: $0 reading|decision|end|wait-owner|outcomes|record ... <turn_dir>" >&2; exit 2 ;;
 esac
 goal_check_turn_dir "$TD" || exit 2
-case "$SUB:$WORD" in end:handoff|end:ready|end:stop|reading:|decision:|wait-owner:|record:) ;; *) echo "ERROR: end takes handoff, ready or stop" >&2; exit 2 ;; esac
+case "$SUB:$WORD" in end:handoff|end:ready|end:stop|reading:|decision:|wait-owner:|outcomes:|record:) ;; *) echo "ERROR: end takes handoff, ready or stop" >&2; exit 2 ;; esac
+
+# The shape of a decision's `outcomes`: prints ok, or the problem.
+OUTCOMES_CHECK='(.outcomes // null) as $o |
+  if $o == null then "ok"
+  elif ($o | type) != "array" then "outcomes is not an array"
+  elif ($o | length) > 64 then "outcomes has more than 64 entries"
+  elif any($o[]; type != "object") then "every outcome is an object"
+  elif any($o[]; (.name | type) != "string" or (.name | length) == 0 or (.name | utf8bytelength) > 200 or (.name | test("[[:cntrl:]]")))
+    then "every outcome needs a name of 1 to 200 bytes on one line"
+  elif any($o[]; .status != "met" and .status != "unmet" and .status != "rejected") then "every outcome status is met, unmet or rejected"
+  elif any($o[]; ((.evidence // "") | type) != "string" or ((.reason // "") | type) != "string"
+    or ((.evidence // "") | utf8bytelength) > 2000 or ((.reason // "") | utf8bytelength) > 2000) then "an outcome evidence or reason is not a string of at most 2000 bytes"
+  elif any($o[]; .status == "rejected" and ((.reason // "") | gsub("\\s"; "") | length) == 0) then "a rejected outcome needs a reason"
+  elif ($o | map(.name) | unique | length) != ($o | length) then "outcome names are not unique"
+  else "ok" end'
+
+# The run's ledger of required outcomes. A missing ledger is an empty one; one
+# that cannot be read is an error, never "no outcomes".
+LEDGER="${AUTODRIVE_STATE_DIR:+${AUTODRIVE_STATE_DIR%/}/outcomes.json}"
+ledger_read() { # prints the ledger's outcomes array, or fails
+  [ -n "$LEDGER" ] || return 1
+  if [ ! -e "$LEDGER" ] && [ ! -L "$LEDGER" ]; then echo '[]'; return 0; fi
+  goal_json_file "$LEDGER" 524288 && jq -c '.outcomes | if type == "array" then . else error("no outcomes array") end' "$LEDGER" 2>/dev/null
+}
 
 result() { # result <outcome> <summary> [extra json object]
   local extra="${3:-}"
@@ -54,9 +89,13 @@ do_reading() {
     prev="$(jq -cn --argjson t "$((10#$pl))" \
       --argjson d "$(goal_json_file "$pd/decision.json" 131072 && cat "$pd/decision.json" || echo null)" \
       --argjson r "$(goal_json_file "$pd/result.json" 65536 && cat "$pd/result.json" || echo null)" \
-      '{turn:$t, action:($d.action // null), outcome:($r.outcome // null), summary:($r.summary // null)}')"
+      '{turn:$t, action:($d.action // null), outcome:($r.outcome // null), summary:($r.summary // null),
+        recovery:($r.recovery // null), failure:($r.failure // null)}')"
   fi
-  jq -n --slurpfile goal "$goal" --slurpfile gd "$gd" --argjson prev "$prev" \
+  # Through a file, never argv, where Linux caps one argument at 128 KiB.
+  local ledf="$TD/.ledger" led_err=""
+  ledger_read > "$ledf" || { echo '[]' > "$ledf"; led_err="the run's outcome ledger (outcomes.json in the state folder) could not be read, so the required outcomes named in earlier turns are unknown"; }
+  jq -n --slurpfile goal "$goal" --slurpfile gd "$gd" --argjson prev "$prev" --slurpfile led "$ledf" --arg led_err "$led_err" \
     --argjson turn "$((10#${TD##*/}))" --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg goal_file "${AUTODRIVE_GOAL_FILE:-}" --arg turns "${TD%/*}" --arg mark "${AUTODRIVE_GUIDANCE_MARK:-}" \
     --arg actions "${AUTODRIVE_GOAL_ACTIONS:-}" --arg merging "${AUTODRIVE_MERGE_ALLOWED:-false}" \
@@ -64,8 +103,13 @@ do_reading() {
       guidance:[($gd[0].entries // [])[] | {name, timestamp, caller, source, from_step, new, bytes}],
       guidance_mark:$mark, guidance_newest:(($gd[0].newest // "") | if . == "" then $mark else . end),
       guidance_error:($gd[0].error // null), previous:$prev, turns_dir:$turns,
+      outcomes:[$led[0][] | {name, status, evidence, reason, turn, answered}],
+      outcomes_error:(if $led_err == "" then null else $led_err end),
       actions:{goal:($actions | split(" ") | map(select(. != ""))), shared:["continue","wait-owner","handoff","ready","stop"]},
       merging_allowed:($merging == "true")}' | goal_atomic_write "$TD/reading.json"
+  local rc=$?
+  rm -f -- "$ledf"
+  return "$rc"
 }
 
 do_decision() {
@@ -81,11 +125,15 @@ do_decision() {
   elif ! jq -e '(.args // {}) | type == "object"' "$obj" >/dev/null 2>&1; then problem="args is not an object"
   elif [ "$(jq -c '.args // {}' "$obj" | wc -c | tr -d ' ')" -gt 65536 ]; then problem="args is over 64 KiB"
   elif [ "$(jq -r '.why // "" | tostring' "$obj" | wc -c | tr -d ' ')" -gt 16384 ]; then problem="why is over 16 KiB"
+  else problem="$(jq -r "$OUTCOMES_CHECK" "$obj" 2>/dev/null || echo "outcomes could not be read")"; [ "$problem" != ok ] || problem=""
   fi
   if [ -n "$problem" ]; then
     jq -cn --arg p "$problem" '{schema_version:1, valid:false, action:null, args:{}, why:null, problem:$p}'
   else
-    jq -c '{schema_version:1, valid:true, action, args:(.args // {}), why:(.why // "" | tostring), problem:null}' "$obj"
+    # `outcomes` is kept only when the agent gave it: a merge needs the list,
+    # and an absent list is not the same as an empty one.
+    jq -c '{schema_version:1, valid:true, action, args:(.args // {}), why:(.why // "" | tostring), problem:null}
+      + (if (.outcomes | type) == "array" then {outcomes:[.outcomes[] | {name, status, evidence:(.evidence // ""), reason:(.reason // "")}]} else {} end)' "$obj"
   fi | goal_atomic_write "$TD/decision.json"
   rm -f -- "$obj"
   return 0
@@ -112,7 +160,12 @@ compose_end() {
       [ -n "$text" ] || { echo "stop needs args.text, the continuation note"; return 1; }
       footer="Stopped at the request of ${owner}, by the auto-drive goal loop, turn ${label}. The text above is the continuation note." ;;
   esac
-  { printf '%s\n\n%s\n' "$text" "$footer"; } | goal_neutralise | goal_atomic_write "$TD/end.md" || { echo "end.md could not be written"; return 1; }
+  # The run's required outcomes, as the agent last judged each by name (R2).
+  local outs
+  outs="$(ledger_read 2>/dev/null | jq -r 'if length == 0 then empty else "Required outcomes for this run, as the agent last judged them:\n"
+    + (map("- \(.name): \(.status)" + (if .status == "rejected" then " (\(.reason))" elif .evidence != "" then " (\(.evidence))" else "" end)) | join("\n")) end' 2>/dev/null \
+    | goal_clean_text | head -c 6000)"
+  { printf '%s\n\n' "$text"; [ -z "$outs" ] || printf '%s\n\n' "$outs"; printf '%s\n' "$footer"; } | goal_neutralise | goal_atomic_write "$TD/end.md" || { echo "end.md could not be written"; return 1; }
   printf 'Owner: %s. %s' "$owner" "${decision:-$word}" | goal_clean_line 1000 > "$TD/.end-detail"
 }
 
@@ -159,6 +212,54 @@ do_wait_owner() {
   esac
 }
 
+# do_outcomes: this turn's `outcomes` into the ledger (every name kept, the
+# latest status wins), then one PR comment answering each rejected outcome
+# whose reason has not been answered yet. A comment that fails the secret
+# screen or cannot be posted leaves the outcome unanswered, and the merge
+# action refuses until a later turn answers it. Exit 0, 1 (the ledger could
+# not be read or written; it is left as it was), 2 usage, 75 and 79 passed up.
+do_outcomes() {
+  local d="$TD/decision.json" old="$TD/.ledger-old" new="$TD/.ledger-new" pend="$TD/.ledger-pending" body="$TD/answer.md" rc=0 prc=0 n
+  [ -n "$LEDGER" ] || { echo "ERROR: outcomes needs AUTODRIVE_STATE_DIR" >&2; return 2; }
+  goal_json_file "$d" 131072 && [ "$(jq -r '.valid' "$d")" = true ] || return 0
+  if ! ledger_read > "$old"; then
+    rm -f -- "$old"; echo "ERROR: the outcome ledger ${LEDGER} could not be read; it was left as it is" >&2; return 1
+  fi
+  if ! jq -c --slurpfile old "$old" --argjson t "$((10#${TD##*/}))" '
+      reduce (.outcomes // [])[] as $o ($old[0];
+        (map(.name) | index($o.name)) as $i
+        | {name:$o.name, status:$o.status, evidence:$o.evidence, reason:$o.reason, turn:$t} as $e
+        | if $i == null then . + [$e + {answered_reason:""}] else .[$i] |= (. + $e) end)
+      | map(. + {answered:(.status == "rejected" and .reason != "" and (.answered_reason // "") == .reason)}) | .[:256]' "$d" > "$new"; then
+    rm -f -- "$old" "$new"; echo "ERROR: the turn's outcomes could not be merged into the ledger; it was left as it is" >&2; return 1
+  fi
+  jq -c '[.[] | select(.status == "rejected" and (.answered | not))]' "$new" > "$pend"
+  n="$(jq 'length' "$pend")"
+  if [ "${n:-0}" -gt 0 ]; then
+    { printf 'The auto-drive goal loop will not carry out %s required outcome(s) named for this run. The agent judged each one at turn %s, and its reason is below.\n\n' "$n" "${TD##*/}"
+      jq -r '.[] | "- \(.name): \(.reason)"' "$pend"
+      printf '\nFrom the auto-drive goal loop, turn %s. Each outcome counts as answered, not met.\n' "${TD##*/}"
+    } | goal_clean_text | head -c 60000 | goal_neutralise > "$body"
+    if ! goal_secret_screen "$body"; then
+      echo "the answer to the rejected outcome(s) matched the secret screen (${GOAL_SECRET_CLASS}); nothing was posted, so they stay unanswered" >&2
+    elif [ -z "${AUTODRIVE_GOAL_TOOL:-}" ] || [ ! -f "$AUTODRIVE_GOAL_TOOL" ]; then
+      echo "no goal tool to post the answer with; the rejected outcome(s) stay unanswered" >&2
+    else
+      AUTODRIVE_GOAL_CONTRACT=1 bash "$AUTODRIVE_GOAL_TOOL" publish "$body" > "$TD/answer.log" 2>&1; prc=$?
+      if [ "$prc" -eq 0 ]; then
+        jq -c --slurpfile p "$pend" '($p[0] | map(.name)) as $done | map(if (.name as $x | $done | index($x)) != null then . + {answered:true, answered_reason:.reason} else . end)' "$new" > "$new.2" \
+          && mv -f -- "$new.2" "$new"
+      else
+        echo "the answer to the rejected outcome(s) could not be posted (exit ${prc}); they stay unanswered" >&2
+      fi
+    fi
+  fi
+  jq -c '{schema_version:1, outcomes:.}' "$new" | goal_atomic_write "$LEDGER" || { echo "ERROR: the outcome ledger could not be written" >&2; rc=1; }
+  rm -f -- "$old" "$new" "$new.2" "$pend"
+  case "$prc" in 75|79) return "$prc" ;; esac
+  return "$rc"
+}
+
 do_record() {
   local r="$TD/reading.json" d="$TD/decision.json" res="$TD/result.json" why seen
   seen="$(jq -r '[.guidance[]?] as $g | [$g[] | select(.new)] as $n
@@ -170,7 +271,9 @@ do_record() {
   {
     printf 'Turn %s · %s\n' "${TD##*/}" "$(jq -r '.time // "unknown time"' "$r" 2>/dev/null)"
     jq -r '.goal.summary // "no goal summary" | tostring' "$r" 2>/dev/null | goal_clean_line 600; printf '\n'
-    printf 'Guidance seen: %s\n\n' "${seen:-unreadable}"
+    printf 'Guidance seen: %s\n' "${seen:-unreadable}"
+    printf 'Required outcomes named this turn: %s\n\n' "$(jq -r 'if (.outcomes | type) != "array" then "none listed"
+      else "\(.outcomes | length) (\([.outcomes[] | select(.status == "met")] | length) met, \([.outcomes[] | select(.status == "unmet")] | length) unmet, \([.outcomes[] | select(.status == "rejected")] | length) rejected)" end' "$d" 2>/dev/null || echo 'none listed')"
     printf 'Action chosen: %s\n' "$(jq -r '.action // "none" | tostring' "$d" 2>/dev/null || echo none)"
     printf '%s\n\n' "${why:-The agent gave no paragraph. $(jq -r '.problem // empty' "$d" 2>/dev/null)}"
     printf 'Result: %s: %s\n' "$(jq -r '.outcome // "none"' "$res" 2>/dev/null || echo none)" \
@@ -183,5 +286,6 @@ case "$SUB" in
   decision) do_decision ;;
   end) publish_end "$WORD" ;;
   wait-owner) do_wait_owner ;;
+  outcomes) do_outcomes ;;
   record) do_record ;;
 esac

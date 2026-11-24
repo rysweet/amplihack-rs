@@ -23,7 +23,7 @@ fn merge_policy(head_expr: &str) -> String {
 if [ ! -e "$STUB_LOG/tried" ]; then
   : > "$STUB_LOG/tried"
   head={head_expr}
-  printf '{{"action":"merge","args":{{"head":"%s"}},"why":"Try the merge."}}\n' "$head"
+  printf '{{"action":"merge","args":{{"head":"%s"}},"outcomes":[],"why":"Try the merge."}}\n' "$head"
 else
   echo '{{"action":"handoff","args":{{"owner":"operator","decision":"what to do next","text":"The merge did not go through. The operator decides what happens next."}},"why":"Merge refused."}}'
 fi
@@ -266,4 +266,55 @@ fn a_long_crusty_history_keeps_every_round_and_names_the_unreadable_one() {
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!(failed[0]["record"], "crusty-round-999.json");
     assert_eq!(crusty[129]["minor_findings"].as_array().unwrap().len(), 10);
+}
+
+// #3141 (R3): a BEHIND merge state is evidence beside the repository's policy,
+// never the policy itself. Both tests fail on ccb445a9, where BEHIND set
+// strict_status_checks to true in each case.
+
+#[test]
+fn a_policy_read_as_not_strict_wins_over_a_behind_merge_state() {
+    let h = Harness::new();
+    h.advance_base(false);
+    h.merge_state("BEHIND");
+    h.classic_protection(&json!({"strict": false, "contexts": ["build"]}));
+    h.policy(HAND_OFF);
+    let out = h.drive("auto-drive-to-merge", &["no_merge=false"]);
+    let repo = &h.reading("001")["goal"]["repository"];
+    assert_eq!(
+        repo["strict_status_checks"],
+        json!(false),
+        "classic protection said strict is false, and that reading wins: {repo}\n{}",
+        describe(&out)
+    );
+    assert_eq!(repo["strict_source"], json!("protection"), "{repo}");
+    assert!(repo["strict_unreadable"].is_null(), "{repo}");
+    assert_eq!(
+        repo["merge_state_behind"],
+        json!(true),
+        "BEHIND is reported beside the policy: {repo}"
+    );
+}
+
+#[test]
+fn an_unreadable_policy_stays_unknown_with_its_reason_and_behind_is_evidence_only() {
+    let h = Harness::new();
+    h.advance_base(false);
+    h.merge_state("BEHIND");
+    h.policy_unreadable();
+    h.policy(HAND_OFF);
+    let out = h.drive("auto-drive-to-merge", &["no_merge=false"]);
+    let repo = &h.reading("001")["goal"]["repository"];
+    assert!(
+        repo["strict_status_checks"].is_null(),
+        "neither endpoint could be read, so the policy is unknown, not true: {repo}\n{}",
+        describe(&out)
+    );
+    assert!(repo["strict_source"].is_null(), "{repo}");
+    let why = repo["strict_unreadable"].as_str().unwrap_or_default();
+    assert!(
+        why.contains("rules endpoint") && why.contains("classic protection") && why.contains("403"),
+        "the reason names both endpoints and what they said: {repo}"
+    );
+    assert_eq!(repo["merge_state_behind"], json!(true), "{repo}");
 }

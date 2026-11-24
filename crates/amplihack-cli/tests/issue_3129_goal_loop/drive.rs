@@ -193,7 +193,7 @@ if [ ! -f notes.txt ]; then
   echo "written by the task's later step" > notes.txt
   echo '{"action":"continue","args":{},"why":"The PR is ready; the task has one more step, so I did it."}'
 elif [ "$guided" != "0" ] && [ "$prev" != "not-authorised" ]; then
-  printf '{"action":"merge","args":{"head":"%s"},"why":"The guidance asks for a merge."}\n' "$head"
+  printf '{"action":"merge","args":{"head":"%s"},"outcomes":[],"why":"The guidance asks for a merge."}\n' "$head"
 else
   echo '{"action":"ready","args":{"text":"The pull request is ready. Merging is off for this run, so the operator decides the merge."},"why":"Merging is off."}'
 fi
@@ -340,7 +340,7 @@ new=$(jq -r '[.guidance[]? | select(.new)] | length' "$TURN/reading.json")
 if [ ! -e "$STUB_LOG/t1" ]; then
   : > "$STUB_LOG/t1"
   read -r _ < "$STUB_FIFO"
-  printf '{"action":"merge","args":{"head":"%s"},"why":"All checks passed at this head."}\n' "$head"
+  printf '{"action":"merge","args":{"head":"%s"},"outcomes":[],"why":"All checks passed at this head."}\n' "$head"
 elif [ "$new" != "0" ]; then
   echo '{"action":"handoff","args":{"owner":"operator","decision":"whether to merge after the hold","text":"The operator asked the run to hold. The run stopped as asked. Nothing was merged."},"why":"New guidance asks me to hold."}'
 else

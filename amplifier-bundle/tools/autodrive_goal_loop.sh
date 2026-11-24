@@ -12,17 +12,26 @@
 #
 # The run ends when: the goal tool's `final` prints a word (merged, closed,
 # refused, or the goal's own), the turn carried out `handoff`, `ready` or
-# `stop`, or the owner stops it. Exit 79 and 75 pass up unchanged. A turn run
-# that fails after the runner's own handling (limit wait, limit-resume) ends
-# the run as `failed`: no agent ran, so none could judge.
+# `stop`, or the owner stops it. Exit 79 and 75 pass up unchanged.
+#
+# A turn run that fails after the runner's own handling (limit wait,
+# limit-resume) does not end the run (failed_turn, #3129 R1). The agent may
+# have edited, committed or pushed before a later step failed, so nothing is
+# reset: the worktree and the remote stay as the turn left them. The failure's
+# class and evidence go into the turn's result.json, which the next turn's
+# reading carries as `previous`, and a fresh agent judges it. What runs before
+# that next turn depends on the class. Two cases still end the run: the
+# operator's own `recipe.usage_limit_wait = false`, which asks for the limit
+# result at once, and `--once`, which asks for one turn.
 #
 #   autodrive_goal_loop.sh --goal-tool <name.sh> --goal-file <bundle-relative path>
 #     --state-dir <dir> --repo <dir> [--task-file <f>] [--notes-file <f>]
 #     [--invocation <invocation.json>] [--recovery-dir <dir>] [--once]
 #
-# Exit: 0 an end (loop-end.json written) or one --once turn; 1 an error or a
-# failed turn run; 2 usage, or a refused contract before turn 1 (no turn
-# runs); 75 and 79 passed up. Stdout: exactly one JSON line.
+# Exit: 0 an end (loop-end.json written) or one --once turn; 1 an error, a
+# failed --once turn, or a usage limit the operator asked to receive at once;
+# 2 usage, or a refused contract before turn 1 (no turn runs); 75 and 79
+# passed up. Stdout: exactly one JSON line.
 #
 # Goal contract v1, the reading, the records and the trust rules:
 # docs/reference/autodrive-goal-loop.md.
@@ -96,7 +105,8 @@ cp -- "$GOAL_TEXT" "$W/GOAL" || finish 1 "the goal text cannot be read"
 goal_call() { # the goal tool, with the contract and the driver's own state only
   ( cd "$REPO" && AUTODRIVE_GOAL_CONTRACT=1 AUTODRIVE_STATE_DIR="$STATE" AUTODRIVE_REPO="$REPO" AUTODRIVE_WORKTREE="$WORK" \
       AUTODRIVE_LOOP_HOME="$LOOP_HOME" AUTODRIVE_INVOCATION_FILE="$INVOCATION" \
-      AUTODRIVE_TASK_FILE="$W/TASK" AUTODRIVE_TURN_DIR="${TD:-}" exec bash "$GOAL_PATH" "$@" )
+      AUTODRIVE_TASK_FILE="$W/TASK" AUTODRIVE_TURN_DIR="${TD:-}" AUTODRIVE_GUIDANCE_UNKNOWN="${GUIDE_UNKNOWN:-false}" \
+      exec bash "$GOAL_PATH" "$@" )
 }
 turn_call() { # the shared turn tool, with what it needs from the driver
   AUTODRIVE_STATE_DIR="$STATE" AUTODRIVE_GOAL_TOOL="$GOAL_PATH" AUTODRIVE_GOAL_FILE="$GOAL_TEXT" \
@@ -181,7 +191,88 @@ guidance_show() { # guidance_show <since> <out>: metadata only (never text)
   "$AMPLIHACK_BIN" recipe guidance show --json "--since=$1" ${GUIDE_TARGET:+"$GUIDE_TARGET"} > "$2" 2>"$2.err"
 }
 
-GUIDE_TARGET=""; GUIDE_DIRS=""
+# failed_turn <rc>: a turn run that failed after the runner's own handling
+# (R1). It never resets anything: completed work in the worktree and on the
+# remote is kept. It writes result.json with the failure's evidence, which the
+# next turn's reading carries as `previous`, and then picks the recovery from
+# the class the runner recorded (its last failure_class marker):
+#   - the operator turned the runner's limit wait off (`usage_limit_wait
+#     skipped reason=disabled`): the run ends as usage_limit, as that setting
+#     asks; the same command resumes it.
+#   - the agent finished deciding (`decide` completed, or decision.json was
+#     saved) and a later step failed: the next turn starts at once. The saved
+#     decision's action does not run; the fresh agent decides again.
+#   - any other usage limit, unless the runner said it could not supervise the
+#     step: the next turn starts at once, and the runner's supervisor in its
+#     agent step moves to a login with room or waits for the reset. No timer.
+#   - transient_transport: the runner already spent its own retry budget on
+#     the call; the next turn starts at once.
+#   - anything else (environmental, work, agent_api, indeterminate, or a usage
+#     limit the runner could not supervise) stopped the agent before it could
+#     decide, and a fresh turn would likely meet it again at once. The driver
+#     waits for an event, the owner's word (`recipe guidance wait`, no timer),
+#     and then starts the next turn. Where no wake can be armed, the run hands
+#     the question to the operator, as wait-owner does.
+# Returns 0 when the next turn is to start; every other path ends the run.
+failed_turn() {
+  local rc="$1" summary marker completed judged=false limit=false recovery why wrc
+  classify_child "$TD/turn.log" >/dev/null
+  summary="$(child_failure_summary "$rc" "$TD/turn.log")"
+  marker="$(LC_ALL=C grep -a '^amplihack\.recipe\.failure_class ' "$TD/turn.log" 2>/dev/null | tail -n 1)"
+  completed="$(printf '%s' "${marker#amplihack.recipe.failure_class }" | jq -r '[.completed_steps // [] | .[] | strings] | join(" ")' 2>/dev/null)"
+  case " $completed " in *" decide "*) judged=true ;; esac
+  [ -f "$TD/decision.json" ] && [ ! -L "$TD/decision.json" ] && judged=true
+  usage_limit_failure "$rc" "$TD/turn.log" && limit=true
+  if [ "$limit" = true ] && log_body "$TD/turn.log" | grep -qE 'amplihack\.recipe\.usage_limit_wait skipped reason=disabled'; then
+    recovery=ended
+    why="the turn run met a usage limit and the operator turned the runner's limit wait off (recipe.usage_limit_wait = false), which asks for the limit result at once; the same command resumes the run"
+  elif [ "$judged" = true ]; then
+    recovery=next-turn
+    why="the turn's agent finished deciding and a later step of the turn run failed"
+  elif [ "$limit" = true ] && ! log_body "$TD/turn.log" | grep -qE 'amplihack\.recipe\.usage_limit_wait skipped reason=not_supervised'; then
+    recovery=next-turn
+    why="the turn run met a usage limit; the next turn's agent step moves to a login with room or waits for the reset"
+  elif [ "$CHILD_FAILURE_CLASS" = transient_transport ]; then
+    recovery=next-turn
+    why="a transport fault outlasted the runner's own retries"
+  else
+    recovery=owner-wait
+    why="the turn run failed before its agent could decide, so the run waits for the owner's word (new guidance) before the next turn"
+  fi
+  [ "$ONCE" = false ] || recovery=ended
+  jq -cn --arg s "the turn run failed after the runner's own recovery (${summary}): ${why}" --arg rc "$rc" \
+    --arg class "$CHILD_FAILURE_CLASS" --arg retryable "$CHILD_FAILURE_RETRYABLE" --arg completed "$completed" \
+    --argjson judged "$judged" --argjson limit "$limit" --arg rec "$recovery" --arg log "$TD/turn.log" \
+    '{outcome:"turn-failed", summary:$s, recovery:$rec,
+      failure:{exit:($rc | tonumber? // $rc), class:$class, retryable:$retryable, usage_limit:$limit, agent_finished:$judged,
+        completed_steps:($completed | split(" ") | map(select(. != ""))), log:$log}}' | goal_atomic_write "$TD/result.json"
+  turn_call record "$TD" || say "WARNING: the record of failed turn ${TURN} could not be written"
+  say "turn $(printf '%03d' "$TURN"): the turn run failed (${summary}); ${why}"
+  case "$recovery" in
+    next-turn) return 0 ;;
+    ended)
+      if [ "$limit" = true ]; then end_run usage_limit "$why"; else end_run failed "the turn run failed (${summary}) and this was a --once turn"; fi
+      finish 1 "$why" ;;
+  esac
+  # owner-wait: an event, never a timer. Guidance that arrived since this
+  # turn's reading wakes it at once.
+  "$AMPLIHACK_BIN" recipe guidance wait "--since=$NEWEST" ${GUIDE_TARGET:+"$GUIDE_TARGET"} >"$TD/owner-wait.json" 2>"$TD/owner-wait.err"; wrc=$?
+  passed_up "$wrc" "the owner wait after failed turn ${TURN}"
+  if [ "$wrc" -eq 0 ]; then say "new guidance arrived; the next turn reads it"; return 0; fi
+  # No wake could be armed (3), or the wait itself failed: the question goes to
+  # the operator, as wait-owner's fallback does. The text is mechanical.
+  { printf 'Turn %03d of the auto-drive goal loop failed before its agent could decide (%s).\n\n' "$TURN" "$summary"
+    printf 'The run would wait for the owner'"'"'s word before the next turn, but that wait could not run here (exit %s: %s). The turn log is %s.\n\n' \
+      "$wrc" "$(goal_clean_line 300 < "$TD/owner-wait.err")" "$TD/turn.log"
+    printf 'Hand-off from the auto-drive goal loop, turn %03d. Owner: the operator who started this run. Decision: whether to fix the cause and start the run again.\n' "$TURN"
+  } | goal_neutralise | goal_atomic_write "$TD/end.md"
+  if goal_secret_screen "$TD/end.md"; then goal_call publish "$TD/end.md" >"$TD/publish.log" 2>&1 || say "WARNING: the hand-off comment could not be published; the text is in end.md"
+  else rm -f -- "$TD/end.md"; fi
+  end_run handoff "Owner: the operator who started this run. Turn ${TURN} failed before its agent could decide (${summary}) and no wake for the owner's word could be armed (exit ${wrc})"
+  finish 0
+}
+
+GUIDE_TARGET=""; GUIDE_DIRS=""; GUIDE_UNKNOWN=false
 while :; do
   final_check
   # --- a new turn folder: numbers continue after the highest one -----------
@@ -229,21 +320,32 @@ while :; do
   fi
   if [ "$rc" -ne 0 ]; then
     tail -n 60 -- "$TD/turn.log" >&2
-    why="the turn run failed after the runner's own recovery ($(child_failure_summary "$rc" "$TD/turn.log")); no agent judged this turn"
-    jq -cn --arg s "$why" '{outcome:"turn-failed", summary:$s}' | goal_atomic_write "$TD/result.json"
-    turn_call record "$TD" || :
-    if usage_limit_failure "$rc" "$TD/turn.log"; then end_run usage_limit "$why"; else end_run failed "$why"; fi
-    finish 1 "$why"
+    # The guidance mark stays where it was: this turn's agent may not have
+    # read the guidance it was given, so the next reading shows it as new.
+    failed_turn "$rc"
+    continue
   fi
   ACTION=""
   if goal_json_file "$TD/decision.json" 131072 && [ "$(jq -r '.valid' "$TD/decision.json")" = true ]; then
     ACTION="$(jq -r '.action // empty | strings' "$TD/decision.json")"
     goal_is_word "$ACTION" || ACTION=""
   fi
+  # --- the required outcomes the agent named go into the run's ledger -------
+  # (R2) before any action reads it; a rejected one is answered in a comment.
+  turn_call outcomes "$TD" 2>"$TD/outcomes.err"; orc=$?
+  passed_up "$orc" "the outcome ledger"
+  [ "$orc" -eq 0 ] || say "WARNING: the outcome ledger was not updated (exit ${orc}: $(goal_clean_line 300 < "$TD/outcomes.err")); a merge reads it as it stands"
   # --- guidance that arrived during the turn skips the action ---------------
-  SKIP=false
-  if guidance_show "$NEWEST" "$W/after.json" && [ "$(jq '[.entries[]? | select(.new)] | length' "$W/after.json" 2>/dev/null)" != 0 ]; then
-    SKIP=true
+  # A recheck that cannot be read leaves guidance unknown (R2): the goal's
+  # actions are told so (AUTODRIVE_GUIDANCE_UNKNOWN), and a goal's merge
+  # refuses on it, so the next turn's agent judges before any merge.
+  SKIP=false; GUIDE_UNKNOWN=false
+  if guidance_show "$NEWEST" "$W/after.json"; then
+    [ "$(jq '[.entries[]? | select(.new)] | length' "$W/after.json" 2>/dev/null)" = 0 ] || SKIP=true
+  else
+    GUIDE_UNKNOWN=true
+    cp -- "$W/after.json.err" "$TD/guidance-after.err" 2>/dev/null
+    say "guidance could not be read again after the decision ($(goal_clean_line 200 < "$W/after.json.err")); guidance is unknown for this turn's action"
   fi
   if [ "$SKIP" = true ]; then
     jq -cn --arg a "${ACTION:-none}" '{outcome:"skipped-guidance", summary:("new guidance arrived after this turn'"'"'s reading, so the action " + $a + " did not run; the next turn decides again")}' \

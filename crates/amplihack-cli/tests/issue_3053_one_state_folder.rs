@@ -59,7 +59,7 @@ if [ "$prev" = "not-authorised" ]; then
   echo '{"action":"ready","args":{"text":"The pull request is ready. Merging is off for this run."},"why":"Merging is off."}'
 else
   head=$(jq -r '.goal.pr.head' "$TURN/reading.json")
-  printf '{"action":"merge","args":{"head":"%s"},"why":"Every check passed."}\n' "$head"
+  printf '{"action":"merge","args":{"head":"%s"},"outcomes":[],"why":"Every check passed."}\n' "$head"
 fi
 "#;
 

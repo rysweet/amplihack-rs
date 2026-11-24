@@ -98,16 +98,21 @@ which is why waiting is an action and not part of the agent step.
 | `checks` | Each check at the head with its status, counts, and whether `required` could be read |
 | `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at and the round's minor findings, which the agent files as follow-up issues before it merges; a round whose record or minor findings could not be read is listed with its `error` |
 | `base` | Merge base, how far behind the PR is, conflicting files from `git merge-tree --write-tree`, and the files the base changed since the merge base that the PR also touches |
-| `repository` | Allowed merge methods; whether strict status checks are required |
-| `guidance` | Name, time, caller, source, new flag and size of each entry |
-| `previous` | The last turn's number, action and mechanical result |
+| `repository` | Allowed merge methods; whether strict status checks are required (`strict_status_checks`, `strict_source`, `strict_unreadable`); `merge_state_behind` as evidence only |
+| `guidance` | Name, time, caller, source, new flag and size of each entry; `guidance_error` when guidance could not be read |
+| `outcomes` | Every required outcome an agent has named in this run, from the run's ledger, with its latest status, evidence, reason, the turn that last judged it and whether a rejection was answered; `outcomes_error` when the ledger could not be read |
+| `previous` | The last turn's number, action and mechanical result; after a failed turn run also its `recovery` and `failure` (class, whether it was retryable, whether the agent finished deciding, the completed steps and the turn log's path) |
 | `goal_file` | Path to the goal text |
 | `turns_dir` | Path to the turn records |
 
 Strict status checks come from the rules endpoint, then classic branch
-protection where it can be read. If neither can be read, the reading says so
-and gives the reason. `mergeStateStatus` of `BEHIND` counts as evidence that an
-up-to-date branch is required.
+protection where it can be read. A policy that was read wins, whether it is
+`true` or `false`. If neither can be read, `strict_status_checks` is `null` and
+`strict_unreadable` gives the reason. `merge_state_behind` reports whether
+GitHub's `mergeStateStatus` is `BEHIND`, beside the policy and as evidence only:
+it never sets the policy, never overrides one that was read, and never fills in
+one that could not be read (#3141). GitHub can report `BEHIND` under a policy
+that does not require an up-to-date branch.
 
 Fetching the base is allowed. Reading never changes the worktree. A read that
 fails records its error in its own section and never ends the turn.
@@ -120,7 +125,7 @@ The agent picks one. The word is used only to dispatch the mechanical step.
 |--------|-----------|
 | `review` | One Crusty round (`autodrive-crusty-round`). Its verdict is evidence in the next reading. Nothing requires the reviewed head to equal the current head. |
 | `wait` | Waits for an event: the checks at the head to complete (`gh pr checks <pr> --watch`, with `--required` when asked), or the owner's answer. |
-| `merge` | Merges with an allowed merge method and `--match-head-commit`. Authority comes only from the captured authorisation. |
+| `merge` | Merges with an allowed merge method and `--match-head-commit`. Authority comes only from the captured authorisation. Before it merges, guidance must have been read again after the decision, and every [required outcome](#required-outcomes) is checked by name. |
 | `continue` | Nothing mechanical; the next turn reads the live state again. The agent chooses it after it pushed, installed something or did a task step. |
 | `wait-owner` | Waits for the owner's answer: `amplihack recipe guidance wait` with no command. args: `owner`, `question`. |
 | `handoff` | Posts one PR comment naming the owner, the decision and the evidence. The run ends. args: `owner`, `decision`, `text`. |
@@ -128,8 +133,11 @@ The agent picks one. The word is used only to dispatch the mechanical step.
 | `stop` | The owner asked the run to stop. Posts the continuation note. The run ends as `stopped`. args: `owner`, `text`. |
 
 The agent ends its reply with one JSON object on its own line:
-`{"action": "<word>", "args": {...}, "why": "..."}`. The turn tool saves it as
-`decision.json`; `args` is at most 64 KiB and `why` at most 16 KiB. A reply
+`{"action": "<word>", "args": {...}, "outcomes": [...], "why": "..."}`. The turn tool saves it as
+`decision.json`; `args` is at most 64 KiB and `why` at most 16 KiB. `outcomes`
+is optional on every action except `merge`; its shape is under
+[Required outcomes](#required-outcomes), and a list of the wrong shape makes the
+decision invalid. A reply
 with no such object, or a word outside `^[a-z][a-z0-9-]{0,31}$`, runs no
 mechanical action.
 
@@ -193,6 +201,50 @@ authority comes only from `no_merge` and the captured invocation.
 Guidance that arrives between the turn's reading and the action makes the action
 skip, with outcome `skipped-guidance`. The next turn decides again.
 
+Guidance that cannot be read is unknown, never absent. A failed read at the
+start of a turn puts `guidance_error` in the reading, so the agent judges with
+that in view. A failed read after the decision tells the goal's action that
+guidance is unknown (`AUTODRIVE_GUIDANCE_UNKNOWN=true`). The auto-drive `merge`
+then refuses with `guidance-unknown`, and the next turn reads guidance again
+and decides. The other actions still run, so a run whose guidance cannot be
+read can still wait, review, hand off or stop.
+
+### Required outcomes
+
+An outcome that the task text or guidance requires is one of the run's
+conditions (#3129, the guidance case of 7115122327). The agent names each one
+in the decision's `outcomes` list:
+
+```json
+{"name": "<short name in the agent's own words>", "status": "met|unmet|rejected",
+ "evidence": "<what meets it>", "reason": "<why it is rejected>"}
+```
+
+The list has at most 64 entries with unique names of at most 200 bytes on one
+line. `evidence` and `reason` are at most 2000 bytes each, and a `rejected`
+entry needs a `reason`.
+
+- The ledger. After each turn's decision the driver runs
+  `autodrive_goal_turn.sh outcomes`, which merges the list into the run's
+  ledger, `<autodrive_state_dir>/outcomes.json`. Every name ever listed is
+  kept, with its latest status, up to 256 names. A later turn cannot drop one
+  silently. Each reading lists the ledger under `outcomes`.
+- The answer. A `rejected` outcome is answered in one PR comment that names it
+  and gives the agent's reason. It is posted once for each reason. A comment
+  that fails the secret screen or cannot be posted leaves the outcome
+  unanswered, and the next turn tries again.
+- The check by name. The auto-drive `merge` refuses with `outcomes-unmet`,
+  naming each outcome, unless the merge decision lists `outcomes` (an empty
+  list when none is required) and every name in the ledger is in it as `met`,
+  or as `rejected` with that same reason already answered. A ledger that
+  exists and cannot be read refuses the merge with `outcomes-unreadable`.
+- The end. A `ready`, `handoff` or `stop` comment lists every outcome in the
+  ledger with its status.
+
+The mechanical check makes sure that no named outcome is forgotten at the
+merge. Whether an outcome is met stays the agent's judgement, with its
+evidence on record.
+
 To print the guidance a run has received:
 
 ```
@@ -255,12 +307,33 @@ These never end the run. They go into the next turn's reading:
 - a `gh` or `git` error while reading;
 - a wait that returns an error.
 
-The agent process failing is different. If it cannot start or exits with a
-failure, the runner's existing handling runs first: the limit wait, limit-resume
-and step recovery. If the turn still fails, the run ends as `failed` and names
-the error. No agent ran, so none could judge, and a loop that spun on a crashing
-agent would fill the disk with turn folders. A restarted run loses nothing,
-because every turn reads live state.
+A turn run that fails does not end the run either (#3129 R1). The runner's own
+handling runs first: the usage-limit wait, limit-resume and step recovery. If
+the turn run still fails, the driver resets nothing. The agent may have edited,
+committed or pushed before a later step failed, and all of that is kept. The
+turn's `result.json` has outcome `turn-failed`, the `recovery` chosen and the
+`failure`: the runner's class from its last `failure_class` marker, whether
+it was retryable, whether the agent finished deciding, the completed steps and
+the turn log's path. The next turn's reading carries them as `previous`, so a
+fresh agent judges the failure. A decision the failed turn saved is not
+carried out. The guidance mark does not move, so guidance the failed turn was
+given shows as new again.
+
+What runs before the next turn depends on the failure:
+
+| Failure | Recovery |
+|---------|----------|
+| The agent finished deciding (`decide` completed, or `decision.json` was saved) and a later step failed | The next turn starts at once |
+| A usage limit | The next turn starts at once. The runner's supervisor in its agent step moves to a login with room, or waits for the reset or for a login with room ([usage-limit waits](./usage-limit-waits.md)). No timer. |
+| `transient_transport` | The next turn starts at once. The runner has already spent its own retry budget on the call. |
+| Anything else before the agent decided: `environmental`, `work`, `agent_api`, `indeterminate`, or a usage limit the runner could not supervise (`usage_limit_wait skipped reason=not_supervised`) | The run waits for the owner's word, `amplihack recipe guidance wait`, an event with no timer. Guidance that arrived during the turn wakes it at once. Then the next turn starts. If no wake can be armed, the question goes to the operator in a hand-off, as `wait-owner` does. |
+| A usage limit when the operator turned the runner's limit wait off (`recipe.usage_limit_wait = false`, logged `usage_limit_wait skipped reason=disabled`) | The run ends as `usage_limit`. That setting asks for the limit result at once, and the same command resumes the run. |
+| Any failure of a `--once` turn | The driver exits 1. The caller asked for one turn. |
+
+The wait in the fourth row is there because a fault that stopped the agent
+before it could decide would meet the next turn at once, and a loop that
+started turns with no agent able to judge would spin and fill the disk with
+turn folders.
 
 ## Turn records
 
@@ -306,8 +379,9 @@ bound state folder, with a matching run ID.
 | `closed` | The PR was closed |
 | `stopped` | The owner stopped the run |
 | `terminal_refusal` | A trust boundary refused |
-| `failed` | The agent process failed after the runner's recovery |
-| `usage_limit`, `orphaned` | Unchanged |
+| `failed` | A `--once` turn run failed after the runner's recovery |
+| `usage_limit` | A usage limit, with the operator's limit wait turned off |
+| `orphaned` | Unchanged |
 
 Only `completed` counts as success. A merge counts only when `loop-end.json`
 says `merged`, which only the driver writes, after its own reading of GitHub.
@@ -408,7 +482,9 @@ read by the driver:
 | `worktree` | The absolute folder the agent works in, when it is not the run's checkout |
 
 `act <word> <turn_dir>` reads the agent's `decision.json` and this turn's
-`goal.json` and `reading.json` from the turn folder. `result.json` has
+`goal.json` and `reading.json` from the turn folder, and
+`AUTODRIVE_GUIDANCE_UNKNOWN`, which is `true` when guidance could not be read
+again after the decision. `result.json` has
 `outcome` and `summary`. The shared words `continue`, `wait-owner`, `handoff`,
 `ready` and `stop` are reserved. The driver rejects a goal tool whose action
 words collide with them before turn 1, and exits 2.
@@ -433,9 +509,10 @@ autodrive_goal_loop.sh --goal-tool <name.sh> --goal-file <bundle-relative path>
 ```
 
 `--once` runs one turn and returns; the one-release recipe aliases use it.
-The driver's exit codes: 0 for an end (or one `--once` turn), 1 for an error or
-a turn run that failed, 2 for a usage error or a refused contract (no turn
-runs), 75 and 79 passed up unchanged. It prints exactly one JSON line on
+The driver's exit codes: 0 for an end (or one `--once` turn), 1 for an error, a
+failed `--once` turn, or a usage limit the operator asked to receive at once, 2
+for a usage error or a refused contract (no turn runs), 75 and 79 passed up
+unchanged. It prints exactly one JSON line on
 stdout.
 
 The auto-drive goal tools are `autodrive_pr_goal.sh` (actions `review wait merge`)
@@ -447,7 +524,7 @@ its actions:
 |--------|----------|
 | `review` | `reviewed`, `review-failed` |
 | `wait` | `checks-complete`, `checks-pending`, `guidance-arrived`, `wait-error` |
-| `merge` | `merged`, `not-authorised`, `authorization-unreadable`, `checks-not-green`, `refused`, `not-open`, `message-unavailable`, `invalid-head`, `head-mismatch` |
+| `merge` | `merged`, `not-authorised`, `authorization-unreadable`, `guidance-unknown`, `outcomes-unmet`, `outcomes-unreadable`, `checks-not-green`, `refused`, `not-open`, `message-unavailable`, `invalid-head`, `head-mismatch` |
 
 The shared outcomes are `continued`, `no-action`, `skipped-guidance`,
 `turn-failed`, `ended`, `invalid-args`, `refused-secret`, `guidance-arrived`

@@ -21,8 +21,12 @@
 #                    --write-tree), and the files the base changed since the
 #                    merge base that the PR also touches
 #   repository       allowed merge methods; strict status checks from the
-#                    rules endpoint, then classic protection, then
-#                    mergeStateStatus BEHIND as evidence
+#                    rules endpoint, then classic protection. A policy that
+#                    was read wins. When neither endpoint can be read the
+#                    policy stays unknown (null), with strict_unreadable
+#                    saying why. mergeStateStatus BEHIND is reported beside it
+#                    as merge_state_behind, evidence only: it never sets or
+#                    replaces the policy (#3141)
 #
 # Fetching the base and head refs is allowed (refspec fetches only); nothing
 # here changes the worktree. A read that fails records its error and never
@@ -203,9 +207,15 @@ else
       if [ "$STRICT" = null ] && [ "$RULES_READ" = true ]; then STRICT=false; SRC="rules (no strict status check rule)"; fi
     fi
   else WHY="the base name was refused"; fi
-  [ "$MSS" != BEHIND ] || { STRICT=true; SRC="${SRC:+$SRC, }mergeStateStatus BEHIND"; }
-  RJ="$(jq -cn --argjson m "$M" --argjson s "$STRICT" --arg src "$SRC" --arg why "$WHY" \
-    '{merge_methods:$m, strict_status_checks:$s, strict_source:(if $src == "" then null else $src end), strict_unreadable:(if $s == null then $why else null end)}')"
+  # #3141: BEHIND is evidence beside the policy, never the policy. GitHub can
+  # report BEHIND under a policy that does not require an up-to-date branch,
+  # so it neither overrides a policy that was read nor fills in one that was
+  # not. null: the pull request itself could not be read.
+  BEHIND_EV=null
+  [ "$PR_READ" != true ] || { if [ "$MSS" = BEHIND ]; then BEHIND_EV=true; else BEHIND_EV=false; fi; }
+  RJ="$(jq -cn --argjson m "$M" --argjson s "$STRICT" --arg src "$SRC" --arg why "$WHY" --argjson behind "$BEHIND_EV" \
+    '{merge_methods:$m, strict_status_checks:$s, strict_source:(if $src == "" then null else $src end), strict_unreadable:(if $s == null then $why else null end),
+      merge_state_behind:$behind}')"
 fi
 put repository "$RJ" "$RE"
 

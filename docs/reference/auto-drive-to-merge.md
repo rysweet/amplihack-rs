@@ -72,6 +72,13 @@ install a host input.
   instructions and the run carries on.
 - A decision that belongs to an owner, such as whether to accept a risk, ends
   in a hand-off naming that owner and the decision.
+- Each required outcome in the task text or guidance is named by the agent and
+  checked by name before a merge. One the agent rejects is answered in a PR
+  comment with its reason
+  ([required outcomes](./autodrive-goal-loop.md#required-outcomes)).
+- A turn run that fails does not end the run. Its work is kept and the next
+  turn's agent reads the failure
+  ([failures inside a turn](./autodrive-goal-loop.md#failures-inside-a-turn)).
 
 ## How a run ends
 
@@ -83,7 +90,7 @@ install a host input.
 | PR closed | `closed` |
 | Owner stopped the run | `stopped` |
 | A trust boundary refused | `terminal_refusal` |
-| The agent process failed after recovery | `failed` |
+| The operator's limit wait is off and a turn met a usage limit | `usage_limit` |
 
 With merging off, the run does not end at the readiness assessment. It carries
 on with the task's remaining steps, then posts a comment saying the PR is ready,

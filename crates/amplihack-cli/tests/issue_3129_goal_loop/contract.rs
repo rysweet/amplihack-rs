@@ -21,7 +21,10 @@ use std::process::Command;
 const GOAL_TEXT: &str = "Poke the thing until it is ready, then say so.\n";
 
 /// Contract v1: `actions`, `final`, `read <turn_dir>`, `act <word> <turn_dir>`,
-/// `publish <body_file>`. State is kept in `$S`, baked in at write time.
+/// `publish <body_file>`. State is kept in `$S`, baked in at write time. A
+/// `$S/target` file becomes the reading's `guidance_target`; each `act`
+/// appends the `AUTODRIVE_GUIDANCE_UNKNOWN` it was given to
+/// `$S/guidance-unknown`.
 fn tool_script(state: &std::path::Path, actions: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
@@ -31,8 +34,10 @@ case "${{1:-}}" in
   actions) echo '{actions}' ;;
   final) [ -e "$S/final" ] && cat "$S/final"; exit 0 ;;
   read) [ -e "$S/read75" ] && exit 75
-        jq -n '{{schema_version:1,summary:"stand-in goal"}}' > "$2/goal.json" ;;
+        t=""; [ -e "$S/target" ] && t="$(cat "$S/target")"
+        jq -n --arg t "$t" '{{schema_version:1,summary:"stand-in goal"}} + (if $t == "" then {{}} else {{guidance_target:$t}} end)' > "$2/goal.json" ;;
   act) echo "$2" >> "$S/acts"
+       echo "${{AUTODRIVE_GUIDANCE_UNKNOWN:-unset}}" >> "$S/guidance-unknown"
        jq -n '{{outcome:"done",summary:"poked"}}' > "$3/result.json" ;;
   publish) cp -- "$2" "$S/published.md" ;;
   *) exit 2 ;;
@@ -115,6 +120,39 @@ fn a_standin_goal_ends_through_ready_on_turn_two() {
             .unwrap()
             .contains("The stand-in goal is ready.")
     );
+    assert_eq!(
+        fs::read_to_string(s.state.join("guidance-unknown")).unwrap(),
+        "false\n",
+        "guidance was read again after the decision, so it is known"
+    );
+}
+
+// R2: guidance that cannot be read is unknown, never absent. The target
+// passes the driver's URL check and `recipe guidance show` refuses it, so the
+// read fails for real. Fails on ccb445a9, which told the action nothing.
+#[test]
+fn a_guidance_read_that_fails_leaves_guidance_unknown_and_the_goals_action_is_told_so() {
+    let s = standin("poke");
+    fs::write(
+        s.state.join("target"),
+        "https://example.invalid/not-a-pull-request",
+    )
+    .unwrap();
+    s.h.policy(POKE_THEN_READY);
+    let out = s.command().output().unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(
+        s.h.reading("001")["guidance_error"].is_string(),
+        "the reading says guidance could not be read: {}",
+        s.h.reading("001")
+    );
+    assert_eq!(
+        fs::read_to_string(s.state.join("guidance-unknown")).unwrap(),
+        "true\n",
+        "the action was told guidance is unknown\n{}",
+        describe(&out)
+    );
+    assert_eq!(s.h.loop_end()["end"], "ready");
 }
 
 #[test]

@@ -1094,7 +1094,7 @@ fn merge_record(fx: &Fx) -> Value {
 /// `act merge` in a new turn folder, where the agent named `named` as the
 /// head (`None`: no `args.head`) and the turn read `read` as the PR's head
 /// (`None`: no `pr.head`), with extra `RECIPE_VAR_*` values from the run's
-/// context.
+/// context, or `AUTODRIVE_*` values from the driver, given by their names.
 fn merge_action(
     fx: &Fx,
     named: Option<&str>,
@@ -1111,7 +1111,7 @@ fn merge_action(
     let args = named.map_or_else(|| json!({}), |h| json!({ "head": h }));
     private_file(
         &dir.join("decision.json"),
-        &json!({"action": "merge", "args": args}).to_string(),
+        &json!({"action": "merge", "args": args, "outcomes": []}).to_string(),
     );
     let pr = read.map_or_else(|| json!({}), |h| json!({ "head": h }));
     private_file(
@@ -1139,7 +1139,12 @@ fn merge_action(
         .current_dir(&fx.repo)
         .stdin(Stdio::null());
     for (k, v) in vars {
-        c.env(format!("RECIPE_VAR_{k}"), v);
+        // The driver's own `AUTODRIVE_*` values pass by their names.
+        if k.starts_with("AUTODRIVE_") {
+            c.env(k, v);
+        } else {
+            c.env(format!("RECIPE_VAR_{k}"), v);
+        }
     }
     let out = c.output().expect("run the merge action");
     MergeTurn { out, dir }
@@ -1178,6 +1183,24 @@ fn merge_action_merges_on_captured_authorisation_read_head_and_green_checks() {
         "{auth:?}"
     );
     assert!(auth.contains(&fx.state.display().to_string()), "{auth:?}");
+}
+
+// #3129 R2: guidance the driver could not read again after the decision is
+// unknown, and the merge action refuses on it. Fails on ccb445a9, which merged.
+#[test]
+fn merge_refused_when_guidance_could_not_be_read_after_the_decision() {
+    let Some((fx, head)) = merge_action_fixture() else {
+        return;
+    };
+    let turn = merge_at(&fx, &head, &[("AUTODRIVE_GUIDANCE_UNKNOWN", "true")]);
+    assert_eq!(turn.out.status.code(), Some(0), "{}", show(&turn.out));
+    assert_eq!(
+        turn.outcome(),
+        json!("guidance-unknown"),
+        "{}",
+        turn.result()
+    );
+    assert_no_merge_attempt(&fx);
 }
 
 #[test]

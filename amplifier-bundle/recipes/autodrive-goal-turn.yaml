@@ -77,10 +77,12 @@ steps:
       - stop: the owner asked the run to stop. Commit and push your work first. args: owner (who asked), text (the continuation note).
       The owner is the one the task text or guidance names; if neither names one, it is the operator who started the run.
 
-      Write `why`, args.text and args.decision in plain words in the journalistic style: short sentences, literal words, no bold labels and no em dashes. Say what you read, what you chose and why. Never quote guidance, the task text, tokens or other secrets in them; the text is published as a comment and kept in the turn record.
+      Required outcomes. Every outcome the task text or guidance requires is one of the run's conditions. List each in `outcomes`, by a short name in your own words, with status met, unmet or rejected, the evidence that meets it, and for a rejected one the reason. The reading's `outcomes` lists every name an earlier turn gave: keep each one, with its latest status. A goal's merge action checks the list by name and refuses while any is unmet. A rejected outcome is answered in a PR comment with your reason, so never drop one silently.
 
-      End your reply with exactly one JSON object on its own line, with nothing after it. Keep args under 64 KiB and why under 16 KiB:
-      {"action": "<word>", "args": {}, "why": "<what you read, what you chose and why>"}
+      Write `why`, args.text, args.decision and each outcome's name, evidence and reason in plain words in the journalistic style: short sentences, literal words, no bold labels and no em dashes. Say what you read, what you chose and why. Never quote guidance, the task text, tokens or other secrets in them; the text is published as a comment and kept in the turn record.
+
+      End your reply with exactly one JSON object on its own line, with nothing after it. Keep args under 64 KiB, why under 16 KiB, at most 64 outcomes, each name under 200 bytes and each evidence or reason under 2000 bytes:
+      {"action": "<word>", "args": {}, "outcomes": [{"name": "<short name>", "status": "met|unmet|rejected", "evidence": "<what meets it>", "reason": "<why rejected>"}], "why": "<what you read, what you chose and why>"}
   - id: "save-decision"
     type: "bash"
     command: |

@@ -26,7 +26,7 @@ prev=$(jq -r '.previous.outcome // ""' "$TURN/reading.json")
 if [ -n "$prev" ] && [ "$prev" != "null" ]; then
   echo '{"action":"handoff","args":{"owner":"operator","decision":"which merge method to use","text":"The merge was refused. The operator decides which merge method to use."},"why":"The merge was refused."}'
 else
-  printf '{"action":"merge","args":{"head":"%s"},"why":"Every check passed at this head."}\n' "$head"
+  printf '{"action":"merge","args":{"head":"%s"},"outcomes":[],"why":"Every check passed at this head."}\n' "$head"
 fi
 "#;
 

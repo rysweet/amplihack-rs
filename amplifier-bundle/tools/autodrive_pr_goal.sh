@@ -13,7 +13,11 @@
 #                              guidance ends the wait too; no timer or poll
 #   act merge <turn_dir>       autodrive_merge.sh under the captured
 #                              authorisation, with --match-head-commit at the
-#                              head this turn read; writes merge-result.json
+#                              head this turn read; writes merge-result.json.
+#                              Before it: guidance must have been read again
+#                              after the decision (else guidance-unknown), and
+#                              every required outcome is checked by name
+#                              against the run's ledger (else outcomes-unmet)
 #   publish <body_file>        gh pr comment <pr> --body-file
 #   review                     one Crusty round outside a turn (the
 #                              autodrive-crusty-loop alias)
@@ -127,6 +131,33 @@ do_act_wait() {
   esac
 }
 
+# outcome_problems: one line per required outcome that keeps a merge from
+# going ahead (R2). The merge decision must list `outcomes` (an empty list
+# when the task text and guidance require none), and every name in the run's
+# ledger (autodrive_goal_turn.sh outcomes) must be in it, by name, as met, or
+# as rejected with that same reason already answered in a PR comment. Fails
+# only when the ledger exists and cannot be read.
+outcome_problems() {
+  local led="$STATE/outcomes.json" ledf
+  if ! jq -e '(.outcomes | type) == "array"' "$TD/decision.json" >/dev/null 2>&1; then
+    echo "the merge decision lists no outcomes; name each required outcome of the task text and guidance with met, unmet or rejected, or give an empty list when there are none"
+    return 0
+  fi
+  ledf="$led"
+  if [ ! -e "$led" ] && [ ! -L "$led" ]; then ledf="$(mktemp "$TD/.no-ledger.XXXXXX")" || return 1; echo '{"outcomes":[]}' > "$ledf"
+  elif ! goal_json_file "$led" 524288; then return 1; fi
+  jq -r --slurpfile led "$ledf" '($led[0].outcomes // []) as $L | .outcomes as $D | ($L | map(.name)) as $names
+    | ($L[] | . as $e | ([$D[] | select(.name == $e.name)] | .[0]) as $d
+        | if $d == null then "\($e.name): named in turn \($e.turn) and not checked by name in this merge decision"
+          elif $d.status == "unmet" then "\($e.name): unmet"
+          elif $d.status == "rejected" and (($e.answered != true) or ($e.answered_reason != $d.reason)) then "\($e.name): rejected, and its reason is not yet answered in a PR comment"
+          else empty end),
+      ($D[] | select(.name as $n | ($names | index($n)) == null) | "\(.name): \(.status), but not in the run'"'"'s outcome ledger")' "$TD/decision.json"
+  local rc=$?
+  [ "$ledf" = "$led" ] || rm -f -- "$ledf"
+  return "$rc"
+}
+
 do_act_merge() {
   local head want auth allows sel line rc run_id res
   need_pr
@@ -155,6 +186,22 @@ do_act_merge() {
   if [ "$allows" != true ] || [ "$sel" != true ]; then
     merge_record "$(jq -cn --argjson pr "$PR" --arg h "$head" '{result:"not-authorised", pr:$pr, expected_head:$h, reason:"the captured invocation does not allow this merge"}')"
     result not-authorised "the captured invocation does not allow a merge of this pull request (allows_merge ${allows}, pr_selected ${sel}); merging is off for this run, so nothing was merged"
+    return 0
+  fi
+  # R2: guidance and the required outcomes, before any merge. Guidance that
+  # could not be read again after the decision is unknown, not absent.
+  if [ "${AUTODRIVE_GUIDANCE_UNKNOWN:-false}" != false ]; then
+    result guidance-unknown "guidance could not be read again after this turn's decision, so it is unknown whether new guidance arrived; nothing was merged, and the next turn reads guidance again and decides"
+    return 0
+  fi
+  local problems
+  if ! problems="$(outcome_problems)"; then
+    result outcomes-unreadable "the run's outcome ledger (outcomes.json in the state folder) could not be read, so the required outcomes named in earlier turns are unknown; nothing was merged"
+    return 0
+  fi
+  if [ -n "$problems" ]; then
+    result outcomes-unmet "$(printf 'nothing was merged, because each required outcome must be met, or rejected and answered in a PR comment, before a merge: %s' \
+      "$(printf '%s\n' "$problems" | paste -sd ';' - | sed 's/;/; /g')" | goal_clean_line 2000)"
     return 0
   fi
   # The launch bundle's tools are regular files only: a symlinked one is refused.

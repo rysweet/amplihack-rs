@@ -21,7 +21,9 @@
 //! appended to `calls.log`. `pr merge` refuses a `--match-head-commit` that is not
 //! the remote's head, and a method the repository does not allow (by default
 //! merge and squash are allowed and rebase is not; `allow_methods` changes
-//! that). `pr checks --watch` blocks reading
+//! that). `mss` overrides the merge state GitHub reports, `protection.json` is
+//! what classic branch protection's required status checks return, and
+//! `policy403` makes both policy endpoints refuse with a 403. `pr checks --watch` blocks reading
 //! `$GH_STATE/release.fifo`; a test releases it (`fifo_release`), and if the
 //! run exits early the harness's watcher opens the FIFO itself, so nothing
 //! sleeps and nothing times out.
@@ -73,6 +75,7 @@ behind() { [ "$(gitO rev-list --count "refs/heads/$BR..refs/heads/$BASE")" != 0 
 pending() { grep -q $'\tpending' "$G/checks" 2>/dev/null; }
 failing() { grep -q $'\tfail' "$G/checks" 2>/dev/null; }
 mss() {
+  if [ -e "$G/mss" ]; then cat "$G/mss"; return; fi
   if [ "$(mergeable)" = CONFLICTING ]; then echo DIRTY
   elif pending || failing; then echo BLOCKED
   elif [ -e "$G/strict" ] && behind; then echo BEHIND
@@ -121,10 +124,13 @@ case "${1:-} ${2:-}" in
   "auth status") exit 0 ;;
   api*)
     case "$*" in
-      *rules/branches*) if [ -e "$G/strict" ]; then
+      *rules/branches*) if [ -e "$G/policy403" ]; then echo "HTTP 403: Resource not accessible by integration" >&2; exit 1
+        elif [ -e "$G/strict" ]; then
           echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]'
         else echo '[]'; fi ;;
-      *protection*) echo "HTTP 404: Branch not protected" >&2; exit 1 ;;
+      *protection*) if [ -e "$G/policy403" ]; then echo "HTTP 403: Resource not accessible by integration" >&2; exit 1
+        elif [ -e "$G/protection.json" ]; then filter "$@" < "$G/protection.json"
+        else echo "HTTP 404: Branch not protected" >&2; exit 1; fi ;;
       *repos/*) settings | filter "$@" ;;
       *) echo "stand-in gh: unexpected api call: $*" >&2; exit 1 ;;
     esac ;;
@@ -377,6 +383,21 @@ impl Harness {
         fs::write(self.gh.join("strict"), "").unwrap();
     }
 
+    /// Makes the stand-in report this `mergeStateStatus` whatever the branches hold.
+    pub fn merge_state(&self, state: &str) {
+        fs::write(self.gh.join("mss"), state).unwrap();
+    }
+
+    /// What classic branch protection's required status checks return.
+    pub fn classic_protection(&self, v: &Value) {
+        fs::write(self.gh.join("protection.json"), v.to_string()).unwrap();
+    }
+
+    /// Both policy endpoints (rules and classic protection) refuse with a 403.
+    pub fn policy_unreadable(&self) {
+        fs::write(self.gh.join("policy403"), "").unwrap();
+    }
+
     /// Advances the base on the remote by one commit (so the PR is behind).
     /// With `conflicting`, the commit edits the line the PR changed.
     pub fn advance_base(&self, conflicting: bool) {
@@ -603,6 +624,6 @@ pending=$(jq -r '.goal.checks.counts.pending // 0' "$TURN/reading.json")
 if [ "$pending" != "0" ]; then
   echo '{"action":"wait","args":{"required":true},"why":"A required check is still running at this head, so I wait for it."}'
 else
-  printf '{"action":"merge","args":{"head":"%s"},"why":"Every required check passed at this head and the owner'"'"'s conditions hold."}\n' "$head"
+  printf '{"action":"merge","args":{"head":"%s"},"outcomes":[],"why":"Every required check passed at this head and the owner'"'"'s conditions hold."}\n' "$head"
 fi
 "#;
