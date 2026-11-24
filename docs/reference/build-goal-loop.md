@@ -1,6 +1,6 @@
 ---
 title: Build Goal Loop
-description: How default-workflow builds a change and opens its pull request as one goal-driven agent loop. Inputs, outputs, the reading, actions, pull request text, claims, host inputs, run endings, behaviour changes and the 1.2.213 callers.
+description: How default-workflow builds a change and opens its pull request as one goal-driven agent loop. Inputs, outputs, the reading, actions, pull request text, claims, host inputs, run endings, behaviour changes and the release evidence: start kinds, runs in flight and rollback.
 last_updated: 2026-11-24
 review_schedule: quarterly
 owner: workflow-team
@@ -40,7 +40,7 @@ This page is the specification for the build side of issue #3129. It closes
 - [Behaviour changes](#behaviour-changes)
 - [Security notes](#security-notes)
 - [Notes for the shared loop](#notes-for-the-shared-loop)
-- [Callers in 1.2.213](#callers-in-12213)
+- [Release evidence](#release-evidence)
 - [Tests](#tests)
 
 ## How a build run goes
@@ -572,7 +572,8 @@ See [Quick-Change Recipe](./quick-change-recipe.md) for the full recipe.
 
 ## Changes to tools used by older recipes
 
-These changes also protect 1.2.213 runs in flight.
+These changes also protect runs in flight on earlier releases; see
+[Runs in flight](#runs-in-flight) for each caller.
 
 | Tool | Change |
 | --- | --- |
@@ -690,44 +691,147 @@ read in PR 1's code:
 - `failed_turn` starts the next turn after any failed turn run, so a failure
   after the work is done is evidence for the next turn (condition 5).
 
-## Callers in 1.2.213
+## Release evidence
 
-Runs started on 1.2.213 source `amplifier-bundle/tools` from the live bundle at
-step time. Every argument, function and output line those runs call still
-exists after this release. Two exit codes change, and both
-turn a run-ending result into exit 0: the claim check exits 0 for a claim, and
-`workflow_pr_ready.sh` exits 0 with a `WARNING` when the run's pull request is
-known but fails scope or identity validation. No 1.2.213 step reads the result
-either one used to give except to fail the run.
+This section records what a release of this change needs on file before it
+ships: each kind of start run through the real binary and recipes, the tools
+and recipes that runs already in flight still call, and the way back to the
+previous release. The pull request's "Release evidence" comment gives the CI
+result of each start kind at the head being merged.
 
-The table was built from `git diff --name-only origin/main...HEAD --
-amplifier-bundle/tools` and checked with `git grep` at the `v1.2.213` tag for
-each tool. The `autodrive_build_*` tools, `quick_change_create_pr.sh`,
+### Start kinds
+
+Each start kind runs in CI's `Install Smoke Test` job, against the binary that
+job installs from the checkout and the pinned recipe runner. `gh`, `claude` and,
+in the #2806 scenario, `codex` are stand-ins on a private `PATH`, and each
+origin is a local bare repository. A missing binary, runner or host tool fails
+the step; nothing is skipped. Each runner prints `PASS: <case>` for every case
+and `ALL_CASES_PASSED` at the end. None of them is run on a developer host.
+
+| Start kind | Recipe started | CI step and runner | Cases |
+| --- | --- | --- | --- |
+| New-branch build | `default-workflow` | "Outside-in: the build goal loop (issue #3129)", `tests/gadugi/run-issue-3129-build-loop-scenario.sh` | `build_opens_its_pr_with_the_task_text`, `build_marks_its_pr_ready`, `build_never_merges`, `build_branch_is_pushed_at_the_worktree_head`, `build_keeps_its_worktree_and_branch`, `build_reports_the_open_pr` |
+| New-branch build through the router | `smart-orchestrator`, routed to `default-workflow` | "Outside-in: whole build and whole drive (issue #2806)", `tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh` | `part1_build_opens_pr_and_pushes_branch`, `part1_build_loop_ends_ready_without_merge` |
+| Continuation of an existing branch and pull request | `smart-orchestrator` | "Outside-in: continuation, quick-change and investigation starts (issue #3129)", section E of `tests/gadugi/run-issue-3129-start-kinds-scenario.sh` | `continuation_runs_to_its_end`, `continuation_pushes_onto_the_existing_branch`, `continuation_opens_no_second_pr`, `continuation_marks_the_existing_pr_ready`, `continuation_keeps_the_pr_text`, `continuation_never_merges` |
+| Quick-change | `smart-orchestrator` | The same step, section F | `quick_change_runs_to_its_end`, `quick_change_opens_its_pr_with_the_task_text`, `quick_change_opens_the_pr_without_the_build_loop`, `quick_change_pushes_its_branch`, `quick_change_never_merges` |
+| Investigation | `smart-orchestrator` | The same step, section G | `investigation_runs_to_its_end`, `investigation_writes_its_report`, `investigation_changes_nothing_on_origin` |
+
+### Runs in flight
+
+A run started on the previous release keeps the recipe it has already loaded.
+When a step runs, it reads two things from the live install:
+
+- a tool in `amplifier-bundle/tools`, found through
+  `$AMPLIHACK_HOME/amplifier-bundle`, which is the release link, or the other
+  places each step searches;
+- a recipe named in a `recipe:` step, looked up by name in the recipe search
+  path: the run's repository's `amplifier-bundle/recipes`, then
+  `$AMPLIHACK_HOME/amplifier-bundle/recipes`, then
+  `~/.amplihack/.claude/recipes`.
+
+`autodrive-*` runs are the exception. Each has a private copy of the bundle,
+taken at launch, so it keeps its own release's recipes and tools throughout.
+An `autodrive-build` run launched on 1.2.219 therefore keeps running
+`default-workflow` 3.0.0.
+
+The previous release at the time of writing is 1.2.219. Its bundle is
+identical to `main` at fb97d5119 (`git diff v1.2.219 fb97d5119 --
+amplifier-bundle` is empty). Apart from `recipes/_recipe_manifest.json`, every
+bundle file this change touches is identical at `v1.2.213` and `v1.2.219`, so
+what this page says about 1.2.213 holds for 1.2.219. The callers below were
+found with `git grep` at `v1.2.219`, leaving out comments, documents and the
+recipe test scripts. Every line that invokes one of the changed tools is the
+same at `v1.2.213` and `v1.2.219`, so the invocations that the `old_tools`
+tests copy from 1.2.213 are also the 1.2.219 invocations. No tool, recipe,
+step id or recipe output is removed or renamed. A release cut from `main`
+after fb97d5119 and before this change is checked the same way, with its own
+tag in place of `v1.2.219`.
+
+Changed tools:
+
+| Tool | Change | Caller at 1.2.219 and its invocation | What the caller reads | Test |
+| --- | --- | --- | --- | --- |
+| `workflow_issue_claim_check.sh` | Exit 0 for every result, where a claim exited 1. New `--json`. An unknown argument, a missing value or a malformed `--head` or `--repo` exits 2 | workflow-prep `step-03c-issue-claim-check`: `--issue "$N" --repo-path "$REPO_PATH"`. `workflow_publish_pr.sh`: `--issue --repo --head` | step-03c: the stdout key line as `issue_claim_check`, and a non-zero exit fails the step. Both callers pass only accepted arguments, each with a value. A claim now lets step-03c go on | `old_tools::claim_check_called_as_step_03c_exits_zero_with_one_claimed_key_line`, `old_tools::claim_check_called_as_publish_calls_it_exits_zero_and_names_the_claim` |
+| `workflow_issue_tracking.sh` | One function added, `tracking_issue_reference`. No line removed | workflow-prep `step-03-create-issue` sources it and calls `select_github_tracking_issue` and `emit_local_metadata`. `autodrive_followups.sh` and `autodrive_followups_file.sh` source it for `sanitize_cli_output` | The existing functions, unchanged | `old_tools::tracking_functions_step_03_calls_still_answer_as_before` |
+| `workflow_publish_pr.sh` | A claim by another branch's pull request is printed and the pull request is opened. `FAILED_DUPLICATE_CLAIM` is no longer returned | workflow-publish `step-16-create-draft-pr`: `bash "$PUBLISH_HELPER"` | The stdout JSON as `pr_publish_result`. Every other `publish_status` is unchanged | `old_tools::publish_called_as_step_16_opens_the_pr_beside_another_branchs_claim` |
+| `workflow_pr_scope.sh` | The `no_scoped_pr` JSON gains `rejected`. One `INFO` line per candidate follows the unchanged `ERROR` line | The workflow-terminal-state step, `workflow_final_status.sh`, `workflow_pr_ready.sh` and `workflow_publish_pr.sh`, each with its own `scope_args` | `.reason`, `.url` and `.number`, and the exit status. No caller parses stderr | `old_tools::scope_called_as_terminal_state_keeps_reason_exit_and_first_error_line` |
+| `workflow_pr_ready.sh` | Finds the pull request's worktree and passes `--allow-head-behind`. A known pull request that fails validation gives a `WARNING` and exit 0, where it gave exit 1 | workflow-finalize `step-21-pr-ready`: `bash "$READY_HELPER" --base "$base"` | The stdout as `pr_ready_result`, and a non-zero exit fails the step. The other exits are unchanged | `old_tools::pr_ready_called_as_step_21_from_the_launch_checkout_on_main_marks_the_pr_ready`, `old_tools::pr_ready_with_a_failed_validation_records_no_pr_ready_call` |
+
+The `autodrive_build_*` tools, `quick_change_create_pr.sh`,
 `workflow_pr_text.sh` and `workflow_worktree_host_inputs.sh` are new and have
-no 1.2.213 caller. 1.2.213's `step-21-pr-ready` runs
-`bash workflow_pr_ready.sh --base "$base"` and reaches the new worktree lookup
-with the inputs that step provides. A `recipe: default-workflow` step looks the
-recipe up by name in the installed recipe folders when the step runs, so a run
-that reaches such a step after the upgrade runs version 4.0.0. The exception is
-`autodrive-build`: 1.2.213 gives every `autodrive-*` run a private copy of the
-bundle, so its step 02 keeps running version 3.0.0 with the 1.2.213 tools.
-Version 4.0.0 accepts every v3 context key, and `workflow_result` keeps `terminal_state`,
-`terminal_success`, `handoff` and `pr_number`.
+no caller at 1.2.219. `quick_change_common.sh`, `workflow_hook_repair.sh` and
+`worktree_setup_path.sh` are not changed.
 
-| Tool | Calling step | What is kept |
-| --- | --- | --- |
-| `workflow_issue_claim_check.sh` | `step-03c-issue-claim-check`; `workflow_publish_pr.sh` | `--issue`, `--repo-path`; `--repo` and `--head` from publish; every stdout key line. A claim now exits 0 where it exited 1 |
-| `workflow_issue_tracking.sh` | `step-03` and `step-03b` | Every existing function; one function added |
-| `workflow_publish_pr.sh` | `workflow-publish` | Interface and every `publish_status` except `FAILED_DUPLICATE_CLAIM` |
-| `workflow_pr_ready.sh` | `step-21-pr-ready` | `--base`, the `pr_ready_result` line and every other exit. A known pull request that fails scope or identity validation now gives a `WARNING` and exit 0 where it gave exit 1 |
-| `workflow_pr_scope.sh` | many callers | Every argument; stdout JSON keys, reason, message, exit status and first stderr line |
-| `workflow_pr_text.sh` | `workflow-publish` and the build tools | The functions and arguments the 1.2.213 recipes call; output lines |
-| `workflow_worktree_host_inputs.sh` | `workflow-worktree` step 04 | Called with the launch checkout and the new worktree; it only links, and logs each link |
-| `quick_change_create_pr.sh` | `quick-change-create-pr` | Its arguments, the printed URL and exit 0 on success. A refused or unreadable PR text now exits 1 with `check=<key>` where it used the template |
-| `workflow_hook_repair.sh` | commit and push steps | `hook_repair_run` and its return codes |
-| `quick_change_common.sh` | `quick-change` | `qc_title`, `qc_request`, `qc_issue` |
-| `workflow-worktree` step 04 | `default-workflow` | Inputs and the `worktree_setup` JSON |
-| `worktree_setup_path.sh` | various | `<label>`, exit 3 meaning unset |
+Changed recipes that a run in flight can load by name:
+
+| Recipe | Loaded at 1.2.219 by | Change | What stays the same |
+| --- | --- | --- | --- |
+| `smart-classify-route` | `smart-orchestrator` | The classifier's prompt sends a small operational step to quick-change or the Operations route | Step ids, outputs and the routing values |
+| `smart-execute-routing` | `smart-orchestrator` | `build_loop_result` joins the recovery context list | Step ids and outputs |
+| `smart-reflect-loop`, `smart-validate-summarize` | `smart-orchestrator` | New input `build_loop_result`, empty by default; reflection and validation are skipped when it is set. Two summary steps continue on error | Step ids and outputs. A 3.0.0 build sets no `build_loop_result`, so these steps run as before |
+| `default-workflow`, 3.0.0 to 4.0.0 | `smart-execute-routing`, `quick-change`, `oxidizer-workflow` and `quality-loop` | The build loop | Every 3.0.0 context key is accepted. `workflow_result` keeps `terminal_state`, `terminal_success`, `handoff` and `pr_number` |
+| `quick-change` | `smart-execute-routing` | Two steps added, `quick-change-pr-text` and `quick-change-finish-in-loop`; `quick_change_create_pr.sh` opens the pull request | No step id or output removed |
+| `workflow-prep` | `default-workflow` 3.0.0 | An Azure DevOps work-item create failure is a `WARNING`, and the run carries on with local tracking. Recovery context list | Step ids and outputs |
+| `workflow-worktree` | `default-workflow` 3.0.0, `quick-change` and `auto-drive-light` | Step 04 links the launch checkout's git-ignored `.venv` folders and cannot fail on them | Inputs and the `worktree_setup` JSON |
+| `workflow-design` | `default-workflow` 3.0.0 | Recovery context list only | Step ids and outputs |
+| `workflow-finalize` | `default-workflow` 3.0.0 | One sentence in step 20's prompt | Step ids and outputs |
+| `hook-rejection-repair` | `workflow_hook_repair.sh`, from the bundle beside it | Point 4 of the prompt: a missing host input is installed in the worktree | The outcome values `fixed` and `not_fixable_in_code` |
+
+`smart-orchestrator` itself changes only in its recovery context list. A
+1.2.219 `smart-orchestrator` run that loads the new sub-recipes therefore runs
+the same steps as the #2806 scenario above. The one difference is that a
+recovery replay of that run would not carry `build_loop_result`, so reflection
+would run again after a 4.0.0 build.
+
+### Rollback
+
+The way back is an explicit install from the previous release's own binary.
+These steps were run in a sandbox with a temporary `HOME`: the 1.2.218 binary
+staged this branch's tree with `install --local`, and the 1.2.217 binary then
+rolled it back with `install --force-refresh`. Both exited 0.
+
+1. Before the upgrade, note the release in use:
+   `readlink ~/.amplihack/amplifier-bundle`, for example
+   `~/.amplihack/releases/1.2.219/amplifier-bundle`. After the upgrade,
+   install's cleanup keeps the release each link pointed to before the switch
+   (see [Versioned Install Layout](../concepts/versioned-install-layout.md#cleanup-of-old-releases)),
+   so that folder and its `bin/amplihack` stay on disk until a later install
+   finds them unused.
+2. Run that release's binary:
+   `~/.amplihack/releases/<previous>/bin/amplihack install --force-refresh`.
+   It fetches the bundle at the tag `v<previous>`, builds a new release folder
+   (`<previous>-<UTC time>-<pid>` when `releases/<previous>` already exists),
+   switches all four links to it, copies the framework folders under
+   `~/.amplihack/.claude` again, the recipes among them, and writes
+   `<previous>` to `~/.amplihack/.installed-version`. A stamp newer than the
+   binary does not stop an explicit install; only the startup self-heal and
+   the launch bootstrap decline to stage over a newer stamp. In the sandbox it
+   printed no refusal or warning about the newer stamp, and the release that
+   held this branch's bundle was kept.
+3. Check the result. `amplihack --version` prints the previous version, and
+   `grep -m1 '^version:'` on both
+   `~/.amplihack/amplifier-bundle/recipes/default-workflow.yaml` and
+   `~/.amplihack/.claude/recipes/default-workflow.yaml` prints `3.0.0`. In the
+   sandbox, `default-workflow`, `smart-orchestrator`, `smart-execute-routing`,
+   `quick-change`, `workflow-prep` and `workflow-worktree` in both folders were
+   byte-identical to `v1.2.217`, and the bundle had no
+   `autodrive_build_goal.sh`.
+
+Repointing the four links by hand is not enough.
+`~/.amplihack/.claude/recipes` is a copy outside the release folders, and the
+recipe search path reads it, ahead of everything else installed, whenever
+`AMPLIHACK_HOME` is unset. Only an install copies it again.
+
+A `default-workflow` 4.0.0 run still in flight at the rollback keeps going
+inside a build step it has already started, because each build step resolves
+`autodrive_build_run.sh` to its physical release folder when the step starts,
+and cleanup keeps a release that a running process uses. Its next build step
+resolves through the link to the previous release, finds no
+`autodrive_build_run.sh` and stops: `build-goal-setup` and `build-loop` end the
+run with "autodrive_build_run.sh is missing from the launch bundle", and
+`build-report` logs a warning and writes no report. Let 4.0.0 runs reach their
+end before rolling back, or start them again afterwards, when they run 3.0.0.
+`autodrive-*` runs are not affected, because they use their private copy.
 
 ## Tests
 
