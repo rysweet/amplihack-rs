@@ -110,7 +110,12 @@ steps:
          single-file fix with no behaviour change to a public interface.
          Never recommend it for a feature, a behaviour change visible to
          users, or more than one workstream. When in doubt, choose
-         "default-workflow".
+         "default-workflow". A small operational step, such as a data fill,
+         a one-file fix or a docs change, is never sent to the full
+         workflow: it takes "quick-change" when it is new work on a new
+         branch, or the Operations route when it is an operations step
+         (#3129). A continuation of an existing branch or PR still goes to
+         "default-workflow", whose build loop runs only the actions it needs.
 
       **Classification rules — read carefully (#269)**:
       - **Operations** is ONLY for one-shot read-only or trivial mutating

@@ -50,8 +50,9 @@ pub fn run_guidance(command: GuidanceCommands) -> Result<()> {
         GuidanceCommands::Show {
             folder,
             since,
+            operator_only,
             json,
-        } => show(&folder, since.as_deref(), json).map(|()| 0),
+        } => show(&folder, since.as_deref(), operator_only, json).map(|()| 0),
         GuidanceCommands::Wait {
             folder,
             since,
@@ -215,13 +216,24 @@ fn show_json<'a>(list: &[Folder], entries: &'a [Entry], since: &'a str) -> ShowJ
     }
 }
 
-/// `recipe guidance show`.
-fn show(args: &PrFolderArgs, since: Option<&str>, json: bool) -> Result<(), GuideError> {
+/// `recipe guidance show`. With `operator_only`, entries an agent step added
+/// are removed before either output is built, so neither can hold one. This
+/// guards a run against widening its own allowed PR text through ordinary use;
+/// it is not a trust boundary, since the `from_step` label is the CLI's own.
+fn show(
+    args: &PrFolderArgs,
+    since: Option<&str>,
+    operator_only: bool,
+    json: bool,
+) -> Result<(), GuideError> {
     let since = since.unwrap_or("");
     check_since(since)?;
     let folders = Folders::resolve(named_pr(args)?.as_ref())?;
     folders.warn_untrusted();
-    let entries = folders.read();
+    let mut entries = folders.read();
+    if operator_only {
+        entries.retain(|e| !e.is_from_step());
+    }
     if json {
         print_json(&show_json(&folders.list, &entries, since))
     } else {

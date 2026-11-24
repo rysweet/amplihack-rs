@@ -1,0 +1,154 @@
+name: issue-3129-start-kinds
+description: >
+  Outside-in QA for issue #3129 PR 2: each kind of start other than a
+  new-branch build runs to its end through smart-orchestrator. The new-branch
+  build is covered by issue-2806-end-to-end-build-and-drive.yaml and
+  issue-3129-build-loop.yaml. The scenario (via
+  tests/gadugi/run-issue-3129-start-kinds-scenario.sh) runs the shipped
+  `smart-orchestrator` recipe with the real binary and the pinned recipe
+  runner three times, each in its own temporary repository whose origin is a
+  local bare repository reached through a GitHub URL: a continuation of an
+  existing branch and draft pull request 42 (`existing_branch`,
+  `allow_existing_pr=true`), routed to default-workflow and its build loop; a
+  quick-change (`workflow=quick-change`) whose task gives the pull request's
+  own title and description; and an investigation, routed to
+  investigation-workflow. Only the outside world is stood in for: `gh`, which
+  keeps each run's pull request title, body, branch and draft flag, records
+  every call and exits 96 on any call it does not answer, and `claude`, which
+  gives each run's agent steps one fixed answer that chooses its route and
+  answers each turn of the continuation's build loop from that turn's own
+  reading: commit second.txt in the run's worktree and push with plain
+  `git push`, then `mark-ready`, then `ready`. A fault ends in a hand-off, so
+  it ends the run rather than looping. Nothing reaches GitHub or a live agent.
+
+  Fifteen cases, each asserted below, from recorded facts only.
+  Continuation: `continuation_runs_to_its_end` (exit 0),
+  `continuation_pushes_onto_the_existing_branch` (origin's branch moved
+  forward from the seeded head and holds greeting.txt and second.txt),
+  `continuation_opens_no_second_pr` (no `pr create`),
+  `continuation_marks_the_existing_pr_ready` (`pr ready 42`, and it no longer
+  reads as a draft), `continuation_keeps_the_pr_text` (title and body
+  unchanged) and `continuation_never_merges`. Quick-change:
+  `quick_change_runs_to_its_end`, `quick_change_opens_its_pr_with_the_task_text`
+  (one `pr create` with the task's title and description byte for byte),
+  `quick_change_opens_the_pr_without_the_build_loop` (no build loop turn ran),
+  `quick_change_pushes_its_branch` (a quick/ branch on origin holding
+  feature.txt) and `quick_change_never_merges`. Investigation:
+  `investigation_runs_to_its_end`, `investigation_writes_its_report` (a
+  non-empty investigation_report.md in the run's repository) and
+  `investigation_changes_nothing_on_origin` (no `pr create`, origin holds only
+  main at the seeded head). And one on this file:
+  `every_case_this_run_emitted_is_asserted_by_the_descriptor`.
+
+  Everything runs under `env -i` with a 0700 root, one HOME per run, a PATH
+  holding only the scenario's own tool links, no Git system or global
+  configuration and only the file transport; the real ~/.claude and
+  ~/.amplihack are never read or written. A missing binary, runner or host
+  tool is a failure, not a skip. The driver runs in CI, in the host-install
+  job, after the pinned recipe runner is installed; it is never run by hand on
+  a shared host.
+version: "1.0"
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, end-to-end, smart-orchestrator, continuation, quick-change, investigation]
+  priority: high
+  issues: ["3129", "3049"]
+steps:
+  - name: run-issue-3129-start-kinds-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-3129-start-kinds-scenario.sh
+  - name: all-start-kinds-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+# One assertion per PASS line the script emits, so the descriptor states the
+# scenario in full rather than a subset of it.
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: the-continuation-runs-to-its-end
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: continuation_runs_to_its_end"
+  - name: the-continuation-pushes-onto-the-existing-branch
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: continuation_pushes_onto_the_existing_branch"
+  - name: the-continuation-opens-no-second-pull-request
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: continuation_opens_no_second_pr"
+  - name: the-continuation-marks-the-existing-pull-request-ready
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: continuation_marks_the_existing_pr_ready"
+  - name: the-continuation-keeps-the-pull-request-text
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: continuation_keeps_the_pr_text"
+  - name: the-continuation-never-merges
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: continuation_never_merges"
+  - name: the-quick-change-runs-to-its-end
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: quick_change_runs_to_its_end"
+  - name: the-quick-change-opens-its-pull-request-with-the-task-text
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: quick_change_opens_its_pr_with_the_task_text"
+  - name: the-quick-change-opens-the-pull-request-without-the-build-loop
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: quick_change_opens_the_pr_without_the_build_loop"
+  - name: the-quick-change-pushes-its-branch
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: quick_change_pushes_its_branch"
+  - name: the-quick-change-never-merges
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: quick_change_never_merges"
+  - name: the-investigation-runs-to-its-end
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: investigation_runs_to_its_end"
+  - name: the-investigation-writes-its-report
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: investigation_writes_its_report"
+  - name: the-investigation-changes-nothing-on-origin
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: investigation_changes_nothing_on_origin"
+  - name: the-descriptor-states-every-case-the-script-emits
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: every_case_this_run_emitted_is_asserted_by_the_descriptor"

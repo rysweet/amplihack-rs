@@ -19,6 +19,9 @@ recursion:
 
 context:
   # Issue #1740: set by select-workflow; quick-change runs skip these steps.
+  # #3129: set by default-workflow's build loop, which already reviewed the
+  # change at its pushed head; reflection and validation are not run again.
+  build_loop_result: ""
   selected_workflow: ""
 
 steps:
@@ -30,7 +33,7 @@ steps:
   - id: "reflect-round-1"
     type: "agent"
     condition: |
-      'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'
+      'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change' and not build_loop_result
     agent: "amplihack:core:reviewer"
     model: "standard"
     prompt: |
@@ -208,7 +211,7 @@ steps:
 
   - id: "reflect-final"
     type: "agent"
-    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'"
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change' and not build_loop_result"
     agent: "amplihack:core:reviewer"
     model: "standard"
     prompt: |

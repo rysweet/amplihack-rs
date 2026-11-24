@@ -85,7 +85,7 @@ steps:
 
       1. Review all changes for philosophy compliance WITHIN user constraints
       2. Review all changes for Forbidden Pattern violations (FORBIDDEN_PATTERNS.md)
-      3. Remove temporary artifacts or test files (unless user wanted them)
+      3. Remove temporary artifacts or test files (unless user wanted them); never remove the worktree, the branch or the run state, which later steps and runs still use (#3129)
       4. Eliminate unnecessary complexity (without violating requirements)
       5. Verify module boundaries remain clean
       6. Ensure zero dead code or stub implementations

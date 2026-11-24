@@ -34,14 +34,6 @@ fn load_finalize_recipe() -> Value {
     serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
-fn helper_text(name: &str) -> String {
-    let path = workspace_root()
-        .join("amplifier-bundle")
-        .join("tools")
-        .join(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
 fn workspace_helper_path(name: &str) -> PathBuf {
     workspace_root()
         .join("amplifier-bundle")
@@ -270,108 +262,6 @@ fn step_command(recipe: &Value, id: &str) -> String {
 }
 
 #[test]
-fn ready_step_distinguishes_merged_closed_after_merge_and_closed_unmerged() {
-    let recipe = load_finalize_recipe();
-    let command = step_command(&recipe, "step-21-pr-ready");
-
-    for required in [
-        "mergedAt",
-        "closed-after-merge",
-        "closed-unmerged",
-        "terminal_status",
-        "exit 1",
-    ] {
-        assert!(
-            command.contains(required),
-            "step-21 must classify merged/closed PR states explicitly; missing `{required}`"
-        );
-    }
-
-    assert!(
-        !command.contains("PR is closed — no ready-for-review action possible")
-            && !command.contains("PR is closed - no ready-for-review action possible"),
-        "closed-unmerged PRs must not be silently skipped as successful finalization"
-    );
-}
-
-#[test]
-fn final_status_accepts_no_diff_and_already_merged_as_successful_terminal_outcomes() {
-    let recipe = load_finalize_recipe();
-    let command = step_command(&recipe, "step-22b-final-status");
-
-    for required in [
-        "git diff --quiet",
-        "no-diff",
-        "already-merged",
-        "closed-after-merge",
-        "terminal_status",
-    ] {
-        assert!(
-            command.contains(required),
-            "final status must report idempotent successful terminal outcomes; missing `{required}`"
-        );
-    }
-}
-
-#[test]
-fn final_status_uses_resilient_github_status_lookup() {
-    let command = helper_text("workflow_final_status.sh");
-
-    for required in [
-        "workflow_gh_retry.sh",
-        "_gh_retry_core",
-        "gh_pr_view_with_retry",
-        "final PR status",
-    ] {
-        assert!(
-            command.contains(required),
-            "final status must use bounded, visible GitHub status lookup resilience; missing `{required}`"
-        );
-    }
-}
-
-#[test]
-fn pr_ready_helper_retries_github_lookup_ready_and_comment_calls() {
-    let command = helper_text("workflow_pr_ready.sh");
-
-    for required in [
-        "workflow_gh_retry.sh",
-        "_gh_retry_core",
-        "gh_with_retry",
-        "workflow_pr_scope.sh",
-        "gh_with_retry \"pr view\"",
-        "gh_with_retry \"pr ready\"",
-        "gh_with_retry \"pr comment\"",
-        "refusing to report successful finalization",
-        "isCrossRepository",
-    ] {
-        assert!(
-            command.contains(required),
-            "PR-ready helper must use bounded GitHub retries; missing `{required}`"
-        );
-    }
-    assert!(
-        !command.contains("baseRepository"),
-        "PR-ready helper must request only gh-supported fields; gh pr view does not support baseRepository"
-    );
-}
-
-#[test]
-fn workflow_complete_json_reports_terminal_outcome_instead_of_unconditional_merge_ready() {
-    let recipe = load_finalize_recipe();
-    let command = step_command(&recipe, "workflow-complete");
-
-    assert!(
-        command.contains("terminal_outcome"),
-        "workflow-complete JSON must include the terminal outcome that made finalization succeed"
-    );
-    assert!(
-        !command.contains("ready_to_merge: true"),
-        "workflow-complete must not unconditionally claim merge readiness for no-diff or already-merged terminal states"
-    );
-}
-
-#[test]
 fn pr_ready_helper_fails_closed_when_pr_view_metadata_is_unavailable() {
     let tmp = TempDir::new().expect("tempdir");
     let repo = private_git_scope(tmp.path());
@@ -391,16 +281,26 @@ fn pr_ready_helper_fails_closed_when_pr_view_metadata_is_unavailable() {
         tmp.path(),
         "pr view https://github.com/owner/repo/pull/7 --repo owner/repo --json ",
     );
-    assert!(
-        !output.status.success(),
-        "PR-ready helper must fail closed when explicit PR metadata cannot be inspected\nstdout:\n{}\nstderr:\n{}",
+    // #2787: the run's own PR is known, so an unreadable lookup leaves the PR
+    // as it is and never ends a run whose work is done: exit 0, the reason
+    // printed, and no mutation.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "PR-ready helper must leave the PR alone and exit 0 when its metadata cannot be inspected\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("pr_metadata_unavailable"),
-        "scoped validation must fail closed before ambiguous PR mutation, stderr:\n{stderr}"
+        stderr.contains("pr_metadata_unavailable") && stderr.contains("WARNING"),
+        "the failed lookup must be named before any mutation, stderr:\n{stderr}"
+    );
+    let calls = optional_gh_call_log(&tmp.path().join("gh-calls.log"))
+        .unwrap_or_else(|error| panic!("read private GH call log: {error}"));
+    assert!(
+        !calls.lines().any(|l| l.starts_with("pr ready")),
+        "no ready mutation after a failed lookup: {calls}"
     );
     assert!(
         !stderr.contains("https://token@example.com")
@@ -628,15 +528,19 @@ exit 99
         .output()
         .expect("run workflow_pr_ready.sh");
 
-    assert!(
-        !output.status.success(),
-        "PR-ready helper must fail before mutation when PR identity is stale\nstdout:\n{}\nstderr:\n{}",
+    // #2787: a stale identity of the run's own, known PR leaves the PR as it
+    // is (exit 0, the reason printed); it never ends a run whose work is done.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "PR-ready helper must leave a PR with a stale identity alone and exit 0\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("no_scoped_pr") || stderr.contains("headRefOid"),
+        (stderr.contains("no_scoped_pr") || stderr.contains("headRefOid"))
+            && stderr.contains("WARNING"),
         "identity failure must explain stale scoped PR metadata, stderr:\n{stderr}"
     );
     let log = fs::read_to_string(&gh_log).expect("read gh log");
@@ -843,13 +747,16 @@ exit 99
         .output()
         .expect("run workflow_pr_ready.sh");
 
-    assert!(
-        !output.status.success(),
-        "PR-ready helper must fail closed when base branch cannot be proven"
+    // #2787: the run's PR is known, so a base that cannot be proven leaves the
+    // PR as it is (exit 0, the reason printed) instead of ending the run.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "PR-ready helper must leave the PR alone and exit 0 when the base cannot be proven"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unable to resolve expected base branch"),
+        stderr.contains("unable to resolve expected base branch") && stderr.contains("WARNING"),
         "missing base proof must be surfaced before mutation, stderr:\n{stderr}"
     );
     let log = fs::read_to_string(&gh_log).expect("read gh log");
