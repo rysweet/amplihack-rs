@@ -57,6 +57,7 @@ mod issue_2589_update_coverage;
 mod issue_2922_helper_contract;
 #[cfg(unix)]
 mod issue_2922_inherited_config_dir;
+mod issue_3220_directory_index;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]

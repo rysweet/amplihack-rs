@@ -49,6 +49,9 @@ pub enum Commands {
     /// Report workstream token observations or explicitly publish a PR summary
     #[command(subcommand)]
     Usage(crate::commands::usage::UsageCommands),
+    /// Search the index of installed amplihack skills and agents
+    #[command(subcommand)]
+    Directory(crate::commands::directory::DirectoryCommands),
     /// Show the capacity governor's limit, budgets, slots and queue
     #[command(subcommand)]
     Governor(crate::commands::governor::GovernorCommands),

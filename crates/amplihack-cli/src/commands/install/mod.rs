@@ -789,6 +789,17 @@ fn local_install_scoped(
     // (missing_framework_paths) know which mapping to consult.
     write_layout_marker(&claude_dir, layout)?;
 
+    // Issue #3220: the index `amplihack directory` searches. It is built
+    // from the trees just staged, so it lists amplihack's own skills and
+    // agents only. A failure costs a warning: the command then reports the
+    // missing index and names `amplihack install`.
+    if let Err(error) = crate::commands::directory::index::write_index(&claude_dir) {
+        eprintln!(
+            "amplihack: warning: cannot write the skills and agents index: {}",
+            paths::sanitize_text(&format!("{error:#}"))
+        );
+    }
+
     cleanup_unused_releases(&claude_dir, &switched);
 
     let preferred_amplihack =
