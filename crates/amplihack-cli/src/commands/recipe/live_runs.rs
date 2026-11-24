@@ -41,7 +41,7 @@ use crate::run_guidance::GUIDANCE_DIR;
 use crate::run_guidance::env::pr_ref_from_context;
 use crate::run_guidance::fs_safety::{DirState, dir_state};
 use crate::run_guidance::pr_key::{PrRef, same_repo_ref};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// One live run for the pull request.
@@ -55,20 +55,33 @@ pub(crate) struct LiveRun {
     pub reachable: Result<PathBuf, String>,
 }
 
-/// The pull request a pointer records, through the shared resolver.
-fn pointer_pr(record: &Pointer) -> Option<PrRef> {
+/// The pull request a pointer records, through the shared resolver, when it
+/// can be pull request number `want`.
+///
+/// A number-only pointer is resolved by running `git remote get-url origin`
+/// in its folder. The log folder holds a pointer for every past run, so the
+/// recorded number is compared with `want` first, and git runs only for a
+/// pointer that can match. A pointer with another number could not pass
+/// [`same_repo_ref`], so the result is the same.
+pub(super) fn pointer_pr(record: &Pointer, want: u64) -> Option<PrRef> {
     let mut context = BTreeMap::new();
     if let Some(url) = &record.pr_url {
         context.insert("pr_url".to_string(), url.clone());
     }
-    let working_dir = record
-        .worktree
-        .as_deref()
-        .or(record.cwd.as_deref())
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute() && p.is_dir());
+    let number = record
+        .pr_number
+        .as_ref()
+        .filter(|n| n.trim().parse::<u64>().ok() == Some(want));
+    let working_dir = number.and_then(|_| {
+        record
+            .worktree
+            .as_deref()
+            .or(record.cwd.as_deref())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute() && p.is_dir())
+    });
     // A number with no folder to resolve it against names no repository.
-    if let (Some(number), Some(_)) = (&record.pr_number, &working_dir) {
+    if let (Some(number), Some(_)) = (number, &working_dir) {
         context.insert("pr_number".to_string(), number.clone());
     }
     if context.is_empty() {
@@ -113,23 +126,20 @@ fn runs_for_pr(pr: &PrRef) -> Vec<(LiveRun, bool)> {
         return Vec::new();
     };
     let mut roots = RootChecks::default();
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut runs = Vec::new();
     for record in guide_records::scan(&log_dir).records {
         let Some(recorded) = record.run_dir.clone() else {
             continue;
         };
-        if seen.contains(&recorded) {
-            continue;
-        }
-        if !pointer_pr(&record).is_some_and(|found| same_repo_ref(&found, pr)) {
-            continue;
-        }
-        seen.push(recorded.clone());
         let run_dir = PathBuf::from(&recorded);
-        if !run_dir.is_absolute() {
+        if !run_dir.is_absolute() || seen.contains(&recorded) {
             continue;
         }
+        if !pointer_pr(&record, pr.number).is_some_and(|found| same_repo_ref(&found, pr)) {
+            continue;
+        }
+        seen.insert(recorded.clone());
         let live = is_live(&run_dir, record.run_id.as_deref());
         let reachable = accept_recorded(&recorded, record.run_id.as_deref(), &mut roots)
             .and_then(|(dir, _)| guidance_folder(&dir));

@@ -249,3 +249,83 @@ fn listed_folders_keep_missing_and_untrusted_ones_with_their_state() {
     assert_eq!(listed[1], (missing, DirCheck::Missing));
     assert!(matches!(&listed[2], (p, DirCheck::Untrusted(_)) if *p == open));
 }
+
+/// Issue #3162: a `guidance.log` that cannot be read leaves the read state
+/// unknown. `show --json` says so with `read: null` and the folder's
+/// `log_error`, and plain `show` with a line saying the state is unknown.
+#[test]
+fn an_unreadable_log_makes_read_null_and_sets_the_folder_log_error() {
+    let (_t, root) = private_root();
+    let run_dir = root.join("runs").join("r1");
+    let run = run_dir.join(GUIDANCE_DIR);
+    fs::create_dir_all(&run).unwrap();
+    let target = root.join("elsewhere.log");
+    fs::write(
+        &target,
+        format!("{{\"event\":\"guidance_injected\",\"entry_names\":[\"{FIRST}\"]}}\n"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&target, run_dir.join(crate::run_guidance::GUIDANCE_LOG)).unwrap();
+    let list = vec![Folder {
+        path: run.clone(),
+        check: DirCheck::Trusted,
+    }];
+    let entries = vec![entry(FIRST, &run, "alice", "hold")];
+    let line = serde_json::to_string(&show_json(&list, &entries, "")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["entries"][0]["read"], serde_json::Value::Null, "{line}");
+    assert!(
+        v["entries"][0].as_object().unwrap().contains_key("read"),
+        "read is present as null: {line}"
+    );
+    assert_eq!(
+        v["folders"][0]["log_error"], "it is a symbolic link",
+        "{line}"
+    );
+    assert_eq!(v["drops"], serde_json::json!([]));
+    assert_eq!(
+        read_and_drop_lines(&list, &entries),
+        [format!(
+            "entry {FIRST}: read state unknown (log unreadable)"
+        )]
+    );
+}
+
+#[test]
+fn a_readable_log_in_another_copy_proves_the_entry_read_despite_an_unreadable_one() {
+    let (_t, root) = private_root();
+    let bad_dir = root.join("runs").join("bad");
+    let bad = bad_dir.join(GUIDANCE_DIR);
+    let good_dir = root.join("runs").join("good");
+    let good = good_dir.join(GUIDANCE_DIR);
+    fs::create_dir_all(&bad).unwrap();
+    fs::create_dir_all(&good).unwrap();
+    std::os::unix::fs::symlink(
+        "/nonexistent",
+        bad_dir.join(crate::run_guidance::GUIDANCE_LOG),
+    )
+    .unwrap();
+    let log = good_dir.join(crate::run_guidance::GUIDANCE_LOG);
+    fs::write(
+        &log,
+        format!("{{\"event\":\"guidance_injected\",\"entry_names\":[\"{FIRST}\"]}}\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&log, fs::Permissions::from_mode(0o600)).unwrap();
+    let list = vec![
+        Folder {
+            path: bad.clone(),
+            check: DirCheck::Trusted,
+        },
+        Folder {
+            path: good.clone(),
+            check: DirCheck::Trusted,
+        },
+    ];
+    let mut e = entry(FIRST, &bad, "alice", "hold");
+    e.also_in.push((good.clone(), FIRST.to_string()));
+    let v = serde_json::to_value(show_json(&list, &[e], "")).unwrap();
+    assert_eq!(v["entries"][0]["read"], true, "{v}");
+    assert!(v["folders"][0].get("log_error").is_some(), "{v}");
+    assert!(v["folders"][1].get("log_error").is_none(), "{v}");
+}

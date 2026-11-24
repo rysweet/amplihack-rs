@@ -973,6 +973,13 @@ The drop concerns guidance that existed when the step started, which may be an
 earlier entry than the one just written; use `recipe guidance show` to see
 which.
 
+If a folder's `guidance.log` exists but cannot be read, its drops are
+unknown, and this line is printed in place of its drop lines:
+
+```text
+drop state unknown for /srv/work/runs/3d52a1c8-6b0e-4f7a-8e19-5c4d7a9b2f60/guidance: guidance.log cannot be read: it is a symbolic link
+```
+
 | Code | Meaning | Example message on stderr |
 | --- | --- | --- |
 | `0` | The entry was written | |
@@ -1064,6 +1071,16 @@ copy is listed. Records from 1.2.215 or earlier have no `entry_names`, so they
 leave every entry not yet read. This understates reads and never overstates
 them.
 
+A `guidance.log` that exists but cannot be read (a symbolic link, a file not
+owned by you or writable by others, or a read error) says nothing about reads
+or drops. Its entries are then reported as read state unknown, not as not yet
+read, unless the log of another folder holding the same entry lists them. The
+reader prints one warning on stderr naming the log and the cause. `show` prints
+`entry <name>: read state unknown (log unreadable)`, and `show --json` gives
+`"read":null` on the entry and `log_error` on the folder. `recipe guide` prints
+`drop state unknown for <folder>: guidance.log cannot be read: <cause>` for
+each folder it wrote whose log could not be read.
+
 ### Worked example: correcting a detached run
 
 Start a detached run:
@@ -1116,7 +1133,8 @@ $ amplihack recipe guidance show https://github.com/rysweet/amplihack-rs/pull/25
 ```
 
 After the block, one line for each entry says `entry <name>: read` or
-`entry <name>: not yet read`.
+`entry <name>: not yet read`, or `entry <name>: read state unknown (log
+unreadable)` when the log cannot be read.
 
 ## amplihack recipe guidance
 
@@ -1181,7 +1199,8 @@ newest kept.
 Without `--json`, `show` prints the entries as the operator-instructions block
 an agent step receives, oldest first. Each entry's header line also carries the
 entry's file name, then `NEW` when the entry is new. After the block, one line
-for each entry says `entry <name>: read` or `entry <name>: not yet read` (see
+for each entry says `entry <name>: read`, `entry <name>: not yet read` or
+`entry <name>: read state unknown (log unreadable)` (see
 [Read state](#read-state)), then one line for each drop recorded since the last
 injection in a folder, printed once, in the format
 described under [Output and exit codes](#output-and-exit-codes). Nothing is
@@ -1230,16 +1249,17 @@ several lines. It never holds guidance text: no field is named `text`, and
 ```
 
 The output stays at schema 1 because the change only adds fields: `read` on
-each entry and the top-level `drops` array. A consumer that reads the existing
-keys is not affected.
+each entry, `log_error` on a folder and the top-level `drops` array. A consumer
+that reads the existing keys is not affected. A consumer that reads `read`
+must treat `null` as unknown, not as false.
 
 | Field | Meaning |
 | --- | --- |
 | `schema_version` | `1`. |
 | `since` | The `--since` value, or `""`. |
 | `newest` | The largest entry name read, or `""` when there is none. |
-| `folders[]` | Every folder in the list, in order: `path`; `source`, `pr` when the folder's grandparent is named `auto-drive` and `run` otherwise; `state`, one of `present`, `missing` or `untrusted`; and, only for `untrusted`, `reason`. |
-| `entries[]` | Every entry read, oldest first: `name`, the file name; `folder`; `timestamp`; `caller`; `source`; `from_step`, true when an agent step added it with `recipe guide --from-step`; `new`; `read`, true when `entry_names` in that folder's `guidance.log` (or in the log of another folder holding the same entry) lists it; and `bytes`, the size of the text in UTF-8 bytes. |
+| `folders[]` | Every folder in the list, in order: `path`; `source`, `pr` when the folder's grandparent is named `auto-drive` and `run` otherwise; `state`, one of `present`, `missing` or `untrusted`; and, only for `untrusted`, `reason`; and, only for a `present` folder whose `guidance.log` exists but could not be read, `log_error`, the cause. Drops in such a folder are unknown and none are listed. |
+| `entries[]` | Every entry read, oldest first: `name`, the file name; `folder`; `timestamp`; `caller`; `source`; `from_step`, true when an agent step added it with `recipe guide --from-step`; `new`; `read`, true when `entry_names` in that folder's `guidance.log` (or in the log of another folder holding the same entry) lists it, `null` when none lists it and the log of at least one of those folders could not be read, and false otherwise; and `bytes`, the size of the text in UTF-8 bytes. |
 | `drops[]` | One for each `guidance_dropped` record since the last `guidance_injected` record in a folder: `folder`; `ts`; `step_run_id`; `tool`; `launch_form`; `agent`, left out when unknown; and `reason`, the code. The array is empty when there are none. |
 
 Every line the command prints, JSON included, has control, bidirectional and

@@ -15,7 +15,8 @@
 //!
 //! The reader never fails: a missing log is an empty state, a line that does
 //! not parse or names an event it does not know is skipped, and a log that
-//! cannot be opened safely is one warning line. Every value read back goes
+//! cannot be opened safely is one warning line plus [`LogState::log_error`],
+//! so that a reader reports the state as unknown rather than empty. Every value read back goes
 //! through [`sanitize_line`] before it is printed.
 
 use super::sanitize::sanitize_line;
@@ -96,6 +97,11 @@ pub(crate) struct LogState {
     /// `guidance_dropped` records written after the last
     /// `guidance_injected` record, oldest first.
     pub drops_since_injection: Vec<Drop>,
+    /// Why the log could not be read, when it exists but was refused or
+    /// failed. `read` and `drops_since_injection` are then empty because
+    /// nothing is known, not because nothing happened, and readers must say
+    /// so.
+    pub log_error: Option<String>,
 }
 
 fn text(value: &serde_json::Value, key: &str) -> String {
@@ -171,6 +177,7 @@ pub(crate) fn read_log_state(guidance_dir: &Path) -> LogState {
                 "amplihack: ignoring operator guidance log {}: {reason}",
                 log.display()
             ));
+            state.log_error = Some(sanitize_line(&reason));
             return state;
         }
     };

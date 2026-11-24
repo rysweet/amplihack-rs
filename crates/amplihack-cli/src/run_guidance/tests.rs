@@ -1579,7 +1579,20 @@ fn log_state_does_not_follow_a_symlinked_log() {
     .unwrap();
     fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
     std::os::unix::fs::symlink(&target, run.parent().unwrap().join(GUIDANCE_LOG)).unwrap();
-    assert!(read_log_state(&run).read.is_empty());
+    let state = read_log_state(&run);
+    assert!(state.read.is_empty());
+    assert!(state.drops_since_injection.is_empty());
+    assert_eq!(state.log_error.as_deref(), Some("it is a symbolic link"));
+}
+
+#[test]
+fn log_state_has_no_log_error_for_a_missing_or_readable_log() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-ok");
+    assert_eq!(read_log_state(&run).log_error, None, "missing log");
+    append_entry(&run, "one", "alice").unwrap();
+    GuidanceForLaunch::from_dirs(vec![run.clone()]).record_injection("corr-1");
+    assert_eq!(read_log_state(&run).log_error, None, "readable log");
 }
 
 #[test]

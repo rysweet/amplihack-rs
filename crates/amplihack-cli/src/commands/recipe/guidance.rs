@@ -240,6 +240,11 @@ struct FolderJson {
     state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// Issue #3162: why this trusted folder's `guidance.log` could not be
+    /// read. Its entries' `read` is then `null` unless another folder
+    /// proves them read, and its drops are unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_error: Option<String>,
 }
 
 /// One entry's metadata. There is deliberately no field for its text.
@@ -253,9 +258,11 @@ struct EntryJson<'a> {
     from_step: bool,
     new: bool,
     bytes: usize,
-    /// Issue #3162: a `guidance_injected` record in a folder that holds the
-    /// entry (or a copy of it) names it.
-    read: bool,
+    /// Issue #3162: `true` when a `guidance_injected` record in a folder
+    /// that holds the entry (or a copy of it) names it; `null` when none
+    /// does and the log of at least one of those folders could not be read;
+    /// `false` otherwise.
+    read: Option<bool>,
 }
 
 /// One `guidance_dropped` record. Every value comes from a closed table or
@@ -284,13 +291,21 @@ impl LogStates {
             .or_insert_with(|| read_log_state(dir))
     }
 
-    /// Whether a step has read `entry`, from any folder that holds a copy.
-    fn read(&mut self, entry: &Entry) -> bool {
-        std::iter::once((entry.dir.as_path(), entry.name.as_str()))
+    /// Whether a step has read `entry`, from any folder that holds a copy:
+    /// `Some(true)` when one of their logs names it, `None` when none does
+    /// and one of their logs could not be read, `Some(false)` otherwise.
+    fn read(&mut self, entry: &Entry) -> Option<bool> {
+        let mut unknown = false;
+        for (dir, name) in std::iter::once((entry.dir.as_path(), entry.name.as_str()))
             .chain(entry.also_in.iter().map(|(d, n)| (d.as_path(), n.as_str())))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .any(|(dir, name)| self.of(dir).read.contains(name))
+        {
+            let state = self.of(dir);
+            if state.read.contains(name) {
+                return Some(true);
+            }
+            unknown |= state.log_error.is_some();
+        }
+        if unknown { None } else { Some(false) }
     }
 }
 
@@ -321,11 +336,15 @@ fn show_json<'a>(list: &[Folder], entries: &'a [Entry], since: &'a str) -> ShowJ
                 DirCheck::Missing => ("missing", None),
                 DirCheck::Untrusted(reason) => ("untrusted", Some(sanitize_line(reason))),
             };
+            let log_error = (f.check == DirCheck::Trusted)
+                .then(|| states.of(&f.path).log_error.clone())
+                .flatten();
             FolderJson {
                 path: path_text(&f.path),
                 source: Source::of(&f.path).label(),
                 state,
                 reason,
+                log_error,
             }
         })
         .collect();
@@ -373,10 +392,10 @@ fn read_and_drop_lines(list: &[Folder], entries: &[Entry]) -> Vec<String> {
     let mut lines: Vec<String> = entries
         .iter()
         .map(|e| {
-            let state = if states.read(e) {
-                "read"
-            } else {
-                "not yet read"
+            let state = match states.read(e) {
+                Some(true) => "read",
+                Some(false) => "not yet read",
+                None => "read state unknown (log unreadable)",
             };
             format!("entry {}: {state}", e.name)
         })

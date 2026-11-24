@@ -174,8 +174,7 @@ pub(crate) fn find(work_root: &Path, run_id: &str) -> Result<Option<Record>> {
     }
     let entries = fs::read_dir(&runs).with_context(|| format!("cannot list {}", runs.display()))?;
     let name = file_name(run_id);
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let euid = unsafe { libc::geteuid() };
+    let euid = current_euid();
     let mut first_error: Option<anyhow::Error> = None;
     for entry in entries {
         let found = entry
@@ -190,6 +189,13 @@ pub(crate) fn find(work_root: &Path, run_id: &str) -> Result<Option<Record>> {
         }
     }
     first_error.map_or(Ok(None), Err)
+}
+
+/// The effective user id of this process, which a trusted record must be
+/// owned by.
+fn current_euid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
 }
 
 /// The acceptable record `name` in the `procs` folder of run folder `entry`.
@@ -230,8 +236,7 @@ pub(crate) fn read_in(run_dir: &Path, run_id: &str) -> Result<Option<Record>> {
             return Err(error).with_context(|| format!("cannot check {}", procs.display()));
         }
     }
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let euid = unsafe { libc::geteuid() };
+    let euid = current_euid();
     read_record(&procs.join(file_name(run_id)), run_id, euid)
 }
 

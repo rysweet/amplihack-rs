@@ -108,3 +108,48 @@ fn a_context_with_no_pull_request_resolves_to_none() {
     let wd = tempfile::tempdir().unwrap();
     assert!(pr_ref_from_context(&ctx(&[("task", "x")]), wd.path()).is_none());
 }
+
+/// A number-only pointer resolves its repository with
+/// `git remote get-url origin`. Every past run leaves a pointer, so a
+/// pointer whose number is not the one asked for is passed over without
+/// running git; the one whose number matches still resolves.
+#[test]
+fn a_number_only_pointer_is_resolved_only_for_its_own_number() {
+    use super::guide_records::Pointer;
+    use super::live_runs::pointer_pr;
+    let repo = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let status = amplihack_git::command_in(repo.path())
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/Owner/Repo.git",
+    ]);
+    let record = Pointer {
+        pr_number: Some("7".to_string()),
+        cwd: Some(repo.path().display().to_string()),
+        ..Pointer::default()
+    };
+    let found = pointer_pr(&record, 7).expect("the matching number resolves");
+    assert_eq!(
+        (found.owner.as_str(), found.repo.as_str(), found.number),
+        ("Owner", "Repo", 7)
+    );
+    assert!(pointer_pr(&record, 8).is_none());
+    // A URL is parsed whatever the number asked for; the caller compares.
+    let by_url = Pointer {
+        pr_url: Some("https://github.com/o/r/pull/9".to_string()),
+        pr_number: Some("7".to_string()),
+        ..Pointer::default()
+    };
+    assert_eq!(pointer_pr(&by_url, 8).map(|p| p.number), Some(9));
+}

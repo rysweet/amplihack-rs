@@ -906,7 +906,7 @@ impl GuidanceForLaunch {
                 "bytes": self.bytes,
                 "entry_names": names,
             });
-            self.log_in(dir, &record, "added but not logged");
+            log_in(dir, &record, "added but not logged");
         }
     }
 
@@ -933,17 +933,19 @@ impl GuidanceForLaunch {
             record["agent"] = agent.into();
         }
         for dir in self.sources() {
-            self.log_in(dir, &record, "not delivered and the drop not logged");
+            log_in(dir, &record, "not delivered and the drop not logged");
         }
     }
+}
 
-    fn log_in(&self, dir: &Path, record: &serde_json::Value, what: &str) {
-        let Some(parent) = dir.parent() else { return };
-        if let Err(e) = log_event(&parent.join(GUIDANCE_LOG), record) {
-            warn(&format!(
-                "amplihack: warning: operator guidance was {what}: {e}"
-            ));
-        }
+/// Appends `record` to the `guidance.log` beside `dir`; a failure is a
+/// warning that says the guidance was `what`.
+fn log_in(dir: &Path, record: &serde_json::Value, what: &str) {
+    let Some(parent) = dir.parent() else { return };
+    if let Err(e) = log_event(&parent.join(GUIDANCE_LOG), record) {
+        warn(&format!(
+            "amplihack: warning: operator guidance was {what}: {e}"
+        ));
     }
 }
 

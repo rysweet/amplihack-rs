@@ -249,7 +249,19 @@ fn guide(
     // it read, so a line is printed once.
     let mut shown: Vec<String> = Vec::new();
     for (folder, _) in &folders {
-        for drop in read_log_state(folder).drops_since_injection {
+        let state = read_log_state(folder);
+        if let Some(reason) = &state.log_error {
+            // An unreadable log says nothing about drops; say that rather
+            // than print nothing, which would read as "none".
+            println!(
+                "{}",
+                sanitize_line(&format!(
+                    "drop state unknown for {}: guidance.log cannot be read: {reason}",
+                    folder.display()
+                ))
+            );
+        }
+        for drop in state.drops_since_injection {
             let line = render_drop_line(&drop);
             if !shown.contains(&line) {
                 println!("{line}");
