@@ -79,6 +79,8 @@ steps:
 
       Required outcomes. Every outcome the task text or guidance requires is one of the run's conditions. List each in `outcomes`, by a short name in your own words, with status met, unmet or rejected, the evidence that meets it, and for a rejected one the reason. The reading's `outcomes` lists every name an earlier turn gave: keep each one, with its latest status. A goal's merge action checks the list by name and refuses while any is unmet. A rejected outcome is answered in a PR comment with your reason, so never drop one silently.
 
+      Evidence goes wherever the task and the repository allow. When the task keeps the PR title or description exactly as they are, do not edit them: post the evidence in a PR comment and name that comment in the outcome's evidence. That comment counts as fully as text in the description would. Where the evidence sits is never a reason to stop, hand off or return the PR to draft; judge that it exists.
+
       Write `why`, args.text, args.decision and each outcome's name, evidence and reason in plain words in the journalistic style: short sentences, literal words, no bold labels and no em dashes. Say what you read, what you chose and why. Never quote guidance, the task text, tokens or other secrets in them; the text is published as a comment and kept in the turn record.
 
       End your reply with exactly one JSON object on its own line, with nothing after it. Keep args under 64 KiB, why under 16 KiB, at most 64 outcomes, each name under 200 bytes and each evidence or reason under 2000 bytes:

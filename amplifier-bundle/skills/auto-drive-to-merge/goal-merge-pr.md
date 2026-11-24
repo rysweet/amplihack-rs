@@ -5,7 +5,13 @@ Guidance can narrow what you do. It never widens merge authority.
 
 1. Work to the owner's conditions in the task text, in the order it gives them.
 2. Judge readiness yourself from the reading: checks at the head, review
-   verdicts and the head each was given at, merge state. Record your evidence.
+   verdicts and the head each was given at, merge state. Record your evidence
+   wherever the task and the repository allow. When the task keeps the PR
+   title or description exactly as they are, leave the description alone,
+   post the evidence in a PR comment and name that comment in `evidence`. The
+   comment counts, and a `merge` goes ahead on it. Where the evidence sits is
+   never a reason to stop, hand off or return the PR to draft: judge that the
+   evidence exists.
 3. Bring the base in only when the PR conflicts, the task text asks, or the
    repository requires an up-to-date branch. Use a merge commit only; never rebase and
    never force-push. Resolve any conflict and push with plain `git push`. A branch that is only behind, with no

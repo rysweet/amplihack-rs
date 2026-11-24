@@ -249,6 +249,28 @@ The mechanical check makes sure that no named outcome is forgotten at the
 merge. Whether an outcome is met stays the agent's judgement, with its
 evidence on record.
 
+#### Where evidence goes
+
+The agent records evidence wherever the task and the repository allow (#3129,
+the PR 1 case of 7114891207). When the task keeps the PR title or description
+exactly as they are, the agent leaves them alone, posts the evidence in a PR
+comment and names that comment in the outcome's `evidence`. The comment
+counts, and the merge goes ahead on it. The goal text (`goal-merge-pr.md`,
+rule 2) and the turn prompt (`autodrive-goal-turn.yaml`) both say so.
+
+No step requires evidence in the PR description. The parsed-record readiness
+gate is gone (see [Removed behaviour](#removed-behaviour)), so the location of
+the evidence cannot end a run, hand off or return the PR to draft. The merge
+action reads the description only to build the commit message
+(`autodrive_merge_message.sh`), so a kept description becomes the commit
+message as it is. The behaviour test
+`kept_description::a_kept_description_sends_the_evidence_to_a_comment_and_the_run_merges`
+runs a drive whose task keeps the description and whose PR body holds no
+evidence. It checks that the turn prompt carries the rule, that the evidence
+comment comes before the merge, that the run never edits the PR or returns it
+to draft, and that the merge goes ahead with the title and description as
+they were.
+
 To print the guidance a run has received:
 
 ```

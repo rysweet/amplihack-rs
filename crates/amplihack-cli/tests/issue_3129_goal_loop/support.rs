@@ -21,14 +21,18 @@
 //! appended to `calls.log`. `pr merge` refuses a `--match-head-commit` that is not
 //! the remote's head, and a method the repository does not allow (by default
 //! merge and squash are allowed and rebase is not; `allow_methods` changes
-//! that). `mss` overrides the merge state GitHub reports, `protection.json` is
+//! that). A merge that goes ahead saves its `--subject` and the `--body-file -`
+//! it was piped as `merge-subject` and `merge-body` ([`Harness::merge_message`]).
+//! `mss` overrides the merge state GitHub reports, `protection.json` is
 //! what classic branch protection's required status checks return, and
 //! `policy403` makes both policy endpoints refuse with a 403. `pr checks --watch` blocks reading
 //! `$GH_STATE/release.fifo`; a test releases it (`fifo_release`), and if the
 //! run exits early the harness's watcher opens the FIFO itself, so nothing
 //! sleeps and nothing times out.
 //!
-//! Stub agent. It reads nothing from the prompt. When a turn folder under
+//! Stub agent. Its choice never depends on the prompt; it saves what a turn's
+//! agent was sent under `prompts/<turn>.txt` ([`Harness::turn_prompt`]) so a
+//! test can check what the rendered prompt told the agent. When a turn folder under
 //! `$STUB_STATE_DIR/turns/` has a `reading.json` and no `decision.json`, it
 //! is the turn's agent: it runs the test's policy (`$STUB_POLICY`, a bash
 //! snippet) in the repo worktree with `$TURN` set, and prints the snippet's
@@ -111,6 +115,11 @@ case "${1:-} ${2:-}" in
     esac
     [ "$(settings | jq -r --arg k "$k" '.[$k] // false')" = true ] || { echo "merge method not allowed" >&2; exit 1; }
     pending && { echo "required status checks are expected" >&2; exit 1; }
+    prev=""
+    for a in "$@"; do
+      case "$prev" in --subject) printf '%s' "$a" > "$G/merge-subject" ;; --body-file) [ "$a" = - ] && cat > "$G/merge-body" ;; esac
+      prev="$a"
+    done
     : > "$G/merged"; echo merged ;;
   "pr comment")
     n=$(( $(cat "$G/comment.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$G/comment.count"
@@ -140,7 +149,7 @@ esac
 
 pub const STUB_AGENT: &str = r##"#!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then echo "2.1.329 (Claude Code)"; exit 0; fi
-cat > /dev/null
+input=$(cat)
 turn=""
 # STUB_STATE_GLOB (unquoted on purpose) finds turns when the runner picks the
 # state folder itself; otherwise the test's own folder.
@@ -152,6 +161,9 @@ if [ -z "$turn" ]; then
   exit 0
 fi
 printf '%s\n' "$turn" >> "$STUB_LOG/agent-turns.log"
+# What the turn's agent was sent, argv then stdin, for Harness::turn_prompt.
+mkdir -p "$STUB_LOG/prompts"
+{ printf '%s\n' "$@"; printf '%s\n' "$input"; } > "$STUB_LOG/prompts/${turn##*/}.txt"
 export TURN="$turn"
 cd "$STUB_REPO" || exit 1
 export GIT_AUTHOR_NAME=Stub GIT_AUTHOR_EMAIL=stub@example.invalid GIT_COMMITTER_NAME=Stub GIT_COMMITTER_EMAIL=stub@example.invalid
@@ -349,6 +361,13 @@ impl Harness {
         let raw = fs::read_to_string(self.state.join("merge-result.json"))
             .unwrap_or_else(|e| panic!("no merge-result.json: {e}"));
         serde_json::from_str(raw.trim()).unwrap()
+    }
+
+    /// The subject and body the merge that went ahead was given.
+    pub fn merge_message(&self) -> (String, String) {
+        let read =
+            |f: &str| fs::read_to_string(self.gh.join(f)).unwrap_or_else(|e| panic!("no {f}: {e}"));
+        (read("merge-subject"), read("merge-body"))
     }
 
     /// The run's report (`autodrive_outcome`) from `--format json` stdout.
@@ -582,6 +601,13 @@ impl Harness {
         let raw =
             fs::read_to_string(self.state.join("turns").join(turn).join("reading.json")).unwrap();
         serde_json::from_str(&raw).unwrap()
+    }
+
+    /// What the stub agent was sent as the turn's agent (argv, then stdin):
+    /// the prompt the runner rendered, goal text included.
+    pub fn turn_prompt(&self, turn: &str) -> String {
+        let p = self.base.join("prompts").join(format!("{turn}.txt"));
+        fs::read_to_string(&p).unwrap_or_else(|e| panic!("no prompt at {}: {e}", p.display()))
     }
 
     pub fn record(&self, turn: &str) -> String {
