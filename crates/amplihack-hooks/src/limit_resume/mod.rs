@@ -70,7 +70,7 @@ use amplihack_utils::secure_files::{euid, read_bounded};
 use decide::{Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key};
 use guard::{CommitError, FsGuard, GuardStore};
 use keys::{Key, Pane, PaneCheck, RESUME_KEYS, ScreenCheck};
-use log::LogEntry;
+use log::{LogEntry, LogWriteFailure, reduce_error};
 use std::cell::Cell;
 use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -163,11 +163,24 @@ pub enum Outcome {
     /// line: when the read before a wake fails (the session is still woken)
     /// or when a release fails after failed keys (the event stays used).
     GuardFailed,
-    /// Auto-switch is off. Logged only when it was turned off while
-    /// waiting.
+    /// Auto-switch is off, at the start or when a swap record would have
+    /// resumed the session. Always logged through [`Deps::log_existing`],
+    /// so a host that never opted in gets no new folder or file (FS-5).
     Disabled,
-    /// Not a usage-limit stop, or no usable session id. Not logged.
+    /// The stop's `error` is one of [`decide::NOT_LIMIT_ERRORS`], or the
+    /// input was not a `StopFailure`. Logged with the reduced `error` value
+    /// (issue #3172).
     NotLimit,
+    /// The payload's `session_id` was missing, empty or oversized. Logged
+    /// with `session=-` (issue #3172).
+    BadSessionId,
+    /// Standard input was not a readable hook payload of at most
+    /// [`MAX_STDIN_BYTES`]. Logged (issue #3172).
+    BadPayload,
+    /// The hook panicked; the panic was caught and the hook exits 0. One
+    /// attempt is made to log it, after the panic has unwound, so no lock is
+    /// held (issue #3172).
+    Panicked,
 }
 
 impl Outcome {
@@ -191,6 +204,9 @@ impl Outcome {
             Self::GuardFailed => "guard-failed",
             Self::Disabled => "disabled",
             Self::NotLimit => "not-limit",
+            Self::BadSessionId => "bad-session-id",
+            Self::BadPayload => "bad-payload",
+            Self::Panicked => "panicked",
         }
     }
 
@@ -236,8 +252,16 @@ pub trait Deps {
     /// The rotate ledger's last cycle, read at `now` (for the event key).
     fn read_cycle(&mut self, now: i64) -> Option<CycleStatus>;
     fn guard(&mut self) -> &mut dyn GuardStore;
-    /// Records a decision; must never fail or print.
-    fn log(&mut self, now: i64, entry: &LogEntry);
+    /// Records a decision, creating the resume folder when it is missing.
+    /// Returns why no line was written; never prints, panics or changes the
+    /// outcome. The caller records the first failure and reports it on
+    /// stderr when the hook exits 0 (issue #3172).
+    fn log(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure>;
+    /// As [`Deps::log`], but appends only to a resume folder that already
+    /// exists and creates nothing; a missing folder is
+    /// [`LogWriteFailure::DirMissing`]. Used for the early exits, so a host
+    /// that never opted in to auto-switch is left as it is (FS-5).
+    fn log_existing(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure>;
     /// Whether no rotator can record a cycle (see
     /// [`rotator_status::rotator_down`]).
     fn rotator_down(&mut self, now: i64) -> bool;
@@ -401,18 +425,89 @@ fn claimed(guard: &mut dyn GuardStore, event: &str, session: &str, start: i64) -
     Ok(guard.last_resume(session)?.is_some_and(|t| t > start))
 }
 
+/// The first log line this call could not write: its outcome and why.
+type LogFailed = Cell<Option<(Outcome, LogWriteFailure)>>;
+
+/// Whether `outcome` ends a call before the hook has anything to resume, so
+/// its line goes only to an existing resume folder and creates nothing.
+fn is_early_exit(outcome: Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Disabled
+            | Outcome::NotLimit
+            | Outcome::BadSessionId
+            | Outcome::BadPayload
+            | Outcome::Panicked
+    )
+}
+
+/// Writes `entry` and keeps the first failure in `failed`. A failure never
+/// changes control flow.
+///
+/// The early exits ([`is_early_exit`]) write through [`Deps::log_existing`]
+/// and so create no folder. With no resume folder, `disabled` leaves no
+/// record at all: a host that never opted in to auto-switch is left as it is
+/// (FS-5). Every other early exit with no folder is recorded as
+/// `dir_missing`, which reaches stderr.
+fn record<D: Deps + ?Sized>(deps: &mut D, now: i64, entry: &LogEntry, failed: &LogFailed) {
+    let written = if is_early_exit(entry.outcome) {
+        deps.log_existing(now, entry)
+    } else {
+        deps.log(now, entry)
+    };
+    let written = match written {
+        Err(LogWriteFailure::DirMissing) if entry.outcome == Outcome::Disabled => Ok(()),
+        other => other,
+    };
+    if let Err(reason) = written
+        && failed.get().is_none()
+    {
+        failed.set(Some((entry.outcome, reason)));
+    }
+}
+
+/// The line for a call that ends before any event exists: `event=-`, no
+/// ledger fields, and `session=-` unless the session id is usable.
+fn gate_line(session_id: Option<&str>, outcome: Outcome, error: String) -> LogEntry {
+    let session = match session_id.filter(|s| session_id_ok(Some(s))) {
+        Some(id) => session_key(id)[..LOG_KEY_CHARS].to_string(),
+        None => "-".to_string(),
+    };
+    LogEntry {
+        session,
+        event: "-".to_string(),
+        outcome,
+        live: None,
+        cycle: None,
+        swap_seq: None,
+        swap_live: None,
+        pane: None,
+        keys_sent: None,
+        resumes: None,
+        detail: None,
+        error,
+    }
+}
+
 /// Decides one hook invocation.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
-    run_with_affinity(input, deps, &mut None)
+    run_with_affinity(input, deps, &mut None, &Cell::new(None))
 }
 
 /// [`run_with`], also setting `affinity` to the organisation outcome of the
-/// swap record this resume follows. Only a resume reads it; every other
-/// outcome leaves it `None`.
+/// swap record this resume follows, and `log_failed` to the first line that
+/// could not be written. Only a resume reads `affinity`; every other outcome
+/// leaves it `None`.
+///
+/// Every call writes at least one line (issue #3172), the gate exits
+/// included. Nothing is logged while this process holds the guard lock:
+/// lines are written only after `commit` and `release` have returned, since
+/// the log takes the same lock file and would otherwise wait on itself.
 fn run_with_affinity<D: Deps + ?Sized>(
     input: &HookInput,
     deps: &mut D,
     affinity: &mut Option<Affinity>,
+    log_failed: &LogFailed,
 ) -> Outcome {
     let enabled = deps.auto_switch_on();
     let HookInput::StopFailure {
@@ -425,17 +520,27 @@ fn run_with_affinity<D: Deps + ?Sized>(
         ..
     } = input
     else {
-        return if enabled {
+        let outcome = if enabled {
             Outcome::NotLimit
         } else {
             Outcome::Disabled
         };
+        let now = deps.now();
+        record(
+            deps,
+            now,
+            &gate_line(None, outcome, String::new()),
+            log_failed,
+        );
+        return outcome;
     };
     let (error, details, message) = (
         error.as_deref(),
         error_details.as_deref(),
         last_assistant_message.as_deref(),
     );
+    // The only form of `error` that reaches a line: `[a-z_]`, never text.
+    let error_field = reduce_error(error);
     let mut facts = Facts {
         enabled,
         limit: is_limit(error),
@@ -443,10 +548,17 @@ fn run_with_affinity<D: Deps + ?Sized>(
         stop_hook_active: *stop_hook_active == Some(true),
         duplicate: false,
     };
-    match gate(&facts) {
-        Gate::Disabled => return Outcome::Disabled,
-        Gate::NotLimit => return Outcome::NotLimit,
-        _ => {}
+    let gate_exit = match gate(&facts) {
+        Gate::Disabled => Some((Outcome::Disabled, session_id.as_deref())),
+        Gate::NotLimit => Some((Outcome::NotLimit, session_id.as_deref())),
+        Gate::BadSessionId => Some((Outcome::BadSessionId, None)),
+        _ => None,
+    };
+    if let Some((outcome, session)) = gate_exit {
+        let now = deps.now();
+        let entry = gate_line(session, outcome, error_field);
+        record(deps, now, &entry, log_failed);
+        return outcome;
     }
 
     let session_id = session_id.as_deref().unwrap_or_default();
@@ -500,8 +612,9 @@ fn run_with_affinity<D: Deps + ?Sized>(
             keys_sent: n.keys_sent,
             resumes: resumes.get(),
             detail: n.detail,
+            error: error_field.clone(),
         };
-        deps.log(now, &entry);
+        record(deps, now, &entry, log_failed);
         outcome
     };
     let finish =
@@ -678,21 +791,68 @@ fn run_with_affinity<D: Deps + ?Sized>(
 /// only the log. These wakes record nothing (#3104). On `ResumedKeys` the
 /// warning went with the keys instead. Returns the exit code: 2 for those
 /// outcomes, 0 otherwise, including after keys were sent, for an oversized
-/// or malformed payload and for a panic.
+/// or malformed payload (`bad-payload`) and for a panic (`panicked`).
+///
+/// When a log line could not be written and the exit code is 0, one fixed
+/// line naming the outcome and the [`LogWriteFailure`] token goes to stderr
+/// (issue #3172). On exit 2 stderr goes to the model, so it carries the wake
+/// text alone.
 pub fn run_with_io<D: Deps + ?Sized>(
     stdin: impl Read,
     stderr: &mut dyn Write,
     deps: &mut D,
 ) -> i32 {
     let mut affinity = None;
+    let log_failed: LogFailed = Cell::new(None);
     let decided = catch_unwind(AssertUnwindSafe(|| {
         let raw = read_bounded(stdin, MAX_STDIN_BYTES).ok()?;
         if raw.len() as u64 > MAX_STDIN_BYTES {
             return None;
         }
         let input: HookInput = serde_json::from_slice(&raw).ok()?;
-        Some(run_with_affinity(&input, deps, &mut affinity))
+        Some(run_with_affinity(&input, deps, &mut affinity, &log_failed))
     }));
+    // Logged here, after `catch_unwind` has returned, so an unwound panic
+    // holds no lock. One attempt; a second panic is caught and ends here.
+    let late = match decided {
+        Ok(None) => Some(Outcome::BadPayload),
+        Err(_) => Some(Outcome::Panicked),
+        Ok(Some(_)) => None,
+    };
+    if let Some(outcome) = late {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let now = deps.now();
+            record(
+                deps,
+                now,
+                &gate_line(None, outcome, String::new()),
+                &log_failed,
+            );
+        }));
+    }
+    let code = exit_and_wake(decided, affinity, stderr);
+    if code == 0
+        && let Some((outcome, reason)) = log_failed.get()
+    {
+        let _ = writeln!(
+            stderr,
+            "amplihack limit-resume: the resume.log line for outcome={} was not written \
+             (reason={}); see resume/log-write-failed",
+            outcome.as_str(),
+            reason.as_str()
+        );
+        let _ = stderr.flush();
+    }
+    code
+}
+
+/// The exit code for `decided`, writing the wake text to `stderr` for the
+/// outcomes that wake the session.
+fn exit_and_wake(
+    decided: std::thread::Result<Option<Outcome>>,
+    affinity: Option<Affinity>,
+    stderr: &mut dyn Write,
+) -> i32 {
     match decided {
         Ok(Some(outcome)) if outcome.wakes() => {
             // Exit 2 alone wakes the session, so a failed write still
@@ -738,6 +898,23 @@ fn prompted_dir(root: &Path) -> PathBuf {
     root.join(".auto-switch.d").join("resume").join("prompted")
 }
 
+impl SystemDeps {
+    /// Leaves the fixed-name `log-write-failed` marker for a line that was
+    /// not written; [`log::mark_failure`] writes only into a private resume
+    /// folder. Returns `written` unchanged.
+    fn mark(
+        &self,
+        now: i64,
+        outcome: Outcome,
+        written: Result<(), LogWriteFailure>,
+    ) -> Result<(), LogWriteFailure> {
+        if let Err(reason) = written {
+            log::mark_failure(&self.guard.resume_dir(), now, outcome, reason);
+        }
+        written
+    }
+}
+
 /// The real environment for a resolved profile root.
 struct SystemDeps {
     root: PathBuf,
@@ -772,12 +949,24 @@ impl Deps for SystemDeps {
         &mut self.guard
     }
 
-    fn log(&mut self, now: i64, entry: &LogEntry) {
-        // An unsafe or uncreatable resume directory means no log line;
-        // the outcome is unchanged.
-        if let Ok(dir) = self.guard.ensure_resume_dir() {
-            log::append(&dir, &log::format_line(now, entry));
-        }
+    fn log(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        let written = match self.guard.ensure_resume_dir() {
+            Ok(dir) => log::append(&dir, &log::format_line(now, entry)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(LogWriteFailure::DirMissing),
+            Err(_) => Err(LogWriteFailure::DirUnprivate),
+        };
+        self.mark(now, entry.outcome, written)
+    }
+
+    fn log_existing(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        let written = match self.guard.existing_resume_dir() {
+            // Never created here (FS-5); `record` decides what a missing
+            // folder means for the outcome.
+            Ok(None) => Err(LogWriteFailure::DirMissing),
+            Ok(Some(dir)) => log::append(&dir, &log::format_line(now, entry)),
+            Err(_) => Err(LogWriteFailure::DirUnprivate),
+        };
+        self.mark(now, entry.outcome, written)
     }
 
     fn rotator_down(&mut self, now: i64) -> bool {
@@ -894,11 +1083,17 @@ fn epoch_now() -> i64 {
 }
 
 /// The `limit-resume` subcommand. Exits 0 at once, without reading stdin,
-/// when the profile root cannot be resolved safely; panics are silenced and
-/// become exit 0.
+/// when the profile root cannot be resolved safely, with one fixed line on
+/// stderr, the only record such a call can leave (issue #3172). Panics are
+/// silenced and become exit 0.
 pub fn run(stdin: impl Read) -> i32 {
     std::panic::set_hook(Box::new(|_| {}));
     let Ok(Some(root)) = catch_unwind(rotator_status::resolve_root) else {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "amplihack limit-resume: the profile root could not be resolved \
+             (reason=no_profile_root); no resume.log line was written"
+        );
         return 0;
     };
     let var = |k: &str| std::env::var(k).ok();

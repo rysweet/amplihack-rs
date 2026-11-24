@@ -1,38 +1,55 @@
-//! `resume/resume.log`: one line per decision after the gate passed the
-//! auto-switch and limit checks.
+//! `resume/resume.log`: one line per hook call, including the calls that
+//! end at the gate (`disabled`, `not-limit`, `bad-session-id`), a payload
+//! that cannot be read (`bad-payload`) and a caught panic (`panicked`)
+//! (issue #3172).
 //!
 //! ```text
-//! 2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=not-resumed live=spare cycle=swapped detail=no-tmux-pane
+//! 2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=not-resumed live=spare cycle=swapped detail=no-tmux-pane error=rate_limit
 //! ```
 //!
 //! Since #2085 a line may end with the swap record it was decided on, the
 //! pane's tag and the keys sent (only the fields that apply):
 //!
 //! ```text
-//! ... outcome=resumed-keys live=- cycle=- swap_seq=7 swap_live=spare pane=0c4e61a8d2f3 keys_sent=4
+//! ... outcome=resumed-keys live=- cycle=- swap_seq=7 swap_live=spare pane=0c4e61a8d2f3 keys_sent=4 error=rate_limit
 //! ```
 //!
 //! Every field is a hash prefix, a fixed outcome name, a checked profile
 //! name, the ledger's cycle outcome, a number or an `io::ErrorKind` name,
 //! and is reduced to `[A-Za-z0-9._:-]`, so no message text reaches the
 //! file. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
-//! Logging is best effort: a failure never changes the outcome or prints.
+//! Every line ends with `error=`, the payload's `error` value reduced by
+//! [`reduce_error`] to `[a-z_]`, at most 32 characters, and empty when the
+//! value is absent or not a string. Lines written before #3172 have no
+//! such field and are read as `error=`.
+//!
+//! [`append`] waits for the resume lock without a timeout
+//! ([`lock_exclusive`]) and returns why it wrote nothing, as a
+//! [`LogWriteFailure`]. The caller records that reason with
+//! [`mark_failure`] and on stderr; it never changes the outcome or the exit
+//! code.
+//!
+//! The lock file is the guard's own, so nothing may be logged while this
+//! process holds the guard lock on another descriptor: `flock` would wait on
+//! itself. `run_with_affinity` keeps to this by logging only after
+//! `commit` and `release` have returned.
 
 use super::Outcome;
 use amplihack_utils::secure_files::{
-    check_private_dir, lock_exclusive_timeout, open_private_nofollow,
+    check_private_dir, lock_exclusive, open_private_nofollow, write_private_atomic_nosync,
 };
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
 
 /// The log is rotated before it would grow past this size.
 pub const LOG_MAX_BYTES: u64 = 64 * 1024;
 const LOG_FILE: &str = "resume.log";
 const ROTATED_FILE: &str = "resume.log.1";
 const LOCK_FILE: &str = "lock";
-const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
+const FAILURE_MARKER: &str = "log-write-failed";
+/// The longest reduced `error` value.
+pub const MAX_ERROR_CHARS: usize = 32;
 const MAX_FIELD_CHARS: usize = 64;
 
 /// One decision.
@@ -65,6 +82,9 @@ pub struct LogEntry {
     /// [`super::keys::UNVERIFIED_REASONS`] for `pane-unverified`, or one of
     /// [`super::keys::UNRECOGNISED_REASONS`] for `screen-unrecognised`.
     pub detail: Option<String>,
+    /// The payload's `error` value, already reduced by [`reduce_error`]
+    /// (issue #3172). Empty when the value was absent or not a string.
+    pub error: String,
 }
 
 /// `s` with every character outside `[A-Za-z0-9._:-]` replaced by `-`, cut
@@ -84,9 +104,26 @@ pub fn sanitize(s: &str) -> String {
     if out.is_empty() { "-".to_string() } else { out }
 }
 
+/// The payload's `error` value as the log shows it: ASCII lowercased, every
+/// character outside `[a-z_]` replaced by `_`, cut to
+/// [`MAX_ERROR_CHARS`] characters; empty for an absent value. The only route
+/// from payload text to the log, so no message text can reach a line.
+pub fn reduce_error(error: Option<&str>) -> String {
+    error
+        .unwrap_or("")
+        .chars()
+        .take(MAX_ERROR_CHARS)
+        .map(|c| {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() { c } else { '_' }
+        })
+        .collect()
+}
+
 /// The log line for `entry` at `now` (epoch seconds), newline included.
 /// The fields added by issue #2085 appear only when set, so older lines
-/// keep their form.
+/// keep their form. `error=` always comes last (issue #3172), reduced again
+/// here so a caller cannot put other text into it.
 pub fn format_line(now: i64, entry: &LogEntry) -> String {
     let mut line = format!(
         "{} resume session={} event={} outcome={} live={} cycle={}",
@@ -110,6 +147,8 @@ pub fn format_line(now: i64, entry: &LogEntry) -> String {
             line.push_str(&format!(" {key}={}", sanitize(&v)));
         }
     }
+    line.push_str(" error=");
+    line.push_str(&reduce_error(Some(&entry.error)));
     line.push('\n');
     line
 }
@@ -136,38 +175,92 @@ fn utc_timestamp(secs: i64) -> String {
     )
 }
 
+/// Why [`append`] wrote no line. Each reason is a fixed `[a-z_]` token, so
+/// it can be shown on stderr and in the `log-write-failed` marker without
+/// carrying a path, an `io::Error` text or any payload value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogWriteFailure {
+    /// The resume folder does not exist. It is never created to log.
+    DirMissing,
+    /// The resume folder is not a private directory of the current user.
+    DirUnprivate,
+    /// The lock file could not be opened or locked.
+    LockFailed,
+    /// The log file could not be opened safely (a symlink, a FIFO, another
+    /// owner, a mode that is not private, or an I/O error).
+    OpenFailed,
+    /// The log could not be rotated or the line could not be written.
+    WriteFailed,
+}
+
+impl LogWriteFailure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirMissing => "dir_missing",
+            Self::DirUnprivate => "dir_unprivate",
+            Self::LockFailed => "lock_failed",
+            Self::OpenFailed => "open_failed",
+            Self::WriteFailed => "write_failed",
+        }
+    }
+}
+
 /// Appends `line` to `dir/resume.log` under the resume lock, rotating it
-/// first when it would pass `LOG_MAX_BYTES`. Does nothing when `dir` is not
-/// an existing private directory or when any step fails; never creates
-/// `dir` and never writes through a symlink.
-pub fn append(dir: &Path, line: &str) {
+/// first when it would pass `LOG_MAX_BYTES`. Never creates `dir`, never
+/// writes through a symlink and never opens anything but a private regular
+/// file, so a FIFO in place of the log or the lock cannot make it hang.
+///
+/// The lock is taken with [`lock_exclusive`], which waits as long as the
+/// holder holds it, with no timeout. The lock file is shared with the guard:
+/// the caller must not hold the guard lock while it logs.
+///
+/// Returns why no line was written; the caller records that reason (see
+/// [`mark_failure`]). A failure is never silent.
+pub fn append(dir: &Path, line: &str) -> Result<(), LogWriteFailure> {
+    if let Err(e) = check_private_dir(dir) {
+        return Err(if e.kind() == std::io::ErrorKind::NotFound {
+            LogWriteFailure::DirMissing
+        } else {
+            LogWriteFailure::DirUnprivate
+        });
+    }
+    let lock_file =
+        open_private_nofollow(&dir.join(LOCK_FILE)).map_err(|_| LogWriteFailure::LockFailed)?;
+    // Blocking on purpose (issue #3172): a timed lock dropped lines without
+    // a trace. Nothing in this process holds the guard lock here.
+    let _lock = lock_exclusive(lock_file).map_err(|_| LogWriteFailure::LockFailed)?;
+    let path = dir.join(LOG_FILE);
+    let mut file = open_private_nofollow(&path).map_err(|_| LogWriteFailure::OpenFailed)?;
+    let len = file
+        .metadata()
+        .map_err(|_| LogWriteFailure::OpenFailed)?
+        .len();
+    if len + line.len() as u64 > LOG_MAX_BYTES && len > 0 {
+        drop(file);
+        fs::rename(&path, dir.join(ROTATED_FILE)).map_err(|_| LogWriteFailure::WriteFailed)?;
+        file = open_private_nofollow(&path).map_err(|_| LogWriteFailure::OpenFailed)?;
+    }
+    file.write_all(line.as_bytes())
+        .map_err(|_| LogWriteFailure::WriteFailed)
+}
+
+/// Records that the line for `outcome` was not written, in the fixed-name
+/// marker `dir/log-write-failed`: one line with the time, the outcome and
+/// the reason, replacing the marker's previous content so it never grows.
+/// Writes only into an existing private `dir`, never through a symlink and
+/// without the resume lock. Its own failure has nowhere further to go; the
+/// caller's stderr line still records the reason.
+pub fn mark_failure(dir: &Path, now: i64, outcome: Outcome, reason: LogWriteFailure) {
     if check_private_dir(dir).is_err() {
         return;
     }
-    let Ok(lock_file) = open_private_nofollow(&dir.join(LOCK_FILE)) else {
-        return;
-    };
-    let Ok(_lock) = lock_exclusive_timeout(lock_file, LOCK_TIMEOUT) else {
-        return;
-    };
-    let path = dir.join(LOG_FILE);
-    let Ok(mut file) = open_private_nofollow(&path) else {
-        return;
-    };
-    let Ok(meta) = file.metadata() else {
-        return;
-    };
-    if meta.len() + line.len() as u64 > LOG_MAX_BYTES && meta.len() > 0 {
-        drop(file);
-        if fs::rename(&path, dir.join(ROTATED_FILE)).is_err() {
-            return;
-        }
-        file = match open_private_nofollow(&path) {
-            Ok(f) => f,
-            Err(_) => return,
-        };
-    }
-    // Best effort by design: the hook's only output channel is reserved for
-    // the resume message.
-    let _ = file.write_all(line.as_bytes());
+    let text = format!(
+        "{} log-write-failed outcome={} reason={}\n",
+        utc_timestamp(now),
+        outcome.as_str(),
+        reason.as_str()
+    );
+    // Ignored by design: see the doc comment. The stderr line is the record
+    // of last resort.
+    let _ = write_private_atomic_nosync(dir, FAILURE_MARKER, text.as_bytes());
 }

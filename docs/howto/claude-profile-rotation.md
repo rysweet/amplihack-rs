@@ -1850,10 +1850,27 @@ resume.
 
 ### Limits during a wait and after a resume
 
-The hook acts only when Claude Code runs it, on a `StopFailure` event with
-`error: "rate_limit"`. Every run it gets writes at least one line to
-`resume.log`, including `duplicate`. A limit stop with no line in
-`resume.log` is one for which Claude Code did not run the hook.
+The hook acts only when Claude Code runs it, on a `StopFailure` event. The
+registered matcher is `rate_limit`, and every stop it delivers is treated as
+a usage limit, as is any `error` value that is not a known non-limit one.
+Every run it gets writes one line to `resume.log`, including `duplicate` and
+the early exits `disabled`, `not-limit`, `bad-session-id` and `bad-payload`.
+Each line ends with `error=`, the payload's `error` value reduced to
+lowercase letters and underscores, so a stop that was refused shows which
+value Claude Code sent. A limit stop with no line in `resume.log` is one for
+which Claude Code did not run the hook.
+
+Two exceptions, each recorded elsewhere. With auto-switch off, the
+`disabled` line is written only when `resume/` already exists, because the
+hook creates nothing for a host that never opted in. In that case the call
+is a silent exit `0`: no line, no failure marker and no stderr output. When a line cannot be
+written, the reason is saved in `resume/log-write-failed` and, on exit `0`,
+one fixed line goes to stderr. To check a quiet day:
+
+```bash
+tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
+cat ~/.claude-profiles/.auto-switch.d/resume/log-write-failed
+```
 
 - **A limit while a hook for the same session is waiting.** Claude Code
   starts a second hook. Its event differs in the error text or the live

@@ -11583,9 +11583,11 @@ The hook resumes a session in one of two ways, never both:
   event tries again. The outcome says why the keys path was not taken. For
   `screen-unrecognised` a second fixed line precedes the resume message.
 
-Every other outcome exits `0` with nothing on stdout or stderr. The hook
+Every other outcome exits `0` and writes nothing to stdout. It writes
+nothing to stderr either, except one fixed line when a log line or the root
+could not be written or resolved (see [Resume log](#resume-log)). The hook
 never writes to stdout and never exits with any other status. A panic exits
-`0` with nothing printed. The resume message is exactly:
+`0`, after one attempt to log `panicked`. The resume message is exactly:
 
 ```
 amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
@@ -11645,8 +11647,8 @@ The checks run in this order. The first one that fails decides the outcome.
 
 | Step | Check | When it fails |
 |------|-------|---------------|
-| 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. Nothing under the root is created or written, and nothing but the toggle and the pointer file is read. Nothing is logged. |
-| 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`. Nothing is logged. |
+| 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Root not resolved: exit `0`. Nothing under the root is created or written, and nothing is logged because there is no log to reach; one fixed line goes to stderr. Auto-switch off: exit `0`, outcome `disabled`. The line is appended only if a private `resume/` folder already exists. The hook never creates it, so a host that has never rotated gets no new file. With no `resume/` folder the call is a silent exit `0`: nothing is written, no `log-write-failed` marker is recorded and nothing goes to stderr. |
+| 2 | Standard input is a JSON object of at most 1 MiB. The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present, at most 256 bytes and valid. | Exit `0`, with outcome `bad-payload` for input that is malformed or too large, `not-limit` for a stop that is not a usage limit (this includes input whose `hook_event_name` is not `StopFailure`), and `bad-session-id` for a missing, oversized or invalid id, with `session=-`. The limit test runs before the id check, so a `not-limit` line shows the 12-digit session prefix when `session_id` is valid and `session=-` when it is not. A `not-limit` line always has `event=-`, because no event claim is made. |
 | 3 | `stop_hook_active` is absent, `null` or `false` (any other non-boolean value counts as `true`). Before this check the hook reads the ledger once, for its `live` profile. When the check passes, it reads the [stop time](#stop-time), notes the current swap record and the session's last resume, and works out the login the session stopped on for the [event key](#resume-state-directory). When it fails, none of the transcript, the swap record or the resume state is read. | Exit `0`, outcome `stop-hook-active`. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
 | 5 | The session's record of earlier resumes is read, and its count is kept for the log. No count refuses a resume. A record that cannot be parsed is treated as no earlier resumes, and one `session-record-reset` line is logged. | Exit `0`, outcome `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
@@ -11706,17 +11708,31 @@ disk, and ignores every error, so it never fails or holds up a prompt.
 
 #### Limit detection
 
-The stop is a usage limit only when `error` is exactly `rate_limit`. The
-installed hook has matcher `rate_limit`, so Claude Code runs it only for that
-error. Any other value, an empty or missing `error`, or `unknown` is not a
-limit, whatever `last_assistant_message` or `error_details` say; message text
-is never matched.
+The stop is a usage limit unless `error` is one of these values, which
+Claude Code 2.1.329 uses for failures that are not a limit:
+
+`authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`,
+`verification_required`, `overloaded`, `invalid_request`, `model_not_found`,
+`server_error`, `max_output_tokens` and `cloud_credential_error`.
+
+The values are compared exactly and case-sensitively. So `rate_limit`,
+`billing_error`, `unknown`, an absent `error`, an `error` that is not a
+string and any value not yet seen are all limits. The installed hook has
+matcher `rate_limit`, so Claude Code decides which calls arrive; a renamed
+limit value therefore cannot end a call silently. Message text
+(`last_assistant_message`, `error_details`) is never matched.
+
+This rule is not an authorisation to type. Keys still need the swap record,
+the [proved pane](#resume-keys), a [screen the keys answer](#resume-screen)
+and the event claim, so a stop that is not a limit never gets keys. It exits
+`0` as `not-limit` only when its `error` is in the list above. A stop
+classed `billing_error` is accepted by this rule but reaches the hook only if
+the registered matcher is widened.
 
 Standard input is read up to 1 MiB; a larger payload or one that is not a
-JSON object exits `0` with nothing logged. A known field of an unexpected
-type (for example `error_details` sent as an object) is read as absent, so it
-neither stops the hook nor reaches the event key; an `error` that is not a
-string is therefore not a limit.
+JSON object exits `0` as `bad-payload`. A known field of an unexpected type
+(for example `error_details` sent as an object) is read as absent, so it
+neither stops the hook nor reaches the event key.
 
 #### Capacity for a resume
 
@@ -12218,23 +12234,28 @@ and epoch seconds. No pane id is stored.
 
 | Path | Contents |
 |------|----------|
-| `lock` | Lock file for steps 4 and 9. Waited on for at most 5 seconds. |
+| `lock` | Lock file for steps 4 and 9, and for appending to `resume.log`. The guard waits on it for at most 5 seconds. The log waits on it with a blocking lock, with no timeout; nothing is logged while the guard holds it. |
+| `log-write-failed` | One line, replaced each time, with the time, the outcome and the reason a log line could not be written: `dir_missing`, `dir_unprivate`, `lock_failed`, `open_failed` or `write_failed`. It does not grow. It is written only when `resume/` exists and is private, never into an unsafe folder. |
 | `events/<sha256 hex>` | One empty marker per limit event resumed with keys. A wake writes none. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the login the session stopped on, each written with its length, so no two different payloads share a name. The login the session stopped on is the noted swap record's `from_login` when the swap falls between one second before the [stop time](#stop-time) and the hook's start (`stop - 1 <= swapped_at <= start`). The bound depends on the stop alone, not on when the hook started or on the session's past resumes, so every run of the hook for one stop gets the same name, whatever second it starts in and before and after that stop is resumed; a repeat run is `duplicate` and never resumes the session a second time. The second before the stop is the allowance [Capacity for a resume](#capacity-for-a-resume) gives a hook that starts in the stop's second, so a session resumed through it has its event named for that record's `from_login`. A hook that starts two or more seconds after the stop does not resume on a swap in the second before the stop, but its event is still named for that swap's `from_login`. The cost: a session resumed on that swap in the second before its next stop, which stops again with the same text and whose hook starts two or more seconds late, gets the earlier event's name and is `duplicate`, so it is left stopped rather than sent keys twice. Without a stop time it is `from_login` when the record is after the stop by the rule in [Capacity for a resume](#capacity-for-a-resume) and not later than the hook's start. Otherwise it is the ledger's `live` profile when the hook started. A session that stops on the outgoing login while the rotator swaps, is resumed, and stops again on the new login therefore gets a new event, not `duplicate`. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
 | `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. The count is evidence for `resume.log` (`resumes=<n>`) and decides nothing. A file that cannot be parsed counts as no earlier resumes: it is rewritten holding only the current resume, and one `session-record-reset` line is logged. |
 | `prompted/<sha256 hex>` | One file per session, named like `sessions/`, holding the epoch seconds of your last prompt in it. Written by the `UserPromptSubmit` hook, replaced atomically. Removed after 7 days and 1 hour (the longest wait plus 1 hour) when a hook starts waiting or commits. A file that cannot be parsed or is not private makes a waiting hook end as `guard-failed`. |
-| `resume.log` | One line per decision from step 3 on, and one per swap record judged stale or without room. |
+| `resume.log` | One line per call: every decision, including the early exits `disabled`, `not-limit`, `bad-session-id` and `bad-payload`, and one per swap record judged stale or without room. A silent day therefore means the hook was not called. |
 | `resume.log.1` | The previous log. `resume.log` is renamed to it when it passes 64 KiB. |
 
 #### Resume log
 
 ```
-2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third
-2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4
-2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=not-resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane
-2026-11-09T00:43:12Z resume session=4e1c8b07d26a event=b73ad9052f14 outcome=screen-unrecognised live=work cycle=stayed swap_seq=42 swap_live=spare detail=screen-unknown
-2026-11-09T02:10:55Z resume session=c41d7a9e0b13 event=e9f2b6a01c7d outcome=resume-keys-failed live=spare cycle=stayed swap_seq=43 swap_live=spare pane=0d3a8f61e2b9 keys_sent=2 detail=session-gone
-2026-11-09T02:15:01Z resume session=6a0b3c9d1e42 event=17c5e8d2f0a6 outcome=watch-lost live=spare cycle=stayed detail=NotFound
+2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third error=rate_limit
+2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4 error=rate_limit
+2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=not-resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane error=rate_limit
+2026-11-09T00:43:12Z resume session=4e1c8b07d26a event=b73ad9052f14 outcome=screen-unrecognised live=work cycle=stayed swap_seq=42 swap_live=spare detail=screen-unknown error=rate_limit
+2026-11-09T02:10:55Z resume session=c41d7a9e0b13 event=e9f2b6a01c7d outcome=resume-keys-failed live=spare cycle=stayed swap_seq=43 swap_live=spare pane=0d3a8f61e2b9 keys_sent=2 detail=session-gone error=rate_limit
+2026-11-09T02:15:01Z resume session=6a0b3c9d1e42 event=17c5e8d2f0a6 outcome=watch-lost live=spare cycle=stayed detail=NotFound error=rate_limit
+2026-11-09T02:16:40Z resume session=8c2f5e71a0d9 event=- outcome=not-limit live=- cycle=- error=server_error
+2026-11-09T02:17:02Z resume session=- event=- outcome=bad-session-id live=- cycle=- error=rate_limit
 ```
+
+Every sample line above carries `error=`. A log written before the field existed holds lines without it; they stay valid and are read as `error=`.
 
 `session` and `event` are the first 12 hex digits of the hashes above. `live`
 and `cycle` are the ledger's `live` profile and `last_cycle.outcome` when the
@@ -12249,13 +12270,26 @@ after `cycle` appear only when they apply:
 | `pane` | The first 12 hex digits of the SHA-256 of the pane id, when keys were sent or tried, or a pane was proved or refused. The log does not say whether the pane came from the environment or from the lookup by terminal. |
 | `keys_sent` | How many of the four keys were sent (0–4). |
 | `resumes` | How many key resumes the session's record already held in the last 24 hours when the record was read, in step 5. It does not count the resume this line is about, so the first resume of a session logs `resumes=0`. A record that could not be parsed reads as `0`. Evidence for an operator; nothing branches on it. |
+| `error` | Always last, on every line. The payload's `error` value reduced to lowercase ASCII, with every character outside `a-z` and `_` written as `_`, at most 32 characters. An absent or non-string value gives `error=`. The value always matches `^[a-z_]*$`; `error_details` and message text are never read into the line. |
 | `detail` | Why there was no keys path, or why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. For `not-resumed`, the one fixed word `no-tmux-pane` (no pane was named or found). For `pane-unverified`, one of `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`. For `screen-unrecognised`, `screen-unreadable` or `screen-unknown`. The value is always one of these fixed words, never text taken from the pane, `tmux`, `/proc` or the environment. |
 
 Every field holds only `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`; any other
 character is written as `-`. The log never holds message text, error text,
 pane ids, account IDs or tokens. A log written by an earlier version, without
 the new fields, is still valid. Failing to write it does not change the
-outcome.
+outcome or the exit code, and it is never silent:
+
+- When `resume/` exists and is private, the reason is written to
+  `log-write-failed` (see [Resume state directory](#resume-state-directory)).
+- When the hook exits `0`, it writes one fixed line to stderr saying that a
+  log line or the root could not be written or resolved. It names a reason
+  from the fixed list, never a path or error text. On exit `2` stderr goes to
+  the model, so the resume message is unchanged.
+- Where the root cannot be resolved, the stderr line is the only record.
+- The early exits (`disabled`, `not-limit`, `bad-session-id`,
+  `bad-payload` and `panicked`) never create `resume/`. With no `resume/`
+  folder, each of them except `disabled` is recorded only by the stderr
+  line, with reason `dir_missing`.
 
 | Outcome | Exit | Meaning |
 |---------|------|---------|
@@ -12269,7 +12303,11 @@ outcome.
 | `watch-lost` | `0` | The [event wait](#event-wait) could not be set up, or a watch was lost. Never resumes. |
 | `no-capacity-timeout` | `0` | No swap record with room within 7 days. |
 | `moved-on` | `0` | You sent a prompt in that session during the wait, so the hook did not resume it. |
-| `disabled` | `0` | Auto-switch was off when a swap record would have resumed the session. |
+| `disabled` | `0` | Auto-switch was off, at the start of the call or when a swap record would have resumed the session. At the start, the line is written only if a private `resume/` folder already exists; otherwise the call is a silent exit `0`, with no line, no failure marker and no stderr output. |
+| `not-limit` | `0` | The stop was not a usage limit: its `error` is a known non-limit value (see [Limit detection](#limit-detection)), or the input was not a `StopFailure`. `error=` shows which value. `session=` is the session prefix when the id is valid, else `-`; `event=` is `-`. |
+| `bad-session-id` | `0` | `session_id` was missing, over 256 bytes or invalid. The line has `session=-`. |
+| `bad-payload` | `0` | Standard input was malformed or over 1 MiB. |
+| `panicked` | `0` | The hook panicked. One attempt is made to log this line; if the log cannot be reached, only the stderr line records it. |
 | `duplicate` | `0` | This limit event, or this session since the hook started, was already resumed with keys. Also given instead of a wake when that is found just before the wake. |
 | `session-record-reset` | `0` | The session's record of earlier resumes could not be parsed. It was treated as no earlier resumes; the next resume with keys rewrites it, and until then each run logs this line. The run goes on, and its own line follows. Logged once per run, with no record contents. |
 | `stop-hook-active` | `0` | Claude Code reported a stop hook already running. |

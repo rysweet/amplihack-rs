@@ -73,7 +73,7 @@ use amplihack_hooks::limit_resume::guard::{FsGuard, GuardStore};
 use amplihack_hooks::limit_resume::keys::{
     self, Key, Pane, PaneCheck, ProcEntry, ProcView, ScreenCheck,
 };
-use amplihack_hooks::limit_resume::log::{LogEntry, append, format_line};
+use amplihack_hooks::limit_resume::log::{LogEntry, LogWriteFailure, append, format_line};
 use amplihack_hooks::limit_resume::{Deps, Event, RESUME_MSG, UNRECOGNISED_MSG, run_with_io};
 use amplihack_utils::rotator_status::CycleStatus;
 use amplihack_utils::rotator_status::swap_record::{
@@ -748,8 +748,11 @@ impl Deps for StandInDeps {
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
-    fn log(&mut self, now: i64, entry: &LogEntry) {
-        append(&resume_dir(&self.profile), &format_line(now, entry));
+    fn log(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        append(&resume_dir(&self.profile), &format_line(now, entry))
+    }
+    fn log_existing(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        append(&resume_dir(&self.profile), &format_line(now, entry))
     }
     fn rotator_down(&mut self, _now: i64) -> bool {
         false

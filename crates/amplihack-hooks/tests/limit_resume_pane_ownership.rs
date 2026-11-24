@@ -40,7 +40,7 @@ use amplihack_hooks::limit_resume::keys::{
     Key, MAX_ANCESTRY, Pane, PaneCheck, ProcEntry, ProcView, RESUME_KEYS, ScreenCheck,
     UNVERIFIED_REASONS, check_pane_with, find_pane_with, parse_stat, tty_ancestor,
 };
-use amplihack_hooks::limit_resume::log::{LogEntry, append, format_line};
+use amplihack_hooks::limit_resume::log::{LogEntry, LogWriteFailure, append, format_line};
 use amplihack_hooks::limit_resume::{Deps, Event, Outcome, RESUME_MSG, run_with, run_with_io};
 use amplihack_types::HookInput;
 use amplihack_utils::rotator_status::CycleStatus;
@@ -357,6 +357,9 @@ fn exit_2_and_the_wake_message_follow_one_predicate() {
         Outcome::Disabled,
         Outcome::NotLimit,
         Outcome::ScreenUnrecognised,
+        Outcome::BadSessionId,
+        Outcome::BadPayload,
+        Outcome::Panicked,
     ];
     for o in all {
         assert_eq!(o.exit_code() == 2, o.wakes(), "{o:?}");
@@ -433,11 +436,18 @@ impl Deps for PaneDeps {
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
-    fn log(&mut self, now: i64, entry: &LogEntry) {
+    fn log(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
         append(
             &self.root.join(".auto-switch.d").join("resume"),
             &format_line(now, entry),
-        );
+        )
+    }
+    fn log_existing(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        let dir = self.root.join(".auto-switch.d").join("resume");
+        if !dir.exists() {
+            return Err(LogWriteFailure::DirMissing);
+        }
+        append(&dir, &format_line(now, entry))
     }
     fn rotator_down(&mut self, _now: i64) -> bool {
         false
