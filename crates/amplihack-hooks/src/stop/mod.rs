@@ -14,7 +14,7 @@ mod state_paths;
 #[cfg(test)]
 mod issue_2053_tests;
 
-use crate::protocol::{FailurePolicy, Hook};
+use crate::protocol::{FailurePolicy, Hook, ModelText};
 use amplihack_types::{HookInput, ProjectDirs, session_state_dir};
 use serde_json::Value;
 use state_paths::StopStatePaths;
@@ -32,6 +32,10 @@ impl Hook for StopHook {
 
     fn hook_event_name(&self) -> Option<&'static str> {
         Some("Stop")
+    }
+
+    fn model_text(&self) -> Option<ModelText> {
+        Some(ModelText::StopDecision)
     }
 
     fn failure_policy(&self) -> FailurePolicy {

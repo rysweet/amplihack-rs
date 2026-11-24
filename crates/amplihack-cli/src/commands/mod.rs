@@ -375,12 +375,24 @@ pub fn dispatch(command: Commands) -> Result<()> {
             max_turns,
             ui,
             prompt_file,
+            local_model,
             args,
         } => {
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
+            // A local-model launch (`--local-model` or
+            // AMPLIHACK_CODEX_LOCAL_MODEL) is selected, checked and has its
+            // inputs read here, before anything is created; `None` for an
+            // ordinary launch, which this leaves unchanged.
+            let local = launch::codex_local_model::prepare_launch(
+                local_model.as_deref(),
+                launch::codex_local_model::Conflicts {
+                    docker: launch::codex_local_model::docker_request(docker),
+                    auto,
+                },
+            )?;
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Codex, &args)?;
                 return auto_mode::run_auto_mode(
@@ -393,24 +405,26 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     prompt_file,
                 );
             }
-            launch::run_launch(
-                "codex",
-                "codex",
-                docker,
-                false,
-                false,
-                true,
-                false,
-                no_reflection,
-                subprocess_safe,
-                None,
-                args,
-                // Issue #1276: not the rustyclawd path — nothing has set an override
-                // on amplihack's behalf, so any override in the environment is the
-                // user's instruction.
-                OverrideOrigin::User,
-                None,
-            )
+            launch::codex_local_model::scoped(local, || {
+                launch::run_launch(
+                    "codex",
+                    "codex",
+                    docker,
+                    false,
+                    false,
+                    true,
+                    false,
+                    no_reflection,
+                    subprocess_safe,
+                    None,
+                    args,
+                    // Issue #1276: not the rustyclawd path — nothing has set an override
+                    // on amplihack's behalf, so any override in the environment is the
+                    // user's instruction.
+                    OverrideOrigin::User,
+                    None,
+                )
+            })
         }
         Commands::Amplifier {
             no_reflection,

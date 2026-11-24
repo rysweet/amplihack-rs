@@ -14,6 +14,7 @@ Amplihack supports interactive Codex sessions and unattended Codex recipe steps 
 - [Install and launch](#install-and-launch)
 - [Run an unattended recipe](#run-an-unattended-recipe)
 - [Sandbox and hook trust for agent steps](#sandbox-and-hook-trust-for-agent-steps)
+- [Local-model launches](#local-model-launches)
 - [Preserve configuration](#preserve-configuration)
 - [Skills, commands, and personas](#skills-commands-and-personas)
 - [Hook behavior and limitations](#hook-behavior-and-limitations)
@@ -131,7 +132,7 @@ codex exec --sandbox danger-full-access --dangerously-bypass-hook-trust \
   resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b -
 ```
 
-The flags were checked against codex-cli 0.166.0, whose `codex exec --help` lists `read-only`, `workspace-write` and `danger-full-access` as the values of `--sandbox`. There is no environment variable or configuration key to turn them off; a recipe that needs a different sandbox passes its own, as described below. The hook-trust flag is added to every `amplihack codex -- exec` launch, including one a person types, not only to recipe agent steps; issue #2009 tracks limiting it to recipe runs or adding an opt-out.
+The flags were checked against codex-cli 0.166.0, whose `codex exec --help` lists `read-only`, `workspace-write` and `danger-full-access` as the values of `--sandbox`. There is no environment variable or configuration key to turn them off; a recipe that needs a different sandbox passes its own, as described below. The hook-trust flag is added to every `amplihack codex -- exec` launch, including one a person types, not only to recipe agent steps; issue #2009 tracks limiting it to recipe runs or adding an opt-out. A [local-model launch](#local-model-launches) also adds it to interactive sessions.
 
 When amplihack adds the sandbox, it writes one line to stderr before Codex starts (issue #2010):
 
@@ -165,7 +166,7 @@ The line is reliably seen only when you run `amplihack codex -- exec` yourself. 
 - **No network override is added.** amplihack adds no `-c sandbox_workspace_write.*` setting. A caller's own `-c sandbox_workspace_write.network_access=<value>` is forwarded unchanged. It is not a sandbox choice, and under `danger-full-access` it restricts nothing.
 - **Hook trust is added once.** If the caller already passes `--dangerously-bypass-hook-trust`, it is not added again.
 - **The approvals bypass is never added.** amplihack never passes `--dangerously-bypass-approvals-and-sandbox` or `--yolo`. If a caller passes one, it is forwarded unchanged and counts as the caller's sandbox choice.
-- **Interactive sessions are unchanged.** An argv with no `exec` subcommand is passed to Codex byte for byte. This covers bare `amplihack codex`, `resume`, `resume --last` and a positional prompt. A `-c exec` or `-m exec` value, or an `exec` after a bare `--`, is not treated as the subcommand.
+- **Interactive sessions are unchanged, except local-model launches.** On an ordinary launch an argv with no `exec` subcommand is passed to Codex byte for byte. This covers bare `amplihack codex`, `resume`, `resume --last` and a positional prompt. A `-c exec` or `-m exec` value, or an `exec` after a bare `--`, is not treated as the subcommand. A [local-model launch](#local-model-launches) is the exception: amplihack puts `--dangerously-bypass-hook-trust` first in every argv, interactive or `exec`, unless it is already there.
 - **Nothing is written to configuration.** The flags exist only on the command line. amplihack writes no `sandbox_mode`, hook trust or bypass setting to any `config.toml`.
 
 To run an agent step with a stricter sandbox, pass it in the step's Codex arguments:
@@ -180,11 +181,67 @@ amplihack codex -- exec --sandbox read-only --output-last-message /d0/run/final-
 Full access is not safe for untrusted input. It gives a Codex step the same reach as a Claude step: anything the user account can read or write.
 
 - **Use the intended worktree.** Review agents run directly in the PR worktree and are instructed to leave it unchanged. Trusted workflow assets are selected independently of cwd. Repository instruction files are visible to the harness; direct worktree execution does not isolate the reviewer from them. Treat repository text as task data, not authority for credential access, publication, or cleanup. See [direct review](../reference/recipe-checkout-isolation.md#review-in-the-pr-worktree).
-- **A step can change what later steps run.** Under full access a step can write `.codex/hooks.json` at any level of the checkout, files under `~/.codex/`, `.git/hooks` and `.git/config`. Because every agent step bypasses hook trust, a hook planted by one step runs in later steps without a trust prompt. Codex loads hooks from `CODEX_HOME`, from installed plugins, and, when the project is marked trusted (`trust_level = "trusted"` in the user `config.toml`), from `.codex/` in the working directory and each parent up to the project root. The bypass flag does not mark a project trusted, and amplihack writes no trust entry. That condition gives no protection under full access, because a step can also write `~/.codex/config.toml` and set `trust_level` for the checkout itself. Issue #1993 tracks the planting of `.codex/hooks.json`.
+- **A step can change what later steps run.** Under full access a step can write `.codex/hooks.json` at any level of the checkout, files under `~/.codex/`, `.git/hooks` and `.git/config`. Because every agent step bypasses hook trust, a hook planted by one step runs in later steps without a trust prompt. Codex loads hooks from `CODEX_HOME`, from installed plugins, and, when the project is marked trusted (`trust_level = "trusted"` in the user `config.toml`), from `.codex/` in the working directory and each parent up to the project root. The bypass flag does not mark a project trusted, and amplihack writes no trust entry. That condition gives no protection under full access, because a step can also write `~/.codex/config.toml` and set `trust_level` for the checkout itself. Issue #1993 tracks the planting of `.codex/hooks.json`. In a [local-model session](#local-model-launches) the same holds for the generated home: interactive sessions bypass hook trust as well, so the `.codex/hooks.json` of any project trusted in `~/.amplihack/codex-local/<name>/config.toml` runs without review, and a session can write that file too.
 - **A step can reach credentials.** Files the user account can read, such as SSH keys, `~/.codex/auth.json`, the `gh` and git credential stores and cloud CLI tokens, are readable and writable by the step, and the network is open.
 - **The argv comes from the recipe author.** The caller-wins rule trusts the arguments after `--`. Prompt text, issue bodies and other untrusted content must reach Codex on stdin (`-`), never in argv, where a crafted `--sandbox` or `-c` value would be honoured.
 - **The injected sandbox overrides a stricter host setting.** A host `config.toml` that sets `read-only` or `workspace-write` does not restrict agent steps, because the command-line `--sandbox` takes precedence. A recipe that needs a stricter mode passes it explicitly with `--sandbox <mode>`, as shown above. amplihack does not read `config.toml` or `-p` profiles, so the stderr line cannot say whether a stricter host setting was overridden.
 - **Profiles do not count as a sandbox choice.** Command-line flags take precedence over a `-p <profile>` profile's `sandbox_mode`, so `amplihack codex -- -p ci exec -` still receives `--sandbox danger-full-access`. To keep the profile's mode, pass the same `--sandbox` value explicitly.
+
+## Local-model launches
+
+For a model served from your own machine, start Codex with
+`--local-model <name>`, or set `AMPLIHACK_CODEX_LOCAL_MODEL=<name>` so that
+recipe agent steps inherit the choice:
+
+```bash
+amplihack codex --local-model inkling
+AMPLIHACK_AGENT_BINARY=codex AMPLIHACK_CODEX_LOCAL_MODEL=inkling \
+  amplihack recipe run default-workflow -c task_description="Document the public interfaces" -c repo_path=.
+```
+
+`<name>` is a Codex profile file, `~/.codex/<name>.config.toml`, that holds
+the model and provider settings. Instead of the setup described on this page,
+amplihack:
+
+- builds or refreshes a Codex home of its own at
+  `~/.amplihack/codex-local/<name>/` and passes it to Codex as `CODEX_HOME`;
+- writes there a `config.toml` from the profile with settings that shrink the
+  prompt and keep Codex hooks on (`[features]` `hooks = true`, whatever the
+  profile says), a `hooks.json` with PreToolUse only (its own command-check hook
+  first, then your PreToolUse handlers), the dangerous-command rules file and
+  a short instruction file;
+- installs no plugin, no skills and no marketplace, and does not reconcile or
+  configure your `~/.codex`, which a local-model launch never writes to;
+- sets `AMPLIHACK_HOOK_TEXT=none` for Codex, so no amplihack hook adds text
+  to the model's context, while the pre-tool-use hook still denies a
+  destructive command;
+- puts `--dangerously-bypass-hook-trust` first on the command line, for
+  interactive and `exec` launches alike.
+
+Points to know before you use it:
+
+- **Session data stays in the generated home.** History, sessions, trust
+  entries and any login made in a local session are stored under
+  `~/.amplihack/codex-local/<name>/`, including any `auth.json`. Your
+  `~/.codex/auth.json` and `~/.codex/config.toml` are not read or copied.
+- **The variable governs `amplihack codex` only.** `amplihack claude`,
+  `amplihack copilot` and `amplihack amplifier` ignore
+  `AMPLIHACK_CODEX_LOCAL_MODEL`. They do inherit `AMPLIHACK_HOOK_TEXT=none`
+  when started from inside a local session.
+- **Fewer channels, not a sandbox.** `web_search = "disabled"` and
+  `project_doc_max_bytes = 0` reduce traffic and stop Codex reading
+  `AGENTS.md`, which removes it as a way to inject instructions. These are
+  properties of Codex settings, not guarantees: depending on the sandbox, the
+  shell can still reach the network and read files.
+- **`approval_policy`.** The profile's value is kept; when it has none, the
+  generated `config.toml` sets `"never"`, as an ordinary launch fills in for
+  `~/.codex/config.toml`.
+- **Not available with `--docker` or `--auto`, or outside Unix.**
+
+See [Run amplihack codex with a Local Model](./run-codex-with-a-local-model.md)
+for the steps, and
+[Codex Local-Model Launches](../reference/codex-local-model-launch.md) for
+every rule.
 
 ## Preserve configuration
 
@@ -249,6 +306,8 @@ Canonical skill trees retain their directory layout. Generated instruction name 
 | Stop | Native no-op; Claude transcript-driven continuation is unavailable |
 | SessionEnd | Performs session cleanup without continuing a turn |
 
+A [local-model session](#local-model-launches) registers only PreToolUse, in its own Codex home, and runs with `AMPLIHACK_HOOK_TEXT=none`, so no amplihack hook adds text to the model's context; see [Hook text setting](../reference/hook-specifications.md#hook-text-setting).
+
 Only command handlers are registered. Prompt and agent hook handlers, unsupported events, and input rewriting are outside this integration. Codex transcripts are not treated as Claude transcripts; transcript-dependent checks cannot be claimed when the required data is unavailable. Advisory hook errors retain existing fail-open behavior with diagnostics; explicit policy denials remain denials. Protocol responses go to stdout and diagnostics to stderr.
 
 ### SessionStart output by host
@@ -263,7 +322,7 @@ On the Codex path, payload parse errors and handler errors during PreToolUse fai
 
 > **Wrapper-only variable.** Do not `export AMPLIHACK_HOOK_PROTOCOL=codex` in your shell profile, CI environment, or launcher settings. A global export flips Claude Code and Copilot hooks to the Codex protocol and breaks them. If you run a hook by hand for testing, set it inline: `echo '{"hook_event_name":"PreToolUse","tool_name":"shell_command","tool_input":{"command":"ls"}}' | AMPLIHACK_HOOK_PROTOCOL=codex amplihack-hooks pre-tool-use`. Hand-running the installed `bin/hook` wrapper is equivalent, since it sets the variable itself.
 
-Trust is user-controlled for installation and interactive sessions. `amplihack install` and interactive `amplihack codex` launches never insert `--dangerously-bypass-hook-trust`; review and trust the command definitions through Codex's `/hooks` interface, and do not bypass hook trust to make an installation succeed. Recipe agent steps (`amplihack codex -- exec …`) are the exception: they receive `--dangerously-bypass-hook-trust` so that an untrusted or changed hook definition cannot silently turn off the command-check hook. See [Sandbox and hook trust for agent steps](#sandbox-and-hook-trust-for-agent-steps) for the rules and the trusted-checkout precondition. Hooks execute with user privileges, so the model sandbox does not isolate hook commands. [Official packaging documentation](https://developers.openai.com/plugins/build/plugins) describes the native manifest and portable plugin runtime variables.
+Trust is user-controlled for installation and ordinary interactive sessions. `amplihack install` and ordinary interactive `amplihack codex` launches never insert `--dangerously-bypass-hook-trust`; review and trust the command definitions through Codex's `/hooks` interface, and do not bypass hook trust to make an installation succeed. There are two exceptions. Recipe agent steps (`amplihack codex -- exec …`) receive `--dangerously-bypass-hook-trust` so that an untrusted or changed hook definition cannot silently turn off the command-check hook. [Local-model launches](#local-model-launches) receive it for interactive sessions too, for the same reason, and there trusted-project hooks also run without review. See [Sandbox and hook trust for agent steps](#sandbox-and-hook-trust-for-agent-steps) for the rules and the trusted-checkout precondition. Hooks execute with user privileges, so the model sandbox does not isolate hook commands. [Official packaging documentation](https://developers.openai.com/plugins/build/plugins) describes the native manifest and portable plugin runtime variables.
 
 ## Runner delivery and removal
 

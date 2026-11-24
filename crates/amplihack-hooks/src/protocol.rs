@@ -9,6 +9,9 @@
 mod codex;
 use codex::{codex_output, normalize_codex_input};
 
+/// The kind of model text a hook declares through [`Hook::model_text`].
+pub use crate::hook_text::ModelText;
+use crate::hook_text::{self, Action};
 use amplihack_types::HookInput;
 use anyhow::Context;
 use serde::Serialize;
@@ -54,6 +57,14 @@ pub trait Hook {
     fn hook_event_name(&self) -> Option<&'static str> {
         None
     }
+
+    /// The model text this hook produces, which `AMPLIHACK_HOOK_TEXT`
+    /// governs. `None`, the default, means the hook never reads the setting
+    /// and prints the same output under every value: a hook written without
+    /// thinking about the setting is ungoverned.
+    fn model_text(&self) -> Option<ModelText> {
+        None
+    }
 }
 
 /// Run a hook with full protocol handling.
@@ -65,6 +76,11 @@ pub trait Hook {
 /// 4. Writes JSON to stdout
 /// 5. On any failure (including panics): outputs `{}` (fail-open) or error (fail-closed)
 /// 6. Emits telemetry to stderr
+///
+/// A hook that declares [`Hook::model_text`] also reads `AMPLIHACK_HOOK_TEXT`
+/// once, before stdin: under `none` a context hook's model text is removed
+/// after it runs, and the stop hook approves without running. Failure output
+/// is the same under every value.
 pub fn run_hook<H: Hook>(hook: H) {
     let start = Instant::now();
     let hook_name = hook.name();
@@ -74,6 +90,17 @@ pub fn run_hook<H: Hook>(hook: H) {
     // must not select the hook protocol.
     let codex = codex_hook_protocol_selected();
     let security = codex && hook_name == "pre_tool_use";
+    // AMPLIHACK_HOOK_TEXT is read once, before stdin, and only by a hook that
+    // declares the model text it produces; every other hook never reads it.
+    let text_action = hook.model_text().map_or(Action::Pass, |text| {
+        let parsed = hook_text::from_env();
+        if let Some(record) = &parsed.record {
+            // Intentional: the record is for the operator, and a closed or
+            // failing stderr must not change the hook's output or exit status.
+            let _ = writeln!(io::stderr(), "{record}");
+        }
+        hook_text::action(parsed.setting, text)
+    });
 
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<()> {
         let input_json = read_stdin(codex)?;
@@ -117,8 +144,24 @@ pub fn run_hook<H: Hook>(hook: H) {
             write_stdout(if codex { b"{}" } else { br#"{"version":1}"# })?;
             return Ok(());
         }
+        // AMPLIHACK_HOOK_TEXT=none: stop approves without running, so nothing
+        // blocks the end of a turn or adds text to it.
+        if text_action == Action::Approve {
+            write_stdout(if codex {
+                b"{}"
+            } else {
+                hook_text::APPROVE.as_bytes()
+            })?;
+            return Ok(());
+        }
 
         let output = hook.process(input)?;
+        // AMPLIHACK_HOOK_TEXT=none: the hook has run (its bookkeeping is
+        // done); its model text is removed before the protocol conversion.
+        let output = match text_action {
+            Action::StripContext => hook_text::strip_model_text(output),
+            Action::Pass | Action::Approve => output,
+        };
         let output = if codex {
             codex_output(event, output)
         } else {

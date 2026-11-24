@@ -2,6 +2,8 @@
 
 amplihack registers 8 hooks in `~/.claude/settings.json` when you run `amplihack install`. This page documents each hook: its Claude Code event, the binary or script that runs, and its timeout.
 
+The `session-start`, `stop`, `workflow-classification-reminder` and `user-prompt-submit` hooks add text to the model's context or decide whether a turn may end. `AMPLIHACK_HOOK_TEXT=none` turns that off without touching the other hooks; see [Hook text setting](#hook-text-setting).
+
 ## Canonical Hook Table
 
 | # | Claude Code Event | Command Kind | Command | Timeout |
@@ -1255,6 +1257,111 @@ lock. A missing, damaged or unreadable file, an unresolvable profile root,
 the switch being off, or any error in the check gives no notice, and the
 hook's output is byte-identical to what it is without this feature. The
 check never makes a hook fail.
+
+Under [`AMPLIHACK_HOOK_TEXT=none`](#hook-text-setting) the notice is removed
+from the output with the rest of the hook text, but the notice record is
+still written, so it is not shown later in that session.
+
+## Hook text setting
+
+`AMPLIHACK_HOOK_TEXT` decides whether the hooks that add text to the model's
+context add it. It exists for sessions where every prompt token is costly,
+such as a [local-model Codex launch](./codex-local-model-launch.md), which sets
+it to `none` for the Codex process it starts. With the variable unset, every
+hook prints exactly what it printed before the variable existed.
+
+### Values
+
+| Value | Meaning |
+|---|---|
+| unset, empty or whitespace only | `full` |
+| `full` | Every hook prints its usual output. |
+| `none` | The governed hooks below add no text; the others are unchanged. |
+| anything else | `full`, with one line on stderr |
+
+The value is trimmed and compared without regard to ASCII case, so ` None `
+means `none`. Each hook process reads the variable once, before it reads its
+input, and only if the hook is one of the governed hooks below.
+
+An unknown value, including one that is not valid UTF-8, writes one line to
+stderr naming the variable and the value, escaped and cut to 64 characters:
+
+```text
+amplihack-hooks: AMPLIHACK_HOOK_TEXT="bogus-value" is not full or none; using full
+```
+
+The line goes to stderr only, never to stdout, so it never reaches the
+model's context. Writing it cannot fail the hook or change its exit status.
+Ungoverned hooks never read the variable and never write the line.
+
+### Governed hooks
+
+| Hook | Under `none` | Default protocol stdout | Codex protocol stdout |
+|---|---|---|---|
+| `session-start` | Runs as usual, then removes the model text | `{"hookSpecificOutput":{"hookEventName":"SessionStart","indexing_status":"…"}}`, plus `warnings` when setup reported any | `{}` |
+| `user-prompt-submit` and its alias `user-prompt` | Runs as usual, then removes the model text | `{}` | `{}` |
+| `workflow-classification-reminder` | Runs as usual, then removes the model text | `{}` | `{}` |
+| `stop` and its alias `agentStop` | Approves without running | `{"decision":"approve"}` | `{}` |
+
+**Removing the model text.** After a context hook has run, three fields are
+removed from its output before the protocol conversion:
+
+- top-level `additionalContext`;
+- `hookSpecificOutput.additionalContext`;
+- top-level `systemMessage`.
+
+`hookSpecificOutput` is removed as well when it is left holding only
+`hookEventName`. `indexing_status` and `warnings` stay: they are diagnostics
+for the operator, and the Codex adapter drops them. Control fields
+(`decision`, `reason`, `continue`, `stopReason`, `permissionDecision`) are
+never removed, so a control decision always outranks text suppression.
+`systemMessage` is removed even though Claude Code shows it to you rather than
+the model: `none` means no hook text of any kind.
+
+Because the hook still runs, its bookkeeping still happens. Among other
+things, `user-prompt-submit` still records the prompt's time for a waiting
+`limit-resume` hook, and the [capacity notice](#capacity-notice-in-hooks)
+record is still written.
+
+**Stop.** Under the Codex protocol `stop` already prints `{}` without running,
+and an unknown event is still a no-op; those checks come first. Otherwise,
+under `none`, `stop` prints `{"decision":"approve"}` without calling the hook,
+so lock mode, power steering and reflection do not run and nothing blocks the
+end of a turn. `approve` is reachable only from `stop`.
+
+### Ungoverned hooks
+
+`pre-tool-use`, `post-tool-use`, `pre-compact`, `session-stop` and its
+aliases, and `precommit-prefs` never read the variable and behave the same
+under every value. In particular, `pre-tool-use` under `none` still denies a
+destructive command with the same decision and exit code.
+
+`limit-resume` runs before the hook dispatcher and never reads the variable.
+Under `none` it still types the resume keys and exits `2` with the same
+stderr line, so a session stopped at a usage limit still resumes.
+
+### Failures
+
+An error or panic in a governed hook prints the same output under every
+value: `{}` for these fail-open hooks. Telemetry is unchanged.
+
+### Inheritance
+
+The variable passes through every amplihack launcher unchanged. A Claude,
+Copilot or Codex session started inside a session that has
+`AMPLIHACK_HOOK_TEXT=none`, for example by a recipe agent step, therefore
+also gets no hook text. amplihack sets the variable only for local-model Codex
+launches and never removes it. Set it yourself, or unset it for one child with
+`env -u AMPLIHACK_HOOK_TEXT`, as you need.
+
+```sh
+# The model gets no amplihack hook text in this Claude session.
+AMPLIHACK_HOOK_TEXT=none amplihack claude
+
+# Check one hook by hand: prints {} instead of the classification reminder.
+echo '{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"Fix the failing test"}' | \
+  AMPLIHACK_HOOK_TEXT=none amplihack-hooks workflow-classification-reminder
+```
 
 ## Hook Runtime Location
 

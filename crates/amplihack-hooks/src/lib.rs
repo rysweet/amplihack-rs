@@ -5,6 +5,8 @@
 
 mod agent_memory;
 mod capacity_notice;
+/// AMPLIHACK_HOOK_TEXT: whether the governed hooks add text to the model's context.
+mod hook_text;
 mod original_request;
 mod prompt_input;
 mod state_dir;

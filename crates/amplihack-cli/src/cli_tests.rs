@@ -944,4 +944,88 @@ mod tests {
             assert!(sessions.find_subcommand(sub).is_some(), "{sub}");
         }
     }
+
+    /// `amplihack codex --local-model <name>` (D9). The flag takes a non-empty
+    /// value and has no clap `env`: the variable is read by hand so that an
+    /// empty one counts as unset, and parsing never sees it.
+    mod local_model_flag {
+        use super::launcher_env_lock;
+        use crate::*;
+        use clap::CommandFactory;
+
+        fn local_model(args: &[&str]) -> (Option<String>, Vec<String>) {
+            match Cli::try_parse_from(args)
+                .unwrap_or_else(|e| panic!("{args:?}: {e}"))
+                .command
+            {
+                Commands::Codex {
+                    local_model, args, ..
+                } => (local_model, args),
+                other => panic!("expected codex, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn the_flag_is_parsed_before_the_codex_arguments() {
+            let _env = launcher_env_lock();
+            assert_eq!(
+                local_model(&[
+                    "amplihack",
+                    "codex",
+                    "--local-model",
+                    "inkling",
+                    "--",
+                    "exec",
+                    "-"
+                ]),
+                (
+                    Some("inkling".to_string()),
+                    vec!["exec".to_string(), "-".to_string()]
+                )
+            );
+            assert_eq!(
+                local_model(&["amplihack", "codex", "--local-model=inkling"]),
+                (Some("inkling".to_string()), vec![])
+            );
+            assert_eq!(
+                local_model(&["amplihack", "codex", "--", "--local-model", "inkling"]).0,
+                None,
+                "after `--` it is a Codex argument"
+            );
+        }
+
+        #[test]
+        fn the_variable_does_not_reach_parsing() {
+            let _env = launcher_env_lock();
+            let _var =
+                crate::test_support::EnvGuard::set([("AMPLIHACK_CODEX_LOCAL_MODEL", "inkling")]);
+            assert_eq!(local_model(&["amplihack", "codex"]).0, None);
+        }
+
+        #[test]
+        fn an_empty_or_missing_value_is_a_usage_error() {
+            let _env = launcher_env_lock();
+            for args in [
+                &["amplihack", "codex", "--local-model", ""][..],
+                &["amplihack", "codex", "--local-model="][..],
+                &["amplihack", "codex", "--local-model"][..],
+            ] {
+                let err = Cli::try_parse_from(args).expect_err("refused");
+                assert_eq!(err.exit_code(), 2, "{args:?}: {:?}", err.kind());
+            }
+        }
+
+        #[test]
+        fn the_help_names_the_variable() {
+            let mut cmd = Cli::command();
+            let codex = cmd
+                .find_subcommand_mut("codex")
+                .expect("codex command should exist");
+            let mut help = Vec::new();
+            codex.write_long_help(&mut help).unwrap();
+            let help = String::from_utf8(help).unwrap();
+            assert!(help.contains("--local-model"), "{help}");
+            assert!(help.contains("AMPLIHACK_CODEX_LOCAL_MODEL"), "{help}");
+        }
+    }
 }

@@ -59,6 +59,9 @@ semver = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+# Local-model Codex launches split hooks.json commands into shell words to
+# recognise amplihack's own pre-tool-use handlers.
+shell-words = { workspace = true }
 signal-hook = { workspace = true }
 time = { version = "0.3", default-features = false, features = ["std"] }
 tar = "0.4"

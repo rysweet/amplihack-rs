@@ -255,6 +255,18 @@ MODEL SELECTION (issues #1421, #1527)
         /// Read the initial auto-mode prompt from a file (requires --auto).
         #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
         prompt_file: Option<PathBuf>,
+        /// Launch for a local model. NAME is the Codex profile
+        /// <Codex home>/NAME.config.toml that holds the model's provider
+        /// settings. amplihack starts Codex on a small Codex home of its own,
+        /// ~/.amplihack/codex-local/NAME, and its hooks add no text to the
+        /// model's context. Also selected by AMPLIHACK_CODEX_LOCAL_MODEL=NAME,
+        /// which a recipe agent step inherits; this flag wins over it.
+        #[arg(
+            long = "local-model",
+            value_name = "NAME",
+            value_parser = clap::builder::NonEmptyStringValueParser::new()
+        )]
+        local_model: Option<String>,
         /// Extra args passed to codex
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

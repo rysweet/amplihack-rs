@@ -123,17 +123,30 @@ pub fn ensure_assets_match_binary_version(args: &[OsString]) -> Result<()> {
 /// Use parsed CLI provider intent for startup repair, ahead of inherited hints.
 /// The scoped selection restores the caller's provider after the check.
 pub fn ensure_assets_for_command(args: &[OsString], command: &crate::Commands) -> Result<()> {
-    let provider = match command {
+    let provider = startup_provider(command);
+    crate::freshness::with_provider(provider, || ensure_assets_match_binary_version(args))
+}
+
+/// The provider start-up repair runs for. A local-model `amplihack codex`
+/// launch, by its flag or AMPLIHACK_CODEX_LOCAL_MODEL and valid or not, gets
+/// none, so the repair never installs or updates the Codex plugin in the
+/// user's Codex home (SF8).
+pub(crate) fn startup_provider(command: &crate::Commands) -> &'static str {
+    match command {
         crate::Commands::Launch { .. } | crate::Commands::Claude { .. } => "claude",
         crate::Commands::Copilot { .. } => "copilot",
+        crate::Commands::Codex { local_model, .. }
+            if crate::commands::launch::codex_local_model::requested(local_model.as_deref()) =>
+        {
+            ""
+        }
         crate::Commands::Codex { .. } => "codex",
         crate::Commands::Amplifier { .. } => "amplifier",
         crate::Commands::RustyClawd { .. } => "rustyclawd",
         // Generic commands repair generic assets; direct install retains its
         // separate all-provider semantics and is in the startup skip list.
         _ => "",
-    };
-    crate::freshness::with_provider(provider, || ensure_assets_match_binary_version(args))
+    }
 }
 
 /// Resolve ordinary Codex launches before asset repair registers native resources.
@@ -1717,5 +1730,64 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
             stamp_before,
             "the newer install's stamp must be untouched"
         );
+    }
+}
+
+/// Local-model launches of `amplihack codex` (SF8, L13): start-up repair runs
+/// with no Codex provider for any local-model selection, valid or not, so it
+/// never installs or updates the Codex plugin in the user's Codex home.
+/// Every other command keeps its provider.
+#[cfg(test)]
+mod startup_provider_tests {
+    use super::startup_provider;
+    use crate::test_support::{EnvGuard, env_lock};
+
+    const VAR: &str = "AMPLIHACK_CODEX_LOCAL_MODEL";
+
+    /// Parsing reads `AMPLIHACK_AUTO_MAX_TURNS`, so callers hold the lock.
+    fn command(args: &[&str]) -> crate::Commands {
+        crate::Cli::try_parse_from(args)
+            .unwrap_or_else(|e| panic!("{args:?} parses: {e}"))
+            .command
+    }
+
+    #[test]
+    fn a_local_model_selection_maps_codex_to_no_provider() {
+        let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let mut env = EnvGuard::unset([VAR]);
+
+        let ordinary = command(&["amplihack", "codex", "--", "exec", "-"]);
+        assert_eq!(startup_provider(&ordinary), "codex");
+        for name in ["inkling", "../not-a-valid-name"] {
+            let by_flag = command(&["amplihack", "codex", "--local-model", name]);
+            assert_eq!(startup_provider(&by_flag), "", "flag {name:?}");
+        }
+
+        for name in ["inkling", "../not-a-valid-name", " "] {
+            env.assign(VAR, name);
+            assert_eq!(startup_provider(&ordinary), "", "variable {name:?}");
+        }
+
+        env.assign(VAR, "");
+        assert_eq!(
+            startup_provider(&ordinary),
+            "codex",
+            "empty counts as unset"
+        );
+    }
+
+    #[test]
+    fn other_commands_keep_their_provider_whatever_the_variable() {
+        let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _env = EnvGuard::set([(VAR, "inkling")]);
+        for (args, provider) in [
+            (&["amplihack", "claude"][..], "claude"),
+            (&["amplihack", "launch"][..], "claude"),
+            (&["amplihack", "copilot"][..], "copilot"),
+            (&["amplihack", "amplifier"][..], "amplifier"),
+            (&["amplihack", "recipe", "list"][..], ""),
+        ] {
+            assert_eq!(startup_provider(&command(args)), provider, "{args:?}");
+        }
     }
 }

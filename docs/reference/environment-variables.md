@@ -41,6 +41,8 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES](#amplihack_context_env_budget_bytes)
 - [Variables read by amplihack](#variables-read-by-amplihack)
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
+  - [AMPLIHACK_CODEX_LOCAL_MODEL](#amplihack_codex_local_model)
+  - [AMPLIHACK_HOOK_TEXT](#amplihack_hook_text)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
   - [AMPLIHACK_GOVERNOR](#amplihack_governor)
@@ -1100,6 +1102,60 @@ or out of either backend without modifying on-disk state.
 
 See [Memory Backend Reference](./memory-backend.md) for the complete
 backend configuration reference.
+
+---
+
+### AMPLIHACK_CODEX_LOCAL_MODEL
+
+**Type:** string (Codex profile name)
+**Values:** 1 to 64 characters from `A-Z`, `a-z`, `0-9`, `.`, `_` and `-`; not `.` or `..`
+**Default:** unset, which gives an ordinary `amplihack codex` launch
+**Config key:** none
+**Read by:** `amplihack codex`, including recipe agent steps on Codex
+**Set by:** a local-model `amplihack codex` launch, for the Codex process it starts
+
+Makes an `amplihack codex` launch a
+[local-model launch](./codex-local-model-launch.md): Codex runs with its own
+home at `~/.amplihack/codex-local/<name>/`, built from the profile
+`<user Codex home>/<name>.config.toml`, with `AMPLIHACK_HOOK_TEXT=none`. It is
+the environment form of `amplihack codex --local-model <name>`, for recipe
+agent steps, which inherit their environment and cannot add flags. The flag
+wins when both are given. An empty value counts as unset; the value is not
+trimmed. An invalid name is an error and never falls back to an ordinary
+launch. `amplihack claude`, `amplihack copilot` and `amplihack amplifier`
+ignore it.
+
+```sh
+AMPLIHACK_AGENT_BINARY=codex AMPLIHACK_CODEX_LOCAL_MODEL=inkling \
+  amplihack recipe run default-workflow -c task_description="Add a doc comment to fn parse_name in src/name.rs" -c repo_path=.
+```
+
+See [Run amplihack codex with a Local Model](../howto/run-codex-with-a-local-model.md).
+
+---
+
+### AMPLIHACK_HOOK_TEXT
+
+**Type:** string (enum)
+**Values:** `full` | `none`, trimmed and compared without regard to ASCII case
+**Default:** `full` when unset, empty or whitespace only
+**Config key:** none
+**Read by:** `amplihack-hooks` for `session-start`, `user-prompt-submit` (and `user-prompt`), `workflow-classification-reminder` and `stop` (and `agentStop`) only
+**Set by:** a local-model `amplihack codex` launch, to `none`, for the Codex process it starts
+
+Under `none` the session-start, user-prompt-submit and
+workflow-classification-reminder hooks add no text to the model's context,
+and the stop hook approves without blocking or adding text. `pre-tool-use`
+still denies a destructive command, and `limit-resume` still resumes a session
+stopped at a usage limit; neither reads the variable. An unknown value
+behaves as `full` and writes one line to stderr naming the variable, never to
+the hook's stdout.
+
+amplihack passes the variable through every launcher unchanged, so a Claude,
+Copilot or Codex session started inside a local-model session inherits
+`none`. Use `env -u AMPLIHACK_HOOK_TEXT` to give one child the full text
+again. Full rules and the output of each hook: see
+[Hook text setting](./hook-specifications.md#hook-text-setting).
 
 ---
 

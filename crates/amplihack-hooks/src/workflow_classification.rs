@@ -19,7 +19,7 @@ mod state;
 pub use coordination::{COORDINATION_NOTE, COORDINATION_PREFIX};
 
 use crate::prompt_input::extract_user_prompt;
-use crate::protocol::{FailurePolicy, Hook};
+use crate::protocol::{FailurePolicy, Hook, ModelText};
 use crate::session_start::{is_nested_recipe_session, is_workflow_active};
 use amplihack_types::{HookInput, ProjectDirs, amplihack_state_root, session_state_dir_under};
 use coordination::{is_explicit_work_request, strip_coordination_prefix};
@@ -60,6 +60,10 @@ enum TopicDecision {
 impl Hook for WorkflowClassificationReminderHook {
     fn name(&self) -> &'static str {
         "workflow_classification_reminder"
+    }
+
+    fn model_text(&self) -> Option<ModelText> {
+        Some(ModelText::ClassificationReminder)
     }
 
     fn failure_policy(&self) -> FailurePolicy {

@@ -16,7 +16,7 @@ mod tests;
 mod tests_capacity;
 
 use crate::original_request::{capture_original_request, format_original_request_context};
-use crate::protocol::{FailurePolicy, Hook};
+use crate::protocol::{FailurePolicy, Hook, ModelText};
 use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 
@@ -37,6 +37,10 @@ impl Hook for SessionStartHook {
 
     fn hook_event_name(&self) -> Option<&'static str> {
         Some("SessionStart")
+    }
+
+    fn model_text(&self) -> Option<ModelText> {
+        Some(ModelText::SessionContext)
     }
 
     fn failure_policy(&self) -> FailurePolicy {

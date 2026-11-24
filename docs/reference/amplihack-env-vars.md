@@ -43,7 +43,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_AGENT_BINARY_SOURCE` | internal |  | Tag describing where an exported `AMPLIHACK_AGENT_BINARY` came from (`session:`, `default:`, `tmux_server:`, `user_config:`). |
 | `AMPLIHACK_ALLOW` | test-only |  | Not an env var: half of a split string in a runner-ancestry test that proves the unreleased pre-#1593 name no longer forces a downgrade. |
 | `AMPLIHACK_AMPLIHACK_BINARY_PATH` | test-only |  | Instance of the `AMPLIHACK_<TOOL>_BINARY_PATH` lookup, set only by blarify tests. |
-| `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | internal |  | `AMPLIHACK_<TOOL>_BINARY_PATH` lookup for `amplihack-hooks` during install. |
+| `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | internal |  | `AMPLIHACK_<TOOL>_BINARY_PATH` lookup for `amplihack-hooks` during install, and for the hook command a [local-model Codex launch](./codex-local-model-launch.md#hooksjson) writes; there the result must be an absolute path. |
 | `AMPLIHACK_ARTIFACT_GUARD_BASELINE` | internal |  | Baseline handed to the artifact guard by workflow steps. |
 | `AMPLIHACK_ARTIFACT_GUARD_PREEXISTING` | internal |  | Pre-existing paths handed to the artifact guard by workflow steps. |
 | `AMPLIHACK_ASSET_RESOLVER` | internal |  | Path to `amplihack-asset-resolver`, exported to recipe steps. |
@@ -62,6 +62,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` | launcher |  | Off unless the trimmed value is exactly `1`, the inverse of `AMPLIHACK_CLEANUP_ON_EXIT`. `1` states that the folder named by `CARGO_TARGET_DIR` belongs to this run alone, so the run removes it when it ends. It is an assertion of exclusive ownership of the whole folder and is not verified. A folder is refused with a warning when it is a symbolic link, is not owned by you, has a parent that other users can write to (without the sticky bit), is a mount point or has one directly inside it, is a git checkout, or lacks a Cargo marker while holding files; the full list of checks is in the how-to. A mount deeper inside is not detected, and an active build is protected only by one non-waiting attempt on each `.cargo-lock` the folder and its immediate subfolders hold. The runner exports it as empty to steps, including under `--dry-run`; `--detach` passes the launcher's value to the pane. See [Remove a run's own build output](../howto/clean-up-after-recipe-runs.md#remove-a-runs-own-build-output). |
 | `AMPLIHACK_CLI_INTEGRATION_QUIET_CHILD` | test-only |  | Test-support child-process switch. |
 | `AMPLIHACK_CODEX_BINARY_PATH` | test-only |  | Set only by install tests; the lookup itself is `AMPLIHACK_<TOOL>_BINARY_PATH`. |
+| `AMPLIHACK_CODEX_LOCAL_MODEL` | user preference |  | Codex profile name that makes `amplihack codex` a local-model launch with its own home under `~/.amplihack/codex-local/`; the environment form of `--local-model`, for recipe agent steps. The flag wins; empty means unset; an invalid name is an error. A local-model launch also exports it to Codex. Ignored by other launchers. See [Codex Local-Model Launches](./codex-local-model-launch.md#selecting-a-local-model-launch). |
 | `AMPLIHACK_CODEX_TERMINAL_TEST_FIXTURE` | test-only |  | Launcher test fixture switch. |
 | `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` | user preference |  | Seconds each Codex account's live rate-limit read may take in `amplihack profile usage`, `1` to `300`; default `20`. Any other value warns once and uses the default. See [Codex read deadline](profile-command.md#codex-read-deadline). |
 | `AMPLIHACK_CONTEXT` | internal |  | Prefix of the `AMPLIHACK_CONTEXT_<KEY>` variables `recipe run` exports for context values. |
@@ -98,6 +99,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_HOOK_CONTRACT` | internal |  | Not an env var: suffix of the `CANONICAL_AMPLIHACK_HOOK_CONTRACT` constant. |
 | `AMPLIHACK_HOOK_PROTOCOL` | internal |  | Hook wire protocol, set by the Codex plugin's wrapper script. |
 | `AMPLIHACK_HOOK_SPECS` | internal |  | Not an env var: the install crate's hook spec table. |
+| `AMPLIHACK_HOOK_TEXT` | user preference |  | `full` (default) or `none`. Under `none`, `session-start`, `user-prompt-submit`, `workflow-classification-reminder` and `stop` add no text for the model and `stop` never blocks; `pre-tool-use` and `limit-resume` are unaffected. An unknown value is `full`, with one stderr line. A local-model Codex launch sets `none` for Codex, and every launcher passes it through, so nested sessions inherit it. See [Hook text setting](./hook-specifications.md#hook-text-setting). |
 | `AMPLIHACK_IDLE_POLL_MS` | user preference |  | Idle-watchdog poll interval. |
 | `AMPLIHACK_IDLE_TIMEOUT_SECS` | user preference |  | Idle-watchdog timeout. |
 | `AMPLIHACK_INDICATORS` | internal |  | Not an env var: the project-init marker list. |

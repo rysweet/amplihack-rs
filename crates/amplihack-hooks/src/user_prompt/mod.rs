@@ -17,7 +17,7 @@ mod tests_capacity;
 
 use crate::post_tool_use::begin_workflow_enforcement_tracking;
 use crate::prompt_input::extract_user_prompt;
-use crate::protocol::{FailurePolicy, Hook};
+use crate::protocol::{FailurePolicy, Hook, ModelText};
 use crate::session_start::{is_nested_recipe_session, is_workflow_active};
 use amplihack_types::HookInput;
 use serde_json::Value;
@@ -58,6 +58,10 @@ impl Hook for UserPromptSubmitHook {
 
     fn hook_event_name(&self) -> Option<&'static str> {
         Some("UserPromptSubmit")
+    }
+
+    fn model_text(&self) -> Option<ModelText> {
+        Some(ModelText::PromptContext)
     }
 
     fn failure_policy(&self) -> FailurePolicy {
