@@ -146,7 +146,7 @@ MINOR_JQ='($led[0] // {}) as $L
   | [.[] | objects | {id, summary}] | .[:50]
   | map(. as $m
     | (if $m.id == null then null else ($m.id | tostring | .[0:64]) end) as $id
-    | $L["minor:" + ($id // "")] as $e
+    | (if $id == null then null else $L["minor:" + $id] end) as $e
     | (if $e.status == "met" and ($e.treatment == "fixed" or $e.treatment == "filed") then $e.treatment else "open" end) as $o
     | {id:$id, summary:$m.summary, outcome:$o}
       + (if ($e.evidence | type) == "string" and $e.evidence != "" then {evidence:($e.evidence | .[0:300])} else {} end)
