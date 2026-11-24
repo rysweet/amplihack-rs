@@ -324,8 +324,13 @@ pub(crate) fn assert_no_account_detail(f: &Fixture, out: &Output) {
 
 // --- a capacity wait starts and ends -----------------------------------------
 
+/// The two end reasons one rotator write can produce, see the assertion in
+/// the test below.
+const ROTATOR_ENDINGS: [&str; 2] = ["end reason=rotator capacity", "end reason=login changed"];
+
 /// AC1: a weekly limit on a `$HOME/.claude` step waits for capacity, and the
-/// rotator's next cycle ends the wait.
+/// rotator's next cycle ends the wait. The cycle changes the live login and
+/// reports capacity in one write, so the end is logged under either reason.
 ///
 /// Issue #2911 added one line to the sequence: `waiting_for_capacity
 /// reason=reset_too_far` before its own `start`. The wait's deadline is the
@@ -348,7 +353,16 @@ fn ac1_a_home_step_waits_on_a_weekly_limit_and_the_rotator_ends_the_wait() {
         "{ev:?}"
     );
     assert!(ev[1].ends_with(" bound=reset+margin"), "{ev:?}");
-    assert_eq!(ev[2..], ["end reason=rotator capacity", "resume attempt=2"]);
+    // The rotator's one write stamps `measured_at` and moves the live login.
+    // The wait compares `measured_at` with its own start in whole seconds, so
+    // whichever of the two signals it reads first ends the wait. Either shows
+    // that the rotator's write ended it, and no other ending is accepted.
+    assert!(
+        ROTATOR_ENDINGS.contains(&ev[2].as_str()),
+        "the wait ends on the rotator's write: {ev:?}\n{}",
+        describe(&out)
+    );
+    assert_eq!(ev[3], "resume attempt=2", "{ev:?}");
     assert_eq!(
         f.call("0", 2)["PROFILE"],
         "<unset>",
