@@ -254,6 +254,9 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let runner = pinned_runner_with_the_capability();
+        let runner = runner
+            .canonicalize()
+            .unwrap_or_else(|e| panic!("canonicalize {}: {e}", runner.display()));
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
