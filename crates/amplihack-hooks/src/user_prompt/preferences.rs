@@ -17,7 +17,10 @@ pub(crate) fn load_user_preferences_with_patterns(dirs: &ProjectDirs) -> (Option
             match fs::read_to_string(path) {
                 Ok(content) => {
                     let has_learned = has_learned_patterns(&content);
-                    let prefs = extract_preferences(&content);
+                    let mut prefs = extract_preferences(&content);
+                    // A placeholder tells the model nothing, so the per-prompt
+                    // table leaves it out.
+                    prefs.retain(|(_, value)| !value.trim().eq_ignore_ascii_case("(not set)"));
                     if !prefs.is_empty() {
                         return (Some(build_preference_context(&prefs)), has_learned);
                     }

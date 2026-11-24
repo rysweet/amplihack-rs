@@ -676,3 +676,47 @@ Use the customise command to change these.
 
     assert!(!has_learned_patterns);
 }
+
+#[test]
+fn not_set_preference_is_left_out_of_the_table() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Verbosity | balanced |
+| Coding Standards | (not set) |
+";
+
+    let (context, _) = load_preferences_fixture(content);
+
+    let context = context.unwrap();
+    assert!(context.contains("**Verbosity**"));
+    assert!(!context.contains("**Coding Standards**"));
+}
+
+#[test]
+fn no_table_when_every_preference_is_not_set() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Verbosity | (not set) |
+| Communication Style | (Not Set) |
+| Coding Standards |   (NOT SET)   |
+";
+
+    let (context, _) = load_preferences_fixture(content);
+
+    assert!(context.is_none());
+}
+
+#[test]
+fn value_containing_not_set_in_other_text_is_kept() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Coding Standards | not set by default, use rustfmt |
+";
+
+    let (context, _) = load_preferences_fixture(content);
+
+    assert!(context.unwrap().contains("**Coding Standards**"));
+}
