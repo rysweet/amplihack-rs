@@ -44,7 +44,7 @@ Follow these steps in order. Check off each step as you complete it.
 gh auth status 2>&1
 ```
 
-Parse the output to identify all authenticated accounts (e.g., `rysweet` on github.com, `rysweet_microsoft` on github.com). Store the list of `account` values and note which is currently active.
+Parse the output to identify all authenticated accounts (for example `<account-a>` and `<account-b>`, both on github.com). Store the list of `account` values and note which is currently active.
 
 ### Step 2: Gather data per account
 
@@ -163,7 +163,7 @@ If yes, follow the infrastructure setup in `reference.md` § Infrastructure Setu
 
 ## Authentication & Automation
 
-- **Local (multi-account)**: Use `./run.sh [days]` which leverages `gh auth switch` across all locally authenticated accounts. This is the recommended approach for users with multiple accounts (e.g., public + EMU).
+- **Local (multi-account)**: Follow Steps 1 and 2 above, which use `gh auth switch` across every locally authenticated account. This is the approach for users with more than one account (for example a public account and an enterprise managed account).
 - **GitHub Actions (single-account)**: Use the workflow templates with a PAT secret. A PAT is scoped to one identity and cannot cross accounts.
 - **Two-PAT approach**: For Actions across two accounts, use separate PAT secrets (`ACCOUNT1_PAT`, `ACCOUNT2_PAT`) with explicit `--header "authorization: token $PAT"` per API call.
 - **GitHub Pages is static only** — report generation must happen elsewhere (local script, Actions, gh-aw). Pages just serves the output.

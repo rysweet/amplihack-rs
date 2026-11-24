@@ -56,6 +56,9 @@ mod issue_2575_agentic_merge_ready;
 // #3129: the goal loop, its shared module and its behaviour tests.
 #[path = "issue_3129_goal_loop/mod.rs"]
 mod issue_3129_goal_loop;
+// #3129 PR 2: the build goal loop and the old tools it keeps alive.
+#[path = "issue_3129_build_loop/mod.rs"]
+mod issue_3129_build_loop;
 // #1888: the merge method, through `amplihack recipe run` and the real runner.
 mod issue_1888_merge_method_recipe_run;
 #[path = "issue_2582_context_off_argv.rs"]

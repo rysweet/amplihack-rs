@@ -33,6 +33,11 @@
 #                               or fails; never creates or substitutes one
 #   azdo_task_work_item       — the work item a task text names (AB#N, else #N),
 #                               for the Azure DevOps reuse lookup
+#   tracking_issue_reference: which issue the run is about and where the
+#                               number came from (#3129): `N context`,
+#                               `N marked-reference`, `N bare-reference` or
+#                               `none`. Pure text, no network call; code spans
+#                               and fenced blocks are not read
 
 derive_local_tracking_id() {
   if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
@@ -102,6 +107,37 @@ _tracking_issue_refs() {
 _tracking_issue_candidates() {
   { _tracking_issue_refs marked; _tracking_issue_refs bare; } \
     | awk '$1 ~ /^[1-9][0-9]{0,8}$/ && !seen[$1]++ && c < 5 { print; c++ }'
+}
+
+# tracking_issue_reference: which issue this run is about, and where the number
+# came from (#3129, mistt-app-ui #480). The build loop's reading calls it every
+# turn, so the agent knows that a PR naming that issue may be the very work it
+# is continuing. An explicit issue number (EXISTING_ISSUE_NUMBER) wins as
+# `context`; otherwise the first task-text candidate, marked references first,
+# as step-03 ranks them. Fenced code blocks and inline code spans are removed
+# first, because a command quoted in the task is not the run's issue. Pure
+# text: it asks GitHub nothing, so it cannot fail on the network. Prints one
+# line and returns 0.
+tracking_issue_reference() {
+  local explicit stripped n kind
+  explicit="${EXISTING_ISSUE_NUMBER:-}"; explicit="${explicit#\#}"
+  if [[ "$explicit" =~ ^[1-9][0-9]{0,8}$ ]]; then
+    printf '%s context\n' "$explicit"; return 0
+  fi
+  # shellcheck disable=SC2016  # the backticks are literal markdown code markers
+  stripped="$(printf '%s\n' "${TASK_DESC:0:65536}" | awk '
+    /^ ? ? ?(```|~~~)/ { fence = !fence; next }
+    !fence { print }' | sed -E 's/`+[^`]*`+/ /g')"
+  # The candidate helpers read TASK_DESC from the caller scope; this local
+  # copy shadows it for them only.
+  local TASK_DESC="$stripped"
+  read -r n kind < <(_tracking_issue_candidates | awk 'NR == 1 { print }') || true
+  case "${kind:-}" in
+    marked) printf '%s marked-reference\n' "$n" ;;
+    bare) printf '%s bare-reference\n' "$n" ;;
+    *) printf 'none\n' ;;
+  esac
+  return 0
 }
 
 # Return 0 only if $1 is a single-line https:// URL ending in /issues/$2.

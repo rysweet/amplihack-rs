@@ -15,7 +15,11 @@ description: >
   pull request, issue and account calls the shipped steps make, records every
   call, and exits 96 on any call it does not answer, GraphQL included),
   `claude` and `codex`. The `claude` stand-in gives the build one fixed
-  answer whatever step asks, and answers the drive from a dispatch table with
+  answer whatever step asks, except the build loop's turn (#3129:
+  default-workflow 4.0.0 builds through the shared goal loop), which it
+  answers from the turn's own reading: commit and push the task's file in the
+  run's worktree, open the pull request, mark it ready, then end with
+  `ready`. It answers the drive from a dispatch table with
   one entry per agent step, keyed on a substring that occurs in exactly one
   shipped prompt, because the drive's preflights and readers need answer
   shapes that contradict each other and four shipped steps open with the same
@@ -25,9 +29,9 @@ description: >
   Crusty verdict, writing the completion decision, saving the measured qa
   record) before reporting them. A prompt matching no entry keeps the fixed
   answer and is recorded. Every call is recorded. The pull request's checks
-  are PENDING for the build, which is the issue #2343 case:
-  finalisation must hand the pull request on and not end
-  FAILED_IMPLEMENTATION. They are SUCCESS for the drive, so the merge step's
+  are PENDING for the build, which is the issue #2343 case: the build
+  ends with the pull request open and marked ready whatever the checks say,
+  and never merges. They are SUCCESS for the drive, so the merge step's
   precondition holds and the drive ends at a verdict with a merge recorded on
   the stub. Cleanup is left on and no phase is skipped: reflection and power
   steering are not disabled.
@@ -35,16 +39,11 @@ description: >
   Eight cases, each asserted below, on outcomes only; no internal run-folder
   path or layout is asserted. Part 1: `part1_build_opens_pr_and_pushes_branch`
   (the stub recorded a `pr create` for the run's branch, and the bare origin
-  holds that branch at the local head) and
-  `part1_finalization_is_not_failed_implementation` (the gh stand-in recorded
-  the `pr view ... --json state,mergeable,reviews,statusCheckRollup` call that
-  amplifier-bundle/tools/workflow_final_status.sh makes just after it emits
-  its terminal evidence, which is proof that shell helper ran and which the
-  `claude` stand-in cannot produce, since it does not write gh-calls; the
-  terminal state is not FAILED_IMPLEMENTATION and the run names the open pull
-  request. The helper's own bare `key=value` evidence lines are not the anchor
-  because they are unreadable from outside: the recipe runner captures a bash
-  step's output at every nesting depth). Part 2:
+  holds that branch at the head of the run's worktree, read from
+  `git worktree list`) and `part1_build_loop_ends_ready_without_merge` (the
+  gh stand-in recorded `pr ready 42` and no `pr merge`, which the `claude`
+  stand-in cannot produce since it does not write gh-calls, and the run
+  exited 0). Part 2:
   `part2_drive_ends_at_verdict_and_merges` (the stub recorded a `pr merge` for
   the pull request and the drive printed its own terminal report, the object
   carrying `stop_reason`, which is its verdict however it ended; the sentence
@@ -86,7 +85,7 @@ agents:
 metadata:
   tags: [cli, qa-team, end-to-end, build, drive, release-evidence]
   priority: high
-  issues: ["2806", "2802", "2785", "2343"]
+  issues: ["2806", "2802", "2785", "2343", "3129"]
 steps:
   - name: run-issue-2806-end-to-end-cases
     agent: cli-agent
@@ -112,11 +111,11 @@ assertions:
     params:
       target: stdout
       expected: "PASS: part1_build_opens_pr_and_pushes_branch"
-  - name: finalisation-with-pending-checks-is-not-failed-implementation
+  - name: the-build-loop-ends-ready-without-a-merge
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: part1_finalization_is_not_failed_implementation"
+      expected: "PASS: part1_build_loop_ends_ready_without_merge"
   - name: the-drive-ends-at-a-verdict-with-a-merge-recorded
     type: output_contains
     params:

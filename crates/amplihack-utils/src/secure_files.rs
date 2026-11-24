@@ -83,6 +83,35 @@ impl Drop for ExclusiveLock {
     }
 }
 
+/// Takes an exclusive `flock` on `file`, blocking until it is granted. There
+/// is no timeout, no retry count and no sleep: the call returns when the
+/// holder lets go (a lock is released when its holder's descriptor closes,
+/// including when the holder dies). An interrupted wait (`EINTR`) is
+/// resumed; any other error is returned as it is.
+#[cfg(unix)]
+pub fn lock_exclusive(file: fs::File) -> io::Result<ExclusiveLock> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        // SAFETY: the descriptor is owned by `file` and open.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(ExclusiveLock { file });
+        }
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EINTR) {
+            return Err(err);
+        }
+    }
+}
+
+/// Not supported off Unix: always `ErrorKind::Unsupported`.
+#[cfg(not(unix))]
+pub fn lock_exclusive(_file: fs::File) -> io::Result<ExclusiveLock> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "exclusive file locks need Unix",
+    ))
+}
+
 /// Takes an exclusive `flock` on `file`, retrying every 100 ms until
 /// `timeout` has passed. A zero timeout tries once. Gives up with
 /// `ErrorKind::TimedOut`.
