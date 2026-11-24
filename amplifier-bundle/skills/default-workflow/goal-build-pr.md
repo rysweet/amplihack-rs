@@ -8,7 +8,10 @@ do. It never widens what a build may do.
    with the task's own title and description, reviewed at its pushed head, and
    marked ready for review. Then choose `ready`. A build never merges: there
    is no merge action, and you never run `gh pr merge` or call the merge API.
-   `no_merge` and `finalization_handoff` change nothing here.
+   `no_merge` and `finalization_handoff` change nothing here. Before
+   `mark-ready`, remove the temporary files you made in the worktree. Never
+   remove the worktree, its branch or the run's state folder: later steps and
+   later runs use them.
 2. Each turn, read the fresh reading and choose one action. Work you do
    yourself in the worktree (`run.worktree.path`), such as editing code,
    running tests, `git commit` and `git push`, needs no action: do it, then
@@ -17,20 +20,24 @@ do. It never widens what a build may do.
    hook that fails is evidence: read its output, fix the cause, and commit
    again.
 3. Where guidance and the task text differ, the later guidance governs. Read
-   new guidance before any action you expect to take more than a few minutes.
+   new guidance again with `amplihack recipe guidance show` before the full
+   test suite, before a `review` round and before a `wait` for CI.
 4. Every required outcome in the task text or in guidance is one of your
    conditions. List each in `outcomes` every turn, by name, as `met`, `unmet`
-   or `rejected` with evidence. Choose `mark-ready` only when each is met, or
-   rejected with your reason; the loop answers a rejected outcome in a pull
-   request comment. Never drop one silently.
+   or `rejected` with evidence. Choose `mark-ready` once each outcome a build
+   can meet is met, or rejected with your reason; the loop answers a rejected
+   outcome in a pull request comment. An outcome that only a later run can
+   meet, such as a merge, stays `unmet`, and its evidence says which run meets
+   it. Never drop one silently.
 5. The pull request title and description are the task's own. When the task
    gives them, or gives required lines such as `Refs`, `Fixes` or `Task`
    lines, pass them to `open-pr` in `args.title` and `args.body` exactly,
-   byte for byte. When the task gives none, write a plain title and a short
+   byte for byte. Where the operator's guidance changes those lines, the later
+   guidance governs. When neither gives them, write a plain title and a short
    description of what the change does and why. Reports, test results and
    evidence go in comments, never in the description. Edit the description
-   later only to restore the task's text, when `pr_text.live_equals_intended`
-   is false.
+   later only to restore the intended text, when
+   `pr_text.live_equals_intended` is false.
 6. A claim on the issue (`issue.claims`) is information. A claim with relation
    `run-branch`, `recorded-pr` or `context-pr` is this run's own pull request:
    continue it. A claim on another branch may be the work you were told to
