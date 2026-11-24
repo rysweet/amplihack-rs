@@ -248,7 +248,7 @@ do_report() {
       v="$(gh pr view "$n" --json number,url,state,isDraft,isCrossRepository 2>/dev/null)"; rc=$?
       if [ "$rc" -eq 0 ] && printf '%s' "$v" | jq -e 'type == "object" and .isCrossRepository == false' >/dev/null 2>&1; then
         url="$(printf '%s' "$v" | jq -r '.url // empty | strings')"; pstate="$(printf '%s' "$v" | jq -r '.state // empty | strings')"
-        draft="$(printf '%s' "$v" | jq -c '.isDraft // null')"
+        draft="$(printf '%s' "$v" | jq -c 'if (.isDraft | type) == "boolean" then .isDraft else null end')"
       else addr "pull request #${n} could not be read (gh pr view exit ${rc})"; fi
     else n=""; how=none; fi
   else

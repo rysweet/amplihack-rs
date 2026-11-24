@@ -392,3 +392,34 @@ fn control_characters_in_an_outcome_name_never_reach_the_report() {
         200
     );
 }
+
+// ---- report: terminal state from the live pull request ---------------------
+
+/// A loop that ended `ready` reports the pull request as GitHub reads it: open
+/// and ready for review is IMPLEMENTED_VERIFIED, open as a draft is
+/// EXISTING_OPEN_PR. `isDraft: false` is a value, not a missing one.
+#[test]
+fn a_ready_build_reports_the_draft_flag_it_read() {
+    for (draft, state) in [(false, "IMPLEMENTED_VERIFIED"), (true, "EXISTING_OPEN_PR")] {
+        let s = setup();
+        fs::write(
+            s.state.join("loop-end.json"),
+            json!({"end": "ready", "turn": 4}).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            s.state.join("pr.json"),
+            json!({"schema_version": 1, "number": 42, "url": "https://github.com/o/r/pull/42"})
+                .to_string(),
+        )
+        .unwrap();
+        s.w.pr_view(&json!({
+            "number": 42, "url": "https://github.com/o/r/pull/42", "state": "OPEN",
+            "isDraft": draft, "isCrossRepository": false
+        }));
+        let v = report(&s);
+        assert_eq!(v["pr_draft"], json!(draft), "{v}");
+        assert_eq!(v["terminal_state"], json!(state), "{v}");
+        assert_eq!(v["terminal_success"], json!("true"), "{v}");
+    }
+}
