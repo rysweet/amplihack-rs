@@ -22,7 +22,9 @@ use amplihack_hooks::limit_resume::guard::{
     CommitError, FsGuard, GuardStore, LOCK_TIMEOUT, PROMPTED_RETENTION_SECS, Resumes,
 };
 use amplihack_hooks::limit_resume::keys::{Key, Pane, PaneCheck, ScreenCheck};
-use amplihack_hooks::limit_resume::log::{LOG_MAX_BYTES, LogEntry, append, format_line, sanitize};
+use amplihack_hooks::limit_resume::log::{
+    LOG_MAX_BYTES, LogEntry, LogWriteFailure, append, format_line, sanitize,
+};
 use amplihack_hooks::limit_resume::{
     Deps, Event, Outcome, check_watch_dir, record_prompt_at, run_with,
 };
@@ -129,6 +131,12 @@ fn all_bytes_under(dir: &Path) -> Vec<u8> {
 
 fn contains(hay: &[u8], needle: &str) -> bool {
     hay.windows(needle.len()).any(|w| w == needle.as_bytes())
+}
+
+fn contains_count(hay: &[u8], needle: &str) -> usize {
+    hay.windows(needle.len())
+        .filter(|w| *w == needle.as_bytes())
+        .count()
 }
 
 // ── FsGuard: layout and basic contract ──────────────────────────────────────
@@ -740,6 +748,7 @@ fn entry(outcome: Outcome, live: Option<&str>) -> LogEntry {
         keys_sent: None,
         detail: None,
         resumes: None,
+        error: String::new(),
     }
 }
 
@@ -749,11 +758,11 @@ fn log_line_matches_the_documented_format() {
     e.detail = Some("no-tmux-pane".into());
     assert_eq!(
         format_line(NOW, &e),
-        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=not-resumed live=spare cycle=swapped detail=no-tmux-pane\n"
+        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=not-resumed live=spare cycle=swapped detail=no-tmux-pane error=\n"
     );
     assert_eq!(
         format_line(NOW, &entry(Outcome::NoCapacityTimeout, None)),
-        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=no-capacity-timeout live=- cycle=-\n"
+        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=no-capacity-timeout live=- cycle=- error=\n"
     );
 }
 
@@ -763,7 +772,10 @@ fn the_resume_count_is_logged_as_evidence_when_set() {
     e.resumes = Some(4);
     e.detail = Some("no-tmux-pane".into());
     let line = format_line(NOW, &e);
-    assert!(line.contains(" resumes=4 detail=no-tmux-pane\n"), "{line}");
+    assert!(
+        line.contains(" resumes=4 detail=no-tmux-pane error=\n"),
+        "{line}"
+    );
     assert!(line.ends_with('\n'));
     let mut e = entry(Outcome::SessionRecordReset, None);
     e.resumes = None;
@@ -791,14 +803,14 @@ fn log_fields_are_restricted_to_a_safe_alphabet() {
     );
     assert_eq!(line.matches('\n').count(), 1, "{line:?}");
     assert!(
-        line.ends_with("live=x-y-z-outcome-resumed cycle=swapped\n"),
+        line.ends_with("live=x-y-z-outcome-resumed cycle=swapped error=\n"),
         "{line:?}"
     );
     let mut e = entry(Outcome::NotResumed, None);
     e.cycle = Some("stayed cycle=x\n".into());
     let line = format_line(NOW, &e);
     assert_eq!(line.matches('\n').count(), 1, "{line:?}");
-    assert!(line.ends_with("cycle=stayed-cycle-x-\n"), "{line:?}");
+    assert!(line.ends_with("cycle=stayed-cycle-x- error=\n"), "{line:?}");
 }
 
 #[test]
@@ -806,8 +818,8 @@ fn append_creates_a_private_log_and_appends() {
     let r = root();
     let d = resume_dir(r.path());
     private_dir(&d);
-    append(&d, "one\n");
-    append(&d, "two\n");
+    append(&d, "one\n").unwrap();
+    append(&d, "two\n").unwrap();
     let log = d.join("resume.log");
     assert_eq!(fs::read_to_string(&log).unwrap(), "one\ntwo\n");
     assert_eq!(mode(&log), 0o600);
@@ -823,7 +835,7 @@ fn append_rotates_past_64_kib() {
     let big = "x".repeat(LOG_MAX_BYTES as usize + 1);
     fs::write(&log, &big).unwrap();
     fs::set_permissions(&log, fs::Permissions::from_mode(0o600)).unwrap();
-    append(&d, "new\n");
+    append(&d, "new\n").unwrap();
     assert_eq!(fs::read_to_string(d.join("resume.log.1")).unwrap(), big);
     assert_eq!(fs::read_to_string(&log).unwrap(), "new\n");
 }
@@ -836,12 +848,16 @@ fn append_never_writes_through_a_symlink_and_never_panics() {
     let target = r.path().join("target");
     fs::write(&target, b"keep").unwrap();
     symlink(&target, d.join("resume.log")).unwrap();
-    append(&d, "line\n");
+    assert_eq!(
+        append(&d, "line\n"),
+        Err(LogWriteFailure::OpenFailed),
+        "a symlinked log is refused, and the refusal is reported"
+    );
     assert_eq!(fs::read(&target).unwrap(), b"keep");
 
     // Missing directory: ignored, nothing created.
     let missing = r.path().join("missing");
-    append(&missing, "line\n");
+    assert_eq!(append(&missing, "line\n"), Err(LogWriteFailure::DirMissing));
     assert!(!missing.exists());
 }
 
@@ -938,8 +954,11 @@ impl Deps for DiskDeps {
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
-    fn log(&mut self, now: i64, entry: &LogEntry) {
-        append(&resume_dir(&self.root), &format_line(now, entry));
+    fn log(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        append(&resume_dir(&self.root), &format_line(now, entry))
+    }
+    fn log_existing(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        append(&resume_dir(&self.root), &format_line(now, entry))
     }
     fn rotator_down(&mut self, _now: i64) -> bool {
         false
@@ -1015,10 +1034,21 @@ fn resume_state_holds_no_message_text_or_session_id() {
         "sk-ant",
         "SECRET",
         "weekly",
-        "rate_limit",
     ] {
         assert!(!contains(&bytes, s), "{s} reached the resume state");
     }
+    // Since #3172 the reduced `error` value is on every line, and only there.
+    let log_text = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+    assert_eq!(
+        log_text.matches("rate_limit").count(),
+        log_text.matches(" error=rate_limit\n").count(),
+        "rate_limit appears outside the error field: {log_text}"
+    );
+    assert_eq!(
+        contains_count(&bytes, "rate_limit"),
+        log_text.matches("rate_limit").count(),
+        "rate_limit reached resume state outside resume.log"
+    );
     let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
     assert!(log.contains("outcome=resumed-keys "), "{log}");
     assert!(log.contains("spare"), "the swap's login is logged: {log}");
@@ -1241,8 +1271,11 @@ impl Deps for SwapDeps {
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
-    fn log(&mut self, now: i64, entry: &LogEntry) {
-        append(&resume_dir(&self.root), &format_line(now, entry));
+    fn log(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        append(&resume_dir(&self.root), &format_line(now, entry))
+    }
+    fn log_existing(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        append(&resume_dir(&self.root), &format_line(now, entry))
     }
     fn rotator_down(&mut self, _now: i64) -> bool {
         false

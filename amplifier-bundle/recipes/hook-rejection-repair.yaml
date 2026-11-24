@@ -77,12 +77,18 @@ steps:
          whose only purpose is to silence the hook. A round that changes hook
          configuration, an allowlist, git configuration or HEAD ends the
          workflow step as refused.
-      4. Some rejections cannot be fixed in code. The commit and push run in
-         the environment of the process that launched the workflow, not in
-         yours, so a hook that needs a tool on `PATH`, a virtualenv or a token
-         that only your shell has fails there even though it passes for you.
-         When the cause is the environment rather than the repository, change
-         nothing and report `not_fixable_in_code` with class `environment`.
+      4. A host input the worktree lacks, such as a `.venv` the hooks call, is
+         yours to install, inside the worktree, by the repository's own setup
+         instructions as they stand on the base branch (`git show
+         origin/<base>:<file>`). A `.venv` that is a symbolic link belongs to
+         the launch checkout: remove the link with `rm <name>` and create the
+         worktree's own before you install anything into it. Never use sudo, a
+         system package manager or a global install. Report `fixed` with class
+         `environment`, and name the cause in the summary in plain words, for
+         example "the worktree has no .venv; the launch checkout has one". A
+         cause you cannot fix from inside the worktree, such as a token or a
+         tool that needs privileges, gets `not_fixable_in_code` with class
+         `environment`, and the summary names it the same way.
 
       ## Output contract
 

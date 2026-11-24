@@ -80,9 +80,9 @@ fn the_polling_rows_are_gone() {
     }
 }
 
-/// Every outcome the hook logs, for the documentation checks below.
-/// `Outcome::NotLimit` is not logged, so it is not here.
-const OUTCOMES: [Outcome; 17] = [
+/// Every outcome the hook logs, for the documentation checks below. Since
+/// #3172 every call leaves a line, so the gate outcomes are here too.
+const OUTCOMES: [Outcome; 21] = [
     Outcome::NotResumed,
     Outcome::ResumedKeys,
     Outcome::ResumeKeysFailed,
@@ -100,6 +100,10 @@ const OUTCOMES: [Outcome; 17] = [
     Outcome::RotatorDown,
     Outcome::GuardFailed,
     Outcome::Disabled,
+    Outcome::NotLimit,
+    Outcome::BadSessionId,
+    Outcome::BadPayload,
+    Outcome::Panicked,
 ];
 
 #[test]
@@ -188,5 +192,25 @@ fn every_detail_the_hook_logs_is_documented() {
     for reason in UNVERIFIED_REASONS.iter().chain(UNRECOGNISED_REASONS.iter()) {
         let name = format!("`{reason}`");
         assert!(REFERENCE.contains(&name), "profile-command.md lacks {name}");
+    }
+}
+
+/// Issue #3172: the `error=` field and the failed-write marker are part of
+/// the log's documented format, in every document that explains it.
+#[test]
+fn the_error_field_and_the_write_failure_marker_are_documented() {
+    for (name, doc) in [
+        ("profile-command.md", REFERENCE),
+        ("claude-profile-rotation.md", HOWTO),
+        ("hook-specifications.md", HOOK_SPECS),
+        ("SKILL.md", SKILL),
+    ] {
+        assert!(doc.contains("error="), "{name} lacks the `error=` field");
+    }
+    for (name, doc) in [("profile-command.md", REFERENCE), ("SKILL.md", SKILL)] {
+        assert!(
+            doc.contains("log-write-failed"),
+            "{name} lacks the `log-write-failed` marker"
+        );
     }
 }

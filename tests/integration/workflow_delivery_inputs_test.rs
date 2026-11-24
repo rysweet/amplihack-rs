@@ -728,11 +728,13 @@ fn step_shell(recipe: &str, step_id: &str) -> String {
         .iter()
         .find(|s| s["id"].as_str() == Some(step_id))
         .unwrap_or_else(|| panic!("{recipe}: no step {step_id}"));
-    step["command"]
+    let inline = step["command"]
         .as_str()
         .or_else(|| step["prompt"].as_str())
-        .unwrap_or_else(|| panic!("{recipe}/{step_id} has neither a command nor a prompt"))
-        .to_owned()
+        .unwrap_or_else(|| panic!("{recipe}/{step_id} has neither a command nor a prompt"));
+    // #1619: a step whose body was extracted into amplifier-bundle/tools/ is
+    // read from there.
+    crate::recipe_step_body::resolved(inline)
 }
 
 fn pull_request_base(repo: &Repo, recipe: &str, step_id: &str) -> String {

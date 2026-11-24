@@ -253,7 +253,14 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     assert!(home.join(".amplihack/codex/ownership.json").is_file());
     assert!(explicit.with_extension("installed").exists());
     let skills = home.join(".amplihack/codex/market/plugin/skills");
-    assert!(fs::read_dir(skills).unwrap().count() >= 196);
+    // #3195: the 23 `-analyst` skills are left out of the Codex package, so
+    // the floor is the earlier 196 less those 23.
+    let names = fs::read_dir(skills)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(names.len() >= 173, "{} packaged skills", names.len());
+    assert!(!names.iter().any(|name| name.ends_with("-analyst")));
     let hooks: serde_json::Value =
         serde_json::from_slice(&fs::read(home.join(".codex/hooks.json")).unwrap()).unwrap();
     assert!(hooks["hooks"]["PreToolUse"].is_array());

@@ -938,10 +938,14 @@ fi
 # one closes the window between the two, which in the recorded cases was the
 # whole race (#1131 opened 01:03, #1132 merged 01:32).
 #
-# Advisory by construction: the helper exits non-zero ONLY when it actually saw
-# a claiming pull request. No `gh` on PATH, a rate limit, an API error or a
-# missing helper all warn and return 0, because an unreadable answer is not
-# evidence that an issue is unclaimed — nor that it is claimed.
+# Information, never a stop (#3129, #3110). A claim by another branch's pull
+# request is printed for the run's agent to judge, and the PR is opened: the
+# claim may be the run's own earlier attempt, or work the task says to do
+# beside it. No `gh` on PATH, a rate limit, an API error or a missing helper
+# all warn, because an unreadable answer is not evidence that an issue is
+# unclaimed, nor that it is claimed. A non-zero exit from the helper (a usage
+# error, or a 1.2.212 helper that still exits 1 on a claim) is printed with its
+# code and the run carries on.
 if ! $HAS_ISSUE_LINK; then
   : # Issue #1976: no linked issue, so there is no claim to check.
 elif [ "$ISSUE_TAG" != "#${ISSUE_NUM}" ]; then
@@ -952,11 +956,10 @@ elif [ "$ISSUE_TAG" != "#${ISSUE_NUM}" ]; then
   # above already found no pull request for this head.
   echo "INFO: issue claim check skipped: ${ISSUE_TAG} is owned by another repository and this strict_delivery run publishes its assigned branch" >&2
 elif [ -f "$CLAIM_CHECK_HELPER" ]; then
-  if ! CLAIM_OUTPUT="$(bash "$CLAIM_CHECK_HELPER" --issue "$ISSUE_NUM" --repo "$REPO_IDENTITY" --head "$CURRENT_BRANCH" 2>&1 >/dev/null)"; then
-    printf '%s\n' "$CLAIM_OUTPUT" >&2
-    finish_publish "FAILED_DUPLICATE_CLAIM" "duplicate-issue-claim" "failure" \
-      "a pull request already claims issue #${ISSUE_NUM}; refusing to open a duplicate (issue #1361)" 1
-  fi
+  CLAIM_RC=0
+  CLAIM_OUTPUT="$(bash "$CLAIM_CHECK_HELPER" --issue "$ISSUE_NUM" --repo "$REPO_IDENTITY" --head "$CURRENT_BRANCH" 2>&1 >/dev/null)" || CLAIM_RC=$?
+  [ -z "$CLAIM_OUTPUT" ] || printf '%s\n' "$CLAIM_OUTPUT" >&2
+  [ "$CLAIM_RC" -eq 0 ] || echo "INFO: the issue claim check exited ${CLAIM_RC}; its output above is information, and the pull request is opened (#3129)" >&2
 else
   echo "WARNING: workflow_issue_claim_check.sh not found at ${CLAIM_CHECK_HELPER} — creating this PR without a duplicate-claim check (#1361)" >&2
 fi

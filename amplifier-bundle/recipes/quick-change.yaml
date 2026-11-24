@@ -10,9 +10,10 @@ tags: ["development", "small-change", "single-session"]
 # the base pinned before the agent ran. Over the limits the work is handed
 # over, as it stands in the worktree, to default-workflow on the same branch,
 # before any check runs. Within the limits the repository's checks run and
-# the change is committed, pushed and opened as a PR, and the recipe stops
-# there: no review, merge, CI repair or finalisation. The verdict comes from
-# git output only.
+# the change is committed, pushed and opened as a PR with the task's own PR
+# text when it gives one (#3129); no review, merge, CI repair or finalisation.
+# A commit, push or PR that does not finish goes to the build loop
+# (default-workflow) on the same branch. The verdict comes from git output only.
 #
 # Every bash step sources tools/quick_change_common.sh, found from
 # AMPLIHACK_HOME, repo_path or the $HOME install locations, never from the
@@ -42,6 +43,8 @@ context:
   quick_change_handover_note: ""
   quick_change_commit_repaired: ""
   quick_change_push_repaired: ""
+  quick_change_pr_text: ""
+  quick_change_pr_url: ""
 
 steps:
   # Step 1: a new quick/ branch from origin/HEAD, the base quick-change-create-pr targets; inherited targets and base_branch are cleared, strict_delivery is not (docs/reference/workflow-delivery-inputs.md).
@@ -171,6 +174,7 @@ steps:
   - id: "quick-change-commit"
     type: "bash"
     condition: "quick_change_verdict == 'proceed'"
+    continue_on_error: true
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-commit; . "${QC:?quick_change_common.sh not found}"
       # Only the step output goes to stdout (fd 3); git and the helpers write to stderr.
@@ -218,7 +222,8 @@ steps:
   # repair ran.
   - id: "quick-change-push"
     type: "bash"
-    condition: "quick_change_verdict == 'proceed'"
+    condition: "quick_change_verdict == 'proceed' and quick_change_commit_repaired"
+    continue_on_error: true
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-push; . "${QC:?quick_change_common.sh not found}"
       exec 3>&1 1>&2
@@ -251,46 +256,45 @@ steps:
       printf '%s' "$REPAIRED" >&3
     output: "quick_change_push_repaired"
 
-  # Step 10, always last: open the PR, a draft on any warning from qc_pr_warnings.
+  # Step 10 (#3129): the task's own PR text, or an empty title. Non-fatal.
+  - id: "quick-change-pr-text"
+    agent: "amplihack:core:builder"
+    model: "fast"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    condition: "quick_change_verdict == 'proceed' and quick_change_push_repaired"
+    continue_on_error: true
+    parse_json: true
+    prompt: |
+      You are a leaf step inside a running recipe. Run no command, edit no file and start no recipe or agent.
+      If the task text below gives the pull request's own title, description or required lines (such as `Refs #N`, `Fixes #N` or a `Task:` line), return them exactly, byte for byte. With required lines but no title, write a plain title of at most 72 characters from the task's first sentence; with no description, the body is the required lines as written. Add nothing of your own: no report, mention or closing keyword the task does not give. If the task gives none of these, return an empty title and body.
+      ----- TASK START -----
+      {{task_description}}
+      ----- TASK END -----
+      End your reply with exactly one JSON object on its own line: {"title": "<title or empty>", "body": "<body or empty>"}
+    output: "quick_change_pr_text"
+
+  # Step 11: open the PR with the task's own text or the template text, a draft
+  # on any warning, read back and restored once. Non-fatal (#3129).
   - id: "quick-change-create-pr"
     type: "bash"
-    condition: "quick_change_verdict == 'proceed'"
+    condition: "quick_change_verdict == 'proceed' and quick_change_push_repaired"
+    continue_on_error: true
     command: |
-      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-create-pr; . "${QC:?quick_change_common.sh not found}"
-      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
-      BRANCH="$(qc_branch)"
-      [ -f "$QC_TOOLS/workflow_gh_retry.sh" ] || qc_die "workflow_gh_retry.sh is missing from $QC_TOOLS"
-      BASE="$(qc_base)"
-      CHECKS="$(qc_checks_summary)"
-      DEFAULT="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-      DEFAULT="${DEFAULT#origin/}"; [ -n "$DEFAULT" ] || DEFAULT=main
-      ISSUE="$(qc_issue)"
-      # Runner outputs, not state files: the agent and check code can write to
-      # the state dir, so the checks summary and table are checked against them.
-      REPAIRED=no
-      for r in "${RECIPE_VAR_quick_change_commit_repaired:-}" "${RECIPE_VAR_quick_change_push_repaired:-}"; do
-        case "$r" in
-          yes) REPAIRED=yes ;;
-          no) ;;
-          *) qc_die "runner did not provide the hook-repair outputs" ;;
-        esac
-      done
-      # Any warning at the top of the body makes the PR a draft.
-      WARNINGS="$(qc_pr_warnings "$CHECKS" "$REPAIRED")"
-      set --
-      [ -z "$WARNINGS" ] || set -- --draft
-      {
-        [ -z "$WARNINGS" ] || printf '%s\n\n' "$WARNINGS"
-        printf '## Request\n\n%s\n' "$(qc_request)"
-        [ -z "$ISSUE" ] || printf '\nRefs #%s\n' "$ISSUE"
-        printf '\n## Diff\n\n```\n%s\n```\n' "$(git diff --stat "$BASE" HEAD)"
-        printf '\n## Checks\n\n| Command | Result |\n| --- | --- |\n'
-        qc_checks_table "$CHECKS"
-      } | qc_write pr-body.md
-      # gh pr create runs through _gh_retry_core from workflow_gh_retry.sh,
-      # under an outer timeout; the body goes through --body-file (#1570).
-      GH_RETRY_TMPDIR="$QUICK_CHANGE_STATE_DIR" timeout 1800 bash -c '. "$1"; shift; _gh_retry_core "pr create" pr create "$@"' _ \
-        "$QC_TOOLS/workflow_gh_retry.sh" --base "$DEFAULT" --head "$BRANCH" --title "$(qc_title)" \
-        --body-file "$QUICK_CHANGE_STATE_DIR/pr-body.md" "$@"
-      qc_remove_state
+      # The body of this step lives in amplifier-bundle/tools/quick_change_create_pr.sh
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_create_pr.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_create_pr.sh"; break; }; done
+      [ -n "$QC" ] || { echo "ERROR: quick-change-create-pr: quick_change_create_pr.sh not found (searched AMPLIHACK_HOME, repo_path, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$QC"
     output: "quick_change_pr_url"
+
+  # Step 12 (#3129): no PR after commit, push and create, so the build loop
+  # continues on this branch from the worktree as it stands (step 04 reuses it).
+  - id: "quick-change-finish-in-loop"
+    type: "recipe"
+    condition: "quick_change_verdict == 'proceed' and not quick_change_pr_url"
+    recipe: "default-workflow"
+    context:
+      base_branch: "{{base_branch}}"
+      task_description: "{{task_description}}\n\nHand-over from quick-change: its commit, push or pull request step did not finish. The change is in the worktree on this branch, committed or not. Read the run's state, finish the change, commit through the repository's hooks, push, and open the pull request."
+      existing_branch: "{{worktree_setup.branch_name}}"
+      repo_path: "{{repo_path}}"
+    output: "quick_change_loop_result"

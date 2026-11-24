@@ -66,6 +66,9 @@ mod issue_3162_nested_recipe_guidance;
 // PR #3190 review: Copilot reads a block after a stdin prompt (run by hand).
 #[path = "issue_3162_copilot_stdin_live.rs"]
 mod issue_3162_copilot_stdin_live;
+// #3129 PR 2: the build goal loop and the old tools it keeps alive.
+#[path = "issue_3129_build_loop/mod.rs"]
+mod issue_3129_build_loop;
 // #1888: the merge method, through `amplihack recipe run` and the real runner.
 mod issue_1888_merge_method_recipe_run;
 #[path = "issue_2582_context_off_argv.rs"]

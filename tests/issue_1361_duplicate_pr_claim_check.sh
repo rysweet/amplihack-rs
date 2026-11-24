@@ -13,15 +13,20 @@
 # These tests drive the real helpers and the real recipe steps against real git
 # repositories and a fake `gh`. Four properties are under test:
 #
-#   1. an issue already claimed by an open or recently-merged PR stops the run,
-#      and the refusal names the PR and how to continue it instead;
+#   1. an issue already claimed by an open or recently-merged PR is reported
+#      (exit 0, the `claimed` key line) with the PR named, as information for
+#      the run's agent to judge (#3129; it ended the run before);
 #   2. a mere mention is NOT a claim, and our own branch is not a competitor;
 #   3. a check that cannot be made warns and continues — no `gh`, no `jq`, no
 #      network, a rate limit, a 403 or a missing helper must never stop a run
 #      (#1268), and no token value is ever printed;
 #   4. `Closes #N` is earned by the diff: a change that only writes a planning
-#      document gets `Refs`, and both emitters (the step-15 commit message and
-#      the PR body in workflow_publish_pr.sh) go through that decision.
+#      document gets `Refs` from workflow_issue_reference.sh.
+#
+# The checks that read the helper's --help wording, the step-03c lookup text,
+# the order of calls in workflow_publish_pr.sh, the emitters' text and the
+# helper's pipeline shape were removed under #3129: tests check values and
+# behaviour, never wording (Ryan, 23 Nov 2026).
 #
 # Every token in this file is an obvious fake.
 
@@ -29,20 +34,21 @@ set -uo pipefail
 # Issue #1764: no git this script runs may wait on a credential prompt.
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
 exec </dev/null
+# An enclosing run may export these; each one makes the claim check skip, which
+# would leave nothing here to test.
+unset ALLOW_EXISTING_PR AMPLIHACK_ALLOW_EXISTING_PR AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLAIM="$ROOT/amplifier-bundle/tools/workflow_issue_claim_check.sh"
 IREF="$ROOT/amplifier-bundle/tools/workflow_issue_reference.sh"
 PREP="$ROOT/amplifier-bundle/recipes/workflow-prep.yaml"
-PUBLISH_RECIPE="$ROOT/amplifier-bundle/recipes/workflow-publish.yaml"
-PUBLISH_TOOL="$ROOT/amplifier-bundle/tools/workflow_publish_pr.sh"
 
 fails=0
 pass() { printf '  ok    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 need() { [ -f "$1" ] || { echo "missing $1"; exit 1; }; }
 
-need "$CLAIM"; need "$IREF"; need "$PREP"; need "$PUBLISH_RECIPE"; need "$PUBLISH_TOOL"
+need "$CLAIM"; need "$IREF"; need "$PREP"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/issue1361.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -228,14 +234,14 @@ run() {
   RC=$?
 }
 
-echo "== 1. an issue already claimed by a pull request stops the run =="
+echo "== 1. an issue already claimed by a pull request is reported as a claim =="
 claimed() { # claimed <label> <expected-pr-number>
   local label="$1" num="$2" missing=""
   grep -q "#${num}" <<<"$OUT" || missing="$missing pr-number"
   grep -q '#1084' <<<"$OUT" || missing="$missing issue"
-  grep -q 'existing_branch=' <<<"$OUT" || missing="$missing how-to-continue"
-  if [ "$RC" -eq 1 ] && [ -z "$missing" ]; then
-    pass "$label refuses (exit 1) naming the claiming PR and how to continue it"
+  grep -q '^issue_claim_check: claimed issue=1084 ' <<<"$OUT" || missing="$missing claimed-key-line"
+  if [ "$RC" -eq 0 ] && [ -z "$missing" ]; then
+    pass "$label is reported (exit 0, claimed) naming the claiming PR"
   else
     fail "$label: rc=$RC missing:${missing:-none} out=${OUT:0:400}"
   fi
@@ -325,7 +331,7 @@ grep -q 'BODYTEXT' <<<"$OUT" \
 # This is the case the branch-scoped lookup could never see: no PR exists for
 # OUR head, and a duplicate would have been opened.
 run "$WORK/gh" FAKE_GH=closing_ref -- --head "fix/1084-a-brand-new-branch"
-[ "$RC" -eq 1 ] \
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: claimed issue=1084 ' <<<"$OUT" \
   && pass "a competitor on a DIFFERENT branch is still a claim (the #1361 hole)" \
   || fail "a different-branch competitor was not detected: rc=$RC out=${OUT:0:300}"
 
@@ -389,12 +395,13 @@ claimed "a body keyword on a PR to main when the local origin/HEAD says trunk" 1
 grep -q '^repo view' "$WORK/calls.log" \
   && fail "the API was asked although origin/HEAD -> origin/trunk exists" \
   || pass "a stale local origin/HEAD is used without asking the API"
+# Every result exits 0 since #3129, so the key line is what says no claim.
 run "$WORK/gh" FAKE_GH=own_branch -- --head "fix/1084-mine"
-[ "$RC" -eq 0 ] \
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
   && pass "the run's own branch is excluded via --head" \
   || fail "our own PR was treated as a duplicate: rc=$RC out=${OUT:0:300}"
 run "$WORK/gh" FAKE_GH=merged_old
-[ "$RC" -eq 0 ] \
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
   && pass "a PR merged long ago does not block later work on a reopened issue" \
   || fail "an ancient merge blocked the run: rc=$RC out=${OUT:0:300}"
 
@@ -478,16 +485,6 @@ run "$WORK/gh" FAKE_GH=none
   && pass "an unclaimed issue passes" \
   || fail "an unclaimed issue was refused: rc=$RC out=${OUT:0:300}"
 
-# --help prints the whole header and stops at the exit-code table, however
-# long the header grows (#1707 lengthened it past a fixed line number).
-# The output is captured whole and its last line taken by substring, not
-# piped into `tail`: the #1434 guard forbids early-exit pipeline stages.
-HELP_OUT="$(bash "$CLAIM" --help 2>&1)"
-HELP_LAST="${HELP_OUT##*$'\n'}"
-[ "$HELP_LAST" = "#   1  an existing pull request already claims this issue" ] \
-  && pass "--help ends at the last exit-code line" \
-  || fail "--help stops in the wrong place; last line: ${HELP_LAST:0:200}"
-
 echo "== 3. a check that cannot be made warns and continues =="
 continues() { # continues <label> <expected-substring>
   if [ "$RC" -eq 0 ] && grep -q 'WARNING' <<<"$OUT" && grep -q "$2" <<<"$OUT"; then
@@ -563,7 +560,7 @@ kw() { printf '%s\n' "$1" | bash "$IREF" --keyword; }
   || fail "an ordinary docs change was demoted to Refs"
 [ "$(kw '')" = "Refs" ] && pass "an empty diff yields Refs" || fail "an empty diff did not yield Refs"
 
-echo "== 5. the recipes and the publish helper are wired to all of it =="
+echo "== 5. the recipe step carries all of it end to end =="
 STEP="$WORK/step03c.sh"
 if python3 - "$PREP" "$STEP" <<'PY'
 import sys, yaml
@@ -582,16 +579,12 @@ else
 fi
 
 if [ -s "$STEP" ]; then
-  for tok in AMPLIHACK_HOME .copilot .amplihack workflow_issue_claim_check.sh; do
-    grep -q -- "$tok" "$STEP" || fail "step-03c must resolve the helper through the standard cascade (missing $tok)"
-  done
-  pass "step-03c resolves the helper through the AMPLIHACK_HOME / REPO_PATH / cwd / ~/.copilot / ~/.amplihack cascade"
-
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" FAKE_GH=closing_ref AMPLIHACK_HOME="$ROOT" \
         REPO_PATH="$WORK/gh" RECIPE_VAR_issue_number=1084 bash "$STEP" 2>&1)"; RC=$?
-  [ "$RC" -eq 1 ] && grep -q 'already working on issue #1084' <<<"$OUT" \
-    && pass "the recipe step stops a run whose issue is already claimed" \
-    || fail "recipe step did not refuse: rc=$RC out=${OUT:0:300}"
+  [ "$RC" -eq 0 ] && grep -q 'already working on issue #1084' <<<"$OUT" \
+    && grep -q '^issue_claim_check: claimed issue=1084 ' <<<"$OUT" \
+    && pass "the recipe step reports the claim on an already-claimed issue and carries on" \
+    || fail "recipe step did not report the claim: rc=$RC out=${OUT:0:300}"
 
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" FAKE_GH=none AMPLIHACK_HOME="$ROOT" \
         REPO_PATH="$WORK/gh" RECIPE_VAR_issue_number=1084 bash "$STEP" 2>&1)"; RC=$?
@@ -612,49 +605,6 @@ if [ -s "$STEP" ]; then
     && pass "a missing helper warns and continues rather than gating the run" \
     || fail "missing helper gated the run: rc=$RC out=${OUT:0:300}"
 fi
-
-# The claim check must be consulted BEFORE the create call, not after it.
-# One awk per value, over the whole file. The `tail`/`head`-terminated pipelines
-# this replaces left `grep` writing into a closed pipe; under `pipefail` either
-# position collapses to "" and the ordering assertion silently becomes vacuous
-# (issue #1434).
-claim_pos=$(awk 'index($0, "workflow_issue_claim_check.sh") { n = FNR } END { if (n) print n }' "$PUBLISH_TOOL")
-create_pos=$(awk 'n == 0 && index($0, "gh_start_owned gh_pr_create_with_retry") { n = FNR } END { if (n) print n }' "$PUBLISH_TOOL")
-if [ -n "$claim_pos" ] && [ -n "$create_pos" ] && [ "$claim_pos" -lt "$create_pos" ]; then
-  pass "workflow_publish_pr.sh consults the claim check before it creates a PR"
-else
-  fail "workflow_publish_pr.sh does not claim-check before creating a PR (claim=$claim_pos create=$create_pos)"
-fi
-grep -q 'workflow_issue_reference.sh' "$PUBLISH_TOOL" \
-  && ! grep -q 'ISSUE_LINK="Closes #' "$PUBLISH_TOOL" \
-  && pass "the PR body's closing keyword comes from the diff, not a hardcoded Closes" \
-  || fail "workflow_publish_pr.sh still hardcodes 'Closes #N' in the PR body"
-
-STEP15="$WORK/step15.sh"
-python3 - "$PUBLISH_RECIPE" "$STEP15" <<'PY'
-import sys, yaml
-steps = yaml.safe_load(open(sys.argv[1]))["steps"]
-step = next(s for s in steps if s["id"] == "step-15-commit-push")
-open(sys.argv[2], "w").write(step["command"])
-PY
-grep -q 'workflow_issue_reference.sh' "$STEP15" && ! grep -q 'ISSUE_REF="Closes #' "$STEP15" \
-  && pass "the step-15 commit message's closing keyword comes from the diff too" \
-  || fail "step-15 still hardcodes 'Closes #N' in the commit message"
-
-# The claim-check helper is called from workflow-prep.yaml and the publish
-# helper, not from .github/workflows, so the #1434 guard's derived script list
-# never scans it. Apply the same shape rule to it here. The pattern is built
-# from fragments so this file never contains a literal the guard would flag.
-STOPS_EARLY="$(printf '%s|%s' head tail)"
-EARLY_EXIT_RE="[|][[:space:]]*(${STOPS_EARLY})([[:space:]]|\$)|grep[[:space:]]+-[[:alnum:]]*m[[:space:]]"
-EARLY_HITS=$(awk -v re="$EARLY_EXIT_RE" '
-  /^[[:space:]]*#/   { next }
-  /# early-exit-ok:/ { next }
-  $0 ~ re            { printf "%d:%s\n", FNR, $0 }
-' "$CLAIM")
-[ -z "$EARLY_HITS" ] \
-  && pass "the claim-check helper has no early-exit pipeline stage (#1434)" \
-  || fail "the claim-check helper has an early-exit pipeline stage (#1434): $EARLY_HITS"
 
 echo
 if [ "$fails" -eq 0 ]; then

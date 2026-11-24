@@ -201,6 +201,13 @@ impl FsGuard {
         Ok(dir)
     }
 
+    /// `resume/` when it and every directory above it up to the root exist
+    /// and are private; `None` when one is missing; an error when one is
+    /// unsafe. Creates nothing.
+    pub fn existing_resume_dir(&self) -> io::Result<Option<PathBuf>> {
+        self.existing_subdir("")
+    }
+
     /// `resume/<sub>` (`resume/` itself for an empty `sub`) when it and every
     /// directory above it up to the root exist and are private; `None` when one is missing; an error when one
     /// is unsafe. Creates nothing.

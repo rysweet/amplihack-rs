@@ -15,7 +15,10 @@
 #           account calls `api user` and `api rate_limit`, and the read of the
 #           repository's allowed merge methods, `api repos/{owner}/{repo}`
 #           (#1888). It reads the body from standard input exactly where real
-#           gh does (`--body-file -`), records every call in $WORK/gh-calls,
+#           gh does (`--body-file -`). It keeps the pull request's title, body
+#           and draft flag in $WORK/gh-state as GitHub does, so `pr create`,
+#           `pr edit` and `pr ready` change what `pr view` reads back, and
+#           records every call in $WORK/gh-calls,
 #           and exits 96 on anything else, GraphQL included (recorded in
 #           $WORK/gh-unexpected). The pull request's checks are PENDING for the
 #           build and SUCCESS for the drive; the state lives in
@@ -27,7 +30,18 @@
 #           route, and the sentence a step without parse_json would read as a
 #           field of that object rather than beside it, because a step that
 #           declares parse_json parses the whole of its agent's stdout as
-#           exactly one object.
+#           exactly one object. The one exception in part 1 is the build
+#           loop's turn (#3129: default-workflow 4.0.0 builds through the
+#           shared goal loop), which needs an action: it is answered from the
+#           turn's own reading, quoted in the prompt, as a competent agent
+#           would act on it. When the pushed branch does not hold feature.txt
+#           (the worktree step pushes a new branch at the base's head), it
+#           commits feature.txt in the run's worktree and pushes with plain
+#           `git push` (`continue`);
+#           with no pull request it chooses `open-pr` with a plain title and
+#           description; then `mark-ready`; then `ready`. A previous action
+#           that failed, a git step that fails, or a reading it does not
+#           expect hands off, so a fault ends the build instead of looping.
 #           In part 2 one answer cannot serve every step: the build stage's
 #           preflight, its no-merge directive, its PR resolution and the goal
 #           loop's turn (#3129) need shapes that contradict each other. So the
@@ -42,9 +56,9 @@
 #           come from the PR worktree, and the private state directory is the
 #           one the driver gave the drive. A prompt matching no entry keeps part 1's
 #           fixed answer and is recorded in $WORK/agent-unmatched.jsonl, which
-#           a case of its own reads: part 1's prompts are all there by design,
-#           and a part 2 prompt there is a shipped prompt reworded out from
-#           under its discriminator.
+#           a case of its own reads: part 1's prompts other than the build
+#           loop's turn are there by design, and a part 2 prompt there is a
+#           shipped prompt reworded out from under its discriminator.
 #           In a work tree inside the scenario's root it writes the
 #           task's file, and nowhere else: a step may call the agent from the
 #           repository the product was pointed at, and a stand-in that wrote
@@ -58,21 +72,17 @@
 #           $WORK/codex-calls, exits 47 otherwise. It is on PATH only so a
 #           probe cannot reach a host codex.
 #
-# Part 1  the whole build. Checks are PENDING. The run ends with a pull request
-#         opened on the stub for the run's branch and that branch pushed to the
-#         bare origin at the local head, and finalisation reports a terminal
-#         state that is not FAILED_IMPLEMENTATION and names the open pull
-#         request (issue 2343: pending checks hand the pull request on).
-#         Finalisation must have run, and not merely have been spoken for: the
-#         case requires the hosting call
-#         amplifier-bundle/tools/workflow_final_status.sh makes just after it
-#         emits its terminal evidence, recorded by the gh stand-in. That
-#         helper is shell and not an agent, and the claude stand-in cannot
-#         write gh-calls, so this case cannot be satisfied by an agent's own
-#         answer. The helper's bare `key=value` evidence lines would be the
-#         obvious anchor and are not readable here: the recipe runner captures
-#         a bash step's output at every depth, so nothing a bash step prints
-#         reaches this script.
+# Part 1  the whole build. Checks are PENDING. default-workflow 4.0.0 (#3129)
+#         builds through the shared goal loop and ends when the pull request
+#         is open and marked ready for review; a build never merges and no
+#         longer runs finalisation. The run ends with a pull request opened
+#         on the stub for the run's branch and that branch pushed to the bare
+#         origin at the head of the run's worktree, read from
+#         `git worktree list`. The build loop marked that pull request ready
+#         (`pr ready 42`, recorded by the gh stand-in, which the claude
+#         stand-in cannot write), asked for no merge, and the run exited 0.
+#         Pending checks do not hold the build up (issue 2343): the build
+#         ends with the pull request open whatever the checks say.
 # Part 2  the whole drive. Checks are SUCCESS, so the merge step's precondition
 #         (no pending required check) holds. The stub recorded a `pr merge` for
 #         that pull request and the drive printed its own terminal report, the
@@ -353,11 +363,26 @@ drain_body() {
     prev="$a"
   done
 }
+# take_text <args...>: --title/--title=, --body-file into the live text.
+take_text() {
+  local prev="" a
+  for a in "$@"; do
+    case "$a" in --title=*) printf '%s' "${a#--title=}" > "$state/title" ;; esac
+    case "$prev" in
+      --title) printf '%s' "$a" > "$state/title" ;;
+      --body-file|-F) [ "$a" = - ] || cp -- "$a" "$state/body" ;;
+    esac
+    prev="$a"
+  done
+}
 
 pr_json() {
-  local branch oid pr_state="OPEN" merged_at=null rollup
+  local branch oid pr_state="OPEN" merged_at=null rollup draft=false
   branch="$(cat "$branch_file" 2>/dev/null || true)"
   oid="$(git --git-dir="$root/origin.git" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
+  [ ! -e "$state/draft" ] || draft=true
+  [ -f "$state/title" ] || printf 'qa change' > "$state/title"
+  [ -f "$state/body" ] || printf 'qa' > "$state/body"
   if [ -e "$state/merged" ]; then
     pr_state="MERGED"
     merged_at='"2026-11-20T00:00:00Z"'
@@ -368,10 +393,11 @@ pr_json() {
     rollup='[{"__typename":"CheckRun","name":"ci","status":"IN_PROGRESS","conclusion":null}]'
   fi
   jq -nc --arg b "$branch" --arg o "$oid" --arg s "$pr_state" --argjson r "$rollup" \
-    --argjson m "$merged_at" \
-    '{number:42,url:"https://github.com/qa-owner/qa-repo/pull/42",state:$s,title:"qa change",
-      body:"qa",headRefName:$b,headRefOid:$o,baseRefName:"main",isCrossRepository:false,
-      isDraft:false,mergeable:"MERGEABLE",mergeStateStatus:"CLEAN",reviewDecision:"APPROVED",
+    --argjson m "$merged_at" --argjson d "$draft" \
+    --rawfile t "$state/title" --rawfile body "$state/body" \
+    '{number:42,url:"https://github.com/qa-owner/qa-repo/pull/42",state:$s,title:$t,
+      body:$body,headRefName:$b,headRefOid:$o,baseRefName:"main",isCrossRepository:false,
+      isDraft:$d,mergeable:"MERGEABLE",mergeStateStatus:"CLEAN",reviewDecision:"APPROVED",
       statusCheckRollup:$r,mergedAt:$m,mergeCommit:null,
       headRepositoryOwner:{login:"qa-owner",id:"qa-owner-id"},
       headRepository:{name:"qa-repo",id:"qa-repo-id"},
@@ -421,17 +447,11 @@ case "${1-} ${2-}" in
   "pr create")
     drain_body "$@"
     printf '%s\n' "$*" >> "$root/gh-create.argv"
-    # The local head and the branch, as they are in the folder gh was called
-    # in: that folder is the run's own work tree, so this is the run's work
-    # without the scenario knowing anything about the run's layout.
+    # The folder gh was called in, as evidence only. The build goal (#3129)
+    # runs `gh pr create` from the launch checkout with `--head <branch>`, so
+    # the branch comes from that argument below, and the run's head is read
+    # afterwards from the run's own worktree, never from this folder.
     printf '%s\n' "$(pwd -P)" >> "$root/gh-create.cwd"
-    # Not guarded: a `pr create` from a folder with no committed head is not a
-    # `pr create` the product could have meant, and swallowing it here would
-    # surface later as an empty local head and point at the wrong cause.
-    git rev-parse HEAD > "$root/gh-create.head" 2>/dev/null || {
-      echo "gh stub: pr create in $(pwd -P), which has no committed HEAD" >&2
-      exit 97
-    }
     git branch --show-current > "$state/branch" 2>/dev/null || true
     # The shipped publish step writes `--head=<branch>`; `--head <branch>` is
     # the other form gh accepts. An `owner:branch` value keeps the branch.
@@ -439,10 +459,12 @@ case "${1-} ${2-}" in
     for a in "$@"; do
       case "$a" in
         --head=*) v="${a#--head=}"; printf '%s\n' "${v##*:}" > "$state/branch" ;;
+        --draft) : > "$state/draft" ;;
       esac
       if [ "$prev" = "--head" ]; then printf '%s\n' "${a##*:}" > "$state/branch"; fi
       prev="$a"
     done
+    take_text "$@"
     : > "$state/pr-created"
     echo "https://github.com/qa-owner/qa-repo/pull/42"
     exit 0 ;;
@@ -464,7 +486,9 @@ case "${1-} ${2-}" in
     printf '%s\n' "$*" >> "$root/gh-merge.argv"
     : > "$state/merged"
     exit 0 ;;
-  "pr ready"|"pr edit"|"pr comment") drain_body "$@"; exit 0 ;;
+  "pr edit") drain_body "$@"; take_text "$@"; exit 0 ;;
+  "pr ready") rm -f -- "$state/draft"; exit 0 ;;
+  "pr comment") drain_body "$@"; exit 0 ;;
 esac
 printf '%s\n' "$*" >> "$root/gh-unexpected"
 echo "gh stub: unexpected call: $*" >&2
@@ -532,8 +556,8 @@ response="$(jq -nc --arg m "$prose" \
 step=fallback
 
 # --- the drive's dispatch ----------------------------------------------------
-# Part 2 only. Part 1 never enters this block, so the build keeps the single
-# fixed answer above and its cases are unaffected by anything below.
+# Part 2 only. Part 1 enters only the build loop's turn entry below; every
+# other part 1 step keeps the single fixed answer above.
 #
 # One entry per agent step the drive runs, each naming the step it answers and
 # why that answer is the one a competent agent would give here. The first line
@@ -548,6 +572,70 @@ step=fallback
 # different directories.
 has() { case "$input" in *"$1"*) return 0 ;; esac; return 1; }
 opens() { case "$first" in "$1"*) return 0 ;; esac; return 1; }
+# --- the build loop's turn (part 1) ------------------------------------------
+# default-workflow 4.0.0 (#3129) builds through the shared goal loop, whose
+# turn needs an action that the fixed answer above does not carry. Every other
+# part 1 step keeps the fixed answer. The answer is read from the turn's own
+# reading, which the turn prompt quotes between its UNTRUSTED-READING markers,
+# and is the one a competent agent would give: commit the task's file in the
+# run's worktree and push with plain `git push`, then open the pull request
+# with a plain title and description, then mark it ready, then end with
+# `ready`. The answer follows state, never a count of turns: a previous action
+# that failed, a git step that fails, or a reading it does not expect hands off
+# to the operator, naming it, so a fault ends the build instead of looping.
+if [ "${QA_RUN_LABEL:-}" = build ] && has 'You are one turn of a goal-driven loop'; then
+  step=autodrive-goal-turn/decide
+  reading="$(printf '%s\n' "$input" | awk '$0 == "<<<UNTRUSTED-READING" { f = 1; next } $0 == "UNTRUSTED-READING>>>" { f = 0 } f')"
+  printf '%s' "$reading" | jq -e 'type == "object"' >/dev/null 2>&1 || reading='{}'
+  r() { printf '%s' "$reading" | jq -r "$1" 2>/dev/null; }
+  turn="$(r '.turn // 0')"
+  own="$(r '.goal.prs.own // empty')"
+  pushed="$(r '.goal.run.pushed_head // empty')"
+  wt="$(r '.goal.run.worktree.path // empty')"
+  br="$(r '.goal.run.branch // empty')"
+  prev="$(r '.previous.outcome // "none"')"
+  # The worktree step pushes a new branch at the base's head, so a branch
+  # on origin is not yet the task's work: the work is pushed when the
+  # pushed head holds feature.txt.
+  work_pushed=false
+  if [ -n "$pushed" ] && [ -n "$wt" ] && git -C "$wt" cat-file -e "${pushed}:feature.txt" 2>/dev/null; then
+    work_pushed=true
+  fi
+  build_handoff() {
+    jq -nc --arg d "$1" '{action:"handoff",args:{owner:"the operator who started this run",decision:$d,
+      text:("The build could not go on: " + $d + ". The operator decides what happens next.")},outcomes:[],
+      why:("I read the state and could not take the next step: " + $d + ".")}'
+  }
+  case "$prev" in
+    none|continued|continue|opened|already-open|reviewed|marked-ready|already-ready|checks-complete|checks-pending|guidance-arrived|skipped-guidance) prev_ok=true ;;
+    *) prev_ok=false ;;
+  esac
+  if [ "$prev_ok" != true ]; then
+    response="$(build_handoff "the previous action ended ${prev}")"
+  elif [ -z "$own" ] && [ "$work_pushed" != true ]; then
+    if [ -z "$wt" ] || [ -z "$br" ]; then
+      response="$(build_handoff "the reading names no worktree or branch for this run")"
+    elif { [ -f "$wt/feature.txt" ] || printf 'qa feature\n' > "$wt/feature.txt"; } \
+        && git -C "$wt" add feature.txt >/dev/null 2>&1 \
+        && git -C "$wt" -c user.name=qa -c user.email=qa@example.invalid commit -q -m "Add feature.txt" >/dev/null 2>&1 \
+        && git -C "$wt" push -q -u origin "$br" >/dev/null 2>&1; then
+      response="$(jq -nc '{action:"continue",args:{},outcomes:[],why:"The branch had no commit for the task, so I added feature.txt, committed it through the hooks and pushed the branch."}')"
+    else
+      response="$(build_handoff "committing or pushing feature.txt on ${br} failed")"
+    fi
+  elif [ -z "$own" ]; then
+    response="$(jq -nc '{action:"open-pr",args:{title:"Add feature.txt at the repository root",
+      body:"Adds feature.txt, a one-line text file, at the repository root.\n"},outcomes:[],
+      why:"The branch is pushed and has no pull request, so I open it with a plain title and description."}')"
+  elif [ "$prev" != marked-ready ] && [ "$prev" != already-ready ]; then
+    response="$(jq -nc '{action:"mark-ready",args:{},outcomes:[],why:"The pull request is open, so I mark it ready for review."}')"
+  elif [ "$prev" = marked-ready ] || [ "$prev" = already-ready ]; then
+    response="$(jq -nc '{action:"ready",args:{text:"The change is pushed, and its pull request is open and ready for review."},outcomes:[],why:"The pull request is ready for review, so the build is done."}')"
+  else
+    response="$(build_handoff "the reading is not one this stand-in expects: own pull request '${own}', pushed head '${pushed}', previous result ${prev}")"
+  fi
+fi
+
 if [ "${QA_RUN_LABEL:-}" = drive ]; then
   REPO="${QA_DRIVE_REPO:-}"
   STATE="${QA_AUTODRIVE_STATE_DIR:-}"
@@ -699,11 +787,9 @@ scenario_env build "$BINDIR/amplihack" recipe run smart-orchestrator \
 build_rc=$?
 echo "build exit status: $build_rc"
 
-# Branch and head, as the stub recorded them when the pull request was asked
-# for: the branch of `--head`, in either of the two forms gh accepts, and
-# otherwise the branch the folder gh was called in was on. The stub writes
-# both as it goes, so gh's arguments are parsed in one place and not two; the
-# argv file is read here only for whether a `pr create` was recorded at all.
+# The branch, as the stub recorded it when the pull request was asked for: the
+# branch of `--head`, in either of the two forms gh accepts. The argv file is
+# read here only for whether a `pr create` was recorded at all.
 if [ -s "$WORK/gh-create.argv" ]; then
   BRANCH="$(cat "$WORK/gh-state/branch" 2>/dev/null)"
 fi
@@ -711,83 +797,36 @@ fi
 # `git worktree add` as an argument, and `grep` would have matched one line of
 # a multi-line value and accepted a value Git would read as an option.
 [[ $BRANCH =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]] || BRANCH=""
-LOCAL_HEAD="$(cat "$WORK/gh-create.head" 2>/dev/null)"
+# The run's own head: the head of the worktree Git lists on that branch. The
+# build goal (#3129) opens the pull request from the launch checkout, so the
+# folder gh was called in is not the run's work tree.
+BUILD_WT=""
+[ -z "$BRANCH" ] || BUILD_WT="$(gitq -C "$WORK/build-repo" worktree list --porcelain 2>/dev/null \
+  | awk -v want="refs/heads/$BRANCH" '/^worktree /{p = substr($0, 10)} /^branch /{if (substr($0, 8) == want) {print p; exit}}')"
+LOCAL_HEAD=""
+[ -z "$BUILD_WT" ] || LOCAL_HEAD="$(gitq -C "$BUILD_WT" rev-parse HEAD 2>/dev/null)"
 ORIGIN_HEAD=""
 [ -z "$BRANCH" ] || ORIGIN_HEAD="$(gitq --git-dir="$ORIGIN" rev-parse "refs/heads/$BRANCH" 2>/dev/null)"
 
 if [ -z "$BRANCH" ]; then
   flunk "part1_build_opens_pr_and_pushes_branch: the stub recorded no pr create (build exit $build_rc)"
 elif [ -z "$LOCAL_HEAD" ] || [ "$LOCAL_HEAD" != "$ORIGIN_HEAD" ]; then
-  flunk "part1_build_opens_pr_and_pushes_branch: pr create for '$BRANCH' from '$(tail -n 1 "$WORK/gh-create.cwd" 2>/dev/null)' but the local head '$LOCAL_HEAD' is not the origin's '$ORIGIN_HEAD'"
+  flunk "part1_build_opens_pr_and_pushes_branch: pr create for '$BRANCH', but the run's worktree '${BUILD_WT:-none listed}' is at '${LOCAL_HEAD:-nothing}', not the origin's '$ORIGIN_HEAD'"
 else
   pass "part1_build_opens_pr_and_pushes_branch - $BRANCH at $ORIGIN_HEAD"
 fi
 
-# Finalisation reports its decision as a named field and not as a loose word:
-# the recipes' own prompts list every state by name, and a run that echoed one
-# would otherwise read as having reached it. There are two field forms, and
-# which one carried the state matters, so they are read apart and reported
-# apart.
-#
-# The agent form is a field of the JSON result object an agent step prints.
-# The stand-in prints exactly that form, so on its own it says only what the
-# agent answered.
-agent_reported_state() {
-  grep -hoE '"terminal_state" *: *"[A-Z_]+"' "$@" | sed 's/.*"\([A-Z_]*\)"$/\1/'
-}
-# The helper form is a bare `key=value` line at the start of a line, which is
-# how amplifier-bundle/tools/workflow_final_status.sh prints its terminal
-# evidence (emit_terminal_evidence). That helper is shell, not an agent. It is
-# read for the report only, and is normally empty: the runner captures a bash
-# step's output, so the helper's own lines do not reach these two files. The
-# case below anchors on the call the helper makes instead.
-helper_reported_state() { grep -hoE '^terminal_state=[A-Z_]+$' "$@" | cut -d= -f2; }
-
-AGENT_STATES="$(agent_reported_state "$WORK/build.out" "$WORK/build.err" | sort -u | tr '\n' ' ')"
-HELPER_STATES="$(helper_reported_state "$WORK/build.out" "$WORK/build.err" | sort -u | tr '\n' ' ')"
-FINAL_STATES="$(printf '%s %s' "$HELPER_STATES" "$AGENT_STATES")"
-
-# Finalisation's own evidence, in a form the stand-in cannot produce.
-#
-# The helper also prints its terminal evidence as bare `key=value` lines, and
-# that would be the obvious anchor, but it is unreadable from here: the recipe
-# runner captures a bash step's standard output and standard error at every
-# nesting depth, so neither stream reaches build.out or build.err (issue
-# #2875). The
-# `INFO: resolved open PR ... (#1596)` line the helper writes to standard
-# error is unreadable for the same reason. What does reach this script is the
-# call the helper makes after emitting that evidence
-# (amplifier-bundle/tools/workflow_final_status.sh, `gh_pr_view_with_retry
-# "$PR_URL" --json state,mergeable,reviews,statusCheckRollup`): the gh
-# stand-in records every call, that field list appears at exactly that one
-# call site in the whole repository, and it is downstream of
-# emit_terminal_evidence. So a recorded call of that shape is proof the shell
-# helper ran and got past its evidence emission.
-#
-# It keeps the property the case exists to have: the gh stand-in writes
-# gh-calls and the claude stand-in cannot, so no agent answer can produce it.
-# The call is matched by field position rather than as a loose substring, and
-# it is read here, before part 2 runs, so only the build can have made it.
-final_status_call_recorded() {
-  awk '$1 == "pr" && $2 == "view" && $(NF - 1) == "--json" \
-       && $NF == "state,mergeable,reviews,statusCheckRollup" { found = 1 }
-       END { exit !found }' "$WORK/gh-calls"
-}
-
-if printf '%s' "$FINAL_STATES" | grep -qw FAILED_IMPLEMENTATION; then
-  flunk "part1_finalization_is_not_failed_implementation: the build reported FAILED_IMPLEMENTATION with the pull request's checks pending (helper: ${HELPER_STATES:-none}, agent: ${AGENT_STATES:-none})"
-elif [ ! -s "$WORK/gh-create.argv" ]; then
-  flunk "part1_finalization_is_not_failed_implementation: no pull request was opened, so finalisation had nothing to report on"
-elif ! final_status_call_recorded; then
-  # Do not fall back to the agent form, which is the stand-in's own answer and
-  # proves nothing about finalisation; and do not look for the helper's own
-  # output in build.out or build.err, which cannot hold it (see above).
-  flunk "part1_finalization_is_not_failed_implementation: gh-calls, dumped below, holds no \`pr view ... --json state,mergeable,reviews,statusCheckRollup\` call, the one amplifier-bundle/tools/workflow_final_status.sh makes after emitting its terminal evidence, so finalisation's own shell never ran and the only state reported is the stand-in agent's (agent: ${AGENT_STATES:-none}, build exit $build_rc)"
-elif ! grep -qE '"terminal_state" *: *"EXISTING_OPEN_PR"|^terminal_state=EXISTING_OPEN_PR$|"pr_number" *: *"?42"?|/pull/42' \
-    "$WORK/build.out" "$WORK/build.err"; then
-  flunk "part1_finalization_is_not_failed_implementation: the run's output does not name the open pull request (build exit $build_rc, helper: ${HELPER_STATES:-none}, agent: ${AGENT_STATES:-none})"
+# The build loop's end, from facts the claude stand-in cannot produce: the gh
+# stand-in recorded `pr ready 42` and no merge, and the run exited 0. Read
+# here, before part 2 runs, so only the build can have made these calls.
+if [ "$build_rc" -ne 0 ]; then
+  flunk "part1_build_loop_ends_ready_without_merge: the build exited $build_rc"
+elif ! awk '$1 == "pr" && $2 == "ready" && $3 == "42" { found = 1 } END { exit !found }' "$WORK/gh-calls"; then
+  flunk "part1_build_loop_ends_ready_without_merge: the build never asked for 'pr ready 42'"
+elif [ -s "$WORK/gh-merge.argv" ]; then
+  flunk "part1_build_loop_ends_ready_without_merge: the build asked for a merge: $(cat "$WORK/gh-merge.argv")"
 else
-  pass "part1_finalization_is_not_failed_implementation - finalisation reported ${HELPER_STATES:-no state line}; the agent answered ${AGENT_STATES:-nothing}"
+  pass "part1_build_loop_ends_ready_without_merge"
 fi
 
 # --- F: part 2, the whole drive ---------------------------------------------

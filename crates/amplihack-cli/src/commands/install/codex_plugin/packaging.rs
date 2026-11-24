@@ -55,3 +55,33 @@ mod hook_wrapper_contract_tests {
         assert!(!HOOK_WRAPPER.contains("eval"));
     }
 }
+
+#[cfg(test)]
+mod analyst_skill_tests {
+    use super::*;
+
+    #[test]
+    fn package_leaves_out_analyst_skills_and_source_keeps_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let skills = source.join("amplifier-bundle/skills");
+        for name in ["economist-analyst", "code-review"] {
+            fs::create_dir_all(skills.join(name)).unwrap();
+            fs::write(
+                skills.join(name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test skill\n---\n"),
+            )
+            .unwrap();
+        }
+        let hooks_binary = dir.path().join("amplihack-hooks");
+        fs::write(&hooks_binary, b"hooks").unwrap();
+        let staged = dir.path().join("staged");
+
+        build(&source, &hooks_binary, &staged).unwrap();
+
+        assert!(staged.join("skills/code-review/SKILL.md").is_file());
+        assert!(!staged.join("skills/economist-analyst").exists());
+        assert!(skills.join("code-review/SKILL.md").is_file());
+        assert!(skills.join("economist-analyst/SKILL.md").is_file());
+    }
+}
