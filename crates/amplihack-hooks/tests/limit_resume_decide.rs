@@ -52,6 +52,9 @@ const DEADLINE: i64 = START + MAX_WAIT.as_secs() as i64;
 /// Seconds the fake clock moves for each scripted event.
 const STEP: i64 = 60;
 const TMUX: &str = "/tmp/tmux-1000/default,4242,0";
+/// The holder the fake pane check proves. The per-key check rejects every
+/// other pid, so passing the hook's parent instead of the holder fails.
+const FAKE_HOLDER: u32 = 31_337;
 
 // ── Test doubles ────────────────────────────────────────────────────────────
 
@@ -423,7 +426,10 @@ impl Deps for Fake {
             .pane_id
             .and_then(|id| Pane::parse(Some(TMUX), Some(id)))
         {
-            Some(p) => PaneCheck::Ready(p),
+            Some(p) => PaneCheck::Ready {
+                pane: p,
+                holder: FAKE_HOLDER,
+            },
             None => PaneCheck::None,
         }
     }
@@ -436,8 +442,8 @@ impl Deps for Fake {
         self.keys.push(key);
         Ok(())
     }
-    fn session_alive_now(&mut self) -> bool {
-        self.gone_after_keys.is_none_or(|n| self.keys.len() < n)
+    fn session_alive_now(&mut self, holder: u32) -> bool {
+        holder == FAKE_HOLDER && self.gone_after_keys.is_none_or(|n| self.keys.len() < n)
     }
 }
 
@@ -1084,7 +1090,7 @@ fn the_session_exiting_mid_keys_stops_the_rest() {
 fn send_resume_sends_the_four_keys_in_order() {
     let mut d = Fake::new();
     let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
-    assert!(send_resume(&mut d, &pane).is_ok());
+    assert!(send_resume(&mut d, &pane, FAKE_HOLDER).is_ok());
     assert_eq!(d.keys, RESUME_KEYS);
 }
 
@@ -1093,7 +1099,7 @@ fn send_resume_reports_how_many_keys_were_sent() {
     let mut d = Fake::new();
     d.fail_key = Some(3);
     let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
-    let err = send_resume(&mut d, &pane).unwrap_err();
+    let err = send_resume(&mut d, &pane, FAKE_HOLDER).unwrap_err();
     assert_eq!(err.sent, 2);
     assert_eq!(err.err.kind(), io::ErrorKind::Other);
     assert_eq!(d.key_attempts, 3);
@@ -1104,7 +1110,7 @@ fn send_resume_sends_nothing_to_a_session_that_is_gone() {
     let mut d = Fake::new();
     d.gone_after_keys = Some(0);
     let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
-    let err = send_resume(&mut d, &pane).unwrap_err();
+    let err = send_resume(&mut d, &pane, FAKE_HOLDER).unwrap_err();
     assert_eq!(err.sent, 0);
     assert_eq!(d.key_attempts, 0);
 }
@@ -2180,8 +2186,11 @@ fn every_wake_path_records_nothing_and_the_next_room_event_wakes_again() {
 }
 
 #[test]
-fn a_pane_refusal_and_a_session_not_reading_record_nothing() {
-    for check in [PaneCheck::Unverified("tty-mismatch"), PaneCheck::NotReading] {
+fn a_pane_refusal_records_nothing() {
+    for check in [
+        PaneCheck::Unverified("tty-mismatch"),
+        PaneCheck::Unverified("not-foreground"),
+    ] {
         let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
         d.pane_override = Some(check.clone());
         let out = run_with(&limit_input("s", "hit your limit"), &mut d);

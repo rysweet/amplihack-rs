@@ -1581,10 +1581,10 @@ rotator puts them back at the end of its next cycle, and sessions started with
 6. Before it resumes, the hook checks again that auto-switch is on
    (otherwise `disabled`) and that you have not sent a prompt (`moved-on`).
    Then it proves the pane, once. It walks up its own ancestry to the nearest
-   process whose standard input is a terminal, which can be Claude Code or a
-   launcher around it. The pane's `#{pane_tty}`, as tmux reports it, must be
-   that terminal, that process must hold the terminal's foreground process
-   group, and Claude Code must be reading it. A pane inherited from another
+   process whose standard input is a terminal, the holder, which can be
+   Claude Code or a launcher around it. The pane's `#{pane_tty}`, as tmux
+   reports it, must be that terminal, and the holder must hold the
+   terminal's foreground process group. A pane inherited from another
    shell, or one that another session owns, is not the terminal of any
    process in the hook's ancestry and fails. For a proved pane it then reads
    the screen once, with `tmux capture-pane -p`, and types nothing unless
@@ -1605,8 +1605,7 @@ rotator puts them back at the end of its next cycle, and sessions started with
      ```
      The outcome says why: `not-resumed` with `detail=no-tmux-pane` when no
      pane was named or found, `pane-unverified` when a pane was named or
-     found but not proved to be this session's terminal, `pane-not-reading`
-     when it was the terminal but Claude Code is not the process reading it,
+     found but not proved to be this session's terminal,
      and `screen-unrecognised` when the pane was proved but its screen was
      not one the keys answer. The last of these adds a line of its own before
      the continue message, so the refusal is not left to the log.
@@ -1746,6 +1745,15 @@ describes it.
 When your session hits a usage limit and the rotator swaps to a login with
 room, check the hook's outcome and the terminal together.
 
+A session in Claude Code's timed wait ("Usage limit reached · Continuing
+automatically at …"), including one with a background agent running, gets the
+keys and logs `outcome=resumed-keys`. Logs written before the
+[#3156](https://github.com/rysweet/amplihack-rs/issues/3156) fix may show
+`outcome=pane-not-reading`, which the hook no longer writes. A hook that
+was already waiting when you installed a build with that fix is still the
+old binary, and may log `pane-not-reading` for that wake. Start a new
+session, or let the hook end, to get the new behaviour.
+
 - `outcome=resumed-keys keys_sent=4` records that tmux accepted all four
   inputs for the proved pane. No further action is needed unless the reply
   does not appear.
@@ -1761,8 +1769,6 @@ room, check the hook's outcome and the terminal together.
   `not-foreground`. `tty-mismatch` is also logged when `tmux` fails or
   prints nothing. Nothing was typed, and a session held on the menu stays
   there.
-- `outcome=pane-not-reading` records that the pane is this session's
-  terminal but Claude Code is not the process reading it. Nothing was typed.
 - `outcome=screen-unrecognised` records that the pane is this session's
   terminal but what it was showing is not a screen the keys answer
   (`detail=screen-unknown`) or could not be read (`detail=screen-unreadable`).
@@ -1778,7 +1784,7 @@ before a wake line means the hook could not read the resume state and woke
 the session anyway.
 
 A new reply that picks up the prior task in the original conversation
-confirms recovery. For `pane-unverified`, `pane-not-reading`,
+confirms recovery. For `pane-unverified`,
 `screen-unrecognised` and `resume-keys-failed`, or if the menu or timed wait
 remains, follow
 [Continue a session yourself](#continue-a-session-yourself).
@@ -1804,7 +1810,7 @@ it with `amplihack profile rotate start`. `no-capacity-timeout` means no
 swap to a login with room came within 7 days. `moved-on` means you sent a
 prompt in that session during the wait. `watch-lost` means the hook could
 not watch for swaps; the `detail` field names the reason. `pane-unverified`
-and `pane-not-reading` mean the hook typed nothing; see
+means the hook typed nothing; see
 [Verify a wake](#verify-a-wake). `pane` is a hash of the pane id, not the
 id. The other outcomes are listed in the
 [resume log reference](../reference/profile-command.md#resume-log).
@@ -1924,7 +1930,7 @@ live sessions. See the
 ### Continue a session yourself
 
 This is the fallback for a session the hook could not continue itself. Use
-it when `resume.log` shows `pane-unverified`, `pane-not-reading` or
+it when `resume.log` shows `pane-unverified` or
 `resume-keys-failed`, when the session does not run in tmux and still shows
 the usage-limit menu or timed wait, or when the keys were sent and the menu
 returned.
