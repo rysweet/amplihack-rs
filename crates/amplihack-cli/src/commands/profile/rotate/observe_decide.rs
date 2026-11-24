@@ -53,17 +53,26 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     measured_at: i64,
     extra: &Extra,
 ) -> Result<Measurement, ProfileError> {
+    let s = &ctx.settings;
+    let ledger = ctx.rs.load_ledger()?;
+    let t = (ctx.now)();
+    // Issue #3181: a measured reading below the highest one taken in its
+    // window is decided on at that highest figure; the probes stay as read.
+    let high = ledger.as_ref().map(|l| &l.high_water);
+    let floor =
+        |n: &ProfileName, p: &Probed| high.map_or(p.reading, |h| h.floor(n.as_str(), p, t).reading);
     let measured: Vec<Measured> = probes
         .iter()
         .map(|(name, p)| {
             let mut m = Measured::new(name.clone(), p);
-            m.reading = reading_used(extra, name, p);
+            let used = Probed {
+                reading: reading_used(extra, name, p),
+                ..p.clone()
+            };
+            m.reading = floor(name, &used);
             m
         })
         .collect();
-    let s = &ctx.settings;
-    let ledger = ctx.rs.load_ledger()?;
-    let t = (ctx.now)();
     // The standing recorded block on a login (issue #3105's one test): its
     // own, or the API key's.
     let active_block = |n: &ProfileName| {
@@ -82,15 +91,23 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     // owned it, so neither the hold, damping nor the home key keeps it, and
     // no synthetic reading of it is taken for a measured one.
     let live_name = snap.measured_live();
+    let decided = Probed {
+        reading: live_name.map_or(probe.reading, |n| floor(n, &probe)),
+        ..probe.clone()
+    };
     let overflow = snap.decision_overflow();
     let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
     let live_over = live_name.is_some_and(is_overflow);
     // E11: a live plan login with an active block has no room, whatever its
     // probe reads, so the move needs no margin and may cross.
     let live_blocked = live_name.is_some_and(|n| !is_overflow(n) && blocked(n));
-    let live_reading = if live_blocked { NO_ROOM } else { probe.reading };
+    let live_reading = if live_blocked {
+        NO_ROOM
+    } else {
+        decided.reading
+    };
     let need = Need::of(on_overflow, !on_overflow && needs_swap(s, &live_reading));
-    let room = target::live_room(&probe.reading, live_blocked);
+    let room = target::live_room(&decided.reading, live_blocked);
     // A live login whose probe failed may cross as before #2910, and only by
     // the failed-probe swap, which `damp` holds until three failures in a
     // row and the outlook never makes sooner (`outlook_failed`).
@@ -114,11 +131,12 @@ pub(in crate::commands::profile::rotate) fn decide_with(
         .unwrap_or_default();
     let unmeasured_plan = snap.unmeasured_plan();
     let refused = snap.refused_plan();
-    // Every rule runs on the live reading as measured.
+    // Every rule runs on the live reading as measured, at no less than its
+    // highest figure in the window (#3181).
     let input = OverflowInput {
         settings: s,
         live_name,
-        live: &probe,
+        live: &decided,
         candidates: &measured,
         unmeasured_plan: &unmeasured_plan,
         refused: &refused,

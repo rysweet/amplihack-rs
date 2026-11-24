@@ -96,6 +96,14 @@ pub(super) fn record(
     for line in swap_back::update(l, s, recorded_live, d.probed, left, m, t) {
         out.emit(now(), &line);
     }
+    // Issue #3181: after damping, which compares with the figures kept before.
+    if let Some((live_probe, others)) = d.probed {
+        let named = recorded_live.map(|n| (n, live_probe));
+        for (n, p) in named.into_iter().chain(others.iter().map(|(n, p)| (n, p))) {
+            l.high_water.raise(n.as_str(), p, t);
+        }
+    }
+    l.high_water.prune(t);
     let at = capacity::recorded_at(d.outcome, d.probed, d.measured_at);
     let live_room = d.live_room(ctx.settings.session_at);
     save(ctx, l, d.outcome, now(), Some(at), d.tag, live_room)?;

@@ -18,6 +18,8 @@ use super::alert::valid_alerts;
 pub use super::hand_fields::{HandSuspect, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, unprintable};
 use super::hand_fields::{valid_guidance, valid_hand_suspect, valid_lost_login, valid_name};
 pub use super::older_readers::for_older_readers;
+#[path = "high_water.rs"]
+pub mod high_water;
 use super::plan_room::no_room::{self, NoRoom};
 #[cfg(test)]
 pub use super::spend_blocks::KEY_REASONS;
@@ -58,13 +60,6 @@ pub struct LastCycle {
     /// as no room.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_room: Option<bool>,
-}
-
-/// Whether `last` was written after a cycle began measuring at
-/// `measured_at`, so another writer used the ledger while that cycle held no
-/// lock. A switch record always counts, whatever the clock says.
-pub fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
-    last.is_some_and(|c| c.outcome == SWITCHED || c.at >= measured_at)
 }
 
 /// The tags `LastCycle.overflow` may hold.
@@ -171,6 +166,9 @@ pub struct RotateLedger {
     /// Logins left while full, by name, at the swap's epoch seconds (#1870).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub swapped_away: BTreeMap<String, i64>,
+    /// Issue #3181: the highest reading of each login in its window.
+    #[serde(default, skip_serializing_if = "high_water::HighWater::is_empty")]
+    pub high_water: high_water::HighWater,
 }
 
 impl Default for RotateLedger {
@@ -196,6 +194,7 @@ impl Default for RotateLedger {
             platform_block: None,
             no_room: None,
             swapped_away: BTreeMap::new(),
+            high_water: high_water::HighWater::default(),
         }
     }
 }
@@ -341,7 +340,7 @@ impl RotateState {
         if l.login_identity.as_ref().is_some_and(|i| !i.valid()) {
             return Err(refuse("invalid login_identity"));
         }
-        l.swapped_away = super::swap_back::valid(std::mem::take(&mut l.swapped_away), now());
+        high_water::on_load(&mut l, now());
         Ok(Some(l))
     }
 
