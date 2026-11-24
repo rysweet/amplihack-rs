@@ -28,8 +28,8 @@
 use crate::issue_1618_fixture::{Fixture, SPEND_TEXT, claude_stdout, describe, events};
 use crate::issue_1618_wait_profiles::with_profiles;
 use crate::issue_1801_capacity_wait::{
-    assert_no_account_detail, real_clock, rotator_running, run_with_rotator_cycle_during_wait,
-    x_is_live,
+    ROTATOR_ENDINGS, assert_no_account_detail, real_clock, rotator_running,
+    run_with_rotator_cycle_during_wait, x_is_live,
 };
 use std::fs;
 use std::process::{Command, Output};
@@ -110,7 +110,13 @@ fn a_far_spend_reset_starts_a_capacity_wait_and_resumes_on_the_login_with_room()
         ev[1].starts_with("start reason=usage_limit wait=capacity harness=claude reset=2"),
         "{ev:?}"
     );
-    assert_eq!(ev[2..], ["end reason=rotator capacity", "resume attempt=2"]);
+    // The rotator's one write ends the wait under either reason, as in
+    // `issue_1801_capacity_wait::ac1` (#3170).
+    assert!(
+        ROTATOR_ENDINGS.contains(&ev[2].as_str()),
+        "the wait ends on the rotator's write: {ev:?}"
+    );
+    assert_eq!(ev[3], "resume attempt=2", "{ev:?}");
     assert_eq!(claude_stdout(&out), "attempt 2 output\n");
     assert_no_account_detail(&f, &out);
 }

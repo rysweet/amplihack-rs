@@ -326,7 +326,8 @@ pub(crate) fn assert_no_account_detail(f: &Fixture, out: &Output) {
 
 /// The two end reasons one rotator write can produce, see the assertion in
 /// the test below.
-const ROTATOR_ENDINGS: [&str; 2] = ["end reason=rotator capacity", "end reason=login changed"];
+pub(crate) const ROTATOR_ENDINGS: [&str; 2] =
+    ["end reason=rotator capacity", "end reason=login changed"];
 
 /// AC1: a weekly limit on a `$HOME/.claude` step waits for capacity, and the
 /// rotator's next cycle ends the wait. The cycle changes the live login and
