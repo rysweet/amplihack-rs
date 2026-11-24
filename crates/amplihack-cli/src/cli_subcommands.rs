@@ -732,6 +732,10 @@ pub enum GuidanceCommands {
         /// Empty or absent: every entry is NEW.
         #[arg(long = "since", value_name = "ENTRY")]
         since: Option<String>,
+        /// Leave out entries an agent step added with `recipe guide
+        /// --from-step`, from both the plain and the JSON output
+        #[arg(long = "operator-only")]
+        operator_only: bool,
         /// Print one JSON line (schema 1) of metadata, never guidance text
         #[arg(long = "json")]
         json: bool,

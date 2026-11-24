@@ -112,9 +112,18 @@ act_open_pr() {
   # The mention and closing-keyword filter is an argument check: it runs before
   # the identity, with the repository name when origin gives one.
   build_repo_slug "$LAUNCH" || :
-  build_allow_text "$S/allow"
+  # The operator's guidance is part of the allowed text (later guidance
+  # governs); a read that fails leaves it out and says so in the result.
+  build_allow_text "$S/allow" "$(jq -r '.url // empty | strings' "$STATE/pr.json" 2>/dev/null)"
   if ! tok="$(build_mentions_allowed "$bf" "$S/allow")" || ! tok="$(build_mentions_allowed "$tf" "$S/allow")"; then
-    result invalid-args "the text holds ${tok}, which the task text, the goal notes, closing_reference and issue_number do not give; a build adds no mention or closing keyword of its own. Raise it in a comment if guidance asked for it"
+    local unread='' extra
+    if [ -n "$BUILD_GUIDANCE_UNREAD" ]; then
+      unread="; the run's guidance could not be read (amplihack recipe guidance show exited ${BUILD_GUIDANCE_UNREAD}), so it was not counted"
+      extra="$(jq -cn --arg t "$tok" --argjson g "$BUILD_GUIDANCE_UNREAD" '{refused:$t, guidance_unread:$g}')"
+    else
+      extra="$(jq -cn --arg t "$tok" '{refused:$t}')"
+    fi
+    result invalid-args "the text holds ${tok}, which the task text, the goal notes, closing_reference, issue_number and the operator's guidance do not give${unread}; a build adds no mention or closing keyword of its own. Raise it in a comment if it is needed" "$extra"
     return 0
   fi
   identity_for_write || return 0

@@ -20,13 +20,22 @@ use std::process::Command;
 
 const PR: [&str; 4] = ["--pr", "7", "--pr-repo", "o/r"];
 
+/// Appends one entry. A step's entry is written as an agent step writes it:
+/// inside a recipe run (`AMPLIHACK_RECIPE_RUN_ID` set), which `--from-step`
+/// allows and which marks the entry as the step's.
 fn append(fx: &GuideFixture, text: &str, from_step: bool) {
     let mut args = vec!["recipe", "guide"];
     if from_step {
         args.push("--from-step");
     }
     args.extend_from_slice(&[PR_URL, "-"]);
-    let out = fx.run_with_stdin(fx.amplihack(&args), Some(text.as_bytes()));
+    let mut cmd = fx.amplihack(&args);
+    if from_step {
+        cmd.env("AMPLIHACK_RECIPE_RUN_ID", "run-3129-step");
+    } else {
+        cmd.env_remove("AMPLIHACK_RECIPE_RUN_ID");
+    }
+    let out = fx.run_with_stdin(cmd, Some(text.as_bytes()));
     assert!(out.status.success(), "{}", show(&out));
 }
 

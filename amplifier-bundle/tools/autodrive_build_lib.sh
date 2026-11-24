@@ -48,9 +48,25 @@
 #                                 removed
 #   build_task_text <out>         the task text (AUTODRIVE_TASK_FILE, at most
 #                                 65,536 bytes) into <out>
-#   build_allow_text <out>        the text that may name mentions and closing
+#   build_allow_text <out> [pr_url]
+#                                 the text that may name mentions and closing
 #                                 keywords: the task text, goal notes,
-#                                 closing_reference and issue_number
+#                                 closing_reference, then the operator's
+#                                 guidance from `amplihack recipe guidance
+#                                 show --operator-only [pr_url]`. pr_url is
+#                                 passed only when it is a GitHub pull request
+#                                 URL. The guidance is appended only when the
+#                                 read exits 0; otherwise BUILD_GUIDANCE_UNREAD
+#                                 holds its exit code ("" after a good read).
+#                                 Always returns 0. issue_number is added by
+#                                 build_mentions_allowed. --operator-only
+#                                 keeps entries an agent step wrote out of the
+#                                 list; it guards against a build widening its
+#                                 own list by ordinary use and is not a trust
+#                                 boundary. A guidance header's caller login of
+#                                 the form user@domain lets @domain through;
+#                                 that value comes from the operator's own
+#                                 account, so it is accepted (S-V6).
 
 # The variables set below are this library's outputs, read by its callers.
 # shellcheck disable=SC2034
@@ -303,9 +319,23 @@ build_task_text() {
   else printf '%s' "${RECIPE_VAR_task_description:-}" | head -c 65536 > "$1"; fi
 }
 
+BUILD_GUIDANCE_UNREAD=""
 build_allow_text() {
-  local out="$1"
+  local out="$1" url="${2:-}" rc bin="${AMPLIHACK_BIN:-amplihack}"
+  BUILD_GUIDANCE_UNREAD=""
   build_task_text "$out"
   { printf '\n'; printf '%s\n' "${RECIPE_VAR_goal_notes:-}" | head -c 65536
     printf '%s\n' "${RECIPE_VAR_closing_reference:-}" | head -c 4096; } >> "$out"
+  # The run's guidance folders (AMPLIHACK_RUN_GUIDANCE_DIRS) and, when the
+  # recorded URL is a GitHub pull request, that pull request's folder. A URL
+  # of any other shape is dropped, never passed on.
+  [[ "$url" =~ ^https://github\.com/[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}/pull/[1-9][0-9]{0,9}$ ]] || url=""
+  set -- recipe guidance show --operator-only
+  [ -z "$url" ] || set -- "$@" "$url"
+  "$bin" "$@" > "$out.guidance" 2>/dev/null < /dev/null; rc=$?
+  # Fail closed: only a read that succeeded widens the text. A binary older
+  # than --operator-only exits 2 here, which counts as unread.
+  if [ "$rc" -eq 0 ]; then head -c 262144 -- "$out.guidance" >> "$out"; else BUILD_GUIDANCE_UNREAD="$rc"; fi
+  rm -f -- "$out.guidance"
+  return 0
 }
