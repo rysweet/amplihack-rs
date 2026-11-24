@@ -429,6 +429,11 @@ fn a_caller_can_still_turn_hooks_off() {
             .position(|pair| pair[0] == tail[0] && pair[1] == tail[1])
             .unwrap_or_else(|| panic!("{tail:?} passes through: {argv:?}"));
         assert!(ours < theirs, "{tail:?}: {argv:?}");
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair == ["--sandbox", "danger-full-access"]),
+            "{tail:?}: the exec injection still finds exec: {argv:?}"
+        );
     }
 }
 
@@ -541,7 +546,7 @@ fn the_hook_trust_notice_names_what_amplihack_added() {
             lines[0]
         );
         assert!(
-            !stderr.contains("codex-guard-adapter") && !stderr.contains("block-tmux-kill"),
+            !stderr.contains("my-guard") && !stderr.contains("tmux-check"),
             "{tail:?}: no command text on stderr:\n{stderr}"
         );
     }

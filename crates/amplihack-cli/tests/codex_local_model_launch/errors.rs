@@ -238,6 +238,10 @@ fn docker_is_refused_by_flag() {
 fn docker_is_refused_by_environment() {
     if std::path::Path::new("/.dockerenv").exists() {
         // Inside a container AMPLIHACK_USE_DOCKER does not turn Docker on.
+        eprintln!(
+            "skipped docker_is_refused_by_environment: running in a container (/.dockerenv), \
+             where AMPLIHACK_USE_DOCKER does not turn Docker on"
+        );
         return;
     }
     let f = Fixture::new();

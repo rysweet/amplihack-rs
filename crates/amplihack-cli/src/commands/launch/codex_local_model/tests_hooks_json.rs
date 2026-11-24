@@ -36,7 +36,7 @@ fn wrapper() -> String {
 
 fn guard(script: &str) -> Value {
     json!({"hooks": [{"type": "command",
-        "command": format!("/usr/bin/python3 -I /home/u/.codex/hooks/codex-guard-adapter.py {script}")}]})
+        "command": format!("/usr/bin/python3 -I /home/u/.codex/hooks/my-guard.py {script}")}]})
 }
 
 fn user_file(pre_tool_use: Value) -> String {
@@ -96,8 +96,7 @@ fn other_commands_are_not_amplihack_pre_tool_use() {
         // prefix with it as text.
         "'/home/u/.amplihack/codex-local/inkling/bin/hook' pre-tool-use".to_string(),
         "'/home/u/.amplihack/codexbin/hook' pre-tool-use".to_string(),
-        "/usr/bin/python3 -I /home/u/.codex/hooks/codex-guard-adapter.py worker-bash-guard.py"
-            .to_string(),
+        "/usr/bin/python3 -I /home/u/.codex/hooks/my-guard.py shell-check".to_string(),
     ] {
         assert!(
             !runs_amplihack_pre_tool_use(&command, root()),
@@ -156,12 +155,12 @@ fn the_wrapper_as_install_writes_it_is_still_removed() {
         let text = json!({"hooks": {"PreToolUse": [
             {"hooks": [{"type": "command", "command": installed}]},
             {"hooks": [{"type": "command", "command": generated}]},
-            guard("worker-bash-guard.py"),
+            guard("shell-check"),
         ]}})
         .to_string();
         let groups =
             user_pre_tool_use(&text, Path::new(USER_HOOKS), Path::new(&plugin_root)).unwrap();
-        assert_eq!(groups, vec![guard("worker-bash-guard.py")], "{home}");
+        assert_eq!(groups, vec![guard("shell-check")], "{home}");
     }
 }
 
@@ -171,10 +170,10 @@ fn the_wrapper_as_install_writes_it_is_still_removed() {
 /// guards. The wrappers go; the guards stay, unchanged and in order.
 #[test]
 fn both_wrapper_forms_are_removed_and_the_guards_kept_in_order() {
-    let mut tmux = guard("block-tmux-kill.py");
+    let mut tmux = guard("tmux-check");
     tmux["matcher"] = json!("Bash");
     tmux["hooks"][0]["timeout"] = json!(10);
-    let worker = guard("worker-bash-guard.py");
+    let worker = guard("shell-check");
     let groups = filter(json!([
         {"hooks": [{"type": "command", "command": format!("env XPIA_ENABLED=false {} pre-tool-use", wrapper())}]},
         {"hooks": [{"type": "command", "command": format!("{} pre-tool-use", wrapper())}]},
@@ -216,10 +215,10 @@ fn compound_and_non_command_handlers_are_kept_in_order() {
 fn a_group_left_empty_is_dropped() {
     let groups = filter(json!([
         {"hooks": [{"type": "command", "command": "amplihack-hooks pre-tool-use"}]},
-        guard("worker-bash-guard.py"),
+        guard("shell-check"),
         {"matcher": "Bash", "hooks": [{"type": "command", "command": format!("{} pre-tool-use", wrapper())}]},
     ]));
-    assert_eq!(groups, vec![guard("worker-bash-guard.py")]);
+    assert_eq!(groups, vec![guard("shell-check")]);
 }
 
 #[test]

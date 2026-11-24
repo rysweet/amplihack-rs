@@ -114,12 +114,12 @@ multi_agent = true
 
 /// The two Python guards in candide's `hooks.json`, as kept groups.
 pub(crate) fn kept_user_groups(home: &Path) -> Vec<serde_json::Value> {
-    let adapter = home.join(".codex/hooks/codex-guard-adapter.py");
+    let adapter = home.join(".codex/hooks/my-guard.py");
     vec![
         serde_json::json!({"matcher": "Bash", "hooks": [{"type": "command", "timeout": 10,
-            "command": format!("/usr/bin/python3 -I {} block-tmux-kill.py", adapter.display())}]}),
+            "command": format!("/usr/bin/python3 -I {} tmux-check", adapter.display())}]}),
         serde_json::json!({"hooks": [{"type": "command",
-            "command": format!("/usr/bin/python3 -I {} worker-bash-guard.py", adapter.display())}]}),
+            "command": format!("/usr/bin/python3 -I {} shell-check", adapter.display())}]}),
     ]
 }
 
@@ -224,7 +224,7 @@ impl Fixture {
             "prefix_rule(pattern=[\"ls\"])\n",
         )
         .unwrap();
-        fs::write(codex.join("hooks/codex-guard-adapter.py"), "# guard\n").unwrap();
+        fs::write(codex.join("hooks/my-guard.py"), "# guard\n").unwrap();
         fs::write(
             codex.join("sessions/2026/11/24/rollout.jsonl"),
             "{\"type\":\"session\"}\n",
