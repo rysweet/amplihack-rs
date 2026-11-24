@@ -830,10 +830,15 @@ pub fn run_with_io<D: Deps + ?Sized>(
     if code == 0
         && let Some((outcome, reason)) = log_failed.get()
     {
+        let see = if reason.marker_written() {
+            "; see resume/log-write-failed"
+        } else {
+            ""
+        };
         let _ = writeln!(
             stderr,
             "amplihack limit-resume: the resume.log line for outcome={} was not written \
-             (reason={}); see resume/log-write-failed",
+             (reason={}){see}",
             outcome.as_str(),
             reason.as_str()
         );

@@ -203,6 +203,13 @@ impl LogWriteFailure {
             Self::WriteFailed => "write_failed",
         }
     }
+
+    /// Whether [`mark_failure`] can have left the `log-write-failed` marker
+    /// for this reason. It never writes into a folder that is missing or
+    /// not private, so only the lock, open and write failures have one.
+    pub fn marker_written(self) -> bool {
+        !matches!(self, Self::DirMissing | Self::DirUnprivate)
+    }
 }
 
 /// Appends `line` to `dir/resume.log` under the resume lock, rotating it

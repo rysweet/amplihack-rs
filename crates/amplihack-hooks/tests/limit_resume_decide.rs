@@ -1520,7 +1520,7 @@ fn e_auto_switch_off_with_no_resume_dir_prints_one_fixed_line() {
     assert_eq!(
         text,
         "amplihack limit-resume: the resume.log line for outcome=disabled was not written \
-         (reason=dir_missing); see resume/log-write-failed\n"
+         (reason=dir_missing)\n"
     );
     assert!(!text.contains("rate_limit"), "no payload text: {text:?}");
     assert_eq!(d.existing_logs, 1, "disabled always uses log_existing");
@@ -1563,6 +1563,37 @@ fn a_failed_write_on_exit_2_leaves_the_wake_message_alone() {
     let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
     assert_eq!(code, 2);
     assert_eq!(stderr, format!("{RESUME_MSG}\n").as_bytes());
+}
+
+#[test]
+fn the_stderr_line_points_to_the_marker_only_when_one_can_exist() {
+    // `mark_failure` writes nothing into a missing or unprivate folder, so
+    // the stderr line names `resume/log-write-failed` only for the others.
+    for (f, points) in [
+        (LogWriteFailure::DirMissing, false),
+        (LogWriteFailure::DirUnprivate, false),
+        (LogWriteFailure::LockFailed, true),
+        (LogWriteFailure::OpenFailed, true),
+        (LogWriteFailure::WriteFailed, true),
+    ] {
+        assert_eq!(f.marker_written(), points, "{f:?}");
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+        d.log_result = Err(f);
+        let mut stderr = Vec::new();
+        let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+        assert_eq!(code, 0);
+        let text = String::from_utf8(stderr).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text:?}");
+        assert!(
+            text.contains(&format!("(reason={})", f.as_str())),
+            "{text:?}"
+        );
+        assert_eq!(
+            text.contains("see resume/log-write-failed"),
+            points,
+            "{f:?}: {text:?}"
+        );
+    }
 }
 
 #[test]
