@@ -260,7 +260,7 @@ Before marking a profile, tell the user:
   reject the new ledger fields.
 
 ```bash
-amplihack profile overflow add ryan-mistt-org
+amplihack profile overflow add <overflow-profile>
 amplihack profile overflow list
 amplihack profile rotate stop
 amplihack profile rotate start --overflow-wait 1800
