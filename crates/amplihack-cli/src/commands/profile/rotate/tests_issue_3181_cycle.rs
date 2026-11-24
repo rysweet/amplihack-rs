@@ -255,3 +255,50 @@ fn a_waived_swap_still_refuses_a_target_whose_identity_cannot_be_read() {
     assert_ne!(got, CycleOutcome::Swapped, "{}", log_of(&e));
     assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
 }
+
+lane!(s4);
+
+#[test]
+fn a_budget_spent_in_several_cycles_does_not_stop_the_swap_at_the_limit() {
+    // One rotator process: the budget is spent inside every cycle's
+    // measurement while the live login rises below the swap point, then the
+    // live login reaches its limit. The swap happens in that cycle.
+    fn spend_then_measure(
+        c: &Ctx,
+        snap: &super::super::observe::Snap,
+    ) -> Result<super::super::observe::Measurement, crate::commands::profile::ProfileError> {
+        c.identity_budget.spend();
+        s4::measure(c, snap)
+    }
+    let e = env();
+    seed(&s4::CLOCK, &s4::RESET);
+    set(
+        &s4::LIVE,
+        &[
+            Live::Direct(50.0, 14.0),
+            Live::Direct(55.0, 14.0),
+            Live::Direct(60.0, 14.0),
+            Live::Direct(100.0, 14.0),
+        ],
+    );
+    set(&s4::OTHERS, &[("spare", rd(0.0, 0.0, None))]);
+    set(&s4::REREAD, &[rd(0.0, 0.0, None)]);
+    let mut c = ctx(&e, s4::clock, spend_then_measure, Some(s4::reread));
+    for _ in 0..3 {
+        assert_ne!(
+            step(&mut c, &s4::CLOCK),
+            CycleOutcome::Swapped,
+            "{}",
+            log_of(&e)
+        );
+        assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
+    }
+    let got = step(&mut c, &s4::CLOCK);
+    assert_eq!(
+        got,
+        CycleOutcome::Swapped,
+        "refused at the limit: {}",
+        log_of(&e)
+    );
+    assert_eq!(ino_at(&e.live()), Some(e.t), "spare's login is live");
+}
