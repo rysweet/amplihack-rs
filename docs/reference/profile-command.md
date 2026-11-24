@@ -11577,7 +11577,7 @@ The hook resumes a session in one of two ways, never both:
   [#2695](https://github.com/rysweet/amplihack-rs/issues/2695), so such a
   session gets the keys.
 - **Wake** (outcome `not-resumed` with `detail=no-tmux-pane`,
-  `pane-unverified`, `pane-not-reading` or `screen-unrecognised`, exit `2`):
+  `pane-unverified` or `screen-unrecognised`, exit `2`):
   otherwise it exits `2` with the resume message on stderr. Nothing was
   typed and nothing was recorded, so the event stays armed and the next room
   event tries again. The outcome says why the keys path was not taken. For
@@ -11653,9 +11653,9 @@ The checks run in this order. The first one that fails decides the outcome.
 | 6 | The rotator is running: `<root>/.auto-switch.d/rotate/rotate.pid` names a running `amplihack profile rotate watch` process of yours (checked in `/proc`; skipped where there is none), and the ledger, if present, can be read by the trust rules in [Rotator capacity rule](#rotator-capacity-rule). | Exit `0` without waiting, outcome `rotator-down`. |
 | 7 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 7 days and 1 hour are removed. | Exit `0`, outcome `guard-failed`. |
 | 8 | The hook keeps the swap record it noted in step 3 (or that there was none), sets up the [event wait](#event-wait), and reads the swap record once. Then it waits for a record that passes [Capacity for a resume](#capacity-for-a-resume), for at most 7 days from its start. A record that fails is logged (`swap-stale` or `swap-no-room`) and the wait goes on. | Exit `0`, outcome `watch-lost` if the wait cannot be set up or a watch is lost; `moved-on` if you sent a prompt in that session; `session-gone` if the session exited; `no-capacity-timeout` at the 7-day deadline; `guard-failed` if a prompt marker cannot be read safely. |
-| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and the hook has a pane (the named pane, or the single pane on the session's terminal, see [Resume keys](#resume-keys)) that [passes its check](#resume-keys) and is [showing a screen the keys answer](#resume-screen); otherwise the wake is used instead, with outcome `not-resumed`, `pane-unverified`, `pane-not-reading` or `screen-unrecognised`, and the hook reads the event marker and the session's last resume once more, without the lock and writing nothing (`duplicate` if either applies; `guard-failed` is logged and the wake still given if the read fails). On the keys path, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
+| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and the hook has a pane (the named pane, or the single pane on the session's terminal, see [Resume keys](#resume-keys)) that [passes its check](#resume-keys) and is [showing a screen the keys answer](#resume-screen); otherwise the wake is used instead, with outcome `not-resumed`, `pane-unverified` or `screen-unrecognised`, and the hook reads the event marker and the session's last resume once more, without the lock and writing nothing (`duplicate` if either applies; `guard-failed` is logged and the wake still given if the read fails). On the keys path, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
 | 10 | With a pane: send the [resume keys](#resume-keys). | Exit `0`, outcome `resume-keys-failed`, with the number of keys sent. The hook releases the marker and its session time under the lock, so the event stays armed, and does not exit `2`. If the release fails, `guard-failed` is logged first and the event stays used. |
-| 11 | No further check | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message when there was no keys path: outcome `not-resumed` with `detail=no-tmux-pane` for no pane named or found, `pane-unverified` for a pane that was not proved to be this session's terminal, `pane-not-reading` for a terminal Claude Code is not reading, `screen-unrecognised` for a proved pane that was not showing a screen the keys answer. |
+| 11 | No further check | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message when there was no keys path: outcome `not-resumed` with `detail=no-tmux-pane` for no pane named or found, `pane-unverified` for a pane that was not proved to be this session's terminal, `screen-unrecognised` for a proved pane that was not showing a screen the keys answer. |
 
 Steps 4 and 5 run once without the lock, so a duplicate session
 exits at once instead of waiting up to 7 days, and again under the lock in
@@ -11858,7 +11858,7 @@ interval. It watches:
 |--------|-----------------|---------------|
 | inotify on `<root>/.auto-switch.d/rotate/` | `swap.json` closed after writing or renamed into place | A swap record may have changed; read and judge it. |
 | inotify on `<root>/.auto-switch.d/resume/prompted/` | any file renamed into place | A prompt may have been sent; check this session's marker. |
-| a pidfd on the hook's parent process | the process exits | The session is gone: `session-gone`. |
+| a pidfd on the hook's parent process, the process the hook command runs through | the process exits | The session is normally gone: `session-gone`. The process is not Claude Code itself, so an exit of the session is otherwise noticed at the maximum wait. |
 | the `poll` timeout | the time left until 7 days after the hook's start | `no-capacity-timeout`. The timeout never resumes a session. |
 
 Both directories must be real directories, not symlinks, owned by you and
@@ -11902,9 +11902,12 @@ proved, never as evidence. A named pane that is refused never falls back to
 the lookup by terminal.
 
 The pane is used only if it passes this check, made once, right before the
-commit. Claude Code does not always hold the terminal itself (a launcher or
-wrapper can sit between it and the pane), so the check starts from the
-hook's own process and walks up, not from the hook's parent:
+commit. Claude Code runs the hook command through a process of its own,
+which has a pipe on its standard input and its own process group
+([#3156](https://github.com/rysweet/amplihack-rs/issues/3156)), so the
+hook's parent is not Claude Code and is never consulted. The check starts
+from the hook's own process and walks up to the process that holds the
+terminal, the holder:
 
 1. The hook walks up its ancestry through `/proc/<pid>/stat` to the nearest
    process whose standard input (`/proc/<pid>/fd/0`) is a terminal. The walk
@@ -11914,21 +11917,18 @@ hook's own process and walks up, not from the hook's parent:
 2. `tmux display-message -p -t %N '#{pane_tty}'` exits 0 and prints an
    absolute path under `/dev/` of at most 256 bytes, and that path is the
    terminal found in step 1.
-3. The process found in step 1 is the terminal's foreground process group
-   (`/proc/<pid>/stat`).
-4. The hook's parent, which shares Claude Code's process group, is reading
-   that terminal: its process group is the terminal's foreground process
-   group. Step 3 already makes the process from step 1 the foreground group,
-   so this step fails only when Claude Code sits in a different, background
-   group, for example behind a wrapper that holds the terminal. Without it,
-   the keys could land on a launcher or shell prompt.
+3. The process found in step 1, the holder, is the terminal's foreground
+   process group (`/proc/<pid>/stat`). The holder is an ancestor of the
+   hook that is not necessarily Claude Code itself: it can be a launcher
+   or a shell. Children of Claude Code, such as background agents, are
+   never reached by the walk, because the walk goes up and not down.
 
 The check is made once. Between it and the first key the hook adds no
 delay, retry or poll. The process ids it used belong to the hook's own
 ancestors under its own user, so a process id reused in that instant is an
 accepted residual risk, not a case the hook guards against.
 
-A failure at step 1, 2 or 3 for a named or found pane gives outcome
+A failure at any step for a named or found pane gives outcome
 `pane-unverified`, with a `detail` from this closed list:
 
 | `detail` | Cause |
@@ -11940,7 +11940,7 @@ A failure at step 1, 2 or 3 for a named or found pane gives outcome
 | `tty-mismatch` | The pane's `#{pane_tty}` is not the terminal the walk found, or `tmux` failed or printed nothing. |
 | `not-foreground` | The process holding the terminal is not its foreground process group. |
 
-A failure at step 4 gives `pane-not-reading`. Every one of these exits `2`
+Every one of these exits `2`
 with the resume message. None of them tries another pane, and the hook never
 runs `list-clients`. A pane inherited from a shell that
 started Claude Code outside that pane, or a pane another session owns, is not
@@ -12040,9 +12040,11 @@ status before the next:
 | 4 | `tmux send-keys -t %N Enter` | Send it. |
 
 Before each key the hook checks, without blocking, that the session's
-process is still running and that `/proc/<parent>/stat` still shows it as
-the terminal's foreground process group, so a session suspended with
-Ctrl-Z gets no more keys. A key whose `tmux` run exits non-zero, or a
+process is still running and that `/proc/<holder>/stat` still shows the
+holder proved by the pane check as the terminal's foreground process
+group, so a session suspended with Ctrl-Z gets no more keys. The holder is
+an ancestor of the hook that is not necessarily Claude Code itself. A key
+whose `tmux` run exits non-zero, or a
 session found gone or suspended, stops the sequence: the remaining keys are not sent,
 and the outcome is `resume-keys-failed` with `keys_sent` set to the number
 sent and `detail` naming the cause (`session-gone` for a session that
@@ -12260,7 +12262,6 @@ outcome.
 | `resumed-keys` | `0` | A swap record with room arrived, the resume was recorded, and all four keys were sent to the session's pane. This is the only outcome that records the event as used. |
 | `not-resumed` | `2` | Logged with `detail=no-tmux-pane`, when no pane was named or found: the exit `2` wake was given, nothing was typed and nothing was recorded, so the event stays armed and the next room event tries again. If the session runs in tmux, check that the hook reaches the session's own tmux server. |
 | `pane-unverified` | `2` | A pane was named or found, but it was not proved to be the terminal of this hook's own Claude Code (`detail` says which check failed). Nothing was typed or recorded, and the hook exited `2` with the continue message. A session held on the usage-limit menu stays there, so this outcome in `resume.log` is the sign to continue the session by hand. |
-| `pane-not-reading` | `2` | The pane is this session's terminal, but Claude Code is not the process reading it (for example it is in a background process group behind a wrapper). Nothing was typed or recorded; the hook exited `2` with the continue message. |
 | `screen-unrecognised` | `2` | The pane is this session's own terminal, but what it was showing is not a screen the keys answer (`detail=screen-unknown`) or could not be read at all (`detail=screen-unreadable`). Nothing was typed or recorded, so the event stays armed; the hook exited `2` with the unrecognised-screen line and the continue message. See [Resume screen](#resume-screen). |
 | `resume-keys-failed` | `0` | A key failed or the session exited part way; `keys_sent` says how many went. The record of the event is released so the next room event tries again. No exit `2` follows. |
 | `swap-stale` | — | A new swap record was swapped at or before the stop. The hook keeps waiting. Never the final outcome. |

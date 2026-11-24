@@ -21,6 +21,8 @@ struct Ownership {
     schema_version: u32,
     #[serde(default)]
     transaction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completion: Option<completion_proof::Completion>,
     #[serde(default, skip_serializing_if = "is_false")]
     uninstall_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,9 +56,14 @@ mod storage;
 use storage::*;
 mod backup_cleanup;
 mod cleanup_guard;
+mod completion_proof;
 mod config;
 mod package_cleanup;
 mod recovery;
+mod recovery_archive;
+mod recovery_archive_intent;
+mod recovery_archive_storage;
+mod recovery_staleness;
 mod rollback;
 mod rollback_durability;
 use recovery::*;
@@ -91,6 +98,9 @@ pub(super) fn uninstall() -> Result<()> {
         }
     }
     uninstall::uninstall()
+}
+pub(super) fn reset_recovery() -> Result<()> {
+    recovery_archive::reset()
 }
 
 /// Issue #2589: writes amplihack's dangerous-command rules file into the
@@ -133,6 +143,8 @@ mod classify_tests;
 #[cfg(test)]
 mod cleanup_performance_tests;
 #[cfg(all(test, unix))]
+mod completion_proof_tests;
+#[cfg(all(test, unix))]
 mod deny_rules_tests;
 #[cfg(test)]
 mod digest_tests;
@@ -148,6 +160,16 @@ mod probe_install_tests;
 mod probe_tests;
 #[cfg(all(test, unix))]
 mod recovery_alias_tests;
+#[cfg(all(test, unix))]
+mod recovery_archive_guard_tests;
+#[cfg(all(test, unix))]
+mod recovery_archive_retry_tests;
+#[cfg(all(test, unix))]
+mod recovery_archive_tests;
+#[cfg(all(test, unix))]
+mod recovery_staleness_tests;
+#[cfg(all(test, unix))]
+mod recovery_test_support;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(all(test, unix))]

@@ -388,6 +388,10 @@ mod issue_2190_recipe_steps_report_real_exit_status;
 mod issue_2211_live_freshness;
 #[path = "issue_2218_excluded.rs"]
 mod issue_2218_excluded;
+#[path = "issue_2284_codex_recovery.rs"]
+mod issue_2284_codex_recovery;
+#[path = "issue_2284_codex_reset_recovery.rs"]
+mod issue_2284_codex_reset_recovery;
 #[path = "issue_2317_codex_step_commits_in_worktree.rs"]
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]

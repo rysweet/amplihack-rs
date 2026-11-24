@@ -7,7 +7,9 @@
 mod conversation;
 mod prompt;
 
-use amplihack_types::{ProjectDirs, sanitize_session_id};
+use super::state_paths::StopStatePaths;
+use crate::state_dir::create_private_dir_all;
+use amplihack_types::{ProjectDirs, session_state_dir};
 use anyhow::Result;
 use serde_json::Value;
 use std::fs;
@@ -57,41 +59,23 @@ pub fn should_run(dirs: &ProjectDirs) -> bool {
 /// Save reflection artifacts to disk.
 ///
 /// Writes FEEDBACK_SUMMARY.md, timestamped reflection file, and current_findings.md.
-fn save_reflection_artifacts(dirs: &ProjectDirs, session_id: &str, template: &str) {
-    let session_dir = dirs.session_logs(session_id);
-    let safe_id = sanitize_session_id(session_id);
-
+fn save_reflection_artifacts(state: &StopStatePaths, template: &str) {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let filename = format!("reflection_{safe_id}_{timestamp}.md");
+    let history_path = state.reflection_history(timestamp);
 
-    if let Err(e) = fs::write(session_dir.join("FEEDBACK_SUMMARY.md"), template) {
+    if let Err(e) = fs::write(state.logs.join("FEEDBACK_SUMMARY.md"), template) {
         tracing::warn!("Failed to write FEEDBACK_SUMMARY.md: {}", e);
     }
 
-    let reflection_dir = reflection_runtime_dir(dirs);
-    if let Err(e) = fs::create_dir_all(&reflection_dir) {
-        tracing::warn!("Failed to create reflection dir: {}", e);
+    if let Err(e) = fs::write(&history_path, template) {
+        tracing::warn!("Failed to write {}: {}", history_path.display(), e);
     }
-    if let Err(e) = fs::write(reflection_dir.join(&filename), template) {
-        tracing::warn!("Failed to write {}: {}", filename, e);
-    }
-    if let Err(e) = fs::write(reflection_dir.join("current_findings.md"), template) {
+    if let Err(e) = fs::write(state.reflection.join("current_findings.md"), template) {
         tracing::warn!("Failed to write current_findings.md: {}", e);
     }
-}
-
-fn reflection_runtime_dir(dirs: &ProjectDirs) -> std::path::PathBuf {
-    dirs.runtime.join("reflection")
-}
-
-fn reflection_semaphore_path(dirs: &ProjectDirs, session_id: &str) -> std::path::PathBuf {
-    reflection_runtime_dir(dirs).join(format!(
-        ".reflection_presented_{}",
-        sanitize_session_id(session_id)
-    ))
 }
 
 /// Run session reflection and return findings if session should be blocked.
@@ -103,11 +87,22 @@ pub fn run_reflection(
     session_id: &str,
     transcript_path: Option<&Path>,
 ) -> Result<Option<Value>> {
-    let session_dir = dirs.session_logs(session_id);
-    fs::create_dir_all(&session_dir)?;
-    fs::create_dir_all(reflection_runtime_dir(dirs))?;
+    let Some(session_dir) = session_state_dir(Some(session_id)) else {
+        tracing::warn!("Reflection state unavailable: no amplihack state root, approving");
+        return Ok(None);
+    };
+    run_reflection_with_state(dirs, &StopStatePaths::new(session_dir), transcript_path)
+}
 
-    let semaphore_path = reflection_semaphore_path(dirs, session_id);
+pub(super) fn run_reflection_with_state(
+    dirs: &ProjectDirs,
+    state: &StopStatePaths,
+    transcript_path: Option<&Path>,
+) -> Result<Option<Value>> {
+    create_private_dir_all(&state.logs)?;
+    create_private_dir_all(&state.reflection)?;
+
+    let semaphore_path = state.reflection_semaphore();
     if semaphore_path.exists() {
         if let Err(error) = fs::remove_file(&semaphore_path) {
             tracing::warn!(
@@ -129,12 +124,14 @@ pub fn run_reflection(
         None => Vec::new(),
     };
 
-    let prompt = build_reflection_prompt(dirs, &session_dir, &conversation)?;
+    // Redirect history remains a project-owned input, separate from feedback.
+    let redirects_dir = dirs.session_logs(&state.session_key);
+    let prompt = build_reflection_prompt(dirs, &redirects_dir, &conversation)?;
     let Some(template) = run_claude_reflection(&dirs.root, &prompt)? else {
         return Ok(None);
     };
 
-    save_reflection_artifacts(dirs, session_id, &template);
+    save_reflection_artifacts(state, &template);
 
     if let Err(e) = fs::write(&semaphore_path, "") {
         tracing::warn!("Failed to write reflection semaphore: {}", e);
@@ -153,11 +150,13 @@ pub fn run_reflection(
 mod tests {
     use super::*;
     use crate::test_support::env_lock;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn not_enabled_by_default() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _enable = crate::test_support::EnvVarGuard::unset("AMPLIHACK_ENABLE_REFLECTION");
+        let _skip = crate::test_support::EnvVarGuard::unset("AMPLIHACK_SKIP_REFLECTION");
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         assert!(!should_run(&dirs));
     }
@@ -167,7 +166,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.tools_amplihack).unwrap();
         fs::write(
@@ -201,7 +200,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.tools_amplihack).unwrap();
         fs::write(
@@ -235,7 +234,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.tools_amplihack).unwrap();
         fs::create_dir_all(dirs.runtime.join("reflection")).unwrap();
@@ -268,17 +267,45 @@ mod tests {
 
     #[test]
     fn semaphore_prevents_re_presentation() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let _binary = crate::test_support::EnvVarGuard::set(
+            "AMPLIHACK_REFLECTION_BINARY",
+            home.path().join("absent-agent"),
+        );
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         let session_id = "test-session";
-        let session_dir = dirs.session_logs(session_id);
+        let session_dir = amplihack_types::session_state_dir(Some(session_id)).unwrap();
         fs::create_dir_all(&session_dir).unwrap();
-        fs::create_dir_all(reflection_runtime_dir(&dirs)).unwrap();
-        fs::write(reflection_semaphore_path(&dirs, session_id), "").unwrap();
+        fs::create_dir_all(session_dir.join("reflection")).unwrap();
+        let semaphore = session_dir.join("reflection/.reflection_presented_test-session");
+        fs::write(&semaphore, "").unwrap();
 
         let result = run_reflection(&dirs, session_id, None).unwrap();
         assert!(result.is_none());
-        assert!(!reflection_semaphore_path(&dirs, session_id).exists());
+        assert!(!semaphore.exists());
+    }
+
+    #[test]
+    fn feedback_survives_history_and_current_findings_storage_failures() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _environment = crate::stop::issue_2053_tests::Environment::new();
+        let state = StopStatePaths::new(session_state_dir(Some("output-error")).unwrap());
+        fs::create_dir_all(&state.logs).unwrap();
+        // Obstruct both reflection outputs without depending on permissions,
+        // effective uid or the timestamp chosen for the history filename.
+        fs::write(&state.reflection, "not a directory").unwrap();
+        save_reflection_artifacts(&state, "isolated findings");
+        assert_eq!(
+            fs::read_to_string(state.logs.join("FEEDBACK_SUMMARY.md")).unwrap(),
+            "isolated findings"
+        );
+        assert_eq!(
+            fs::read_to_string(&state.reflection).unwrap(),
+            "not a directory"
+        );
     }
 
     #[test]
@@ -286,7 +313,9 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let fake_cli = crate::stop::issue_2053_tests::reflection_fixture();
+        let _environment = crate::stop::issue_2053_tests::Environment::new();
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(dirs.tools_amplihack.join("hooks/templates")).unwrap();
         fs::create_dir_all(dirs.claude.join("templates")).unwrap();
@@ -311,27 +340,17 @@ mod tests {
         )
         .unwrap();
 
-        let fake_cli = dir.path().join("fake-claude.sh");
-        fs::write(
-            &fake_cli,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '## Task Summary\\nReflected session\\n'\n",
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&fake_cli).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&fake_cli, perms).unwrap();
-
-        let previous = std::env::var_os("AMPLIHACK_REFLECTION_BINARY");
-        unsafe { std::env::set_var("AMPLIHACK_REFLECTION_BINARY", &fake_cli) };
+        let _binary =
+            crate::test_support::EnvVarGuard::set("AMPLIHACK_REFLECTION_BINARY", fake_cli);
+        let _project = crate::test_support::EnvVarGuard::set("STOP_FIXTURE_PROJECT", &dirs.root);
+        let _findings = crate::test_support::EnvVarGuard::set(
+            "STOP_FIXTURE_UNIT_FINDINGS",
+            "## Task Summary\nReflected session\n",
+        );
 
         let result = run_reflection(&dirs, "test-session", Some(&transcript)).unwrap();
 
-        match previous {
-            Some(value) => unsafe { std::env::set_var("AMPLIHACK_REFLECTION_BINARY", value) },
-            None => unsafe { std::env::remove_var("AMPLIHACK_REFLECTION_BINARY") },
-        }
-
-        let session_dir = dirs.session_logs("test-session");
+        let session_dir = amplihack_types::session_state_dir(Some("test-session")).unwrap();
         assert_eq!(result.as_ref().unwrap()["decision"], "block");
         assert!(
             result.as_ref().unwrap()["reason"]
@@ -339,8 +358,12 @@ mod tests {
                 .unwrap()
                 .contains("Reflected session")
         );
-        assert!(session_dir.join("FEEDBACK_SUMMARY.md").exists());
-        assert!(dirs.runtime.join("reflection/current_findings.md").exists());
-        assert!(reflection_semaphore_path(&dirs, "test-session").exists());
+        assert!(session_dir.join("logs/FEEDBACK_SUMMARY.md").exists());
+        assert!(session_dir.join("reflection/current_findings.md").exists());
+        assert!(
+            session_dir
+                .join("reflection/.reflection_presented_test-session")
+                .exists()
+        );
     }
 }
