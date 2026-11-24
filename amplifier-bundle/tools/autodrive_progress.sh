@@ -3,10 +3,14 @@
 #
 # It recorded each round and stopped a loop whose rounds made no progress.
 # The shared goal loop replaced it: autodrive_goal_loop.sh; whether a review converges is the agent's judgement, recorded in the turn records.
-# This file stays for one release so that a run with an older pinned bundle,
-# or a caller that still names it, keeps working. It prints one plain line
+# This file stays for one release so that a path that still names it finds a
+# file. It keeps the name, not the old interface. It prints one plain line
 # naming the replacement and does nothing else: it brings back no stop, no
 # budget and no gate. Sourced or run, it ends with status 0.
+# A run started on 1.2.212 never reaches it: auto-drive runs every tool from
+# the launch copy of the bundle made when the run starts (#2959).
+# A 1.2.212 caller that did reach it would read status 0 and no output as
+# "no stop".
 # docs/reference/autodrive-goal-loop.md#retired-keys-and-aliases.
 
 echo "autodrive_progress.sh is retired (#3129) and does nothing here; its replacement is autodrive_goal_loop.sh and its turn records." >&2

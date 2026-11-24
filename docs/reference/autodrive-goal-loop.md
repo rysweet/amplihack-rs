@@ -519,8 +519,12 @@ reads them. The run log has one plain note that they are retired. An unknown
 `autodrive_budget_*` key no longer fails the run. `light_eligibility` is accepted
 and ignored.
 
-For one release (#3049), renamed or removed recipes and tools keep a working
-alias. Runs in flight keep their pinned bundle.
+For one release (#3049), renamed or removed recipes and tools keep a file under
+the old name. Runs in flight keep their pinned bundle: an auto-drive run on
+1.2.212 runs every recipe and tool from the launch copy of the bundle made
+when it started, so an upgrade under it changes nothing it calls (see
+[Callers in 1.2.212](#callers-in-12212)). A tool alias keeps the name, not the
+old interface.
 
 | Alias | Now |
 |-------|-----|
@@ -533,6 +537,59 @@ alias. Runs in flight keep their pinned bundle.
 Every `autodrive_budget.sh` subcommand exits 0, so a call to `check` means
 "carry on". No alias brings back a stop. Aliases are real files, because the
 bundle copy skips symbolic links.
+
+### Callers in 1.2.212
+
+Every 1.2.212 caller of the ten tools this change rewrites was walked against
+this branch's tools (crusty round 3 of #3143). The installed 1.2.212 bundle is
+byte-identical to tag `v1.2.212`, and the five added tools have no 1.2.212
+caller. The table holds for 1.2.213 too. Of these files, 1.2.213 changes only
+`autodrive_merge.sh` (reason wording, and BEHIND and DIRTY each still return
+8) and the round budget in `autodrive_merge_loop_run.sh` (#3131, #3152), and it
+changes no code under `crates/*/src`, so how a run finds its tools is the same.
+
+How a 1.2.212 run finds its tools:
+
+- An `auto-drive-to-merge`, `auto-drive-light` or `autodrive-*` run copies the
+  bundle into its own run folder when it starts. It loads its recipe and
+  sub-recipe search path from that copy, and every step gets `AMPLIHACK_HOME`
+  set to the copy (v1.2.212 `execute.rs` lines 863-889 and 1178-1190). A
+  nested auto-drive run copies its parent's copy.
+- Each 1.2.212 tool that calls another finds it in its own folder, so inside
+  the copy.
+- Other runs have no copy. Their steps read `AMPLIHACK_HOME`, the live
+  `~/.amplihack` link, at step time. Of the ten tools, only
+  `autodrive_refusal.sh` is reached this way. `quick-change` and
+  `workflow-publish` source `workflow_hook_repair.sh`, which runs
+  `loop-health-evaluator`, whose `loop-evidence-collector.yaml` sources it.
+
+| Tool | Reached by a 1.2.212 run after the upgrade | If a 1.2.212 caller reached this branch's version |
+|------|------|------|
+| `autodrive_refusal.sh` | Yes, by runs without a launch copy | Works. The four 1.2.212 functions are byte-identical; `log_body` and `usage_limit_failure` were added. `tests/issue_1437_autodrive_refusal.sh` covers the four. |
+| `autodrive_merge.sh` | No | Same function names, arguments and result fields. The return codes for pending checks (7, now 3) and for base-behind (8, now 4) are gone, because the goal loop has no base-sync path (#3094). |
+| `autodrive_budget.sh`, `autodrive_progress.sh` | No | Status 0 and no output, which the callers read as "no stop". |
+| `autodrive_done_override.sh` | No | Status 0, so the caller always takes its "another round" branch. |
+| `autodrive_crusty_rereview.sh` | No | Status 0 with no re-review. |
+| `autodrive_round_word.sh` | No | The merge-round step that sources it finds no `autodrive_round_word` or `autodrive_round_file` and stops with status 127. |
+| `autodrive_escalate.sh` | No | The 1.2.212 `autodrive_loop.sh` that sources it finds none of the old stop functions and fails at its first call. |
+| `autodrive_loop.sh` | No | Runs one review or the goal loop, but writes no `loop_result` or `merge-ready-result.json`, so a 1.2.212 caller reads its result as unreadable and hands off. `--context pr_number` is ignored; the number comes from `RECIPE_VAR_pr_number`. |
+| `autodrive_merge_loop_run.sh` | No | Runs the goal loop; the 1.2.212 `autodrive-merge-loop` step reads no result and hands off. |
+
+No 1.2.212 run can reach a tool that fails its call. The failures in the last
+four rows would need a 1.2.212 recipe running with this branch's tools in the
+same bundle, and neither an install nor a launch copy produces that mix.
+
+Two mixes of binary and bundle are refused or limited rather than broken:
+
+- A newer `amplihack` typed by an agent inside a 1.2.212 run keeps that run's
+  `AMPLIHACK_HOME`. The commands 1.2.212 prompts ask for (`orch helper
+  autodrive state|worktree`, `orch helper autodrive-completion-write`,
+  `hygiene artifact-guard`) run none of these tools. A newer `recipe run
+  autodrive-*` refuses at launch, because the 1.2.212 copy lacks the goal
+  loop's required files.
+- A 1.2.212 binary run by path against this bundle launches, but it has no
+  `recipe guidance` command, so every guidance read fails. Guidance is then
+  unknown and the merge refuses with `guidance-unknown`.
 
 ## Goal contract v1
 
