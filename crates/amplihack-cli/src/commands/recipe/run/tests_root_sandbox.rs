@@ -232,20 +232,14 @@ fn run_as_root_outside_a_sandbox(
     // workflow, the test would inherit that workflow's depth, the guard would
     // refuse, and the runner stub would never start, whatever the pre-flight
     // had decided.
-    let _orchestration_env = crate::test_support::EnvGuard::unset([
-        "AMPLIHACK_SESSION_TREE_DIR",
-        "AMPLIHACK_TREE_ID",
-        "AMPLIHACK_SESSION_DEPTH",
-        "AMPLIHACK_MAX_DEPTH",
-        "AMPLIHACK_RECIPE_RUN_ID",
-    ]);
+    let _orchestration_env = crate::test_support::clear_outer_run_env();
     let stub_dir = tempfile::tempdir().unwrap();
     let handed = stub_dir.path().join("handed");
     let runner = stub_dir.path().join("recipe-runner-rs");
     std::fs::write(
         &runner,
         format!(
-            "#!/bin/sh\nprintf '%s' \"$AMPLIHACK_AGENT_BINARY\" > '{}'\n\
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '%s' \"$AMPLIHACK_AGENT_BINARY\" > '{}'\n\
              printf '%s' '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n",
             handed.display()
         ),

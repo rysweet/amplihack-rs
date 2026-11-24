@@ -1,7 +1,7 @@
 # How to Diagnose Workflow Terminal-State Failures
 
 Use this guide when `default-workflow` or `smart-orchestrator` exits nonzero
-with `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_INVALID_EVIDENCE`, or another
+with `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_INVALID_EVIDENCE` (recorded by earlier runs), or another
 terminal-state error.
 
 ## Before you start
@@ -43,7 +43,7 @@ Look for these fields:
 | `terminal_reason` | Human-readable explanation and next action. |
 | `required_next_action` | The action the finalizer expects before the workflow can close. |
 | `hollow_success_detected` | Whether the run appeared successful but lacked real completion evidence. |
-| `evidence_used` | Typed evidence keys used by the deterministic classifier. |
+| `evidence_used` | Typed evidence keys the reported decision was made on; since #2343 `assess-finalization` makes it, not a deterministic classifier. |
 | `reporting_failure` | Whether a reporting step failed after successful implementation (produces `FAILED_REPORTING`, durable evidence preserved). |
 | `observed_phases` | Last workflow phases that produced evidence. |
 | `missing_evidence` | Required proof that was absent. |
@@ -113,7 +113,14 @@ for the full rules.
 
 ## Fix `FAILED_INVALID_EVIDENCE`
 
-This means the workflow produced terminal markers, but they were not trustworthy.
+Finalization no longer emits this state (#2343); it is still recognised so older
+run records and other producers read correctly. Finalization now classifies on
+the pushed head and the open PR, see
+[The Run's Real Outcome](../reference/default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
+The checks below apply to a record that carries the state from an earlier run
+or another producer.
+
+The workflow produced terminal markers, but they were not trustworthy.
 
 Check for:
 
@@ -141,7 +148,7 @@ or:
 ```text
 terminal_success=false
 terminal_state=BLOCKED_CI
-terminal_reason=required status check unit-tests failed
+terminal_reason=deploy-preview: the workflow reads secrets.PREVIEW_TOKEN, which the repository does not define
 terminal_failure=true
 ```
 
@@ -181,6 +188,44 @@ required_next_action=Re-run the reporting step; the implementation is intact.
 Retry the reporting step for `FAILED_REPORTING`; do not re-run the
 implementation. Resume from implementation only for `FAILED_IMPLEMENTATION`.
 
+A published pull request whose head the run left not green, with the repair
+unfinished and no cause named that the run cannot fix, is not
+`FAILED_IMPLEMENTATION` (#2966). The assessment answers `CI_REPAIR_UNFINISHED`,
+and the runner starts it again, once, in a new session. A crash or a prose
+answer is started again the same way, and so is a session that left the run's
+worktree dirty (an untracked build artefact, a hook-generated file), whatever
+it answered: `read-worktree-after-assessment` reads the worktree after the
+session and the new session is given its entries. The pass logs one line on
+stderr:
+
+```text
+INFO: #2966: assess-finalization did not decide (no terminal_state, or CI_REPAIR_UNFINISHED), or left the run's worktree not clean; starting it again in a fresh session
+```
+
+When that session did not decide either, or left the worktree dirty too,
+`continue-ci-repair` fails with a line that carries the session's answer as a
+JSON string and the worktree it left as JSON:
+
+```text
+ERROR: #2966: the fresh assess-finalization session did not decide either, or left the worktree not clean (nested run exit 1); its answer, as data: "..."; the worktree after it, as data: {"clean":"false","state":"dirty",...}
+```
+
+It goes to its recovery agent, which judges whether another session is useful
+(a retry starts one) or hands off. Every such decision is one line of
+`continue-ci-repair.jsonl` in the run's step-recovery directory (the
+`step_recovery_dir` context value), so the passes can be read there:
+
+```bash
+jq -c '{choice, reason, recurrence}' "<step_recovery_dir>/continue-ci-repair.jsonl"
+```
+
+A `BLOCKED_CI` that leaves out its cause or its owner's step is not started
+again and not refused. It is reported as `BLOCKED_CI`, with a sentence that
+names what is missing, for example
+`next action: assess-finalization named no owner and no step: ...`. The
+recovery agent's hand-off record then names the owner and the step. See
+[When the assessment stops short](../reference/default-workflow-agentic-finalization.md#when-the-assessment-stops-short).
+
 The finalizer narrative is never parsed, so its text cannot cause either state.
 Read it as diagnostics only:
 
@@ -194,6 +239,11 @@ prove closure.
 ---
 
 ## Fix `HOLLOW_SUCCESS`
+
+`HOLLOW_SUCCESS` is unchanged by #2343: empty or inaccessible agent output means
+the run may have produced nothing at all, so it stays a blocker ahead of any
+success classification. See
+[The Run's Real Outcome](../reference/default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 `HOLLOW_SUCCESS` means a workflow path looked complete at the process level but
 did not produce meaningful terminal evidence. This often follows setup-only,
@@ -226,19 +276,97 @@ Recovery is one of:
 
 ## Fix `BLOCKED_CI`
 
-`BLOCKED_CI` is a terminal failure state, not an incomplete finalizer run. It
-means the finalizer found a matching PR or publish target, but required checks
-are failing, pending beyond policy, or unavailable when required.
+`BLOCKED_CI` is a terminal failure state, not an incomplete finalizer run. Since
+#2966 it means one thing: a check on the PR head fails, or cannot run, for a
+cause the run could not fix itself. A red CI that the run can fix is repaired
+before finalization decides (diagnose, fix, push, wait, reassess, with no round
+or time limit), so a run that ended `BLOCKED_CI` has already tried and has named
+what it needs from a person.
 
-For GitHub PRs:
+Read the cause and the step from the output. The failure line is:
+
+```text
+ERROR: workflow finalization failed closed: BLOCKED_CI: <check>: <cause>; next action: <owner>: <exact step>
+```
+
+The same two sentences are `terminal_reason` and `required_next_action` in the
+result, and the step-recovery hand-off record names the owner. For example:
+
+```text
+BLOCKED_CI: deploy-preview: the workflow reads secrets.PREVIEW_TOKEN, which the repository does not define
+next action: repository administrator: add PREVIEW_TOKEN under Settings, Secrets and variables, Actions, then re-run deploy-preview
+```
+
+Take the step the owner is named for. Typical causes the run cannot fix are a
+missing secret, a workflow run awaiting maintainer approval, a setting only a
+repository or organisation owner can change, an account or billing block on
+CI, and a fix that needs a change under `.github/**`, which the repair never
+edits, whether or not the pull request changes it. In that last case the owner
+is the code owner of `.github/` or the repository administrator, who makes the
+change. To confirm the state of the checks first:
 
 ```bash
 gh pr view "$PR_NUMBER" \
   --json number,state,headRefName,baseRefName,headRefOid,statusCheckRollup
+gh pr checks "$PR_NUMBER" --watch
 ```
 
-Then fix or rerun the failing checks. Do not convert `BLOCKED_CI` into success
-unless the CI evidence changes and finalization is rerun.
+Then rerun finalization. Do not convert `BLOCKED_CI` into success unless the CI
+evidence changes.
+
+If a run ended on a failure that looks fixable (a test, lint, build or smoke
+failure, a flaky check, a slow run, a branch behind its base), it should not have
+ended `BLOCKED_CI`. Read the head SHA and the check counts in the assessment's
+`reason`, and the `assessment_action` in `evidence_used`. `assessment_action=repaired_ci`
+beside `outcome.checks=failing` is normal: the first is what the run found, the
+second what it did. Report a fixable cause that was named as unfixable as a bug
+in the assessment's judgement.
+
+---
+
+## Checking the CI Repair
+
+The QA scenario for #2966 runs the shipped `workflow-finalize` recipe against a
+local bare remote, a stub `gh` whose check results depend on the pushed head,
+and a stub agent launcher. Run it with the `amplihack` binary you want to test:
+
+```bash
+AMPLIHACK_2966_QA_BIN="$(command -v amplihack)" \
+  bash tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh
+```
+
+The driver prints the binary path it uses and fails if the variable does not
+name an existing executable; without the variable it builds `amplihack` with
+cargo first. It runs with `env -i` and an allowlist, a fresh
+`HOME` per case and temporary folders under `$TMPDIR`, so it never reads the
+operator's Claude profile or a GitHub token. Four cases run in turn:
+
+| Case | What the stubs do | Expected result |
+| --- | --- | --- |
+| `red_ci_is_repaired` | Checks fail until the fix is pushed. The `step-22` stub applies the fix, commits and pushes. | At least one repair push, `EXISTING_OPEN_PR`, `terminal_success=true`, no hand-off in the step-recovery report, exit `0` (not `81`). |
+| `assessment_finishes_the_repair` | Checks fail on the first head, and the `step-22` stub ends without pushing a fix, so the second point of the loop has work to do. The assessment stub applies the fix and pushes it, and the stub `gh` reports green only for the new head. | `assessment_action=repaired_ci`, `EXISTING_OPEN_PR`, `terminal_success=true`, exit `0`. |
+| `unfixable_cause_is_handed_to_its_owner` | A check fails because a secret is not defined. | `BLOCKED_CI` with the check and cause as the reason, the owner and step as the next action, hand-off recorded, exit `81`. |
+| `pending_checks_are_waited_on` | A check is still in progress, and the stub `gh` reports it settled and green only once `pr checks --watch` has been run. The `step-22` stub pushes nothing. | The assessment waits with `gh pr checks --watch` and decides on the settled head: `EXISTING_OPEN_PR`, `terminal_success=true`, no push, no hand-off, exit `0`. |
+
+Every case also asserts that the stub logs are not empty, that the stub `gh`
+saw no call outside its table, and that no agent prompt went unmatched by a
+stub key. The table holds `auth status`, `pr view` and `pr list`, and one
+write that a shipped step makes, the `pr comment` of `step-21-pr-ready`; the
+stub exits `96` on anything else, such as a merge, an `api` call, or a write to
+secrets, variables or workflows.
+
+To see the report reproduced, run the first fixture against the bundle from
+before the change:
+
+```bash
+AMPLIHACK_2966_QA_BIN="$(command -v amplihack)" \
+  AMPLIHACK_2966_BASELINE_REF=origin/main \
+  bash tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh
+```
+
+The driver extracts that ref's `amplifier-bundle` with `git archive` into a
+separate temporary folder, and prints `BASELINE_CONFIRMED` when the run ends
+`BLOCKED_CI` with exit `81` and never starts the `step-22` agent.
 
 ---
 

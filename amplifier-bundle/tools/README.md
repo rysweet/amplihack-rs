@@ -138,7 +138,9 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 ```rust
 // Automatically triggered after each tool use
-// Metrics saved to ${AMPLIHACK_HOME:-~/.amplihack}/runtime/sessions/<session_key>/metrics/
+// Metrics saved to <hook state root>/runtime/sessions/<session_key>/metrics/
+// <hook state root> is $AMPLIHACK_HOME when that is an absolute path with no
+// `..` component and not a Git checkout, and $HOME/.amplihack otherwise
 // Nothing is written into the session's working directory
 ```
 

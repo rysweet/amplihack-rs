@@ -153,7 +153,7 @@ impl LightRepo {
         );
         r.write("crates/foo/src/existing.rs", "fn helper() {}\n");
         r.write("amplifier-bundle/recipes/demo.yaml", BASE_RECIPE);
-        r.write("amplifier-bundle/tools/existing.sh", "#!/bin/sh\necho hi\n");
+        r.write("amplifier-bundle/tools/existing.sh", "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho hi\n");
         r.write("docs/guide.md", "# guide\n");
         r.commit_all("base");
         git(&r.wt, &["push", "-q", "-u", "origin", "main"]);
@@ -258,6 +258,8 @@ pub fn fault(o: &Output, token: &str) {
 ///   empty)
 /// - `label list`                `$FAKE_GH_LABELS` (default `[]`)
 /// - `search issues`/`issue list` `$FAKE_GH_SEARCH` (default `[]`)
+/// - `api repos/.../pulls/<n>`   `{"head":{"sha":"$FAKE_GH_HEAD"}}`
+/// - `api repos/.../pulls?...`   `$FAKE_GH_PULLS` (default `[{"number":7}]`)
 /// - `api .../search/issues...`  `{"items": $FAKE_GH_SEARCH_API}` (default `[]`)
 /// - `issue view <n>`            `$FAKE_GH_ISSUE_VIEW` (default open, by `me`)
 /// - `issue create`              `https://github.com/o/r/issues/$FAKE_GH_NEW_ISSUE`
@@ -267,6 +269,7 @@ pub fn fault(o: &Output, token: &str) {
 /// prints `HTTP 404: Not Found` on stderr and exits `$FAKE_GH_EXIT_CODE`
 /// (default 1; a 404 is not retried).
 pub const FAKE_GH: &str = r#"#!/usr/bin/env bash
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 set -u
 log="${FAKE_LOG:?}"
 n=$(( $(wc -l < "$log/gh.log" 2>/dev/null || echo 0) + 1 ))
@@ -299,6 +302,10 @@ case "$1 ${2:-}" in
   *)
     if [ "$1" = api ] && [[ "$joined" == *search/issues* ]]; then
       emit "{\"total_count\":0,\"items\":${FAKE_GH_SEARCH_API:-[]}}"
+    elif [ "$1" = api ] && [[ "$joined" == *repos/*/pulls\?* ]]; then
+      pulls='[{"number":7}]'; emit "${FAKE_GH_PULLS:-$pulls}"
+    elif [ "$1" = api ] && [[ "$joined" == *repos/*/pulls/* ]]; then
+      emit "{\"head\":{\"sha\":\"${FAKE_GH_HEAD:-}\"}}"
     elif [ "$1" = api ] && [[ "$joined" == *repos/o/r/issues/* ]]; then
       emit "${FAKE_GH_ISSUE_API:-{\"state\":\"open\",\"user\":{\"login\":\"$login\"},\"body\":\"\"}}"
     elif [ "$1" = api ]; then
@@ -315,6 +322,9 @@ exit 0
 /// --field F --default D` prints `.F` (strings raw, anything else as compact
 /// JSON) or D.
 pub const FAKE_AMPLIHACK: &str = r#"#!/usr/bin/env bash
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
+# Review generations (#2096) are real: step-06 binds its record to one.
+if [ "${1:-}" = internal ]; then exec "${REAL_AMPLIHACK:?}" "$@"; fi
 ( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "${FAKE_LOG:?}/amplihack.log"
 if [ "${1:-} ${2:-}" != "orch helper" ]; then exit 0; fi
 case "${3:-}" in
@@ -432,10 +442,17 @@ pub fn run_bash(
         .env("HOME", home)
         .env("PATH", fakes.path_with_fakes())
         .env("FAKE_LOG", &fakes.log)
+        .env(
+            "REAL_AMPLIHACK",
+            crate::support::amplihack_bin::amplihack_bin(),
+        )
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env_remove("AMPLIHACK_CLAUDE_PROFILE_ROOT")
         .env_remove("GH_TOKEN")
         .env_remove("GITHUB_TOKEN")
+        // #3053: light-eligibility reads the runner-bound folder first, so an
+        // outer drive's folder must not reach a step run directly here.
+        .env_remove("RECIPE_VAR_autodrive_state_dir")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

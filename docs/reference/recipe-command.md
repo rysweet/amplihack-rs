@@ -1,3 +1,10 @@
+---
+title: amplihack recipe reference
+description: Commands and options for inspecting and executing recipes.
+doc_type: reference
+last_updated: 2026-11-18
+---
+
 # amplihack recipe — Reference
 
 Full CLI reference for the `amplihack recipe` subcommand, which lists,
@@ -11,8 +18,11 @@ inspects, validates, and runs YAML recipe files.
   - [recipe show](#recipe-show)
   - [recipe validate](#recipe-validate)
   - [recipe run](#recipe-run)
+  - [Usage-limit relaunch recovery](#usage-limit-relaunch-recovery)
   - [Detached runs](#detached-runs)
   - [recipe stop](#recipe-stop)
+  - [recipe guide](#recipe-guide)
+  - [Run records](#run-records)
 - [Output formats](#output-formats)
 - [Progress and stream contract](#progress-and-stream-contract)
 - [Recipe file format](#recipe-file-format)
@@ -197,20 +207,25 @@ Exit code is 1 on validation failure; 0 on success.
 Execute a recipe by delegating to the `recipe-runner-rs` binary.
 
 ```
-amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
+amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--fresh] [--verbose]
   [--format <FORMAT>] [--working-dir <DIR>] [--step-timeout <SECONDS>]
   [--detach | --no-detach] [--governor-wait <DURATION>]
   [--governor-class <CLASS>] [--workstream <ID>]
 ```
+
+The runner executes in the named checkout. Recipes use `repo_path` and step
+`working_dir` to select their task or PR worktree; paths are not remapped into
+a private repository. See [execution locations](recipe-checkout-isolation.md#execution-locations).
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `<FILE>` | (required) | Path to the recipe YAML file |
 | `-c KEY=VALUE` | (none) | Set a context variable; repeat for multiple values |
 | `--dry-run` | false | Print the execution plan without running any steps |
+| `--fresh` | false | Bypass historical recovery for this launch and its delegated execution; preserve existing history |
 | `--verbose` | false, or [`recipe.verbose`](./user-config.md#recipeverbose) | Increase progress detail on stderr; basic step progress is emitted by default. On when either the flag or `recipe.verbose = true` is set |
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
-| `--working-dir <DIR>` | `.` | Working directory for step execution |
+| `-w`, `--working-dir <DIR>` | `.` | Runner working directory, used directly; explicit recipe/step directory selection still applies. No private execution copy is created. |
 | `--detach` | false, or [`recipe.detach`](./user-config.md#recipedetach) `= "tmux"` | Run in a new tmux session with a private log, print the session and log path, and return. See [Detached runs](#detached-runs) |
 | `--no-detach` | | Run in the foreground even when `recipe.detach = "tmux"` |
 | `--governor-wait <DURATION>` | `AMPLIHACK_GOVERNOR_WAIT`, then `governor.wait_secs`, else `10m` | Longest time to wait for the [capacity governor](./capacity-governor.md) to admit the run. `0` means do not wait |
@@ -314,7 +329,53 @@ runner is started in its own session, so before this the signal ended only
 
 SIGKILL cannot be caught. If `recipe run` is killed that way, on Linux the
 kernel sends the runner SIGTERM (`PR_SET_PDEATHSIG`); agents the runner started
-can outlive it. Use `amplihack recipe stop <run_id>` to end them.
+can outlive it. `amplihack recipe stop <run_id>` ends the runner's process
+group only while the runner is still alive, because it finds the run through
+the [run record](#run-records), and a record whose processes have exited
+matches nothing. Agents that outlived the runner are then left running. Stop
+them through their tmux session, or by pid.
+
+### Usage-limit relaunch recovery
+
+Durable relaunch recovery is supported by the pinned Rust runner. Use
+`--fresh` to bypass historical replay for one launch. See the
+[recovery reference](recipe-recovery.md) for persistence policies and resources.
+
+An identified launch selects the latest matching recipe/work attempt.
+For `smart-orchestrator`, supply the same repository and a positive
+`issue_number` or validated matching `issue_url`. Canonical Git worktrees
+share a repository identity; independent clones remain separate. An
+unidentified launch runs fresh outside shared recovery namespaces.
+
+Recovery requires a durable usage-limit stop in that latest attempt and
+an owner that is no longer active. A newer success, non-limit failure, or
+unknown termination prevents recovery from older history. Current live
+session ownership, authorization, governor admission, and recursion
+accounting are established before dependent replay.
+
+The runner restores compatible completed results and typed context changes
+in order, including children beneath incomplete parent steps. It executes
+the first incomplete or invalidated step. Compatibility covers effective
+inputs, execution definitions and settings, cumulative repository state,
+and required files/artifacts. Workflow-produced branch changes are checked
+against recorded progression. Missing or unverifiable history causes a
+logged fresh fallback; unsafe current storage or failed durable publication
+stops execution.
+
+`--fresh` bypasses this historical replay throughout the tree, including
+detached and delegated execution. It preserves earlier records and records
+the current attempt, which can support a later recovery. It does not reset
+Git or clear an explicit `resume_checkpoint`.
+
+`--dry-run` admits no recovery attempt, writes no recovery records, and
+does not advance the latest marker, including when combined with `--fresh`.
+The existing same-process usage-limit wait/retry behavior remains in place.
+
+Stderr identifies the source run and actual restart step with its nested
+invocation path, or explains the fresh fallback. JSON/YAML preserve the
+additive [recovery metadata](recipe-result.md#recovery-metadata).
+See [relaunch commands](../howto/resume-recipe-after-usage-limit.md) and
+[the recovery contract](recipe-recovery.md) for policies and storage rules.
 
 ### Detached runs
 
@@ -338,13 +399,29 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
 - **Log** — `<session>.log` in [`recipe.log_dir`](./user-config.md#recipelog_dir),
   default `~/.amplihack/recipe-logs`. The directory is created 0700 and the log
   0600. It receives everything the run prints, which the tmux pane shows too.
+  The copy that reaches the log is written a **whole line at a time**: a read
+  that stops mid-line is held until the rest of that line arrives, and any
+  remainder is flushed with a closing newline when the run's output ends.
+  What the pane shows is unaffected, since the run's own output is streamed
+  byte for byte. The holding matters because the run is not the only writer:
+  a step that is waiting out a usage limit appends its own
+  [wait lines](./profile-command.md#the-wait-in-the-recipe-log) to this file,
+  and without it one of those could land inside a half-written `working (Ns
+  elapsed)` heartbeat. The absolute path is exported to every step as
+  `AMPLIHACK_RECIPE_LOG`, which amplihack sets for its own children only.
 - **Environment** — the run gets your shell's environment, not the tmux
   server's. The agent CLI is resolved in your shell, as a foreground run would
   resolve it, and handed over tagged; every agent session marker the tmux
   server holds is removed. The environment travels in a 0600 file in the log
   directory that the pane reads and deletes at once, never on a command line.
   If the pane has not read it within 15 s, or the launch is interrupted, the
-  file is deleted and the launch fails.
+  file is deleted and the launch fails. The run also gets your shell's
+  file-creation mask (umask), not the tmux server's, through the same file,
+  so the files it creates have the modes a foreground run would give them: a
+  run launched from a shell with umask `022` keeps `022` even when the tmux
+  server was started under `002`. A launch file that carries no umask, as an
+  amplihack from before #2778 writes it, leaves the pane's own umask in
+  place.
 - **Context** — `-c`, `--context-file` and `--context-from-file` are read
   when you launch, not later, and reach the run in a 0600
   `<session>.context.json` in the log directory, removed when the run ends.
@@ -353,9 +430,14 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
   `amplihack: detached run started (pid N)` to the log. If the pane cannot
   start the run, it writes the reason there instead, and the launch prints it
   and fails.
-- **Stopping** — `amplihack recipe stop <session>`, or `tmux kill-session`.
+- **Stopping** — `amplihack recipe stop <session>`, `amplihack recipe stop <run_id>`
+  with the run id from the `early` line in the log, or `tmux kill-session`.
 
 Needs `tmux` on `PATH`.
+
+Recovery settings, including `--fresh`, travel in the
+private launch payload. The detaching process does not register a recovery
+attempt or advance its latest marker; admission happens once in the executing pane.
 
 ### recipe stop
 
@@ -372,14 +454,174 @@ and every agent and command it started.
   down. Anything of its tree still running after 15 s gets SIGKILL. Then the
   session is killed, which closes any other pane in it (a `tail -f` you split
   off) without a signal from `recipe stop`.
-- **A run id**, the `run_id` of a run's `amplihack.recipe.log_pointer` line:
-  every process started with that `AMPLIHACK_RECIPE_RUN_ID`, its descendants
-  and their process groups get SIGTERM, then SIGKILL after 15 s. Linux only.
+- **A run id**, the `run_id` of a run's `amplihack.recipe.log_pointer` line
+  (the attempt id, `AMPLIHACK_RECIPE_RUN_ID`): the processes are taken from
+  the attempt's [run record](#run-records). `recipe run` and the runner's
+  process group get SIGTERM, then SIGKILL after 15 s. `recipe run` tears its
+  runner down, prints its `final` line and exits non-zero. Linux only.
 
-The tree is found before anything is signalled, and each process is
-signalled only while its start time still matches, so a reused pid is never
-hit. `recipe stop` never signals itself or its own ancestors. It prints
-`stopped <what> (<n> processes)` and exits 0, or exits 1 when nothing matches.
+An empty target, or one that starts with `-`, is refused. Otherwise tmux is
+asked first: if it has a session with that name, the session is stopped and
+the run-id path is not used.
+
+Each process is signalled only while its start time still matches the one
+recorded, so a reused pid is never hit. `recipe stop` never signals itself or
+its parent, and by run id refuses a run it descends from. It prints `stopped <what> (<n> processes)` and exits 0, or exits 1
+when nothing matches.
+
+### recipe guide
+
+```
+amplihack recipe guide <TARGET> [-] [--file <PATH>] [--from-step]
+```
+
+Adds an instruction to a running recipe run. Builds (`smart-orchestrator` and
+similar) and drives (`auto-drive`) are both recipe runs, and both take guidance.
+`<TARGET>` is a detached session name, a run ID, an issue (`<number>`,
+`'#<number>'` or an issue URL), or a GitHub pull request URL. The run is found
+from what it recorded at start, whatever the work root in your environment. The
+instruction is read from stdin, or from `--file <PATH>`; text given on the
+command line is refused with exit 2. It is stored as one private file in the
+run's `guidance/` folder, and every agent step that starts afterwards
+receives it at the end of its prompt. See [amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide)
+for targets, storage, limits and exit codes.
+
+### recipe guidance
+
+```
+amplihack recipe guidance show [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] [--since <ENTRY>] [--json]
+amplihack recipe guidance wait [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] --since <ENTRY> [-- <COMMAND>...]
+```
+
+Reads the guidance a run has received, from the folders
+`AMPLIHACK_RUN_GUIDANCE_DIRS` lists and then the folder of the pull request
+named by `<TARGET>` (a pull request URL) or by `--pr` with `--pr-repo`.
+
+`show` prints every entry, oldest first, as the block an agent step receives,
+with each entry's file name, and marks entries whose names sort after `--since`
+as `NEW`. `--json` prints one line of metadata (schema 1) for each folder and
+entry, and never the text.
+
+`wait` arms a wake FIFO beside each folder, then blocks, with no polling loop
+or timer, until an entry after `--since` arrives or the command finishes. It
+prints one JSON line: `{"event":"guidance","entry":"<ENTRY>"}`,
+`{"event":"command","exit":N}` (with `"signal":S` when a signal ended the
+command), or `{"event":"unarmed"}` with exit code 3 when no FIFO could be armed
+and the command was not started. A command's own exit code, 75 and 79
+included, is reported in `exit` and never passed on.
+
+Both work inside recipe runs and are what the
+[auto-drive goal loop](./autodrive-goal-loop.md#guidance) uses. See
+[recipe guidance](./recipe-cli-reference.md#amplihack-recipe-guidance) for the
+folders read, the JSON fields and the exit codes.
+
+### Run records
+
+On Linux, every `recipe run` attempt that starts a runner writes a record of
+its own processes into its run directory (on other platforms none is written):
+
+```text
+<work root>/runs/<run dir id>/procs/<run_id>.json    procs/ 0700, file 0600
+```
+
+`<work root>` is resolved as in
+[Settings](../howto/clean-up-after-recipe-runs.md#settings). `<run dir id>` is
+the run directory's name (`AMPLIHACK_RUN_ID`), not the `run_id` that
+`recipe stop` takes. `<run_id>` is the attempt id from the log pointer lines;
+a run that retries writes one record per attempt. Each record is removed when
+its attempt ends, and `procs/` is removed with the last one, so a finished run
+leaves no `procs/` behind. A record left by a killed run is removed with its
+run directory by [`amplihack cleanup`](../howto/clean-up-after-recipe-runs.md).
+
+| Field | Meaning |
+|-------|---------|
+| `version` | Always `1` |
+| `run_id` | The attempt's run id, the same as in its log pointer lines |
+| `recipe_run.pid` | The pid of the `recipe run` process that owns the attempt |
+| `recipe_run.start_ticks` | Its start time in clock ticks, field 22 of `/proc/<pid>/stat` |
+| `runner.pid` | The runner's pid, the `child_pid` of the `final` line |
+| `runner.pgid` | The runner's process group. The runner starts its own session, so this equals `runner.pid` |
+| `runner.start_ticks` | The runner's start time in clock ticks |
+
+The record holds nothing else: no environment, arguments, paths or context.
+
+#### When the record exists
+
+`recipe run` writes the record straight after the runner starts and before it
+prints the `early` log pointer line, so a script that has read that line can
+run `recipe stop <run_id>` at once. This includes a detached run's pane. The
+record is removed when the attempt ends, however it ends, and before any retry
+backoff; during backoff, stop the run through its tmux session.
+
+No record is written for a `--dry-run`, when the runner cannot be started or
+its probe fails, or when an orphan stop arrives before the runner starts. If
+the record cannot be written, `recipe run` prints a warning and continues. A
+record left by a SIGKILLed `recipe run` stays until cleanup; its start times no
+longer match, so it never causes a signal.
+
+#### How `recipe stop <run_id>` uses the record
+
+- **The id is checked first:** 1 to 128 bytes of ASCII letters, digits, `.`,
+  `_` and `-`, not starting with `.`. No file is read for a refused id.
+- **The record is found** by listing `<work root>/runs/` and opening
+  `<entry>/procs/<run_id>.json` without following symlinks (entries and
+  `procs/` directories that are symlinks are skipped). It is used only if it
+  is a regular file of at most 4 KiB, belongs to you, is not writable by group
+  or others, has exactly the fields above with `version` `1` and the requested
+  `run_id`, and has both pids above 1 with `runner.pgid` equal to `runner.pid`.
+- **A pid is kept** only while the start time in `/proc/<pid>/stat` matches
+  the record, and never if it is `recipe stop`'s own pid or its parent's.
+  `recipe stop` refuses when its own `AMPLIHACK_RECIPE_RUN_ID`, session or
+  process group is the run's, and when it descends from the run: it walks its
+  own parent chain (`/proc/self/stat`, then each parent's `stat`) and refuses
+  if any ancestor is the recorded `recipe run` or runner with the recorded
+  start time, or is in the runner's process group. This covers a step of a
+  nested `recipe run` asked to stop an outer run: the nested run has its own
+  `AMPLIHACK_RECIPE_RUN_ID` and its runner its own session, but the outer
+  runner is still its ancestor.
+- **Signals:** SIGTERM to the kept pids and to the runner's group; after up to
+  15 s, SIGKILL to the group and then to any kept pid still running. The start
+  time is checked again before every signal. `recipe stop` waits only on the
+  two recorded pids, and signals the group only while its leader, the runner,
+  still matches its start time. If the runner exits within the 15 s, the group
+  gets no SIGKILL from `recipe stop`: members that ignored SIGTERM are left to
+  `recipe run`'s own teardown, which got SIGTERM in the same pass and SIGKILLs
+  the runner's remaining group members (`snapshot_group` in `run/execute.rs`).
+- **No other `/proc` access:** besides the two recorded pids' `stat` it reads
+  only the `stat` of itself and its ancestors; it does not list `/proc`, reads
+  no `environ`, and never writes or removes a record. The strace check in
+  [Keep Tests off the Host Process Table](../howto/keep-tests-off-the-host-process-table.md#recipe-stop-run_id-reads-only-its-own-runs-pids)
+  enforces this.
+
+#### Errors
+
+Each error exits 1 and signals nothing. The Linux messages quote the id as a
+string literal, so control characters in it are printed escaped.
+
+| Case | Message |
+|------|---------|
+| The id is invalid | `recipe stop: invalid run id "<run_id>"` |
+| The id is `recipe stop`'s own run | `recipe stop: refusing to stop run "<run_id>" from inside it` |
+| No usable record, or a stale one | `recipe stop: no tmux session or running recipe run named "<run_id>"` |
+| The work root, `runs/`, a run folder or a record cannot be read (for example, permission denied), and no usable record was found | The same "not found" message, followed by the reason, such as `cannot list <work root>/runs: Permission denied` |
+| Any run id on a platform other than Linux | `recipe stop: no tmux session named <run_id>; stopping by run id needs /proc and is supported on Linux only` |
+
+#### Runs that `recipe stop <run_id>` does not find
+
+Besides runs that have no record (see
+[When the record exists](#when-the-record-exists)) and runs on platforms
+other than Linux, `recipe stop <run_id>` does not find runs started by an
+amplihack built before run records existed, or runs whose `recipe stop` sees a
+different work root (through `AMPLIHACK_WORK_ROOT` or `HOME`). Stop these
+through their tmux session, or by signalling `recipe run`.
+
+Accepted risks: a pid reused in the microseconds between the start-time check
+and `kill(2)`, which only pidfds would close; a descendant of the run whose
+link to it was broken (an intermediate process exited, so it was reparented to
+init or a subreaper) and that cleared its environment and started a new
+session, which the "from inside it" check does not detect; and agents that started their own session and outlived
+their runner, which are not in the runner's group. Stop those through their
+tmux session or by pid.
 
 ---
 
@@ -500,10 +742,15 @@ A recipe is a YAML file. The top-level document must be a mapping.
 | `parse_json`  | bool    | no       | Parse step output as JSON |
 | `timeout`     | integer | no       | Step timeout in seconds. **Discouraged on `agent` steps** — agent reasoning is variable and per-step timeouts cause spurious mid-thought aborts (see [issue #439](https://github.com/rysweet/amplihack-rs/issues/439)). Permitted on `bash` steps that perform external network I/O (`gh`, `curl`, `git fetch`); use a generous floor of **1800s** to guard against stuck sockets, not to bound work. Omit otherwise. |
 | `working_dir` | string  | no       | Working directory override for this step |
+| `model`       | string  | no       | For an `agent` step, the [model tier](./model-tiers.md) the step needs (`fast`, `standard` or `strong`), which amplihack turns into a model, and on Codex a reasoning effort, for the CLI it launches. A value that is not one of the three words is treated as a concrete model id and passed through as typed. |
 | `recipe`      | string  | no       | Sub-recipe path (for `recipe` steps) |
 | `context`     | map     | no       | Context overrides for a sub-recipe step |
 | `mode`        | string  | no       | Step execution mode |
 | `auto_stage`  | bool    | no       | Auto-stage git changes after step completes |
+
+Recipe-level and step-level `recovery` mappings opt into durable recording.
+See [persistence policies](recipe-recovery.md#recipe-persistence-policy)
+and [step resources](recipe-recovery.md#step-replay-policy-and-resources).
 
 ### Step types
 
@@ -645,6 +892,13 @@ This allows local overrides of bundled recipes.
 The same lookup is used by `amplihack install` and the launch-time freshness
 refresh, so all three agree on which binary is in use.
 
+The recovery integration requires the selected binary to
+advertise `durable_recovery_v1`, including when `--fresh` is requested.
+Validation enforces that capability. Supported runner
+delivery retains the pinned upstream revision and ancestry validation.
+A binary with partial recovery support does not satisfy this requirement; see
+[the capability contract](recipe-recovery.md#capability-and-dependency-contract).
+
 If no binary is found, `recipe run` fails with:
 
 ```
@@ -698,6 +952,7 @@ For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../how
 - [Capacity Governor](./capacity-governor.md): When `recipe run` may start, waits or exits with 80
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_CONTEXT_*`, `AMPLIHACK_TASK_DESCRIPTION`, `RECIPE_RUNNER_RS_PATH`
 - [Recipe Runner Logging](./recipe-runner-logging.md) — stderr progress, heartbeats, snippets, and JSONL logs
+- [Model Tiers](./model-tiers.md): The `model` step field, the per-harness mapping, and the `Model tiers:` section of the run summary
 - [Parity Test Scenarios](./parity-test-scenarios.md) — `tier4-recipe-run.yaml` test cases
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` affects recipe step execution
 - [Recipe Runner Architecture](../concepts/recipe-runner-architecture.md) — Why the runner is an external binary

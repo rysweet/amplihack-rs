@@ -1,16 +1,17 @@
 mod archive;
 mod check;
 mod checksum;
+pub(crate) mod gh;
 mod install;
 mod network;
 mod path_verify;
-mod post_install;
+pub(crate) mod post_install;
 
 pub use check::{
     StartupUpdateOutcome, maybe_print_update_notice_from_args, run_update,
     should_skip_update_check_for_subcommand,
 };
-pub(crate) use network::{MAX_TAG_TARBALL_BYTES, http_get_bounded};
+pub(crate) use network::{MAX_TAG_TARBALL_BYTES, http_get_bounded, latest_release_via_gh};
 
 use anyhow::{Result, anyhow, bail};
 use semver::Version;
@@ -47,6 +48,9 @@ struct UpdateRelease {
     /// URL for the `.sha256` checksum file accompanying the archive.
     /// When present, the downloaded archive is verified before installation.
     checksum_url: Option<String>,
+    /// The release's tag exactly as GitHub gives it (`tag_name`), used by
+    /// `gh release download` (issue #2957).
+    tag: String,
 }
 
 fn normalize_tag(tag: &str) -> Result<String> {

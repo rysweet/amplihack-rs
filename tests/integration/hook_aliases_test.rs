@@ -28,9 +28,13 @@
 //! echo, log, or otherwise persist the stdin payload (security: stdin may
 //! contain user prompts or secrets — see design spec security_considerations).
 
+#[path = "../support/isolated_hook.rs"]
+mod isolated_hook;
+
+use isolated_hook::HookSandbox;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Path to the compiled amplihack-hooks binary. Uses the Cargo-provided
 /// `CARGO_BIN_EXE_<name>` env var so the test honors `CARGO_TARGET_DIR`
@@ -49,7 +53,11 @@ fn invoke(subcommand: &str, stdin_payload: &str) -> (String, String, bool) {
         bin.display()
     );
 
-    let mut child = Command::new(&bin)
+    // Isolated HOME, AMPLIHACK_HOME, profile root, CLAUDE_PROJECT_DIR and cwd
+    // (#2361): the hook must not write into the checkout the tests run in.
+    let sandbox = HookSandbox::new();
+    let mut child = sandbox
+        .command(&bin)
         .arg(subcommand)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

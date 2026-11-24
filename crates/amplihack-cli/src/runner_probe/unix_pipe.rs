@@ -15,10 +15,11 @@ impl<T: Read + std::os::fd::AsRawFd> Pipe<T> {
             fd
         };
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        ensure!(
-            flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
-            "capability pipe nonblocking setup failed"
-        );
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            // Read at once, before another call can replace it.
+            let error = io::Error::last_os_error();
+            anyhow::bail!("capability pipe nonblocking setup failed: {error}");
+        }
         Ok(Self {
             stream,
             bytes: Vec::new(),
@@ -42,7 +43,7 @@ impl<T: Read + std::os::fd::AsRawFd> Pipe<T> {
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => anyhow::bail!("capability pipe read failed"),
+                Err(e) => anyhow::bail!("capability pipe read failed: {e}"),
             }
         }
         Ok(())

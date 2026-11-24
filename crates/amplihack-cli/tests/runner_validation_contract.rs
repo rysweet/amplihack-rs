@@ -3,23 +3,23 @@
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Output};
 
+/// The `amplihack` binary of this run: built from the current sources and
+/// copied aside by `support::amplihack_bin`.
+///
+/// This file used to take whatever binary lay beside the test executable and
+/// never built one, so it could run a binary left by an earlier build. That
+/// was seen in #2931: with the probe's group kill removed from the source on
+/// purpose, `exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group`
+/// still passed, because it had run the binary of the build before.
 fn cli_binary() -> std::path::PathBuf {
-    std::env::var_os("AMPLIHACK_TEST_BINARY")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("amplihack")
-        })
+    crate::support::amplihack_bin::amplihack_bin()
 }
 
 const REPO: &str = "https://github.com/rysweet/amplihack-recipe-runner";
 const REV: &str = "1111111111111111111111111111111111111111";
-const REPORT: &str = r#"{"capabilities":["future","codex_exec"],"version":"custom-99","schema_version":1,"extra":true}"#;
+/// A value set in the child's environment that must never come back out.
+const ENV_CANARY_VALUE: &str = "env-canary-5b1f";
+const REPORT: &str = r#"{"capabilities":["future","codex_exec","durable_recovery_v1"],"version":"custom-99","schema_version":1,"extra":true}"#;
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -70,6 +70,7 @@ impl Fixture {
         .arg(binary)
         .env("HOME", self.path())
         .env("PATH", self.path().join("bin"))
+        .env("RUNNER_ENV_CANARY", ENV_CANARY_VALUE)
         .env_remove("RECIPE_RUNNER_RS_PATH")
         .env_remove("CODEX_HOME");
         if managed {
@@ -96,7 +97,7 @@ impl Fixture {
         );
     }
 }
-fn failure(o: Output, code: &str) {
+fn failure(o: Output, code: &str) -> Value {
     assert_eq!(o.status.code(), Some(1));
     assert!(
         o.stdout.is_empty(),
@@ -105,6 +106,7 @@ fn failure(o: Output, code: &str) {
     let v: Value = serde_json::from_slice(&o.stderr).expect("structured private endpoint error");
     assert_eq!(v["error"]["code"], code);
     assert!(!String::from_utf8_lossy(&o.stderr).contains("secret-canary"));
+    v
 }
 #[test]
 fn reordered_additive_report_works_without_python_or_node() {
@@ -112,10 +114,10 @@ fn reordered_additive_report_works_without_python_or_node() {
     f.success(f.run("codex", false, &f.binary()), "codex", "explicit");
 }
 #[test]
-fn empty_capabilities_are_legacy_provider_compatible_only() {
+fn recovery_only_capability_supports_legacy_providers_but_codex_still_requires_codex_exec() {
     for provider in ["claude", "copilot", "codex"] {
         let f = Fixture::new(
-            r#"{"capabilities":[],"schema_version":1,"version":"custom-99"}"#,
+            r#"{"capabilities":["durable_recovery_v1"],"schema_version":1,"version":"custom-99"}"#,
             0,
         );
         let o = f.run(provider, false, &f.binary());
@@ -130,8 +132,8 @@ fn empty_capabilities_are_legacy_provider_compatible_only() {
 fn ambiguous_malformed_and_wrong_typed_reports_fail() {
     for report in [
         r#"{"schema_version":1,"schema_version":1,"version":"v","capabilities":["codex_exec"]}"#,
-        r#"{"schema_version":true,"version":"v","capabilities":[]}"#,
-        r#"{"schema_version":1,"version":" ","capabilities":[]}"#,
+        r#"{"schema_version":true,"version":"v","capabilities":["durable_recovery_v1"]}"#,
+        r#"{"schema_version":1,"version":" ","capabilities":["durable_recovery_v1"]}"#,
         r#"{"schema_version":1,"version":"v","capabilities":[1]}"#,
         &format!("{REPORT} {{}}"),
         "not json",
@@ -234,44 +236,102 @@ fn repository_prefix_and_wrong_receipt_binary_cannot_establish_provenance() {
 
 #[test]
 fn exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group() {
+    use crate::support::exit_witness::{ExitWitness, Outcome};
     let f = Fixture::new(REPORT, 0);
+    // The descendant holds the witness pipe open until it dies, so the end of
+    // file on that pipe is the event "the process group is gone": no read of
+    // `/proc`, no poll of the clock (issue #2931, TIMING).
+    let witness = ExitWitness::new(f.path());
     fs::write(
         f.binary(),
         format!(
-            "#!/bin/sh\n/bin/sleep 60 &\necho $! > '{}/descendant'\n/bin/cat '{}/report'\n",
-            f.path().display(),
+            "#!/bin/sh\n{}\n/bin/sleep 60 &\n/bin/cat '{}/report'\n",
+            witness.stub_lines(),
             f.path().display()
         ),
     )
     .unwrap();
+    // Resolved before the clock starts: the first lookup of a run builds
+    // the binary, and that time is not the probe's.
+    let _ = cli_binary();
     let started = std::time::Instant::now();
     failure(f.run("codex", false, &f.binary()), "RUNNER_PROBE_FAILED");
-    assert!(started.elapsed() < std::time::Duration::from_secs(13));
-    let pid = fs::read_to_string(f.path().join("descendant")).unwrap();
-    // The group SIGKILL is delivered asynchronously, so under load the
-    // descendant can still read as sleeping just after the probe returns
-    // (#1748). Poll for a bounded period well under the descendant's 60 s.
-    #[cfg(target_os = "linux")]
-    {
-        let stat_path = format!("/proc/{}/stat", pid.trim());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while let Ok(stat) = fs::read_to_string(&stat_path) {
-            let state = stat
-                .rsplit_once(") ")
-                .unwrap()
-                .1
-                .split_whitespace()
-                .next()
-                .unwrap()
-                .to_owned();
-            if state == "Z" || state == "X" {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "probe descendant still running (state {state}) 5 s after the probe returned"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
+    // A ceiling, not a measurement: the probe gives up at its own 10 s
+    // deadline, and what this must tell apart is a probe that waited for the
+    // descendant, which holds the pipes for 60 s. The old 13 s left three
+    // seconds for the binary to start, which a loaded host exceeds (issue
+    // #2931, TIMING).
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(45),
+        "the probe waited {elapsed:?}: it must give up at its deadline, not at the descendant's exit"
+    );
+    // The group SIGKILL is delivered asynchronously (#1748), so the pipe may
+    // close a moment after the probe returns. The ceiling only bounds a
+    // failure: a descendant that survives holds the pipe for 60 s.
+    match witness.wait_released(std::time::Duration::from_secs(10)) {
+        Outcome::Released { held, .. } => assert!(
+            held,
+            "the descendant never held the witness pipe, so its end proves nothing"
+        ),
+        Outcome::StillHeld => {
+            panic!("probe descendant still running 10 s after the probe returned")
         }
     }
+}
+
+/// Issue #2931 (PROBE): a probe that fails says why. The code stays exactly
+/// `RUNNER_PROBE_FAILED`, and `details.cause` names the step and the exit
+/// status, in words the source wrote.
+#[test]
+fn a_failed_probe_names_its_cause_in_the_details() {
+    let f = Fixture::new(REPORT, 17);
+    let v = failure(f.run("codex", false, &f.binary()), "RUNNER_PROBE_FAILED");
+    assert_eq!(v["error"]["details"]["provider"], "codex");
+    assert_eq!(
+        v["error"]["details"]["cause"],
+        "runner exited with status 17"
+    );
+}
+
+/// The cause is built from step names and OS errors only. Nothing the runner
+/// wrote, nothing about where it lives and nothing from the environment may
+/// reach it.
+#[test]
+fn the_cause_carries_nothing_the_runner_or_the_host_supplied() {
+    let f = Fixture::new(REPORT, 17);
+    let o = f.run("codex", false, &f.binary());
+    let text = String::from_utf8_lossy(&o.stderr).into_owned();
+    let v: Value = serde_json::from_slice(&o.stderr).expect("one JSON document on stderr");
+    let cause = v["error"]["details"]["cause"].as_str().expect("a cause");
+    for (what, secret) in [
+        ("the runner's stderr", "secret-canary".to_string()),
+        ("the runner's stdout", "custom-99".to_string()),
+        ("the binary's path", f.path().display().to_string()),
+        ("the environment", ENV_CANARY_VALUE.to_string()),
+    ] {
+        assert!(!text.contains(&secret), "{what} reached stderr: {text}");
+        assert!(
+            !cause.contains(&secret),
+            "{what} reached the cause: {cause}"
+        );
+    }
+    assert!(cause.chars().count() <= 512, "the cause is capped: {cause}");
+    assert!(
+        cause.chars().all(|c| !c.is_control()),
+        "the cause holds no control character: {cause:?}"
+    );
+}
+
+/// `details.cause` belongs to the probe code alone: another failure keeps the
+/// object it had.
+#[test]
+fn a_failure_that_is_not_a_probe_failure_has_no_cause() {
+    let f = Fixture::new(r#"{"capabilities":[],"version":"x","schema_version":2}"#, 0);
+    let v = failure(f.run("codex", false, &f.binary()), "RUNNER_REPORT_INVALID");
+    assert!(
+        v["error"]["details"].get("cause").is_none(),
+        "{}",
+        v["error"]["details"]
+    );
 }

@@ -443,13 +443,22 @@ mod ws2_verifier_prompt {
         );
     }
 
-    /// The verifier must check git log commits, not just working tree diffs.
+    /// The verifier must check git log commits, not just working tree diffs,
+    /// counted from the run's own base: the receipt's `base_ref`, which is
+    /// `origin/<base_branch>` when the caller set one
+    /// (docs/reference/workflow-delivery-inputs.md). A hard-coded
+    /// `origin/main` miscounts every run whose base is another branch.
     #[test]
     fn prompt_checks_commits_on_branch() {
         let prompt = verifier_prompt();
         assert!(
-            prompt.contains("git log") && prompt.contains("origin/main"),
-            "Verifier must use 'git log' with origin/main to check commits (#596)"
+            prompt.contains("git log --oneline <base>..HEAD")
+                && prompt.contains("{{worktree_setup.base_ref}}"),
+            "Verifier must use 'git log' from the run's base (worktree_setup.base_ref) to check commits (#596)"
+        );
+        assert!(
+            !prompt.contains("origin/main..HEAD"),
+            "Verifier must not count commits from a hard-coded origin/main"
         );
     }
 }

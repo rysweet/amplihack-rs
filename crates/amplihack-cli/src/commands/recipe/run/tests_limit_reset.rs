@@ -266,3 +266,27 @@ fn a_dated_reset_is_read_in_this_year_or_next() {
         Some(at(chrono_tz::UTC, 2027, 1, 2, 13, 0))
     );
 }
+
+// Issue #2230: the reset in "You've hit your 5-hour limit · resets 8:20pm
+// (America/Los_Angeles)". Both fixed times are in PDT, so no daylight-saving
+// change can move the expected instants.
+
+/// 2026-10-18 20:20:00 -07:00.
+const LA_2020: i64 = 1_792_380_000;
+/// 2026-10-18 21:00:00 -07:00, past the 20:20 reset and its 10-minute grace.
+const LA_2100: i64 = 1_792_382_400;
+
+#[test]
+fn the_five_hour_limit_reset_is_today_before_it_arrives() {
+    assert_eq!(LA_2020, at(LA, 2026, 10, 18, 20, 20));
+    assert_eq!(parse("8:20pm (America/Los_Angeles)", NOW), Some(LA_2020));
+}
+
+#[test]
+fn the_five_hour_limit_reset_rolls_to_tomorrow_once_it_has_passed() {
+    assert_eq!(LA_2100, at(LA, 2026, 10, 18, 21, 0));
+    assert_eq!(
+        parse("8:20pm (America/Los_Angeles)", LA_2100),
+        Some(LA_2020 + DAY)
+    );
+}

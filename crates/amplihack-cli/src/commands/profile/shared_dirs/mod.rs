@@ -259,8 +259,13 @@ pub(super) fn mode_from_liveness(
 ) -> Mode {
     use super::auto_switch::kit::Liveness;
     match live {
-        Liveness::Known(set) if !set.contains(name.as_str()) => Mode::Migrate,
-        Liveness::Known(_) | Liveness::Everything => Mode::LinkOnly(Deferred::LiveSession),
+        // Issue #2820: per profile, also after an unreadable process.
+        Liveness::Known(set) | Liveness::Partial { live: set, .. }
+            if !set.contains(name.as_str()) =>
+        {
+            Mode::Migrate
+        }
+        Liveness::Known(_) | Liveness::Partial { .. } => Mode::LinkOnly(Deferred::LiveSession),
         // On Linux `Unsupported` means the /proc scan failed: retried next call.
         Liveness::Unsupported if cfg!(target_os = "linux") => {
             tracing::debug!("profile {name}: liveness scan failed; migration deferred");

@@ -1,0 +1,77 @@
+name: issue-2343-finalization-outcome
+description: >
+  Outside-in QA for issue #2343. validate-agentic-finalization marked finished
+  runs as failed: it asked the run's own bookkeeping whether the run had
+  succeeded, so a missing context file read as "invalid authoritative workflow
+  context" and pending checks read as "no passing verification signal", and the
+  run ended FAILED_IMPLEMENTATION while its work was pushed and its pull request
+  was open (the #2784 run of 18 November, whose pull request merged on green CI
+  the same day). The scenario (via
+  tests/gadugi/run-issue-2343-finalization-outcome-scenario.sh) runs the shipped
+  collect-finalization-evidence and validate-agentic-finalization bodies through
+  `amplihack recipe run` and the pinned recipe runner, against a local bare
+  repository and a clone on the run branch, under env -i with a fresh HOME. A
+  stub gh, first on PATH, holds pull request #7 with a check still in progress;
+  nothing reaches GitHub and no mutating call is answered. The run carries no
+  implementation or verification booleans at all. The shipped validation body
+  reaches no verdict of its own since #2809: it reports the terminal state
+  assess-finalization decided, so each case supplies that decision the way the
+  recipe does, through the finalization_assessment context key. It checks that
+  the validator reports a decision of EXISTING_OPEN_PR for a pull request open
+  at the pushed head, carrying #7, and does not refuse it on the run's own
+  bookkeeping (since #2966 the assessment waits out pending checks before it
+  decides, so the case supplies that decision and tests the reporting);
+  that the same pull request sitting at an unrelated commit fails with both
+  commit ids and the pull request number in the record, so the decision was
+  reported against the facts; and that the healthy fixture with no assessment
+  at all ends FAILED_MISSING_TERMINAL_EVIDENCE and exits 1, which is what sends
+  the step to its recovery agent rather than letting it fill a verdict in from
+  the facts. CI's Install Smoke Test job runs the driver
+  script directly against the binary it installs; CI does not run gadugi-test,
+  so this file is for running the same cases through gadugi-test by hand.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, workflow-finalize, terminal-state, regression]
+  priority: high
+  issues: ["2343", "2784", "2809"]
+steps:
+  - name: run-issue-2343-finalization-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2343-finalization-outcome-scenario.sh
+    timeout: 880000
+  - name: all-finalization-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: pending-checks-hand-the-pr-on
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: pending_checks_hand_the_pr_on - "
+  - name: diverged-pr-head-fails
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: diverged_pr_head_fails - "
+  - name: no-decision-goes-to-recovery
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: no_decision_goes_to_recovery - "

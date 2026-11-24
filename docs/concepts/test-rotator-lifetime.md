@@ -120,10 +120,15 @@ would outlive the killed helper and that test would fail.
 
 ## What the watcher does when the pipe closes
 
-`watch()` in `rotate/daemon.rs` calls `super::lifetime::arm(&stop)` once
-(`lifetime` is declared in `rotate/mod.rs` beside the other rotate modules),
-directly after it registers its signal handlers. This runs in every mode, so
-a plain `rotate watch` child is covered as well as a `--spawned` one.
+`watch()` in `rotate/daemon.rs` builds the watch loop's `Waker`
+(`rotate/wake.rs`) once, after it registers its signal handlers, and
+`Waker::arm` calls `lifetime::arm(stop, wake)` (`lifetime` is declared in
+`rotate/mod.rs` beside the other rotate modules). `wake` is a write end of the
+same stop pipe that SIGTERM and SIGINT write to, or nothing where the waker has
+no event intake and waits on `--interval` alone. This runs in every mode, so a
+plain `rotate watch` child is covered as well as a `--spawned` one. A test that
+dies before the watcher arms still stops it: end of file stays readable, so the
+first read after arming returns it.
 
 Once armed, the watcher:
 
@@ -132,9 +137,12 @@ Once armed, the watcher:
 2. Starts a thread that reads into a fixed 64-byte buffer:
    - `Interrupted`: reads again.
    - Data: ignored; reads again.
-   - EOF or any other error: sets the existing `stop` flag (`PROBE_CANCEL`).
+   - EOF or any other error: sets the existing `stop` flag (`PROBE_CANCEL`),
+     then writes one byte to the stop pipe.
 
-Setting `stop` is the same thing the SIGTERM handler does. The watcher then
+Setting `stop` and then writing to the stop pipe is what the SIGTERM handler
+does, in the same order, so the `Waker` wait ends at once rather than at the
+next ledger event or `--interval`. No timer or polling loop is involved. The watcher then
 leaves by its normal path: in-flight probes are cancelled,
 `finish_refreshes` runs and `rotate.pid` is removed. No log line, flag,
 default or exit code was added, so the rotate log reads the same as after a

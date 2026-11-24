@@ -410,12 +410,13 @@ per-candidate timeout would otherwise be 24 seconds of foreground hang.
 the child and then joining the reader threads unconditionally is not a timeout:
 if the child exits promptly but a *grandchild* inherits its stdout pipe, the
 drain thread never sees EOF and the join has no ceiling at all. Against a
-shim that runs `sleep 60 &` and then exits, the drain overruns to **60.0 s
-against a 10 s budget** (a design estimate — no test in the workspace builds
-that shim, so the figure is the `sleep`'s own duration, reasoned rather than
-timed; the unboundedness it illustrates is structural, not numeric),
-and against a daemon it never returns. `run_capped_output_with_timeout`
-therefore bounds the joins by whatever is left of the timeout and, when that
+shim that runs `sleep 600 &` and then exits, the drain would take as long as
+the `sleep`, 600 s against a 10 s budget, and against a daemon it never
+returns. The test
+`a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly`
+builds that shim (see [Testing under load](#testing-under-load)).
+`run_capped_output_with_timeout` therefore bounds the joins by whatever is left
+of the timeout and, when that
 runs out, abandons the reader threads rather than waiting on them — the child's
 exit status is already known and authoritative, and a version probe needs one
 semver line, not a complete transcript. The detached threads exit when the pipe
@@ -476,6 +477,84 @@ the child's pipes hit EOF, so the wait now sleeps on that instead — with the
 same backoff retained as the fallback, because a child can close its stdio and
 keep running, and a grandchild can hold the pipes open past its parent's exit.
 `try_wait` remains the authority; EOF is only a hint about when to ask.
+
+### Testing under load
+
+The tests in `crates/amplihack-utils/tests/launch_target_health_gate.rs` that
+check the probe bounds must pass on a host whose CPUs are fully loaded. Load
+slows each probe; it does not change which bounds the code enforces. The tests
+are therefore written so that load cannot make them fail and a removed bound
+still does.
+
+None of these tests reads a clock. Each proves its bound by a count or by an
+event that a slow host cannot change (issue #1860).
+
+| Test | Purpose | Proof |
+| --- | --- | --- |
+| `the_total_probe_budget_bounds_a_path_full_of_hanging_binaries` | The total budget ends the walk. | The number of timed-out probes. |
+| `a_hanging_candidate_times_out_and_the_next_one_is_still_reached` | A hanging candidate does not stop the walk. | The hung candidate is `ProbeTimedOut`, the next one is chosen, and the hung process has been killed. |
+| `a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly` | The output drain is bounded. | The grandchild holding the pipe is still running when resolution returns. |
+
+#### The total budget is proved by a count
+
+A wall-clock bound cannot prove the total budget. Without the budget check,
+`MAX_PROBE_CANDIDATES` still ends the walk after that many probes of
+`PER_CANDIDATE_PROBE_TIMEOUT` each. A bound tight enough to catch that would
+fail on a loaded host, and a bound loose enough for a loaded host would not
+catch it.
+
+The count does not have this problem. Each probe's timeout is
+`PER_CANDIDATE_PROBE_TIMEOUT`, cut to whatever budget remains. A probe whose
+timeout was cut leaves no budget, so it is the last; every timed-out probe
+before it took the full `PER_CANDIDATE_PROBE_TIMEOUT`. No more than
+`ceil(TOTAL_PROBE_BUDGET / PER_CANDIDATE_PROBE_TIMEOUT)` probes can therefore
+time out, and the total stays within `TOTAL_PROBE_BUDGET`. Load makes each
+probe slower, which can lower the count but never raise it. Removing the
+budget check raises the count to `MAX_PROBE_CANDIDATES`, and the test fails on
+the count. Candidates the walk did not reach are recorded as `NotProbed`,
+including those beyond `MAX_PROBE_CANDIDATES`, so every candidate has exactly
+one rejection.
+
+A host that is short of processes rejects a probe as `ResourceExhausted`
+instead. That probe can return at once without using the budget, so the test
+accepts it and leaves it out of the count.
+
+A probe that ignored its own timeout would report no `ProbeTimedOut` at all,
+and the test requires at least one timeout unless the host refused every
+fork. The test also checks that every candidate that started has been killed.
+
+#### The hung candidate and the drain are proved by events
+
+The hanging-candidate test does not time the walk. `ProbeTimedOut` is
+reported only when the probe gave up on a candidate; a probe without a
+timeout would wait for the fixture's `sleep` to end and report a different
+rejection. The test also checks, from the pid the fixture recorded, that the
+hung process is no longer running, which only the probe's kill can cause.
+
+The drain test does not time the walk either. Its shim starts a 600 s `sleep`
+that inherits the shim's stdout, records that `sleep`'s pid, prints a version
+and exits. If the `sleep` is still running when resolution returns,
+resolution did not wait for the pipe to close. A drain without a limit would
+return only after the `sleep` had ended, and the test would then fail.
+
+#### Hanging fixtures sleep for 600 s
+
+Each fixture that hangs runs `sleep 600`, far longer than any probe timeout,
+so a regression cannot pass by finishing early.
+
+The probe kills the child, not its process group (see [Probe budget](#probe-budget)),
+so the fixtures end their own sleeps. A hanging script writes its pid to a
+file and then runs `exec sleep 600`, which makes the probed process the
+`sleep` itself, and the probe's kill on timeout ends it. If the pid cannot be
+written, the script stops before the `sleep` starts.
+
+The drain fixture's shim kills its `sleep` itself if it cannot record the
+pid, so a `sleep` never runs without a record. The test's `KillOnDrop` guard
+sends `SIGKILL` to the recorded pid when the test ends, whether it passes or
+fails. A missing pid file means no `sleep` is running. Any other failure, to
+read the file, parse the pid or send the signal, is reported: the guard
+panics if the test has otherwise passed, and writes to stderr if the test is
+already failing.
 
 ## The install decision
 

@@ -210,7 +210,13 @@ fn auto_switch_off_on_logs_two_changes_and_threshold_none() {
 fn a_corrupt_auto_switch_file_is_logged_as_corrupt() {
     let f = Fixture::new();
     private_file(&f.root.join(".auto-switch"), "garbage\n");
-    f.ok(&["profile", "auto-switch", "on"]);
+    // A bare `on` is refused: the file does not parse, so its exclude list
+    // is unknown (issue #2218). A refusal changes nothing and logs nothing.
+    let out = f.run(&["profile", "auto-switch", "on"]);
+    assert!(!out.status.success(), "{}", text(&out.stderr));
+    assert!(change_lines(&f).is_empty(), "{:#?}", change_lines(&f));
+    // `on --exclude` names the list; its rewrite is logged as from corrupt.
+    f.ok(&["profile", "auto-switch", "on", "--exclude", ""]);
     let lines = change_lines(&f);
     assert_eq!(lines.len(), 1, "{lines:#?}");
     assert!(

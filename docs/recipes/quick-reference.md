@@ -129,26 +129,28 @@ With `AMPLIHACK_AGENT_BINARY=codex`, each agent step runs as
 directly after `exec`:
 
 ```text
---sandbox workspace-write -c sandbox_workspace_write.network_access=true --dangerously-bypass-hook-trust
+--sandbox danger-full-access --dangerously-bypass-hook-trust
 ```
 
 The reasons:
 
-- The host `config.toml` may set `sandbox_mode = "danger-full-access"` for
-  interactive lanes. Without an explicit `--sandbox`, agent steps would
-  inherit it.
+- Codex agent steps run with the same trust as Claude agent steps, which use
+  `--dangerously-skip-permissions` (issue #2317). A step in a linked git
+  worktree can then commit, because the worktree's index and refs under the
+  main checkout's `.git/` are writable.
+- The amplihack PreToolUse hooks apply the same deny rules to both harnesses.
+  They check commands; they are not a sandbox.
 - Codex skips an untrusted hook without saying so, which would turn off the
   command-check hook (software-factory #149) for every step.
-- A full `default-workflow` run under workspace-write with network access
-  completed the same steps as one under danger-full-access, with no per-job
-  preparation.
 
 The rules: the caller's own sandbox choice in the step's arguments wins (no
-`--sandbox` or network override is then added); amplihack never adds
+`--sandbox` is then added); amplihack adds no network override and never adds
 `--dangerously-bypass-approvals-and-sandbox` or `--yolo`; interactive
 `amplihack codex` sessions are unchanged. Prompt text must reach Codex on
-stdin, never in argv, and agent steps should run only in trusted checkouts,
-because hook trust is bypassed. The full rules, the `exec resume` placement and
+stdin, never in argv. Agent steps should run only in trusted checkouts with
+trusted task text: a step can write `.codex/hooks.json`, `~/.codex/` and
+`.git/hooks`, and because hook trust is bypassed, a hook it plants runs in
+later steps without a prompt. The full rules, the `exec resume` placement and
 the preconditions are in
 [Sandbox and hook trust for agent steps](../howto/install-codex-plugin.md#sandbox-and-hook-trust-for-agent-steps).
 

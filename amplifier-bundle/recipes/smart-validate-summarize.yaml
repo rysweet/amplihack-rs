@@ -38,6 +38,7 @@ steps:
     type: "agent"
     condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and 'Development' in task_type and round_1_result and selected_workflow != 'quick-change'"
     agent: "amplihack:core:reviewer"
+    model: "standard"
     prompt: |
       Outside-in testing validation check.
 
@@ -114,6 +115,7 @@ steps:
     type: "agent"
     condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
     agent: "amplihack:core:architect"
+    model: "fast"
     prompt: |
       Produce a concise execution summary.
 

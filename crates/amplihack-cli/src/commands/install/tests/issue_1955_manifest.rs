@@ -251,14 +251,14 @@ fn the_mismatch_message_gives_counts_and_paths() {
     let diff = ManifestDiff {
         missing: vec!["recipes/default-workflow.yaml".to_string()],
         extra: vec![],
-        changed: vec!["tools/autodrive_merge_gate.sh".to_string()],
+        changed: vec!["tools/ordinary-tool.sh".to_string()],
     };
 
     assert_eq!(
         render_mismatch(Path::new("/home/alice/src/amplihack-rs"), &diff),
         "the staged bundle does not match its source /home/alice/src/amplihack-rs (1 missing, 0 \
          extra, 1 changed):\n  missing: recipes/default-workflow.yaml\n  changed: \
-         tools/autodrive_merge_gate.sh"
+         tools/ordinary-tool.sh"
     );
 }
 

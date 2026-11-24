@@ -9,11 +9,17 @@ fn verbatim(_path: &Path, body: &str) -> Result<String> {
 
 /// Build a request whose scratch root is a sibling of `target`'s parent, i.e.
 /// never inside the directory a host tool would scan.
-fn request<'a>(source: &'a Path, target: &'a Path, scratch_root: &'a Path) -> StageRequest<'a> {
+fn request<'a>(
+    source: &'a Path,
+    target: &'a Path,
+    scratch_root: &'a Path,
+    retire_root: &'a Path,
+) -> StageRequest<'a> {
     StageRequest {
         source,
         target,
         scratch_root,
+        retire_root,
         target_is_owned: false,
     }
 }
@@ -27,6 +33,7 @@ struct Fixture {
     source: PathBuf,
     target: PathBuf,
     scratch: PathBuf,
+    amp: PathBuf,
 }
 
 impl Fixture {
@@ -35,17 +42,19 @@ impl Fixture {
         let source = td.path().join("source");
         let target = td.path().join("commands").join("amplihack");
         let scratch = td.path().join("scratch");
+        let amp = td.path().join(".amplihack");
         fs::create_dir_all(&source).unwrap();
         Self {
             _td: td,
             source,
             target,
             scratch,
+            amp,
         }
     }
 
     fn request(&self) -> StageRequest<'_> {
-        request(&self.source, &self.target, &self.scratch)
+        request(&self.source, &self.target, &self.scratch, &self.amp)
     }
 
     fn staging_dir(&self) -> PathBuf {
@@ -119,8 +128,13 @@ fn staging_a_directory_from_itself_is_refused() {
     fs::create_dir_all(&fixture.target).unwrap();
     fs::write(fixture.target.join("lock.md"), "v1\n").unwrap();
 
-    let error = stage(&request(&fixture.target, &fixture.target, &fixture.scratch))
-        .expect_err("source == target must be refused, not reported as success");
+    let error = stage(&request(
+        &fixture.target,
+        &fixture.target,
+        &fixture.scratch,
+        &fixture.amp,
+    ))
+    .expect_err("source == target must be refused, not reported as success");
 
     assert!(
         format!("{error:#}").contains("into itself"),
@@ -312,4 +326,172 @@ fn transform_is_applied_to_every_staged_file() {
         fs::read_to_string(fixture.target.join("b.md")).unwrap(),
         "b:body\n"
     );
+}
+
+/// Issue #1954 D4: the previous command set is retired under
+/// `releases/.retired/`, not deleted, whichever swap path ran.
+#[test]
+fn restaging_retires_the_previous_command_set() {
+    let fixture = Fixture::new();
+    fs::write(fixture.source.join("lock.md"), "v2\n").unwrap();
+    fs::create_dir_all(&fixture.target).unwrap();
+    fs::write(fixture.target.join("lock.md"), "v1\n").unwrap();
+
+    let mut request = fixture.request();
+    request.target_is_owned = true;
+    stage(&request).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("lock.md")).unwrap(),
+        "v2\n"
+    );
+    let retired_dir = fixture.amp.join("releases").join(".retired");
+    let retired: Vec<PathBuf> = fs::read_dir(&retired_dir)
+        .unwrap_or_else(|e| panic!("{} must exist: {e}", retired_dir.display()))
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(retired.len(), 1, "one retired tree expected: {retired:?}");
+    assert!(
+        retired[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(&format!("-{RETIRE_LABEL}")),
+        "unexpected retired name {}",
+        retired[0].display()
+    );
+    assert_eq!(
+        fs::read_to_string(retired[0].join("lock.md")).unwrap(),
+        "v1\n",
+        "the retired tree must be the previous command set"
+    );
+    assert!(!fixture.staging_dir().exists());
+    assert!(!fixture.backup_dir().exists());
+}
+
+impl Fixture {
+    fn scratch(&self) -> Scratch<'_> {
+        Scratch {
+            retire_root: &self.amp,
+            scratch_root: &self.scratch,
+            target: &self.target,
+        }
+    }
+
+    /// Makes every retire fail: `releases` is a file, so `.retired/` cannot be
+    /// created under it.
+    fn block_retiring(&self) {
+        fs::create_dir_all(&self.amp).unwrap();
+        fs::write(self.amp.join("releases"), "not a directory").unwrap();
+    }
+
+    /// A previous command set at `path`, as a swap leaves it.
+    fn old_set(&self, path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(path.join("lock.md"), "v1\n").unwrap();
+    }
+}
+
+fn scan_with(pids: &'static [u32]) -> impl FnOnce(&[PathBuf]) -> InUse {
+    move |candidates: &[PathBuf]| {
+        let mut map = std::collections::BTreeMap::new();
+        if !pids.is_empty() {
+            map.insert(candidates[0].clone(), pids.to_vec());
+        }
+        InUse::Known(map)
+    }
+}
+
+/// Crusty round 1 (#2137): a tree that cannot be retired is removed only when
+/// the scan completes and names no process.
+#[test]
+fn an_unretirable_unused_command_set_is_removed() {
+    let fixture = Fixture::new();
+    fixture.block_retiring();
+    let old = fixture.backup_dir();
+    fixture.old_set(&old);
+
+    let disposal = dispose_old_commands(&fixture.scratch(), &old, scan_with(&[]));
+
+    assert_eq!(disposal, Disposal::Removed);
+    assert!(!old.exists());
+}
+
+/// Crusty round 1 (#2137): a tree that cannot be retired and that a process
+/// uses is kept, under a name that does not block the next swap.
+#[test]
+fn an_unretirable_command_set_in_use_is_kept_aside() {
+    let fixture = Fixture::new();
+    fixture.block_retiring();
+    let old = fixture.staging_dir();
+    fixture.old_set(&old);
+
+    let disposal = dispose_old_commands(&fixture.scratch(), &old, scan_with(&[4242]));
+
+    let kept = fixture.scratch.join("amplihack.unretired-1");
+    assert_eq!(disposal, Disposal::Kept(kept.clone()));
+    assert!(
+        !old.exists(),
+        "the fixed scratch name is free for the next swap"
+    );
+    assert_eq!(fs::read_to_string(kept.join("lock.md")).unwrap(), "v1\n");
+}
+
+/// An incomplete scan is treated as "in use": nothing is deleted.
+#[test]
+fn an_unretirable_command_set_is_kept_when_the_scan_is_incomplete() {
+    for scan in [InUse::Unknown, InUse::Unsupported] {
+        let fixture = Fixture::new();
+        fixture.block_retiring();
+        let old = fixture.backup_dir();
+        fixture.old_set(&old);
+
+        let disposal = dispose_old_commands(&fixture.scratch(), &old, move |_| scan);
+
+        let kept = fixture.scratch.join("amplihack.unretired-1");
+        assert_eq!(disposal, Disposal::Kept(kept.clone()));
+        assert_eq!(fs::read_to_string(kept.join("lock.md")).unwrap(), "v1\n");
+    }
+}
+
+/// A tree already kept aside is checked again where it is, not renamed again.
+#[test]
+fn a_kept_command_set_still_in_use_stays_where_it_is() {
+    let fixture = Fixture::new();
+    fixture.block_retiring();
+    let kept = fixture.scratch.join("amplihack.unretired-1");
+    fixture.old_set(&kept);
+
+    let disposal = dispose_old_commands(&fixture.scratch(), &kept, scan_with(&[4242]));
+
+    assert_eq!(disposal, Disposal::Kept(kept.clone()));
+    assert_eq!(fs::read_to_string(kept.join("lock.md")).unwrap(), "v1\n");
+    assert!(!fixture.scratch.join("amplihack.unretired-2").exists());
+}
+
+/// A leftover `.staging` tree from a run that stopped after the exchange holds
+/// the previously live set: it is retired, never deleted by the scratch guard.
+#[test]
+fn a_leftover_staging_tree_is_retired_not_deleted() {
+    let fixture = Fixture::new();
+    fs::write(fixture.source.join("lock.md"), "v2\n").unwrap();
+    fixture.old_set(&fixture.staging_dir());
+
+    stage(&fixture.request()).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("lock.md")).unwrap(),
+        "v2\n"
+    );
+    let retired_dir = fixture.amp.join("releases").join(".retired");
+    let retired: Vec<PathBuf> = fs::read_dir(&retired_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(retired.len(), 1, "{retired:?}");
+    assert_eq!(
+        fs::read_to_string(retired[0].join("lock.md")).unwrap(),
+        "v1\n"
+    );
+    assert!(!fixture.staging_dir().exists());
 }

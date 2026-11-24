@@ -50,6 +50,10 @@ if [ -n "${OPENAI_API_KEY+x}" ] || [ -n "${CODEX_API_KEY+x}" ]; then
   exit 70
 fi
 [ -z "${RUST_LOG+x}" ] || { echo "RUST_LOG reached the app server" >&2; exit 71; }
+# Issue #2271: `gated` answers nothing until the test writes a line to the
+# FIFO at $CODEX_GATE. The test holds the FIFO open read-write, so this
+# open never blocks; only the read waits.
+if [ "$name" = gated ]; then IFS= read -r _ < "$CODEX_GATE"; fi
 IFS= read -r init || exit 65
 case "$init" in *'"method":"initialize"'*) ;; *) echo "first line: $init" >&2; exit 65;; esac
 printf '%s\n' '{"method":"remoteControl/status/changed","params":{"status":"idle"}}'
@@ -71,6 +75,8 @@ case "$name" in
     sleep 600 >/dev/null 2>&1 &
     echo $! > "$CODEX_PID_DIR/$!"
     sleep 600 ;;
+  gated)
+    printf '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":%s}},"planType":"plus"}}\n' $((now + 3600)) ;;
   mmoss)
     echo "error: unrecognized subcommand 'app-server'" >&2
     exit 1 ;;
@@ -88,12 +94,35 @@ exec cat >/dev/null
 
 const ACCOUNTS: [&str; 6] = ["ffarmer", "ggrant", "hhale", "jjones", "kkim", "mmoss"];
 
+/// The account whose fake app server never answers, so its read ends only at
+/// the limit.
+const HANGING: &str = "kkim";
+
+/// [`ACCOUNTS`] without [`HANGING`]: each fake answers at once, with figures,
+/// a refusal or an exit.
+const ANSWERING: [&str; 5] = ["ffarmer", "ggrant", "hhale", "jjones", "mmoss"];
+
+/// The read limit of a fixture that holds [`HANGING`]. The product has one
+/// limit for all accounts of a run and no way for a test to supply the
+/// clock, so the accounts that answer must start and answer inside it too,
+/// and a test with the hanging account lasts at least this long. At one
+/// second, and on a busier day at five, a loaded machine had started no fake
+/// when the limit passed, and every account read as timed out (issue #2931,
+/// TIMING). Twenty leaves forty before [`DEADLINE`] calls the command hung.
+const HANG_LIMIT_SECS: u64 = 20;
+
+/// The read limit of a fixture in which every account answers: the largest
+/// the product accepts, so that no answer is ever cut off by the clock.
+const ANSWER_LIMIT_SECS: u64 = 300;
+
 struct Codex {
     f: Fixture,
     root: PathBuf,
     bin: PathBuf,
     run_log: PathBuf,
     pid_dir: PathBuf,
+    /// `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` for every command of the fixture.
+    limit_secs: u64,
 }
 
 fn mkfifo(path: &Path) {
@@ -114,6 +143,8 @@ fn trapped(dir: &Path) {
 
 impl Codex {
     /// The fixture with `names` as Codex accounts under `<tmp>/codex-profiles`.
+    /// The read limit is [`HANG_LIMIT_SECS`] when `names` holds [`HANGING`],
+    /// which only the limit can end, and [`ANSWER_LIMIT_SECS`] otherwise.
     fn with(names: &[&str]) -> Self {
         let f = Fixture::new();
         f.assert_isolated();
@@ -134,10 +165,23 @@ impl Codex {
             bin,
             run_log: base.join("codex-runs.log"),
             pid_dir,
+            limit_secs: if names.contains(&HANGING) {
+                HANG_LIMIT_SECS
+            } else {
+                ANSWER_LIMIT_SECS
+            },
         }
     }
 
+    /// The accounts that answer ([`ANSWERING`]), for tests that say nothing
+    /// about a read that runs out of time.
     fn new() -> Self {
+        Self::with(&ANSWERING)
+    }
+
+    /// Every account ([`ACCOUNTS`]), the hanging one included, for tests of
+    /// the timed-out row and of what is left running after it.
+    fn with_hang() -> Self {
         Self::with(&ACCOUNTS)
     }
 
@@ -151,7 +195,10 @@ impl Codex {
         let mut c = self.f.cmd(&full);
         c.env("CODEX_PROFILES_ROOT", &self.root)
             .env("CODEX_BIN", &self.bin)
-            .env("AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS", "1")
+            .env(
+                "AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS",
+                self.limit_secs.to_string(),
+            )
             .env("CODEX_RUN_LOG", &self.run_log)
             .env("CODEX_PID_DIR", &self.pid_dir)
             .env("FAKE_HOME_STATE", "nosign");
@@ -175,20 +222,24 @@ impl Codex {
     }
 }
 
-/// A pipe made with `O_CLOEXEC` on both ends, so no process started by
-/// another test inherits it.
+/// A pipe with `O_CLOEXEC` on both ends, so that a process started by
+/// another test does not inherit it.
+///
+/// `std::io::pipe` is used because `libc::pipe2` does not exist on macOS,
+/// so the previous spelling did not build there (#2210). How std sets the
+/// flag differs by platform:
+///
+/// - On Linux (and the BSDs) std calls `pipe2(O_CLOEXEC)`, so the flag is
+///   set atomically and no other thread can fork in between.
+/// - On macOS std calls `pipe()` and then sets `FD_CLOEXEC` on each end.
+///   A child forked by another test in that gap inherits the write end
+///   across `exec`, and [`run`]'s wait for end-of-file then lasts until
+///   that unrelated child exits. macOS has no atomic alternative, so the
+///   window remains there. These tests run in Linux CI, where it does not
+///   arise.
 fn cloexec_pipe() -> (OwnedFd, OwnedFd) {
-    let mut fds = [0; 2];
-    // SAFETY: `fds` is a valid two-element array.
-    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
-    assert_eq!(rc, 0, "pipe2: {}", std::io::Error::last_os_error());
-    // SAFETY: both descriptors are new and owned only here.
-    unsafe {
-        (
-            std::os::fd::FromRawFd::from_raw_fd(fds[0]),
-            std::os::fd::FromRawFd::from_raw_fd(fds[1]),
-        )
-    }
+    let (r, w) = std::io::pipe().expect("pipe");
+    (OwnedFd::from(r), OwnedFd::from(w))
 }
 
 /// Runs `c` until it and every process it started have exited, and fails
@@ -337,7 +388,7 @@ fn json_stays_an_array_of_claude_rows_and_reads_no_codex() {
 
 #[test]
 fn summary_json_lists_every_account_in_order_with_its_state() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     let out = ok(c.cmd(&["--summary-json"]));
     let v = json(&out);
     assert!(v["profiles"].is_array(), "{v}");
@@ -360,7 +411,10 @@ fn summary_json_lists_every_account_in_order_with_its_state() {
         );
     }
     assert!(rows[3]["error"].is_null());
-    assert_eq!(rows[4]["error"], "timed out after 1s");
+    assert_eq!(
+        rows[4]["error"],
+        format!("timed out after {HANG_LIMIT_SECS}s")
+    );
     assert_eq!(
         rows[5]["error"],
         "codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'"
@@ -423,7 +477,7 @@ fn summary_json_adds_the_same_codex_rows_after_the_summary() {
     let v = json(&out);
     assert!(v["profiles"].is_array(), "the Claude rows keep their key");
     let rows = codex_rows(&v);
-    assert_eq!(field(&rows, "account"), ACCOUNTS);
+    assert_eq!(field(&rows, "account"), ANSWERING);
     assert!(s.find("\"summary\"").unwrap() < s.find("\"codex\"").unwrap());
 }
 
@@ -433,7 +487,7 @@ fn summary_json_adds_the_same_codex_rows_after_the_summary() {
 
 #[test]
 fn the_bar_view_prints_the_codex_block_after_the_claude_output() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     let out = ok(c.cmd(&[]));
     let s = text(&out.stdout);
     let header = format!("Codex accounts under {}\n", c.root.display());
@@ -452,7 +506,7 @@ fn the_bar_view_prints_the_codex_block_after_the_claude_output() {
         "{block}"
     );
     assert!(
-        line_of(block, "kkim").contains("timed out      after 1s"),
+        line_of(block, HANGING).contains(&format!("timed out      after {HANG_LIMIT_SECS}s")),
         "{block}"
     );
     assert!(
@@ -495,7 +549,7 @@ fn utc_applies_to_the_codex_times() {
 
 #[test]
 fn no_login_file_is_opened_and_no_api_key_reaches_codex() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env("OPENAI_API_KEY", OPENAI_SENTINEL)
         .env("CODEX_API_KEY", CODEX_KEY_SENTINEL)
@@ -518,7 +572,7 @@ fn no_login_file_is_opened_and_no_api_key_reaches_codex() {
 
 #[test]
 fn no_codex_process_outlives_the_command() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     // `run` returns only once the command and every process it started,
     // including `kkim`'s app server and its background `sleep 600`, have
     // exited (see its witness pipe). The pid files show the fakes ran.
@@ -529,7 +583,7 @@ fn no_codex_process_outlives_the_command() {
 
 #[test]
 fn every_account_is_started_once() {
-    let c = Codex::new();
+    let c = Codex::with_hang();
     ok(c.cmd(&["--summary-json"]));
     let mut runs = c.runs();
     runs.sort();
@@ -736,4 +790,248 @@ fn labels_and_server_strings_cannot_send_terminal_escapes() {
         !plan.contains('\u{1b}') && !plan.contains('\u{202e}'),
         "cleaned before it is stored: {plan:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2271: the Claude output never waits for Codex
+//
+// The `gated` account's app server answers only once the test writes a line
+// to a FIFO. In the bar and table views the whole Claude block, up to the
+// last line of the capacity summary, must reach stdout while the gate is
+// shut; only then is the gate opened and the Codex block read, and it must
+// hold the answer, not a timeout. `--summary-json` stays one document that
+// includes the Codex rows, and `--json` starts no Codex at all
+// (`json_stays_an_array_of_claude_rows_and_reads_no_codex`).
+//
+// Order is shown by events only: lines read while the gate is shut. The
+// tests add no sleep and no deadline. The Codex read keeps its own existing
+// deadline, set here to its 300 s maximum so that only the gate decides when
+// Codex answers. If the Claude block were held back until Codex finished,
+// the read would end at that deadline, the Codex block would say `timed
+// out`, and the test would fail rather than hang.
+// ---------------------------------------------------------------------------
+
+/// The FIFO the `gated` fake reads a line from. The test holds it open
+/// read-write from the start, so neither side's open ever blocks: the fake
+/// waits only in its read, and writing a line lets it go.
+struct Gate {
+    path: PathBuf,
+    held: Option<fs::File>,
+}
+
+impl Gate {
+    fn new(dir: &Path) -> Self {
+        let path = dir.join("codex-gate");
+        mkfifo(&path);
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the gate is private");
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("hold the gate open");
+        Gate {
+            path,
+            held: Some(held),
+        }
+    }
+
+    /// Lets the fake go. Safe to call more than once: a line nobody reads
+    /// stays in the pipe buffer and never blocks the writer.
+    fn open(&mut self) {
+        use std::io::Write;
+        if let Some(f) = self.held.as_mut() {
+            let _ = f.write_all(b"go\n");
+            let _ = f.flush();
+        }
+    }
+}
+
+impl Drop for Gate {
+    fn drop(&mut self) {
+        self.open();
+        self.held = None;
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// A started `profile usage` whose stdout is read line by line on its own
+/// thread. On drop it lets a held fake go and kills and reaps the command,
+/// so a failed test leaves nothing running.
+struct Running {
+    child: std::process::Child,
+    lines: mpsc::Receiver<String>,
+    gate: Gate,
+    stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
+}
+
+impl Running {
+    fn spawn(mut cmd: Command, gate: Gate) -> Self {
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("start amplihack");
+        let out = child.stdout.take().unwrap();
+        let mut err = child.stderr.take().unwrap();
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for l in std::io::BufReader::new(out).lines() {
+                let Ok(l) = l else { break };
+                if tx.send(l).is_err() {
+                    break;
+                }
+            }
+        });
+        let stderr = std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = err.read_to_end(&mut b);
+            b
+        });
+        Running {
+            child,
+            lines,
+            gate,
+            stderr: Some(stderr),
+        }
+    }
+
+    /// Reads stdout up to and including the first line `last` accepts.
+    /// Blocks on each line: the command always ends, at the latest when
+    /// the Codex read reaches its own deadline.
+    fn read_until(&self, what: &str, last: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut seen = Vec::new();
+        loop {
+            let l = self
+                .lines
+                .recv()
+                .unwrap_or_else(|_| panic!("stdout ended before {what}:\n{}", seen.join("\n")));
+            let done = last(&l);
+            seen.push(l);
+            if done {
+                return seen;
+            }
+        }
+    }
+
+    /// Opens the gate, reads the rest of stdout and waits for the exit.
+    fn finish(mut self) -> (Vec<String>, std::process::ExitStatus, String) {
+        self.gate.open();
+        let rest: Vec<String> = self.lines.iter().collect();
+        let status = self.child.wait().expect("reap amplihack");
+        let err = self.stderr.take().unwrap().join().unwrap();
+        (rest, status, text(&err))
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.gate.open();
+        if let Ok(None) = self.child.try_wait() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+/// `gated` as the only Codex account. The Codex read's existing deadline is
+/// set to its maximum, so that only the gate decides when it answers.
+fn gated(args: &[&str]) -> (Codex, Running) {
+    let c = Codex::with(&["gated"]);
+    let gate = Gate::new(c.f.home.parent().unwrap());
+    let mut cmd = c.cmd(args);
+    cmd.env("CODEX_GATE", &gate.path)
+        .env("AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS", "300");
+    let r = Running::spawn(cmd, gate);
+    (c, r)
+}
+
+fn is_codex_header(l: &str) -> bool {
+    l.starts_with("Codex accounts under ") || l.starts_with("Codex: ")
+}
+
+/// The capacity summary's last line (issue #1797).
+fn is_summary_end(l: &str) -> bool {
+    l.starts_with("unknown ")
+}
+
+fn assert_claude_block_before_codex(args: &[&str]) {
+    let (c, r) = gated(args);
+    let before = r.read_until("the end of the capacity summary", is_summary_end);
+    assert!(
+        !before.iter().any(|l| is_codex_header(l)),
+        "Codex printed before it answered:\n{}",
+        before.join("\n")
+    );
+    let shown = before.join("\n");
+    for p in PROFILES {
+        assert!(shown.contains(p), "every Claude row first: {shown}");
+    }
+    assert!(
+        before.iter().any(|l| l.starts_with("order: ")),
+        "the Claude footer first: {shown}"
+    );
+    let (rest, status, stderr) = r.finish();
+    assert!(status.success(), "exit {:?}: {stderr}", status.code());
+    let header = rest
+        .iter()
+        .position(|l| is_codex_header(l))
+        .unwrap_or_else(|| panic!("no Codex block after the gate:\n{}", rest.join("\n")));
+    assert!(
+        rest[..header].iter().all(|l| l.is_empty()),
+        "only the empty line before the Codex block: {rest:?}"
+    );
+    let block = rest[header..].join("\n");
+    assert!(block.contains("gated"), "{block}");
+    assert!(
+        !block.contains("timed out"),
+        "Codex answered once the gate opened, so the Claude block did not wait for it: {block}"
+    );
+    assert!(block.contains('7'), "the gated answer (7%): {block}");
+    assert_eq!(c.runs(), ["gated"]);
+    let out = Output {
+        status,
+        stdout: [before, rest].concat().join("\n").into_bytes(),
+        stderr: stderr.into_bytes(),
+    };
+    assert_no_secrets(&out);
+}
+
+#[test]
+fn the_bar_view_prints_the_claude_block_before_codex_answers() {
+    assert_claude_block_before_codex(&[]);
+}
+
+#[test]
+fn the_table_prints_the_claude_block_before_codex_answers() {
+    assert_claude_block_before_codex(&["--table"]);
+}
+
+/// `--summary-json` still waits for Codex and prints one document that
+/// holds its rows: the `ok` row proves the read was joined, not skipped.
+#[test]
+fn summary_json_is_one_document_that_holds_the_codex_answer() {
+    let (c, r) = gated(&["--summary-json"]);
+    let (rest, status, stderr) = r.finish();
+    assert!(status.success(), "exit {:?}: {stderr}", status.code());
+    let s = rest.join("\n");
+    let v: serde_json::Value =
+        serde_json::from_str(&s).unwrap_or_else(|e| panic!("one JSON document ({e}): {s}"));
+    assert!(v["profiles"].is_array(), "{v}");
+    let rows = codex_rows(&v);
+    assert_eq!(field(&rows, "account"), ["gated"]);
+    assert_eq!(field(&rows, "state"), ["ok"]);
+    assert_eq!(c.runs(), ["gated"]);
+}
+
+/// `--json` reads no Codex, so a shut gate changes nothing.
+#[test]
+fn json_never_reaches_the_gated_codex_account() {
+    let (c, r) = gated(&["--json"]);
+    let rest: Vec<String> = r.lines.iter().collect();
+    let v: serde_json::Value = serde_json::from_str(&rest.join("\n")).unwrap();
+    assert!(v.is_array(), "{v}");
+    let (_, status, stderr) = r.finish();
+    assert!(status.success(), "exit {:?}: {stderr}", status.code());
+    assert!(c.runs().is_empty(), "{:?}", c.runs());
 }

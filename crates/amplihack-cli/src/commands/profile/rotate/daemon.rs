@@ -24,10 +24,11 @@ use crate::commands::profile::{PROFILE_ENV, ProfileError};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const MAX_PID_FILE: usize = 32;
-
+#[path = "wake.rs"]
+pub(super) mod wake;
 pub use amplihack_utils::rotator_status::DaemonState;
 pub(super) use amplihack_utils::rotator_status::running_on_host;
 
@@ -243,10 +244,11 @@ pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, 
     Ok(cmd.spawn()?.id())
 }
 
-/// `watch`: cycles every `interval` seconds until SIGTERM or SIGINT. Never
-/// acts on a signal while holding the lock. A watch that is not `--spawned`
-/// and is supervised (`--supervised[=UNIT]` or `INVOCATION_ID`) records
-/// itself as the rotation owner (issue #1803); no watch removes the marker.
+/// `watch`: a cycle on each [`wake`] (a limit recorded, a recorded reset, or
+/// `--interval`) until SIGTERM or SIGINT. Never acts on a signal while
+/// holding the lock. A watch that is not `--spawned` and is supervised
+/// (`--supervised[=UNIT]` or `INVOCATION_ID`) records itself as the rotation
+/// owner (issue #1803); no watch removes the marker.
 pub fn watch(
     store: &ProfileStore,
     home: PathBuf,
@@ -259,7 +261,6 @@ pub fn watch(
     for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
         signal_hook::flag::register(sig, stop.clone())?;
     }
-    super::lifetime::arm(&stop);
     if !spawned {
         rs.ensure()?;
         // As in `start`: checked and written under the lock.
@@ -303,8 +304,7 @@ pub fn watch(
         );
     }
     let archive_home = home.clone();
-    let mut ctx = Ctx::new(store.clone(), home, s);
-    ctx.reread = Some(super::fresh::reread_as_configured);
+    let mut ctx = Ctx::new(store.clone(), home, s).with_rereads();
     ctx.stop = Some(stop.clone());
     // Issue #1844: reads that outlast a cycle are used by the next one.
     let (probe_secs, _) = crate::commands::profile::probe_limits::timeout_from_env(None);
@@ -312,13 +312,17 @@ pub fn watch(
     ctx.in_flight = Some(std::sync::Mutex::new(super::inflight::InFlight::new(
         super::inflight::max_age(probe_timeout),
     )));
+    // Armed once, after the stop flag, with any test lifetime pipe (#2909, #2095).
+    let mut waker = wake::Waker::arm(&rs, &stop);
     let mut idle = false;
     while !stop.load(Ordering::SeqCst) {
         if !paused(store.root()) {
             idle = false;
             match cycle::run_cycle(&mut ctx, Mode::Watch) {
                 Ok(CycleOutcome::Stopped) => break,
-                Ok(_) => {}
+                // Issue #2279 (D6): heal the hooks block after the cycle,
+                // outside the swap lock. It never changes the outcome.
+                Ok(outcome) => super::hook_heal::after_cycle(outcome, &ctx),
                 Err(e) => log_line(&rs, &failure(&e)),
             }
         } else if !idle {
@@ -331,10 +335,7 @@ pub fn watch(
             log_line(&rs, &line);
         }
         super::sessions_daily::tick(&rs, &archive_home, now(), &stop);
-        let until = Instant::now() + Duration::from_secs(s.interval);
-        while Instant::now() < until && !stop.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_secs(1).min(until - Instant::now()));
-        }
+        ctx.event = waker.wait(&rs, s.interval, &stop).event();
     }
     // SR-9: `stop` is `PROBE_CANCEL`, already set here. A refresh counts
     // itself before it reads that flag and backs out if it is set, so once
@@ -380,6 +381,7 @@ fn record_idle(rs: &RotateState, store: &ProfileStore) {
             measured_at: None,
             outcome: "idle".into(),
             overflow: None,
+            live_room: None,
         });
         if let Err(e) = rs.save_ledger(&l) {
             log_line(rs, &format!("skip: could not record the idle cycle: {e}"));

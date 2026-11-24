@@ -14,12 +14,15 @@ mod directories;
 mod fetch_backoff;
 pub(crate) mod filesystem;
 pub(crate) mod framework_source;
+pub(crate) mod hook_block;
 mod hooks;
 pub(crate) mod interactive;
+mod launch_repair;
 mod manifest;
 mod mermaid_cli;
 pub(crate) mod paths;
 mod recipe_runner;
+pub(crate) mod release_layout;
 mod settings;
 mod stale_wrappers;
 pub(crate) mod tag_fetch;
@@ -35,13 +38,20 @@ mod codex_alias_fixture;
 mod tests;
 
 pub(crate) use binary::resolve_running_binary_source;
-use binary::{deploy_binaries, find_hooks_binary, stable_hooks_binary};
+use binary::{deploy_binaries_into, find_hooks_binary, stable_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;
 use filesystem::{all_rel_dirs, get_all_files_and_dirs};
 use manifest::{manifest_path, write_manifest};
 use paths::*;
+/// Issue #2589: the dangerous-command deny entries, for every writer of a
+/// Claude `settings.json` outside this module (the profile seeding).
+///
+/// The function holds no install-specific logic and belongs in
+/// `policy::claude`; this re-export is what makes profile management depend
+/// on the install module. Moved in issue #2751.
+pub(crate) use settings::apply_deny_policy;
 use settings::*;
 #[cfg(test)]
 pub(in crate::commands) use types::SourceLayout as SourceLayoutForTest;
@@ -323,6 +333,39 @@ fn framework_restage_needed(staging_exists: bool, missing: &[String]) -> bool {
     !staging_exists || !missing.is_empty()
 }
 
+/// Issue #1954 D7: removes releases and retired trees no process uses. Each
+/// published link keeps its current release and the one it named before this
+/// switch. A failure here costs disk space, not the install, so it warns.
+fn cleanup_unused_releases(claude_dir: &Path, switched: &release_layout::SwitchReport) {
+    let Some(amplihack_dir) = claude_dir.parent() else {
+        return;
+    };
+    let mut links = vec![amplihack_dir.join("amplifier-bundle")];
+    match paths::preferred_user_bin_dir() {
+        Ok(local_bin) => {
+            for name in ["amplihack", "amplihack-hooks", "amplihack-asset-resolver"] {
+                links.push(local_bin.join(crate::path_conflicts::binary_filename(name)));
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "amplihack: warning: skipping release cleanup, the user bin directory is \
+                 unknown: {error:#}"
+            );
+            return;
+        }
+    }
+    let releases = release_layout::releases_dir(amplihack_dir);
+    let keep = release_layout::keep_set(&releases, &links, &switched.previous_targets());
+    match release_layout::cleanup_unused(amplihack_dir, &keep) {
+        Ok(report) => release_layout::report_cleanup(&report),
+        Err(error) => eprintln!(
+            "amplihack: warning: could not clean up unused releases in {}: {error:#}",
+            releases.display()
+        ),
+    }
+}
+
 /// Announce entries a publisher carried across because amplihack could not
 /// prove it had staged them.
 ///
@@ -351,6 +394,63 @@ pub(crate) fn newer_install_stamp() -> Result<Option<String>> {
         }))
 }
 
+/// Issue #2279: whether this binary may write hooks implicitly, that is, it
+/// is not older than the install stamp. An unreadable stamp counts as newer,
+/// so the answer is `false`. Used by launch, profile seeding and the rotator.
+pub(crate) fn binary_is_current() -> bool {
+    matches!(newer_install_stamp(), Ok(None))
+}
+
+/// What [`apply_dangerous_command_policy`] did: the lines an explicit
+/// install prints, and one warning per harness whose rules could not be
+/// written.
+pub(super) struct PolicyReport {
+    /// What this run wrote, one line per harness. A harness whose files were
+    /// all refused has no line here: the warnings carry it.
+    pub(crate) lines: Vec<crate::policy::ReportLine>,
+    pub(crate) warnings: Vec<String>,
+}
+
+/// Issue #2589: applies amplihack's dangerous-command policy to the harness
+/// mechanisms that are written as files of their own.
+///
+/// Claude Code's `permissions.deny` is written by the settings writer, the
+/// profile refresh and the profile seeding, because those already own the
+/// files it lives in; Copilot CLI has no such file and takes the policy as
+/// session arguments at launch. What is left here is the Codex rules file.
+///
+/// Never fatal. A harness that could not be written yields a warning and the
+/// install carries on, because the rest of the install is worth having; but
+/// the warning is loud and unsuppressed, since a security control that is not
+/// installed must not be silent (SEC-C3).
+pub(super) fn apply_dangerous_command_policy() -> PolicyReport {
+    use crate::policy::HarnessWrite;
+    let mut codex_warnings = Vec::new();
+    let codex = match codex_plugin::install_deny_rules() {
+        codex_plugin::DenyRulesWrite::Written | codex_plugin::DenyRulesWrite::AlreadyCurrent => {
+            HarnessWrite::Written
+        }
+        codex_plugin::DenyRulesWrite::Absent => {
+            tracing::debug!("no Codex home to write the dangerous-command rules into");
+            HarnessWrite::NothingToWriteInto
+        }
+        codex_plugin::DenyRulesWrite::Refused(reason) => {
+            codex_warnings.push(crate::policy::write_failure_warning("Codex", &reason));
+            // Codex has one rules file, so a refusal is the whole harness.
+            HarnessWrite::AllRefused
+        }
+    };
+    // The Claude settings files were written earlier in this run, by the
+    // settings writer, the profile refresh and profile seeding; each left a
+    // record of the file it met, and this is where it is read and reported.
+    let (claude, mut warnings) = crate::policy::claude::take_record();
+    warnings.extend(codex_warnings);
+    PolicyReport {
+        lines: crate::policy::install_report_lines(claude, codex),
+        warnings,
+    }
+}
+
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     ensure_framework_installed_with(&mut std::io::stderr())
 }
@@ -358,6 +458,68 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
 /// [`ensure_framework_installed`], writing the #1526 refusal warning to
 /// `notice` (stderr in the binary).
 pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
+    ensure_framework_installed_using(
+        notice,
+        framework_restage_needed_now,
+        repair_framework_assets,
+    )
+}
+
+/// Whether the staged framework assets need a re-stage, read from disk on
+/// every call (issue #1582): the answer before the install lock and the
+/// answer under it can differ, so neither is ever reused for the other.
+fn framework_restage_needed_now() -> Result<bool> {
+    let staging_dir = staging_claude_dir()?;
+    let staging_exists = staging_dir.exists();
+    let missing = if staging_exists {
+        missing_framework_paths(&staging_dir)?
+    } else {
+        Vec::new()
+    };
+    Ok(framework_restage_needed(staging_exists, &missing))
+}
+
+/// The launch bootstrap's re-stage (issue #1582).
+///
+/// `needed` is asked first without the install lock, so a launch whose assets
+/// are complete neither waits behind another install nor creates the lock
+/// file. A "yes" there only leads to the lock: under it, the shared helper
+/// re-reads the stamp, runs Guard #2 and asks `needed` again, so a launch that
+/// waited for another launch's re-stage finds nothing to do. `install` runs
+/// only on that second "yes", with the lock held.
+fn restage_framework_if_needed<W, N, I>(
+    notice: &mut W,
+    mut needed: N,
+    install: I,
+) -> Result<crate::self_heal::LockedRestage>
+where
+    W: std::io::Write,
+    N: FnMut() -> Result<bool>,
+    I: FnOnce() -> Result<()>,
+{
+    if !needed()? {
+        return Ok(crate::self_heal::LockedRestage::NotNeeded);
+    }
+    crate::self_heal::restage_under_install_lock(
+        notice,
+        move |_stamp: Option<&str>| needed(),
+        |_notice: &mut W| {
+            println!("🔧 Bootstrapping amplihack framework assets...");
+            install()
+        },
+    )
+}
+
+/// The launch bootstrap, with the re-stage check and the installer injected so
+/// tests can drive it without a real install.
+fn ensure_framework_installed_using<W, N, I>(notice: &mut W, needed: N, install: I) -> Result<()>
+where
+    W: std::io::Write,
+    N: FnMut() -> Result<bool>,
+    I: FnOnce() -> Result<()>,
+{
+    use crate::self_heal::LockedRestage;
+
     // Issue #1526: this bootstrap is an implicit installer too. A binary older
     // than the installed stamp must not stage, top up commands or repair
     // settings.json over the newer install.
@@ -375,20 +537,17 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
         return Ok(());
     }
 
-    let staging_dir = staging_claude_dir()?;
-    let staging_exists = staging_dir.exists();
-    let missing = if staging_exists {
-        missing_framework_paths(&staging_dir)?
-    } else {
-        Vec::new()
-    };
     // Issue #254: framework assets are now bundled in the amplihack-rs source
     // tree.  The legacy upstream freshness check is removed;
     // framework updates are delivered via amplihack-rs binary updates instead.
-    if framework_restage_needed(staging_exists, &missing) {
-        println!("🔧 Bootstrapping amplihack framework assets...");
-        repair_framework_assets()?;
+
+    // Issue #1582: a newer install that finished while this launch waited for
+    // the install lock stops the bootstrap here, as Guard #1 does above.
+    match restage_framework_if_needed(notice, needed, install)? {
+        LockedRestage::NewerInstalled => return Ok(()),
+        LockedRestage::NotNeeded | LockedRestage::Installed => {}
     }
+    let staging_dir = staging_claude_dir()?;
 
     // Issue #1344: `~/.claude/commands/amplihack/` lives outside `claude_dir`,
     // so `missing_framework_paths` never sees it — and must not, per the
@@ -429,69 +588,30 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
             );
         }
     }
-    let settings_path = global_settings_path()?;
-    match hooks_registered_in_settings(&settings_path)? {
-        HookRegistration::Registered => {
-            // #1659: a settings.json from #1660 registers `StopFailure` for
-            // every user. A Claude Code too old for it ignores the whole
-            // file, so the entry is drift even though every hook is present.
-            // Only a Claude launch asks `claude --version`: copilot and codex
-            // never read this file, and the next Claude launch repairs it.
-            let Some(version) =
-                harmful_limit_resume_registration(&settings_path, launched_claude_too_old)
-            else {
-                return Ok(());
-            };
-            tracing::warn!(
-                "settings.json registers StopFailure, which Claude Code {version} does not know \
-                 — auto-repairing"
-            );
-            println!(
-                "⚠️  Claude Code {version} is older than {LIMIT_RESUME_MIN_CLAUDE}: removing the \
-                 usage-limit resume hook (StopFailure) from settings.json, which this Claude \
-                 Code would otherwise read as invalid and run no amplihack hook"
-            );
-        }
-        HookRegistration::Missing => {}
-        HookRegistration::Unparseable => {
-            // Issue #1526 (SR-8): never back up or rewrite a file we cannot read.
-            tracing::warn!("settings.json is not valid JSON; skipping hook auto-repair");
-            eprintln!(
-                "amplihack: warning: {} is not valid JSON; hook registrations were not \
-                 checked or repaired. Fix the file, then run `amplihack install`.",
-                paths::sanitize_path(&settings_path)
-            );
-            return Ok(());
+    // Issue #2589: a Codex launch keeps its deny rules current too, so a
+    // machine that never runs `amplihack install` again is still covered.
+    // Gated on the selected client for the same reason as the reconcile
+    // above: an explicit `claude` or `copilot` launch leaves a Codex home
+    // byte-identical (issue #1538), and the rules file lives in that home.
+    // The Claude entries are kept current by `refresh_deny_entries` below,
+    // on every launch: `repair_settings_hooks` cannot carry them, because it
+    // returns when amplihack's hooks block is clean and so never reaches
+    // `ensure_permissions`.
+    if crate::freshness::codex_selected() {
+        // The policy section below reads the thread-local record the Claude
+        // writers leave. Nothing in this bootstrap has written a Claude
+        // settings file yet -- `repair_settings_hooks` runs after this --
+        // so anything in the record came from an earlier phase in the same
+        // process and is not this run's work to report (SEC-C3).
+        crate::policy::claude::clear_record();
+        for warning in apply_dangerous_command_policy().warnings {
+            let _ = writeln!(notice, "amplihack: warning: {warning}");
         }
     }
-    tracing::warn!("hooks not registered in settings.json — auto-repairing");
-    let timestamp = unix_timestamp();
-    // The launch repair writes the user's own settings, so it is global.
-    let status_line =
-        status_line_command(interactive::HookScope::Global, binary::stable_self_binary);
-    let (settings_ok, _events) = ensure_settings_json(
-        &settings_path,
-        &staging_dir,
-        timestamp,
-        &hooks_bin,
-        status_line.as_deref(),
-    )?;
-    if !settings_ok {
-        bail!(
-            "failed to configure ~/.claude/settings.json for amplihack hooks.\n\
-             Run `amplihack install` to repair, or `amplihack doctor` to diagnose."
-        );
-    }
-    // Verify the repair actually worked
-    if hooks_registered_in_settings(&settings_path)? != HookRegistration::Registered
-        || harmful_limit_resume_registration(&settings_path, launched_claude_too_old).is_some()
-    {
-        bail!(
-            "hooks still not registered after auto-repair.\n\
-             Run `amplihack install` manually to fix hook wiring."
-        );
-    }
-    println!("✅ Auto-repaired missing hook registrations in settings.json");
+    launch_repair::repair_settings_hooks(notice, &staging_dir, &hooks_bin)?;
+    // Issue #2589: after the hook repair, so a launch that did rewrite the
+    // file has already written the entries and this pass adds nothing.
+    launch_repair::refresh_deny_entries(notice);
     Ok(())
 }
 
@@ -551,97 +671,6 @@ pub(super) fn warn_implicit_hook_drift_for<W: std::io::Write>(
     );
 }
 
-/// #1659: the version of the `claude` a launch would run, when
-/// `settings_path` holds amplihack's `StopFailure` registration and that
-/// `claude` is older than [`LIMIT_RESUME_MIN_CLAUDE`]. `old_claude` is only
-/// called when the registration is there, so a launch without it never
-/// probes. A file that is absent, unreadable or not JSON gives `None`.
-pub(super) fn harmful_limit_resume_registration(
-    settings_path: &Path,
-    old_claude: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    let raw = fs::read_to_string(settings_path).ok()?;
-    let settings = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
-    if !has_limit_resume_registration(&settings) {
-        return None;
-    }
-    old_claude()
-}
-
-/// #1659: [`claude_too_old_for_limit_resume`] for the launch bootstrap, which
-/// runs before every launch. A launch of another tool gives `None` without
-/// running `claude --version` (about 150 ms, up to the 10-second probe
-/// budget): that tool never reads `~/.claude/settings.json`, and the next
-/// Claude launch removes an entry its Claude Code cannot read.
-fn launched_claude_too_old() -> Option<String> {
-    claude_too_old_for_launch(claude_too_old_for_limit_resume)
-}
-
-/// [`launched_claude_too_old`] with the version check passed in.
-pub(super) fn claude_too_old_for_launch(
-    old_claude: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    if !crate::freshness::claude_selected() {
-        return None;
-    }
-    old_claude()
-}
-
-/// Whether `~/.claude/settings.json` holds an `amplihack-hooks` command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum HookRegistration {
-    Registered,
-    /// The file is absent, or parses with no amplihack hook.
-    Missing,
-    Unparseable,
-}
-
-/// Classify the settings file. Absence is read off the failed read (no
-/// `exists()` probe, issue #1123); any other read error, such as EACCES, is
-/// an `Err`, because an unreadable file is not evidence that hooks are missing.
-pub(super) fn hooks_registered_in_settings(settings_path: &Path) -> Result<HookRegistration> {
-    let raw = match fs::read_to_string(settings_path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(HookRegistration::Missing);
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to read {}", settings_path.display()));
-        }
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Ok(HookRegistration::Unparseable);
-    };
-    let has_hooks = json
-        .get("hooks")
-        .and_then(|h| h.as_object())
-        .map(|hooks_map| {
-            hooks_map.values().any(|wrappers| {
-                wrappers.as_array().is_some_and(|arr| {
-                    arr.iter().any(|wrapper| {
-                        wrapper
-                            .get("hooks")
-                            .and_then(|h| h.as_array())
-                            .is_some_and(|entries| {
-                                entries.iter().any(|entry| {
-                                    entry
-                                        .get("command")
-                                        .and_then(|c| c.as_str())
-                                        .is_some_and(|cmd| cmd.contains("amplihack-hooks"))
-                                })
-                            })
-                    })
-                })
-            })
-        })
-        .unwrap_or(false);
-    Ok(if has_hooks {
-        HookRegistration::Registered
-    } else {
-        HookRegistration::Missing
-    })
-}
-
 #[cfg(test)]
 fn local_install(
     repo_root: &Path,
@@ -656,6 +685,11 @@ fn local_install_scoped(
     reconcile_codex: bool,
     mode: InstallMode,
 ) -> Result<()> {
+    // Issue #1954 D6: every install holds the install lock for its whole
+    // run, so an explicit install, the post-update install and a self-heal
+    // never stage or switch at the same time. Re-entrant on this thread, so
+    // the self-heal that calls this while holding it does not deadlock.
+    let _install_lock = crate::install_lock::acquire()?;
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
 
@@ -682,7 +716,18 @@ fn local_install_scoped(
             })
             .unwrap_or_default(),
     };
-    let (deployed_binaries, kept_binaries) = deploy_binaries(mode, stamp.as_deref())?;
+    // Issue #1954: this run's binaries and bundle go into one new release
+    // under ~/.amplihack/releases. Everything that can fail on the source is
+    // staged and checked inside that release first; nothing a running process
+    // reads changes until `commit_release` switches the links. The mapped
+    // `.claude` trees are not part of a release: they are exchanged after the
+    // commit, so a failure while staging the release leaves every published
+    // path on the old version. If an exchange itself fails, the binaries and
+    // bundle are already on the new release and the trees exchanged so far
+    // stay new; running `amplihack install` again completes the rest.
+    let mut release = binary::new_release_txn()?;
+    let (deployed_binaries, kept_binaries) =
+        deploy_binaries_into(&mut release, mode, stamp.as_deref())?;
     let hooks_bin = find_hooks_binary()?;
     for p in deployed_binaries
         .iter()
@@ -690,6 +735,62 @@ fn local_install_scoped(
     {
         println!("  ✅ Deployed {}", p.display());
     }
+
+    ensure_dirs(&claude_dir)?;
+    let pre_dirs = all_rel_dirs(&claude_dir)?;
+
+    let (source_root, layout) = find_source_root(repo_root)?;
+    if layout == SourceLayout::Bundle {
+        validate_framework_bundle_compatibility(&source_root).with_context(|| {
+            format!(
+                "source amplifier-bundle at {} is incompatible",
+                source_root.display()
+            )
+        })?;
+    }
+
+    println!();
+    println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
+    copy_amplifier_bundle_into(repo_root, &claude_dir, &mut release)?;
+
+    println!();
+    println!("🔀 Switching to the new release:");
+    let switched = binary::commit_release(release)?;
+    for switch in &switched.switched {
+        println!(
+            "  ✅ {} -> {}",
+            switch.link.display(),
+            switch.target.display()
+        );
+    }
+    // After the commit: the analysis reads ~/.local/bin/amplihack, which
+    // names the new binary only once the links have switched.
+    binary::print_path_conflict_advisory();
+
+    println!();
+    println!("📁 Copying essential directories:");
+    println!(
+        "   Source layout: {} (from {})",
+        layout.marker_str(),
+        source_root.display()
+    );
+    let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
+    if copied_dirs.is_empty() {
+        bail!(
+            "no essential directories were copied from {} (layout: {}). \
+             The source repository appears to be missing all framework assets. \
+             Verify the checkout is complete.",
+            source_root.display(),
+            layout.marker_str()
+        );
+    }
+
+    // Write the .layout marker atomically so subsequent presence checks
+    // (missing_framework_paths) know which mapping to consult.
+    write_layout_marker(&claude_dir, layout)?;
+
+    cleanup_unused_releases(&claude_dir, &switched);
+
     let preferred_amplihack =
         paths::preferred_user_bin_dir()?.join(crate::path_conflicts::binary_filename("amplihack"));
     if preferred_amplihack.is_file() {
@@ -740,44 +841,6 @@ fn local_install_scoped(
         }
     }
 
-    ensure_dirs(&claude_dir)?;
-    let pre_dirs = all_rel_dirs(&claude_dir)?;
-
-    println!();
-    println!("📁 Copying essential directories:");
-    let (source_root, layout) = find_source_root(repo_root)?;
-    println!(
-        "   Source layout: {} (from {})",
-        layout.marker_str(),
-        source_root.display()
-    );
-    if layout == SourceLayout::Bundle {
-        validate_framework_bundle_compatibility(&source_root).with_context(|| {
-            format!(
-                "source amplifier-bundle at {} is incompatible",
-                source_root.display()
-            )
-        })?;
-    }
-    let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
-    if copied_dirs.is_empty() {
-        bail!(
-            "no essential directories were copied from {} (layout: {}). \
-             The source repository appears to be missing all framework assets. \
-             Verify the checkout is complete.",
-            source_root.display(),
-            layout.marker_str()
-        );
-    }
-
-    // Write the .layout marker atomically so subsequent presence checks
-    // (missing_framework_paths) know which mapping to consult.
-    write_layout_marker(&claude_dir, layout)?;
-
-    println!();
-    println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
-    copy_amplifier_bundle(repo_root, &claude_dir)?;
-
     println!();
     println!("📝 Initializing PROJECT.md:");
     initialize_project_md(&claude_dir)?;
@@ -825,6 +888,13 @@ fn local_install_scoped(
         .first()
         .cloned()
         .unwrap_or_else(|| hooks_bin.clone());
+    // Issue #2589: the Claude deny entries are written by the three calls
+    // below -- `ensure_settings_json`, the profile refresh and profile
+    // seeding -- and each records the file it met for the policy section
+    // further down. The write phase starts here, so the record starts empty:
+    // an outcome left by an earlier phase in this process would otherwise be
+    // printed as a file this run wrote (SEC-C3).
+    crate::policy::claude::clear_record();
     // Issue #1526: an implicit re-stage never writes (or backs up) the
     // user's settings.json; only `amplihack install` does. Its one output is
     // a stderr warning when settings.json lacks hooks this build registers,
@@ -959,6 +1029,25 @@ fn local_install_scoped(
         // `amplihack install`. Issue #1526's downgrade refusal runs earlier.
         codex_plugin::install(repo_root, &durable_hooks_bin)
             .context("failed native Codex installation")?;
+    }
+
+    // Issue #2589: an explicit `amplihack install` (and `amplihack update`,
+    // which reaches this through the post-update install) writes the deny
+    // rules for every harness home it manages, whether or not Codex is the
+    // selected client. An implicit re-stage does not: it runs on the launch
+    // path, where an explicit `claude` or `copilot` launch must leave a
+    // Codex home byte-identical (issue #1538). A Codex launch refreshes its
+    // own rules from `ensure_framework_installed_with` instead.
+    if mode == InstallMode::Explicit {
+        println!();
+        println!("🛡️  Configuring dangerous-command deny rules:");
+        let policy = apply_dangerous_command_policy();
+        for line in &policy.lines {
+            println!("  {}  {}", line.marker, line.text);
+        }
+        for warning in &policy.warnings {
+            eprintln!("  ⚠️  {warning}");
+        }
     }
 
     println!("📝 Generating uninstall manifest:");

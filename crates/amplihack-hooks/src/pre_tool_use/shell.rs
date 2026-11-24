@@ -1,6 +1,6 @@
 //! The small shell tokeniser shared by the PreToolUse command guards: the
-//! auto-drive merge guard (#1551), the tmux server guard (#1733) and the
-//! tail-follow guard (#1794).
+//! tmux server guard (#1733) and the tail-follow guard (#1794). The
+//! auto-drive merge guard (#1551) that also used it was removed in #2340.
 //!
 //! This is not a shell parser and does not try to be one. It splits a command
 //! line into simple commands of unquoted words, finds each command's program
@@ -175,6 +175,7 @@ pub(super) fn basename(word: &str) -> &str {
 /// they are data, never a command's words.
 /// `$(…)` and backticks stay inside the word they appear in, including a
 /// `$(…)` inside double quotes, whose own quotes do not end the string.
+#[cfg(test)]
 pub(super) fn commands(text: &str) -> Vec<Vec<String>> {
     parse(text)
         .into_iter()
@@ -184,11 +185,12 @@ pub(super) fn commands(text: &str) -> Vec<Vec<String>> {
 }
 
 /// [`commands`] with each command's heredoc bodies and pipeline index.
+#[cfg(test)]
 pub(super) fn parse(text: &str) -> Vec<SimpleCommand> {
     tokenise(text).commands
 }
 
-/// [`parse`], plus whether the text was well formed.
+/// Parsed commands and whether the text was well formed.
 pub(super) fn tokenise(text: &str) -> Parsed {
     let chars: Vec<char> = text.chars().collect();
     let mut out = vec![SimpleCommand::default()];

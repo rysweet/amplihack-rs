@@ -103,8 +103,8 @@ check approval_404_blocked_outdated_thread_is_pending PENDING other-blockers "" 
   "an unresolved thread that went outdated is still unresolved; an agent resolves it before a person is asked" \
   PF_CLASSIC=404 PF_PROTECTED=true PF_DECISION= PF_MSTATE=BLOCKED \
   PF_THREAD_NODES='[{"isResolved":true,"isOutdated":false},{"isResolved":false,"isOutdated":true}]'
-check approval_count_0_with_code_owner_rule_is_not_zero UNREADABLE unreadable "" \
-  "a count of 0 beside a code-owner rule is unknown, never 0" \
+check approval_count_0_with_code_owner_rule_is_not_zero NOT_MET review-rule "" \
+  "a count of 0 beside a code-owner rule is unknown, never 0; BLOCKED names the missing review" \
   PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_DECISION= PF_MSTATE=BLOCKED
 check approval_ruleset_count_2_is_not_met NOT_MET required-count 2 \
   "a ruleset requiring 2 approvals is read with read access when protection returns 404" \

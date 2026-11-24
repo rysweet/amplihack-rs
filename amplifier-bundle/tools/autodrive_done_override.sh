@@ -1,45 +1,17 @@
 #!/usr/bin/env bash
-# autodrive_done_override.sh <raw-verdict> <verdict> <prev-overridden>
-#   <prev-verdict> <findings> <prev-findings> <baseline> <head>
+# autodrive_done_override.sh: a one-release alias (#3049, #3129).
 #
-# What autodrive_loop.sh does with a loop-health DONE over a round whose own
-# verdict is not the clean token (issue #1597). Such a DONE never advances:
-# the findings may have been addressed where no review has seen it yet (a PR
-# description edit, say), so the loop runs one more round to re-review.
-#
-#   Exit 0 — run another round to re-review.
-#   Exit 1 — STUCK. stdout carries the reason clause, or nothing when the
-#            round wrote no record (<raw-verdict> MISSING).
-#   Exit 2 — usage error; the loop reads any non-zero exit as STUCK.
-#
-# STUCK when the round record is missing, or when the previous round's DONE
-# was overridden too (<prev-overridden> 1) and this round moved nothing: the
-# same <verdict>, the same findings once whitespace is collapsed and trimmed,
-# and <head> equal to the round's <baseline>. An empty <head> (git could not
-# read HEAD) counts as not moved, so the guard fails safe. No counter: the stop
-# comes from the absence of progress. <verdict> and <prev-verdict> are the
-# loop's A-Za-z0-9_ copies; the raw verdict is only compared to MISSING.
-#
-# Executed, never sourced. It reads its arguments and writes nothing.
+# It decided whether a loop-health DONE could override a non-clean round.
+# The shared goal loop replaced it: autodrive_goal_loop.sh; nothing in code decides that a loop is done.
+# This file stays for one release so that a path that still names it finds a
+# file. It keeps the name, not the old interface. It prints one plain line
+# naming the replacement and does nothing else: it brings back no stop, no
+# budget and no gate. Sourced or run, it ends with status 0.
+# A run started on 1.2.212 never reaches it: auto-drive runs every tool from
+# the launch copy of the bundle made when the run starts (#2959).
+# A 1.2.212 caller that did reach it would always take its "another round"
+# branch.
+# docs/reference/autodrive-goal-loop.md#retired-keys-and-aliases.
 
-set -uo pipefail
-export LC_ALL=C
-
-if [ $# -ne 8 ]; then
-  echo "usage: autodrive_done_override.sh <raw-verdict> <verdict> <prev-overridden> <prev-verdict> <findings> <prev-findings> <baseline> <head>" >&2
-  exit 2
-fi
-RAW_VERDICT="$1"; VERDICT="$2"; PREV_OVERRIDDEN="$3"; PREV_VERDICT="$4"
-FINDINGS="$5"; PREV_FINDINGS="$6"; BASELINE="$7"; HEAD="$8"
-
-[ "$RAW_VERDICT" = "MISSING" ] && exit 1
-
-trim_ws() { tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; }
-
-if [ "$PREV_OVERRIDDEN" = "1" ] && [ "$VERDICT" = "$PREV_VERDICT" ] \
-   && [ "$(printf '%s' "$FINDINGS" | trim_ws)" = "$(printf '%s' "$PREV_FINDINGS" | trim_ws)" ] \
-   && { [ -z "$HEAD" ] || [ "$HEAD" = "$BASELINE" ]; }; then
-  printf "repeated DONE over non-clean '%s' with no progress (same verdict, same findings, HEAD unchanged)\n" "$VERDICT"
-  exit 1
-fi
-exit 0
+echo "autodrive_done_override.sh is retired (#3129) and does nothing here; its replacement is autodrive_goal_loop.sh." >&2
+return 0 2>/dev/null || exit 0

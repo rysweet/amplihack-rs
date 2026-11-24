@@ -14,8 +14,8 @@ use std::fs;
 use crate::issue_1985_codex_agent_step_flags::{FAKE_FINAL_MESSAGE, Launch, launch};
 
 const PREFIX: &str = "amplihack: codex exec:";
-const NOTICE_ALL: &str = "amplihack: codex exec: added --sandbox workspace-write, \
-                          network access, --dangerously-bypass-hook-trust (#1985)";
+const NOTICE_ALL: &str = "amplihack: codex exec: added --sandbox danger-full-access, \
+                          --dangerously-bypass-hook-trust (#1985)";
 const HOOK_TRUST: &str = "--dangerously-bypass-hook-trust";
 
 fn stdout(launch: &Launch) -> String {
@@ -35,7 +35,7 @@ fn notice_lines(launch: &Launch) -> Vec<String> {
 }
 
 /// (a) An agent step that chose no sandbox gets exactly one line on stderr,
-/// with the full three-item text, and nothing on stdout or in the output file.
+/// with the full two-item text (#2317), and nothing on stdout or in the output file.
 #[test]
 fn exec_launch_prints_one_notice_on_stderr_only() {
     let tmp = tempfile::tempdir().unwrap();
@@ -72,15 +72,20 @@ fn exec_launch_prints_one_notice_on_stderr_only() {
     let sandbox = at("--sandbox").expect("--sandbox injected");
     assert_eq!(
         launch.argv.get(sandbox + 1).map(String::as_str),
-        Some("workspace-write")
+        Some("danger-full-access")
     );
     assert!(
-        launch
+        !launch
             .argv
             .iter()
-            .any(|a| a == "sandbox_workspace_write.network_access=true"),
-        "{:?}",
+            .any(|a| a.contains("sandbox_workspace_write")),
+        "no network override may be added: {:?}",
         launch.argv
+    );
+    assert!(
+        !stderr(&launch).contains("network access"),
+        "{}",
+        stderr(&launch)
     );
     assert!(at(HOOK_TRUST).is_some(), "{:?}", launch.argv);
 }
@@ -98,7 +103,7 @@ fn no_notice_when_caller_chose_sandbox_or_nothing_injected() {
         chose.argv
     );
     assert!(
-        !chose.argv.iter().any(|a| a == "workspace-write"),
+        !chose.argv.iter().any(|a| a == "danger-full-access"),
         "{:?}",
         chose.argv
     );

@@ -78,8 +78,35 @@ pub fn write_launcher_context(
 /// either its old contents or the complete new ones, never a part.
 ///
 /// The temporary file is created in `path`'s own directory, because
-/// `rename(2)` is atomic only within one file system. If `write`, the flush or
-/// the rename fails, the temporary file is removed and `path` is untouched.
+/// `rename(2)` is atomic only within one file system. If `write` or the
+/// rename fails, the temporary file is removed and `path` is untouched.
+///
+/// The file is not synced: there is no `fsync(2)` before the rename (#2068).
+/// This write runs on every `claude`, `copilot`, `codex` and `amplifier`
+/// launch, before the agent starts, and a sync would make each launch wait on
+/// the disk. Measured once with `strace -T` on base `def287b82`, writing to
+/// xfs at load averages 17.00, 9.35, 8.14, the sync took 0.6 ms; it is much
+/// slower when the disk is busy with other writes (#1992 measured 9.76 s for
+/// the `config.toml` sync on this launch path).
+///
+/// Losing the file is acceptable. It is rewritten on every launch, it holds
+/// only the current session's command line and environment, and its readers
+/// already cope with a bad file. After a crash the file may be:
+///
+/// - unchanged: the previous context, written by the same user, naming an
+///   allowlisted launcher, and still subject to the readers' allowlist and
+///   staleness checks;
+/// - missing, which every reader skips;
+/// - empty, or unreadable or unparsable. `agent_binary`'s
+///   `read_launcher_field` reports such a file as unusable and logs
+///   "ignoring an unusable launcher_context.json", and
+///   [`read_launcher_context`] returns `None` with a warning.
+///
+/// When the file is missing or unusable, `agent_binary` searches parent
+/// directories for another `launcher_context.json` and then uses the
+/// default. In every case the next launch rewrites the file. Errors that only `fsync(2)` would
+/// report (EIO, ENOSPC, EDQUOT, NFS writeback) are no longer reported for
+/// this file; errors from `write` and the rename still are.
 ///
 /// The file is owner read and write only, because it records the command line
 /// and environment a session was started with. On Unix `tempfile` asks for
@@ -106,7 +133,6 @@ fn replace_file(
         .suffix(".tmp")
         .tempfile_in(dir)?;
     write(temp.as_file_mut())?;
-    temp.as_file().sync_all()?;
     temp.persist(path).map_err(|error| error.error)?;
     Ok(())
 }

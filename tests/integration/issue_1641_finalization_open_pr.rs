@@ -22,7 +22,13 @@ pub(crate) mod fixture;
 mod head_and_fallback;
 #[path = "issue_1641_finalization_open_pr/metadata.rs"]
 mod metadata;
+#[path = "issue_1641_finalization_open_pr/pr_identity.rs"]
+mod pr_identity;
+#[path = "issue_1641_finalization_open_pr/pr_reference.rs"]
+mod pr_reference;
 #[path = "issue_1641_finalization_open_pr/signal.rs"]
 mod signal;
 #[path = "issue_1641_finalization_open_pr/success.rs"]
 mod success;
+#[path = "issue_1641_finalization_open_pr/success_facts.rs"]
+mod success_facts;

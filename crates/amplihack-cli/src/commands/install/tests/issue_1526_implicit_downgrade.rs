@@ -55,11 +55,19 @@ pub(super) fn newer_version() -> String {
 /// every variable that would let installer code escape it. Each variable is
 /// saved the first time it is touched; all are restored on drop, newest first.
 ///
-/// Drop order is load-bearing: `Drop::drop` restores the variables before the
-/// `_lock` field is released, even on panic, so no other test observes this
-/// test's HOME and nothing here can resolve to the developer's real one.
+/// `CLAUDE_CONFIG_DIR`, `AMPLIHACK_HOME` and the three auto-switch names are
+/// not in the list below: they belong to the `_profile` field, which is the
+/// one owner of `claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS` in this
+/// guard (issue #2922). Two guards saving one variable restore it in the wrong
+/// order, which is why there is exactly one owner for each.
+///
+/// Drop order is load-bearing: `Drop::drop` restores the variables, then
+/// `_profile` restores the five, and only then is `_lock` released, even on
+/// panic. So no other test observes this test's HOME and nothing here can
+/// resolve to the developer's real home or live login profile.
 pub(super) struct IsolatedHome {
     saved: Vec<(&'static str, Option<OsString>)>,
+    _profile: crate::test_support::claude_profile_isolation::ClaudeProfileIsolation,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -71,12 +79,19 @@ impl IsolatedHome {
         crate::self_heal::set_downgrade_warned(false);
         let mut env = Self {
             saved: Vec::new(),
+            // The launch repair writes `$CLAUDE_CONFIG_DIR/settings.json` when
+            // it is set (#2279), which is outside HOME: a session started with
+            // a login profile exports it, along with the profile's name, root
+            // and auto-switch toggle (#2922).
+            _profile: crate::test_support::claude_profile_isolation::ClaudeProfileIsolation::new(),
             _lock: lock,
         };
         env.put("HOME", Some(home.as_os_str()));
+        // Asset-restaging tests must not select the enclosing agent's provider.
+        env.set("AMPLIHACK_AGENT_BINARY", "claude");
+        env.set("AMPLIHACK_SKIP_MMDC", "1");
         for name in [
             "AMPLIHACK_SKIP_AUTO_INSTALL",
-            "AMPLIHACK_HOME",
             "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
             "AMPLIHACK_REPAIR_ORIGINAL_PATH",
         ] {

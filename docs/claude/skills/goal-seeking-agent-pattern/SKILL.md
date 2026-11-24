@@ -777,7 +777,7 @@ goal = """
 CI pipeline failing after push.
 Diagnose failures, apply fixes, push updates, monitor CI.
 Iterate until all checks pass.
-Stop at mergeable state without auto-merging.
+Stop at mergeable state; the calling workflow decides the merge.
 """
 
 # Agent decomposes into phases:
@@ -788,7 +788,8 @@ Stop at mergeable state without auto-merging.
 # 5. Success Verification: Confirm all checks pass
 
 # Iterative loop:
-# Phases 2-4 repeat until success or max iterations (5)
+# Phases 2-4 repeat until every check is green or a cause the run cannot fix
+# is named; there is no round limit and no time limit (#2966)
 ```
 
 **Key Characteristics**:
@@ -797,18 +798,15 @@ Stop at mergeable state without auto-merging.
 - **Autonomous Recovery**: Tries multiple fix strategies
 - **State Management**: Tracks attempted fixes, avoids repeating failures
 - **Pattern Matching**: Recognizes common CI failure types
-- **Escalation**: Reports to user after max iterations
+- **Escalation**: Reports a cause the run cannot fix, with its owner and the step they take
 
 **Implementation**:
 
 ```rust
 # Located in: .claude/agents/amplihack/specialized/ci-diagnostic-workflow.md
 
-# Fix iteration loop:
-MAX_ITERATIONS = 5
-iteration = 0
-
-while iteration < MAX_ITERATIONS:
+# Fix loop, with no round limit and no time limit (#2966):
+while True:
     status = check_ci_status()
 
     if status["conclusion"] == "success":
@@ -816,6 +814,13 @@ while iteration < MAX_ITERATIONS:
 
     # Diagnose failures
     failures = analyze_ci_logs(status)
+
+    # A cause the run cannot fix (a missing secret, a run awaiting approval)
+    # ends the loop, reported with its owner and the step they take
+    cause = cause_the_run_cannot_fix(failures)
+    if cause:
+        report_to_owner(cause)
+        break
 
     # Apply pattern-matched fixes
     for failure in failures:
@@ -827,23 +832,18 @@ while iteration < MAX_ITERATIONS:
             fix_type_failure(failure)
 
     # Commit and push
-    git_commit_and_push(f"fix: CI iteration {iteration + 1}")
+    git_commit_and_push("fix: CI failure")
 
-    # Wait for CI re-run
+    # Wait for CI re-run (gh pr checks --watch)
     wait_for_ci_completion()
-
-    iteration += 1
-
-if iteration >= MAX_ITERATIONS:
-    escalate_to_user("CI still failing after 5 iterations")
 ```
 
 **Lessons Learned**:
 
-- Iteration limits prevent infinite loops
+- A named cause the run cannot fix, not a counter, ends a loop that cannot succeed
 - Pattern matching (test/lint/type) enables targeted fixes
-- Smart waiting (exponential backoff) reduces wait time
-- Never auto-merge: human approval always required
+- Waiting is `gh pr checks --watch`, with no sleep or backoff of the agent's own
+- Stop at mergeable state: the merge belongs to the calling workflow's gate
 
 ### Example 3: Pre-Commit Diagnostic Workflow
 
@@ -1349,33 +1349,25 @@ if detected_environment != expected_environment:
 
 ```rust
 escalate(
-    reason="CI failure diagnosis unsuccessful after 5 iterations",
+    reason="deploy-preview: the workflow reads secrets.PREVIEW_TOKEN, which the repository does not define",
     context={
-        "iterations": 5,
+        "check": "deploy-preview",
+        "cause": "a missing secret, which the run cannot supply",
+        "owner": "repository administrator",
         "attempted_fixes": [
-            "Import path corrections (iteration 1)",
-            "Type annotation fixes (iteration 2)",
-            "Test environment setup (iteration 3)",
-            "Dependency version pins (iteration 4)",
-            "Mock configuration (iteration 5)"
+            "Re-ran the failed job once, to rule out a flaky check"
         ],
-        "persistent_failures": [
-            "test_integration.py::test_api_connection - Timeout",
-            "test_models.py::test_validation - Assertion error"
-        ],
-        "system_state": "2 of 25 tests still failing",
+        "system_state": "every other check on the head is green",
         "ci_logs": "https://github.com/.../actions/runs/123456"
     },
     recommendations=[
-        "Review test_api_connection timeout - may need increased timeout or mock",
-        "Examine test_validation assertion - data structure may have changed",
-        "Consider running tests locally with same environment as CI",
-        "Check if recent changes affected integration test setup"
+        "Define PREVIEW_TOKEN, or change the workflow's use of it in a change its code owner reviews",
+        "Re-run deploy-preview once the secret exists"
     ],
     next_steps={
-        "manual_investigation": "Run failing tests locally with verbose output",
-        "rollback_option": "git revert HEAD~5 if fixes made things worse",
-        "resume_point": "Fix failures and run /amplihack:ci-diagnostic to resume"
+        "owner_action": "repository administrator: add PREVIEW_TOKEN under Settings, Secrets and variables, Actions, then re-run deploy-preview",
+        "rollback_option": "git revert the last fix commit if a fix made things worse",
+        "resume_point": "Run the CI diagnostic again once the secret exists"
     }
 )
 ```

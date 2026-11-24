@@ -9,11 +9,14 @@
 //! The harness creates a pipe, keeps the write end (close-on-exec) and lets
 //! only the child it starts inherit the read end, naming its number in
 //! [`LIFETIME_FD_ENV`]. `spawn` passes that fd and variable on to the
-//! watcher, and `watch` calls [`arm`]. A thread blocks on the read end; when
-//! the test process ends for any reason the kernel closes the write end, the
-//! read returns end of file, and the thread sets the watcher's existing stop
-//! flag. The watcher then leaves by its SIGTERM path: probes are cancelled,
-//! refreshes finish and the pid file is removed.
+//! watcher, and `wake::Waker::arm` calls [`arm`] with the write end of the
+//! watch loop's stop pipe. A thread blocks on the read end; when the test
+//! process ends for any reason the kernel closes the write end, the read
+//! returns end of file, and the thread sets the watcher's existing stop flag
+//! and then writes one byte to the stop pipe, in the same order as a signal.
+//! The `Waker` wait therefore ends at once, and the watcher leaves by its
+//! SIGTERM path: probes are cancelled, refreshes finish and the pid file is
+//! removed. No timer or polling loop is involved.
 //!
 //! The `start` CLI keeps its inherited, non-close-on-exec read end, and its
 //! children may inherit it. That is harmless: a read end cannot delay end of
@@ -25,7 +28,7 @@
 
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,8 +82,10 @@ fn cloexec_clear(fd: RawFd) -> bool {
 }
 
 /// Arms the lifetime pipe when this watcher was started by the test harness.
+/// `wake` is the write end of the `Waker`'s stop pipe, or `None` where the
+/// waker has no intake and its interval wait reads `stop` itself.
 /// On any failure it returns silently and the watcher runs as it does today.
-pub(super) fn arm(stop: &Arc<AtomicBool>) {
+pub(super) fn arm<W: Write + Send + 'static>(stop: &Arc<AtomicBool>, wake: Option<W>) {
     let var = std::env::var_os(LIFETIME_FD_ENV);
     let guard = std::env::var_os(TEST_GUARD_ENV);
     let Some(fd) = armed_fd(var.as_deref(), guard.as_deref(), inherited_fifo) else {
@@ -98,21 +103,24 @@ pub(super) fn arm(stop: &Arc<AtomicBool>) {
     // A thread that cannot start leaves the watcher unarmed, by design
     // silently; the harness's own stop path still applies. Dropping the
     // handle detaches the thread.
-    let _ = watch_pipe(file, Arc::clone(stop));
+    let _ = watch_pipe(file, Arc::clone(stop), wake);
 }
 
-fn watch_pipe<R>(reader: R, stop: Arc<AtomicBool>) -> io::Result<JoinHandle<()>>
+fn watch_pipe<R, W>(reader: R, stop: Arc<AtomicBool>, wake: Option<W>) -> io::Result<JoinHandle<()>>
 where
     R: Read + Send + 'static,
+    W: Write + Send + 'static,
 {
     thread::Builder::new()
         .name("rotate-lifetime".into())
-        .spawn(move || pump(reader, &stop))
+        .spawn(move || pump(reader, &stop, wake))
 }
 
 /// Reads until end of file or an error other than `Interrupted`, ignoring
-/// any data, then sets `stop`.
-fn pump<R: Read>(mut reader: R, stop: &AtomicBool) {
+/// any data, then sets `stop` and writes one byte to `wake`. A failed write
+/// is ignored: the stop pipe is non-blocking, and a full pipe already wakes
+/// the waiter.
+fn pump<R: Read, W: Write>(mut reader: R, stop: &AtomicBool, wake: Option<W>) {
     let mut buf = [0u8; 64];
     loop {
         match reader.read(&mut buf) {
@@ -123,6 +131,9 @@ fn pump<R: Read>(mut reader: R, stop: &AtomicBool) {
         }
     }
     stop.store(true, Ordering::SeqCst);
+    if let Some(mut w) = wake {
+        let _ = w.write(&[1]);
+    }
 }
 
 #[cfg(test)]

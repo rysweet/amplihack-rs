@@ -27,8 +27,12 @@ out/
 # Amplihack runtime directories (auto-generated)
 .claude/logs/
 .claude/runtime/
-# Hook state when AMPLIHACK_HOME points at this checkout (#1963)
+# Hook state (runtime/) and the launch contract (private/) that amplihack
+# builds from before #2361 wrote here when AMPLIHACK_HOME named this checkout
+# (#1963). Since #2361, hooks and `amplihack launch` use $HOME/.amplihack
+# whenever AMPLIHACK_HOME is a Git checkout.
 /runtime/
+/private/
 index.scip
 .amplihack/
 observability/litellm/.env

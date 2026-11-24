@@ -15,10 +15,11 @@
 //!   is true. Otherwise it returns `None`.
 //! - `inherited_fifo(fd)` is true only for an open FIFO whose `FD_CLOEXEC`
 //!   flag is clear (an fd inherited across `execve`).
-//! - `watch_pipe(reader, stop)` starts a named thread that reads into a buffer of
-//!   at most 64 bytes, ignores the data, retries on `Interrupted`, and sets
-//!   `stop` on end of file or any other error.
-//! - `arm(stop)` reads the process environment and does nothing, silently,
+//! - `watch_pipe(reader, stop, wake)` starts a named thread that reads into a
+//!   buffer of at most 64 bytes, ignores the data, retries on `Interrupted`,
+//!   and sets `stop` on end of file or any other error, then writes a byte to
+//!   `wake` so the `Waker` wait ends.
+//! - `arm(stop, wake)` reads the process environment and does nothing, silently,
 //!   when the variable is absent.
 //!
 //! No test sleeps, and none sets a process-wide environment variable: every
@@ -30,6 +31,7 @@ use std::ffi::OsStr;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -168,7 +170,7 @@ fn the_write_end_is_close_on_exec() {
 fn dropping_the_write_end_sets_stop() {
     let (reader, writer) = io::pipe().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
-    let handle = watch_pipe(reader, stop.clone()).unwrap();
+    let handle = watch_pipe(reader, stop.clone(), None::<UnixStream>).unwrap();
     // The write end is open, so the reader cannot have seen end of file.
     assert!(!stop.load(Ordering::SeqCst));
     drop(writer);
@@ -180,7 +182,7 @@ fn dropping_the_write_end_sets_stop() {
 fn data_on_the_pipe_never_sets_stop() {
     let (reader, writer) = io::pipe().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
-    let handle = watch_pipe(reader, stop.clone()).unwrap();
+    let handle = watch_pipe(reader, stop.clone(), None::<UnixStream>).unwrap();
     // Four times a 64 KiB pipe buffer: the writer can only finish once the
     // watch thread has read most of it, so it has handled many reads.
     let writer = std::thread::spawn(move || {
@@ -223,7 +225,7 @@ fn run_script(script: Vec<io::Result<usize>>) -> (bool, Vec<usize>) {
         script,
         calls: calls.clone(),
     };
-    watch_pipe(reader, stop.clone())
+    watch_pipe(reader, stop.clone(), None::<UnixStream>)
         .unwrap()
         .join()
         .expect("the watch thread does not panic");
@@ -266,6 +268,25 @@ fn arm_without_the_variable_does_nothing() {
         "the unit test process must not carry {LIFETIME_FD_ENV}"
     );
     let stop = Arc::new(AtomicBool::new(false));
-    arm(&stop);
+    arm(&stop, None::<UnixStream>);
     assert!(!stop.load(Ordering::SeqCst));
+}
+
+#[test]
+fn end_of_file_sets_stop_before_it_wakes_the_waiter() {
+    let (reader, writer) = io::pipe().unwrap();
+    let (mut waiter_end, wake) = UnixStream::pair().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let handle = watch_pipe(reader, stop.clone(), Some(wake)).unwrap();
+    drop(writer);
+    // A blocking read on the waiter's end returns only once the thread has
+    // written, and the thread writes only after it has set `stop`.
+    let mut byte = [0u8; 1];
+    assert_eq!(
+        waiter_end.read(&mut byte).unwrap(),
+        1,
+        "the waiter is woken"
+    );
+    assert!(stop.load(Ordering::SeqCst), "stop is set before the wake");
+    handle.join().expect("the watch thread does not panic");
 }

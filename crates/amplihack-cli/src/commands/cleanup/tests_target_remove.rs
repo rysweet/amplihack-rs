@@ -21,7 +21,8 @@
 //!   - `fn allowed(&self) -> &[PathBuf]`: the canonical managed roots
 //!     (`targets`, then `hook_base` when set) followed by the accepted entries.
 //!   - Every ownership check in `inspect` and `remove` compares with `uid`.
-//! - `pub(super) enum LinkReason` and `pub(super) enum Refusal` whose single
+//! - `enum LinkReason` and `enum Refusal`, visible throughout the `cleanup`
+//!   module since #2886's end-of-run removal reuses them, whose single
 //!   `Display` gives every report text:
 //!   `in use: .cargo-lock is held`, `changed since plan`, and
 //!   `link not followed: <not a cargo target|outside allowed roots|link chain|foreign owner>`.
@@ -515,7 +516,7 @@ fn held_cargo_lock_at_any_level_means_in_use_and_nothing_is_deleted() {
             "{lock}"
         );
         assert!(dir.join("debug/blob").exists(), "{lock}: nothing deleted");
-        drop(held);
+        crate::test_support::release_flock(held, &dir.join(lock));
         fx.remove(&dir, &Shape::Dir, &fx.no_links(), false).unwrap();
         assert!(!exists_no_follow(&dir), "{lock}: removed once released");
     }
@@ -533,7 +534,7 @@ fn held_cargo_lock_in_a_linked_destination_keeps_link_and_destination() {
     );
     assert!(dest.join("debug/blob").exists());
     assert!(exists_no_follow(&link));
-    drop(held);
+    crate::test_support::release_flock(held, &dest.join("debug/.cargo-lock"));
     fx.remove(&link, &shape, &fx.links(), false).unwrap();
     assert!(!exists_no_follow(&dest) && !exists_no_follow(&link));
 }

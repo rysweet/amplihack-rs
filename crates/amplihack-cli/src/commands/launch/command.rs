@@ -2,6 +2,7 @@
 //! handling, Docker launcher args, and Claude-specific env augmentation.
 
 use super::codex_agent_step;
+use super::model_tiers::table::validate_model_id;
 use super::system_prompt_append;
 use crate::binary_finder::BinaryInfo;
 use crate::commands::uvx_help::is_uvx_deployment;
@@ -102,6 +103,7 @@ pub(super) fn build_command(
         false, // subprocess_safe
         None,  // claude_config_dir
         Some(Path::new(TEST_CONTRACT_PATH)),
+        None, // hook_settings
     )
     .expect("a contract path is supplied")
 }
@@ -117,6 +119,7 @@ pub(super) fn build_command_for_dir(
     subprocess_safe: bool,
     claude_config_dir: Option<&Path>,
     contract_file: Option<&Path>,
+    hook_settings: Option<&Path>,
 ) -> Result<Command> {
     let mut cmd = Command::new(&binary.path);
 
@@ -135,6 +138,13 @@ pub(super) fn build_command_for_dir(
         pin_profile_for_descendants(&mut cmd, dir);
     }
 
+    // Issue #1619: by here every model tier on `extra_args` has already been
+    // resolved into a model this harness actually has, or removed so the
+    // chain below decides. `run_launch` does that once, before anything reads
+    // the tail, so the LiteLLM routing check, the passthrough rewrite,
+    // `model_args`, the contract-injection gate, the Copilot allow-all checks
+    // and `codex_agent_step_args` all read one consistent argv. See
+    // [`model_tiers::resolve_passthrough`].
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
 
     // Issues #1421, #1527: every decision about `--model`, and every stderr
@@ -171,6 +181,23 @@ pub(super) fn build_command_for_dir(
     // allow-all-* flag, or if AMPLIHACK_COPILOT_NO_ALLOW_ALL=1.
     if binary.name == "copilot" && should_inject_copilot_allow_all(extra_args) {
         cmd.arg("--allow-all");
+    }
+
+    // Issue #2589: amplihack's dangerous-command policy, in Copilot CLI's own
+    // mechanism. Copilot keeps no user-level file for command deny rules, so
+    // the policy is supplied as session arguments; its documented precedence
+    // is that a deny rule wins over an allow rule, including over the
+    // `--allow-all` injected just above. Deliberately not conditional on that
+    // injection: the deny flags are what makes `--allow-all` survivable, so
+    // the `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` opt-out leaves them in place.
+    // Injected before the user's own arguments, as every other injection is,
+    // and `extra_args` is deliberately not passed down: the renderer used to
+    // skip a prefix that already followed a `--deny-tool` there, which an
+    // adjacent pair Copilot parses as another flag's value was enough to
+    // trigger, dropping the rule from both sides at once.
+    if binary.name == "copilot" {
+        let instance = crate::user_config::policy_deny_commands();
+        cmd.args(crate::policy::copilot::deny_args(&instance));
     }
 
     // Issue #621: Subprocess-safe defense-in-depth — granular allow-all flags.
@@ -231,12 +258,19 @@ pub(super) fn build_command_for_dir(
         cmd.arg(path);
     }
 
+    // Issue #2279 (D5): amplihack's hooks block as a settings source of its
+    // own, by path (#2030), before the user's arguments. The caller decides
+    // whether it applies (`hook_settings::prepare`).
+    if let Some(path) = hook_settings {
+        cmd.arg("--settings");
+        cmd.arg(path);
+    }
+
     // Issue #1985: a recipe agent step on Codex (`amplihack codex -- exec …`)
-    // gets workspace-write with network access and the hook-trust bypass,
-    // unless the caller chose otherwise. Interactive argv is unchanged.
-    // Issue #2010: one stderr line names what was added. As with
-    // `model_args`, print what the module returns and add what it returns;
-    // nothing here decides anything. Nothing is written to stdout.
+    // gets `--sandbox danger-full-access` and the hook-trust bypass, the same
+    // trust as Claude's `--dangerously-skip-permissions` (#2317), unless the
+    // caller chose a sandbox. Interactive argv is unchanged.
+    // The recipe runs in a real checkout; Codex performs its normal Git check.
     if binary.name == "codex" {
         if let Some(line) = codex_agent_step::codex_agent_step_notice(extra_args) {
             eprintln!("{line}");
@@ -372,7 +406,7 @@ pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs 
             normalised_from: None,
         })
     } else {
-        configured_default_model()
+        configured_default_model().map(|selection| validated_default(selection, &mut out.stderr))
     };
     if let Some(selection) = selection {
         out.stderr
@@ -380,6 +414,33 @@ pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs 
         out.argv = vec!["--model".to_string(), selection.model];
     }
     out
+}
+
+/// `selection` if amplihack is willing to write its model, or [`DEFAULT_MODEL`].
+///
+/// The value becomes the argv token straight after `--model`, and both Codex
+/// and Claude carry single-token sandbox-bypass flags. Issue #1619 holds
+/// `AMPLIHACK_DEFAULT_MODEL` to [`validate_model_id`] when it replaces a
+/// step's tier; this is the same check on the same value where no tier is
+/// involved, so one path cannot write a token the other refuses. The line
+/// names the rule broken and never the refused value: it lands in run logs
+/// that get pasted into issues.
+fn validated_default(selection: ModelSelection, stderr: &mut Vec<String>) -> ModelSelection {
+    match validate_model_id(&selection.model) {
+        Ok(()) => selection,
+        Err(reason) => {
+            stderr.push(format!(
+                "amplihack: {} is ignored: the model {reason}. Launching with \
+                 amplihack's own default model instead.",
+                selection.source.label()
+            ));
+            ModelSelection {
+                model: DEFAULT_MODEL.to_string(),
+                source: ModelSource::BuiltInDefault,
+                normalised_from: None,
+            }
+        }
+    }
 }
 
 /// The model amplihack requests when the operator has not chosen one.

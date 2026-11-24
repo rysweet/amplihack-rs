@@ -93,3 +93,51 @@ fn every_failure_is_a_reason() {
     let no_proc = find_claude(&t.proc_root, || Ok(vec![t.config.clone()]));
     assert_eq!(no_proc, Err("cannot read the process table".to_string()));
 }
+
+/// Issue #2912: a run's id thread is told the run is over on every way out
+/// of the run, a panic included, because the flag is set by a drop.
+#[test]
+fn a_run_watch_ends_its_thread_when_dropped_even_by_a_panic() {
+    use super::wrapper::RunWatch;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let over = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&over);
+    let unwound = std::panic::catch_unwind(move || {
+        let _run = RunWatch {
+            over: flag,
+            thread: None,
+        };
+        panic!("the launch panicked");
+    });
+    assert!(unwound.is_err());
+    assert!(over.load(Ordering::SeqCst));
+}
+
+/// Issue #2912: the drop wakes the thread inside its one-second tick, so it
+/// ends at once rather than at its next tick. The bound is half the tick,
+/// so the test tells the two apart on a loaded host.
+#[test]
+fn the_tick_ends_as_soon_as_the_run_is_over() {
+    use super::wrapper::{RunWatch, tick};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+    assert!(!tick(&AtomicBool::new(true)), "over before the tick");
+    let over = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&over);
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let h = std::thread::spawn(move || {
+        ready_tx.send(()).unwrap();
+        let at = Instant::now();
+        (tick(&seen), at.elapsed())
+    });
+    ready_rx.recv().unwrap();
+    drop(RunWatch {
+        over,
+        thread: Some(h.thread().clone()),
+    });
+    let (whole, took) = h.join().unwrap();
+    assert!(!whole, "the tick said a second had passed");
+    assert!(took < Duration::from_millis(500), "{took:?}");
+}

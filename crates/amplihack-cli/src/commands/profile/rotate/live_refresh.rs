@@ -13,6 +13,7 @@ use super::super::cycle::Ctx;
 use super::super::identify::{LoginKind, login_kind};
 use super::super::log::{Sink, msg};
 use crate::commands::profile::auto_switch::kit::{CREDS, now};
+use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_cmd::PROBE_CANCEL;
 use crate::commands::profile::usage_direct::{self, Endpoints};
 use std::path::Path;
@@ -56,7 +57,10 @@ pub fn refresh_direct(root: &Path, creds_dir: &Path) -> Result<bool, &'static st
 }
 
 /// Refreshes the OAuth login in `~/.claude` once when its token has
-/// expired. Never in a read-only run (`--dry-run`). A pending journal, a held
+/// expired. Never in a read-only run (`--dry-run`), and never when a rule
+/// of the local proof names an excluded profile's login there (issue
+/// #2218): its refresh token is shared with other hosts, which a refresh
+/// here would log out. A pending journal, a held
 /// lock, a directory others can write and an unexpired token are refused by
 /// `usage_direct`. A refresh that fails is logged; the snapshot then finds no
 /// trusted identity, and the cycle alerts and moves nothing.
@@ -65,6 +69,18 @@ pub fn refresh_expired_live(ctx: &Ctx, out: &mut Sink) {
         return;
     }
     let dir = ctx.home.join(".claude");
+    match excluded_live(ctx) {
+        // Logged only when a refresh was due; the expiry is read locally.
+        Ok(Some(name)) => {
+            if usage_direct::expired(&dir, chrono::Utc::now().timestamp_millis()) {
+                out.emit(now(), &msg::excluded_not_refreshed(&name));
+            }
+            return;
+        }
+        Ok(None) => {}
+        // Issue #2218: an unknown exclude list refreshes nothing.
+        Err(_) => return,
+    }
     if login_kind(&dir.join(CREDS)) != LoginKind::OAuth {
         return;
     }
@@ -73,4 +89,11 @@ pub fn refresh_expired_live(ctx: &Ctx, out: &mut Sink) {
         Ok(true) => out.emit(now(), msg::LIVE_REFRESHED),
         Err(why) => out.emit(now(), &format!("{} ({why})", msg::LIVE_REFRESH_FAILED)),
     }
+}
+
+/// The excluded profile whose login is in `~/.claude`, by any rule of the
+/// local proof (`super::super::live_excluded_offline`); no request is made.
+fn excluded_live(ctx: &Ctx) -> Result<Option<ProfileName>, crate::commands::profile::ProfileError> {
+    let found = super::super::live_excluded_offline(&ctx.store, &ctx.rs, &ctx.home)?;
+    Ok(found.map(|(n, _)| n))
 }
