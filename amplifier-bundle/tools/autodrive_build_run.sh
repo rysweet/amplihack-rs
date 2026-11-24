@@ -21,19 +21,22 @@
 #                    a run on an existing branch that step-04 does not link.
 #                    Exit 0, or 1 when no parent works.
 #   loop <state>     runs the shared goal loop with the build goal: the
-#                    launch bundle's recipes/autodrive-goal-loop.yaml, as its
-#                    own `amplihack recipe run`, the way the loop runs each
-#                    turn. A sub-recipe step would merge the loop's whole
-#                    context back into this run and its callers, so the build's
-#                    state folder would replace a caller's autodrive_state_dir,
-#                    which autodrive-build and auto-drive-to-merge read after
-#                    the build. The context the build goal tool reads is passed
-#                    whole: task_description, final_requirements (as
-#                    goal_notes) and worktree_setup as files (#1570), the
-#                    other keys with -c. Its scratch folder is made inside
-#                    the state folder and removed on exit. The loop counts as
-#                    started when a turn's reading.json is a regular file (not
-#                    a link) or loop-end.json is a JSON object file.
+#                    launch bundle's tools/autodrive_goal_loop.sh, called the
+#                    way the autodrive-goal-loop recipe's own step calls it.
+#                    Each turn is then one `amplihack recipe run` from this
+#                    step's depth, as under auto-drive-to-merge; a nested run
+#                    of the loop recipe would put the turn's agent past the
+#                    session-depth ceiling, and a sub-recipe step would merge
+#                    the loop's context, autodrive_state_dir included, back
+#                    into this run and its callers. The goal tool reads this
+#                    run's context: repo_path (made absolute), worktree_setup
+#                    and goal_notes (final_requirements) are exported from the
+#                    values write_context_value finds (#1570), and the task
+#                    text goes to the driver as a file. Its scratch folder is
+#                    made inside the state folder and removed on exit. The
+#                    loop counts as started when a turn's reading.json is a
+#                    regular file (not a link) or loop-end.json is a JSON
+#                    object file.
 #                      loop run exit   stdout                       exit
 #                      0               loop-end.json, or the        0
 #                                      fallback line with exit 0
@@ -138,14 +141,14 @@ do_setup() {
 }
 
 do_loop() {
-  local sd="${1%/}" recipe repo scratch rc k v
+  local sd="${1%/}" driver repo scratch rc k
   LOOP_SCRATCH=""
   case "$sd" in /*) ;; *) echo "usage: autodrive_build_run.sh loop <absolute state folder>" >&2; exit 2 ;; esac
   [ -d "$sd" ] && [ ! -L "$sd" ] && [ -O "$sd" ] \
     || { echo "ERROR: autodrive_build_run.sh loop: ${sd} is not a folder of this user (run setup first)" >&2; exit 2; }
-  recipe="${HERE%/tools}/recipes/autodrive-goal-loop.yaml"
-  [ -f "$recipe" ] && [ ! -L "$recipe" ] \
-    || { echo "ERROR: autodrive_build_run.sh loop: the launch bundle has no recipes/autodrive-goal-loop.yaml" >&2; exit 2; }
+  driver="$HERE/autodrive_goal_loop.sh"
+  [ -f "$driver" ] && [ ! -L "$driver" ] \
+    || { echo "ERROR: autodrive_build_run.sh loop: the launch bundle has no tools/autodrive_goal_loop.sh" >&2; exit 2; }
   # shellcheck source=recipe_context_value.sh
   . "$HERE/recipe_context_value.sh" || { echo "ERROR: autodrive_build_run.sh loop: recipe_context_value.sh is missing beside it" >&2; exit 2; }
   repo="${RECIPE_VAR_repo_path:-.}"
@@ -159,19 +162,22 @@ do_loop() {
   for k in task_description final_requirements worktree_setup; do
     write_context_value "$k" "$scratch/$k" 2>/dev/null || : > "$scratch/$k"
   done
-  set -- -c goal_tool=autodrive_build_goal.sh -c goal_file=skills/default-workflow/goal-build-pr.md \
-    -c goal_once=false -c "autodrive_state_dir=${sd}" -c "repo_path=${repo}"
-  # Only the keys this run holds; an unset one keeps the loop's own default.
-  for k in step_recovery_dir base_branch existing_branch pr_number issue_number allow_existing_pr \
-      strict_delivery closing_reference allow_no_op pr_repository; do
-    v="RECIPE_VAR_${k}"
-    [ -z "${!v+set}" ] || set -- "$@" -c "${k}=${!v}"
-  done
+  # The build goal tool reads this run's context from RECIPE_VAR_* (the step
+  # inherits default-workflow's). These four are set from the values the
+  # tool needs whichever channel held them (#1570): the launch checkout as an
+  # absolute path, worktree_setup, and final_requirements as the goal notes.
+  export RECIPE_VAR_repo_path="$repo"
+  RECIPE_VAR_worktree_setup="$(head -c 65536 -- "$scratch/worktree_setup")"; export RECIPE_VAR_worktree_setup
+  RECIPE_VAR_goal_notes="$(head -c 65536 -- "$scratch/final_requirements")"; export RECIPE_VAR_goal_notes
+  set -- --goal-tool autodrive_build_goal.sh --goal-file skills/default-workflow/goal-build-pr.md \
+    --state-dir "$sd" --repo "$repo" --task-file "$scratch/task_description" --notes-file "$scratch/final_requirements"
+  [ -z "${RECIPE_VAR_step_recovery_dir:-}" ] || set -- "$@" --recovery-dir "$RECIPE_VAR_step_recovery_dir"
   echo "build goal: the shared goal loop runs with its state in ${sd}" >&2
-  amplihack recipe run "$recipe" --no-detach -w "$repo" "$@" \
-    --context-from-file "task_description=${scratch}/task_description" \
-    --context-from-file "goal_notes=${scratch}/final_requirements" \
-    --context-from-file "worktree_setup=${scratch}/worktree_setup" >&2
+  # The shared driver itself, as the autodrive-goal-loop recipe's step runs
+  # it. Each turn is a fresh `amplihack recipe run autodrive-goal-turn` from
+  # this step's depth; a nested `recipe run` of the loop recipe would put the
+  # turn's agent past the session-depth ceiling.
+  (cd "$repo" && exec bash "$driver" "$@") >&2
   rc=$?
   if [ "$rc" -eq 0 ]; then
     if goal_json_file "$sd/loop-end.json" 65536; then jq -c . "$sd/loop-end.json"

@@ -114,8 +114,14 @@ impl World {
 
     /// A tool of the bundle, run in `dir` with the stand-in gh first on PATH.
     pub fn tool(&self, name: &str, dir: &Path) -> Command {
+        self.tool_at(&tools_dir().join(name), dir)
+    }
+
+    /// A tool at `path` (for example in a test's own copy of the tools
+    /// folder), run as [`World::tool`] runs one.
+    pub fn tool_at(&self, path: &Path, dir: &Path) -> Command {
         let mut c = Command::new("bash");
-        c.arg(tools_dir().join(name))
+        c.arg(path)
             .current_dir(dir)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .env("HOME", &self.base)

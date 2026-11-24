@@ -15,8 +15,11 @@
 //! - `quick_change`: quick-change keeps the task's PR lines (AC8).
 //! - `guidance`: operator guidance and the PR-text allow list (A1).
 //! - `run_script`: the build run script's loop exit table and report outcomes (A2 to A4).
+//! - `prep`: workflow-prep finds the issue in the task text and reports its
+//!   claims as information (#3110).
 //! - `routing`: post-loop steps skip repeated checks (AC14).
 //! - `loop_drive`: the build goal through the real shared loop (AC6, AC9, AC13).
+//! - `run_level`: default-workflow run whole, from workflow-prep to the report.
 
 mod claim_check;
 mod goal_tool;
@@ -27,7 +30,9 @@ mod loop_drive;
 mod old_tools;
 mod pr_ready;
 mod pr_text;
+mod prep;
 mod quick_change;
 mod routing;
+mod run_level;
 mod run_script;
 pub(crate) mod tools;

@@ -9,6 +9,8 @@
 //!   marks it ready, ends `ready`, and never merges (AC9, AC13, condition 1).
 //! - A retry whose first attempt already opened the PR continues it:
 //!   `open-pr` reports `already-open` and nothing is created (#3110, AC6).
+//! - Guidance sent between turn 1 and turn 2 reaches turn 2's agent and not
+//!   turn 1's (C3b).
 
 #![cfg(target_os = "linux")]
 
@@ -72,6 +74,13 @@ esac
 "#;
 
 fn build(h: &Harness, task: &str) -> Output {
+    build_command(h, task)
+        .output()
+        .expect("amplihack recipe run")
+}
+
+/// The build's `amplihack recipe run autodrive-goal-loop`, ready to spawn.
+fn build_command(h: &Harness, task: &str) -> std::process::Command {
     // The repository is named by its GitHub URL; git reaches the bare origin.
     let origin = h.origin.to_str().unwrap().to_owned();
     crate::issue_3129_goal_loop::support::git(
@@ -119,7 +128,7 @@ fn build(h: &Harness, task: &str) -> Output {
     ];
     fs::write(h.base.join("title.txt"), TITLE).unwrap();
     fs::write(h.base.join("body.txt"), BODY).unwrap();
-    h.command(&args).output().expect("amplihack recipe run")
+    h.command(&args)
 }
 
 fn result_of(h: &Harness, turn: &str) -> Value {
@@ -178,4 +187,61 @@ fn a_retry_continues_the_pr_its_first_attempt_opened() {
         "{calls:?}"
     );
     assert_eq!(h.loop_end()["end"], "ready");
+}
+
+/// C3b: guidance is part of the goal and is read each turn. Guidance sent
+/// while turn 1's agent is deciding is listed as new in turn 2's reading, and
+/// turn 2's agent reads its text with `amplihack recipe guidance show`, as the
+/// goal tells it to; turn 1, which read before it arrived, has neither. The
+/// token is a runtime value; nothing here reads a prompt or recipe file.
+#[test]
+fn guidance_sent_between_turns_reaches_the_next_turn_and_not_the_one_before() {
+    let h = Harness::new();
+    // The pull request exists, so the reading names it and the loop reads
+    // its guidance folder from turn 1.
+    fs::write(h.gh.join("created"), "").unwrap();
+    fs::write(h.gh.join("live-title"), TITLE).unwrap();
+    fs::write(h.gh.join("live-body"), BODY).unwrap();
+    let task = format!("Build the widget.\n\nPR title: {TITLE}\n\n{BODY}");
+    let mut c = build_command(&h, &task);
+    // Each turn's agent reads the guidance first. Turn 1 then waits for the
+    // test to send guidance and continues; later turns mark the pull request
+    // ready and end.
+    fs::write(
+        &h.policy,
+        r#"
+amplihack recipe guidance show > "$STUB_LOG/guidance-${TURN##*/}.txt" 2>&1
+if [ ! -e "$STUB_LOG/t1" ]; then
+  : > "$STUB_LOG/t1"
+  read -r _ < "$STUB_FIFO"
+  echo '{"action":"continue","args":{},"outcomes":[],"why":"The pull request is open; the next turn reads the state again."}'
+else
+  prev="$(jq -r '.previous.outcome // "none"' "$TURN/reading.json")"
+  case "$prev" in
+    marked-ready|already-ready) echo '{"action":"ready","args":{"text":"The pull request is open and ready for review."},"outcomes":[],"why":"The pull request is ready."}' ;;
+    *) echo '{"action":"mark-ready","args":{},"outcomes":[],"why":"The pull request is open with the task text, so I mark it ready."}' ;;
+  esac
+fi
+"#,
+    )
+    .unwrap();
+    c.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut live = crate::support::fifo_release::start(c, &h.fifo, "the build");
+    let token = "ZQGUIDANCE3129TURNTWO";
+    h.guide(&format!("Keep the public API unchanged. {token}"));
+    let out = live.finish();
+    assert!(out.status.success(), "{}", describe(&out));
+    let read = |turn: &str| {
+        fs::read_to_string(h.base.join(format!("guidance-{turn}.txt"))).unwrap_or_default()
+    };
+    assert!(!read("001").contains(token), "turn 1: {}", read("001"));
+    assert!(read("002").contains(token), "turn 2: {}", read("002"));
+    let new_entries = |turn: &str| {
+        h.reading(turn)["guidance"]
+            .as_array()
+            .map_or(0, |g| g.iter().filter(|e| e["new"] == true).count())
+    };
+    assert_eq!(new_entries("001"), 0, "{}", h.reading("001"));
+    assert_eq!(new_entries("002"), 1, "{}", h.reading("002"));
 }

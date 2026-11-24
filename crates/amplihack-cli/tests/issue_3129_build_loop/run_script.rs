@@ -1,56 +1,103 @@
 //! A2, A3 and A4: `autodrive_build_run.sh loop` and `report`.
 //!
-//! `loop` runs with a stand-in `amplihack` first on PATH; the stand-in's exit
-//! code and what it leaves in the state folder come from `STUB_*` variables.
+//! `loop` runs from a copy of the bundle's tools folder in which the shared
+//! driver, `autodrive_goal_loop.sh`, is a stand-in; the stand-in's exit code
+//! and what it leaves in the state folder come from `STUB_*` variables.
 //! `report` runs against the stand-in gh. Assertions are on exit codes, stdout
 //! JSON fields and files, never on message wording.
 
 #![cfg(target_os = "linux")]
 
-use super::tools::{World, text};
+use super::tools::{World, text, tools_dir};
 use crate::support::exec_stub::write_executable;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Output;
 
-/// Records its scratch folder, then acts as `STUB_*` says: leaves a turn record
-/// (`STUB_TURN=1`) or a `loop-end.json` (`STUB_END`), and exits `STUB_RC`.
-const AMPLIHACK: &str = r##"#!/usr/bin/env bash
+/// The shared driver's stand-in. It records its arguments and its task file,
+/// then acts as `STUB_*` says: leaves a turn record (`STUB_TURN=1`) or a
+/// `loop-end.json` (`STUB_END`) in its `--state-dir`, and exits `STUB_RC`.
+const DRIVER: &str = r##"#!/usr/bin/env bash
+printf '%s\n' "$@" > "$STUB_ARGS_LOG"
+state=""; prev=""
 for a in "$@"; do
-  case "$a" in task_description=*) printf '%s\n' "${a#task_description=}" > "$STUB_SCRATCH_LOG" ;; esac
+  case "$prev" in
+    --state-dir) state="$a" ;;
+    --task-file) printf '%s\n' "$a" > "$STUB_SCRATCH_LOG" ;;
+  esac
+  prev="$a"
 done
 if [ "${STUB_TURN:-0}" = 1 ]; then
-  mkdir -p "$STATE/turns/0001"; echo '{}' > "$STATE/turns/0001/reading.json"
+  mkdir -p "$state/turns/0001"; echo '{}' > "$state/turns/0001/reading.json"
 fi
-if [ -n "${STUB_END:-}" ]; then printf '%s\n' "$STUB_END" > "$STATE/loop-end.json"; fi
+if [ -n "${STUB_END:-}" ]; then printf '%s\n' "$STUB_END" > "$state/loop-end.json"; fi
 exit "${STUB_RC:-0}"
 "##;
 
 struct Setup {
     w: World,
     state: PathBuf,
+    tools: PathBuf,
 }
 
 fn setup() -> Setup {
     let w = World::new();
-    write_executable(&w.bin.join("amplihack"), AMPLIHACK, 0o755);
+    let tools = w.base.join("bundle/tools");
+    fs::create_dir_all(&tools).unwrap();
+    for e in fs::read_dir(tools_dir()).unwrap() {
+        let e = e.unwrap();
+        if e.file_type().unwrap().is_file() {
+            fs::copy(e.path(), tools.join(e.file_name())).unwrap();
+        }
+    }
+    write_executable(&tools.join("autodrive_goal_loop.sh"), DRIVER, 0o755);
     let state = w.base.join("state");
     fs::create_dir_all(&state).unwrap();
-    Setup { w, state }
+    Setup { w, state, tools }
 }
 
 fn run_loop(s: &Setup, envs: &[(&str, &str)]) -> Output {
-    let mut c = s.w.tool("autodrive_build_run.sh", &s.w.repo);
+    let mut c =
+        s.w.tool_at(&s.tools.join("autodrive_build_run.sh"), &s.w.repo);
     c.args(["loop", s.state.to_str().unwrap()])
         .env("RECIPE_VAR_repo_path", &s.w.repo)
         .env("RECIPE_VAR_task_description", "Build it.")
-        .env("STATE", &s.state)
+        .env("STUB_ARGS_LOG", s.w.base.join("args.log"))
         .env("STUB_SCRATCH_LOG", s.w.base.join("scratch.log"));
     for (k, v) in envs {
         c.env(k, v);
     }
     c.output().unwrap()
+}
+
+/// The loop calls the shared driver with the build goal and its own state
+/// folder, from the launch checkout.
+#[test]
+fn the_loop_runs_the_shared_driver_with_the_build_goal() {
+    let s = setup();
+    let out = run_loop(&s, &[("STUB_END", r#"{"end":"ready"}"#)]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let args: Vec<String> = fs::read_to_string(s.w.base.join("args.log"))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let after = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(after("--goal-tool"), "autodrive_build_goal.sh", "{args:?}");
+    assert_eq!(
+        after("--goal-file"),
+        "skills/default-workflow/goal-build-pr.md",
+        "{args:?}"
+    );
+    assert_eq!(after("--state-dir"), s.state.to_str().unwrap(), "{args:?}");
+    assert_eq!(after("--repo"), s.w.repo.to_str().unwrap(), "{args:?}");
 }
 
 fn stdout_json(out: &Output) -> Value {

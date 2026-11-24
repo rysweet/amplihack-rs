@@ -197,15 +197,18 @@ steps:
       bash "$R" setup
     output: "build_goal_setup"
 
-  # The shared goal loop (recipes/autodrive-goal-loop.yaml) with the build goal
-  # tool and goal text, run by `autodrive_build_run.sh loop` as its own recipe
-  # run, the way the loop runs each turn. A sub-recipe step would merge the
-  # loop's context back into this run and its callers, and the build's state
-  # folder would replace the autodrive_state_dir that autodrive-build and
-  # auto-drive-to-merge read after the build. The tool passes the context the
-  # build goal tool reads, and prints the loop's end line (loop-end.json).
-  # This step fails only when the loop cannot start or run (an install fault).
-  # Nothing here grants merge authority: the build goal tool has no merge action.
+  # The shared goal loop with the build goal tool and goal text.
+  # `autodrive_build_run.sh loop` calls the loop's driver
+  # (tools/autodrive_goal_loop.sh) as the autodrive-goal-loop recipe's own step
+  # does, so each turn's `recipe run` starts from this step's depth, as under
+  # auto-drive-to-merge. A nested run of the loop recipe would put the turn's
+  # agent past the session-depth ceiling, and a sub-recipe step would merge the
+  # loop's context, autodrive_state_dir included, back into this run and its
+  # callers. The tool prints the loop's end line (loop-end.json). This step
+  # fails only when the loop cannot start (an install fault); a failure after
+  # the first turn is a fallback line and exit 0, and the report says
+  # INCOMPLETE. Nothing here grants merge authority: the build goal tool has no
+  # merge action.
   - id: "build-loop"
     recovery: {"replay": "never"}
     type: "bash"

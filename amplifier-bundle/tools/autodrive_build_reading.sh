@@ -210,6 +210,10 @@ esac
 CLAIMS='[]'; CRES=""
 if [ -n "$INUM" ]; then
   args=(--json --issue "$INUM" --repo-path "$LAUNCH"); [ -z "$BRANCH" ] || args+=(--head "$BRANCH")
+  # The repository the build writes to (origin as configured, before insteadOf
+  # rewriting), so the claims are read from the same place. A host other than
+  # github.com is left to the claim check's own reading of origin.
+  [ -z "$BUILD_REPO_NAME" ] || [ "$BUILD_REPO" != "$BUILD_REPO_NAME" ] || args+=(--repo "$BUILD_REPO_NAME")
   env -u ALLOW_EXISTING_PR -u AMPLIHACK_ALLOW_EXISTING_PR bash "$HERE/workflow_issue_claim_check.sh" "${args[@]}" > "$S/claim" 2>"$S/claim.err"; rc=$?; gh79 "$rc"
   line="$(tail -n 1 "$S/claim")"
   if [ "$rc" -eq 0 ] && printf '%s' "$line" | jq -e 'type == "object" and (.claims | type) == "array"' >/dev/null 2>&1; then
