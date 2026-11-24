@@ -223,6 +223,34 @@ fn a_goal_record_without_a_valid_target_names_nothing() {
         Some(serde_json::json!({"guidance_target": "https://example.com/o/r/pull/7"})),
     );
     assert!(goal_pr(&run).is_none(), "not a pull request URL");
+    // The newest record decides: an older turn's target is not used.
+    drive_turn(
+        &run,
+        "003",
+        Some(serde_json::json!({"guidance_target": "https://github.com/o/r/pull/7"})),
+    );
+    drive_turn(
+        &run,
+        "004",
+        Some(serde_json::json!({"guidance_target": null})),
+    );
+    assert!(goal_pr(&run).is_none(), "the newest record names nothing");
+}
+
+#[test]
+fn a_fifo_planted_as_goal_json_is_refused_without_blocking() {
+    use super::live_runs::goal_pr;
+    let tmp = tempfile::tempdir().unwrap();
+    let run = private_run(tmp.path());
+    drive_turn(&run, "001", None);
+    let path = run.join("autodrive-state/turns/001/goal.json");
+    let made = std::process::Command::new("mkfifo")
+        .args(["-m", "600"])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    assert!(goal_pr(&run).is_none());
 }
 
 #[test]

@@ -659,8 +659,9 @@ case. A pull request number alone never matches. Pointers have recorded the pull
 request of the run's context since #761, so runs started by 1.2.215 are found.
 A run whose pointer records no pull request (a drive that opened the pull
 request itself) is found through its goal record instead: the
-`guidance_target` of the newest `goal.json` under the run folder's
-`autodrive-state/turns/`, read only when the run folder, `autodrive-state`,
+`guidance_target` of the newest readable `goal.json` under the run folder's
+`autodrive-state/turns/` (a newer record with no target names nothing), read
+only when the run folder, `autodrive-state`,
 `turns`, the turn folder and the file all pass the trust checks. A drive given
 an `autodrive_state_dir` outside its run folder is not found. When no live run
 is found, the status line says so and only the state folder is written.

@@ -33,7 +33,7 @@
 //! A pointer that records no pull request (a drive that opened the pull
 //! request itself) falls back to the drive's goal record: the
 //! `guidance_target` of the newest `goal.json` under the run's own
-//! `autodrive-state/turns/` ([`goal_pr`]). It is read only once the run
+//! `autodrive-state/turns/` (`goal_pr`). It is read only once the run
 //! folder has passed `accept_recorded`, and it is validated and matched as a
 //! pointer's `pr_url` is.
 //!
@@ -181,16 +181,19 @@ fn runs_for_pr(pr: &PrRef) -> Vec<(LiveRun, bool)> {
 /// The largest `goal.json` read. The goal loop itself refuses one over 1 MiB.
 const MAX_GOAL_BYTES: u64 = 1024 * 1024;
 
-/// How many of the newest turn folders are tried for a `goal.json`. A turn
-/// folder exists before its goal record is written, so the newest one may
-/// not hold it yet.
+/// How many of the newest trusted turn folders are tried for a `goal.json`.
+/// A turn folder exists before its goal record is written, so the newest one
+/// may not hold it yet.
 const GOAL_TURNS_TRIED: usize = 3;
 
 /// The pull request a drive's goal record names: the `guidance_target` of
-/// the newest `goal.json` under `<run_dir>/autodrive-state/turns/<n>/`,
-/// through the resolver a pointer's `pr_url` goes through. `None` when the
-/// folders are missing or untrusted, or no record names a valid pull
-/// request. `run_dir` must already have passed `accept_recorded`.
+/// the newest readable `goal.json` under `<run_dir>/autodrive-state/turns/<n>/`,
+/// through the resolver a pointer's `pr_url` goes through. Turn folders that
+/// fail the trust rule are passed over, and of the rest the newest
+/// [`GOAL_TURNS_TRIED`] are tried. The first record that parses decides: one
+/// with no valid target names nothing, so an older turn's target is not used.
+/// `None` when the folders are missing or untrusted, or the record names no
+/// valid pull request. `run_dir` must already have passed `accept_recorded`.
 pub(super) fn goal_pr(run_dir: &Path) -> Option<PrRef> {
     let state = run_dir.join("autodrive-state");
     let turns = state.join("turns");
@@ -215,16 +218,18 @@ pub(super) fn goal_pr(run_dir: &Path) -> Option<PrRef> {
         .into_iter()
         .filter(|(_, dir)| matches!(dir_state(dir), Ok(DirState::Trusted)))
         .take(GOAL_TURNS_TRIED)
-        .find_map(|(_, dir)| read_goal_target(&dir.join("goal.json")))
+        .find_map(|(_, dir)| read_goal(&dir.join("goal.json")))
+        .and_then(|goal| goal.get("guidance_target")?.as_str().map(str::to_string))
         .and_then(|url| {
             let context = BTreeMap::from([("pr_url".to_string(), url)]);
             pr_ref_from_context(&context, Path::new("/"))
         })
 }
 
-/// The `guidance_target` string of one `goal.json`, read through one handle
-/// opened without following a link and checked by its own metadata.
-fn read_goal_target(path: &Path) -> Option<String> {
+/// One `goal.json`, parsed, read through one handle opened without
+/// following a link and checked by its own metadata. `None` when it is
+/// missing, untrusted, too large or not JSON.
+fn read_goal(path: &Path) -> Option<serde_json::Value> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
@@ -240,8 +245,7 @@ fn read_goal_target(path: &Path) -> Option<String> {
     }
     let mut bytes = Vec::new();
     file.take(MAX_GOAL_BYTES).read_to_end(&mut bytes).ok()?;
-    let goal: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    goal.get("guidance_target")?.as_str().map(str::to_string)
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// The run's guidance folder when it is trusted, or missing under a run
