@@ -189,6 +189,8 @@ pub struct Rig {
     pub standin: Standin,
     /// Where the barrier's two FIFOs live, when the rig has one.
     barrier: Option<(File, File)>,
+    /// Variables set on every hook command, after the rig's own.
+    env: Vec<(String, String)>,
 }
 
 impl Rig {
@@ -270,7 +272,14 @@ impl Rig {
                 screen: screen_file,
             },
             barrier,
+            env: Vec::new(),
         }
+    }
+
+    /// The rig with `key` set to `value` on every hook command it starts.
+    pub fn with_env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.to_string(), value.to_string()));
+        self
     }
 
     pub fn resume_dir(&self) -> PathBuf {
@@ -351,6 +360,7 @@ impl Rig {
         if let Some(t) = toggle {
             c.env("AMPLIHACK_CLAUDE_AUTO_SWITCH", t);
         }
+        c.envs(self.env.iter().map(|(k, v)| (k, v)));
         c
     }
 
