@@ -93,15 +93,13 @@ fn no_step_merges_or_finalises() {
     }
 }
 
+/// A guard on force-push, merge authority and credential leaks: no command
+/// force-pushes, merges, traces its shell or templates values into bash.
 #[test]
-fn no_step_declares_a_timeout_or_templates_into_bash() {
+fn no_step_command_force_pushes_merges_or_templates_into_bash() {
     let r = recipe();
     for s in steps(&r) {
         let id = s["id"].as_str().unwrap();
-        assert!(
-            s.get("timeout").is_none(),
-            "{id} must not declare timeout (#439)"
-        );
         if let Some(cmd) = s["command"].as_str() {
             assert!(
                 !cmd.contains("{{"),
@@ -220,19 +218,8 @@ fn recursion_limits_and_line_budget() {
     );
 }
 
-#[test]
-fn manifest_entry_matches_the_recipe_hash() {
-    let manifest: serde_json::Value =
-        serde_json::from_str(&read("amplifier-bundle/recipes/_recipe_manifest.json")).unwrap();
-    let body =
-        std::fs::read(repo_root().join("amplifier-bundle/recipes/quick-change.yaml")).unwrap();
-    let hex: String = Sha256::digest(&body)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    assert_eq!(manifest["quick-change"].as_str(), Some(&hex[..16]));
-}
-
+/// The pinned launch bundle: quick-change's tools are found from the bundle,
+/// never from the working folder, which the agent can edit.
 #[test]
 fn common_preamble_never_resolves_tools_from_the_worktree() {
     let common = read("amplifier-bundle/tools/quick_change_common.sh");
@@ -253,67 +240,16 @@ fn common_preamble_never_resolves_tools_from_the_worktree() {
 }
 
 #[test]
-fn commit_and_push_re_measure_after_hook_repair() {
-    let r = recipe();
-    for (id, output) in [
-        ("quick-change-commit", "quick_change_commit_repaired"),
-        ("quick-change-push", "quick_change_push_repaired"),
-    ] {
-        let cmd = command(&r, id);
-        let repair = cmd
-            .find("hook_repair_run")
-            .unwrap_or_else(|| panic!("{id} must use hook_repair_run"));
-        let measure = cmd
-            .find("--committed")
-            .unwrap_or_else(|| panic!("{id} must re-measure with --committed"));
-        assert!(
-            repair < measure,
-            "{id}: --committed must follow hook_repair_run"
-        );
-        assert!(
-            cmd.contains("BASE=\"$(qc_base)\""),
-            "{id} must read the pinned base"
-        );
-        assert!(
-            cmd.contains("HOOK_REPAIR_ROUNDS"),
-            "{id} must report repair"
-        );
-        assert_eq!(step(&r, id)["output"].as_str(), Some(output));
-        assert!(
-            r["context"].get(output).is_some(),
-            "context must declare {output}"
-        );
-    }
-    let push = command(&r, "quick-change-push");
-    assert!(
-        push.find("--committed").unwrap() < push.rfind("verify_pushed_ref.sh").unwrap(),
-        "the push step re-measures before verifying the remote ref"
-    );
-    let commit = command(&r, "quick-change-commit");
-    let add = commit.find("stage_workflow_changes").unwrap();
-    let guard = |from: usize| commit[from..].find("artifact-guard").map(|i| i + from);
-    assert!(
-        guard(0).unwrap() < add,
-        "a guard run before stage_workflow_changes"
-    );
-    assert!(
-        guard(add).is_some(),
-        "a guard run after stage_workflow_changes (#1528)"
-    );
-}
-
-#[test]
-fn create_pr_reads_both_repair_outputs_from_the_runner() {
-    let r = recipe();
-    let pr = command(&r, "quick-change-create-pr");
-    for var in [
-        "RECIPE_VAR_quick_change_commit_repaired",
-        "RECIPE_VAR_quick_change_push_repaired",
-    ] {
-        assert!(pr.contains(var), "create-pr must read {var}");
-    }
-    assert!(pr.contains("qc_pr_warnings \"$CHECKS\" \"$REPAIRED\""));
-    assert!(pr.contains("## Request") && !pr.contains("## Summary"));
+fn manifest_entry_matches_the_recipe_hash() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&read("amplifier-bundle/recipes/_recipe_manifest.json")).unwrap();
+    let body =
+        std::fs::read(repo_root().join("amplifier-bundle/recipes/quick-change.yaml")).unwrap();
+    let hex: String = Sha256::digest(&body)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(manifest["quick-change"].as_str(), Some(&hex[..16]));
 }
 
 #[test]

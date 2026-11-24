@@ -386,11 +386,19 @@ fn create_pr_repaired(summary: &str, table: &str, repaired: &str) -> (String, St
     std::fs::write(state.join("checks-table.md"), table).unwrap();
 
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    // Since #3129 the step reads quick_change_pr_text, which the runner holds
+    // from step 10 (quick-change-pr-text). "Fix the link" gives no PR text of
+    // its own, so step 10's value is an empty title and body, and the step
+    // writes its template.
     let o = run_step(
         &r,
         "quick-change-create-pr",
         &[
             ("PATH", &path),
+            (
+                "RECIPE_VAR_quick_change_pr_text",
+                r#"{"title":"","body":""}"#,
+            ),
             ("RECIPE_VAR_task_description", "Fix the link"),
             ("RECIPE_VAR_quick_change_base", &base),
             ("RECIPE_VAR_quick_change_checks", summary),

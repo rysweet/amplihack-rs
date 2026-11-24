@@ -33,35 +33,6 @@ fn step<'a>(r: &'a Value, id: &str) -> &'a Value {
 }
 
 #[test]
-fn select_workflow_step_follows_activate_workflow_and_reads_only_recipe_vars() {
-    let r = recipe("smart-classify-route");
-    let ids: Vec<&str> = steps(&r).iter().filter_map(|s| s["id"].as_str()).collect();
-    let at = ids.iter().position(|i| *i == "activate-workflow").unwrap();
-    assert_eq!(ids.get(at + 1), Some(&"select-workflow"), "{ids:?}");
-    let s = step(&r, "select-workflow");
-    assert_eq!(s["type"].as_str(), Some("bash"));
-    assert_eq!(s["output"].as_str(), Some("selected_workflow"));
-    let cmd = s["command"].as_str().unwrap();
-    for needle in [
-        "orch helper select-workflow",
-        "--override",
-        "RECIPE_VAR_workflow",
-        "--existing-branch \"${RECIPE_VAR_existing_branch:-}\"",
-        "--pr-number \"${RECIPE_VAR_pr_number:-}\"",
-        "mktemp",
-    ] {
-        assert!(
-            cmd.contains(needle),
-            "select-workflow command must contain {needle:?}"
-        );
-    }
-    assert!(
-        !cmd.contains("{{"),
-        "select-workflow must not template values into bash"
-    );
-}
-
-#[test]
 fn orchestrator_and_phase_recipes_declare_the_workflow_context() {
     let ctx = recipe("smart-orchestrator")["context"].clone();
     assert_eq!(ctx["workflow"].as_str(), Some(""));
@@ -130,19 +101,6 @@ fn quick_change_round_1_follows_development_and_forwards_the_same_context() {
     assert_eq!(
         &qc["context"], dev,
         "quick-change must get the same forwarded keys"
-    );
-}
-
-#[test]
-fn create_workstreams_config_reads_the_override_from_the_environment() {
-    let r = recipe("smart-execute-routing");
-    let cmd = step(&r, "create-workstreams-config")["command"]
-        .as_str()
-        .unwrap();
-    assert!(cmd.contains("build-workstreams-config"), "{cmd}");
-    assert!(
-        !cmd.contains("{{"),
-        "override must reach bash as RECIPE_VAR_workflow"
     );
 }
 

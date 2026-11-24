@@ -34,14 +34,6 @@ fn load_finalize_recipe() -> Value {
     serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
-fn helper_text(name: &str) -> String {
-    let path = workspace_root()
-        .join("amplifier-bundle")
-        .join("tools")
-        .join(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
 fn workspace_helper_path(name: &str) -> PathBuf {
     workspace_root()
         .join("amplifier-bundle")
@@ -267,108 +259,6 @@ fn step_command(recipe: &Value, id: &str) -> String {
             .and_then(|step| step.get("command").and_then(Value::as_str))
             .unwrap_or_else(|| panic!("step {id} must be a bash command step")),
     )
-}
-
-#[test]
-fn ready_step_distinguishes_merged_closed_after_merge_and_closed_unmerged() {
-    let recipe = load_finalize_recipe();
-    let command = step_command(&recipe, "step-21-pr-ready");
-
-    for required in [
-        "mergedAt",
-        "closed-after-merge",
-        "closed-unmerged",
-        "terminal_status",
-        "exit 1",
-    ] {
-        assert!(
-            command.contains(required),
-            "step-21 must classify merged/closed PR states explicitly; missing `{required}`"
-        );
-    }
-
-    assert!(
-        !command.contains("PR is closed — no ready-for-review action possible")
-            && !command.contains("PR is closed - no ready-for-review action possible"),
-        "closed-unmerged PRs must not be silently skipped as successful finalization"
-    );
-}
-
-#[test]
-fn final_status_accepts_no_diff_and_already_merged_as_successful_terminal_outcomes() {
-    let recipe = load_finalize_recipe();
-    let command = step_command(&recipe, "step-22b-final-status");
-
-    for required in [
-        "git diff --quiet",
-        "no-diff",
-        "already-merged",
-        "closed-after-merge",
-        "terminal_status",
-    ] {
-        assert!(
-            command.contains(required),
-            "final status must report idempotent successful terminal outcomes; missing `{required}`"
-        );
-    }
-}
-
-#[test]
-fn final_status_uses_resilient_github_status_lookup() {
-    let command = helper_text("workflow_final_status.sh");
-
-    for required in [
-        "workflow_gh_retry.sh",
-        "_gh_retry_core",
-        "gh_pr_view_with_retry",
-        "final PR status",
-    ] {
-        assert!(
-            command.contains(required),
-            "final status must use bounded, visible GitHub status lookup resilience; missing `{required}`"
-        );
-    }
-}
-
-#[test]
-fn pr_ready_helper_retries_github_lookup_ready_and_comment_calls() {
-    let command = helper_text("workflow_pr_ready.sh");
-
-    for required in [
-        "workflow_gh_retry.sh",
-        "_gh_retry_core",
-        "gh_with_retry",
-        "workflow_pr_scope.sh",
-        "gh_with_retry \"pr view\"",
-        "gh_with_retry \"pr ready\"",
-        "gh_with_retry \"pr comment\"",
-        "refusing to report successful finalization",
-        "isCrossRepository",
-    ] {
-        assert!(
-            command.contains(required),
-            "PR-ready helper must use bounded GitHub retries; missing `{required}`"
-        );
-    }
-    assert!(
-        !command.contains("baseRepository"),
-        "PR-ready helper must request only gh-supported fields; gh pr view does not support baseRepository"
-    );
-}
-
-#[test]
-fn workflow_complete_json_reports_terminal_outcome_instead_of_unconditional_merge_ready() {
-    let recipe = load_finalize_recipe();
-    let command = step_command(&recipe, "workflow-complete");
-
-    assert!(
-        command.contains("terminal_outcome"),
-        "workflow-complete JSON must include the terminal outcome that made finalization succeed"
-    );
-    assert!(
-        !command.contains("ready_to_merge: true"),
-        "workflow-complete must not unconditionally claim merge readiness for no-diff or already-merged terminal states"
-    );
 }
 
 #[test]

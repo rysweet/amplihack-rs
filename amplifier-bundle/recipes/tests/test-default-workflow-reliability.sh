@@ -6,24 +6,22 @@
 #      It must prefer origin/HEAD, refresh remote HEAD before master/develop
 #      fallback, and tolerate repositories whose supported remote base is
 #      origin/master or origin/develop.
-#   2. workflow-publish does not wrap GitHub CLI publish/PR calls in shell
-#      timeout/gtimeout commands.
-#   3. workflow-publish keeps explicit gh error handling and treats design_spec /
-#      DESIGN_SPEC as optional under set -u while preserving bounded retries for
-#      transient gh failures.
-#   4. Default-workflow commit checkpoints resolve the active pre-commit hook
+#   2. workflow-publish treats design_spec / DESIGN_SPEC as optional under
+#      set -u while preserving bounded retries for transient gh failures.
+#   3. Default-workflow commit checkpoints resolve the active pre-commit hook
 #      with git rev-parse --git-path hooks/pre-commit and scope
 #      PRE_COMMIT_ALLOW_NO_CONFIG=1 only to commits where that hook exists and
 #      .pre-commit-config.yaml is absent.
-#   5. Issue #752: development/code-change workflows fail closed unless terminal
+#   4. Issue #752: development/code-change workflows fail closed unless terminal
 #      evidence proves implementation+verification, publish/PR state, explicit
 #      no-op, or an explicit failure. Planning, analysis, design, and worktree
 #      prep are not success evidence by themselves.
 #
-# This test SHOULD FAIL before the issue #573 reliability fixes land. It MUST
-# PASS once workflow-worktree resolves local/remote origin/HEAD before
-# origin/master -> origin/develop fallback and workflow-publish removes timeout
-# wrappers while making design spec optional.
+# The checks that read recipe or helper text for a tool name, a timeout
+# wrapper, gh error handling, a diff range or the az query form were removed
+# under #3129: tests check values and behaviour, never wording (Ryan, 23 Nov
+# 2026). The PRE_COMMIT_ALLOW_NO_CONFIG and secret-redaction checks still
+# read text, as guards on the hook and credential boundaries.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -49,9 +47,6 @@ REFACTOR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-refactor-
 PR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-pr-review.yaml"
 FINALIZE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-finalize.yaml"
 TERMINAL_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-terminal-state.yaml"
-DEFAULT_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/default-workflow.yaml"
-SMART_EXECUTE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-execute-routing.yaml"
-SMART_ORCHESTRATOR_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-orchestrator.yaml"
 PREP_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml"
 # Issue #1361: step-03's provider-metadata helpers (derive_local_tracking_id,
 # emit_local_metadata, sanitize_cli_output, _pct_decode) were extracted VERBATIM
@@ -80,7 +75,7 @@ for recipe in "${TDD_RECIPE}" "${REFACTOR_REVIEW_RECIPE}" "${PR_REVIEW_RECIPE}" 
         exit 2
     fi
 done
-for path in "${TERMINAL_RECIPE}" "${DEFAULT_RECIPE}" "${SMART_EXECUTE_RECIPE}" "${SMART_ORCHESTRATOR_RECIPE}" "${FINAL_STATUS_TOOL}"; do
+for path in "${TERMINAL_RECIPE}" "${FINAL_STATUS_TOOL}"; do
     if [[ ! -f "${path}" ]]; then
         echo "HARNESS-ERROR: ${path} not found" >&2
         exit 2
@@ -298,11 +293,6 @@ SHIM
         || fail "issue #1528: preflight must warn that the worktree list failed (got: $(cat "${stderr_file}"))"
 
     echo "  PASS[runtime-preflight-1528]: a main checkout keeps worktrees/ while it holds a registered worktree or the list fails"
-}
-
-assert_terminal_recipe_uses_final_status_tool() {
-    grep -qF 'workflow_final_status.sh' "${TERMINAL_RECIPE}" \
-        || fail "workflow-terminal-state must wrap workflow_final_status.sh as the canonical terminal gate"
 }
 
 create_terminal_status_repo() {
@@ -1011,7 +1001,6 @@ assert_terminal_status_case \
     "RECIPE_VAR_terminal_state__terminal_state=FAILED_MEANINGFUL_DIFF" \
     "RECIPE_VAR_terminal_state__terminal_reason=goal_already_met=true is ambiguous because meaningful unmerged diff remains"
 
-assert_terminal_recipe_uses_final_status_tool
 assert_runtime_artifact_helper_contracts
 assert_runtime_preflight_keeps_main_checkout_worktrees
 
@@ -1022,22 +1011,6 @@ run_worktree_case "remote-head-prefers-develop-over-master-without-local-origin-
 run_worktree_case "fallback-master-without-origin-head" "origin/master" "yes" "no"
 run_worktree_case "fallback-develop-without-origin-head" "origin/develop" "yes" "no"
 run_worktree_json_escape_case
-
-# Static coverage: workflow-publish must not use shell timeout wrappers for gh PR paths.
-if grep -nE '(^|[^[:alnum:]_])(g?timeout)[[:space:]]+[0-9]+[[:space:]]+gh[[:space:]]+pr[[:space:]]+(list|create)' "${PUBLISH_RECIPE}" >&2; then
-    fail "workflow-publish still wraps gh pr list/create with timeout/gtimeout"
-fi
-
-# Static coverage: timeout removal must not remove explicit gh pr create error handling.
-if ! awk '
-    /gh pr create/ { seen = 1 }
-    seen && /gh pr create failed|return[[:space:]]+"\$status"|exit[[:space:]]+"\$STATUS"|exit[[:space:]]+\$STATUS|if[[:space:]]+![[:space:]]+gh pr create/ {
-        handled = 1
-    }
-    END { exit handled ? 0 : 1 }
-' "${PUBLISH_RECIPE}" "${PUBLISH_HELPER}"; then
-    fail "workflow-publish must keep explicit gh pr create failure handling"
-fi
 
 # Integration coverage: missing DESIGN_SPEC must be optional under set -u.
 STEP16="${WORK}/step-16-create-draft-pr.sh"
@@ -2048,17 +2021,6 @@ assert_pr_title_from_issue_on_moved_base() {
         || publish_1968_fail "${tag}" "issue #1968 case 9: the adopted PR must be the open one, #11"
     if grep -q '^pr create' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 9: gh pr create ran although an open PR exists"; fi
 
-    # Static guard: the changed-file list and diff stat are computed once,
-    # from DIFF_RANGE, for both providers. A two-dot literal reintroduced on
-    # either path (the AzDO path has no moved-base case above) fails here.
-    # shellcheck disable=SC2016 # the patterns match literal shell text
-    if grep -nE 'git diff --(name-only|stat) "\$\{BASE_REF\}\.\.HEAD"' "${PUBLISH_HELPER}"; then
-        fail "issue #1968: workflow_publish_pr.sh lists or stats changed files with a two-dot range; use \"\$DIFF_RANGE\""
-    fi
-    # shellcheck disable=SC2016 # the pattern matches literal shell text
-    [ "$(grep -cE 'git diff --(name-only|stat) "\$DIFF_RANGE"' "${PUBLISH_HELPER}")" -eq 2 ] \
-        || fail "issue #1968: expected exactly one --name-only and one --stat computation from \"\$DIFF_RANGE\", shared by both providers"
-
     echo "  PASS[1968]: merge-base diff, true count, issue/task/template title order, hostile-title defusal, identity guard, no-merge-base fallback and mixed-title tie"
 }
 
@@ -2645,23 +2607,6 @@ SHIMD
     echo "  PASS[gh-retry:d]: generic 5xx keeps short-backoff 3-attempt behavior"
 }
 
-assert_azdo_work_item_url_parsing() {
-    # issue #1091: step-03-create-issue must project ONLY the url scalar (single line,
-    # no read-splitting) and must NOT fold create stderr into the parsed value; step-03b
-    # must extract the id from the AzDO REST url form the create/reuse paths actually emit.
-    grep -qF -- '--query "url" -o tsv' "${PREP_RECIPE}" \
-        || fail "issue #1091: step-03 must project the url scalar via --query \"url\" -o tsv"
-    if grep -qF -- '--query "[id,url]" -o tsv' "${PREP_RECIPE}"; then
-        fail "issue #1091: step-03 must not use the brittle --query \"[id,url]\" -o tsv projection"
-    fi
-    if grep -qE 'az boards work-item create .*-o tsv 2>&1' "${PREP_RECIPE}"; then
-        fail "issue #1091: step-03 must not fold create-command stderr with 2>&1 into the parsed result"
-    fi
-    grep -qF -- '_apis/wit/workItems/' "${PREP_RECIPE}" \
-        || fail "issue #1091: step-03b must extract the id from the _apis/wit/workItems/ REST url form"
-    echo "  PASS[azdo-wi]: step-03 url projection + step-03b REST-url extraction contracts hold"
-}
-
 assert_sanitize_cli_output_redacts_secrets() {
     # issue #1103: harden the sanitize_cli_output shell filter in workflow-prep.yaml
     # so it ALSO redacts Azure DevOps Personal Access Tokens (classic 52-char
@@ -2837,7 +2782,6 @@ assert_pr_title_from_issue_on_moved_base
 assert_no_merge_directive_suppresses_auto_merge
 assert_1561_terminal_state_rows
 assert_gh_rate_limit_backoff_contracts
-assert_azdo_work_item_url_parsing
 assert_sanitize_cli_output_redacts_secrets
 assert_1561_nested_rows
 assert_1561_worktree_setup_invalid_rows
