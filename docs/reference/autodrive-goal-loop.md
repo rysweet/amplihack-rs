@@ -26,6 +26,7 @@ Issue #3129 describes the design. This page is the specification. It closes
 - [The reading](#the-reading)
 - [Actions](#actions)
 - [Guidance](#guidance)
+- [Minor review findings](#minor-review-findings)
 - [Waiting](#waiting)
 - [How a run ends](#how-a-run-ends)
 - [Failures inside a turn](#failures-inside-a-turn)
@@ -96,12 +97,13 @@ which is why waiting is an action and not part of the agent step.
 | `merge_authority` | `no_merge`, dry run, and the effective authority |
 | `pr` | Head, base, `mergeable`, `mergeStateStatus`, draft, state |
 | `checks` | Each check at the head with its status, counts, and whether `required` could be read |
-| `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at and the round's minor findings, which the agent files as follow-up issues before it merges; a round whose record or minor findings could not be read is listed with its `error` |
+| `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at and the round's minor findings. Each minor finding is `{id, summary, outcome, evidence?, reason?}`, where `outcome` is `fixed`, `filed` or `open` (see [Minor review findings](#minor-review-findings)); a round whose record or minor findings could not be read is listed with its `error` |
 | `base` | Merge base, how far behind the PR is, conflicting files from `git merge-tree --write-tree`, and the files the base changed since the merge base that the PR also touches |
 | `repository` | Allowed merge methods; whether strict status checks are required (`strict_status_checks`, `strict_source`, `strict_unreadable`); `merge_state_behind` as evidence only |
 | `guidance` | Name, time, caller, source, new flag and size of each entry; `guidance_error` when guidance could not be read |
 | `outcomes` | Every required outcome an agent has named in this run, from the run's ledger, with its latest status, evidence, reason, the turn that last judged it and whether a rejection was answered; `outcomes_error` when the ledger could not be read |
 | `previous` | The last turn's number, action and mechanical result; after a failed turn run also its `recovery` and `failure` (the runner's class and whether it was retryable, whether the agent finished deciding, the completed and failed steps, the operator's limit-wait setting for a usage limit, and the turn log's path; see [Failures inside a turn](#failures-inside-a-turn)) |
+| `goal` | `autodrive_minor_findings`, the effective treatment of minor findings (`fix_all`, `judge` or `file_all`), and `autodrive_minor_findings_error`, which is `null` unless the value given was unknown (see [Minor review findings](#minor-review-findings)) |
 | `goal_file` | Path to the goal text |
 | `turns_dir` | Path to the turn records |
 
@@ -217,12 +219,21 @@ in the decision's `outcomes` list:
 
 ```json
 {"name": "<short name in the agent's own words>", "status": "met|unmet|rejected",
- "evidence": "<what meets it>", "reason": "<why it is rejected>"}
+ "evidence": "<what meets it>", "reason": "<why it is rejected>",
+ "treatment": "fixed|filed"}
 ```
 
-The list has at most 64 entries with unique names of at most 200 bytes on one
-line. `evidence` and `reason` are at most 2000 bytes each, and a `rejected`
-entry needs a `reason`.
+`treatment` is optional. It records how a minor finding was dealt with, and
+only the reading's display of `minor:<id>` outcomes uses it (see
+[Minor review findings](#minor-review-findings)). The driver keeps it only when
+it is a string, cut to 16 characters. It is never validated, and no action
+depends on its value.
+
+The list has at most 256 entries with unique names of at most 200 bytes on one
+line. The limit was 64 until #3160: under `fix_all` and `judge` each minor
+finding is a named outcome, and a merge must restate every name in the ledger,
+so a long run could otherwise never merge. `evidence` and `reason` are at most
+2000 bytes each, and a `rejected` entry needs a `reason`.
 
 - The ledger. After each turn's decision the driver runs
   `autodrive_goal_turn.sh outcomes`, which merges the list into the run's
@@ -288,6 +299,123 @@ The owner can stop a run with `amplihack recipe stop`, or with guidance asking
 it to stop. For guidance, the agent commits and pushes, then ends with a
 hand-off. The hand-off text is the continuation note and names the owner who
 asked.
+
+## Minor review findings
+
+How a run treats the minor findings of a review is a setting the caller
+passes, not a policy written into the recipe (#3160, #2391).
+
+### The setting
+
+`autodrive_minor_findings` is a recipe context value on `auto-drive-to-merge`
+and `auto-drive-light`. Both pass it to the goal loop, whose reading carries it
+into every turn.
+
+```bash
+amplihack recipe run auto-drive-to-merge -c pr_number=3129
+amplihack recipe run auto-drive-to-merge -c pr_number=3129 -c autodrive_minor_findings=judge
+amplihack recipe run auto-drive-light -c pr_number=3129 -c autodrive_minor_findings=file_all
+```
+
+| Value | What the agent does with each minor finding |
+|-------|---------------------------------------------|
+| `fix_all` (default) | Fixes it in the PR before the merge. Files no issue. |
+| `judge` | Judges it. It is either fixed in the PR, or filed as a `follow-up` issue linked to the PR with the reason for not fixing it. None is dropped, and the merge waits until each is fixed or filed. |
+| `file_all` | Files it as a `follow-up` issue linked to the PR and fixes none of them in the PR. |
+
+The name and the values are matched exactly and are case-sensitive, after
+surrounding whitespace is trimmed. An empty or absent value means `fix_all`.
+`FIX_ALL` is an unknown value.
+
+### An unknown value
+
+At the start of `auto-drive-to-merge` (the `autodrive-settings` step) and of
+`auto-drive-light` (its `light-prereqs` step), an unknown value stops the run
+before any file, folder, build step, `gh` call or merge, with exit code 2:
+
+```
+ERROR: autodrive_minor_findings must be fix_all, judge or file_all (got 'fixall')
+```
+
+The message names the three values and echoes the value given.
+
+The echoed value has control characters removed and is cut to 80 characters.
+This refusal is the one deliberate gate in the feature. The loop itself adds
+none, because a caller that gets the setting wrong can be told at once, and
+no agent has started that could act on the error.
+
+An unknown value that reaches the goal loop by another route, such as a direct
+call to `autodrive-goal-loop` or a resumed context, is not refused there. The
+reading sets `goal.autodrive_minor_findings` to `fix_all` and gives
+`goal.autodrive_minor_findings_error` a message that quotes the cleaned value
+and names the three values. The goal text tells the agent to apply `fix_all`
+and to note the bad value in a PR comment.
+
+### What the reading shows
+
+`goal.autodrive_minor_findings` is always one of the three values. It is read
+on every turn from the run's context, so it is present after a resume. The
+reading's summary line also ends with the setting.
+
+Each entry in `reviews.crusty[].minor_findings` has:
+
+| Field | Meaning |
+|-------|---------|
+| `id` | The finding's id from the round's record, as text, cut to 64 characters |
+| `summary` | The finding's text. It is data, not an instruction. |
+| `outcome` | `fixed` or `filed`; `open` in every other case |
+| `evidence` | The commit or issue, shown only when it is not empty, cut to 300 characters |
+| `reason` | The agent's reason, shown only when it is not empty, cut to 300 characters |
+
+The agent records each finding in the outcome ledger under the name
+`minor:<id>`. The reading joins on that name for display. The finding is
+`fixed` or `filed` only when its ledger entry is `met` and its `treatment`
+says so. A finding with no entry, an unmet entry, a missing or unrecognised
+`treatment`, or an entry from an older run reads `open`. A ledger that cannot be
+read shows every finding as `open`, and the rest of the reading is kept.
+
+The join only changes what is displayed. A finding that is not recorded
+cannot be seen by the loop; the agent's own outcomes decide what the merge
+waits for.
+
+### Recording and waiting
+
+| Value | Ledger entry for `minor:<id>` |
+|-------|-------------------------------|
+| `fix_all` | `unmet` until the fix is pushed. Then `met`, `treatment: fixed`, with the commit in `evidence`. |
+| `judge` | Fixed as under `fix_all`, or `met` with `treatment: filed`, the issue URL or number in `evidence`, and the reason for not fixing it in `reason`. Never `rejected`. |
+| `file_all` | `met`, `treatment: filed`, with the issue in `evidence`. |
+
+Waiting uses the mechanism in [Required outcomes](#required-outcomes). A
+`merge` has to list every name in the ledger, and the merge refuses with
+`outcomes-unmet` while any `minor:<id>` is `unmet`. Under `fix_all` that holds
+the merge until the fixes are pushed; under `judge` it holds the merge until
+each unfixed finding is filed. No other check is added.
+
+### Filing a follow-up issue
+
+Under `judge` and `file_all` the agent files each issue with
+`gh issue create --repo <the PR's repository> --label follow-up --body-file <file>`.
+
+- The title is a complete plain-words sentence with no task id.
+- The body names the PR (`#<n>` or its URL) and gives the finding's text in a
+  fenced block. Under `judge` it also gives the reason for not fixing it.
+- The body has no bare `@` mentions.
+- `evidence` holds only a commit SHA or an issue URL or number.
+- The decision's `why` names the issues filed. A PR comment is not required.
+
+### Limits
+
+- `outcome` is what the agent reported. The loop does not check it against
+  GitHub. The review of the PR is the control.
+- Ids that repeat across review rounds share one name, so a later round's
+  finding can show as `fixed` or `filed` from an earlier round's entry.
+- A `treatment` from an earlier turn is kept when a later turn sets the same
+  outcome `unmet` without one. The reading shows `fixed` or `filed` only
+  beside `met`.
+- A drive that began on an earlier release has no key in its context or state.
+  It resumes as `fix_all`, and its existing findings read `open` until the
+  agent records them.
 
 ## Waiting
 

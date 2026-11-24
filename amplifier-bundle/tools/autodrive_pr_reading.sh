@@ -16,7 +16,8 @@
 #                    required_known (false when gh rejects --required)
 #   reviews          GitHub reviews and Crusty round records, each with the
 #                    head it was given at; a round that could not be read is
-#                    listed with its own error
+#                    listed with its own error. Each minor finding carries
+#                    its outcome (fixed, filed or open) from the ledger
 #   base             merge base, behind_by, conflict_files (git merge-tree
 #                    --write-tree), and the files the base changed since the
 #                    merge base that the PR also touches
@@ -27,6 +28,8 @@
 #                    saying why. mergeStateStatus BEHIND is reported beside it
 #                    as merge_state_behind, evidence only: it never sets or
 #                    replaces the policy (#3141)
+#   autodrive_minor_findings        fix_all, judge or file_all (#3160), with
+#   autodrive_minor_findings_error  null, or why an unknown value became fix_all
 #
 # Fetching the base and head refs is allowed (refspec fetches only); nothing
 # here changes the worktree. A read that fails records its error and never
@@ -127,6 +130,23 @@ fi
 # argv, where Linux caps one argument at 128 KiB: a long run's rounds would
 # pass that, and the whole section would be lost. A round that cannot be read
 # is listed by name with its error, so it never reads as "no verdict".
+#
+# #3160: each minor finding shows its outcome from the run's outcome ledger,
+# joined on the name minor:<id> for display only: fixed or filed when that
+# entry is met with that treatment, else open. A ledger that cannot be read
+# shows every finding open; the rest of the reading is kept.
+if [ -n "$STATE" ] && goal_json_file "$STATE/outcomes.json" 524288 \
+  && jq -c '.outcomes | if type == "array" then . else [] end' "$STATE/outcomes.json" > "$S/ledger.json" 2>/dev/null; then :
+else echo '[]' > "$S/ledger.json"; fi
+MINOR_JQ='($led[0] // []) as $L
+  | [.[] | objects | {id, summary}] | .[:50]
+  | map(. as $m
+    | (if $m.id == null then null else ($m.id | tostring | .[0:64]) end) as $id
+    | (try ([$L[] | objects | select(.name == ("minor:" + ($id // "")))] | last) catch null) as $e
+    | (if ($e | type) == "object" and $e.status == "met" and ($e.treatment == "fixed" or $e.treatment == "filed") then $e.treatment else "open" end) as $o
+    | {id:$id, summary:$m.summary, outcome:$o}
+      + (if ($e | type) == "object" and ($e.evidence | type) == "string" and $e.evidence != "" then {evidence:($e.evidence | .[0:300])} else {} end)
+      + (if ($e | type) == "object" and ($e.reason | type) == "string" and $e.reason != "" then {reason:($e.reason | .[0:300])} else {} end))'
 : > "$S/crusty.jsonl"
 round_err() { jq -cn --arg n "${1##*/}" --arg e "$2" '{record:$n, error:$e}' >> "$S/crusty.jsonl"; }
 for f in "$STATE"/crusty-round-*.json; do
@@ -134,7 +154,7 @@ for f in "$STATE"/crusty-round-*.json; do
   goal_json_file "$f" 65536 || { round_err "$f" "the round record is not a regular JSON object file of at most 64 KiB"; continue; }
   MINOR='[]'; ME=""
   if [ -f "$f.minor" ] && [ ! -L "$f.minor" ]; then
-    MINOR="$(head -c 65536 -- "$f.minor" | jq -c -s '[.[] | objects | {id, summary}] | .[:50]' 2>/dev/null)" && [ -n "$MINOR" ] \
+    MINOR="$(head -c 65536 -- "$f.minor" | jq -c -s --slurpfile led "$S/ledger.json" "$MINOR_JQ" 2>/dev/null)" && [ -n "$MINOR" ] \
       || { MINOR='[]'; ME="the round's minor findings could not be read"; }
   elif [ -e "$f.minor" ] || [ -L "$f.minor" ]; then
     ME="the round's minor findings could not be read"
@@ -227,15 +247,30 @@ if [ -n "$LB" ] && g rev-parse --verify -q "refs/remotes/origin/$LB" >/dev/null;
 put repo "$(jq -cn --arg w "$WORK" --arg b "$LB" --arg h "$LH" --arg d "$DIRTY" --argjson u "$UNPUSHED" \
   '{worktree:$w, branch:$b, local_head:$h, clean:($d == ""), unpushed_commits:$u}')" "$WT_ERR"
 
+# --- the setting for minor findings (#3160) ---------------------------------
+# fix_all when empty or absent (drives started on an earlier release). An
+# unknown value is reported, never refused here: fix_all applies, and the
+# error quotes the cleaned value. The top-level recipes refuse it at the start.
+MF="${RECIPE_VAR_autodrive_minor_findings:-}"
+MF="${MF#"${MF%%[![:space:]]*}"}"; MF="${MF%"${MF##*[![:space:]]}"}"
+MF_ERR=""
+case "$MF" in
+  ""|fix_all) MF=fix_all ;;
+  judge|file_all) ;;
+  *) MF_ERR="autodrive_minor_findings must be fix_all, judge or file_all (got '$(printf '%s' "$MF" | LC_ALL=C tr -cd '[:print:]' | head -c 80)'); fix_all applies"
+     MF=fix_all ;;
+esac
+
 # --- goal.json ----------------------------------------------------------------
 jq -n --slurpfile repo "$S/repo.json" --slurpfile ma "$S/merge_authority.json" --slurpfile pr "$S/pr.json" \
   --slurpfile checks "$S/checks.json" --slurpfile reviews "$S/reviews.json" --slurpfile base "$S/base.json" \
-  --slurpfile repository "$S/repository.json" --arg prn "$PR" --arg url "$URL" --arg work "$WORK" '
+  --slurpfile repository "$S/repository.json" --arg prn "$PR" --arg url "$URL" --arg work "$WORK" --arg mf "$MF" --arg mferr "$MF_ERR" '
   ($pr[0]) as $p | ($checks[0].counts // {}) as $c | ($base[0]) as $b |
   {schema_version:1, subject:("pull request #" + $prn), guidance_target:(if ($url | test("^https://github\\.com/[^/]+/[^/]+/pull/[0-9]+$")) then $url else null end),
    worktree:$work, repo:$repo[0], merge_authority:$ma[0], pr:$p, checks:$checks[0], reviews:$reviews[0], base:$b, repository:$repository[0],
-   summary:(if $p.error then "PR #" + $prn + ": the pull request could not be read (" + $p.error + ")" else
+   autodrive_minor_findings:$mf, autodrive_minor_findings_error:(if $mferr == "" then null else $mferr end),
+   summary:((if $p.error then "PR #" + $prn + ": the pull request could not be read (" + $p.error + ")" else
      "PR #" + $prn + " " + ($p.state // "?") + " at " + (($p.head // "?")[0:12]) + " (" + ($p.head_branch // "?") + " into " + ($p.base // "?") + "), mergeStateStatus " + ($p.merge_state // "?")
      + "; checks: " + (if $checks[0].error then "unreadable" else "\($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending" end)
      + "; base: " + (if $b.error then "unreadable" else "\($b.behind_by // "?") behind, \($b.conflict_files | length) conflicting files" end)
-     + "; merging " + (if $ma[0].effective then "allowed" else "off" end) end)}' | goal_atomic_write "$TD/goal.json"
+     + "; merging " + (if $ma[0].effective then "allowed" else "off" end) end) + "; minor findings: " + $mf)}' | goal_atomic_write "$TD/goal.json"
