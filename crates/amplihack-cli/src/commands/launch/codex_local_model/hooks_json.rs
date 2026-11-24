@@ -6,7 +6,9 @@
 //! run amplihack's pre-tool-use hook (the Codex plugin's wrapper, with or
 //! without an `env NAME=value` prefix, or any program named
 //! `amplihack-hooks`). A handler the filter misses runs the guard twice,
-//! which is safe; the filter therefore removes only exact word lists.
+//! which is safe; the filter therefore removes only exact word lists, and
+//! only when every word is one the shell would take as it is (when in doubt,
+//! keep it).
 //!
 //! Pure apart from [`verify_generated`], which checks that the hooks binary
 //! named in amplihack's entry is still an executable regular file. No error
@@ -20,7 +22,15 @@ use std::path::{Component, Path};
 
 const SUBCOMMAND: &str = "pre-tool-use";
 const PROTOCOL: &str = "AMPLIHACK_HOOK_PROTOCOL=codex";
-const HOOKS_BINARY: &str = "amplihack-hooks";
+pub(super) const HOOKS_BINARY: &str = "amplihack-hooks";
+/// Characters a shell may treat as an operator, a quote, an expansion, a
+/// glob or a comment. shell-words splits on whitespace only, so a word that
+/// holds one of these may be more than one word, or more than one command,
+/// to the shell.
+const SHELL_SPECIAL: [char; 21] = [
+    ';', '&', '|', '<', '>', '(', ')', '$', '`', '\\', '"', '\'', '*', '?', '[', ']', '{', '}',
+    '~', '!', '#',
+];
 
 /// The user's PreToolUse groups from `text` (their `hooks.json` at `path`),
 /// with amplihack's own pre-tool-use handlers removed and groups left empty
@@ -91,11 +101,15 @@ fn is_amplihack_handler(handler: &Value, plugin_root: &Path) -> bool {
 /// `env NAME=value …` prefix taken off, is exactly
 /// `[program, pre-tool-use]`, where `program` is named `amplihack-hooks` or
 /// is an absolute path under `plugin_root` ending in `bin/hook`. A command
-/// that cannot be split, or is compound, is not.
+/// that cannot be split, is compound, or has a word that is not
+/// [inert](is_inert_word), is not.
 pub(super) fn runs_amplihack_pre_tool_use(command: &str, plugin_root: &Path) -> bool {
     let Ok(words) = shell_words::split(command) else {
         return false;
     };
+    if !words.iter().all(|word| is_inert_word(word)) {
+        return false;
+    }
     let mut rest = words.as_slice();
     if let Some((first, tail)) = rest.split_first()
         && first == "env"
@@ -115,11 +129,21 @@ pub(super) fn runs_amplihack_pre_tool_use(command: &str, plugin_root: &Path) -> 
     }
 }
 
-/// `NAME=value` with a shell variable name and a value the shell would not
-/// expand (no `$` and no backquote), so removing the handler loses nothing
-/// the command would have done.
+/// Whether the shell would take `word` as it is: no whitespace, no control
+/// character and nothing from [`SHELL_SPECIAL`]. shell-words removes the
+/// quoting it understands, so a word that was quoted in the command is
+/// refused too when it holds one of these; such a handler is kept.
+fn is_inert_word(word: &str) -> bool {
+    !word
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || SHELL_SPECIAL.contains(&c))
+}
+
+/// `NAME=value` with a shell variable name. The value is inert (see
+/// [`is_inert_word`]), so removing the handler loses nothing the command
+/// would have done.
 fn is_plain_assignment(word: &str) -> bool {
-    let Some((name, value)) = word.split_once('=') else {
+    let Some((name, _)) = word.split_once('=') else {
         return false;
     };
     let mut chars = name.chars();
@@ -127,7 +151,6 @@ fn is_plain_assignment(word: &str) -> bool {
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !value.contains(['$', '`'])
 }
 
 fn is_amplihack_program(program: &str, plugin_root: &Path) -> bool {
@@ -179,7 +202,8 @@ pub(super) fn render(user_groups: &[Value], hooks_bin: &Path) -> String {
 /// returns the user groups after amplihack's. amplihack's group must be the
 /// first PreToolUse group and exactly one command handler (no matcher, no
 /// other key) that splits to `[env, AMPLIHACK_HOOK_PROTOCOL=codex, <absolute
-/// executable regular file>, pre-tool-use]`.
+/// path of an executable regular file named amplihack-hooks>,
+/// pre-tool-use]`.
 pub(super) fn verify_generated(text: &str) -> Result<Vec<Value>> {
     let value: Value = serde_json::from_str(text).map_err(|error| {
         anyhow!(
@@ -232,6 +256,12 @@ fn verify_amplihack_group(group: &Value) -> Result<()> {
     let binary = Path::new(binary);
     if !binary.is_absolute() {
         bail!("the hooks binary in amplihack's PreToolUse entry is not an absolute path");
+    }
+    if binary.file_name().and_then(|name| name.to_str()) != Some(HOOKS_BINARY) {
+        bail!(
+            "the hooks binary in amplihack's PreToolUse entry, {}, is not named {HOOKS_BINARY}",
+            sanitize_path(binary)
+        );
     }
     let usable = std::fs::metadata(binary)
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0);

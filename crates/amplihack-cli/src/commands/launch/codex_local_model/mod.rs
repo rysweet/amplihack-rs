@@ -15,7 +15,9 @@
 //! - starts Codex with `CODEX_HOME` pointing there, `AMPLIHACK_HOOK_TEXT=none`
 //!   and `AMPLIHACK_CODEX_LOCAL_MODEL=<name>`, on the child only;
 //! - puts `--dangerously-bypass-hook-trust` first unless the caller passed
-//!   it, and says so once on stderr.
+//!   it, and says so once on stderr, then `-c features.hooks=true`, so that
+//!   a trusted project's `.codex/config.toml` cannot switch hooks off. A
+//!   caller's own later `-c` or `--disable hooks` still wins (D12).
 //!
 //! With no selection nothing here runs and an ordinary launch is unchanged.
 //!
@@ -59,6 +61,8 @@ const HOOK_TEXT_ENV: &str = "AMPLIHACK_HOOK_TEXT";
 /// The only value amplihack ever writes for [`HOOK_TEXT_ENV`].
 const HOOK_TEXT_NONE: &str = "none";
 const HOOK_TRUST: &str = "--dangerously-bypass-hook-trust";
+/// The override that keeps hooks on over a project's own config layer.
+const HOOKS_ON: [&str; 2] = ["-c", "features.hooks=true"];
 /// How much of an invalid name an error quotes, in characters.
 const QUOTED_CHARS: usize = 64;
 const MAX_NAME_LEN: usize = 64;
@@ -288,29 +292,36 @@ pub(crate) struct LocalHome {
 }
 
 impl LocalHome {
-    /// The Codex argv tail with `--dangerously-bypass-hook-trust` first,
-    /// unless the caller passed it before any `--` among the Codex arguments
-    /// (the agent-step injection then adds nothing, so it appears once).
-    /// When it is added, one stderr line names the flag, the profile, the
-    /// home and the number of user handlers carried over, never a command.
+    /// The Codex argv tail: `--dangerously-bypass-hook-trust` first, unless
+    /// the caller passed it before any `--` among the Codex arguments (the
+    /// agent-step injection then adds nothing, so it appears once), then
+    /// `-c features.hooks=true` always, then the caller's arguments
+    /// unchanged. When the hook-trust flag is added, one stderr line names
+    /// what was added, the profile, the home and the number of user handlers
+    /// carried over, never a command.
     pub(crate) fn codex_args(&self, args: Vec<String>) -> Vec<String> {
-        if super::codex_agent_step::has_hook_trust_bypass(&args) {
-            return args;
+        let add_trust = !super::codex_agent_step::has_hook_trust_bypass(&args);
+        if add_trust {
+            let handlers = if self.user_handlers == 1 {
+                "handler"
+            } else {
+                "handlers"
+            };
+            eprintln!(
+                "amplihack: codex local model \"{}\": added {HOOK_TRUST} and {} {} (Codex home \
+                 \"{}\", {} user PreToolUse {handlers} carried over)",
+                self.name.as_str(),
+                HOOKS_ON[0],
+                HOOKS_ON[1],
+                crate::commands::install::paths::sanitize_text(&self.home),
+                self.user_handlers,
+            );
         }
-        let handlers = if self.user_handlers == 1 {
-            "handler"
-        } else {
-            "handlers"
-        };
-        eprintln!(
-            "amplihack: codex local model \"{}\": added {HOOK_TRUST} (Codex home \"{}\", \
-             {} user PreToolUse {handlers} carried over)",
-            self.name.as_str(),
-            crate::commands::install::paths::sanitize_text(&self.home),
-            self.user_handlers,
-        );
-        let mut out = Vec::with_capacity(args.len() + 1);
-        out.push(HOOK_TRUST.to_string());
+        let mut out = Vec::with_capacity(args.len() + 3);
+        if add_trust {
+            out.push(HOOK_TRUST.to_string());
+        }
+        out.extend(HOOKS_ON.map(String::from));
         out.extend(args);
         out
     }

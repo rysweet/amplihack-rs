@@ -8,13 +8,15 @@
 //! - `pub(super) fn check_shape(profile: &Table, path: &Path) ->
 //!   anyhow::Result<()>`;
 //! - `pub(super) fn render(profile: &Table, previous: Option<&Table>,
-//!   instructions: &Path) -> anyhow::Result<String>`.
+//!   instructions: &Path) -> anyhow::Result<String>`;
+//! - `pub(super) fn guard_disabled(doc: &Table, hooks_json_paths: &[&str])
+//!   -> bool`.
 //!
 //! The rendered text is compared by its settings (through `toml::Value`),
 //! never by layout or wording, except where byte equality is the property
 //! (determinism, the fixed point a second refresh relies on).
 
-use super::config::{check_shape, parse, render};
+use super::config::{check_shape, guard_disabled, parse, render};
 use std::path::Path;
 use toml::Table;
 
@@ -217,7 +219,7 @@ fn the_profile_approval_policy_is_kept() {
     }
 }
 
-// ---- step 4: tables Codex wrote are carried over ----
+// ---- step 4: tables Codex wrote are carried over, never [hooks] ----
 
 const PREVIOUS: &str = r#"model = "an-old-model"
 web_search = "live"
@@ -240,11 +242,10 @@ base_url = "http://stale"
 "#;
 
 #[test]
-fn projects_hook_state_and_notice_are_carried_over() {
+fn projects_and_notice_are_carried_over() {
     let config = rendered(PROFILE, Some(PREVIOUS));
     let previous: toml::Value = toml::from_str(PREVIOUS).unwrap();
     assert_eq!(config["projects"], previous["projects"]);
-    assert_eq!(config["hooks"]["state"], previous["hooks"]["state"]);
     assert_eq!(config["notice"], previous["notice"]);
 }
 
@@ -252,8 +253,8 @@ fn projects_hook_state_and_notice_are_carried_over() {
 fn nothing_else_is_carried_over() {
     let config = rendered(PROFILE, Some(PREVIOUS));
     assert!(
-        config["hooks"].get("PreToolUse").is_none(),
-        "hook definitions are never carried over: {config:#?}"
+        config.get("hooks").is_none(),
+        "neither hook definitions nor [hooks.state] are carried over: {config:#?}"
     );
     assert_eq!(config["model"].as_str(), Some("inkling-2-mini"));
     assert_eq!(config["web_search"].as_str(), Some("disabled"));
@@ -270,6 +271,96 @@ fn carried_projects_come_from_the_previous_file_only() {
     let projects = config["projects"].as_table().unwrap();
     assert!(projects.contains_key("/work/trusted"));
     assert!(!projects.contains_key("/from-profile"));
+}
+
+/// S1: a previous file that switches amplihack's handler off renders with
+/// no `hooks` key at all, so a refresh restores the guard.
+#[test]
+fn a_disabled_guard_in_the_previous_file_is_not_carried_over() {
+    let previous = format!(
+        "{PREVIOUS}\n[hooks.state.\"{GENERATED_HOOKS}:pre_tool_use:0:0\"]\nenabled = false\n"
+    );
+    let config = rendered(PROFILE, Some(&previous));
+    assert!(config.get("hooks").is_none(), "{config:#?}");
+}
+
+// ---- guard_disabled: the check a reused home must pass (S1) ----
+
+const GENERATED_HOOKS: &str = "/home/u/.amplihack/codex-local/inkling/hooks.json";
+const CANONICAL_HOOKS: &str = "/data/u/.amplihack/codex-local/inkling/hooks.json";
+
+/// A generated file holding `entry` as the `[hooks.state]` value of `key`.
+fn with_state(key: &str, entry: &str) -> Table {
+    doc(&format!(
+        "[features]\nhooks = true\n\n[hooks.state]\n\"{key}\" = {entry}\n"
+    ))
+}
+
+#[test]
+fn guard_disabled_is_true_for_an_entry_that_switches_amplihack_off() {
+    let key = format!("{GENERATED_HOOKS}:pre_tool_use:0:0");
+    for entry in [
+        "{ enabled = false }",
+        "{ enabled = \"false\" }",
+        "{ enabled = 0, trusted_hash = \"sha256:abc\" }",
+        "false",
+        "\"off\"",
+    ] {
+        assert!(
+            guard_disabled(&with_state(&key, entry), &[GENERATED_HOOKS]),
+            "{entry}"
+        );
+    }
+}
+
+#[test]
+fn guard_disabled_checks_every_path_given() {
+    let doc = with_state(
+        &format!("{CANONICAL_HOOKS}:pre_tool_use:0:0"),
+        "{ enabled = false }",
+    );
+    assert!(guard_disabled(&doc, &[GENERATED_HOOKS, CANONICAL_HOOKS]));
+    assert!(!guard_disabled(&doc, &[GENERATED_HOOKS]));
+}
+
+#[test]
+fn guard_disabled_is_false_for_an_entry_that_leaves_amplihack_on() {
+    let ours = format!("{GENERATED_HOOKS}:pre_tool_use:0:0");
+    let cases = [
+        (ours.clone(), "{ enabled = true }"),
+        (ours.clone(), "{ trusted_hash = \"sha256:abc\" }"),
+        // Another hooks.json, another group, another event, a malformed index.
+        (
+            "/home/u/.codex/hooks.json:pre_tool_use:0:0".to_string(),
+            "{ enabled = false }",
+        ),
+        (
+            format!("{GENERATED_HOOKS}:pre_tool_use:1:0"),
+            "{ enabled = false }",
+        ),
+        (
+            format!("{GENERATED_HOOKS}:post_tool_use:0:0"),
+            "{ enabled = false }",
+        ),
+        (
+            format!("{GENERATED_HOOKS}:pre_tool_use:0:"),
+            "{ enabled = false }",
+        ),
+        (
+            format!("{GENERATED_HOOKS}:pre_tool_use:0:0x"),
+            "{ enabled = false }",
+        ),
+    ];
+    for (key, entry) in &cases {
+        assert!(
+            !guard_disabled(&with_state(key, entry), &[GENERATED_HOOKS]),
+            "{key} = {entry}"
+        );
+    }
+    assert!(!guard_disabled(
+        &doc("[features]\nhooks = true\n"),
+        &[GENERATED_HOOKS]
+    ));
 }
 
 // ---- determinism and the fixed point a refresh relies on ----

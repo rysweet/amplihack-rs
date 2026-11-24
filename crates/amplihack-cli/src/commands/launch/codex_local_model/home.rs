@@ -302,6 +302,22 @@ impl Plan {
                 sanitize_path(&config_path)
             )));
         }
+        // The session may have switched amplihack's handler off since the
+        // last refresh. Codex keys its state by the hooks.json path, either
+        // as CODEX_HOME gives it or canonicalised, so both are checked.
+        let hooks_path = layout.generated.join(HOOKS);
+        let canonical = fs::canonicalize(&hooks_path).ok();
+        let paths: Vec<&str> = [Some(hooks_path.as_path()), canonical.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter_map(Path::to_str)
+            .collect();
+        if config::guard_disabled(&document, &paths) {
+            return Err(refuse(format!(
+                "{} disables amplihack's PreToolUse handler in [hooks.state]",
+                sanitize_path(&config_path)
+            )));
+        }
 
         let hooks_text = std::str::from_utf8(&hooks)
             .map_err(|_| refuse("hooks.json is not valid UTF-8".to_string()))?;
@@ -391,7 +407,8 @@ fn read_owned(path: &Path) -> Result<Option<(Vec<u8>, fs::Metadata)>> {
 /// SF4: the hooks binary amplihack's entry runs. It must be an absolute path
 /// (a relative one is refused, never made absolute from the working
 /// directory, so a checkout cannot supply the guard), valid UTF-8 with no
-/// control character, and an executable regular file.
+/// control character, an executable regular file, and named
+/// `amplihack-hooks`, which is what a nested launch checks for (SF3).
 fn validate_hooks_binary(path: &Path) -> Result<()> {
     let refuse = |problem: &str| {
         anyhow!(
@@ -415,6 +432,12 @@ fn validate_hooks_binary(path: &Path) -> Result<()> {
     }
     if meta.permissions().mode() & 0o111 == 0 {
         return Err(refuse("is not executable"));
+    }
+    if path.file_name().and_then(|name| name.to_str()) != Some(hooks_json::HOOKS_BINARY) {
+        return Err(refuse(&format!(
+            "is not named {}",
+            hooks_json::HOOKS_BINARY
+        )));
     }
     Ok(())
 }

@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 pub(crate) const HOOK_TRUST: &str = "--dangerously-bypass-hook-trust";
+/// The value of the `-c` a local launch puts before the caller's arguments.
+pub(crate) const HOOKS_ON: &str = "features.hooks=true";
 pub(crate) const NAME: &str = "inkling";
 pub(crate) const LOCAL_MODEL_ENV: &str = "AMPLIHACK_CODEX_LOCAL_MODEL";
 pub(crate) const HOOK_TEXT_ENV: &str = "AMPLIHACK_HOOK_TEXT";

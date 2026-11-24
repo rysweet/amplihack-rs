@@ -10,9 +10,14 @@
 //!    `goals`, `view_image`, `plugins` and `apps` off) and
 //!    `[skills.bundled] enabled = false`, merging into the profile's tables;
 //! 3. set `approval_policy = "never"` only when the profile has none;
-//! 4. carry `[projects.*]`, `[hooks.state.*]` and `[notice]` over from the
-//!    previous generated file, which Codex writes itself. Hook definitions
-//!    are never carried.
+//! 4. carry `[projects.*]` and `[notice]` over from the previous generated
+//!    file, which Codex writes itself. `[hooks]` is never carried: neither
+//!    hook definitions nor `[hooks.state]`, whose only effect under
+//!    `--dangerously-bypass-hook-trust` is to switch a hook off, so every
+//!    refresh restores amplihack's handler.
+//!
+//! [`guard_disabled`] is the check a nested launch makes on a generated file
+//! it reuses, which the session may have written to since the last refresh.
 //!
 //! The output is serialised from a value, not from the profile's layout, so
 //! it depends only on the inputs: rendering again over its own output gives
@@ -135,19 +140,11 @@ pub(super) fn render(
     out.entry("approval_policy")
         .or_insert_with(|| Value::String("never".into()));
 
-    // Step 4: tables Codex wrote into the previous generated file.
+    // Step 4: tables Codex wrote into the previous generated file. Never
+    // `[hooks]`: see the module documentation.
     if let Some(previous) = previous {
         if let Some(projects) = previous.get("projects") {
             out.insert("projects".into(), projects.clone());
-        }
-        if let Some(state) = previous
-            .get("hooks")
-            .and_then(Value::as_table)
-            .and_then(|hooks| hooks.get("state"))
-        {
-            let mut hooks = Table::new();
-            hooks.insert("state".into(), state.clone());
-            out.insert("hooks".into(), Value::Table(hooks));
         }
         if let Some(notice) = previous.get("notice") {
             out.insert("notice".into(), notice.clone());
@@ -155,6 +152,48 @@ pub(super) fn render(
     }
 
     toml::to_string(&out).map_err(|_| anyhow!("the generated config.toml could not be serialised"))
+}
+
+/// The `[hooks.state]` key prefix of the handlers in the first PreToolUse
+/// group of the `hooks.json` at `hooks_json`, which is always amplihack's.
+/// Codex 0.166 keys a hook's state `<hooks.json path>:<event>:<group
+/// index>:<handler index>`; the step 10b experiment showed that
+/// `enabled = false` under this key stops Codex running amplihack's handler,
+/// with `--dangerously-bypass-hook-trust` or without it.
+fn guard_state_prefix(hooks_json: &str) -> String {
+    format!("{hooks_json}:pre_tool_use:0:")
+}
+
+/// Whether `doc` (a generated `config.toml`) switches amplihack's PreToolUse
+/// handler off for any of `hooks_json_paths`: a `[hooks.state]` entry for
+/// one of them whose `enabled` is anything but `true`, or that is not a
+/// table. Fails closed: an entry of an unexpected shape counts as off. An
+/// entry with no `enabled` key leaves the handler on.
+pub(super) fn guard_disabled(doc: &Table, hooks_json_paths: &[&str]) -> bool {
+    let Some(state) = doc
+        .get("hooks")
+        .and_then(Value::as_table)
+        .and_then(|hooks| hooks.get("state"))
+        .and_then(Value::as_table)
+    else {
+        return false;
+    };
+    let prefixes: Vec<String> = hooks_json_paths
+        .iter()
+        .map(|path| guard_state_prefix(path))
+        .collect();
+    state.iter().any(|(key, entry)| {
+        let ours = prefixes.iter().any(|prefix| {
+            key.strip_prefix(prefix.as_str())
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        });
+        ours && match entry.as_table() {
+            Some(entry) => entry
+                .get("enabled")
+                .is_some_and(|enabled| enabled.as_bool() != Some(true)),
+            None => true,
+        }
+    })
 }
 
 /// The table at `key` in `table`, created when absent. An existing value

@@ -60,7 +60,7 @@ fn amplihack_pre_tool_use_commands_are_recognised() {
     for command in [
         "amplihack-hooks pre-tool-use".to_string(),
         "/usr/local/bin/amplihack-hooks pre-tool-use".to_string(),
-        "'/opt/my tools/amplihack-hooks' pre-tool-use".to_string(),
+        "'/opt/tools/amplihack-hooks' pre-tool-use".to_string(),
         "env AMPLIHACK_HOOK_PROTOCOL=codex '/x/amplihack-hooks' pre-tool-use".to_string(),
         "env A=1 B=2 amplihack-hooks pre-tool-use".to_string(),
         format!("{} pre-tool-use", wrapper()),
@@ -103,6 +103,65 @@ fn other_commands_are_not_amplihack_pre_tool_use() {
             !runs_amplihack_pre_tool_use(&command, root()),
             "{command:?}"
         );
+    }
+}
+
+/// S4: shell-words splits on whitespace only, so a word may hold an
+/// operator, an expansion or a glob that the shell acts on. Any such word
+/// makes the handler the user's, and it is kept.
+#[test]
+fn a_command_with_a_shell_special_word_is_not_amplihack_pre_tool_use() {
+    for command in [
+        "env A=1;/usr/local/bin/my-guard amplihack-hooks pre-tool-use".to_string(),
+        "/x;y/amplihack-hooks pre-tool-use".to_string(),
+        "/x&&y/amplihack-hooks pre-tool-use".to_string(),
+        "true&&/x/amplihack-hooks pre-tool-use".to_string(),
+        "/x|tee/amplihack-hooks pre-tool-use".to_string(),
+        "env A=1>/tmp/out amplihack-hooks pre-tool-use".to_string(),
+        "env A=$(my-guard) amplihack-hooks pre-tool-use".to_string(),
+        "env A=`my-guard` amplihack-hooks pre-tool-use".to_string(),
+        "/opt/*/amplihack-hooks pre-tool-use".to_string(),
+        "~/bin/amplihack-hooks pre-tool-use".to_string(),
+        // Quoted, so one word to shell-words, holding a newline or a space.
+        "'/x\n/usr/local/bin/my-guard\n/amplihack-hooks' pre-tool-use".to_string(),
+        "'/opt/my tools/amplihack-hooks' pre-tool-use".to_string(),
+        "env A='1;my-guard' amplihack-hooks pre-tool-use".to_string(),
+    ] {
+        assert!(
+            !runs_amplihack_pre_tool_use(&command, root()),
+            "{command:?}"
+        );
+    }
+}
+
+/// Regression for S4: the wrapper as `amplihack install` writes it
+/// (`codex_plugin/hooks.rs`, `declarations`: the single-quoted
+/// `<package>/bin/hook` and the subcommand), and amplihack's own entry as a
+/// generated home holds it, are still recognised and removed, for home paths
+/// with the usual punctuation.
+#[test]
+fn the_wrapper_as_install_writes_it_is_still_removed() {
+    for home in ["/home/u", "/home/first.last-2_x", "/Users/a+b@corp"] {
+        let plugin_root = format!("{home}/.amplihack/codex");
+        let installed = format!("'{plugin_root}/amplihack-local/amplihack/bin/hook' pre-tool-use");
+        let generated = format!(
+            "env AMPLIHACK_HOOK_PROTOCOL=codex '{home}/.local/bin/amplihack-hooks' pre-tool-use"
+        );
+        for command in [&installed, &generated] {
+            assert!(
+                runs_amplihack_pre_tool_use(command, Path::new(&plugin_root)),
+                "{command:?}"
+            );
+        }
+        let text = json!({"hooks": {"PreToolUse": [
+            {"hooks": [{"type": "command", "command": installed}]},
+            {"hooks": [{"type": "command", "command": generated}]},
+            guard("worker-bash-guard.py"),
+        ]}})
+        .to_string();
+        let groups =
+            user_pre_tool_use(&text, Path::new(USER_HOOKS), Path::new(&plugin_root)).unwrap();
+        assert_eq!(groups, vec![guard("worker-bash-guard.py")], "{home}");
     }
 }
 
@@ -363,6 +422,10 @@ fn verify_refuses_a_weakened_entry() {
         dir.path().join("gone").display()
     ));
     cases.push(("a missing binary", v));
+    let mut v = good.clone();
+    v["hooks"]["PreToolUse"][0] =
+        command("env AMPLIHACK_HOOK_PROTOCOL=codex /bin/true pre-tool-use");
+    cases.push(("an executable that is not amplihack-hooks (S3)", v));
     let mut v = good.clone();
     v["hooks"]["PreToolUse"][0]["hooks"][0]["type"] = json!("prompt");
     cases.push(("not a command handler", v));

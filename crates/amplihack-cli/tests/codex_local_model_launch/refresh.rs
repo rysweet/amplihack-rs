@@ -124,7 +124,8 @@ hide_full_access_warning = true
 command = "echo written-into-the-generated-file"
 "#;
 
-/// AC10: tables Codex writes survive a refresh; hook definitions do not.
+/// AC10: tables Codex writes survive a refresh; `[hooks]` does not, neither
+/// hook definitions nor `[hooks.state]` (S1).
 #[test]
 fn tables_codex_writes_survive_a_refresh() {
     let f = Fixture::new();
@@ -138,11 +139,10 @@ fn tables_codex_writes_survive_a_refresh() {
     f.local(NAME, &[]).assert_started();
     let after = read_toml(&config);
     assert_eq!(after["projects"], written["projects"]);
-    assert_eq!(after["hooks"]["state"], written["hooks"]["state"]);
     assert_eq!(after["notice"], written["notice"]);
     assert!(
-        after["hooks"].get("PreToolUse").is_none(),
-        "hook definitions are not carried over: {after:#?}"
+        after.get("hooks").is_none(),
+        "neither hook definitions nor [hooks.state] are carried over: {after:#?}"
     );
     assert!(
         after["projects"].get("/work/checkout").is_none(),
@@ -153,6 +153,36 @@ fn tables_codex_writes_survive_a_refresh() {
     let settled = inode(&config);
     f.local(NAME, &[]).assert_started();
     assert_eq!(inode(&config), settled);
+}
+
+/// The `[hooks.state]` entry that switches amplihack's PreToolUse handler
+/// off in a generated home, keyed as Codex 0.166 keys it.
+fn guard_off(home: &Path) -> String {
+    format!(
+        "\n[hooks.state.\"{}:pre_tool_use:0:0\"]\nenabled = false\n",
+        home.join("hooks.json").display()
+    )
+}
+
+/// S1: a top-level launch over a generated config that switches amplihack's
+/// handler off starts Codex with the entry gone, so the guard runs again.
+#[test]
+fn a_top_level_launch_restores_a_disabled_guard() {
+    let f = Fixture::new();
+    f.local(NAME, &[]).assert_started();
+    let home = f.generated(NAME);
+    let config = home.join("config.toml");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str(&guard_off(&home));
+    fs::write(&config, &text).unwrap();
+    assert!(
+        read_toml(&config)["hooks"]["state"].is_table(),
+        "fixture check"
+    );
+
+    f.local(NAME, &[]).assert_started();
+    let after = read_toml(&config);
+    assert!(after.get("hooks").is_none(), "{after:#?}");
 }
 
 /// AC10: what Codex keeps in its home is left alone.
@@ -374,7 +404,7 @@ fn a_nested_launch_under_another_name_reads_the_user_codex_home() {
 #[test]
 fn reuse_refuses_a_weakened_home() {
     type Weaken = fn(&Path);
-    let cases: [(&str, Weaken); 5] = [
+    let cases: [(&str, Weaken); 7] = [
         ("amplihack entry removed", |home| {
             let path = home.join("hooks.json");
             let mut hooks = read_json(&path);
@@ -401,6 +431,23 @@ fn reuse_refuses_a_weakened_home() {
         ("config.toml unparseable", |home| {
             fs::write(home.join("config.toml"), "not = [toml\n").unwrap();
         }),
+        // S1: the session switched amplihack's handler off since the last
+        // refresh, under the home's path as given and as canonicalised.
+        ("amplihack's handler disabled in [hooks.state]", |home| {
+            let path = home.join("config.toml");
+            let mut text = fs::read_to_string(&path).unwrap();
+            text.push_str(&guard_off(home));
+            fs::write(&path, text).unwrap();
+        }),
+        (
+            "amplihack's handler disabled under the canonical path",
+            |home| {
+                let path = home.join("config.toml");
+                let mut text = fs::read_to_string(&path).unwrap();
+                text.push_str(&guard_off(&fs::canonicalize(home).unwrap()));
+                fs::write(&path, text).unwrap();
+            },
+        ),
     ];
     for (what, weaken) in cases {
         let f = Fixture::new();

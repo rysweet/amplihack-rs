@@ -154,12 +154,17 @@ fn an_unusable_hooks_binary_is_refused_naming_the_override() {
     fs::create_dir(&control).unwrap();
     let control_bin = control.join("amplihack-hooks");
     crate::test_support::write_executable_with_mode(&control_bin, "#!/bin/sh\n", 0o700);
+    // S3: an executable that is not amplihack-hooks, as a nested launch
+    // would refuse it.
+    let other = f.home().join("bin/true");
+    crate::test_support::write_executable_with_mode(&other, "#!/bin/sh\n", 0o700);
     for (what, value) in [
         ("relative", Path::new("bin/amplihack-hooks").to_path_buf()),
         ("a directory", f.home().join("bin")),
         ("not executable", not_executable.clone()),
         ("a control character", control_bin.clone()),
         ("missing", f.home().join("bin/absent")),
+        ("another name", other.clone()),
     ] {
         f.set(HOOKS_OVERRIDE, &value);
         let text = refresh_error(&f, Some(NAME));
@@ -226,23 +231,38 @@ fn a_profile_reached_through_a_symlink_is_read() {
 
 // ---- what the launch core receives ----
 
+/// The hook-trust flag first unless the caller passed it, then
+/// `-c features.hooks=true` always (S2), then the caller's arguments.
 #[test]
 fn codex_args_put_hook_trust_first_unless_the_caller_passed_it() {
     let f = LocalFixture::new();
     let local = build(&f);
+    const C: &str = "-c";
+    const ON: &str = "features.hooks=true";
     for (input, expected) in [
-        (vec![], vec![HOOK_TRUST]),
-        (vec!["exec", "-"], vec![HOOK_TRUST, "exec", "-"]),
+        (vec![], vec![HOOK_TRUST, C, ON]),
+        (vec!["exec", "-"], vec![HOOK_TRUST, C, ON, "exec", "-"]),
         (
             vec!["resume", "--last"],
-            vec![HOOK_TRUST, "resume", "--last"],
+            vec![HOOK_TRUST, C, ON, "resume", "--last"],
         ),
-        (vec![HOOK_TRUST], vec![HOOK_TRUST]),
-        (vec![HOOK_TRUST, "exec", "-"], vec![HOOK_TRUST, "exec", "-"]),
-        (vec!["exec", HOOK_TRUST, "-"], vec!["exec", HOOK_TRUST, "-"]),
+        (vec![HOOK_TRUST], vec![C, ON, HOOK_TRUST]),
+        (
+            vec![HOOK_TRUST, "exec", "-"],
+            vec![C, ON, HOOK_TRUST, "exec", "-"],
+        ),
+        (
+            vec!["exec", HOOK_TRUST, "-"],
+            vec![C, ON, "exec", HOOK_TRUST, "-"],
+        ),
         (
             vec!["exec", "--", HOOK_TRUST],
-            vec![HOOK_TRUST, "exec", "--", HOOK_TRUST],
+            vec![HOOK_TRUST, C, ON, "exec", "--", HOOK_TRUST],
+        ),
+        // A caller's own override comes later, so Codex applies it last.
+        (
+            vec!["--disable", "hooks", "exec", "-"],
+            vec![HOOK_TRUST, C, ON, "--disable", "hooks", "exec", "-"],
         ),
     ] {
         assert_eq!(
@@ -253,7 +273,8 @@ fn codex_args_put_hook_trust_first_unless_the_caller_passed_it() {
     }
 }
 
-/// With the agent-step injection after it, the flag appears exactly once.
+/// With the agent-step injection after it, the flag appears exactly once,
+/// and the injection still finds `exec` behind `-c features.hooks=true`.
 #[test]
 fn the_agent_step_injection_adds_no_second_flag() {
     let f = LocalFixture::new();
@@ -270,6 +291,11 @@ fn the_agent_step_injection_adds_no_second_flag() {
         );
         let count = args.iter().filter(|a| *a == HOOK_TRUST).count();
         assert_eq!(count, 1, "{input:?} -> {args:?}");
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--sandbox", "danger-full-access"]),
+            "{input:?} -> {args:?}"
+        );
     }
 }
 

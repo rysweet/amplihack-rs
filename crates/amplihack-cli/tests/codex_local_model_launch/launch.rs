@@ -360,14 +360,18 @@ fn an_empty_variable_gives_an_ordinary_launch() {
 }
 
 /// AC14: the hook-trust flag appears exactly once, first, whatever the
-/// caller passed, interactive or `exec`.
+/// caller passed, interactive or `exec`; `-c features.hooks=true` (S2)
+/// appears once, before the caller's arguments.
 #[test]
 fn hook_trust_appears_exactly_once() {
     let f = Fixture::new();
     let cases: &[(&[&str], &[&str])] = &[
-        (&[], &[HOOK_TRUST]),
-        (&["resume", "--last"], &[HOOK_TRUST, "resume", "--last"]),
-        (&[HOOK_TRUST], &[HOOK_TRUST]),
+        (&[], &[HOOK_TRUST, "-c", HOOKS_ON]),
+        (
+            &["resume", "--last"],
+            &[HOOK_TRUST, "-c", HOOKS_ON, "resume", "--last"],
+        ),
+        (&[HOOK_TRUST], &["-c", HOOKS_ON, HOOK_TRUST]),
         (&[HOOK_TRUST, "exec", "-"], &[]),
         (&["exec", "-"], &[]),
         (&["exec", HOOK_TRUST, "-"], &[]),
@@ -377,6 +381,13 @@ fn hook_trust_appears_exactly_once() {
         let launch = f.local(NAME, tail);
         launch.assert_started();
         assert_eq!(launch.count(HOOK_TRUST), 1, "{tail:?}: {:?}", launch.argv());
+        assert_eq!(launch.count(HOOKS_ON), 1, "{tail:?}: {:?}", launch.argv());
+        let on = launch.argv().iter().position(|a| a == HOOKS_ON).unwrap();
+        assert_eq!(launch.argv()[on - 1], "-c", "{tail:?}: {:?}", launch.argv());
+        if let Some(first) = tail.iter().find(|a| **a != HOOK_TRUST && **a != "-c") {
+            let caller = launch.argv().iter().position(|a| a == first).unwrap();
+            assert!(on < caller, "{tail:?}: ours first: {:?}", launch.argv());
+        }
         if !exact.is_empty() {
             assert_eq!(launch.argv(), *exact, "{tail:?}");
         }
@@ -396,6 +407,28 @@ fn hook_trust_appears_exactly_once() {
                 .any(|a| a == "--dangerously-bypass-approvals-and-sandbox" || a == "--yolo"),
             "{tail:?}"
         );
+    }
+}
+
+/// D12 and S2: a caller who turns hooks off still can. Their own `-c` or
+/// `--disable hooks` reaches Codex unchanged, after amplihack's
+/// `-c features.hooks=true`, so Codex applies theirs last.
+#[test]
+fn a_caller_can_still_turn_hooks_off() {
+    let f = Fixture::new();
+    for tail in [
+        &["-c", "features.hooks=false", "exec", "-"][..],
+        &["--disable", "hooks", "exec", "-"][..],
+    ] {
+        let launch = f.local(NAME, tail);
+        launch.assert_started();
+        let argv = launch.argv();
+        let ours = argv.iter().position(|a| a == HOOKS_ON).unwrap();
+        let theirs = argv
+            .windows(2)
+            .position(|pair| pair[0] == tail[0] && pair[1] == tail[1])
+            .unwrap_or_else(|| panic!("{tail:?} passes through: {argv:?}"));
+        assert!(ours < theirs, "{tail:?}: {argv:?}");
     }
 }
 
