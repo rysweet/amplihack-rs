@@ -282,7 +282,7 @@ fn the_rules_file_carries_the_configured_deny_commands() {
     let config = f.home().join(".amplihack/config.toml");
     fs::write(
         &config,
-        "[policy]\ndeny_commands = [\"issue-3172-forbidden-tool\"]\n",
+        "[policy]\ndeny_commands = [\"local-model-forbidden-tool\"]\n",
     )
     .unwrap();
     // A group- or other-writable user config is ignored (#2589).
@@ -290,7 +290,7 @@ fn the_rules_file_carries_the_configured_deny_commands() {
     f.local(NAME, &[]).assert_started();
     let rules = fs::read_to_string(f.generated(NAME).join(RULES_FILE)).unwrap();
     assert!(
-        rules.contains("issue-3172-forbidden-tool"),
+        rules.contains("local-model-forbidden-tool"),
         "policy.deny_commands reaches the rules file:\n{rules}"
     );
 }
