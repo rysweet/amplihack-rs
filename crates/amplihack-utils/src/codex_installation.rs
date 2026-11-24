@@ -3,8 +3,9 @@
 //! Layout evidence is pinned to upstream rust-v0.98.0, rust-v0.147.0 and rust-v0.166.0:
 //! `codex-cli/bin/codex.js`, `codex-cli/scripts/build_npm_package.py`, and
 //! (0.166.0) `codex-rs/install-context/src/lib.rs`.
-//! The host-only implementation is present from 0.147.0; releases 0.99–0.146
-//! are inconclusive because experimental host/fallback behavior varied.
+//! The host-only implementation is present from 0.147.0, and later stable releases
+//! are taken to keep it (#2353); releases 0.99–0.146 are inconclusive because
+//! experimental host/fallback behavior varied.
 use crate::launch_target::display_untrusted_path;
 use serde::Deserialize;
 use std::{
@@ -238,15 +239,16 @@ fn native_path(resolved: &Path, modern: bool, version: &str) -> Result<PathBuf, 
 }
 
 // Upstream 97576b179487 removes the fallback between 0.146.0 and 0.147.0.
-// Future releases may change helper requirements or npm package selection.
+// Every stable release from 0.147.0 on is taken as the host-only layout (#2353):
+// a fixed upper bound refused each new Codex release until amplihack caught up.
+// If a later release changes the layout, the native path or helper check below
+// fails on that installation and names what is missing.
 fn needs_code_mode_host(version: &semver::Version) -> Option<bool> {
     if !version.pre.is_empty() {
         None
     } else if version.major == 0 && version.minor <= 98 {
         Some(false)
-    } else if *version >= semver::Version::new(0, 147, 0)
-        && *version <= semver::Version::new(0, 166, 0)
-    {
+    } else if *version >= semver::Version::new(0, 147, 0) {
         Some(true)
     } else {
         None

@@ -149,7 +149,7 @@ fn unverified_versions_are_inconclusive_and_do_not_buy_repair() {
     use amplihack_utils::codex_installation::validate_codex_installation;
     let temp = tempfile::tempdir().unwrap();
     let codex = tree(temp.path(), true);
-    for version in ["0.120.0", "0.167.0", "1.0.0", "0.166.0-alpha.1"] {
+    for version in ["0.120.0", "0.146.0", "0.171.0-alpha.1", "0.166.0-alpha.1"] {
         let error = validate_codex_installation(&codex, version).unwrap_err();
         assert!(!error.repairable, "{version}: {error}");
         assert!(error.to_string().contains("inconclusive"));
@@ -275,6 +275,28 @@ fn packaged_resource_host_is_checked_before_sibling_host() {
     assert!(validate_codex_installation(&codex, "0.166.0").is_ok());
 }
 
+/// #2353: releases after 0.166.0 use the same host-only layout, so a newer
+/// Codex with its helper in place validates, and one without it is told the
+/// helper is missing instead of being refused as an unverified version.
+#[test]
+fn releases_after_0_166_take_the_host_only_layout() {
+    use amplihack_utils::codex_installation::validate_codex_installation;
+    for version in ["0.167.0", "0.171.0", "0.172.0", "1.0.0"] {
+        let temp = tempfile::tempdir().unwrap();
+        let with_host = tree(&temp.path().join("with"), true);
+        assert!(
+            validate_codex_installation(&with_host, version).is_ok(),
+            "{version}: should validate with its helper in place"
+        );
+        let without = tree(&temp.path().join("without"), false);
+        let error = validate_codex_installation(&without, version).unwrap_err();
+        assert!(
+            error.repairable && error.to_string().contains("codex-code-mode-host"),
+            "{version}: {error}"
+        );
+    }
+}
+
 #[test]
 fn diagnostics_do_not_allow_paths_to_forge_report_lines() {
     let temp = tempfile::tempdir().unwrap();
@@ -380,7 +402,18 @@ fn platform_install_uses_the_installed_wrappers_exact_version() {
                 Some(format!("{name}@{}", dependency.as_str().unwrap()))
             );
         }
-        metadata["version"] = serde_json::json!("0.167.0");
+        // #2353: a later stable release keeps the host-only npm layout, pinned to
+        // its own exact version.
+        if version != "0.98.0" {
+            metadata["version"] = serde_json::json!("0.171.0");
+            fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+            let later = pinned_npm_platform_package(&metadata_path)
+                .unwrap()
+                .unwrap();
+            assert!(later.contains("@npm:@openai/codex@0.171.0-"), "{later}");
+        }
+        // A pre-release stays unverified.
+        metadata["version"] = serde_json::json!("0.171.0-alpha.1");
         fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
         assert!(
             !pinned_npm_platform_package(&metadata_path)
