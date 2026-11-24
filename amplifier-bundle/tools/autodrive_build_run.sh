@@ -262,7 +262,7 @@ do_report() {
         | if type != "array" then error("no outcomes array") else . end
         | map(if type == "object" and (.name | type) == "string" and (.name | length) > 0
                  and (.status == "met" or .status == "unmet" or .status == "rejected")
-              then {name:(.name | gsub("[\\p{Cc}  ]"; " ") | .[0:200]), status}
+              then {name:(.name | gsub("[\\p{Cc}\u2028\u2029]"; " ") | .[0:200]), status}
               else error("a malformed outcome") end)' "$STATE/outcomes.json" 2>/dev/null)"; then
       outcomes="$v"
     else
