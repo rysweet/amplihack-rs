@@ -54,6 +54,7 @@ fn with_default<'a>(
         force: None,
         default_model,
         through_gateway: false,
+        local_model: false,
     }
 }
 
@@ -313,6 +314,7 @@ fn a_forced_model_still_reaches_codex_with_an_operator_default_set() {
         force: Some("gpt-6.1-mini"),
         default_model: Some(CLAUDE_ID),
         through_gateway: false,
+        local_model: false,
     });
     assert_eq!(model_of(&out.argv), Some("gpt-6.1-mini"), "{:?}", out.argv);
     assert_eq!(out.effort, Some(Effort::High));
@@ -369,6 +371,7 @@ fn a_forced_model_outranks_an_operator_default() {
         force: Some("forced-model"),
         default_model: Some("house-model"),
         through_gateway: false,
+        local_model: false,
     });
     assert_eq!(
         model_of(&out.argv),
@@ -402,6 +405,7 @@ fn an_operator_default_outranks_the_table_but_not_a_gateway_launch() {
         force: None,
         default_model: Some("house-model"),
         through_gateway: true,
+        local_model: false,
     });
     assert_eq!(
         model_of(&out.argv),

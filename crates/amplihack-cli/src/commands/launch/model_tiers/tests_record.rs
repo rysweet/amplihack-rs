@@ -87,12 +87,13 @@ fn absent_values_serialise_as_null_rather_than_being_omitted() {
 }
 
 #[test]
-fn the_four_fall_back_reasons_have_stable_names() {
+fn the_fall_back_reasons_have_stable_names() {
     for (value, name) in [
         (Fallback::NoColumn, "no_column"),
         (Fallback::NoMapping, "no_mapping"),
         (Fallback::NoModel, "no_model"),
         (Fallback::Gateway, "gateway"),
+        (Fallback::LocalModel, "local_model"),
     ] {
         assert_eq!(
             serde_json::to_value(value).unwrap(),

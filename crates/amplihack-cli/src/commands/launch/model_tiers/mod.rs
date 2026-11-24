@@ -297,9 +297,9 @@ fn reasoning_effort(
 
 /// Resolve every tier on one launch's passthrough tail.
 ///
-/// Reads the instance mapping, `model.force`, `AMPLIHACK_DEFAULT_MODEL` and
-/// the gateway variables, then calls [`resolve::resolve`]. It decides nothing
-/// itself.
+/// Reads the instance mapping, `model.force`, `AMPLIHACK_DEFAULT_MODEL`, the
+/// gateway variables and whether a local-model Codex launch is in scope,
+/// then calls [`resolve::resolve`]. It decides nothing itself.
 fn resolve_for_launch(
     binary_name: &str,
     extra_args: &[String],
@@ -319,6 +319,7 @@ fn resolve_for_launch(
         force: force.as_deref(),
         default_model: default_model.as_deref(),
         through_gateway,
+        local_model: crate::commands::launch::codex_local_model::current(binary_name).is_some(),
     });
     // The file's own diagnostics come first: they explain why a mapping is
     // not what the operator wrote.

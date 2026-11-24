@@ -432,6 +432,71 @@ fn a_caller_can_still_turn_hooks_off() {
     }
 }
 
+/// A recipe agent step's model tier on a local launch: the tier word is
+/// removed and nothing takes its place, neither a model nor a reasoning
+/// effort, because the profile sets both. The ordinary launch of the same
+/// tail is the control: there the tier does add an effort.
+#[test]
+fn a_tier_on_a_local_launch_adds_no_model_and_no_effort() {
+    let f = Fixture::new();
+    let effort = |argv: &[String]| argv.iter().any(|a| a.contains("model_reasoning_effort"));
+
+    let ordinary = f.launch(&mut f.command(&["codex", "--", "--model", "strong", "exec", "-"]));
+    ordinary.assert_started();
+    assert!(effort(ordinary.argv()), "control: {:?}", ordinary.argv());
+
+    for tier in ["fast", "standard", "strong"] {
+        let launch = f.local(NAME, &["--model", tier, "exec", "-"]);
+        launch.assert_started();
+        let argv = launch.argv();
+        assert!(
+            !argv.iter().any(|a| a == tier || a.starts_with("--model")),
+            "{tier}: no tier word and no model: {argv:?}"
+        );
+        assert!(!effort(argv), "{tier}: no effort: {argv:?}");
+    }
+}
+
+/// `model.force` is not applied to a local launch: the profile sets the model.
+#[test]
+fn a_forced_model_is_not_applied_to_a_local_launch() {
+    let f = Fixture::new();
+    for tail in [&["exec", "-"][..], &["--model", "strong", "exec", "-"][..]] {
+        let mut args = vec!["codex", "--local-model", NAME, "--"];
+        args.extend_from_slice(tail);
+        let launch = f.launch(
+            f.command(&args)
+                .env("AMPLIHACK_FORCE_MODEL", "forced-model"),
+        );
+        launch.assert_started();
+        let argv = launch.argv();
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a.contains("forced-model") || a.starts_with("--model")),
+            "{tail:?}: {argv:?}"
+        );
+    }
+}
+
+/// D12: a concrete `--model` on a local launch reaches Codex unchanged.
+#[test]
+fn a_concrete_model_reaches_a_local_launch_unchanged() {
+    let f = Fixture::new();
+    let launch = f.local(NAME, &["--model", "qwen3", "exec", "-"]);
+    launch.assert_started();
+    let argv = launch.argv();
+    assert_eq!(launch.count("--model"), 1, "{argv:?}");
+    assert!(
+        argv.windows(2).any(|pair| pair == ["--model", "qwen3"]),
+        "{argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|a| a.contains("model_reasoning_effort")),
+        "{argv:?}"
+    );
+}
+
 /// A `--` among the Codex arguments ends Codex's options: a hook-trust flag
 /// after it is prompt text, so amplihack still adds its own.
 ///

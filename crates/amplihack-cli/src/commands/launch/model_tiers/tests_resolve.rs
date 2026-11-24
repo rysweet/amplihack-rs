@@ -28,6 +28,7 @@ fn request<'a>(harness: &'a str, args: &'a [String], table: &'a Table) -> Reques
         force: None,
         default_model: None,
         through_gateway: false,
+        local_model: false,
     }
 }
 
@@ -341,6 +342,7 @@ fn a_gateway_launch_deletes_the_tier_and_says_why() {
         force: None,
         default_model: None,
         through_gateway: true,
+        local_model: false,
     });
     assert_eq!(
         out.argv,
@@ -375,6 +377,7 @@ fn a_forced_model_replaces_a_tier_and_keeps_the_tiers_effort() {
             force: Some("gpt-6.1-mini"),
             default_model: None,
             through_gateway: false,
+            local_model: false,
         });
         assert_eq!(model_of(&out), Some("gpt-6.1-mini"), "codex/{tier}");
         assert_eq!(
@@ -396,6 +399,7 @@ fn a_forced_model_supplies_one_where_the_command_has_none() {
         force: Some("claude-haiku-5-5"),
         default_model: None,
         through_gateway: false,
+        local_model: false,
     });
     assert_eq!(model_of(&out), Some("claude-haiku-5-5"), "{:?}", out.argv);
 }
@@ -419,6 +423,7 @@ fn a_forced_model_lands_before_the_end_of_options_marker() {
             force: Some("claude-haiku-5-5"),
             default_model: None,
             through_gateway: false,
+            local_model: false,
         });
         let marker = out
             .argv
@@ -454,6 +459,7 @@ fn a_forced_model_does_not_make_a_second_prompt_in_print_mode() {
         force: Some("claude-haiku-5-5"),
         default_model: None,
         through_gateway: false,
+        local_model: false,
     });
     assert!(
         rewrite_claude_passthrough(&out.argv).is_ok(),
@@ -473,6 +479,7 @@ fn a_forced_model_with_no_marker_is_appended_as_before() {
         force: Some("claude-haiku-5-5"),
         default_model: None,
         through_gateway: false,
+        local_model: false,
     });
     assert_eq!(
         out.argv,
@@ -494,6 +501,7 @@ fn a_forced_model_outranks_an_explicit_concrete_id() {
         force: Some("claude-haiku-5-5"),
         default_model: None,
         through_gateway: false,
+        local_model: false,
     });
     assert_eq!(model_of(&out), Some("claude-haiku-5-5"));
     assert!(
@@ -516,6 +524,7 @@ fn a_forced_model_does_not_route_past_the_gateway() {
         force: Some("claude-haiku-5-5"),
         default_model: None,
         through_gateway: true,
+        local_model: false,
     });
     assert_eq!(
         model_of(&out),
@@ -537,6 +546,7 @@ fn a_forced_model_that_does_not_validate_is_refused_and_the_tier_applies() {
         force: Some("--dangerously-skip-permissions"),
         default_model: None,
         through_gateway: false,
+        local_model: false,
     });
     assert_eq!(
         model_of(&out),
@@ -660,6 +670,7 @@ fn a_gateway_claude_launch_keeps_the_effort_and_still_says_why() {
         force: None,
         default_model: None,
         through_gateway: true,
+        local_model: false,
     });
     assert_eq!(out.argv, argv(&["-p"]), "the model pair is still deleted");
     assert_eq!(
@@ -682,4 +693,68 @@ fn a_column_with_no_effort_control_still_gets_no_effort() {
     let args = argv(&["--model", "strong"]);
     let out = resolve(&request("copilot", &args, table));
     assert_eq!(out.effort, None);
+}
+
+// -------------------------------------------------------------------------
+// A local-model Codex launch: the profile sets the model and the effort
+// -------------------------------------------------------------------------
+
+fn local<'a>(args: &'a [String], table: &'a Table, force: Option<&'a str>) -> Request<'a> {
+    Request {
+        force,
+        local_model: true,
+        ..request("codex", args, table)
+    }
+}
+
+#[test]
+fn a_local_launch_removes_the_tier_and_adds_no_effort() {
+    let table = Table::shipped();
+    for tier in Tier::ALL {
+        let args = argv(&["--model", tier.as_str(), "exec", "-"]);
+        let out = resolve(&local(&args, table, None));
+        assert_eq!(out.argv, argv(&["exec", "-"]), "{tier:?}");
+        assert_eq!(out.effort, None, "{tier:?}");
+        assert!(
+            matches!(out.notices.as_slice(), [Notice::LocalModel { tier: t, .. }] if *t == tier),
+            "{tier:?}: {:?}",
+            out.notices
+        );
+        let record = out.record.expect("a tiered launch is recorded");
+        assert_eq!(record.fallback, Some(Fallback::LocalModel));
+        assert_eq!(record.effective_model, None);
+        assert_eq!(record.effective_effort, None);
+    }
+}
+
+#[test]
+fn a_local_launch_passes_a_concrete_model_through() {
+    let table = Table::shipped();
+    let args = argv(&["--model", "qwen3", "exec", "-"]);
+    let out = resolve(&local(&args, table, None));
+    assert_eq!(out.argv, args);
+    assert!(out.notices.is_empty(), "{:?}", out.notices);
+    assert!(out.record.is_none());
+}
+
+#[test]
+fn a_local_launch_applies_no_forced_model_and_says_so() {
+    let table = Table::shipped();
+    for args in [
+        argv(&["exec", "-"]),
+        argv(&["--model", "qwen3", "exec", "-"]),
+    ] {
+        let out = resolve(&local(&args, table, Some("gpt-5")));
+        assert_eq!(out.argv, args, "no --model added or replaced");
+        assert!(
+            matches!(out.notices.as_slice(), [Notice::LocalModelForce { .. }]),
+            "{:?}",
+            out.notices
+        );
+        assert!(out.record.is_none());
+    }
+    let args = argv(&["--model", "strong", "exec", "-"]);
+    let out = resolve(&local(&args, table, Some("gpt-5")));
+    assert_eq!(out.argv, argv(&["exec", "-"]));
+    assert_eq!(model_of(&out), None);
 }
