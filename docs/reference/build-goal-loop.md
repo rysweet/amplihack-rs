@@ -756,7 +756,10 @@ recorded. No test reads recipe, document or prompt text. They are in
 | `old_tools` | One 1.2.213 caller's invocation of each changed tool runs against the new bundle |
 
 A gadugi scenario, `tests/gadugi/scenarios/issue-3129-build-loop.yaml`, covers
-the build loop end to end. It runs in CI only.
+the build loop end to end. A second, `tests/gadugi/scenarios/issue-3129-start-kinds.yaml`,
+starts a continuation of an existing branch and pull request, a quick-change
+and an investigation through `smart-orchestrator` and runs each to its end.
+Both run in CI only.
 
 ## Related
 
