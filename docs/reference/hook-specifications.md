@@ -1060,7 +1060,8 @@ on:
   renamed into place;
 - an inotify watch on `resume/prompted/` for a prompt marker renamed into
   place (the session moved on; see hook 6);
-- a pidfd on the hook's parent, the Claude Code process (the session exited);
+- a pidfd on the hook's parent, the process Claude Code runs the hook
+  command through, not Claude Code itself (that process exited);
 - a timeout of the time left until 7 days after the start, which ends the
   wait and never resumes.
 
@@ -1078,8 +1079,8 @@ deadline cannot be represented as a clock time), `read_swap()` reads the
 record, `stop_time(transcript, start)` returns the stop time or nothing,
 `pane_check()` returns the pane verdict (a pane proved to be this session's
 terminal, no pane, or a refusal with its reason), `send_keys(pane, key)`
-sends one key, and `session_alive_now()` checks the pidfd and the
-foreground process group without blocking; with no pidfd it reports the
+sends one key, and `session_alive_now(holder)` checks the pidfd and the
+holder's foreground state without blocking; with no pidfd it reports the
 session as not running, so the check before each key fails and no key is
 sent. Tests replace `Deps` with a fake that scripts the events.
 
@@ -1094,16 +1095,21 @@ the resume, and a wake records nothing:
   just before the commit; a named pane that is refused never falls back to
   the lookup; see [Resume keys](profile-command.md#resume-keys): the hook
   walks up its own ancestry to the nearest process whose standard input is
-  a terminal, the pane's `#{pane_tty}` must be that terminal, that process
-  must be its foreground process group, and Claude Code must be reading it),
+  a terminal, the holder; the pane's `#{pane_tty}` must be that terminal,
+  and the holder must be its foreground process group),
   and that pane is showing a screen the keys answer (read once with
   `tmux capture-pane -p`, matched against a closed list of six fixed
   phrases; see [Resume screen](profile-command.md#resume-screen)), it
   records the resume under its lock, then runs
   `tmux send-keys -t %N Escape`, then `C-u`, then `-l continue`, then
   `Enter`, as four separate commands, each waited on for its exit status.
-  Before each key it checks that the session is still running and still in
-  the terminal's foreground, so a session that exits or is suspended
+  The hook's parent is not consulted for the proof, because Claude Code
+  runs the hook command through a process of its own
+  ([#3156](https://github.com/rysweet/amplihack-rs/issues/3156)).
+  Before each key it checks that the session is still running and that the
+  holder is still the terminal's foreground group. The holder is the
+  ancestor of the hook that the pane check found, not necessarily Claude
+  Code itself. A session that exits or is suspended
   (Ctrl-Z) gets no more keys. A failure stops the remaining keys, releases
   the record so the next room event tries again, and ends as
   `resume-keys-failed`, still exit `0`. If the release fails, a
@@ -1123,13 +1129,12 @@ the resume, and a wake records nothing:
   outcome names why there was no keys path: `not-resumed` with
   `detail=no-tmux-pane` when no pane was named or found (a fixed
   value, never a pane id or socket path), `pane-unverified` when a pane was
-  named or found but not proved to be this session's own terminal,
-  `pane-not-reading` when it was the terminal but Claude Code is not the
-  process reading it, and `screen-unrecognised` when the pane was proved
+  named or found but not proved to be this session's own terminal, and
+  `screen-unrecognised` when the pane was proved
   but its screen matched no phrase (`detail=screen-unknown`) or could not
   be read (`detail=screen-unreadable`). `screen-unrecognised` writes one
   further fixed line before the continue message, so the refusal reaches
-  the model and not only the log. Otherwise the four differ only in the log
+  the model and not only the log. Otherwise the three differ only in the log
   line. None is recorded, so the event stays armed and the next room event
   tries again. Before it wakes, the hook reads the duplicate rules once
   more, without the lock, and logs `duplicate` and exits `0` if the event
@@ -1162,8 +1167,8 @@ server named by `$TMUX`, or the default server when `$TMUX` is unset; both
 are trusted because they belong to the same user as the session.
 
 **Exit codes.** `2` for the outcomes that wake the session: `not-resumed`,
-`pane-unverified`, `pane-not-reading` and `screen-unrecognised`. The
-continue message is written for exactly those four, and none of them is
+`pane-unverified` and `screen-unrecognised`. The
+continue message is written for exactly those three, and none of them is
 recorded. Every other outcome, including
 `resumed-keys`, `resume-keys-failed`, `watch-lost`, `no-capacity-timeout`,
 `moved-on`, `session-gone`, `disabled`, `duplicate`,

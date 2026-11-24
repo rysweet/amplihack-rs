@@ -82,12 +82,11 @@ fn the_polling_rows_are_gone() {
 
 /// Every outcome the hook logs, for the documentation checks below.
 /// `Outcome::NotLimit` is not logged, so it is not here.
-const OUTCOMES: [Outcome; 18] = [
+const OUTCOMES: [Outcome; 17] = [
     Outcome::NotResumed,
     Outcome::ResumedKeys,
     Outcome::ResumeKeysFailed,
     Outcome::PaneUnverified,
-    Outcome::PaneNotReading,
     Outcome::ScreenUnrecognised,
     Outcome::WatchLost,
     Outcome::SwapStale,

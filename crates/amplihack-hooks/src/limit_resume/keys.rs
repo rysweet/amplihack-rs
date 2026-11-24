@@ -23,14 +23,17 @@
 //! session, by the same proof and with the same refusal words. The listing
 //! is matched in memory and dropped; no pane id or tty from it is logged.
 //!
-//! The ownership proof does not assume that Claude Code itself holds the
-//! pane's terminal. On Claude Code 2.1.329 the hook's parent has a pipe on
-//! its standard input, so a check that read `/proc/<parent>/fd/0` and
-//! compared it with `#{pane_tty}` could never match, and every standing
-//! session silently took the exit-2 wake. Instead [`tty_ancestor`] walks up
-//! the hook's own ancestry to the nearest process whose standard input is a
-//! terminal, and the pane must be that terminal, that process must be its
-//! foreground process group, and the session must be reading it (S3). Both
+//! The ownership proof does not treat the hook's parent as Claude Code.
+//! Claude Code runs the hook command through a process of its own, which
+//! has a pipe on its standard input and a process group of its own (#3156),
+//! so a check that read `/proc/<parent>/fd/0` and compared it with
+//! `#{pane_tty}` could never match, and neither could a check that the
+//! parent's group is the terminal's foreground group. Instead
+//! [`tty_ancestor`] walks up the hook's own ancestry to the nearest process
+//! whose standard input is a terminal, the holder, and the pane must be
+//! that terminal and the holder must be its foreground process group (S3).
+//! [`PaneCheck::Ready`] carries the holder's pid, and the check before each
+//! key asks again whether that same process is still in the foreground. Both
 //! of the old predicates, [`same_tty`] and [`ProcStat::foreground`], are
 //! kept; only the process they are applied to changed.
 //!
@@ -363,8 +366,8 @@ pub fn parse_stat(text: &str) -> Option<ProcStat> {
     Some(ProcStat { ppid, pgrp, tpgid })
 }
 
-/// Whether tmux's `#{pane_tty}` output names `stdin_target`, the file
-/// Claude Code's stdin points at: at most 256 bytes and one trailing
+/// Whether tmux's `#{pane_tty}` output names `stdin_target`, the file the
+/// terminal's holder has on its stdin: at most 256 bytes and one trailing
 /// newline, an absolute path under `/dev/` without `..`, and the same path.
 pub fn same_tty(pane_tty_output: &[u8], stdin_target: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
@@ -548,16 +551,21 @@ pub fn tty_ancestor<V: ProcView + ?Sized>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaneCheck {
     /// The pane is this session's own terminal: the keys may be sent.
-    Ready(Pane),
+    Ready {
+        /// The proved pane.
+        pane: Pane,
+        /// The holder: the nearest ancestor of the hook that has the pane's
+        /// terminal on its standard input and is in that terminal's
+        /// foreground process group. The check before each key watches
+        /// this process.
+        holder: u32,
+    },
     /// No pane was named, and none was found on the session's terminal, so
     /// there is nothing to check.
     None,
     /// A pane was named or found but not proved to be this session's
     /// terminal. The reason is one of [`UNVERIFIED_REASONS`].
     Unverified(&'static str),
-    /// The pane is this session's terminal, but the session is not the
-    /// process reading it.
-    NotReading,
 }
 
 /// The pane check once the terminal's holder is known: the whole of the
@@ -569,15 +577,16 @@ pub enum PaneCheck {
 /// outside this function is what lets every caller walk the ancestry
 /// exactly once.
 ///
-/// `Ready` needs all of: `pane_tty_output` naming the holder's own terminal
-/// ([`same_tty`]); the holder being that terminal's foreground process
-/// group ([`ProcEntry::foreground`]); and `parent`, the session,
-/// sharing that foreground group, so the keys reach the session and not a
-/// launcher or a shell prompt behind it. Every other path refuses.
+/// `Ready` needs both of: `pane_tty_output` naming the holder's own
+/// terminal ([`same_tty`]), and the holder being that terminal's foreground
+/// process group ([`ProcEntry::foreground`]). Every other path refuses. The
+/// hook's parent is not consulted: it is the process Claude Code runs the
+/// hook command through, in a process group of its own (#3156), and it was
+/// already read by the walk. `Ready` carries `holder_pid`, so the check
+/// before each key watches the process proved here.
 pub(crate) fn check_pane_held<V: ProcView + ?Sized>(
     view: &V,
     holder_pid: u32,
-    parent: u32,
     pane: Pane,
     pane_tty_output: &[u8],
 ) -> PaneCheck {
@@ -593,13 +602,10 @@ pub(crate) fn check_pane_held<V: ProcView + ?Sized>(
     if !holder.foreground() {
         return PaneCheck::Unverified(NOT_FOREGROUND);
     }
-    let Some(session) = view.entry(parent) else {
-        return PaneCheck::Unverified(UNREADABLE_PROC);
-    };
-    if session.pgrp != holder.tpgid {
-        return PaneCheck::NotReading;
+    PaneCheck::Ready {
+        pane,
+        holder: holder_pid,
     }
-    PaneCheck::Ready(pane)
 }
 
 /// The pane check, with `/proc` and tmux's answer supplied: a pane id that
@@ -608,7 +614,6 @@ pub(crate) fn check_pane_held<V: ProcView + ?Sized>(
 pub fn check_pane_with<V: ProcView + ?Sized>(
     view: &V,
     hook_pid: u32,
-    parent: u32,
     euid: u32,
     pane: Option<Pane>,
     pane_tty_output: &[u8],
@@ -623,7 +628,7 @@ pub fn check_pane_with<V: ProcView + ?Sized>(
         Ok(pid) => pid,
         Err(reason) => return PaneCheck::Unverified(reason),
     };
-    check_pane_held(view, holder_pid, parent, pane, pane_tty_output)
+    check_pane_held(view, holder_pid, pane, pane_tty_output)
 }
 
 /// The pane check with `/proc` and both tmux questions supplied: the pure
@@ -645,7 +650,6 @@ pub fn check_pane_with<V: ProcView + ?Sized>(
 pub fn find_pane_with<V, L, T>(
     view: &V,
     hook_pid: u32,
-    parent: u32,
     euid: u32,
     env_pane: Option<Pane>,
     list_panes: L,
@@ -665,7 +669,7 @@ where
             Err(reason) => return PaneCheck::Unverified(reason),
         };
         let out = pane_tty(&pane).unwrap_or_default();
-        return check_pane_held(view, holder_pid, parent, pane, &out);
+        return check_pane_held(view, holder_pid, pane, &out);
     }
     let Ok(holder_pid) = tty_ancestor(view, hook_pid, euid) else {
         return PaneCheck::None;
@@ -679,7 +683,7 @@ where
         return PaneCheck::None;
     };
     let out = pane_tty(&pane).unwrap_or_default();
-    check_pane_held(view, holder_pid, parent, pane, &out)
+    check_pane_held(view, holder_pid, pane, &out)
 }
 
 /// [`find_pane_with`] over `view`, with the real tmux calls: one
@@ -689,11 +693,10 @@ where
 pub fn check_pane_owned_in<V: ProcView + ?Sized>(
     view: &V,
     hook_pid: u32,
-    parent: u32,
     euid: u32,
     env_pane: Option<Pane>,
 ) -> PaneCheck {
-    find_pane_with(view, hook_pid, parent, euid, env_pane, list_panes, pane_tty)
+    find_pane_with(view, hook_pid, euid, env_pane, list_panes, pane_tty)
 }
 
 /// The pane check against the live `/proc` tree and the tmux server
@@ -708,11 +711,10 @@ pub fn check_pane_owned_in<V: ProcView + ?Sized>(
 /// are listed only when the environment names none, and the listing is
 /// matched and dropped. There is no retry, delay or poll: the check runs
 /// once.
-pub fn check_pane_owned(pane: Option<&Pane>, parent: u32) -> PaneCheck {
+pub fn check_pane_owned(pane: Option<&Pane>) -> PaneCheck {
     check_pane_owned_in(
         &ProcFs,
         std::process::id(),
-        parent,
         amplihack_utils::secure_files::euid(),
         pane.cloned(),
     )
