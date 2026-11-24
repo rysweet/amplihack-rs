@@ -289,6 +289,15 @@ impl Reason {
             Self::Projected => "projected",
         }
     }
+    /// Issue #3181: a swap the live login needs, because it is at or near
+    /// its limit or its reading near the threshold cannot be trusted. Such a
+    /// swap is not refused for the identity read budget.
+    pub fn live_needs_it(self) -> bool {
+        match self {
+            Self::Threshold | Self::FailedProbe | Self::Projected => true,
+            Self::Upgrade | Self::OverflowIn | Self::OverflowOut | Self::PlanRoom => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

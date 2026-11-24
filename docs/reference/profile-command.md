@@ -7418,6 +7418,16 @@ before any swap back to it.
   `damp: <name> swapped away exhausted; no later reading shows room`, and
   the login is not chosen on its new figures.
 
+A reading does not lift damping when it is below the login's
+[highest reading](#highest-reading-in-a-window) for the same window. A login
+left at 91% of its session and then reported at 70% in the same window keeps
+its entry, because use does not fall within one window and the lower figure
+is stale. The same applies to the week figure. A reading taken at or before
+the swap away does not lift damping either. A reading taken before the start
+of the previous cycle's measurement is rejected earlier, by the
+[freshness gate](#rotate-reading-freshness-and-swap-back-damping), and never
+reaches the damping check.
+
 A damped login remains a plan login: it counts towards the
 [plan pool](#plan-pool) and the rules that keep the rotator off
 [overflow](#rotate-decision-order) as before.
@@ -7464,6 +7474,50 @@ an entry whose name fails the [name rules](#name-rules), or whose time is
 not above `0` or is more than 300 seconds in the future, is dropped, and
 the rest of the ledger is used. A bad entry is dropped rather than
 reported as `RotateInconsistent` so that it cannot stop rotation.
+
+##### Highest reading in a window
+
+The ledger keeps, for each login, the highest session figure and the highest
+week figure the rotator has seen, each with the reset time of its window, in
+the optional `high_water` field:
+
+```json
+"high_water": { "work": { "session": { "used": 91.0, "resets_at": 1793642400 } } }
+```
+
+A reading is below the stored figure when it is lower than it, is in the same
+window (the same reset time, within the tolerance used for the
+[live series](#stale-live-reading)) and the reset has not passed. Such a
+reading does not rank the login as having room and does not lift damping. The
+decision uses the highest figure for a measured login, in place of the lower
+reading, for the live login and for each candidate; the `cycle` line still
+shows the reading as read. A login whose reading is exhausted or failed is
+left as it was read.
+
+The raw readings are not changed. They stay in the probe results the cycle
+holds, in the [usage history](#usage-history) and in the
+[capacity file](#capacity-file); only the figures used to decide are raised.
+
+- A reading with a later reset time replaces the stored figure.
+- Once the stored reset time has passed, the entry is dropped and any reading
+  is accepted.
+- A reading with no reset time cannot be placed in a window. It does not
+  raise the stored figure. While the stored figure is live, that is, its reset
+  time has not passed, the reading counts as below it: it cannot lift damping
+  or rank the login as having room, whatever the stored figure is.
+
+`profile usage` shows each session and week figure at no less than the stored
+figure for the current window. It reads the ledger and never writes it.
+
+The field holds profile names, percentages and whole epoch seconds, never an
+e-mail address, account ID or token. The map holds at most 16 entries, the
+ones with the latest reset times dropped first. On load, an entry that does
+not parse, whose name fails the [name rules](#name-rules), or which holds no
+figure is dropped, as is a figure that is not a number from `0` to `100` or
+whose reset time has passed or is more than 8 days ahead. The rest of the
+ledger is used. When anything is dropped, one warning gives the number dropped
+for each reason, without names or figures. Older binaries do not read the
+field: it is left out when the ledger is written for them.
 
 #### Rotate live reading freshness
 
@@ -7560,6 +7614,16 @@ The live reading is *stale* when any of these holds:
   point in the same session window, or in a window whose reset time is
   unknown, or comes from an earlier window. Its observation time does not
   matter: use never falls within one window.
+
+- **Below the highest reading.** The reading is lower than the login's
+  [highest reading](#highest-reading-in-a-window) in the same window. The
+  decision uses the highest figure in its place.
+
+A reading of a target is also stale when it was taken before the start of the
+previous cycle's measurement or before the last swap. A reading taken during
+the current cycle's own measurement is never stale on this ground. A stale target
+reading is [read again](#re-reads) within the existing limits and cannot rank
+the login as having room until it is.
 
 A stale live reading is read once more in the same way as a
 [re-read](#re-reads) of a target: by the [probe method](#probe-method),
@@ -9409,6 +9473,49 @@ A cause never holds a token, an account or server text.
 | `login file not trusted` | The login file is missing where a login is required, is a symlink or not a regular file, belongs to another owner, can be written by group or others, has more than one link, or is on a different device from its directory. A [seeding scan](#seeding-a-record) treats a definitely missing login in another profile as no login, not as this cause. |
 | `login changed during read` | The file or directory changed between the checks before and after the read. |
 | `identity read budget used up` | The cycle's 30-second identity limit ran out before this read started. |
+
+##### Identity read budget
+
+Each cycle has one identity-read allowance of 30 seconds. It is a time
+allowance, not a count of reads: a read that starts after the 30 seconds have
+passed is refused with `identity read budget used up`.
+
+- **What spends it.** Every bound identity read that the cycle makes with its
+  allowance, wherever in the cycle it falls: the checks of a login's file and
+  account before they are trusted, whether they come from recovery, seeding,
+  the [revalidation](#rotate-revalidation) snapshot or a swap. A read checks the
+  allowance before it starts, so one that has started is not cut short by it.
+- **What does not spend it.** The usage measurement and its
+  [re-reads](#re-reads), including `stale live reading; re-read` and
+  `reread: <name>`. The time they take is taken out of the allowance, so a
+  cycle that logs re-reads has the same allowance as one that does not.
+- **What refills it.** The start of the next cycle. Nothing else does: there
+  is no timer, retry or background refill. A dry run starts with a full
+  allowance in the same way.
+- **Who else can spend it.** Nothing outside the cycle. The allowance belongs to
+  the rotator process, so `profile usage` run by another session cannot spend
+  it, and reading the usage table cannot stop a swap.
+- **Swaps the live login needs.** A swap away from the live login whose reason
+  is `threshold`, `failed-probe` or `projected` is not subject to the allowance.
+  Once the cycle has decided on such a swap, the revalidation snapshot and the
+  reads of the swap are not refused with `identity read budget used up`. There
+  is no reserve to draw on and no count: the allowance is set aside for that
+  swap until the next cycle begins. Each read keeps its 5-second timeout, and
+  every other check still applies, including the bound-identity checks, swap
+  authorization and the scan of other profiles. A swap for any other reason
+  (`upgrade`, `overflow-in`, `overflow-out`, `plan-room`) is refused when the
+  allowance is spent, as before, and the ledger records the refusal.
+
+For example, the live login is at 91% with `--session-at 90`, and the
+allowance is spent by the reads at the start of the cycle. The swap goes ahead:
+
+```
+2026-11-24T20:03:17Z cycle live=work work:s=91%,w=14% spare:s=71%,w=25%
+2026-11-24T20:03:18Z swap work->spare live s=91% w=14% target s=71% w=25% reason=threshold
+```
+
+With `reason=upgrade` in the same state, the cycle stays and writes
+`ALERT: swap refused: trusted login identity unavailable: identity read budget used up`.
 
 The ALERT for the live login is:
 

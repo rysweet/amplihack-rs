@@ -29,6 +29,8 @@ use super::ledger::{RotateLedger, RotateState};
 ///   excluded live login reads it, and without it that proof falls back to
 ///   `swapped_at`, which only ever makes rule 2 apply more often: nothing
 ///   is moved on evidence that is not proof.
+/// - `high_water` (issue #3181), read only by this binary's cycle and
+///   `profile usage`. An older rotator then ranks on the figures it reads.
 ///
 /// `overflow_blocked` is kept (issue #3105, which reverses the trade-off
 /// #2890 accepted). A block a failed agent step records for a plan login
@@ -57,6 +59,8 @@ pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
         out.login_identity = None;
         // Issue #1870: only this binary's freshness gate reads it.
         out.swapped_away.clear();
+        // Issue #3181: only this binary reads the highest readings.
+        out.high_water = Default::default();
         out.advisory_alert = None;
         // Issue #2218: only this binary's local proof of an excluded live
         // login reads it.

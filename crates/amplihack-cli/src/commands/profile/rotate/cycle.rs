@@ -11,7 +11,7 @@ use super::held::held_cycle;
 use super::history;
 use super::identify::LiveId;
 use super::identify::excluded_offline::{exclude_paused, unproven_live};
-use super::ledger::{RotateLedger, newer_than};
+use super::ledger::RotateLedger;
 use super::log::{msg, shown, shown_of};
 use super::observe::{Measurement, Snap, live_name, platform_block_reason};
 use super::overflow::Tag;
@@ -171,6 +171,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     ctx.stored
         .keep(first.measured_live(), m.probed.as_ref(), m.measured_at);
     ctx.identity_budget.exclude_measurement(measuring.elapsed());
+    // Issue #3181: a swap the live login needs is never refused for the budget.
+    if matches!(m.decision, Decision::Swap { reason, .. } if reason.live_needs_it()) {
+        ctx.identity_budget.waive();
+    }
     m.fresh_lines.iter().for_each(|line| out.emit(now(), line));
     let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
     note_home_key(ctx, &mut out, &first);
@@ -210,7 +214,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             // record, and the held cycles after it would then write a bare
             // `held`, so the limit-resume hook would never wake sessions
             // stopped before the switch (#1691).
-            if !newer_than(l.last_cycle.as_ref(), m.measured_at) {
+            if !outcome::newer_than(l.last_cycle.as_ref(), m.measured_at) {
                 let at = Some(m.measured_at);
                 save(ctx, &mut l, CycleOutcome::Skipped, t, at, None, None)?;
             }

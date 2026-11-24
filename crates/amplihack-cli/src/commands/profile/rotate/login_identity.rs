@@ -141,6 +141,9 @@ fn stamp(dir: &Path) -> Result<Stamp, &'static str> {
 /// identity [`Reader::bound`] takes from local files, never a request.
 pub struct Budget {
     started: Cell<Instant>,
+    /// Issue #3181: set for the rest of a cycle that has decided on a swap
+    /// the live login needs, so that swap is never refused for the budget.
+    waived: Cell<bool>,
     local_only: RefCell<Vec<PathBuf>>,
     home: RefCell<Option<PathBuf>>,
 }
@@ -149,17 +152,34 @@ impl Budget {
     pub fn new() -> Self {
         Self {
             started: Cell::new(Instant::now()),
+            waived: Cell::new(false),
             local_only: RefCell::new(Vec::new()),
             home: RefCell::new(None),
         }
     }
-    /// Begin the next cycle's identity work.
+    /// Begin the next cycle's identity work: a full allowance, no waiver.
     pub fn reset(&self) {
         self.started.set(Instant::now());
+        self.waived.set(false);
+    }
+    /// Issue #3181: the rest of this cycle's identity reads are not bound
+    /// by the allowance. Each read stays bound by its own timeout, and every
+    /// other identity check still runs. Cleared by [`Budget::reset`].
+    pub fn waive(&self) {
+        self.waived.set(true);
     }
     /// Whether another bounded identity read may start.
     pub fn available(&self) -> bool {
-        self.started.get().elapsed() < identity_budget()
+        self.waived.get() || self.started.get().elapsed() < identity_budget()
+    }
+    /// Test only: leave the allowance used up without waiting for it.
+    #[cfg(test)]
+    pub fn spend(&self) {
+        let back = identity_budget() * 2;
+        let origin = Instant::now()
+            .checked_sub(back)
+            .expect("the monotonic clock is far enough from its origin");
+        self.started.set(origin);
     }
     /// Exclude time spent measuring usage from the identity-work deadline.
     pub fn exclude_measurement(&self, elapsed: Duration) {
