@@ -73,10 +73,11 @@ pub(super) fn archive(root: &Path, expected: Option<&[u8]>) -> Result<bool> {
     .with_context(|| context(root))
 }
 /// Resolve only HOME metadata; no journal parsing or CODEX_HOME access.
+///
+/// Reset takes the package lock without waiting: when another process holds
+/// it, reset declines at once and leaves the journal untouched, so startup
+/// never stalls behind a running installer.
 pub(super) fn reset() -> Result<()> {
-    reset_with_timeout(Duration::from_secs(10))
-}
-fn reset_with_timeout(timeout: Duration) -> Result<()> {
     let caller = home_dir()?;
     let root = root()?;
     path_scope::with_scope(&root, &caller, || {
@@ -88,9 +89,9 @@ fn reset_with_timeout(timeout: Duration) -> Result<()> {
                 super::super::paths::sanitize_path(&lock_path)
             )
         })?;
-        acquire_lock(&lock, timeout).with_context(|| {
+        acquire_lock(&lock).with_context(|| {
             format!(
-                "cannot acquire Codex recovery lock {}; another installer may be running; retry --reset-recovery after it finishes",
+                "cannot acquire Codex recovery lock {}; another installer is running; retry --reset-recovery after it finishes",
                 super::super::paths::sanitize_path(&lock_path)
             )
         })?;
@@ -103,26 +104,18 @@ fn reset_with_timeout(timeout: Duration) -> Result<()> {
     .with_context(|| context(&root))
 }
 
-// Keep fs2's package-lock primitive on every platform; never block indefinitely.
-fn acquire_lock(lock: &fs::File, timeout: Duration) -> std::io::Result<()> {
-    let started = std::time::Instant::now();
-    loop {
-        match FileExt::try_lock_exclusive(lock) {
-            Ok(()) => return Ok(()),
-            Err(error)
-                if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
-                    || error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
+/// One nonblocking attempt on fs2's package lock; contention is reported at once.
+fn acquire_lock(lock: &fs::File) -> std::io::Result<()> {
+    FileExt::try_lock_exclusive(lock).map_err(|error| {
+        if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+            std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "the Codex recovery lock is held by another process",
+            )
+        } else {
+            error
         }
-        let remaining = timeout.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "timed out waiting for the Codex recovery lock",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100).min(remaining));
-    }
+    })
 }
 
 #[cfg(all(test, unix))]
@@ -131,22 +124,24 @@ mod tests {
     use crate::commands::install::codex_plugin::recovery_test_support::Fixture;
 
     #[test]
-    fn reset_lock_timeout_preserves_journal_and_retries_after_release() {
+    fn reset_declines_at_once_while_lock_is_held_and_succeeds_after_release() {
         let f = Fixture::new();
         let bytes = b"unparseable journal";
         fs::write(f.root.join("pending.json"), bytes).unwrap();
         fs::write(f.codex.join("config.toml"), b"native configuration").unwrap();
         let held = open_package_lock(&f.root).unwrap();
         held.lock_exclusive().unwrap();
-        // Zero budget exercises contention without sleeps or clock-based assertions.
-        let error = format!("{:#}", reset_with_timeout(Duration::ZERO).unwrap_err());
-        for expected in ["timed out", "codex.install.lock", "retry --reset-recovery"] {
-            assert!(error.contains(expected), "{error}");
-        }
+        // The held lock makes reset return an error at once, not wait.
+        let error = reset().unwrap_err();
+        let io = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .expect("lock contention is reported as an I/O error");
+        assert_eq!(io.kind(), std::io::ErrorKind::WouldBlock, "{error:#}");
         assert_eq!(fs::read(f.root.join("pending.json")).unwrap(), bytes);
         assert!(f.archives().is_empty());
         drop(held);
-        reset_with_timeout(Duration::ZERO).unwrap();
+        reset().unwrap();
         assert_eq!(fs::read(f.archives().pop().unwrap()).unwrap(), bytes);
         assert_eq!(
             fs::read(f.codex.join("config.toml")).unwrap(),
