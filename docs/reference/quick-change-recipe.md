@@ -463,10 +463,24 @@ When a `pre-commit` or `pre-push` hook rejects the commit or push, the step uses
 
 ## Task pull request lines and finishing in the loop
 
-When the task gives its own pull request title and description lines, they are kept exactly, and the template body does not replace them. Three steps and one tool carry this (see [Build Goal Loop](./build-goal-loop.md#quick-change)):
+When the task gives its own pull request title and description lines, they are kept exactly, and the template body does not replace them. The steps below carry this (see [Build Goal Loop](./build-goal-loop.md#quick-change)):
 
 - `quick-change-pr-text` is a fast-tier agent step that runs after the push, when the verdict is `proceed` and `quick_change_push_repaired` is set. It returns the title and body the task gives, with its lines exactly, as `quick_change_pr_text`, or an empty title when the task gives none. It is non-fatal.
-- `quick_change_create_pr.sh` creates the pull request. With written files that pass validation, the secret screen and the mention and closing-keyword filter, it uses them verbatim and posts the template report (Request, Diff, Checks) as one comment. Without files, it derives the title from the first 72 characters of the task and the body from its first 4,000 bytes, as in [Pull request](#pull-request). It then reads the text back, corrects it with one `gh pr edit` if needed, and records any remaining difference as a warning and a short comment. It does not end the run. `gh pr create` runs without the former outer timeout.
+- `quick_change_create_pr.sh` creates the pull request. It acts on `quick_change_pr_text` as the table below shows.
+
+| `quick_change_pr_text` | Result |
+| --- | --- |
+| An object with `title` `""` and a string `body` | The task gives no PR lines. The title comes from the first 72 characters of the task and the body from its first 4,000 bytes, as in [Pull request](#pull-request) |
+| A non-empty title that passes every check | The title and body are used byte for byte, and the template report (Request, Diff, Checks) is posted as one comment |
+| A non-empty title that fails a check | Nothing is created. Exit 1 |
+| Missing, unparseable, not an object, or a non-string `title` or `body` | Nothing is created. Exit 1 |
+
+A refusal prints `ERROR: quick-change-create-pr: check=<key>: <reason>; nothing was created and the work goes to the build loop`, leaves stdout empty and exits 1. The keys are `pr-text`, `title`, `body` (a title with an empty body), `secret-screen` (the shared secret screen) and `references` (a mention or closing keyword that no source allows), with the unread clause when operator guidance could not be read. `quick-change-finish-in-loop` then takes the work. A failed write of a context value is reported, and is not treated as an empty file.
+
+After creation, the tool reads the text back, corrects it with one `gh pr edit` if needed, and records any remaining difference as a warning and a short comment. It does not end the run. `gh pr create` runs without the former outer timeout.
+
+The steps after the tool behave as follows:
+
 - Commit, push and create-pr are non-fatal. `quick-change-finish-in-loop` runs `default-workflow` (now the goal loop) when the verdict is `proceed` and no pull request exists, with `existing_branch` set from the worktree's branch, the task, and a fixed hand-over note. A failed commit therefore continues in the loop with the worktree and the failure, and does not end the run.
 
 Step 04 of `workflow-worktree` links the launch checkout's git-ignored `.venv` and `.venv-*` folders into the quick-change worktree, so a hook that calls `.venv/bin/python` passes.

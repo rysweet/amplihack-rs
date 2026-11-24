@@ -13,11 +13,14 @@
 //! - `old_tools`: 1.2.213 callers of the changed tools still work (AC17).
 //! - `pr_text`: the read-back and single correction of PR text.
 //! - `quick_change`: quick-change keeps the task's PR lines (AC8).
+//! - `guidance`: operator guidance and the PR-text allow list (A1).
+//! - `run_script`: the build run script's loop exit table and report outcomes (A2 to A4).
 //! - `routing`: post-loop steps skip repeated checks (AC14).
 //! - `loop_drive`: the build goal through the real shared loop (AC6, AC9, AC13).
 
 mod claim_check;
 mod goal_tool;
+mod guidance;
 mod host_inputs;
 mod issue_reference;
 mod loop_drive;
@@ -26,4 +29,5 @@ mod pr_ready;
 mod pr_text;
 mod quick_change;
 mod routing;
+mod run_script;
 pub(crate) mod tools;

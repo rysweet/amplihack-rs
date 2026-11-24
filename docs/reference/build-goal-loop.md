@@ -45,8 +45,10 @@ This page is the specification for the build side of issue #3129. It closes
 
 ## How a build run goes
 
-`default-workflow` version 4.0.0 has five steps, each with
-`recovery: {replay: never}`:
+`default-workflow` version 4.0.0 has five build steps, each with
+`recovery: {replay: never}`, and seven Azure DevOps steps that are described
+under [Azure DevOps builds](#azure-devops-builds). The build steps run when
+`remote_host_type` is `github` or `other`, or empty:
 
 | Step | What it does |
 | --- | --- |
@@ -54,7 +56,7 @@ This page is the specification for the build side of issue #3129. It closes
 | `workflow-worktree` | The existing recipe. Step 04 creates the worktree and, for a new branch, links host inputs into it. |
 | `build-goal-setup` | Runs `autodrive_build_run.sh setup`. Creates the state folder, records the run's branch and worktree, and links host inputs into the worktree, which also covers a run on an existing branch. |
 | `build-loop` | Runs `autodrive_build_run.sh loop`, which runs the shared recipe `autodrive-goal-loop` as its own recipe run, with `autodrive_build_goal.sh` as the goal tool and `skills/default-workflow/goal-build-pr.md` as the goal text, and passes it the context the goal tool reads. Output: `build_loop_result`, the loop's end line from `loop-end.json`. A sub-recipe step would merge the loop's context back into the run and its callers, so the build's state folder would replace the `autodrive_state_dir` that `autodrive-build` and `auto-drive-to-merge` read after the build. |
-| `build-report` | Runs `autodrive_build_run.sh report`. Non-fatal. Writes `workflow_result` from the loop's end and the pull request's live state. |
+| `build-report` | Runs `autodrive_build_run.sh report`. Non-fatal, and it runs once, after the loop's last action. Writes `workflow_result` from the loop's end, the pull request's live state and the outcome ledger. Besides the report, it removes only the temporary files the run made outside its state folder and names each one in the log. |
 
 The agent in each turn works on the branch the run created. The worktree and
 branch are never removed by the build run, because callers such as
@@ -63,10 +65,10 @@ returns. This closes the cleanup-order failure in which a cleanup step removed
 the worktree that a later step needed.
 
 The phase recipes (`workflow-design`, `workflow-tdd`, `workflow-publish`,
-`workflow-finalize` and the others) are no longer called by new runs. They stay
-for one release with the same names, inputs and step ids, because a 1.2.213 run
-that has already loaded the old `default-workflow` calls them by name at step
-time. Their removal is recorded in a follow-up issue.
+`workflow-finalize` and the others) are called only on the Azure DevOps route
+(see [Azure DevOps builds](#azure-devops-builds)). They stay for one release
+with the same names, inputs and step ids, because a 1.2.213 run that has
+already loaded the old `default-workflow` calls them by name at step time.
 
 ## Inputs and outputs
 
@@ -273,9 +275,11 @@ comments, never in the description.
   `fixed`, `close`, `closes`, `closed`, `resolve`, `resolves`, `resolved`
   followed by `#N` or an issue URL), are refused with `invalid-args` unless the
   task text, the goal notes, `closing_reference`, the context `issue_number` or
-  the turn's guidance contains them. This stops injected text from notifying
+  operator guidance contains them. This stops injected text from notifying
   people or closing other issues at a later merge. The refusal names the token
-  so the agent can raise it in a comment. Email addresses do not count as
+  in `refused` so the agent can raise it in a comment. See
+  [Guidance and required outcomes](#guidance-and-required-outcomes) for how
+  guidance is read. Email addresses do not count as
   mentions.
 - The shared secret screen covers the title, the body, `publish` text, the
   quick-change report comment and `quick_change_pr_text`. It does not cover
@@ -401,16 +405,53 @@ any conflict, and commits and pushes without force.
 ## Guidance and required outcomes
 
 Guidance is part of the goal. Where guidance and the task text differ, the later
-guidance governs. How the shared driver reads guidance, before and after a pull
-request exists, depends on the shared loop; see
-[Notes for the shared loop](#notes-for-the-shared-loop).
+guidance governs. The shared driver reads guidance at the start of each turn.
+The goal text also names three long actions, the full test suite, a review round
+and a wait for CI, and tells the agent to read guidance again before each of
+them. Nothing in code times this.
+
+When `open-pr` checks mentions and closing keywords, it also reads the guidance
+the run has received. `build_allow_text` in `autodrive_build_lib.sh` runs
+`amplihack recipe guidance show --operator-only`, passing the pull request's URL
+when `pr.json` holds one that matches
+`https://github.com/<owner>/<repo>/pull/<n>`, and adds the text to the allow
+list. A malformed URL is dropped and the run's own folder is still read.
+
+- `--operator-only` leaves out entries that an agent step added with
+  `recipe guide --from-step`, so a build cannot widen its own list by writing
+  guidance to itself. It guards against mistakes. It is not a trust boundary:
+  the label is written by the CLI, and the turn agent holds the same `gh` login.
+- The read fails closed. The guidance text is appended to the allow list only
+  when the command exits 0, and the scratch file holding it is removed in every
+  case. When the read fails, for example on an older binary that rejects
+  `--operator-only` with exit 2, the allow list is the task-only list, and
+  `open-pr` adds `guidance_unread` (the exit code) to its result and the
+  unread clause to its summary.
+- A reference found in none of the sources is refused as an action result. The
+  run carries on, and the agent can raise it with `publish`.
+- A guidance header of the form `user@domain` would allow `@domain`. The value
+  comes from the operator's own account, so this is accepted.
+- Guidance text appears only in the plain output of `show` and in a 0600
+  scratch file. It never reaches `--json`, argument lists, logs, turn records or
+  `workflow_result`.
 
 Every required outcome in the task text or in guidance is listed in the outcome
 ledger each turn, with whether it is met. The goal text tells the agent to
-choose `mark-ready` only when each outcome is met, or rejected with a reason in
-a pull request comment. Nothing in code checks this; the ledger is the agent's
-recorded judgement. The shared `ready` ending posts the ledger as a pull request
-comment.
+choose `mark-ready` once each outcome a build can meet is met, or rejected with
+a reason in a pull request comment. An outcome that only a later run can meet,
+such as a merge, stays `unmet` and says so in its evidence. Nothing in code
+checks this; the ledger is the agent's recorded judgement. The shared `ready`
+ending posts the ledger as a pull request comment.
+
+`build-report` copies the ledger into `workflow_result.outcomes` as a list of
+`{name, status}` in ledger order, with `status` one of `met`, `unmet` or
+`rejected`. The value is `[]` when there is no ledger. It is `null`, with one
+entry in `errors`, when the ledger is a symbolic link, is over 524,288 bytes,
+is not JSON, has no `outcomes` array, or has an element with an empty name or
+another status. Control characters in a name, U+2028 and U+2029 included, become
+a space, and a name is cut to 200 characters. `reason` and `evidence` are not
+copied. `terminal_state` and `terminal_success` are never changed by the
+ledger.
 
 Text from pull requests, issues, checks and reviews is data. Only the task text
 and owner guidance are instructions, and a command quoted in other text is never
@@ -426,11 +467,25 @@ distinction between data and instructions for the agent.
 | `stop` | Stopped by the owner |
 | a turn that failed | Never an end. The next turn starts and reads the failure as evidence |
 | failure before the first turn (bundle check, missing goal tool) | Failure. It is an install fault that no agent inside the run can judge |
+| failure after a turn has started | Not a failure. The step prints a warning, and the loop's end line is `{end: null, exit, turn, error}` with exit 0 |
 
-`build-loop` is fatal on any non-zero driver exit, so `build-report` runs only
-after a loop that ended. `build-report` is non-fatal. A run whose work is pushed
-and whose pull request is open is never reported as failed because a later
-bookkeeping step failed. The same holds for the steps after the loop in
+The loop counts as started when a turn's `reading.json` is a regular file, not a
+symbolic link, or when `loop-end.json` is valid. `build-loop` exits like this:
+
+| Driver exit | `build-loop` result |
+| --- | --- |
+| 0 | Prints `loop-end.json`, or the fallback line when it is absent, and exits 0 |
+| 75 or 79 | The code passes up unchanged |
+| any other code, before the loop started | Prints an `ERROR` line, leaves stdout empty and exits with that code |
+| any other code, after it started | Prints a `WARNING` on stderr and the fallback line, and exits 0 |
+
+The `error` field goes through `goal_clean_line` and is cut to 300 bytes. The
+loop's scratch folder is created inside the state folder, so the run leaves no
+file outside it. A run whose loop ended with a failure after a turn has run, including a usage
+limit when `usage_limit_wait` is `false`, reports `INCOMPLETE` and exits 0, not
+a failed step. `build-report` is non-fatal. A run
+whose work is pushed and whose pull request is open is never reported as failed
+because a later bookkeeping step failed. The same holds for the steps after the loop in
 `smart-execute-routing` and `smart-validate-summarize` (`summarize` and
 `complete-session` are non-fatal).
 
@@ -458,12 +513,18 @@ gains three things.
    the push and before the pull request is created. When the task gives PR
    lines, it writes the title and body files with those lines exactly.
    Otherwise it writes nothing. The step is non-fatal.
-2. `quick_change_create_pr.sh`. When files were written and pass validation,
-   the secret screen and the mention and closing-keyword filter, the pull
-   request is created with them verbatim and the template report (Request,
-   Diff, Checks) goes in one comment. When none were written, `qc_title`
-   (the first 72 characters of the task) and `qc_request` (the first 4,000 bytes)
-   and the template body apply, as before. After creation the text is read back
+2. `quick_change_create_pr.sh`. When the step gave a non-empty title and it passes every
+   check, the pull request is created with the title and body byte for byte and
+   the template report (Request, Diff, Checks) goes in one comment. When the
+   step gave an empty title with a string body, the task has no PR lines, and
+   `qc_title` (the first 72 characters of the task), `qc_request` (the first
+   4,000 bytes) and the template body apply, as before. Any other result, such as a
+   missing, unparseable or non-object `quick_change_pr_text`, or a non-empty
+   title that fails a check, creates nothing and exits 1 with
+   `ERROR: quick-change-create-pr: check=<key>: <reason>; nothing was created and the work goes to the build loop`.
+   The keys are `pr-text`, `title`, `body` (a title with an empty body),
+   `secret-screen` and `references`, with the unread clause when guidance could
+   not be read. The work then goes to `quick-change-finish-in-loop`. After creation the text is read back
    and corrected once, as in [Pull request text](#pull-request-text). A
    difference that remains is printed as a `WARNING` and posted as a short
    comment. It does not fail the run. `gh pr create` runs without the former
@@ -477,9 +538,25 @@ gains three things.
    included; it checks ownership, not cleanliness. The loop continues from the
    worktree and the failure instead of ending the run.
 
-Builds are GitHub only until it is confirmed whether 1.2.213
-`workflow_publish_pr.sh` publishes to Azure DevOps; this line will state the
-answer.
+### Azure DevOps builds
+
+The build tools read through `gh` only. `workflow_publish_pr.sh` in 1.2.213
+publishes to Azure DevOps with `az repos pr list` and `az repos pr create`, so
+those builds would stop working on the loop. `default-workflow` 4.0.0 therefore
+chooses the route from the `remote_host_type` that `workflow-prep` outputs:
+
+| `remote_host_type` | Route |
+| --- | --- |
+| `github`, `other` or empty | The build loop: `build-goal-setup`, `build-loop`, `build-report` |
+| `azdo` | The seven v3 phase steps, unchanged: `workflow-design`, `workflow-tdd`, `workflow-refactor-review`, `workflow-precommit-test`, `workflow-publish`, `workflow-pr-review` and `workflow-finalize` |
+
+The three build steps carry the condition `remote_host_type != 'azdo'` and the
+seven v3 steps carry `remote_host_type == 'azdo'`. An Azure DevOps run does not
+reach `build-goal-setup` and creates no `build.*` state folder.
+`recovery.persist.outputs` lists all twelve step ids, and
+`recursion.max_total_steps` is 120. The v3 gates remain on this route for one
+release. Moving Azure DevOps builds onto the loop is tracked in a follow-up
+issue.
 
 Step 04 links host inputs for `quick-change` as well, so its commit passes a
 hook that calls `.venv/bin/python`.
@@ -589,30 +666,32 @@ read in PR 1's code:
   it. It is never read from pull request comments, so no author filter is
   needed for it.
 - Only `wait` (and the shared `wait-owner`) is woken when guidance arrives.
-- Guidance text never reaches the turn folder or any JSON, by design. So the
-  mention and closing-keyword filter of `open-pr` takes its allow-list from the
-  task text, the goal notes, `closing_reference` and `issue_number` only. A
-  mention or closing line that only guidance asks for is refused with
-  `invalid-args`, which names the token; the agent raises it in a comment.
+- Guidance text never reaches the turn folder or any JSON, by design. The goal
+  tool reads the guidance folders itself, at each `open-pr`, with
+  `amplihack recipe guidance show --operator-only`; see
+  [Guidance and required outcomes](#guidance-and-required-outcomes).
 - `autodrive_goal_lib.sh` has no redaction helper, so the build library has
   its own (`build_redact_tail`).
 - `failed_turn` starts the next turn after any failed turn run, so a failure
   after the work is done is evidence for the next turn (condition 5).
 
-Two small changes are requested of PR 1, and neither blocks this change:
-
-- when `goal.json` names no worktree, reset the working folder to the
-  repository rather than keep the previous turn's one (the build reading always
-  names one, the empty `no-worktree` folder when needed, so it is not affected);
-- the `ready` and hand-off footers name "the auto-drive goal loop" and say
-  whether merging is allowed; on a build they would read better as "the build
-  loop".
-
 ## Callers in 1.2.213
 
 Runs started on 1.2.213 source `amplifier-bundle/tools` from the live bundle at
 step time. Every argument, function, exit-code meaning and output line those
-runs call still exists after this release.
+runs call still exists after this release, except the one exit-code change
+named in the table.
+
+The table was built from `git diff --name-only origin/main...HEAD --
+amplifier-bundle/tools` and checked with `git grep` at the `v1.2.213` tag for
+each tool. The `autodrive_*` tools in that diff belong to the shared loop and
+are not called by 1.2.213 build recipes. 1.2.213's `step-21-pr-ready` runs
+`bash workflow_pr_ready.sh --base "$base"` and reaches the new worktree lookup
+with the inputs that step provides. A `recipe: default-workflow` step looks the
+recipe up by name in the installed recipe folders when the step runs, so a run
+that reaches such a step after the upgrade runs version 4.0.0. That version
+accepts every v3 context key, and `workflow_result` keeps `terminal_state`,
+`terminal_success`, `handoff` and `pr_number`.
 
 | Tool | Calling step | What is kept |
 | --- | --- | --- |
@@ -621,6 +700,9 @@ runs call still exists after this release.
 | `workflow_publish_pr.sh` | `workflow-publish` | Interface and every `publish_status` except `FAILED_DUPLICATE_CLAIM` |
 | `workflow_pr_ready.sh` | `step-21-pr-ready` | `--base` |
 | `workflow_pr_scope.sh` | many callers | Every argument; stdout JSON keys, reason, message, exit status and first stderr line |
+| `workflow_pr_text.sh` | `workflow-publish` and the build tools | The functions and arguments the 1.2.213 recipes call; output lines |
+| `workflow_worktree_host_inputs.sh` | `workflow-worktree` step 04 | Called with the launch checkout and the new worktree; it only links, and logs each link |
+| `quick_change_create_pr.sh` | `quick-change-create-pr` | Its arguments, the printed URL and exit 0 on success. A refused or unreadable PR text now exits 1 with `check=<key>` where it used the template |
 | `workflow_hook_repair.sh` | commit and push steps | `hook_repair_run` and its return codes |
 | `quick_change_common.sh` | `quick-change` | `qc_title`, `qc_request`, `qc_issue` |
 | `workflow-worktree` step 04 | `default-workflow` | Inputs and the `worktree_setup` JSON |
@@ -644,7 +726,11 @@ recorded. No test reads recipe, document or prompt text. They are in
 | `pr_ready` | #2787: a head one commit behind is marked ready; run from a checkout on `main` the tool reads the worktree; an own pull request that cannot be validated stays draft and the tool exits 0; a cross-repository pull request is never marked ready |
 | `host_inputs` | #3102: ignored `.venv` and `.venv-*` folders are linked, logged and never staged; a hook that calls `.venv/bin/python` passes in the new worktree |
 | `pr_text` | The read-back: matching text is left alone, CRLF and trailing whitespace are no difference, an altered body is restored with one edit, a difference that remains is reported, a failed read edits nothing |
-| `quick_change` | The task's PR lines reach `gh pr create` exactly and the report goes in a comment; a rewritten body is restored once; without PR lines the 72-character title and 4,000-byte body apply; an unlisted closing keyword falls back to the template; a failed create exits 1 with no URL |
+| `quick_change` | The task's PR lines reach `gh pr create` exactly and the report goes in a comment; a rewritten body is restored once; without PR lines the 72-character title and 4,000-byte body apply; an unlisted closing keyword, a failed `pr-text` step and a title with an empty body each exit 1 with the check key and create nothing; a failed create exits 1 with no URL |
+| `run_level` | Real runner and stand-in `gh`: the worktree exists when `mark-ready` runs and after the run, and `build-report` runs once after the loop; a `build-report` that fails after the pull request opened leaves the recipe exit 0 with the failure in the log; an Azure DevOps origin takes the v3 route and never starts the loop; a branch only behind a non-strict base gets no base merge; another branch's pull request on the issue is information and the run opens its own |
+| `prep` | `Fixes #N` in the task with no `issue_number` gives issue N and its claim information |
+| `guidance` | Guidance written between turn 1 and turn 2 reaches turn 2 and not turn 1; operator guidance allows a closing line the task did not give; guidance from an agent step does not; `show --operator-only` leaves out agent-step entries in plain and JSON output; a failed guidance read does not widen the list and sets `guidance_unread`; a malformed pull request URL still reads the run's folder; guidance text reaches no kept record |
+| `tools` | The loop's exit table and fallback line, a loop that ends before turn 1, no scratch folder left behind, and the outcome list in the report, including `null` for an unreadable ledger |
 | `routing` | With `build_loop_result` set, reflection and outside-in validation do not run and the summary does |
 | `old_tools` | One 1.2.213 caller's invocation of each changed tool runs against the new bundle |
 

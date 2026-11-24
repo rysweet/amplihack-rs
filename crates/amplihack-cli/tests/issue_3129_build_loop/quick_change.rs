@@ -190,23 +190,106 @@ fn without_pr_lines_the_title_and_body_come_from_the_task_as_before() {
 }
 
 #[test]
-fn a_closing_keyword_the_task_never_gave_falls_back_to_the_template() {
-    let w = world();
-    let out = create(
-        &w,
-        TASK,
-        &json!({"title": OWN_TITLE, "body": "Fixes #999\n"}),
-    );
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    assert_ne!(read(&w, "create-body"), "Fixes #999\n");
-    assert!(read(&w, "create-body").contains("## Request"));
-}
-
-#[test]
 fn a_create_that_fails_exits_one_with_no_url_so_the_loop_takes_over() {
     let w = world();
     fs::write(w.gh.join("create-fails"), "").unwrap();
     let out = create(&w, TASK, &json!({"title": OWN_TITLE, "body": OWN_BODY}));
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     assert!(out.stdout.is_empty(), "{}", text(&out));
+}
+
+/// The refusal contract: exit 1, nothing on stdout, nothing created, and the
+/// stderr ERROR line names the check by key so the loop's agent can act on it.
+fn handed_to_the_loop(w: &World, out: &Output, key: &str) {
+    assert_eq!(out.status.code(), Some(1), "{}", text(out));
+    assert!(out.stdout.is_empty(), "{}", text(out));
+    assert!(
+        !read(w, "calls.log")
+            .lines()
+            .any(|l| l.starts_with("pr create")),
+        "nothing is created: {}",
+        read(w, "calls.log")
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    let line = err
+        .lines()
+        .find(|l| l.starts_with("ERROR: quick-change-create-pr:"))
+        .unwrap_or_else(|| panic!("no ERROR line: {}", text(out)));
+    assert!(line.contains(&format!("check={key}:")), "{line}");
+}
+
+#[test]
+fn a_closing_keyword_the_task_never_gave_hands_the_work_to_the_build_loop() {
+    let w = world();
+    let out = create(
+        &w,
+        TASK,
+        &json!({"title": OWN_TITLE, "body": "Fixes #999\n"}),
+    );
+    handed_to_the_loop(&w, &out, "references");
+}
+
+#[test]
+fn a_failed_pr_text_step_hands_the_work_to_the_build_loop() {
+    let w = world();
+    for bad in [
+        json!("not an object"),
+        json!([]),
+        json!({"title": 5, "body": "b"}),
+        json!({"title": "t", "body": null}),
+    ] {
+        let out = create(&w, TASK, &bad);
+        handed_to_the_loop(&w, &out, "pr-text");
+    }
+}
+
+#[test]
+fn an_unparseable_pr_text_hands_the_work_to_the_build_loop() {
+    let w = world();
+    let wt = fs::canonicalize(&w.r.wt).unwrap();
+    let mut c = crate::isolated_amplihack::isolated("bash");
+    c.arg(tools_dir().join("quick_change_create_pr.sh"))
+        .current_dir(&wt)
+        .env("HOME", w.r.tmp.path())
+        .env("TMPDIR", w.r.tmp.path())
+        .env("PATH", format!("{}:/usr/bin:/bin", w.bin.display()))
+        .env("GH_STATE", &w.gh)
+        .env(
+            "RECIPE_VAR_worktree_setup",
+            json!({ "worktree_path": wt }).to_string(),
+        )
+        .env("RECIPE_VAR_task_description", TASK)
+        .env("RECIPE_VAR_quick_change_base", &w.r.base)
+        .env("RECIPE_VAR_quick_change_checks", SUMMARY)
+        .env("RECIPE_VAR_quick_change_pr_text", "{ this is not json")
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN");
+    let out = c.output().unwrap();
+    handed_to_the_loop(&w, &out, "pr-text");
+}
+
+#[test]
+fn a_title_with_an_empty_body_hands_the_work_to_the_build_loop() {
+    let w = world();
+    let out = create(&w, TASK, &json!({"title": OWN_TITLE, "body": ""}));
+    handed_to_the_loop(&w, &out, "body");
+}
+
+#[test]
+fn a_secret_in_the_task_text_lines_hands_the_work_to_the_build_loop() {
+    let w = world();
+    let out = create(
+        &w,
+        TASK,
+        &json!({"title": OWN_TITLE,
+                "body": "token ghp_abcdefghijklmnopqrstuvwxyz0123456789\n"}),
+    );
+    handed_to_the_loop(&w, &out, "secret-screen");
+}
+
+#[test]
+fn a_title_over_one_line_hands_the_work_to_the_build_loop() {
+    let w = world();
+    let out = create(&w, TASK, &json!({"title": "one\ntwo", "body": OWN_BODY}));
+    handed_to_the_loop(&w, &out, "title");
 }
