@@ -245,3 +245,12 @@ pub(crate) fn rewrite_copilot_passthrough(
     }
     Ok(Rewritten::from_parts(out, None, dir))
 }
+
+/// Whether `args` give Copilot any prompt flag (`-p`/`--prompt` or
+/// `-i`/`--interactive`) before `--`, with text or a file reference
+/// (issue #3162). Without one, Copilot reads its prompt from a piped stdin.
+pub(crate) fn copilot_has_prompt_flag(args: &[String]) -> bool {
+    args.iter()
+        .take_while(|a| a.as_str() != "--")
+        .any(|a| copilot_prompt_flag(a).is_some())
+}

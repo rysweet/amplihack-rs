@@ -275,12 +275,20 @@ fn codex_child_that_closes_stdin_early_records_no_injection() {
         "no notice for undelivered guidance:\n{}",
         show(&o)
     );
-    let events: Vec<String> = f
-        .log(&guidance)
+    let log = f.log(&guidance);
+    let events: Vec<String> = log
         .iter()
         .map(|l| l["event"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(events, ["guidance_appended"], "no guidance_injected record");
+    // Issue #3162: no guidance_injected record, and the drop is recorded for
+    // the sender with its reason code.
+    assert_eq!(
+        events,
+        ["guidance_appended", "guidance_dropped"],
+        "no guidance_injected record"
+    );
+    assert_eq!(log[1]["reason"], "trailer_not_written", "{log:?}");
+    assert_eq!(log[1]["tool"], "codex", "{log:?}");
 }
 
 // ---------------------------------------------------------------------------

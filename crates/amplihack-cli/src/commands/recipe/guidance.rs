@@ -21,22 +21,26 @@
 //! arm a waiter and did not start the command. An error or usage failure
 //! prints one stderr line and nothing on stdout.
 
+use super::live_runs::runs_to_read_for_pr;
 use crate::cli_subcommands::{GuidanceCommands, PrFolderArgs};
 use crate::command_error::exit_error;
-use crate::run_guidance::env::DirCheck;
+use crate::run_guidance::env::{DirCheck, check_guidance_dir};
 use crate::run_guidance::folders::{Folder, Folders};
+use crate::run_guidance::log_state::{Drop, LogState, read_log_state, render_drop_line};
 use crate::run_guidance::pr_key::{PrRef, parse_pr_url, parse_repo_slug};
 use crate::run_guidance::sanitize::sanitize_line;
 use crate::run_guidance::wait::{WaitOutcome, arm, wait_armed};
 use crate::run_guidance::{
-    Entry, GUIDANCE_DIRS_ENV, GuideError, Source, is_entry_name, is_new, render_block_marked,
+    Entry, GUIDANCE_DIR, GUIDANCE_DIRS_ENV, GuideError, Source, is_entry_name, is_new,
+    render_block_marked,
 };
 use anyhow::Result;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
 /// The exit code of a `wait` that could not arm a waiter.
@@ -110,6 +114,79 @@ fn named_pr(args: &PrFolderArgs) -> Result<Option<PrRef>, GuideError> {
     }
 }
 
+/// Whether two folder paths name one folder: the same path, or the same
+/// canonical path when both exist.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (a.canonicalize(), b.canonicalize()),
+            (Ok(x), Ok(y)) if x == y
+        )
+}
+
+/// Adds `folder` to `list` at `at` unless the list already holds it.
+fn insert_folder(list: &mut Vec<Folder>, at: usize, folder: Folder) -> usize {
+    if list.iter().any(|f| same_folder(&f.path, &folder.path)) {
+        return at;
+    }
+    list.insert(at, folder);
+    at + 1
+}
+
+/// The folders `show` and `wait` read.
+///
+/// - A pull request (URL, or `--pr` with `--pr-repo`): the folders
+///   `AMPLIHACK_RUN_GUIDANCE_DIRS` lists, then the guidance folder of each
+///   live run for the pull request (issue #3161), then that of each ended
+///   run still on record (so an entry a step read is still reported as
+///   read), then the pull request's folder. This holds every folder
+///   `recipe guide <PR URL>` writes, so the goal loop's read and the
+///   sender's write agree whatever the run's work root.
+///   A live run that cannot be reached is listed as untrusted, with why.
+/// - Any other target (issue #3162): the guidance folder of the run that a
+///   detached session name, a run folder name or a correlation id names,
+///   found as `recipe guide` finds it, after the listed folders.
+/// - No target: the listed folders.
+fn resolve_folders(args: &PrFolderArgs) -> Result<Folders, GuideError> {
+    if let (Some(target), None, None) = (&args.target, &args.pr, &args.pr_repo)
+        && !target.contains("://")
+    {
+        let dir = super::guide::run_guidance_dir(target)?;
+        let mut folders = Folders::resolve(None)?;
+        let at = folders.list.len();
+        let check = check_guidance_dir(&dir);
+        insert_folder(&mut folders.list, at, Folder { path: dir, check });
+        return Ok(folders);
+    }
+    let pr = named_pr(args)?;
+    let mut folders = Folders::resolve(pr.as_ref())?;
+    if let Some(pr) = &pr {
+        let pr_path = folders.pr.as_ref().map(|p| p.path.clone());
+        let mut at = folders
+            .list
+            .iter()
+            .position(|f| Some(&f.path) == pr_path.as_ref())
+            .unwrap_or(folders.list.len());
+        for run in runs_to_read_for_pr(pr) {
+            let folder = match run.reachable {
+                Ok(dir) => Folder {
+                    check: check_guidance_dir(&dir),
+                    path: dir,
+                },
+                Err(reason) => Folder {
+                    path: run.run_dir.join(GUIDANCE_DIR),
+                    check: DirCheck::Untrusted(format!(
+                        "live run of session {} cannot be reached: {reason}",
+                        run.session
+                    )),
+                },
+            };
+            at = insert_folder(&mut folders.list, at, folder);
+        }
+    }
+    Ok(folders)
+}
+
 /// `--since`: empty, or an entry file name.
 fn check_since(since: &str) -> Result<(), GuideError> {
     if since.is_empty() || is_entry_name(since) {
@@ -151,6 +228,9 @@ struct ShowJson<'a> {
     newest: &'a str,
     folders: Vec<FolderJson>,
     entries: Vec<EntryJson<'a>>,
+    /// Issue #3162: launches since the last read that could not take the
+    /// guidance, per folder. Added to schema 1; readers ignore it.
+    drops: Vec<DropJson>,
 }
 
 #[derive(Debug, Serialize)]
@@ -173,10 +253,66 @@ struct EntryJson<'a> {
     from_step: bool,
     new: bool,
     bytes: usize,
+    /// Issue #3162: a `guidance_injected` record in a folder that holds the
+    /// entry (or a copy of it) names it.
+    read: bool,
 }
 
-/// The `show --json` document.
+/// One `guidance_dropped` record. Every value comes from a closed table or
+/// is a run id or a sanitised agent name; none is guidance or argv text.
+#[derive(Debug, Serialize)]
+struct DropJson {
+    folder: String,
+    ts: String,
+    step_run_id: String,
+    tool: String,
+    launch_form: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+    reason: String,
+    detail: String,
+}
+
+/// What each guidance folder's log says, read once per folder.
+#[derive(Default)]
+struct LogStates(HashMap<PathBuf, LogState>);
+
+impl LogStates {
+    fn of(&mut self, dir: &Path) -> &LogState {
+        self.0
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| read_log_state(dir))
+    }
+
+    /// Whether a step has read `entry`, from any folder that holds a copy.
+    fn read(&mut self, entry: &Entry) -> bool {
+        std::iter::once((entry.dir.as_path(), entry.name.as_str()))
+            .chain(entry.also_in.iter().map(|(d, n)| (d.as_path(), n.as_str())))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .any(|(dir, name)| self.of(dir).read.contains(name))
+    }
+}
+
+/// The drops since the last read in each trusted folder of `list`.
+fn drops_of(list: &[Folder], states: &mut LogStates) -> Vec<(PathBuf, Drop)> {
+    list.iter()
+        .filter(|f| f.check == DirCheck::Trusted)
+        .flat_map(|f| {
+            states
+                .of(&f.path)
+                .drops_since_injection
+                .iter()
+                .map(|d| (f.path.clone(), d.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The `show --json` document. Read state and drops come from each folder's
+/// `guidance.log`.
 fn show_json<'a>(list: &[Folder], entries: &'a [Entry], since: &'a str) -> ShowJson<'a> {
+    let mut states = LogStates::default();
     let folders = list
         .iter()
         .map(|f| {
@@ -204,6 +340,20 @@ fn show_json<'a>(list: &[Folder], entries: &'a [Entry], since: &'a str) -> ShowJ
             from_step: e.is_from_step(),
             new: is_new(&e.name, since),
             bytes: e.text.len(),
+            read: states.read(e),
+        })
+        .collect();
+    let drops = drops_of(list, &mut states)
+        .into_iter()
+        .map(|(folder, d)| DropJson {
+            folder: path_text(&folder),
+            ts: d.ts,
+            step_run_id: d.step_run_id,
+            tool: d.tool,
+            launch_form: d.launch_form,
+            agent: d.agent,
+            reason: d.reason,
+            detail: d.detail,
         })
         .collect();
     ShowJson {
@@ -212,20 +362,46 @@ fn show_json<'a>(list: &[Folder], entries: &'a [Entry], since: &'a str) -> ShowJ
         newest: entries.last().map_or("", |e| e.name.as_str()),
         folders,
         entries: entries_json,
+        drops,
     }
+}
+
+/// The lines plain `show` prints after the block (issue #3162): whether each
+/// entry has been read, then each drop since the last read, once.
+fn read_and_drop_lines(list: &[Folder], entries: &[Entry]) -> Vec<String> {
+    let mut states = LogStates::default();
+    let mut lines: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            let state = if states.read(e) {
+                "read"
+            } else {
+                "not yet read"
+            };
+            format!("entry {}: {state}", e.name)
+        })
+        .collect();
+    for (_, drop) in drops_of(list, &mut states) {
+        let line = render_drop_line(&drop);
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    lines
 }
 
 /// `recipe guidance show`.
 fn show(args: &PrFolderArgs, since: Option<&str>, json: bool) -> Result<(), GuideError> {
     let since = since.unwrap_or("");
     check_since(since)?;
-    let folders = Folders::resolve(named_pr(args)?.as_ref())?;
+    let folders = resolve_folders(args)?;
     folders.warn_untrusted();
     let entries = folders.read();
     if json {
         print_json(&show_json(&folders.list, &entries, since))
     } else {
-        print_lines(&render_block_marked(&entries, Some(since)))
+        print_lines(&render_block_marked(&entries, Some(since)))?;
+        print_lines(&read_and_drop_lines(&folders.list, &entries).join("\n"))
     }
 }
 
@@ -273,7 +449,7 @@ fn command_event(status: ExitStatus) -> Result<Event<'static>, GuideError> {
 /// `recipe guidance wait`. Returns the exit code after printing its line.
 fn wait(args: &PrFolderArgs, since: &str, command: &[OsString]) -> Result<i32, GuideError> {
     check_since(since)?;
-    let mut folders = Folders::resolve(named_pr(args)?.as_ref())?;
+    let mut folders = resolve_folders(args)?;
     folders.warn_untrusted();
     let (mut waiters, problems) = arm(&folders);
     if waiters.is_empty() {

@@ -213,6 +213,28 @@ fn record_in(entry: &fs::DirEntry, name: &str, run_id: &str, euid: u32) -> Resul
     read_record(&procs.join(name), run_id, euid)
 }
 
+/// The record of attempt `run_id` in the run folder `run_dir` itself, under
+/// the rules of [`find`]: `Ok(None)` when there is none that can be trusted,
+/// `Err` when one could not be read. Issue #3161: `recipe guide` asks this
+/// of the folder a session pointer names, whatever work root it is under.
+pub(crate) fn read_in(run_dir: &Path, run_id: &str) -> Result<Option<Record>> {
+    if !validate_run_id(run_id) {
+        return Ok(None);
+    }
+    let procs = run_dir.join(PROCS);
+    match fs::symlink_metadata(&procs) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot check {}", procs.display()));
+        }
+    }
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    read_record(&procs.join(file_name(run_id)), run_id, euid)
+}
+
 fn read_record(path: &Path, run_id: &str, euid: u32) -> Result<Option<Record>> {
     let (bytes, meta) = match read_capped_nofollow_with_metadata(path, MAX_RECORD) {
         Ok(read) => read,

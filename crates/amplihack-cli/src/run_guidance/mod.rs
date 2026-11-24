@@ -53,6 +53,7 @@
 pub(crate) mod env;
 pub(crate) mod folders;
 pub(crate) mod fs_safety;
+pub(crate) mod log_state;
 pub(crate) mod pr_key;
 mod render;
 pub(crate) mod sanitize;
@@ -66,6 +67,7 @@ pub(crate) mod wake;
 mod wake_tests;
 pub(crate) mod watch;
 
+pub(crate) use log_state::{DropReason, StepLabel};
 pub(crate) use render::{append_block, is_new, render_block, render_block_marked};
 use sanitize::sanitize_line;
 
@@ -129,6 +131,9 @@ pub(crate) enum GuideError {
     Unsafe(String),
     /// An I/O error (exit 1).
     Io(String),
+    /// A live run for the pull request cannot be reached, so nothing was
+    /// written (exit 1, issue #3161). The message names each session.
+    Unreachable(String),
 }
 
 impl GuideError {
@@ -136,7 +141,7 @@ impl GuideError {
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) | Self::Oversize { .. } => 2,
-            Self::NotFound(_) | Self::Unsafe(_) | Self::Io(_) => 1,
+            Self::NotFound(_) | Self::Unsafe(_) | Self::Io(_) | Self::Unreachable(_) => 1,
         }
     }
 }
@@ -152,7 +157,11 @@ impl fmt::Display for GuideError {
                 f,
                 "guidance entry is more than {MAX_GUIDANCE_ENTRY_BYTES} bytes; the limit is {MAX_GUIDANCE_ENTRY_BYTES} bytes"
             ),
-            Self::Usage(m) | Self::NotFound(m) | Self::Unsafe(m) | Self::Io(m) => f.write_str(m),
+            Self::Usage(m)
+            | Self::NotFound(m)
+            | Self::Unsafe(m)
+            | Self::Io(m)
+            | Self::Unreachable(m) => f.write_str(m),
         }
     }
 }
@@ -197,6 +206,11 @@ pub(crate) struct Entry {
     pub timestamp: String,
     pub caller: String,
     pub text: String,
+    /// The other folders that hold a copy of this entry, as (folder, entry
+    /// name): one `recipe guide` to a pull request writes the same entry to
+    /// each live run's folder and to the pull request's folder, and a reader
+    /// of several of them sees it once (issue #3161).
+    pub also_in: Vec<(PathBuf, String)>,
 }
 
 impl Entry {
@@ -468,10 +482,25 @@ fn publish(dir: &Path, tmp: &Path, stamp: &str) -> Result<PathBuf, GuideError> {
 /// Nothing is written on error. A failed log write after the entry exists is
 /// reported in [`Appended::log_error`], and a waiter that could not be woken
 /// in [`Appended::wake_warning`], not as an error.
+// `recipe guide` writes through [`append_entry_at`] (one time for every copy,
+// issue #3161); the tests and other callers use this form.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn append_entry(
     guidance_dir: &Path,
     text: &str,
     caller: &str,
+) -> Result<Appended, GuideError> {
+    append_entry_at(guidance_dir, text, caller, chrono::Utc::now())
+}
+
+/// [`append_entry`] with the entry's time given. `recipe guide` writes one
+/// entry to several folders with one time, so readers of more than one of
+/// them can tell the copies are one entry ([`read_entries`]).
+pub(crate) fn append_entry_at(
+    guidance_dir: &Path,
+    text: &str,
+    caller: &str,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Appended, GuideError> {
     let parent = guidance_dir.parent().ok_or_else(|| {
         GuideError::NotFound(format!("{} has no parent folder", guidance_dir.display()))
@@ -485,7 +514,6 @@ pub(crate) fn append_entry(
     fs_safety::ensure_private_dir(guidance_dir)?;
 
     let caller = sanitize_caller(caller);
-    let now = chrono::Utc::now();
     let timestamp = now.format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string();
     let stamp = now.format("%Y%m%dT%H%M%S%.9fZ").to_string();
     let body = format!("timestamp: {timestamp}\ncaller: {caller}\n\n{text}");
@@ -624,6 +652,7 @@ fn read_entry(dir: &Path, name: String) -> Option<Entry> {
         timestamp: sanitize_caller(&timestamp),
         caller: sanitize_caller(&caller),
         text,
+        also_in: Vec::new(),
     })
 }
 
@@ -706,7 +735,46 @@ pub(crate) fn read_entries(dirs: &[PathBuf]) -> Vec<Entry> {
         }
     }
     kept.reverse();
-    kept
+    merge_copies(kept, dirs)
+}
+
+/// One entry for each set of copies: entries in different folders with the
+/// same timestamp, caller and text are one entry written to several folders
+/// by one `recipe guide` (issue #3161). The copy in the folder listed first
+/// in `dirs` is kept, and the others are named in [`Entry::also_in`]. Order
+/// is unchanged otherwise.
+fn merge_copies(entries: Vec<Entry>, dirs: &[PathBuf]) -> Vec<Entry> {
+    let rank = |dir: &Path| dirs.iter().position(|d| d == dir).unwrap_or(usize::MAX);
+    let mut out: Vec<Entry> = Vec::with_capacity(entries.len());
+    let mut by_key: std::collections::HashMap<(String, String, String), usize> =
+        std::collections::HashMap::new();
+    for entry in entries {
+        let key = (
+            entry.timestamp.clone(),
+            entry.caller.clone(),
+            entry.text.clone(),
+        );
+        let Some(&at) = by_key.get(&key) else {
+            by_key.insert(key, out.len());
+            out.push(entry);
+            continue;
+        };
+        if out[at].dir == entry.dir {
+            // Two appends in one folder are two entries.
+            out.push(entry);
+            continue;
+        }
+        let held = &mut out[at];
+        if rank(&entry.dir) < rank(&held.dir) {
+            let earlier_name = std::mem::replace(&mut held.name, entry.name);
+            let earlier_dir = std::mem::replace(&mut held.dir, entry.dir);
+            held.source = entry.source;
+            held.also_in.push((earlier_dir, earlier_name));
+        } else {
+            held.also_in.push((entry.dir, entry.name));
+        }
+    }
+    out
 }
 
 /// Whether a Codex launch takes the guidance trailer (C4): `exec` is among
@@ -721,8 +789,9 @@ pub(crate) fn codex_trailer_applies(args: &[String]) -> bool {
 /// The guidance one agent launch adds: read once, when the step starts.
 #[derive(Debug, Default)]
 pub(crate) struct GuidanceForLaunch {
-    /// Folders that held at least one used entry.
-    sources: Vec<PathBuf>,
+    /// Every (folder, entry name) the block holds, copies included, so each
+    /// folder's log can name its own entries ([`Self::record_injection`]).
+    injected: Vec<(PathBuf, String)>,
     entries: usize,
     bytes: usize,
     block: Option<String>,
@@ -744,18 +813,29 @@ impl GuidanceForLaunch {
         if entries.is_empty() {
             return Self::default();
         }
-        let mut sources: Vec<PathBuf> = Vec::new();
+        let mut injected: Vec<(PathBuf, String)> = Vec::new();
         for e in &entries {
-            if !sources.contains(&e.dir) {
-                sources.push(e.dir.clone());
-            }
+            injected.push((e.dir.clone(), e.name.clone()));
+            injected.extend(e.also_in.iter().cloned());
         }
         Self {
-            sources,
+            injected,
             entries: entries.len(),
             bytes: entries.iter().map(|e| e.text.len()).sum(),
             block: Some(render_block(&entries)),
         }
+    }
+
+    /// The folders that supplied an entry (or a copy of one), in first-seen
+    /// order.
+    fn sources(&self) -> Vec<&Path> {
+        let mut sources: Vec<&Path> = Vec::new();
+        for (dir, _) in &self.injected {
+            if !sources.contains(&dir.as_path()) {
+                sources.push(dir);
+            }
+        }
+        sources
     }
 
     /// How many entries the block holds.
@@ -801,34 +881,83 @@ impl GuidanceForLaunch {
         )
     }
 
-    /// Logs `guidance_injected` (counts only) in the `guidance.log` of each
-    /// folder that supplied an entry. Call only after the agent started.
+    /// Logs `guidance_injected` in the `guidance.log` of each folder that
+    /// supplied an entry: the totals (`entries`, `bytes`) and the names of
+    /// that folder's own entries (`entry_names`, issue #3162), which is what
+    /// marks an entry as read. Call only after the agent has the block.
     pub(crate) fn record_injection(&self, step_run_id: &str) {
         if self.entries == 0 {
             return;
         }
-        let ts = chrono::Utc::now()
-            .format("%Y-%m-%dT%H:%M:%S%.9fZ")
-            .to_string();
-        let step = if validate_run_id(step_run_id) {
-            step_run_id
-        } else {
-            "unknown"
-        };
-        let record = serde_json::json!({
-            "event": "guidance_injected",
-            "ts": ts,
-            "step_run_id": step,
-            "entries": self.entries,
-            "bytes": self.bytes,
-        });
-        for dir in &self.sources {
-            let Some(parent) = dir.parent() else { continue };
-            if let Err(e) = log_event(&parent.join(GUIDANCE_LOG), &record) {
-                warn(&format!(
-                    "amplihack: warning: operator guidance was added but not logged: {e}"
-                ));
-            }
+        let ts = now_text();
+        let step = valid_step_run_id(step_run_id);
+        for dir in self.sources() {
+            let names: Vec<&str> = self
+                .injected
+                .iter()
+                .filter(|(d, _)| d == dir)
+                .map(|(_, n)| n.as_str())
+                .collect();
+            let record = serde_json::json!({
+                "event": "guidance_injected",
+                "ts": ts,
+                "step_run_id": step,
+                "entries": self.entries,
+                "bytes": self.bytes,
+                "entry_names": names,
+            });
+            self.log_in(dir, &record, "added but not logged");
         }
+    }
+
+    /// Logs `guidance_dropped` in the `guidance.log` of each folder that
+    /// supplied an entry, when this launch had guidance it could not deliver
+    /// (issue #3162). The record holds the step's label and the reason, from
+    /// closed tables, and never any guidance or argv text. Nothing is
+    /// written when there is no guidance. A failed write is a warning.
+    pub(crate) fn record_drop(&self, label: &StepLabel, reason: DropReason) {
+        if self.entries == 0 {
+            return;
+        }
+        let mut record = serde_json::json!({
+            "event": "guidance_dropped",
+            "ts": now_text(),
+            "step_run_id": valid_step_run_id(&label.step_run_id),
+            "tool": label.tool,
+            "launch_form": label.launch_form,
+            "reason": reason.code(),
+            "detail": reason.detail(),
+            "entries": self.entries,
+        });
+        if let Some(agent) = label.agent.as_deref() {
+            record["agent"] = agent.into();
+        }
+        for dir in self.sources() {
+            self.log_in(dir, &record, "not delivered and the drop not logged");
+        }
+    }
+
+    fn log_in(&self, dir: &Path, record: &serde_json::Value, what: &str) {
+        let Some(parent) = dir.parent() else { return };
+        if let Err(e) = log_event(&parent.join(GUIDANCE_LOG), record) {
+            warn(&format!(
+                "amplihack: warning: operator guidance was {what}: {e}"
+            ));
+        }
+    }
+}
+
+fn now_text() -> String {
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.9fZ")
+        .to_string()
+}
+
+/// `step_run_id` when it is a valid run id, `unknown` otherwise.
+fn valid_step_run_id(step_run_id: &str) -> &str {
+    if validate_run_id(step_run_id) {
+        step_run_id
+    } else {
+        "unknown"
     }
 }

@@ -331,3 +331,46 @@ pub(crate) fn rewrite_claude_passthrough(args: &[String]) -> Result<Rewritten> {
         _dir: b.dir,
     })
 }
+
+/// Whether `args` start Claude in print mode (`-p`/`--print` before any
+/// `--`), whatever carries the prompt (issue #3162).
+pub(crate) fn claude_print_mode(args: &[String]) -> bool {
+    args.iter()
+        .take_while(|a| a.as_str() != "--")
+        .any(|a| matches!(classify(a), Token::Print { .. }))
+}
+
+/// Whether a print-mode launch carries its prompt text in `args`, the case
+/// [`rewrite_claude_passthrough`] moves to stdin. Reads the arguments the
+/// way the rewrite does and writes nothing (issue #3162).
+pub(crate) fn claude_print_prompt_in_argv(args: &[String]) -> bool {
+    if !claude_print_mode(args) {
+        return false;
+    }
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if arg == "--" {
+            return i + 1 < args.len();
+        }
+        match classify(arg) {
+            Token::Print { inline, .. } => {
+                if inline.is_some() || args.get(i + 1).is_some_and(|n| !n.starts_with('-')) {
+                    return true;
+                }
+                i += 1;
+            }
+            Token::SystemPrompt(inline) | Token::AppendPrompt(inline) => {
+                i += if inline.is_some() { 1 } else { 2 };
+            }
+            Token::SystemPromptFile | Token::AppendPromptFile => {
+                i = crate::commands::profile::claude_option_end(args, i);
+            }
+            Token::Other if arg.starts_with('-') && arg != "-" => {
+                i = crate::commands::profile::claude_option_end(args, i);
+            }
+            Token::Other => return true,
+        }
+    }
+    false
+}

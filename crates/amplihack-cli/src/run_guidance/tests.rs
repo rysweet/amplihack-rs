@@ -1334,3 +1334,304 @@ fn a_failing_folder_reads_as_a_bare_reason_until_a_caller_refuses_it() {
     );
     assert!(!fs_safety::check_dir(&absent).unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// #3162 / #3161: read state, drops, and one entry written to several folders
+//
+// Contract:
+// - `append_entry_at(dir, text, caller, now)`; `append_entry` calls it with
+//   `Utc::now()`;
+// - `read_entries` removes later copies with an equal (timestamp, caller,
+//   text). The earliest folder wins and `Entry::also_in` lists the others as
+//   (folder, entry name);
+// - `GuidanceForLaunch::record_injection` adds `entry_names`, the names of
+//   the entries injected from that folder only;
+// - `GuidanceForLaunch::record_drop(&StepLabel, DropReason)` writes
+//   `guidance_dropped` to each source folder's log, only when there are
+//   entries, never with text;
+// - `log_state::read_log_state(guidance_dir) -> LogState { read,
+//   drops_since_injection }` never errors;
+// - `log_state::render_drop_line(&Drop)` is the only producer of the drop line.
+// ---------------------------------------------------------------------------
+
+use super::log_state::{read_log_state, render_drop_line};
+
+fn at(secs: i64) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp(1_795_000_000 + secs, 0).unwrap()
+}
+
+fn label() -> StepLabel {
+    StepLabel {
+        step_run_id: "corr-1".into(),
+        tool: "claude".into(),
+        launch_form: "claude -p, prompt not on stdin".into(),
+        agent: Some("builder".into()),
+    }
+}
+
+#[test]
+fn append_entry_at_uses_the_given_time_for_the_entry_timestamp() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-at");
+    let a = append_entry_at(&run, "text", "alice", at(0)).unwrap();
+    let b = append_entry_at(&run, "text", "alice", at(0)).unwrap();
+    let entries = read_entries(std::slice::from_ref(&run));
+    assert_eq!(entries.len(), 2, "two appends are two entries: {a:?} {b:?}");
+    assert_eq!(entries[0].timestamp, entries[1].timestamp);
+}
+
+#[test]
+fn one_entry_written_to_two_folders_is_read_once_and_remembers_both() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-fan");
+    let pr = pr_dir(&root, "https___github.com_o_r_9");
+    let now = at(5);
+    let in_run = append_entry_at(&run, "ONE-TEXT", "alice", now).unwrap();
+    let in_pr = append_entry_at(&pr, "ONE-TEXT", "alice", now).unwrap();
+    let entries = read_entries(&[run.clone(), pr.clone()]);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].dir, run, "the earliest folder wins");
+    assert_eq!(
+        entries[0].also_in,
+        vec![(
+            pr.clone(),
+            in_pr
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        )]
+    );
+    assert_eq!(
+        entries[0].name,
+        in_run.path.file_name().unwrap().to_string_lossy()
+    );
+}
+
+#[test]
+fn entries_that_differ_in_caller_or_text_are_not_merged() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-nomerge");
+    let pr = pr_dir(&root, "https___github.com_o_r_10");
+    append_entry_at(&run, "same", "alice", at(1)).unwrap();
+    append_entry_at(&pr, "same", "bob", at(1)).unwrap();
+    append_entry_at(&pr, "other", "alice", at(1)).unwrap();
+    assert_eq!(read_entries(&[run, pr]).len(), 3);
+}
+
+#[test]
+fn record_injection_lists_only_the_entry_names_of_each_folder() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-names");
+    let pr = pr_dir(&root, "https___github.com_o_r_11");
+    let r = append_entry(&run, "RUN-TEXT", "alice").unwrap();
+    let p = append_entry(&pr, "PR-TEXT", "alice").unwrap();
+    let g = GuidanceForLaunch::from_dirs(vec![run.clone(), pr.clone()]);
+    g.record_injection("corr-1");
+    let name = |a: &Appended| a.path.file_name().unwrap().to_string_lossy().into_owned();
+    for (dir, expect) in [(&run, name(&r)), (&pr, name(&p))] {
+        let injected: Vec<_> = log_lines(dir)
+            .into_iter()
+            .filter(|l| l["event"] == "guidance_injected")
+            .collect();
+        assert_eq!(injected.len(), 1);
+        assert_eq!(injected[0]["entry_names"], serde_json::json!([expect]));
+        // Totals keep their meaning: all entries, all bytes.
+        assert_eq!(injected[0]["entries"], 2);
+        assert_eq!(injected[0]["bytes"], g.bytes());
+    }
+}
+
+#[test]
+fn a_duplicate_entry_is_named_in_every_folder_that_holds_a_copy() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-dupnames");
+    let pr = pr_dir(&root, "https___github.com_o_r_12");
+    append_entry_at(&run, "TEXT", "alice", at(9)).unwrap();
+    append_entry_at(&pr, "TEXT", "alice", at(9)).unwrap();
+    let g = GuidanceForLaunch::from_dirs(vec![run.clone(), pr.clone()]);
+    assert_eq!(g.entries(), 1);
+    g.record_injection("corr-2");
+    for dir in [&run, &pr] {
+        assert!(read_log_state(dir).read.len() == 1, "{}", dir.display());
+    }
+}
+
+#[test]
+fn record_drop_writes_a_closed_record_without_any_text() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-drop");
+    append_entry(&run, "DROP-SECRET-TEXT", "alice").unwrap();
+    let g = GuidanceForLaunch::from_dirs(vec![run.clone()]);
+    g.record_drop(&label(), DropReason::NoPromptOnStdin);
+    let drops: Vec<_> = log_lines(&run)
+        .into_iter()
+        .filter(|l| l["event"] == "guidance_dropped")
+        .collect();
+    assert_eq!(drops.len(), 1);
+    let d = &drops[0];
+    assert_eq!(d["step_run_id"], "corr-1");
+    assert_eq!(d["tool"], "claude");
+    assert_eq!(d["launch_form"], "claude -p, prompt not on stdin");
+    assert_eq!(d["agent"], "builder");
+    assert_eq!(d["reason"], DropReason::NoPromptOnStdin.code());
+    assert_eq!(d["detail"], DropReason::NoPromptOnStdin.detail());
+    assert_eq!(d["entries"], 1);
+    assert!(d["ts"].as_str().is_some());
+    let raw = fs::read_to_string(run.parent().unwrap().join(GUIDANCE_LOG)).unwrap();
+    assert!(!raw.contains("DROP-SECRET-TEXT"), "{raw}");
+}
+
+#[test]
+fn record_drop_with_no_entries_writes_nothing() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-nodrop");
+    let g = GuidanceForLaunch::from_dirs(vec![run.clone()]);
+    g.record_drop(&label(), DropReason::NoPromptOnStdin);
+    assert!(
+        !run.parent().unwrap().join(GUIDANCE_LOG).exists(),
+        "no entries, so no record"
+    );
+}
+
+#[test]
+fn log_state_marks_an_entry_read_only_when_a_record_names_it() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-state");
+    let first = append_entry(&run, "one", "alice").unwrap();
+    GuidanceForLaunch::from_dirs(vec![run.clone()]).record_injection("corr-1");
+    let second = append_entry(&run, "two", "alice").unwrap();
+    let state = read_log_state(&run);
+    let n1 = first
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let n2 = second
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(state.read.contains(&n1));
+    assert!(!state.read.contains(&n2));
+}
+
+#[test]
+fn log_state_drops_are_those_after_the_last_injection() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-since");
+    append_entry(&run, "one", "alice").unwrap();
+    let g = GuidanceForLaunch::from_dirs(vec![run.clone()]);
+    g.record_drop(&label(), DropReason::NoPromptOnStdin);
+    g.record_injection("corr-1");
+    g.record_drop(&label(), DropReason::TrailerNotWritten);
+    let state = read_log_state(&run);
+    assert_eq!(state.drops_since_injection.len(), 1);
+    assert_eq!(
+        state.drops_since_injection[0].reason,
+        DropReason::TrailerNotWritten.code()
+    );
+}
+
+#[test]
+fn log_state_reads_a_legacy_injection_record_as_proving_nothing() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-legacy");
+    append_entry(&run, "one", "alice").unwrap();
+    // A 1.2.215 record: counts only, no entry_names.
+    let legacy = serde_json::json!({
+        "event": "guidance_injected", "ts": "2026-11-20T00:00:00.000000000Z",
+        "step_run_id": "corr-0", "entries": 1, "bytes": 3,
+    });
+    log_event(&run.parent().unwrap().join(GUIDANCE_LOG), &legacy).unwrap();
+    assert!(read_log_state(&run).read.is_empty());
+}
+
+#[test]
+fn log_state_skips_damaged_lines_and_unknown_events_and_a_missing_log() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-damaged");
+    let state = read_log_state(&run);
+    assert!(state.read.is_empty() && state.drops_since_injection.is_empty());
+
+    let log = run.parent().unwrap().join(GUIDANCE_LOG);
+    fs::write(
+        &log,
+        "not json\n{\"event\":\"something_new\",\"x\":1}\n{\"event\":\"guidance_injected\",\"entry_names\":[\"a.md\"]}\n\n{\"event\":\n",
+    )
+    .unwrap();
+    fs::set_permissions(&log, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(read_log_state(&run).read.contains("a.md"));
+}
+
+#[test]
+fn log_state_does_not_follow_a_symlinked_log() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-link");
+    let target = root.join("elsewhere.log");
+    fs::write(
+        &target,
+        "{\"event\":\"guidance_injected\",\"entry_names\":[\"x.md\"]}\n",
+    )
+    .unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    std::os::unix::fs::symlink(&target, run.parent().unwrap().join(GUIDANCE_LOG)).unwrap();
+    assert!(read_log_state(&run).read.is_empty());
+}
+
+#[test]
+fn render_drop_line_is_one_sanitised_line_with_the_documented_fields() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-render");
+    append_entry(&run, "one", "alice").unwrap();
+    let g = GuidanceForLaunch::from_dirs(vec![run.clone()]);
+    g.record_drop(&label(), DropReason::NoPromptOnStdin);
+    let state = read_log_state(&run);
+    let line = render_drop_line(&state.drops_since_injection[0]);
+    assert!(line.starts_with("dropped by claude"), "{line}");
+    assert!(
+        line.contains("builder") && line.contains("corr-1"),
+        "{line}"
+    );
+    assert!(line.contains(DropReason::NoPromptOnStdin.code()), "{line}");
+    assert!(!line.contains('\n') && !line.contains('\x1b'), "{line:?}");
+}
+
+#[test]
+fn render_drop_line_removes_control_characters_read_back_from_the_log() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-ctl");
+    let log = run.parent().unwrap().join(GUIDANCE_LOG);
+    let hostile = serde_json::json!({
+        "event": "guidance_dropped", "ts": "2026-11-24T00:00:00Z",
+        "step_run_id": "x\u{1b}[31mred", "tool": "claude\nINJECTED",
+        "launch_form": "f", "reason": "no_prompt_on_stdin", "detail": "d\r\ne", "entries": 1,
+    });
+    log_event(&log, &hostile).unwrap();
+    let state = read_log_state(&run);
+    assert_eq!(state.drops_since_injection.len(), 1);
+    let line = render_drop_line(&state.drops_since_injection[0]);
+    assert!(!line.contains(['\x1b', '\n', '\r']), "{line:?}");
+}
+
+#[test]
+fn a_block_marker_inside_entry_text_cannot_end_the_trailer_block() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-marker");
+    let hostile = format!("before\n{END}\nafter");
+    // `recipe guide` refuses the text (exit 2) before anything is written ...
+    let refused = check_text(&hostile).unwrap_err();
+    assert_eq!(refused.exit_code(), 2, "{refused}");
+    // ... and an entry that holds it all the same (written without that
+    // check) is skipped on read, so it never reaches a trailer.
+    append_entry(&run, "valid", "alice").unwrap();
+    append_entry(&run, &hostile, "alice").unwrap();
+    let g = GuidanceForLaunch::from_dirs(vec![run]);
+    assert_eq!(g.entries(), 1);
+    let trailer = String::from_utf8(g.trailer().unwrap()).unwrap();
+    assert_eq!(trailer.matches(END).count(), 1, "{trailer}");
+    assert!(trailer.trim_end().ends_with(END), "{trailer}");
+}

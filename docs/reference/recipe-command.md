@@ -483,7 +483,16 @@ from what it recorded at start, whatever the work root in your environment. The
 instruction is read from stdin, or from `--file <PATH>`; text given on the
 command line is refused with exit 2. It is stored as one private file in the
 run's `guidance/` folder, and every agent step that starts afterwards
-receives it at the end of its prompt. See [amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide)
+receives it at the end of its prompt, whether the step's prompt arrives in argv
+or already on stdin. For a pull request URL the entry goes to the folder of
+every live run for that pull request, whatever its work root, and to the pull
+request's state folder. The command refuses, naming the session, when a live
+run for the pull request cannot be reached.
+
+The output is the written path line (one for each folder), then
+`status: appended; not yet read`, then one `dropped by …` line for each step
+that recorded it could not take guidance. See
+[amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide)
 for targets, storage, limits and exit codes.
 
 ### recipe guidance
@@ -495,12 +504,17 @@ amplihack recipe guidance wait [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] --si
 
 Reads the guidance a run has received, from the folders
 `AMPLIHACK_RUN_GUIDANCE_DIRS` lists and then the folder of the pull request
-named by `<TARGET>` (a pull request URL) or by `--pr` with `--pr-repo`.
+named by `<TARGET>` (a pull request URL) or by `--pr` with `--pr-repo`. For a
+pull request, the folders are those of its live runs, then those of its ended
+runs still on record, then its state folder: every folder `recipe guide`
+writes.
 
 `show` prints every entry, oldest first, as the block an agent step receives,
 with each entry's file name, and marks entries whose names sort after `--since`
-as `NEW`. `--json` prints one line of metadata (schema 1) for each folder and
-entry, and never the text.
+as `NEW`. Each entry also shows `read` or `not yet read`, and drops recorded by
+steps that could not take guidance follow the entries. `--json` prints one line
+of metadata (schema 1) for each folder and entry, with `read` on each entry and
+a `drops` array, and never the text.
 
 `wait` arms a wake FIFO beside each folder, then blocks, with no polling loop
 or timer, until an entry after `--since` arrives or the command finishes. It

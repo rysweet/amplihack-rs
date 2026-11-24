@@ -35,6 +35,7 @@ fn entry(name: &str, dir: &Path, caller: &str, text: &str) -> Entry {
         timestamp: "2026-11-23T18:40:02.000000000Z".to_string(),
         caller: caller.to_string(),
         text: text.to_string(),
+        also_in: Vec::new(),
     }
 }
 
@@ -147,8 +148,11 @@ fn json_lists_metadata_marks_new_entries_and_never_holds_text() {
     assert_eq!(e[0]["folder"], run.to_str().unwrap());
     assert_eq!(e[1]["new"], true);
     assert_eq!(e[1]["from_step"], true);
+    // Issue #3162 adds `read` to schema 1; no other key is added.
+    assert_eq!(e[0]["read"], false, "no guidance.log names it");
     let keys: Vec<&String> = e[0].as_object().unwrap().keys().collect();
-    assert_eq!(keys.len(), 8, "{keys:?}");
+    assert_eq!(keys.len(), 9, "{keys:?}");
+    assert_eq!(v["drops"], serde_json::json!([]));
 }
 
 #[test]
@@ -156,7 +160,7 @@ fn json_with_no_entries_and_no_folders_is_still_one_valid_document() {
     let line = serde_json::to_string(&show_json(&[], &[], "")).unwrap();
     assert_eq!(
         line,
-        r#"{"schema_version":1,"since":"","newest":"","folders":[],"entries":[]}"#
+        r#"{"schema_version":1,"since":"","newest":"","folders":[],"entries":[],"drops":[]}"#
     );
 }
 
