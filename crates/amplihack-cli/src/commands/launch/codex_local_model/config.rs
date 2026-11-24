@@ -26,7 +26,6 @@ use crate::commands::install::paths::sanitize_path;
 use anyhow::{Result, anyhow, bail};
 use std::path::Path;
 use toml::{Table, Value};
-use toml_edit::DocumentMut;
 
 /// Top-level keys of the profile that never reach the generated file.
 const REMOVED: [&str; 6] = [
@@ -43,8 +42,8 @@ const REMOVED: [&str; 6] = [
 const FEATURES_OFF: [&str; 5] = ["multi_agent", "goals", "view_image", "plugins", "apps"];
 
 /// Parses a profile or a generated `config.toml`.
-pub(super) fn parse(text: &str, path: &Path) -> Result<DocumentMut> {
-    text.parse::<DocumentMut>().map_err(|error| {
+pub(super) fn parse(text: &str, path: &Path) -> Result<Table> {
+    toml::from_str::<Table>(text).map_err(|error| {
         let shown = sanitize_path(path);
         match error.span() {
             Some(span) => anyhow!(
@@ -69,19 +68,20 @@ fn line_of(text: &str, offset: usize) -> usize {
 /// E8: `features`, `skills` and `skills.bundled` must be tables (standard,
 /// inline or dotted) where the profile has them, so that amplihack's
 /// settings can be merged into them.
-pub(super) fn check_shape(profile: &DocumentMut, path: &Path) -> Result<()> {
-    let root = profile.as_table();
-    if let Some(features) = root.get("features")
-        && !features.is_table_like()
+pub(super) fn check_shape(profile: &Table, path: &Path) -> Result<()> {
+    if profile
+        .get("features")
+        .is_some_and(|features| !features.is_table())
     {
         bail!(shape_error(path, "features"));
     }
-    if let Some(skills) = root.get("skills") {
-        let Some(skills) = skills.as_table_like() else {
+    if let Some(skills) = profile.get("skills") {
+        let Some(skills) = skills.as_table() else {
             bail!(shape_error(path, "skills"));
         };
-        if let Some(bundled) = skills.get("bundled")
-            && !bundled.is_table_like()
+        if skills
+            .get("bundled")
+            .is_some_and(|bundled| !bundled.is_table())
         {
             bail!(shape_error(path, "skills.bundled"));
         }
@@ -100,21 +100,20 @@ fn shape_error(path: &Path, key: &str) -> String {
 /// over from `previous`. `instructions` is the absolute path of the home's
 /// `instructions.md`.
 pub(super) fn render(
-    profile: &DocumentMut,
-    previous: Option<&DocumentMut>,
+    profile: &Table,
+    previous: Option<&Table>,
     instructions: &Path,
 ) -> Result<String> {
     let instructions = instructions
         .to_str()
         .ok_or_else(|| anyhow!("{} is not valid UTF-8", sanitize_path(instructions)))?;
-    let mut out = Table::new();
 
     // Step 1: the profile, minus what may not reach the generated home.
-    for (key, value) in to_table(profile, "the local-model profile")? {
-        if !REMOVED.contains(&key.as_str()) {
-            out.insert(key, value);
-        }
-    }
+    let mut out: Table = profile
+        .iter()
+        .filter(|(key, _)| !REMOVED.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
 
     // Step 2: amplihack's settings override the profile's.
     out.insert("project_doc_max_bytes".into(), Value::Integer(0));
@@ -138,7 +137,6 @@ pub(super) fn render(
 
     // Step 4: tables Codex wrote into the previous generated file.
     if let Some(previous) = previous {
-        let previous = to_table(previous, "the previous generated config.toml")?;
         if let Some(projects) = previous.get("projects") {
             out.insert("projects".into(), projects.clone());
         }
@@ -157,14 +155,6 @@ pub(super) fn render(
     }
 
     toml::to_string(&out).map_err(|_| anyhow!("the generated config.toml could not be serialised"))
-}
-
-/// `document` as a plain table. The document was parsed from valid TOML and
-/// prints as valid TOML, so this re-reads its own output; a failure is
-/// reported without the parser's message, which may quote the source.
-fn to_table(document: &DocumentMut, what: &str) -> Result<Table> {
-    toml::from_str::<Table>(&document.to_string())
-        .map_err(|_| anyhow!("{what} could not be read back as TOML"))
 }
 
 /// The table at `key` in `table`, created when absent. An existing value

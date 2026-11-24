@@ -62,6 +62,8 @@ const HOOK_TRUST: &str = "--dangerously-bypass-hook-trust";
 /// How much of an invalid name an error quotes, in characters.
 const QUOTED_CHARS: usize = 64;
 const MAX_NAME_LEN: usize = 64;
+/// The error for a selection off Unix (D21).
+const UNIX_ONLY: &str = "local-model launches of amplihack codex are supported on Unix only";
 
 /// The launch options a local-model launch refuses.
 #[derive(Debug, Clone, Copy)]
@@ -171,7 +173,7 @@ fn is_valid_name(name: &str) -> bool {
 /// Refuses what a local-model launch cannot do, before anything is read.
 fn refuse_conflicts(conflicts: Conflicts) -> Result<()> {
     if cfg!(not(unix)) {
-        bail!("local-model launches of amplihack codex are supported on Unix only");
+        bail!(UNIX_ONLY);
     }
     if let Some(docker) = conflicts.docker {
         let source = match docker {
@@ -219,7 +221,7 @@ pub(crate) fn prepare_launch(flag: Option<&str>, conflicts: Conflicts) -> Result
     #[cfg(not(unix))]
     {
         let _ = name;
-        bail!("local-model launches of amplihack codex are supported on Unix only")
+        bail!(UNIX_ONLY)
     }
 }
 
@@ -269,7 +271,7 @@ impl Prepared {
         }
         #[cfg(not(unix))]
         {
-            bail!("local-model launches of amplihack codex are supported on Unix only")
+            bail!(UNIX_ONLY)
         }
     }
 }

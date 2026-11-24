@@ -33,7 +33,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use toml_edit::DocumentMut;
+use toml::Table;
 
 /// The model instructions every generated home points Codex at.
 const INSTRUCTIONS: &str = include_str!("instructions.md");
@@ -81,7 +81,7 @@ enum Kind {
     Reuse,
     /// Build or refresh the home from the profile and the user's groups.
     Build {
-        profile: Box<DocumentMut>,
+        profile: Table,
         user_groups: Vec<Value>,
     },
 }
@@ -129,7 +129,7 @@ impl Plan {
         Ok(Self {
             layout,
             kind: Kind::Build {
-                profile: Box::new(profile),
+                profile,
                 user_groups,
             },
         })
@@ -165,7 +165,7 @@ impl Plan {
         })
     }
 
-    fn build(&self, profile: &DocumentMut, user_groups: &[Value]) -> Result<()> {
+    fn build(&self, profile: &Table, user_groups: &[Value]) -> Result<()> {
         let layout = &self.layout;
         let hooks_bin = crate::commands::install::find_hooks_binary().context(
             "a local-model launch needs the amplihack-hooks binary for its command check",
@@ -295,7 +295,7 @@ impl Plan {
         let hooks_on = document
             .get("features")
             .and_then(|features| features.get("hooks"))
-            .and_then(toml_edit::Item::as_bool);
+            .and_then(toml::Value::as_bool);
         if hooks_on != Some(true) {
             return Err(refuse(format!(
                 "{} does not set [features] hooks = true",

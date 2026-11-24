@@ -3,12 +3,12 @@
 //! `config.rs` is pure. The contract held here:
 //!
 //! - `pub(super) fn parse(text: &str, path: &Path) ->
-//!   anyhow::Result<toml_edit::DocumentMut>`, whose error is a fresh message
-//!   naming the path and the line, never the source text, and never chained;
-//! - `pub(super) fn check_shape(profile: &DocumentMut, path: &Path) ->
+//!   anyhow::Result<toml::Table>`, whose error is a fresh message naming the
+//!   path and the line, never the source text, and never chained;
+//! - `pub(super) fn check_shape(profile: &Table, path: &Path) ->
 //!   anyhow::Result<()>`;
-//! - `pub(super) fn render(profile: &DocumentMut, previous:
-//!   Option<&DocumentMut>, instructions: &Path) -> anyhow::Result<String>`.
+//! - `pub(super) fn render(profile: &Table, previous: Option<&Table>,
+//!   instructions: &Path) -> anyhow::Result<String>`.
 //!
 //! The rendered text is compared by its settings (through `toml::Value`),
 //! never by layout or wording, except where byte equality is the property
@@ -16,12 +16,12 @@
 
 use super::config::{check_shape, parse, render};
 use std::path::Path;
-use toml_edit::DocumentMut;
+use toml::Table;
 
 const INSTRUCTIONS: &str = "/home/u/.amplihack/codex-local/inkling/instructions.md";
 
-fn doc(text: &str) -> DocumentMut {
-    text.parse().expect("fixture TOML parses")
+fn doc(text: &str) -> Table {
+    toml::from_str(text).expect("fixture TOML parses")
 }
 
 fn rendered(profile: &str, previous: Option<&str>) -> toml::Value {
