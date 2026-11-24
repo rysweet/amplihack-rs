@@ -1,7 +1,18 @@
 //! Which profile directories a running process is using, from
 //! `/proc/<pid>/environ`. A directory is live when a process of the same user,
 //! other than this one and not a zombie, has `CLAUDE_CONFIG_DIR` resolving to
-//! it. Any doubt counts as live.
+//! it. Only processes with this process's real user ID are read.
+//!
+//! Issue #2820: the decision is per profile, on what is known. A process
+//! whose environment cannot be read is judged by `unreadable::judge` from its
+//! command line and `status` name: a Claude or amplihack executable makes
+//! doubtful, and so live, only the profiles its arguments name or that hold
+//! Claude Code's `sessions/<pid>.json` for it, and any other is no evidence.
+//! One tied to no profile protects none; `unreadable.rs` says why that is
+//! the remaining gap. One unreadable process never makes every profile live;
+//! only a process table that cannot be used at all does
+//! ([`Liveness::Unsupported`]). Every unreadable process the scan noted is
+//! kept in [`Liveness::Partial`] so the rotate log can name it.
 //!
 //! The decisions that depend on this take a [`SessionView`] (issue #2935),
 //! so a test of a decision supplies the answer and reads no process table.
@@ -9,6 +20,7 @@
 //! and its answer is [`Liveness::Unsupported`].
 
 use super::fsx;
+use super::unreadable::{self, Unreadable, Verdict};
 use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -21,8 +33,16 @@ const KEY: &[u8] = b"CLAUDE_CONFIG_DIR=";
 pub enum Liveness {
     /// Profile names with a live process.
     Known(BTreeSet<String>),
-    /// A Claude-like process's environment could not be read.
-    Everything,
+    /// Issue #2820: as `Known`, after some processes' environments could
+    /// not be read. `live` holds the names readable processes gave and the
+    /// names unreadable Claude or amplihack executables were tied to by
+    /// their arguments or session files (doubtful counts as live). `unreadable` is every unreadable process the scan
+    /// noted, in pid order, and is never empty. It is for the log only and
+    /// never changes a decision.
+    Partial {
+        live: BTreeSet<String>,
+        unreadable: Vec<Unreadable>,
+    },
     /// `/proc` cannot be used here.
     Unsupported,
 }
@@ -30,8 +50,17 @@ pub enum Liveness {
 impl Liveness {
     pub fn is_live(&self, name: &ProfileName) -> bool {
         match self {
-            Self::Known(set) => set.contains(name.as_str()),
-            Self::Everything | Self::Unsupported => true,
+            Self::Known(set) | Self::Partial { live: set, .. } => set.contains(name.as_str()),
+            Self::Unsupported => true,
+        }
+    }
+
+    /// The unreadable processes the scan noted, in pid order; empty unless
+    /// [`Liveness::Partial`].
+    pub fn unreadable(&self) -> &[Unreadable] {
+        match self {
+            Self::Partial { unreadable, .. } => unreadable,
+            Self::Known(_) | Self::Unsupported => &[],
         }
     }
 
@@ -133,6 +162,7 @@ pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness 
         return Liveness::Unsupported;
     };
     let mut live = BTreeSet::new();
+    let mut noted: Vec<Unreadable> = Vec::new();
     for entry in entries.flatten() {
         let Some(pid) = entry
             .file_name()
@@ -145,7 +175,7 @@ pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness 
             continue;
         }
         let dir = entry.path();
-        let Some((state, owner)) = status(&dir) else {
+        let Some((state, owner, comm)) = status(&dir) else {
             continue; // gone
         };
         if owner != uid || state == 'Z' {
@@ -155,8 +185,12 @@ pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness 
             Ok(Some((raw, _))) => raw,
             Ok(None) => continue, // exited
             Err(_) => {
-                if looks_like_claude(&dir) {
-                    return Liveness::Everything;
+                // Not dumpable, changed credentials, or over the bound.
+                if let Some(u) = unreadable::judge(&dir, pid, &comm, root) {
+                    if let Verdict::Counted(names) = &u.verdict {
+                        live.extend(names.iter().cloned());
+                    }
+                    noted.push(u);
                 }
                 continue;
             }
@@ -167,16 +201,27 @@ pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness 
             live.insert(name);
         }
     }
-    Liveness::Known(live)
+    if noted.is_empty() {
+        return Liveness::Known(live);
+    }
+    noted.sort_by_key(|u| u.pid);
+    Liveness::Partial {
+        live,
+        unreadable: noted,
+    }
 }
 
 /// The `CLAUDE_CONFIG_DIR` of every process of `uid` other than `self_pid`
 /// that is not a zombie, for the session archive's live check (issue #1746).
 /// A relative value is taken from the process's working directory.
-/// Only the value is kept. Fails closed, like [`scan`]: an unreadable
-/// `proc_root`, or a Claude-like process whose environment or working
-/// directory cannot be read, is an error. Other unreadable processes (such
-/// as a non-dumpable `ssh-agent`) and processes that exited are skipped.
+/// Only the value is kept. Fails closed: an unreadable `proc_root`, or a
+/// Claude or amplihack executable (`unreadable::claude_executable`, judged
+/// by its `status` name and `argv[0]`, never by other text in its command
+/// line) whose environment or working directory cannot be read, is an
+/// error. The archive cannot tell which directory such a process uses, and
+/// the cost is one deferred archive. Other unreadable processes (such as a
+/// non-dumpable `ssh-agent` or `tailscaled`) and processes that exited are
+/// skipped.
 pub(crate) fn claude_config_dirs(
     proc_root: &Path,
     self_pid: u32,
@@ -194,15 +239,19 @@ pub(crate) fn claude_config_dirs(
             continue;
         };
         let dir = entry.path();
-        if pid == self_pid
-            || !matches!(status(&dir), Some((state, owner)) if owner == uid && state != 'Z')
-        {
+        if pid == self_pid {
             continue;
         }
+        let comm = match status(&dir) {
+            Some((state, owner, comm)) if owner == uid && state != 'Z' => comm,
+            _ => continue,
+        };
         let environ = match fsx::read_bounded_nofollow(&dir.join("environ"), MAX_ENVIRON) {
             Ok(Some((raw, _))) => raw,
             Ok(None) => continue, // exited
-            Err(e) if looks_like_claude(&dir) => return Err(e),
+            Err(e) if unreadable::claude_executable(&comm, &unreadable::argv(&dir)) => {
+                return Err(e);
+            }
             Err(_) => continue,
         };
         let value = environ
@@ -224,30 +273,24 @@ pub(crate) fn claude_config_dirs(
     Ok(dirs)
 }
 
-/// `(state letter, real uid)` from `/proc/<pid>/status`.
-fn status(dir: &Path) -> Option<(char, u32)> {
+/// `(state letter, real uid, name)` from `/proc/<pid>/status`. The name is
+/// the `Name:` field (the kernel's `comm`), empty when there is none.
+fn status(dir: &Path) -> Option<(char, u32, String)> {
     let (raw, _) = fsx::read_bounded_nofollow(&dir.join("status"), MAX_SMALL).ok()??;
     let text = String::from_utf8_lossy(&raw);
     let mut state = None;
     let mut uid = None;
+    let mut name = String::new();
     for line in text.lines() {
-        if let Some(v) = line.strip_prefix("State:") {
+        if let Some(v) = line.strip_prefix("Name:") {
+            name = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("State:") {
             state = v.trim().chars().next();
         } else if let Some(v) = line.strip_prefix("Uid:") {
             uid = v.split_whitespace().next().and_then(|u| u.parse().ok());
         }
     }
-    Some((state?, uid?))
-}
-
-fn looks_like_claude(dir: &Path) -> bool {
-    match fsx::read_bounded_nofollow(&dir.join("cmdline"), MAX_SMALL) {
-        Ok(Some((raw, _))) => {
-            let text = String::from_utf8_lossy(&raw).to_ascii_lowercase();
-            text.contains("claude") || text.contains("amplihack")
-        }
-        _ => false,
-    }
+    Some((state?, uid?, name))
 }
 
 /// The profile name `value` points at, if it is a directory under `root`.

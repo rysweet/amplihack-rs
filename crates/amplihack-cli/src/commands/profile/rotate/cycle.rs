@@ -362,6 +362,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             room.alert(&mut out, &mut l, line.kind, &key, t, &line.text)
         }
     };
+    // Issue #2820: a target accepted on no fresh reading, off a blocked live
+    // login, is recorded unread, so no waiting step is woken onto it yet.
+    let others = saw.recorded(&others);
     record::record(
         ctx,
         &mut out,

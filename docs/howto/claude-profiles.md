@@ -2153,7 +2153,9 @@ limit is passed back at once.
 ### What happens
 
 1. If [auto-switch](#switch-accounts-automatically) is on and another
-   profile has quota left, the step first runs again under that profile.
+   profile has quota left, the step first runs again under that profile. It
+   does so on every limit, including one met after the step has already
+   waited.
 2. Otherwise amplihack reads the reset time from Claude's own message, such
    as `You've hit your session limit · resets 1pm (America/Los_Angeles)`,
    and waits until the earliest of:
@@ -2170,7 +2172,13 @@ limit is passed back at once.
      the exhausted profile's reset. Only a status line or the
      [login rotator](claude-profile-rotation.md) records such readings, so
      in an unattended run with neither, the wait usually still goes to the
-     reset.
+     reset;
+   - with auto-switch on, the earliest end of a limit block recorded on
+     any other login auto-switch could move the step to, whether or not the
+     step has run there, plus two minutes (`bound=earliest_reset+margin`);
+     the step then retries on that login without checking it first, so a
+     block end that was wrong about the login costs one attempt
+     ([The earliest-reset deadline](../reference/usage-limit-waits.md#the-earliest-reset-deadline)).
 
    No timer ends a wait. A limit whose message states no usable reset gives
    the wait no deadline: it waits for a login with room or a login change.

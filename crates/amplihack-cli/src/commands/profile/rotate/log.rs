@@ -190,6 +190,8 @@ pub fn cut(s: &str, max: usize) -> String {
 
 #[path = "log_shown.rs"]
 mod shown;
+#[path = "unreadable_msg.rs"]
+mod unreadable_msg;
 /// Issue #2909: the lines about the rotator's event wake. Read through
 /// `log::wake_msg` rather than re-exported into [`msg`]: the waiter writes
 /// them itself, between cycles, and no cycle builds one.
@@ -203,6 +205,8 @@ pub mod msg {
     use crate::commands::profile::name::ProfileName;
 
     pub(in super::super) use super::shown::{pct, usage};
+    /// Issue #2820: the `unreadable process` lines.
+    pub use super::unreadable_msg::lines as unreadable_lines;
 
     pub fn swap(
         from: &ProfileName,

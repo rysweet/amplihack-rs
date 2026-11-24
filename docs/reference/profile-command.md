@@ -4012,7 +4012,7 @@ Liveness comes from the auto-switch `/proc` scan for a process with
 | Scan result | Mode |
 |-------------|------|
 | No such process | `Migrate` |
-| A matching process, or the scan sees everything as running | `LinkOnly(LiveSession)` |
+| A matching process, or the scan sees everything as running | `LinkOnly(LiveSession)`. The scan decides per profile: a Claude or amplihack executable whose environment cannot be read defers the migration only for a profile its arguments name, and one unreadable process does not defer every profile. See [Leases](#leases). |
 | The scan failed (Linux) | `LinkOnly(LivenessCheckFailed)`; the error is logged at debug level and the next call retries |
 | `Unsupported` (every Unix except Linux) | `LinkOnly(LivenessUnknown)` |
 
@@ -5290,9 +5290,59 @@ the moved login. Other cached account fields are left alone.
 A directory is *live* when a process of yours, other than amplihack itself
 and not a zombie, has a `CLAUDE_CONFIG_DIR` in `/proc/<pid>/environ` that
 resolves to it. Relative values are resolved against that process's working
-directory. A process whose environment cannot be read but whose command line
-mentions `claude` or `amplihack` makes every hosted directory count as live.
-Any doubt counts as live.
+directory. Only processes with your real user ID are read.
+
+A process whose environment cannot be read (not dumpable, changed
+credentials, or an environment over 16 MiB) is judged from its command line
+and its name, never from its environment:
+
+- It counts only when it is a Claude or amplihack executable: the name in
+  `/proc/<pid>/status`, or the basename of `argv[0]`, is `claude`,
+  `amplihack` or `amplihack-*`, or it is `node` running the Claude Code
+  `cli.js`. Text elsewhere in the command line does not make a process
+  Claude-like, and `/proc/<pid>/exe` is never read.
+- A Claude or amplihack executable makes *doubtful* only the profiles it can
+  be tied to, and a doubtful profile counts as live. When it is tied to
+  several profiles, each is doubtful. Two things tie it to a profile:
+  - Its arguments: an argument after `argv[0]` that is `<root>/<name>`, a
+    path under it, or any `=`-separated part of an argument that is such a
+    path (`KEY=<that path>`, `--env=CLAUDE_CONFIG_DIR=<root>/x`).
+  - Claude Code's own session file for it, `<root>/<name>/sessions/<pid>.json`.
+    Claude Code writes that file in the config directory it runs under,
+    including for `-p` runs (checked with Claude Code 2.1.330; an older one
+    may not write it). Only the file's name is looked up; the file is
+    never opened. A file of any age counts, because a stale one can only
+    delay a swap. A profile directory or `sessions` directory that is a
+    symlink ties nothing, so one `sessions` directory shared by several
+    profiles cannot make all of them live.
+- A Claude or amplihack executable tied to no profile makes no profile live,
+  and is logged as `profile cannot be told`. **The login it uses is not
+  protected.** Suppose it uses a profile through `CLAUDE_CONFIG_DIR` set only
+  in its own environment, and Claude Code has written no session file for it
+  under that profile. The rotator can then move that login out from under it.
+  This is the one case where the scan's guess leans unsafe. The alternative,
+  making every profile live, would let one such process stop all rotation,
+  which is the fault issue #2820 fixed. Two other sources were considered,
+  and neither helps. A readable relative that carries `CLAUDE_CONFIG_DIR`
+  already makes its profile live by the rule above. That covers the process
+  that started it, and any hook, tool or MCP server it started.
+  `/proc/<pid>/cwd` is behind the same access check as `environ` for a
+  process that is not dumpable or changed its credentials, and it names a
+  working directory, not a config directory.
+- Any other unreadable process, such as `tailscaled be-child ssh` or
+  `ssh-agent`, is not evidence and makes no profile live.
+
+One unreadable process therefore never makes every profile live. A readable
+process whose environment names a profile makes that profile live whatever
+its executable. When the process table itself cannot be read (every system
+but Linux), every profile counts as live. The session archive reads the same
+table and still fails closed for any unreadable Claude or amplihack
+executable, because it cannot tell which directory that process uses; the
+cost is one deferred archive.
+
+Each unreadable process that mentions `claude` or `amplihack`, or is a Claude
+or amplihack executable, is named once in the [rotate
+log](#unreadable-process-lines).
 
 Account `X` is *leased* to directory `Y` when `Y` is not `X` and the ledger
 says `X` is live in `Y`. These are refused before `claude` is spawned:
@@ -6272,7 +6322,10 @@ same comparison with the rules for a stay: it stops only on a `journal`,
 reads again or reconsiders.
 
 The liveness scan behind `live`, `session running` and the target's
-eligibility reads the system process table, `/proc`. In the test suite, a
+eligibility reads the system process table, `/proc`. It decides per profile;
+see [Leases](#leases) for what an unreadable process counts for.
+
+In the test suite, a
 fixture can supply a synthetic process table instead, so that sessions
 running elsewhere on the host do not change a test's result (#1860). The
 table is the one named by `AMPLIHACK_TEST_PROC_ROOT`, selected through
@@ -6680,8 +6733,11 @@ one, is read again once.
 | The fresh reading shows room, and the target still qualifies | The swap goes ahead. |
 | The fresh reading shows no room: a window at 100%, a week above the ceiling, a spend limit | `reject: <name> <reason>`, and the rotator decides again on the new reading, which reaches the next-ranked login. The login is no longer eligible: the new reading counts it as exhausted or above the ceiling. |
 | The fresh reading has no usable figures, including a `NaN`, infinite or negative figure, or the re-read failed for a reason about the login (an expired or refused token, no credentials), which gives no [label](#rotate-unknown-readings) | `reject: <name> no usable reading`. The login is no longer eligible and is counted as failed. |
-| The fresh reading is unknown, or the re-read failed, is still running or is carried, or the probe already failed earlier in this cycle (no read is made), whatever room the live login has | `reject: <name> reading unknown (<label>)`, and the next login is tried. The login is not chosen again in this cycle, but nothing shows it full, so it stays eligible. |
-| The fresh reading is older than the newest reading the rotator holds for the login | `reject: <name> reading <n>s older than one already held`, and the next login is tried. |
+| The fresh reading is unknown, or the re-read failed, is still running or is carried, or the probe already failed earlier in this cycle (no read is made), and the live login has no standing block (a window at 100% is not one) | `reject: <name> reading unknown (<label>)`, and the next login is tried. The login is not chosen again in this cycle, but nothing shows it full, so it stays eligible. |
+| The same, but the live login has a standing block (a spend, session, week or credit limit, or the API key's block) and the reading the decision used is recent (issue #2820) | The swap goes ahead on that reading, and the `swap` line adds ` unconfirmed (<label>); live <from> has no room: <kind> until <UTC minute>`. |
+| The re-read count is spent (`re-read limit 3`), the live login has a standing block, and the target's reading is recent | The target is accepted on its last good, carried or passive reading. The `swap` line adds ` unconfirmed (re-read limit 3)` and the same live-login clause. No re-read is made. |
+| The time limit for re-reads is spent (`time limit`), and the same conditions hold | The same, with ` unconfirmed (time limit)`. |
+| The fresh reading is older than the newest reading the rotator holds for the login | `reject: <name> reading <n>s older than one already held`, and the next login is tried, whatever block the live login has. |
 | The login has a standing block | Never reached: the block rules the login out before confirmation. See [Block reject lines](#block-reject-lines). |
 
 When the last qualifying login has been rejected, the result depends on
@@ -6693,15 +6749,61 @@ whether any login is still eligible:
 | No login is eligible (every rejection was for a reading that shows no room, a week above the ceiling, a spend limit or no usable figures), and the live login is past a threshold or has no room | The [no-target line](#rotate-no-target). The rejected logins are in its counts as exhausted, above the ceiling or failed. |
 | No login is eligible, and the live login is below both thresholds | A stay with no note: the rejected login was an upgrade or projected-swap target, and nothing forces a move. |
 
-Confirmation fails closed. A swap on an unknown, failed, carried or superseded
-reading is never made, whatever room the live login has. Before #3105 a
-swap could go ahead unconfirmed when the live login had no room; it woke
-sessions onto logins that could not serve them and used up their resumes, so
-that path is withdrawn. The cost is plain: when the live login has no room and
-every candidate is unknown, the cycle no longer swaps. It ends on the stay note
-and a hard ALERT (see the [advisory alert](#rotate-advisory-alert) rule), which
-pauses session resumes until a later cycle finds room. With room on the live
-login the ALERT is advisory.
+Confirmation fails closed, with one exception. A swap on an unknown, failed,
+carried or superseded reading is never made on the live login's room alone.
+Before #3105 a swap could go ahead unconfirmed when the live login had no
+room; it woke sessions onto logins that could not serve them and used up
+their resumes, so that path is withdrawn. When the live login is only full
+and every candidate is unknown, the cycle does not swap. It ends on the stay
+note and a hard ALERT (see the [advisory alert](#rotate-advisory-alert)
+rule), which pauses session resumes until a later cycle finds room. With
+room on the live login the ALERT is advisory.
+
+The exception (issue #2820): when the live login has a standing recorded
+block in the ledger (a spend, session, week or credit limit, or the API
+key's block), staying on it is never better than moving, because no work
+can run on it until the block ends. Then a target that could not be read
+again (its probe failed with a [label](#rotate-unknown-readings), its
+confirming read came back unknown, or the re-read cap or time limit left it
+unread) is accepted on the reading the decision used, when that reading is
+recent: it has a time, is at most the last-good age (`LAST_GOOD_MAX_AGE_SECS`,
+five hours) old, and was taken after the rotator last left or damped that
+login. Issue #3105's guards still choose the target: a login with a standing
+block is never eligible, and a reading older than one the rotator already
+holds is never ranked, substituted or swapped on, so neither can be taken
+this way. A target with no usable reading time, or a failed probe with no
+label, is not accepted. Under the revalidation lock nothing new is accepted,
+and an entry already accepted is accepted again only while the live login is
+still blocked. When the live login has no block, a capped target becomes
+unknown with no `reject:` line, and is not chosen again in this cycle.
+
+The exception was asked for in the 23 November report on issue #2820: "when
+the live login is spend-blocked, staying on it is never better than moving
+to any measured login. Even with unread candidates, the rotator could fall
+back to the last good reading of the others rather than stay." The owner's
+brief for the fix (point 3) gives the same rule for a spend- or
+usage-blocked live login. It is narrower than #2910's D7, which #3105
+withdrew. D7 let a live login that was only full move on any reading. This
+exception needs a standing recorded block, and it keeps every guard #3105
+added on the target. A live login that is only full keeps #3105's
+fail-closed rule; issue #3130 holds the question of widening it.
+
+The `swap` line of such a move says that it was made without a fresh reading
+and why:
+`<swap line> unconfirmed (<label> | re-read limit 3 | time limit); live <from> has no room: <kind> until <UTC minute>`,
+where `<kind>` is the block's fixed label. A target accepted at a limit also
+shows `read <N>m ago` with its figures.
+
+A waiting [usage-limit](#rotate-stays-and-capacity) step wakes on every move,
+because the wait watches the rotate ledger and the swap file. How it ends
+depends on the move: a move confirmed by a fresh reading below `--session-at`
+ends the wait on its own cycle record. A move made without a fresh reading
+writes no swap record (`swap.json`), because the record carries the target's
+measured figures and there are none, and records no room for the login now
+live, so it wakes the wait but holds it until a later cycle reads the new
+live login below `--session-at`, or its reset. A wait for a spend limit with
+no reset time ends on the swap itself. This holds at the deployed
+`--session-at 95 --week-at 98` and at 85/90.
 
 #### Block reject lines
 
@@ -6838,6 +6940,64 @@ used:
 2026-11-26T08:00:05Z ALERT: no profile has capacity live=rrowan s=100% w=71% (candidates: 2 blocked until 2026-11-27T00:00Z, 5 exhausted)
 ```
 
+#### Unreadable process lines
+
+The first cycle that sees an unreadable process of yours that mentions
+`claude` or `amplihack`, or that is a Claude or amplihack executable, writes
+one line for it:
+
+```
+2026-11-23T11:00:00Z unreadable process 41207 (tailscaled) "tailscaled be-child ssh --remote-ip=100.64.0.7 amplihack recipe run wait": not counted (not a Claude executable)
+```
+
+The line gives the pid, the executable (the basename of `argv[0]`, or the
+name in `status` when `argv` is empty or `argv[0]` is `NAME=value`, cut to 32
+characters), and the command line cut to 120 characters, then one verdict:
+
+| Verdict | Meaning |
+|---------|---------|
+| `counted as a session on <a>, <b>` | A Claude or amplihack executable is tied to these profiles, by its arguments or by Claude Code's session file for it. They count as live. |
+| `not counted (not a Claude executable)` | The command line mentions `claude` or `amplihack`, but the executable is something else. No profile is live because of it. |
+| `not counted (profile cannot be told)` | A Claude or amplihack executable is tied to no profile. No profile is live because of it, so the login it uses is not protected; see [Leases](#leases). |
+
+Arguments are joined with a space; NUL is only the separator between them.
+`"` and `\` are escaped with a backslash, any other ASCII control character
+(0x01 to 0x1F, including an embedded one, and 0x7F) is shown as `\xNN`, and a
+Unicode control character (U+0080 to U+009F) as `\u{NN}`. The executable and
+the profile names in the verdict are escaped the same way. A
+trailing `...` marks a command line or executable that was cut.
+
+Each argument is masked before it is escaped and cut. The first rule that
+fits applies. A *secret word* is `token`, `secret`, `passw`, `passphrase`,
+`key`, `auth`, `cred`, `cookie` or `bearer`, found anywhere in a name and in
+any case.
+
+| Argument | Shown as |
+|----------|----------|
+| The argument after a flag written without `=` whose name holds a secret word (`--token abc`, `--api-key sk-...`), whatever it is | `<hidden>` |
+| An environment assignment, `NAME=value` | `NAME=<hidden>` |
+| `--flag=value`, where the flag's name holds a secret word | `--flag=<hidden>` |
+| `--flag=NAME=value` | `--flag=NAME=<hidden>` |
+| An argument, or the value of any other `--flag=value`, that starts with a known token prefix: `sk-`, `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `glpat-`, `xoxa-`, `xoxb-`, `xoxp-`, `xoxr-`, `xoxs-`, `AKIA`, `ASIA`, `AIza`, `eyJ`, `npm_` or `hf_` | `<hidden>` |
+| An argument or flag value `Name: value`, where `Name` is one word holding a secret word (`Authorization: Bearer ...`, `--header=X-Api-Key: ...`) | `Name: <hidden>` |
+| A URL with a user or password, anywhere in an argument or flag value (`https://bob:pw@host/r`) | `https://<hidden>@host/r` |
+| Anything else | as it is |
+
+Masking hides what is shaped like a secret, not every secret. A secret
+passed as a bare argument, with no secret-named flag before it and no known
+prefix, is still shown within the 120 characters. So is a token inside other
+text. Any process of yours can already read it in `/proc/<pid>/cmdline`, and
+so can other users unless `/proc` is mounted with `hidepid`. The log is
+created with mode 0600, and the rotator refuses to write a log that other
+users can read or write. The process environment is never read or logged.
+
+A process is logged again only when it was not in the previous cycle's set, so
+a long-lived one is named once. A restart of the rotator names it again. At
+most 32 process lines are written per cycle, followed by
+`unreadable processes: <N> more not listed` when there are more. The cap limits
+the log only; every process is still judged. Revalidation inside a cycle does
+not log these lines.
+
 #### Rotate failed live probes
 
 When the table above gives a threshold swap only because the live probe
@@ -6848,6 +7008,7 @@ consecutive cycles, including this one, whose live probe failed.
 
 | Condition | Outcome | Log line |
 |-----------|---------|----------|
+| The live login has a standing recorded block in the ledger | None of these rules applies, including the home-key stay below: a failed live probe is read as the recorded block, which is evidence of no room, so it does not hold the move off. A target that could not be read fresh is taken [unconfirmed](#rotate-confirmation) on its recent reading. | as the swap line |
 | `k < 3` | Stay. | `stay: live probe failed (<k>/3)` |
 | `k >= 3` and `now - swapped_at < hold` | Stay. | `stay: live probe failed; held after last swap (<N>s left)`, where `N = hold - (now - swapped_at)`, or `hold` if `swapped_at` is in the future |
 | The [API-key login check](#api-key-login-check) passes on the `$HOME` files and the API key is not live | Stay. | `stay: live probe failed; home key (<detail>) applies to every login once live, a swap changes nothing`; see [API-key login check](#api-key-login-check) |
@@ -9014,7 +9175,7 @@ set of skipped profiles changes, and by the one-shot command on every run.
 | `directory refused` | The profile directory fails the ownership and mode check: it is a symlink, not a directory, not owned by you, or open to group or other users. A profile in the auto-switch `exclude` list is skipped as `excluded` instead. While a plan profile has this reason, the rotator does not move onto an overflow profile (see [Overflow decision](#overflow-decision)). |
 | `no login` | `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, readable by other users, or has more than one link. |
 | `excluded` | It is in the auto-switch `exclude` list. It is not probed and no request is sent with its token. Its `.credentials.json` is read only for the byte comparison of [rule 3](#local-proof-of-an-excluded-live-login), and written only by the [write-back](#write-back-into-an-excluded-folder). It never reaches the `no account` check or the unbound set. |
-| `session running` | A running process has `CLAUDE_CONFIG_DIR=<root>/<name>` (the same `/proc` scan auto-switch uses). If `/proc` cannot be scanned, every profile is skipped and `skip: cannot see running sessions; no candidates` is logged once. |
+| `session running` | A running process has `CLAUDE_CONFIG_DIR=<root>/<name>` (the same `/proc` scan auto-switch uses), or an unreadable Claude or amplihack executable names the profile in its arguments (see [Leases](#leases)). One unreadable process never skips the other profiles. Only if the process table cannot be used at all is every profile skipped, and `skip: cannot see running sessions; no candidates` is logged once: there is no `/proc` (every system but Linux), `/proc/self/environ` or the `/proc` listing cannot be read, or the profile root cannot be resolved. |
 | `leased` | Its login is on loan to another profile's session in the auto-switch ledger. |
 | `hosting` | Its directory hosts another account's login in the auto-switch ledger. |
 | `parked` | `<root>/.auto-switch.d/parked/<name>` exists. |
@@ -10442,9 +10603,9 @@ run and prints their `reread:` lines; see
 | `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
 | `reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%` | The chosen swap target's reading failed the [freshness gate](#rotate-reading-freshness-and-swap-back-damping) and was read again by the [probe method](#probe-method), with passive readings off. The first figures are those the decision used, the second those of the new read, formatted as in the `swap` line (`w=?` when no weekly window was read). The decision was then made again on the new figures. |
 | `stale live reading; re-read` | The live login's reading was [frozen, old or lagging](#stale-live-reading) and was read again by the configured probe method, with passive readings off. A direct read uses the supplied home's live credentials and never refreshes them. Written at most once per cycle, before the decision. The line holds no name or figures. |
-| `reread: <name> failed; treated as unknown` | The re-read timed out or failed, or the re-read returned a reading that is itself still stale. `<name>` is unknown for this cycle: not recorded as exhausted, counted as `unknown (<label>)` in the [no-target line](#rotate-no-target), and rejected at [confirmation](#rotate-confirmation) with `reject: <name> reading unknown (<label>)`, whatever room the live login has. After a [`stale live reading; re-read`](#stale-live-reading) line, `<name>` is the live login: its re-read failed or was still stale, and the cycle is decided by the [near-threshold rule](#failed-or-stale-reading-near-the-threshold). |
-| `reread: <name> limit reached; treated as unknown` | The chosen target was stale, but this cycle had already made 3 target re-reads. The separate live re-read does not count toward this limit. `<name>` is unknown for this cycle, and is counted as `not tried (re-read limit 3)`. |
-| `reread: <name> time limit reached; treated as unknown` | The chosen target was stale, but this cycle's target re-reads had already used their shared time limit of one [probe deadline](#probe-deadline). The live re-read has a separate budget. `<name>` is not read and is unknown for this cycle, and is counted as `unknown (timeout)`. |
+| `reread: <name> failed; treated as unknown` | The re-read timed out or failed, or the re-read returned a reading that is itself still stale. `<name>` is unknown for this cycle: not recorded as exhausted, counted as `unknown (<label>)` in the [no-target line](#rotate-no-target), and rejected at [confirmation](#rotate-confirmation) with `reject: <name> reading unknown (<label>)`, unless the live login has a standing block and the reading the decision used is recent, in which case the `swap` line ends `unconfirmed (<label>); live <from> has no room: <kind> until <UTC minute>`. After a [`stale live reading; re-read`](#stale-live-reading) line, `<name>` is the live login: its re-read failed or was still stale, and the cycle is decided by the [near-threshold rule](#failed-or-stale-reading-near-the-threshold). |
+| `reread: <name> limit reached; treated as unknown` | The chosen target was stale, but this cycle had already made 3 target re-reads. The separate live re-read does not count toward this limit. `<name>` is unknown for this cycle, and is counted as `not tried (re-read limit 3)`. Not written when the live login has a standing block and `<name>`'s reading is recent: the swap goes ahead on it with ` unconfirmed (re-read limit 3)`; see [Rotate confirmation](#rotate-confirmation). |
+| `reread: <name> time limit reached; treated as unknown` | The chosen target was stale, but this cycle's target re-reads had already used their shared time limit of one [probe deadline](#probe-deadline). The live re-read has a separate budget. `<name>` is not read and is unknown for this cycle, and is counted as `unknown (timeout)`. Not written when the live login has a standing block and `<name>`'s reading is recent: the swap goes ahead on it with ` unconfirmed (time limit)`. |
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)` / `ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)` | No login is eligible and the live login is past a threshold or has no room. The first wording is written only when every other plan login is known, by a fresh or last good reading, to have a window at 100%, a spend limit or an active block; a login the cycle skipped before probing it is never read, so it keeps the second wording. The second is written in every other case. `<counts>` lists, in this order and leaving out any zero count, `<N> unknown (<label>)` for each [label](#rotate-unknown-readings) in the order `HTTP 429`, `transport`, `identity unavailable`, `timeout`, `still running`, `probe error`; `<N> not read (<reason>)` for each plan login skipped before any probe, in the wording of that login's `skip:` line (written when the set of skipped logins changes, so often in an earlier cycle); `<N> failed`; `<N> blocked until <time>`, the earliest block end as UTC to the minute; `<N> exhausted`; `<N> above week ceiling <n>%`; and `<N> not tried (re-read limit 3)` for the candidates the cap of three re-reads left unread (one the time limit left unread is `unknown (timeout)`). With nothing to count it is `candidates: none`. The line holds no profile names. The ALERT kind stays `no-capacity`, and the key is `no-capacity` for the first wording and `no-capacity/known` for the second, so a change of wording writes a new line and a change in the counts does not. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)`, or `would alert: no capacity known ...`, without the `ALERT: ` prefix. See [Rotate no target](#rotate-no-target). |
@@ -10485,6 +10646,8 @@ run and prints their `reread:` lines; see
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
 | `skip: state lock busy` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. |
+| `unreadable process <pid> (<exe>) "<command>": <verdict>` | A process of yours whose environment the liveness scan could not read, and what it counted for: `counted as a session on <a>, <b>`, `not counted (not a Claude executable)` or `not counted (profile cannot be told)`. Written once per process; see [Unreadable process lines](#unreadable-process-lines). |
+| `unreadable processes: <N> more not listed` | More than 32 unreadable processes were noted in one cycle; every one was still judged. |
 | `skip: state changed during measurement (<labels>)` | Step 6 found a change that affects the decision; see [Rotate revalidation](#rotate-revalidation). `<labels>` lists one or more of `journal`, `live`, `pin`, `overflow`, `target eligibility: <reason>` and `target identity`, separated by `, `. The labels are fixed text and [skip reasons](#rotate-candidates) only. Older readers that match the prefix `skip: state changed during measurement` still match. The bare form, with no labels, is also written when nothing in the snapshot changed but the target's reading went stale under the lock and no fresh target remains. |
 | `revalidate: target <name> no longer eligible (<reason>); reconsidered` | The swap target became ineligible, or its account changed, while the cycle measured, and the cycle decided again under the lock. `<reason>` is the target's bare [skip reason](#rotate-candidates), such as `session running`, `gone`, or `account changed`, or `stale reading` when the snapshot is unchanged and the target's reading went stale under the lock; it never begins with `target eligibility: `. The next line is the new `swap` line, or `ALERT: swap refused: <reason>` when a [pre-swap check](#rotate-swap) refuses the new target. |
 | `revalidate: ~/.claude.json held no account; read again` | Retained diagnostic wording for the bounded retry of trusted credential identity. Session JSON supplies no identity evidence. |
@@ -12401,15 +12564,17 @@ Claude reads as it always did.
 After an attempt hits a usage limit, in this order:
 
 1. a stop signal already received ends the step with `128` plus the signal;
-2. auto-switch on, the wait unused, and an eligible profile left: rerun
-   under that profile at once. A piped prompt still arriving is fed to the
-   rerun as it arrives, as in step 3;
+2. auto-switch on and an eligible profile left: rerun under that profile at
+   once, whether or not the step has already waited (issue #2967; see
+   [Moving to another login before a wait](./usage-limit-waits.md#moving-to-another-login-before-a-wait)).
+   A piped prompt still arriving is fed to the rerun as it arrives, as in
+   step 3;
 3. auto-switch moved the step off the inherited profile before the first
    attempt only because that profile is over the threshold (no window at
    100%), and no eligible profile is left: rerun under the inherited
    profile at once. This is an auto-switch rerun, made at most once per
-   step: no `start` or `end` is written and the wait stays unused, so a
-   limit on that rerun still goes through steps 4 to 6. A piped prompt is
+   step: no `start` or `end` is written, so a limit on that rerun still goes
+   through steps 4 to 6. A piped prompt is
    replayed from its stored copy, so this rerun is made. A prompt still
    arriving is fed to the rerun as it arrives (see
    [Stdin](#stdin-handling)), so the rerun runs at once. It is refused only
@@ -12456,7 +12621,11 @@ unless the wait ends on another login's capacity (see
 [Retry login](#retry-login)). When auto-switch ran the step under other
 profiles before running out, their limits only steer auto-switch's choice of
 the next profile: a candidate that resets later does not stretch the wait, and
-a candidate's weekly limit or spend limit does not cancel it. When auto-switch
+a candidate's weekly limit or spend limit does not cancel it. With auto-switch
+on, the end of a limit block the rotate ledger records on any other login
+auto-switch could move the step to, run on or not, ends the wait when it comes
+first, and the retry then runs on that login
+([The earliest-reset deadline](./usage-limit-waits.md#the-earliest-reset-deadline)). When auto-switch
 moved the step off the inherited profile before the first attempt, the
 inherited profile's limit comes from the usage readings: the latest reset
 among its windows at 100%. A reset from a reading more than five hours away is
@@ -12481,9 +12650,16 @@ is the [rotate ledger](#rotate-state-directory)'s `live` profile, else the
 [swap record](#swap-record)'s live login. For any other step there is no key.
 The name is read at runtime from the files the rotator writes under its own
 lock, never from `.claude.json`, whose account field may hold an e-mail
-address or a UUID. A step that can read neither file has no key. A host with
-no profile store has no rotator files at all, so every key is absent and every
-recipe-log line says `account=unknown`.
+address or a UUID. A step that can read neither file has no key.
+
+The login key is what the login-change checks compare. The `account=` field
+and the wait's mark name the login more widely (issue #2967): the profile the
+supervisor launched the attempt under, else the inherited profile, else the
+login key. A step under a stored profile is therefore named by that profile,
+where before #2967 it had no key and logged `account=unknown`. A host with no
+profile store, a `CLAUDE_CONFIG_DIR` step, and a `$HOME/.claude` step whose
+key cannot be read still say `account=unknown`
+([The login a wait names](./usage-limit-waits.md#the-login-a-wait-names)).
 
 Each reading carries **which of the two files it came from** along with the
 name. The two are read in order, the cycle ledger first and the swap record
@@ -12658,8 +12834,9 @@ candidate that applies (a tie is named by the earlier row):
 | Candidate | Applies when | `bound=` |
 |-----------|--------------|----------|
 | reset + 120 s, or now + 120 s when the reset has passed | always | `reset+margin` |
+| another login's block end + 120 s | auto-switch is on, and a limit block recorded on another login the step could move to ends before that (issue #2967) | `earliest_reset+margin` |
 
-A reset wait has one row and no other timed bound. It ends at its reset plus
+A reset wait has no timed bound but these two. It ends at its reset plus
 120 seconds, or earlier on a login with room or a login change
 ([Reasons a wait ends](#reasons-a-wait-ends)). No setting shortens it.
 
@@ -13050,6 +13227,7 @@ A capacity wait's deadline is one of:
 |----------|--------------|----------|
 | the failed login's reset + 120 s, the reset held to its kind's window | the limit message states a reset that is still in the future | `reset+margin` |
 | none (`until=none`) | the limit states no reset still in the future: none readable, credit exhaustion, a reset already passed, or a bare 429 | `none` |
+| another login's block end + 120 s | auto-switch is on, and a limit block recorded on another login the step could move to ends before the row above would end the wait (issue #2967); the `reset=` field keeps the limit's own reset | `earliest_reset+margin` |
 
 A stated reset still ahead is the deadline however far away it is: a weekly
 limit days away is waited for once, to its reset. The reset is held to its
@@ -13407,8 +13585,8 @@ too. No other event reaches that sink.
 
 | Event | Fields |
 |-------|--------|
-| `start` (reset wait) | `reason=usage_limit harness=claude reset=<time> until=<time> bound=<bound>` |
-| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time>\|none bound=reset+margin\|none`; `until=none bound=none` when the limit stated no reset still ahead |
+| `start` (reset wait) | `reason=usage_limit harness=claude reset=<time> until=<time> bound=reset+margin\|earliest_reset+margin` |
+| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time>\|none bound=reset+margin\|earliest_reset+margin\|none`; `until=none bound=none` when the limit stated no reset still ahead and no other login's block end comes first |
 | `start` (login-change wait) | `reason=spend_limit wait=login_change harness=claude reset=none until=none bound=none` |
 | `reentered` | `met=usage_limit\|rate_limit`; once per [re-entry](#a-limit-after-a-wait), before that wait's `start`. `met=usage_limit` is also written for a [passed reset](#a-reset-that-has-already-passed), whose `start` is a capacity wait |
 | `progress` | `remaining=<secs>s`, or `remaining=none` for a wait with no deadline, every 60 s |

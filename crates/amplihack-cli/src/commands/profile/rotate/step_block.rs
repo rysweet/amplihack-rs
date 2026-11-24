@@ -55,7 +55,9 @@
 //! 8. **Log**, outside the lock.
 
 use super::control::CLEAR_LOCK_WAIT;
-use super::ledger::{MAX_BLOCKS, OverflowBlock, RotateState, prune_blocks, spend_reset};
+use super::ledger::{
+    MAX_BLOCKS, OverflowBlock, RotateState, active_blocks, prune_blocks, spend_reset,
+};
 use super::log::msg;
 use super::spend_blocks::valid_span;
 use crate::commands::profile::auto_switch::kit::{State, exists};
@@ -115,6 +117,38 @@ pub fn note_limit_block(
             &msg::step_limit_block_not_written(login, kind, why),
         ),
     }
+}
+
+/// The earliest end after `now` of a block the rotate ledger under `root`
+/// records on one of `logins`, and that login (issue #2967).
+///
+/// This is the one reader a step's wait has of another login's reset. It
+/// reads the blocks [`note_limit_block`] writes, each ending at the reset a
+/// limit message stated, and the blocks the rotator records itself, by the
+/// rule every block reader uses (`active_blocks`). The rotator wakes at the
+/// same ends (`wake::deadline`), so the step and the rotator cannot disagree
+/// about when a block ends. A tie goes to the first name.
+///
+/// `None` when the host has no ledger, as on a host the rotator has never
+/// run on, where no block is recorded, and when no such block stands. A
+/// ledger that cannot be read also gives `None`, and the step says so on
+/// stderr.
+pub fn earliest_end<'a>(root: &Path, logins: &[&'a str], now: i64) -> Option<(&'a str, i64)> {
+    let ledger = match RotateState::new(root).load_ledger() {
+        Ok(l) => l?,
+        Err(e) => {
+            eprintln!(
+                "amplihack: the rotate ledger cannot be read: {e}; no other login's recorded \
+                 reset can end this step's wait (auto-switch)"
+            );
+            return None;
+        }
+    };
+    let blocks = active_blocks(&ledger, now);
+    logins
+        .iter()
+        .filter_map(|login| blocks.get(*login).map(|b| (*login, b.until)))
+        .min_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)))
 }
 
 /// The end of the block to write, or `None` when none can be known.

@@ -485,7 +485,7 @@ fn after(w: &mut Waiter, wait: WaitFor, n: u32, probe: &dyn Fn(i64, i64) -> bool
 /// `a` when the attempt was launched, `b` after its limit.
 fn swapped_during_the_attempt(e: &Env, w: &mut Waiter, room_on_b: Option<bool>) {
     e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
-    w.note_attempt_login();
+    w.note_attempt_login(None);
     e.rotator_cycle_room("b", 2, None, "swapped", false, room_on_b);
 }
 
@@ -609,7 +609,7 @@ fn a_manual_switch_during_the_attempt_retries_at_once_without_a_room_reading() {
         let _writes = readings_written(&e);
         let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         e.rotator_cycle_room("b", 2, None, "switched", false, None);
         let probed = Cell::new(0);
         let got = after(&mut w, capacity(), 1, &probe_counting(&probed));
@@ -626,7 +626,7 @@ fn a_manual_switch_that_recorded_no_room_during_the_attempt_runs_the_wait() {
         let _writes = readings_written(&e);
         let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         e.rotator_cycle_room("b", 2, None, "switched", false, Some(false));
         let probed = Cell::new(0);
         let got = after(&mut w, capacity(), 1, &probe_counting(&probed));
@@ -650,7 +650,7 @@ fn a_retry_after_a_wait_that_said_try_now_is_reported_once_and_consumed() {
         let _writes = readings_written(&e);
         let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let probed = Cell::new(0);
         let got = after(&mut w, capacity(), 1, &probe_counting(&probed));
         assert!(matches!(got, AfterLimit::Retry));
@@ -684,7 +684,7 @@ fn a_capacity_wait_with_no_reset_retries_only_on_an_event_that_says_try_now() {
         let e = env();
         let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         // A cycle measured after the wait's start, as the rotator's next
         // cycle would be.
         let later = w.now() + 1;
@@ -706,7 +706,7 @@ fn a_reset_wait_runs_to_its_reset() {
         let e = env();
         let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let start = w.now();
         let reset = start + 1800;
         let wait = WaitFor::Reset {
@@ -741,12 +741,12 @@ fn a_finish_clears_what_an_earlier_retry_set() {
         let _writes = readings_written(&e);
         let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let probed = Cell::new(0);
         let got = after(&mut w, capacity(), 1, &probe_counting(&probed));
         assert!(matches!(got, AfterLimit::Retry));
         // The flag is deliberately not read here.
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let got = after(&mut w, WaitFor::Skip(NoWait::NoLimitMessage), 2, &|_, _| {
             false
         });
@@ -765,7 +765,7 @@ fn a_waiter_that_has_never_waited_has_not_resumed_on_a_signal() {
         let mut w = waiter(&e);
         assert!(!w.resumed_on_a_signal());
         // Nor does noting a login change that.
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         assert!(!w.resumed_on_a_signal());
     });
 }
@@ -814,7 +814,7 @@ fn issue_2911_a_second_and_a_third_limit_on_one_login_each_wait() {
         let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         for n in 1..=3 {
-            w.note_attempt_login();
+            w.note_attempt_login(None);
             let before = w.now();
             let wait = reset_in(&w, 1800);
             let got = after_a_signal(&mut w, n, wait);
@@ -840,7 +840,7 @@ fn issue_2911_repeated_capacity_waits_are_never_refused() {
         let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         for n in 1..=4 {
-            w.note_attempt_login();
+            w.note_attempt_login(None);
             let later = w.now() + 1;
             e.rotator_cycle_room("a", later, Some(later), "stayed", false, Some(true));
             let got = after_a_signal(&mut w, n, capacity());
@@ -860,7 +860,7 @@ fn issue_2911_a_passed_reset_waits_instead_of_ending_the_step() {
         let e = env();
         for ahead in [0, -1, -120, -599, -86_400] {
             let mut w = waiter(&e);
-            w.note_attempt_login();
+            w.note_attempt_login(None);
             w.marks.record(None);
             let before = w.now();
             let wait = reset_in(&w, ahead);
@@ -883,7 +883,7 @@ fn issue_2911_a_login_change_wait_retries_when_the_login_changes() {
         let e = env();
         let mut w = waiter(&e);
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         e.rotator_cycle_room("b", 2, None, "swapped", false, None);
         let got = after(&mut w, login_change(), 1, &|_, _| false);
         assert!(matches!(got, AfterLimit::Retry));
@@ -902,7 +902,7 @@ fn issue_2911_a_capacity_wait_retries_when_another_login_has_room() {
     guarded(|| {
         let e = env();
         let mut w = waiter(&e);
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let got = after(&mut w, capacity(), 1, &|_, _| true);
         assert!(matches!(got, AfterLimit::Retry));
         assert!(
@@ -923,7 +923,7 @@ fn issue_3037_a_step_timeout_does_not_end_a_limit_wait() {
         let _timeout = EnvGuard::set([("AMPLIHACK_STEP_TIMEOUT", "1")]);
         let e = env();
         let mut w = waiter(&e);
-        w.note_attempt_login();
+        w.note_attempt_login(None);
         let before = w.now();
         let wait = reset_in(&w, 1800);
         let got = after(&mut w, wait, 1, &|_, _| false);

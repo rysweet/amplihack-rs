@@ -217,6 +217,7 @@ fn snap_on_unmarked_key() -> Snap {
         candidates: vec![n("work"), n("spare")],
         skips: Vec::new(),
         sees_sessions: true,
+        unreadable: Vec::new(),
         overflow: Vec::new(),
         pin: PinState::None,
         ignored: Vec::new(),

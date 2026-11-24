@@ -154,8 +154,9 @@ recipe run, as amplihack-rs's do, must not join or write into the outer one.
 | --- | --- | --- | --- |
 | [`scripts/git-hook-cargo.sh`](../../scripts/git-hook-cargo.sh) (amplihack-rs `pre-commit` and `pre-push`) | yes | no | First thing after `set -euo pipefail`. |
 | [`autodrive_qa_evidence.sh`](../../amplifier-bundle/tools/autodrive_qa_evidence.sh) | yes | yes | Straight after its helper directory `H` is found, before `cd "$REPO_PATH"`, the scan subshell and `git rev-parse HEAD`. |
-| `autodrive-merge-evidence.yaml` `step-01-sync-with-base` | yes | yes | Before its first `git` command. Its `git push` runs the target repository's pre-push hook and tests. |
+| `autodrive-merge-evidence.yaml` `step-01-sync-with-base` | yes | yes | Before its first `git` command. The step only observes (it fetches and reads) and no longer pushes. |
 | `autodrive-merge-evidence.yaml` `step-02-qa-team-scenarios` | yes | yes | Before `git rev-parse` and before it runs `autodrive_qa_evidence.sh`. |
+| `autodrive-merge-loop.yaml` `step-03b-base-sync` (merge and resolve) | yes | yes | Before every shell call that runs tests, hooks, `cargo`, `npm` or `pytest` while it checks a resolved conflict. The merge loop has no round tools directory, so the line loads the helper from `$AMPLIHACK_HOME/amplifier-bundle/tools`. As in `step-04`, the prompt is advice to an agent, not a shell wrapper. |
 | `autodrive-merge-round.yaml` `step-04` (fix and commit) | yes | yes | Twice, because each of the agent's shell calls is a new process that inherits the agent's environment. The "Running tests or hooks" instruction tells the agent to start every shell call that runs tests, hooks, `cargo`, `npm` or `pytest` with the helper line, so the tests it runs while fixing blockers see no inherited `GIT_*`. The bash block that commits and pushes loads it again; there it replaces the old partial `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE`, and `unset GH_REPO` stays. The prompt is advice to an agent, not a shell wrapper: a test command the agent runs without the line is not covered. |
 
 `autodrive-merge-round.yaml` `step-00-tools-dir` lists `git-repo-env.sh` in

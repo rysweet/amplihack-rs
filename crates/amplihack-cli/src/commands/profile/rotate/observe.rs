@@ -8,6 +8,7 @@ use super::identify::{self, Account, CandidateInput, LiveId, LoginKind, Skip};
 use super::log::msg;
 use super::overflow::Tag;
 use super::pin::{self, PinState};
+use crate::commands::profile::auto_switch::Unreadable;
 use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER};
@@ -31,6 +32,11 @@ pub struct Snap {
     pub candidates: Vec<ProfileName>,
     pub skips: Vec<(ProfileName, Skip)>,
     pub sees_sessions: bool,
+    /// Issue #2820: the processes whose environment the liveness scan could
+    /// not read and that it noted, in pid order, for the `unreadable
+    /// process` lines. Only logs; the profiles they count for are already
+    /// in `skips` as `session running`.
+    pub unreadable: Vec<Unreadable>,
     /// The overflow entries with their tiers, in file order. Part of the
     /// snapshot, so a mark or tier changed during measurement skips the
     /// cycle. The API-key profile (issue #1700) is the entry at

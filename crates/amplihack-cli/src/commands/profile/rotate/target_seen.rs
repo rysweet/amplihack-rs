@@ -19,6 +19,7 @@ use super::super::measure::ProbeLabel;
 use super::super::observe::Snap;
 use super::last_good::{LastGood, last_good};
 use super::target::{Block, NoMove, Unfit, fit_blocked, standing_block};
+use super::target_confirm::Unconfirmed;
 use super::{Measured, Probed, Reading};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::OverflowEntry;
@@ -33,6 +34,12 @@ pub struct Extra {
     /// Candidates rejected at confirmation for an unknown reading: their
     /// last good reading is no longer used in this cycle.
     pub rejected: BTreeSet<ProfileName>,
+    /// Issue #2820: candidates the gate accepted without a fresh reading
+    /// off a blocked live login, with why (the label of their unknown
+    /// reading, or the limit that left them unread), so a later gate of the
+    /// same cycle (under the lock, in revalidation) accepts them again
+    /// rather than reading while the live login is still blocked.
+    pub unconfirmed: BTreeMap<ProfileName, Unconfirmed>,
     /// Last good readings of the labelled candidates; `None` when the history
     /// was not read, so nothing is substituted.
     pub last_good: Option<BTreeMap<ProfileName, LastGood>>,
@@ -146,10 +153,38 @@ pub struct Seen {
     pub may_cross: bool,
     /// Why an ALERT decision did not move.
     pub why: Option<NoMove>,
+    /// Issue #2820: the swap target accepted without a fresh reading, with
+    /// why.
+    pub unconfirmed: Option<(ProfileName, Unconfirmed)>,
+    /// Issue #2820: the live plan login's standing recorded block (its own,
+    /// or the API key's), set by the caller. Only then may a target be
+    /// accepted without a fresh reading; the swap line of such a move says
+    /// which block and until when.
+    pub live_blocked: Option<Block>,
     /// Candidates left untried at the re-read limit.
     pub not_tried: BTreeSet<ProfileName>,
     /// `--target-week-max`, for the lines.
     pub week_max: u8,
+}
+
+impl Seen {
+    /// The readings the cycle records: the capacity file, the no-room marks,
+    /// `live_room` and the swap record. A swap target accepted without a fresh
+    /// reading (issue #2820) has no measured figures, whether its probe
+    /// failed or the stale reading it was chosen on stood, so it is recorded
+    /// as read nothing: no swap record, and no room claimed for the login now
+    /// live, so a waiting step is not woken onto it until a cycle reads it
+    /// with room.
+    pub fn recorded(&self, others: &[(ProfileName, Reading)]) -> Vec<(ProfileName, Reading)> {
+        let unconfirmed = self.unconfirmed.as_ref().map(|(n, _)| n);
+        others
+            .iter()
+            .map(|(n, r)| {
+                let unread = unconfirmed == Some(n);
+                (n.clone(), if unread { Reading::Failed } else { *r })
+            })
+            .collect()
+    }
 }
 
 /// The reading the decision uses for `name`: the probe's, or the last good
@@ -166,8 +201,8 @@ pub fn reading_used(extra: &Extra, name: &ProfileName, p: &Probed) -> Reading {
 }
 
 /// The cycle's [`Seen`] for the plan candidates in `probes` and the plan
-/// logins `snap` skipped as `no account`. `may_cross` and `why` are set by
-/// the caller.
+/// logins `snap` skipped as `no account`. `may_cross`, `why` and
+/// `live_blocked` are set by the caller.
 pub fn build(
     snap: &Snap,
     extra: Extra,

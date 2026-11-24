@@ -227,6 +227,7 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
         candidates: Vec::new(),
         skips: vec![(n("work"), Skip::Live), (n("spare"), skip)],
         sees_sessions,
+        unreadable: Vec::new(),
         overflow: Vec::new(),
         pin: PinState::None,
         ignored: Vec::new(),

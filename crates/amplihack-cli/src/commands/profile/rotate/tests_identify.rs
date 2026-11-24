@@ -567,13 +567,41 @@ fn a_refused_directory_is_skipped_as_directory_refused_not_no_login() {
 #[test]
 fn unknown_liveness_leaves_no_candidates() {
     let e = env();
-    for l in [Liveness::Everything, Liveness::Unsupported] {
-        let mut input = e.input(None);
-        input.liveness = l;
-        let (c, skips) = candidates(&e.store, &input).unwrap();
-        assert!(c.is_empty());
-        assert_eq!(skipped(&skips, "spare"), Some("session running"));
-    }
+    let mut input = e.input(None);
+    input.liveness = Liveness::Unsupported;
+    let (c, skips) = candidates(&e.store, &input).unwrap();
+    assert!(c.is_empty());
+    assert_eq!(skipped(&skips, "spare"), Some("session running"));
+}
+
+/// Issue #2820: after an unreadable process, only the profiles named as
+/// live are skipped as `session running`; the others stay candidates.
+#[test]
+fn an_unreadable_process_skips_only_the_profile_it_names() {
+    use crate::commands::profile::auto_switch::{Unreadable, Verdict};
+    let e = env();
+    let mut input = e.input(None);
+    input.liveness = Liveness::Partial {
+        live: ["spare".to_string()].into(),
+        unreadable: vec![
+            Unreadable {
+                pid: 700_001,
+                exe: "claude".into(),
+                argv: vec!["claude".into()],
+                verdict: Verdict::Counted(["spare".to_string()].into()),
+            },
+            Unreadable {
+                pid: 700_002,
+                exe: "tailscaled".into(),
+                argv: vec!["tailscaled".into(), "amplihack".into()],
+                verdict: Verdict::NotClaude,
+            },
+        ],
+    };
+    let (c, skips) = candidates(&e.store, &input).unwrap();
+    assert_eq!(skipped(&skips, "spare"), Some("session running"));
+    assert!(!c.is_empty(), "the other profiles stay candidates");
+    assert!(!c.contains(&n("spare")));
 }
 
 #[test]

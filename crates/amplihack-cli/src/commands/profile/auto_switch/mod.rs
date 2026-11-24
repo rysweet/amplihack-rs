@@ -49,6 +49,8 @@ mod swap;
 #[cfg(unix)]
 pub(super) mod takeover;
 #[cfg(unix)]
+mod unreadable;
+#[cfg(unix)]
 mod usage;
 
 #[cfg(all(test, unix))]
@@ -79,6 +81,8 @@ mod tests_platform_candidate;
 mod tests_record;
 #[cfg(all(test, unix))]
 mod tests_takeover;
+#[cfg(all(test, unix))]
+mod tests_unreadable;
 #[cfg(all(test, unix))]
 mod tests_usage;
 
@@ -114,6 +118,10 @@ pub(super) use overflow_inputs::login_gap;
 pub(super) use state::CREDS;
 #[cfg(all(test, unix))]
 pub(crate) use swap::rerun_owner;
+/// Issue #2820: an unreadable process the liveness scan noted, for the
+/// rotate log's `unreadable process` lines.
+#[cfg(unix)]
+pub(super) use unreadable::{Unreadable, Verdict, assignment_name};
 #[cfg(unix)]
 pub(super) use usage::Window;
 #[cfg(all(test, unix))]

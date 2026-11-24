@@ -236,6 +236,28 @@ fn a_deadline_reached_is_the_reset_reached() {
     }
 }
 
+/// Issue #2967: a deadline another login's reset set (`earliest_reset+margin`)
+/// is a reset passing too, so reaching it is `reset reached`, on a reset wait
+/// and a capacity wait alike; the retry then runs on that login. It is not a
+/// login-change wait, so a login with room written before the deadline still
+/// ends it early, and the wait reads its files no more often than any other.
+#[test]
+fn a_deadline_another_logins_reset_set_is_the_reset_reached() {
+    for kind in [PlanKind::Reset, PlanKind::Capacity] {
+        let plan = Plan::for_test(T0 + 75, Bound::EarliestReset, kind, Some(T0 + 3_600));
+        let mut f = Fake::new();
+        assert_eq!(wait(&plan, &mut f), End::ResetReached, "{kind:?}");
+        assert_eq!(f.elapsed(), 75, "{kind:?} ended at {}", f.elapsed());
+        assert_eq!(f.other_probes, vec![0], "{kind:?}: read once, as it began");
+    }
+    let plan = Plan::for_test(T0 + 600, Bound::EarliestReset, PlanKind::Reset, None);
+    assert!(plan.capacity_may_end());
+    let mut f = Fake::new();
+    f.other_from = Some(40);
+    assert_eq!(wait(&plan, &mut f), End::OtherCapacity);
+    assert_eq!(f.elapsed(), 40, "ended on the write, not the deadline");
+}
+
 /// Issue #2911: a wait with no deadline is ended by no clock. With nothing
 /// written it wakes only for its progress lines, reads no file at any of
 /// them, and runs until something it waits on happens: here, six hours in,

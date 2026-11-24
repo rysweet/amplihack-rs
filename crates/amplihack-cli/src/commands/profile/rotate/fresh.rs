@@ -13,15 +13,13 @@
 
 use super::cycle::Ctx;
 use super::decide::target::{NoMove, Unfit, fit};
-use super::decide::target_confirm::{Facts, Limit, Step, Why, next};
+use super::decide::target_confirm::{Facts, Limit, Step, Unconfirmed, Why, after_unknown, next};
 use super::decide::target_msg::{blocked, reject};
 use super::decide::target_seen::Extra;
 use super::decide::{Decision, Measured, Probed, Reading, Reason};
 use super::fresh_msg;
-use super::log::Shown;
 use super::measure::{self, ProbeLabel};
 use super::observe::{Measurement, Snap, decide_with};
-use super::swap_back;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeSet;
@@ -32,7 +30,7 @@ pub(super) mod live;
 #[path = "fresh_reread.rs"]
 mod reread;
 #[cfg(test)]
-pub(super) use reread::{configured_env, reread_env};
+pub(super) use reread::{configured_env, recent, reread_env, taken_at};
 pub use reread::{reread_as_configured, reread_live_as_configured};
 
 /// The oldest a target's reading may be. It equals the default passive
@@ -131,10 +129,11 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 /// again (with [`Reread::Allowed`] and a hook) and decide again on the new
 /// figures; otherwise reject it with a `reject:` line and decide again, which
 /// reaches the next-ranked login. A read that fails, comes back unknown or is
-/// older than a reading already held rejects the target too, whatever room
-/// the live login has (issue #3105): no swap is made without a fresh reading.
-/// Then, when the decision looked for a target, one `reject:` line for each
-/// plan login with a standing block; it makes no read.
+/// older than one already held rejects the target too (issue #3105), unless
+/// the live login has a standing block and the target's reading is recent
+/// (issue #2820, `target_confirm`). When the decision looked for a target,
+/// the gate then writes one `reject:` line for each plan login with a
+/// standing block; that makes no read.
 /// Each name is read at most once, at most [`MAX_REREADS_PER_CYCLE`] reads and
 /// read-less rejections are made, and the loop is capped at `2n + 1` passes
 /// for `n` probes; a decision that still names a stale target at the cap is
@@ -226,7 +225,7 @@ pub(super) fn settle_timed(
     // so the log does not read as if the re-read had been accepted.
     let mut accepted: Vec<ProfileName> = Vec::new();
     let mut not_tried = BTreeSet::new();
-    let (mut attempts, mut rejected_unknown) = (0, false);
+    let (mut attempts, mut rejected_unknown, mut unconfirmed) = (0, false, None);
     // Each name is handled at most twice: read (or made unknown), then made
     // unknown. One more pass finds the settled decision.
     let max_handled = 2 * probes.len();
@@ -253,7 +252,19 @@ pub(super) fn settle_timed(
             return Err(ProfileError::GateUnsettled);
         }
         handled += 1;
-        let failed_now = probes[i].1.reading == Reading::Failed && !probes[i].1.carried;
+        // Issue #2820: a login an earlier gate of this cycle accepted unread
+        // is accepted again while the live login is still blocked; else it
+        // counts as failed (an unknown one) or unknown with no `reject:` line.
+        let known = extra.unconfirmed.get(&to).copied();
+        if let Some(why) = known
+            && m.seen.live_blocked.is_some()
+        {
+            unconfirmed = Some((to, why));
+            break;
+        }
+        let known_label = known.and_then(|u| u.label());
+        let failed_now = known_label.is_some()
+            || (probes[i].1.reading == Reading::Failed && !probes[i].1.carried);
         let mut read = None;
         if !failed_now && (done.contains(&to) || mode == Reread::Never || ctx.reread.is_none()) {
             // Under the lock, with no hook, or a re-read that is still not
@@ -271,13 +282,28 @@ pub(super) fn settle_timed(
                 break;
             }
             let remaining = budget.saturating_sub(spent());
+            let sub = extra.substitute(&to, &probes[i].1);
+            let at = reread::taken_at(&probes[i].1, m.measured_at, sub);
             let facts = Facts {
                 failed_now,
                 attempts,
                 can_read: !remaining.is_zero(),
-                label: extra.labels.get(&to).copied(),
+                live_blocked: m.seen.live_blocked.is_some(),
+                label: known_label.or_else(|| extra.labels.get(&to).copied()),
+                recent: reread::recent(at, damped_at.max(left_at), t),
             };
             match next(&facts) {
+                // Issue #2820: no read, no line of its own, probe unchanged.
+                Step::AcceptUnconfirmed(label) => {
+                    unconfirmed = Some(reread::accept(&mut extra, to, label.into()));
+                    break;
+                }
+                Step::AcceptStale(limit) => {
+                    let age = at.map_or(0, |at| u64::try_from(t - at).unwrap_or(0));
+                    let why = Unconfirmed::NotTried { limit, age };
+                    unconfirmed = Some(reread::accept(&mut extra, to, why));
+                    break;
+                }
                 Step::Reject(why) => {
                     attempts += 1;
                     rejected_unknown |= matches!(why, Why::Unknown(_));
@@ -305,16 +331,26 @@ pub(super) fn settle_timed(
                         Some(reread) => reread(ctx, &to, remaining),
                         None => (Probed::failed(), None),
                     };
-                    let mut p =
-                        fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines);
+                    let mut p = reread::fresh_probe(
+                        ctx,
+                        &to,
+                        &probes[i].1,
+                        p,
+                        damped_at.is_some(),
+                        &mut lines,
+                    );
                     // Issue #3105: a read that says nothing, or is older than
-                    // a reading already held, is never swapped on. One with
-                    // no label failed for a reason about the login (S2).
+                    // one held, is never swapped on; one with no label failed
+                    // for a reason about the login (S2). #2820: see `after_unknown`.
                     let older = p.observed_at.and_then(|at| extra.older_by(&to, at));
                     if p == Probed::failed() || older.is_some() {
                         let why = match (older, label) {
                             (Some(n), _) => Why::Older(n),
                             (None, Some(l)) => {
+                                if let Step::AcceptUnconfirmed(l) = after_unknown(l, &facts) {
+                                    unconfirmed = Some(reread::accept(&mut extra, to, l.into()));
+                                    break;
+                                }
                                 extra.labels.insert(to.clone(), l);
                                 Why::Unknown(l)
                             }
@@ -357,36 +393,7 @@ pub(super) fn settle_timed(
     }
     m.seen.extra = extra;
     m.seen.not_tried = not_tried;
+    m.seen.unconfirmed = unconfirmed;
     m.fresh_lines = lines;
     Ok(m)
-}
-
-/// The probe that replaces `old` after a re-read returned `p`, and its log
-/// lines. A failed read is unknown; a successful one is read now.
-fn fresh_probe(
-    ctx: &Ctx,
-    to: &ProfileName,
-    old: &Probed,
-    mut p: Probed,
-    damped: bool,
-    lines: &mut Vec<String>,
-) -> Probed {
-    // Issue #2910: a spend limit is what the login reported, not a failed read.
-    let spent = p.spend_limit && !p.unknown && !p.still_running && !p.carried;
-    if !spent && (p.reading == Reading::Failed || p.unknown || p.still_running || p.carried) {
-        lines.push(fresh_msg::failed(to));
-        return Probed::failed();
-    }
-    // Preserve the evidence time. Only an undated direct result receives
-    // the completion time; the next gate pass validates dated results.
-    p.observed_at.get_or_insert_with(ctx.now);
-    p.carried = false;
-    // Issue #1970: a re-read is made with passive readings off, so it is a
-    // direct reading and never checked as a stale cached one.
-    p.passive = false;
-    lines.push(fresh_msg::stale(to, &Shown::of(old), &Shown::of(&p)));
-    if damped && !swap_back::room(&p.reading, &ctx.settings) {
-        lines.push(fresh_msg::still_damped(to));
-    }
-    p
 }
