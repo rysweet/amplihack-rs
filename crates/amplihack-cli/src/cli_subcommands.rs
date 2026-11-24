@@ -556,6 +556,9 @@ pub enum ConfigCommands {
 pub enum RecipeCommands {
     /// Run a recipe
     Run {
+        /// Bypass historical recovery for this launch and its delegated recipes.
+        #[arg(long)]
+        fresh: bool,
         /// Recipe path
         recipe_path: String,
         /// Set context variable (key=value)
@@ -601,6 +604,49 @@ pub enum RecipeCommands {
         no_detach: bool,
         #[command(flatten)]
         governor: crate::commands::governor::GovernorArgs,
+    },
+    /// Add an instruction that every later agent step of a recipe run
+    /// receives after its own prompt
+    ///
+    /// Builds (smart-orchestrator, default-workflow and the like) and drives
+    /// (auto-drive) are both recipe runs, and both take guidance this way.
+    ///
+    /// The run is found from what it recorded when it started, so this works
+    /// from any shell, whatever AMPLIHACK_WORK_ROOT is set to.
+    Guide {
+        /// The run to guide, in any of these forms: a detached session name;
+        /// a run ID, either the run folder name or the correlation id that
+        /// `recipe stop` takes; a GitHub issue, as <number>, #<number> or an
+        /// issue URL; or the pull request URL of an auto-drive
+        /// (https://github.com/<owner>/<repo>/pull/<n>).
+        ///
+        /// Quote #<number>, which most shells read as a comment: '#2783'. A
+        /// bare number is tried as a run ID before an issue number.
+        target: String,
+        /// `-` reads the instruction from stdin, as does giving nothing.
+        /// Any other value here is refused: instruction text is never
+        /// accepted on the command line (PR #2567, issue #2582). Leading
+        /// hyphens are allowed so `--text` gets that refusal, not clap's
+        /// error; `guide.rs` reads `--from-step` and `--file` after `-`.
+        #[arg(hide = true, num_args = 0.., allow_hyphen_values = true, value_parser = clap::value_parser!(std::ffi::OsString))]
+        text: Vec<std::ffi::OsString>,
+        /// Read the instruction from this file instead of stdin
+        #[arg(long = "file", value_name = "PATH")]
+        file: Option<std::path::PathBuf>,
+        /// Allow the command inside a recipe run (`AMPLIHACK_RECIPE_RUN_ID`
+        /// set). The entry is then shown to later steps as coming from an
+        /// agent step in this run, not from the operator.
+        #[arg(long = "from-step")]
+        from_step: bool,
+    },
+    /// Read the guidance a run has received, or wait for more
+    ///
+    /// Reads the folders AMPLIHACK_RUN_GUIDANCE_DIRS lists, then the folder
+    /// of the pull request named. Allowed inside recipe runs. JSON output
+    /// never holds guidance text.
+    Guidance {
+        #[command(subcommand)]
+        command: GuidanceCommands,
     },
     /// Stop a recipe run and its whole process tree: a tmux session started
     /// by `recipe run --detach`, or a run id from its log pointer
@@ -655,6 +701,56 @@ pub enum RecipeCommands {
         /// Hide context variables
         #[arg(long)]
         no_context: bool,
+    },
+}
+
+/// The pull request whose guidance folder `recipe guidance` reads after the
+/// folders `AMPLIHACK_RUN_GUIDANCE_DIRS` lists (issue #3129). Give a URL or
+/// `--pr` with `--pr-repo`, or neither.
+#[derive(clap::Args, Debug, Clone)]
+pub struct PrFolderArgs {
+    /// A pull request URL: https://github.com/<owner>/<repo>/pull/<n>
+    #[arg(value_name = "TARGET")]
+    pub target: Option<String>,
+    /// The pull request number; needs --pr-repo
+    #[arg(long = "pr", value_name = "N")]
+    pub pr: Option<String>,
+    /// The repository of --pr, as <owner>/<repo>
+    #[arg(long = "pr-repo", value_name = "OWNER/REPO")]
+    pub pr_repo: Option<String>,
+}
+
+/// `amplihack recipe guidance` subcommands (issue #3129). See
+/// docs/reference/recipe-cli-reference.md#amplihack-recipe-guidance.
+#[derive(Subcommand, Debug)]
+pub enum GuidanceCommands {
+    /// Print every entry, oldest first, marking those after --since as NEW
+    Show {
+        #[command(flatten)]
+        folder: PrFolderArgs,
+        /// An entry file name; entries whose names sort after it are NEW.
+        /// Empty or absent: every entry is NEW.
+        #[arg(long = "since", value_name = "ENTRY")]
+        since: Option<String>,
+        /// Print one JSON line (schema 1) of metadata, never guidance text
+        #[arg(long = "json")]
+        json: bool,
+    },
+    /// Wait until an entry after --since arrives, or COMMAND finishes
+    ///
+    /// Prints one JSON line: {"event":"guidance","entry":"<name>"},
+    /// {"event":"command","exit":N} or {"event":"unarmed"} (exit 3).
+    Wait {
+        #[command(flatten)]
+        folder: PrFolderArgs,
+        /// An entry file name, or empty: an entry whose name sorts after it
+        /// ends the wait
+        #[arg(long = "since", value_name = "ENTRY", required = true)]
+        since: String,
+        /// A command to run while waiting, after `--`. Its stdout goes to
+        /// stderr; guidance arriving first stops it with SIGTERM.
+        #[arg(last = true, value_name = "COMMAND", value_parser = clap::value_parser!(std::ffi::OsString))]
+        command: Vec<std::ffi::OsString>,
     },
 }
 

@@ -120,9 +120,14 @@ fn launch_dirs_must_be_absolute_existing_directories_without_hash() {
     assert!(launch_dir(&file).is_err(), "not a directory");
     assert!(launch_dir(&tmp.path().join("missing")).is_err());
     assert!(launch_dir(Path::new("relative")).is_err());
+    // Not created: the rule about the text of the path is applied before
+    // the folder is looked for, and APFS would refuse to make this name
+    // (issue #2931). The message shows which rule refused it.
     let not_utf8 = tmp.path().join(OsStr::from_bytes(b"x\xff"));
-    std::fs::create_dir(&not_utf8).unwrap();
-    assert!(launch_dir(&not_utf8).is_err());
+    assert_eq!(
+        launch_dir(&not_utf8).unwrap_err(),
+        "must be an absolute UTF-8 path, without '#' or control characters"
+    );
 }
 
 #[test]

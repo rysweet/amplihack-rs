@@ -178,3 +178,6 @@ mod tests_capacity;
 #[cfg(test)]
 #[path = "tests_issue_1907_cycle.rs"]
 mod tests_issue_1907_cycle;
+#[cfg(test)]
+#[path = "tests_issue_2857_cycle.rs"]
+mod tests_issue_2857_cycle;

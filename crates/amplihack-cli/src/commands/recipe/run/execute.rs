@@ -11,14 +11,38 @@ use crate::env_builder::EnvBuilder;
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
+use amplihack_utils::clock::{Clock, SystemClock};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write as IoWrite};
-use std::process::{Child, ExitStatus, Stdio};
+use std::process::Child;
+use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+/// Git's tracing namespace, which routes diagnostic output to a caller-chosen
+/// file descriptor or path. Deliberately not in `amplihack_git::scrub`, whose
+/// list is repository selection: that list is unset wholesale by
+/// `tests/issue_1278_git_env_isolation.sh` and shared with every other caller.
+pub(super) const CALLER_TRACE_VARS: &[&str] = &[
+    "GIT_TRACE2",
+    "GIT_TRACE2_CONFIG_PARAMS",
+    "GIT_TRACE2_ENV_VARS",
+    "GIT_TRACE2_EVENT",
+    "GIT_TRACE2_PERF",
+    "GIT_TRACE2_REDACT",
+];
+
+/// Remove inherited Git routing and tracing after building all other environment.
+/// User credentials, global/system configuration and identity remain inherited.
+pub(super) fn scrub_runner_git_environment(command: &mut Command) {
+    for var in CALLER_TRACE_VARS {
+        command.env_remove(var);
+    }
+    amplihack_git::scrub(command);
+}
 
 const STDERR_TAIL_LINES: usize = 5;
 const CAPTURED_STDERR_LINES: usize = 200;
@@ -51,6 +75,66 @@ const MAX_SESSIONS_ENV: &str = "AMPLIHACK_MAX_SESSIONS";
 /// Distinct from 1 so a caller -- human or agent -- can tell "the tool broke" from
 /// "the tool declined, and will decline again".
 pub const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
+
+/// #2663 M1: a top-level drive succeeds only when it merged. `outcome` is the
+/// `autodrive_outcome` built by `report()`; success is an allow-list of the
+/// single `stop_reason` value `completed` (the loop driver ended the run
+/// `merged`, the PR was already merged at entry, or, since #2575 B4 and now
+/// #3129, a run with merging off ended `ready`). A missing, non-string or any
+/// other value is a failure.
+///
+/// #2769: "a run" here means a top-level drive, `auto-drive-to-merge` or
+/// `auto-drive-light`, as [`trusted::is_top_level_drive`] names them. A nested
+/// `autodrive-*` sub-recipe merges nothing and is judged by its own steps; the
+/// caller applies this only where it belongs.
+///
+/// docs/reference/autodrive-goal-loop.md#reported-outcomes.
+///
+/// [`trusted::is_top_level_drive`]: crate::commands::orch::autodrive::trusted::is_top_level_drive
+pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
+    outcome
+        .get("stop_reason")
+        .and_then(serde_json::Value::as_str)
+        == Some("completed")
+}
+
+/// #2663: a top-level drive's final status follows the merge, in both
+/// directions. A drive that did not merge is not a success; a drive whose
+/// merge `report()` read as `completed` is a success even when a later step
+/// failed. Applied only to an `Ok` run result, after
+/// `run_with_transient_retry` has returned, so it never starts a whole-run
+/// re-attempt (#1267) and never touches exit 79 or another terminal block,
+/// which are `Err`. It runs before the failure class is attached, so a raised
+/// run carries none.
+///
+/// #2769: the caller applies this only to a top-level drive; both directions
+/// stay exactly as #2663 wrote them, and a nested `autodrive-*` sub-recipe
+/// gets neither of them.
+///
+/// docs/reference/autodrive-goal-loop.md#reported-outcomes.
+pub(crate) fn apply_autodrive_outcome(
+    run_result: &mut RecipeRunResult,
+    outcome: &serde_json::Value,
+) {
+    let succeeded = autodrive_run_succeeded(outcome);
+    if run_result.success == succeeded {
+        return;
+    }
+    if succeeded {
+        eprintln!(
+            "INFO: auto-drive completed; a later step failed, the run is reported as a success [#2663]"
+        );
+    } else {
+        eprintln!(
+            "INFO: auto-drive did not complete (stop_reason {}); the run is not reported as a success [#2663]",
+            outcome
+                .get("stop_reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("missing")
+        );
+    }
+    run_result.success = succeeded;
+}
 
 /// Report a terminal refusal and carry the distinguishing exit code.
 ///
@@ -172,9 +256,10 @@ impl Drop for SpawnGuard {
 /// string longer than `MAX_ARG_STRLEN` (PAGE_SIZE * 32 = 131072 on Linux)
 /// with `E2BIG`. We cap conservatively below that so a pathologically large
 /// value cannot make the spawn fail. Over-limit values are still delivered
-/// to the runner via `--set` for `{{placeholder}}`
-/// substitution; only the env mirror is skipped (issue #784, regression
-/// guard for the E2BIG path).
+/// to the runner for `{{placeholder}}` substitution — since issue #2582 in
+/// the context file, and only on the `--set` path for a runner older than
+/// the pin; only the env mirror is skipped (issue #784, regression guard
+/// for the E2BIG path).
 const CONTEXT_ENV_VALUE_MAX_BYTES: usize = 96 * 1024;
 
 /// Per-entry byte overhead charged to every environment variable when
@@ -249,9 +334,37 @@ const RESERVED_ENV_DENYLIST: &[&str] = &[
     "IFS",
     // interpreter option injection
     "PYTHONPATH",
+    "PYTHONSTARTUP",
     "NODE_OPTIONS",
     "PERL5OPT",
     "RUBYOPT",
+];
+
+/// Names whose VALUE is executed, or which select the executable that will
+/// be. Context cannot set these on either transport — see
+/// [`is_reserved_context_key`], which refuses them outright rather than
+/// merely skipping the env mirror.
+///
+/// The Git/SSH entries are the command-running subset of
+/// `install::clone::GIT_SCRUBBED_ENV`, plus the two named in
+/// `amplihack-hooks`' tmux guard ("`GIT_EXTERNAL_DIFF=…`, `GIT_SSH_COMMAND=…`
+/// and the like run their value"). Both places already classify these as
+/// code execution; this is the same list applied to recipe context, which is
+/// untrusted in exactly the same way.
+const EXECUTABLE_SELECTOR_ENV: &[&str] = &[
+    // The recipe runner this run and every nested `amplihack` execs, and
+    // (issue #2582) the switch deciding whether context lands on argv.
+    "RECIPE_RUNNER_RS_PATH",
+    // Git and SSH names whose value is run as a command.
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_EDITOR",
+    "GIT_PAGER",
 ];
 
 /// `true` when `name` is a valid POSIX environment-variable identifier,
@@ -285,11 +398,35 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
     name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES
 }
 
-/// The `AMPLIHACK_` namespace belongs to amplihack. A context key in it is
-/// never mirrored into the env and never forwarded to the runner, so a recipe
-/// cannot choose, for example, the pinned Claude profile (issue #1567).
-fn is_reserved_context_key(key: &str) -> bool {
-    key.to_ascii_uppercase().starts_with("AMPLIHACK_")
+/// Context cannot select an amplihack profile, restore Git routing and
+/// executable configuration that the command policy removed before launch,
+/// or name a program that this run (or anything it spawns) will execute.
+///
+/// Issue #2582: `pub(super)` so `context_transport::refuse_reserved_keys`
+/// applies the same predicate before it writes a context file, rather than
+/// carrying a second copy of the rule that could drift from this one.
+///
+/// [`EXECUTABLE_SELECTOR_ENV`] names are reserved here rather than only in
+/// [`RESERVED_ENV_DENYLIST`] because they are *executable selectors*, not
+/// merely dangerous env names: their value is run, or chooses what is run.
+/// Context is untrusted input — issue bodies and third-party recipes flow
+/// into it — so these must be refused by the same rule BOTH transports
+/// consult, not dropped by the env filter alone. Dropping is wrong here: the
+/// `--set` path would still hand the pair to the runner for `{{placeholder}}`
+/// substitution even after the env mirror skipped it.
+///
+/// `*_BINARY_PATH` is a suffix rule, not a list, because
+/// `amplihack_utils::launch_target` resolves `{TOOL}_BINARY_PATH` for ANY
+/// tool name as an explicit, user-supplied override at the highest
+/// precedence. Enumerating today's tools would leave the next one open.
+pub(super) fn is_reserved_context_key(key: &str) -> bool {
+    let name = key.to_ascii_uppercase();
+    name.starts_with("AMPLIHACK_")
+        || amplihack_git::REPOSITORY_ENV_VARS.contains(&name.as_str())
+        || name.starts_with("GIT_CONFIG")
+        || name.ends_with("_BINARY_PATH")
+        || EXECUTABLE_SELECTOR_ENV.contains(&name.as_str())
+        || matches!(name.as_str(), "GIT_EXEC_PATH" | "GIT_TEMPLATE_DIR")
 }
 
 /// Validate a single recipe context entry for env export (issue #784 / #1023),
@@ -459,7 +596,9 @@ pub(super) fn resolve_context_env_budget() -> usize {
 /// 5. Drop values containing a NUL byte (rejected by the OS for env vars;
 ///    would otherwise panic at spawn time).
 /// 6. Drop values larger than [`CONTEXT_ENV_VALUE_MAX_BYTES`] (would risk
-///    `E2BIG`); they are delivered to the runner as `--set` arguments.
+///    `E2BIG`); they still reach the runner through the chosen context
+///    transport — the context file since issue #2582, or `--set` arguments
+///    for a runner older than the pin.
 ///
 /// Aggregate budget (issue #1023): the total bytes of the exported mirror must
 /// stay within `budget` so the environment inherited by every bash step cannot
@@ -536,26 +675,107 @@ pub(super) fn context_env_pairs(
     pairs
 }
 
+/// #2329: the private auto-drive state directory for one invocation.
+///
+/// Resolution order: the operator's explicit `autodrive_state_dir` (already
+/// validated by `InvocationAuthorization::capture`), then `autodrive-state`
+/// in this run's durable folder, then `autodrive-state` in the dry run's
+/// private launch copy. The directory is created 0700, or an existing one is
+/// checked for a non-symlink leaf, ownership and private modes; it is never
+/// chmodded to pass. The returned path is the absolute path before
+/// canonicalisation: the runner binds it, passes the same string to the child
+/// and the report compares against it lexically.
+fn assign_autodrive_state_dir(
+    explicit_inputs: &BTreeMap<String, String>,
+    workspace: &crate::commands::cleanup::run_dir::RunWorkspace,
+    launch_home: &Path,
+) -> Result<PathBuf> {
+    let directory = match explicit_inputs.get("autodrive_state_dir") {
+        Some(value) => PathBuf::from(value),
+        None => match workspace.durable_run_dir()? {
+            Some(run_dir) => run_dir.join("autodrive-state"),
+            None => launch_home.join("autodrive-state"),
+        },
+    };
+    anyhow::ensure!(
+        directory.is_absolute(),
+        "autodrive_state_dir must be an absolute path"
+    );
+    anyhow::ensure!(
+        directory.to_str().is_some(),
+        "auto-drive state directory {directory:?} is not valid UTF-8"
+    );
+    crate::commands::orch::autodrive::state::EvidenceStore::create(&directory)
+        .with_context(|| format!("cannot prepare auto-drive state directory {directory:?}"))?;
+    Ok(directory)
+}
+
 // The resolved agent binary is an extra argument on purpose: the caller
 // decided it once, for the pre-flight and the steps alike (issue #1481).
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
+    explicit_inputs: &BTreeMap<String, String>,
     dry_run: bool,
-    _verbose: bool,
+    verbose: bool,
     working_dir: &Path,
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
     agent_binary: amplihack_utils::agent_binary::Resolution,
-    merge_guard: bool,
 ) -> Result<RecipeRunResult> {
+    execute_recipe_via_rust_fresh(
+        recipe_path,
+        context,
+        explicit_inputs,
+        dry_run,
+        verbose,
+        working_dir,
+        search_dirs,
+        step_timeout,
+        agent_binary,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_recipe_via_rust_fresh(
+    recipe_path: &Path,
+    context: &BTreeMap<String, String>,
+    explicit_inputs: &BTreeMap<String, String>,
+    dry_run: bool,
+    verbose: bool,
+    working_dir: &Path,
+    search_dirs: &[PathBuf],
+    step_timeout: Option<u64>,
+    agent_binary: amplihack_utils::agent_binary::Resolution,
+    fresh: bool,
+) -> Result<RecipeRunResult> {
+    use crate::commands::orch::autodrive::{authorization::InvocationAuthorization, trusted};
+    let invocation_name = recipe_name_for_correlation(recipe_path);
+    // #2329: authority is captured once, from the raw operator inputs of this
+    // invocation, before defaults, recovery normalisation or admission. A
+    // --fresh launch or a recovery resume captures new authority (and a new
+    // run_id) like any other invocation; stored context never grants it.
+    let mut authorization = trusted::applies(&invocation_name)
+        .then(|| InvocationAuthorization::capture(&invocation_name, explicit_inputs))
+        .transpose()?;
+    if dry_run && let Some(auth) = &mut authorization {
+        auth.restrict_dry_run();
+    }
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
     // so a failing / misbehaving orchestration can never recursively re-enter
     // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
-    // lookup, temp dirs, spawn) so no descendant is ever created past the limit.
+    // lookup, temp dirs, bundle copies, spawn) so no descendant is ever
+    // created past the limit.
     let guard = enforce_recursion_depth_guard(working_dir)?;
+    // Issues #964/#1903/#2814: read the named checkout's `core.bare` before
+    // anything else runs, so the release step below can tell a flip from the
+    // value it started with. Taken here, after the depth guard and before the
+    // bundle, spawn and every step.
+    let checkout_bare = super::checkout_bare::CheckoutBare::snapshot(working_dir);
     // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
     // point: setup, a running attempt, or retry backoff.
     super::stop_signal::arm();
@@ -563,8 +783,39 @@ pub(super) fn execute_recipe_via_rust(
     // parent already gone sets the stop here, before the runner is spawned.
     super::parent_watch::start();
 
-    let binary = super::binary::find_recipe_runner_binary()?;
+    let binary = super::binary::find_recipe_runner_binary()?
+        .canonicalize()
+        .context("resolve recipe runner before changing its launch directory")?;
+    // The trusted launch copy below does not change a recipe's `name:`, so
+    // the name read from the requested recipe is the pinned copy's name too.
     let recipe_name = recipe_name_for_correlation(recipe_path);
+    // Issue #2582: the report is kept, so the context transport can check
+    // for `context_file_v1` without a second probe.
+    let runner_report = match crate::runner_validation::probe(&binary, &agent_binary.binary) {
+        Ok(report) => report,
+        Err(error) => {
+            let correlation = RecipeRunCorrelation::new(
+                recipe_name.clone(),
+                working_dir,
+                &BTreeMap::new(),
+                binary.as_path(),
+            );
+            correlation.emit_early();
+            // The code first, unchanged, then why the probe failed (issue
+            // #2931): a step name and an OS error, never runner output.
+            eprintln!(
+                "amplihack: runner capability check failed: {error}{}",
+                crate::runner_validation::cause_suffix(&error)
+            );
+            return Err(fail_with_final_record(
+                &correlation,
+                RecipeRunFinalStatus::SpawnFailure,
+                None,
+                None,
+                error,
+            ));
+        }
+    };
 
     // Issue #1481: the caller resolved the agent binary once, from
     // `working_dir`, while this process could still see the session markers of
@@ -588,26 +839,207 @@ pub(super) fn execute_recipe_via_rust(
             .build()
             .remove("AMPLIHACK_HOME"),
     };
+    // Issue #3049: the stage-changes helper this run's shell steps source,
+    // resolved once from the release the bundle link names now, so an upgrade
+    // that moves the link mid-run (or before a retry) does not change it.
+    let stage_helper_pin = stage_helper_pin(run_settings.amplihack_home.as_deref());
 
     // Issue #1808: the run's folder under the work root holds run.json and
     // owned-paths; its runtime/ (TMPDIR, TMP, TEMP and artifacts) is removed
     // when the run ends, on every exit path including a panic.
-    let workspace = RefCell::new(crate::commands::cleanup::run_dir::RunWorkspace::begin(
-        &recipe_name,
-        working_dir,
-    )?);
+    let workspace = RefCell::new(if dry_run {
+        crate::commands::cleanup::run_dir::RunWorkspace::dry_runtime()?
+    } else {
+        crate::commands::cleanup::run_dir::RunWorkspace::begin_durable(&recipe_name, working_dir)?
+    });
+    // #2959: the trusted launch copy, and with it the invocation record, is
+    // made inside this run's own durable folder (`runs/<id>/`), beside the
+    // state directory the runner binds below, rather than in a loose TMPDIR
+    // folder that the run does not own. Cleanup keeps a live run's folder,
+    // so the record lasts as long as the drive; it is removed when this
+    // owner ends. The bundle is prepared here, once the run folder exists and
+    // before admission, because `prepare` writes the record's path into the
+    // pinned recipes. A dry run has no durable folder and never merges, so its
+    // copy stays under the inherited TMPDIR as before.
+    let launch = match authorization.as_mut().map(|auth| {
+        let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
+        let home = env
+            .var("AMPLIHACK_HOME")
+            .context("trusted AMPLIHACK_HOME missing for auto-drive")?;
+        let parent = match workspace.borrow().durable_run_dir()? {
+            Some(run_dir) => run_dir.to_path_buf(),
+            None => std::env::temp_dir(),
+        };
+        trusted::LaunchBundle::prepare(Path::new(home), &parent, auth)
+    }) {
+        None => None,
+        Some(Ok(launch)) => Some(launch),
+        Some(Err(error)) => {
+            return fail_before_execution(workspace.into_inner(), None, error, dry_run);
+        }
+    };
+    let pinned_recipe = launch.as_ref().map(|l| {
+        l.home
+            .join("amplifier-bundle/recipes")
+            .join(format!("{invocation_name}.yaml"))
+    });
+    let recipe_path = pinned_recipe.as_deref().unwrap_or(recipe_path);
+    let pinned_search = launch
+        .as_ref()
+        .map(|l| vec![l.home.join("amplifier-bundle/recipes")]);
+    let search_dirs = pinned_search.as_deref().unwrap_or(search_dirs);
+    // Expand auto-drive defaults only after trusted entrypoint selection.
+    // Neither requested recipe defaults nor inferred values grant authority.
+    let (mut invocation_context, inferred) = if launch.is_some() {
+        let recipe = match super::parse_recipe_from_path(recipe_path) {
+            Ok(recipe) => recipe,
+            Err(error) => {
+                return fail_before_execution(workspace.into_inner(), None, error, dry_run);
+            }
+        };
+        let (mut expanded, inferred) =
+            super::infer_missing_context(&recipe.context, explicit_inputs);
+        // Entry resolved an explicitly selected repo_path against the caller's
+        // directory. Keep that derived path when expanding the trusted recipe,
+        // while authorization continues to read the untouched operator inputs.
+        if explicit_inputs.contains_key("repo_path")
+            && let Some(repo) = context.get("repo_path")
+        {
+            expanded.insert("repo_path".into(), repo.clone());
+        }
+        // Recovery identity is normalised on this derived copy only, never on
+        // `explicit_inputs`, which stays the raw source of authority.
+        super::recovery::normalize(&mut expanded, working_dir);
+        (expanded, inferred)
+    } else {
+        (context.clone(), Vec::new())
+    };
+    if verbose && !inferred.is_empty() {
+        eprintln!(
+            "[context] Inferred {} variable(s): {}",
+            inferred.len(),
+            inferred.join(", ")
+        );
+    }
+    let delegated = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
+    let admission = if !dry_run && delegated.is_none() {
+        // #2329: whether auto-drive authority applies is part of the resume
+        // settings, so a resume cannot switch it. No per-run value (run_id,
+        // state directory) enters the fingerprint. This protects resume
+        // consistency only; it is not an authority check.
+        let settings = recipe_runner_rs::recovery::model::fingerprint(&(
+            &agent_binary.binary,
+            step_timeout,
+            authorization.is_some(),
+            env!("CARGO_PKG_VERSION"),
+        ))?;
+        Some(super::recovery::admit(
+            &workspace.borrow(),
+            recipe_path,
+            &recipe_name,
+            working_dir,
+            &invocation_context,
+            fresh,
+            settings,
+        )?)
+    } else {
+        None
+    };
+    // #2329 (S2): the runner writes its own keys last, after admission and
+    // immediately before launch, so no stored, recovered or operator-supplied
+    // value for them reaches the child. The private state directory is
+    // assigned and bound here too: the report opens evidence only from it.
+    if let Some(auth) = &mut authorization {
+        let launch = launch
+            .as_ref()
+            .context("trusted launch bundle missing for auto-drive")?;
+        let state_dir =
+            assign_autodrive_state_dir(explicit_inputs, &workspace.borrow(), &launch.home)?;
+        auth.bind_state_dir(state_dir.clone());
+        launch.record_state_dir(auth)?;
+        invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
+        invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
+        invocation_context.insert(
+            "autodrive_authorization".into(),
+            serde_json::to_string(auth)?,
+        );
+        invocation_context.insert(
+            "autodrive_invocation_file".into(),
+            launch
+                .home
+                .join("invocation.json")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        invocation_context.insert(
+            "autodrive_state_dir".into(),
+            state_dir.to_string_lossy().into_owned(),
+        );
+    }
+    let authorization = authorization;
+    let context = &invocation_context;
 
-    // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a
-    // runner that corrupts it (e.g. flips `core.bare=true`, which breaks
-    // `git status`) can be repaired on a terminal failure — leaving the caller's
-    // checkout usable while preserving any durable child worktrees.
-    let caller_git = CallerGitState::snapshot(working_dir);
+    // Run in the checkout selected by the caller. Recovery and context
+    // transport retain their ordinary durable state outside disposable runtime.
+    let context_runtime_dir = workspace.borrow().runtime_dir().to_path_buf();
+    let transport = match super::context_transport::ContextTransport::choose(
+        &runner_report,
+        &context_runtime_dir,
+        context,
+    ) {
+        Ok(transport) => transport,
+        Err(error) => {
+            return fail_before_execution(
+                workspace.into_inner(),
+                admission.as_ref(),
+                error,
+                dry_run,
+            );
+        }
+    };
+    transport.record();
 
     // Issue #1267: a `std::process::Command` is consumed by `spawn`, and every
     // attempt needs its own correlation run id, so command construction is a
     // closure invoked once per attempt rather than hoisted state. The runtime
-    // dir is deliberately NOT rebuilt: a retry of a transient transport fault
-    // should reuse the same artifact/tmp scratch space it was already given.
+    // dir path is deliberately NOT rebuilt: a retry of a transient transport
+    // fault should reuse the same artifact/tmp scratch space it was already
+    // given. Issue #2486: its tmp/ and artifacts/ are re-created there if
+    // missing, so a step never starts with a TMPDIR that no longer exists.
+    // Issue #2535: the guidance folders this run's agent steps read, computed
+    // once: this run's folder, the per-PR folder and the inherited list.
+    let guidance_dirs = crate::run_guidance::env::runner_env_value(
+        std::env::var_os(crate::run_guidance::GUIDANCE_DIRS_ENV).as_ref(),
+        workspace.borrow().run_dir(),
+        context,
+        working_dir,
+        crate::run_guidance::pr_key::state_root()
+            .as_deref()
+            .map_err(|e| *e),
+    );
+    // Issue #1619: the run summary's `Model tiers:` section reads the records
+    // this run's agent steps write into the run directory. A top-level
+    // `recipe run` hands AMPLIHACK_RUN_DIR to its children without setting it
+    // on itself, so the directory is named here rather than read back from
+    // the environment.
+    if let Some(run_dir) = workspace.borrow().run_dir() {
+        super::format::remember_run_dir(run_dir);
+    }
+    // Issue #1619: an instance may give one named step a tier of its own. The
+    // step id never reaches the child, so the override is applied recipe-side:
+    // patched copies of only the recipes that declare a named step, written
+    // into this run's own directory and handed to the runner as its first
+    // `-R`. With nothing configured nothing is staged, no argument is added
+    // and the run behaves exactly as it did before. A staging failure is
+    // reported and the run continues on the recipes as written: a tier
+    // preference must never stop a run.
+    let staged_recipes =
+        stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, recipe_path);
+    // Issue #2783: the folder this run uses, recorded in every pointer line
+    // it writes, so `recipe guide` finds the run from what it recorded at
+    // start rather than from the caller's work-root variables. Cloned once:
+    // the correlation sites below must not hold a `RefCell` borrow.
+    let run_location: Option<PathBuf> = workspace.borrow().run_dir().map(Path::to_path_buf);
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
         // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
@@ -622,13 +1054,42 @@ pub(super) fn execute_recipe_via_rust(
         // still override the pinned value until the runner refuses that
         // namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
+        // Issue #1619: a `-R` directory is searched for a name, and the
+        // top-level recipe is passed as a path, so `-R` alone never reaches
+        // it. When staging patched that recipe, the positional argument is
+        // its staged copy instead — the only route by which a single-step
+        // override covers a step of the recipe named on the command line.
+        let staged_top_level = staged_recipes
+            .as_ref()
+            .and_then(|staged| staged.top_level.as_ref());
+        let recipe_arg = match staged_top_level {
+            Some(path) => path.clone(),
+            None => recipe_path.to_path_buf(),
+        };
         command
-            .arg(recipe_path)
+            .current_dir(working_dir)
+            .arg(&recipe_arg)
             .arg("--output-format")
             .arg("json")
             .arg("-C")
             .arg(working_dir);
 
+        if fresh {
+            command.arg("--fresh");
+        }
+        if let Some(admission) = &admission {
+            command
+                .arg("--recovery-descriptor")
+                .arg(admission.descriptor_path());
+        }
+        // Issue #1619: the staged copies go ahead of every other -R. The
+        // runner resolves a sub-recipe name from its -R list first, in the
+        // order given, and amplihack forwards the bundle below, so anything
+        // offered after it is outranked by the recipe it was patched from.
+        let mut recipe_dir_args: Vec<PathBuf> = Vec::new();
+        if let Some(staged) = &staged_recipes {
+            recipe_dir_args.push(staged.dir.clone());
+        }
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
         // resolves top-level recipes. One -R per non-empty entry, in order.
@@ -636,24 +1097,47 @@ pub(super) fn execute_recipe_via_rust(
             if dir.as_os_str().is_empty() {
                 continue;
             }
-            command.arg("-R").arg(dir);
+            recipe_dir_args.push(dir.clone());
             tracing::debug!(dir = %dir.display(), "forwarding -R to recipe-runner-rs");
+        }
+        // Issue #1619: substituting the positional argument moves the
+        // runner's anchored search — its `recipe_origin_dir` — to the staging
+        // directory, so a recipe that resolves a sibling sub-recipe by name
+        // would stop finding it. The original recipe's own directory goes
+        // back on the end of the list rather than the front: appended, it
+        // cannot shadow anything that already ranked above it, so a
+        // repository-local file still does not displace a bundled one.
+        if staged_top_level.is_some()
+            && let Some(parent) = recipe_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let parent = parent.to_path_buf();
+            if !recipe_dir_args.contains(&parent) {
+                recipe_dir_args.push(parent);
+            }
+        }
+        for dir in &recipe_dir_args {
+            command.arg("-R").arg(dir);
         }
 
         if dry_run {
             command.arg("--dry-run");
         }
 
-        // Issue #1570: context goes to the runner as `--set` arguments; their
-        // size comes out of the env-mirror budget below so argv + envp stay
-        // under ARG_MAX together.
-        let context_argv_bytes = pass_context(&mut command, context)?;
+        // Issue #1570 / #2582: context goes to the runner as `--context-file
+        // <path>` or, for a runner older than the pin, as `--set` arguments.
+        // Whichever it is, the argv bytes it actually costs come out of the
+        // env-mirror budget below, so argv + envp stay under ARG_MAX
+        // together. The file transport costs the flag and the path, which is
+        // why `apply` returns a real count rather than zero.
+        let context_argv_bytes = transport.apply(&mut command, context)?;
         let argv_room = current_arg_max().saturating_sub(inherited_env_bytes());
         if context_argv_bytes > argv_room.saturating_sub(ENV_BUDGET_RESERVATION_BYTES) {
             anyhow::bail!(
-                "recipe context totals {context_argv_bytes} bytes of --set arguments, more than \
+                "recipe context totals {context_argv_bytes} bytes of {} arguments, more than \
                  the {argv_room} bytes of ARG_MAX left after the inherited environment. Pass \
-                 large values as file paths in the context instead"
+                 large values as file paths in the context instead",
+                transport.name()
             );
         }
 
@@ -692,36 +1176,24 @@ pub(super) fn execute_recipe_via_rust(
             .set("AMPLIHACK_NONINTERACTIVE", "1")
             .with_project_graph_db(working_dir)?;
 
-        // Issue #1551: put the `gh` merge guard from this run's own bundle
-        // first on PATH, and its BASH_ENV file to put it back there after a
-        // login shell's profile, so a merge outside autodrive_merge_gate.sh
-        // is refused in every step. Fails closed, before the runner starts, when
-        // the shim is missing.
-        //
-        // Issue #1954 D5: the guard comes from the bundle pinned once here, at
-        // run start. A link into a release is resolved now and never again, so
-        // an install that switches the link mid-run cannot make the guard's
-        // PATH entry, BASH_ENV and their de-duplication straddle two releases.
-        let env_builder = if merge_guard {
-            let guard_dir =
-                super::merge_guard::guard_dir_for_home(env_builder.var("AMPLIHACK_HOME"))?;
-            let pinned_bundle = guard_dir
-                .parent()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf);
-            let env_builder =
-                super::merge_guard::apply_guard(env_builder.prepend_path(&guard_dir), &guard_dir);
-            match pinned_bundle {
-                Some(bundle) => env_builder.set(
-                    super::merge_guard::BUNDLE_DIR_ENV,
-                    bundle.to_string_lossy().into_owned(),
-                ),
-                None => env_builder,
+        let env_builder = match &launch {
+            Some(launch) => {
+                let executable = std::env::current_exe()
+                    .context("resolve current auto-drive helper executable")?;
+                env_builder
+                    .prepend_path(
+                        executable
+                            .parent()
+                            .context("auto-drive helper executable has no parent")?,
+                    )
+                    .set("AMPLIHACK_BIN", executable.to_string_lossy().into_owned())
+                    .set("AMPLIHACK_HOME", launch.home.to_string_lossy().into_owned())
             }
-        } else {
-            env_builder
+            None => match &stage_helper_pin {
+                Some(pin) => env_builder.set(STAGE_HELPER_PIN_ENV, pin.clone()),
+                None => env_builder,
+            },
         };
-
         // Issue #439: propagate --step-timeout as AMPLIHACK_STEP_TIMEOUT env var.
         // When Some(n), the child process sees AMPLIHACK_STEP_TIMEOUT=n (0 = disable).
         // When None, the env var is not injected (parent-inherited values flow through).
@@ -731,6 +1203,7 @@ pub(super) fn execute_recipe_via_rust(
         };
 
         env_builder.apply_to_command(&mut command);
+        crate::commands::orch::autodrive::trusted::clean_retired_environment(&mut command)?;
         // Issue #1326: pin the session-tree directory for every descendant. Without
         // this each level re-derives it, and the previous derivation was based on
         // TMPDIR -- which we replace below with a fresh per-run tempdir, giving every
@@ -746,7 +1219,18 @@ pub(super) fn execute_recipe_via_rust(
         command.env(SESSION_DEPTH_ENV, guard.child_depth.to_string());
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
+        // Issue #2486: this run's own TMPDIR must exist before the step starts.
+        workspace.borrow_mut().prepare_attempt()?;
+        // Must stay last among the TMPDIR/TMP/TEMP setters: it overrides the
+        // inherited environment and the recipe context, so a step never gets
+        // another run's (or a removed) TMPDIR.
         command.envs(workspace.borrow().env());
+        if let Some(dirs) = &guidance_dirs {
+            command.env(crate::run_guidance::GUIDANCE_DIRS_ENV, dirs);
+        }
+        if dry_run {
+            command.env("AMPLIHACK_RUN_ID", run_id);
+        }
         // Issue #1976: name this `recipe run` as the parent of any nested run
         // a step starts, on the child only (never set_var). Without a start
         // time the pair is omitted: a pid alone could be reused.
@@ -771,6 +1255,9 @@ pub(super) fn execute_recipe_via_rust(
         // level reads the variable from its own environment, so removing it
         // on the child does not affect this run.
         command.env_remove(super::orphan_record::AUTODRIVE_STATE_DIR_ENV);
+        // Apply repository selection last so inherited environment builders
+        // cannot reintroduce caller routing or configuration injection.
+        scrub_runner_git_environment(&mut command);
 
         Ok(command)
     };
@@ -801,7 +1288,8 @@ pub(super) fn execute_recipe_via_rust(
                         context,
                         binary.as_path(),
                     )
-                    .with_settings(run_settings.clone());
+                    .with_settings(run_settings.clone())
+                    .with_run_location(run_location.as_deref());
                     // The pointer contract is one `early` then one `final`
                     // per run_id, even when no runner is spawned.
                     correlation.emit_early();
@@ -817,8 +1305,14 @@ pub(super) fn execute_recipe_via_rust(
                 context,
                 binary.as_path(),
             )
-            .with_settings(run_settings.clone());
-            workspace.borrow_mut().record_attempt(correlation.run_id());
+            .with_settings(run_settings.clone())
+            .with_run_location(run_location.as_deref());
+            if let Err(error) = workspace
+                .borrow_mut()
+                .record_attempt_checked(correlation.run_id())
+            {
+                return AttemptOutcome::Final(Err(error));
+            }
             let command = match build_command(correlation.run_id()) {
                 Ok(built) => built,
                 // Failing to BUILD the invocation (temp file, project graph db)
@@ -826,20 +1320,20 @@ pub(super) fn execute_recipe_via_rust(
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
             let mut stderr_tail = String::new();
+            // Cloned so no RefCell borrow is held across the attempt.
+            let run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
             let attempt_result = spawn_with_streaming_stderr(
                 command,
                 correlation,
                 recipe_path,
+                run_dir.as_deref(),
                 timeout,
                 &guard.tree_id,
                 &mut stderr_tail,
             );
 
-            // Issue #964: restore on ANY terminal failure, not just a spawn/parse `Err`.
-            // A runner that completes and emits a structured result reporting failure
-            // (`Ok(RecipeRunResult { success: false, .. })`) is still a terminal failure
-            // and is in fact the more likely path to leave the caller checkout corrupted
-            // (it did real work before failing). Restoring only on `Err` would miss it.
+            // Structured runner failures and spawn/parse errors both enter
+            // the failure-classification path below.
             let failed = match &attempt_result {
                 Err(_) => true,
                 Ok(run_result) => !run_result.success,
@@ -851,16 +1345,11 @@ pub(super) fn execute_recipe_via_rust(
                     .downcast_ref::<super::stop_signal::StoppedBySignal>()
                     .is_some()
             {
-                caller_git.restore_on_failure();
                 return AttemptOutcome::Final(attempt_result);
             }
             if !failed {
                 return AttemptOutcome::Final(attempt_result);
             }
-            // Issue #1267: repair before a retry too — a second attempt must not
-            // run against a checkout the first attempt corrupted.
-            caller_git.restore_on_failure();
-
             let verdict = match &attempt_result {
                 Ok(run_result) => classify_run_failure(run_result, &stderr_tail),
                 Err(error) => classify_error(error),
@@ -916,6 +1405,56 @@ pub(super) fn execute_recipe_via_rust(
     // reads it as DATA (issue #1337's evaluator) instead of scraping prose.
     let final_result = match result {
         Ok(mut run_result) => {
+            if let Some(auth) = &authorization {
+                let outcome = crate::commands::orch::autodrive::report::report(
+                    auth,
+                    &run_result.context,
+                    context.get("pr_number").map(String::as_str),
+                );
+                // #2769: the #2663 rule, that a run succeeds only if it
+                // merged, is the top-level drive's. A nested `autodrive-*`
+                // sub-recipe merges nothing, so its verdict stays its own
+                // steps'. Both halves of the rule go with it, not just the
+                // one the defect showed: a sub-recipe that did not merge is
+                // no longer failed, and a sub-recipe that merged and then
+                // failed at a later step is no longer raised to success. The
+                // second half is observable in the separate
+                // `amplihack recipe run autodrive-goal-turn` processes that
+                // the goal loop's driver starts, one per turn (#3129); a
+                // `type: recipe` step runs in process and never re-enters
+                // this function. No merge is read from a turn's exit status.
+                // The loop's merge action records its own result in
+                // `merge-result.json`, and the driver alone writes
+                // `loop-end.json`, ending `merged` only after its own reading
+                // of GitHub. Both are bound to the run id in the
+                // runner-bound state folder, where the top-level drive's
+                // `report()` reads them.
+                // The inserts below stay unconditional: the outcome remains
+                // data in the run result whatever the invocation.
+                if trusted::is_top_level_drive(&invocation_name) {
+                    apply_autodrive_outcome(&mut run_result, &outcome);
+                }
+                run_result
+                    .extra
+                    .insert("autodrive_outcome".into(), outcome.clone());
+                run_result
+                    .context
+                    .insert("autodrive_summary".into(), outcome);
+                let value = serde_json::to_value(auth)?;
+                run_result
+                    .extra
+                    .insert("autodrive_authorization".into(), value.clone());
+                run_result
+                    .context
+                    .insert("autodrive_authorization".into(), value);
+                run_result
+                    .context
+                    .insert("no_merge".into(), auth.no_merge().to_string().into());
+                run_result.context.insert(
+                    "autodrive_dry_run".into(),
+                    auth.dry_run().to_string().into(),
+                );
+            }
             if !run_result.success
                 && let Some(verdict) = last_verdict.borrow().as_ref()
             {
@@ -928,8 +1467,129 @@ pub(super) fn execute_recipe_via_rust(
         }
         Err(error) => Err(error),
     };
-    finish_workspace(workspace.into_inner(), &final_result, dry_run);
-    final_result
+    // Finish recovery admission and context transport before the run report.
+    release_in_order(
+        final_result,
+        vec![
+            // First, so the checkout is usable again before any later step —
+            // or the operator — runs git in it (#964, #2814).
+            (
+                "named checkout git state",
+                Box::new(|_| match checkout_bare.restore() {
+                    None => Ok(()),
+                    Some(message) => Err(anyhow::anyhow!(message)),
+                }),
+            ),
+            (
+                "recovery admission finish",
+                Box::new(|result| {
+                    match (
+                        &admission,
+                        admission_outcome(result, last_verdict.borrow().as_ref()),
+                    ) {
+                        (Some(admission), Some(outcome)) => admission
+                            .finish(outcome)
+                            .context("cannot finish recovery admission"),
+                        _ => Ok(()),
+                    }
+                }),
+            ),
+            // Issue #2582: the context file goes after the last runner child
+            // has been reaped and before the run folder it lives in, so no
+            // value outlives the run and the run report never finds the
+            // folder half-removed. Dropping the transport removes the file
+            // and then its folder.
+            (
+                "recipe context file",
+                Box::new(move |_| {
+                    drop(transport);
+                    Ok(())
+                }),
+            ),
+            (
+                "run report",
+                Box::new(|result| finish_workspace(workspace.into_inner(), result, dry_run)),
+            ),
+        ],
+    )
+}
+
+/// One release step: its name in the error chain, and the step, which sees
+/// the result so far.
+pub(super) type ReleaseStep<'a> = (
+    &'static str,
+    Box<dyn FnOnce(&Result<RecipeRunResult>) -> Result<()> + 'a>,
+);
+
+/// Runs every release step, in order, whatever happened before it. A step's
+/// error becomes the result of a run that had succeeded; otherwise it is kept
+/// as context ("<name> also failed: ...") on the error before it, so no
+/// release failure hides another.
+pub(super) fn release_in_order(
+    mut result: Result<RecipeRunResult>,
+    steps: Vec<ReleaseStep<'_>>,
+) -> Result<RecipeRunResult> {
+    for (name, step) in steps {
+        if let Err(step_error) = step(&result) {
+            result = Err(match result {
+                Err(error) => error.context(format!("{name} also failed: {step_error:#}")),
+                Ok(_) => step_error,
+            });
+        }
+    }
+    result
+}
+
+/// The recovery outcome for a finished run (#2334): `None` for a run stopped
+/// by a signal, which stays resumable.
+fn admission_outcome(
+    final_result: &Result<RecipeRunResult>,
+    last_verdict: Option<&FailureVerdict>,
+) -> Option<recipe_runner_rs::recovery::model::Outcome> {
+    use recipe_runner_rs::recovery::model::Outcome;
+    match final_result {
+        Ok(result) if result.success => Some(Outcome::Success),
+        Ok(_) if last_verdict.is_some_and(|v| v.class == super::FailureClass::UsageLimit) => {
+            Some(Outcome::UsageLimit)
+        }
+        Err(error)
+            if error
+                .downcast_ref::<super::stop_signal::StoppedBySignal>()
+                .is_some() =>
+        {
+            None
+        }
+        _ => Some(Outcome::Failure),
+    }
+}
+
+/// Preserve preparation errors while finishing the recovery admission (as
+/// `Failure`, unless a stop signal ended the run) and publishing a terminal
+/// run report.
+fn fail_before_execution(
+    workspace: crate::commands::cleanup::run_dir::RunWorkspace,
+    admission: Option<&recipe_runner_rs::recovery::admission::Admission>,
+    error: anyhow::Error,
+    dry_run: bool,
+) -> Result<RecipeRunResult> {
+    let mut error = error;
+    if let Some(admission) = admission
+        && error
+            .downcast_ref::<super::stop_signal::StoppedBySignal>()
+            .is_none()
+        && let Err(admission_error) =
+            admission.finish(recipe_runner_rs::recovery::model::Outcome::Failure)
+    {
+        error = error.context(format!(
+            "recovery admission finish also failed: {admission_error:#}"
+        ));
+    }
+    let failure = Err(error);
+    if let Err(finalization) = finish_workspace(workspace, &failure, dry_run) {
+        return failure
+            .map_err(|error| error.context(format!("run report also failed: {finalization:#}")));
+    }
+    failure
 }
 
 /// Issue #1808: removes runtime/, finalises run.json with the outcome, step
@@ -939,7 +1599,7 @@ fn finish_workspace(
     workspace: crate::commands::cleanup::run_dir::RunWorkspace,
     result: &Result<RecipeRunResult>,
     dry_run: bool,
-) {
+) -> Result<()> {
     use crate::commands::cleanup::run_dir::{Outcome, StepStatus};
     let (outcome, steps, log_path) = match result {
         Ok(run_result) => (
@@ -970,7 +1630,7 @@ fn finish_workspace(
         }
         Err(_) => (Outcome::Failure, Vec::new(), None),
     };
-    workspace.finish(outcome, steps, log_path, !dry_run);
+    workspace.finish_checked(outcome, steps, log_path, !dry_run)
 }
 
 /// The `action` recorded on the classification attached to a terminal result.
@@ -989,57 +1649,45 @@ fn spawn_with_streaming_stderr(
     mut command: Command,
     correlation: RecipeRunCorrelation,
     recipe_path: &Path,
+    run_dir: Option<&Path>,
     timeout: Duration,
     tree_id: &str,
     stderr_sink: &mut String,
 ) -> Result<RecipeRunResult> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // Issue #1606: SIGKILL cannot be caught, so a `recipe run` killed that
-        // way never tears the runner down. On Linux the kernel then sends the
-        // runner SIGTERM (PR_SET_PDEATHSIG). Captured before the fork: the
-        // check after prctl catches a parent that died in between.
-        #[cfg(target_os = "linux")]
-        let parent = std::process::id() as libc::pid_t;
-        // SAFETY: `pre_exec` runs after fork and before exec. `setsid`,
-        // `prctl` and `getppid` are async-signal-safe. `setsid` lets timeout
-        // cleanup terminate the recipe tree.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if libc::getppid() != parent {
-                        // No allocation after fork: ESRCH, "no such process",
-                        // for the parent that is already gone.
-                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
-                    }
-                }
-                Ok(())
-            });
-        }
-    }
-    correlation.emit_early();
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            return Err(fail_with_final_record(
-                &correlation,
-                RecipeRunFinalStatus::SpawnFailure,
-                None,
-                None,
-                anyhow::Error::new(error).context("failed to spawn recipe-runner-rs"),
-            ));
-        }
-    };
+    arm_runner(&mut command);
+    let spawned = command.spawn().context("failed to spawn recipe-runner-rs");
+    let mut child = spawned.map_err(|error| {
+        correlation.emit_early();
+        fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::SpawnFailure,
+            None,
+            None,
+            error,
+        )
+    })?;
     let child_pid = Some(child.id());
+    // Issue #2175: the record `recipe stop <run_id>` finds this attempt's
+    // processes by, written before `early` so a run id seen there always has
+    // one. Held for this attempt only: dropping the guard on any return
+    // removes it. A dry run has no run folder and writes none.
+    #[cfg(target_os = "linux")]
+    let _run_record = run_dir.and_then(|dir| {
+        match super::super::run_record::write(dir, correlation.run_id(), child.id()) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                eprintln!(
+                    "amplihack: warning: recipe run {:?} wrote no process record, so \
+                     `amplihack recipe stop` cannot stop it by run id: {error:#}",
+                    correlation.run_id()
+                );
+                None
+            }
+        }
+    });
+    #[cfg(not(target_os = "linux"))]
+    let _ = run_dir;
+    correlation.emit_early();
 
     let captured_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let dropped_stderr_lines: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
@@ -1084,7 +1732,12 @@ fn spawn_with_streaming_stderr(
         let _ = stdout_tx.send(result);
     });
 
-    let status = match wait_for_recipe_runner(&mut child, timeout)
+    // One clock for this attempt's timeout and every teardown grace below:
+    // `terminate_recipe_runner`, `sweep_runner_tree` and
+    // `reap_recipe_runner_group` all wait on it.
+    let runner = RunnerClock::current();
+    let waited = wait_for_recipe_runner(&mut child, timeout, &runner);
+    let status = match waited
         .context("failed to wait for recipe-runner-rs")
         .map_err(|error| {
             fail_with_final_record(
@@ -1105,9 +1758,8 @@ fn spawn_with_streaming_stderr(
                 // found through them.
                 let tree = crate::commands::recipe::stop::snapshot_group(child.id() as i32);
                 #[cfg(unix)]
-                reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
-                crate::commands::recipe::stop::terminate(&tree);
-                crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
+                reap_recipe_runner_group(child.id(), &runner);
+                sweep_runner_tree(&tree, &runner);
                 // Issue #1976: the captured signal value alone decides the
                 // status; a signal stored after an orphan request replaces it
                 // and is a Failure.
@@ -1132,10 +1784,11 @@ fn spawn_with_streaming_stderr(
             // every descendant that left the runner's group (an agent that
             // setsid'd again): the whole tree is found before anything is
             // signalled, and swept after the group teardown.
-            let tree =
-                crate::commands::recipe::stop::snapshot_tree(&std::collections::BTreeSet::from([
-                    child.id() as i32,
-                ]));
+            //
+            // The child is reaped only by this executor's own wait, so its
+            // pid is still the runner's and the walk starts there.
+            let roots = std::collections::BTreeSet::from([child.id() as i32]);
+            let tree = crate::commands::recipe::stop::snapshot_tree(&roots);
             // Issue #1976: the flag value alone decides the status; a signal
             // stored after an orphan request replaces it and is a Failure.
             let summary = if signal == super::stop_signal::ORPHANED as i32 {
@@ -1151,9 +1804,8 @@ fn spawn_with_streaming_stderr(
             let detail = super::format::format_log_pointer_summary(&summary);
             // The sweep runs whatever the group teardown reports: a runner
             // that could not be reaped must not leave its descendants behind.
-            let teardown = terminate_recipe_runner(&mut child);
-            crate::commands::recipe::stop::terminate(&tree);
-            crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
+            let teardown = terminate_recipe_runner(&mut child, &runner);
+            sweep_runner_tree(&tree, &runner);
             let stopped = anyhow::Error::new(super::stop_signal::StoppedBySignal(signal));
             return Err(match teardown {
                 Ok(()) => stopped,
@@ -1177,7 +1829,8 @@ fn spawn_with_streaming_stderr(
             );
             let detail = super::format::format_log_pointer_summary(&summary);
             let run_id = summary.run_id.clone();
-            terminate_recipe_runner(&mut child).with_context(|| {
+            let teardown = terminate_recipe_runner(&mut child, &runner);
+            teardown.with_context(|| {
                 format!("recipe run {run_id} timed out and could not be terminated: {detail}")
             })?;
             anyhow::bail!(
@@ -1199,7 +1852,7 @@ fn spawn_with_streaming_stderr(
     // a failed/early-exiting runner cannot leak a recursive subprocess tree and
     // cannot wedge the drain by holding the inherited stdout pipe open.
     #[cfg(unix)]
-    reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
+    reap_recipe_runner_group(child.id(), &runner);
 
     let stdout_buf = stdout_rx
         .recv_timeout(RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT)
@@ -1281,6 +1934,61 @@ fn spawn_with_streaming_stderr(
             })
         }
     }
+}
+
+/// The runner's process setup: captured stdout and stderr, its own session,
+/// and on Linux a SIGTERM when this process dies.
+fn arm_runner(command: &mut Command) {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Issue #1606: SIGKILL cannot be caught, so a `recipe run` killed that
+        // way never tears the runner down. On Linux the kernel then sends the
+        // runner SIGTERM (PR_SET_PDEATHSIG). Captured before the fork: the
+        // check after prctl catches a parent that died in between.
+        #[cfg(target_os = "linux")]
+        let parent = std::process::id() as libc::pid_t;
+        // SAFETY: `pre_exec` runs after fork and before exec. `setsid`,
+        // `prctl` and `getppid` are async-signal-safe. `setsid` lets timeout
+        // cleanup terminate the recipe tree.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent {
+                        // No allocation after fork: ESRCH, "no such process",
+                        // for the parent that is already gone.
+                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+}
+
+/// SIGTERM every process of `tree`, wait up to the teardown grace on
+/// `runner`'s clock for them to exit, then SIGKILL the survivors. A test that
+/// has cancelled its run ends the grace at once. Returns how many had to be
+/// killed.
+pub(super) fn sweep_runner_tree(
+    tree: &crate::commands::recipe::stop::Tree,
+    runner: &RunnerClock,
+) -> usize {
+    crate::commands::recipe::stop::terminate(tree);
+    crate::commands::recipe::stop::sweep_on(
+        tree,
+        recipe_runner_teardown_grace(),
+        runner.clock(),
+        &|| runner.cancelled(),
+    )
 }
 
 fn recipe_name_for_correlation(recipe_path: &Path) -> String {
@@ -1386,9 +2094,16 @@ fn parse_recipe_output_with_stderr_drops(
 pub(super) const MAX_ARG_STRLEN_BYTES: usize = 131_072;
 
 /// Pass context key-value pairs to the command as `--set KEY=VALUE`
-/// arguments, the only context input `recipe-runner-rs` accepts (it has no
-/// `--context-file` option; the fallback that used one failed every run
-/// whose context totalled over 128 KiB, issue #1570).
+/// arguments, which puts every value on the runner's argv.
+///
+/// Issue #2582: this runs only for a runner that does not report
+/// `context_file_v1`. The pinned runner reports it, so in a normal run
+/// `context_transport` passes `--context-file <path>` instead and no value is
+/// on argv at all. This path is reached only by a runner older than the pin
+/// supplied through `RECIPE_RUNNER_RS_PATH`; `ContextTransport::record`
+/// prints a line to stderr when it is taken, unconditionally, so that case is
+/// visible to an operator who set no `RUST_LOG` and would otherwise find it
+/// only in `/proc`.
 ///
 /// Returns the argv bytes the pairs occupy, so the caller can take them out
 /// of the env-mirror budget. A pair longer than one argv string allows is
@@ -1397,23 +2112,22 @@ pub(super) fn pass_context(
     command: &mut Command,
     context: &BTreeMap<String, String>,
 ) -> Result<usize> {
-    if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
-        anyhow::bail!(
-            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
-            crate::commands::profile::escape_for_error(key)
-        );
-    }
+    super::context_transport::refuse_reserved_keys(context)?;
     if let Some((key, value)) = context
         .iter()
         .find(|(k, v)| k.len() + 1 + v.len() + 1 > MAX_ARG_STRLEN_BYTES)
     {
         anyhow::bail!(
-            "recipe context value for key {} is {} bytes; recipe-runner-rs takes context only \
-             as --set arguments, and one argument cannot exceed {} bytes. Pass a file path \
-             in the context instead and read the file in the step",
+            "recipe context value for key {} is {} bytes; the runner supplied through \
+             RECIPE_RUNNER_RS_PATH does not report {}, so this run passes context as --set \
+             arguments, and one argument cannot exceed {} bytes. Use a runner that reports \
+             {}, which takes the context as a file and has no per-value limit; failing that, \
+             pass a file path in the context instead and read the file in the step",
             crate::commands::profile::escape_for_error(key),
             value.len(),
-            MAX_ARG_STRLEN_BYTES
+            super::context_transport::CONTEXT_FILE_CAPABILITY,
+            MAX_ARG_STRLEN_BYTES,
+            super::context_transport::CONTEXT_FILE_CAPABILITY
         );
     }
     let mut argv_bytes = 0;
@@ -1546,7 +2260,7 @@ pub(super) fn meaningful_stderr_tail_with_prior_drops(
     tail
 }
 
-fn recipe_runner_timeout() -> Duration {
+pub(super) fn recipe_runner_timeout() -> Duration {
     std::env::var(RECIPE_RUNNER_TIMEOUT_ENV)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -1563,11 +2277,73 @@ enum RunnerWait {
     Stopped(i32),
 }
 
-fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Result<RunnerWait> {
-    let started = Instant::now();
+/// The clock a runner attempt's timeout and teardown grace are measured on,
+/// and whether the attempt has been cancelled. Production reads the system
+/// clock and is never cancelled. A lib test that runs the executor under
+/// `test_runner::RunnerWorker` gets that worker's control instead: its
+/// (optionally virtual) clock and its cancel flag. The wait and every
+/// teardown take it from here, so neither runs on a clock the test does not
+/// control.
+pub(super) struct RunnerClock {
+    #[cfg(all(test, unix))]
+    control: Option<Arc<super::test_runner::Control>>,
+}
+
+impl RunnerClock {
+    /// The control installed for this thread, if any. Read on the executor's
+    /// thread, where `RunnerWorker` installs it.
+    pub(super) fn current() -> Self {
+        Self {
+            #[cfg(all(test, unix))]
+            control: super::test_runner::current(),
+        }
+    }
+
+    fn clock(&self) -> &dyn Clock {
+        #[cfg(all(test, unix))]
+        if let Some(control) = self.control.as_deref() {
+            return control;
+        }
+        &SystemClock
+    }
+
+    fn cancelled(&self) -> bool {
+        #[cfg(all(test, unix))]
+        if let Some(control) = self.control.as_deref() {
+            return control.cancelled();
+        }
+        false
+    }
+}
+
+/// Polls the runner until it exits, a stop signal arrives, or `timeout`
+/// passes on `runner`'s clock.
+///
+/// Each poll asks `try_wait` first, so a runner that has exited is reported
+/// as `Exited` even when the run was cancelled in the meantime. A cancelled
+/// run whose runner `try_wait` has just found still running has its process
+/// group killed and is reported as a timeout, so the usual teardown ends it.
+fn wait_for_recipe_runner(
+    child: &mut Child,
+    timeout: Duration,
+    runner: &RunnerClock,
+) -> std::io::Result<RunnerWait> {
+    let clock = runner.clock();
+    let started = clock.now();
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(RunnerWait::Exited(status));
+        }
+        if runner.cancelled() {
+            // SAFETY: `try_wait` has just found the child still running, and
+            // only this executor waits on it, so it is still unreaped and its
+            // pid, the id of the group it leads, is still this runner's.
+            // Cancel only that group before the test worker is joined.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL)
+            };
+            return Ok(RunnerWait::TimedOut);
         }
         if let Some(signal) = super::stop_signal::pending() {
             return Ok(RunnerWait::Stopped(signal));
@@ -1575,15 +2351,15 @@ fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Resu
         // Single clock read per poll: derive the remaining budget once and reuse
         // it for both the deadline check and the sleep cap. A zero (or elapsed)
         // remaining is the timeout.
-        let remaining = match timeout.checked_sub(started.elapsed()) {
+        let remaining = match timeout.checked_sub(clock.now().saturating_duration_since(started)) {
             Some(remaining) if !remaining.is_zero() => remaining,
             _ => return Ok(RunnerWait::TimedOut),
         };
-        thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
+        clock.sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
 }
 
-fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
+fn terminate_recipe_runner(child: &mut Child, runner: &RunnerClock) -> Result<()> {
     let pid = child.id();
     #[cfg(unix)]
     {
@@ -1598,12 +2374,19 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
         //      a runner that ignored SIGTERM and any lingering descendants.
         // The signal target is `-pgid`, so this is scoped strictly to the
         // runner's own session and never touches unrelated / parent processes.
-        let grace = recipe_runner_teardown_grace();
         let pgid = pid as libc::pid_t;
-        signal_process_group(pgid, libc::SIGTERM);
-        wait_until_exited(grace, || matches!(child.try_wait(), Ok(None)));
-        signal_process_group(pgid, libc::SIGKILL);
+        terminate_recipe_runner_with(
+            runner.clock(),
+            || {
+                // A test's virtual grace may be frozen while it awaits the
+                // TERM handler. Unwinding must still cancel and join it.
+                !runner.cancelled() && matches!(child.try_wait(), Ok(None))
+            },
+            |signal| signal_process_group(pgid, signal),
+        );
     }
+    #[cfg(not(unix))]
+    let _ = runner;
     #[cfg(windows)]
     {
         let mut command = Command::new("taskkill");
@@ -1628,6 +2411,20 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
     Ok(())
 }
 
+/// Apply the configured timeout teardown policy with injectable clock and
+/// process operations, so tests observe signals without real-time races.
+#[cfg(unix)]
+pub(super) fn terminate_recipe_runner_with(
+    clock: &dyn Clock,
+    still_running: impl FnMut() -> bool,
+    mut signal: impl FnMut(libc::c_int),
+) {
+    let grace = recipe_runner_teardown_grace();
+    signal(libc::SIGTERM);
+    wait_until_exited(grace, clock, still_running);
+    signal(libc::SIGKILL);
+}
+
 /// Resolve the SIGTERM -> SIGKILL grace window for recipe-runner teardown.
 ///
 /// Honors `AMPLIHACK_TEARDOWN_GRACE_SECS` (whole seconds, `0` allowed to mean
@@ -1644,23 +2441,23 @@ fn recipe_runner_teardown_grace() -> Duration {
 
 /// Poll `still_running` until it reports the target has exited or `grace`
 /// elapses; returns `true` if it exited within the window. Sleeps in short
-/// `RECIPE_RUNNER_POLL_INTERVAL` steps (floored at 1ms, never past the remaining
-/// grace) so a zero grace escalates almost immediately. Shared by both teardown
+/// `RECIPE_RUNNER_POLL_INTERVAL` steps (never past the remaining grace), so a
+/// zero grace escalates immediately. Shared by both teardown
 /// paths so the SIGTERM -> grace -> SIGKILL timing policy lives in one place.
 #[cfg(unix)]
-fn wait_until_exited(grace: Duration, mut still_running: impl FnMut() -> bool) -> bool {
-    let started = Instant::now();
+fn wait_until_exited(
+    grace: Duration,
+    clock: &dyn Clock,
+    mut still_running: impl FnMut() -> bool,
+) -> bool {
+    let started = clock.now();
     while still_running() {
-        let elapsed = started.elapsed();
+        let elapsed = clock.now().saturating_duration_since(started);
         if elapsed >= grace {
             return false;
         }
         let remaining = grace.saturating_sub(elapsed);
-        thread::sleep(
-            RECIPE_RUNNER_POLL_INTERVAL
-                .min(remaining)
-                .max(Duration::from_millis(1)),
-        );
+        clock.sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
     true
 }
@@ -1682,9 +2479,11 @@ fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) {
 /// runner's process group (issue #964). The runner itself has already been
 /// reaped by [`wait_for_recipe_runner`]; this sweeps any survivors that
 /// outlived the session leader using the same graceful SIGTERM -> grace ->
-/// SIGKILL contract, scoped strictly to `-pgid`.
+/// SIGKILL contract, scoped strictly to `-pgid`. The grace is measured on
+/// `runner`'s clock, like every other teardown grace of the attempt, and a
+/// cancelled test gives it up at once and kills the group.
 #[cfg(unix)]
-fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
+fn reap_recipe_runner_group(pgid_pid: u32, runner: &RunnerClock) {
     let pgid = pgid_pid as libc::pid_t;
     // `kill(-pgid, 0)` probes group liveness without delivering a signal.
     let group_alive = || unsafe { libc::kill(-pgid, 0) } == 0;
@@ -1693,7 +2492,15 @@ fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
         return;
     }
     signal_process_group(pgid, libc::SIGTERM);
-    if !wait_until_exited(grace, group_alive) {
+    let gave_up = std::cell::Cell::new(false);
+    let exited = wait_until_exited(recipe_runner_teardown_grace(), runner.clock(), || {
+        if runner.cancelled() {
+            gave_up.set(true);
+            return false;
+        }
+        group_alive()
+    });
+    if !exited || gave_up.get() {
         signal_process_group(pgid, libc::SIGKILL);
     }
 }
@@ -1889,109 +2696,84 @@ pub(crate) fn new_tree_id() -> String {
     format!("{:016x}{:08x}", nanos, std::process::id())
 }
 
-/// Pre-run snapshot of the caller checkout's git state needed to keep it usable
-/// after a terminal recipe-runner failure (issue #964).
+/// Issue #1619: write this run's patched recipe copies, or `None` when no
+/// per-step tier override is configured, the run has no durable directory, or
+/// no recipe declares a named step.
 ///
-/// The observed corruption was a runner flipping the caller checkout's
-/// `core.bare` to `true`, which makes `git status` fail with
-/// `this operation must be run in a work tree`. We snapshot `core.bare` before
-/// spawning and, on any terminal failure, restore the pre-run value so the
-/// caller's checkout is left usable. This is intentionally scoped to the single
-/// `core.bare` key on the caller checkout: it never touches the work tree, and
-/// never deletes or unregisters durable child worktrees produced by the run.
-struct CallerGitState {
-    /// The caller checkout (the runner's working directory).
-    dir: PathBuf,
-    /// `true` only if `dir` was a usable git work tree before the run. When
-    /// `false` there is nothing to restore and we must never "fix" a non-repo
-    /// into a repo.
-    was_git_checkout: bool,
-    /// Pre-run value of `core.bare` (`None` == unset). A `None` snapshot is
-    /// never restored as an explicit `false`; absence is preserved as absence.
-    core_bare: Option<String>,
-}
-
-impl CallerGitState {
-    /// Capture the caller checkout's `core.bare` before spawning. Returns a
-    /// snapshot with `was_git_checkout = false` (a no-op restore) when `dir` is
-    /// not a git work tree or git is unavailable.
-    fn snapshot(dir: &Path) -> Self {
-        let was_git_checkout =
-            git_capture(dir, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true");
-        let core_bare = if was_git_checkout {
-            git_capture(dir, &["config", "--local", "--get", "core.bare"])
-        } else {
-            None
-        };
-        Self {
-            dir: dir.to_path_buf(),
-            was_git_checkout,
-            core_bare,
-        }
+/// Reported and never fatal: a tier is a preference about which model runs a
+/// step, so a staging failure leaves the run on the recipes as written rather
+/// than stopping a hundred agent steps.
+fn stage_step_tier_overrides(
+    run_dir: Option<&Path>,
+    search_dirs: &[PathBuf],
+    recipe: &Path,
+) -> Option<super::step_tiers::Staged> {
+    let (overrides, file_notices) = crate::commands::launch::model_tiers::step_tier_overrides();
+    // Once per run, before anything is staged: this process is the only
+    // reader of `[step_tiers]`, so a line it does not print is a line nobody
+    // sees. The file's own diagnostics come first — they explain why a
+    // mapping is not what the operator wrote.
+    for notice in file_notices {
+        eprintln!("{}", notice.render());
     }
-
-    /// Best-effort restore of the caller checkout to the snapshotted `core.bare`,
-    /// run only after a terminal failure. Never bails; a restore failure is
-    /// surfaced via structured `tracing` (issue #964 requirement 5) and never
-    /// masks the original error. Preserves durable child worktrees (config-only).
-    fn restore_on_failure(&self) {
-        if !self.was_git_checkout {
-            return;
-        }
-        let current = git_capture(&self.dir, &["config", "--local", "--get", "core.bare"]);
-        if current == self.core_bare {
-            return; // caller checkout untouched — nothing to restore.
-        }
-
-        let restored = match &self.core_bare {
-            Some(value) => git_run(&self.dir, &["config", "--local", "core.bare", value]),
-            // Was unset before the run: unset whatever the runner left behind.
-            None => git_run(&self.dir, &["config", "--local", "--unset", "core.bare"]),
-        };
-
-        if restored {
-            tracing::warn!(
-                dir = %self.dir.display(),
-                "restored caller checkout core.bare after terminal recipe-runner failure (issue #964)"
-            );
-        } else {
-            tracing::error!(
-                dir = %self.dir.display(),
-                "failed to restore caller checkout git state after terminal recipe-runner failure (issue #964)"
-            );
-        }
-    }
-}
-
-/// Run `git -C dir <args>` and return trimmed stdout, or `None` if git is
-/// unavailable or the command failed (e.g. `--get` of an unset key exits
-/// non-zero, which we map to `None` == "unset").
-fn git_capture(dir: &Path, args: &[&str]) -> Option<String> {
-    let output = amplihack_git::command()
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    if overrides.is_empty() {
         return None;
     }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    // Not `run_dir?` above the emptiness check: an operator who configured
+    // `[step_tiers]` and got nothing must be told why. Without this line a
+    // run with no durable directory — a dry run — discards the whole table
+    // with no `BadStepId`, no `StepTierUnmatched` and no line at all, which
+    // is the silence `step_tiers` says a mistyped step id must never have.
+    let Some(run_dir) = run_dir else {
+        eprintln!(
+            "amplihack: model tiers: per-step tier overrides are configured, but this \
+             run has no durable directory to stage them in; the recipes run with the \
+             tiers they declare."
+        );
+        return None;
+    };
+    match super::step_tiers::stage(run_dir, search_dirs, recipe, overrides) {
+        Ok(outcome) => {
+            for notice in &outcome.notices {
+                eprintln!("{}", notice.render());
+            }
+            outcome.staged
+        }
+        Err(reason) => {
+            eprintln!(
+                "amplihack: model tiers: the per-step tier override could not be staged \
+                 ({reason}); the recipes run with the tiers they declare."
+            );
+            None
+        }
+    }
 }
 
-/// Run `git -C dir <args>` for side effects; `true` on success. `--unset` of an
-/// already-absent key exits non-zero (code 5) — treated as a non-fatal no-op so
-/// restoring "was unset, still unset" is not reported as a failure.
-fn git_run(dir: &Path, args: &[&str]) -> bool {
-    match amplihack_git::command()
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .status()
-    {
-        Ok(status) if status.success() => true,
-        // `git config --unset` of a missing key -> exit code 5; benign here.
-        Ok(status) if args.contains(&"--unset") && status.code() == Some(5) => true,
-        _ => false,
+/// Variable the recipes read first when looking for `workflow_stage_changes.sh`.
+const STAGE_HELPER_PIN_ENV: &str = "WORKFLOW_STAGE_CHANGES_HELPER";
+
+/// Issue #3049: the release copy of `workflow_stage_changes.sh` that the
+/// `amplifier-bundle` link under `home` names at run start, in the
+/// non-canonical `<home>/releases/<name>/...` form that release clean-up
+/// matches against a live process's environment.
+///
+/// `None` when the parent environment already sets the variable (a nested run
+/// keeps its parent's release), when the bundle is not reached through a
+/// release (a development checkout), when the release has no helper, or when
+/// the path is not UTF-8. Best effort: the steps' own search applies then.
+fn stage_helper_pin(home: Option<&str>) -> Option<String> {
+    if std::env::var_os(STAGE_HELPER_PIN_ENV).is_some_and(|v| !v.is_empty()) {
+        return None;
     }
+    let home = Path::new(home?);
+    let releases = crate::commands::install::release_layout::releases_dir(home);
+    let root = crate::commands::install::release_layout::release_root_of(
+        &releases,
+        &home.join("amplifier-bundle"),
+    )?;
+    let helper = root.join("amplifier-bundle/tools/workflow_stage_changes.sh");
+    if !helper.is_file() {
+        return None;
+    }
+    helper.to_str().map(str::to_owned)
 }

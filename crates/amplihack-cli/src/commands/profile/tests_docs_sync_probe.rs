@@ -155,7 +155,7 @@ fn docs_say_overflow_profiles_are_probed_with_usage_only() {
 
 #[test]
 fn reference_quotes_the_rotators_probe_warnings() {
-    let src = include_str!("rotate/measure.rs");
+    let src = include_str!("rotate/probe_reading.rs");
     for (code, doc) in [
         (
             "warning: rotate: probe of {who} timed out",
@@ -166,7 +166,10 @@ fn reference_quotes_the_rotators_probe_warnings() {
             "warning: rotate: probe of <name> failed: <reason>",
         ),
     ] {
-        assert!(src.contains(code), "measure.rs no longer prints {code:?}");
+        assert!(
+            src.contains(code),
+            "probe_reading.rs no longer prints {code:?}"
+        );
         assert!(
             REFERENCE.contains(doc),
             "the reference does not quote {doc:?}"
@@ -266,6 +269,8 @@ fn reference_lists_every_direct_failure_reason() {
         reason::REFRESH_REFUSED,
         reason::REFRESH_FAILED,
         reason::REFRESH_NOT_SAVED,
+        reason::NO_REFRESH_TOKEN,
+        reason::UNREADABLE_CREDS,
     ] {
         assert!(
             REFERENCE.contains(&format!("`{r}`")),
@@ -285,6 +290,10 @@ fn reference_quotes_the_fixed_row_texts() {
         "unknown, still running".to_string(),
         "note: profile \"spare\": direct read gave http 5xx; using claude".to_string(),
         super::usage_cmd::not_saved_warning("spare"),
+        // Issue #2271: the row text of a login with no token. These rows
+        // print no stderr warning (D7) and have `"error": null` (D6).
+        ErrorReason::NotSignedIn("no oauth token").to_string(),
+        "no refresh token".to_string(),
     ] {
         assert!(
             REFERENCE.contains(&text),
@@ -623,4 +632,16 @@ fn the_rotation_howto_says_small_dips_add_nothing() {
     let howto = flat(ROTATE_HOWTO);
     assert!(howto.contains("net rise"), "rotation how-to");
     assert!(howto.contains("10 points or less"), "rotation how-to");
+}
+
+/// Issue #2271 (D7): the reference no longer shows a stderr warning for a
+/// not-signed-in row.
+#[test]
+fn reference_shows_no_warning_for_a_not_signed_in_row() {
+    use super::usage_cmd::ErrorReason;
+    let gone = format!(
+        "warning: profile \"scratch\": {}",
+        ErrorReason::NotSignedIn("no credentials file")
+    );
+    assert!(!REFERENCE.contains(&gone), "{gone}");
 }

@@ -13,7 +13,12 @@
 //! - M unfetchable: no signal (a missing object is never read as "ancestor");
 //! - a diverged or rewritten PR head: no signal.
 //!
-//! The hand-off on that history is in `ancestor_handoff.rs`.
+//! Since #2343 the same question is also a FACT the outcome reader reports:
+//! `pr_head_descends_local_head` is what `git merge-base --is-ancestor`
+//! answered -- `"true"`, `"false"`, or `""` with `unread` naming the commit it
+//! could not obtain to ask about. These tests assert that fact, because the
+//! terminal state is no longer derived from it here: `assess-finalization`
+//! decides it, and the hand-off on that history is in `ancestor_handoff.rs`.
 
 use std::fs;
 use std::path::PathBuf;
@@ -21,7 +26,6 @@ use std::path::PathBuf;
 use serde_json::json;
 
 use super::fixture::*;
-use crate::issue_1641_finalization_open_pr::fixture::assert_failed_implementation;
 
 pub(super) const FLAG: (&str, &str) = ("RECIPE_VAR_finalization_handoff", "true");
 
@@ -99,7 +103,7 @@ pub(super) fn pending() -> serde_json::Value {
     json!([check_run("IN_PROGRESS", json!(null))])
 }
 
-fn assert_descendant_signal(outcome: &Outcome, checks: &str, why: &str) {
+pub(super) fn assert_descendant_signal(outcome: &Outcome, checks: &str, why: &str) {
     assert!(outcome.success(), "{why}\n{}", outcome.describe());
     let signal = outcome.json();
     assert_eq!(signal["pr_number"], "7", "{why}");
@@ -108,7 +112,7 @@ fn assert_descendant_signal(outcome: &Outcome, checks: &str, why: &str) {
     assert_eq!(signal["head"], "descendant", "{why}");
 }
 
-fn assert_no_signal(outcome: &Outcome, why: &str) {
+pub(super) fn assert_no_signal(outcome: &Outcome, why: &str) {
     assert!(
         !outcome.success(),
         "{why}: must be no signal\n{}",
@@ -124,19 +128,13 @@ fn assert_no_signal(outcome: &Outcome, why: &str) {
     );
 }
 
-fn assert_no_fetch_side_effects(fx: &Fixture) {
-    assert_eq!(
-        fx.git(&["for-each-ref", "refs/remotes"]).trim(),
-        "",
-        "the fetch must not write a remote-tracking ref"
-    );
-    assert!(
-        !fx.repo.join(".git/FETCH_HEAD").exists(),
-        "the fetch must not write FETCH_HEAD"
-    );
+/// What the outcome reader says about the PR head of PR 7 on this history.
+pub(super) fn descends(fx: &Fixture) -> String {
+    fx.fact(BRANCH, Some("7"), "pr_head_descends_local_head")
 }
 
-// The mistt #138 history with green checks: the same PR, EXISTING_OPEN_PR.
+// The mistt #138 history with green checks: the PR head really does carry the
+// run's work, and the facts say so without deciding anything.
 #[test]
 fn an_ancestor_local_head_with_green_checks_is_the_same_pr() {
     let fx = Fixture::new();
@@ -146,75 +144,55 @@ fn an_ancestor_local_head_with_green_checks_is_the_same_pr() {
 
     assert_descendant_signal(&fx.signal(BRANCH, Some("7")), "green", "signal");
 
-    let outcome = validate(&fx, &as_refs(&pr_env(&fx)));
-    assert!(outcome.success(), "{}", outcome.describe());
-    assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
-    assert_eq!(outcome.field("pr_number"), "7");
-    let evidence = outcome.field("evidence_used");
-    assert!(
-        evidence.contains("pr_head_sha_matches=false")
-            && evidence.contains("pr_head_fast_forwards_local_head=true"),
-        "the result records that the PR head is a fast-forward: {evidence}"
+    let facts = fx.facts(BRANCH, Some("7")).0;
+    assert_eq!(facts["pr_head"], pr_head, "the facts report the PR head");
+    assert_eq!(facts["local_head"], local);
+    assert_ne!(facts["pr_head"], facts["local_head"], "M is not L");
+    assert_eq!(
+        facts["pr_head_descends_local_head"], "true",
+        "merge-base said the local head is an ancestor of the PR head: {facts}"
     );
+    assert_eq!(facts["pr_state"], "OPEN");
+    assert_eq!(facts["checks"], "green");
+    assert_eq!(facts["pr_number"], "7");
+    // The fixture has no bare remote here, so `ls-remote` is legitimately
+    // unread; every pull-request fact was readable, and the answer about the
+    // head is a read answer, not a missing one.
+    let unread = facts["unread"].as_str().expect("unread is a String");
     assert!(
-        !outcome.stderr.contains("no open-PR signal"),
-        "{}",
-        outcome.describe()
+        !unread.contains("pull request") && !unread.contains(pr_head.as_str()),
+        "the pull request's facts were all readable: {facts}"
     );
-    assert_eq!(fx.head(), local, "the check never moves the local HEAD");
+    assert_eq!(fx.head(), local, "the read never moves the local HEAD");
     fx.assert_gh_reads_only();
 }
 
-// M is not in the local object store: one fetch brings it in, and nothing
-// else in the repository changes.
+// The end state on that history is the one assess-finalization decided, and
+// the result carries the facts it was decided on.
 #[test]
-fn a_pr_head_missing_locally_is_fetched_without_writing_refs() {
-    let fx = Fixture::new();
-    let (local, pr_head) = merge_main_on_pushed(&fx);
-    origin_remote(&fx);
-    fx.git(&[
-        "push",
-        "-q",
-        "origin",
-        &format!("pushed:refs/heads/{BRANCH}"),
-    ]);
-    drop_pushed_branch(&fx);
-    for r in fx
-        .git(&["for-each-ref", "--format=%(refname)", "refs/remotes"])
-        .lines()
-    {
-        fx.git(&["update-ref", "-d", r]);
-    }
-    prune(&fx, &pr_head);
-    view_at(&fx, &pr_head, green_rollup());
-
-    assert_descendant_signal(&fx.signal(BRANCH, Some("7")), "green", "after fetch");
-    assert!(has_object(&fx, &pr_head), "the fetch brought M in");
-    assert_eq!(fx.head(), local);
-    assert_no_fetch_side_effects(&fx);
-}
-
-// A missing object is never read as "ancestor": with no remote, or a remote
-// whose branch is elsewhere, the check fails closed.
-#[test]
-fn an_unfetchable_pr_head_fails_closed() {
+fn the_assessments_state_on_an_ancestor_head_is_what_finalization_reports() {
     let fx = Fixture::new();
     let (_, pr_head) = merge_main_on_pushed(&fx);
     drop_pushed_branch(&fx);
-    prune(&fx, &pr_head);
     view_at(&fx, &pr_head, green_rollup());
-    assert_no_signal(&fx.signal(BRANCH, Some("7")), "no remote");
-    assert_failed_implementation(&validate(&fx, &as_refs(&pr_env(&fx))), "no remote");
 
-    origin_remote(&fx);
-    fx.git(&[
-        "push",
-        "-q",
-        "origin",
-        &format!("{BRANCH}:refs/heads/{BRANCH}"),
-    ]);
-    assert_no_signal(&fx.signal(BRANCH, Some("7")), "remote branch elsewhere");
-    assert!(!has_object(&fx, &pr_head));
+    let mut envs = pr_env(&fx);
+    envs.push(assessment("EXISTING_OPEN_PR", "none", "7"));
+    let outcome = validate(&fx, &as_refs(&envs));
+
+    assert!(outcome.success(), "{}", outcome.describe());
+    assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
+    assert_eq!(outcome.field("pr_number"), "7");
+    assert_eq!(outcome.field("pr_url"), PR_URL);
+    let evidence = outcome.field("evidence_used");
+    assert!(
+        evidence.contains("outcome.pr=7")
+            && evidence.contains("outcome.pr_state=OPEN")
+            && evidence.contains("outcome.checks=green")
+            && evidence.contains("assessment_state=EXISTING_OPEN_PR"),
+        "the result records the facts and the decision: {evidence}"
+    );
+    fx.assert_gh_reads_only();
 }
 
 // A PR head that does not contain the local HEAD is not the same PR: a
@@ -238,10 +216,29 @@ fn a_diverged_or_rewritten_pr_head_fails_closed() {
     for (name, pr_head) in [("diverged", &diverged), ("rewritten", &rewritten)] {
         view_at(&fx, pr_head, green_rollup());
         assert_no_signal(&fx.signal(BRANCH, Some("7")), name);
+        // The commit IS in the local store, so merge-base really answered no.
+        let facts = fx.facts(BRANCH, Some("7")).0;
+        assert_eq!(facts["pr_head"], pr_head.as_str(), "{name}");
+        assert_eq!(
+            facts["pr_head_descends_local_head"], "false",
+            "{name}: merge-base answered no, and the facts say so: {facts}"
+        );
+        let unread = facts["unread"].as_str().expect("unread is a String");
+        assert!(
+            !unread.contains("pull request") && !unread.contains(pr_head.as_str()),
+            "{name}: the head was readable and merge-base simply said no: {facts}"
+        );
+        // Typed completion booleans cannot turn that into a success: with no
+        // assessment there is no terminal state at all.
         let mut envs = pr_env(&fx);
         envs.push(("VERIFICATION_COMPLETED", "true".to_owned()));
         let outcome = validate(&fx, &as_refs(&envs));
-        assert_failed_implementation(&outcome, name);
-        assert_eq!(outcome.field("pr_number"), "", "{name}");
+        assert_ne!(outcome.field("terminal_success"), "true", "{name}");
+        assert_eq!(
+            outcome.output.status.code(),
+            Some(1),
+            "{name}\n{}",
+            outcome.describe()
+        );
     }
 }

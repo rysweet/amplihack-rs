@@ -21,7 +21,6 @@
 use serde_yaml::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const BRICK_LINE_BUDGET: usize = 400;
 
@@ -320,8 +319,8 @@ fn exit_79_is_terminal_and_never_retried_into() {
     let recipe = recipe_yaml();
     let collect = collect_command();
     assert!(
-        collect.contains("BLOCKED_TERMINAL"),
-        "step-01 must detect a BLOCKED_TERMINAL child"
+        collect.contains("terminal_refusal \"${LOOP_CHILD_EXIT_CODE:-}\" \"$WORK/last\""),
+        "step-01 must use the shared authoritative refusal rule on the current child"
     );
     assert!(
         collect.contains("79"),
@@ -931,7 +930,9 @@ fn loop_health_contract_shell_test_passes() {
         Err(_) => bin_dir.display().to_string(),
     };
 
-    let out = Command::new("bash")
+    // Issue #2712: `isolated()` keeps a recipe run's AMPLIHACK_WORK_ROOT out
+    // of the suite, so its worktrees cannot land in the shared work root.
+    let out = crate::isolated_amplihack::isolated("bash")
         .arg(&script)
         .current_dir(&root)
         .env("PATH", path)
@@ -1008,7 +1009,9 @@ fn run_shell_test_copy(
         Ok(p) => format!("{}:{p}", path_dir.display()),
         Err(_) => path_dir.display().to_string(),
     };
-    let mut cmd = Command::new("bash");
+    // Issue #2712: `isolated()` keeps a recipe run's AMPLIHACK_WORK_ROOT out
+    // of the suite, so its worktrees cannot land in the shared work root.
+    let mut cmd = crate::isolated_amplihack::isolated("bash");
     cmd.arg(&script)
         .current_dir(scratch)
         .env("PATH", path)

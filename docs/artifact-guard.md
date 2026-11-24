@@ -420,8 +420,9 @@ The amplihack launcher and session tracker write bookkeeping into
 launcher context, the session log, locks, and power-steering state can land
 here while a recipe runs. This subtree is `.gitignore`d, tool-generated runtime
 state. The `amplihack-hooks` binary no longer writes its tool metrics,
-transcripts or session state here; they go to the hook state root under
-`${AMPLIHACK_HOME:-~/.amplihack}/runtime/` (see
+transcripts or session state here; they go to `runtime/` under the hook state
+root, which is `$AMPLIHACK_HOME` when that is an absolute path with no `..`
+component and not a Git checkout, and `$HOME/.amplihack` otherwise (see
 [Hook State Root Reference](reference/hook-state-root.md)). Files left at the
 old locations by earlier versions, such as
 `.claude/runtime/metrics/post_tool_use_metrics.jsonl`, are still covered by

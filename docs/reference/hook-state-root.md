@@ -1,8 +1,8 @@
 ---
 title: Hook State Root Reference
 description: Where amplihack-hooks writes per-session and per-project state, how the location is resolved, and what happens when it cannot be.
-last_updated: 2026-11-07
-related_issues: ["#1963"]
+last_updated: 2026-11-11
+related_issues: ["#1963", "#2361", "#2368"]
 ---
 
 # Hook State Root Reference
@@ -11,8 +11,9 @@ The `amplihack-hooks` binary keeps its own state (tool metrics, workflow
 enforcement state, captured original requests, pre-compact transcripts,
 compaction metadata, classification state and the blarify staleness marker)
 under one state root in the user's home directory. It never writes these files
-into the session's working directory, so a target repository's git status and
-the installed framework bundle stay unchanged while hooks run.
+into the session's working directory or into the root of a Git checkout named
+by `AMPLIHACK_HOME`, so a target repository's git status and the installed
+framework bundle stay unchanged while hooks run.
 
 ## Contents
 
@@ -57,7 +58,7 @@ first rule that matches wins.
 
 | Priority | Source | Accepted when | Result |
 | --- | --- | --- | --- |
-| 1 | `AMPLIHACK_HOME` | The value is an absolute path with no `..` component | `$AMPLIHACK_HOME` |
+| 1 | `AMPLIHACK_HOME` | The value is an absolute path with no `..` component, and `<value>/.git` does not exist | `$AMPLIHACK_HOME` |
 | 2 | `HOME` | The value is an absolute path with no `..` component | `$HOME/.amplihack` |
 | 3 | Neither accepted | | No state root; see [When no state root resolves](#when-no-state-root-resolves) |
 
@@ -78,22 +79,54 @@ The same `..` rule applies to `AMPLIHACK_HOME` when the launcher sets it; see
 Check which root a hook will use:
 
 ```sh
+root="$HOME/.amplihack"
 case "${AMPLIHACK_HOME:-}" in
-  /*) echo "$AMPLIHACK_HOME" ;;
-  *)  echo "$HOME/.amplihack" ;;
+  /*) if [ ! -e "$AMPLIHACK_HOME/.git" ] && [ ! -L "$AMPLIHACK_HOME/.git" ]; then
+        root="$AMPLIHACK_HOME"
+      fi ;;
 esac
+echo "$root"
 # /home/alice/.amplihack
 ```
 
-This shell check does not reject `..` components; the hooks do.
+This shell check does not reject `..` components, and treats an unreadable `.git` as absent; the hooks reject both.
 
-### `AMPLIHACK_HOME` pointing at a source checkout
+### `AMPLIHACK_HOME` pointing at a Git checkout
 
-The launcher can set `AMPLIHACK_HOME` to an amplihack-rs source checkout (a
-directory containing `amplifier-bundle/`). Hook state then lands in
-`<checkout>/runtime/`, which the repository's `.gitignore` ignores with a
-root-anchored `/runtime/` entry. Other repositories cannot be a bundle root,
-so this case does not apply to them.
+The launcher and `recipe run -w` can set `AMPLIHACK_HOME` to an amplihack-rs
+source checkout (a directory containing `amplifier-bundle/`). Bundle and asset
+lookup still use that checkout. Runtime state does not: when
+`<AMPLIHACK_HOME>/.git` exists as a directory, file or symlink, or cannot be
+checked, hooks write under `$HOME/.amplihack/runtime/` instead, and skip the
+write when `HOME` is unusable. The launch contract file follows the same
+checkout rule, except that with no usable `HOME` the launch fails instead of
+skipping the file; see
+[Agent Prompt Channels Reference](./agent-prompt-channels.md#errors). This
+keeps runtime files out of checkouts that recipe steps stage (#2361).
+
+The probe is one `lstat` of `<AMPLIHACK_HOME>/.git`. It does not run git and
+does not look at parent directories, so a linked worktree (where `.git` is a
+file) and a submodule are skipped, but a subdirectory of a checkout is not.
+
+```sh
+home=$(mktemp -d)
+checkout=$(mktemp -d) && git -C "$checkout" init -q
+cd "$checkout"
+echo '{"hook_event_name":"PostToolUse","session_id":"demo-2","tool_name":"Bash","tool_input":{"command":"ls"}}' \
+  | AMPLIHACK_HOME="$checkout" HOME="$home" amplihack-hooks post-tool-use
+
+git status --porcelain
+# (no output)
+
+ls "$home/.amplihack/runtime/sessions/demo-2/metrics/"
+# post_tool_use_metrics.jsonl
+```
+
+Releases before #2361 wrote hook state to `<checkout>/runtime/` and the
+contract file to `<checkout>/private/`. Those directories are not moved or
+deleted. The amplihack-rs `.gitignore` keeps ignoring both with root-anchored
+`/runtime/` and `/private/` entries; remove them by hand if you no longer
+need them.
 
 ## Directory layout
 
@@ -242,9 +275,10 @@ directories are created with the default mode.
 
 ## When no state root resolves
 
-If neither `AMPLIHACK_HOME` nor `HOME` gives an absolute path, the hook logs
-it, skips every state write and still succeeds. Nothing falls back to the
-working directory.
+If no rule in [Resolving the state root](#resolving-the-state-root) accepts a
+value, the hook logs it, skips every state write and still succeeds. This
+includes an `AMPLIHACK_HOME` that is a Git checkout when `HOME` is unusable.
+Nothing falls back to the checkout or the working directory.
 
 | Hook | Behaviour with no state root |
 | --- | --- |
@@ -315,15 +349,24 @@ next to `sanitize_session_id`. It uses the standard library only.
 ```rust
 pub const UNKNOWN_SESSION_KEY: &str = "unknown-session";
 
-/// Pure: chooses the state root from the two candidate values.
-/// A candidate is accepted only if `Path::is_absolute()` holds and it has no
-/// `..` component. No trimming, no environment access, no I/O, never the cwd.
+/// True when `<dir>/.git` exists as a directory, file or symlink (dangling
+/// included). One `symlink_metadata` call; never runs git, never climbs to
+/// parents. Only `NotFound` means false; any other error means true.
+pub fn is_git_checkout(dir: &Path) -> bool;
+
+/// Pure: chooses the state root from the candidate values.
+/// `amplihack_home` is accepted only if `Path::is_absolute()` holds, it has
+/// no `..` component and `amplihack_home_is_checkout` is false. `home` is
+/// accepted under the same path rule. No trimming, no environment access,
+/// no I/O, never the cwd.
 pub fn resolve_state_root(
     amplihack_home: Option<&OsStr>,
     home: Option<&OsStr>,
+    amplihack_home_is_checkout: bool,
 ) -> Option<PathBuf>;
 
-/// Reads `AMPLIHACK_HOME` and `HOME` with `std::env::var_os` and calls
+/// Reads `AMPLIHACK_HOME` and `HOME` with `std::env::var_os`, probes an
+/// accepted `AMPLIHACK_HOME` with `is_git_checkout` and calls
 /// `resolve_state_root`.
 pub fn amplihack_state_root() -> Option<PathBuf>;
 
@@ -343,11 +386,17 @@ use std::ffi::OsStr;
 use std::path::Path;
 use amplihack_types::{resolve_state_root, session_state_dir_under, UNKNOWN_SESSION_KEY};
 
-let root = resolve_state_root(Some(OsStr::new("relative")), Some(OsStr::new("/home/alice")));
+let home = Some(OsStr::new("/home/alice"));
+
+let root = resolve_state_root(Some(OsStr::new("relative")), home, false);
 assert_eq!(root.as_deref(), Some(Path::new("/home/alice/.amplihack")));
 
-let root = resolve_state_root(Some(OsStr::new("/opt/amp/../etc")), None);
+let root = resolve_state_root(Some(OsStr::new("/opt/amp/../etc")), None, false);
 assert_eq!(root, None);
+
+// An AMPLIHACK_HOME that is a Git checkout is skipped in favour of HOME.
+let root = resolve_state_root(Some(OsStr::new("/src/amplihack-rs")), home, true);
+assert_eq!(root.as_deref(), Some(Path::new("/home/alice/.amplihack")));
 
 let dir = session_state_dir_under(Path::new("/home/alice/.amplihack"), Some("../../escape"));
 assert_eq!(dir, Path::new("/home/alice/.amplihack/runtime/sessions/______escape"));
@@ -369,8 +418,10 @@ mix user data into framework files.
 
 Residual cases that remain by design:
 
-- If `HOME` or `AMPLIHACK_HOME` is itself inside a git work tree, state lands
-  in that work tree.
+- An `AMPLIHACK_HOME` that is the root of a Git checkout is skipped (#2361).
+  If `HOME`, or an `AMPLIHACK_HOME` below the root of a work tree, is inside a
+  git work tree, state still lands in that work tree, because the probe does
+  not look at parent directories.
 - The state root is not checked for ownership or existence before use.
 - PreCompact copies whatever file the payload's `transcript_path` names.
 - The working-directory writes listed under
@@ -384,5 +435,7 @@ Residual cases that remain by design:
   classification state file format
 - [`AMPLIHACK_HOME`](./environment-variables.md#amplihack_home): launcher
   resolution of the same variable
+- [Agent Prompt Channels Reference](./agent-prompt-channels.md#the-contract-file):
+  the launch contract file, which follows the same checkout rule
 - [Artifact Guard](../artifact-guard.md): how runtime output in a repository is
   treated at publish time

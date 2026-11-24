@@ -27,6 +27,12 @@
 #   _tracking_issue_candidates — up to 5 `N kind` candidates, no network
 #   _github_open_issue_url    — read-only check of one candidate via `gh api`
 #   _is_github_issue_url      — the one URL check: https://…/issues/N, one line
+#   select_strict_delivery_issue — strict_delivery (docs/reference/
+#                               workflow-delivery-inputs.md): confirms the
+#                               caller's issue in the repository that owns it,
+#                               or fails; never creates or substitutes one
+#   azdo_task_work_item       — the work item a task text names (AB#N, else #N),
+#                               for the Azure DevOps reuse lookup
 
 derive_local_tracking_id() {
   if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
@@ -146,4 +152,78 @@ select_github_tracking_issue() {
   done < <(_tracking_issue_candidates)
   [ -z "$checked" ] || echo "INFO: no task-text candidate accepted as an open issue (checked:${checked}); falling back to title search" >&2
   return 1
+}
+
+# 0 when $1 is a plain owner/repo slug (no `.` or `..` segment).
+_strict_slug_ok() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
+  case "/$1/" in */./*|*/../*) return 1 ;; esac
+}
+
+# strict_delivery (docs/reference/workflow-delivery-inputs.md). The caller has
+# already chosen the issue, the repository that owns it, the pull request's
+# repository and the branch; step-03 only confirms them. Arguments, in order:
+# issue_number create_issue repository pr_repository closing_reference
+# existing_branch base_branch forbidden_base_branches (base_branch may be
+# empty). The base is checked here as well as at step-16, so a misdirected run
+# fails before any work. The issue is read on github.com: publication accepts
+# only a github.com origin, and a closing reference cannot cross hosts.
+# The issue must be open, as on the ordinary path (#1595): a task closed while
+# it waited in the caller's queue (completed, or not planned) is not delivered.
+# A caller that wants a closed issue worked on reopens it first.
+# Prints the issue's URL and returns 0, or returns 2 with the reason on stderr.
+# It never creates an issue, never reads the task text, never consults the
+# remote host type and never falls back to local tracking: a strict run on the
+# wrong issue is worse than a failed one.
+select_strict_delivery_issue() {
+  local n="${1:-}" create="${2:-}" repo="${3:-}" pr_repo="${4:-}" closing="${5:-}" branch="${6:-}"
+  local base="${7:-}" forbidden="${8:-}" host="github.com"
+  local dir origin tag url observed kind rc=0
+  dir="$(dirname "${BASH_SOURCE[0]}")"
+  # shellcheck source=/dev/null
+  if ! . "$dir/workflow_delivery_inputs.sh" || ! . "$dir/workflow_github_repo.sh"; then
+    echo "ERROR: strict_delivery: workflow_delivery_inputs.sh or workflow_github_repo.sh is missing next to $dir/workflow_issue_tracking.sh" >&2
+    return 2
+  fi
+  [[ "$n" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "ERROR: strict_delivery: issue_number must be the number of the caller's issue" >&2; return 2; }
+  case "$(printf '%s' "$create" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes) echo "ERROR: strict_delivery: create_issue must not be set; a strict run works on the caller's issue and never opens another" >&2; return 2 ;;
+  esac
+  _strict_slug_ok "$repo" || { echo "ERROR: strict_delivery: repository must be the owner/repo that owns issue ${n}" >&2; return 2; }
+  _strict_slug_ok "$pr_repo" || { echo "ERROR: strict_delivery: pr_repository must be the owner/repo that receives the pull request" >&2; return 2; }
+  [ -n "$branch" ] || { echo "ERROR: strict_delivery=true requires existing_branch: a strict run works on the branch its caller assigned and never derives one" >&2; return 2; }
+  [ -z "$base" ] || delivery_base_ref "$base" "$branch" "$forbidden" >/dev/null || return 2
+  origin="$(parse_github_repo_identity "$(git remote get-url origin 2>/dev/null)")" || origin=""
+  same_github_repository "$pr_repo" "$origin" || { echo "ERROR: strict_delivery: pr_repository '${pr_repo}' is not this checkout's origin repository ('${origin:-unknown}')" >&2; return 2; }
+  tag="$(strict_issue_tag "$n" "$repo" "$pr_repo")"
+  [ "$closing" = "$tag" ] || { echo "ERROR: strict_delivery: closing_reference must be '${tag}' (issue ${n} in ${repo}, pull request in ${pr_repo})" >&2; return 2; }
+  url="https://${host}/${repo}/issues/${n}"
+  # gh's stderr stays discarded (it can hold tokens); its exit code is logged.
+  # The filter answers `<kind><TAB><html_url>`, where kind is the issue's state
+  # (`open`, `closed`) or `pull_request`: the issues endpoint also returns pull
+  # requests.
+  observed="$(GH_PROMPT_DISABLED=1 timeout 30 gh api --hostname "$host" "repos/${repo}/issues/${n}" --jq '[(if has("pull_request") then "pull_request" else (.state // "") end), (.html_url // "")] | @tsv' </dev/null 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || { echo "ERROR: strict_delivery: could not read ${repo}#${n} on ${host} (gh exit ${rc}); a strict run never substitutes another issue" >&2; return 2; }
+  kind=""
+  IFS=$'\t' read -r kind observed <<< "$observed" || true
+  if [ "$kind" = pull_request ] || [ "$(printf '%s' "$observed" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" ]; then
+    echo "ERROR: strict_delivery: ${repo}#${n} on ${host} is not an issue at ${url} (a pull request, or moved)" >&2
+    return 2
+  fi
+  [ "$kind" = open ] || {
+    echo "ERROR: strict_delivery: ${repo}#${n} is ${kind:-in no reported state}, not open; a strict run delivers only an open issue and never implements a task closed while it waited" >&2
+    return 2
+  }
+  echo "INFO: tracking issue ${repo}#${n} selected (strict_delivery)" >&2
+  printf '%s\n' "$observed"
+}
+
+# The Azure DevOps work item a task text names, for step-03's reuse lookup:
+# the first AB#N, else the first #N; nothing when there is none. GitHub never
+# uses this (#1595: select_github_tracking_issue chooses GitHub's issue).
+azdo_task_work_item() {
+  if [[ "${TASK_DESC:-}" =~ AB#([0-9]+) ]] || [[ "${TASK_DESC:-}" =~ \#([0-9]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+  return 0
 }

@@ -24,7 +24,8 @@ The contract contains the phrase `tail -f /dev/null`. No agent command line
 should contain it:
 
 ```bash
-for pid in $(pgrep -x claude; pgrep -x codex; pgrep -x copilot); do
+for pid in $(ps -eo pid=,comm= |
+             awk '$2 == "claude" || $2 == "codex" || $2 == "copilot" {print $1}'); do
   printf '%s %s\n' "$pid" "$(grep -c 'tail -f /dev/null' /proc/$pid/cmdline)"
 done
 ```

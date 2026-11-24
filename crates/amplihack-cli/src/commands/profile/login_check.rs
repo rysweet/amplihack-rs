@@ -3,11 +3,14 @@
 //! A login to the rotator's live profile is refused first: its login is
 //! `~/.claude`. Otherwise, before Claude starts, the profile's login file is
 //! moved into a new `<root>/.rejected-logins/.pending-<name>-<ts>/` with a
-//! copy of its `oauthAccount` block. After Claude exits, the new login is
-//! compared with every other profile and with `~/.claude` by
-//! [`Account::same`]; when they cannot be read, the login is refused (fail
-//! closed). A duplicate is moved to `<name>-<ts>/` and the previous login is
-//! put back; an accepted login sends the previous one to
+//! copy of its `oauthAccount` block, and that key is removed from the
+//! profile's `.claude.json` while Claude runs. After Claude exits, the new
+//! login is either a login file or, on the macOS Keychain (which writes no
+//! login file), an identifiable `oauthAccount` block. It is compared with
+//! every other profile and with `~/.claude` by [`Account::same`]; when they
+//! cannot be read, the login is refused (fail closed). A duplicate is moved
+//! to `<name>-<ts>/` (a Keychain login has no file to move) and the previous
+//! login is put back; an accepted login sends the previous one to
 //! `<name>-<ts>-replaced/`.
 //!
 //! Login files are only checked by metadata and renamed (never opened, read,
@@ -98,6 +101,11 @@ impl Held {
         if self.held {
             format!(
                 "{new}; the previous login is held in {}",
+                show(&self.pending)
+            )
+        } else if self.block.is_some() {
+            format!(
+                "{new}; the previous oauthAccount block is held in {}",
                 show(&self.pending)
             )
         } else {
@@ -193,8 +201,11 @@ fn after_claude(cleanup: anyhow::Error, outcome: &Result<()>) -> anyhow::Error {
     }
 }
 
-/// Phase A: moves the previous login into a new pending directory, after
-/// saving its `oauthAccount` block there.
+/// Phase A: saves the `oauthAccount` block in a new pending directory,
+/// removes that key from `.claude.json`, then moves the previous login
+/// there. Any block present after Claude exits is therefore Claude's own.
+/// Every failure leaves the profile as it was, and the pending directory is
+/// kept whenever it holds the only copy of the block.
 fn hold(root: &Path, dir: PathBuf, name: &str, ts: String) -> Result<Held> {
     let slot = dir.join(CREDS);
     let present = exists(&slot);
@@ -227,20 +238,27 @@ fn hold(root: &Path, dir: PathBuf, name: &str, ts: String) -> Result<Held> {
             "check permissions on the profile root",
         ));
     }
+    if block.is_some()
+        && let Err(e) = put_back_block(&dir, None)
+    {
+        let why = format!("{}: {e}", show(&dir.join(CLAUDE_JSON)));
+        return Err(undo_hold(&dir, &pending, block.as_ref(), name, why));
+    }
+    if block.is_some() && !present {
+        eprintln!(
+            "note: holding the previous oauthAccount block of profile '{name}' in {} while \
+             you log in",
+            show(&pending)
+        );
+    }
     if present {
         eprintln!(
             "note: holding the previous login of profile '{name}' in {} while you log in",
             show(&pending)
         );
         if let Err(e) = move_login(&slot, &pending.join(CREDS), &show) {
-            remove_pending(&pending);
-            return Err(fail(
-                format!(
-                    "could not hold the login of profile '{name}': {}; nothing was moved",
-                    move_error(e)
-                ),
-                "check permissions on the profile directory",
-            ));
+            let why = move_error(e);
+            return Err(undo_hold(&dir, &pending, block.as_ref(), name, why));
         }
     }
     Ok(Held {
@@ -251,6 +269,38 @@ fn hold(root: &Path, dir: PathBuf, name: &str, ts: String) -> Result<Held> {
         held: present,
         block,
     })
+}
+
+/// Undoes a failed [`hold`]: puts the `oauthAccount` block back into
+/// `.claude.json`, because a failed write may already have removed the key
+/// (an atomic write renames first and syncs the directory after). The
+/// pending directory is removed only when the block is back; otherwise it is
+/// kept and named as the only copy.
+fn undo_hold(
+    dir: &Path,
+    pending: &Path,
+    block: Option<&serde_json::Value>,
+    name: &str,
+    why: String,
+) -> anyhow::Error {
+    if let Err(undo) = put_back_block(dir, block) {
+        return fail(
+            format!(
+                "could not hold the login of profile '{name}': {why}; the login was not \
+                 moved, but its oauthAccount could not be put back into {}: {undo}",
+                show(&dir.join(CLAUDE_JSON))
+            ),
+            format!(
+                "the only copy of that block is {}",
+                show(&pending.join(SAVED_BLOCK))
+            ),
+        );
+    }
+    remove_pending(pending);
+    fail(
+        format!("could not hold the login of profile '{name}': {why}; nothing was moved"),
+        "check permissions on the profile directory",
+    )
 }
 
 /// Phase C after Claude failed: the new login, if any, is set aside and the
@@ -308,10 +358,14 @@ fn finish(
     }
 }
 
-/// Claude exited 0 without writing a login file. With a previous login,
-/// everything is put back. Without one (the macOS Keychain) `oauthAccount`
-/// stays as Claude wrote it, matching the Keychain, and a duplicate is
-/// still reported.
+/// Claude exited 0 without writing a login file. An identifiable
+/// `oauthAccount` is a new login in the macOS Keychain: it is checked for
+/// duplicates like a login file, and an accepted one sends the previous
+/// login file, if any, to `<name>-<ts>-replaced/`. A duplicate puts the
+/// previous login back when there was one; without one the block stays as
+/// Claude wrote it, matching the Keychain, and the duplicate is reported.
+/// With no new account everything is put back, and a previous login file
+/// means the login failed.
 fn no_login_file(
     store: &ProfileStore,
     held: &Held,
@@ -319,21 +373,42 @@ fn no_login_file(
     home: Option<&Path>,
 ) -> Result<()> {
     let n = name.as_str();
-    if held.held {
+    // Phase A removed the key, so an account named now is the new login. An
+    // empty, malformed or unsafe block is no login and never replaces a
+    // working login file. Without a held login file, `restore` still puts
+    // the earlier block back over such a block: a block that names no
+    // account is not accepted as Claude's, so the last known account is kept.
+    if Account::of_dir(&held.dir).is_none() {
         restore(held, n, None)?;
-        return Err(fail(
-            format!(
-                "Claude exited without writing a login file; the previous login of profile \
-                 '{n}' was restored"
-            ),
-            format!("run 'amplihack profile login {n}' again and finish the login in Claude"),
-        ));
+        if held.held {
+            return Err(fail(
+                format!(
+                    "Claude exited without writing a login file; the previous login of \
+                     profile '{n}' was restored"
+                ),
+                format!("run 'amplihack profile login {n}' again and finish the login in Claude"),
+            ));
+        }
+        return Ok(());
     }
     match duplicate_of(store, held, name, home) {
         Ok(None) => {
-            remove_pending(&held.pending);
+            replace_previous(held, n)?;
             record_login(store, held, name);
             Ok(())
+        }
+        Ok(Some(h)) if held.held => {
+            restore(held, n, None)?;
+            Err(fail(
+                format!(
+                    "profile '{n}' is signed in to the same account and organization as {}; \
+                     Claude wrote no login file. The previous login file and oauthAccount of \
+                     '{n}' were put back, but the macOS Keychain may still hold the refused \
+                     account, and Claude may use it until '{n}' is logged in again",
+                    duplicates::holder_label(&h)
+                ),
+                refusal_hint(n),
+            ))
         }
         Ok(Some(h)) => {
             remove_pending(&held.pending);

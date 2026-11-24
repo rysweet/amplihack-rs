@@ -1,3 +1,10 @@
+---
+title: Launch Flag Injection — Reference
+description: Automatically injected agent CLI flags, Codex worktree launches, and caller overrides.
+doc_type: reference
+last_updated: 2026-11-18
+---
+
 # Launch Flag Injection — Reference
 
 When `amplihack` starts `claude`, `copilot`, `codex`, or `amplifier`, it builds
@@ -12,7 +19,9 @@ can override the defaults.
 - [--dangerously-skip-permissions](#-dangerously-skip-permissions)
 - [--model](#-model)
 - [--resume and --continue](#-resume-and-continue)
+- [--deny-tool (Copilot CLI)](#-deny-tool)
 - [Codex agent-step flags](#codex-agent-step-flags)
+  - [Codex worktree launches](#codex-worktree-launches)
 - [Extra args passthrough](#extra-args-passthrough)
 - [Complete command-line assembly](#complete-command-line-assembly)
 - [Python launcher parity](#python-launcher-parity)
@@ -28,7 +37,8 @@ can override the defaults.
 | `--model <value>` | tool is Claude-compatible AND user did not pass `--model`, unless `AMPLIHACK_DEFAULT_MODEL` is set to an empty value outside the LiteLLM gateway path. Unset, the value is `claude-opus-5[1m]`; see [--model](#-model) | `claude`, `rusty`, `rustyclawd`, `amplifier` | pass `--model`, or set `AMPLIHACK_DEFAULT_MODEL=` (empty) to pass none |
 | `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
 | `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
-| `--sandbox workspace-write` and `-c sandbox_workspace_write.network_access=true` | argv after `--` contains an `exec`/`e` subcommand AND the caller chose no sandbox; the network pair is also skipped when the caller sets `sandbox_workspace_write.network_access` | `codex` | pass your own sandbox (`--sandbox`, `-s`, `-c sandbox_mode=…`); see [Codex agent-step flags](#codex-agent-step-flags) |
+| `--deny-tool shell(<prefix>:*)` | always, once per entry in the [dangerous-command policy](./dangerous-command-policy.md); nothing in your own arguments suppresses one | `copilot` | none for a shipped prefix. `policy.deny_commands` only adds, and `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` leaves these flags in place. See [--deny-tool](#-deny-tool) |
+| `--sandbox danger-full-access` | argv after `--` contains an `exec`/`e` subcommand AND the caller chose no sandbox | `codex` | pass your own sandbox (`--sandbox`, `--sandbox=`, `-s`, `-s<mode>`, `-s=<mode>`, `-c sandbox_mode=…`); see [Codex agent-step flags](#codex-agent-step-flags) |
 | `--dangerously-bypass-hook-trust` | argv after `--` contains an `exec`/`e` subcommand AND the flag is not already present | `codex` | none; it is added once on every Codex `exec` launch |
 
 ---
@@ -262,14 +272,18 @@ The `claude`, `copilot`, `codex`, and `amplifier` subcommands do not support
 
 Recipe agent steps on Codex run `amplihack codex -- exec …`.
 When the arguments after `--` contain an `exec` subcommand (or its alias `e`),
-amplihack inserts three flags immediately after that token:
+amplihack inserts the following baseline flags immediately after that token.
+Crusty and merge-ready reviews run in real linked Git worktrees. Amplihack
+never automatically inserts `--skip-git-repo-check`.
+
+The command examples below assume execution in a Git checkout.
 
 ```sh
 amplihack codex -- exec --output-last-message /d0/run/final-message -
 
 # amplihack spawns:
-codex exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true \
-  --dangerously-bypass-hook-trust --output-last-message /d0/run/final-message -
+codex exec --sandbox danger-full-access --dangerously-bypass-hook-trust \
+  --output-last-message /d0/run/final-message -
 ```
 
 For `exec resume`, the flags go before `resume`, because `--sandbox` is not an
@@ -278,7 +292,7 @@ For `exec resume`, the flags go before `resume`, because `--sandbox` is not an
 
 ```sh
 amplihack codex -- exec resume --last -
-# → codex exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true --dangerously-bypass-hook-trust resume --last -
+# → codex exec --sandbox danger-full-access --dangerously-bypass-hook-trust resume --last -
 ```
 
 The `exec` token is found by scanning root-level arguments from the start. The
@@ -306,11 +320,13 @@ which is kept in
 a unit test fails if the list and that copy disagree. `--full-auto` is not
 on the list because codex-cli 0.140.0 to 0.166.0 reject it.
 
+The following table describes sandbox and hook-trust injection.
+
 | Caller argv (after `--`) | What amplihack adds |
 |---|---|
-| `exec --output-last-message F -` | all three flags after `exec` |
-| `e -` | all three flags after `e` |
-| `-m gpt-5.5 exec -` | all three flags after `exec`; `-m gpt-5.5` stays first |
+| `exec --output-last-message F -` | both flags after `exec` |
+| `e -` | both flags after `e` |
+| `-m gpt-5.5 exec -` | both flags after `exec`; `-m gpt-5.5` stays first |
 | `exec --sandbox read-only -` | `--dangerously-bypass-hook-trust` only |
 | `-s danger-full-access exec -` | `--dangerously-bypass-hook-trust` only |
 | `exec -c sandbox_mode=read-only -` | `--dangerously-bypass-hook-trust` only |
@@ -318,23 +334,19 @@ on the list because codex-cli 0.140.0 to 0.166.0 reject it.
 | `exec -c 'sandbox_mode = "read-only"' -` | `--dangerously-bypass-hook-trust` only; the key is trimmed |
 | `exec --approve-for-me -` | `--dangerously-bypass-hook-trust` only; `--approve-for-me` selects the workspace-write sandbox and codex-cli 0.166.0 refuses it alongside `--sandbox` |
 | `exec --dangerously-bypass-approvals-and-sandbox -` | `--dangerously-bypass-hook-trust` only; the caller's flag is forwarded unchanged |
-| `exec -c sandbox_workspace_write.network_access=false -` | `--sandbox workspace-write` and `--dangerously-bypass-hook-trust` |
-| `exec --dangerously-bypass-hook-trust -` | `--sandbox workspace-write` and the network override; hook trust is not repeated |
-| `-p ci exec -` | all three flags; a profile is not a sandbox choice, and the command-line `--sandbox` overrides the profile's `sandbox_mode` |
+| `exec -c sandbox_workspace_write.network_access=false -` | `--sandbox danger-full-access` and `--dangerously-bypass-hook-trust`; the caller's `-c` is forwarded unchanged, is not a sandbox choice and restricts nothing under full access |
+| `exec --dangerously-bypass-hook-trust -` | `--sandbox danger-full-access`; hook trust is not repeated |
+| `-p ci exec -` | both flags; a profile is not a sandbox choice, and the command-line `--sandbox` overrides the profile's `sandbox_mode` |
 | (none), `resume --last`, `"Explain this repository"` | nothing; interactive argv is unchanged |
 | `-c exec`, `-m exec`, `-- exec` | nothing; `exec` here is a value or a positional, not the subcommand |
 
-**Notice (issue #2010).** When amplihack adds `--sandbox workspace-write`, it
-writes one line to stderr before Codex starts. The line lists what was added,
-in the order it appears in the argv; `network access` stands for
-`-c sandbox_workspace_write.network_access=true`. The four possible lines are:
+**Notice (issue #2010).** When amplihack adds
+`--sandbox danger-full-access`, it writes one line to stderr before Codex starts:
 
 | Caller already set | Line written to stderr |
-|---|---|
-| nothing | `amplihack: codex exec: added --sandbox workspace-write, network access, --dangerously-bypass-hook-trust (#1985)` |
-| the network override | `amplihack: codex exec: added --sandbox workspace-write, --dangerously-bypass-hook-trust (#1985)` |
-| `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --sandbox workspace-write, network access (#1985)` |
-| both | `amplihack: codex exec: added --sandbox workspace-write (#1985)` |
+| --- | --- |
+| nothing | `amplihack: codex exec: added --sandbox danger-full-access, --dangerously-bypass-hook-trust (#1985)` |
+| `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --sandbox danger-full-access (#1985)` |
 
 The line is written once per launch, and only to stderr, so a step's stdout
 and its `--output-last-message` file are unchanged. The line is built from
@@ -365,8 +377,9 @@ added; the table above is the record of what an agent step receives.
 No line is written when:
 
 - the caller chose a sandbox, in any of the forms listed above. The hook-trust
-  flag is still added in that case, without a line. Issue #2048 tracks
-  reporting it; issue #2009 is limited to whether the flag is added at all;
+  flag is still added in
+  that case, without a line. Issue #2048 tracks reporting it; issue #2009 is
+  limited to whether the flag is added at all;
 - the argv has no `exec`/`e` subcommand, including an empty argv,
   `resume --last`, `-c exec` and `-- exec`.
 
@@ -380,14 +393,142 @@ environment variable to turn the injection off; pass your own sandbox to change
 it. Because the caller's sandbox wins, untrusted text (prompts, issue bodies)
 must reach Codex on stdin, never in argv.
 
-**Rationale (issue #1985):** the host `config.toml` may set
-`sandbox_mode = "danger-full-access"` for interactive lanes, which agent steps
-would otherwise inherit; Codex skips untrusted hooks without saying so, which
-would turn off the command-check hook (software-factory #149); and a full
-`default-workflow` run under workspace-write with network access needed no
-per-job preparation. The preconditions, including the trusted-checkout
-requirement that follows from bypassing hook trust, are in
+**Rationale (issues #1985 and #2317):** Codex agent steps run with the same
+trust as Claude agent steps, which are launched with
+`--dangerously-skip-permissions`. Under the earlier `workspace-write` sandbox a
+step in a linked git worktree could not commit, because the worktree's index
+and refs live under the main checkout's `.git/`, outside the writable root. An
+explicit `--sandbox` also overrides any `sandbox_mode` in the host
+`config.toml`, so every agent step gets the same mode. The amplihack
+PreToolUse hooks apply the same deny rules to Claude and Codex steps; they
+check commands and are not a filesystem or network sandbox. Codex skips
+untrusted hooks without saying so, which would turn off the command-check hook
+(software-factory #149), so hook trust is bypassed. Full access means a step
+can write `.codex/hooks.json`, `~/.codex/`, `.git/hooks` and credential
+stores, and a hook planted by one step runs in later steps without a trust
+prompt. The execution-directory preconditions are in
 [Sandbox and hook trust for agent steps](../howto/install-codex-plugin.md#sandbox-and-hook-trust-for-agent-steps).
+
+### Codex worktree launches
+
+Crusty context, reviewer, merge-ready, and subsequent assessment agents start
+in the actual linked PR worktree. Codex discovers Git there normally.
+Amplihack does not inspect review-folder ownership, authorize launch folders,
+write project trust entries, or automatically add `--skip-git-repo-check`.
+A caller-supplied flag is forwarded as an explicit argument.
+Removing `--skip-git-repo-check` is not offset by a broader trust flag: the
+agent-step injection now decides only the sandbox and hook trust, as it did
+before #2788.
+
+The reviewer's working directory is the PR worktree, so it is controlled by the
+branch under review, and the agent-step trust each provider already receives is
+not narrowed for it. A Codex agent step still gets `--sandbox
+danger-full-access` and `--dangerously-bypass-hook-trust`, a Claude step
+`--dangerously-skip-permissions`, and a Copilot step `--allow-all-tools`. The
+injection is pure and reads only the argv tail, so it cannot tell a reviewer
+step from a step that must commit, and no per-step narrowing is available
+without adding a mechanism. Instruction files, agent and skill definitions,
+hook and MCP configuration and scripts discovered in that worktree are
+therefore reachable by the provider: what keeps them from directing the review
+is the reviewer prompt's rule that worktree content is data and is never
+executed or obeyed, together with `loop-preflight` refusing a round recipe that
+resolves inside the reviewed tree. A PR that plants a hook or an MCP server in
+its own tree is within the exposure this leaves; treat it as an open residual
+risk rather than something the flag removal addressed.
+
+Shared argument parsing, supported subcommands, explicit `--cd` / `-C`,
+sandbox selection, hook trust, stdin prompt delivery, and final-message capture
+retain their existing behavior. If Codex refuses the directory, inspect the
+effective cwd and verify it is the intended registered worktree at the reviewed
+commit. A directory outside Git gets Codex's normal handling.
+
+Validation uses a genuine linked worktree, records effective cwd and argv,
+and independently checks Git discovery. A Codex-compatible stub demonstrates
+the launch contract; it is not evidence that live Codex executed. Live Codex
+evidence must be identified separately. See
+[direct review and evidence](recipe-checkout-isolation.md#review-in-the-pr-worktree).
+
+---
+
+## --deny-tool
+
+Every Copilot CLI launch receives one `--deny-tool shell(<prefix>:*)` argument
+pair per prefix in amplihack's
+[dangerous-command policy](./dangerous-command-policy.md) — ten for the
+shipped list, which renders ten prefixes from six policy entries, since the
+five forced and deleting push forms share one entry. amplihack spawns
+`copilot` directly, with no shell in between, so each value is one argv
+element:
+
+```text
+copilot
+--deny-tool
+shell(pkill:*)
+--deny-tool
+shell(killall:*)
+--deny-tool
+shell(pgrep:*)
+--deny-tool
+shell(tmux kill-server:*)
+--deny-tool
+shell(tmux kill-session -a:*)
+--deny-tool
+shell(git push --force:*)
+--deny-tool
+shell(git push -f:*)
+--deny-tool
+shell(git push --force-with-lease:*)
+--deny-tool
+shell(git push --delete:*)
+--deny-tool
+shell(git push -d:*)
+```
+
+The `:*` suffix is the prefix form GitHub documents for shell rules:
+`shell(git:*)` matches `git push` but not `gitea`, while a bare value is
+documented as matching literally. See
+[Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
+
+The quotes in `--deny-tool 'shell(pkill:*)'` are shell syntax, needed only when
+you type the flag at a prompt yourself. The value amplihack passes holds no
+quotes; do not copy them into a config file.
+
+Copilot CLI is the only tool that receives these flags. Claude Code and Codex
+read the same policy from files amplihack writes at install time, so their
+command lines are unchanged; see
+[Dangerous Command Policy](./dangerous-command-policy.md).
+
+They are not the only flags a `copilot` launch receives. amplihack also
+injects `--allow-all` (issue #303), unless the caller passed an allow-all flag
+of its own or set `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1`. The opt-out suppresses
+`--allow-all` and leaves the deny flags in place. Which of the two wins for a
+command they both cover is Copilot's resolution order, not amplihack's:
+amplihack passes both and does not enforce a precedence between them.
+
+- Copilot CLI has no user-level file for command deny rules, only per-session
+  flags, so the policy is applied here rather than at install.
+- The flags are a function of the policy list alone. Nothing you pass is read
+  when they are built, so no argument of yours can suppress one. If you deny
+  the same prefix yourself, Copilot receives `--deny-tool` twice for it, in
+  whichever spellings were used; both deny the same command. Whether Copilot
+  accepts the repetition is recorded as an open check in
+  [Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
+  An earlier version did skip a prefix that already followed a `--deny-tool`
+  in your arguments; it was removed because the scan matched any adjacent
+  pair, including one where Copilot reads `--deny-tool` as another flag's
+  value, and so could drop a policy rule silently.
+- Entries from `policy.deny_commands` in `~/.amplihack/config.toml` follow the
+  shipped defaults, in the order written. A change applies to the next launch;
+  no install or update is needed.
+- A `copilot` started by hand, outside `amplihack`, receives none of this.
+
+Whether Copilot CLI resolves a `--deny-tool` over a session approval or an
+allow flag, and whether it accepts a multi-token prefix such as
+`shell(git push --force:*)` at all, are third-party behaviours recorded with the
+version they were checked against in
+[Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
+Until those checks are settled, the Copilot rendering is the weakest of the
+three.
 
 ---
 
@@ -429,12 +570,14 @@ assembles the final command line. The assembly order is:
    `AMPLIHACK_DEFAULT_MODEL` outside the gateway means no `--model`
 4. `--resume` (if requested — `launch` subcommand only)
 5. `--continue` (if requested — `launch` subcommand only)
-6. All `extra_args` in the order they were passed on the command line. For
+6. `--allow-all`, then `--deny-tool shell(<prefix>:*)` once per
+   dangerous-command policy entry, unconditionally. `copilot` only; see
+   [--deny-tool](#-deny-tool)
+7. All `extra_args` in the order they were passed on the command line. For
    `codex`, `codex_agent_step_args()` first inserts the
    [Codex agent-step flags](#codex-agent-step-flags) after an `exec`/`e`
-   subcommand, if there is one. When the sandbox is among them,
-   `codex_agent_step_notice()` supplies the one stderr line described under
-   [Codex agent-step flags](#codex-agent-step-flags)
+   subcommand, if there is one. When the sandbox is among them, `codex_agent_step_notice()` supplies the one stderr line
+   described under [Codex agent-step flags](#codex-agent-step-flags)
 
 The following examples show the full assembled command for each launch
 subcommand with no extra args:
@@ -447,13 +590,14 @@ amplihack claude --skip-permissions
 # → claude --dangerously-skip-permissions --model claude-opus-5[1m]
 
 amplihack copilot
-# → copilot
+# → copilot --allow-all --deny-tool shell(pkill:*) … (one --deny-tool argument
+#   pair per policy entry; see the --deny-tool section above)
 
 amplihack codex
 # → codex
 
 amplihack codex -- exec -
-# → codex exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true --dangerously-bypass-hook-trust -
+# → codex exec --sandbox danger-full-access --dangerously-bypass-hook-trust -
 
 amplihack amplifier
 # → amplifier --model claude-opus-5[1m]
@@ -496,3 +640,4 @@ Intentional divergences (not bugs) are documented in
 - [Parity Test Scenarios](./parity-test-scenarios.md) — tier5 and tier7 test cases that verify flag injection
 - [Run amplihack in Non-interactive Mode](../howto/run-in-noninteractive-mode.md) — CI configuration guide
 - [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — How the pre-launch update check interacts with the launch sequence
+- [Dangerous Command Policy](./dangerous-command-policy.md): the policy list behind the injected `--deny-tool` flags, and the files written for Claude Code and Codex

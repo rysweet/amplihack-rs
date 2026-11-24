@@ -60,7 +60,7 @@ impl LaunchFixture {
         write(
             "recipe-runner-rs",
             &format!(
-                "#!/bin/sh\necho '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}}'\nexit 0\n# {}\n",
+                "#!/bin/sh\necho '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'\nexit 0\n# {}\n",
                 "x".repeat(1100)
             ),
         );

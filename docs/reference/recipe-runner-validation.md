@@ -2,7 +2,7 @@
 title: Recipe runner validation
 description: Runner capability schema, provider rules and managed source provenance.
 type: reference
-updated: 2026-10-18
+updated: 2026-11-21
 ---
 
 # Recipe runner validation
@@ -42,7 +42,33 @@ Property order and compatible additional fields are accepted. Duplicate property
 names, trailing data, invalid UTF-8, malformed JSON, wrong types, failed probes
 and unsupported schemas fail validation. Probes have bounded duration and output.
 Unsupported Codex platforms advertise an empty array rather than claiming support.
+
 Python and Node are optional; semantic parsing uses existing native JSON support.
+
+Optional capabilities change behaviour without being required:
+
+| Capability | Effect when present |
+| --- | --- |
+| `context_file_v1` | `amplihack recipe run` passes the recipe context as `--context-file <path>` instead of `--set` pairs. Exact membership only. See [Recipe Context Transport Reference](recipe-context-transport.md). |
+| `agent_prompt_file_v1` | The runner hands an agent step's brief to the agent wrapper by file and stdin instead of in the wrapper's argv. See [Agent Prompt Channels Reference](agent-prompt-channels.md). |
+
+Both are absent from a runner older than v0.7.0 and present in the pinned
+revision. amplihack reads the report it already takes before every run and
+makes no second probe. A report that fails the validation above ends the run
+before a transport is chosen; a report that validates but omits an optional
+capability selects the older behaviour for that capability alone. For the
+context transport, a run that falls back to `--set` because the report omits
+`context_file_v1` prints a line to stderr saying so, with no `RUST_LOG`
+needed (see
+[Seeing which transport a run used](recipe-context-transport.md#seeing-which-transport-a-run-used)).
+
+### Recovery capability enforcement
+
+Every provider requires `durable_recovery_v1`, including `--fresh`. Codex also
+requires `codex_exec`. A version string or partial recovery implementation is
+insufficient. The native validator and shell delivery path enforce the same
+contract; `--require-capability` prevents an older validator silently accepting
+an incomplete runner. See [durable recovery](recipe-recovery.md).
 
 ## Managed provenance
 
@@ -175,10 +201,43 @@ Public CLI errors remain human-readable.
 | `INVALID_VALIDATION_REQUEST` | Invalid argument combination. |
 | `RUNNER_PROBE_FAILED` | Probe failed or exceeded its bounds. |
 | `RUNNER_REPORT_INVALID` | Capability report is malformed, ambiguous or uses an unsupported schema. |
+| `RUNNER_RECOVERY_CAPABILITY_MISSING: durable_recovery_v1` | Required durable recovery contract is absent. |
 | `RUNNER_CAPABILITY_MISSING` | Required provider capability is absent. |
 | `RUNNER_RECEIPT_MISSING` | Managed receipt is absent. |
 | `RUNNER_PROVENANCE_MISMATCH` | Receipt is invalid or same-entry package/source/revision/binary identity does not match. |
 | `RUNNER_BINARY_SHADOWED` | Selected executable differs from the managed binary. |
+
+### Probe failure cause
+
+`RUNNER_PROBE_FAILED` carries a cause, so that a failure seen on one operating
+system only can be told apart from the others. The error's own text stays exactly
+`RUNNER_PROBE_FAILED`, and the code that reads it needs no change. The cause is
+added in `details.cause`, next to the existing `details.provider`, on this code
+only. The `code` and the `message` are unchanged:
+
+```json
+{"error":{"code":"RUNNER_PROBE_FAILED","message":"runner capability probe failed; check executable compatibility and permissions","details":{"provider":"codex","cause":"runner exited with status 17"}}}
+```
+
+The human-readable lines print the code first, unchanged, with the cause after
+it. `amplihack recipe run` prints:
+
+```text
+amplihack: runner capability check failed: RUNNER_PROBE_FAILED: runner exited with status 17
+```
+
+The freshness check adds the cause to the code in the same way inside its own
+sentence. The exact layout of each line may change; read `error.code` and
+`details.cause` rather than parsing a line.
+
+A cause is a step name written in the amplihack source, followed by the exit
+status or the operating system's error number and its standard text. The steps are
+the capture of the probe's output, a non-zero exit, and the canonicalisation of the
+binary's path. For example, a binary that cannot be resolved gives
+`canonicalize binary: No such file or directory (os error 2)`. A cause holds no
+path, argument, environment value or byte read from the runner, so the canary and
+no-leak guarantees above are unchanged. It is limited to 512 characters, and
+control characters are escaped.
 
 See [Codex usage](../howto/install-codex-plugin.md),
 [Claude plugin installation](../howto/install-claude-code-plugin.md) and

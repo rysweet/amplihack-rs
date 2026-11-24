@@ -24,8 +24,6 @@ pub const CEILING: Duration = Duration::from_secs(600);
 /// How often every wait here checks its condition.
 pub const POLL: Duration = Duration::from_millis(50);
 const TAIL: usize = 4096;
-const BUSY_RETRIES: u32 = 50;
-const BUSY_PAUSE: Duration = Duration::from_millis(20);
 
 /// Polls `cond` every 50 ms until it holds, for at most [`CEILING`].
 pub fn wait_until(what: &str, cond: impl FnMut() -> bool) {
@@ -58,7 +56,7 @@ pub fn output_within(what: &str, cmd: &mut Command) -> Output {
 pub fn output_with_ceiling(what: &str, cmd: &mut Command, ceiling: Duration) -> Output {
     let start = Instant::now();
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = spawn_retrying(what, cmd);
+    let mut child = spawn_once(what, cmd);
     let stdout = Arc::new(Mutex::new(Vec::new()));
     let stderr = Arc::new(Mutex::new(Vec::new()));
     let out_reader = drain(child.stdout.take(), Arc::clone(&stdout));
@@ -130,22 +128,11 @@ pub fn wait_child_with_ceiling(what: &str, child: &mut Child, ceiling: Duration)
     }
 }
 
-/// Spawns `cmd`, retrying while the program is busy being written
-/// (`ETXTBSY`, when a sibling test's fork briefly holds a write descriptor).
-pub fn spawn_retrying(what: &str, cmd: &mut Command) -> Child {
-    let mut tries = 0;
-    loop {
-        match cmd.spawn() {
-            Ok(child) => return child,
-            Err(e)
-                if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < BUSY_RETRIES =>
-            {
-                tries += 1;
-                std::thread::sleep(BUSY_PAUSE);
-            }
-            Err(e) => panic!("waiting for {what}: cannot start the program: {e}"),
-        }
-    }
+/// Spawns `cmd` once. A stub that fails with `ETXTBSY` was written in place;
+/// write it with `exec_stub::write_executable` instead of retrying (#2019).
+pub fn spawn_once(what: &str, cmd: &mut Command) -> Child {
+    cmd.spawn()
+        .unwrap_or_else(|e| panic!("waiting for {what}: cannot start the program: {e}"))
 }
 
 fn drain<R: Read + Send + 'static>(src: Option<R>, into: Arc<Mutex<Vec<u8>>>) -> JoinHandle<()> {

@@ -198,6 +198,11 @@ const CANARY: &str = "light-tool-ran";
 fn fake_tools(e: &Env) -> PathBuf {
     let t = e.repo.tmp.path().join("fake-tools");
     std::fs::create_dir_all(&t).unwrap();
+    std::fs::copy(
+        tools_dir().join("autodrive_crusty_record.sh"),
+        t.join("autodrive_crusty_record.sh"),
+    )
+    .unwrap();
     for f in RETIRED_TOOLS {
         crate::support::exec_stub::write_executable(
             &t.join(f),
@@ -233,6 +238,9 @@ fn run_step(e: &Env, id: &str, tools: &Path, env: &[(&str, &str)]) -> Output {
         ("AUTODRIVE_ROUND_LABEL", OsStr::new("crusty-round-1")),
         ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
         ("RECIPE_VAR_crusty_round_context", OsStr::new(&ctx)),
+        // #2814: the loop measures the round's head and passes it in; the
+        // record writer compares the review's claim with it.
+        ("RECIPE_VAR_reviewed_head_sha", OsStr::new(&e.head)),
         ("REPO_PATH", e.repo.wt.as_os_str()),
         ("RECIPE_VAR_repo_path", e.repo.wt.as_os_str()),
         ("RECIPE_VAR_pr_number", OsStr::new("7")),
@@ -253,7 +261,10 @@ fn step03(e: &Env, tools: &Path, review: &str, env: &[(&str, &str)]) -> Output {
     run_step(e, STEP03, tools, &v)
 }
 
+/// Step-06 writes ordinary round evidence directly from the PR worktree. The
+/// review names the head the loop measured, as an uninterrupted round does.
 fn step06(e: &Env, tools: &Path, verdict: &str, fix: &str) -> Output {
+    let review = json!({ "reviewed_head_sha": e.head }).to_string();
     run_step(
         e,
         STEP06,
@@ -261,8 +272,35 @@ fn step06(e: &Env, tools: &Path, verdict: &str, fix: &str) -> Output {
         &[
             ("RECIPE_VAR_crusty_verdict", verdict),
             ("RECIPE_VAR_crusty_fix_evidence", fix),
+            ("RECIPE_VAR_crusty_review", &review),
         ],
     )
+}
+
+/// Step-06 prints its ordinary round record, with the verdict tag first.
+fn assert_bound(e: &Env, o: &Output, golden: &str) {
+    let rec = std::fs::read_to_string(&e.record).unwrap();
+    assert_eq!(stdout(o), rec, "stdout is the bound record: {}", show(o));
+    assert_bound_record(&rec, golden);
+}
+
+/// An ordinary round record with the verdict first, on one line.
+fn assert_bound_record(rec: &str, golden: &str) {
+    let golden: Value = serde_json::from_str(golden).unwrap();
+    let first = golden
+        .as_object()
+        .unwrap()
+        .keys()
+        .find(|k| k.ends_with("_verdict"))
+        .unwrap()
+        .clone();
+    assert!(
+        rec.starts_with(&format!("{{\"{first}\":")),
+        "the verdict tag stays first: {rec}"
+    );
+    assert_eq!(rec.lines().count(), 1, "one line: {rec}");
+    let bound: Value = serde_json::from_str(rec).unwrap();
+    assert_eq!(bound, golden, "{rec}");
 }
 
 // --- golden: no marker, output as before #1802 ------------------------------
@@ -339,8 +377,7 @@ fn golden_step06_without_light_source_writes_the_same_bytes() {
         "{{\"crusty_verdict\":\"CONCERNS\",\"concern_count\":2,\"commits_this_round\":1,\"head_sha\":\"{post}\",\"reviewed_head_sha\":\"{}\",\"round_label\":\"crusty-round-1\",\"test_signal\":\"\",\"ci_signal\":\"\"}}\n",
         e.head
     );
-    assert_eq!(std::fs::read_to_string(&e.record).unwrap(), want);
-    assert_eq!(stdout(&o), want);
+    assert_bound(&e, &o, &want);
     assert_eq!(mode(&e.record), 0o600);
     assert_eq!(
         state_names(&e),
@@ -358,12 +395,7 @@ fn golden_step06_without_light_source_writes_the_same_bytes() {
         "{{\"crusty_verdict\":\"CLEAN\",\"concern_count\":0,\"commits_this_round\":0,\"head_sha\":\"{h}\",\"reviewed_head_sha\":\"{h}\",\"round_label\":\"crusty-round-1\",\"test_signal\":\"\",\"ci_signal\":\"\"}}\n",
         h = e.head
     );
-    assert_eq!(
-        std::fs::read_to_string(&e.record).unwrap(),
-        want,
-        "{}",
-        show(&o)
-    );
+    assert_bound(&e, &o, &want);
     assert_eq!(
         state_names(&e),
         ["crusty-round-1.json", "crusty-round-1.json.findings"]
@@ -514,9 +546,7 @@ fn step06_has_no_light_hook() {
         let tools = fake_tools(&e);
         let o = step06(&e, &tools, verdict, "");
         assert_eq!(o.status.code(), Some(0), "{verdict}: {}", show(&o));
-        let rec = std::fs::read_to_string(&e.record).unwrap();
-        assert_eq!(rec, plain_record(want, 2, &e.head), "{verdict}");
-        assert_eq!(stdout(&o), rec, "{verdict}");
+        assert_bound(&e, &o, &plain_record(want, 2, &e.head));
         assert!(
             !stderr(&o).contains("light-side-file-invalid"),
             "{verdict}: {}",
@@ -537,7 +567,9 @@ fn real_tools(e: &Env) -> PathBuf {
     let t = e.repo.tmp.path().join("real-tools");
     std::fs::create_dir_all(&t).unwrap();
     for f in [
+        "autodrive_crusty_record.sh",
         "autodrive_followups.sh",
+        "autodrive_followups_file.sh",
         "autodrive_followups_check.sh",
         "autodrive_finding_rules.sh",
         "autodrive_state.sh",
@@ -699,7 +731,7 @@ fn real_tools_record_a_light_minor_only_round_with_the_plain_prefix() {
         rec.starts_with("{\"crusty_verdict\":\"MINOR_ONLY\","),
         "{rec}"
     );
-    assert_eq!(rec, plain_record("MINOR_ONLY", 2, &e.head));
+    assert_bound_record(&rec, &plain_record("MINOR_ONLY", 2, &e.head));
     assert!(!rec.contains("verdict_source"), "{rec}");
 }
 

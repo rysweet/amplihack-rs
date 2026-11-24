@@ -4,8 +4,9 @@
 //! The tree is a `tempfile` directory under `std::env::temp_dir()`, created
 //! with mode 0700 whatever the umask and owned by this user, so it meets
 //! every condition of the binary's seam (`procfs::resolve`, S27). It
-//! always holds `self/environ` = `AMPLIHACK_FAKE=1\0` (`seed_proc_tree`, shared
-//! with the empty tree in `isolated_amplihack.rs`); without it the
+//! always holds `self/environ` = `AMPLIHACK_FAKE=1\0` (`seed_proc_tree` in
+//! `tests/support/proc_tree_seed.rs`, shared with the empty tree in
+//! `isolated_amplihack.rs` and with the lib tests' scopes); without it the
 //! liveness scan reports "unsupported" and every profile counts as live.
 //!
 //! Static pids lie in `FAKE_PID_BASE..=i32::MAX`. `FAKE_PID_BASE` is one
@@ -21,7 +22,7 @@
 //!
 //! Every I/O failure panics. Nothing here reads a real process's `environ`.
 
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 #![allow(dead_code)]
 
 use std::fs::{DirBuilder, OpenOptions};
@@ -32,7 +33,14 @@ use std::path::{Path, PathBuf};
 /// One above the largest Linux `pid_max` (2^22).
 pub const FAKE_PID_BASE: u32 = 4_194_305;
 
-pub use crate::isolated_amplihack::SELF_ENVIRON;
+#[path = "../../../../tests/support/proc_tree_seed.rs"]
+// `cli_integration` loads this file twice, here and through the other of
+// `isolated_amplihack.rs` / `fake_proc.rs`: one source, the same constants,
+// and `fake_proc.rs` must not name `isolated_amplihack` so the lib tests can
+// include it too (issue #2196).
+#[allow(dead_code, clippy::duplicate_mod)]
+mod proc_tree_seed;
+pub use proc_tree_seed::{SELF_ENVIRON, seed_proc_tree};
 
 fn private_dir(path: &Path) {
     DirBuilder::new()
@@ -84,7 +92,7 @@ impl FakeProc {
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in(parent)
             .expect("create the fake proc root");
-        crate::isolated_amplihack::seed_proc_tree(dir.path());
+        seed_proc_tree(dir.path());
         Self { dir }
     }
 

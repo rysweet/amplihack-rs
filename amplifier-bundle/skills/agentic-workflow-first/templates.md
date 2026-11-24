@@ -53,13 +53,26 @@ steps:
       RECORD
     output: "record_written"
 
-  # (c) THIN RAIL — read the record fail-CLOSED, then route (Step 3c / Template D)
+  # (c) THIN RAIL: verify the record and report what was found (Step 3c / Template D).
+  # A later step routes on `route_result.routed`, and only when `integrity` is `ok`.
   - id: "route"
     type: "bash"
     command: |
       set -euo pipefail
-      "{{repo_path}}/scripts/read_record.sh" "${RECORD_PATH:?}"   # fail-closed reader
+      # Capture the reader's reason as evidence. Under `set -e` an unguarded call
+      # would end the run, and the reason would survive only in the log, where the
+      # recovery step cannot read it.
+      ( umask 177; : > "${EVIDENCE_PATH:?}" )
+      if decision=$("{{repo_path}}/scripts/read_record.sh" "${RECORD_PATH:?}" 2>>"$EVIDENCE_PATH"); then
+        integrity="ok"
+      else
+        decision="unverified"; integrity="failed"
+        echo "ERROR: record integrity check failed; evidence at $EVIDENCE_PATH" >&2
+      fi
+      jq -cn --arg d "$decision" --arg i "$integrity" --arg e "$EVIDENCE_PATH" \
+        '{routed:$d, integrity:$i, evidence_path:$e}'
     output: "route_result"
+    parse_json: true
 ```
 
 ## Template B — Inline prompt skeleton
@@ -107,15 +120,24 @@ format in this repo; keep prompts inline.
 Control flow reads ONLY typed fields (`decision`, `schema_version`, `nonce`). `rationale`
 is human-facing and must never drive routing (that would re-introduce AP-1).
 
-## Template D — Fail-CLOSED reader (`scripts/read_record.sh`, the thin rail)
+## Template D: Record-integrity reader (`scripts/read_record.sh`, the thin rail)
+
+The rail validates ownership, freshness and parseability, and it never proceeds on a
+record that fails one of those checks. That part does not soften. Its nonzero exit is a
+report to the step that invoked the rail, not a gate that ends the run: the caller
+captures the reason as evidence (Template A's `route` step) and an agent step reads that
+evidence, decides what went wrong, and either fixes the cause and revalidates or says
+plainly what is blocked. The reason must not be left only on stderr. A reader failure
+that reaches the agent as a bare "unreadable" cannot be told apart from a replayed
+nonce, a missing file, or a record owned by another run.
 
 ```bash
 #!/usr/bin/env bash
-# Thin rail: read a typed record fail-CLOSED. Aborts on ANY doubt (AP-1).
+# Thin rail: read a typed record and report on ANY doubt (AP-1).
 set -euo pipefail
 REC="${1:?record path required}"
 
-# WHY each guard: any failure => abort the step; never proceed on default data.
+# WHY each guard: any failure => report and hand to an agent step; never proceed on default data.
 [ -f "$REC" ]                        || { echo "record missing: $REC" >&2; exit 1; }
 perms=$(stat -c '%a' "$REC" 2>/dev/null || stat -f '%Lp' "$REC")  # GNU || BSD/macOS
 [ "$perms" = "600" ]                 || { echo "record not 0o600 (got $perms)" >&2; exit 1; }
@@ -127,7 +149,7 @@ ver=$(jq -r '.schema_version' "$REC")
 
 decision=$(jq -r '.decision' "$REC")   # route ONLY on the typed field
 # Optional allowlist (defense-in-depth): when ALLOWED_DECISIONS is set (space-separated),
-# reject any decision outside it — fail CLOSED here, before the caller ever routes on it.
+# report any decision outside it here, before the caller ever routes on it.
 if [ -n "${ALLOWED_DECISIONS:-}" ]; then
   case " $ALLOWED_DECISIONS " in
     *" $decision "*) : ;;
@@ -139,6 +161,16 @@ echo "$decision"
 
 **PR-review checklist (paste into the PR):**
 - [ ] No example shows a fail-OPEN handoff (proceeding on missing/partial record).
+- [ ] Every reader failure reaches an agent step with its own reason as evidence, not
+      as a bare "unreadable" and not only in the log.
+- [ ] Every call in a bash step that can exit non-zero (`gh`, `git`, `curl`, and the
+      `jq` that parses what they returned) reaches an agent the same way, either by
+      capturing what it returned into the evidence file and reporting a typed status,
+      or through the step-recovery wrapper
+      (`docs/reference/step-failure-recovery.md`). An unguarded call under `set -e`
+      ends the step and leaves its reason only in the log.
+- [ ] Required inputs are checked (`: "${VAR:?}"`) before the first call, not after
+      it, so a missing one fails on its own name rather than part-way through.
 - [ ] No example uses `chmod` after write (must be `0o600` at creation).
 - [ ] No large/sensitive payload passed via argv or env (stdin/file only).
 - [ ] No control flow keys off `rationale`/free-text (only typed fields).

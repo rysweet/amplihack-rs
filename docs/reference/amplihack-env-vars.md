@@ -59,6 +59,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_CLAUDE_PROFILE_ROOT` | user preference |  | Directory that holds Claude profiles. The test helper `isolated(..)` removes it from every child; see [Keep Tests out of the Real Profile Root](../howto/keep-tests-out-of-the-real-profile-root.md). |
 | `AMPLIHACK_CLEANUP_KEEP_HOURS` | user preference |  | Hours run-owned worktrees and targets are kept after a run's PR closes or the run ends, and the minimum age of untagged targets and system temporary leftovers (not `run-tmp`); default `24`, maximum `87600`. See [Settings](../howto/clean-up-after-recipe-runs.md#settings). |
 | `AMPLIHACK_CLEANUP_ON_EXIT` | user preference |  | `0` skips the end-of-run cleanup sweep; default `1`. The run's `runtime/` folder is still removed. See [What happens when a run ends](../howto/clean-up-after-recipe-runs.md#what-happens-when-a-run-ends). |
+| `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` | launcher |  | Off unless the trimmed value is exactly `1`, the inverse of `AMPLIHACK_CLEANUP_ON_EXIT`. `1` states that the folder named by `CARGO_TARGET_DIR` belongs to this run alone, so the run removes it when it ends. It is an assertion of exclusive ownership of the whole folder and is not verified. A folder is refused with a warning when it is a symbolic link, is not owned by you, has a parent that other users can write to (without the sticky bit), is a mount point or has one directly inside it, is a git checkout, or lacks a Cargo marker while holding files; the full list of checks is in the how-to. A mount deeper inside is not detected, and an active build is protected only by one non-waiting attempt on each `.cargo-lock` the folder and its immediate subfolders hold. The runner exports it as empty to steps, including under `--dry-run`; `--detach` passes the launcher's value to the pane. See [Remove a run's own build output](../howto/clean-up-after-recipe-runs.md#remove-a-runs-own-build-output). |
 | `AMPLIHACK_CLI_INTEGRATION_QUIET_CHILD` | test-only |  | Test-support child-process switch. |
 | `AMPLIHACK_CODEX_BINARY_PATH` | test-only |  | Set only by install tests; the lookup itself is `AMPLIHACK_<TOOL>_BINARY_PATH`. |
 | `AMPLIHACK_CODEX_TERMINAL_TEST_FIXTURE` | test-only |  | Launcher test fixture switch. |
@@ -72,7 +73,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | user preference |  | Stops `amplihack copilot` from passing `--allow-all-*`. |
 | `AMPLIHACK_DATABASE_PASSWORD` | internal |  | Example secret the Docker launcher must not forward; named in its test. |
 | `AMPLIHACK_DEBUG` | internal |  | Not read: example name in `amplihack-state` `EnvVar` docs. |
-| `AMPLIHACK_DEFAULT_MODEL` | user preference |  | Default model for launched agents. |
+| `AMPLIHACK_DEFAULT_MODEL` | user preference |  | Default model for Claude-compatible launches. Set to a non-blank value it also replaces the model a [model tier](./model-tiers.md) maps to on the `claude` column, below `AMPLIHACK_FORCE_MODEL` and below a concrete `--model` the command line carries. Codex and Copilot CLI do not read it; give them a model with a `[codex.<tier>] model` or `[copilot.<tier>] model` cell. |
 | `AMPLIHACK_DELEGATE` | user preference |  | Delegate command for multitask workstreams. |
 | `AMPLIHACK_DELIVERY_WORKER` | test-only |  | Re-exec switch for the freshness delivery test worker. |
 | `AMPLIHACK_DEPTH` | internal |  | Launch nesting depth exported to children. |
@@ -83,6 +84,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION` | internal |  | OTLP header the Docker launcher must not forward; named in its filter. |
 | `AMPLIHACK_FLEET_EXISTING_VMS` | user preference |  | Existing VMs for `amplihack fleet` to use. |
 | `AMPLIHACK_FLEET_REASONER_BINARY_PATH` | user preference |  | Path to the fleet reasoner's CLI. |
+| `AMPLIHACK_FORCE_MODEL` | user preference | `model.force` | One model id for every launch, whatever [tier](./model-tiers.md) a step declared. The one setting that replaces a concrete `--model` already on the command line. Ignored on a LiteLLM gateway launch. |
 | `AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE` | user preference |  | Allows installing an older recipe runner. |
 | `AMPLIHACK_GIT_1278_CHILD` | test-only |  | Re-exec switch for the #1278 git test. |
 | `AMPLIHACK_GIT_1278_PLAIN` | test-only |  | Re-exec switch for the #1278 git test. |
@@ -135,8 +137,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_MEMORY_TOKEN_BUDGET` | user preference |  | Memory injection token budget. |
 | `AMPLIHACK_MEMORY_TOPOLOGY` | user preference |  | Distributed-memory topology. |
 | `AMPLIHACK_MEMORY_TRANSPORT` | user preference |  | Distributed-memory transport. |
-| `AMPLIHACK_MERGE_GUARD` | internal |  | Set by `recipe run` for auto-drive recipes; the merge guard (`gh pr merge` shim and pre-tool-use hook) is active while it is non-empty. |
-| `AMPLIHACK_MERGE_GUARD_USER_BASH_ENV` | internal |  | The user's own `BASH_ENV`, kept while the merge guard's `BASH_ENV` file is in place; that file sources it first. |
+| `AMPLIHACK_MERGE_GUARD` | internal |  | Retired marker. Launch and recipe execution remove it; it grants no merge authority. |
+| `AMPLIHACK_MERGE_GUARD_USER_BASH_ENV` | internal |  | Retired compatibility value. When removing the exact retired guard `BASH_ENV`, launch restores this unrelated user path without sourcing the retired guard. |
 | `AMPLIHACK_MIN_AVAILABLE_MIB` | user preference |  | Free-memory floor before a session-tree spawn. |
 | `AMPLIHACK_MODE` | user preference |  | Forces the detected framework mode. |
 | `AMPLIHACK_NONINTERACTIVE` | internal |  | Marks a delegated, non-interactive process; set by `recipe run` for every step. |
@@ -167,6 +169,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_PROJECT_ROOT` | internal |  | Project root exported by the uvx manager. |
 | `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses: `auto` (default), `stdin` or `tempfile`. No value puts the prompt in argv: any other value, including `argv`, logs a warning and is treated as `auto`. Never set it in recipes or bundle config. See [Agent Prompt Channels](agent-prompt-channels.md#automatic-prompt-delivery-never-selects-argv). |
 | `AMPLIHACK_QUEUE_PATH` | test-only |  | Fleet test fixture. |
+| `AMPLIHACK_RECIPE_LOG` | internal |  | Absolute path of a detached run's recipe log, exported by `amplihack recipe run --detach` so each step can append its usage-limit wait's `start` and `end` lines to it. Inherited by nested foreground runs, which append to the enclosing run's log; a nested detached run overwrites it with its own. Never read from configuration. See [The wait in the recipe log](profile-command.md#the-wait-in-the-recipe-log). |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | user preference |  | Path for structured runner events. |
 | `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` | user preference |  | Whole-run wall-clock limit for the recipe runner. |
 | `AMPLIHACK_RECIPE_RUN_ID` | internal |  | Run id `recipe run` hands to the runner; a new one for each attempt, including transient retries. A launch that sees it set and non-empty never starts the profile rotator, and a `change:` line in the rotate log records it as `recipe_run=<id>`; see [Rotate autostart](profile-command.md#rotate-autostart). |
@@ -189,12 +192,14 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET` | user preference |  | Default for `amplihack profile rotate --overflow-unknown-reset` (`0` or `1`, default `0`); auto-switch reads it only while no rotator runs, and otherwise uses the running rotator's value. |
 | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | user preference |  | Default for `amplihack profile rotate --overflow-wait`; auto-switch reads it only while no rotator runs, and otherwise uses the running rotator's value. |
 | `AMPLIHACK_ROTATE_SESSION_AT` | user preference |  | Default for `amplihack profile rotate --session-at`; also auto-switch's plan-capacity test for overflow while no rotator runs. |
+| `AMPLIHACK_ROTATE_TARGET_WEEK_MAX` | user preference |  | Default for `amplihack profile rotate --target-week-max` (`1`-`100`, default `95`): a login whose week use is above it is never a move target. Auto-switch does not read it; see [Rotate target choice](profile-command.md#rotate-target-choice). |
 | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | user preference |  | Default for `amplihack profile rotate --upgrade-margin`. |
 | `AMPLIHACK_ROTATE_WEEK_AT` | user preference |  | Default for `amplihack profile rotate --week-at`; also auto-switch's plan-capacity test for overflow while no rotator runs. |
 | `AMPLIHACK_RUNTIME_DIR` | user preference |  | Worktree runtime directory override. |
 | `AMPLIHACK_RUNTIME_ROOT` | internal |  | Runtime root handed to recipe steps. |
 | `AMPLIHACK_RUN_DIR` | internal |  | Run folder `<work root>/runs/<run id>` handed to recipe steps. |
 | `AMPLIHACK_RUN_ID` | internal |  | Id of one `amplihack recipe run` invocation, handed to recipe steps; names the run folder. Differs from `AMPLIHACK_RECIPE_RUN_ID`, which is the id of the current attempt. |
+| `AMPLIHACK_RUN_GUIDANCE_DIRS` | internal |  | Guidance folders `recipe run` hands to its runner; the agent-step launcher adds their entries to each prompt. Removed by `--detach`, `agent-binary --shell` and test isolation. See [amplihack recipe guide](recipe-cli-reference.md#what-the-agent-receives). |
 | `AMPLIHACK_RUST_BINARY` | user preference |  | Binary for the Rust trial. |
 | `AMPLIHACK_RUST_RUNTIME` | internal |  | Marks a process launched by the Rust CLI. |
 | `AMPLIHACK_RUST_TRIAL_HOME` | user preference |  | Home for the Rust trial. |
@@ -238,6 +243,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_BOOL_UNSET_XYZ` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_DENIAL_PANIC` | test-only |  | Fault injection in the hook protocol test. |
 | `AMPLIHACK_TEST_DETACH_START_SECS` | test-only |  | Shortens how long `recipe run --detach` waits for the pane to start the run (default 15 s), so a test of a pane that never starts is quick. Other `recipe run --detach` tests set it to 600 so a loaded host cannot time out a pane that does start. |
+| `AMPLIHACK_TEST_FAIL_ATTEMPT` | test-only |  | Read only in debug builds. The number of a supervised attempt that must fail to start, as a replaced binary, `EMFILE` or a refused output buffer would. Issue #2816 uses it to drive the path where the supervisor stands down after a prompt capture has been set up, so the plain launch that follows must inherit fd 0 whole. |
+| `AMPLIHACK_TEST_FAIL_PROMPT_COPY` | test-only |  | Read only in debug builds. When set and not empty, setting up the copy of a supervised step's piped prompt fails as it does in a process out of file descriptors (`EMFILE`). Tests use it to check that such a step is not run at all, rather than run on a prompt no retry could be given: the real cause cannot be arranged from outside a test without starving the test of descriptors too. |
 | `AMPLIHACK_TEST_FAKE_LATEST_VERSION` | test-only |  | Fakes the latest release for update tests. |
 | `AMPLIHACK_TEST_HOME_GUARD` | test-only |  | Set only by the test helper `tests/support/isolated_amplihack.rs` on each `amplihack` a test starts; the user-config loader then ignores a HOME outside the temp dir, so no test reads or migrates a real `~/.amplihack`. When it is set and not empty, a launch also skips rotator autostart before any other check, so no test starts a real `profile rotate watch --spawned` daemon; see [Keep Tests from Leaking Rotator Daemons](../howto/keep-tests-from-leaking-rotator-daemons.md). |
 | `AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS` | test-only |  | Read only in debug builds. Whole seconds, `1..=3600`; any other value gives the 10 s `CHILD_TIMEOUT`. Raises the time each tmux, `systemd-run` and git call of `amplihack agent` may take. The `issue_1760` test fixture sets it to 600; see [Keep Tests Passing Under Host Load](../howto/keep-tests-passing-under-host-load.md#agent-child-timeout-in-issue_1760_fixture). |
@@ -247,7 +254,9 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_NONEXISTENT_123` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_456` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_789` | test-only |  | `EnvVar` unit test name. |
+| `AMPLIHACK_TEST_LOGIN_EXCHANGE` | test-only |  | Read only in debug builds, by `profile rotate` and `profile switch`. Exactly `renames`, together with a non-empty `AMPLIHACK_TEST_HOME_GUARD`, replaces the atomic exchange of two login files with a stand-in made of three plain renames, so rotation tests that start the binary run the same way on every system; any other value leaves the host's exchange in place. The stand-in is not atomic, and it moves a file only when both files lie inside the temp dir, where a test's logins are: for any other pair it moves nothing, prints one line on stderr that names the file, and the swap fails with `exchange failed: permission denied`. A debug build that carries both variables by mistake therefore cannot move a login under a home folder or a profile root. Release builds do not contain the stand-in, and on every system but Linux they decline the exchange with `atomic exchange is not supported here`. The rotation fixtures set it (`LOGIN_EXCHANGE_ENV`). Do not set it in a shell. |
 | `AMPLIHACK_TEST_NONEXISTENT_GET_ERR` | test-only |  | `EnvVar` unit test name. |
+| `AMPLIHACK_TEST_PROBE_WAIT` | test-only |  | Read only in debug builds, by `amplihack_utils::launch_target`. Exactly `exit` makes the `--version` probe of each launch candidate wait for the candidate to exit instead of the 3 s per-candidate and 10 s total limits; any other value leaves the limits in place. `isolated(..)` sets it on every test child. Do not set it in a shell: it removes the probe bound, so a candidate that hangs on `--version` hangs the launch; see [Keep Tests Passing Under Host Load](../howto/keep-tests-passing-under-host-load.md#wait-for-the-version-probe-to-exit). |
 | `AMPLIHACK_TEST_PROC_ROOT` | test-only |  | Names a fake process table that `procfs::proc_root()` reads in place of `/proc`. Unlike the debug-only knobs above, it is honoured in release builds too (accepted risk SR-2), but only when `AMPLIHACK_TEST_HOME_GUARD` is set and the path is a private directory owned by this user inside the temp dir; otherwise `/proc` is read, and a debug build prints one stderr line naming the reason (`AMPLIHACK_TEST_PROC_ROOT ignored (...)`). `rotate stop` checks the pid it signals against the real `/proc` whatever this names. `isolated(..)` sets it to a shared empty tree (`PROC_ROOT_ENV`), so no `amplihack profile`, `sessions` or `cleanup` test reads the host's processes; see [Keep Tests off the Host Process Table](../howto/keep-tests-off-the-host-process-table.md). |
 | `AMPLIHACK_TEST_REQUIRE_STRACE` | test-only |  | When non-empty, the `issue_2042_host_proc_strace` tests fail if `strace` is not installed instead of skipping. CI sets it. |
 | `AMPLIHACK_TEST_ROOT_SANDBOX_PROBE` | test-only |  | Root-sandbox spawn test probe. |
@@ -303,3 +312,4 @@ environment is not changed.
 
 - [User Configuration](./user-config.md) — The config files, their keys and the `amplihack config` command
 - [Environment Variables](./environment-variables.md) — Detailed behaviour of the variables amplihack sets and reads
+- [Model Tiers](./model-tiers.md): `AMPLIHACK_FORCE_MODEL`, where `AMPLIHACK_DEFAULT_MODEL` and `AMPLIHACK_LITELLM_MODEL` sit relative to a step's tier, and the `model-tiers.jsonl` record written under `AMPLIHACK_RUN_DIR`

@@ -10,12 +10,8 @@ use super::ledger::{RotateLedger, RotateState};
 /// left out, because amplihack before #1659 rejects unknown ledger fields:
 /// - `last_cycle.measured_at`, without which the limit-resume hook falls
 ///   back to its 60-second margin;
-/// - `last_cycle.overflow` and `overflow_blocked` (issue #1606). An older
-///   rotator never moves onto an overflow profile, so it has no use for
-///   them. A spend block dropped this way is not a cost: when this binary
-///   runs the rotator again, the blocked profile's probe still reports the
-///   spend limit, and a profile reporting one is blocked again and never
-///   moved onto;
+/// - `last_cycle.overflow` (issue #1606). An older rotator never moves onto
+///   an overflow profile, so it has no use for it;
 /// - `guidance`, `home_unreadable_since` and `lost_login` (issue #1693),
 ///   which only `rotate status` and this binary's hand-change recovery read;
 /// - `no_room` (issue #1804), set on every measuring cycle. Only this
@@ -25,15 +21,34 @@ use super::ledger::{RotateLedger, RotateState};
 ///   `platform_block` and `live_kind`, nothing is gained by keeping it for a
 ///   rotator that would refuse the whole ledger;
 /// - `advisory_alert` (issue #1907). Without it an older rotator logs the
-///   advisory ALERT once more; `alert` stays empty, so no hook is blocked.
+///   advisory ALERT once more; `alert` stays empty, so no hook is blocked;
+/// - `last_cycle.live_room` (issue #2857). Only this binary's usage-limit
+///   wait reads it, and without it a wait sleeps to its reset instead of
+///   waking on a login change, which is the safe direction;
+/// - `live_login_at` (issue #2218). Only this binary's local proof of an
+///   excluded live login reads it, and without it that proof falls back to
+///   `swapped_at`, which only ever makes rule 2 apply more often: nothing
+///   is moved on evidence that is not proof.
+///
+/// `overflow_blocked` is kept (issue #3105, which reverses the trade-off
+/// #2890 accepted). A block a failed agent step records for a plan login
+/// cannot be derived again: the `/usage` probe cannot see an individual spend
+/// limit. Dropping it here, which every save beside a rotator from another
+/// binary did, let the rotator swap to a login whose spend block stood. The
+/// cost falls on older rotators only, and only while a block is held, since
+/// an empty map is not written. One built before #1659 refuses the ledger,
+/// and one built from #1695 to before #2890 refuses any kind but a spend
+/// limit; both refuse loudly until restarted, which the note below already
+/// asks for. One built between #1659 and #1695 ignores the field and drops
+/// it when it saves, which this binary cannot prevent.
 pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
     let mut out = l.clone();
     if older {
         if let Some(c) = &mut out.last_cycle {
             c.measured_at = None;
             c.overflow = None;
+            c.live_room = None;
         }
-        out.overflow_blocked.clear();
         out.guidance = None;
         out.home_unreadable_since = None;
         out.lost_login.clear();
@@ -43,6 +58,9 @@ pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
         // Issue #1870: only this binary's freshness gate reads it.
         out.swapped_away.clear();
         out.advisory_alert = None;
+        // Issue #2218: only this binary's local proof of an excluded live
+        // login reads it.
+        out.live_login_at = None;
     }
     out
 }

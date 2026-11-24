@@ -1,24 +1,20 @@
 #!/usr/bin/env bash
 # autodrive_qa_sources.sh — the declared QA command sources (issue #1763):
-# .amplihack/qa.toml and one clean CI test step. Only autodrive_qa_evidence.sh
-# loads this file, from its own physical directory and after
-# autodrive_trust.sh, whose autodrive_qa_scope.sh gives the changed paths and
-# the merge base this file reads (_autodrive_qa_scan, _AD_PATHS,
-# _AD_PATHS_STATE, _AD_MB). The merge gate never uses these sources; it
-# measures the evidence they feed.
-#
-# Public functions:
-#   autodrive_qa_config <dir>  .amplihack/qa.toml: none, ok or invalid
-#   autodrive_qa_ci <dir>      the one clean CI test step, or none and a reason
-#   autodrive_qa_report <dir>  every answer the evidence tool needs, at once
+# .amplihack/qa.toml and one clean CI test step. autodrive_qa_evidence.sh and
+# autodrive_trust.sh load it: autodrive_trust.sh sources this file from its own
+# physical directory after autodrive_qa_scope.sh, which gives
+# the changed paths and merge base read here (_autodrive_qa_scan, _AD_PATHS,
+# _AD_PATHS_STATE, _AD_MB). Public functions:
+#   autodrive_qa_config <dir>       .amplihack/qa.toml: none, ok or invalid
+#   autodrive_qa_declaration <dir>  how criterion 1 is met (#2458)
+#   autodrive_qa_ci <dir>           the one clean CI test step, or none and a reason
+#   autodrive_qa_report <dir>       every answer the evidence tool needs, at once
 # Contract: docs/reference/auto-drive-to-merge.md, "Choosing the QA command".
-#
-# This file only DEFINES functions and runs nothing it reads: no eval, no shell
-# on built text, and awk never calls a command. git runs via autodrive_trust_git
-# and never contacts a remote. qa.toml and the workflows come from the
-# merge-base tree (HEAD's when no base is given), never the working tree.
-# Output is a fixed token, a directory in the `dir` alphabet, or a command in
-# the command alphabet. LC_ALL=C; bash 3.2+, git, awk, head and tr.
+# Only DEFINES functions and runs nothing it reads: no eval, no shell on built
+# text, awk never calls a command. git runs via autodrive_trust_git, never a
+# remote. qa.toml and the workflows come from the merge-base tree (HEAD's when
+# no base is given), never the working tree. Output is a fixed token or a value
+# in its checked alphabet. LC_ALL=C; bash 3.2+, git, awk, head and tr.
 
 # _autodrive_qa_toml_changed: return 0 when the changed paths hold
 # .amplihack/qa.toml or .amplihack itself: the pull request choosing its suite.
@@ -59,18 +55,30 @@ _autodrive_qa_dir_check() {
   return 2
 }
 
-# autodrive_qa_config <dir> -> `none` when .amplihack/qa.toml is not present in
-# the merge-base tree (HEAD's if unknown) and the pull request leaves it alone,
-# `ok<TAB><dir><TAB><command>`, or `invalid<TAB><problem>`: symlink not-regular
-# too-large syntax unknown-key duplicate-key missing-command unsafe-command
-# unsafe-dir dir-not-found changed-in-pr paths-empty paths-unknown. Present:
-# .amplihack is not a tree, or qa.toml has an entry. Only the `dir` is checked
-# on disk. The blob is read once, at most 4097 bytes (NUL as 0x01, which the
-# byte check rejects); no content is printed except a valid command and dir.
+# _autodrive_qa_job_ok <name>: a scenarios_ci_job value: 1 to 128 bytes of
+# A-Za-z0-9 space . _ / ( ) + : , @ % -, not starting with `-` (#2458).
+_autodrive_qa_job_ok() {
+  local -x LC_ALL=C
+  [ "${#1}" -ge 1 ] && [ "${#1}" -le 128 ] || return 1
+  case "$1" in -*|*[!A-Za-z0-9\ ._/\(\)+:,@%-]*) return 1 ;; esac
+}
+
+# autodrive_qa_config <dir> [decl-only] -> `none` when .amplihack/qa.toml is
+# not present in the merge-base tree (HEAD's if unknown) and the pull request
+# leaves it alone, `ok<TAB><dir><TAB><command>[<TAB><declaration>]`, or
+# `invalid<TAB><problem>`: symlink not-regular too-large syntax unknown-key
+# duplicate-key declaration-conflict unknown-value missing-command
+# unsafe-command unsafe-dir dir-not-found changed-in-pr paths-empty
+# paths-unknown. Keys: command, dir, multi_area ("command" gives
+# multi-area-command) and scenarios_ci_job (_autodrive_qa_job_ok, ci-job:<name>).
+# decl-only (no base: a preflight) accepts the head tree and prints
+# `decl<TAB><declaration or none>` in place of ok. Only `dir` is checked on
+# disk. The blob is read once, at most 4097 bytes (NUL as 0x01, rejected); no
+# content is printed but checked values.
 autodrive_qa_config() {
   local -x LC_ALL=C
   local r="${1:-.}" a="" q="" present="" oid="" size="" body="" line="" key="" val="" cmd="" dir="." seen=""
-  local re="" okb=""
+  local re="" okb="" decl="" job=""
   _autodrive_qa_scan "$r"
   if ! a="$(_autodrive_qa_entry "$r" "${_AD_MB:-HEAD}" .amplihack)" \
      || ! q="$(_autodrive_qa_entry "$r" "${_AD_MB:-HEAD}" .amplihack/qa.toml)"; then
@@ -87,9 +95,9 @@ autodrive_qa_config() {
     return 0
   fi
   # The file is used only when the diff shows the pull request left it alone.
-  case "$_AD_PATHS_STATE" in
-    known) ;;
-    empty) printf 'invalid\tpaths-empty\n'; return 0 ;;
+  case "$_AD_PATHS_STATE:${2:-}" in
+    known:*|nobase:decl-only) ;;
+    empty:*) printf 'invalid\tpaths-empty\n'; return 0 ;;
     *) printf 'invalid\tpaths-unknown\n'; return 0 ;;
   esac
   if _autodrive_qa_toml_changed; then printf 'invalid\tchanged-in-pr\n'; return 0; fi
@@ -118,13 +126,21 @@ autodrive_qa_config() {
     if ! [[ "$line" =~ $re ]]; then printf 'invalid\tsyntax\n'; return 0; fi
     key="${BASH_REMATCH[1]}"
     val="${BASH_REMATCH[2]}"
-    case "$key" in command|dir) ;; *) printf 'invalid\tunknown-key\n'; return 0 ;; esac
+    case "$key" in command|dir|multi_area|scenarios_ci_job) ;; *) printf 'invalid\tunknown-key\n'; return 0 ;; esac
     case " $seen " in *" $key "*) printf 'invalid\tduplicate-key\n'; return 0 ;; esac
     seen="${seen} ${key}"
-    if [ "$key" = "command" ]; then cmd="$val"; else dir="$val"; fi
+    case "$key" in command) cmd="$val" ;; dir) dir="$val" ;; multi_area) decl="$val" ;; *) job="$val" ;; esac
   done <<EOF
 $body
 EOF
+  case "$seen " in
+    *" multi_area "*scenarios_ci_job*|*" scenarios_ci_job "*multi_area*)
+      printf 'invalid\tdeclaration-conflict\n'; return 0 ;;
+    *" multi_area "*) [ "$decl" = "command" ] || { printf 'invalid\tunknown-value\n'; return 0; }
+      decl="multi-area-command" ;;
+    *" scenarios_ci_job "*) _autodrive_qa_job_ok "$job" || { printf 'invalid\tunknown-value\n'; return 0; }
+      decl="ci-job:$job" ;;
+  esac
   case "$cmd" in *[!\ $'\t']*) ;; *) printf 'invalid\tmissing-command\n'; return 0 ;; esac
   case "$cmd" in *[!A-Za-z0-9\ ._/=+:,@%-]*) printf 'invalid\tunsafe-command\n'; return 0 ;; esac
   _autodrive_qa_dir_check "$r" "$dir"
@@ -133,15 +149,51 @@ EOF
     1) printf 'invalid\tunsafe-dir\n'; return 0 ;;
     *) printf 'invalid\tdir-not-found\n'; return 0 ;;
   esac
-  printf 'ok\t%s\t%s\n' "$dir" "$cmd"
+  if [ "${2:-}" = "decl-only" ]; then printf 'decl\t%s\n' "${decl:-none}"; return 0; fi
+  printf 'ok\t%s\t%s%s\n' "$dir" "$cmd" "${decl:+$'\t'$decl}"
 }
 
-# _autodrive_qa_workflow_changed: return 0 when the changed paths hold
-# .github, .github/workflows or a file below it, or the qa.toml paths.
+# autodrive_qa_declaration <dir> -> none, multi-area-command or ci-job:<name>,
+# always exit 0 (#2458). Only the merge-base qa.toml counts (#2439); with no
+# AUTODRIVE_QA_BASE at all (a preflight) the head tree's, via decl-only. `none`
+# when AUTODRIVE_QA_SCENARIO_DIR, AUTODRIVE_QA_COMMAND or AUTODRIVE_QA_COMMANDS
+# is set, qa.toml is absent or invalid, git fails, or the value fails its check
+# again; ci-job also when the pull request changes a workflow (S3).
+autodrive_qa_declaration() {
+  local -x LC_ALL=C
+  local r="${1:-.}" cfg="" d="" mode=""
+  if [ -n "${AUTODRIVE_QA_SCENARIO_DIR+x}${AUTODRIVE_QA_COMMAND+x}${AUTODRIVE_QA_COMMANDS+x}" ]; then
+    printf 'none\n'; return 0
+  fi
+  [ -n "${AUTODRIVE_QA_BASE+x}" ] || mode="decl-only"
+  _autodrive_qa_scan "$r"
+  cfg="$(autodrive_qa_config "$r" $mode)" || cfg=""
+  case "$cfg" in
+    decl$'\t'*) d="${cfg#decl$'\t'}" ;;
+    ok$'\t'*$'\t'*$'\t'*) d="${cfg##*$'\t'}" ;;
+  esac
+  case "$d" in
+    multi-area-command) ;;
+    ci-job:*) { _autodrive_qa_job_ok "${d#ci-job:}" && ! _autodrive_qa_workflow_changed; } || d="" ;;
+    *) d="" ;;
+  esac
+  printf '%s\n' "${d:-none}"
+}
+
+# autodrive_qa_lifting_declaration <dir> -> the declaration only where it lifts the gadugi
+# need (D8): not docs-only, detection needs gadugi (autodrive_gadugi_required's order). Else none.
+autodrive_qa_lifting_declaration() {
+  if { ! declare -F autodrive_qa_docs_only >/dev/null || [ "$(autodrive_qa_docs_only "${1:-.}")" != "true" ]; } \
+     && declare -F _autodrive_qa_needs_gadugi >/dev/null && _autodrive_qa_needs_gadugi "${1:-.}"
+  then autodrive_qa_declaration "${1:-.}"; else printf 'none\n'; fi
+}
+
+# _autodrive_qa_workflow_changed: return 0 when the changed paths hold .github or
+# any file below it (workflows and local actions alike), or the qa.toml paths.
 _autodrive_qa_workflow_changed() {
   local p=""
   for p in ${_AD_PATHS[@]+"${_AD_PATHS[@]}"}; do
-    case "$p" in .github|.github/workflows|.github/workflows/*) return 0 ;; esac
+    case "$p" in .github|.github/*) return 0 ;; esac
   done
   _autodrive_qa_toml_changed
 }
@@ -150,25 +202,10 @@ _autodrive_qa_workflow_changed() {
 # test step in .github/workflows/*.yml and *.yaml of the merge-base tree, else
 # `none<TAB><reason>`. The source is advisory: `none` falls through to
 # detection, and the evidence records the reason as qa_ci_skip. Reasons, in
-# the order they are checked:
-#   paths-empty / paths-unknown  the diff is empty, or the changed paths are
-#                     unknown or no base was given
-#   changed-in-pr     the pull request changes .github, a workflow or qa.toml
-#   no-workflows      .github or .github/workflows is not a tree, or holds no
-#                     *.yml or *.yaml file
-#   list-failed       git could not list .github/workflows
-#   too-many-files    over 50 workflow files (counted before any is read)
-#   unsafe-name       a file name outside A-Z a-z 0-9 . _ -
-#   not-regular       an entry is not a regular blob
-#   too-large         an entry is over 256 KiB
-#   read-failed       git or awk failed on a file
-#   not-clean         a matching step is not clean (below)
-#   no-match          no step matches
-#   several-matches   more than one clean step matches
-#   unsafe-command    the command has a byte outside the command alphabet
-#   unsafe-dir / dir-not-found  the step's working-directory fails the
-#                     qa.toml `dir` rule
-#   out-of-scope      the step does not cover the change (_autodrive_qa_covers)
+# check order (the docs' table says what each means): paths-empty
+# paths-unknown changed-in-pr no-workflows list-failed too-many-files (over 50)
+# unsafe-name not-regular too-large (over 256 KiB) read-failed not-clean
+# no-match several-matches unsafe-command unsafe-dir dir-not-found out-of-scope.
 # A `run:` value matches when it starts with cargo test, cargo nextest run,
 # npm test, npm run test, pytest, or python(3) -m pytest. It is clean only on
 # one line with no `${{`, quote, backtick, `$`, `\`, `&`, `;`, `|`, `<`, `>`
@@ -223,8 +260,7 @@ autodrive_qa_ci() {
   prog='
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
     function unq(s) {
-      s = trim(s)
-      sub(/[ \t]+#.*$/, "", s)
+      s = trim(s); sub(/[ \t]+#.*$/, "", s)
       if (s ~ /^".*"$/ || s ~ /^\047.*\047$/) s = substr(s, 2, length(s) - 2)
       return s
     }
@@ -251,12 +287,7 @@ autodrive_qa_ci() {
       if (pend >= 0 && ind > pend) dirty = 1
       pend = -1
       rest = substr(line, ind + 1)
-      while (match(rest, /^-( +|$)/)) {
-        ind += RLENGTH
-        rest = substr(rest, RLENGTH + 1)
-        nit++
-        at[ind] = nit
-      }
+      while (match(rest, /^-( +|$)/)) { ind += RLENGTH; rest = substr(rest, RLENGTH + 1); at[ind] = ++nit }
       if (!match(rest, /^[A-Za-z0-9_.-]+:/)) next
       key = substr(rest, 1, RLENGTH - 1)
       val = substr(rest, RLENGTH + 1)
@@ -269,41 +300,18 @@ autodrive_qa_ci() {
       sk[sp] = key
       si[sp] = ind
       id = (ind in at) ? at[ind] : ("top" NR)
-      if (key == "working-directory") {
-        if (parent == "run") dirty = 1
-        else wdv[id] = unq(val)
-        next
-      }
-      if (val ~ /^[|>][-+0-9]*([ \t]+#.*)?$/) {
-        blk = ind
-        brun = (key == "run")
-        next
-      }
+      if (key == "working-directory") { if (parent == "run") dirty = 1; else wdv[id] = unq(val); next }
+      if (val ~ /^[|>][-+0-9]*([ \t]+#.*)?$/) { blk = ind; brun = (key == "run"); next }
       if (key != "run" || val == "") next
       v = val
       sub(/[ \t]+#.*$/, "", v)
-      q = 0
-      e = 0
-      if (v ~ /^["\047]/) {
-        q = 1
-        v = substr(v, 2)
-      }
-      while (match(v, /^[A-Za-z_][A-Za-z0-9_]*=[^ \t]*[ \t]+/)) {
-        v = substr(v, RLENGTH + 1)
-        e = 1
-      }
+      q = e = 0
+      if (v ~ /^["\047]/) { q = 1; v = substr(v, 2) }
+      while (match(v, /^[A-Za-z_][A-Za-z0-9_]*=[^ \t]*[ \t]+/)) { v = substr(v, RLENGTH + 1); e = 1 }
       if (!inv(v)) next
       pend = ind
-      if (q || e || val ~ /[$`"\047\\&;|<>]/) {
-        dirty = 1
-        next
-      }
-      if (!(id in runv)) {
-        nr++
-        order[nr] = id
-      } else {
-        dirty = 1
-      }
+      if (q || e || val ~ /[$`"\047\\&;|<>]/) { dirty = 1; next }
+      if (!(id in runv)) order[++nr] = id; else dirty = 1
       runv[id] = trim(v)
     }
     END {
@@ -352,17 +360,20 @@ EOT
 #   kind     autodrive_repo_type
 #   greq, docsonly  autodrive_gadugi_required, and autodrive_qa_docs_only as its own field so the round reads the exemption, not greq (#2219)
 #   target   autodrive_qa_target
+#   decl     autodrive_qa_declaration; declskip ci-job-workflow-changed when
+#            qa.toml's scenarios_ci_job was not used for that reason (S3)
 #   source, dir, command  `repo-file` or `ci`, when that source gives a command
 #   invalid  the qa.toml problem, when qa.toml is invalid (qa-config-invalid)
 #   ciskip   the reason the CI source gave none, when it was read
 # The declared sources are read only when AUTODRIVE_QA_COMMAND and
 # AUTODRIVE_QA_COMMANDS are both unset, so an env command never reads qa.toml.
 autodrive_qa_report() {
-  local r="${1:-.}" cfg="" ci=""
+  local r="${1:-.}" cfg="" ci="" rest=""
   _autodrive_qa_choose "$r"
   printf 'paths\t%s\n' "$(autodrive_qa_changed_paths "$r")"
   printf 'kind\t%s\n' "$(autodrive_repo_type "$r")"
   printf 'greq\t%s\ndocsonly\t%s\n' "$(autodrive_gadugi_required "$r")" "$(autodrive_qa_docs_only "$r")"
+  printf 'decl\t%s\n' "$(autodrive_qa_lifting_declaration "$r")"
   printf 'target\t%s\n' "$(autodrive_qa_target "$r")"
   if [ -n "${AUTODRIVE_QA_COMMAND+x}" ] || [ -n "${AUTODRIVE_QA_COMMANDS+x}" ]; then
     return 0
@@ -371,30 +382,19 @@ autodrive_qa_report() {
   case "$cfg" in
     none) ;;
     ok$'\t'*$'\t'?*)
-      cfg="${cfg#ok$'\t'}"
-      printf 'source\trepo-file\ndir\t%s\ncommand\t%s\n' "${cfg%%$'\t'*}" "${cfg#*$'\t'}"
+      cfg="${cfg#ok$'\t'}"; rest="${cfg#*$'\t'}"
+      printf 'source\trepo-file\ndir\t%s\ncommand\t%s\n' "${cfg%%$'\t'*}" "${rest%%$'\t'*}"
+      case "$rest" in *$'\t'ci-job:*) ! _autodrive_qa_workflow_changed || printf 'declskip\tci-job-workflow-changed\n' ;; esac
       return 0
       ;;
-    invalid$'\t'*)
-      printf 'invalid\t%s\n' "${cfg#invalid$'\t'}"
-      return 0
-      ;;
-    *)
-      printf 'invalid\tsyntax\n'
-      return 0
-      ;;
+    invalid$'\t'*) printf 'invalid\t%s\n' "${cfg#invalid$'\t'}"; return 0 ;;
+    *) printf 'invalid\tsyntax\n'; return 0 ;;
   esac
   ci="$(autodrive_qa_ci "$r")" || ci="none"$'\t'"read-failed"
   case "$ci" in
-    ok$'\t'*$'\t'?*)
-      ci="${ci#ok$'\t'}"
-      printf 'source\tci\ndir\t%s\ncommand\t%s\n' "${ci%%$'\t'*}" "${ci#*$'\t'}"
-      ;;
-    none$'\t'*)
-      printf 'ciskip\t%s\n' "${ci#none$'\t'}"
-      ;;
-    *)
-      printf 'ciskip\tread-failed\n'
-      ;;
+    ok$'\t'*$'\t'?*) ci="${ci#ok$'\t'}"
+      printf 'source\tci\ndir\t%s\ncommand\t%s\n' "${ci%%$'\t'*}" "${ci#*$'\t'}" ;;
+    none$'\t'*) printf 'ciskip\t%s\n' "${ci#none$'\t'}" ;;
+    *) printf 'ciskip\tread-failed\n' ;;
   esac
 }

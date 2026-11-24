@@ -3,11 +3,16 @@
 use super::name::ProfileName;
 use super::{ProfileError, pointer};
 use fs4::fs_std::FileExt;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::commands::install::apply_deny_policy;
+use crate::commands::install::hook_block::{
+    FileMerge, HookTarget, hook_target, merge_file, update_file,
+};
 pub use amplihack_utils::rotator_status::ROOT_ENV;
 const SHARED_ASSET_DIRS: &[&str] = &["agents", "commands", "output-styles", "rules", "skills"];
 const MAX_COPY_DEPTH: usize = 16;
@@ -44,6 +49,9 @@ pub(super) const SHARED_SETTINGS_KEYS: &[&str] = &[
 pub struct ProfileStore {
     root: PathBuf,
     shared_assets: Option<PathBuf>,
+    /// Issue #2279 (C7): the hooks block a newly seeded profile gets, or why
+    /// it gets none. `None`: decided when seeding, from this process.
+    seed_hooks: Option<Result<HookTarget, String>>,
 }
 
 impl ProfileStore {
@@ -51,6 +59,76 @@ impl ProfileStore {
         Self {
             root,
             shared_assets: None,
+            seed_hooks: default_seed_hooks(),
+        }
+    }
+
+    /// Fixes the hooks block seeding gives a new profile's `settings.json`:
+    /// `Ok(target)` merges it, `Err(reason)` writes none. Tests use it in
+    /// place of this process's hooks binary.
+    #[cfg(test)]
+    pub(crate) fn with_seed_hooks(mut self, hooks: Result<HookTarget, String>) -> Self {
+        self.seed_hooks = Some(hooks);
+        self
+    }
+
+    /// Issue #2279 (C7, D7): gives the `settings.json` just seeded into
+    /// `profile_dir` amplihack's full hooks block, so a profile seeded from a
+    /// hook-less home file still runs every hook. Never creates the file and
+    /// never fails the seeding: a refusal is logged.
+    fn seed_hooks_into(&self, profile_dir: &Path) {
+        let target = match &self.seed_hooks {
+            Some(decided) => decided.clone(),
+            None => production_seed_hooks(&self.root),
+        };
+        let target = match target {
+            Ok(target) => target,
+            Err(reason) => {
+                tracing::info!("new profile settings.json gets no hooks block: {reason}");
+                return;
+            }
+        };
+        match merge_file(&profile_dir.join("settings.json"), &target) {
+            FileMerge::Written | FileMerge::AlreadyCurrent | FileMerge::Absent => {}
+            FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
+                tracing::warn!("new profile settings.json: hooks block not written ({reason})");
+            }
+        }
+    }
+
+    /// Issue #2589: gives a newly seeded profile the dangerous-command deny
+    /// entries. Seeding copies `permissions` from the user's settings file,
+    /// so a profile seeded from a file written before this change would
+    /// otherwise carry no entry at all. Never creates the file and never
+    /// fails the seeding: a file that cannot take the entries is recorded
+    /// and named on stderr, because `amplihack profile add` runs off the
+    /// install path and nothing else would print it (SEC-C3).
+    fn seed_policy_into(&self, profile_dir: &Path, name: &ProfileName) {
+        use crate::policy::claude::{DenyOutcome, record};
+        let label = format!("new profile {}", name.as_str());
+        let refusal = std::cell::RefCell::new(None);
+        let merge = update_file(&profile_dir.join("settings.json"), &|settings| {
+            *refusal.borrow_mut() = apply_deny_policy(settings, &label);
+        });
+        // `apply_deny_policy` records the file it met; a merge that refused
+        // the file never ran it, so that case is recorded here instead.
+        let reason = refusal.into_inner().or_else(|| match merge {
+            FileMerge::Written | FileMerge::AlreadyCurrent | FileMerge::Absent => None,
+            FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
+                record(&label, &DenyOutcome::Unparseable(reason.clone()));
+                Some(reason)
+            }
+        });
+        // `amplihack profile add` runs off the install path, so this is the
+        // only place a refusal met here is printed (SEC-C3). The line goes
+        // through `policy::warn`, which writes it to stderr with the same
+        // `amplihack: warning: ` prefix as before and, in a test build,
+        // keeps a copy a behaviour test can read.
+        if let Some(reason) = reason {
+            crate::policy::warn(&crate::policy::write_failure_warning(
+                &format!("Claude Code ({label})"),
+                &reason,
+            ));
         }
     }
 
@@ -149,6 +227,10 @@ impl ProfileStore {
         if let Err(error) = result {
             return Err(discard_staging(&staging, error));
         }
+        if self.shared_assets.is_some() {
+            self.seed_hooks_into(&staging);
+        }
+        self.seed_policy_into(&staging, name);
         if let Err(error) = rename_noreplace(&staging, &dir) {
             let error = if error.kind() == std::io::ErrorKind::AlreadyExists {
                 ProfileError::AlreadyExists(name.to_string())
@@ -527,6 +609,130 @@ pub(super) fn renameat_noreplace(
     }
 }
 
+/// Claude Code owns these account caches; never inspect or copy their entries.
+fn is_excluded_shared_path(relative: &Path) -> bool {
+    relative == Path::new("skills/synced") || relative == Path::new("skills/.trash")
+}
+
+/// How many folders an entry-limit error names, largest charge first.
+const MAX_REPORTED_FOLDERS: usize = 3;
+/// How long a folder name may be in that error. The name comes out of the
+/// source tree, so a very long one would otherwise flood the message.
+const MAX_REPORTED_NAME_CHARS: usize = 120;
+
+/// The folder an entry is charged to: the directory holding it, cut to the
+/// first two components of its path relative to the shared source. Every entry
+/// anywhere below `skills/custom` is therefore charged to `skills/custom`,
+/// which is a subtree the user can move or delete, unlike `skills` itself.
+fn charged_folder(holder: &Path) -> &Path {
+    holder
+        .ancestors()
+        .find(|ancestor| ancestor.components().count() == 2)
+        .unwrap_or(holder)
+}
+
+/// A relative path for a diagnostic: `Debug` quotes it and escapes anything
+/// non-printable, and a long one is cut, because its last component is a name
+/// out of the source tree rather than a constant.
+fn for_diagnostic(path: &Path) -> String {
+    let shown = format!("{path:?}");
+    match shown.char_indices().nth(MAX_REPORTED_NAME_CHARS) {
+        Some((cut, _)) => format!("{}...\"", &shown[..cut]),
+        None => shown,
+    }
+}
+
+/// The copy budget is aggregate across the allowlisted shared directories, so
+/// the folder holding the entry that overruns it is usually not the folder
+/// that spent it: that one is decided by walk order. The budget therefore
+/// charges every entry to [`charged_folder`] and names the folders that
+/// charged the most, which is what an operator has to shrink.
+#[derive(Default)]
+struct CopyBudget {
+    counted: usize,
+    /// Entries charged per folder, keyed by the relative path from
+    /// [`charged_folder`].
+    folders: HashMap<PathBuf, usize>,
+}
+
+impl CopyBudget {
+    /// Charges one directory entry to `holder`, the directory that holds it,
+    /// as a path relative to the shared source. Fails once the aggregate
+    /// budget is spent.
+    fn charge(&mut self, holder: &Path) -> Result<(), ProfileError> {
+        self.counted += 1;
+        let folder = charged_folder(holder);
+        match self.folders.get_mut(folder) {
+            Some(count) => *count += 1,
+            None => {
+                self.folders.insert(folder.to_path_buf(), 1);
+            }
+        }
+        if self.counted > MAX_COPY_ENTRIES {
+            return Err(self.exceeded());
+        }
+        Ok(())
+    }
+
+    /// Names the folders that charged the most entries, each as its path
+    /// relative to the shared source. Every count is exactly what that folder
+    /// had charged when the walk stopped at the limit; folders the walk never
+    /// reached are absent rather than reported as zero.
+    fn exceeded(&self) -> ProfileError {
+        let mut folders: Vec<(&Path, usize)> = self
+            .folders
+            .iter()
+            .map(|(folder, count)| (folder.as_path(), *count))
+            .collect();
+        folders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let named: Vec<String> = folders
+            .iter()
+            .take(MAX_REPORTED_FOLDERS)
+            .map(|(folder, count)| format!("{} {count}", for_diagnostic(folder)))
+            .collect();
+        // `charge` records the folder before it calls this, so at least one
+        // folder is always named.
+        let rest = match folders.len() - named.len() {
+            0 => String::new(),
+            more => format!(", and {more} more"),
+        };
+        ProfileError::SharedAssetLimit(format!(
+            "more than {MAX_COPY_ENTRIES} entries; charged before stopping: {}{rest}",
+            named.join(", ")
+        ))
+    }
+}
+
+/// The two rules the entry-limit message rests on. Both are cheap to state
+/// here and would otherwise need a 5,000-entry tree to reach.
+#[cfg(test)]
+mod budget_naming_tests {
+    use super::{MAX_REPORTED_NAME_CHARS, charged_folder, for_diagnostic};
+    use std::path::Path;
+
+    #[test]
+    fn an_entry_is_charged_to_the_first_two_components_of_its_folder() {
+        for (holder, charged) in [
+            ("skills", "skills"),
+            ("skills/custom", "skills/custom"),
+            ("skills/custom/deep/deeper", "skills/custom"),
+        ] {
+            assert_eq!(charged_folder(Path::new(holder)), Path::new(charged));
+        }
+    }
+
+    #[test]
+    fn a_named_folder_is_quoted_escaped_and_cut() {
+        assert_eq!(for_diagnostic(Path::new("skills/a b")), r#""skills/a b""#);
+        assert_eq!(for_diagnostic(Path::new("skills/a\nb")), r#""skills/a\nb""#);
+        let long = format!("skills/{}", "v".repeat(200));
+        let cut = for_diagnostic(Path::new(&long));
+        assert_eq!(cut.chars().count(), MAX_REPORTED_NAME_CHARS + 4);
+        assert!(cut.starts_with(r#""skills/vvv"#), "{cut}");
+        assert!(cut.ends_with("...\""), "{cut}");
+    }
+}
+
 /// Unix: the source root is opened once with no-follow and every later open is
 /// relative to that descriptor, so a root swapped for a symlink afterwards is
 /// never followed. Only the final component of `source` is no-follow; symlinked
@@ -539,9 +745,9 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
     #[cfg(test)]
     test_hook::fire_after_root_anchor(source);
 
-    let mut entries = 0usize;
+    let mut budget = CopyBudget::default();
     for name in SHARED_ASSET_DIRS {
-        copy_allowlisted_tree(&root, name, &destination.join(name), 0, &mut entries)?;
+        copy_allowlisted_tree(&root, name, &destination.join(name), 0, &mut budget)?;
     }
     let dst = fdwalk::open_dir(libc::AT_FDCWD, destination)?
         .ok_or_else(|| ProfileError::SymlinkRefused(destination.display().to_string()))?;
@@ -556,6 +762,18 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
 
 #[cfg(not(unix))]
 fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileError> {
+    portable_seed_shared_assets(source, destination)
+}
+
+/// Non-Unix targets seed with this path-based walker instead of the
+/// descriptor-relative one above. No CI target builds for a non-Unix platform,
+/// so it is also compiled under `cfg(test)` on Unix and exercised there by
+/// `tests_seed`; otherwise nothing in the project would compile it at all.
+#[cfg(any(not(unix), test))]
+pub(super) fn portable_seed_shared_assets(
+    source: &Path,
+    destination: &Path,
+) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(meta) if meta.file_type().is_symlink() => {
             return Err(ProfileError::SymlinkRefused(source.display().to_string()));
@@ -570,9 +788,15 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
         Err(error) => return Err(error.into()),
     }
 
-    let mut entries = 0usize;
+    let mut budget = CopyBudget::default();
     for name in SHARED_ASSET_DIRS {
-        copy_allowlisted_tree(&source.join(name), &destination.join(name), 0, &mut entries)?;
+        portable_copy_allowlisted_tree(
+            &source.join(name),
+            &destination.join(name),
+            Path::new(name),
+            0,
+            &mut budget,
+        )?;
     }
     for name in SHARED_ASSET_FILES {
         copy_regular_file(&source.join(name), &destination.join(name))?;
@@ -585,12 +809,13 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
 
 /// Copies only regular files and directories. Symlinks and special files are
 /// skipped so shared assets cannot pull credentials or arbitrary paths in.
-#[cfg(not(unix))]
-fn copy_allowlisted_tree(
+#[cfg(any(not(unix), test))]
+fn portable_copy_allowlisted_tree(
     source: &Path,
     destination: &Path,
+    shown: &Path,
     depth: usize,
-    entries: &mut usize,
+    budget: &mut CopyBudget,
 ) -> Result<(), ProfileError> {
     if depth > MAX_COPY_DEPTH {
         return Err(ProfileError::SharedAssetLimit(format!(
@@ -606,17 +831,23 @@ fn copy_allowlisted_tree(
     private_dir_builder().create(destination)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
-        *entries += 1;
-        if *entries > MAX_COPY_ENTRIES {
-            return Err(ProfileError::SharedAssetLimit(format!(
-                "more than {MAX_COPY_ENTRIES} entries"
-            )));
+        let name = entry.file_name();
+        let path = shown.join(&name);
+        if is_excluded_shared_path(&path) {
+            continue;
         }
+        budget.charge(shown)?;
         let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
+        let destination_path = destination.join(&name);
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            copy_allowlisted_tree(&source_path, &destination_path, depth + 1, entries)?;
+            portable_copy_allowlisted_tree(
+                &source_path,
+                &destination_path,
+                &path,
+                depth + 1,
+                budget,
+            )?;
         } else if kind.is_file() {
             copy_regular_file(&source_path, &destination_path)?;
         }
@@ -633,7 +864,7 @@ fn copy_allowlisted_tree(
     name: &str,
     destination: &Path,
     depth: usize,
-    entries: &mut usize,
+    budget: &mut CopyBudget,
 ) -> Result<(), ProfileError> {
     use std::os::fd::AsRawFd;
     let Some(src) = fdwalk::open_dir(root.as_raw_fd(), Path::new(name))? else {
@@ -642,7 +873,7 @@ fn copy_allowlisted_tree(
     private_dir_builder().create(destination)?;
     let dst = fdwalk::open_dir(libc::AT_FDCWD, destination)?
         .ok_or_else(|| ProfileError::SymlinkRefused(destination.display().to_string()))?;
-    fdwalk::copy_dir(&src, &dst, Path::new(name), depth, entries)
+    fdwalk::copy_dir(&src, &dst, Path::new(name), depth, budget)
 }
 
 #[cfg(all(unix, test))]
@@ -699,7 +930,7 @@ pub(super) mod test_hook {
 
 #[cfg(unix)]
 pub(super) mod fdwalk {
-    use super::{MAX_COPY_DEPTH, MAX_COPY_ENTRIES, ProfileError};
+    use super::{CopyBudget, MAX_COPY_DEPTH, ProfileError};
     use std::ffi::{CString, OsStr, OsString};
     use std::fs::File;
     use std::io::Read;
@@ -878,7 +1109,7 @@ pub(super) mod fdwalk {
         dst: &OwnedFd,
         shown: &Path,
         depth: usize,
-        entries: &mut usize,
+        budget: &mut CopyBudget,
     ) -> Result<(), ProfileError> {
         if depth > MAX_COPY_DEPTH {
             return Err(ProfileError::SharedAssetLimit(format!(
@@ -886,13 +1117,11 @@ pub(super) mod fdwalk {
             )));
         }
         for name in list(src)? {
-            *entries += 1;
-            if *entries > MAX_COPY_ENTRIES {
-                return Err(ProfileError::SharedAssetLimit(format!(
-                    "more than {MAX_COPY_ENTRIES} entries"
-                )));
-            }
             let path = shown.join(&name);
+            if super::is_excluded_shared_path(&path) {
+                continue;
+            }
+            budget.charge(shown)?;
             let kind = match file_type(src.as_raw_fd(), &name) {
                 Ok(k) => k,
                 Err(e) if skippable(&e) => continue,
@@ -904,7 +1133,7 @@ pub(super) mod fdwalk {
             #[cfg(test)]
             super::test_hook::fire(&path);
             if kind == libc::S_IFDIR {
-                copy_subdir(src, dst, &name, &path, depth, entries)?;
+                copy_subdir(src, dst, &name, &path, depth, budget)?;
             } else {
                 copy_file(src, dst, &name)?;
             }
@@ -918,7 +1147,7 @@ pub(super) mod fdwalk {
         name: &OsStr,
         path: &Path,
         depth: usize,
-        entries: &mut usize,
+        budget: &mut CopyBudget,
     ) -> Result<(), ProfileError> {
         let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_DIRECTORY;
         let child = match openat(src.as_raw_fd(), name, flags, 0) {
@@ -932,7 +1161,7 @@ pub(super) mod fdwalk {
             return Err(std::io::Error::last_os_error().into());
         }
         let out = openat(dst.as_raw_fd(), name, flags, 0)?;
-        copy_dir(&child, &out, path, depth + 1, entries)
+        copy_dir(&child, &out, path, depth + 1, budget)
     }
 
     fn copy_file(src: &OwnedFd, dst: &OwnedFd, name: &OsStr) -> Result<(), ProfileError> {
@@ -970,7 +1199,12 @@ pub(super) mod fdwalk {
     }
 }
 
-#[cfg(not(unix))]
+/// The path-based file copy the portable walker uses, served by
+/// [`open_source_nofollow`] and, for `settings.json`, by
+/// `copy_filtered_settings`. On Unix all three are compiled only for the
+/// `cfg(test)` build of [`portable_seed_shared_assets`]; production on Unix
+/// copies through `fdwalk` and never reaches them.
+#[cfg(any(not(unix), test))]
 fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
@@ -978,7 +1212,7 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileErr
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     }
-    let mut input = open_source_nofollow(source)?;
+    let input = open_source_nofollow(source)?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -990,8 +1224,12 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileErr
     copy_limited(input, &mut output)
 }
 
-/// Best-effort on non-Unix: no descriptor-relative open is available.
-#[cfg(not(unix))]
+/// Best-effort on non-Unix: no descriptor-relative open is available. Only
+/// the Windows branch holds the final component against a swap; the
+/// `cfg(test)` build on Unix falls through to a plain open, so driving the
+/// portable walker there proves nothing about symlink handling. On Unix that
+/// is `fdwalk`'s to prove, and its own tests do.
+#[cfg(any(not(unix), test))]
 fn open_source_nofollow(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -1015,7 +1253,7 @@ fn open_source_nofollow(path: &Path) -> std::io::Result<fs::File> {
     options.open(path)
 }
 
-#[cfg(not(unix))]
+#[cfg(any(not(unix), test))]
 fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
@@ -1034,6 +1272,34 @@ fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), Profi
         ));
     }
     write_filtered_settings(&raw, destination)
+}
+
+/// Production stores decide the seeding hooks block when seeding.
+#[cfg(not(test))]
+fn default_seed_hooks() -> Option<Result<HookTarget, String>> {
+    None
+}
+
+/// Unit tests never resolve the host's hooks binary: a store seeds no hooks
+/// block unless the test calls [`ProfileStore::with_seed_hooks`].
+#[cfg(test)]
+fn default_seed_hooks() -> Option<Result<HookTarget, String>> {
+    Some(Err("not configured".into()))
+}
+
+/// This process's hooks block for profiles under `root`: none from a binary
+/// older than the install stamp (R3; an unreadable stamp counts as newer),
+/// none without a usable hooks binary, and none when
+/// [`super::settings_refresh::hook_path_refusal`] refuses it (#1699).
+fn production_seed_hooks(root: &Path) -> Result<HookTarget, String> {
+    if !crate::commands::install::binary_is_current() {
+        return Err("older binary than the install stamp".into());
+    }
+    let target = hook_target().ok_or_else(|| "no usable amplihack-hooks binary".to_string())?;
+    match super::settings_refresh::hook_path_refusal_here(&target.bin, root) {
+        Some(reason) => Err(reason),
+        None => Ok(target),
+    }
 }
 
 fn write_filtered_settings(raw: &[u8], destination: &Path) -> Result<(), ProfileError> {

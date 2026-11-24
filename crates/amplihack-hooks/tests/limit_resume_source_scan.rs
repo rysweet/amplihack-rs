@@ -135,6 +135,7 @@ fn only_keys_rs_starts_a_program_and_never_a_shell() {
     for arg in [
         "\"send-keys\"",
         "\"display-message\"",
+        "\"capture-pane\"",
         "\"#{pane_tty}\"",
         "\"continue\"",
     ] {

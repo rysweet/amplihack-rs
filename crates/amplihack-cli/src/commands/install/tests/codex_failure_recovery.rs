@@ -241,6 +241,11 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     // Explicit executable outside PATH must own native registration too.
     let explicit = home.join("selected-codex");
     fs::rename(codex, &explicit).unwrap();
+    fs::rename(
+        bin.join("codex-code-mode-host"),
+        home.join("codex-code-mode-host"),
+    )
+    .unwrap();
     unsafe {
         std::env::set_var("AMPLIHACK_CODEX_BINARY_PATH", &explicit);
     }

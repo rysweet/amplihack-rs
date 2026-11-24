@@ -691,12 +691,12 @@ fn issue_780_lifecycle_recipes_preflight_runtime_artifacts_before_sensitive_oper
         (
             "amplifier-bundle/recipes/workflow-pr-review.yaml",
             "step-18c-push-feedback-changes",
-            "git add",
+            "stage_workflow_changes",
         ),
         (
             "amplifier-bundle/recipes/workflow-publish.yaml",
             "step-15-commit-push",
-            "git add",
+            "stage_workflow_changes",
         ),
         (
             "amplifier-bundle/recipes/workflow-publish.yaml",
@@ -711,7 +711,7 @@ fn issue_780_lifecycle_recipes_preflight_runtime_artifacts_before_sensitive_oper
         (
             "amplifier-bundle/recipes/workflow-finalize.yaml",
             "step-20b-push-cleanup",
-            "git add",
+            "stage_workflow_changes",
         ),
         (
             "amplifier-bundle/recipes/workflow-finalize.yaml",

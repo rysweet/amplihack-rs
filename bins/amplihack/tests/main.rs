@@ -38,3 +38,9 @@ mod issue_538_install_completeness;
 mod issue_625_update_prompt_subprocess_safe;
 #[path = "spec_conformance_process.rs"]
 mod spec_conformance_process;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One copy follows the call-out.
+#[path = "../../../tests/integration/recipe_step_body.rs"]
+mod recipe_step_body;

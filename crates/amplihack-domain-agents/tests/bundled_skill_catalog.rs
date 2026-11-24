@@ -82,7 +82,7 @@ fn real_catalog_loads_every_bundled_skill_and_body() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/skills");
     let mut files = Vec::new();
     skill_files(&root, &mut files);
-    assert_eq!(files.len(), 132, "fixed recursive inventory");
+    assert_eq!(files.len(), 133, "fixed recursive inventory");
     assert_eq!(
         files
             .iter()

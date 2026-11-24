@@ -1302,7 +1302,7 @@ pub(crate) fn scan_with(
 /// release and starting the process makes that process read as older than
 /// the release, and the release can be removed from under it. A forward step
 /// errs toward keeping. This limit is documented under "Known limits" in
-/// `docs/concepts/versioned-install-layout.md`; the lease in #2185 removes it.
+/// `docs/concepts/versioned-install-layout.md`.
 #[cfg(target_os = "linux")]
 const START_TIME_SLACK: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -1451,7 +1451,14 @@ pub(crate) mod proc_scan {
     }
 
     pub(crate) fn classify_opaque(pid: u32) -> Opaque {
-        let dir = PathBuf::from(format!("/proc/{pid}"));
+        classify_opaque_at(Path::new("/proc"), pid)
+    }
+
+    /// Classifies an opaque process using only the supplied table, including
+    /// its boot-time file. Tests can exercise the real classifier without
+    /// enumerating or reading any host process.
+    pub(crate) fn classify_opaque_at(root: &Path, pid: u32) -> Opaque {
+        let dir = root.join(pid.to_string());
         // `cgroup` is mode 0444, readable when `cwd` and `fd` are not.
         if let Ok(cgroup) = fs::read_to_string(dir.join("cgroup"))
             && is_user_manager_cgroup(&cgroup, super::euid())
@@ -1463,7 +1470,7 @@ pub(crate) mod proc_scan {
             Err(e) if gone(&e) => return Opaque::Gone,
             Err(_) => return Opaque::Unknown,
         };
-        let boot = fs::read_to_string("/proc/stat")
+        let boot = fs::read_to_string(root.join("stat"))
             .ok()
             .and_then(|s| boot_time_secs(&s));
         // SAFETY: sysconf has no preconditions; it returns -1 on error, which

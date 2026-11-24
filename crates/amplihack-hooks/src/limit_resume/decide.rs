@@ -1,7 +1,7 @@
 //! Pure decision logic for `limit-resume`: is this stop a usage limit, the
 //! keys that identify the event and the session, and the gate order.
 //! Whether a swap record resumes is
-//! [`amplihack_utils::rotator_status::swap_record::judge`].
+//! [`amplihack_utils::rotator_status::swap_record::judge_at`].
 
 use sha2::{Digest, Sha256};
 
@@ -34,12 +34,15 @@ fn hex_digest(domain: &str, fields: &[Option<&str>]) -> String {
 }
 
 /// The limit event: SHA-256 (lowercase hex) of the session id, `error`,
-/// `error_details`, `last_assistant_message` and the live profile the
-/// ledger named when the hook started. The same limit on the same login
-/// gives the same key; a limit after the rotator swapped logins does not.
-/// With no ledger at the start `live` is `None`, so a later limit seen with
-/// a ledger is a new event; the session cap and one wake per session still
-/// bound it.
+/// `error_details`, `last_assistant_message` and `live`, the login the
+/// session stopped on: the outgoing login (`from_login`) of a swap the hook
+/// noted at its start when that swap falls after the stop and is not later
+/// than the start, otherwise the live profile the ledger named when the
+/// hook started (#2235). The same limit on the same login gives the same
+/// key; a limit after the rotator swapped logins does not. With no ledger
+/// at the start and no such swap `live` is `None`, so a later limit seen
+/// with a ledger is a new event; the event marker and one wake per session
+/// still bound it.
 pub fn event_key(
     session_id: &str,
     error: Option<&str>,
@@ -77,8 +80,6 @@ pub struct Facts {
     pub stop_hook_active: bool,
     /// This event already has a marker.
     pub duplicate: bool,
-    /// The session reached `MAX_RESUMES_PER_SESSION` in the last 24 hours.
-    pub capped: bool,
 }
 
 /// What the gate decided, in contract order.
@@ -88,13 +89,13 @@ pub enum Gate {
     NotLimit,
     StopHookActive,
     Duplicate,
-    Cap,
     Proceed,
 }
 
 /// The first reason not to wait, in the order Disabled, NotLimit (also a
-/// missing or oversized session id), StopHookActive, Duplicate, Cap; else
-/// Proceed.
+/// missing or oversized session id), StopHookActive, Duplicate; else
+/// Proceed. No count appears here: since issue #2912 nothing refuses a
+/// resume on how often a session has already been resumed.
 pub fn gate(f: &Facts) -> Gate {
     if !f.enabled {
         Gate::Disabled
@@ -104,8 +105,6 @@ pub fn gate(f: &Facts) -> Gate {
         Gate::StopHookActive
     } else if f.duplicate {
         Gate::Duplicate
-    } else if f.capped {
-        Gate::Cap
     } else {
         Gate::Proceed
     }

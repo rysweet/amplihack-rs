@@ -196,21 +196,23 @@ fn the_handoff_never_reads_log_text_or_stderr() {
 // handed-off build; the report shows the two new fields.
 #[test]
 fn both_loops_run_on_a_handed_off_build() {
+    // #3129: one goal loop step replaced the crusty and merge-ready loops. It
+    // takes the PR autodrive-goal-pr names: the operator's pr_number, else the
+    // build's PR.
     let composer = recipe_yaml("auto-drive-to-merge");
-    for id in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
-        let loop_step = step(&composer, id);
-        assert_eq!(
-            loop_step["context"]["pr_number"].as_str(),
-            Some("{{build_result.pr}}"),
-            "{id}"
+    let id = "autodrive-loop";
+    let loop_step = step(&composer, id);
+    assert_eq!(
+        loop_step["context"]["pr_number"].as_str(),
+        Some("{{autodrive_goal_pr}}"),
+        "{id}"
+    );
+    let condition = loop_step["condition"].as_str().unwrap_or("");
+    for needle in ["handed_off", "terminal_state", "BLOCKED_CI"] {
+        assert!(
+            !condition.contains(needle),
+            "{id} must not skip on `{needle}`: {condition}"
         );
-        let condition = loop_step["condition"].as_str().unwrap_or("");
-        for needle in ["handed_off", "terminal_state", "BLOCKED_CI"] {
-            assert!(
-                !condition.contains(needle),
-                "{id} must not skip on `{needle}`: {condition}"
-            );
-        }
     }
     let text = read(&recipe_path("auto-drive-to-merge"));
     assert!(
@@ -223,31 +225,13 @@ fn both_loops_run_on_a_handed_off_build() {
 
 // T6: the merge gate stays the only merge control and never reads the hand-off.
 #[test]
-fn the_merge_gate_never_reads_the_handoff() {
-    let mut files = vec![tool_path("autodrive_merge_gate.sh")];
-    for name in [
-        "autodrive-merge-loop",
-        "autodrive-merge-round",
-        "autodrive-merge-evidence",
-        "autodrive-crusty-loop",
-    ] {
-        files.push(recipe_path(name));
-    }
-    for path in files {
-        let text = read(&path);
-        for needle in [
-            "handed_off",
-            "build_result.terminal_state",
-            "finalization_handoff",
-            "merge_ready_loop",
-        ] {
-            assert!(
-                !text.contains(needle),
-                "{} must not read `{needle}`",
-                rel(&path)
-            );
-        }
-    }
+fn finalization_handoff_cannot_authorize_a_merge() {
+    let source = read(
+        &workspace_root().join("crates/amplihack-cli/src/commands/orch/autodrive/authorization.rs"),
+    );
+    assert!(!source.contains("finalization_handoff"));
+    let recipe = recipe_yaml("autodrive-finalize");
+    assert_eq!(recipe["context"]["no_merge"].as_str(), Some("true"));
 }
 
 // The step-03 call: direct, after PR resolution, before the no-PR error.

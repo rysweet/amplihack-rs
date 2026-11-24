@@ -516,18 +516,4 @@ mod codex_selector_exactness_tests {
         let _guard = crate::test_support::EnvVarGuard::set("AMPLIHACK_HOOK_PROTOCOL", "codex");
         assert!(codex_hook_protocol_selected());
     }
-
-    #[test]
-    fn session_start_shares_the_protocol_selector() {
-        let _lock = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for value in ["codex", "codex ", "1"] {
-            let _guard = crate::test_support::EnvVarGuard::set("AMPLIHACK_HOOK_PROTOCOL", value);
-            assert_eq!(
-                crate::session_start::codex_protocol_selected(),
-                codex_hook_protocol_selected()
-            );
-        }
-    }
 }

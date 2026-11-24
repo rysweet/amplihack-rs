@@ -25,7 +25,7 @@ const KEY_HELD: &str = "key-held";
 pub const MAX_CLAUDE_JSON: u64 = 32 * 1024 * 1024;
 const VERSION: u32 = 1;
 /// The readings that passive reads, `profile rotate` and auto-switch use.
-const USAGE: &str = "usage.json";
+pub const USAGE: &str = "usage.json";
 /// Readings taken in `~/.claude`; see [`State::try_load_home_usage`].
 pub const HOME_USAGE: &str = "home-usage.json";
 

@@ -873,12 +873,9 @@ fn a_corrupt_auto_switch_file_loses_the_marks_for_the_rotator() {
     let state = crate::commands::profile::auto_switch::kit::State::new(&f.root).unwrap();
     let snap = super::observe::snapshot(&c, &state).unwrap();
     assert!(snap.overflow.is_empty(), "{:?}", snap.overflow);
-    assert!(
-        snap.candidates.contains(&n(CREDITS)),
-        "{:?}",
-        snap.candidates
-    );
-    assert!(!snap.candidates.contains(&n(KEY)), "{:?}", snap.candidates);
+    // Issue #2218: which profiles are excluded is unknown, so every profile
+    // counts as excluded and none is a candidate, the credits one included.
+    assert!(snap.candidates.is_empty(), "{:?}", snap.candidates);
 }
 
 #[path = "tests_no_room.rs"]
