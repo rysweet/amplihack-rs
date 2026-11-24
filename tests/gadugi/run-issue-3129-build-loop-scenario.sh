@@ -27,9 +27,11 @@
 #           "You are one turn of a goal-driven loop") is answered from the
 #           turn's own reading, quoted in the prompt between the
 #           UNTRUSTED-READING markers, the way a competent agent would act on
-#           it: with no pushed branch it commits the task's file in the run's
-#           worktree, pushes with plain `git push` and chooses `continue`;
-#           with the branch pushed and no pull request it chooses `open-pr`
+#           it: when the pushed branch does not hold the task's file (the
+#           worktree step pushes a new branch at the base's head) it commits
+#           the file in the run's worktree, pushes with plain `git push` and
+#           chooses `continue`;
+#           with the work pushed and no pull request it chooses `open-pr`
 #           with the title and body the task text gives; then `mark-ready`;
 #           then `ready`. It follows state, never a count of turns: a
 #           previous action that failed, a git step that fails, or a reading
@@ -416,6 +418,13 @@ if has 'You are one turn of a goal-driven loop'; then
   wt="$(r '.goal.run.worktree.path // empty')"
   br="$(r '.goal.run.branch // empty')"
   prev="$(r '.previous.outcome // "none"')"
+  # The worktree step pushes a new branch at the base's head, so a branch
+  # on origin is not yet the task's work: the work is pushed when the
+  # pushed head holds feature.txt.
+  work_pushed=false
+  if [ -n "$pushed" ] && [ -n "$wt" ] && git -C "$wt" cat-file -e "${pushed}:feature.txt" 2>/dev/null; then
+    work_pushed=true
+  fi
   handoff() {
     jq -nc --arg d "$1" '{action:"handoff",args:{owner:"the operator who started this run",decision:$d,
       text:("The build could not go on: " + $d + ". The operator decides what happens next.")},outcomes:[],
@@ -431,7 +440,7 @@ if has 'You are one turn of a goal-driven loop'; then
   esac
   if [ "$prev_ok" != true ]; then
     response="$(handoff "the previous action ended ${prev}")"
-  elif [ -z "$own" ] && [ -z "$pushed" ]; then
+  elif [ -z "$own" ] && [ "$work_pushed" != true ]; then
     if [ -z "$wt" ] || [ -z "$br" ]; then
       response="$(handoff "the reading names no worktree or branch for this run")"
     elif [ -f "$wt/feature.txt" ] || printf 'qa feature\n' > "$wt/feature.txt"; then
@@ -577,7 +586,7 @@ fi
 
 # build-report's output is workflow_result; the run prints it among its step
 # results (`-f json`).
-RESULT_JSON="$(sed -n '/^{/,$p' "$WORK/build.out" | jq -c '.' 2>/dev/null | tail -n 1)"
+RESULT_JSON="$(sed -n '/^{/,$p' "$WORK/build.out" | jq -c '.' 2>/dev/null | awk 'END { print }')"
 WORKFLOW_RESULT="$(printf '%s' "$RESULT_JSON" | jq -r '[.step_results[]? | select(.step_id == "build-report") | .output] | last // empty' 2>/dev/null)"
 TS="$(printf '%s' "$WORKFLOW_RESULT" | jq -r '.terminal_state // empty' 2>/dev/null)"
 RPR="$(printf '%s' "$WORKFLOW_RESULT" | jq -r '.pr_number // empty' 2>/dev/null)"
@@ -617,7 +626,7 @@ run_ready() { # run_ready <cwd> <out> [extra VAR=value...]
       bash "$REPO_ROOT/amplifier-bundle/tools/workflow_pr_ready.sh" --base main ) >"$out" 2>&1
 }
 
-FIRST="$(tool_repo "$WORK/tool-a" | tail -n 1)" || FIRST=""
+FIRST="$(tool_repo "$WORK/tool-a" | awk 'END { print }')" || FIRST=""
 rm -f -- "$G2787/ready-called"
 if [ -z "$FIRST" ]; then
   flunk "pr_ready_tool_marks_a_head_one_commit_behind: the fixture repository could not be made"

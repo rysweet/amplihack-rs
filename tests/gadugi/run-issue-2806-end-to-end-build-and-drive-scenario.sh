@@ -15,7 +15,10 @@
 #           account calls `api user` and `api rate_limit`, and the read of the
 #           repository's allowed merge methods, `api repos/{owner}/{repo}`
 #           (#1888). It reads the body from standard input exactly where real
-#           gh does (`--body-file -`), records every call in $WORK/gh-calls,
+#           gh does (`--body-file -`). It keeps the pull request's title, body
+#           and draft flag in $WORK/gh-state as GitHub does, so `pr create`,
+#           `pr edit` and `pr ready` change what `pr view` reads back, and
+#           records every call in $WORK/gh-calls,
 #           and exits 96 on anything else, GraphQL included (recorded in
 #           $WORK/gh-unexpected). The pull request's checks are PENDING for the
 #           build and SUCCESS for the drive; the state lives in
@@ -31,8 +34,10 @@
 #           loop's turn (#3129: default-workflow 4.0.0 builds through the
 #           shared goal loop), which needs an action: it is answered from the
 #           turn's own reading, quoted in the prompt, as a competent agent
-#           would act on it. With no pushed branch it commits feature.txt in
-#           the run's worktree and pushes with plain `git push` (`continue`);
+#           would act on it. When the pushed branch does not hold feature.txt
+#           (the worktree step pushes a new branch at the base's head), it
+#           commits feature.txt in the run's worktree and pushes with plain
+#           `git push` (`continue`);
 #           with no pull request it chooses `open-pr` with a plain title and
 #           description; then `mark-ready`; then `ready`. A previous action
 #           that failed, a git step that fails, or a reading it does not
@@ -358,11 +363,26 @@ drain_body() {
     prev="$a"
   done
 }
+# take_text <args...>: --title/--title=, --body-file into the live text.
+take_text() {
+  local prev="" a
+  for a in "$@"; do
+    case "$a" in --title=*) printf '%s' "${a#--title=}" > "$state/title" ;; esac
+    case "$prev" in
+      --title) printf '%s' "$a" > "$state/title" ;;
+      --body-file|-F) [ "$a" = - ] || cp -- "$a" "$state/body" ;;
+    esac
+    prev="$a"
+  done
+}
 
 pr_json() {
-  local branch oid pr_state="OPEN" merged_at=null rollup
+  local branch oid pr_state="OPEN" merged_at=null rollup draft=false
   branch="$(cat "$branch_file" 2>/dev/null || true)"
   oid="$(git --git-dir="$root/origin.git" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
+  [ ! -e "$state/draft" ] || draft=true
+  [ -f "$state/title" ] || printf 'qa change' > "$state/title"
+  [ -f "$state/body" ] || printf 'qa' > "$state/body"
   if [ -e "$state/merged" ]; then
     pr_state="MERGED"
     merged_at='"2026-11-20T00:00:00Z"'
@@ -373,10 +393,11 @@ pr_json() {
     rollup='[{"__typename":"CheckRun","name":"ci","status":"IN_PROGRESS","conclusion":null}]'
   fi
   jq -nc --arg b "$branch" --arg o "$oid" --arg s "$pr_state" --argjson r "$rollup" \
-    --argjson m "$merged_at" \
-    '{number:42,url:"https://github.com/qa-owner/qa-repo/pull/42",state:$s,title:"qa change",
-      body:"qa",headRefName:$b,headRefOid:$o,baseRefName:"main",isCrossRepository:false,
-      isDraft:false,mergeable:"MERGEABLE",mergeStateStatus:"CLEAN",reviewDecision:"APPROVED",
+    --argjson m "$merged_at" --argjson d "$draft" \
+    --rawfile t "$state/title" --rawfile body "$state/body" \
+    '{number:42,url:"https://github.com/qa-owner/qa-repo/pull/42",state:$s,title:$t,
+      body:$body,headRefName:$b,headRefOid:$o,baseRefName:"main",isCrossRepository:false,
+      isDraft:$d,mergeable:"MERGEABLE",mergeStateStatus:"CLEAN",reviewDecision:"APPROVED",
       statusCheckRollup:$r,mergedAt:$m,mergeCommit:null,
       headRepositoryOwner:{login:"qa-owner",id:"qa-owner-id"},
       headRepository:{name:"qa-repo",id:"qa-repo-id"},
@@ -438,10 +459,12 @@ case "${1-} ${2-}" in
     for a in "$@"; do
       case "$a" in
         --head=*) v="${a#--head=}"; printf '%s\n' "${v##*:}" > "$state/branch" ;;
+        --draft) : > "$state/draft" ;;
       esac
       if [ "$prev" = "--head" ]; then printf '%s\n' "${a##*:}" > "$state/branch"; fi
       prev="$a"
     done
+    take_text "$@"
     : > "$state/pr-created"
     echo "https://github.com/qa-owner/qa-repo/pull/42"
     exit 0 ;;
@@ -463,7 +486,9 @@ case "${1-} ${2-}" in
     printf '%s\n' "$*" >> "$root/gh-merge.argv"
     : > "$state/merged"
     exit 0 ;;
-  "pr ready"|"pr edit"|"pr comment") drain_body "$@"; exit 0 ;;
+  "pr edit") drain_body "$@"; take_text "$@"; exit 0 ;;
+  "pr ready") rm -f -- "$state/draft"; exit 0 ;;
+  "pr comment") drain_body "$@"; exit 0 ;;
 esac
 printf '%s\n' "$*" >> "$root/gh-unexpected"
 echo "gh stub: unexpected call: $*" >&2
@@ -569,6 +594,13 @@ if [ "${QA_RUN_LABEL:-}" = build ] && has 'You are one turn of a goal-driven loo
   wt="$(r '.goal.run.worktree.path // empty')"
   br="$(r '.goal.run.branch // empty')"
   prev="$(r '.previous.outcome // "none"')"
+  # The worktree step pushes a new branch at the base's head, so a branch
+  # on origin is not yet the task's work: the work is pushed when the
+  # pushed head holds feature.txt.
+  work_pushed=false
+  if [ -n "$pushed" ] && [ -n "$wt" ] && git -C "$wt" cat-file -e "${pushed}:feature.txt" 2>/dev/null; then
+    work_pushed=true
+  fi
   build_handoff() {
     jq -nc --arg d "$1" '{action:"handoff",args:{owner:"the operator who started this run",decision:$d,
       text:("The build could not go on: " + $d + ". The operator decides what happens next.")},outcomes:[],
@@ -580,7 +612,7 @@ if [ "${QA_RUN_LABEL:-}" = build ] && has 'You are one turn of a goal-driven loo
   esac
   if [ "$prev_ok" != true ]; then
     response="$(build_handoff "the previous action ended ${prev}")"
-  elif [ -z "$own" ] && [ -z "$pushed" ]; then
+  elif [ -z "$own" ] && [ "$work_pushed" != true ]; then
     if [ -z "$wt" ] || [ -z "$br" ]; then
       response="$(build_handoff "the reading names no worktree or branch for this run")"
     elif { [ -f "$wt/feature.txt" ] || printf 'qa feature\n' > "$wt/feature.txt"; } \
