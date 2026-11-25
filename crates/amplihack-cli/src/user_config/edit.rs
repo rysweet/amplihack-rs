@@ -54,7 +54,7 @@ use toml_edit::DocumentMut;
 
 use super::ConfigError;
 use super::safe::{display_path, read_bounded};
-use super::schema::{KeyDef, Value};
+use super::schema::{KeyDef, Value, ValueKind};
 
 /// Parse `text`, or describe the syntax error by position only.
 pub(crate) fn parse_document(text: &str) -> Result<DocumentMut, String> {
@@ -131,9 +131,10 @@ fn set_value_with(path: &Path, key: &KeyDef, value: &Value, sync: bool) -> Resul
             })?)
         }
         Value::Text(s) => toml_edit::value(s.as_str()),
-        // Issue #2589: `config set` writes scalars. A list key is rejected
-        // by `parse_cli` before it reaches here; this arm keeps that true in
-        // every build rather than half-writing an array.
+        Value::List(entries) if key.kind == ValueKind::EntryList => {
+            toml_edit::value(entries.iter().collect::<toml_edit::Array>())
+        }
+        // Command policies retain their file-only editing interface.
         Value::List(_) => {
             return Err(ConfigError::InvalidValue {
                 key: key.name.to_string(),

@@ -1,5 +1,6 @@
 ---
 name: amplihack:cascade
+disable-model-invocation: true
 version: 1.0.0
 description: Fallback cascade pattern for resilient operations
 triggers:

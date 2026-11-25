@@ -1,8 +1,7 @@
 //! Canonical resource validation, copying and digest identity.
 use super::*;
-/// Codex has a fixed budget for the skill list it shows the model, so skills
-/// whose folder name ends in `-analyst` are not packaged for Codex (#3195).
-/// Claude and Copilot installs do not use this filter and keep them.
+/// Full-list packages retain Codex's existing analyst exclusion (#3195).
+/// Default packages allow explicitly enabled analysts like any other skill.
 pub(super) fn left_out_of_codex(directory: &Path) -> bool {
     directory.join("SKILL.md").is_file()
         && directory
@@ -14,8 +13,16 @@ pub(super) fn copy_tree(
     destination: &Path,
     boundary: &Path,
     depth: usize,
+    selection: &ListSelection,
 ) -> Result<()> {
     ensure!(depth < 32, "Codex resource nesting exceeds safe depth");
+    if source.join("SKILL.md").is_file()
+        && !source
+            .file_name()
+            .is_some_and(|name| selection.includes_skill(&name.to_string_lossy()))
+    {
+        return Ok(());
+    }
     fs::create_dir_all(destination)?;
     for e in fs::read_dir(source)? {
         let e = e?;
@@ -55,10 +62,10 @@ pub(super) fn copy_tree(
             #[cfg(not(unix))]
             bail!("symlink resource packaging requires Unix");
         } else if kind.is_dir() {
-            if left_out_of_codex(&e.path()) {
+            if selection.set == ListSet::All && left_out_of_codex(&e.path()) {
                 continue;
             }
-            copy_tree(&e.path(), &target, boundary, depth + 1)?;
+            copy_tree(&e.path(), &target, boundary, depth + 1, selection)?;
         } else {
             ensure!(kind.is_file(), "unsupported skill resource type");
             fs::copy(e.path(), target)?;
@@ -157,6 +164,7 @@ pub(super) fn validate_skill_names(
     directory: &Path,
     names: &mut std::collections::BTreeSet<String>,
     depth: usize,
+    selection: &ListSelection,
 ) -> Result<()> {
     ensure!(depth < 32, "skill validation depth exceeds safe limit");
     let skill = directory.join("SKILL.md");
@@ -199,8 +207,10 @@ pub(super) fn validate_skill_names(
     }
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() && !left_out_of_codex(&entry.path()) {
-            validate_skill_names(&entry.path(), names, depth + 1)?;
+        if entry.file_type()?.is_dir()
+            && !(selection.set == ListSet::All && left_out_of_codex(&entry.path()))
+        {
+            validate_skill_names(&entry.path(), names, depth + 1, selection)?;
         }
     }
     Ok(())
@@ -209,7 +219,12 @@ pub(super) fn validate_skill_names(
 // Native plugin discovery stops descending once a parent is itself a skill.
 // Expose nested canonical roots through top-level runtime copies, retaining
 // their original location and every sibling resource byte.
-pub(super) fn expose_nested_skills(directory: &Path, root: &Path, depth: usize) -> Result<()> {
+pub(super) fn expose_nested_skills(
+    directory: &Path,
+    root: &Path,
+    depth: usize,
+    selection: &ListSelection,
+) -> Result<()> {
     ensure!(depth < 32, "nested skill depth exceeds safe limit");
     let entries = fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
     for entry in entries {
@@ -217,12 +232,18 @@ pub(super) fn expose_nested_skills(directory: &Path, root: &Path, depth: usize) 
             continue;
         }
         let path = entry.path();
-        if path.join("SKILL.md").is_file() && path.parent() != Some(root) {
+        let nested = path.join("SKILL.md").is_file() && path.parent() != Some(root);
+        if nested {
             let alias = root.join(entry.file_name());
             ensure!(!alias.exists(), "nested Codex skill alias collision");
-            copy_tree(&path, &alias, root, 0)?;
+            copy_tree(&path, &alias, root, 0, selection)?;
         }
-        expose_nested_skills(&path, root, depth + 1)?;
+        expose_nested_skills(&path, root, depth + 1, selection)?;
+        if nested && selection.set == ListSet::Default {
+            // The top-level publication is the sole discoverable definition.
+            // Keep the original resource location for relative references.
+            fs::remove_file(path.join("SKILL.md"))?;
+        }
     }
     Ok(())
 }

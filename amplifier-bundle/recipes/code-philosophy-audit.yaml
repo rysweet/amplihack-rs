@@ -46,6 +46,8 @@ steps:
 
       **Invoke the skill:**
       Activate Skill(skill="code-smell-detector") against the target path.
+      If the Skill tool does not know that name, run `amplihack directory find code-smell-detector`.
+      Read the returned skill file in full and follow it. Resolve resources relative to that file.
       Focus on these categories:
       1. Over-abstraction (unnecessary layers, single-impl traits)
       2. Complex inheritance (depth >2 levels)
@@ -105,6 +107,8 @@ steps:
 
       **Invoke the skill:**
       Activate Skill(skill="philosophy-compliance-workflow") against the target.
+      If the Skill tool does not know that name, run `amplihack directory find philosophy-compliance-workflow`.
+      Read the returned skill file in full and follow it. Resolve resources relative to that file.
       Focus on:
       1. Ruthless simplicity — over-engineered solutions where simpler exists
       2. Brick philosophy — modules not self-contained or regeneratable
@@ -161,8 +165,8 @@ steps:
       - Layer 2 (architecture): {{layer_2_findings}}
 
       You are the third layer. Perform the structured 3-pass audit defined
-      in the code-philosophy skill (amplifier-bundle/skills/code-philosophy/).
-      Read SKILL.md for the full check tables and thresholds.
+      in the code-philosophy skill. Run `amplihack directory find code-philosophy`
+      and read the returned skill file for the full check tables and thresholds. Resolve resources relative to that file.
 
       **Phase 0: File Classification**
       Classify target files by language and tag exclusions (test, vendored,

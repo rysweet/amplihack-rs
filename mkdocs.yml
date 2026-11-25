@@ -61,6 +61,7 @@ nav:
       - PATH Conflict Tutorial: tutorials/repair-install-update-path-conflicts.md
       - Local Install: howto/local-install.md
       - Find Installed Skills and Agents: howto/find-installed-skills-and-agents.md
+      - Choose Listed Skills and Agents: howto/choose-listed-skills-and-agents.md
       - directory Command Reference: reference/directory-command.md
       - Repair PATH Conflicts: howto/repair-install-update-path-conflicts.md
       - Runtime Asset Resolution: howto/verify-runtime-asset-resolution.md

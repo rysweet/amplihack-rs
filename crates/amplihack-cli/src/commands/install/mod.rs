@@ -18,6 +18,7 @@ pub(crate) mod hook_block;
 mod hooks;
 pub(crate) mod interactive;
 mod launch_repair;
+pub(crate) mod lists;
 mod manifest;
 mod mermaid_cli;
 pub(crate) mod paths;
@@ -168,6 +169,7 @@ fn run_install_with_fetcher(
     binary: &framework_source::BinaryIdentity,
     fetcher: &dyn tag_fetch::TagFetcher,
 ) -> Result<()> {
+    let _notice = crate::list_notice::begin();
     let local = local
         .map(|local_path| -> Result<PathBuf> {
             // Validate and canonicalize the --local path

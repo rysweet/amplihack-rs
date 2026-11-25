@@ -29,6 +29,12 @@ mod isolated_amplihack;
 mod pinned_runner;
 mod support;
 
+#[path = "issue_3240_list_config.rs"]
+mod issue_3240_list_config;
+
+#[path = "issue_3240_list_scenarios.rs"]
+mod issue_3240_list_scenarios;
+
 #[path = "issue_2922_quiet_child_purge.rs"]
 mod issue_2922_quiet_child_purge;
 

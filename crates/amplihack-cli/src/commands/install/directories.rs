@@ -101,6 +101,8 @@ pub(super) fn copytree_manifest(
         copied.push((*dst_rel).to_string());
     }
 
+    crate::claude_plugin::complete_indexed_skill_resources(claude_dir)?;
+
     if layout == SourceLayout::Bundle {
         for (src_rel, dst_rel) in SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING {
             let source_dir = source_root.join(src_rel);

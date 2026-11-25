@@ -48,9 +48,10 @@ pub(crate) enum ValueKind {
     SessionPattern,
     /// A TOML array of command prefixes, each validated as a
     /// [`crate::policy::Prefix`], at most [`MAX_DENY_COMMANDS`] of them
-    /// (issue #2589). Set by editing the user file: `config set` writes
-    /// scalars only.
+    /// (issue #2589). Set only by editing the user file.
     CommandList,
+    /// Canonical skill and agent identities, supplied as a TOML array.
+    EntryList,
 }
 
 /// Most dangerous-command entries one file may add (issue #2589). The
@@ -79,7 +80,7 @@ pub(crate) enum Value {
     Bool(bool),
     Int(u64),
     Text(String),
-    /// A list of command prefixes (issue #2589).
+    /// A list of strings validated according to the key's kind.
     List(Vec<String>),
 }
 
@@ -178,7 +179,15 @@ impl KeyDef {
     /// The built-in default as a value.
     pub(crate) fn default_value(&self) -> Option<Value> {
         self.default.map(|raw| {
-            parse_raw(self.kind, raw).expect("every schema default passes its own validation")
+            // A list default is written as TOML, which only a file supplies.
+            let value = match self.kind {
+                ValueKind::EntryList => raw
+                    .parse::<toml_edit::Value>()
+                    .map_err(|error| error.to_string())
+                    .and_then(|item| from_toml(self.kind, &item)),
+                _ => parse_raw(self.kind, raw),
+            };
+            value.expect("every schema default passes its own validation")
         })
     }
 
@@ -208,6 +217,22 @@ pub(crate) static KEYS: &[KeyDef] = &[
         kind: ValueKind::AbsPath,
         env: Some("AMPLIHACK_HOME"),
         default: None,
+        lower_only: false,
+    },
+    KeyDef {
+        name: "lists.set",
+        scope: Scope::UserOnly,
+        kind: ValueKind::Choice(&["default", "all"]),
+        env: None,
+        default: Some("default"),
+        lower_only: false,
+    },
+    KeyDef {
+        name: "lists.enabled",
+        scope: Scope::UserOnly,
+        kind: ValueKind::EntryList,
+        env: None,
+        default: Some("[]"),
         lower_only: false,
     },
     KeyDef {
@@ -483,6 +508,9 @@ pub(crate) fn parse_raw(kind: ValueKind, raw: &str) -> Result<Value, String> {
         ValueKind::CommandList => Err("is a list and is set by editing the user file \
              ~/.amplihack/config.toml, not from the command line"
             .to_string()),
+        ValueKind::EntryList => Err("is a list; use `amplihack directory enable` and \
+             `amplihack directory disable` to change individual entries"
+            .to_string()),
         ValueKind::Int { min, max } => {
             if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(kind_requirement(kind));
@@ -516,6 +544,20 @@ pub(crate) fn from_toml(kind: ValueKind, item: &toml_edit::Value) -> Result<Valu
             }
             parse_command_list(&entries)
         }
+        (ValueKind::EntryList, toml_edit::Value::Array(array)) => {
+            let mut entries = std::collections::BTreeSet::new();
+            for item in array.iter() {
+                let id = item
+                    .as_str()
+                    .ok_or_else(|| kind_requirement(kind))?
+                    .parse::<amplihack_utils::list_selection::EntryId>()
+                    .map_err(|_| kind_requirement(kind))?;
+                if !id.is_default() {
+                    entries.insert(id.to_string());
+                }
+            }
+            Ok(Value::List(entries.into_iter().collect()))
+        }
         (ValueKind::Bool, toml_edit::Value::Boolean(b)) => Ok(Value::Bool(*b.value())),
         (ValueKind::Int { .. }, toml_edit::Value::Integer(i)) => {
             let value = *i.value();
@@ -544,6 +586,10 @@ pub(crate) fn kind_requirement(kind: ValueKind) -> String {
              {MAX_PATH_BYTES} bytes"
         ),
         ValueKind::Bool => "must be true or false".to_string(),
+        ValueKind::EntryList => {
+            "must be a TOML array of skill:<name> or agent:<bundle-relative-path> strings"
+                .to_string()
+        }
         ValueKind::CommandList => format!(
             "must be a TOML array of at most {MAX_DENY_COMMANDS} command prefixes, each 1 to \
              {} bytes of ASCII letters, digits and the characters . _ - / @ = +, holding at \

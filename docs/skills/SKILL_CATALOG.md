@@ -3,16 +3,23 @@
 This catalog is generated from the live bundled skills under `amplifier-bundle/skills/`.
 Those bundled `SKILL.md` files are the install-time source of truth.
 
+Managed installations list 30 skills and 12 agents by default. Every skill in
+this catalogue remains installed and available through `amplihack directory find`.
+The repository plugin exposes the same default set. It does not read the managed
+installation settings. See [Choose listed skills and agents](../howto/choose-listed-skills-and-agents.md)
+to extend the lists or restore the full lists through a managed installation.
+
 ## Summary
 
-- **Unique bundled skill names:** 126
-- **Skill definition files:** 126
+- **Unique bundled skill names:** 134
+- **Skill definition files:** 134
 
 ## Bundled Skills
 
 | Skill | Bundle path |
 | --- | --- |
 | `agent-generator-tutor` | `agent-generator-tutor/SKILL.md` |
+| `agentic-workflow-first` | `agentic-workflow-first/SKILL.md` |
 | `amplihack-expert` | `amplihack-expert/SKILL.md` |
 | `amplihack-migrate` | `migrate/SKILL.md` |
 | `analyzing-deeply` | `meta-cognitive/analyzing-deeply/SKILL.md` |
@@ -20,6 +27,7 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `architecting-solutions` | `development/architecting-solutions/SKILL.md` |
 | `aspire` | `aspire/SKILL.md` |
 | `authenticated-web-scraper` | `authenticated-web-scraper/SKILL.md` |
+| `auto-drive-to-merge` | `auto-drive-to-merge/SKILL.md` |
 | `awesome-copilot-sync` | `awesome-copilot-sync/SKILL.md` |
 | `azure-admin` | `azure-admin/SKILL.md` |
 | `azure-devops` | `azure-devops/SKILL.md` |
@@ -28,6 +36,7 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `cascade-workflow` | `cascade-workflow/SKILL.md` |
 | `chemist-analyst` | `chemist-analyst/SKILL.md` |
 | `claude-agent-sdk` | `claude-agent-sdk/SKILL.md` |
+| `claude-profile-rotation` | `claude-profile-rotation/SKILL.md` |
 | `code-atlas` | `code-atlas/SKILL.md` |
 | `code-philosophy` | `code-philosophy/SKILL.md` |
 | `code-smell-detector` | `code-smell-detector/SKILL.md` |
@@ -100,12 +109,15 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `poet-analyst` | `poet-analyst/SKILL.md` |
 | `political-scientist-analyst` | `political-scientist-analyst/SKILL.md` |
 | `pptx` | `pptx/SKILL.md` |
+| `pr-guide` | `pr-guide/SKILL.md` |
 | `pr-review-assistant` | `pr-review-assistant/SKILL.md` |
 | `pre-commit-manager` | `pre-commit-manager/SKILL.md` |
+| `property-based-testing` | `property-based-testing/SKILL.md` |
 | `psychologist-analyst` | `psychologist-analyst/SKILL.md` |
 | `qa-team` | `qa-team/SKILL.md` |
 | `quality-audit` | `quality-audit/SKILL.md` |
 | `remote-work` | `remote-work/SKILL.md` |
+| `repository-oom-audit` | `repository-oom-audit/SKILL.md` |
 | `researching-topics` | `research/researching-topics/SKILL.md` |
 | `reviewing-code` | `quality/reviewing-code/SKILL.md` |
 | `roadmap-strategist` | `roadmap-strategist/SKILL.md` |
@@ -115,6 +127,7 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `session-to-agent` | `session-to-agent/SKILL.md` |
 | `setting-up-projects` | `development/setting-up-projects/SKILL.md` |
 | `shadow-testing` | `shadow-testing/SKILL.md` |
+| `signal` | `signal/SKILL.md` |
 | `signal-setup` | `signal-setup/SKILL.md` |
 | `silent-degradation-audit` | `silent-degradation-audit/SKILL.md` |
 | `skill-and-agents-directory` | `skill-and-agents-directory/SKILL.md` |
@@ -124,6 +137,7 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `socratic-review` | `socratic-review/SKILL.md` |
 | `statler-waldorf` | `statler-waldorf/SKILL.md` |
 | `storytelling-synthesizer` | `storytelling-synthesizer/SKILL.md` |
+| `supervise-agent-sessions` | `supervise-agent-sessions/SKILL.md` |
 | `supply-chain-audit` | `supply-chain-audit/SKILL.md` |
 | `test-gap-analyzer` | `test-gap-analyzer/SKILL.md` |
 | `testing-code` | `quality/testing-code/SKILL.md` |
