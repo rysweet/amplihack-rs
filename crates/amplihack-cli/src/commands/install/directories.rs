@@ -171,7 +171,7 @@ pub(super) fn copytree_manifest(
     //
     // Pre-fix: only `source_root.parent()/CLAUDE.md` was probed and a
     // missing source was silently skipped. With the bundle layout, the
-    // canonical CLAUDE.md ships at `<repo>/amplifier-bundle/CLAUDE.md`
+    // canonical CLAUDE.md shipped at `<repo>/amplifier-bundle/CLAUDE.md`
     // (i.e., inside `source_root`), not at the repo root, so installs from
     // a bundle-only checkout left `$AMPLIHACK_HOME/CLAUDE.md` absent and
     // the verifier reported ❌. Per the install-completeness invariant in
