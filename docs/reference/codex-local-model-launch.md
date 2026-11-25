@@ -726,6 +726,18 @@ These are missing validation inputs, not successful checks. Native trust
 inspection and fixture tests do not establish live safety or token savings;
 the PR must remain open without a readiness claim until that evidence exists.
 
+The review follow-up on 25 November 2026 at 13:53 UTC repeated the provider
+checks with Codex 0.166.0 installed. Direct requests (with proxy use disabled)
+to `/v1/models` returned curl exit 7 / HTTP 000 on port 8080 and HTTP 404 on
+port 8000. The user Codex home had no `<name>.config.toml` local-model profile,
+and its main configuration defined no model providers. No local-model
+provider was configured through the environment either. Issue #3224 supplied
+requirements but no working provider or token-measurement provenance. Thus no
+live interactive or `exec` model session or comparable token measurement
+could be run on this host. Supplying a working local provider, model profile
+and comparable prompt/token provenance remains necessary to close this
+validation gap; a shell regression or native trust inspection cannot do so.
+
 ## Related
 
 - [Run amplihack codex with a Local Model](../howto/run-codex-with-a-local-model.md): the steps to set up and use a local-model launch

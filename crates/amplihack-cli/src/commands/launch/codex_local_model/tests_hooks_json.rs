@@ -170,6 +170,9 @@ fn a_command_with_a_shell_special_word_is_not_amplihack_pre_tool_use() {
         "env A=`my-guard` amplihack-hooks pre-tool-use".to_string(),
         "/opt/*/amplihack-hooks pre-tool-use".to_string(),
         "~/bin/amplihack-hooks pre-tool-use".to_string(),
+        "amplihack-hooks\npre-tool-use".to_string(),
+        "env\nAMPLIHACK_HOOK_PROTOCOL=codex amplihack-hooks pre-tool-use".to_string(),
+        "amplihack-hooks pre-tool-use\n".to_string(),
         // Quoted, so one word to shell-words, holding a newline or a space.
         "'/x\n/usr/local/bin/my-guard\n/amplihack-hooks' pre-tool-use".to_string(),
         "'/opt/my tools/amplihack-hooks' pre-tool-use".to_string(),
@@ -261,6 +264,43 @@ fn compound_and_non_command_handlers_are_kept_in_order() {
     let groups = filter(kept.clone());
     // A handler without `type: command` is not a command, whatever its text.
     assert_eq!(Value::Array(groups), kept);
+}
+
+/// A raw newline separates shell commands, even though shell-words splits
+/// it like a space. Keep the compound handler and run its user check.
+#[test]
+fn a_newline_handler_survives_filtering_and_executes_the_user_check() {
+    let dir = crate::test_support::tempdir_outside_framework_roots();
+    for (name, script) in [
+        ("amplihack-hooks", "#!/bin/sh\nprintf 'hook:%s\\n' \"$#\"\n"),
+        (
+            "pre-tool-use",
+            "#!/bin/sh\nprintf 'user-check\\n'\nexit 2\n",
+        ),
+    ] {
+        crate::test_support::write_executable_with_mode(&dir.path().join(name), script, 0o700);
+    }
+    let original = json!({"matcher": "Bash", "hooks": [{
+        "type": "command", "command": "amplihack-hooks\npre-tool-use", "timeout": 10,
+    }]});
+    let groups = filter(json!([original.clone()]));
+    assert_eq!(groups, vec![original]);
+    let generated: Value =
+        serde_json::from_str(&render(&groups, &dir.path().join("amplihack-hooks"))).unwrap();
+    let command = generated["hooks"]["PreToolUse"][1]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", command])
+        .env("PATH", dir.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "hook:0\nuser-check\n"
+    );
+    assert_eq!(output.status.code(), Some(2), "the user check must reject");
 }
 
 #[test]

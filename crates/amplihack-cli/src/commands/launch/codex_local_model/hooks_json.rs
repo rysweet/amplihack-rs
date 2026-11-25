@@ -110,6 +110,11 @@ fn is_amplihack_handler(handler: &Value, plugin_root: &Path) -> bool {
 /// be split, is compound, or has a word that is not [inert](is_inert_word),
 /// is not amplihack's either.
 pub(super) fn runs_amplihack_pre_tool_use(command: &str, plugin_root: &Path) -> bool {
+    // shell-words treats raw newlines as word separators and loses shell
+    // command boundaries. Keep these handlers before parsing can erase them.
+    if command.contains('\n') {
+        return false;
+    }
     let Ok(words) = shell_words::split(command) else {
         return false;
     };
