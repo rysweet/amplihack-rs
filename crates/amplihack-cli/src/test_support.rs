@@ -111,7 +111,7 @@ pub(crate) fn release_flock(held: std::fs::File, path: &Path) {
 #[path = "test_support_proc.rs"]
 pub(crate) mod proc;
 
-/// The five profile-redirecting variables and the guards that keep a test's
+/// The six profile-redirecting variables and the guards that keep a test's
 /// settings writes inside its own temporary home (issue #2922). Shared with
 /// the other crates' `test_support`, with `cli_integration` and with the
 /// golden-hook harness.
@@ -234,7 +234,7 @@ mod scratch_base_tests {
 ///
 /// Tests must acquire `env_lock()` before constructing this guard.
 ///
-/// A guard that moves `HOME` also clears the five
+/// A guard that moves `HOME` also clears the six
 /// [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`] and restores them
 /// with everything else it touched, so pointing `HOME` at a temporary folder
 /// through this type cannot leave an inherited `CLAUDE_CONFIG_DIR` pointing at
@@ -281,7 +281,7 @@ impl EnvGuard {
     /// Set `key` to `value` until the guard is dropped. The value `key` had
     /// before the guard first touched it is restored on drop, panics included.
     ///
-    /// Assigning `HOME` also clears the five profile variables (issue #2922),
+    /// Assigning `HOME` also clears the six profile variables (issue #2922),
     /// so a guard built with [`EnvGuard::capture`] and then pointed at a
     /// temporary home is isolated in the same way as one built with
     /// [`EnvGuard::set`]. A profile variable must therefore be assigned after
@@ -309,7 +309,7 @@ impl EnvGuard {
         }
     }
 
-    /// Clear the five [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`]
+    /// Clear the six [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`]
     /// until the guard drops, if `keys` contains `HOME` (issue #2922).
     ///
     /// A guard that moves `HOME` may make installer code write a settings
@@ -506,7 +506,7 @@ impl Drop for AgentBinaryEnv {
 /// out of `path`. The purge has no restore, which is why this function cannot
 /// offer one: its `Option<OsString>` return is unwound by `restore_home` at
 /// call sites that have no guard to hang a restore on. A fixture that needs
-/// the five profile variables put back afterwards takes a [`HomeGuard`]
+/// the six profile variables put back afterwards takes a [`HomeGuard`]
 /// instead, or a [`claude_profile_isolation::ClaudeProfileIsolation`] of its
 /// own.
 ///
@@ -574,7 +574,7 @@ impl Drop for CwdGuard {
 pub(crate) struct HomeGuard {
     previous: Option<std::ffi::OsString>,
     // Issue #2922. Field order is drop order, and `Drop::drop` below runs
-    // before either field, so `HOME` is restored first and the five profile
+    // before either field, so `HOME` is restored first and the six profile
     // variables after it.
     _profile: claude_profile_isolation::ClaudeProfileIsolation,
 }
@@ -583,7 +583,7 @@ impl HomeGuard {
     /// Set `HOME` to `path`, returning a guard that restores (or unsets) the
     /// prior value on drop.
     ///
-    /// The guard also clears the five variables that would redirect a settings
+    /// The guard also clears the six variables that would redirect a settings
     /// write out of `path` ([`claude_profile_isolation`], issue #2922) and
     /// restores them with `HOME`. A test that must keep `CLAUDE_CONFIG_DIR`
     /// set takes `claude_profile_isolation::with_config_dir` afterwards, which

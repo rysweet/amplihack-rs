@@ -1,33 +1,29 @@
-//! The one definition of the environment variables that redirect a Claude
-//! settings write away from the `HOME` a test gave it, and of the guards that
-//! keep a test's writes inside its own temporary folder (issue #2922).
+//! Shared isolation for environment variables that redirect Claude or Codex
+//! settings writes away from the `HOME` a test gave them (issues #2922 and
+//! #2940).
 //!
 //! # The fault this prevents
 //!
 //! `install::launch_repair` writes `$CLAUDE_CONFIG_DIR/settings.json` when that
 //! variable is set, and falls back to `$HOME/.claude/settings.json` when it is
-//! not. A test that points `HOME` at a temporary folder but leaves an
-//! inherited `CLAUDE_CONFIG_DIR` in place therefore writes its fixture's
-//! settings into whatever profile the inherited value names. On 21 November
-//! 2026 a workspace test run inside an agent launch replaced a developer's
-//! live profile that way: every hook in it then pointed at a temporary folder
-//! that no longer existed, and the next session on that login ran with none of
-//! the owner's guards.
+//! not. Codex installation similarly honours `CODEX_HOME`, falling back to
+//! `$HOME/.codex` when it is unset or empty. Changing `HOME` alone therefore
+//! lets either inherited variable send a test's settings outside its fixture.
 //!
 //! # What this file does about it
 //!
-//! [`CLAUDE_PROFILE_ENV_VARS`] names the five variables that can redirect such
+//! [`CLAUDE_PROFILE_ENV_VARS`] names the six variables that can redirect such
 //! a write. Nothing here takes a caller-supplied list, so no call site can
 //! narrow the set.
 //!
-//! - [`purge_inherited`] removes all five from this process, once and for all,
+//! - [`purge_inherited`] removes all six from this process, once and for all,
 //!   with no restore. A test binary fires it at its earliest serialised point
 //!   so that a value inherited from the launching session never reaches any
 //!   test. It is the backstop for a test that reaches a settings writer
 //!   without taking any of the guards below.
-//! - [`ClaudeProfileIsolation`] clears all five for as long as it is held and
+//! - [`ClaudeProfileIsolation`] clears all six for as long as it is held and
 //!   restores the prior values on drop, panics included. The `HOME` primitives
-//!   of each crate's `test_support` hold one, or clear the same five under
+//!   of each crate's `test_support` hold one, or clear the same six under
 //!   their own restore, so isolation follows from setting `HOME` at all rather
 //!   than from remembering to ask for it.
 //! - [`with_config_dir`] is the only way a test may keep `CLAUDE_CONFIG_DIR`
@@ -69,17 +65,19 @@ use std::process::Command;
 /// * `AMPLIHACK_HOME` moves amplihack's own state out of `$HOME/.amplihack`.
 /// * `CLAUDE_CONFIG_DIR` is read directly by the launch repair, which writes
 ///   `$CLAUDE_CONFIG_DIR/settings.json` whenever it is set.
+/// * `CODEX_HOME` selects Codex's configuration and plugin installation root.
 ///
 /// `crate::test_support::claude_profile_isolation` has a test in
 /// `amplihack-cli` asserting that this list still holds the product's own
 /// exported constants, so a rename there fails the build rather than leaving
 /// this list clearing a name nothing reads.
-pub const CLAUDE_PROFILE_ENV_VARS: [&str; 5] = [
+pub const CLAUDE_PROFILE_ENV_VARS: [&str; 6] = [
     "AMPLIHACK_CLAUDE_AUTO_SWITCH",
     "AMPLIHACK_CLAUDE_PROFILE",
     "AMPLIHACK_CLAUDE_PROFILE_ROOT",
     "AMPLIHACK_HOME",
     "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
 ];
 
 /// Remove every [`CLAUDE_PROFILE_ENV_VARS`] entry from this process for good.
@@ -118,7 +116,7 @@ pub fn purge_inherited() {
 ///
 /// The caller must hold the test binary's environment lock for the whole
 /// lifetime of the guard. `HomeGuard::set` holds one of these, and the other
-/// `HOME` primitives clear the same five, so a test that sets `HOME` through a
+/// `HOME` primitives clear the same six, so a test that sets `HOME` through a
 /// crate's own primitive is isolated without naming this type.
 ///
 /// A variable that was absent is left absent on drop. Values are restored
@@ -129,7 +127,7 @@ pub struct ClaudeProfileIsolation {
 }
 
 impl ClaudeProfileIsolation {
-    /// Clear all five, remembering what each one held.
+    /// Clear all six, remembering what each one held.
     pub fn new() -> Self {
         let mut saved = Vec::with_capacity(CLAUDE_PROFILE_ENV_VARS.len());
         for name in CLAUDE_PROFILE_ENV_VARS {
@@ -158,13 +156,13 @@ impl Drop for ClaudeProfileIsolation {
     }
 }
 
-/// Isolate the five as [`ClaudeProfileIsolation::new`] does, then point
+/// Isolate the six as [`ClaudeProfileIsolation::new`] does, then point
 /// `CLAUDE_CONFIG_DIR` at `dir`, which must be inside `home`.
 ///
 /// This is the opt-in for a test that must exercise a set `CLAUDE_CONFIG_DIR`,
 /// and it is the only supported way to keep that variable set in a test. Call
 /// it after `HOME` has been pointed at `home`; the returned guard restores the
-/// prior value of every one of the five on drop, panics included.
+/// prior value of every one of the six on drop, panics included.
 ///
 /// # Panics
 ///
@@ -184,7 +182,7 @@ pub fn with_config_dir(home: &Path, dir: &Path) -> ClaudeProfileIsolation {
         resolved_dir.display(),
         resolved_home.display()
     );
-    // `new` has already saved `CLAUDE_CONFIG_DIR` with the other four, so the
+    // `new` has already saved `CLAUDE_CONFIG_DIR` with the other variables, so the
     // value set below is undone on drop.
     let isolation = ClaudeProfileIsolation::new();
     // SAFETY: as in `ClaudeProfileIsolation::new`; the caller holds the lock.

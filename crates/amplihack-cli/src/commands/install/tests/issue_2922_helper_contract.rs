@@ -32,7 +32,7 @@ fn export_all(value: &Path) -> EnvGuard {
 }
 
 #[test]
-fn the_variable_list_is_exactly_the_five_profile_redirecting_names() {
+fn the_variable_list_contains_the_settings_redirecting_variables() {
     let mut names = CLAUDE_PROFILE_ENV_VARS.to_vec();
     names.sort_unstable();
     assert_eq!(
@@ -43,6 +43,7 @@ fn the_variable_list_is_exactly_the_five_profile_redirecting_names() {
             "AMPLIHACK_CLAUDE_PROFILE_ROOT",
             "AMPLIHACK_HOME",
             "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME",
         ]
     );
 }
@@ -59,7 +60,7 @@ fn the_list_holds_the_names_the_product_exports() {
 }
 
 #[test]
-fn a_new_guard_clears_all_five_and_drop_restores_them() {
+fn a_new_guard_clears_all_six_and_drop_restores_them() {
     let _lock = lock();
     let scratch = tempdir_outside_framework_roots();
     let _outer = export_all(scratch.path());
@@ -120,7 +121,7 @@ fn purge_is_idempotent_and_leaves_the_names_absent() {
 }
 
 #[test]
-fn home_guard_isolates_the_five_while_held_and_restores_them_after() {
+fn home_guard_isolates_the_six_while_held_and_restores_them_after() {
     let _lock = lock();
     let scratch = tempdir_outside_framework_roots();
     let home = scratch.path().join("home");
@@ -142,7 +143,7 @@ fn home_guard_isolates_the_five_while_held_and_restores_them_after() {
 }
 
 #[test]
-fn env_guard_isolates_the_five_when_it_sets_home() {
+fn env_guard_isolates_the_six_when_it_sets_home() {
     let _lock = lock();
     let scratch = tempdir_outside_framework_roots();
     let _outer = export_all(scratch.path());
@@ -168,17 +169,15 @@ fn env_guard_restores_a_profile_variable_it_set_before_moving_home() {
     let _lock = lock();
     let scratch = tempdir_outside_framework_roots();
     let _outer = EnvGuard::unset(CLAUDE_PROFILE_ENV_VARS);
-    {
-        let mut env = EnvGuard::capture(&[]);
-        env.assign("AMPLIHACK_HOME", scratch.path());
-        env.assign("HOME", scratch.path());
-        assert_eq!(get("AMPLIHACK_HOME"), None, "moving HOME must clear it");
+    for name in ["AMPLIHACK_HOME", "CODEX_HOME"] {
+        {
+            let mut env = EnvGuard::capture(&[]);
+            env.assign(name, scratch.path());
+            env.assign("HOME", scratch.path());
+            assert_eq!(get(name), None, "moving HOME must clear {name}");
+        }
+        assert_eq!(get(name), None, "the guard leaked its own {name} value");
     }
-    assert_eq!(
-        get("AMPLIHACK_HOME"),
-        None,
-        "the guard leaked its own value"
-    );
 }
 
 /// A profile variable named in the same `EnvGuard::set` call as `HOME` keeps
@@ -189,23 +188,21 @@ fn env_guard_set_keeps_a_profile_variable_named_with_home() {
     let scratch = tempdir_outside_framework_roots();
     let value = scratch.path().to_str().unwrap();
     let _outer = EnvGuard::unset(CLAUDE_PROFILE_ENV_VARS);
-    {
-        let _env = EnvGuard::set([("AMPLIHACK_HOME", value), ("HOME", value)]);
-        assert_eq!(
-            get("AMPLIHACK_HOME").as_deref(),
-            Some(scratch.path().as_os_str()),
-            "a profile variable named with HOME must keep its value"
-        );
+    for name in ["AMPLIHACK_HOME", "CODEX_HOME"] {
+        {
+            let _env = EnvGuard::set([(name, value), ("HOME", value)]);
+            assert_eq!(
+                get(name).as_deref(),
+                Some(scratch.path().as_os_str()),
+                "{name} set with HOME must keep its value"
+            );
+        }
+        assert_eq!(get(name), None, "the guard leaked its own {name} value");
     }
-    assert_eq!(
-        get("AMPLIHACK_HOME"),
-        None,
-        "the guard leaked its own value"
-    );
 }
 
 #[test]
-fn env_guard_leaves_the_five_alone_when_home_is_not_among_its_keys() {
+fn env_guard_leaves_the_six_alone_when_home_is_not_among_its_keys() {
     let _lock = lock();
     let scratch = tempdir_outside_framework_roots();
     let _outer = export_all(scratch.path());
@@ -222,7 +219,7 @@ fn env_guard_leaves_the_five_alone_when_home_is_not_among_its_keys() {
 /// that begins `CLAUDE_CONFIG_DIR=`; grepping `env` reports those lines as if
 /// the child held the variable.
 #[test]
-fn remove_from_command_strips_all_five_from_a_child() {
+fn remove_from_command_strips_all_six_from_a_child() {
     let _lock = lock();
     let scratch = tempdir_outside_framework_roots();
     let _outer = export_all(scratch.path());
