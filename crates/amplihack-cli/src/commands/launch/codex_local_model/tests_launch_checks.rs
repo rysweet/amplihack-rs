@@ -77,6 +77,9 @@ fn caller_arguments_that_turn_hooks_off_are_recognised() {
         &["--disable", "hooks"],
         &["--disable=hooks"],
         &["exec", "-c", "features.hooks=false", "-"],
+        &["-c", "features={hooks=false}"],
+        &["-c", "features = { hooks = false, goals = true }"],
+        &["--config=features={hooks=0}"],
     ] {
         assert!(caller_disables_hooks(&strings(args)), "{args:?}");
     }
@@ -88,6 +91,9 @@ fn other_caller_arguments_leave_hooks_on() {
         &[][..],
         &["-c", "features.hooks=true"],
         &["-c", "features.goals=false"],
+        &["-c", "features={hooks=true}"],
+        &["-c", "features={goals=false}"],
+        &["-c", "features=not a table"],
         &["--disable", "goals"],
         &["exec", "-"],
         &["--", "-c", "features.hooks=false"],

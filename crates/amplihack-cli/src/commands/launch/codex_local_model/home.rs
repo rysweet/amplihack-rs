@@ -106,6 +106,9 @@ enum Kind {
 pub(super) struct Plan {
     layout: Layout,
     kind: Kind,
+    /// Lines the launch prints on stderr about what its inputs leave out
+    /// or rely on ([`build_tree_hooks_notice`], [`config::user_profile_notice`]).
+    notices: Vec<String>,
 }
 
 impl Plan {
@@ -119,6 +122,7 @@ impl Plan {
             return Ok(Self {
                 layout,
                 kind: Kind::Reuse,
+                notices: Vec::new(),
             });
         }
         let user_codex = user_codex_home(&home, &layout.codex_local);
@@ -134,12 +138,17 @@ impl Plan {
         let profile = config::parse(&profile_text, &profile_path)?;
         config::check_shape(&profile, &profile_path)?;
 
-        let hooks_bin = deployed_hooks_binary()?;
+        let (hooks_bin, hooks_notice) = deployed_hooks_binary()?;
+        let mut notices: Vec<String> = hooks_notice.into_iter().collect();
 
         let user_config_path = user_codex.join(CONFIG);
         let user = match read_followed(&user_config_path)? {
             None => Table::new(),
-            Some(text) => config::user_settings(&config::parse(&text, &user_config_path)?),
+            Some(text) => {
+                let user_config = config::parse(&text, &user_config_path)?;
+                notices.extend(config::user_profile_notice(&user_config, &user_config_path));
+                config::user_settings(&user_config)
+            }
         };
 
         let hooks_path = user_codex.join(HOOKS);
@@ -162,6 +171,7 @@ impl Plan {
                 user_rules,
                 hooks_bin,
             },
+            notices,
         })
     }
 
@@ -179,8 +189,13 @@ impl Plan {
                 )
             })?
             .to_owned();
+        let mut notices = self.notices.clone();
         let (user_handlers, sandbox_mode) = match &self.kind {
-            Kind::Reuse => self.verify_reuse()?,
+            Kind::Reuse => {
+                let (handlers, sandbox_mode, hooks_notice) = self.verify_reuse()?;
+                notices.extend(hooks_notice);
+                (handlers, sandbox_mode)
+            }
             Kind::Build {
                 profile,
                 user,
@@ -200,6 +215,7 @@ impl Plan {
             home,
             user_handlers,
             sandbox_mode,
+            notices,
         })
     }
 
@@ -345,9 +361,10 @@ impl Plan {
     }
 
     /// The checks a reused home must pass, without writing to it. Returns
-    /// the number of user handlers carried into its `hooks.json` and the
-    /// `sandbox_mode` its `config.toml` sets, if any.
-    fn verify_reuse(&self) -> Result<(usize, Option<String>)> {
+    /// the number of user handlers carried into its `hooks.json`, the
+    /// `sandbox_mode` its `config.toml` sets, if any, and the hooks binary's
+    /// [`build_tree_hooks_notice`], if any.
+    fn verify_reuse(&self) -> Result<(usize, Option<String>, Option<String>)> {
         let layout = &self.layout;
         let refuse = |reason: String| {
             anyhow!(
@@ -425,7 +442,8 @@ impl Plan {
 
         let hooks_text = std::str::from_utf8(&hooks)
             .map_err(|_| refuse("hooks.json is not valid UTF-8".to_string()))?;
-        let hooks_bin = deployed_hooks_binary().map_err(|e| refuse(format!("{e:#}")))?;
+        let (hooks_bin, hooks_notice) =
+            deployed_hooks_binary().map_err(|e| refuse(format!("{e:#}")))?;
         let (user_groups, expected_hash) = hooks_json::verify_generated(hooks_text, &hooks_bin)
             .map_err(|e| refuse(format!("{e:#}")))?;
         let key = format!("{}:pre_tool_use:0:0", canonical.display());
@@ -451,6 +469,7 @@ impl Plan {
         Ok((
             hooks_json::handler_count(&user_groups),
             config::sandbox_mode(&document),
+            hooks_notice,
         ))
     }
 }
@@ -594,12 +613,52 @@ fn read_owned(path: &Path) -> Result<Option<Owned>> {
 /// The hooks binary amplihack's entry runs, chosen as the ordinary install
 /// chooses the one it records: the deployed copy in the user's bin
 /// directory, else the first of [`HOOKS_OVERRIDE`], the binary beside the
-/// running executable and `PATH`. It must pass [`validate_hooks_binary`].
-fn deployed_hooks_binary() -> Result<PathBuf> {
-    let path = crate::commands::install::stable_hooks_binary()
+/// running executable and `PATH`. It must pass [`validate_hooks_binary`]
+/// and [`build_tree_hooks_notice`], whose line, if any, is returned with it.
+fn deployed_hooks_binary() -> Result<(PathBuf, Option<String>)> {
+    let (path, is_deployed) = crate::commands::install::stable_hooks_binary_with_origin()
         .context("a local-model launch needs the amplihack-hooks binary for its command check")?;
     validate_hooks_binary(&path)?;
-    Ok(path)
+    let notice = build_tree_hooks_notice(
+        &path,
+        is_deployed,
+        std::env::var_os(HOOKS_OVERRIDE).as_deref(),
+    )?;
+    Ok((path, notice))
+}
+
+/// The check on a hooks binary that is not the deployed copy but lies in a
+/// build directory ([`looks_like_build_artifact`]), such as
+/// `target/debug/amplihack-hooks` found beside the running executable. The
+/// command-check entry would name a file that disappears when that
+/// directory is cleaned, so such a path is refused, unless `override_value`
+/// (the value of [`HOOKS_OVERRIDE`]) names it: a path the user set on
+/// purpose is used, and the returned line says that it is a build output.
+/// The deployed copy is never checked here.
+///
+/// [`looks_like_build_artifact`]: crate::commands::install::looks_like_build_artifact
+pub(super) fn build_tree_hooks_notice(
+    path: &Path,
+    is_deployed: bool,
+    override_value: Option<&std::ffi::OsStr>,
+) -> Result<Option<String>> {
+    if is_deployed || !crate::commands::install::looks_like_build_artifact(path) {
+        return Ok(None);
+    }
+    if override_value.is_some_and(|value| Path::new(value) == path) {
+        return Ok(Some(format!(
+            "the command check runs {}, a build output named by {HOOKS_OVERRIDE}; it stops \
+             working when that directory is cleaned; run `amplihack install` to deploy a \
+             stable copy",
+            sanitize_path(path)
+        )));
+    }
+    bail!(
+        "the amplihack-hooks binary {} is in a build directory and no deployed copy exists; \
+         the command check would stop working when that directory is cleaned; deploy it with \
+         `amplihack install`, or set {HOOKS_OVERRIDE} to its absolute path to use it anyway",
+        sanitize_path(path)
+    )
 }
 
 /// The hooks binary amplihack's entry runs. It must be an absolute path

@@ -638,11 +638,22 @@ fn is_python_script(path: &std::path::Path) -> bool {
 /// Prefer the deployed copy under the user's bin dir; fall back to discovery
 /// only when nothing has been deployed yet.
 pub(crate) fn stable_hooks_binary() -> Result<PathBuf> {
+    stable_hooks_binary_with_origin().map(|(path, _)| path)
+}
+
+/// [`stable_hooks_binary`], and whether the path is the deployed copy
+/// (`true`) or the discovery fallback (`false`). A local-model launch uses
+/// this to refuse a fallback in a build directory instead of recording it.
+pub(crate) fn stable_hooks_binary_with_origin() -> Result<(PathBuf, bool)> {
     let deployed = super::paths::preferred_user_bin_dir()
         .ok()
         .map(|dir| dir.join("amplihack-hooks"))
         .filter(|candidate| is_executable(candidate));
-    Ok(choose_durable_hooks_path(deployed, find_hooks_binary()?))
+    let is_deployed = deployed.is_some();
+    Ok((
+        choose_durable_hooks_path(deployed, find_hooks_binary()?),
+        is_deployed,
+    ))
 }
 
 /// Pure seam for [`stable_hooks_binary`], so the preference is testable without
@@ -727,7 +738,7 @@ pub(super) fn build_output_warning(exe: &Path) -> Option<String> {
 ///
 /// Matched on whole path components, not a substring: a user whose home is
 /// `/home/debug` must not be flagged.
-pub(super) fn looks_like_build_artifact(path: &Path) -> bool {
+pub(crate) fn looks_like_build_artifact(path: &Path) -> bool {
     let mut saw_profile = false;
     for component in path.components() {
         let part = component.as_os_str();

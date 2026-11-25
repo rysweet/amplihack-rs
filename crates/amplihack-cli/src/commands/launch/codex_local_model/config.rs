@@ -57,7 +57,8 @@ pub(super) const INHERITED: [&str; 3] =
     ["approval_policy", "sandbox_mode", "sandbox_workspace_write"];
 
 /// The [`INHERITED`] settings of `user_config`, the user's own top-level
-/// `config.toml`. `[profiles.*]` and its `profile` key are not read.
+/// `config.toml`. `[profiles.*]` and its `profile` key are not read; the
+/// launch prints [`user_profile_notice`] when they are present.
 pub(super) fn user_settings(user_config: &Table) -> Table {
     INHERITED
         .iter()
@@ -67,6 +68,29 @@ pub(super) fn user_settings(user_config: &Table) -> Table {
                 .map(|value| ((*key).to_owned(), value.clone()))
         })
         .collect()
+}
+
+/// The stderr line for a user `config.toml` at `path` that has a `profile`
+/// key or a `[profiles.*]` table. Codex applies a selected profile's
+/// `approval_policy`, `sandbox_mode` and `[sandbox_workspace_write]` over
+/// the top-level ones, but a local-model session reads only the top-level
+/// [`INHERITED`] settings, so a stricter setting kept in a profile does not
+/// apply. `None` when the file has neither. The profile's name and values
+/// are not quoted.
+pub(super) fn user_profile_notice(user_config: &Table, path: &Path) -> Option<String> {
+    let selects = user_config.contains_key("profile");
+    let defines = user_config
+        .get("profiles")
+        .is_some_and(|profiles| profiles.as_table().is_none_or(|table| !table.is_empty()));
+    (selects || defines).then(|| {
+        format!(
+            "{} has a `profile` key or `[profiles]` tables, which a local-model session does not \
+             read: an approval_policy, sandbox_mode or [sandbox_workspace_write] set in a profile \
+             does not apply here; set it at the top level of that file or in the local-model \
+             profile",
+            sanitize_path(path)
+        )
+    })
 }
 
 /// Parses a profile or a generated `config.toml`.

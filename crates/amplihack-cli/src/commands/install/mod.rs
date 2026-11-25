@@ -42,6 +42,9 @@ pub(crate) use binary::resolve_running_binary_source;
 /// the deployed copy, as the ordinary install records it.
 pub(crate) use binary::stable_hooks_binary;
 use binary::{deploy_binaries_into, find_hooks_binary};
+/// The same choice, with whether it is the deployed copy, and the build
+/// directory test a local-model launch applies to a fallback.
+pub(crate) use binary::{looks_like_build_artifact, stable_hooks_binary_with_origin};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;

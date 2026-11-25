@@ -2,9 +2,9 @@
 //! hooks binary, the user's approval and sandbox settings, the user's rules
 //! files, and links that point nowhere.
 //!
-//! Each case shows that the launch is rejected, or that the user's setting
-//! applies, and never that the command check or the sandbox is weakened without a
-//! word. Unix only, like the module. Every test runs in a [`LocalFixture`],
+//! Each case shows that the launch is rejected, that the user's setting
+//! applies, or that a stderr line names what is left out, and never that
+//! the command check or the sandbox is weakened without a word. Unix only, like the module. Every test runs in a [`LocalFixture`],
 //! which asserts that `HOME` is its own tempdir first.
 
 use super::tests_fixture::*;
@@ -151,6 +151,65 @@ fn the_deployed_hooks_binary_is_used() {
     );
 }
 
+/// A hooks binary found in a build directory, with nothing deployed, is
+/// refused: the command-check entry would name a file that goes when the
+/// directory is cleaned. Named on purpose through the override, it is used
+/// and the launch says on stderr that it is a build output. The deployed
+/// copy and a path outside a build directory get no line.
+#[test]
+fn a_hooks_binary_in_a_build_directory_is_refused_or_announced() {
+    use super::home::build_tree_hooks_notice;
+    let built = Path::new("/work/amplihack-rs/target/debug/amplihack-hooks");
+    let error = format!(
+        "{:#}",
+        build_tree_hooks_notice(built, false, None).expect_err("a found build output")
+    );
+    assert!(error.contains(&built.display().to_string()), "{error}");
+    assert!(error.contains("amplihack install"), "{error}");
+    assert!(error.contains(HOOKS_OVERRIDE), "{error}");
+    let other = std::ffi::OsStr::new("/elsewhere/amplihack-hooks");
+    assert!(build_tree_hooks_notice(built, false, Some(other)).is_err());
+
+    let named = build_tree_hooks_notice(built, false, Some(built.as_os_str()))
+        .expect("a build output named by the override is used")
+        .expect("and announced");
+    assert!(named.contains(&built.display().to_string()), "{named}");
+    assert!(named.contains(HOOKS_OVERRIDE), "{named}");
+
+    assert!(
+        build_tree_hooks_notice(built, true, None)
+            .unwrap()
+            .is_none()
+    );
+    let plain = Path::new("/home/u/.local/bin/amplihack-hooks");
+    assert!(
+        build_tree_hooks_notice(plain, false, None)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// Through a launch: the override naming a build output builds the home,
+/// the entry runs that binary, and the launch's stderr lines name it.
+#[test]
+fn a_launch_names_a_build_output_hooks_binary_on_stderr() {
+    let mut f = LocalFixture::new();
+    assert!(build(&f).notice_lines().is_empty());
+    let built_dir = f.home().join("target/debug");
+    private_dir(&f.home().join("target"));
+    private_dir(&built_dir);
+    let built = built_dir.join("amplihack-hooks");
+    fs::copy(f.hooks_bin(), &built).unwrap();
+    f.set(HOOKS_OVERRIDE, &built);
+    let local = build(&f);
+    assert!(hooks_command(&f).contains(&built.display().to_string()));
+    let lines = local.notice_lines();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("amplihack: codex local model \"inkling\": "));
+    assert!(lines[0].contains(&built.display().to_string()), "{lines:?}");
+    assert!(lines[0].contains("build output"), "{lines:?}");
+}
+
 // ---- item 3: the user's approval and sandbox settings ----
 
 fn write_user_config(f: &LocalFixture, text: &str) -> PathBuf {
@@ -226,6 +285,42 @@ fn an_unusable_user_config_is_rejected() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o622)).unwrap();
     let error = rejected(&f);
     assert!(error.contains(&path.display().to_string()), "{error}");
+}
+
+/// A profile selected in the user's `config.toml`, or profile tables there,
+/// are not read by a local-model session, so a stricter approval or sandbox
+/// setting kept in one does not apply. The launch says so on stderr, naming
+/// the file and not the profile, and the generated file is unchanged.
+#[test]
+fn a_user_config_profile_is_announced_on_stderr() {
+    let f = LocalFixture::new();
+    for text in [
+        "profile = \"safe\"\n\n[profiles.safe]\napproval_policy = \"on-request\"\n",
+        "profile = \"safe\"\n",
+        "[profiles.safe]\nsandbox_mode = \"read-only\"\n",
+    ] {
+        let path = write_user_config(&f, text);
+        let local = build(&f);
+        let lines = local.notice_lines();
+        assert_eq!(lines.len(), 1, "{text}: {lines:?}");
+        assert!(
+            lines[0].starts_with("amplihack: codex local model \"inkling\": "),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains(&path.display().to_string()), "{lines:?}");
+        assert!(lines[0].contains("approval_policy"), "{lines:?}");
+        assert!(
+            !lines[0].contains("safe"),
+            "the profile name is not quoted: {lines:?}"
+        );
+        let config = generated_config(&f);
+        assert_eq!(config["approval_policy"].as_str(), Some("never"), "{text}");
+        assert!(config.get("profile").is_none() && config.get("profiles").is_none());
+    }
+    for text in ["approval_policy = \"on-request\"\n", "[profiles]\n"] {
+        write_user_config(&f, text);
+        assert!(build(&f).notice_lines().is_empty(), "{text}");
+    }
 }
 
 // ---- item 3: the user's rules files ----

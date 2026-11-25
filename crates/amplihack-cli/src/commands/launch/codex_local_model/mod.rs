@@ -81,6 +81,11 @@ const UNIX_ONLY: &str = "local-model launches of amplihack codex are supported o
 /// Codex versions whose hook-trust format amplihack has checked: the hash it
 /// writes for its command check is the one these versions compute. An
 /// interactive local-model launch on any other version is rejected.
+///
+/// Adding a version is a change to this list made by whoever moves
+/// amplihack to that Codex release, after the check described under
+/// "Adding a Codex version" in `docs/reference/codex-local-model-launch.md`
+/// passes with that version installed.
 pub(crate) const KNOWN_CODEX_VERSIONS: [&str; 1] = ["0.166.0"];
 
 /// Rejects an interactive local-model launch on a Codex version whose
@@ -115,13 +120,24 @@ fn check_trust_format(name: &ProfileName, version: Option<&str>, args: &[String]
 }
 
 /// Whether the caller's Codex arguments turn hooks off, and with them the
-/// command check: `-c features.hooks=<not true>` (also `-c<k=v>`,
-/// `--config <k=v>` and `--config=<k=v>`) or `--disable hooks` (also
-/// `--disable=hooks`), before any `--`.
+/// command check: `-c features.hooks=<not true>`, or `-c features=<inline
+/// table>` whose `hooks` is present and not `true`, such as
+/// `features={hooks=false}` (also `-c<k=v>`, `--config <k=v>` and
+/// `--config=<k=v>`), or `--disable hooks` (also `--disable=hooks`), before
+/// any `--`. The inline table is read as TOML, as Codex reads a `-c` value.
 fn caller_disables_hooks(args: &[String]) -> bool {
     let turns_off = |pair: &str| {
-        pair.split_once('=')
-            .is_some_and(|(key, value)| key.trim() == "features.hooks" && value.trim() != "true")
+        let Some((key, value)) = pair.split_once('=') else {
+            return false;
+        };
+        match key.trim() {
+            "features.hooks" => value.trim() != "true",
+            "features" => toml::from_str::<toml::Table>(&format!("v = {value}"))
+                .ok()
+                .and_then(|doc| doc.get("v")?.get("hooks").cloned())
+                .is_some_and(|hooks| hooks.as_bool() != Some(true)),
+            _ => false,
+        }
     };
     let mut words = args.iter().map(String::as_str).take_while(|a| *a != "--");
     while let Some(word) = words.next() {
@@ -417,6 +433,9 @@ pub(crate) struct LocalHome {
     user_handlers: usize,
     /// The profile's `sandbox_mode`, passed on as the caller's choice.
     sandbox_mode: Option<String>,
+    /// Lines printed on stderr before the others: a hooks binary in a build
+    /// directory, or a user `config.toml` profile that is not read.
+    notices: Vec<String>,
 }
 
 impl LocalHome {
@@ -430,11 +449,15 @@ impl LocalHome {
     /// launch keeps the profile's sandbox instead of getting
     /// `--sandbox danger-full-access`; a caller's own later choice still wins.
     ///
-    /// One stderr line always says that hook text is off, so that lock mode,
+    /// The [`LocalHome::notice_lines`] come first, one line each. Then one
+    /// stderr line always says that hook text is off, so that lock mode,
     /// power steering and reflection do not run. When the hook-trust flag is
     /// added, a second line names what was added, the profile, the home and
     /// the number of user handlers carried over, never a command.
     pub(crate) fn codex_args(&self, args: Vec<String>) -> Vec<String> {
+        for line in self.notice_lines() {
+            eprintln!("{line}");
+        }
         eprintln!(
             "amplihack: codex local model \"{}\": {HOOK_TEXT_OFF} in this session and in \
              amplihack sessions started from it",
@@ -479,6 +502,20 @@ impl LocalHome {
         }
         out.extend(args);
         out
+    }
+
+    /// The stderr lines for this launch's [`LocalHome::notices`], each
+    /// prefixed with the profile name as the launch's other lines are.
+    pub(crate) fn notice_lines(&self) -> Vec<String> {
+        self.notices
+            .iter()
+            .map(|notice| {
+                format!(
+                    "amplihack: codex local model \"{}\": {notice}",
+                    self.name.as_str()
+                )
+            })
+            .collect()
     }
 
     /// The three variables the Codex child gets, set on `builder` only:
