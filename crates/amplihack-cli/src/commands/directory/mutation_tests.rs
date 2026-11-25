@@ -1,0 +1,273 @@
+use super::*;
+use crate::{ConfigCommands, commands::config::run_config, test_support, user_config::edit};
+use std::{collections::BTreeMap, fs, path::PathBuf};
+
+fn write(root: &Path, relative: &str, content: &str) {
+    let path = root.join(relative);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, content).unwrap();
+}
+
+fn fixture(home: &Path) -> PathBuf {
+    let staged = home.join(".amplihack/.claude");
+    for name in ["pdf", "extra", "tla-plus-expert"] {
+        write(
+            &staged,
+            &format!("skills/{name}/SKILL.md"),
+            &format!("---\nname: {name}\ndescription: example\n---\n{name}\n"),
+        );
+    }
+    for name in [
+        "core/builder",
+        "guide",
+        "core/guide",
+        "specialized/tla-plus-expert",
+    ] {
+        write(
+            &staged,
+            &format!("agents/{name}.md"),
+            &format!(
+                "---\nname: {}\ndescription: example\n---\n{name}\n",
+                name.rsplit('/').next().unwrap()
+            ),
+        );
+    }
+    index::write_index(&staged).unwrap();
+    edit::write_atomic(
+        &home.join(".amplihack/config.toml"),
+        b"# keep\n[recipe]\nverbose = true\n",
+    )
+    .unwrap();
+    crate::commands::install::version_stamp::write_installed_version(crate::VERSION).unwrap();
+    staged
+}
+
+fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        if !dir.exists() {
+            return;
+        }
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, out);
+            } else {
+                out.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    visit(root, root, &mut out);
+    out
+}
+
+fn change(name: &str, enable: bool) -> Result<String> {
+    run_for_test(if enable {
+        DirectoryCommands::Enable { name: name.into() }
+    } else {
+        DirectoryCommands::Disable { name: name.into() }
+    })
+}
+
+fn set(key: &str, value: &str) {
+    run_config(ConfigCommands::Set {
+        key: key.into(),
+        value: value.into(),
+        project: false,
+    })
+    .unwrap();
+}
+
+#[test]
+fn commands_publish_extensions_immediately_and_restore_config_and_tool_bytes() {
+    let _lock = test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let _home = test_support::HomeGuard::set(home.path());
+    let staged = fixture(home.path());
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    write(
+        home.path(),
+        ".copilot/config.json",
+        "{\"plugins\":[{\"name\":\"amplihack\"}]}\n",
+    );
+    crate::copilot_setup::ensure_copilot_home_staged_with(
+        None,
+        crate::copilot_setup::UserConfig::KeepExisting,
+    )
+    .unwrap();
+    let config = home.path().join(".amplihack/config.toml");
+    let original_config = fs::read(&config).unwrap();
+    let original_index = fs::read(index::index_path(&staged)).unwrap();
+    let claude = home.path().join(".claude/skills");
+    let copilot = home.path().join(".copilot");
+    let original_claude = snapshot(&claude);
+    let original_copilot = snapshot(&copilot);
+    for name in ["amplihack:extra", "amplihack:core:guide"] {
+        change(name, true).unwrap();
+        let first_config = fs::read(&config).unwrap();
+        let first_claude = snapshot(&claude);
+        let first_copilot = snapshot(&copilot);
+        change(name, true).unwrap();
+        assert_eq!(fs::read(&config).unwrap(), first_config);
+        assert_eq!(snapshot(&claude), first_claude);
+        assert_eq!(snapshot(&copilot), first_copilot);
+        if name.ends_with("extra") {
+            assert!(claude.join("extra/SKILL.md").is_file());
+            assert!(copilot.join("skills/extra/SKILL.md").is_file());
+        } else {
+            assert!(claude.join("amplihack/agents/core/guide.md").is_file());
+            assert_eq!(
+                fs::read(copilot.join("agents/amplihack/guide.md")).unwrap(),
+                fs::read(staged.join("agents/core/guide.md")).unwrap()
+            );
+        }
+        change(name, false).unwrap();
+        change(name, false).unwrap();
+        assert_eq!(fs::read(&config).unwrap(), original_config);
+        assert_eq!(snapshot(&claude), original_claude);
+        assert_eq!(snapshot(&copilot), original_copilot);
+    }
+    assert_eq!(
+        fs::read(index::index_path(&staged)).unwrap(),
+        original_index
+    );
+    assert!(!home.path().join(".codex").exists());
+}
+
+#[test]
+fn configuration_commands_restore_full_lists_and_keep_all_mode_extensions() {
+    let _lock = test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let _home = test_support::HomeGuard::set(home.path());
+    fixture(home.path());
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    let skills = home.path().join(".claude/skills");
+    set("lists.set", "all");
+    assert!(skills.join("extra/SKILL.md").is_file());
+    change("extra", true).unwrap();
+    set("lists.set", "default");
+    assert!(skills.join("extra/SKILL.md").is_file());
+    change("extra", false).unwrap();
+    assert!(!skills.join("extra").exists());
+    set("lists.enabled", "[\"skill:extra\"]");
+    assert!(skills.join("extra/SKILL.md").is_file());
+    run_config(ConfigCommands::Unset {
+        key: "lists.enabled".into(),
+        project: false,
+    })
+    .unwrap();
+    assert!(!skills.join("extra").exists());
+    assert!(!home.path().join(".copilot").exists());
+    assert!(!home.path().join(".codex").exists());
+}
+
+#[test]
+fn rejected_names_change_neither_configuration_nor_index() {
+    let _lock = test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let _home = test_support::HomeGuard::set(home.path());
+    let staged = fixture(home.path());
+    let before = snapshot(home.path());
+    for name in ["tla-plus-expert", "guide", "unknown", "amplihack:"] {
+        assert!(change(name, true).is_err());
+        assert!(change(name, false).is_err());
+        assert_eq!(snapshot(home.path()), before);
+    }
+    assert!(change("skill:pdf", false).is_err());
+    change("skill:pdf", true).unwrap();
+    change("agent:core/builder", true).unwrap();
+    change("skill:extra", false).unwrap();
+    assert_eq!(snapshot(home.path()), before);
+    assert!(index::index_path(&staged).exists());
+}
+
+#[test]
+fn repeating_a_command_finishes_an_interrupted_publication() {
+    let _lock = test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let _home = test_support::HomeGuard::set(home.path());
+    fixture(home.path());
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    write(
+        home.path(),
+        ".claude/skills/extra/SKILL.md",
+        "independent skill",
+    );
+    assert!(change("extra", true).is_err());
+    assert!(crate::user_config::list_selection().includes_skill("extra"));
+    fs::rename(
+        home.path().join(".claude/skills/extra"),
+        home.path().join("saved-extra"),
+    )
+    .unwrap();
+    change("extra", true).unwrap();
+    assert_ne!(
+        fs::read(home.path().join(".claude/skills/extra/SKILL.md")).unwrap(),
+        b"independent skill"
+    );
+    assert_eq!(
+        fs::read(home.path().join("saved-extra/SKILL.md")).unwrap(),
+        b"independent skill"
+    );
+}
+
+#[test]
+fn mutations_refresh_older_definitions_without_changing_the_index_or_registering_tools() {
+    let _lock = test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let _home = test_support::HomeGuard::set(home.path());
+    let staged = fixture(home.path());
+    write(
+        &staged,
+        "skills/code-visualizer/SKILL.md",
+        "---\nname: code-visualizer\ndescription: old definition\n---\nold body\n",
+    );
+    index::write_index(&staged).unwrap();
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    let original_index = fs::read(index::index_path(&staged)).unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../amplifier-bundle/skills/code-visualizer/SKILL.md");
+    let current_definition = fs::read(source).unwrap();
+    crate::commands::install::version_stamp::write_installed_version("0.0.1").unwrap();
+
+    // Discovery leaves the old staged bytes and stamp alone.
+    run_for_test(DirectoryCommands::Find {
+        words: vec!["code-visualizer".into()],
+    })
+    .unwrap();
+    assert_ne!(
+        fs::read(staged.join("skills/code-visualizer/SKILL.md")).unwrap(),
+        current_definition
+    );
+
+    change("skill:code-visualizer", true).unwrap();
+    assert_eq!(
+        fs::read(home.path().join(".claude/skills/code-visualizer/SKILL.md")).unwrap(),
+        current_definition
+    );
+    assert_eq!(
+        fs::read(index::index_path(&staged)).unwrap(),
+        original_index
+    );
+    assert!(staged.join("agents/core/builder.md").is_file());
+    assert!(staged.join("agents/core/guide.md").is_file());
+    assert!(!home.path().join(".copilot").exists());
+    assert!(!home.path().join(".codex").exists());
+    assert_eq!(
+        crate::commands::install::version_stamp::read_installed_version().unwrap(),
+        Some("0.0.1".into())
+    );
+}

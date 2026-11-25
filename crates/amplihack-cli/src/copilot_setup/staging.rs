@@ -1,6 +1,7 @@
 //! Asset staging — agents, skills, command docs, and plugin registration.
 
 use amplihack_types::workflow;
+use amplihack_utils::list_selection::{ListSelection, ListSet};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use std::fs;
@@ -8,10 +9,53 @@ use std::path::Path;
 
 use super::{fs_helpers, jsonc};
 
-pub(super) fn stage_agents(source_agents: &Path, copilot_home: &Path) -> Result<usize> {
+pub(super) fn stage_agents(
+    source_agents: &Path,
+    copilot_home: &Path,
+    selection: &ListSelection,
+) -> Result<usize> {
+    let source_agents = if source_agents.join("amplihack").is_dir() {
+        source_agents.join("amplihack")
+    } else {
+        source_agents.to_path_buf()
+    };
     let dest = copilot_home.join("agents").join("amplihack");
+    let files = fs_helpers::walk_files(&source_agents)?
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .filter(|path| {
+            let identity = path
+                .strip_prefix(&source_agents)
+                .expect("walked source")
+                .with_extension("")
+                .to_string_lossy()
+                .replace('\\', "/");
+            selection.includes_agent(&identity)
+        })
+        .collect::<Vec<_>>();
     fs_helpers::reset_markdown_dir(&dest)?;
-    fs_helpers::flatten_markdown_tree(source_agents, &dest)
+    for path in &files {
+        let leaf = path.file_name().context("agent file missing name")?;
+        // Full mode preserves the previous flat layout. In default mode,
+        // qualified extensions can expose both agents that share a leaf name.
+        let target = if selection.set != ListSet::All
+            && files
+                .iter()
+                .filter(|other| other.file_name() == Some(leaf))
+                .count()
+                > 1
+        {
+            dest.join(
+                path.strip_prefix(&source_agents)?
+                    .to_string_lossy()
+                    .replace(['/', '\\'], "--"),
+            )
+        } else {
+            dest.join(leaf)
+        };
+        fs::copy(path, target)?;
+    }
+    Ok(files.len())
 }
 
 pub(super) fn stage_context(source_context: &Path, copilot_home: &Path) -> Result<usize> {
@@ -68,57 +112,60 @@ fn is_stale_selected_workflow_line(line: &str) -> bool {
             || lowered.contains(".claude/workflows/"))
 }
 
-pub(super) fn stage_skills(source_skills: &Path, copilot_home: &Path) -> Result<usize> {
+pub(super) fn stage_skills(
+    source_skills: &Path,
+    copilot_home: &Path,
+    selection: &ListSelection,
+) -> Result<crate::claude_plugin::PluginRegistration> {
     if !source_skills.is_dir() {
-        return Ok(0);
+        return Ok(crate::claude_plugin::PluginRegistration::default());
     }
 
-    remove_legacy_cli_skill(copilot_home)?;
-
-    let mut count = 0;
-    for entry in fs::read_dir(source_skills)
-        .with_context(|| format!("read skills dir {}", source_skills.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
+    let record = copilot_home.join("copilot-skills-manifest.json");
+    let legacy = tempfile::tempdir()?;
+    if selection.set == ListSet::All || !record.try_exists()? {
+        // Older releases copied only Markdown and flattened each top-level
+        // folder. Adopt exactly matching copies, never a user's replacement.
+        for entry in fs::read_dir(source_skills)? {
+            let entry = entry?;
+            if entry.path().is_dir()
+                && (selection.set == ListSet::All
+                    || copilot_home.join("skills").join(entry.file_name()).is_dir())
+            {
+                let expected = legacy.path().join(entry.file_name());
+                fs::create_dir_all(&expected)?;
+                fs_helpers::flatten_markdown_tree(&entry.path(), &expected)?;
+            }
         }
-        let skill_name = entry.file_name();
-        let dest = copilot_home.join("skills").join(&skill_name);
-        fs_helpers::reset_markdown_dir(&dest)?;
-        count += fs_helpers::flatten_markdown_tree(&path, &dest)?;
+        crate::claude_plugin::adopt_legacy_skills(
+            legacy.path(),
+            &copilot_home.join("skills"),
+            &record,
+        )?;
     }
-
-    Ok(count)
-}
-
-fn remove_legacy_cli_skill(copilot_home: &Path) -> Result<()> {
-    let legacy_cli_skill = copilot_home.join("skills").join("azure-devops-cli");
-    let metadata = match fs::symlink_metadata(&legacy_cli_skill) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!("inspect legacy skill path {}", legacy_cli_skill.display())
-            });
-        }
-    };
-
-    if metadata.file_type().is_symlink() || metadata.is_file() {
-        fs::remove_file(&legacy_cli_skill)
-            .with_context(|| format!("remove legacy skill file {}", legacy_cli_skill.display()))?;
-    } else if metadata.is_dir() {
-        fs::remove_dir_all(&legacy_cli_skill)
-            .with_context(|| format!("remove legacy skill dir {}", legacy_cli_skill.display()))?;
-    } else {
-        return Err(anyhow!(
-            "legacy skill path is not a file, directory, or symlink: {}",
-            legacy_cli_skill.display()
-        ));
+    if selection.set == ListSet::All {
+        let skills = fs::read_dir(legacy.path())?
+            .map(|entry| {
+                let entry = entry?;
+                Ok((
+                    entry.file_name().to_string_lossy().into_owned(),
+                    entry.path(),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return crate::claude_plugin::sync_skill_folders(
+            legacy.path(),
+            &copilot_home.join("skills"),
+            &record,
+            skills,
+        );
     }
-
-    Ok(())
+    crate::claude_plugin::sync_canonical_skills(
+        source_skills,
+        &copilot_home.join("skills"),
+        &record,
+        selection,
+    )
 }
 
 pub(super) fn stage_command_docs(source_commands: &Path, copilot_home: &Path) -> Result<usize> {
@@ -290,7 +337,12 @@ mod tests {
         )
         .unwrap();
 
-        let count = stage_skills(&source_skills, &copilot_home).unwrap();
+        let report = stage_skills(
+            &source_skills,
+            &copilot_home,
+            &ListSelection::new(ListSet::All, []),
+        )
+        .unwrap();
 
         let staged_pr_guide = copilot_home
             .join("skills")
@@ -324,9 +376,8 @@ mod tests {
             "staging pr-guide must not drop co-located skills"
         );
         assert!(
-            count >= 3,
-            "expected at least 3 staged markdown files (pr-guide SKILL.md + \
-             reference.md + pr-review-assistant SKILL.md), got {count}"
+            report.published.len() == 2,
+            "expected both skills to be published, got {report:?}"
         );
     }
 
@@ -339,7 +390,7 @@ mod tests {
         let bundle_skills =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/skills");
 
-        stage_skills(&bundle_skills, &copilot_home).unwrap();
+        stage_skills(&bundle_skills, &copilot_home, &ListSelection::default()).unwrap();
 
         let staged = copilot_home
             .join("skills")
@@ -366,8 +417,18 @@ mod tests {
         )
         .unwrap();
 
-        stage_skills(&source_skills, &copilot_home).unwrap();
-        stage_skills(&source_skills, &copilot_home).unwrap();
+        stage_skills(
+            &source_skills,
+            &copilot_home,
+            &ListSelection::new(ListSet::All, []),
+        )
+        .unwrap();
+        stage_skills(
+            &source_skills,
+            &copilot_home,
+            &ListSelection::new(ListSet::All, []),
+        )
+        .unwrap();
 
         let staged_dir = copilot_home.join("skills").join("pr-guide");
         let markdown: Vec<_> = fs::read_dir(&staged_dir)
@@ -382,31 +443,19 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn legacy_cli_skill_cleanup_rejects_unsupported_file_type() {
-        use std::os::unix::net::UnixListener;
-
-        let temp = tempfile::Builder::new()
-            .prefix("ah-staging-")
-            .tempdir_in("/tmp")
-            .unwrap();
+    fn staging_leaves_an_unowned_legacy_named_file_untouched() {
+        let temp = tempfile::tempdir().unwrap();
         let copilot_home = temp.path().join(".copilot");
         let legacy_parent = copilot_home.join("skills");
         fs::create_dir_all(&legacy_parent).unwrap();
         let legacy_path = legacy_parent.join("azure-devops-cli");
-        let _listener = UnixListener::bind(&legacy_path).unwrap();
-
-        let err = remove_legacy_cli_skill(&copilot_home).unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("legacy skill path is not a file, directory, or symlink"),
-            "unexpected cleanup error: {err}"
-        );
-        assert!(
-            legacy_path.exists(),
-            "unsupported legacy path should be left untouched"
-        );
+        fs::write(&legacy_path, "user content").unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let report = stage_skills(&source, &copilot_home, &ListSelection::default()).unwrap();
+        assert!(report.removed_skills.is_empty());
+        assert!(report.preserved.is_empty());
+        assert_eq!(fs::read(&legacy_path).unwrap(), b"user content");
     }
 }

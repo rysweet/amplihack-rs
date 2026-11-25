@@ -9,7 +9,7 @@ use std::path::Path;
 
 use super::{
     COPILOT_HOOK_TIMEOUT_SEC, COPILOT_HOOK_WRAPPERS, HookWrapperSpec, INSTRUCTIONS_MARKER_END,
-    INSTRUCTIONS_MARKER_START, fs_helpers, jsonc,
+    INSTRUCTIONS_MARKER_START, jsonc,
 };
 
 /// Build the Copilot hooks manifest as JSON. Hook entries reference absolute
@@ -235,59 +235,29 @@ fn is_amplihack_owned(entry: &serde_json::Value) -> bool {
         || bash.contains("/.github/hooks/session-end")
 }
 
-pub(super) fn generate_copilot_instructions(copilot_home: &Path) -> Result<()> {
-    let agents_dir = copilot_home.join("agents").join("amplihack");
-    if !agents_dir.is_dir() {
-        return Ok(());
-    }
-
+pub(super) fn remove_copilot_instructions(copilot_home: &Path) -> Result<()> {
     let instructions_path = copilot_home.join("instructions.md");
-    let existing = if instructions_path.exists() {
-        fs::read_to_string(&instructions_path)
-            .with_context(|| format!("read {}", instructions_path.display()))?
-    } else {
-        String::new()
+    let existing = match fs::read_to_string(&instructions_path) {
+        Ok(existing) => existing,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).context("read Copilot instructions"),
     };
-
-    let mut section = String::new();
-    section.push_str(INSTRUCTIONS_MARKER_START);
-    section.push('\n');
-
-    let mut agent_files = fs_helpers::walk_files(&agents_dir)?;
-    agent_files.sort();
-    for file in agent_files {
-        if file.extension().is_some_and(|ext| ext == "md") {
-            let content = fs::read_to_string(&file)
-                .with_context(|| format!("read agent instructions {}", file.display()))?;
-            section.push_str(&content);
-            section.push('\n');
+    if let Some(start) = existing.find(INSTRUCTIONS_MARKER_START)
+        && let Some(relative_end) =
+            existing[start + INSTRUCTIONS_MARKER_START.len()..].find(INSTRUCTIONS_MARKER_END)
+    {
+        let end =
+            start + INSTRUCTIONS_MARKER_START.len() + relative_end + INSTRUCTIONS_MARKER_END.len();
+        let before = &existing[..start];
+        let after = &existing[end..];
+        let updated = format!("{before}{after}");
+        if updated.trim().is_empty() {
+            fs::remove_file(&instructions_path).context("remove empty Copilot instructions")?;
+        } else {
+            fs::write(&instructions_path, updated).context("preserve user Copilot instructions")?;
         }
     }
-
-    section.push_str(INSTRUCTIONS_MARKER_END);
-    section.push('\n');
-
-    let updated = replace_or_append_section(&existing, &section);
-    fs::write(&instructions_path, updated)
-        .with_context(|| format!("write {}", instructions_path.display()))?;
-
     Ok(())
-}
-
-pub(super) fn replace_or_append_section(existing: &str, section: &str) -> String {
-    if let Some(start) = existing.find(INSTRUCTIONS_MARKER_START)
-        && let Some(end) = existing.find(INSTRUCTIONS_MARKER_END)
-    {
-        let before = &existing[..start];
-        let after = &existing[end + INSTRUCTIONS_MARKER_END.len()..];
-        return format!("{before}{section}{after}");
-    }
-
-    if existing.is_empty() {
-        return section.to_string();
-    }
-
-    format!("{existing}\n{section}")
 }
 
 fn should_preserve_user_hook(path: &Path) -> Result<bool> {

@@ -204,6 +204,9 @@ fn tighten_user_dir(path: &Path, effective: &Effective) {
 fn set(cwd: &Path, key: &str, raw: &str, project: bool) -> Result<(), ConfigError> {
     let def = schema::known_key(key)?;
     let value = schema::parse_cli(def.name, raw)?;
+    if def.name == "lists.enabled" {
+        validate_enabled(&value)?;
+    }
     if def.name == "paths.home" {
         validate_home_dir(Path::new(raw)).map_err(|reason| ConfigError::InvalidValue {
             key: def.name.to_string(),
@@ -215,9 +218,41 @@ fn set(cwd: &Path, key: &str, raw: &str, project: bool) -> Result<(), ConfigErro
     let path = target_file(cwd, def, project, &effective)?;
     refuse_while_legacy_remains(def, &effective)?;
     set_value(&path, def, &value)?;
+    if def.name == "lists.enabled" {
+        forget_list_origin(&path)?;
+    }
     tighten_user_dir(&path, &effective);
+    apply_lists(def)?;
     println!("set {} = {value} in {}", def.name, display_path(&path));
     Ok(())
+}
+
+/// Validate existence through the installed index before changing configuration.
+/// Parsing the value already required canonical identities, so an alias that
+/// happens to resolve to a different identity is rejected here too.
+fn validate_enabled(value: &Value) -> Result<(), ConfigError> {
+    let Some(names) = value.as_list() else {
+        return Err(ConfigError::InvalidValue {
+            key: "lists.enabled".into(),
+            reason: "must be an array".into(),
+        });
+    };
+    if names.is_empty() {
+        return Ok(());
+    }
+    let validate = || -> anyhow::Result<()> {
+        let staged = crate::commands::install::paths::staging_claude_dir()?;
+        let entries = super::directory::resolve::installed_entries(&staged)?;
+        for name in names {
+            let id = super::directory::resolve::resolve(&staged, &entries, name)?;
+            anyhow::ensure!(name == &id.to_string(), "use the canonical identity {id}");
+        }
+        Ok(())
+    };
+    validate().map_err(|error| ConfigError::InvalidValue {
+        key: "lists.enabled".into(),
+        reason: error.to_string(),
+    })
 }
 
 fn unset(cwd: &Path, key: &str, project: bool) -> Result<(), ConfigError> {
@@ -229,6 +264,23 @@ fn unset(cwd: &Path, key: &str, project: bool) -> Result<(), ConfigError> {
         println!("unset {} in {}", def.name, display_path(&path));
     } else {
         println!("{} is not set in {}", def.name, display_path(&path));
+    }
+    if def.name == "lists.enabled" {
+        forget_list_origin(&path)?;
+    }
+    apply_lists(def)?;
+    Ok(())
+}
+
+fn forget_list_origin(path: &Path) -> Result<(), ConfigError> {
+    super::directory::extensions::forget(path)
+        .map_err(|error| ConfigError::Runtime(format!("{error:#}")))
+}
+
+fn apply_lists(key: &KeyDef) -> Result<(), ConfigError> {
+    if matches!(key.name, "lists.set" | "lists.enabled") {
+        super::install::lists::apply()
+            .map_err(|error| ConfigError::Runtime(format!("{error:#}")))?;
     }
     Ok(())
 }
@@ -280,6 +332,17 @@ fn edit(cwd: &Path, project: bool) -> Result<(), ConfigError> {
         .map(|diagnostic| diagnostic.to_string())
         .collect();
     if problems.is_empty() {
+        if !project {
+            let config = load_for(cwd);
+            if let Some(value) = &config.entry("lists.enabled").value {
+                validate_enabled(value)?;
+            }
+            if config.entry("lists.enabled").value != effective.entry("lists.enabled").value {
+                forget_list_origin(&path)?;
+            }
+            super::install::lists::apply()
+                .map_err(|error| ConfigError::Runtime(format!("{error:#}")))?;
+        }
         return Ok(());
     }
     Err(ConfigError::File {

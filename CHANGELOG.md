@@ -5,6 +5,36 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [Unreleased] Skills and agents listed by default
+
+### Changed
+
+- New and existing managed installations list 32 skills and 12 agents by
+  default in Claude Code, Codex and Copilot. The complete framework, tools,
+  recipes and directory index remain installed. Updates remove only
+  unchanged installer-owned entries from tool lists, preserve edited skills
+  and independently installed skills, and save a readable upgrade notice.
+  The notice appears once at a terminal, with recipe and non-terminal display
+  deferred. Use `amplihack directory find` to find an unlisted definition,
+  `amplihack directory enable NAME` to keep it listed, or
+  `amplihack directory disable NAME` to remove an extension.
+- The user-only settings `lists.set` and `lists.enabled` select and extend
+  those lists. `amplihack config set lists.set all` restores the full lists
+  immediately for installed tools, without a second command. Loading the
+  repository directly as a Claude Code plugin always exposes the default set
+  and does not read these settings.
+- The 23 typed `amplihack:` commands remain available but leave the model's
+  invocation list. Codex's default package provides agent personas without
+  generated command skills and retains `bin/hook`. Copilot no longer generates
+  the combined agent section in `instructions.md`; updates remove only the
+  section amplihack wrote and preserve surrounding user text.
+
+See [Choose which skills and agents are listed](docs/howto/choose-listed-skills-and-agents.md),
+the [directory command](docs/reference/directory-command.md) and
+the [list settings](docs/reference/user-config.md#listsset-and-listsenabled).
+
+---
+
 ## [Unreleased] — Auto-drive as one goal-driven agent loop
 
 ### Changed

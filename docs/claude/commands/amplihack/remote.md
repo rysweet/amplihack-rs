@@ -1,5 +1,6 @@
 ---
 name: amplihack:remote
+disable-model-invocation: true
 version: 1.0.0
 description: Execute amplihack commands on remote Azure VMs using azlin
 triggers:

@@ -1,0 +1,40 @@
+name: Default tool lists
+description: Observe managed list selection through the public CLI and published files.
+runner: 'cargo test -p amplihack-cli --locked --test cli_integration issue_3240_list_scenarios::'
+scenarios:
+  - name: Fresh default installation
+    test: fresh_default_install_keeps_complete_framework_and_index
+    steps:
+      - Install from the checkout into an isolated temporary home with all three clients available.
+      - Check the 32 default skill folders and 12 agent definitions for each client.
+      - Check Codex personas, absence of generated command skills and the hook wrapper.
+      - Check that every indexed definition exists and the framework retains every agent.
+      - Check that linked skill resources remain readable and no upgrade notice is created.
+  - name: Persistent extensions and restoration
+    test: enable_disable_and_single_command_restoration_update_every_installed_tool
+    steps:
+      - Install the defaults and save the published files and configuration bytes.
+      - Enable a skill and a qualified agent twice and check every client receives them.
+      - Install again and then disable both extensions twice.
+      - Check that published files, configuration and index have their original bytes.
+      - Set lists.set to all and check that all three clients receive the full lists immediately.
+      - Repeat restoration and check that the published bytes stay the same.
+  - name: Update a full installation
+    test: update_from_full_install_preserves_edits_and_unowned_skills
+    steps:
+      - Install with lists.set set to all.
+      - Edit an owned skill and add an independently installed skill.
+      - Add user text around the older Copilot instruction section.
+      - Unset lists.set and install again.
+      - Check removal of an unedited skill and preservation of edited and independent skills.
+      - Check that every framework agent remains and only the owned instruction section is removed.
+      - Check that the saved upgrade notice is unchanged by another installation.
+  - name: Automatic repair during launch
+    test: automatic_launch_repair_narrows_lists_and_saves_the_notice
+    steps:
+      - Start with a full installation and an older installation stamp.
+      - Leave the list setting absent and launch a local Claude client fixture.
+      - Check that Claude and Copilot receive the default skills and agents.
+      - Check that the framework agents and user settings retain their original bytes.
+      - Check that a notice is saved without being marked as displayed at a terminal.
+      - Launch again and check that the saved notice has not changed.

@@ -69,7 +69,7 @@ pub(crate) fn validate_routed_copilot_workspace(
 pub(super) fn isolate_routed_copilot_home(
     command: &mut Command,
     routed_copilot: bool,
-) -> std::io::Result<Option<tempfile::TempDir>> {
+) -> Result<Option<tempfile::TempDir>> {
     if !routed_copilot {
         return Ok(None);
     }
@@ -77,6 +77,15 @@ pub(super) fn isolate_routed_copilot_home(
     let home = tempfile::Builder::new()
         .prefix("amplihack-routed-copilot-")
         .tempdir()?;
+    let staged = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .context("HOME is not set")?
+        .join(".amplihack/.claude");
+    crate::copilot_setup::publish_tool_assets(
+        &staged,
+        home.path(),
+        &crate::user_config::list_selection(),
+    )?;
     command.env(COPILOT_HOME_ENV, home.path());
     Ok(Some(home))
 }

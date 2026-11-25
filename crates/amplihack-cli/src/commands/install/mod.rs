@@ -18,6 +18,7 @@ pub(crate) mod hook_block;
 mod hooks;
 pub(crate) mod interactive;
 mod launch_repair;
+pub(crate) mod lists;
 mod manifest;
 mod mermaid_cli;
 pub(crate) mod paths;

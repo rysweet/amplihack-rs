@@ -15,6 +15,8 @@ fn keys_are_in_documented_order() {
         [
             "agent.binary",
             "paths.home",
+            "lists.set",
+            "lists.enabled",
             "node.heap_consent",
             "node.max_old_space_mb",
             "recipe.verbose",
@@ -76,6 +78,8 @@ fn user_only_keys_are_agent_home_node_log_dir_policy_model_review_governor_and_s
         [
             "agent.binary",
             "paths.home",
+            "lists.set",
+            "lists.enabled",
             "node.heap_consent",
             "node.max_old_space_mb",
             "recipe.log_dir",

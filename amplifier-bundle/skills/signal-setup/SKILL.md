@@ -37,20 +37,22 @@ that makes slow QR delivery fail.
 
 ## How to invoke
 
+Resolve the following paths from the folder of this SKILL.md.
+
 ```bash
 # Local host, interactive (prompts you to confirm the scan screen is open):
-amplifier-bundle/skills/signal-setup/scripts/signal-setup.sh \
+./scripts/signal-setup.sh \
   --host local --phone +15551234567
 
 # Remote azlin VM (mint runs on the VM via az run-command; QR renders LOCALLY):
-amplifier-bundle/skills/signal-setup/scripts/signal-setup.sh \
+./scripts/signal-setup.sh \
   --host deva --phone +15551234567 --resource-group rysweet-linux-vm-pool
 
 # Skip the daemon/self-group/post-test step:
-amplifier-bundle/skills/signal-setup/scripts/signal-setup.sh --host local --no-daemon
+./scripts/signal-setup.sh --host local --no-daemon
 
 # Non-interactive (you have ALREADY opened the scan screen):
-amplifier-bundle/skills/signal-setup/scripts/signal-setup.sh --host local -y --phone +1555...
+./scripts/signal-setup.sh --host local -y --phone +1555...
 ```
 
 Run `signal-setup.sh --help` for the full option list.

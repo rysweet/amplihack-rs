@@ -831,6 +831,54 @@ mod tests {
     }
 
     #[test]
+    fn shipped_commands_keep_manual_invocation_metadata_on_both_tools() {
+        let td = TempDir::new().unwrap();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let copilot_home = fake_copilot_home(&td);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        run_with_copilot_home(&copilot_home, &repo, &hooks_bin);
+        let claude = super::super::claude_commands::stage_claude_commands_in(
+            &td.path().join(".claude"),
+            &td.path().join(".amplihack/.claude"),
+            &repo,
+        )
+        .unwrap();
+        assert_eq!(claude.copied, 23);
+
+        let copilot_commands = copilot_home.join("installed-plugins/amplihack@local/commands");
+        assert_eq!(fs::read_dir(&copilot_commands).unwrap().count(), 23);
+        for entry in fs::read_dir(&claude.target).unwrap() {
+            let entry = entry.unwrap();
+            let source = fs::read_to_string(
+                repo.join("docs/claude/commands/amplihack")
+                    .join(entry.file_name()),
+            )
+            .unwrap();
+            let claude_raw = fs::read_to_string(entry.path()).unwrap();
+            assert_eq!(claude_raw, source);
+            let copilot_raw = fs::read_to_string(copilot_commands.join(entry.file_name())).unwrap();
+            let command = entry.path();
+            let command = command.file_stem().unwrap().to_str().unwrap();
+            for (raw, expected_name) in [
+                (&claude_raw, format!("amplihack:{command}")),
+                (&copilot_raw, command.to_string()),
+            ] {
+                let (metadata, body) = raw
+                    .strip_prefix("---\n")
+                    .unwrap()
+                    .split_once("\n---\n")
+                    .unwrap();
+                let metadata: serde_yaml::Value = serde_yaml::from_str(metadata).unwrap();
+                assert_eq!(metadata["name"].as_str(), Some(expected_name.as_str()));
+                assert_eq!(metadata["disable-model-invocation"].as_bool(), Some(true));
+                assert_eq!(body, source.split_once("\n---\n").unwrap().1);
+            }
+            validate_copilot_command_name(command).unwrap();
+        }
+    }
+
+    #[test]
     fn idempotent_registration_does_not_duplicate_entries() {
         let td = TempDir::new().unwrap();
         let copilot_home = fake_copilot_home(&td);

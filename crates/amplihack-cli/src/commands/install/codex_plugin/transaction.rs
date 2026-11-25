@@ -74,6 +74,7 @@ fn install_scoped(
     fs::create_dir_all(home)?;
     path_scope::check()?;
     let prepared = prepare(root, home, binary, source, hooks_binary)?;
+    let removed = removed_inventory(&prepared.package, prepared.staged.path())?;
     path_scope::check()?;
     let result = commit(root, home, binary, &prepared);
     if let Err(error) = result {
@@ -85,10 +86,48 @@ fn install_scoped(
         return Err(error);
     }
     recover_install(root, binary, home)?;
+    crate::list_notice::record(
+        &super::super::paths::staging_claude_dir()?,
+        "Codex",
+        &removed,
+    )?;
     println!(
         "  ✅ Native Codex plugin installed; review exact hooks in Codex /hooks before trusting them"
     );
     Ok(true)
+}
+
+/// `prepare` verifies ownership and integrity before either inventory is read.
+/// The caller records the difference only after the transaction completes.
+pub(super) fn removed_inventory(
+    previous: &Path,
+    desired: &Path,
+) -> Result<crate::claude_plugin::PluginRegistration> {
+    fn inventory(package: &Path) -> Result<std::collections::BTreeSet<String>> {
+        let skills = package.join("skills");
+        if !skills.try_exists()? {
+            return Ok(Default::default());
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for entry in fs::read_dir(skills)? {
+            let entry = entry?;
+            if entry.path().join("SKILL.md").is_file() {
+                names.insert(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        Ok(names)
+    }
+    let before = inventory(previous)?;
+    let after = inventory(desired)?;
+    let mut report = crate::claude_plugin::PluginRegistration::default();
+    for name in before.difference(&after) {
+        if let Some(agent) = name.strip_prefix("amplihack-persona-") {
+            report.removed_agents.insert(agent.to_owned());
+        } else {
+            report.removed_skills.insert(name.to_owned());
+        }
+    }
+    Ok(report)
 }
 
 #[cfg(all(test, windows))]

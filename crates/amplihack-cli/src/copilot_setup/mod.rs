@@ -3,6 +3,8 @@
 pub(crate) mod fs_helpers;
 mod hooks;
 pub(crate) mod jsonc;
+#[cfg(test)]
+mod selection_tests;
 mod staging;
 
 use anyhow::{Context, Result};
@@ -10,8 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-use hooks::{build_wrapper_script, error_wrapper_script, replace_or_append_section};
-use hooks::{generate_copilot_instructions, stage_repo_hooks, write_user_level_hooks_with};
+use hooks::{build_wrapper_script, error_wrapper_script};
+use hooks::{remove_copilot_instructions, stage_repo_hooks, write_user_level_hooks_with};
 use staging::{register_plugin, stage_agents, stage_command_docs, stage_context, stage_skills};
 
 const INSTRUCTIONS_MARKER_START: &str = "<!-- AMPLIHACK_INSTRUCTIONS_START -->";
@@ -162,15 +164,11 @@ pub(crate) fn ensure_copilot_home_staged_with(
     let copilot_home = copilot_home()?;
     fs::create_dir_all(&copilot_home)?;
 
-    let agents_dir = staged.join("agents");
-    if agents_dir.is_dir() {
-        stage_agents(&agents_dir, &copilot_home)?;
-    }
-
-    let skills_dir = staged.join("skills");
-    if skills_dir.is_dir() {
-        stage_skills(&skills_dir, &copilot_home)?;
-    }
+    publish_tool_assets(
+        &staged,
+        &copilot_home,
+        &crate::user_config::list_selection(),
+    )?;
 
     let commands_dir = staged.join("commands").join("amplihack");
     if commands_dir.is_dir() {
@@ -183,7 +181,7 @@ pub(crate) fn ensure_copilot_home_staged_with(
         stage_context(&context_dir, &copilot_home)?;
     }
 
-    generate_copilot_instructions(&copilot_home)?;
+    remove_copilot_instructions(&copilot_home)?;
 
     if let Some(root) = repo_root {
         match stage_repo_hooks(root) {
@@ -209,6 +207,45 @@ pub(crate) fn ensure_copilot_home_staged_with(
     }
 
     Ok(())
+}
+
+/// Publish only amplihack's selected assets, without inheriting configuration,
+/// plugins, hooks or instruction files from another Copilot home.
+pub(crate) fn publish_tool_assets(
+    staged: &Path,
+    copilot_home: &Path,
+    selection: &amplihack_utils::list_selection::ListSelection,
+) -> Result<crate::claude_plugin::PluginRegistration> {
+    fs::create_dir_all(copilot_home)?;
+    let mut report = crate::claude_plugin::PluginRegistration::default();
+    let agents = copilot_home.join("agents/amplihack");
+    let previous = fs_helpers::walk_files(&agents)?;
+    if staged.join("agents").is_dir() {
+        stage_agents(&staged.join("agents"), copilot_home, selection)?;
+        report.removed_agents = previous
+            .into_iter()
+            .filter(|path| path.extension().is_some_and(|ext| ext == "md") && !path.exists())
+            .filter_map(|path| {
+                path.file_stem()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .collect();
+    }
+    if staged.join("skills").is_dir() {
+        let skills = stage_skills(&staged.join("skills"), copilot_home, selection)?;
+        report.published = skills.published;
+        report.skipped = skills.skipped;
+        report.preserved = skills.preserved;
+        report.removed_skills = skills.removed_skills;
+    }
+    crate::list_notice::record(staged, "Copilot", &report)?;
+    if !report.skipped.is_empty() {
+        anyhow::bail!(
+            "Copilot could not publish {} selected skills because their destinations contain changed or independent content",
+            report.skipped.len()
+        );
+    }
+    Ok(report)
 }
 
 fn staged_framework_dir() -> Result<PathBuf> {
@@ -287,8 +324,7 @@ mod tests {
                 .exists()
         );
         assert!(
-            !temp
-                .path()
+            temp.path()
                 .join(".copilot/skills/azure-devops-cli")
                 .exists()
         );
@@ -394,7 +430,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn legacy_cli_skill_cleanup_removes_symlink_without_touching_target() {
+    fn staging_preserves_unowned_skill_symlink_and_target() {
         use std::os::unix::fs::symlink;
 
         let _env_guard = crate::test_support::env_lock()
@@ -416,7 +452,7 @@ mod tests {
 
         ensure_copilot_home_staged_in(None).unwrap();
 
-        assert!(!legacy_parent.join("azure-devops-cli").exists());
+        assert!(legacy_parent.join("azure-devops-cli").exists());
         assert!(
             external_target.join("keep.md").exists(),
             "legacy cleanup must not follow symlinks into user-owned content"
@@ -433,17 +469,6 @@ mod tests {
             "agentStop" => "stop",
             _ => "",
         }
-    }
-
-    #[test]
-    fn replace_or_append_section_updates_existing_block() {
-        let existing =
-            format!("before\n{INSTRUCTIONS_MARKER_START}\nold\n{INSTRUCTIONS_MARKER_END}\nafter\n");
-        let updated = replace_or_append_section(&existing, "NEW");
-        assert!(updated.contains("before"));
-        assert!(updated.contains("after"));
-        assert!(updated.contains("NEW"));
-        assert!(!updated.contains("old"));
     }
 
     #[test]

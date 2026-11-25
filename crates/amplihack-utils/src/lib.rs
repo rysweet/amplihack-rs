@@ -63,6 +63,8 @@ pub mod knowledge_builder;
 /// and issue #1266.
 pub mod launch_target;
 pub mod launcher_context;
+/// Shared defaults and selection policy for model-visible skills and agents.
+pub mod list_selection;
 #[deprecated(
     since = "0.18.0",
     note = "use trace_logger directly; this compatibility module will be removed in 0.19.0"

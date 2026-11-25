@@ -327,7 +327,7 @@ fn env_reason(kind: ValueKind, var: &str, raw: &str) -> String {
         // No key of this kind has a variable (issue #2589), so this is
         // unreachable in practice; it stays a plain sentence rather than a
         // panic, because an added variable must not crash a load.
-        ValueKind::CommandList => format!("{var} is not a valid value"),
+        ValueKind::CommandList | ValueKind::EntryList => format!("{var} is not a valid value"),
         ValueKind::AgentBinary => {
             format!("{var} is not one of amplifier, claude, codex or copilot")
         }

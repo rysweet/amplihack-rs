@@ -13,14 +13,20 @@ pub(super) fn portable_instruction(source: &str) -> String {
         "Analyze code + comments",
     )
 }
-pub(super) fn instruction_skills(source: &Path, output: &Path, prefix: &str) -> Result<()> {
-    instruction_skills_under(source, source, output, prefix)
+pub(super) fn instruction_skills(
+    source: &Path,
+    output: &Path,
+    prefix: &str,
+    selection: &ListSelection,
+) -> Result<()> {
+    instruction_skills_under(source, source, output, prefix, selection)
 }
 pub(super) fn instruction_skills_under(
     source: &Path,
     base: &Path,
     output: &Path,
     prefix: &str,
+    selection: &ListSelection,
 ) -> Result<()> {
     if !source.exists() {
         return Ok(());
@@ -28,10 +34,15 @@ pub(super) fn instruction_skills_under(
     for e in fs::read_dir(source)? {
         let e = e?;
         if e.file_type()?.is_dir() {
-            instruction_skills_under(&e.path(), base, output, prefix)?;
+            instruction_skills_under(&e.path(), base, output, prefix, selection)?;
             continue;
         }
         if e.path().extension().is_none_or(|x| x != "md") {
+            continue;
+        }
+        let relative = e.path().strip_prefix(base)?.with_extension("");
+        let identity = relative.to_string_lossy().replace('\\', "/");
+        if prefix == "persona" && !selection.includes_agent(&identity) {
             continue;
         }
         let stem = e

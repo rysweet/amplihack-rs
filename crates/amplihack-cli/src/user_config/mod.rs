@@ -22,6 +22,8 @@ pub(crate) mod schema_governor;
 #[cfg(test)]
 mod tests_home_check;
 #[cfg(test)]
+mod tests_lists;
+#[cfg(test)]
 mod tests_load;
 #[cfg(test)]
 mod tests_schema;
@@ -305,6 +307,29 @@ pub(crate) fn load_user_only() -> Effective {
         env: &|name| std::env::var(name).ok(),
         migrate: true,
     })
+}
+
+/// Selection for assets a tool discovers. Framework staging stays complete.
+pub(crate) fn list_selection() -> amplihack_utils::list_selection::ListSelection {
+    use amplihack_utils::list_selection::{ListSelection, ListSet};
+
+    let config = load_user_only();
+    let set = config
+        .entry("lists.set")
+        .value
+        .as_ref()
+        .and_then(Value::as_text)
+        .and_then(|value| value.parse::<ListSet>().ok())
+        .unwrap_or_default();
+    let enabled = config
+        .entry("lists.enabled")
+        .value
+        .as_ref()
+        .and_then(Value::as_list)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|value| value.parse().ok());
+    ListSelection::new(set, enabled)
 }
 
 /// What the user config says about `agent.binary` for a run in `cwd`.

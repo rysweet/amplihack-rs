@@ -13,6 +13,7 @@ files.
 - [Keys](#keys)
   - [agent.binary](#agentbinary)
   - [paths.home](#pathshome)
+  - [lists.set and lists.enabled](#listsset-and-listsenabled)
   - [node.heap_consent and node.max_old_space_mb](#nodeheap_consent-and-nodemax_old_space_mb)
   - [recipe.verbose](#recipeverbose)
   - [recipe.step_timeout](#recipestep_timeout)
@@ -57,6 +58,8 @@ amplihack config list --show-origin
 ```text
 agent.binary = "claude"  # user (/home/alice/.amplihack/config.toml)
 paths.home = (unset)  # default
+lists.set = "default"  # default
+lists.enabled = []  # default
 node.heap_consent = true  # user (/home/alice/.amplihack/config.toml)
 node.max_old_space_mb = (unset)  # default
 recipe.verbose = true  # user (/home/alice/.amplihack/config.toml)
@@ -160,6 +163,8 @@ command, so it never prints `flag`.
 |-----|------|---------|---------|------|-------|
 | `agent.binary` | `claude`, `copilot`, `codex` or `amplifier` | (unset) | `AMPLIHACK_AGENT_BINARY` | — | user only |
 | `paths.home` | absolute path to an existing directory | (unset) | `AMPLIHACK_HOME` | — | user only |
+| `lists.set` | `default` or `all` | `default` | — | — | user only |
+| `lists.enabled` | array of qualified skill and agent identities | `[]` | — | — | user only |
 | `node.heap_consent` | bool | (unset) | — | — | user only |
 | `node.max_old_space_mb` | integer, 8192 to 32768 | (unset) | — | — | user only |
 | `recipe.verbose` | bool | `false` | — | `--verbose` | user, project |
@@ -287,6 +292,53 @@ decides which hooks run.
 ```sh
 amplihack config set paths.home /opt/amplihack
 ```
+
+### lists.set and lists.enabled
+
+`lists.set` chooses which installed skills and agents a tool lists to the model.
+`default` selects the shared set of 32 skills and 12 agents, plus entries in
+`lists.enabled`. `all` selects each tool's full inventory. The complete
+framework and directory index remain available in both modes.
+
+`lists.enabled` accepts a TOML array, including through `config set`. Quote the
+whole array to pass it as one shell argument:
+
+```sh
+amplihack config set lists.enabled '["skill:code-visualizer", "agent:core/guide"]'
+amplihack config get lists.enabled
+```
+
+Use `skill:<leaf-name>` for a skill and
+`agent:<bundle-relative-path-without-extension>` for an agent. Writes check
+entries against the installed directory index. Unknown entries are rejected
+before the configuration changes. Duplicate entries and entries already in
+the default set are omitted. An empty array means no extensions.
+
+Both settings are user-only. A project file cannot change them. Extensions
+remain recorded in `all` mode for a later return to `default`.
+
+`config set`, `config unset` and a successful user-scope `config edit` apply
+the resulting selection immediately to every tool already installed for
+amplihack. They do not install another tool. Start a new tool session to use
+the changed lists. If one publication fails, the command exits non-zero and
+reports failed and completed applications. The desired configuration remains
+saved; repeat the command after correcting the problem to finish publication.
+
+Restore the full lists with one command, without a separate install:
+
+```sh
+amplihack config set lists.set all
+```
+
+Setting `lists.set` back to `default`, or unsetting it, restores the smaller
+set plus saved extensions. Unsetting `lists.enabled` removes all explicit
+extensions. Codex's `all` mode keeps its established analyst exclusions;
+explicitly enabled analyst skills are packaged in `default` mode.
+
+For individual changes, use [`directory enable` and `directory disable`](directory-command.md#persistent-extensions).
+The [how-to](../howto/choose-listed-skills-and-agents.md) covers upgrades and
+the repository plugin limitation. That plugin always exposes the shared
+default set and reads neither list setting.
 
 ### node.heap_consent and node.max_old_space_mb
 
@@ -604,8 +656,7 @@ Extra entries for amplihack's
 into Claude Code's `permissions.deny`, the Codex execpolicy rules file and the
 Copilot CLI command line.
 
-This is the only list-valued key. `config set` writes scalars, so it is set by
-editing the user file:
+This key is set by editing the user file:
 
 ```toml
 [policy]

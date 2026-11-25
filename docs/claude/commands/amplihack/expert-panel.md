@@ -1,5 +1,6 @@
 ---
 name: amplihack:expert-panel
+disable-model-invocation: true
 version: 1.0.0
 description: Expert panel review with voting and consensus decision-making
 triggers:

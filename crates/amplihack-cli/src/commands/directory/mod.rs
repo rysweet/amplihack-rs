@@ -1,15 +1,21 @@
 //! `amplihack directory`: search the index of installed skills and agents
 //! (issue #3220).
 //!
-//! The index is written by `amplihack install` (see [`index`]). This command
-//! only reads it: it writes nothing. It finds the index in
+//! The index is written by `amplihack install` (see [`index`]). Discovery
+//! only reads it. Mutations change user configuration and tool assets,
+//! without rewriting the index. The command finds the index in
 //! the installer's own staging folder, through the same function the
 //! installer uses, so the two cannot disagree on its place.
 //!
 //! See docs/reference/directory-command.md.
 
+pub(crate) mod extensions;
 pub mod index;
+mod mutation;
+pub(crate) mod resolve;
 
+#[cfg(test)]
+mod mutation_tests;
 #[cfg(test)]
 mod tests;
 
@@ -32,6 +38,10 @@ pub enum DirectoryCommands {
         /// Words to look for. A quoted argument with spaces is matched as given.
         words: Vec<String>,
     },
+    /// Persist an additional skill or agent and publish it for installed tools.
+    Enable { name: String },
+    /// Remove an explicit extension. Default entries remain listed.
+    Disable { name: String },
 }
 
 /// Run a `directory` subcommand against the index of the installed framework.
@@ -74,6 +84,14 @@ fn run_in(staged: &Path, command: DirectoryCommands, out: &mut impl Write) -> Re
                 return Ok(());
             }
             print_entries(matches.into_iter(), out)
+        }
+        DirectoryCommands::Enable { name } => {
+            mutation::change(staged, &entries, &name, true)?;
+            writeln!(out, "enabled {name}")
+        }
+        DirectoryCommands::Disable { name } => {
+            mutation::change(staged, &entries, &name, false)?;
+            writeln!(out, "disabled {name}")
         }
     };
     // A reader that stops early, as in `directory find word | head -1`, closes

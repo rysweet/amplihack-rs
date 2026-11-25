@@ -35,9 +35,11 @@ Help users enable or troubleshoot language-server-backed code intelligence. This
 
 ## Native Helper
 
+Resolve the following paths from the folder of this SKILL.md.
+
 ```bash
-amplifier-bundle/skills/lsp-setup/scripts/lsp-setup.sh status
-amplifier-bundle/skills/lsp-setup/scripts/lsp-setup.sh recommend
+./scripts/lsp-setup.sh status
+./scripts/lsp-setup.sh recommend
 ```
 
 The helper detects common project languages, checks language-server availability on `PATH`, and prints ecosystem-standard install hints.

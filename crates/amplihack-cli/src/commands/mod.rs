@@ -112,6 +112,13 @@ fn run_supervised(
 
 /// Dispatch a parsed CLI command to the appropriate handler.
 pub fn dispatch(command: Commands) -> Result<()> {
+    // Discovery promises no writes, including notice display bookkeeping.
+    if !matches!(
+        &command,
+        Commands::Directory(directory::DirectoryCommands::Find { .. })
+    ) {
+        crate::list_notice::show_pending()?;
+    }
     match command {
         Commands::Install {
             local,
