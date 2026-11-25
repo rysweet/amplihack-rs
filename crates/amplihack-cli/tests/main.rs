@@ -626,6 +626,11 @@ mod issue_2756_user_git_config;
 #[path = "issue_2886_build_output_cleanup.rs"]
 mod issue_2886_build_output_cleanup;
 
+// Issue #3263: a claimed Cargo output folder that stayed empty because the run
+// never built with Cargo is removed when the run ends.
+#[path = "issue_3263_empty_claimed_target.rs"]
+mod issue_3263_empty_claimed_target;
+
 // Issue #2769: the #2663 outcome rule is the top-level drive's, not every
 // `autodrive-*` sub-recipe's.
 #[path = "issue_2769_autodrive_outcome_scope.rs"]
