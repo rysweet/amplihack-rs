@@ -58,6 +58,8 @@ mod issue_2922_helper_contract;
 #[cfg(unix)]
 mod issue_2922_inherited_config_dir;
 mod issue_527_tests;
+// Issue #3203: no file loaded as memory sits under amplifier-bundle/.
+mod issue_3203_bundle_memory_files;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]
 mod limit_resume_install;

@@ -1,8 +1,9 @@
 //! Issue #2030: the operating contract reaches Claude through
 //! `--append-system-prompt-file <0600 file>`, never as argv text.
 //!
-//! - [`ensure_contract_file`] writes the compiled-in
-//!   [`FRAGMENT`](super::system_prompt_append::FRAGMENT) to
+//! - [`ensure_contract_file`] writes the compiled-in contract, as returned by
+//!   [`installed_fragment`] (the source file without its maintainers'
+//!   comment), to
 //!   `<amplihack home>/private/system-prompt-append.md` (0600, in a 0700
 //!   directory owned by the current user) unless it is already exactly right.
 //!   The file is never read back as a source of content; only a bounded byte
@@ -280,7 +281,8 @@ fn kill_probe_group(pid: u32) {
     }
 }
 
-/// Write the compiled-in contract to `<home>/private/system-prompt-append.md`
+/// Write the compiled-in contract ([`installed_fragment`], without the source
+/// file's maintainers' comment) to `<home>/private/system-prompt-append.md`
 /// with mode 0600 in a 0700 directory, unless it is already exactly right.
 ///
 /// Runs at every launch that injects the contract, never at install. See the

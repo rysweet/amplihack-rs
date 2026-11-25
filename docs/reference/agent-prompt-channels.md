@@ -105,7 +105,8 @@ see [When the contract is injected](#when-the-contract-is-injected).
 
 The operating contract (`amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md`) is
 compiled into the binary. At each launch that injects it, amplihack writes
-those bytes to a file and passes the path:
+those bytes, less the maintainers' comment that opens the file, to a file and
+passes the path:
 
 ```text
 claude --model opus[1m] --append-system-prompt-file /home/alice/.amplihack/private/system-prompt-append.md <user args...>

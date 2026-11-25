@@ -188,12 +188,35 @@ fn user_supplied_append_flag(extra_args: &[String]) -> bool {
 
 /// The routing contract, ready to write to the contract file.
 ///
+/// This is [`FRAGMENT`] without the HTML comment that opens the source file.
+/// That comment is a note to maintainers, not text for the model, so it is
+/// left out of what the model reads (issue #3202). `FRAGMENT` keeps the whole
+/// file.
+///
 /// `Option` is kept because the empty case is a build mistake: an emptied
 /// bundle file would otherwise inject an empty system-prompt append, which is
 /// noise at system-prompt privilege. It is pinned by
 /// `the_compiled_in_fragment_is_not_empty`.
 pub(crate) fn installed_fragment() -> Option<&'static str> {
-    (!FRAGMENT.trim().is_empty()).then_some(FRAGMENT)
+    let text = without_leading_comment(FRAGMENT);
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// `text` without a `<!-- ... -->` comment that starts at its first byte, and
+/// without the one line break after that comment. Text that does not start
+/// with `<!--`, or has no closing `-->`, is returned unchanged.
+fn without_leading_comment(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("<!--") else {
+        return text;
+    };
+    let Some(end) = rest.find("-->") else {
+        return text;
+    };
+    let after = &rest[end + "-->".len()..];
+    after
+        .strip_prefix("\r\n")
+        .or_else(|| after.strip_prefix('\n'))
+        .unwrap_or(after)
 }
 
 // Issue #2030: the contract file and the version gate live in

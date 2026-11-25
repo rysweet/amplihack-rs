@@ -47,7 +47,10 @@ fn assert_good_contract(path: &Path) {
     );
     assert_eq!(meta.permissions().mode() & 0o777, 0o600);
     assert_eq!(meta.uid(), euid());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), FRAGMENT);
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        installed_fragment().unwrap()
+    );
     let dir = path.parent().unwrap();
     let dmeta = std::fs::symlink_metadata(dir).unwrap();
     assert!(dmeta.file_type().is_dir());
@@ -181,6 +184,36 @@ fn ensure_contract_file_creates_0600_file_in_0700_dir() {
     assert_good_contract(&path);
 }
 
+/// Issue #3202: the maintainers' comment that opens the source file is not
+/// written to the file the model reads; the rest of the source is.
+#[test]
+fn contract_file_omits_the_maintainers_comment() {
+    let home = tempfile::tempdir().unwrap();
+    let path = ensure_contract_file(home.path()).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        written.starts_with("# Amplihack operating contract"),
+        "the file must open with the contract heading: {written:?}"
+    );
+    assert!(
+        !written.contains("<!--"),
+        "the file must hold no HTML comment: {written:?}"
+    );
+    let removed = FRAGMENT
+        .strip_suffix(written.as_str())
+        .expect("the file must hold the rest of the source unchanged");
+    let removed = removed.trim();
+    assert!(
+        removed.starts_with("<!--") && removed.ends_with("-->"),
+        "only the leading comment is left out: {removed:?}"
+    );
+    assert_eq!(
+        removed.matches("-->").count(),
+        1,
+        "exactly one comment is left out: {removed:?}"
+    );
+}
+
 #[test]
 fn ensure_contract_file_is_idempotent_and_leaves_no_temp_files() {
     let home = tempfile::tempdir().unwrap();
@@ -223,11 +256,12 @@ fn contract_file_repairs_same_length_wrong_content() {
     // The length check is a shortcut, not the whole comparison.
     let home = tempfile::tempdir().unwrap();
     let path = ensure_contract_file(home.path()).unwrap();
-    let flipped: String = FRAGMENT
+    let written = installed_fragment().unwrap();
+    let flipped: String = written
         .chars()
         .map(|c| if c == 'a' { 'b' } else { c })
         .collect();
-    assert_eq!(flipped.len(), FRAGMENT.len());
+    assert_eq!(flipped.len(), written.len());
     std::fs::write(&path, flipped).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert_good_contract(&ensure_contract_file(home.path()).unwrap());
