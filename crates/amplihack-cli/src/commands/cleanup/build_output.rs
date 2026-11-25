@@ -342,11 +342,13 @@ fn remove(approved: Approved) -> Result<(), String> {
     if !meta.file_type().is_dir() || (meta.dev(), meta.ino()) != identity {
         return Err("it changed while it was being checked".to_string());
     }
-    // A folder approved because it was empty is removed only if it still is:
-    // `remove_dir` fails on anything written into it since, and the folder
-    // and its contents are kept. A Cargo target is removed whole;
-    // `remove_dir_all` does not follow links inside the tree on the pinned
-    // toolchain (CVE-2022-21658).
+    // A folder approved because it was empty is removed with `remove_dir`,
+    // so it goes only if it is still empty. If anything was written into it
+    // since, the call fails and the folder and its contents are kept.
+    //
+    // A Cargo target is removed whole with `remove_dir_all`. On the pinned
+    // toolchain that call does not follow links inside the tree
+    // (CVE-2022-21658).
     let outcome = if empty {
         fs::remove_dir(&at)
     } else {

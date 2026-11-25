@@ -857,6 +857,25 @@ This is why the claim must be accurate.
 
 A `CARGO_TARGET_DIR` that is unset or does not exist is skipped silently.
 
+#### An empty claimed folder that was kept
+
+An empty claimed folder has been removed at the end of a run since v1.2.194
+(#2906). Releases up to v1.2.193 have no end-of-run removal of a claimed
+folder at all. If an empty claimed folder is still there after a run on
+v1.2.194 or later, and no warning names it, the end-of-run step did not
+consider it. These are the known causes:
+
+- the run was nested: `AMPLIHACK_RUN_ID` was set and not empty in the
+  environment the launcher gave it, so the claim was ignored (see
+  [Nested runs](#nested-runs));
+- `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` was not exactly `1` in the
+  environment of the `amplihack recipe run` process;
+- the run never reached its end, for example because it was killed with
+  `SIGKILL`.
+
+A claimed folder that the step did consider and refused is always named in a
+warning, with the reason.
+
 ### Entries in owned-paths are checked
 
 The `owned-paths` file lives in the run's folder, which steps can write, so

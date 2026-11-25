@@ -11,6 +11,11 @@
 //! - a claimed folder that is still empty at the end of the run is removed;
 //! - a claimed folder holding one unrelated file is kept with that file;
 //! - the run's exit status is the same in both cases.
+//!
+//! The first test passes on the base of #3263's fix as well: an empty claimed
+//! folder has been removed since v1.2.194 (#2906), and the host report in
+//! #3263 did not reproduce. These tests pin that behaviour for a whole run;
+//! they do not reproduce the reported fault, whose cause is not known.
 
 #![cfg(unix)]
 
