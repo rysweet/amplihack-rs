@@ -19,6 +19,10 @@
 # the agent rejects is answered in a PR comment with its reason, once per
 # reason.
 #
+# An outcome may carry `treatment` (#3160), a string of at most 16 characters
+# kept for the reading's display of minor:<id> findings. Nothing checks it and
+# no action depends on it; a turn that omits it keeps the earlier value.
+#
 # Every subcommand re-checks <turn_dir> (autodrive_goal_lib.sh) and exits 2
 # when it is not a private turn folder. The driver passes the rest through
 # AUTODRIVE_* variables; the turn run (the agent step) gets none of them, so
@@ -46,7 +50,7 @@ case "$SUB:$WORD" in end:handoff|end:ready|end:stop|reading:|decision:|wait-owne
 OUTCOMES_CHECK='(.outcomes // null) as $o |
   if $o == null then "ok"
   elif ($o | type) != "array" then "outcomes is not an array"
-  elif ($o | length) > 64 then "outcomes has more than 64 entries"
+  elif ($o | length) > 256 then "outcomes has more than 256 entries"
   elif any($o[]; type != "object") then "every outcome is an object"
   elif any($o[]; (.name | type) != "string" or (.name | length) == 0 or (.name | utf8bytelength) > 200 or (.name | test("[[:cntrl:]]")))
     then "every outcome needs a name of 1 to 200 bytes on one line"
@@ -103,7 +107,7 @@ do_reading() {
       guidance:[($gd[0].entries // [])[] | {name, timestamp, caller, source, from_step, new, bytes}],
       guidance_mark:$mark, guidance_newest:(($gd[0].newest // "") | if . == "" then $mark else . end),
       guidance_error:($gd[0].error // null), previous:$prev, turns_dir:$turns,
-      outcomes:[$led[0][] | {name, status, evidence, reason, turn, answered}],
+      outcomes:[$led[0][] | {name, status, evidence, reason, turn, answered, treatment:(.treatment // null)}],
       outcomes_error:(if $led_err == "" then null else $led_err end),
       actions:{goal:($actions | split(" ") | map(select(. != ""))), shared:["continue","wait-owner","handoff","ready","stop"]},
       merging_allowed:($merging == "true")}' | goal_atomic_write "$TD/reading.json"
@@ -133,7 +137,8 @@ do_decision() {
     # `outcomes` is kept only when the agent gave it: a merge needs the list,
     # and an absent list is not the same as an empty one.
     jq -c '{schema_version:1, valid:true, action, args:(.args // {}), why:(.why // "" | tostring), problem:null}
-      + (if (.outcomes | type) == "array" then {outcomes:[.outcomes[] | {name, status, evidence:(.evidence // ""), reason:(.reason // "")}]} else {} end)' "$obj"
+      + (if (.outcomes | type) == "array" then {outcomes:[.outcomes[] | {name, status, evidence:(.evidence // ""), reason:(.reason // "")}
+        + (if (.treatment | type) == "string" then {treatment:(.treatment | .[0:16])} else {} end)]} else {} end)' "$obj"
   fi | goal_atomic_write "$TD/decision.json"
   rm -f -- "$obj"
   return 0
@@ -229,7 +234,8 @@ do_outcomes() {
   if ! jq -c --slurpfile old "$old" --argjson t "$((10#${TD##*/}))" '
       reduce (.outcomes // [])[] as $o ($old[0];
         (map(.name) | index($o.name)) as $i
-        | {name:$o.name, status:$o.status, evidence:$o.evidence, reason:$o.reason, turn:$t} as $e
+        | ({name:$o.name, status:$o.status, evidence:$o.evidence, reason:$o.reason, turn:$t}
+           + (if ($o.treatment | type) == "string" then {treatment:$o.treatment} else {} end)) as $e
         | if $i == null then . + [$e + {answered_reason:""}] else .[$i] |= (. + $e) end)
       | map(. + {answered:(.status == "rejected" and .reason != "" and (.answered_reason // "") == .reason)})' "$d" > "$new"; then
     rm -f -- "$old" "$new"; echo "ERROR: the turn's outcomes could not be merged into the ledger; it was left as it is" >&2; return 1

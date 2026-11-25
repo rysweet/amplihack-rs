@@ -128,6 +128,20 @@ case "${1:-} ${2:-}" in
       case "$prev" in --body-file|-F) cp -- "$a" "$G/comments/$n.md" ;; --body|-b) printf '%s' "$a" > "$G/comments/$n.md" ;; esac
       prev="$a"
     done ;;
+  "issue create")
+    t=""; b=""; bf=""; labels=""; prev=""; shift 2
+    for a in "$@"; do
+      case "$prev" in
+        -t|--title) t="$a" ;; -b|--body) b="$a" ;; -F|--body-file) bf="$a" ;;
+        -l|--label) labels="$labels$a"$'\n' ;;
+      esac
+      prev="$a"
+    done
+    if [ -n "$bf" ]; then if [ "$bf" = - ]; then b="$(cat)"; else b="$(cat -- "$bf")"; fi; fi
+    n=$(( $(cat "$G/issue.count" 2>/dev/null || echo 100) + 1 )); echo "$n" > "$G/issue.count"
+    jq -cn --argjson n "$n" --arg t "$t" --arg b "$b" --arg l "$labels" \
+      '{n:$n,title:$t,body:$b,labels:($l | split("\n") | map(select(. != "")))}' >> "$G/issues.jsonl"
+    echo "https://github.com/o/r/issues/$n" ;;
   "pr ready"|"pr edit") exit 0 ;;
   "repo view") echo '{"nameWithOwner":"o/r","defaultBranchRef":{"name":"main"}}' | filter "$@" ;;
   "auth status") exit 0 ;;
@@ -578,6 +592,35 @@ impl Harness {
             .iter()
             .map(|p| fs::read_to_string(p).unwrap())
             .collect()
+    }
+
+    /// Issues the run filed through `gh issue create`: `{n, title, body, labels}`.
+    pub fn issues(&self) -> Vec<Value> {
+        fs::read_to_string(self.gh.join("issues.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// A stand-in review: round `n` ended `MINOR_ONLY` at `head`, with one
+    /// `{id, summary}` line per finding in its `.minor` file.
+    pub fn plant_minor_round(&self, n: u32, head: &str, findings: &[(&str, &str)]) {
+        let record = serde_json::json!({"crusty_verdict": "MINOR_ONLY", "concern_count": 0,
+            "head_sha": head, "reviewed_head_sha": head});
+        let name = format!("crusty-round-{n:03}.json");
+        let minor: String = findings
+            .iter()
+            .map(|(id, s)| format!("{}\n", serde_json::json!({"id": id, "summary": s})))
+            .collect();
+        for (f, body) in [
+            (name.clone(), format!("{record}\n")),
+            (format!("{name}.minor"), minor),
+        ] {
+            let p = self.state.join(f);
+            fs::write(&p, body).unwrap();
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        }
     }
 
     pub fn loop_end(&self) -> Value {

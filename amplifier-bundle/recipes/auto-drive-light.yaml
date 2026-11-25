@@ -52,6 +52,10 @@ context:
   # #1888: as in auto-drive-to-merge; empty leaves the choice to the
   # repository's own allowed methods.
   merge_method: ""
+  # #3160: as in auto-drive-to-merge: fix_all (the default, also when empty),
+  # judge or file_all. An unknown value runs as fix_all and the reading
+  # reports it.
+  autodrive_minor_findings: ""
   light_prereqs: ""
   autodrive_pr_input: ""
   light_task_id: ""
@@ -465,6 +469,7 @@ steps:
       autodrive_dry_run: "{{autodrive_dry_run}}"
       no_merge: "{{no_merge}}"
       merge_method: "{{merge_method}}"
+      autodrive_minor_findings: "{{autodrive_minor_findings}}"
       plan_task_id: "{{light_task_id}}"
   - id: "light-report"
     type: "bash"
