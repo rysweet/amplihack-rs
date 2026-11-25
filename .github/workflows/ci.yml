@@ -232,6 +232,9 @@ jobs:
       - name: Recipes — every committing recipe prepares its identity (issue #1394)
         shell: bash
         run: bash tests/recipe_commit_identity_static_test.sh
+      - name: Git identity helper, resolution order and repo-local stop (issue #3267)
+        shell: bash
+        run: bash tests/git_identity_test.sh
       - name: Invisible-char scan — stays dependency-free (issue #1397)
         shell: bash
         run: bash tests/issue_1397_invisible_scan_stays_dependency_free.sh

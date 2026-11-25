@@ -330,6 +330,134 @@ else
     record_fail "malformed explicit identity fails closed" "rc=$rc output: $out"
 fi
 
+# --- Contract: repo-local step of the resolution order (issue #3267) ----------
+# Each case runs a real commit in a temporary clone with a GitHub remote and an
+# authenticated fake gh, under `env -i`, so no AMPLIHACK_GIT_* or GIT_* value
+# from the caller's environment reaches the helper. A set repo-local identity
+# that is rejected, or only half set, must stop the commit. The provider
+# identity is used only when no repo-local identity is set.
+CHECKPOINT_HELPER="$REPO_ROOT/amplifier-bundle/tools/workflow_checkpoint_commit.sh"
+PROVIDER_EMAIL="583231+octocat@users.noreply.github.com"
+mkdir -p "$TMPROOT/home"
+
+new_commit_repo() {
+    local name="$1"
+    local repo
+    repo="$(new_repo "$name" "https://github.com/octo/repo.git")"
+    printf 'base\n' >"$repo/file.txt"
+    git -C "$repo" add file.txt
+    HOME="$TMPROOT/home" git -C "$repo" -c user.name="Seed Author" -c user.email="seed@example.com" \
+        commit -q -m seed
+    printf 'change\n' >>"$repo/file.txt"
+    git -C "$repo" add file.txt
+    printf '%s\n' "$repo"
+}
+
+# run_commit <repo> <route> [VAR=value...]: commits the staged change through
+# the helper. Route `direct` is `amplihack_prepare_git_commit_identity && git
+# commit`; route `guard` is `commit_with_pre_commit_guard` from
+# workflow_checkpoint_commit.sh, called inside `if` as the recipes call it.
+# Writes stderr to <repo>.err and returns the commit's exit status.
+run_commit() {
+    local repo="$1"
+    local route="$2"
+    shift 2
+    (
+        cd "$repo" || exit 1
+        env -i \
+            GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true \
+            PATH="$fake_bin:$PATH" \
+            HOME="$TMPROOT/home" \
+            HELPER="$HELPER" \
+            CHECKPOINT_HELPER="$CHECKPOINT_HELPER" \
+            ROUTE="$route" \
+            "$@" \
+            bash -c '
+                set -uo pipefail
+                . "$HELPER"
+                . "$CHECKPOINT_HELPER"
+                if [ "$ROUTE" = guard ]; then
+                    if commit_with_pre_commit_guard -q -m change; then exit 0; else exit "$?"; fi
+                fi
+                amplihack_prepare_git_commit_identity && git commit -q -m change
+            '
+    ) >/dev/null 2>"$repo.err"
+}
+
+# expect_no_commit <desc> <repo> <route> [VAR=value...]
+expect_no_commit() {
+    local desc="$1"
+    local repo="$2"
+    local route="$3"
+    shift 3
+    local head_before head_after rc=0 authors
+    head_before="$(git -C "$repo" rev-parse HEAD)"
+    run_commit "$repo" "$route" "$@" || rc=$?
+    head_after="$(git -C "$repo" rev-parse HEAD)"
+    authors="$(git -C "$repo" log --all --format='%ae %ce')"
+    if [ "$rc" -eq 0 ]; then
+        record_fail "$desc" "commit exited 0"
+    elif [ "$head_before" != "$head_after" ]; then
+        record_fail "$desc" "a commit was made: $(git -C "$repo" log -1 --format='%an <%ae> / %cn <%ce>')"
+    elif printf '%s' "$authors" | grep -qF "$PROVIDER_EMAIL"; then
+        record_fail "$desc" "the provider identity was used"
+    elif [ ! -s "$repo.err" ]; then
+        record_fail "$desc" "no reason was written to stderr"
+    else
+        record_pass "$desc"
+    fi
+}
+
+# expect_commit_as <desc> <repo> <route> <expected "name <email> / name <email>">
+expect_commit_as() {
+    local desc="$1"
+    local repo="$2"
+    local route="$3"
+    local expected="$4"
+    local head_before rc=0 actual
+    head_before="$(git -C "$repo" rev-parse HEAD)"
+    run_commit "$repo" "$route" || rc=$?
+    actual="$(git -C "$repo" log -1 --format='%an <%ae> / %cn <%ce>')"
+    if [ "$rc" -ne 0 ]; then
+        record_fail "$desc" "commit exited $rc: $(cat "$repo.err")"
+    elif [ "$(git -C "$repo" rev-parse HEAD)" = "$head_before" ]; then
+        record_fail "$desc" "no commit was made"
+    else
+        assert_eq "$desc" "$expected" "$actual"
+    fi
+}
+
+for route in direct guard; do
+    repo="$(new_commit_repo "rejected-local-$route")"
+    git -C "$repo" config --local user.name "amplihack-agent"
+    git -C "$repo" config --local user.email "agent@amplihack.local"
+    expect_no_commit "rejected repo-local identity stops the commit ($route)" "$repo" "$route"
+
+    repo="$(new_commit_repo "name-only-local-$route")"
+    git -C "$repo" config --local user.name "Repo Local User"
+    expect_no_commit "repo-local user.name without user.email stops the commit ($route)" "$repo" "$route"
+
+    repo="$(new_commit_repo "email-only-local-$route")"
+    git -C "$repo" config --local user.email "repo.local@example.com"
+    expect_no_commit "repo-local user.email without user.name stops the commit ($route)" "$repo" "$route"
+
+    repo="$(new_commit_repo "no-local-$route")"
+    expect_commit_as "no repo-local identity commits as the provider identity ($route)" "$repo" "$route" \
+        "Octo Cat <$PROVIDER_EMAIL> / Octo Cat <$PROVIDER_EMAIL>"
+
+    repo="$(new_commit_repo "blank-local-$route")"
+    git -C "$repo" config --local user.name "   "
+    git -C "$repo" config --local user.email "   "
+    expect_commit_as "blank repo-local identity counts as unset and uses the provider ($route)" "$repo" "$route" \
+        "Octo Cat <$PROVIDER_EMAIL> / Octo Cat <$PROVIDER_EMAIL>"
+
+    repo="$(new_commit_repo "valid-local-$route")"
+    git -C "$repo" config --local user.name "Repo Local User"
+    git -C "$repo" config --local user.email "repo.local@example.com"
+    expect_commit_as "valid repo-local identity is used as author and committer ($route)" "$repo" "$route" \
+        "Repo Local User <repo.local@example.com> / Repo Local User <repo.local@example.com>"
+done
+
 if [ ! -f "$TMPROOT/home/.gitconfig" ]; then
     record_pass "identity preparation does not mutate global git config"
 else

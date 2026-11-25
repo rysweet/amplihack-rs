@@ -95,9 +95,11 @@ Amplihack never writes global Git config.
 
 ## Provider behavior
 
-GitHub repositories can infer identity from authenticated `gh` when explicit
-Amplihack variables, safe Git environment variables, and safe repo-local Git
-config are unavailable. Amplihack uses the public GitHub email when available
+GitHub repositories can infer identity from authenticated `gh` when no explicit
+Amplihack variables, no Git environment identity and no repo-local `user.name`
+or `user.email` are set. A repo-local identity that is set but rejected, or
+set only in part, stops the commit with the reason and is not replaced with
+the provider identity. Amplihack uses the public GitHub email when available
 and the authenticated account's GitHub noreply email otherwise. It uses the
 public profile name when available, falling back to the login when the profile
 name is empty. The resulting name and email must pass validation.
