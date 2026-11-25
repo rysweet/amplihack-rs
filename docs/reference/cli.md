@@ -56,6 +56,7 @@ The version string comes from the `__version__` attribute in `amplihack/__init__
 | `wait`       | Sleep for `--seconds N` (0 to 86400) inside the amplihack process, then exit 0. Starts no child process and prints nothing. Use it instead of `tail -f /dev/null` or `timeout N tail -f /dev/null`, which the `pre-tool-use` hook denies; to wait for a command, run it in the background and use `wait $pid`. See [Wait Without Leaving Orphan Processes](../howto/wait-without-orphan-processes.md). |
 | `install`    | Install amplihack agents and tools to `~/.claude`.                                          |
 | `uninstall`  | Remove amplihack agents and tools from `~/.claude`.                                         |
+| `directory`  | Search the index of installed skills and agents that `install` writes. `directory find WORD...` prints every entry whose name or description contains all the words. See [directory command](./directory-command.md). |
 | `update`     | Self-update the amplihack binary, then automatically run `install` to refresh framework assets. Pass `--skip-install` (alias `--no-install`) for a binary-only update. |
 | `claude`     | Launch Claude Code. Preferred explicit launcher in user-facing docs.                        |
 | `launch`     | Compatibility alias for `claude`; `amplihack` with no subcommand also launches Claude Code. |

@@ -60,7 +60,7 @@ pub(super) fn global_claude_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".claude"))
 }
 
-pub(super) fn staging_claude_dir() -> Result<PathBuf> {
+pub(crate) fn staging_claude_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".amplihack").join(".claude"))
 }
 

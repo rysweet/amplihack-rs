@@ -9,6 +9,7 @@ pub mod cleanup;
 pub mod completions;
 pub mod config;
 pub mod cs_validate;
+pub mod directory;
 pub mod doctor;
 pub mod fleet;
 pub mod governor;
@@ -128,6 +129,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Usage(cmd) => usage::run(cmd),
         Commands::Cleanup(args) => cleanup::run(args),
         Commands::Governor(cmd) => governor::run(cmd),
+        Commands::Directory(cmd) => directory::run(cmd),
         Commands::Agent(cmd) => agent::run_agent(cmd),
         Commands::Launch {
             resume,
