@@ -93,6 +93,8 @@ fn refresh_staged_assets(staged: &Path) -> Result<()> {
         },
     )?;
     let (root, layout) = super::directories::find_source_root(&source.root)?;
+    crate::copilot_setup::adopt_previous_skill_ownership(staged)
+        .context("failed to capture legacy Copilot skill ownership before replacing definitions")?;
     super::directories::copytree_manifest(&root, layout, staged)?;
     super::write_layout_marker(staged, layout)
 }

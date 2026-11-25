@@ -402,6 +402,129 @@ fn update_from_full_install_preserves_edits_and_unowned_skills() {
     assert_eq!(fs::read(notice).unwrap(), saved);
 }
 
+// Verbatim Markdown payloads from PR base 439a20122d52d08abe727c27d43e9fe8bbc32bfc.
+// All three SKILL.md definitions change in this release; compare destinations
+// with the old staged payload, rather than with the incoming bundle.
+const LEGACY_COPILOT_FILES: [(&str, &str); 7] = [
+    (
+        "lsp-setup/README.md",
+        include_str!("fixtures/issue_3240_legacy_copilot/lsp-setup/README.md"),
+    ),
+    (
+        "lsp-setup/SKILL.md",
+        include_str!("fixtures/issue_3240_legacy_copilot/lsp-setup/SKILL.md"),
+    ),
+    (
+        "context-management/QUICK_START.md",
+        include_str!("fixtures/issue_3240_legacy_copilot/context-management/QUICK_START.md"),
+    ),
+    (
+        "context-management/README.md",
+        include_str!("fixtures/issue_3240_legacy_copilot/context-management/README.md"),
+    ),
+    (
+        "context-management/SKILL.md",
+        include_str!("fixtures/issue_3240_legacy_copilot/context-management/SKILL.md"),
+    ),
+    (
+        "code-visualizer/README.md",
+        include_str!("fixtures/issue_3240_legacy_copilot/code-visualizer/README.md"),
+    ),
+    (
+        "code-visualizer/SKILL.md",
+        include_str!("fixtures/issue_3240_legacy_copilot/code-visualizer/SKILL.md"),
+    ),
+];
+
+#[test]
+fn base_version_copilot_upgrade_without_ownership_refreshes_and_narrows() {
+    // Exercise both writers that replace framework definitions: install and a
+    // list change against an older version. Do not use the new publisher to
+    // create the starting installation or its ownership manifest.
+    for list_change in [false, true] {
+        let install = Installation::new();
+        let staged = install.path(".amplihack/.claude");
+        for (relative, body) in LEGACY_COPILOT_FILES {
+            if relative.ends_with("SKILL.md") {
+                assert_ne!(
+                    fs::read(
+                        install
+                            .source
+                            .join("amplifier-bundle/skills")
+                            .join(relative)
+                    )
+                    .unwrap(),
+                    body.as_bytes(),
+                    "{relative} must exercise a changed release payload"
+                );
+            }
+            // These skills have no nested Markdown; this is exactly the old
+            // Copilot publisher's flattened, Markdown-only installation.
+            for root in [staged.join("skills"), install.path(".copilot/skills")] {
+                let file = root.join(relative);
+                fs::create_dir_all(file.parent().unwrap()).unwrap();
+                fs::write(file, body).unwrap();
+            }
+        }
+        fs::write(install.path(".amplihack/.installed-version"), "0.0.0").unwrap();
+        fs::write(
+            install.path(".copilot/config.json"),
+            r#"{"installedPlugins":[{"name":"amplihack"}]}"#,
+        )
+        .unwrap();
+        let edited = install.path(".copilot/skills/code-visualizer/SKILL.md");
+        fs::write(&edited, "user edit\n").unwrap();
+        let independent = install.path(".copilot/skills/independent");
+        fs::create_dir_all(&independent).unwrap();
+        fs::write(independent.join("SKILL.md"), "independent\n").unwrap();
+        let record = install.path(".copilot/copilot-skills-manifest.json");
+        assert!(!record.exists());
+
+        let upgrade = || {
+            if list_change {
+                install.run(&["config", "set", "lists.set", "default"]);
+            } else {
+                install.install();
+            }
+        };
+        upgrade();
+        let expected: BTreeSet<_> = DEFAULT_SKILLS
+            .iter()
+            .copied()
+            .chain(["code-visualizer", "independent"])
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(skill_names(&install.path(".copilot/skills")), expected);
+        assert_eq!(
+            fs::read(install.path(".copilot/skills/lsp-setup/SKILL.md")).unwrap(),
+            fs::read(
+                install
+                    .source
+                    .join("amplifier-bundle/skills/lsp-setup/SKILL.md")
+            )
+            .unwrap()
+        );
+        assert!(!install.path(".copilot/skills/context-management").exists());
+        assert_eq!(fs::read(&edited).unwrap(), b"user edit\n");
+        assert_eq!(
+            fs::read(independent.join("SKILL.md")).unwrap(),
+            b"independent\n"
+        );
+        let ownership: serde_json::Value =
+            serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        let owned: BTreeSet<_> = ownership["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|skill| skill["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(owned, DEFAULT_SKILLS.map(str::to_owned).into());
+        let published = snapshot(&install.path(".copilot/skills"));
+        upgrade();
+        assert_eq!(snapshot(&install.path(".copilot/skills")), published);
+    }
+}
+
 #[test]
 fn automatic_launch_repair_narrows_lists_and_saves_the_notice() {
     let install = Installation::new();

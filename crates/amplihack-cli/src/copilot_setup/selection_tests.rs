@@ -241,3 +241,51 @@ fn instruction_migration_removes_empty_file_and_leaves_unowned_files_alone() {
         b"leave this file"
     );
 }
+
+#[test]
+fn legacy_upgrade_preserves_selected_edits_and_does_not_readopt_ownership() {
+    let source = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    for name in ["lsp-setup", "default-workflow"] {
+        write(
+            source.path(),
+            &format!("skills/{name}/SKILL.md"),
+            "old release",
+        );
+        write(
+            home.path(),
+            &format!("skills/{name}/SKILL.md"),
+            "old release",
+        );
+    }
+    let edited = home.path().join("skills/default-workflow/SKILL.md");
+    fs::write(&edited, "user edit").unwrap();
+    staging::adopt_previous_skill_ownership(&source.path().join("skills"), home.path()).unwrap();
+    let record = home.path().join("copilot-skills-manifest.json");
+    let adopted = fs::read(&record).unwrap();
+    for name in ["lsp-setup", "default-workflow"] {
+        write(
+            source.path(),
+            &format!("skills/{name}/SKILL.md"),
+            "new release",
+        );
+    }
+    // A retry must retain the old digest, which authorizes the upgrade, rather
+    // than comparing the destination to the incoming definitions again.
+    staging::adopt_previous_skill_ownership(&source.path().join("skills"), home.path()).unwrap();
+    assert_eq!(fs::read(&record).unwrap(), adopted);
+    let report = staging::stage_skills(
+        &source.path().join("skills"),
+        home.path(),
+        &ListSelection::default(),
+    )
+    .unwrap();
+    assert_eq!(report.published, BTreeSet::from(["lsp-setup".to_owned()]));
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.skipped[0].name, "default-workflow");
+    assert_eq!(fs::read(&edited).unwrap(), b"user edit");
+    assert_eq!(
+        fs::read(home.path().join("skills/lsp-setup/SKILL.md")).unwrap(),
+        b"new release"
+    );
+}

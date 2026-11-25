@@ -132,6 +132,12 @@ pub(crate) fn user_config_registers_amplihack(copilot_home: &Path) -> Result<boo
     Ok(named("installedPlugins") || named("plugins") || hooks::has_amplihack_owned_hook(&config))
 }
 
+/// Capture legacy Copilot ownership before an installer replaces the staged
+/// framework definitions. A user's changed or independent trees stay unowned.
+pub(crate) fn adopt_previous_skill_ownership(staged: &Path) -> Result<()> {
+    staging::adopt_previous_skill_ownership(&staged.join("skills"), &copilot_home()?)
+}
+
 pub fn ensure_copilot_home_staged(user_config: UserConfig) -> Result<()> {
     // Resolve the repo root from the current working directory exactly once,
     // up-front. This preserves the historical behaviour for the production

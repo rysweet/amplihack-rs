@@ -122,21 +122,14 @@ pub(super) fn stage_skills(
     }
 
     let record = copilot_home.join("copilot-skills-manifest.json");
-    let legacy = tempfile::tempdir()?;
-    if selection.set == ListSet::All || !record.try_exists()? {
-        // Older releases copied only Markdown and flattened each top-level
-        // folder. Adopt exactly matching copies, never a user's replacement.
-        for entry in fs::read_dir(source_skills)? {
-            let entry = entry?;
-            if entry.path().is_dir()
-                && (selection.set == ListSet::All
-                    || copilot_home.join("skills").join(entry.file_name()).is_dir())
-            {
-                let expected = legacy.path().join(entry.file_name());
-                fs::create_dir_all(&expected)?;
-                fs_helpers::flatten_markdown_tree(&entry.path(), &expected)?;
-            }
-        }
+    let legacy = if selection.set == ListSet::All || !record.try_exists()? {
+        legacy_skill_tree(source_skills)?
+    } else {
+        tempfile::tempdir()?
+    };
+    if !record.try_exists()? {
+        // Fallback for a legacy launch that does not replace the staged
+        // definitions. Upgrade paths adopt against the previous payload first.
         crate::claude_plugin::adopt_legacy_skills(
             legacy.path(),
             &copilot_home.join("skills"),
@@ -166,6 +159,34 @@ pub(super) fn stage_skills(
         &record,
         selection,
     )
+}
+
+/// Record byte-identical legacy copies while the previous staged payload is
+/// still available. Never infer ownership from a matching folder name alone.
+pub(super) fn adopt_previous_skill_ownership(
+    source_skills: &Path,
+    copilot_home: &Path,
+) -> Result<()> {
+    let record = copilot_home.join("copilot-skills-manifest.json");
+    if record.try_exists()? || !source_skills.is_dir() || !copilot_home.join("skills").is_dir() {
+        return Ok(());
+    }
+    let legacy = legacy_skill_tree(source_skills)?;
+    crate::claude_plugin::adopt_legacy_skills(legacy.path(), &copilot_home.join("skills"), &record)
+}
+
+fn legacy_skill_tree(source_skills: &Path) -> Result<tempfile::TempDir> {
+    let legacy = tempfile::tempdir()?;
+    // Older releases copied only Markdown, flattening each top-level folder.
+    for entry in fs::read_dir(source_skills)? {
+        let entry = entry?;
+        if entry.path().is_dir() {
+            let expected = legacy.path().join(entry.file_name());
+            fs::create_dir_all(&expected)?;
+            fs_helpers::flatten_markdown_tree(&entry.path(), &expected)?;
+        }
+    }
+    Ok(legacy)
 }
 
 pub(super) fn stage_command_docs(source_commands: &Path, copilot_home: &Path) -> Result<usize> {
