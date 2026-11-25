@@ -113,9 +113,14 @@ fn run_supervised(
 /// Dispatch a parsed CLI command to the appropriate handler.
 pub fn dispatch(command: Commands) -> Result<()> {
     // Discovery promises no writes, including notice display bookkeeping.
+    // The detached child must restore the caller's environment before reading
+    // installation state. Its recipe-run child handles any deferred notice.
     if !matches!(
         &command,
         Commands::Directory(directory::DirectoryCommands::Find { .. })
+            | Commands::Recipe {
+                command: RecipeCommands::DetachedChild { .. }
+            }
     ) {
         crate::list_notice::show_pending()?;
     }
