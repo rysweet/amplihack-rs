@@ -799,7 +799,7 @@ guidance.
 | Claude Code, `launch`, RustyClawd, prompt in argv | End of the prompt sent on stdin, after the `-p` text. When input is also piped to `amplihack`, the block comes after that input. |
 | Claude Code in print mode (`-p` or `--print` with no prompt text), prompt already on stdin | The runner's own form, such as `amplihack claude -- --system-prompt-file <file> -p --add-dir .`. After the caller's stdin closes, the block is written to Claude's stdin, so it follows the step's prompt. The block is written only if the caller's stdin gave at least one byte that is not white space; see [Stdin that gives no text](#stdin-that-gives-no-text). The stderr line above and the `guidance_injected` record are written after Claude exits, and only if the block was written in full. |
 | GitHub Copilot CLI, prompt in argv | End of the `-p <text>` prompt, before it is written to the private prompt file. |
-| GitHub Copilot CLI, no `-p` or `-i`, prompt piped on stdin | After the caller's stdin closes, as for Claude print mode. The help of the pinned Copilot CLI (1.0.114) names piped stdin as a prompt source beside `-i` and `-p`, and Copilot CLI 1.0.114 and 1.0.115 were seen to read a block after the piped prompt. That depends on Copilot, so it is checked by a test run by hand against the installed Copilot, not in CI; see [Checking Copilot's stdin](#checking-copilots-stdin). Delivery is reported only once the block was written in full. With nothing on stdin the launch is recorded as a `no_prompt_on_stdin` drop. |
+| GitHub Copilot CLI, no `-p` or `-i`, prompt piped on stdin | After the caller's stdin closes, as for Claude print mode. The help of the pinned Copilot CLI (1.0.114) names piped stdin as a prompt source beside `-i` and `-p`, and Copilot CLI 1.0.114 and 1.0.115 were seen to read a block after the piped prompt. That depends on Copilot, so it is checked by a test run by hand against the installed Copilot, not in CI; see [Checking Copilot's stdin](#checking-copilots-stdin). Delivery is reported only once the block was written in full, so for this route "read" means written in full to Copilot's stdin. If Copilot closed its stdin first, the launch is recorded as a `trailer_not_written` drop. With nothing on stdin it is a `no_prompt_on_stdin` drop. |
 | GitHub Copilot CLI, `-i`, or a `-p` file reference the caller gave | No guidance; recorded as a `launch_form_unsupported` drop. |
 | Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written, if that stdin gave text. The stderr line above and the `guidance_injected` record are written after Codex exits, and only if the block was written and flushed to Codex's stdin in full. If Codex closed its stdin first, neither is written and the launch is recorded as a `trailer_not_written` drop. With nothing on stdin, it is a `no_prompt_on_stdin` drop. Other Codex forms receive no guidance and are recorded as drops. |
 
@@ -824,17 +824,36 @@ reported as read.
 
 #### Checking Copilot's stdin
 
+Two things must hold for guidance on this route to reach the model, and they
+are checked in different ways.
+
+What amplihack does is checked in CI.
+`crates/amplihack-cli/tests/issue_3162_copilot_stdin_launcher.rs` runs the
+real launcher in the Copilot form (no `-p` or `-i`) against a stand-in Copilot
+that copies its stdin to a file. It checks that the stand-in gets the caller's
+prompt and then one block, with a single `guidance_injected` record naming the
+entry; that a Copilot which closes its stdin before the block gets no block
+and a `trailer_not_written` drop, with the entry still not read; and that a
+launch with nothing on stdin is a `no_prompt_on_stdin` drop.
+
 Whether Copilot reads a block after a piped prompt is Copilot's behaviour, not
-amplihack's. `crates/amplihack-cli/tests/issue_3162_copilot_stdin_live.rs`
-starts the real launcher with the real Copilot CLI, a piped prompt that asks
-for one token and guidance that asks for another, and checks that Copilot's
-answer holds both and that the step recorded the entry as read. It needs a
-signed-in Copilot and makes one model call, so it is marked `#[ignore]` and
-is run by hand after a Copilot upgrade:
+amplihack's, and no CI job checks it.
+`crates/amplihack-cli/tests/issue_3162_copilot_stdin_live.rs` starts the real
+launcher with the real Copilot CLI, a piped prompt that asks for one token and
+guidance that asks for another, and checks that Copilot's answer holds both
+and that the step recorded the entry as read. It needs a signed-in Copilot and
+makes one model call, so it is marked `#[ignore]` and is run by hand after a
+Copilot upgrade:
 
 ```console
 $ cargo test -p amplihack-cli --test cli_integration -- --ignored issue_3162_copilot_stdin_live
 ```
+
+Until that check has an automated form, a Copilot release that stops reading
+past the first prompt would still be reported as read, because the block was
+written in full. Issue
+[#3225](https://github.com/rysweet/amplihack-rs/issues/3225) tracks the
+automated check.
 
 ### When a step cannot take guidance
 
@@ -914,10 +933,12 @@ An append writes:
 ```
 
 An agent step that received guidance writes to the log of each folder it
-read. For most agent CLIs this happens once the agent process has started.
-For Codex it happens after Codex exits, and only when the block was written
-to Codex's stdin in full; see [Agent CLIs](#what-the-agent-receives). A
-successful write means the pipe accepted the bytes, not that Codex read them.
+read. When the block is part of a prompt given in argv, this happens once the
+agent process has started. When the block follows a prompt on stdin (Claude
+print mode, Codex `exec … -`, Copilot with no prompt flag), it happens after
+the agent exits, and only when the block was written to the agent's stdin in
+full; see [Agent CLIs](#what-the-agent-receives). A successful write means
+the pipe accepted the bytes, not that the agent read them.
 
 ```json
 {"event":"guidance_injected","ts":"2026-11-12T09:20:11.554013873Z","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81","entries":2,"bytes":231,"entry_names":["20261112T091405.120458911Z-48211-0.md","20261112T091722.003114920Z-48390-0.md"]}

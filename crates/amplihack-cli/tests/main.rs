@@ -66,6 +66,9 @@ mod issue_3162_nested_recipe_guidance;
 // PR #3190 review: Copilot reads a block after a stdin prompt (run by hand).
 #[path = "issue_3162_copilot_stdin_live.rs"]
 mod issue_3162_copilot_stdin_live;
+// PR #3190 review: the launcher's half of the Copilot stdin route, in CI.
+#[path = "issue_3162_copilot_stdin_launcher.rs"]
+mod issue_3162_copilot_stdin_launcher;
 // #3129 PR 2: the build goal loop and the old tools it keeps alive.
 #[path = "issue_3129_build_loop/mod.rs"]
 mod issue_3129_build_loop;

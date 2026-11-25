@@ -33,12 +33,18 @@
 //! Copilot and stdin: Copilot CLI 1.0.114 and 1.0.115, launched with no
 //! prompt flag and a piped stdin, took the whole of stdin as their prompt,
 //! including a block after the caller's text (prompt and trailer each asked
-//! for a token; both were printed). The check is
+//! for a token; both were printed). The launcher's half of this route (the
+//! block after the prompt, `guidance_injected` only after a full write,
+//! `trailer_not_written` when Copilot closes stdin first, `no_prompt_on_stdin`
+//! with nothing on stdin) is checked in CI against a stand-in Copilot by
+//! `tests/issue_3162_copilot_stdin_launcher.rs`. Copilot's half, that it
+//! reads the block at all, is checked only by
 //! `tests/issue_3162_copilot_stdin_live.rs`, which is run by hand against
 //! the installed Copilot because it needs a signed-in Copilot and a model
-//! call; run it after a Copilot upgrade. Delivery is still reported only
-//! once the bytes were written; a child that closed stdin first records
-//! `trailer_not_written`.
+//! call; run it after a Copilot upgrade. For this route, "read" therefore
+//! means the block was written in full to Copilot's stdin, not that a
+//! check has shown the installed Copilot reads it. Issue #3225 tracks an
+//! automated form of that check.
 
 use super::codex_copilot_rewrite;
 use super::passthrough_rewrite;
