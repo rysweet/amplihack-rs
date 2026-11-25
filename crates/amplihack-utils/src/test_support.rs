@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-/// The five profile-redirecting variables and the guards that keep a test's
+/// The six profile-redirecting variables and the guards that keep a test's
 /// settings writes inside its own temporary home (issue #2922). One
 /// definition, shared with the other crates' `test_support`.
 #[path = "../../../tests/support/claude_profile_isolation.rs"]
@@ -45,7 +45,7 @@ pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
 pub(crate) struct EnvGuard {
     previous: Vec<(OsString, Option<OsString>)>,
     // Field order is drop order, and `Drop::drop` below runs before either
-    // field: the variables this guard set are restored first, then the five
+    // field: the variables this guard set are restored first, then the six
     // profile variables.
     _profile: Option<claude_profile_isolation::ClaudeProfileIsolation>,
 }
@@ -87,7 +87,7 @@ impl Drop for EnvGuard {
 ///
 /// This also fires [`claude_profile_isolation::purge_inherited`] (issue
 /// #2922), so an inherited `CLAUDE_CONFIG_DIR` cannot send a settings write
-/// out of `path`. The purge has no restore; a fixture that needs the five
+/// out of `path`. The purge has no restore; a fixture that needs the six
 /// profile variables put back afterwards takes a [`HomeGuard`] instead.
 ///
 /// The caller must hold `env_lock()`.
@@ -154,7 +154,7 @@ impl Drop for CwdGuard {
 pub(crate) struct HomeGuard {
     previous: Option<std::ffi::OsString>,
     // Issue #2922. Field order is drop order, and `Drop::drop` below runs
-    // before either field, so `HOME` is restored first and the five profile
+    // before either field, so `HOME` is restored first and the six profile
     // variables after it.
     _profile: claude_profile_isolation::ClaudeProfileIsolation,
 }
@@ -163,7 +163,7 @@ impl HomeGuard {
     /// Set `HOME` to `path`, returning a guard that restores (or unsets) the
     /// prior value on drop.
     ///
-    /// The guard also clears the five variables that would redirect a settings
+    /// The guard also clears the six variables that would redirect a settings
     /// write out of `path` ([`claude_profile_isolation`], issue #2922) and
     /// restores them with `HOME`.
     pub(crate) fn set(path: &Path) -> Self {

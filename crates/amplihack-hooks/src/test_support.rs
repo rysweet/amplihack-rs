@@ -21,7 +21,7 @@
 use std::ffi::OsString;
 use std::sync::{Mutex, OnceLock};
 
-/// The five profile-redirecting variables and the guards that keep a test's
+/// The six profile-redirecting variables and the guards that keep a test's
 /// settings writes inside its own temporary home (issue #2922). One
 /// definition, shared with the other crates' `test_support`.
 #[path = "../../../tests/support/claude_profile_isolation.rs"]
@@ -107,7 +107,7 @@ pub(crate) fn blarify_not_disabled() -> EnvVarGuard {
 /// guards saving one variable restore it in the wrong order, which is why the
 /// separate `AMPLIHACK_HOME` guard this type used to carry is gone.
 ///
-/// Field order is drop order: `HOME` is restored first, then the five.
+/// Field order is drop order: `HOME` is restored first, then the six.
 #[allow(dead_code)]
 pub(crate) struct IsolatedStateHome {
     _home: EnvVarGuard,
