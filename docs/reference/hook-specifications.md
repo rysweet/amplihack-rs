@@ -270,16 +270,16 @@ either one can deny, so a harmless `command` does not hide a `cmd` that kills
 the user's server.
 
 **Position.** The guard is the first check `PreToolUseHook::process` makes for
-a shell tool: it runs before the XPIA check, the Skill redirect, the merge
-guard and the non-Bash early return. The checks after it answer with a bare
-`{"block": true, "message": …}`, which Claude Code does not act on (#1773).
+a shell tool: it runs before the XPIA check, the Skill redirect and the non-Bash early
+return. Every check answers a refusal in the same deny shape, shown under
+**Response** below (#1773).
 XPIA is off by default (#1734). When a user opts in with `XPIA_ENABLED=true`,
 its command-injection pattern matches a separator or newline followed by `rm`,
 `kill` and similar words. If XPIA ran first, it would answer for `TMUX_TMPDIR=$SB/tmuxsock tmux
 kill-server; rm -rf "$SB"`, for a `tmux -C attach <<EOF` heredoc whose body is
-`kill-server`, and for `tmux new -d 'sleep 1' \; kill-server`, and on Claude
-Code the command would run. Running the guard first gives those commands the
-deny shown under **Response** below. The guard only ever denies, so running
+`kill-server`, and for `tmux new -d 'sleep 1' \; kill-server`, and its reason
+would replace the guard's own. Running the guard first gives those commands
+the guard's reason. The guard only ever denies, so running
 it first cannot let through a command that a later check refuses: a command
 the guard allows goes on to XPIA and the other checks unchanged.
 
@@ -818,8 +818,8 @@ is allowed; this differs from the tmux guard, which joins the string
 elements and checks them.
 
 **Position.** The guard runs in `PreToolUseHook::process` directly after the
-tmux guard, and before the XPIA check, the Skill redirect, the merge guard and
-the non-Bash early return. When both guards match, the tmux guard's deny is
+tmux guard, and before the XPIA check, the Skill redirect and the non-Bash
+early return. When both guards match, the tmux guard's deny is
 returned.
 
 **What it denies.** A command in which, after tokenising with the shared

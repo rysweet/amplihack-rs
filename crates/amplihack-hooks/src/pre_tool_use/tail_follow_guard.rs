@@ -140,19 +140,7 @@ pub(super) fn check(command: &str) -> Option<Value> {
 
 fn deny_response() -> Value {
     warn!("tail-follow guard denied tail following a never-ending device (#1794)");
-    serde_json::json!({
-        "block": true,
-        "message": BLOCK_MESSAGE,
-        "decision": "block",
-        "reason": BLOCK_MESSAGE,
-        "permissionDecision": "deny",
-        "permissionDecisionReason": BLOCK_MESSAGE,
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": BLOCK_MESSAGE,
-        },
-    })
+    super::deny(BLOCK_MESSAGE)
 }
 
 /// Whether `text`, read at `depth`, runs a `tail` that follows a device.

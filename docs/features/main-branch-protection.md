@@ -77,10 +77,7 @@ git commit -m "fix: update authentication logic"
 ```
 ⛔ Direct commits to 'main' branch are not allowed.
 
-Please use the feature branch workflow:
-  1. Create a feature branch: git checkout -b feature/your-feature-name
-  2. Make your commits on the feature branch
-  3. Create a Pull Request to merge into main
+Commit on a branch and open a pull request.
 
 This protection cannot be bypassed with --no-verify.
 ```
@@ -100,10 +97,7 @@ git commit --amend --no-edit
 ```
 ⛔ Direct commits to 'master' branch are not allowed.
 
-Please use the feature branch workflow:
-  1. Create a feature branch: git checkout -b feature/your-feature-name
-  2. Make your commits on the feature branch
-  3. Create a Pull Request to merge into master
+Commit on a branch and open a pull request.
 
 This protection cannot be bypassed with --no-verify.
 ```
@@ -135,10 +129,7 @@ git commit --no-verify -m "quick fix"
 ```
 ⛔ Direct commits to 'main' branch are not allowed.
 
-Please use the feature branch workflow:
-  1. Create a feature branch: git checkout -b feature/your-feature-name
-  2. Make your commits on the feature branch
-  3. Create a Pull Request to merge into main
+Commit on a branch and open a pull request.
 
 This protection cannot be bypassed with --no-verify.
 ```
@@ -414,15 +405,22 @@ Check for --no-verify flag → Found → Block ❌ (existing protection)
 Allow ✅
 ```
 
+### Response Shape
+
+A refused commit gets the shared PreToolUse deny (#1773): `block` and
+`message`, `decision: "block"` and `reason`, a top-level
+`permissionDecision: "deny"` and `hookSpecificOutput.permissionDecision:
+"deny"`, each carrying the message below. Claude Code, Copilot and Codex all
+act on it. The hook exits 0, so a refusal is information for the agent's next
+step, not a failed hook. The check reads the `Bash` tool; Copilot's `bash`
+tool does not reach it.
+
 ### Error Message Template
 
 ```rust
 MAIN_BRANCH_ERROR_MESSAGE = """⛔ Direct commits to '{branch}' branch are not allowed.
 
-Please use the feature branch workflow:
-  1. Create a feature branch: git checkout -b feature/your-feature-name
-  2. Make your commits on the feature branch
-  3. Create a Pull Request to merge into {branch}
+Commit on a branch and open a pull request.
 
 This protection cannot be bypassed with --no-verify."""
 ```

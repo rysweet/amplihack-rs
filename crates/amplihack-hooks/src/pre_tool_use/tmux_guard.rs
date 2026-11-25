@@ -351,19 +351,7 @@ pub(super) fn check(command: &str) -> Option<Value> {
 
 fn deny_response() -> Value {
     warn!("tmux guard denied an unscoped tmux kill-server or kill-session -a (#1733)");
-    serde_json::json!({
-        "block": true,
-        "message": BLOCK_MESSAGE,
-        "decision": "block",
-        "reason": BLOCK_MESSAGE,
-        "permissionDecision": "deny",
-        "permissionDecisionReason": BLOCK_MESSAGE,
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": BLOCK_MESSAGE,
-        },
-    })
+    super::deny(BLOCK_MESSAGE)
 }
 
 fn is_dangerous(text: &str) -> bool {
