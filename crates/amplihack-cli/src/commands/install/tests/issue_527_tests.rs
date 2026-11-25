@@ -82,7 +82,7 @@ fn stage_recipe_runner_stub(bin_dir: &Path) -> std::path::PathBuf {
 /// place a `recipe-runner-rs` stub on PATH for some tests and explicitly
 /// omit it for others. We also always set `AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL=1`
 /// so the cargo-install fallback never reaches the network during tests.
-fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
+pub(super) fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
