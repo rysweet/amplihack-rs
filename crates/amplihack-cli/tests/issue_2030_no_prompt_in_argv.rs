@@ -318,7 +318,26 @@ fn claude_launch_uses_contract_file() {
     assert_eq!(rec.path, f.contract_path());
     assert_private(&rec, false);
     assert_eq!(rec.parent_mode, "700", "private/ is 0700: {rec:?}");
-    assert_eq!(f.content(1, "--append-system-prompt-file"), contract_text());
+    // Issue #3202: the model reads the contract without the maintainers'
+    // comment that opens the source file, and nothing else is left out.
+    let delivered = f.content(1, "--append-system-prompt-file");
+    assert!(
+        delivered.starts_with("# Amplihack operating contract"),
+        "the delivered file must open with the contract heading: {delivered:?}"
+    );
+    assert!(
+        !delivered.contains("<!--"),
+        "the delivered file must hold no HTML comment: {delivered:?}"
+    );
+    let source = contract_text();
+    let removed = source
+        .strip_suffix(delivered.as_str())
+        .expect("the delivered file must hold the rest of the source unchanged")
+        .trim();
+    assert!(
+        removed.starts_with("<!--") && removed.ends_with("-->"),
+        "only the leading comment is left out: {removed:?}"
+    );
 }
 
 #[test]
@@ -587,6 +606,11 @@ fn opt_out_skips_the_gate_and_the_contract() {
     assert!(
         !argv.iter().any(|a| a.starts_with("--append-system-prompt")),
         "{argv:?}"
+    );
+    let contract = f.contract_path().to_string_lossy().into_owned();
+    assert!(
+        !argv.iter().any(|a| a.contains(&contract)),
+        "no contract file is passed: {argv:?}"
     );
     assert_argv_clean(&argv, &[]);
 }
