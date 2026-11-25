@@ -28,14 +28,17 @@ pub(crate) fn apply() -> Result<()> {
     let tools = [
         (
             "Claude Code",
-            Ok(staged
+            staged
                 .join("install/claude-skills-manifest.json")
-                .try_exists()?
-                || home.join(".claude/skills/amplihack").try_exists()?),
+                .try_exists()
+                .and_then(|found| Ok(found || home.join(".claude/skills/amplihack").try_exists()?))
+                .map_err(Into::into),
         ),
         (
             "Codex",
-            Ok(home.join(".amplihack/codex/ownership.json").try_exists()?),
+            home.join(".amplihack/codex/ownership.json")
+                .try_exists()
+                .map_err(Into::into),
         ),
         (
             "Copilot",
@@ -78,13 +81,12 @@ fn apply_codex(staged: &Path) -> Result<()> {
     let source = clone::find_bundled_framework_root()
         .context("framework source is unavailable; run `amplihack install` and retry")?;
     let hooks = binary::stable_hooks_binary()?;
-    crate::freshness::with_provider("codex", || {
-        ensure!(
-            codex_plugin::install(&source.root, &hooks)?,
-            "the installed Codex package could not be updated"
-        );
-        Ok(())
-    })
+    // As the installer does, Codex is optional here: when it is not
+    // available it is skipped, and the other tools decide the exit status.
+    if !codex_plugin::install(&source.root, &hooks)? {
+        eprintln!("amplihack: warning: Codex is not available; its list was not updated.");
+    }
+    Ok(())
 }
 
 fn apply_installed(
@@ -161,6 +163,36 @@ mod tests {
             assert!(diagnostic.contains(tool));
         }
         apply_installed(&tools, |_| Ok(())).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_installation_path_is_a_failure_of_its_own_entry() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let locked = home.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let probe = locked.join("ownership.json").try_exists();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if probe.is_ok() {
+            // Running with privileges that read any folder; nothing to test.
+            return;
+        }
+        let tools = [
+            ("Claude Code", Ok(true)),
+            ("Codex", probe.map_err(Into::into)),
+            ("Copilot", Ok(true)),
+        ];
+        let mut published = Vec::new();
+        let error = apply_installed(&tools, |tool| {
+            published.push(tool.to_owned());
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(published, ["Claude Code", "Copilot"]);
+        assert!(error.to_string().contains("Codex"));
     }
 
     #[test]
