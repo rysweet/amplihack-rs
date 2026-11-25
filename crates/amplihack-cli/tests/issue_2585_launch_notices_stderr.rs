@@ -37,7 +37,12 @@ const AGENT_STDERR_MARKER: &str = "fake-agent-stderr-2585";
 // `AGENT_STDOUT` and `AGENT_STDERR_MARKER` above.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
+  --version)
+    case "$0" in
+      *codex) echo 'codex-cli 0.166.0' ;;
+      *) echo '2.1.319 (Claude Code)' ;;
+    esac
+    exit 0 ;;
 esac
 printf '%s\n' '{"ok":true}'
 printf '%s\n' 'fake-agent-stderr-2585' >&2
@@ -76,7 +81,14 @@ impl Fixture {
         fs::create_dir_all(user_config.parent().unwrap()).unwrap();
         fs::write(&user_config, "[node]\nheap_consent = true\n").unwrap();
 
-        crate::support::exec_stub::write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
+        for tool in ["claude", "copilot", "codex"] {
+            crate::support::exec_stub::write_executable(&tools.join(tool), FAKE_CLAUDE, 0o755);
+        }
+        crate::support::exec_stub::write_executable(
+            &tools.join("codex-code-mode-host"),
+            "#!/bin/sh\nexit 0\n",
+            0o755,
+        );
 
         Self {
             _tmp: tmp,
@@ -92,8 +104,17 @@ impl Fixture {
     /// The command a recipe agent step runs, isolated, with only this
     /// fixture's environment.
     fn agent_step(&self) -> Command {
+        self.launch("claude")
+    }
+
+    fn launch(&self, tool: &str) -> Command {
         let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
-        c.args(["claude", "--dangerously-skip-permissions", "-p", "step"])
+        let args = match tool {
+            "codex" => vec![tool, "exec", "step"],
+            "copilot" => vec![tool, "-p", "step"],
+            _ => vec![tool, "--dangerously-skip-permissions", "-p", "step"],
+        };
+        c.args(args)
             .current_dir(&self.work)
             .env(
                 "PATH",
@@ -102,8 +123,11 @@ impl Fixture {
             .env("HOME", &self.home)
             .env("AMPLIHACK_HOME", &self.amplihack_home)
             .env("CLAUDE_CONFIG_DIR", &self.config)
+            .env("CODEX_HOME", self.home.join(".codex"))
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.profiles)
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
+            .env("AMPLIHACK_COPILOT_BINARY_PATH", self.tools.join("copilot"))
+            .env("AMPLIHACK_CODEX_BINARY_PATH", self.tools.join("codex"))
             .env("AMPLIHACK_NONINTERACTIVE", "1")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
@@ -126,6 +150,44 @@ fn describe(out: &Output) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     )
+}
+
+/// Suppression is visible on stderr for each launcher. The agent's stdout
+/// remains suitable for a recipe step to parse.
+#[test]
+fn inherited_hook_suppression_has_one_stderr_notice() {
+    use amplihack_types::AMPLIHACK_HOOK_TEXT;
+    for tool in ["claude", "copilot", "codex"] {
+        for setting in [None, Some("none"), Some("NONE"), Some("")] {
+            let fx = Fixture::new();
+            let mut command = fx.launch(tool);
+            if let Some(value) = setting {
+                command.env(AMPLIHACK_HOOK_TEXT, value);
+            }
+            let out = command.output().unwrap();
+            assert!(
+                out.status.success(),
+                "{tool} {setting:?}: {}",
+                describe(&out)
+            );
+            assert_eq!(
+                out.stdout,
+                AGENT_STDOUT,
+                "{tool} {setting:?}: {}",
+                describe(&out)
+            );
+            let notices = String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .filter(|line| line.contains(AMPLIHACK_HOOK_TEXT))
+                .count();
+            assert_eq!(
+                notices,
+                usize::from(setting == Some("none")),
+                "{tool} {setting:?}: {}",
+                describe(&out)
+            );
+        }
+    }
 }
 
 /// The acceptance test from #2585: with a saved consent, stdout is exactly

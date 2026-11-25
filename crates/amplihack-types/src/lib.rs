@@ -27,3 +27,6 @@ pub use paths::{
 };
 /// Deserialized settings from `settings.json`.
 pub use settings::Settings;
+
+/// Environment setting for omitting the text hooks add to model context.
+pub const AMPLIHACK_HOOK_TEXT: &str = "AMPLIHACK_HOOK_TEXT";

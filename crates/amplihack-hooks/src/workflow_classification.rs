@@ -64,6 +64,10 @@ enum TopicDecision {
 }
 
 impl Hook for WorkflowClassificationReminderHook {
+    fn model_text(&self) -> Option<crate::hook_text::ModelText> {
+        Some(crate::hook_text::ModelText::ClassificationReminder)
+    }
+
     fn name(&self) -> &'static str {
         "workflow_classification_reminder"
     }

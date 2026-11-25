@@ -97,6 +97,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_HOME` | user preference | `paths.home` | Root for framework assets, hooks and runtime state. |
 | `AMPLIHACK_HOOK_CONTRACT` | internal |  | Not an env var: suffix of the `CANONICAL_AMPLIHACK_HOOK_CONTRACT` constant. |
 | `AMPLIHACK_HOOK_PROTOCOL` | internal |  | Hook wire protocol, set by the Codex plugin's wrapper script. |
+| `AMPLIHACK_HOOK_TEXT` | user preference |  | Exact `none` omits participating hooks' context text and skips Stop checks. Unset keeps existing behaviour. See [Omit hook context text](../howto/omit-hook-context-text.md). |
 | `AMPLIHACK_HOOK_SPECS` | internal |  | Not an env var: the install crate's hook spec table. |
 | `AMPLIHACK_IDLE_POLL_MS` | user preference |  | Idle-watchdog poll interval. |
 | `AMPLIHACK_IDLE_TIMEOUT_SECS` | user preference |  | Idle-watchdog timeout. |

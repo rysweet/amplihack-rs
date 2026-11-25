@@ -5,6 +5,8 @@
 
 mod agent_memory;
 mod capacity_notice;
+/// Optional suppression of model-context text from participating hooks.
+pub mod hook_text;
 mod original_request;
 mod prompt_input;
 mod state_dir;

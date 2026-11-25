@@ -189,6 +189,8 @@ pub struct Rig {
     pub standin: Standin,
     /// Where the barrier's two FIFOs live, when the rig has one.
     barrier: Option<(File, File)>,
+    /// Variables set on every hook command after the fixture defaults.
+    env: Vec<(String, String)>,
 }
 
 impl Rig {
@@ -270,11 +272,17 @@ impl Rig {
                 screen: screen_file,
             },
             barrier,
+            env: Vec::new(),
         }
     }
 
     pub fn resume_dir(&self) -> PathBuf {
         self.root.join(".auto-switch.d/resume")
+    }
+
+    pub fn with_env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.to_string(), value.to_string()));
+        self
     }
 
     /// The resume folder as the rotator leaves it, private and present.
@@ -351,6 +359,7 @@ impl Rig {
         if let Some(t) = toggle {
             c.env("AMPLIHACK_CLAUDE_AUTO_SWITCH", t);
         }
+        c.envs(self.env.iter().map(|(key, value)| (key, value)));
         c
     }
 
