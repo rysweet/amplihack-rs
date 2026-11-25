@@ -3,7 +3,7 @@
 //!
 //! Drives the real `amplihack recipe run` with the stub runner of
 //! `issue_2738_support`, launched in the fixture's caller checkout, which
-//! holds no Cargo workspace. Each run gets a claimed folder of its own inside
+//! has no Cargo workspace. Each run gets a claimed folder of its own inside
 //! the fixture's tempfile root and has `AMPLIHACK_RUN_ID` removed, so it is
 //! the outermost run and never inherits a claim from the process running it.
 //!

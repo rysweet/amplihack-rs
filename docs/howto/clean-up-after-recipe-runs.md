@@ -838,7 +838,7 @@ removed only when all of these hold. Otherwise it is skipped with a reason:
 - it has no `.git` at its root;
 - it is empty (no entries at all) or carries the Cargo marker
   (`CACHEDIR.TAG` or `.rustc_info.json`), so a folder holding only unrelated
-  files is refused. A run that never builds with Cargo, for example in a
+  files is rejected. A run that never builds with Cargo, for example in a
   repository with no Rust code, leaves its claimed folder empty, and that
   folder is removed;
 - an empty folder is removed only while it is still empty, never
@@ -873,7 +873,7 @@ consider it. These are the known causes:
 - the run never reached its end, for example because it was killed with
   `SIGKILL`.
 
-A claimed folder that the step did consider and refused is always named in a
+A claimed folder that the step did consider and rejected is always named in a
 warning, with the reason.
 
 ### Entries in owned-paths are checked
