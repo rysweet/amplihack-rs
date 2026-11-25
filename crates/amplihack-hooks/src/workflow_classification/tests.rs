@@ -5,8 +5,10 @@
 //! and the state file in `marker`, the work-request rule and verb-led reports
 //! in `work_request`, the gates and robustness cases in `gates`, and the
 //! routing prompt and its docs in `prompt_docs`. `layout` holds the module to
-//! the crate's line budget.
+//! the crate's line budget. `provenance` holds the prompts that are not a
+//! person's (issue #2533).
 
+use super::provenance::STEP_ID_ENV;
 use super::*;
 use std::fs;
 
@@ -14,6 +16,7 @@ mod gates;
 mod layout;
 mod marker;
 mod prompt_docs;
+mod provenance;
 mod support;
 mod work_request;
 
@@ -92,6 +95,7 @@ fn human_prompts_are_still_routed() {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+    let _step = crate::test_support::EnvVarGuard::unset(STEP_ID_ENV);
     let _depth = crate::test_support::EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     assert!(!is_agent_authored_prompt());
 }
@@ -261,6 +265,7 @@ fn emits_the_copilot_shape_for_a_human_prompt() {
     let temp = tempfile::tempdir().unwrap();
     let dirs = ProjectDirs::from_root(temp.path());
     let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+    let _step = crate::test_support::EnvVarGuard::unset(STEP_ID_ENV);
 
     let out = classify(&dirs, "s-copilot", None, "Please investigate this issue");
 
@@ -295,6 +300,7 @@ fn a_runtime_that_reports_no_turn_count_is_still_throttled() {
     let temp = tempfile::tempdir().unwrap();
     let dirs = ProjectDirs::from_root(temp.path());
     let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+    let _step = crate::test_support::EnvVarGuard::unset(STEP_ID_ENV);
 
     // Every prompt below omits turnCount, exactly as Copilot sends it.
     let routed: Vec<bool> = (0..8)
@@ -336,6 +342,7 @@ fn a_reported_turn_count_is_used_verbatim() {
     let temp = tempfile::tempdir().unwrap();
     let dirs = ProjectDirs::from_root(temp.path());
     let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+    let _step = crate::test_support::EnvVarGuard::unset(STEP_ID_ENV);
 
     let first = classify(&dirs, "s-claude", Some(0), "Please investigate this");
     assert!(first.get("additionalContext").is_some());

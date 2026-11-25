@@ -33,6 +33,10 @@ context:
   # squash wherever squash is allowed. A method the repository does not allow
   # is never used; the drive hands the PR off instead.
   merge_method: ""
+  # #3160: how minor review findings are treated: fix_all (the default, also
+  # when empty), judge or file_all. An unknown value runs as fix_all and the
+  # reading reports it in goal.autodrive_minor_findings_error.
+  autodrive_minor_findings: ""
   autodrive_pr_input: ""
   # Retired (#3129): accepted for one release and ignored; the loop has no
   # round or time budget.
@@ -108,6 +112,7 @@ steps:
       autodrive_dry_run: "{{autodrive_dry_run}}"
       no_merge: "{{no_merge}}"
       merge_method: "{{merge_method}}"
+      autodrive_minor_findings: "{{autodrive_minor_findings}}"
       step_recovery_dir: "{{step_recovery_dir}}"
   # The run's outcome is the runner's report (report.rs), built from the
   # driver's loop-end.json and the merge action's merge-result.json; this step

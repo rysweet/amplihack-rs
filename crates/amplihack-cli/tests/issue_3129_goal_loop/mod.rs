@@ -13,6 +13,7 @@ mod drive;
 mod goal_tool;
 mod guidance_cli;
 mod kept_description;
+mod minor_findings;
 mod required_outcomes;
 pub(crate) mod support;
 mod turn_failures;
