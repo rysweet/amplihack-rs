@@ -40,6 +40,7 @@ Several of these variables have a persistent equivalent in the [user config file
   - [Context-derived recipe variables](#context-derived-recipe-variables)
   - [AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES](#amplihack_context_env_budget_bytes)
 - [Variables read by amplihack](#variables-read-by-amplihack)
+  - [AMPLIHACK_HOOK_TEXT](#amplihack_hook_text)
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
@@ -1024,6 +1025,19 @@ for the derivation, essential-key set, and smallest-first fill.
 ---
 
 ## Variables read by amplihack
+
+### AMPLIHACK_HOOK_TEXT
+
+Set exactly `none` to omit the text participating hooks add to model context.
+Unset preserves existing behaviour silently. Every other explicit value,
+including an empty value, preserves behaviour and produces an escaped
+diagnostic on stderr from a participating hook.
+
+Context hooks still run their bookkeeping. Stop approves without lock mode,
+power steering or reflection. PreToolUse enforcement, StopFailure limit-resume,
+other hooks, control fields and failure output remain unchanged. Claude,
+Copilot and Codex launches report suppression on stderr. Child sessions inherit
+the setting. See [Omit hook context text](../howto/omit-hook-context-text.md).
 
 These variables influence `amplihack`'s behaviour but are not set by it.
 

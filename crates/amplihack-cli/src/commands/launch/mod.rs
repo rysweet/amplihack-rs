@@ -384,6 +384,18 @@ fn run_launch_core(
         return child_status(exit_code);
     }
 
+    if matches!(
+        agent_binary_for_tool(tool),
+        Some(AgentBinary::Claude | AgentBinary::Copilot | AgentBinary::Codex)
+    ) && std::env::var_os(amplihack_types::AMPLIHACK_HOOK_TEXT).as_deref()
+        == Some(std::ffi::OsStr::new("none"))
+    {
+        eprintln!(
+            "amplihack: {}=none omits hook context text; Stop approves without lock mode, power steering or reflection. Child sessions inherit this setting.",
+            amplihack_types::AMPLIHACK_HOOK_TEXT
+        );
+    }
+
     // Issue #2030, launch order step 1: rewrite the passthrough arguments of a
     // Claude, Codex or Copilot launch so no prompt text reaches the agent's
     // argv. After the Docker hand-off: the amplihack inside the container

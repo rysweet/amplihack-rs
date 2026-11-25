@@ -1,5 +1,31 @@
 # Hook Specifications Reference
 
+## Optional hook text suppression
+
+With `AMPLIHACK_HOOK_TEXT=none`, SessionStart, UserPromptSubmit and the workflow
+classification reminder run normally, then omit `additionalContext`,
+`systemMessage` and `hookSpecificOutput.additionalContext`. Empty context
+envelopes are removed. Other fields, including control decisions and indexing
+diagnostics, are preserved before conversion to the host's protocol. This also
+omits capacity notices from participating hooks.
+
+Stop approves without running lock mode, power steering or reflection, after
+normal input validation. Codex keeps its existing Stop no-op. Malformed input
+and hook failures retain the existing failure policy and response. PreToolUse,
+PostToolUse, PreCompact, SessionEnd, precommit-prefs and StopFailure limit-resume
+are outside the setting. Command enforcement remains active.
+
+Only exact `none` suppresses text. An unset variable preserves behaviour
+silently. Any other explicit value, including an empty or non-UTF-8 value,
+preserves behaviour with one bounded, escaped diagnostic on stderr from each
+participating hook invocation. The variable is read before stdin, so invalid
+input does not hide that diagnostic.
+
+The variable is inherited by child sessions. The shared Claude, Copilot and
+Codex launcher reports suppression and the skipped Stop functions on stderr.
+See [Omit hook context text](../howto/omit-hook-context-text.md) for use and
+restoring the default for a child session.
+
 amplihack registers 8 hooks in `~/.claude/settings.json` when you run `amplihack install`. This page documents each hook: its Claude Code event, the binary or script that runs, and its timeout.
 
 ## Canonical Hook Table
