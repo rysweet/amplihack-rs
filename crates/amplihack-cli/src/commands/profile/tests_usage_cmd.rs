@@ -3203,3 +3203,52 @@ fn a_not_signed_in_row_sorts_after_readings_and_before_errors() {
         ["zz-work", "ac-scratch", "ab-timeout", "aa-error"]
     );
 }
+
+/// Issue #3181: `profile usage` shows a login at no less than the rotator's
+/// highest reading of it in the same window, and only for display.
+#[cfg(unix)]
+#[test]
+fn usage_rows_are_shown_at_no_less_than_the_rotators_highest_reading() {
+    use super::rotate::ledger::{RotateLedger, RotateState};
+    use super::store::ProfileStore;
+    use super::usage_cmd::shown_rows;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = ProfileStore::new(tmp.path().join("root"));
+    store
+        .add(&super::name::ProfileName::parse("work").unwrap())
+        .unwrap();
+    let t = super::auto_switch::kit::now();
+    let reset = t + 2 * HOUR;
+    let l: RotateLedger = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "high_water": {"work": {"session": {"used": 91.0, "resets_at": reset}}},
+    }))
+    .unwrap();
+    RotateState::new(store.root()).save_ledger(&l).unwrap();
+    let rows = vec![
+        ok(
+            "work",
+            Some((70.0, Some(reset))),
+            Some((11.0, Some(reset + DAY))),
+        ),
+        ok(
+            "spare",
+            Some((20.0, Some(reset))),
+            Some((5.0, Some(reset + DAY))),
+        ),
+    ];
+    let shown = shown_rows(&store, &rows, t);
+    let session = |rs: &[Row], name: &str| {
+        let r = rs.iter().find(|r| r.profile == name).unwrap();
+        r.report.session.as_ref().unwrap().used_percentage
+    };
+    assert_eq!(session(&shown, "work"), 91.0, "the stale 70% is not shown");
+    assert_eq!(session(&shown, "spare"), 20.0, "no peak, shown as read");
+    assert_eq!(session(&rows, "work"), 70.0, "the rows as read are kept");
+    // Once the window has reset, the reading is shown as read.
+    let later = shown_rows(&store, &rows, reset + 1);
+    assert_eq!(session(&later, "work"), 70.0);
+    // Another window: shown as read.
+    let next = vec![ok("work", Some((3.0, Some(reset + 5 * HOUR))), None)];
+    assert_eq!(session(&shown_rows(&store, &next, t), "work"), 3.0);
+}

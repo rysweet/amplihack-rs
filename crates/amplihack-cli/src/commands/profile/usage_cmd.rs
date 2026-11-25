@@ -454,8 +454,10 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         Output::SummaryJson => codex.take().map(CodexRead::finish),
         Output::Bars | Output::Table | Output::Json => None,
     };
+    // Issue #3181: shown at no less than the rotator's highest readings.
+    let shown = shown_rows(store, &rows, at);
     print_output(
-        &rows,
+        &shown,
         output,
         &time,
         summary.as_ref(),
@@ -493,6 +495,34 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     // excluded profile makes the run exit non-zero (the refusals are
     // already on stderr).
     refusal_result(&refused)
+}
+
+/// Issue #3181: the rows as shown. Each login's session and week figures are
+/// at no less than the highest the rotator read of it in the same window,
+/// from the rotate ledger, since within a window use never falls. The
+/// history and the records keep the figures as read. Read only.
+#[cfg(unix)]
+pub(super) fn shown_rows(store: &ProfileStore, rows: &[Row], at: i64) -> Vec<Row> {
+    let mut shown = rows.to_vec();
+    let ledger = super::rotate::ledger::RotateState::new(store.root()).load_ledger();
+    let high = match ledger {
+        Ok(Some(l)) => l.high_water,
+        Ok(None) => return shown,
+        Err(e) => {
+            eprintln!("warning: could not read the rotate ledger ({e}); usage shown as read");
+            return shown;
+        }
+    };
+    for r in shown.iter_mut().filter(|r| r.is_login()) {
+        high.floor_report(&r.profile, &mut r.report, at);
+    }
+    order(&mut shown, at);
+    shown
+}
+
+#[cfg(not(unix))]
+pub(super) fn shown_rows(_store: &ProfileStore, rows: &[Row], _at: i64) -> Vec<Row> {
+    rows.to_vec()
 }
 
 /// The warning printed when `<root>/.auto-switch` exists but cannot be
