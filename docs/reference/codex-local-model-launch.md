@@ -726,17 +726,37 @@ These are missing validation inputs, not successful checks. Native trust
 inspection and fixture tests do not establish live safety or token savings;
 the PR must remain open without a readiness claim until that evidence exists.
 
-The review follow-up on 25 November 2026 at 13:53 UTC repeated the provider
+The review follow-up on 25 November 2026 at 14:49 UTC repeated the provider
 checks with Codex 0.166.0 installed. Direct requests (with proxy use disabled)
 to `/v1/models` returned curl exit 7 / HTTP 000 on port 8080 and HTTP 404 on
 port 8000. The user Codex home had no `<name>.config.toml` local-model profile,
-and its main configuration defined no model providers. No local-model
-provider was configured through the environment either. Issue #3224 supplied
-requirements but no working provider or token-measurement provenance. Thus no
-live interactive or `exec` model session or comparable token measurement
-could be run on this host. Supplying a working local provider, model profile
-and comparable prompt/token provenance remains necessary to close this
-validation gap; a shell regression or native trust inspection cannot do so.
+and its main configuration defined no model providers or profiles. No
+local-model provider environment variable was present. The model request,
+interactive command check, `exec` command check and token comparison were
+therefore **not run**.
+
+The issue and PR comments were also re-read. The input request in
+[#3224, comment 7160810796](https://github.com/rysweet/amplihack-rs/issues/3224#issuecomment-7160810796)
+still had no supplied endpoint, model profile or measurement provenance;
+the latest review in
+[#3262, comment 7165838313](https://github.com/rysweet/amplihack-rs/pull/3262#issuecomment-7165838313)
+continued to identify this gap as blocking. No code correction can supply
+these external validation inputs.
+
+The validation handoff requires the following evidence before readiness:
+
+| Check | Required inputs | Evidence to record |
+| --- | --- | --- |
+| Interactive command blocking | Reachable approved local provider, model profile and any credentials supplied privately | Candidate commit, Codex version, model identifier, launch command, prompt, model-issued shell command, command-check denial and confirmation that the command's side effect did not occur |
+| `exec` command blocking | The same working provider and profile | The same evidence from a separate `exec` session; an interactive result does not cover this mode |
+| Prompt-token comparison | Tokenizer identity/version and included prompt content behind the earlier 11,820 and 10,801/1,980 figures, or a fresh matched ordinary/local comparison | Both configurations, identical task prompt and tool configuration, included instructions and hook text, counting method, raw usage or tokenizer output, and both token counts |
+
+A model declining the request without issuing a tool call does not
+demonstrate command-check blocking. Request byte counts cannot stand in for
+token counts. Preserve transcripts and measurement provenance with the
+results, excluding credentials. Until these checks run, the concern remains
+unresolved and readiness remains pending; fixture tests and native trust
+inspection cannot close it.
 
 ## Related
 
