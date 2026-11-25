@@ -209,8 +209,7 @@ pub(crate) fn ensure_copilot_home_staged_with(
     Ok(())
 }
 
-/// Publish only amplihack's selected assets, without inheriting configuration,
-/// plugins, hooks or instruction files from another Copilot home.
+/// Publishes the selected skills and agents into the Copilot home.
 pub(crate) fn publish_tool_assets(
     staged: &Path,
     copilot_home: &Path,
@@ -234,8 +233,6 @@ pub(crate) fn publish_tool_assets(
     if staged.join("skills").is_dir() {
         let skills = stage_skills(&staged.join("skills"), copilot_home, selection)?;
         report.published = skills.published;
-        report.skipped = skills.skipped;
-        report.preserved = skills.preserved;
         report.removed_skills = skills.removed_skills;
     }
     crate::list_notice::record(staged, "Copilot", &report);

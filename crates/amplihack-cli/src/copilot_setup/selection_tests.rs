@@ -156,8 +156,6 @@ fn narrowing_rewrites_selected_markdown_and_clears_bundle_named_folders() {
         ])
     );
     assert_eq!(report.removed_agents, BTreeSet::from(["guide".to_owned()]));
-    assert!(report.preserved.is_empty());
-    assert!(report.skipped.is_empty());
     assert!(!home.path().join("skills/edited/SKILL.md").exists());
     assert_eq!(
         fs::read(home.path().join("skills/edited/notes.txt")).unwrap(),
@@ -180,7 +178,6 @@ fn narrowing_rewrites_selected_markdown_and_clears_bundle_named_folders() {
     assert!(!notice.exists());
     assert!(report.removed_skills.is_empty());
     assert!(report.removed_agents.is_empty());
-    assert!(report.preserved.is_empty());
     assert!(
         source
             .path()

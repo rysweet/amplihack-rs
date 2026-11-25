@@ -144,8 +144,12 @@ pub(super) fn stage_skills(
             continue;
         }
         let destination = copilot_home.join("skills").join(&name);
-        if !destination.is_dir() {
-            continue;
+        // A link is left as it is: its target lies outside the Copilot home.
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err.into()),
         }
         let had_markdown = fs::read_dir(&destination)?.try_fold(false, |found, entry| {
             let path = entry?.path();
@@ -496,8 +500,40 @@ mod tests {
         fs::create_dir(&source).unwrap();
         let report = stage_skills(&source, &copilot_home, &ListSelection::default()).unwrap();
         assert!(report.removed_skills.is_empty());
-        assert!(report.preserved.is_empty());
         assert!(!legacy_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_leaves_a_linked_unselected_skill_folder_and_its_target_unchanged() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("unlisted-skill")).unwrap();
+        fs::write(source.join("unlisted-skill/SKILL.md"), "bundled").unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("SKILL.md"), "own skill").unwrap();
+        fs::write(outside.join("notes.md"), "own notes").unwrap();
+        let copilot_home = temp.path().join(".copilot");
+        fs::create_dir_all(copilot_home.join("skills")).unwrap();
+        let link = copilot_home.join("skills/unlisted-skill");
+        symlink(&outside, &link).unwrap();
+
+        let report = stage_skills(&source, &copilot_home, &ListSelection::default()).unwrap();
+        stage_skills(&source, &copilot_home, &ListSelection::default()).unwrap();
+
+        assert!(report.removed_skills.is_empty());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), outside);
+        assert_eq!(fs::read(outside.join("SKILL.md")).unwrap(), b"own skill");
+        assert_eq!(fs::read(outside.join("notes.md")).unwrap(), b"own notes");
     }
 
     #[cfg(unix)]
