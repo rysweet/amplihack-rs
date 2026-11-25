@@ -245,52 +245,56 @@ printf '{"action":"merge","args":{"head":"%s"},"outcomes":[{"name":"the helper k
     assert_eq!(h.loop_end()["end"], json!("merged"));
 }
 
-#[test]
-fn an_unknown_value_is_refused_at_the_start() {
-    for recipe in ["auto-drive-to-merge", "auto-drive-light"] {
-        for value in ["bogus", "FIX_ALL", "bad\u{1b}[31mvalue"] {
-            let h = Harness::new();
-            planted(&h);
-            h.policy(MERGE_WHEN_GREEN);
-            let arg = format!("autodrive_minor_findings={value}");
-            let out = h.drive(recipe, &["no_merge=false", &arg]);
-            let text = describe(&out);
-            assert!(!out.status.success(), "{recipe} {value:?}: {text}");
-            for word in ["fix_all", "judge", "file_all"] {
-                assert!(
-                    text.contains(word),
-                    "{recipe} {value:?} lacks {word}: {text}"
-                );
-            }
-            // The echoed value is cleaned. The runner's own coloured notices
-            // carry escape sequences too, so only the refusal lines are read.
-            let refusals: Vec<&str> = text
-                .lines()
-                .filter(|l| l.contains("autodrive_minor_findings must be"))
-                .collect();
-            assert!(!refusals.is_empty(), "{recipe} {value:?}: {text}");
-            for line in refusals {
-                let at = line.find("autodrive_minor_findings must be").unwrap();
-                let tail = line[at..].split("(got '").nth(1).unwrap_or_default();
-                let echoed = tail.split("')").next().unwrap_or_default();
-                assert!(
-                    !echoed.contains('\u{1b}') && !echoed.contains("u001b"),
-                    "{recipe} {value:?}: {line}"
-                );
-            }
-            assert!(h.turns().is_empty(), "{recipe}: {:?}", h.turns());
-            assert!(h.merge_calls().is_empty(), "{:?}", h.calls());
-            assert!(
-                !h.calls().iter().any(|c| c.starts_with("pr ")),
-                "{recipe}: a PR call was made: {:?}",
-                h.calls()
-            );
-            assert!(
-                !h.base.join("agent-turns.log").exists(),
-                "{recipe}: an agent ran"
-            );
+/// An unknown value given to `recipe` is not refused. The run reaches the goal
+/// loop, the reading applies `fix_all` and shows the value given, cleaned, in
+/// `goal.autodrive_minor_findings_error`, and the run ends by the agent's own
+/// choice.
+fn an_unknown_value_runs_as_fix_all(recipe: &str) {
+    for (value, shown) in [
+        ("bogus", "bogus"),
+        ("FIX_ALL", "FIX_ALL"),
+        ("bad\u{1b}[31mvalue", "bad[31mvalue"),
+    ] {
+        let h = Harness::new();
+        planted(&h);
+        h.policy(r#"echo '{"action":"handoff","args":{"owner":"operator","decision":"what next","text":"One reading is enough."},"why":"Read once."}'"#);
+        let arg = format!("autodrive_minor_findings={value}");
+        let out = h.drive(recipe, &["no_merge=false", &arg]);
+        let text = describe(&out);
+        let r = h.reading("001");
+        assert_eq!(setting(&r), json!("fix_all"), "{recipe} {value:?}: {text}");
+        let err = r["goal"]["autodrive_minor_findings_error"]
+            .as_str()
+            .unwrap_or_default();
+        for word in ["fix_all", "judge", "file_all", "fix_all applies"] {
+            assert!(err.contains(word), "{recipe} {value:?} lacks {word}: {err}");
         }
+        assert!(
+            err.contains(&format!("(got '{shown}')")),
+            "{recipe} {value:?}: {err}"
+        );
+        assert!(!err.contains('\u{1b}'), "{recipe} {value:?}: {err}");
+        assert!(
+            r["goal"]["summary"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("minor findings: fix_all"),
+            "{recipe} {value:?}: {}",
+            r["goal"]["summary"]
+        );
+        assert_eq!(first_minor(&r)["outcome"], json!("open"), "{recipe}");
+        assert_eq!(h.loop_end()["end"], json!("handoff"), "{recipe}: {text}");
     }
+}
+
+#[test]
+fn an_unknown_value_given_to_auto_drive_to_merge_runs_as_fix_all_and_is_reported() {
+    an_unknown_value_runs_as_fix_all("auto-drive-to-merge");
+}
+
+#[test]
+fn an_unknown_value_given_to_auto_drive_light_runs_as_fix_all_and_is_reported() {
+    an_unknown_value_runs_as_fix_all("auto-drive-light");
 }
 
 #[test]

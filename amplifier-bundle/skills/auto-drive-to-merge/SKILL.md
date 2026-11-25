@@ -59,8 +59,8 @@ amplihack recipe run auto-drive-to-merge -c pr_number=3129 -c no_merge=true
 The `autodrive_budget_*` keys are accepted and ignored.
 
 `autodrive_minor_findings` sets how minor review findings are treated:
-`fix_all` (the default), `judge` or `file_all`. Any other value is refused at
-the start. See [Minor review findings](../../../docs/reference/autodrive-goal-loop.md#minor-review-findings).
+`fix_all` (the default), `judge` or `file_all`. Any other value runs as
+`fix_all`, and the reading reports it. See [Minor review findings](../../../docs/reference/autodrive-goal-loop.md#minor-review-findings).
 
 ```bash
 amplihack recipe run auto-drive-to-merge -c pr_number=3129 -c autodrive_minor_findings=judge

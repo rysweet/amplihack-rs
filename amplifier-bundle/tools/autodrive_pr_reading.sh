@@ -253,8 +253,8 @@ put repo "$(jq -cn --arg w "$WORK" --arg b "$LB" --arg h "$LH" --arg d "$DIRTY" 
 
 # --- the setting for minor findings (#3160) ---------------------------------
 # fix_all when empty or absent (drives started on an earlier release). An
-# unknown value is reported, never refused here: fix_all applies, and the
-# error quotes the cleaned value. The top-level recipes refuse it at the start.
+# unknown value is reported, never refused: fix_all applies, and the
+# error quotes the cleaned value. No recipe refuses it.
 MF="${RECIPE_VAR_autodrive_minor_findings:-}"
 MF="${MF#"${MF%%[![:space:]]*}"}"; MF="${MF%"${MF##*[![:space:]]}"}"
 MF_ERR=""

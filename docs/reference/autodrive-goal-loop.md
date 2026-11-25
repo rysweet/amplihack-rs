@@ -329,27 +329,23 @@ surrounding whitespace is trimmed. An empty or absent value means `fix_all`.
 
 ### An unknown value
 
-At the start of `auto-drive-to-merge` (the `autodrive-settings` step) and of
-`auto-drive-light` (its `light-prereqs` step), an unknown value stops the run
-before any file, folder, build step, `gh` call or merge, with exit code 2:
+No entry point refuses an unknown value. `auto-drive-to-merge`,
+`auto-drive-light` and a direct call to `autodrive-goal-loop` all pass the
+value through to the goal loop, and a resumed context does the same. The run
+goes on with `fix_all`, the strictest treatment, which can only fix more
+findings and never lets one through.
+
+The reading sets `goal.autodrive_minor_findings` to `fix_all` and gives
+`goal.autodrive_minor_findings_error` a message that names the three values
+and quotes the value given:
 
 ```
-ERROR: autodrive_minor_findings must be fix_all, judge or file_all (got 'fixall')
+autodrive_minor_findings must be fix_all, judge or file_all (got 'fixall'); fix_all applies
 ```
 
-The message names the three values and echoes the value given.
-
-The echoed value has control characters removed and is cut to 80 characters.
-This refusal is the one deliberate gate in the feature. The loop itself adds
-none, because a caller that gets the setting wrong can be told at once, and
-no agent has started that could act on the error.
-
-An unknown value that reaches the goal loop by another route, such as a direct
-call to `autodrive-goal-loop` or a resumed context, is not refused there. The
-reading sets `goal.autodrive_minor_findings` to `fix_all` and gives
-`goal.autodrive_minor_findings_error` a message that quotes the cleaned value
-and names the three values. The goal text tells the agent to apply `fix_all`
-and to note the bad value in a PR comment.
+The quoted value has control characters removed and is cut to 80 characters.
+The goal text tells the agent to apply `fix_all` and to quote the message in a
+PR comment, so the value given is visible on the PR as well as in the reading.
 
 ### What the reading shows
 

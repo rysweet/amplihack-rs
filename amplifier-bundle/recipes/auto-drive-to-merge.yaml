@@ -34,9 +34,9 @@ context:
   # is never used; the drive hands the PR off instead.
   merge_method: ""
   # #3160: how minor review findings are treated: fix_all (the default, also
-  # when empty), judge or file_all. Any other value is refused at the start.
+  # when empty), judge or file_all. An unknown value runs as fix_all and the
+  # reading reports it in goal.autodrive_minor_findings_error.
   autodrive_minor_findings: ""
-  autodrive_settings: ""
   autodrive_pr_input: ""
   # Retired (#3129): accepted for one release and ignored; the loop has no
   # round or time budget.
@@ -52,21 +52,6 @@ context:
   autodrive_finalization: ""
   autodrive_goal_pr: ""
 steps:
-  # #3160: the one start-of-run check of the setting. It runs first, so a bad
-  # value stops the run before any folder, build, gh call or agent turn. The
-  # value is read from RECIPE_VAR_* only and echoed cleaned.
-  - id: "autodrive-settings"
-    type: "bash"
-    command: |
-      v="${RECIPE_VAR_autodrive_minor_findings:-}"
-      v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
-      case "$v" in
-        ""|fix_all|judge|file_all) printf '%s' "${v:-fix_all}" ;;
-        *) shown="$(printf '%s' "$v" | LC_ALL=C tr -cd '[:print:]' | head -c 80)"
-           echo "ERROR: autodrive_minor_findings must be fix_all, judge or file_all (got '$shown')" >&2
-           exit 2 ;;
-      esac
-    output: "autodrive_settings"
   - id: "step-recovery-init"
     type: "bash"
     command: |
