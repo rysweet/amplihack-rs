@@ -11,8 +11,8 @@
 //! - `pub(super) fn render(user_groups: &[Value], hooks_bin: &Path) ->
 //!   String`;
 //! - `pub(super) fn verify_generated(text: &str, expected: &Path) ->
-//!   anyhow::Result<Vec<Value>>`: the user groups after amplihack's, when
-//!   amplihack's entry is exactly right and runs `expected`;
+//!   anyhow::Result<(Vec<Value>, String)>`: the user groups after amplihack's
+//!   and its actual trust hash, when the entry is right and runs `expected`;
 //! - `pub(super) fn handler_count(groups: &[Value]) -> usize`.
 //!
 //! `plugin_root` is `<home>/.amplihack/codex`.
@@ -411,9 +411,24 @@ fn verify_accepts_what_render_writes() {
     let dir = crate::test_support::tempdir_outside_framework_roots();
     let bin = executable(dir.path(), "amplihack-hooks");
     let user = vec![guard("a.py"), guard("b.py")];
-    let groups = verify_generated(&render(&user, &bin), &bin).expect("verified");
+    let (groups, hash) = verify_generated(&render(&user, &bin), &bin).expect("verified");
     assert_eq!(groups, user);
     assert_eq!(handler_count(&groups), 2);
+    assert_eq!(hash, command_check_hash(&bin));
+}
+
+#[test]
+fn shell_equivalent_commands_have_different_trust_hashes() {
+    let dir = crate::test_support::tempdir_outside_framework_roots();
+    let bin = executable(dir.path(), "amplihack-hooks");
+    let text = render(&[], &bin);
+    for changed in [
+        text.replacen("env ", "env  ", 1),
+        text.replacen("env ", "'env' ", 1),
+    ] {
+        let (_, hash) = verify_generated(&changed, &bin).expect("same command semantics");
+        assert_ne!(hash, command_check_hash(&bin));
+    }
 }
 
 /// A session that points amplihack's entry at another executable named

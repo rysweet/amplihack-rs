@@ -176,11 +176,17 @@ fn amplihack_command(hooks_bin: &Path) -> String {
 /// absent optional fields are omitted and the default command duration is
 /// 600 seconds. Only our generated definition is trusted, never user groups.
 pub(super) fn command_check_hash(hooks_bin: &Path) -> String {
+    command_hash(&amplihack_command(hooks_bin))
+}
+
+/// Hash the actual command bytes: shell-equivalent whitespace or quoting
+/// changes still invalidate Codex's saved trust.
+fn command_hash(command: &str) -> String {
     let mut identity = json!({
         "event_name": "pre_tool_use",
         "hooks": [{
             "type": "command",
-            "command": amplihack_command(hooks_bin),
+            "command": command,
             "async": false,
             "timeout": 600,
         }],
@@ -205,14 +211,15 @@ pub(super) fn render(user_groups: &[Value], hooks_bin: &Path) -> String {
 }
 
 /// Checks a generated file before a nested launch reuses it, and returns
-/// the user groups after amplihack's. amplihack's group must be the first
+/// the user groups after amplihack's and the actual handler's trust hash.
+/// amplihack's group must be the first
 /// PreToolUse group and exactly one command handler (no matcher, no other
 /// key) that splits to `[env, AMPLIHACK_HOOK_PROTOCOL=codex, <hooks binary>,
 /// pre-tool-use]`, where the hooks binary is an absolute path of an
 /// executable regular file named `amplihack-hooks` that resolves to the same
 /// file as `expected`, the binary this launch would put there. A session
 /// that pointed the entry at another file is refused.
-pub(super) fn verify_generated(text: &str, expected: &Path) -> Result<Vec<Value>> {
+pub(super) fn verify_generated(text: &str, expected: &Path) -> Result<(Vec<Value>, String)> {
     let value: Value = serde_json::from_str(text).map_err(|error| {
         anyhow!(
             "hooks.json is not valid JSON (line {}, column {})",
@@ -228,11 +235,11 @@ pub(super) fn verify_generated(text: &str, expected: &Path) -> Result<Vec<Value>
     let (first, rest) = groups
         .split_first()
         .ok_or_else(|| anyhow!("hooks.json has no amplihack PreToolUse entry"))?;
-    verify_amplihack_group(first, expected)?;
-    Ok(rest.to_vec())
+    let hash = verify_amplihack_group(first, expected)?;
+    Ok((rest.to_vec(), hash))
 }
 
-fn verify_amplihack_group(group: &Value, expected: &Path) -> Result<()> {
+fn verify_amplihack_group(group: &Value, expected: &Path) -> Result<String> {
     let not_amplihack =
         || anyhow!("the first PreToolUse group in hooks.json is not amplihack's entry");
     let group = group.as_object().ok_or_else(not_amplihack)?;
@@ -294,5 +301,5 @@ fn verify_amplihack_group(group: &Value, expected: &Path) -> Result<()> {
             sanitize_path(expected)
         );
     }
-    Ok(())
+    Ok(command_hash(command))
 }

@@ -453,6 +453,26 @@ fn a_nested_launch_reuses_the_home() {
     assert_eq!(snapshot(&home), before);
 }
 
+#[test]
+fn a_symlinked_amplihack_root_uses_canonical_hook_trust() {
+    let f = Fixture::new();
+    let root = f.home().join(".amplihack");
+    let target = f.home().join("amplihack-target");
+    fs::rename(&root, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &root).unwrap();
+    f.local(NAME, &[]).assert_started();
+    let home = f.generated(NAME);
+    let canonical = fs::canonicalize(home.join("hooks.json")).unwrap();
+    let key = format!("{}:pre_tool_use:0:0", canonical.display());
+    let config = read_toml(&home.join("config.toml"));
+    let state = config["hooks"]["state"].as_table().unwrap();
+    assert_eq!(state.len(), 1);
+    assert_eq!(state[&key]["enabled"].as_bool(), Some(true));
+    let before = snapshot(&home);
+    nested(&f, &home, NAME).assert_started();
+    assert_eq!(snapshot(&home), before, "reuse writes nothing");
+}
+
 /// under another name, a `CODEX_HOME` inside `codex-local` is not a
 /// user Codex home, so the profile comes from `~/.codex`.
 #[test]
@@ -484,7 +504,21 @@ fn a_nested_launch_under_another_name_reads_the_user_codex_home() {
 #[test]
 fn reuse_refuses_a_weakened_home() {
     type Weaken = fn(&Path);
-    let cases: [(&str, Weaken); 9] = [
+    let cases: [(&str, Weaken); 11] = [
+        ("command whitespace changed without renewed trust", |home| {
+            let path = home.join("hooks.json");
+            let text = fs::read_to_string(&path)
+                .unwrap()
+                .replacen("env ", "env  ", 1);
+            fs::write(path, text).unwrap();
+        }),
+        ("command quoting changed without renewed trust", |home| {
+            let path = home.join("hooks.json");
+            let text = fs::read_to_string(&path)
+                .unwrap()
+                .replacen("env ", "'env' ", 1);
+            fs::write(path, text).unwrap();
+        }),
         ("amplihack trust removed", |home| {
             let config = home.join("config.toml");
             let mut value = read_toml(&config);

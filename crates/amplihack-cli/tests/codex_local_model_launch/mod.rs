@@ -12,4 +12,5 @@
 mod errors;
 pub(crate) mod harness;
 pub(crate) mod launch;
+mod native_trust;
 mod refresh;

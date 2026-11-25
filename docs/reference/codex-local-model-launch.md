@@ -481,6 +481,13 @@ therefore checks that configuration before starting Codex. These checks
 inspect Codex's resolved handlers; they do not replace a live command-check
 exercise against a model.
 
+The trust record uses Codex's canonical `hooks.json` source path, including
+when `~/.amplihack` is a symbolic link. Nested reuse hashes the actual
+verified handler definition. A whitespace or quoting change to its command
+invalidates saved trust even if the shell would execute the same program;
+reuse then refuses the launch until the handler is reviewed again or the
+home is refreshed from outside the local session.
+
 ```sh
 amplihack codex --local-model inkling
 # → codex -c features.hooks=true
@@ -694,6 +701,30 @@ cannot disable that entry. Record the Codex version, model, provider,
 instructions and tool configuration with any first-prompt measurements.
 Request bytes and token counts are different units. Compare token counts
 only when their measurement method and included prompt content agree.
+
+The native trust regression can be run without a model request:
+
+```sh
+env -u CODEX_HOME CODEX_TEST_BINARY="$(command -v codex)" \
+  cargo test --locked -p amplihack-cli --test cli_integration \
+  codex_local_model_launch::native_trust -- --ignored --nocapture
+```
+
+It inspects a loaded thread for both a normal home and a symbolic link at
+`~/.amplihack`: the generated handler must be trusted, user handlers must
+remain untrusted, and whitespace-only or quoting-only command changes must
+resolve as modified and prevent nested interactive launch.
+This regression passed with installed Codex 0.166.0 on 25 November 2026;
+it made no model requests.
+
+As of 25 November 2026, live interactive and `exec` command-check exercises
+and comparable token measurements remain **unverified**. On the review
+host, the documented `http://127.0.0.1:8080/v1/models` endpoint refused the
+connection, and `http://127.0.0.1:8000/v1/models` returned HTTP 404. No usable
+model profile or tokenizer and prompt provenance was supplied in #3224.
+These are missing validation inputs, not successful checks. Native trust
+inspection and fixture tests do not establish live safety or token savings;
+the PR must remain open without a readiness claim until that evidence exists.
 
 ## Related
 

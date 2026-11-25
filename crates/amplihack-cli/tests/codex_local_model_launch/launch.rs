@@ -340,11 +340,6 @@ fn an_ordinary_launch_passes_codex_home_and_hook_text_through() {
                 .count();
             let expected = usize::from(hook_text == Some("none"));
             assert_eq!(named, expected, "{hook_text:?}:\n{}", launch.stderr());
-            if hook_text == Some("none") {
-                for behaviour in ["lock mode", "power steering", "reflection"] {
-                    assert!(launch.stderr().contains(behaviour), "{}", launch.stderr());
-                }
-            }
         }
     }
 }
@@ -364,9 +359,8 @@ fn a_local_launch_says_that_hook_text_is_off() {
             .filter(|l| l.contains(HOOK_TEXT_ENV) && l.contains(NAME))
             .count();
         assert_eq!(lines, 1, "{tail:?}:\n{stderr}");
-        for behaviour in ["lock mode", "power steering", "reflection"] {
-            assert!(stderr.contains(behaviour), "{tail:?}:\n{stderr}");
-        }
+        assert_eq!(launch.env(HOOK_TEXT_ENV), Some("none"));
+        assert_eq!(launch.env(LOCAL_MODEL_ENV), Some(NAME));
     }
 }
 

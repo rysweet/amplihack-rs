@@ -181,6 +181,30 @@ impl Plan {
             check_existing_private_dir(dir)?;
         }
 
+        // Codex keys hook trust by the canonical source path. The generated
+        // directories need not exist yet, but every existing child of the
+        // supported .amplihack link was checked above to be a real directory.
+        let root = if amplihack_exists {
+            fs::canonicalize(&layout.amplihack)?
+        } else {
+            fs::canonicalize(
+                layout
+                    .amplihack
+                    .parent()
+                    .context(".amplihack has no parent")?,
+            )?
+            .join(".amplihack")
+        };
+        let canonical_codex_local = root.join("codex-local");
+        let hooks_source = canonical_codex_local
+            .join(
+                layout
+                    .generated
+                    .file_name()
+                    .context("Codex home has no name")?,
+            )
+            .join(HOOKS);
+
         // Compute everything before the first write.
         let config_path = layout.generated.join(CONFIG);
         let previous_config = read_owned(&config_path)?;
@@ -197,10 +221,7 @@ impl Plan {
             previous.as_ref(),
             &layout.generated.join(INSTRUCTIONS_FILE),
             (
-                &format!(
-                    "{}:pre_tool_use:0:0",
-                    layout.generated.join(HOOKS).display()
-                ),
+                &format!("{}:pre_tool_use:0:0", hooks_source.display()),
                 &hooks_json::command_check_hash(&hooks_bin),
             ),
         )?;
@@ -247,7 +268,9 @@ impl Plan {
         if !amplihack_exists {
             create_amplihack_root(&layout.amplihack)?;
         }
-        for dir in [&layout.codex_local, &layout.generated, &rules_dir] {
+        // Creating codex-local syncs its parent; open the resolved root so
+        // fsync's no-follow check does not reject the supported root link.
+        for dir in [&canonical_codex_local, &layout.generated, &rules_dir] {
             ensure_private_dir(dir).map_err(|error| private_dir_error(dir, &error))?;
         }
         for (dir, file, bytes) in writes {
@@ -344,10 +367,9 @@ impl Plan {
             .map_err(|_| refuse("hooks.json is not valid UTF-8".to_string()))?;
         let hooks_bin = crate::commands::install::find_hooks_binary()
             .map_err(|e| refuse(format!("the amplihack-hooks binary was not found: {e:#}")))?;
-        let user_groups = hooks_json::verify_generated(hooks_text, &hooks_bin)
+        let (user_groups, expected_hash) = hooks_json::verify_generated(hooks_text, &hooks_bin)
             .map_err(|e| refuse(format!("{e:#}")))?;
-        let key = format!("{}:pre_tool_use:0:0", hooks_path.display());
-        let expected_hash = hooks_json::command_check_hash(&hooks_bin);
+        let key = format!("{}:pre_tool_use:0:0", canonical.display());
         if document
             .get("hooks")
             .and_then(|hooks| hooks.get("state"))
