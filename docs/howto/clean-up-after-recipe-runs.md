@@ -838,7 +838,12 @@ removed only when all of these hold. Otherwise it is skipped with a reason:
 - it has no `.git` at its root;
 - it is empty (no entries at all) or carries the Cargo marker
   (`CACHEDIR.TAG` or `.rustc_info.json`), so a folder holding only unrelated
-  files is refused;
+  files is refused. A run that never builds with Cargo, for example in a
+  repository with no Rust code, leaves its claimed folder empty, and that
+  folder is removed;
+- an empty folder is removed only while it is still empty, never
+  recursively. When an entry appears in it after the checks, the removal is
+  declined with one warning and the folder and the new entry are kept;
 - no build holds the `.cargo-lock` of the folder or of a folder directly
   inside it. Each lock is tried once, with no waiting and no retry;
 - it is still the same folder (same device and inode) immediately before the
