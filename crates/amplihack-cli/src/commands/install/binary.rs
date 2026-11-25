@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// 3. PATH lookup (handles reinstall after uninstall removes ~/.local/bin copy)
 /// 4. `~/.local/bin/amplihack-hooks`
 /// 5. `~/.cargo/bin/amplihack-hooks`
-pub(super) fn find_hooks_binary() -> Result<PathBuf> {
+pub(crate) fn find_hooks_binary() -> Result<PathBuf> {
     if let Some(found) = hooks_override_or_sibling()? {
         return Ok(found);
     }

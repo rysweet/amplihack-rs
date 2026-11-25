@@ -1,0 +1,515 @@
+//! The generated `config.toml`.
+//!
+//! `config.rs` is pure. The contract held here:
+//!
+//! - `pub(super) fn parse(text: &str, path: &Path) ->
+//!   anyhow::Result<toml::Table>`, whose error is a fresh message naming the
+//!   path and the line, never the source text, and never chained;
+//! - `pub(super) fn check_shape(profile: &Table, path: &Path) ->
+//!   anyhow::Result<()>`;
+//! - `pub(super) fn render(profile: &Table, previous: Option<&Table>,
+//!   instructions: &Path, command_check: (&str, &str)) -> anyhow::Result<String>`;
+//! - `pub(super) fn guard_disabled(doc: &Table, hooks_json_paths: &[&str])
+//!   -> bool`.
+//!
+//! The rendered text is compared by its settings (through `toml::Value`),
+//! never by layout or wording, except where byte equality is the property
+//! (determinism, the fixed point a second refresh relies on).
+
+use super::config::{check_shape, guard_disabled, parse, render};
+use std::path::Path;
+use toml::Table;
+
+const CHECK_KEY: &str = "/work/fixture/.amplihack/codex-local/inkling/hooks.json:pre_tool_use:0:0";
+const CHECK_HASH: &str = "sha256:fixture";
+
+const INSTRUCTIONS: &str = "/work/fixture/.amplihack/codex-local/inkling/instructions.md";
+
+fn doc(text: &str) -> Table {
+    toml::from_str(text).expect("fixture TOML parses")
+}
+
+fn rendered(profile: &str, previous: Option<&str>) -> toml::Value {
+    let previous = previous.map(doc);
+    let text = render(
+        &doc(profile),
+        previous.as_ref(),
+        Path::new(INSTRUCTIONS),
+        (CHECK_KEY, CHECK_HASH),
+    )
+    .expect("render succeeds");
+    toml::from_str(&text).unwrap_or_else(|e| panic!("rendered TOML parses ({e}):\n{text}"))
+}
+
+const PROFILE: &str = r#"model = "inkling-2-mini"
+model_provider = "llamacpp-local"
+model_context_window = 65536
+
+[model_providers.llamacpp-local]
+name = "llama.cpp (local)"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "responses"
+"#;
+
+// ---- step 1: the profile, minus what may not reach the generated home ----
+
+#[test]
+fn the_profile_is_copied() {
+    let config = rendered(PROFILE, None);
+    assert_eq!(config["model"].as_str(), Some("inkling-2-mini"));
+    assert_eq!(config["model_provider"].as_str(), Some("llamacpp-local"));
+    assert_eq!(config["model_context_window"].as_integer(), Some(65536));
+    assert_eq!(
+        config["model_providers"]["llamacpp-local"]["base_url"].as_str(),
+        Some("http://127.0.0.1:8080/v1")
+    );
+}
+
+#[test]
+fn marketplaces_plugins_projects_hooks_and_profiles_are_removed() {
+    let profile = format!(
+        r#"profile = "hosted"
+{PROFILE}
+[profiles.hosted]
+model = "gpt-5"
+web_search = "live"
+
+[marketplaces.amplihack-local]
+source = "/m"
+
+[plugins."amplihack@amplihack-local"]
+enabled = true
+
+[projects."/work"]
+trust_level = "trusted"
+
+[hooks.state."/x"]
+trusted_hash = "from-the-profile"
+
+[[hooks.PreToolUse]]
+command = "echo profile-hook"
+"#
+    );
+    let config = rendered(&profile, None);
+    for key in ["marketplaces", "plugins", "projects", "profile", "profiles"] {
+        assert!(config.get(key).is_none(), "{key} survived: {config:#?}");
+    }
+}
+
+// ---- step 2: amplihack's settings override the profile ----
+
+#[test]
+fn amplihack_settings_beat_the_profile() {
+    let profile = format!(
+        r#"project_doc_max_bytes = 65536
+model_instructions_file = "/elsewhere.md"
+web_search = "live"
+{PROFILE}
+[features]
+multi_agent = true
+goals = true
+view_image = true
+plugins = true
+apps = true
+hooks = false
+"#
+    );
+    let config = rendered(&profile, None);
+    assert_eq!(config["project_doc_max_bytes"].as_integer(), Some(0));
+    assert_eq!(
+        config["model_instructions_file"].as_str(),
+        Some(INSTRUCTIONS)
+    );
+    assert_eq!(config["web_search"].as_str(), Some("disabled"));
+    let features = config["features"].as_table().unwrap();
+    for off in ["multi_agent", "goals", "view_image", "plugins", "apps"] {
+        assert_eq!(features[off].as_bool(), Some(false), "{off}");
+    }
+    assert_eq!(features["hooks"].as_bool(), Some(true), "hooks forced on");
+    assert_eq!(
+        config["skills"]["bundled"]["enabled"].as_bool(),
+        Some(false)
+    );
+}
+
+#[test]
+fn the_settings_are_present_without_any_in_the_profile() {
+    let config = rendered(PROFILE, None);
+    assert_eq!(config["project_doc_max_bytes"].as_integer(), Some(0));
+    assert_eq!(config["web_search"].as_str(), Some("disabled"));
+    assert_eq!(
+        config["model_instructions_file"].as_str(),
+        Some(INSTRUCTIONS)
+    );
+    assert_eq!(config["features"]["hooks"].as_bool(), Some(true));
+    assert_eq!(config["features"]["apps"].as_bool(), Some(false));
+    assert_eq!(
+        config["skills"]["bundled"]["enabled"].as_bool(),
+        Some(false)
+    );
+}
+
+#[test]
+fn features_and_skills_are_merged_not_replaced() {
+    for features in [
+        "[features]\nsome_future_feature = true\n",
+        "features = { some_future_feature = true }\n",
+        "features.some_future_feature = true\n",
+    ] {
+        let profile = if features.starts_with('[') {
+            format!("{PROFILE}\n{features}\n[skills.bundled]\nextra = \"kept\"\n")
+        } else {
+            format!("{features}skills.bundled.extra = \"kept\"\n{PROFILE}")
+        };
+        let config = rendered(&profile, None);
+        assert_eq!(
+            config["features"]["some_future_feature"].as_bool(),
+            Some(true),
+            "{features}"
+        );
+        assert_eq!(
+            config["features"]["hooks"].as_bool(),
+            Some(true),
+            "{features}"
+        );
+        assert_eq!(
+            config["skills"]["bundled"]["extra"].as_str(),
+            Some("kept"),
+            "{features}"
+        );
+        assert_eq!(
+            config["skills"]["bundled"]["enabled"].as_bool(),
+            Some(false),
+            "{features}"
+        );
+    }
+}
+
+/// `profile`/`profiles` cannot switch a forced setting back, because
+/// they do not reach the generated file at all.
+#[test]
+fn a_profiles_table_cannot_undo_a_forced_setting() {
+    let profile = format!(
+        "profile = \"loud\"\n{PROFILE}\n[profiles.loud]\nweb_search = \"live\"\nproject_doc_max_bytes = 99\n\n[profiles.loud.features]\nhooks = false\n"
+    );
+    let config = rendered(&profile, None);
+    assert!(config.get("profile").is_none());
+    assert!(config.get("profiles").is_none());
+    assert_eq!(config["web_search"].as_str(), Some("disabled"));
+}
+
+// ---- step 3: approval_policy is a default, not an override ----
+
+#[test]
+fn approval_policy_defaults_to_never() {
+    assert_eq!(
+        rendered(PROFILE, None)["approval_policy"].as_str(),
+        Some("never")
+    );
+}
+
+#[test]
+fn the_profile_approval_policy_is_kept() {
+    for policy in ["on-request", "untrusted", "never", "on-failure"] {
+        let config = rendered(&format!("approval_policy = \"{policy}\"\n{PROFILE}"), None);
+        assert_eq!(config["approval_policy"].as_str(), Some(policy));
+    }
+}
+
+// ---- step 4: Codex state is kept, hook definitions are not ----
+
+const PREVIOUS: &str = r#"model = "an-old-model"
+web_search = "live"
+approval_policy = "on-request"
+
+[projects."/work/trusted"]
+trust_level = "trusted"
+
+[hooks.state."/work/trusted/.codex/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:abc"
+enabled = false
+
+[[hooks.PreToolUse]]
+command = "echo written-by-hand"
+
+[notice]
+hide_full_access_warning = true
+
+[model_providers.stale]
+base_url = "http://stale"
+"#;
+
+#[test]
+fn projects_notice_and_hook_state_are_carried_over() {
+    let config = rendered(PROFILE, Some(PREVIOUS));
+    let previous: toml::Value = toml::from_str(PREVIOUS).unwrap();
+    assert_eq!(config["projects"], previous["projects"]);
+    assert_eq!(config["notice"], previous["notice"]);
+    assert_eq!(
+        config["hooks"]["state"]["/work/trusted/.codex/hooks.json:pre_tool_use:0:0"],
+        previous["hooks"]["state"]["/work/trusted/.codex/hooks.json:pre_tool_use:0:0"]
+    );
+}
+
+#[test]
+fn nothing_else_is_carried_over() {
+    let config = rendered(PROFILE, Some(PREVIOUS));
+    assert!(
+        config["hooks"].get("PreToolUse").is_none(),
+        "hook definitions are not copied: {config:#?}"
+    );
+    assert_eq!(config["model"].as_str(), Some("inkling-2-mini"));
+    assert_eq!(config["web_search"].as_str(), Some("disabled"));
+    assert_eq!(config["approval_policy"].as_str(), Some("never"));
+    assert!(config["model_providers"].get("stale").is_none());
+}
+
+/// The profile's own `projects` are dropped even when the previous file's
+/// are carried.
+#[test]
+fn carried_projects_come_from_the_previous_file_only() {
+    let profile = format!("{PROFILE}\n[projects.\"/from-profile\"]\ntrust_level = \"trusted\"\n");
+    let config = rendered(&profile, Some(PREVIOUS));
+    let projects = config["projects"].as_table().unwrap();
+    assert!(projects.contains_key("/work/trusted"));
+    assert!(!projects.contains_key("/from-profile"));
+}
+
+/// a previous file that switches amplihack's handler off renders with
+/// its own trusted and enabled state restored.
+#[test]
+fn a_disabled_guard_in_the_previous_file_is_not_carried_over() {
+    let previous = format!(
+        "{PREVIOUS}\n[hooks.state.\"{GENERATED_HOOKS}:pre_tool_use:0:0\"]\nenabled = false\n"
+    );
+    let config = rendered(PROFILE, Some(&previous));
+    assert_eq!(
+        config["hooks"]["state"][CHECK_KEY]["enabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        config["hooks"]["state"][CHECK_KEY]["trusted_hash"].as_str(),
+        Some(CHECK_HASH)
+    );
+}
+
+// ---- guard_disabled: the check a reused home must pass ----
+
+const GENERATED_HOOKS: &str = "/work/fixture/.amplihack/codex-local/inkling/hooks.json";
+const CANONICAL_HOOKS: &str = "/data/u/.amplihack/codex-local/inkling/hooks.json";
+
+/// A generated file holding `entry` as the `[hooks.state]` value of `key`.
+fn with_state(key: &str, entry: &str) -> Table {
+    doc(&format!(
+        "[features]\nhooks = true\n\n[hooks.state]\n\"{key}\" = {entry}\n"
+    ))
+}
+
+#[test]
+fn guard_disabled_is_true_for_an_entry_that_switches_amplihack_off() {
+    let key = format!("{GENERATED_HOOKS}:pre_tool_use:0:0");
+    for entry in [
+        "{ enabled = false }",
+        "{ enabled = \"false\" }",
+        "{ enabled = 0, trusted_hash = \"sha256:abc\" }",
+        "false",
+        "\"off\"",
+    ] {
+        assert!(
+            guard_disabled(&with_state(&key, entry), &[GENERATED_HOOKS]),
+            "{entry}"
+        );
+    }
+}
+
+#[test]
+fn guard_disabled_checks_every_path_given() {
+    let doc = with_state(
+        &format!("{CANONICAL_HOOKS}:pre_tool_use:0:0"),
+        "{ enabled = false }",
+    );
+    assert!(guard_disabled(&doc, &[GENERATED_HOOKS, CANONICAL_HOOKS]));
+    assert!(!guard_disabled(&doc, &[GENERATED_HOOKS]));
+}
+
+#[test]
+fn guard_disabled_is_false_for_an_entry_that_leaves_amplihack_on() {
+    let ours = format!("{GENERATED_HOOKS}:pre_tool_use:0:0");
+    let cases = [
+        (ours.clone(), "{ enabled = true }"),
+        (ours.clone(), "{ trusted_hash = \"sha256:abc\" }"),
+        // Another hooks.json, another group, another event, a malformed index.
+        (
+            "/work/fixture/.codex/hooks.json:pre_tool_use:0:0".to_string(),
+            "{ enabled = false }",
+        ),
+        (
+            format!("{GENERATED_HOOKS}:pre_tool_use:1:0"),
+            "{ enabled = false }",
+        ),
+        (
+            format!("{GENERATED_HOOKS}:post_tool_use:0:0"),
+            "{ enabled = false }",
+        ),
+        (
+            format!("{GENERATED_HOOKS}:pre_tool_use:0:"),
+            "{ enabled = false }",
+        ),
+        (
+            format!("{GENERATED_HOOKS}:pre_tool_use:0:0x"),
+            "{ enabled = false }",
+        ),
+    ];
+    for (key, entry) in &cases {
+        assert!(
+            !guard_disabled(&with_state(key, entry), &[GENERATED_HOOKS]),
+            "{key} = {entry}"
+        );
+    }
+    assert!(!guard_disabled(
+        &doc("[features]\nhooks = true\n"),
+        &[GENERATED_HOOKS]
+    ));
+}
+
+// ---- determinism and the fixed point a refresh relies on ----
+
+#[test]
+fn rendering_is_deterministic() {
+    let profile = doc(PROFILE);
+    let previous = doc(PREVIOUS);
+    let a = render(
+        &profile,
+        Some(&previous),
+        Path::new(INSTRUCTIONS),
+        (CHECK_KEY, CHECK_HASH),
+    )
+    .unwrap();
+    let b = render(
+        &profile,
+        Some(&previous),
+        Path::new(INSTRUCTIONS),
+        (CHECK_KEY, CHECK_HASH),
+    )
+    .unwrap();
+    assert_eq!(a, b);
+}
+
+/// Rendering again over its own output gives the same bytes, so an
+/// unchanged home is never rewritten.
+#[test]
+fn rendering_over_its_own_output_is_a_fixed_point() {
+    for previous in [None, Some(PREVIOUS)] {
+        let profile = doc(PROFILE);
+        let previous = previous.map(doc);
+        let first = render(
+            &profile,
+            previous.as_ref(),
+            Path::new(INSTRUCTIONS),
+            (CHECK_KEY, CHECK_HASH),
+        )
+        .unwrap();
+        let second = render(
+            &profile,
+            Some(&doc(&first)),
+            Path::new(INSTRUCTIONS),
+            (CHECK_KEY, CHECK_HASH),
+        )
+        .unwrap();
+        assert_eq!(second, first);
+    }
+}
+
+// ---- profile shape (E8) ----
+
+#[test]
+fn features_and_skills_must_be_tables() {
+    let path = Path::new("/work/fixture/.codex/inkling.config.toml");
+    for (key, text) in [
+        ("features", format!("features = \"all\"\n{PROFILE}")),
+        ("features", format!("features = [\"hooks\"]\n{PROFILE}")),
+        ("features", format!("features = 1\n{PROFILE}")),
+        ("skills", format!("skills = true\n{PROFILE}")),
+        ("skills", format!("skills = [1]\n{PROFILE}")),
+        (
+            "bundled",
+            format!("skills = {{ bundled = true }}\n{PROFILE}"),
+        ),
+        ("bundled", format!("skills.bundled = \"yes\"\n{PROFILE}")),
+        ("bundled", format!("{PROFILE}\n[skills]\nbundled = 3\n")),
+    ] {
+        let err = check_shape(&doc(&text), path).expect_err(&text);
+        let message = format!("{err:#}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(message.contains(key), "{key}: {message}");
+    }
+}
+
+#[test]
+fn table_shapes_of_every_spelling_are_accepted() {
+    let path = Path::new("/p.toml");
+    for text in [
+        PROFILE.to_string(),
+        format!("{PROFILE}\n[features]\nhooks = true\n\n[skills.bundled]\nenabled = true\n"),
+        format!(
+            "features = {{ goals = true }}\nskills = {{ bundled = {{ enabled = true }} }}\n{PROFILE}"
+        ),
+        format!("features.goals = true\nskills.bundled.enabled = true\n{PROFILE}"),
+        format!("{PROFILE}\n[skills]\nother = 1\n"),
+    ] {
+        check_shape(&doc(&text), path).unwrap_or_else(|e| panic!("{e:#}\n{text}"));
+    }
+}
+
+/// `render` is itself a guard: it refuses a shape it cannot merge.
+#[test]
+fn render_refuses_a_bad_shape() {
+    let profile = doc(&format!("features = \"all\"\n{PROFILE}"));
+    assert!(
+        render(
+            &profile,
+            None,
+            Path::new(INSTRUCTIONS),
+            (CHECK_KEY, CHECK_HASH)
+        )
+        .is_err()
+    );
+}
+
+// ---- parse errors carry no source text ----
+
+#[test]
+fn a_parse_error_names_the_file_and_quotes_nothing() {
+    let path = Path::new("/work/fixture/.codex/inkling.config.toml");
+    let secret = "sk-SENTINEL-config-tests-0123456789";
+    for text in [
+        format!("model = \"{secret}\n"),
+        format!("model = \"m\"\nmodel = \"{secret}\"\n"),
+        format!("[model_providers.x]\ntoken = \"{secret}\"\n[model_providers.x]\n"),
+        format!("{secret} = = \n"),
+    ] {
+        let err = parse(&text, path).expect_err(&text);
+        for rendered in [format!("{err}"), format!("{err:#}"), format!("{err:?}")] {
+            assert!(
+                !rendered.contains(secret),
+                "source text in the error: {rendered}"
+            );
+            assert!(
+                !rendered.contains("token ="),
+                "source text in the error: {rendered}"
+            );
+        }
+        assert!(format!("{err:#}").contains(&path.display().to_string()));
+        assert_eq!(
+            err.chain().count(),
+            1,
+            "a fresh error, never chained: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn parse_accepts_valid_toml() {
+    let parsed = parse(PROFILE, Path::new("/p.toml")).unwrap();
+    assert_eq!(parsed["model"].as_str(), Some("inkling-2-mini"));
+}

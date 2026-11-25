@@ -37,8 +37,10 @@ mod codex_alias_fixture;
 #[cfg(test)]
 mod tests;
 
+/// The hooks binary a local-model Codex home's pre-tool-use entry runs.
+pub(crate) use binary::find_hooks_binary;
 pub(crate) use binary::resolve_running_binary_source;
-use binary::{deploy_binaries_into, find_hooks_binary, stable_hooks_binary};
+use binary::{deploy_binaries_into, stable_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;

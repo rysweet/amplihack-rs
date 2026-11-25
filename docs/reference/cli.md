@@ -62,7 +62,7 @@ The version string comes from the `__version__` attribute in `amplihack/__init__
 | `launch`     | Compatibility alias for `claude`; `amplihack` with no subcommand also launches Claude Code. |
 | `RustyClawd` | Launch RustyClawd (Rust implementation).                                                    |
 | `copilot`    | Launch GitHub Copilot CLI.                                                                  |
-| `codex`      | Launch OpenAI Codex CLI; `--reset-recovery` preserves a pending recovery journal before startup. |
+| `codex`      | Launch OpenAI Codex CLI; `--reset-recovery` preserves a pending recovery journal before startup; `--local-model NAME` starts Codex for a local model with its own Codex home. |
 | `amplifier`  | Launch Microsoft Amplifier with amplihack bundle.                                           |
 | `uvx-help`   | Get help with UVX deployment.                                                               |
 | `plugin`     | Install, uninstall, and list amplihack plugins.                                             |
@@ -85,12 +85,13 @@ See the documentation for each subcommand:
 Launches Codex after reconciling Amplihack's native plugin and hooks.
 
 ```text
-amplihack codex [--reset-recovery] [other amplihack options] [-- <codex arguments>]
+amplihack codex [--reset-recovery] [--local-model NAME] [other amplihack options] [-- <codex arguments>]
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--reset-recovery` | Archive a pending Codex recovery journal, then continue launch. |
+| `--local-model NAME` | Launch for a local model. `NAME` is the Codex profile `<user Codex home>/NAME.config.toml`. Also set by `AMPLIHACK_CODEX_LOCAL_MODEL`; the flag wins. Not allowed with `--docker` or `--auto`; Unix only. |
 
 The reset flag must precede native arguments and the explicit `--` separator.
 Amplihack consumes it immediately after parsing, before client resolution,
@@ -119,6 +120,17 @@ amplihack codex --reset-recovery -- exec "Summarize the public interfaces withou
 The recovery status appears before the unattended task starts; the task returns
 the repository summary. See [recovery steps](../howto/install-codex-plugin.md#recover-an-interrupted-installation)
 and [ownership and archival guarantees](../concepts/codex-installation-ownership.md#journal-archival-and-explicit-reset).
+
+`--local-model NAME` starts Codex on a Codex home that amplihack builds at
+`~/.amplihack/codex-local/NAME/` from the profile, in place of the plugin
+setup described above. Your `~/.codex` is not modified.
+
+```bash
+amplihack codex --local-model inkling -- exec --output-last-message /tmp/final.txt -
+```
+
+See [Run amplihack codex with a Local Model](../howto/run-codex-with-a-local-model.md)
+and [Codex Local-Model Launches](./codex-local-model-launch.md).
 
 ### `update`
 

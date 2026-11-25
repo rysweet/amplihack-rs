@@ -9,6 +9,9 @@ mod checkout;
 mod codex_agent_step;
 mod codex_copilot_rewrite;
 mod codex_exec_args;
+/// Local-model launches of `amplihack codex`: a small Codex home of
+/// amplihack's own and no hook text for the model.
+pub(crate) mod codex_local_model;
 mod command;
 mod context;
 /// Issue #2030 — the 0600 contract file and the Claude Code version gate.
@@ -175,6 +178,10 @@ pub(super) fn root_sandbox_for_launch(
 }
 
 /// Launch a tool binary (claude, copilot, codex, amplifier).
+///
+/// Codex dispatch must call this inside [`codex_local_model::scoped`] with
+/// the result of [`codex_local_model::prepare_launch`]. The scope supplies
+/// the local selection to model resolution and bootstrap on this thread.
 #[allow(clippy::too_many_arguments)]
 pub fn run_launch(
     tool: &str,
@@ -384,16 +391,14 @@ fn run_launch_core(
         return child_status(exit_code);
     }
 
-    if matches!(
-        agent_binary_for_tool(tool),
-        Some(AgentBinary::Claude | AgentBinary::Copilot | AgentBinary::Codex)
-    ) && std::env::var_os(amplihack_types::AMPLIHACK_HOOK_TEXT).as_deref()
-        == Some(std::ffi::OsStr::new("none"))
+    let local_model = codex_local_model::current(tool);
+    if local_model.is_none()
+        && matches!(
+            agent_binary_for_tool(tool),
+            Some(AgentBinary::Claude | AgentBinary::Copilot | AgentBinary::Codex)
+        )
     {
-        eprintln!(
-            "amplihack: {}=none omits hook context text; Stop approves without lock mode, power steering or reflection. Child sessions inherit this setting.",
-            amplihack_types::AMPLIHACK_HOOK_TEXT
-        );
+        codex_local_model::warn_inherited_hook_text(tool);
     }
 
     // Issue #2030, launch order step 1: rewrite the passthrough arguments of a
@@ -458,8 +463,12 @@ fn run_launch_core(
     } else {
         None
     };
+    // A local-model Codex launch runs the generic bootstrap only, so nothing
+    // is written to the user's Codex home.
     if !subprocess_safe {
-        if tool == "codex" {
+        if local_model.is_some() {
+            codex_local_model::bootstrap()?;
+        } else if tool == "codex" {
             let selected = prevalidated_binary
                 .as_ref()
                 .map(|p| &p.binary)
@@ -509,6 +518,18 @@ fn run_launch_core(
                 }
             },
         },
+    };
+
+    // A local-model launch builds, refreshes or verifies its Codex home now,
+    // the last step that can stop it before anything is spawned, and adds
+    // the local settings before the caller's Codex arguments.
+    let local_home = local_model
+        .as_deref()
+        .map(codex_local_model::Prepared::refresh)
+        .transpose()?;
+    let extra_args = match &local_home {
+        Some(home) => home.codex_args(extra_args),
+        None => extra_args,
     };
 
     // Issue #2916: a Claude effort the tier added is checked against the
@@ -606,6 +627,10 @@ fn run_launch_core(
         let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
             .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
             .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags
+        let env_builder = match &local_home {
+            Some(home) => home.with_env(env_builder),
+            None => env_builder,
+        };
         maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
 
         // Register before the final executable check so revalidation, command

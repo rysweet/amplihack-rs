@@ -1,0 +1,67 @@
+name: codex-local-model-launch
+description: >
+  Outside-in QA for local-model Codex launches. Native Rust integration tests
+  start the built amplihack executable with a private fixture home and project.
+  A stub Codex records its arguments and child environment. The interactive
+  bootstrap cases use a pseudo-terminal, a staged bundle and a stub recipe
+  runner. They do not install a runner or contact a model provider.
+
+  The launch cases select a profile by flag and environment, check precedence,
+  inspect the private generated home, preserve meaningful user handlers and
+  profile sandbox settings, and compare ordinary launches. Interactive launches
+  automatically trust only amplihack's command check. Exec launches retain the
+  existing agent-step trust bypass. Notices identify the inherited hook-text
+  effects without matching complete prose.
+
+  The input cases cover invalid names, unsupported modes, missing binaries,
+  malformed and oversized files, non-regular files, private directory modes
+  and output that does not disclose input values. The refresh cases compare
+  user-home snapshots and generated files, preserve authentication separation,
+  exercise interactive bootstrap with an ordinary-launch negative control,
+  preserve user state, reject symbolic links, and reject weakened nested homes.
+
+  These scenarios establish launcher behaviour. Real Codex interactive and exec
+  sessions against a local model, native hook trust and configuration precedence,
+  and comparable provider token measurements require separate live evidence.
+version: "1.0"
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, codex, local-model, bootstrap, regression]
+  priority: high
+  issues: ["3224"]
+steps:
+  - name: launch-selection-and-ordinary-controls
+    agent: cli-agent
+    action: execute
+    params:
+      command: "nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration codex_local_model_launch::launch:: --locked"
+  - name: launch-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: invalid-inputs-and-private-directories
+    agent: cli-agent
+    action: execute
+    params:
+      command: "nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration codex_local_model_launch::errors:: --locked"
+  - name: input-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: interactive-bootstrap-refresh-and-nested-launches
+    agent: cli-agent
+    action: execute
+    params:
+      command: "nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration codex_local_model_launch::refresh:: --locked"
+  - name: refresh-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0

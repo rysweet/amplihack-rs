@@ -1,8 +1,8 @@
 ---
 title: Launch Flag Injection — Reference
-description: Automatically injected agent CLI flags, Codex worktree launches, and caller overrides.
+description: Automatically injected agent CLI flags, Codex worktree and local-model launches, and caller overrides.
 doc_type: reference
-last_updated: 2026-11-18
+last_updated: 2026-11-24
 ---
 
 # Launch Flag Injection — Reference
@@ -22,6 +22,7 @@ can override the defaults.
 - [--deny-tool (Copilot CLI)](#-deny-tool)
 - [Codex agent-step flags](#codex-agent-step-flags)
   - [Codex worktree launches](#codex-worktree-launches)
+  - [Codex local-model launches](#codex-local-model-launches)
 - [Extra args passthrough](#extra-args-passthrough)
 - [Complete command-line assembly](#complete-command-line-assembly)
 - [Python launcher parity](#python-launcher-parity)
@@ -40,6 +41,8 @@ can override the defaults.
 | `--deny-tool shell(<prefix>:*)` | always, once per entry in the [dangerous-command policy](./dangerous-command-policy.md); nothing in your own arguments suppresses one | `copilot` | none for a shipped prefix. `policy.deny_commands` only adds, and `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` leaves these flags in place. See [--deny-tool](#-deny-tool) |
 | `--sandbox danger-full-access` | argv after `--` contains an `exec`/`e` subcommand AND the caller chose no sandbox | `codex` | pass your own sandbox (`--sandbox`, `--sandbox=`, `-s`, `-s<mode>`, `-s=<mode>`, `-c sandbox_mode=…`); see [Codex agent-step flags](#codex-agent-step-flags) |
 | `--dangerously-bypass-hook-trust` | argv after `--` contains an `exec`/`e` subcommand AND the flag is not already present | `codex` | none; it is added once on every Codex `exec` launch |
+| `--dangerously-bypass-hook-trust` (first argument) | a [local-model launch](#codex-local-model-launches) (`--local-model` or `AMPLIHACK_CODEX_LOCAL_MODEL`) AND the Codex arguments do not already contain the flag ahead of any `--` among them; `exec` launches only | `codex` | none; the `exec` injection above then does not add it again |
+| `-c features.hooks=true` (before the Codex arguments) | a [local-model launch](#codex-local-model-launches), always | `codex` | pass `-c features.hooks=false` or `--disable hooks`; yours comes later and wins |
 
 ---
 
@@ -337,7 +340,7 @@ The following table describes sandbox and hook-trust injection.
 | `exec -c sandbox_workspace_write.network_access=false -` | `--sandbox danger-full-access` and `--dangerously-bypass-hook-trust`; the caller's `-c` is forwarded unchanged, is not a sandbox choice and restricts nothing under full access |
 | `exec --dangerously-bypass-hook-trust -` | `--sandbox danger-full-access`; hook trust is not repeated |
 | `-p ci exec -` | both flags; a profile is not a sandbox choice, and the command-line `--sandbox` overrides the profile's `sandbox_mode` |
-| (none), `resume --last`, `"Explain this repository"` | nothing; interactive argv is unchanged |
+| (none), `resume --last`, `"Explain this repository"` | nothing; interactive argv is unchanged on an ordinary launch (a [local-model launch](#codex-local-model-launches) puts `-c features.hooks=true` first) |
 | `-c exec`, `-m exec`, `-- exec` | nothing; `exec` here is a value or a positional, not the subcommand |
 
 **Notice (issue #2010).** When amplihack adds
@@ -448,6 +451,39 @@ the launch contract; it is not evidence that live Codex executed. Live Codex
 evidence must be identified separately. See
 [direct review and evidence](recipe-checkout-isolation.md#review-in-the-pr-worktree).
 
+### Codex local-model launches
+
+`amplihack codex --local-model <name>`, or `amplihack codex` with
+`AMPLIHACK_CODEX_LOCAL_MODEL=<name>` set, starts Codex for a model served from
+your own machine. This section covers only the command line; the rules,
+the reasons, the stderr notice and the child environment are in
+[Command line and environment of Codex](./codex-local-model-launch.md#command-line-and-environment-of-codex).
+
+On `exec`, amplihack puts `--dangerously-bypass-hook-trust` first, unless the
+Codex arguments already contain it ahead of any `--` among them, then
+`-c features.hooks=true`, then `-c sandbox_mode="<value>"` when the profile
+sets `sandbox_mode`, then the Codex arguments. Interactive launches omit the
+automatic bypass and trust only amplihack's generated entry. The `exec` injection then finds the hook-trust
+flag and adds only the sandbox, so the flag appears exactly once. A profile's
+`sandbox_mode` counts as the caller's sandbox choice, so then no sandbox is
+added either.
+
+| Command | Codex receives |
+|---|---|
+| `amplihack codex --local-model inkling` | `codex -c features.hooks=true` |
+| `amplihack codex --local-model inkling -- resume --last` | `codex -c features.hooks=true resume --last` |
+| `amplihack codex --local-model inkling -- exec -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true exec --sandbox danger-full-access -` |
+| `amplihack codex --local-model inkling -- exec --sandbox read-only -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true exec --sandbox read-only -` |
+| `amplihack codex --local-model inkling -- exec -`, with `sandbox_mode = "workspace-write"` in the profile | `codex --dangerously-bypass-hook-trust -c features.hooks=true -c sandbox_mode="workspace-write" exec -` |
+| `amplihack codex --local-model inkling -- --dangerously-bypass-hook-trust exec -` | `codex -c features.hooks=true --dangerously-bypass-hook-trust exec --sandbox danger-full-access -` |
+| `amplihack codex --local-model inkling -- -m inkling-2-mini exec -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true -m inkling-2-mini exec --sandbox danger-full-access -` |
+| `amplihack codex --local-model inkling -- --disable hooks exec -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true --disable hooks exec --sandbox danger-full-access -`; your `--disable hooks` comes later and wins |
+
+Both additions are root options in codex-cli 0.166.0, so they are valid before
+interactive and `exec` launches alike. No `--profile` is added. A `-p` or
+`-c` you pass after `--` is forwarded unchanged; a model tier word is removed,
+as described in [Model tiers](./codex-local-model-launch.md#model-tiers).
+
 ---
 
 ## --deny-tool
@@ -551,7 +587,9 @@ claude --model claude-opus-5[1m] --print 'Fix the failing tests' --output-format
 There is no processing or escaping of `extra_args`. What the user types is what
 the subprocess receives, except that a Codex argv containing an `exec`
 subcommand receives the [Codex agent-step flags](#codex-agent-step-flags)
-after `exec`.
+after `exec`, and a [Codex local-model launch](#codex-local-model-launches)
+receives `-c features.hooks=true` before everything else, with the hook-trust
+bypass before it only for `exec`.
 
 ---
 
@@ -577,7 +615,11 @@ assembles the final command line. The assembly order is:
    `codex`, `codex_agent_step_args()` first inserts the
    [Codex agent-step flags](#codex-agent-step-flags) after an `exec`/`e`
    subcommand, if there is one. When the sandbox is among them, `codex_agent_step_notice()` supplies the one stderr line
-   described under [Codex agent-step flags](#codex-agent-step-flags)
+   described under [Codex agent-step flags](#codex-agent-step-flags).
+   On a [local-model launch](#codex-local-model-launches),
+   `--dangerously-bypass-hook-trust` for `exec` (unless the Codex arguments already
+   contain it ahead of any `--` among them) and `-c features.hooks=true` are
+   put before all of these first
 
 The following examples show the full assembled command for each launch
 subcommand with no extra args:
@@ -598,6 +640,12 @@ amplihack codex
 
 amplihack codex -- exec -
 # → codex exec --sandbox danger-full-access --dangerously-bypass-hook-trust -
+
+amplihack codex --local-model inkling
+# → codex -c features.hooks=true
+
+amplihack codex --local-model inkling -- exec -
+# → codex --dangerously-bypass-hook-trust -c features.hooks=true exec --sandbox danger-full-access -
 
 amplihack amplifier
 # → amplifier --model claude-opus-5[1m]
@@ -641,3 +689,4 @@ Intentional divergences (not bugs) are documented in
 - [Run amplihack in Non-interactive Mode](../howto/run-in-noninteractive-mode.md) — CI configuration guide
 - [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — How the pre-launch update check interacts with the launch sequence
 - [Dangerous Command Policy](./dangerous-command-policy.md): the policy list behind the injected `--deny-tool` flags, and the files written for Claude Code and Codex
+- [Codex Local-Model Launches](./codex-local-model-launch.md): the generated Codex home, its `config.toml` and `hooks.json`, and everything else about a local-model launch

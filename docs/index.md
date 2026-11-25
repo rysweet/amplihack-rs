@@ -142,6 +142,8 @@ amplihack copilot
 - [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
 - [Recover an interrupted Codex installation](howto/install-codex-plugin.md#recover-an-interrupted-installation) - Retry safely or preserve a pending journal with `--reset-recovery`
 - [Codex agent-step launch flags](reference/launch-flag-injection.md#codex-agent-step-flags) - Sandbox, hook trust, and the directory-check bypass for validated review launch directories
+- [Run amplihack codex with a Local Model](howto/run-codex-with-a-local-model.md) - Interactive sessions, single tasks and recipe agent steps on a model served from your own machine, with a small prompt
+- [Codex Local-Model Launches](reference/codex-local-model-launch.md) - Selection, the generated Codex home, its `config.toml` and `hooks.json`, refresh, nested launches and errors
 - [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, installer downgrade guard, and diagnostics
 - [Recipe Context Transport Reference](reference/recipe-context-transport.md) - How `recipe run` hands context to the runner without argv
 - [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
