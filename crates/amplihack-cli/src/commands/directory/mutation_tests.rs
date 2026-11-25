@@ -1,5 +1,10 @@
 use super::*;
-use crate::{ConfigCommands, commands::config::run_config, test_support, user_config::edit};
+use crate::{
+    ConfigCommands,
+    commands::config::run_config,
+    test_support,
+    user_config::{self, edit},
+};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 fn write(root: &Path, relative: &str, content: &str) {
@@ -82,7 +87,7 @@ fn set(key: &str, value: &str) {
 }
 
 #[test]
-fn commands_publish_extensions_immediately_and_restore_config_and_tool_bytes() {
+fn commands_publish_extensions_immediately_and_restore_values_and_tool_bytes() {
     let _lock = test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -101,13 +106,18 @@ fn commands_publish_extensions_immediately_and_restore_config_and_tool_bytes() {
     )
     .unwrap();
     let config = home.path().join(".amplihack/config.toml");
-    let original_config = fs::read(&config).unwrap();
+    let original_config = user_config::load_user_only();
     let original_index = fs::read(index::index_path(&staged)).unwrap();
     let claude = home.path().join(".claude/skills");
     let copilot = home.path().join(".copilot");
     let original_claude = snapshot(&claude);
     let original_copilot = snapshot(&copilot);
-    for name in ["amplihack:extra", "amplihack:core:guide"] {
+    for name in [
+        "amplihack:extra",
+        "amplihack:core:guide",
+        "amplihack:amplihack:extra",
+        "amplihack:amplihack:core:guide",
+    ] {
         change(name, true).unwrap();
         let first_config = fs::read(&config).unwrap();
         let first_claude = snapshot(&claude);
@@ -128,7 +138,10 @@ fn commands_publish_extensions_immediately_and_restore_config_and_tool_bytes() {
         }
         change(name, false).unwrap();
         change(name, false).unwrap();
-        assert_eq!(fs::read(&config).unwrap(), original_config);
+        let restored = user_config::load_user_only();
+        for key in ["lists.enabled", "lists.set", "recipe.verbose"] {
+            assert_eq!(restored.entry(key).value, original_config.entry(key).value);
+        }
         assert_eq!(snapshot(&claude), original_claude);
         assert_eq!(snapshot(&copilot), original_copilot);
     }
@@ -137,6 +150,45 @@ fn commands_publish_extensions_immediately_and_restore_config_and_tool_bytes() {
         original_index
     );
     assert!(!home.path().join(".codex").exists());
+}
+
+#[test]
+fn disabling_the_last_extension_removes_empty_configuration_entries() {
+    let _lock = test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    for original in [
+        "",
+        "[lists]\nenabled = []\n",
+        "lists = { enabled = [] }\n",
+        "[lists]\nset = 'all'\n",
+        "[lists]\nenabled = ['agent:core/guide']\n",
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let _home = test_support::HomeGuard::set(home.path());
+        fixture(home.path());
+        let config = home.path().join(".amplihack/config.toml");
+        fs::write(&config, original).unwrap();
+        let before = user_config::load_user_only();
+        change("skill:extra", true).unwrap();
+        change("skill:extra", false).unwrap();
+        let restored = user_config::load_user_only();
+        for key in ["lists.enabled", "lists.set"] {
+            assert_eq!(restored.entry(key).value, before.entry(key).value);
+        }
+        let doc = fs::read_to_string(&config)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        if original.contains("agent:core/guide") {
+            assert!(doc["lists"]["enabled"].is_array());
+        } else if original.contains("set =") {
+            assert_eq!(doc["lists"]["set"].as_str(), Some("all"));
+            assert!(doc["lists"].get("enabled").is_none());
+        } else {
+            assert!(doc.get("lists").is_none());
+        }
+    }
 }
 
 #[test]
@@ -156,13 +208,16 @@ fn configuration_commands_restore_full_lists_and_keep_all_mode_extensions() {
     assert!(skills.join("extra/SKILL.md").is_file());
     change("extra", false).unwrap();
     assert!(!skills.join("extra").exists());
-    set("lists.enabled", "[\"skill:extra\"]");
+    change("extra", true).unwrap();
     assert!(skills.join("extra/SKILL.md").is_file());
     run_config(ConfigCommands::Unset {
         key: "lists.enabled".into(),
         project: false,
     })
     .unwrap();
+    assert!(skills.join("extra/SKILL.md").is_file());
+    // Setting the same value applies deferred configuration changes too.
+    set("lists.set", "default");
     assert!(!skills.join("extra").exists());
     assert!(!home.path().join(".copilot").exists());
     assert!(!home.path().join(".codex").exists());
@@ -185,6 +240,7 @@ fn rejected_names_change_neither_configuration_nor_index() {
     assert!(change("skill:pdf", false).is_err());
     change("skill:pdf", true).unwrap();
     change("agent:core/builder", true).unwrap();
+    change("amplihack:amplihack:core:builder", true).unwrap();
     change("skill:extra", false).unwrap();
     assert_eq!(snapshot(home.path()), before);
     assert!(index::index_path(&staged).exists());
@@ -223,7 +279,7 @@ fn repeating_a_command_finishes_an_interrupted_publication() {
 }
 
 #[test]
-fn mutations_refresh_older_definitions_without_changing_the_index_or_registering_tools() {
+fn stale_installations_reject_list_changes_without_mutation() {
     let _lock = test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -237,37 +293,26 @@ fn mutations_refresh_older_definitions_without_changing_the_index_or_registering
     );
     index::write_index(&staged).unwrap();
     crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
-    let original_index = fs::read(index::index_path(&staged)).unwrap();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../amplifier-bundle/skills/code-visualizer/SKILL.md");
-    let current_definition = fs::read(source).unwrap();
-    crate::commands::install::version_stamp::write_installed_version("0.0.1").unwrap();
-
-    // Discovery leaves the old staged bytes and stamp alone.
-    run_for_test(DirectoryCommands::Find {
-        words: vec!["code-visualizer".into()],
-    })
-    .unwrap();
-    assert_ne!(
-        fs::read(staged.join("skills/code-visualizer/SKILL.md")).unwrap(),
-        current_definition
-    );
-
-    change("skill:code-visualizer", true).unwrap();
-    assert_eq!(
-        fs::read(home.path().join(".claude/skills/code-visualizer/SKILL.md")).unwrap(),
-        current_definition
-    );
-    assert_eq!(
-        fs::read(index::index_path(&staged)).unwrap(),
-        original_index
-    );
-    assert!(staged.join("agents/core/builder.md").is_file());
-    assert!(staged.join("agents/core/guide.md").is_file());
-    assert!(!home.path().join(".copilot").exists());
-    assert!(!home.path().join(".codex").exists());
-    assert_eq!(
-        crate::commands::install::version_stamp::read_installed_version().unwrap(),
-        Some("0.0.1".into())
-    );
+    for version in ["0.0.1", "9999.0.0"] {
+        crate::commands::install::version_stamp::write_installed_version(version).unwrap();
+        let before = snapshot(home.path());
+        run_for_test(DirectoryCommands::Find {
+            words: vec!["code-visualizer".into()],
+        })
+        .unwrap();
+        for enable in [true, false] {
+            let error = change("skill:code-visualizer", enable).unwrap_err();
+            assert!(error.to_string().contains("amplihack install"));
+            assert_eq!(snapshot(home.path()), before);
+        }
+        assert!(
+            run_config(ConfigCommands::Set {
+                key: "lists.set".into(),
+                value: "all".into(),
+                project: false,
+            })
+            .is_err()
+        );
+        assert_eq!(snapshot(home.path()), before);
+    }
 }

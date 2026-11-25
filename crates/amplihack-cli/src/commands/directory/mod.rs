@@ -9,7 +9,6 @@
 //!
 //! See docs/reference/directory-command.md.
 
-pub(crate) mod extensions;
 pub mod index;
 mod mutation;
 pub(crate) mod resolve;

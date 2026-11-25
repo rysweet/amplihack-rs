@@ -9,13 +9,12 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Leaf names of the skills listed by default, including nested skills.
-pub const DEFAULT_SKILLS: [&str; 32] = [
+pub const DEFAULT_SKILLS: [&str; 30] = [
     "crusty-old-engineer",
     "qa-team",
     "documentation-writing",
     "dev-orchestrator",
     "journalistic-writing-style",
-    "auto-drive-to-merge",
     "quality-audit",
     "skill-and-agents-directory",
     "default-workflow",
@@ -31,7 +30,6 @@ pub const DEFAULT_SKILLS: [&str; 32] = [
     "code-philosophy",
     "code-atlas",
     "lsp-setup",
-    "claude-profile-rotation",
     "skill-builder",
     "property-based-testing",
     "supply-chain-audit",

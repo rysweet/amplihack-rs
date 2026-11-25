@@ -6,6 +6,19 @@ use anyhow::{Context, Result, bail, ensure};
 
 use super::{binary, clone, codex_plugin, paths};
 
+/// List publication uses installed definitions and never refreshes the framework.
+/// Before the first installation, settings may be saved without publishing.
+pub(crate) fn ensure_current_installation() -> Result<()> {
+    let installed = super::version_stamp::read_installed_version()
+        .context("cannot check installed framework version; run `amplihack install`")?;
+    ensure!(
+        (installed.is_none() && !paths::staging_claude_dir()?.exists())
+            || installed.as_deref() == Some(crate::VERSION),
+        "installed framework does not match this binary; run `amplihack install` before changing lists"
+    );
+    Ok(())
+}
+
 /// Apply the desired configuration without registering an additional tool.
 /// Keep the configuration on failure, so the same command can complete it.
 pub(crate) fn apply() -> Result<()> {
@@ -15,24 +28,20 @@ pub(crate) fn apply() -> Result<()> {
     let tools = [
         (
             "Claude Code",
-            staged
+            Ok(staged
                 .join("install/claude-skills-manifest.json")
                 .try_exists()?
-                || home.join(".claude/skills/amplihack").try_exists()?,
+                || home.join(".claude/skills/amplihack").try_exists()?),
         ),
         (
             "Codex",
-            home.join(".amplihack/codex/ownership.json").try_exists()?,
+            Ok(home.join(".amplihack/codex/ownership.json").try_exists()?),
         ),
         (
             "Copilot",
-            crate::copilot_setup::user_config_registers_amplihack(&copilot)?,
+            crate::copilot_setup::user_config_registers_amplihack(&copilot),
         ),
     ];
-    if tools.iter().any(|(_, installed)| *installed) {
-        refresh_staged_assets(&staged)
-            .context("list settings were saved; could not refresh framework definitions; repeat the command to finish publication")?;
-    }
     apply_installed(&tools, |tool| {
         ensure!(
             staged.is_dir(),
@@ -42,7 +51,7 @@ pub(crate) fn apply() -> Result<()> {
             "Claude Code" => {
                 let report = crate::claude_plugin::ensure_claude_plugin_installed()?;
                 ensure!(
-                    report.skipped.is_empty() && report.wrapper_error.is_none(),
+                    report.wrapper_error.is_none(),
                     "{}",
                     report.warning().unwrap_or_default()
                 );
@@ -59,44 +68,6 @@ pub(crate) fn apply() -> Result<()> {
             _ => unreachable!("installed tool"),
         }
     })
-}
-
-/// List changes need current definitions, even though discovery skips startup
-/// repair. Reuse source validation and transactional directory publication,
-/// without rewriting the index or registering another tool. The full installer
-/// still owns the version stamp, binaries and release switch.
-fn refresh_staged_assets(staged: &Path) -> Result<()> {
-    let _lock = crate::install_lock::acquire()?;
-    let installed = super::version_stamp::read_installed_version()?;
-    if installed.as_deref().is_some_and(|version| {
-        super::version_stamp::relation(crate::VERSION, version)
-            != super::version_stamp::VersionRelation::Newer
-    }) {
-        return Ok(());
-    }
-    let policy = super::framework_source::SourcePolicy {
-        local: None,
-        force_refresh: false,
-        mode: super::InstallMode::Implicit,
-        fetch_backoff: super::version_stamp::installed_version_path()
-            .ok()
-            .and_then(|path| path.parent().map(super::fetch_backoff::marker_path)),
-    };
-    let source = super::framework_source::acquire_framework_source(
-        &policy,
-        &super::clone::FrameworkRootQuery::from_environment(),
-        &super::framework_source::BinaryIdentity::current(),
-        &super::tag_fetch::ReleaseTagFetcher::production(),
-        &|candidate| {
-            super::bundle_compat::validate_framework_bundle_compatibility(candidate)
-                .map_err(|error| format!("{error:#}"))
-        },
-    )?;
-    let (root, layout) = super::directories::find_source_root(&source.root)?;
-    crate::copilot_setup::adopt_previous_skill_ownership(staged)
-        .context("failed to capture legacy Copilot skill ownership before replacing definitions")?;
-    super::directories::copytree_manifest(&root, layout, staged)?;
-    super::write_layout_marker(staged, layout)
 }
 
 fn apply_codex(staged: &Path) -> Result<()> {
@@ -117,17 +88,19 @@ fn apply_codex(staged: &Path) -> Result<()> {
 }
 
 fn apply_installed(
-    tools: &[(&str, bool)],
+    tools: &[(&str, Result<bool>)],
     mut publish: impl FnMut(&str) -> Result<()>,
 ) -> Result<()> {
     let mut completed = Vec::new();
     let mut failed = Vec::new();
-    for &(tool, installed) in tools {
-        if installed {
-            match publish(tool) {
+    for &(tool, ref installed) in tools {
+        match installed {
+            Ok(true) => match publish(tool) {
                 Ok(()) => completed.push(tool),
                 Err(error) => failed.push(format!("{tool}: {error:#}")),
-            }
+            },
+            Ok(false) => {}
+            Err(error) => failed.push(format!("{tool}: {error:#}")),
         }
     }
     if !failed.is_empty() {
@@ -149,33 +122,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_and_newer_installs_keep_their_staged_definitions() {
-        let _lock = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let home = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::HomeGuard::set(home.path());
-        let staged = home.path().join(".amplihack/.claude");
-        std::fs::create_dir_all(&staged).unwrap();
-        let definition = staged.join("definition.md");
-        std::fs::write(&definition, "installed definition").unwrap();
-        for version in [crate::VERSION, "9999.0.0"] {
-            super::super::version_stamp::write_installed_version(version).unwrap();
-            refresh_staged_assets(&staged).unwrap();
-            assert_eq!(std::fs::read(&definition).unwrap(), b"installed definition");
-            assert_eq!(
-                super::super::version_stamp::read_installed_version().unwrap(),
-                Some(version.into())
-            );
-            assert!(!staged.join("skills").exists());
-        }
-    }
-
-    #[test]
     fn only_installed_tools_are_published() {
         let mut called = Vec::new();
         apply_installed(
-            &[("Claude Code", true), ("Codex", false), ("Copilot", true)],
+            &[
+                ("Claude Code", Ok(true)),
+                ("Codex", Ok(false)),
+                ("Copilot", Ok(true)),
+            ],
             |tool| {
                 called.push(tool.to_owned());
                 Ok(())
@@ -187,7 +141,11 @@ mod tests {
 
     #[test]
     fn failure_does_not_prevent_other_installed_tools_from_converging() {
-        let tools = [("Claude Code", true), ("Codex", true), ("Copilot", true)];
+        let tools = [
+            ("Claude Code", Ok(true)),
+            ("Codex", Ok(true)),
+            ("Copilot", Ok(true)),
+        ];
         let mut called = Vec::new();
         let error = apply_installed(&tools, |tool| {
             called.push(tool.to_owned());
@@ -203,5 +161,31 @@ mod tests {
             assert!(diagnostic.contains(tool));
         }
         apply_installed(&tools, |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn malformed_copilot_configuration_does_not_prevent_other_publications() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("config.json");
+        std::fs::write(&config, "not JSON").unwrap();
+        let tools = [
+            ("Claude Code", Ok(true)),
+            (
+                "Copilot",
+                crate::copilot_setup::user_config_registers_amplihack(home.path()),
+            ),
+            ("Codex", Ok(true)),
+        ];
+        let mut published = Vec::new();
+        let error = apply_installed(&tools, |tool| {
+            published.push(tool.to_owned());
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(published, ["Claude Code", "Codex"]);
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("publication failed for Copilot:"));
+        assert!(diagnostic.contains("Completed applications: Claude Code, Codex"));
+        assert_eq!(std::fs::read(config).unwrap(), b"not JSON");
     }
 }

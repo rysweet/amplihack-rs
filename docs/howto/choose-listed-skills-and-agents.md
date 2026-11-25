@@ -1,9 +1,14 @@
 # Choose which skills and agents are listed
 
-amplihack lists 32 skills and 12 agents by default in Claude Code, Codex and
+amplihack lists 30 skills and 12 agents by default in Claude Code, Codex and
 Copilot. Every other bundled skill and agent remains installed in the complete
 framework and searchable through `amplihack directory find`. Recipes still use
 the complete framework.
+
+The default set excludes `auto-drive-to-merge`, which drives a pull request
+through an owner's merge conditions, and `claude-profile-rotation`, which
+rotates between several logins. Enable either with `amplihack directory enable`
+when that way of working applies.
 
 These steps apply to tools set up through `amplihack install`. They update
 the assets each installed tool reads, without adding another tool. Start a new
@@ -61,28 +66,40 @@ It saves the setting and immediately restores each installed tool's full
 inventory. Codex keeps its established full-mode exclusions for analyst
 skills. Extensions remain recorded for a later return to the smaller set.
 
+In Codex, the generated command skills leave with `default` and return with
+`amplihack config set lists.set all`. They cannot be enabled individually,
+because the directory indexes skills and agents only. Claude Code's typed
+commands remain available under both settings.
+
 To return to the defaults plus your extensions:
 
 ```sh
 amplihack config set lists.set default
 ```
 
-You can inspect either setting with `amplihack config get`. To replace the
-whole extension list, use the quoted TOML array syntax in the
-[configuration reference](../reference/user-config.md#listsset-and-listsenabled).
+You can inspect either setting with `amplihack config get`. Change individual
+extensions with `directory enable` and `directory disable`; `config set
+lists.enabled` is not supported. `config unset` and `config edit` change only
+the configuration file, taking effect at the next install or update, or at
+once with `amplihack config set lists.set <value>` even when the value is unchanged.
+
+Applying a list change requires an installation that matches the running
+binary. If the versions differ, run `amplihack install` first; the list command
+leaves the configuration and tool files unchanged.
 
 ## Read the upgrade notice
 
-An update that removes installer-owned entries from an existing tool's lists
-saves a notice in `list-changes.txt` beside the ownership records in the
+The first install, update or launch publication that narrows an existing
+tool's lists saves a notice in `list-changes.txt` beside the ownership records in the
 [install staging folder](../reference/directory-command.md#where-the-index-lives).
-It reports removed skills and agents separately for each affected tool, and
-identifies edited installer-owned skills left in place. Independently
-installed skills are left untouched and are not included in the notice.
+It reports removed skills and agents separately for each affected tool,
+counting only entries still in the bundle and outside the selection.
 
-The notice appears once on standard error at a terminal. Recipe steps and
-commands without a terminal save it for display by a later terminal command.
-A fresh default installation needs no upgrade notice.
+Only the command that writes the notice prints it, on standard error at a
+terminal and outside a recipe step. No later command displays it. The file
+remains available to read. Notice failures produce warnings and never change
+the command's result. Enable, disable and configuration changes never write
+it. A fresh default installation needs no upgrade notice.
 
 If publication fails, the command reports the failed tool and any completed
 tools. The desired configuration stays saved. Correct the reported problem

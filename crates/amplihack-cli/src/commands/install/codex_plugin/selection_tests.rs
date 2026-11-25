@@ -1,4 +1,4 @@
-//! Selection changes discoverable instructions without losing resource bytes.
+//! Selection publishes complete selected skills and shared resources.
 use super::*;
 use amplihack_utils::list_selection::{DEFAULT_AGENTS, DEFAULT_SKILLS};
 use std::collections::BTreeSet;
@@ -82,7 +82,7 @@ fn default_package_has_exactly_the_regular_and_persona_skills() {
     let dir = package(&source(), &ListSelection::default());
     let root = dir.path().join("package");
     assert_eq!(inventory(&root), defaults());
-    assert_eq!(definition_count(&root.join("skills")), 44);
+    assert_eq!(definition_count(&root.join("skills")), 42);
     assert_eq!(
         fs::read(root.join("bin/hook")).unwrap(),
         HOOK_WRAPPER.as_bytes()
@@ -193,35 +193,55 @@ fn unlisted_skills_still_require_valid_canonical_definitions() {
 
 #[cfg(unix)]
 #[test]
-fn selected_skill_can_read_resources_of_an_unlisted_neighbour() {
+fn selected_skill_can_read_shared_resources_without_packaging_unselected_skills() {
     let source = tempfile::tempdir().unwrap();
     let skills = source.path().join("amplifier-bundle/skills");
-    for name in ["qa-team", "shared-reference"] {
+    for name in ["qa-team", "unlisted", "category/another-unlisted"] {
         fs::create_dir_all(skills.join(name)).unwrap();
         fs::write(
             skills.join(name).join("SKILL.md"),
-            format!("---\nname: {name}\ndescription: resource fixture\n---\n"),
+            format!(
+                "---\nname: {}\ndescription: resource fixture\n---\n",
+                name.rsplit('/').next().unwrap()
+            ),
         )
         .unwrap();
     }
-    fs::write(
-        skills.join("shared-reference/resource.txt"),
-        b"shared resource",
-    )
-    .unwrap();
+    fs::create_dir_all(skills.join("common")).unwrap();
+    fs::write(skills.join("common/resource.txt"), b"shared resource").unwrap();
+    fs::write(skills.join("unlisted/resource.txt"), b"private to skill").unwrap();
     std::os::unix::fs::symlink(
-        "../shared-reference/resource.txt",
+        "../common/resource.txt",
         skills.join("qa-team/resource.txt"),
     )
     .unwrap();
-    let dir = package(source.path(), &ListSelection::default());
-    let root = dir.path().join("package");
-    assert_eq!(inventory(&root), BTreeSet::from(["qa-team".to_owned()]));
-    assert_eq!(
-        fs::read(root.join("skills/qa-team/resource.txt")).unwrap(),
-        b"shared resource"
-    );
-    assert!(skills.join("shared-reference/SKILL.md").is_file());
+    for set in [ListSet::Default, ListSet::All] {
+        let dir = package(source.path(), &ListSelection::new(set, []));
+        let root = dir.path().join("package");
+        assert_eq!(
+            fs::read(root.join("skills/qa-team/resource.txt")).unwrap(),
+            b"shared resource"
+        );
+        assert_eq!(
+            fs::read(root.join("skills/common/resource.txt")).unwrap(),
+            b"shared resource"
+        );
+        if set == ListSet::Default {
+            assert_eq!(inventory(&root), BTreeSet::from(["qa-team".to_owned()]));
+            assert!(!root.join("skills/unlisted").exists());
+            assert!(!root.join("skills/category/another-unlisted").exists());
+        } else {
+            assert_eq!(
+                fs::read(root.join("skills/unlisted/resource.txt")).unwrap(),
+                b"private to skill"
+            );
+            assert!(
+                root.join("skills/category/another-unlisted/SKILL.md")
+                    .is_file()
+            );
+        }
+    }
+    assert!(skills.join("unlisted/SKILL.md").is_file());
 }
 
 #[cfg(unix)]

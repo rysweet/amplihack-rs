@@ -169,6 +169,7 @@ fn run_install_with_fetcher(
     binary: &framework_source::BinaryIdentity,
     fetcher: &dyn tag_fetch::TagFetcher,
 ) -> Result<()> {
+    let _notice = crate::list_notice::begin();
     let local = local
         .map(|local_path| -> Result<PathBuf> {
             // Validate and canonicalize the --local path
@@ -775,8 +776,6 @@ fn local_install_scoped(
         layout.marker_str(),
         source_root.display()
     );
-    crate::copilot_setup::adopt_previous_skill_ownership(&claude_dir)
-        .context("failed to capture legacy Copilot skill ownership before replacing definitions")?;
     let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
     if copied_dirs.is_empty() {
         bail!(

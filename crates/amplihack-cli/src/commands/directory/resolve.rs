@@ -6,20 +6,12 @@ use std::path::Path;
 use amplihack_utils::list_selection::EntryId;
 use anyhow::{Context, Result, bail};
 
-use super::index::{self, Entry, EntryKind};
-
-/// Read the installed index without changing it or refreshing framework assets.
-pub(crate) fn installed_entries(staged: &Path) -> Result<Vec<Entry>> {
-    let entries = index::read_index(&index::index_path(staged))?
-        .filter(|entries| !entries.is_empty())
-        .context("the skills and agents index is missing or empty; run `amplihack install`")?;
-    Ok(entries)
-}
+use super::index::{Entry, EntryKind};
 
 /// Resolve a canonical identity or tool-qualified alias against the whole index.
 /// Ambiguous aliases report every canonical alternative, including agent paths.
 pub(crate) fn resolve(staged: &Path, entries: &[Entry], query: &str) -> Result<EntryId> {
-    let query = query.strip_prefix("amplihack:").unwrap_or(query);
+    let query = query.trim_start_matches("amplihack:");
     let (kind, name) = if let Some(name) = query.strip_prefix("skill:") {
         (Some(EntryKind::Skill), name)
     } else if let Some(name) = query.strip_prefix("agent:") {
@@ -101,6 +93,7 @@ mod tests {
             ),
             (EntryKind::Agent, "guide", "agents/guide.md"),
             (EntryKind::Agent, "guide", "agents/core/guide.md"),
+            (EntryKind::Agent, "builder", "agents/core/builder.md"),
             (EntryKind::Skill, "extra", "skills/category/extra/SKILL.md"),
         ]
         .into_iter()
@@ -121,6 +114,8 @@ mod tests {
         for query in [
             "agent:core/guide",
             "amplihack:core:guide",
+            "amplihack:amplihack:core:guide",
+            "amplihack:amplihack:amplihack:agent:core/guide",
             "agent:core:guide",
         ] {
             assert_eq!(
@@ -134,12 +129,24 @@ mod tests {
                 .to_string(),
             "agent:guide"
         );
-        for query in ["extra", "skill:extra", "amplihack:extra"] {
+        for query in [
+            "extra",
+            "skill:extra",
+            "amplihack:extra",
+            "amplihack:amplihack:extra",
+            "amplihack:amplihack:skill:extra",
+        ] {
             assert_eq!(
                 resolve(staged, &entries, query).unwrap().to_string(),
                 "skill:extra"
             );
         }
+        assert_eq!(
+            resolve(staged, &entries, "amplihack:amplihack:core:builder")
+                .unwrap()
+                .to_string(),
+            "agent:core/builder"
+        );
         assert_eq!(
             resolve(staged, &entries, "skill:tla-plus-expert")
                 .unwrap()
@@ -179,6 +186,7 @@ mod tests {
         for query in [
             "",
             "amplihack:",
+            "amplihack:amplihack:",
             "skill:",
             "agent:",
             "agent:extra",
@@ -188,21 +196,5 @@ mod tests {
         ] {
             assert!(resolve(staged, &entries, query).is_err(), "{query}");
         }
-    }
-
-    #[test]
-    fn index_reads_do_not_change_bytes_and_reject_missing_or_empty_indexes() {
-        let dir = tempfile::tempdir().unwrap();
-        let staged = dir.path();
-        assert!(installed_entries(staged).is_err());
-        let index = index::index_path(staged);
-        std::fs::create_dir_all(index.parent().unwrap()).unwrap();
-        std::fs::write(&index, "").unwrap();
-        assert!(installed_entries(staged).is_err());
-        let bytes = index::render(&entries(staged)).unwrap();
-        std::fs::write(&index, &bytes).unwrap();
-        let read = installed_entries(staged).unwrap();
-        resolve(staged, &read, "extra").unwrap();
-        assert_eq!(std::fs::read_to_string(index).unwrap(), bytes);
     }
 }

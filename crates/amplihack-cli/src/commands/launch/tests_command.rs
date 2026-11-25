@@ -208,11 +208,6 @@ fn gateway_projection_is_the_final_environment_mutation() {
 
 #[test]
 fn routed_copilot_child_cannot_see_installed_user_plugin() {
-    let _lock = home_env_lock()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let user_home = tempfile::tempdir().unwrap();
-    let _home = crate::test_support::HomeGuard::set(user_home.path());
     let ambient_home = tempfile::tempdir().unwrap();
     let installed_plugin = ambient_home
         .path()
@@ -266,63 +261,6 @@ fn routed_copilot_child_cannot_see_installed_user_plugin() {
         installed_plugin.join("plugin.json").is_file(),
         "the fixture must prove isolation without deleting the user's plugin"
     );
-}
-
-#[test]
-fn routed_copilot_stages_the_configured_selection_without_ambient_configuration() {
-    let _lock = home_env_lock()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let user_home = tempfile::tempdir().unwrap();
-    let _home = crate::test_support::HomeGuard::set(user_home.path());
-    let staged = user_home.path().join(".amplihack/.claude");
-    for (relative, body) in [
-        ("skills/pdf/SKILL.md", "pdf"),
-        ("skills/extra/SKILL.md", "extra"),
-        ("agents/amplihack/core/reviewer.md", "reviewer"),
-        ("agents/amplihack/core/guide.md", "guide"),
-    ] {
-        let path = staged.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, body).unwrap();
-    }
-    let config = user_home.path().join(".amplihack/config.toml");
-    fs::write(
-        &config,
-        "[lists]\nenabled = [\"skill:extra\", \"agent:core/guide\"]\n",
-    )
-    .unwrap();
-    let mut command = Command::new("copilot");
-    let isolated = isolate_routed_copilot_home(&mut command, true)
-        .unwrap()
-        .unwrap();
-    for relative in [
-        "skills/pdf/SKILL.md",
-        "skills/extra/SKILL.md",
-        "agents/amplihack/reviewer.md",
-        "agents/amplihack/guide.md",
-    ] {
-        assert!(
-            isolated.path().join(relative).is_file(),
-            "missing {relative}"
-        );
-    }
-    assert!(!isolated.path().join("config.json").exists());
-    assert!(!isolated.path().join("installed-plugins").exists());
-    fs::write(&config, "[lists]\nset = \"all\"\n").unwrap();
-    let all = isolate_routed_copilot_home(&mut command, true)
-        .unwrap()
-        .unwrap();
-    assert!(all.path().join("skills/extra/SKILL.md").is_file());
-    assert!(all.path().join("agents/amplihack/guide.md").is_file());
-    fs::write(&config, "").unwrap();
-    let default = isolate_routed_copilot_home(&mut command, true)
-        .unwrap()
-        .unwrap();
-    assert!(default.path().join("skills/pdf/SKILL.md").is_file());
-    assert!(!default.path().join("skills/extra").exists());
-    assert!(!default.path().join("agents/amplihack/guide.md").exists());
-    assert!(all.path().join("skills/extra/SKILL.md").is_file());
 }
 
 #[test]

@@ -3,10 +3,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
-use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Command;
 
 use amplihack_utils::list_selection::{DEFAULT_AGENTS, DEFAULT_SKILLS};
 
@@ -14,110 +12,6 @@ struct Installation {
     home: tempfile::TempDir,
     source: PathBuf,
     tools: PathBuf,
-}
-
-// Notice display requires terminal stderr. Drain it concurrently so publication
-// output cannot fill the PTY and block the child.
-fn terminal_output(mut command: Command) -> Output {
-    let (mut master, mut slave) = (-1, -1);
-    // SAFETY: openpty initializes both descriptors on success; each is then
-    // transferred to exactly one File owner.
-    assert_eq!(
-        unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null_mut::<libc::termios>(),
-                std::ptr::null_mut::<libc::winsize>(),
-            )
-        },
-        0
-    );
-    let mut reader = unsafe { fs::File::from_raw_fd(master) };
-    let terminal = unsafe { fs::File::from_raw_fd(slave) };
-    let captured = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut buffer = [0; 4096];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(count) => bytes.extend_from_slice(&buffer[..count]),
-                // Linux reports the closed slave as EIO rather than EOF.
-                Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => panic!("reading terminal stderr: {error}"),
-            }
-        }
-        bytes
-    });
-    let mut output = command
-        .env_remove("AMPLIHACK_RECIPE_RUN_ID")
-        .stderr(terminal)
-        .output()
-        .unwrap();
-    drop(command);
-    output.stderr = captured.join().unwrap();
-    output
-}
-
-#[test]
-fn damaged_notice_does_not_block_terminal_inspection_or_full_list_restoration() {
-    for (damage, diagnostic) in [
-        ("malformed", "cannot read the list notice display position"),
-        ("shortened", "list notice history was shortened"),
-    ] {
-        let install = Installation::new();
-        install.run(&["config", "set", "lists.set", "all"]);
-        install.install();
-        let lists = [
-            ".claude/skills",
-            ".copilot/skills",
-            ".copilot/agents/amplihack",
-            ".amplihack/codex/market/plugin/skills",
-        ];
-        let full = lists.map(|path| snapshot(&install.path(path)));
-        install.run(&["config", "set", "lists.set", "default"]);
-        install.defaults();
-        let history = install.path(".amplihack/.claude/install/list-changes.txt");
-        let shown = install.path(".amplihack/.claude/install/list-changes-shown.json");
-        if damage == "shortened" {
-            let position = fs::read(&history).unwrap().len();
-            fs::write(&shown, serde_json::to_vec(&position).unwrap()).unwrap();
-            fs::write(&history, "shortened notice\n").unwrap();
-        } else {
-            fs::write(&shown, "not JSON\n").unwrap();
-        }
-        let mut pending = fs::read(&history).unwrap();
-        let position = fs::read(&shown).unwrap();
-        for (args, expected) in [
-            (vec!["config", "get", "lists.set"], Some("default\n")),
-            (vec!["config", "set", "lists.set", "all"], None),
-            (vec!["config", "get", "lists.set"], Some("all\n")),
-        ] {
-            let output = terminal_output(install.command(&args));
-            assert!(output.status.success(), "{damage}: {args:?}: {output:?}");
-            let warning = String::from_utf8_lossy(&output.stderr);
-            assert!(warning.contains("Warning:"), "{warning}");
-            assert!(warning.contains(diagnostic), "{warning}");
-            if let Some(expected) = expected {
-                assert_eq!(output.stdout, expected.as_bytes());
-            }
-            let saved = fs::read(&history).unwrap();
-            if args[1] == "set" {
-                // Publication may append a migration (Copilot restores its
-                // flat agent filenames); it must retain the pending history.
-                assert!(saved.starts_with(&pending));
-                pending = saved;
-            } else {
-                assert_eq!(saved, pending);
-            }
-            assert_eq!(fs::read(&shown).unwrap(), position);
-        }
-        for (path, expected) in lists.into_iter().zip(full) {
-            assert_eq!(snapshot(&install.path(path)), expected, "{damage}: {path}");
-        }
-    }
 }
 
 impl Installation {
@@ -373,6 +267,28 @@ fn markdown_files(root: &Path) -> BTreeSet<PathBuf> {
 }
 
 #[test]
+fn unusable_notice_destination_does_not_fail_a_narrowing_install() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let install = Installation::new();
+    install.run(&["config", "set", "lists.set", "all"]);
+    install.install();
+    install.run(&["config", "unset", "lists.set"]);
+    let notice = install.path(".amplihack/.claude/install/list-changes.txt");
+    fs::create_dir(&notice).unwrap();
+    fs::set_permissions(&notice, fs::Permissions::from_mode(0o500)).unwrap();
+    let output = install
+        .command(&["install", "--local", install.source.to_str().unwrap()])
+        .output()
+        .unwrap();
+    fs::set_permissions(&notice, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Warning:"));
+    install.defaults();
+    assert!(notice.is_dir());
+}
+
+#[test]
 fn fresh_default_install_keeps_complete_framework_and_index() {
     let install = Installation::new();
     install.install();
@@ -397,7 +313,7 @@ fn fresh_default_install_keeps_complete_framework_and_index() {
         assert!(Path::new(fields[2]).is_file(), "{line}");
         skills += usize::from(fields[0] == "skill");
     }
-    assert!(skills > 32);
+    assert!(skills > 30);
     for resource in [
         "docx/ooxml",
         "pptx/ooxml",
@@ -416,7 +332,8 @@ fn enable_disable_and_single_command_restoration_update_every_installed_tool() {
     install.install();
     let config = install.path(".amplihack/config.toml");
     fs::write(&config, "# preserve\n[recipe]\nverbose = true\n").unwrap();
-    let original_config = fs::read(&config).unwrap();
+    let original_config: toml::Value =
+        toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
     let original = install.readable_assets();
     let index = install.path(".amplihack/.claude/install/skills-and-agents-index.tsv");
     let original_index = fs::read(&index).unwrap();
@@ -441,12 +358,19 @@ fn enable_disable_and_single_command_restoration_update_every_installed_tool() {
             install.run(&["directory", "disable", name]);
         }
     }
+    assert!(
+        !install
+            .path(".amplihack/.claude/install/list-changes.txt")
+            .exists()
+    );
     assert_same_assets(&install.readable_assets(), &original);
-    assert_eq!(fs::read(config).unwrap(), original_config);
+    let restored_config: toml::Value =
+        toml::from_str(&fs::read_to_string(config).unwrap()).unwrap();
+    assert_eq!(restored_config, original_config);
     assert_eq!(fs::read(index).unwrap(), original_index);
     install.run(&["config", "set", "lists.set", "all"]);
-    assert!(skill_names(&install.path(".claude/skills")).len() > 32);
-    assert!(skill_names(&install.path(".copilot/skills")).len() > 32);
+    assert!(skill_names(&install.path(".claude/skills")).len() > 30);
+    assert!(skill_names(&install.path(".copilot/skills")).len() > 30);
     assert!(
         skill_names(&install.path(".amplihack/codex/market/plugin/skills"))
             .iter()
@@ -475,13 +399,16 @@ fn update_from_full_install_preserves_edits_and_unowned_skills() {
         fs::write(unowned.join("SKILL.md"), "independent\n").unwrap();
     }
     fs::write(install.path(".copilot/instructions.md"), "before\n<!-- AMPLIHACK_INSTRUCTIONS_START -->\nold agents\n<!-- AMPLIHACK_INSTRUCTIONS_END -->\nafter\n").unwrap();
+    let before_update = install.readable_assets();
     install.run(&["config", "unset", "lists.set"]);
+    assert_same_assets(&install.readable_assets(), &before_update);
     install.install();
+    assert_eq!(
+        fs::read(install.path(".claude/skills/code-visualizer/SKILL.md")).unwrap(),
+        b"user edit\n"
+    );
+    assert!(!install.path(".copilot/skills/code-visualizer").exists());
     for tool in [".claude", ".copilot"] {
-        assert_eq!(
-            fs::read(install.path(tool).join("skills/code-visualizer/SKILL.md")).unwrap(),
-            b"user edit\n"
-        );
         assert_eq!(
             fs::read(install.path(tool).join("skills/independent/SKILL.md")).unwrap(),
             b"independent\n"
@@ -505,130 +432,95 @@ fn update_from_full_install_preserves_edits_and_unowned_skills() {
     let saved = fs::read(&notice).unwrap();
     assert!(!saved.is_empty());
     install.install();
+    assert_eq!(fs::read(&notice).unwrap(), saved);
+    install.run(&["config", "set", "lists.set", "all"]);
+    install.run(&["config", "unset", "lists.set"]);
+    install.install();
     assert_eq!(fs::read(notice).unwrap(), saved);
 }
 
-// Verbatim Markdown payloads from PR base 439a20122d52d08abe727c27d43e9fe8bbc32bfc.
-// All three SKILL.md definitions change in this release; compare destinations
-// with the old staged payload, rather than with the incoming bundle.
-const LEGACY_COPILOT_FILES: [(&str, &str); 7] = [
-    (
-        "lsp-setup/README.md",
-        include_str!("fixtures/issue_3240_legacy_copilot/lsp-setup/README.md"),
-    ),
-    (
-        "lsp-setup/SKILL.md",
-        include_str!("fixtures/issue_3240_legacy_copilot/lsp-setup/SKILL.md"),
-    ),
-    (
-        "context-management/QUICK_START.md",
-        include_str!("fixtures/issue_3240_legacy_copilot/context-management/QUICK_START.md"),
-    ),
-    (
-        "context-management/README.md",
-        include_str!("fixtures/issue_3240_legacy_copilot/context-management/README.md"),
-    ),
-    (
-        "context-management/SKILL.md",
-        include_str!("fixtures/issue_3240_legacy_copilot/context-management/SKILL.md"),
-    ),
-    (
-        "code-visualizer/README.md",
-        include_str!("fixtures/issue_3240_legacy_copilot/code-visualizer/README.md"),
-    ),
-    (
-        "code-visualizer/SKILL.md",
-        include_str!("fixtures/issue_3240_legacy_copilot/code-visualizer/SKILL.md"),
-    ),
-];
-
 #[test]
 fn base_version_copilot_upgrade_without_ownership_refreshes_and_narrows() {
-    // Exercise both writers that replace framework definitions: install and a
-    // list change against an older version. Do not use the new publisher to
-    // create the starting installation or its ownership manifest.
-    for list_change in [false, true] {
-        let install = Installation::new();
-        let staged = install.path(".amplihack/.claude");
-        for (relative, body) in LEGACY_COPILOT_FILES {
-            if relative.ends_with("SKILL.md") {
-                assert_ne!(
-                    fs::read(
-                        install
-                            .source
-                            .join("amplifier-bundle/skills")
-                            .join(relative)
-                    )
-                    .unwrap(),
-                    body.as_bytes(),
-                    "{relative} must exercise a changed release payload"
-                );
-            }
-            // These skills have no nested Markdown; this is exactly the old
-            // Copilot publisher's flattened, Markdown-only installation.
-            for root in [staged.join("skills"), install.path(".copilot/skills")] {
-                let file = root.join(relative);
-                fs::create_dir_all(file.parent().unwrap()).unwrap();
-                fs::write(file, body).unwrap();
-            }
-        }
-        fs::write(install.path(".amplihack/.installed-version"), "0.0.0").unwrap();
-        fs::write(
-            install.path(".copilot/config.json"),
-            r#"{"installedPlugins":[{"name":"amplihack"}]}"#,
-        )
-        .unwrap();
-        let edited = install.path(".copilot/skills/code-visualizer/SKILL.md");
-        fs::write(&edited, "user edit\n").unwrap();
-        let independent = install.path(".copilot/skills/independent");
-        fs::create_dir_all(&independent).unwrap();
-        fs::write(independent.join("SKILL.md"), "independent\n").unwrap();
-        let record = install.path(".copilot/copilot-skills-manifest.json");
-        assert!(!record.exists());
-
-        let upgrade = || {
-            if list_change {
-                install.run(&["config", "set", "lists.set", "default"]);
-            } else {
-                install.install();
-            }
-        };
-        upgrade();
-        let expected: BTreeSet<_> = DEFAULT_SKILLS
-            .iter()
-            .copied()
-            .chain(["code-visualizer", "independent"])
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(skill_names(&install.path(".copilot/skills")), expected);
-        assert_eq!(
-            fs::read(install.path(".copilot/skills/lsp-setup/SKILL.md")).unwrap(),
-            fs::read(
-                install
-                    .source
-                    .join("amplifier-bundle/skills/lsp-setup/SKILL.md")
-            )
-            .unwrap()
-        );
-        assert!(!install.path(".copilot/skills/context-management").exists());
-        assert_eq!(fs::read(&edited).unwrap(), b"user edit\n");
-        assert_eq!(
-            fs::read(independent.join("SKILL.md")).unwrap(),
-            b"independent\n"
-        );
-        let ownership: serde_json::Value =
-            serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
-        let owned: BTreeSet<_> = ownership["skills"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|skill| skill["name"].as_str().unwrap().to_owned())
-            .collect();
-        assert_eq!(owned, DEFAULT_SKILLS.map(str::to_owned).into());
-        let published = snapshot(&install.path(".copilot/skills"));
-        upgrade();
-        assert_eq!(snapshot(&install.path(".copilot/skills")), published);
+    let install = Installation::new();
+    for (relative, body) in [
+        ("lsp-setup/SKILL.md", "old selected skill"),
+        ("context-management/SKILL.md", "old unselected skill"),
+        ("development/SKILL.md", "old category skill"),
+        ("code-visualizer/SKILL.md", "edited bundle skill"),
+        ("independent/SKILL.md", "personal skill"),
+        ("context-management/notes.txt", "personal non-markdown"),
+    ] {
+        let file = install.path(".copilot/skills").join(relative);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, body).unwrap();
     }
+    fs::write(
+        install.path(".copilot/config.json"),
+        r#"{"installedPlugins":[{"name":"amplihack"}]}"#,
+    )
+    .unwrap();
+    install.install();
+    let skills = install.path(".copilot/skills");
+    let expected: BTreeSet<_> = DEFAULT_SKILLS
+        .iter()
+        .copied()
+        .chain(["independent"])
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(skill_names(&skills), expected);
+    assert_eq!(
+        fs::read(skills.join("lsp-setup/SKILL.md")).unwrap(),
+        fs::read(
+            install
+                .source
+                .join("amplifier-bundle/skills/lsp-setup/SKILL.md")
+        )
+        .unwrap()
+    );
+    assert!(!skills.join("context-management/SKILL.md").exists());
+    assert!(!skills.join("code-visualizer").exists());
+    assert!(!skills.join("development").exists());
+    assert_eq!(
+        fs::read(skills.join("independent/SKILL.md")).unwrap(),
+        b"personal skill"
+    );
+    assert_eq!(
+        fs::read(skills.join("context-management/notes.txt")).unwrap(),
+        b"personal non-markdown"
+    );
+    assert!(
+        !install
+            .path(".copilot/copilot-skills-manifest.json")
+            .exists()
+    );
+    let narrowed = snapshot(&skills);
+    install.install();
+    assert_eq!(snapshot(&skills), narrowed);
+
+    install.run(&["config", "set", "lists.set", "all"]);
+    assert!(skills.join("development/SKILL.md").is_file());
+    assert!(!skills.join("reviewing-code").exists());
+    assert_eq!(
+        fs::read(skills.join("independent/SKILL.md")).unwrap(),
+        b"personal skill"
+    );
+    assert_eq!(
+        fs::read(skills.join("context-management/SKILL.md")).unwrap(),
+        fs::read(
+            install
+                .source
+                .join("amplifier-bundle/skills/context-management/SKILL.md")
+        )
+        .unwrap()
+    );
+    let restored = snapshot(&skills);
+    install.run(&["config", "set", "lists.set", "all"]);
+    assert_eq!(snapshot(&skills), restored);
+    assert!(
+        !install
+            .path(".copilot/copilot-skills-manifest.json")
+            .exists()
+    );
 }
 
 #[test]

@@ -16,6 +16,13 @@ pub(super) fn copy_tree(
     selection: &ListSelection,
 ) -> Result<()> {
     ensure!(depth < 32, "Codex resource nesting exceeds safe depth");
+    if source.join("SKILL.md").is_file()
+        && !source
+            .file_name()
+            .is_some_and(|name| selection.includes_skill(&name.to_string_lossy()))
+    {
+        return Ok(());
+    }
     fs::create_dir_all(destination)?;
     for e in fs::read_dir(source)? {
         let e = e?;
@@ -61,15 +68,6 @@ pub(super) fn copy_tree(
             copy_tree(&e.path(), &target, boundary, depth + 1, selection)?;
         } else {
             ensure!(kind.is_file(), "unsupported skill resource type");
-            // Preserve neighbouring resources and relative links without making
-            // unselected folders discoverable as skills.
-            if e.file_name() == "SKILL.md"
-                && !source
-                    .file_name()
-                    .is_some_and(|name| selection.includes_skill(&name.to_string_lossy()))
-            {
-                continue;
-            }
             fs::copy(e.path(), target)?;
         }
     }

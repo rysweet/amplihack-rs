@@ -72,7 +72,7 @@ fn real_bundle_publishes_exact_defaults_and_keeps_every_framework_entry() {
             .is_file()
     );
     // The old reader rejects unknown fields and versions. It must still read
-    // the exact skill record produced alongside the new agent record.
+    // the exact skill record produced for the selected publication.
     let record = read_skill_ownership_manifest(&skill_ownership_manifest_path(&staged)).unwrap();
     assert_eq!(record.version, 2);
     let json: Value =
@@ -85,7 +85,6 @@ fn real_bundle_publishes_exact_defaults_and_keeps_every_framework_entry() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from(["plugin", "skills", "version"])
     );
-    assert!(agents::record_path(&staged).is_file());
 }
 
 #[test]
@@ -156,11 +155,10 @@ fn narrowing_preserves_edited_owned_skills_and_independent_skills() {
         fs::read(root.join("independent/SKILL.md")).unwrap(),
         b"independent\n"
     );
-    let saved_notice = fs::read(&notice).unwrap();
     let again = ensure_claude_plugin_with_selection(&ListSelection::default()).unwrap();
     assert!(again.removed_skills.is_empty());
     assert!(again.removed_agents.is_empty());
-    assert_eq!(fs::read(&notice).unwrap(), saved_notice);
+    assert!(!notice.exists());
 }
 
 #[test]
@@ -269,32 +267,21 @@ fn unchanged_default_wrapper_and_records_are_not_rewritten() {
 }
 
 #[test]
-fn uninstall_removes_the_separate_agent_record() {
+fn uninstall_removes_selected_agents_and_preserves_staged_agents() {
     let (_lock, home, _env) = tests::isolated_home();
     let staged = fixture(home.path());
     ensure_claude_plugin_with_selection(&ListSelection::default()).unwrap();
-    assert!(agents::record_path(&staged).is_file());
     remove_managed_claude_plugin().unwrap();
-    assert!(!agents::record_path(&staged).exists());
     assert!(!home.path().join(".claude/skills/amplihack").exists());
     assert!(staged.join("agents/core/guide.md").is_file());
 }
 
 #[test]
-fn changed_wrapper_agents_and_invalid_agent_records_preserve_the_live_wrapper() {
+fn changed_wrapper_agents_preserve_the_live_wrapper() {
     let (_lock, home, _env) = tests::isolated_home();
-    let staged = fixture(home.path());
+    fixture(home.path());
     ensure_claude_plugin_with_selection(&ListSelection::default()).unwrap();
     let plugin = home.path().join(".claude/skills/amplihack");
-    let bytes = fs::read(agents::record_path(&staged)).unwrap();
-    for invalid in [b"{".as_slice(), br#"{"version":2,"agents":[]}"#.as_slice()] {
-        fs::write(agents::record_path(&staged), invalid).unwrap();
-        let before = hash_directory_tree(&plugin).unwrap();
-        let report = ensure_claude_plugin_with_selection(&all()).unwrap();
-        assert!(report.wrapper_error.is_some());
-        assert_eq!(hash_directory_tree(&plugin).unwrap(), before);
-    }
-    fs::write(agents::record_path(&staged), bytes).unwrap();
     fs::write(plugin.join("agents/core/builder.md"), "user edit\n").unwrap();
     let before = hash_directory_tree(&plugin).unwrap();
     let report = ensure_claude_plugin_with_selection(&all()).unwrap();

@@ -6,17 +6,17 @@ scenarios:
     test: fresh_default_install_keeps_complete_framework_and_index
     steps:
       - Install from the checkout into an isolated temporary home with all three clients available.
-      - Check the 32 default skill folders and 12 agent definitions for each client.
+      - Check the 30 default skill folders and 12 agent definitions for each client.
       - Check Codex personas, absence of generated command skills and the hook wrapper.
       - Check that every indexed definition exists and the framework retains every agent.
       - Check that linked skill resources remain readable and no upgrade notice is created.
   - name: Persistent extensions and restoration
     test: enable_disable_and_single_command_restoration_update_every_installed_tool
     steps:
-      - Install the defaults and save the published files and configuration bytes.
+      - Install the defaults and save the published files and configuration values.
       - Enable a skill and a qualified agent twice and check every client receives them.
       - Install again and then disable both extensions twice.
-      - Check that published files, configuration and index have their original bytes.
+      - Check that published files and index have their original bytes and configuration has its original values.
       - Set lists.set to all and check that all three clients receive the full lists immediately.
       - Repeat restoration and check that the published bytes stay the same.
   - name: Update a full installation
@@ -25,8 +25,9 @@ scenarios:
       - Install with lists.set set to all.
       - Edit an owned skill and add an independently installed skill.
       - Add user text around the older Copilot instruction section.
-      - Unset lists.set and install again.
-      - Check removal of an unedited skill and preservation of edited and independent skills.
+      - Unset lists.set and check that every published file is unchanged.
+      - Install again and check that this update narrows the lists.
+      - Check that Claude keeps the edited skill, Copilot clears it and both keep independent skills.
       - Check that every framework agent remains and only the owned instruction section is removed.
       - Check that the saved upgrade notice is unchanged by another installation.
   - name: Automatic repair during launch

@@ -382,8 +382,6 @@ fn bundle_install_completes_every_indexed_support_resource() {
         ("pptx", "ooxml/scripts/pack.sh"),
         ("outside-in-testing", "README.md"),
         ("outside-in-testing", "examples/cli/calculator-basic.yaml"),
-        ("outside-in-testing", "scripts/README.md"),
-        ("outside-in-testing", "tests/README.md"),
     ] {
         let entry = entries
             .iter()
@@ -395,6 +393,21 @@ fn bundle_install_completes_every_indexed_support_resource() {
         assert!(!expected.is_empty());
         assert_eq!(fs::read(&indexed).unwrap(), expected, "{skill}/{resource}");
         assert!(!indexed.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    let skills = bundle.join("skills");
+    for directory in filesystem::walk_dirs(&skills).unwrap() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let source = entry.path();
+            if !entry.file_type().unwrap().is_symlink() || !source.exists() {
+                continue;
+            }
+            let relative = source.strip_prefix(&skills).unwrap();
+            let published = staged.join("skills").join(relative);
+            assert!(published.exists(), "{}", relative.display());
+            assert!(!published.is_symlink(), "{}", relative.display());
+        }
     }
 
     crate::claude_plugin::complete_indexed_skill_resources(&staged).unwrap();
@@ -430,16 +443,6 @@ fn bundle_install_then_claude_sync_materializes_known_support_links() {
     assert!(claude_skills.join("pptx/ooxml/scripts/pack.sh").is_file());
     assert!(claude_skills.join("outside-in-testing/README.md").is_file());
     assert!(claude_skills.join("outside-in-testing/examples").is_dir());
-    assert!(
-        claude_skills
-            .join("outside-in-testing/scripts/README.md")
-            .is_file()
-    );
-    assert!(
-        claude_skills
-            .join("outside-in-testing/tests/README.md")
-            .is_file()
-    );
 
     crate::test_support::restore_home(previous);
 }

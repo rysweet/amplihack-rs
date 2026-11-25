@@ -84,6 +84,14 @@ const KNOWN_SKILL_LINKS: &[KnownSkillLink] = &[
     },
 ];
 
+/// A bundled support link or a file beneath it. Copilot excludes these paths
+/// because the historical installer omitted the links rather than completing them.
+pub(crate) fn is_bundled_skill_link(relative: &Path) -> bool {
+    KNOWN_SKILL_LINKS
+        .iter()
+        .any(|link| relative.starts_with(link.path))
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SkillOwnershipManifest {
@@ -148,9 +156,6 @@ pub struct PluginRegistration {
     pub removed_agents: BTreeSet<String>,
 }
 
-/// Names listed individually before a warning switches to a count.
-const MAX_REPORTED_SKILLS: usize = 8;
-
 impl PluginRegistration {
     /// Every destination published.
     pub fn is_complete(&self) -> bool {
@@ -189,18 +194,10 @@ impl PluginRegistration {
 }
 
 fn describe(entries: &[SkippedSkill]) -> Vec<String> {
-    let mut lines = entries
+    entries
         .iter()
-        .take(MAX_REPORTED_SKILLS)
         .map(|entry| format!("   - {}: {}", entry.name, entry.reason))
-        .collect::<Vec<_>>();
-    if entries.len() > MAX_REPORTED_SKILLS {
-        lines.push(format!(
-            "   - ... and {} more",
-            entries.len() - MAX_REPORTED_SKILLS
-        ));
-    }
-    lines
+        .collect()
 }
 
 /// Ensure amplihack is staged as a Claude Code skills-dir plugin.
@@ -246,16 +243,17 @@ fn ensure_claude_plugin_with_selection(selection: &ListSelection) -> Result<Plug
     let wrapper = (|| -> Result<()> {
         let ownership = read_skill_ownership_manifest(&ownership_path)?;
         validate_plugin_destination(&staged, &plugin_dir, ownership.plugin.as_ref())?;
-        let previous = agents::previous_inventory(&staged, &plugin_dir)?;
+        let previous = agents::inventory(&plugin_dir.join("agents"))?;
         publish_plugin_wrapper(&staged, &plugin_dir, &ownership_path, selection)?;
-        registration.removed_agents = agents::record_inventory(&staged, &plugin_dir, &previous)?;
+        let current = agents::inventory(&plugin_dir.join("agents"))?;
+        registration.removed_agents = previous.difference(&current).cloned().collect();
         Ok(())
     })();
     if let Err(error) = wrapper {
         tracing::warn!(%error, "amplihack Claude plugin wrapper was not published");
         registration.wrapper_error = Some(format!("{error:#}"));
     }
-    crate::list_notice::record(&staged, "Claude Code", &registration)?;
+    crate::list_notice::record(&staged, "Claude Code", &registration);
     Ok(registration)
 }
 
@@ -662,7 +660,6 @@ pub(crate) fn remove_managed_claude_plugin() -> Result<()> {
     if let Some(plugin) = &ownership.plugin {
         remove_verified_destination(&skills_root.join(PLUGIN_NAME), plugin)?;
     }
-    agents::remove_record(&staged)?;
     Ok(())
 }
 
@@ -1170,8 +1167,7 @@ pub(crate) fn sync_canonical_skills(
 }
 
 /// Publish an explicitly planned inventory through the skill transaction.
-/// Copilot full mode supplies its established top-level, flattened layout.
-pub(crate) fn sync_skill_folders(
+fn sync_skill_folders(
     source_root: &Path,
     destination_root: &Path,
     ownership_manifest_path: &Path,
@@ -1364,49 +1360,6 @@ fn publish_skill_folders(
         .close()
         .context("failed to remove completed skill transaction directory")?;
     Ok(registration)
-}
-
-/// Adopt only byte-identical legacy publications before using the shared
-/// skill publisher. Each caller constructs its previous publishing layout.
-pub(crate) fn adopt_legacy_skills(
-    expected_root: &Path,
-    destination_root: &Path,
-    manifest_path: &Path,
-) -> Result<()> {
-    if manifest_path.try_exists()? {
-        return Ok(());
-    }
-    let mut skills = Vec::new();
-    for entry in fs::read_dir(expected_root)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let destination = destination_root.join(&name);
-        let metadata = match fs::symlink_metadata(&destination) {
-            Ok(metadata) => metadata,
-            Err(err) if err.kind() == ErrorKind::NotFound => continue,
-            Err(err) => return Err(err).context("inspect legacy skill destination"),
-        };
-        if metadata.is_dir() && !metadata.file_type().is_symlink() {
-            let expected = hash_directory_tree(&entry.path())?;
-            if hash_directory_tree(&destination)? == expected {
-                skills.push(OwnedDestination {
-                    name,
-                    content_sha256: expected,
-                });
-            }
-        }
-    }
-    skills.sort_by(|left, right| left.name.cmp(&right.name));
-    write_skill_ownership_manifest(
-        manifest_path,
-        &SkillOwnershipManifest {
-            version: SKILL_OWNERSHIP_VERSION,
-            skills,
-            plugin: None,
-            commands: None,
-        },
-    )?;
-    Ok(())
 }
 
 /// What to do with one skill's destination under `~/.claude/skills`.

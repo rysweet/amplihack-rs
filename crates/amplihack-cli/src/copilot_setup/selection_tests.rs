@@ -35,7 +35,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 #[test]
-fn real_bundle_publishes_exact_defaults_with_complete_resources() {
+fn real_bundle_publishes_exact_defaults_as_flat_markdown() {
     let home = tempfile::tempdir().unwrap();
     let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle");
     publish_tool_assets(&bundle, home.path(), &ListSelection::default()).unwrap();
@@ -56,7 +56,13 @@ fn real_bundle_publishes_exact_defaults_with_complete_resources() {
             .into()
     );
     assert!(home.path().join("skills/reviewing-code/SKILL.md").is_file());
-    assert!(home.path().join("skills/docx/ooxml").is_dir());
+    assert!(!home.path().join("skills/docx/ooxml").exists());
+    assert!(
+        fs_helpers::walk_files(&home.path().join("skills"))
+            .unwrap()
+            .iter()
+            .all(|path| path.extension().is_some_and(|ext| ext == "md"))
+    );
     assert!(!home.path().join("instructions.md").exists());
     assert!(!home.path().join("config.json").exists());
 }
@@ -85,7 +91,7 @@ fn full_mode_preserves_the_established_flattened_inventory() {
 }
 
 #[test]
-fn extensions_preserve_resources_and_restore_tool_bytes() {
+fn extensions_use_flat_markdown_and_restore_tool_bytes() {
     let source = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     fixture(source.path());
@@ -101,15 +107,17 @@ fn extensions_preserve_resources_and_restore_tool_bytes() {
         ],
     );
     publish_tool_assets(source.path(), home.path(), &selection).unwrap();
-    assert_eq!(
-        fs::read(home.path().join("skills/extra/resources/input.bin")).unwrap(),
-        [0, 255]
-    );
     assert!(
-        home.path()
-            .join("agents/amplihack/core--guide.md")
-            .is_file()
+        !home
+            .path()
+            .join("skills/extra/resources/input.bin")
+            .exists()
     );
+    assert_eq!(
+        fs::read(home.path().join("skills/extra/SKILL.md")).unwrap(),
+        b"extra"
+    );
+    assert!(!home.path().join("agents/amplihack/core--guide.md").exists());
     assert!(home.path().join("agents/amplihack/guide.md").is_file());
     let extended = snapshot(home.path());
     publish_tool_assets(source.path(), home.path(), &selection).unwrap();
@@ -119,7 +127,7 @@ fn extensions_preserve_resources_and_restore_tool_bytes() {
 }
 
 #[test]
-fn narrowing_removes_owned_entries_and_preserves_user_content() {
+fn narrowing_rewrites_selected_markdown_and_clears_bundle_named_folders() {
     let source = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     fixture(source.path());
@@ -129,34 +137,47 @@ fn narrowing_removes_owned_entries_and_preserves_user_content() {
     let notice = source.path().join("install/list-changes.txt");
     assert!(!notice.exists());
     write(home.path(), "skills/edited/SKILL.md", "user edit");
+    write(home.path(), "skills/pdf/SKILL.md", "older selected skill");
+    write(home.path(), "skills/edited/notes.txt", "keep non-markdown");
+    write(
+        home.path(),
+        "skills/edited/nested/notes.md",
+        "keep nested markdown",
+    );
     write(home.path(), "skills/independent/SKILL.md", "independent");
     let report =
         publish_tool_assets(source.path(), home.path(), &ListSelection::default()).unwrap();
     assert_eq!(
         report.removed_skills,
-        BTreeSet::from(["category".to_owned()])
+        BTreeSet::from([
+            "category".to_owned(),
+            "edited".to_owned(),
+            "shared".to_owned()
+        ])
     );
     assert_eq!(report.removed_agents, BTreeSet::from(["guide".to_owned()]));
+    assert!(report.preserved.is_empty());
+    assert!(report.skipped.is_empty());
+    assert!(!home.path().join("skills/edited/SKILL.md").exists());
     assert_eq!(
-        report
-            .preserved
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect::<Vec<_>>(),
-        ["edited"]
+        fs::read(home.path().join("skills/edited/notes.txt")).unwrap(),
+        b"keep non-markdown"
     );
     assert_eq!(
-        fs::read(home.path().join("skills/edited/SKILL.md")).unwrap(),
-        b"user edit"
+        fs::read(home.path().join("skills/edited/nested/notes.md")).unwrap(),
+        b"keep nested markdown"
+    );
+    assert_eq!(
+        fs::read(home.path().join("skills/pdf/SKILL.md")).unwrap(),
+        b"pdf"
     );
     assert_eq!(
         fs::read(home.path().join("skills/independent/SKILL.md")).unwrap(),
         b"independent"
     );
-    let saved_notice = fs::read(&notice).unwrap();
     let report =
         publish_tool_assets(source.path(), home.path(), &ListSelection::default()).unwrap();
-    assert_eq!(fs::read(&notice).unwrap(), saved_notice);
+    assert!(!notice.exists());
     assert!(report.removed_skills.is_empty());
     assert!(report.removed_agents.is_empty());
     assert!(report.preserved.is_empty());
@@ -169,7 +190,7 @@ fn narrowing_removes_owned_entries_and_preserves_user_content() {
 }
 
 #[test]
-fn legacy_flattened_skills_are_adopted_only_when_unchanged() {
+fn legacy_flattened_skills_are_cleared_regardless_of_previous_bytes() {
     let source = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     write(source.path(), "skills/extra/SKILL.md", "extra");
@@ -179,12 +200,12 @@ fn legacy_flattened_skills_are_adopted_only_when_unchanged() {
     write(home.path(), "skills/independent/SKILL.md", "independent");
     let report =
         publish_tool_assets(source.path(), home.path(), &ListSelection::default()).unwrap();
-    assert_eq!(report.removed_skills, BTreeSet::from(["extra".to_owned()]));
-    assert!(!home.path().join("skills/extra").exists());
     assert_eq!(
-        fs::read(home.path().join("skills/edited/SKILL.md")).unwrap(),
-        b"user content"
+        report.removed_skills,
+        BTreeSet::from(["extra".to_owned(), "edited".to_owned()])
     );
+    assert!(!home.path().join("skills/extra").exists());
+    assert!(!home.path().join("skills/edited").exists());
     assert_eq!(
         fs::read(home.path().join("skills/independent/SKILL.md")).unwrap(),
         b"independent"
@@ -243,49 +264,66 @@ fn instruction_migration_removes_empty_file_and_leaves_unowned_files_alone() {
 }
 
 #[test]
-fn legacy_upgrade_preserves_selected_edits_and_does_not_readopt_ownership() {
+fn default_to_all_removes_leaf_folders_and_matches_historical_staging() {
     let source = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    for name in ["lsp-setup", "default-workflow"] {
-        write(
-            source.path(),
-            &format!("skills/{name}/SKILL.md"),
-            "old release",
-        );
-        write(
-            home.path(),
-            &format!("skills/{name}/SKILL.md"),
-            "old release",
-        );
+    fixture(source.path());
+    write(
+        source.path(),
+        "skills/category/reviewing-code/SKILL.md",
+        "review",
+    );
+    write(source.path(), "skills/docx/SKILL.md", "docx");
+    write(
+        source.path(),
+        "skills/common/ooxml/reference.md",
+        "shared support",
+    );
+    write(
+        source.path(),
+        "skills/outside-in-testing/SKILL.md",
+        "outside-in",
+    );
+    write(source.path(), "skills/qa-team/README.md", "qa reference");
+    let historical = tempfile::tempdir().unwrap();
+    for entry in fs::read_dir(source.path().join("skills")).unwrap() {
+        let entry = entry.unwrap();
+        let destination = historical.path().join("skills").join(entry.file_name());
+        fs_helpers::reset_markdown_dir(&destination).unwrap();
+        fs_helpers::flatten_markdown_tree(&entry.path(), &destination).unwrap();
     }
-    let edited = home.path().join("skills/default-workflow/SKILL.md");
-    fs::write(&edited, "user edit").unwrap();
-    staging::adopt_previous_skill_ownership(&source.path().join("skills"), home.path()).unwrap();
-    let record = home.path().join("copilot-skills-manifest.json");
-    let adopted = fs::read(&record).unwrap();
-    for name in ["lsp-setup", "default-workflow"] {
-        write(
-            source.path(),
-            &format!("skills/{name}/SKILL.md"),
-            "new release",
-        );
-    }
-    // A retry must retain the old digest, which authorizes the upgrade, rather
-    // than comparing the destination to the incoming definitions again.
-    staging::adopt_previous_skill_ownership(&source.path().join("skills"), home.path()).unwrap();
-    assert_eq!(fs::read(&record).unwrap(), adopted);
-    let report = staging::stage_skills(
-        &source.path().join("skills"),
-        home.path(),
-        &ListSelection::default(),
+    fs_helpers::reset_markdown_dir(&historical.path().join("agents/amplihack")).unwrap();
+    fs_helpers::flatten_markdown_tree(
+        &source.path().join("agents"),
+        &historical.path().join("agents/amplihack"),
     )
     .unwrap();
-    assert_eq!(report.published, BTreeSet::from(["lsp-setup".to_owned()]));
-    assert_eq!(report.skipped.len(), 1);
-    assert_eq!(report.skipped[0].name, "default-workflow");
-    assert_eq!(fs::read(&edited).unwrap(), b"user edit");
-    assert_eq!(
-        fs::read(home.path().join("skills/lsp-setup/SKILL.md")).unwrap(),
-        b"new release"
+    // The index completes links that historical installation omitted.
+    crate::claude_plugin::complete_indexed_skill_resources(source.path()).unwrap();
+    publish_tool_assets(source.path(), home.path(), &ListSelection::default()).unwrap();
+    assert!(home.path().join("skills/reviewing-code/SKILL.md").exists());
+    publish_tool_assets(source.path(), home.path(), &all()).unwrap();
+    assert!(!home.path().join("skills/reviewing-code").exists());
+    assert_eq!(snapshot(home.path()), snapshot(historical.path()));
+    assert!(!home.path().join("copilot-skills-manifest.json").exists());
+}
+
+#[test]
+fn selected_agents_with_the_same_leaf_use_historical_collision_behaviour() {
+    let source = tempfile::tempdir().unwrap();
+    let default_home = tempfile::tempdir().unwrap();
+    let all_home = tempfile::tempdir().unwrap();
+    write(source.path(), "agents/amplihack/core/guide.md", "core");
+    write(source.path(), "agents/amplihack/guide.md", "top level");
+    let selected = ListSelection::new(
+        ListSet::Default,
+        [
+            "agent:core/guide".parse().unwrap(),
+            "agent:guide".parse().unwrap(),
+        ],
     );
+    publish_tool_assets(source.path(), default_home.path(), &selected).unwrap();
+    publish_tool_assets(source.path(), all_home.path(), &all()).unwrap();
+    assert_eq!(snapshot(default_home.path()), snapshot(all_home.path()));
+    assert_eq!(snapshot(default_home.path()).len(), 1);
 }

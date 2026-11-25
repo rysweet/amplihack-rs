@@ -90,7 +90,7 @@ fn install_scoped(
         &super::super::paths::staging_claude_dir()?,
         "Codex",
         &removed,
-    )?;
+    );
     println!(
         "  ✅ Native Codex plugin installed; review exact hooks in Codex /hooks before trusting them"
     );

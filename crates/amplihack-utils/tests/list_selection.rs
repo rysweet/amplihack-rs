@@ -20,7 +20,7 @@ fn every_default_entry_exists_once_in_the_bundle() {
     let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle");
     let mut found = Vec::new();
     skills(&bundle.join("skills"), &mut found);
-    assert_eq!(DEFAULT_SKILLS.iter().collect::<BTreeSet<_>>().len(), 32);
+    assert_eq!(DEFAULT_SKILLS.iter().collect::<BTreeSet<_>>().len(), 30);
     assert_eq!(DEFAULT_AGENTS.iter().collect::<BTreeSet<_>>().len(), 12);
     for name in DEFAULT_SKILLS {
         assert_eq!(
@@ -67,6 +67,19 @@ fn explicit_extensions_are_typed_and_preserve_agent_paths() {
     assert!(selection.includes_agent("core/guide"));
     assert!(!selection.includes_agent("guide"));
     assert!(selection.includes_skill("economist-analyst"));
+}
+
+#[test]
+fn specialised_workflow_skills_remain_available_as_extensions_and_in_all_mode() {
+    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/skills");
+    for name in ["auto-drive-to-merge", "claude-profile-rotation"] {
+        assert!(bundle.join(name).join("SKILL.md").is_file());
+        assert!(!ListSelection::default().includes_skill(name));
+        let extended =
+            ListSelection::new(ListSet::Default, [format!("skill:{name}").parse().unwrap()]);
+        assert!(extended.includes_skill(name));
+        assert!(ListSelection::new(ListSet::All, []).includes_skill(name));
+    }
 }
 
 #[test]

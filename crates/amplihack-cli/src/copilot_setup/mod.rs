@@ -132,12 +132,6 @@ pub(crate) fn user_config_registers_amplihack(copilot_home: &Path) -> Result<boo
     Ok(named("installedPlugins") || named("plugins") || hooks::has_amplihack_owned_hook(&config))
 }
 
-/// Capture legacy Copilot ownership before an installer replaces the staged
-/// framework definitions. A user's changed or independent trees stay unowned.
-pub(crate) fn adopt_previous_skill_ownership(staged: &Path) -> Result<()> {
-    staging::adopt_previous_skill_ownership(&staged.join("skills"), &copilot_home()?)
-}
-
 pub fn ensure_copilot_home_staged(user_config: UserConfig) -> Result<()> {
     // Resolve the repo root from the current working directory exactly once,
     // up-front. This preserves the historical behaviour for the production
@@ -244,13 +238,7 @@ pub(crate) fn publish_tool_assets(
         report.preserved = skills.preserved;
         report.removed_skills = skills.removed_skills;
     }
-    crate::list_notice::record(staged, "Copilot", &report)?;
-    if !report.skipped.is_empty() {
-        anyhow::bail!(
-            "Copilot could not publish {} selected skills because their destinations contain changed or independent content",
-            report.skipped.len()
-        );
-    }
+    crate::list_notice::record(staged, "Copilot", &report);
     Ok(report)
 }
 
@@ -330,7 +318,8 @@ mod tests {
                 .exists()
         );
         assert!(
-            temp.path()
+            !temp
+                .path()
                 .join(".copilot/skills/azure-devops-cli")
                 .exists()
         );
@@ -436,7 +425,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn staging_preserves_unowned_skill_symlink_and_target() {
+    fn staging_removes_legacy_skill_symlink_without_removing_target() {
         use std::os::unix::fs::symlink;
 
         let _env_guard = crate::test_support::env_lock()
@@ -458,7 +447,7 @@ mod tests {
 
         ensure_copilot_home_staged_in(None).unwrap();
 
-        assert!(legacy_parent.join("azure-devops-cli").exists());
+        assert!(!legacy_parent.join("azure-devops-cli").exists());
         assert!(
             external_target.join("keep.md").exists(),
             "legacy cleanup must not follow symlinks into user-owned content"

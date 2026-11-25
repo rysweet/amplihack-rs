@@ -296,15 +296,16 @@ amplihack config set paths.home /opt/amplihack
 ### lists.set and lists.enabled
 
 `lists.set` chooses which installed skills and agents a tool lists to the model.
-`default` selects the shared set of 32 skills and 12 agents, plus entries in
+`default` selects the shared set of 30 skills and 12 agents, plus entries in
 `lists.enabled`. `all` selects each tool's full inventory. The complete
 framework and directory index remain available in both modes.
 
-`lists.enabled` accepts a TOML array, including through `config set`. Quote the
-whole array to pass it as one shell argument:
+`lists.enabled` is a TOML array. Use directory commands to change one entry at
+a time; `config set lists.enabled` is not supported:
 
 ```sh
-amplihack config set lists.enabled '["skill:code-visualizer", "agent:core/guide"]'
+amplihack directory enable skill:code-visualizer
+amplihack directory enable agent:core/guide
 amplihack config get lists.enabled
 ```
 
@@ -317,9 +318,14 @@ the default set are omitted. An empty array means no extensions.
 Both settings are user-only. A project file cannot change them. Extensions
 remain recorded in `all` mode for a later return to `default`.
 
-`config set`, `config unset` and a successful user-scope `config edit` apply
-the resulting selection immediately to every tool already installed for
-amplihack. They do not install another tool. Start a new tool session to use
+Only `config set lists.set` applies the selection immediately to every tool
+already installed for amplihack, including when the value is unchanged.
+`config unset` and `config edit` change only the configuration; those changes
+apply at the next install or update, or with `config set lists.set <value>`.
+Applying a list change requires the installed framework version to match the
+binary. Otherwise the command changes no configuration or tool files and
+asks for `amplihack install`. List changes never refresh framework definitions
+or install another tool. Start a new tool session to use
 the changed lists. If one publication fails, the command exits non-zero and
 reports failed and completed applications. The desired configuration remains
 saved; repeat the command after correcting the problem to finish publication.
@@ -330,9 +336,10 @@ Restore the full lists with one command, without a separate install:
 amplihack config set lists.set all
 ```
 
-Setting `lists.set` back to `default`, or unsetting it, restores the smaller
-set plus saved extensions. Unsetting `lists.enabled` removes all explicit
-extensions. Codex's `all` mode keeps its established analyst exclusions;
+Setting `lists.set` back to `default` restores the smaller set plus saved
+extensions immediately. Unsetting it selects that set for the next install
+or update. Unsetting `lists.enabled` removes all explicit extensions from
+the configuration. Codex's `all` mode keeps its established analyst exclusions;
 explicitly enabled analyst skills are packaged in `default` mode.
 
 For individual changes, use [`directory enable` and `directory disable`](directory-command.md#persistent-extensions).

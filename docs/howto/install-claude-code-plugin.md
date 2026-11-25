@@ -96,7 +96,7 @@ treat this script shapes what you get:
 
 | Component      | Source in the repo                          | Invoked as                              |
 | -------------- | ------------------------------------------- | --------------------------------------- |
-| Skills         | 32 default skill links under `skills/`      | `amplihack:dev-orchestrator`, …         |
+| Skills         | 30 default skill links under `skills/`      | `amplihack:dev-orchestrator`, …         |
 | Agents         | 12 default files selected by `.claude-plugin/plugin.json` | `amplihack:architect`, `amplihack:builder`, … |
 | Slash commands | `docs/claude/commands/amplihack/`           | `/amplihack:fix`, `/amplihack:analyze`, … |
 | Hooks          | `claude-plugin/hooks.json`                  | Run automatically                       |
@@ -109,7 +109,7 @@ different parts of this repository. Using the root lets them all load without
 duplicating anything.
 
 Loading the repository directly as a plugin always exposes the shared
-default set of 32 skills and 12 agents. It does not read `lists.set` or
+default set of 30 skills and 12 agents. It does not read `lists.set` or
 `lists.enabled`. For persistent extensions or full lists, use the managed
 installation route and its [directory and configuration commands](choose-listed-skills-and-agents.md).
 Where the complete framework and its index are installed, the directory can

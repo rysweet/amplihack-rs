@@ -3,7 +3,7 @@
 This catalog is generated from the live bundled skills under `amplifier-bundle/skills/`.
 Those bundled `SKILL.md` files are the install-time source of truth.
 
-Managed installations list 32 skills and 12 agents by default. Every skill in
+Managed installations list 30 skills and 12 agents by default. Every skill in
 this catalogue remains installed and available through `amplihack directory find`.
 The repository plugin exposes the same default set. It does not read the managed
 installation settings. See [Choose listed skills and agents](../howto/choose-listed-skills-and-agents.md)

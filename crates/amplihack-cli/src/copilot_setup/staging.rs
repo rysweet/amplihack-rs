@@ -4,6 +4,7 @@ use amplihack_types::workflow;
 use amplihack_utils::list_selection::{ListSelection, ListSet};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -14,12 +15,16 @@ pub(super) fn stage_agents(
     copilot_home: &Path,
     selection: &ListSelection,
 ) -> Result<usize> {
+    let dest = copilot_home.join("agents").join("amplihack");
+    fs_helpers::reset_markdown_dir(&dest)?;
+    if selection.set == ListSet::All {
+        return fs_helpers::flatten_markdown_tree(source_agents, &dest);
+    }
     let source_agents = if source_agents.join("amplihack").is_dir() {
         source_agents.join("amplihack")
     } else {
         source_agents.to_path_buf()
     };
-    let dest = copilot_home.join("agents").join("amplihack");
     let files = fs_helpers::walk_files(&source_agents)?
         .into_iter()
         .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
@@ -33,27 +38,9 @@ pub(super) fn stage_agents(
             selection.includes_agent(&identity)
         })
         .collect::<Vec<_>>();
-    fs_helpers::reset_markdown_dir(&dest)?;
     for path in &files {
         let leaf = path.file_name().context("agent file missing name")?;
-        // Full mode preserves the previous flat layout. In default mode,
-        // qualified extensions can expose both agents that share a leaf name.
-        let target = if selection.set != ListSet::All
-            && files
-                .iter()
-                .filter(|other| other.file_name() == Some(leaf))
-                .count()
-                > 1
-        {
-            dest.join(
-                path.strip_prefix(&source_agents)?
-                    .to_string_lossy()
-                    .replace(['/', '\\'], "--"),
-            )
-        } else {
-            dest.join(leaf)
-        };
-        fs::copy(path, target)?;
+        fs::copy(path, dest.join(leaf))?;
     }
     Ok(files.len())
 }
@@ -121,72 +108,105 @@ pub(super) fn stage_skills(
         return Ok(crate::claude_plugin::PluginRegistration::default());
     }
 
-    let record = copilot_home.join("copilot-skills-manifest.json");
-    let legacy = if selection.set == ListSet::All || !record.try_exists()? {
-        legacy_skill_tree(source_skills)?
-    } else {
-        tempfile::tempdir()?
-    };
-    if !record.try_exists()? {
-        // Fallback for a legacy launch that does not replace the staged
-        // definitions. Upgrade paths adopt against the previous payload first.
-        crate::claude_plugin::adopt_legacy_skills(
-            legacy.path(),
-            &copilot_home.join("skills"),
-            &record,
-        )?;
-    }
-    if selection.set == ListSet::All {
-        let skills = fs::read_dir(legacy.path())?
-            .map(|entry| {
-                let entry = entry?;
-                Ok((
-                    entry.file_name().to_string_lossy().into_owned(),
-                    entry.path(),
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        return crate::claude_plugin::sync_skill_folders(
-            legacy.path(),
-            &copilot_home.join("skills"),
-            &record,
-            skills,
-        );
-    }
-    crate::claude_plugin::sync_canonical_skills(
-        source_skills,
-        &copilot_home.join("skills"),
-        &record,
-        selection,
-    )
-}
-
-/// Record byte-identical legacy copies while the previous staged payload is
-/// still available. Never infer ownership from a matching folder name alone.
-pub(super) fn adopt_previous_skill_ownership(
-    source_skills: &Path,
-    copilot_home: &Path,
-) -> Result<()> {
-    let record = copilot_home.join("copilot-skills-manifest.json");
-    if record.try_exists()? || !source_skills.is_dir() || !copilot_home.join("skills").is_dir() {
-        return Ok(());
-    }
-    let legacy = legacy_skill_tree(source_skills)?;
-    crate::claude_plugin::adopt_legacy_skills(legacy.path(), &copilot_home.join("skills"), &record)
-}
-
-fn legacy_skill_tree(source_skills: &Path) -> Result<tempfile::TempDir> {
-    let legacy = tempfile::tempdir()?;
-    // Older releases copied only Markdown, flattening each top-level folder.
+    remove_legacy_cli_skill(copilot_home)?;
+    let mut managed = BTreeSet::new();
+    let mut selected = BTreeMap::new();
+    // Full mode uses precisely the immediate children used by older releases.
     for entry in fs::read_dir(source_skills)? {
         let entry = entry?;
         if entry.path().is_dir() {
-            let expected = legacy.path().join(entry.file_name());
-            fs::create_dir_all(&expected)?;
-            fs_helpers::flatten_markdown_tree(&entry.path(), &expected)?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            managed.insert(name.clone());
+            if selection.set == ListSet::All {
+                selected.insert(name, entry.path());
+            }
         }
     }
-    Ok(legacy)
+    // Nested skills use their leaf names under default, including extensions.
+    for path in fs_helpers::walk_files(source_skills)? {
+        if path.file_name().is_some_and(|name| name == "SKILL.md") {
+            let directory = path.parent().context("skill file missing directory")?;
+            let name = directory
+                .file_name()
+                .context("skill directory missing name")?
+                .to_string_lossy()
+                .into_owned();
+            managed.insert(name.clone());
+            if selection.set != ListSet::All && selection.includes_skill(&name) {
+                selected.insert(name, directory.to_path_buf());
+            }
+        }
+    }
+
+    let mut report = crate::claude_plugin::PluginRegistration::default();
+    for name in managed {
+        if selected.contains_key(&name) {
+            continue;
+        }
+        let destination = copilot_home.join("skills").join(&name);
+        if !destination.is_dir() {
+            continue;
+        }
+        let had_markdown = fs::read_dir(&destination)?.try_fold(false, |found, entry| {
+            let path = entry?.path();
+            Ok::<_, std::io::Error>(
+                found || (path.is_file() && path.extension().is_some_and(|ext| ext == "md")),
+            )
+        })?;
+        fs_helpers::reset_markdown_dir(&destination)?;
+        if fs::read_dir(&destination)?.next().is_none() {
+            fs::remove_dir(&destination)?;
+        }
+        if had_markdown {
+            report.removed_skills.insert(name);
+        }
+    }
+    for (name, source) in selected {
+        let destination = copilot_home.join("skills").join(&name);
+        fs_helpers::reset_markdown_dir(&destination)?;
+        for path in fs_helpers::walk_files(&source)? {
+            // Other tools complete support links in the staged framework.
+            // Those additions were absent from Copilot's historical input.
+            if path.extension().is_some_and(|ext| ext == "md")
+                && !crate::claude_plugin::is_bundled_skill_link(path.strip_prefix(source_skills)?)
+            {
+                fs::copy(
+                    &path,
+                    destination.join(path.file_name().context("skill file missing name")?),
+                )?;
+            }
+        }
+        report.published.insert(name);
+    }
+    Ok(report)
+}
+
+fn remove_legacy_cli_skill(copilot_home: &Path) -> Result<()> {
+    let legacy_cli_skill = copilot_home.join("skills").join("azure-devops-cli");
+    let metadata = match fs::symlink_metadata(&legacy_cli_skill) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("inspect legacy skill path {}", legacy_cli_skill.display())
+            });
+        }
+    };
+
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        fs::remove_file(&legacy_cli_skill)
+            .with_context(|| format!("remove legacy skill file {}", legacy_cli_skill.display()))?;
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(&legacy_cli_skill)
+            .with_context(|| format!("remove legacy skill dir {}", legacy_cli_skill.display()))?;
+    } else {
+        return Err(anyhow!(
+            "legacy skill path is not a file, directory, or symlink: {}",
+            legacy_cli_skill.display()
+        ));
+    }
+
+    Ok(())
 }
 
 pub(super) fn stage_command_docs(source_commands: &Path, copilot_home: &Path) -> Result<usize> {
@@ -465,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn staging_leaves_an_unowned_legacy_named_file_untouched() {
+    fn staging_removes_the_legacy_cli_skill() {
         let temp = tempfile::tempdir().unwrap();
         let copilot_home = temp.path().join(".copilot");
         let legacy_parent = copilot_home.join("skills");
@@ -477,6 +497,31 @@ mod tests {
         let report = stage_skills(&source, &copilot_home, &ListSelection::default()).unwrap();
         assert!(report.removed_skills.is_empty());
         assert!(report.preserved.is_empty());
-        assert_eq!(fs::read(&legacy_path).unwrap(), b"user content");
+        assert!(!legacy_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_cli_skill_cleanup_rejects_unsupported_file_type() {
+        use std::os::unix::net::UnixListener;
+
+        let temp = tempfile::Builder::new().prefix("ah-").tempdir().unwrap();
+        let copilot_home = temp.path().join(".copilot");
+        let legacy_parent = copilot_home.join("skills");
+        fs::create_dir_all(&legacy_parent).unwrap();
+        let legacy_path = legacy_parent.join("azure-devops-cli");
+        let _listener = UnixListener::bind(&legacy_path).unwrap();
+
+        let err = remove_legacy_cli_skill(&copilot_home).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("legacy skill path is not a file, directory, or symlink"),
+            "unexpected cleanup error: {err}"
+        );
+        assert!(
+            legacy_path.exists(),
+            "unsupported legacy path should be left untouched"
+        );
     }
 }
