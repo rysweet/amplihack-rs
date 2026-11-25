@@ -130,7 +130,7 @@ pub fn ensure_assets_for_command(args: &[OsString], command: &crate::Commands) -
 /// The provider start-up repair runs for. A local-model `amplihack codex`
 /// launch, by its flag or AMPLIHACK_CODEX_LOCAL_MODEL and valid or not, gets
 /// none, so the repair never installs or updates the Codex plugin in the
-/// user's Codex home (SF8).
+/// user's Codex home.
 pub(crate) fn startup_provider(command: &crate::Commands) -> &'static str {
     match command {
         crate::Commands::Launch { .. } | crate::Commands::Claude { .. } => "claude",
@@ -1733,7 +1733,7 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
     }
 }
 
-/// Local-model launches of `amplihack codex` (SF8, L13): start-up repair runs
+/// Local-model launches of `amplihack codex`: start-up repair runs
 /// with no Codex provider for any local-model selection, valid or not, so it
 /// never installs or updates the Codex plugin in the user's Codex home.
 /// Every other command keeps its provider.

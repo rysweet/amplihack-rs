@@ -17,7 +17,7 @@
 //! - puts `--dangerously-bypass-hook-trust` first unless the caller passed
 //!   it, and says so once on stderr, then `-c features.hooks=true`, so that
 //!   a trusted project's `.codex/config.toml` cannot switch hooks off. A
-//!   caller's own later `-c` or `--disable hooks` still wins (D12).
+//!   caller's own later `-c` or `--disable hooks` still wins.
 //!
 //! With no selection nothing here runs and an ordinary launch is unchanged.
 //!
@@ -27,7 +27,7 @@
 //! [`bootstrap`] in place of the Codex bootstrap, and calls
 //! [`Prepared::refresh`] as its last step before spawning.
 //!
-//! Unix only (D21): elsewhere a selection is an error.
+//! Unix only: elsewhere a selection is an error.
 
 #[cfg_attr(not(unix), allow(dead_code))]
 mod config;
@@ -60,13 +60,18 @@ const FLAG: &str = "--local-model";
 const HOOK_TEXT_ENV: &str = "AMPLIHACK_HOOK_TEXT";
 /// The only value amplihack ever writes for [`HOOK_TEXT_ENV`].
 const HOOK_TEXT_NONE: &str = "none";
+/// What `AMPLIHACK_HOOK_TEXT=none` costs a session: the stop hook approves
+/// without running, and the context hooks add nothing.
+const HOOK_TEXT_OFF: &str = "AMPLIHACK_HOOK_TEXT=none, so amplihack's hooks add no text and its \
+                             stop hook approves without running: lock mode, power steering and \
+                             reflection do not run";
 const HOOK_TRUST: &str = "--dangerously-bypass-hook-trust";
 /// The override that keeps hooks on over a project's own config layer.
 const HOOKS_ON: [&str; 2] = ["-c", "features.hooks=true"];
 /// How much of an invalid name an error quotes, in characters.
 const QUOTED_CHARS: usize = 64;
 const MAX_NAME_LEN: usize = 64;
-/// The error for a selection off Unix (D21).
+/// The error for a selection off Unix.
 const UNIX_ONLY: &str = "local-model launches of amplihack codex are supported on Unix only";
 
 /// The launch options a local-model launch refuses.
@@ -129,8 +134,8 @@ fn select(flag: Option<&str>) -> Option<Request> {
 }
 
 /// Whether this launch selects a local model, valid or not. Start-up
-/// self-heal uses it to keep the Codex plugin out of the user's Codex home
-/// (SF8), so an invalid name counts.
+/// self-heal uses it to keep the Codex plugin out of the user's Codex home,
+/// and must do so before the name is checked, so an invalid name counts.
 pub(crate) fn requested(flag: Option<&str>) -> bool {
     select(flag).is_some()
 }
@@ -257,10 +262,48 @@ pub(crate) fn current(tool: &str) -> Option<Rc<Prepared>> {
     CURRENT.with(|current| current.borrow().clone())
 }
 
+/// Whether a value of `AMPLIHACK_HOOK_TEXT` means `none` to the hooks
+/// binary: trimmed of ASCII whitespace and compared without regard to ASCII
+/// case, as `amplihack-hooks` reads it (`hook_text.rs`). A value that is not
+/// valid UTF-8 means `full` there, and here.
+fn is_hook_text_none(value: Option<&std::ffi::OsStr>) -> bool {
+    value
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|value| {
+            value
+                .trim_matches(|c: char| c.is_ascii_whitespace())
+                .eq_ignore_ascii_case(HOOK_TEXT_NONE)
+        })
+}
+
+/// The stderr line for a launch that is not a local-model launch but
+/// inherits `AMPLIHACK_HOOK_TEXT=none`, typically from a local-model Codex
+/// session it was started in: the variable passes through every launcher,
+/// so without this line the launched session would lose lock mode, power
+/// steering and reflection without a word. `None` when the variable does
+/// not mean `none`.
+fn inherited_hook_text_notice(tool: &str, value: Option<&std::ffi::OsStr>) -> Option<String> {
+    is_hook_text_none(value).then(|| {
+        format!(
+            "amplihack: {tool}: {HOOK_TEXT_OFF} in this session; the variable was set in this \
+             environment, for example by a local-model Codex session; unset it to restore them"
+        )
+    })
+}
+
+/// Prints [`inherited_hook_text_notice`] for a launch of `tool` that is not
+/// a local-model launch. A local-model launch prints its own line.
+pub(crate) fn warn_inherited_hook_text(tool: &str) {
+    if let Some(line) = inherited_hook_text_notice(tool, std::env::var_os(HOOK_TEXT_ENV).as_deref())
+    {
+        eprintln!("{line}");
+    }
+}
+
 /// The bootstrap a local-model launch runs in place of the Codex one: the
 /// generic part only (framework assets and the recipe-runner check), with no
 /// Codex provider, so nothing is reconciled into the user's Codex home and
-/// no plugin is installed (L13).
+/// no plugin is installed.
 pub(crate) fn bootstrap() -> Result<()> {
     crate::bootstrap::prepare_launcher("")
 }
@@ -289,17 +332,30 @@ pub(crate) struct LocalHome {
     home: String,
     /// The user's PreToolUse handlers carried into `hooks.json`.
     user_handlers: usize,
+    /// The profile's `sandbox_mode`, passed on as the caller's choice.
+    sandbox_mode: Option<String>,
 }
 
 impl LocalHome {
     /// The Codex argv tail: `--dangerously-bypass-hook-trust` first, unless
     /// the caller passed it before any `--` among the Codex arguments (the
     /// agent-step injection then adds nothing, so it appears once), then
-    /// `-c features.hooks=true` always, then the caller's arguments
-    /// unchanged. When the hook-trust flag is added, one stderr line names
-    /// what was added, the profile, the home and the number of user handlers
-    /// carried over, never a command.
+    /// `-c features.hooks=true` always, then `-c sandbox_mode=<value>` when
+    /// the profile sets one, then the caller's arguments unchanged. The
+    /// sandbox override counts as the caller's sandbox choice, so an `exec`
+    /// launch keeps the profile's sandbox instead of getting
+    /// `--sandbox danger-full-access`; a caller's own later choice still wins.
+    ///
+    /// One stderr line always says that hook text is off, so that lock mode,
+    /// power steering and reflection do not run. When the hook-trust flag is
+    /// added, a second line names what was added, the profile, the home and
+    /// the number of user handlers carried over, never a command.
     pub(crate) fn codex_args(&self, args: Vec<String>) -> Vec<String> {
+        eprintln!(
+            "amplihack: codex local model \"{}\": {HOOK_TEXT_OFF} in this session and in \
+             amplihack sessions started from it",
+            self.name.as_str()
+        );
         let add_trust = !super::codex_agent_step::has_hook_trust_bypass(&args);
         if add_trust {
             let handlers = if self.user_handlers == 1 {
@@ -317,11 +373,18 @@ impl LocalHome {
                 self.user_handlers,
             );
         }
-        let mut out = Vec::with_capacity(args.len() + 3);
+        let mut out = Vec::with_capacity(args.len() + 5);
         if add_trust {
             out.push(HOOK_TRUST.to_string());
         }
         out.extend(HOOKS_ON.map(String::from));
+        if let Some(mode) = &self.sandbox_mode {
+            out.push("-c".to_string());
+            out.push(format!(
+                "sandbox_mode={}",
+                toml::Value::String(mode.clone())
+            ));
+        }
         out.extend(args);
         out
     }

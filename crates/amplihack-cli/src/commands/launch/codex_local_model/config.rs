@@ -25,7 +25,7 @@
 //!
 //! Parse errors are fresh messages carrying the path and the line only. They
 //! never quote or chain the parser's error, which may hold a line of the
-//! source, so a key in the profile cannot reach a message (SF9).
+//! source, so a key in the profile cannot reach a message.
 
 use crate::commands::install::paths::sanitize_path;
 use anyhow::{Result, anyhow, bail};
@@ -70,7 +70,7 @@ fn line_of(text: &str, offset: usize) -> usize {
         + 1
 }
 
-/// E8: `features`, `skills` and `skills.bundled` must be tables (standard,
+/// `features`, `skills` and `skills.bundled` must be tables (standard,
 /// inline or dotted) where the profile has them, so that amplihack's
 /// settings can be merged into them.
 pub(super) fn check_shape(profile: &Table, path: &Path) -> Result<()> {
@@ -136,7 +136,8 @@ pub(super) fn render(
     let bundled = table_entry(skills, "bundled")?;
     bundled.insert("enabled".into(), Value::Boolean(false));
 
-    // Step 3: a default, not an override (D7).
+    // Step 3: a default, not an override: an ordinary launch also fills in
+    // `never` only when the user's config has no policy.
     out.entry("approval_policy")
         .or_insert_with(|| Value::String("never".into()));
 
@@ -156,10 +157,10 @@ pub(super) fn render(
 
 /// The `[hooks.state]` key prefix of the handlers in the first PreToolUse
 /// group of the `hooks.json` at `hooks_json`, which is always amplihack's.
-/// Codex 0.166 keys a hook's state `<hooks.json path>:<event>:<group
-/// index>:<handler index>`; the step 10b experiment showed that
-/// `enabled = false` under this key stops Codex running amplihack's handler,
-/// with `--dangerously-bypass-hook-trust` or without it.
+/// Codex keys a hook's state `<hooks.json path>:<event>:<group
+/// index>:<handler index>`. With codex-cli 0.166.0, a hand-made home showed
+/// that `enabled = false` under this key stops Codex running amplihack's
+/// handler, with `--dangerously-bypass-hook-trust` or without it.
 fn guard_state_prefix(hooks_json: &str) -> String {
     format!("{hooks_json}:pre_tool_use:0:")
 }
@@ -194,6 +195,17 @@ pub(super) fn guard_disabled(doc: &Table, hooks_json_paths: &[&str]) -> bool {
             None => true,
         }
     })
+}
+
+/// The `sandbox_mode` string `doc` (a profile or a generated
+/// `config.toml`) sets, if any. A local-model launch passes it on the
+/// command line as the caller's sandbox choice, so that the agent-step
+/// injection of `--sandbox danger-full-access`, which outranks the config
+/// file, does not widen a sandbox the profile chose.
+pub(super) fn sandbox_mode(doc: &Table) -> Option<String> {
+    doc.get("sandbox_mode")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 /// The table at `key` in `table`, created when absent. An existing value

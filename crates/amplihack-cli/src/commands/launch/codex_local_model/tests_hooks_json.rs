@@ -1,4 +1,4 @@
-//! The generated `hooks.json` (D16, SF3, SEC-L5, SEC-L7).
+//! The generated `hooks.json` of a local-model Codex home.
 //!
 //! `hooks_json.rs` is pure apart from `verify_generated`, which checks the
 //! hooks binary on disk. The contract held here:
@@ -10,9 +10,9 @@
 //!   &Path) -> bool`;
 //! - `pub(super) fn render(user_groups: &[Value], hooks_bin: &Path) ->
 //!   String`;
-//! - `pub(super) fn verify_generated(text: &str) ->
+//! - `pub(super) fn verify_generated(text: &str, expected: &Path) ->
 //!   anyhow::Result<Vec<Value>>`: the user groups after amplihack's, when
-//!   amplihack's entry is exactly right;
+//!   amplihack's entry is exactly right and runs `expected`;
 //! - `pub(super) fn handler_count(groups: &[Value]) -> usize`.
 //!
 //! `plugin_root` is `<home>/.amplihack/codex`.
@@ -62,11 +62,13 @@ fn amplihack_pre_tool_use_commands_are_recognised() {
         "/usr/local/bin/amplihack-hooks pre-tool-use".to_string(),
         "'/opt/tools/amplihack-hooks' pre-tool-use".to_string(),
         "env AMPLIHACK_HOOK_PROTOCOL=codex '/x/amplihack-hooks' pre-tool-use".to_string(),
-        "env A=1 B=2 amplihack-hooks pre-tool-use".to_string(),
+        "env amplihack-hooks pre-tool-use".to_string(),
         format!("{} pre-tool-use", wrapper()),
         format!("{ROOT}/market/plugin/bin/hook pre-tool-use"),
-        format!("env XPIA_ENABLED=false {} pre-tool-use", wrapper()),
-        format!("env XPIA_ENABLED=true {} pre-tool-use", wrapper()),
+        format!(
+            "env AMPLIHACK_HOOK_PROTOCOL=codex {} pre-tool-use",
+            wrapper()
+        ),
         format!("'{ROOT}/other-market/plugin-2/bin/hook' pre-tool-use"),
     ] {
         assert!(runs_amplihack_pre_tool_use(&command, root()), "{command}");
@@ -103,6 +105,32 @@ fn other_commands_are_not_amplihack_pre_tool_use() {
             "{command:?}"
         );
     }
+}
+
+/// A handler that sets any variable but amplihack's protocol may check more
+/// than amplihack's own entry (`XPIA_ENABLED=true` turns the XPIA check on),
+/// so it is the user's and is kept, even when it runs amplihack's hook.
+#[test]
+fn a_handler_that_sets_another_variable_is_kept() {
+    for command in [
+        format!("env XPIA_ENABLED=true {} pre-tool-use", wrapper()),
+        format!("env XPIA_ENABLED=false {} pre-tool-use", wrapper()),
+        "env XPIA_ENABLED=true amplihack-hooks pre-tool-use".to_string(),
+        "env A=1 B=2 amplihack-hooks pre-tool-use".to_string(),
+        "env AMPLIHACK_HOOK_PROTOCOL=codex XPIA_ENABLED=true amplihack-hooks pre-tool-use"
+            .to_string(),
+        "env XPIA_ENABLED=true AMPLIHACK_HOOK_PROTOCOL=codex amplihack-hooks pre-tool-use"
+            .to_string(),
+        "env AMPLIHACK_HOOK_PROTOCOL=claude amplihack-hooks pre-tool-use".to_string(),
+    ] {
+        assert!(
+            !runs_amplihack_pre_tool_use(&command, root()),
+            "{command:?}"
+        );
+    }
+    let xpia = json!({"hooks": [{"type": "command",
+        "command": format!("env XPIA_ENABLED=true {} pre-tool-use", wrapper())}]});
+    assert_eq!(filter(json!([xpia.clone()])), vec![xpia]);
 }
 
 /// S4: shell-words splits on whitespace only, so a word may hold an
@@ -166,21 +194,24 @@ fn the_wrapper_as_install_writes_it_is_still_removed() {
 
 // ---- the user's groups ----
 
-/// candide's file: the wrapper twice (one with an XPIA prefix) and two
-/// guards. The wrappers go; the guards stay, unchanged and in order.
+/// candide's file: the wrapper twice (one with an `XPIA_ENABLED=false`
+/// prefix) and two guards. The bare wrapper goes; the prefixed wrapper and
+/// the guards stay, unchanged and in order.
 #[test]
-fn both_wrapper_forms_are_removed_and_the_guards_kept_in_order() {
+fn the_bare_wrapper_is_removed_and_the_rest_kept_in_order() {
     let mut tmux = guard("tmux-check");
     tmux["matcher"] = json!("Bash");
     tmux["hooks"][0]["timeout"] = json!(10);
     let worker = guard("shell-check");
+    let xpia = json!({"hooks": [{"type": "command",
+        "command": format!("env XPIA_ENABLED=false {} pre-tool-use", wrapper())}]});
     let groups = filter(json!([
-        {"hooks": [{"type": "command", "command": format!("env XPIA_ENABLED=false {} pre-tool-use", wrapper())}]},
+        xpia,
         {"hooks": [{"type": "command", "command": format!("{} pre-tool-use", wrapper())}]},
         tmux,
         worker,
     ]));
-    assert_eq!(groups, vec![tmux, worker]);
+    assert_eq!(groups, vec![xpia, tmux, worker]);
 }
 
 #[test]
@@ -352,16 +383,38 @@ fn the_generated_command_survives_the_shell() {
     }
 }
 
-// ---- verification of a generated file (SF3) ----
+// ---- verification of a generated file a nested launch reuses ----
 
 #[test]
 fn verify_accepts_what_render_writes() {
     let dir = crate::test_support::tempdir_outside_framework_roots();
     let bin = executable(dir.path(), "amplihack-hooks");
     let user = vec![guard("a.py"), guard("b.py")];
-    let groups = verify_generated(&render(&user, &bin)).expect("verified");
+    let groups = verify_generated(&render(&user, &bin), &bin).expect("verified");
     assert_eq!(groups, user);
     assert_eq!(handler_count(&groups), 2);
+}
+
+/// A session that points amplihack's entry at another executable named
+/// `amplihack-hooks` is refused: the nested launch would otherwise use that
+/// file as its command check.
+#[test]
+fn verify_refuses_another_hooks_binary() {
+    let dir = crate::test_support::tempdir_outside_framework_roots();
+    let bin = executable(dir.path(), "amplihack-hooks");
+    let other_dir = dir.path().join("other");
+    std::fs::create_dir(&other_dir).unwrap();
+    let other = executable(&other_dir, "amplihack-hooks");
+    let text = render(&[guard("a.py")], &other);
+    assert!(verify_generated(&text, &other).is_ok());
+    assert!(verify_generated(&text, &bin).is_err());
+
+    // The same file reached through a symbolic link is the same binary.
+    let link_dir = dir.path().join("link");
+    std::fs::create_dir(&link_dir).unwrap();
+    let link = link_dir.join("amplihack-hooks");
+    std::os::unix::fs::symlink(&bin, &link).unwrap();
+    assert!(verify_generated(&render(&[], &link), &bin).is_ok());
 }
 
 #[test]
@@ -424,7 +477,7 @@ fn verify_refuses_a_weakened_entry() {
     let mut v = good.clone();
     v["hooks"]["PreToolUse"][0] =
         command("env AMPLIHACK_HOOK_PROTOCOL=codex /bin/true pre-tool-use");
-    cases.push(("an executable that is not amplihack-hooks (S3)", v));
+    cases.push(("an executable that is not amplihack-hooks", v));
     let mut v = good.clone();
     v["hooks"]["PreToolUse"][0]["hooks"][0]["type"] = json!("prompt");
     cases.push(("not a command handler", v));
@@ -434,11 +487,11 @@ fn verify_refuses_a_weakened_entry() {
 
     for (what, value) in cases {
         assert!(
-            verify_generated(&value.to_string()).is_err(),
+            verify_generated(&value.to_string(), &bin).is_err(),
             "{what}: {value:#}"
         );
     }
     for text in ["", "{", "[]", "{\"hooks\": {}}"] {
-        assert!(verify_generated(text).is_err(), "{text:?}");
+        assert!(verify_generated(text, &bin).is_err(), "{text:?}");
     }
 }

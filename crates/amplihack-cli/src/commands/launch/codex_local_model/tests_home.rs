@@ -435,3 +435,122 @@ fn reuse_refuses_a_rules_file_that_differs_from_the_policy() {
     let text = refresh_error(&f, None);
     assert!(text.contains(&home.display().to_string()), "{text}");
 }
+
+// ---- the profile's sandbox ----
+
+/// A `sandbox_mode` in the profile reaches the argv as a `-c` override after
+/// `-c features.hooks=true`, so the agent-step injection treats it as the
+/// caller's choice and adds no `--sandbox danger-full-access`. A nested
+/// launch that reuses the home reads it from the generated `config.toml`.
+#[test]
+fn a_profile_sandbox_is_passed_on_as_the_callers_choice() {
+    let mut f = LocalFixture::new();
+    f.write_profile(NAME, &format!("sandbox_mode = \"read-only\"\n{PROFILE}"));
+    let local = build(&f);
+    let args = local.codex_args(strings(&["exec", "-"]));
+    assert_eq!(
+        args,
+        strings(&[
+            HOOK_TRUST,
+            "-c",
+            "features.hooks=true",
+            "-c",
+            "sandbox_mode=\"read-only\"",
+            "exec",
+            "-",
+        ])
+    );
+    let injected = super::super::codex_agent_step::codex_agent_step_args(&args);
+    assert!(
+        !injected.iter().any(|a| a == "danger-full-access"),
+        "{injected:?}"
+    );
+    assert_eq!(injected.iter().filter(|a| *a == HOOK_TRUST).count(), 1);
+
+    let generated = f.generated(NAME);
+    f.set("CODEX_HOME", &generated);
+    let reused = build(&f);
+    assert!(
+        reused
+            .codex_args(strings(&["exec", "-"]))
+            .iter()
+            .any(|a| a == "sandbox_mode=\"read-only\""),
+        "a nested launch keeps the sandbox"
+    );
+}
+
+/// With no `sandbox_mode` in the profile nothing is added, and an `exec`
+/// launch gets the agent-step sandbox as an ordinary one does.
+#[test]
+fn no_profile_sandbox_adds_no_override() {
+    let f = LocalFixture::new();
+    let local = build(&f);
+    let args = local.codex_args(strings(&["exec", "-"]));
+    assert!(
+        !args.iter().any(|a| a.starts_with("sandbox_mode")),
+        "{args:?}"
+    );
+}
+
+// ---- who may supply the inputs ----
+
+/// The profile and the user's `hooks.json` decide what runs in a session,
+/// so a file others can write, or one in a directory others can write, is
+/// refused before anything is created.
+#[test]
+fn inputs_others_can_write_are_refused() {
+    let f = LocalFixture::new();
+    let profile = f.user_codex().join(format!("{NAME}.config.toml"));
+    let hooks = f.user_codex().join("hooks.json");
+    fs::write(&hooks, "{\"hooks\": {}}\n").unwrap();
+    fs::set_permissions(&hooks, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::set_permissions(&profile, fs::Permissions::from_mode(0o600)).unwrap();
+    build(&f);
+    fs::remove_dir_all(f.codex_local()).unwrap();
+
+    for file in [&profile, &hooks] {
+        fs::set_permissions(file, fs::Permissions::from_mode(0o602)).unwrap();
+        let error = refresh_error(&f, Some(NAME));
+        assert!(
+            error.contains(&file.display().to_string()),
+            "names the file: {error}"
+        );
+        assert!(!f.codex_local().exists(), "nothing is created: {error}");
+        fs::set_permissions(file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fs::set_permissions(f.user_codex(), fs::Permissions::from_mode(0o703)).unwrap();
+    let error = refresh_error(&f, Some(NAME));
+    fs::set_permissions(f.user_codex(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        error.contains(&f.user_codex().display().to_string()),
+        "names the directory: {error}"
+    );
+    assert!(!f.codex_local().exists(), "nothing is created: {error}");
+}
+
+/// A profile reached through a symbolic link is checked where it really
+/// is: a target in a directory others can write is refused, one in a
+/// private directory is accepted.
+#[test]
+fn a_linked_profile_is_checked_where_it_lives() {
+    let f = LocalFixture::new();
+    let profile = f.user_codex().join(format!("{NAME}.config.toml"));
+    let shared = f.home().join("shared");
+    fs::create_dir(&shared).unwrap();
+    let target = shared.join("profile.toml");
+    fs::write(&target, PROFILE).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::remove_file(&profile).unwrap();
+    std::os::unix::fs::symlink(&target, &profile).unwrap();
+
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+    let error = refresh_error(&f, Some(NAME));
+    assert!(
+        error.contains(&shared.display().to_string()),
+        "names the target's directory: {error}"
+    );
+
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o700)).unwrap();
+    build(&f);
+}

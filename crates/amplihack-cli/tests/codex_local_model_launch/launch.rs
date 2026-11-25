@@ -164,8 +164,8 @@ fn hooks_json_keeps_the_user_guards_and_one_amplihack_entry() {
     let groups = hooks["hooks"]["PreToolUse"].as_array().unwrap();
     assert_eq!(
         groups.len(),
-        3,
-        "amplihack's group and the two guards: {hooks:#}"
+        4,
+        "amplihack's group, the XPIA wrapper and the two guards: {hooks:#}"
     );
 
     let first = &groups[0];
@@ -189,12 +189,18 @@ fn hooks_json_keeps_the_user_guards_and_one_amplihack_entry() {
     assert_eq!(&groups[1..], kept_user_groups(f.home()).as_slice());
 
     let all: Vec<String> = groups.iter().flat_map(commands).collect();
-    let amplihack_entries = all.iter().filter(|c| c.contains("pre-tool-use")).count();
-    assert_eq!(amplihack_entries, 1, "{all:#?}");
-    assert!(
-        !all.iter()
-            .any(|c| c.contains("/bin/hook") || c.contains("XPIA_ENABLED")),
-        "the plugin wrapper is dropped in both forms: {all:#?}"
+    let bare_wrappers = all
+        .iter()
+        .filter(|c| c.contains("/bin/hook") && !c.contains("XPIA_ENABLED"))
+        .count();
+    assert_eq!(
+        bare_wrappers, 0,
+        "the bare plugin wrapper is dropped: {all:#?}"
+    );
+    assert_eq!(
+        all.iter().filter(|c| c.contains("XPIA_ENABLED")).count(),
+        1,
+        "the wrapper that sets XPIA_ENABLED is kept: {all:#?}"
     );
 }
 
@@ -323,8 +329,71 @@ fn an_ordinary_launch_passes_codex_home_and_hook_text_through() {
                 !f.codex_local().exists(),
                 "an ordinary launch builds nothing"
             );
+            // An inherited `none` is said on stderr, once; `full` and an
+            // unset variable say nothing.
+            let named = launch
+                .stderr()
+                .lines()
+                .filter(|l| l.contains(HOOK_TEXT_ENV))
+                .count();
+            let expected = usize::from(hook_text == Some("none"));
+            assert_eq!(named, expected, "{hook_text:?}:\n{}", launch.stderr());
         }
     }
+}
+
+/// Every local launch says on stderr that hook text is off, whether or not
+/// amplihack added the hook-trust flag, so that the loss of lock mode, power
+/// steering and reflection is never silent.
+#[test]
+fn a_local_launch_says_that_hook_text_is_off() {
+    let f = Fixture::new();
+    for tail in [&[][..], &["exec", "-"][..], &[HOOK_TRUST, "exec", "-"][..]] {
+        let launch = f.local(NAME, tail);
+        launch.assert_started();
+        let stderr = launch.stderr();
+        let lines = stderr
+            .lines()
+            .filter(|l| l.contains(HOOK_TEXT_ENV) && l.contains(NAME))
+            .count();
+        assert_eq!(lines, 1, "{tail:?}:\n{stderr}");
+    }
+}
+
+/// A sandbox the profile chooses is kept on an `exec` launch: amplihack
+/// passes it on as the caller's choice, so the agent-step injection adds no
+/// `--sandbox danger-full-access`, which would outrank the config file. A
+/// caller's own `--sandbox` still reaches Codex, after amplihack's override.
+#[test]
+fn a_profile_sandbox_is_kept_on_an_exec_launch() {
+    let f = Fixture::new();
+    f.write_profile(
+        NAME,
+        &format!("sandbox_mode = \"workspace-write\"\n{PROFILE}"),
+    );
+    let launch = f.local(NAME, &["exec", "-"]);
+    launch.assert_started();
+    let argv = launch.argv();
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["-c", "sandbox_mode=\"workspace-write\""]),
+        "{argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|a| a == "danger-full-access"),
+        "no wider sandbox is added: {argv:?}"
+    );
+    assert_eq!(launch.count(HOOK_TRUST), 1, "{argv:?}");
+
+    let launch = f.local(NAME, &["exec", "--sandbox", "read-only", "-"]);
+    launch.assert_started();
+    let argv = launch.argv();
+    let ours = argv
+        .iter()
+        .position(|a| a == "sandbox_mode=\"workspace-write\"")
+        .unwrap();
+    let theirs = argv.iter().position(|a| a == "read-only").unwrap();
+    assert!(ours < theirs, "{argv:?}");
 }
 
 /// AC13: the flag wins over the variable.
@@ -541,8 +610,8 @@ fn the_hook_trust_notice_names_what_amplihack_added() {
         assert_eq!(lines.len(), 1, "{tail:?}: one notice line:\n{stderr}");
         let rest = lines[0].replace(&home, "").replace(HOOK_TRUST, "");
         assert!(
-            rest.split(|c: char| !c.is_ascii_digit()).any(|t| t == "2"),
-            "{tail:?}: the notice gives the two user handlers carried over: {}",
+            rest.split(|c: char| !c.is_ascii_digit()).any(|t| t == "3"),
+            "{tail:?}: the notice gives the three user handlers carried over: {}",
             lines[0]
         );
         assert!(

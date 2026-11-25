@@ -112,10 +112,16 @@ web_search = "live"
 multi_agent = true
 "#;
 
-/// The two Python guards in candide's `hooks.json`, as kept groups.
+/// The PreToolUse groups of candide's `hooks.json` that a generated home
+/// keeps, in order: the plugin wrapper with its `env XPIA_ENABLED=false`
+/// prefix (a handler that sets a variable is the user's) and the two Python
+/// guards.
 pub(crate) fn kept_user_groups(home: &Path) -> Vec<serde_json::Value> {
     let adapter = home.join(".codex/hooks/my-guard.py");
+    let wrapper = home.join(".amplihack/codex/market/plugin/bin/hook");
     vec![
+        serde_json::json!({"hooks": [{"type": "command",
+            "command": format!("env XPIA_ENABLED=false '{}' pre-tool-use", wrapper.display())}]}),
         serde_json::json!({"matcher": "Bash", "hooks": [{"type": "command", "timeout": 10,
             "command": format!("/usr/bin/python3 -I {} tmux-check", adapter.display())}]}),
         serde_json::json!({"hooks": [{"type": "command",
@@ -125,7 +131,7 @@ pub(crate) fn kept_user_groups(home: &Path) -> Vec<serde_json::Value> {
 
 /// candide's `~/.codex/hooks.json`: the plugin wrapper (with and without an
 /// `env XPIA_ENABLED=false` prefix) and the two guards under PreToolUse, and
-/// wrapper entries for other events.
+/// wrapper entries for other events. Only the bare wrapper is dropped.
 pub(crate) fn user_hooks_json(home: &Path) -> String {
     let wrapper = home.join(".amplihack/codex/market/plugin/bin/hook");
     let quoted = format!("'{}'", wrapper.display());
@@ -134,10 +140,10 @@ pub(crate) fn user_hooks_json(home: &Path) -> String {
         "SessionStart": [{"hooks": [{"type": "command", "command": format!("{quoted} session-start")}]}],
         "UserPromptSubmit": [{"hooks": [{"type": "command", "command": format!("{quoted} user-prompt")}]}],
         "PreToolUse": [
-            {"hooks": [{"type": "command", "command": format!("env XPIA_ENABLED=false {quoted} pre-tool-use")}]},
-            {"hooks": [{"type": "command", "command": format!("{quoted} pre-tool-use")}]},
             kept[0],
+            {"hooks": [{"type": "command", "command": format!("{quoted} pre-tool-use")}]},
             kept[1],
+            kept[2],
         ],
         "Stop": [{"hooks": [{"type": "command", "command": format!("{quoted} stop")}]}],
     }}))
@@ -355,6 +361,41 @@ impl Fixture {
             env,
             calls,
         }
+    }
+
+    /// [`Fixture::launch`] with stdin on a pseudo-terminal and
+    /// `AMPLIHACK_NONINTERACTIVE` and `CI` removed, as a person at a terminal
+    /// starts it, so the launch bootstrap runs. The terminal already holds an
+    /// end-of-file, so a read of stdin returns at once; stdout and stderr are
+    /// captured as usual.
+    pub(crate) fn launch_on_terminal(&self, command: &mut Command) -> Launched {
+        use std::io::Write;
+        use std::os::fd::FromRawFd;
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: both out-pointers are valid; the name, termios and winsize
+        // pointers may be null. A typed null `*mut` compiles on Linux and
+        // macOS alike (#2210).
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut::<libc::termios>(),
+                std::ptr::null_mut::<libc::winsize>(),
+            )
+        };
+        assert_eq!(opened, 0, "openpty");
+        // SAFETY: openpty returned two fresh descriptors this code now owns.
+        let mut input = unsafe { fs::File::from_raw_fd(master) };
+        let terminal = unsafe { fs::File::from_raw_fd(slave) };
+        input.write_all(b"\x04").unwrap();
+        command
+            .env_remove("AMPLIHACK_NONINTERACTIVE")
+            .env_remove("CI")
+            .stdin(Stdio::from(terminal));
+        let launched = self.launch(command);
+        drop(input);
+        launched
     }
 
     /// `--local-model <name>` and, optionally, a Codex argv tail.

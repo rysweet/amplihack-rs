@@ -12,7 +12,7 @@
 //! hooks binary, `~/.amplihack`, the directories it would create, the
 //! previous `config.toml` and the current state of each owned file. A file
 //! is rewritten only when its bytes differ or it is not a private regular
-//! file (SF10), through a new 0600 temporary file renamed into place, so an
+//! file, through a new 0600 temporary file renamed into place, so an
 //! unchanged home keeps every inode. No lock is taken: the output depends
 //! only on the inputs, so concurrent launches write the same bytes.
 //!
@@ -24,20 +24,20 @@
 use super::{LocalHome, ProfileName, config, hooks_json};
 use crate::commands::install::paths::{home_dir, sanitize_path};
 use amplihack_utils::secure_files::{
-    check_private_dir, check_private_file, dir_writable_by_others, ensure_private_dir,
-    owned_by_euid, read_bounded, read_bounded_nofollow, write_private_atomic,
+    check_private_dir, check_private_file, dir_writable_by_others, ensure_private_dir, euid,
+    owned_by_euid, read_bounded, read_bounded_nofollow, writable_by_others, write_private_atomic,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 use std::fs;
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use toml::Table;
 
 /// The model instructions every generated home points Codex at.
 const INSTRUCTIONS: &str = include_str!("instructions.md");
-/// The most amplihack reads from any input or owned file (SF6).
+/// The most amplihack reads from any input or owned file.
 const READ_LIMIT: u64 = 1024 * 1024;
 const CONFIG: &str = "config.toml";
 const HOOKS: &str = "hooks.json";
@@ -94,9 +94,9 @@ pub(super) struct Plan {
 }
 
 impl Plan {
-    /// Resolves the user Codex home and decides on reuse (D11); otherwise
+    /// Resolves the user Codex home and decides on reuse; otherwise
     /// reads, parses and checks the profile, then reads and filters the
-    /// user's `hooks.json` (D13 steps 2 and 3).
+    /// user's `hooks.json`. Nothing is written.
     pub(super) fn prepare(name: &ProfileName) -> Result<Self> {
         let home = home_dir()?;
         let layout = Layout::new(&home, name);
@@ -135,7 +135,8 @@ impl Plan {
         })
     }
 
-    /// Builds, refreshes or verifies the home (D13 step 6).
+    /// Builds, refreshes or verifies the home: the last step before Codex
+    /// is spawned.
     pub(super) fn refresh(&self, name: &ProfileName) -> Result<LocalHome> {
         let home = self
             .layout
@@ -148,20 +149,24 @@ impl Plan {
                 )
             })?
             .to_owned();
-        let user_handlers = match &self.kind {
+        let (user_handlers, sandbox_mode) = match &self.kind {
             Kind::Reuse => self.verify_reuse()?,
             Kind::Build {
                 profile,
                 user_groups,
             } => {
                 self.build(profile, user_groups)?;
-                hooks_json::handler_count(user_groups)
+                (
+                    hooks_json::handler_count(user_groups),
+                    config::sandbox_mode(profile),
+                )
             }
         };
         Ok(LocalHome {
             name: name.clone(),
             home,
             user_handlers,
+            sandbox_mode,
         })
     }
 
@@ -249,9 +254,10 @@ impl Plan {
         Ok(())
     }
 
-    /// SF3: the checks a reused home must pass, without writing to it.
-    /// Returns the number of user handlers carried into its `hooks.json`.
-    fn verify_reuse(&self) -> Result<usize> {
+    /// The checks a reused home must pass, without writing to it. Returns
+    /// the number of user handlers carried into its `hooks.json` and the
+    /// `sandbox_mode` its `config.toml` sets, if any.
+    fn verify_reuse(&self) -> Result<(usize, Option<String>)> {
         let layout = &self.layout;
         let refuse = |reason: String| {
             anyhow!(
@@ -304,14 +310,22 @@ impl Plan {
         }
         // The session may have switched amplihack's handler off since the
         // last refresh. Codex keys its state by the hooks.json path, either
-        // as CODEX_HOME gives it or canonicalised, so both are checked.
+        // as CODEX_HOME gives it or canonicalised, so both are checked, and
+        // a path that cannot be checked refuses the reuse.
         let hooks_path = layout.generated.join(HOOKS);
-        let canonical = fs::canonicalize(&hooks_path).ok();
-        let paths: Vec<&str> = [Some(hooks_path.as_path()), canonical.as_deref()]
-            .into_iter()
-            .flatten()
-            .filter_map(Path::to_str)
-            .collect();
+        let canonical = fs::canonicalize(&hooks_path).map_err(|error| {
+            refuse(format!(
+                "{} could not be resolved: {error}",
+                sanitize_path(&hooks_path)
+            ))
+        })?;
+        let mut paths = Vec::with_capacity(2);
+        for path in [hooks_path.as_path(), canonical.as_path()] {
+            paths
+                .push(path.to_str().ok_or_else(|| {
+                    refuse(format!("{} is not valid UTF-8", sanitize_path(path)))
+                })?);
+        }
         if config::guard_disabled(&document, &paths) {
             return Err(refuse(format!(
                 "{} disables amplihack's PreToolUse handler in [hooks.state]",
@@ -321,8 +335,10 @@ impl Plan {
 
         let hooks_text = std::str::from_utf8(&hooks)
             .map_err(|_| refuse("hooks.json is not valid UTF-8".to_string()))?;
-        let user_groups =
-            hooks_json::verify_generated(hooks_text).map_err(|e| refuse(format!("{e:#}")))?;
+        let hooks_bin = crate::commands::install::find_hooks_binary()
+            .map_err(|e| refuse(format!("the amplihack-hooks binary was not found: {e:#}")))?;
+        let user_groups = hooks_json::verify_generated(hooks_text, &hooks_bin)
+            .map_err(|e| refuse(format!("{e:#}")))?;
 
         if rules != current_rules().as_bytes() {
             return Err(refuse(
@@ -330,7 +346,10 @@ impl Plan {
                     .to_string(),
             ));
         }
-        Ok(hooks_json::handler_count(&user_groups))
+        Ok((
+            hooks_json::handler_count(&user_groups),
+            config::sandbox_mode(&document),
+        ))
     }
 }
 
@@ -353,7 +372,8 @@ fn reuses(generated: &Path) -> bool {
 }
 
 /// `$CODEX_HOME` when set, non-empty and not inside `codex-local`, else
-/// `<home>/.codex` (D11).
+/// `<home>/.codex`, so that a nested launch under another name reads its
+/// profile from the user's own Codex home, never from a generated one.
 fn user_codex_home(home: &Path, codex_local: &Path) -> PathBuf {
     std::env::var_os("CODEX_HOME")
         .filter(|value| !value.is_empty())
@@ -362,9 +382,10 @@ fn user_codex_home(home: &Path, codex_local: &Path) -> PathBuf {
         .unwrap_or_else(|| home.join(".codex"))
 }
 
-/// SF6: reads an input that may be reached through a symbolic link, which
-/// must end at a regular file of at most [`READ_LIMIT`] bytes of UTF-8. The
-/// open never blocks on a FIFO. `Ok(None)` when the file does not exist.
+/// Reads an input that may be reached through a symbolic link, which must
+/// end at a regular file of at most [`READ_LIMIT`] bytes of UTF-8 that
+/// passes [`check_input_owner`]. The open never blocks on a FIFO. `Ok(None)`
+/// when the file does not exist.
 fn read_followed(path: &Path) -> Result<Option<String>> {
     let shown = || sanitize_path(path);
     let file = match fs::OpenOptions::new()
@@ -382,6 +403,7 @@ fn read_followed(path: &Path) -> Result<Option<String>> {
     if !meta.is_file() {
         bail!("{} is not a regular file", shown());
     }
+    check_input_owner(path, &meta)?;
     let bytes = read_bounded(&file, READ_LIMIT)
         .map_err(|error| anyhow!("{} could not be read: {error}", shown()))?;
     if bytes.len() as u64 > READ_LIMIT {
@@ -390,6 +412,54 @@ fn read_followed(path: &Path) -> Result<Option<String>> {
     String::from_utf8(bytes)
         .map(Some)
         .map_err(|_| anyhow!("{} is not valid UTF-8", shown()))
+}
+
+/// The profile decides which programs a session starts (its provider,
+/// `notify` and MCP settings) and the user's `hooks.json` supplies handlers
+/// that run on every tool call, so both follow the rule `~/.amplihack`
+/// follows: the file (`meta`, read through the open descriptor) and the
+/// directory holding it, and when `path` is a symbolic link the directory
+/// holding its target too, must be owned by this user or by root and not
+/// writable by others. Group write is accepted only for the user's own
+/// private group, as elsewhere in amplihack.
+fn check_input_owner(path: &Path, meta: &fs::Metadata) -> Result<()> {
+    let trusted_owner = |meta: &fs::Metadata| meta.uid() == euid() || meta.uid() == 0;
+    if !trusted_owner(meta) || writable_by_others(meta) {
+        bail!(
+            "{} must be owned by you and not writable by others, because it decides what runs \
+             in a local-model session; amplihack does not change it",
+            sanitize_path(path)
+        );
+    }
+    // Both directories are canonical, so the metadata and the ACL check
+    // below are about the directory itself, never a link to it.
+    let resolve = |p: &Path| {
+        fs::canonicalize(p)
+            .map_err(|error| anyhow!("{} could not be resolved: {error}", sanitize_path(p)))
+    };
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut dirs = vec![resolve(parent)?];
+    if let Some(target_dir) = resolve(path)?.parent()
+        && dirs[0] != target_dir
+    {
+        dirs.push(target_dir.to_path_buf());
+    }
+    for dir in dirs {
+        let dir_meta = fs::symlink_metadata(&dir)
+            .map_err(|error| anyhow!("{} could not be checked: {error}", sanitize_path(&dir)))?;
+        if !trusted_owner(&dir_meta) || dir_writable_by_others(&dir, &dir_meta) {
+            bail!(
+                "{}, which holds {}, must be owned by you and not writable by others; amplihack \
+                 does not change it",
+                sanitize_path(&dir),
+                sanitize_path(path)
+            );
+        }
+    }
+    Ok(())
 }
 
 /// An owned file's bytes and metadata, without following a symbolic link:
@@ -404,11 +474,11 @@ fn read_owned(path: &Path) -> Result<Option<(Vec<u8>, fs::Metadata)>> {
     })
 }
 
-/// SF4: the hooks binary amplihack's entry runs. It must be an absolute path
+/// The hooks binary amplihack's entry runs. It must be an absolute path
 /// (a relative one is refused, never made absolute from the working
 /// directory, so a checkout cannot supply the guard), valid UTF-8 with no
 /// control character, an executable regular file, and named
-/// `amplihack-hooks`, which is what a nested launch checks for (SF3).
+/// `amplihack-hooks`, which is what a nested launch checks for.
 fn validate_hooks_binary(path: &Path) -> Result<()> {
     let refuse = |problem: &str| {
         anyhow!(
@@ -442,7 +512,7 @@ fn validate_hooks_binary(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// SF2: `~/.amplihack`, followed if it is a link, must be a directory owned
+/// `~/.amplihack`, followed if it is a link, must be a directory owned
 /// by this user that others cannot write. It is never changed. `Ok(false)`
 /// when it does not exist yet.
 fn check_amplihack_root(path: &Path) -> Result<bool> {

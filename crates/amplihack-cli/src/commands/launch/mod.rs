@@ -450,8 +450,12 @@ fn run_launch_core(
         None
     };
     // A local-model Codex launch runs the generic bootstrap only, so nothing
-    // is written to the user's Codex home.
+    // is written to the user's Codex home. Any other launch that inherited
+    // AMPLIHACK_HOOK_TEXT=none says that lock mode and the rest are off.
     let local_model = codex_local_model::current(tool);
+    if local_model.is_none() {
+        codex_local_model::warn_inherited_hook_text(tool);
+    }
     if !subprocess_safe {
         if local_model.is_some() {
             codex_local_model::bootstrap()?;

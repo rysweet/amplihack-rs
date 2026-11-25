@@ -62,6 +62,55 @@ fn start_up_self_heal_leaves_the_user_codex_home_alone() {
     }
 }
 
+/// An interactive local launch runs the launch bootstrap, which for a
+/// local model is the generic one: the user's Codex home is unchanged. An
+/// ordinary interactive launch of the same fixture is the control. It runs
+/// the Codex bootstrap, which writes the user's Codex home, so the test
+/// shows that the bootstrap ran and that the local launch replaced it.
+#[test]
+fn an_interactive_local_launch_leaves_the_user_codex_home_alone() {
+    for local in [true, false] {
+        let f = Fixture::new();
+        // The ordinary launch's plugin installation refuses the plugin
+        // wrapper entries of candide's `hooks.json` as unowned; both runs
+        // start from the same home without it.
+        fs::remove_file(f.user_codex().join("hooks.json")).unwrap();
+        // Keeps the unrelated first-launch memory-consent dialog off stdin.
+        fs::write(
+            f.home().join(".amplihack/config"),
+            r#"{"node_options_consent":true}"#,
+        )
+        .unwrap();
+        let before = snapshot(&f.user_codex());
+        let args: &[&str] = if local {
+            &["codex", "--local-model", NAME, "--no-reflection"]
+        } else {
+            &["codex", "--no-reflection"]
+        };
+        let launch = f.launch_on_terminal(&mut f.command(args));
+        let after = snapshot(&f.user_codex());
+        if local {
+            assert_eq!(
+                after.keys().collect::<Vec<_>>(),
+                before.keys().collect::<Vec<_>>(),
+                "no file is added to or removed from the user's Codex home\nstderr: {}",
+                launch.stderr()
+            );
+            assert_eq!(after, before, "the user's Codex home is unchanged");
+            launch.assert_started();
+            assert!(f.generated(NAME).join("config.toml").is_file());
+        } else {
+            assert_ne!(
+                after,
+                before,
+                "control: an ordinary interactive launch runs the Codex bootstrap, which \
+                 writes the user's Codex home\nstderr: {}",
+                launch.stderr()
+            );
+        }
+    }
+}
+
 /// AC10: an unchanged profile writes nothing on the next launch.
 #[test]
 fn an_unchanged_home_keeps_every_inode() {

@@ -1,17 +1,20 @@
-//! The generated `hooks.json` of a local-model Codex home (D16).
+//! The generated `hooks.json` of a local-model Codex home.
 //!
 //! The file holds `PreToolUse` and nothing else: amplihack's own
 //! pre-tool-use entry first, then the user's PreToolUse groups from their
 //! `hooks.json`, in order and otherwise unchanged, minus the handlers that
-//! run amplihack's pre-tool-use hook (the Codex plugin's wrapper, with or
-//! without an `env NAME=value` prefix, or any program named
-//! `amplihack-hooks`). A handler the filter misses runs the guard twice,
-//! which is safe; the filter therefore removes only exact word lists, and
-//! only when every word is one the shell would take as it is (when in doubt,
-//! keep it).
+//! run amplihack's pre-tool-use hook exactly as amplihack's own entry does
+//! (the Codex plugin's wrapper or any program named `amplihack-hooks`, bare
+//! or after `env AMPLIHACK_HOOK_PROTOCOL=codex`). A handler that sets any
+//! other variable, such as `XPIA_ENABLED=true`, may check more than
+//! amplihack's entry does, so it is kept. A handler the filter keeps runs
+//! the guard twice, which is safe; the filter therefore removes only exact
+//! word lists, and only when every word is one the shell would take as it is
+//! (when in doubt, keep it).
 //!
 //! Pure apart from [`verify_generated`], which checks that the hooks binary
-//! named in amplihack's entry is still an executable regular file. No error
+//! named in amplihack's entry is still an executable regular file, and the
+//! one the launch itself resolves. No error
 //! quotes the file's content: a parse error gives the path, line and column.
 
 use crate::commands::install::paths::sanitize_path;
@@ -97,12 +100,15 @@ fn is_amplihack_handler(handler: &Value, plugin_root: &Path) -> bool {
             .is_some_and(|command| runs_amplihack_pre_tool_use(command, plugin_root))
 }
 
-/// Whether `command`, split into shell words with one optional leading
-/// `env NAME=value …` prefix taken off, is exactly
-/// `[program, pre-tool-use]`, where `program` is named `amplihack-hooks` or
-/// is an absolute path under `plugin_root` ending in `bin/hook`. A command
-/// that cannot be split, is compound, or has a word that is not
-/// [inert](is_inert_word), is not.
+/// Whether `command`, split into shell words, is exactly
+/// `[program, pre-tool-use]`, optionally after `env` or
+/// `env AMPLIHACK_HOOK_PROTOCOL=codex`, where `program` is named
+/// `amplihack-hooks` or is an absolute path under `plugin_root` ending in
+/// `bin/hook`. Any other assignment keeps the handler: it changes what the
+/// hook checks (`XPIA_ENABLED=true` turns on the XPIA check), and removing
+/// it would weaken the user's guard without a word. A command that cannot
+/// be split, is compound, or has a word that is not [inert](is_inert_word),
+/// is not amplihack's either.
 pub(super) fn runs_amplihack_pre_tool_use(command: &str, plugin_root: &Path) -> bool {
     let Ok(words) = shell_words::split(command) else {
         return false;
@@ -110,17 +116,11 @@ pub(super) fn runs_amplihack_pre_tool_use(command: &str, plugin_root: &Path) -> 
     if !words.iter().all(|word| is_inert_word(word)) {
         return false;
     }
-    let mut rest = words.as_slice();
-    if let Some((first, tail)) = rest.split_first()
-        && first == "env"
-    {
-        rest = tail;
-        while let Some((word, tail)) = rest.split_first()
-            && is_plain_assignment(word)
-        {
-            rest = tail;
-        }
-    }
+    let rest = match words.as_slice() {
+        [env, protocol, rest @ ..] if env == "env" && protocol == PROTOCOL => rest,
+        [env, rest @ ..] if env == "env" => rest,
+        rest => rest,
+    };
     match rest {
         [program, subcommand] if subcommand == SUBCOMMAND => {
             is_amplihack_program(program, plugin_root)
@@ -137,20 +137,6 @@ fn is_inert_word(word: &str) -> bool {
     !word
         .chars()
         .any(|c| c.is_whitespace() || c.is_control() || SHELL_SPECIAL.contains(&c))
-}
-
-/// `NAME=value` with a shell variable name. The value is inert (see
-/// [`is_inert_word`]), so removing the handler loses nothing the command
-/// would have done.
-fn is_plain_assignment(word: &str) -> bool {
-    let Some((name, _)) = word.split_once('=') else {
-        return false;
-    };
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn is_amplihack_program(program: &str, plugin_root: &Path) -> bool {
@@ -198,13 +184,15 @@ pub(super) fn render(user_groups: &[Value], hooks_bin: &Path) -> String {
     text
 }
 
-/// SF3: checks a generated file before a nested launch reuses it, and
-/// returns the user groups after amplihack's. amplihack's group must be the
-/// first PreToolUse group and exactly one command handler (no matcher, no
-/// other key) that splits to `[env, AMPLIHACK_HOOK_PROTOCOL=codex, <absolute
-/// path of an executable regular file named amplihack-hooks>,
-/// pre-tool-use]`.
-pub(super) fn verify_generated(text: &str) -> Result<Vec<Value>> {
+/// Checks a generated file before a nested launch reuses it, and returns
+/// the user groups after amplihack's. amplihack's group must be the first
+/// PreToolUse group and exactly one command handler (no matcher, no other
+/// key) that splits to `[env, AMPLIHACK_HOOK_PROTOCOL=codex, <hooks binary>,
+/// pre-tool-use]`, where the hooks binary is an absolute path of an
+/// executable regular file named `amplihack-hooks` that resolves to the same
+/// file as `expected`, the binary this launch would put there. A session
+/// that pointed the entry at another file is refused.
+pub(super) fn verify_generated(text: &str, expected: &Path) -> Result<Vec<Value>> {
     let value: Value = serde_json::from_str(text).map_err(|error| {
         anyhow!(
             "hooks.json is not valid JSON (line {}, column {})",
@@ -220,11 +208,11 @@ pub(super) fn verify_generated(text: &str) -> Result<Vec<Value>> {
     let (first, rest) = groups
         .split_first()
         .ok_or_else(|| anyhow!("hooks.json has no amplihack PreToolUse entry"))?;
-    verify_amplihack_group(first)?;
+    verify_amplihack_group(first, expected)?;
     Ok(rest.to_vec())
 }
 
-fn verify_amplihack_group(group: &Value) -> Result<()> {
+fn verify_amplihack_group(group: &Value, expected: &Path) -> Result<()> {
     let not_amplihack =
         || anyhow!("the first PreToolUse group in hooks.json is not amplihack's entry");
     let group = group.as_object().ok_or_else(not_amplihack)?;
@@ -269,6 +257,21 @@ fn verify_amplihack_group(group: &Value) -> Result<()> {
         bail!(
             "the hooks binary in amplihack's PreToolUse entry, {}, is not an executable file",
             sanitize_path(binary)
+        );
+    }
+    let same = match (
+        std::fs::canonicalize(binary),
+        std::fs::canonicalize(expected),
+    ) {
+        (Ok(found), Ok(expected)) => found == expected,
+        _ => false,
+    };
+    if !same {
+        bail!(
+            "the hooks binary in amplihack's PreToolUse entry, {}, is not the one this launch \
+             uses, {}",
+            sanitize_path(binary),
+            sanitize_path(expected)
         );
     }
     Ok(())

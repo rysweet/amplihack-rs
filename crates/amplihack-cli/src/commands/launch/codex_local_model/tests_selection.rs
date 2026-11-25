@@ -311,3 +311,47 @@ fn the_scope_is_restored_after_a_panic() {
     assert!(result.is_err());
     assert!(current("codex").is_none());
 }
+
+// ---- the hook-text notice for other launches ----
+
+/// The launcher reads `AMPLIHACK_HOOK_TEXT` as the hooks binary does:
+/// trimmed of ASCII whitespace, ASCII case ignored, and anything that is
+/// not `none` (including a value that is not UTF-8) is `full`.
+#[test]
+fn hook_text_none_is_read_as_the_hooks_binary_reads_it() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    for value in ["none", "NONE", " None\n", "\tnOnE "] {
+        assert!(
+            super::is_hook_text_none(Some(OsStr::new(value))),
+            "{value:?}"
+        );
+    }
+    for value in ["", " ", "full", "nonе", "no ne", "none2", "bogus"] {
+        assert!(
+            !super::is_hook_text_none(Some(OsStr::new(value))),
+            "{value:?}"
+        );
+    }
+    assert!(!super::is_hook_text_none(None));
+    assert!(!super::is_hook_text_none(Some(OsStr::from_bytes(
+        b"none\xff"
+    ))));
+}
+
+/// A launch that inherits `none` gets one line naming the variable and the
+/// tool; any other value gets none.
+#[test]
+fn an_inherited_none_is_named_for_the_launched_tool() {
+    use std::ffi::OsStr;
+    for tool in ["claude", "copilot", "codex"] {
+        let line =
+            super::inherited_hook_text_notice(tool, Some(OsStr::new("none"))).expect("a notice");
+        assert!(line.contains("AMPLIHACK_HOOK_TEXT"), "{line}");
+        assert!(line.contains(tool), "{line}");
+        assert!(!line.contains('\n'), "one line: {line:?}");
+        for value in [None, Some(OsStr::new("full")), Some(OsStr::new("x"))] {
+            assert_eq!(super::inherited_hook_text_notice(tool, value), None);
+        }
+    }
+}
