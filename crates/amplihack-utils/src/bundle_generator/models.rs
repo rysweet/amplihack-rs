@@ -213,8 +213,10 @@ pub struct GeneratedAgent {
     pub description: String,
     /// Markdown content (agent definition).
     pub content: String,
-    /// LLM model to use ("inherit" = use parent).
-    #[serde(default = "default_model")]
+    /// LLM model the agent asks for. Empty when none was asked for, in which
+    /// case a definition written from this agent leaves the `model` line out
+    /// and the user's own default for helpers applies.
+    #[serde(default)]
     pub model: String,
     /// Capabilities list.
     #[serde(default)]
@@ -233,10 +235,6 @@ pub struct GeneratedAgent {
     /// Time spent generating this agent.
     #[serde(default)]
     pub generation_time_seconds: f64,
-}
-
-fn default_model() -> String {
-    "inherit".into()
 }
 
 impl GeneratedAgent {
@@ -719,7 +717,7 @@ mod tests {
             role: "tester".into(),
             description: "test agent".into(),
             content: "x".repeat(1024),
-            model: "inherit".into(),
+            model: String::new(),
             capabilities: vec![],
             dependencies: vec![],
             tests: vec![],
@@ -744,7 +742,7 @@ mod tests {
                 role: "tester".into(),
                 description: "tests things".into(),
                 content: "# Test Agent\n\nContent here.".repeat(10),
-                model: "inherit".into(),
+                model: String::new(),
                 capabilities: vec!["testing".into()],
                 dependencies: vec![],
                 tests: vec![],

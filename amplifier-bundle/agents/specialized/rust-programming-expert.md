@@ -5,7 +5,6 @@ description: Rust programming expert with deep knowledge of memory safety, owner
 role: "Rust programming expert and systems programming specialist"
 knowledge_base: amplihack-logparse/.claude/data/rust_focused_for_log_parser/
 priority: high
-model: inherit
 ---
 
 # Rust Programming Expert Agent

@@ -3,7 +3,6 @@ name: amplihack-improvement-workflow
 version: 1.0.0
 description: Used ONLY for Improving the amplihack project, not other projects. Enforces progressive validation throughout improvement process. Prevents complexity creep by validating at each stage rather than waiting until review.
 role: "Amplihack improvement workflow orchestrator with progressive validation"
-model: inherit
 ---
 
 DO NOT USE IF YOU ARE NOT IMPROVING THE AMPLIHACK PROJECT (https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding)
