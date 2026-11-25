@@ -461,12 +461,15 @@ the reasons, the stderr notice and the child environment are in
 
 On `exec`, amplihack puts `--dangerously-bypass-hook-trust` first, unless the
 Codex arguments already contain it ahead of any `--` among them, then
-`-c features.hooks=true`, then `-c sandbox_mode="<value>"` when the profile
-sets `sandbox_mode`, then the Codex arguments. Interactive launches omit the
+`-c features.hooks=true`, then `-c sandbox_mode="<value>"` when the profile,
+or failing that the top level of your own `config.toml`, sets `sandbox_mode`,
+then the Codex arguments. Interactive launches omit the
 automatic bypass and trust only amplihack's generated entry. The `exec` injection then finds the hook-trust
 flag and adds only the sandbox, so the flag appears exactly once. A profile's
 `sandbox_mode` counts as the caller's sandbox choice, so then no sandbox is
-added either.
+added either. An interactive launch on a Codex version other than 0.166.0, whose
+hook-trust format amplihack has not checked, is rejected before Codex starts;
+`exec` launches are not affected.
 
 | Command | Codex receives |
 |---|---|
@@ -477,7 +480,7 @@ added either.
 | `amplihack codex --local-model inkling -- exec -`, with `sandbox_mode = "workspace-write"` in the profile | `codex --dangerously-bypass-hook-trust -c features.hooks=true -c sandbox_mode="workspace-write" exec -` |
 | `amplihack codex --local-model inkling -- --dangerously-bypass-hook-trust exec -` | `codex -c features.hooks=true --dangerously-bypass-hook-trust exec --sandbox danger-full-access -` |
 | `amplihack codex --local-model inkling -- -m inkling-2-mini exec -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true -m inkling-2-mini exec --sandbox danger-full-access -` |
-| `amplihack codex --local-model inkling -- --disable hooks exec -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true --disable hooks exec --sandbox danger-full-access -`; your `--disable hooks` comes later and wins |
+| `amplihack codex --local-model inkling -- --disable hooks exec -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true --disable hooks exec --sandbox danger-full-access -`; your `--disable hooks` comes later and wins, and one stderr line says the command check does not run |
 
 Both additions are root options in codex-cli 0.166.0, so they are valid before
 interactive and `exec` launches alike. No `--profile` is added. A `-p` or

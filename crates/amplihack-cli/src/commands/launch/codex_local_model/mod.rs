@@ -46,7 +46,11 @@ mod tests_home;
 #[cfg(all(test, unix))]
 mod tests_hooks_json;
 #[cfg(all(test, unix))]
+mod tests_launch_checks;
+#[cfg(all(test, unix))]
 mod tests_selection;
+#[cfg(all(test, unix))]
+mod tests_user_inputs;
 
 use crate::docker::{DockerActivation, DockerDetector};
 use crate::env_builder::EnvBuilder;
@@ -74,6 +78,87 @@ const QUOTED_CHARS: usize = 64;
 const MAX_NAME_LEN: usize = 64;
 /// The error for a selection off Unix.
 const UNIX_ONLY: &str = "local-model launches of amplihack codex are supported on Unix only";
+/// Codex versions whose hook-trust format amplihack has checked: the hash it
+/// writes for its command check is the one these versions compute. An
+/// interactive local-model launch on any other version is rejected.
+pub(crate) const KNOWN_CODEX_VERSIONS: [&str; 1] = ["0.166.0"];
+
+/// Rejects an interactive local-model launch on a Codex version whose
+/// hook-trust format is not in [`KNOWN_CODEX_VERSIONS`], or whose version
+/// could not be read: Codex would treat amplihack's command check as
+/// untrusted and start the session without it. An `exec` launch keeps the
+/// hook-trust bypass, so it is not affected. `version` is the resolved
+/// version, or `codex-cli X.Y.Z` (the last word is compared).
+fn check_trust_format(name: &ProfileName, version: Option<&str>, args: &[String]) -> Result<()> {
+    if super::codex_agent_step::exec_subcommand_index(args).is_some() {
+        return Ok(());
+    }
+    let shown = |text: &str| crate::commands::install::paths::sanitize_text(text);
+    match version.and_then(|v| v.split_whitespace().last()) {
+        Some(found) if KNOWN_CODEX_VERSIONS.contains(&found) => Ok(()),
+        Some(found) => bail!(
+            "amplihack: codex local model \"{}\": Codex {} has a hook-trust format amplihack has \
+             not checked (known: {}), so an interactive session could start without the \
+             command check; use a known Codex version, or run `codex exec`",
+            name.as_str(),
+            shown(found),
+            KNOWN_CODEX_VERSIONS.join(", ")
+        ),
+        None => bail!(
+            "amplihack: codex local model \"{}\": the Codex version could not be read, so its \
+             hook-trust format is not known and an interactive session could start without the \
+             command check; use a known Codex version ({}), or run `codex exec`",
+            name.as_str(),
+            KNOWN_CODEX_VERSIONS.join(", ")
+        ),
+    }
+}
+
+/// Whether the caller's Codex arguments turn hooks off, and with them the
+/// command check: `-c features.hooks=<not true>` (also `-c<k=v>`,
+/// `--config <k=v>` and `--config=<k=v>`) or `--disable hooks` (also
+/// `--disable=hooks`), before any `--`.
+fn caller_disables_hooks(args: &[String]) -> bool {
+    let turns_off = |pair: &str| {
+        pair.split_once('=')
+            .is_some_and(|(key, value)| key.trim() == "features.hooks" && value.trim() != "true")
+    };
+    let mut words = args.iter().map(String::as_str).take_while(|a| *a != "--");
+    while let Some(word) = words.next() {
+        let off = match word {
+            "-c" | "--config" => words.next().is_some_and(turns_off),
+            "--disable" => words.next() == Some("hooks"),
+            "--disable=hooks" => true,
+            _ => word
+                .strip_prefix("--config=")
+                .or_else(|| word.strip_prefix("-c"))
+                .is_some_and(turns_off),
+        };
+        if off {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fails a Codex launch that has a local model selected by
+/// [`LOCAL_MODEL_ENV`] but no local-model launch in scope: it would
+/// otherwise run as an ordinary launch, with the full Codex home and hook
+/// text, and say nothing. Every dispatch of `amplihack codex` runs its
+/// launch inside [`scoped`], so this happens only to a caller that did not.
+pub(crate) fn check_in_scope(tool: &str, in_scope: bool) -> Result<()> {
+    if tool == "codex"
+        && !in_scope
+        && std::env::var_os(LOCAL_MODEL_ENV).is_some_and(|value| !value.is_empty())
+    {
+        bail!(
+            "{LOCAL_MODEL_ENV} selects a local model, but this Codex launch was started without \
+             one in scope and would run as an ordinary launch; start it with `amplihack codex`, \
+             or unset {LOCAL_MODEL_ENV}"
+        );
+    }
+    Ok(())
+}
 
 /// The launch options a local-model launch refuses.
 #[derive(Debug, Clone, Copy)]
@@ -301,6 +386,12 @@ pub(crate) fn bootstrap() -> Result<()> {
 }
 
 impl Prepared {
+    /// [`check_trust_format`] for this launch: `version` is the resolved
+    /// Codex version and `args` the caller's Codex arguments.
+    pub(crate) fn check_codex_version(&self, version: Option<&str>, args: &[String]) -> Result<()> {
+        check_trust_format(&self.name, version, args)
+    }
+
     /// Builds, refreshes or (for a nested launch) verifies the generated
     /// home: the last step before Codex is spawned.
     pub(crate) fn refresh(&self) -> Result<LocalHome> {
@@ -365,6 +456,13 @@ impl LocalHome {
                 HOOKS_ON[1],
                 crate::commands::install::paths::sanitize_text(&self.home),
                 self.user_handlers,
+            );
+        }
+        if caller_disables_hooks(&args) {
+            eprintln!(
+                "amplihack: codex local model \"{}\": the Codex arguments of this launch turn \
+                 hooks off, so amplihack's command check does not run in this session",
+                self.name.as_str()
             );
         }
         let mut out = Vec::with_capacity(args.len() + 5);

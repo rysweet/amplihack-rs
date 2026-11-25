@@ -7,8 +7,10 @@
 //!   path and the line, never the source text, and never chained;
 //! - `pub(super) fn check_shape(profile: &Table, path: &Path) ->
 //!   anyhow::Result<()>`;
-//! - `pub(super) fn render(profile: &Table, previous: Option<&Table>,
-//!   instructions: &Path, command_check: (&str, &str)) -> anyhow::Result<String>`;
+//! - `pub(super) fn render(profile: &Table, user: &Table, previous:
+//!   Option<&Table>, instructions: &Path, command_check: (&str, &str)) ->
+//!   anyhow::Result<String>`, where `user` is the user's own approval and
+//!   sandbox settings (`user_settings`);
 //! - `pub(super) fn guard_disabled(doc: &Table, hooks_json_paths: &[&str])
 //!   -> bool`.
 //!
@@ -16,7 +18,7 @@
 //! never by layout or wording, except where byte equality is the property
 //! (determinism, the fixed point a second refresh relies on).
 
-use super::config::{check_shape, guard_disabled, parse, render};
+use super::config::{check_shape, guard_disabled, parse, render, user_settings};
 use std::path::Path;
 use toml::Table;
 
@@ -33,6 +35,7 @@ fn rendered(profile: &str, previous: Option<&str>) -> toml::Value {
     let previous = previous.map(doc);
     let text = render(
         &doc(profile),
+        &Table::new(),
         previous.as_ref(),
         Path::new(INSTRUCTIONS),
         (CHECK_KEY, CHECK_HASH),
@@ -216,6 +219,98 @@ fn the_profile_approval_policy_is_kept() {
     }
 }
 
+// ---- step 3: the user's own approval and sandbox settings ----
+
+fn rendered_with_user(profile: &str, user_config: &str) -> toml::Value {
+    let text = render(
+        &doc(profile),
+        &user_settings(&doc(user_config)),
+        None,
+        Path::new(INSTRUCTIONS),
+        (CHECK_KEY, CHECK_HASH),
+    )
+    .expect("render succeeds");
+    toml::from_str(&text).unwrap_or_else(|e| panic!("rendered TOML parses ({e}):\n{text}"))
+}
+
+const USER_CONFIG: &str = r#"model = "gpt-5"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+web_search = "live"
+profile = "hosted"
+
+[sandbox_workspace_write]
+network_access = false
+writable_roots = ["/work/fixture/allowed"]
+
+[profiles.hosted]
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[shell_environment_policy]
+inherit = "core"
+"#;
+
+/// A user who asks Codex to ask first keeps that in a local session: the
+/// generated file is never looser than their own setting.
+#[test]
+fn the_user_approval_policy_applies_when_the_profile_has_none() {
+    let config = rendered_with_user(PROFILE, USER_CONFIG);
+    assert_eq!(config["approval_policy"].as_str(), Some("on-request"));
+}
+
+#[test]
+fn the_user_sandbox_settings_apply_when_the_profile_has_none() {
+    let config = rendered_with_user(PROFILE, USER_CONFIG);
+    let user: toml::Value = toml::from_str(USER_CONFIG).unwrap();
+    assert_eq!(config["sandbox_mode"].as_str(), Some("workspace-write"));
+    assert_eq!(
+        config["sandbox_workspace_write"],
+        user["sandbox_workspace_write"]
+    );
+}
+
+/// The profile's own value wins, and a table is taken whole from the first
+/// source that has it, never merged.
+#[test]
+fn the_profile_settings_win_over_the_user_settings() {
+    let profile = format!(
+        "approval_policy = \"untrusted\"\nsandbox_mode = \"read-only\"\n{PROFILE}\n\
+         [sandbox_workspace_write]\nexclude_slash_tmp = true\n"
+    );
+    let config = rendered_with_user(&profile, USER_CONFIG);
+    assert_eq!(config["approval_policy"].as_str(), Some("untrusted"));
+    assert_eq!(config["sandbox_mode"].as_str(), Some("read-only"));
+    let table = config["sandbox_workspace_write"].as_table().unwrap();
+    assert_eq!(table.len(), 1, "{table:?}");
+    assert_eq!(table["exclude_slash_tmp"].as_bool(), Some(true));
+}
+
+/// Only the approval and sandbox settings of the user's top level are
+/// taken: not their model, their other settings or their `[profiles.*]`.
+#[test]
+fn nothing_else_of_the_user_config_is_taken() {
+    let settings = user_settings(&doc(USER_CONFIG));
+    let mut keys: Vec<&str> = settings.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["approval_policy", "sandbox_mode", "sandbox_workspace_write"]
+    );
+    let config = rendered_with_user(PROFILE, USER_CONFIG);
+    assert_eq!(config["model"].as_str(), Some("inkling-2-mini"));
+    assert!(config.get("profiles").is_none());
+    assert!(config.get("shell_environment_policy").is_none());
+}
+
+#[test]
+fn with_no_policy_anywhere_the_default_is_never() {
+    let config = rendered_with_user(PROFILE, "model = \"gpt-5\"\n");
+    assert_eq!(config["approval_policy"].as_str(), Some("never"));
+    assert!(config.get("sandbox_mode").is_none());
+    assert!(config.get("sandbox_workspace_write").is_none());
+}
+
 // ---- step 4: Codex state is kept, hook definitions are not ----
 
 const PREVIOUS: &str = r#"model = "an-old-model"
@@ -380,6 +475,7 @@ fn rendering_is_deterministic() {
     let previous = doc(PREVIOUS);
     let a = render(
         &profile,
+        &Table::new(),
         Some(&previous),
         Path::new(INSTRUCTIONS),
         (CHECK_KEY, CHECK_HASH),
@@ -387,6 +483,7 @@ fn rendering_is_deterministic() {
     .unwrap();
     let b = render(
         &profile,
+        &Table::new(),
         Some(&previous),
         Path::new(INSTRUCTIONS),
         (CHECK_KEY, CHECK_HASH),
@@ -404,6 +501,7 @@ fn rendering_over_its_own_output_is_a_fixed_point() {
         let previous = previous.map(doc);
         let first = render(
             &profile,
+            &Table::new(),
             previous.as_ref(),
             Path::new(INSTRUCTIONS),
             (CHECK_KEY, CHECK_HASH),
@@ -411,6 +509,7 @@ fn rendering_over_its_own_output_is_a_fixed_point() {
         .unwrap();
         let second = render(
             &profile,
+            &Table::new(),
             Some(&doc(&first)),
             Path::new(INSTRUCTIONS),
             (CHECK_KEY, CHECK_HASH),
@@ -468,6 +567,7 @@ fn render_refuses_a_bad_shape() {
     assert!(
         render(
             &profile,
+            &Table::new(),
             None,
             Path::new(INSTRUCTIONS),
             (CHECK_KEY, CHECK_HASH)

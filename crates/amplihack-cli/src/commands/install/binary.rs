@@ -637,7 +637,7 @@ fn is_python_script(path: &std::path::Path) -> bool {
 ///
 /// Prefer the deployed copy under the user's bin dir; fall back to discovery
 /// only when nothing has been deployed yet.
-pub(super) fn stable_hooks_binary() -> Result<PathBuf> {
+pub(crate) fn stable_hooks_binary() -> Result<PathBuf> {
     let deployed = super::paths::preferred_user_bin_dir()
         .ok()
         .map(|dir| dir.join("amplihack-hooks"))

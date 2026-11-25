@@ -103,9 +103,9 @@ fn config_toml_holds_the_profile_and_amplihack_settings() {
     assert_eq!(bundled["enabled"].as_bool(), Some(false));
     assert_eq!(bundled["extra"].as_str(), Some("kept"));
 
-    // The profile has no approval_policy, so the default is filled in. The
-    // user's own config.toml says "on-request", and must not be read.
-    assert_eq!(config["approval_policy"].as_str(), Some("never"));
+    // The profile has no approval_policy, so the user's own one applies: a
+    // local session is never looser than the user's setting.
+    assert_eq!(config["approval_policy"].as_str(), Some("on-request"));
 
     // Dropped from the profile.
     for dropped in ["marketplaces", "plugins", "projects", "profile", "profiles"] {
@@ -265,6 +265,8 @@ fn the_generated_home_holds_only_the_owned_files_privately() {
         "instructions.md",
         "rules",
         RULES_FILE,
+        // the copy of the user's own rules/default.rules
+        "rules/amplihack-user-default.rules",
     ]
     .iter()
     .map(|s| s.to_string())

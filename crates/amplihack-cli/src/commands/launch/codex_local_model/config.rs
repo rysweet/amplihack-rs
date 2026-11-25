@@ -9,7 +9,12 @@
 //!    `web_search = "disabled"`, `[features]` (`hooks` on; `multi_agent`,
 //!    `goals`, `view_image`, `plugins` and `apps` off) and
 //!    `[skills.bundled] enabled = false`, merging into the profile's tables;
-//! 3. set `approval_policy = "never"` only when the profile has none;
+//! 3. for each of [`INHERITED`] (`approval_policy`, `sandbox_mode` and the
+//!    `[sandbox_workspace_write]` table) the profile has none of, take the
+//!    user's own top-level value from their `config.toml`, whole; then set
+//!    `approval_policy = "never"` only when neither has one, as an ordinary
+//!    launch does. A local session is therefore never looser than the
+//!    user's own approval or sandbox setting;
 //! 4. carry `[projects.*]` and `[notice]` over from the previous generated
 //!    file, which Codex writes itself, together with `[hooks.state]` for
 //!    reviewed user and project handlers. Hook definitions are not copied.
@@ -44,6 +49,25 @@ const REMOVED: [&str; 6] = [
 /// `[features]` keys forced off: the tools and listings they add are left
 /// out of the prompt.
 const FEATURES_OFF: [&str; 5] = ["multi_agent", "goals", "view_image", "plugins", "apps"];
+
+/// Top-level keys of the user's own `config.toml` a generated file takes
+/// when the profile does not set them: the approval and sandbox settings
+/// Codex 0.166 reads. Nothing else from the user's config is used.
+pub(super) const INHERITED: [&str; 3] =
+    ["approval_policy", "sandbox_mode", "sandbox_workspace_write"];
+
+/// The [`INHERITED`] settings of `user_config`, the user's own top-level
+/// `config.toml`. `[profiles.*]` and its `profile` key are not read.
+pub(super) fn user_settings(user_config: &Table) -> Table {
+    INHERITED
+        .iter()
+        .filter_map(|key| {
+            user_config
+                .get(*key)
+                .map(|value| ((*key).to_owned(), value.clone()))
+        })
+        .collect()
+}
 
 /// Parses a profile or a generated `config.toml`.
 pub(super) fn parse(text: &str, path: &Path) -> Result<Table> {
@@ -101,10 +125,12 @@ fn shape_error(path: &Path, key: &str) -> String {
 }
 
 /// The generated `config.toml` for `profile`, carrying Codex's own tables
-/// over from `previous`. `instructions` is the absolute path of the home's
+/// over from `previous`. `user` is the user's [`INHERITED`] settings
+/// ([`user_settings`]). `instructions` is the absolute path of the home's
 /// `instructions.md`.
 pub(super) fn render(
     profile: &Table,
+    user: &Table,
     previous: Option<&Table>,
     instructions: &Path,
     command_check: (&str, &str),
@@ -136,8 +162,16 @@ pub(super) fn render(
     let bundled = table_entry(skills, "bundled")?;
     bundled.insert("enabled".into(), Value::Boolean(false));
 
-    // Step 3: a default, not an override: an ordinary launch also fills in
-    // `never` only when the user's config has no policy.
+    // Step 3: the user's own approval and sandbox settings where the profile
+    // has none, then a default, not an override: an ordinary launch also
+    // fills in `never` only when the user's config has no policy.
+    for key in INHERITED {
+        if !out.contains_key(key)
+            && let Some(value) = user.get(key)
+        {
+            out.insert(key.into(), value.clone());
+        }
+    }
     out.entry("approval_policy")
         .or_insert_with(|| Value::String("never".into()));
 

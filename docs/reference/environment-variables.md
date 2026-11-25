@@ -1132,7 +1132,9 @@ Makes an `amplihack codex` launch a
 `<user Codex home>/<name>.config.toml`. It is the environment form of
 `amplihack codex --local-model <name>`, for recipe agent steps, which cannot
 add flags. The flag wins when both are given, an empty value counts as unset,
-and an invalid name is an error. Other launchers ignore it. See
+and an invalid name is an error. Other launchers ignore it. A Codex launch
+with the variable set that does not go through `amplihack codex` fails with a
+message giving the variable, rather than running as an ordinary launch. See
 [Selecting a local-model launch](./codex-local-model-launch.md#selecting-a-local-model-launch)
 and [Run amplihack codex with a Local Model](../howto/run-codex-with-a-local-model.md).
 

@@ -392,6 +392,7 @@ fn run_launch_core(
     }
 
     let local_model = codex_local_model::current(tool);
+    codex_local_model::check_in_scope(tool, local_model.is_some())?;
     if local_model.is_none()
         && matches!(
             agent_binary_for_tool(tool),
@@ -519,6 +520,12 @@ fn run_launch_core(
             },
         },
     };
+
+    // An interactive local-model launch needs a Codex whose hook-trust format
+    // amplihack knows, or its command check would not run.
+    if let Some(local) = local_model.as_deref() {
+        local.check_codex_version(binary.version.as_deref(), &extra_args)?;
+    }
 
     // A local-model launch builds, refreshes or verifies its Codex home now,
     // the last step that can stop it before anything is spawned, and adds

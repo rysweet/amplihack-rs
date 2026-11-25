@@ -4,9 +4,12 @@
 //!
 //! Layout: `<home>/.amplihack/codex-local/<name>/` holding the four files
 //! amplihack owns (`config.toml`, `hooks.json`, `instructions.md`,
-//! `rules/amplihack-dangerous-commands.rules`). Everything else in the home
-//! (sessions, databases, logs, an `auth.json` from a login there) belongs to
-//! Codex and is never listed, changed or deleted.
+//! `rules/amplihack-dangerous-commands.rules`) and a read-only copy,
+//! `rules/amplihack-user-<file>`, of each top-level `*.rules` file in the
+//! user's own `rules/`. A refresh removes an `amplihack-user-*.rules` copy
+//! whose source is gone, and no other file. Everything else in the home (sessions, databases, logs, an
+//! `auth.json` from a login there) belongs to Codex and is never listed,
+//! changed or deleted.
 //!
 //! A refresh checks and computes everything before its first write: the
 //! hooks binary, `~/.amplihack`, the directories it would create, the
@@ -24,7 +27,7 @@
 use super::{LocalHome, ProfileName, config, hooks_json};
 use crate::commands::install::paths::{home_dir, sanitize_path};
 use amplihack_utils::secure_files::{
-    check_private_dir, check_private_file, dir_writable_by_others, ensure_private_dir,
+    check_private_dir, check_private_file, dir_writable_by_others, ensure_private_dir, euid,
     owned_by_euid, read_bounded, read_bounded_nofollow, write_private_atomic,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -44,7 +47,13 @@ const HOOKS: &str = "hooks.json";
 const INSTRUCTIONS_FILE: &str = "instructions.md";
 const RULES_DIR: &str = "rules";
 const RULES_FILE: &str = "amplihack-dangerous-commands.rules";
+/// The prefix of the copies of the user's own rules files.
+const USER_RULES_PREFIX: &str = "amplihack-user-";
+const RULES_SUFFIX: &str = ".rules";
 const HOOKS_OVERRIDE: &str = "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH";
+
+/// An owned file's bytes and metadata, as [`read_owned`] returns them.
+type Owned = (Vec<u8>, fs::Metadata);
 
 /// Where a local-model launch's files are.
 #[derive(Debug)]
@@ -79,10 +88,16 @@ impl Layout {
 enum Kind {
     /// A nested launch inside a session on this home: verify, write nothing.
     Reuse,
-    /// Build or refresh the home from the profile and the user's groups.
+    /// Build or refresh the home from the profile and the user's own inputs.
     Build {
         profile: Table,
+        /// The user's approval and sandbox settings ([`config::user_settings`]).
+        user: Table,
         user_groups: Vec<Value>,
+        /// The user's rules files: the copy's file name and the text.
+        user_rules: Vec<(String, String)>,
+        /// The deployed hooks binary, checked.
+        hooks_bin: PathBuf,
     },
 }
 
@@ -119,18 +134,33 @@ impl Plan {
         let profile = config::parse(&profile_text, &profile_path)?;
         config::check_shape(&profile, &profile_path)?;
 
+        let hooks_bin = deployed_hooks_binary()?;
+
+        let user_config_path = user_codex.join(CONFIG);
+        let user = match read_followed(&user_config_path)? {
+            None => Table::new(),
+            Some(text) => config::user_settings(&config::parse(&text, &user_config_path)?),
+        };
+
         let hooks_path = user_codex.join(HOOKS);
         let user_groups = match read_followed(&hooks_path)? {
             None => Vec::new(),
-            Some(text) => {
-                hooks_json::user_pre_tool_use(&text, &hooks_path, &layout.amplihack.join("codex"))?
-            }
+            Some(text) => hooks_json::user_pre_tool_use(
+                &text,
+                &hooks_path,
+                &layout.amplihack.join("codex"),
+                &hooks_bin,
+            )?,
         };
+        let user_rules = read_user_rules(&user_codex.join(RULES_DIR))?;
         Ok(Self {
             layout,
             kind: Kind::Build {
                 profile,
+                user,
                 user_groups,
+                user_rules,
+                hooks_bin,
             },
         })
     }
@@ -153,12 +183,15 @@ impl Plan {
             Kind::Reuse => self.verify_reuse()?,
             Kind::Build {
                 profile,
+                user,
                 user_groups,
+                user_rules,
+                hooks_bin,
             } => {
-                self.build(profile, user_groups)?;
+                self.build(profile, user, user_groups, user_rules, hooks_bin)?;
                 (
                     hooks_json::handler_count(user_groups),
-                    config::sandbox_mode(profile),
+                    config::sandbox_mode(profile).or_else(|| config::sandbox_mode(user)),
                 )
             }
         };
@@ -170,12 +203,15 @@ impl Plan {
         })
     }
 
-    fn build(&self, profile: &Table, user_groups: &[Value]) -> Result<()> {
+    fn build(
+        &self,
+        profile: &Table,
+        user: &Table,
+        user_groups: &[Value],
+        user_rules: &[(String, String)],
+        hooks_bin: &Path,
+    ) -> Result<()> {
         let layout = &self.layout;
-        let hooks_bin = crate::commands::install::find_hooks_binary().context(
-            "a local-model launch needs the amplihack-hooks binary for its command check",
-        )?;
-        validate_hooks_binary(&hooks_bin)?;
         let amplihack_exists = check_amplihack_root(&layout.amplihack)?;
         for dir in [&layout.codex_local, &layout.generated, &layout.rules()] {
             check_existing_private_dir(dir)?;
@@ -218,18 +254,29 @@ impl Plan {
         };
         let config_text = config::render(
             profile,
+            user,
             previous.as_ref(),
             &layout.generated.join(INSTRUCTIONS_FILE),
             (
                 &format!("{}:pre_tool_use:0:0", hooks_source.display()),
-                &hooks_json::command_check_hash(&hooks_bin),
+                &hooks_json::command_check_hash(hooks_bin),
             ),
         )?;
-        let hooks_text = hooks_json::render(user_groups, &hooks_bin);
+        let hooks_text = hooks_json::render(user_groups, hooks_bin);
         let rules_text = current_rules();
 
         let rules_dir = layout.rules();
+        let stale = stale_user_rules(&rules_dir, user_rules)?;
         let mut writes: Vec<(&Path, &str, &[u8])> = Vec::new();
+        let mut planned: Vec<(&Path, &str, &[u8], Option<Owned>)> = Vec::new();
+        for (file, text) in user_rules {
+            planned.push((
+                rules_dir.as_path(),
+                file.as_str(),
+                text.as_bytes(),
+                read_owned(&rules_dir.join(file))?,
+            ));
+        }
         for (dir, file, bytes, current) in [
             (
                 layout.generated.as_path(),
@@ -255,7 +302,10 @@ impl Plan {
                 rules_text.as_bytes(),
                 read_owned(&rules_dir.join(RULES_FILE))?,
             ),
-        ] {
+        ]
+        .into_iter()
+        .chain(planned)
+        {
             let unchanged = current.is_some_and(|(existing, meta)| {
                 check_private_file(&meta).is_ok() && existing == bytes
             });
@@ -278,6 +328,16 @@ impl Plan {
                 anyhow!(
                     "{} could not be written: {error}",
                     sanitize_path(&dir.join(file))
+                )
+            })?;
+        }
+        for file in stale {
+            let path = rules_dir.join(&file);
+            fs::remove_file(&path).map_err(|error| {
+                anyhow!(
+                    "{}, a copy of a user rules file that no longer exists, could not be \
+                     removed: {error}",
+                    sanitize_path(&path)
                 )
             })?;
         }
@@ -365,8 +425,7 @@ impl Plan {
 
         let hooks_text = std::str::from_utf8(&hooks)
             .map_err(|_| refuse("hooks.json is not valid UTF-8".to_string()))?;
-        let hooks_bin = crate::commands::install::find_hooks_binary()
-            .map_err(|e| refuse(format!("the amplihack-hooks binary was not found: {e:#}")))?;
+        let hooks_bin = deployed_hooks_binary().map_err(|e| refuse(format!("{e:#}")))?;
         let (user_groups, expected_hash) = hooks_json::verify_generated(hooks_text, &hooks_bin)
             .map_err(|e| refuse(format!("{e:#}")))?;
         let key = format!("{}:pre_tool_use:0:0", canonical.display());
@@ -437,7 +496,17 @@ fn read_followed(path: &Path) -> Result<Option<String>> {
         .open(path)
     {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        // A link whose target is missing is an error, never "no file": the
+        // user meant something to be there.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                bail!(
+                    "{} is a symbolic link whose target does not exist; fix or remove the link",
+                    shown()
+                );
+            }
+            return Ok(None);
+        }
         Err(error) => bail!("{} could not be opened: {error}", shown()),
     };
     let meta = file
@@ -466,7 +535,13 @@ fn read_followed(path: &Path) -> Result<Option<String>> {
 /// which allows private-group writes. On POSIX ACL filesystems the group
 /// write bit is the ACL mask, so rejecting it also excludes named writers.
 fn check_input_owner(path: &Path, meta: &fs::Metadata) -> Result<()> {
-    if !owned_by_euid(meta) || meta.mode() & 0o022 != 0 {
+    check_owner_for(path, meta, euid())
+}
+
+/// [`check_input_owner`] for the user `uid`, so a test can show that a file
+/// owned by another user is rejected without running as root.
+pub(super) fn check_owner_for(path: &Path, meta: &fs::Metadata, uid: u32) -> Result<()> {
+    if meta.uid() != uid || meta.mode() & 0o022 != 0 {
         bail!(
             "{} must be owned by you and not writable by others, because it decides what runs \
              in a local-model session; amplihack does not change it",
@@ -492,7 +567,7 @@ fn check_input_owner(path: &Path, meta: &fs::Metadata) -> Result<()> {
     for dir in dirs {
         let dir_meta = fs::symlink_metadata(&dir)
             .map_err(|error| anyhow!("{} could not be checked: {error}", sanitize_path(&dir)))?;
-        if !owned_by_euid(&dir_meta) || dir_meta.mode() & 0o022 != 0 {
+        if dir_meta.uid() != uid || dir_meta.mode() & 0o022 != 0 {
             bail!(
                 "{}, which holds {}, must be owned by you and not writable by others; amplihack \
                  does not change it",
@@ -507,7 +582,7 @@ fn check_input_owner(path: &Path, meta: &fs::Metadata) -> Result<()> {
 /// An owned file's bytes and metadata, without following a symbolic link:
 /// `Ok(None)` when absent; an error for a link, a non-regular file or a file
 /// over [`READ_LIMIT`].
-fn read_owned(path: &Path) -> Result<Option<(Vec<u8>, fs::Metadata)>> {
+fn read_owned(path: &Path) -> Result<Option<Owned>> {
     read_bounded_nofollow(path, READ_LIMIT).map_err(|error| {
         anyhow!(
             "{} {error}; amplihack refreshes only regular files it owns",
@@ -516,16 +591,31 @@ fn read_owned(path: &Path) -> Result<Option<(Vec<u8>, fs::Metadata)>> {
     })
 }
 
+/// The hooks binary amplihack's entry runs, chosen as the ordinary install
+/// chooses the one it records: the deployed copy in the user's bin
+/// directory, else the first of [`HOOKS_OVERRIDE`], the binary beside the
+/// running executable and `PATH`. It must pass [`validate_hooks_binary`].
+fn deployed_hooks_binary() -> Result<PathBuf> {
+    let path = crate::commands::install::stable_hooks_binary()
+        .context("a local-model launch needs the amplihack-hooks binary for its command check")?;
+    validate_hooks_binary(&path)?;
+    Ok(path)
+}
+
 /// The hooks binary amplihack's entry runs. It must be an absolute path
 /// (a relative one is refused, never made absolute from the working
 /// directory, so a checkout cannot supply the guard), valid UTF-8 with no
 /// control character, an executable regular file, and named
-/// `amplihack-hooks`, which is what a nested launch checks for.
+/// `amplihack-hooks`, which is what a nested launch checks for. It runs on
+/// every tool call, so it must also pass [`check_input_owner`]: owned by
+/// the user, with no group or other write bit on the file, its directory or
+/// its link target's directory.
 fn validate_hooks_binary(path: &Path) -> Result<()> {
     let refuse = |problem: &str| {
         anyhow!(
-            "the amplihack-hooks binary {} {problem}; set {HOOKS_OVERRIDE} to the absolute \
-             path of an executable amplihack-hooks",
+            "the amplihack-hooks binary {} {problem}; deploy it with `amplihack install`, or, \
+             when no deployed copy exists, set {HOOKS_OVERRIDE} to the absolute path of an \
+             executable amplihack-hooks",
             sanitize_path(path)
         )
     };
@@ -551,7 +641,74 @@ fn validate_hooks_binary(path: &Path) -> Result<()> {
             hooks_json::HOOKS_BINARY
         )));
     }
-    Ok(())
+    check_input_owner(path, &meta)
+}
+
+/// The user's own rules files: each top-level regular `*.rules` file in
+/// `dir` (the user's `rules/`), read with [`read_followed`], as the file
+/// name of its copy (`amplihack-user-<file>`) and its text, sorted by name.
+/// Subdirectories and files without the suffix are not read. A missing
+/// `dir` means no rules. A name that is not UTF-8 or contains a control
+/// character is an error, so that no rule is left out without a word.
+fn read_user_rules(dir: &Path) -> Result<Vec<(String, String)>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => bail!("{} could not be listed: {error}", sanitize_path(dir)),
+    };
+    let mut rules = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| anyhow!("{} could not be listed: {error}", sanitize_path(dir)))?;
+        let path = entry.path();
+        let Some(name) = entry
+            .file_name()
+            .to_str()
+            .filter(|name| !name.chars().any(char::is_control))
+            .map(str::to_owned)
+        else {
+            bail!(
+                "{} has a rules file name that is not UTF-8 or contains a control character; \
+                 rename it so that a local-model launch can copy it",
+                sanitize_path(dir)
+            );
+        };
+        if !name.ends_with(RULES_SUFFIX) || fs::metadata(&path).is_ok_and(|meta| meta.is_dir()) {
+            continue;
+        }
+        let text = read_followed(&path)?
+            .ok_or_else(|| anyhow!("{} disappeared while it was read", sanitize_path(&path)))?;
+        rules.push((format!("{USER_RULES_PREFIX}{name}"), text));
+    }
+    rules.sort();
+    Ok(rules)
+}
+
+/// The `amplihack-user-*.rules` copies in the generated `rules_dir` whose source is no
+/// longer among `user_rules`. Nothing when the directory does not exist yet.
+fn stale_user_rules(rules_dir: &Path, user_rules: &[(String, String)]) -> Result<Vec<String>> {
+    let entries = match fs::read_dir(rules_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => bail!("{} could not be listed: {error}", sanitize_path(rules_dir)),
+    };
+    let mut stale = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            anyhow!("{} could not be listed: {error}", sanitize_path(rules_dir))
+        })?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if name.starts_with(USER_RULES_PREFIX)
+            && name.ends_with(RULES_SUFFIX)
+            && !user_rules.iter().any(|(file, _)| *file == name)
+        {
+            stale.push(name);
+        }
+    }
+    stale.sort();
+    Ok(stale)
 }
 
 /// `~/.amplihack`, followed if it is a link, must be a directory owned

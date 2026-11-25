@@ -113,10 +113,13 @@ wire_api = "responses"
 stream_max_retries = 2
 ```
 
-The profile and the user's `hooks.json` are read under these rules:
+The profile, the user's `hooks.json`, the user's `config.toml` and each
+top-level `*.rules` file in the user's `rules/` are read under these rules:
 
-- A symbolic link is followed, but what it reaches must be a regular file. A
-  FIFO, a device or a directory is refused without blocking.
+- A symbolic link is followed, but its target must be a regular file. A
+  FIFO, a device or a directory is rejected without blocking. A symbolic link
+  whose target does not exist is an error giving its path; it is not read as
+  a missing file.
 - Each file may be at most 1 MiB.
 - A parse error reports the file's path and the line (and column, for JSON).
   It never quotes the file's content, so a key in the profile cannot reach a
@@ -125,7 +128,9 @@ The profile and the user's `hooks.json` are read under these rules:
   where present (standard, inline or dotted). Any other type is an error
   naming the path and the key.
 - A missing `hooks.json` means there are no user entries. A malformed one is an
-  error naming the file.
+  error naming the file. A missing `config.toml` or `rules/` means there are
+  no user settings or rules; a `config.toml` that is not valid TOML is an
+  error giving its path and line.
 - Both files decide what runs in a local session: the profile names the
   provider and may set `notify` or MCP servers, and `hooks.json` supplies
   handlers that may run on each matching tool call (see
@@ -137,8 +142,16 @@ The profile and the user's `hooks.json` are read under these rules:
   not allow private-group writes. A file or directory that breaks the rule
   is an error identifying it, and amplihack does not change it.
 
-Nothing else is read from the user Codex home. Its `config.toml`, `auth.json`,
-history, sessions and `rules/` are not read or copied.
+From the user's `config.toml`, only the top-level `approval_policy`,
+`sandbox_mode` and `[sandbox_workspace_write]` are used (see
+[config.toml](#configtoml)). Its `[profiles.*]` tables and `profile` key, and
+every other setting, such as `shell_environment_policy`, are not used. Each
+top-level `*.rules` file in the user's `rules/` is copied into the generated
+home (see [Rules file and instruction file](#rules-file-and-instruction-file));
+subdirectories and files without the `.rules` suffix are not.
+
+Nothing else is read from the user Codex home. Its `auth.json`, history and
+sessions are not read or copied.
 
 ## The generated Codex home
 
@@ -150,7 +163,8 @@ history, sessions and `rules/` are not read or copied.
         ├── hooks.json            0600, owned by amplihack
         ├── instructions.md       0600, owned by amplihack
         ├── rules/                0700
-        │   └── amplihack-dangerous-commands.rules   0600, owned by amplihack
+        │   ├── amplihack-dangerous-commands.rules   0600, owned by amplihack
+        │   └── amplihack-user-default.rules         0600, a copy of ~/.codex/rules/default.rules
         ├── sessions/ …           written by Codex
         └── auth.json             written by Codex, only if you log in there
 ```
@@ -186,10 +200,15 @@ The file is built from the profile in four steps.
    Keys in the profile's `[features]` other than these six are kept. A profile
    cannot turn hooks off or turn on any of the five features above.
 
-3. **Fill in `approval_policy`.** The profile's value is kept. When the profile
-   has none, `approval_policy = "never"` is set, which is what an ordinary
-   launch fills into `~/.codex/config.toml`. This is a default, not an
-   override.
+3. **Fill in the approval and sandbox settings.** For each of
+   `approval_policy`, `sandbox_mode` and the `[sandbox_workspace_write]`
+   table, the profile's value is kept. When the profile has none, the value
+   from the top level of the user's own `config.toml` is used, whole: a table
+   is taken from the first source that has it and is never merged. When
+   neither has an `approval_policy`, `approval_policy = "never"` is set, which
+   is what an ordinary launch fills into `~/.codex/config.toml`. This is a
+   default, not an override. A local session is therefore never looser than
+   the user's own approval or sandbox setting.
 4. **Keep Codex state.** Copy `[projects.*]`, `[notice]` and
    `[hooks.state]` from the previous generated file. This preserves project
    trust, dismissed notices and hook reviews or disabled states chosen in the
@@ -197,7 +216,7 @@ The file is built from the profile in four steps.
    `enabled = true` and the current `trusted_hash` only for amplihack's own
    first PreToolUse entry. The hash follows Codex 0.166.0's normalised handler
    identity, including its default duration. No other handler is automatically
-   trusted. The user's ordinary Codex configuration is never read.
+   trusted. No other part of the user's ordinary Codex configuration is used.
 
 The output depends only on these inputs, so two launches with the same inputs
 write the same bytes. For the `inkling` profile above, with no previous file
@@ -290,13 +309,24 @@ that runs the hooks binary directly with `AMPLIHACK_HOOK_PROTOCOL=codex` fixed
 in the command text. The path is absolute and single-quoted, with a `'` inside
 it written as `'\''`, as the Codex plugin's own hook commands are.
 
-The hooks binary is found as `amplihack install` finds it:
-`AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH`, then the directory of the `amplihack`
-executable, then `PATH`, then `~/.local/bin` and `~/.cargo/bin`. The result
-must be an absolute path to a regular, executable file named
+The hooks binary is the one `amplihack install` records for an ordinary
+install: the deployed copy, `~/.local/bin/amplihack-hooks`, when it exists.
+Only when there is no deployed copy is it looked up, in this order:
+`AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH`, the directory of the `amplihack`
+executable, `PATH`, then `~/.local/bin` and `~/.cargo/bin`. A launch from a
+build tree therefore does not write a path into the build tree when a
+deployed copy exists.
+
+The result must be an absolute path to a regular, executable file named
 `amplihack-hooks`, in valid UTF-8 with no control characters. A relative
-result is an error naming `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH`; it is not
-made absolute, so a checkout cannot supply the guard.
+result is an error; it is not made absolute, so a checkout cannot supply the
+command check. The binary runs on every tool call, so it is checked as the
+profile is: the file, the directory holding it and, for a symbolic link, the
+directory holding its target must be owned by the effective user, with no
+group or other write permission. A binary owned by root, such as one in
+`/usr/local/bin`, is rejected unless amplihack runs as root; deploy a copy
+with `amplihack install`. Each of these errors gives the path and is reported
+before anything is created.
 
 **Your PreToolUse groups** from the user Codex home's `hooks.json` follow, in
 their original order and otherwise unchanged, except that handlers which run
@@ -305,8 +335,10 @@ removed. A handler is removed when its command, split into shell words, is
 exactly these words, optionally after `env` or after
 `env AMPLIHACK_HOOK_PROTOCOL=codex`:
 
-- a program named `amplihack-hooks`, or an absolute path under
-  `~/.amplihack/codex/` ending in `bin/hook` (the Codex plugin's wrapper);
+- a program named `amplihack-hooks` that resolves to the same file as the
+  hooks binary above (a bare name is looked up in `PATH`; a symbolic link is
+  followed), or an absolute path under `~/.amplihack/codex/` ending in
+  `bin/hook` (the Codex plugin's wrapper);
 - followed by `pre-tool-use`;
 
 and every word, the `env` prefix included, is one the shell takes as it is:
@@ -329,10 +361,12 @@ the second is removed and the other three are kept, as in the file above. The
 first is kept because it sets a variable: any assignment other than
 `AMPLIHACK_HOOK_PROTOCOL=codex` may change what the hook checks
 (`XPIA_ENABLED=true` turns the XPIA check on), so removing the handler could
-weaken your guard without a word. A kept handler of this kind runs
+weaken your command check without a word. A kept handler of this kind runs
 amplihack's pre-tool-use hook a second time, which is safe and costs one more
-process per tool call. A compound command, a command that cannot be split, and
-a handler that is not a command are kept. A group left with no handlers is
+process per tool call. A program named `amplihack-hooks` at another file, or
+one that cannot be resolved, is your own check and is kept. A compound
+command, a command that cannot be split, and a handler that is not a command
+are kept. A group left with no handlers is
 dropped.
 
 Other events from your `hooks.json` (`SessionStart`, `UserPromptSubmit`,
@@ -345,6 +379,16 @@ the [dangerous-command policy](./dangerous-command-policy.md), including any
 `policy.deny_commands` entries in `~/.amplihack/config.toml`. It is the same
 file `amplihack install` writes for an ordinary Codex home. Codex applies it
 independently of hooks, including under `approval_policy = "never"`.
+
+Each top-level `*.rules` file in the user's own `rules/` (for example
+`~/.codex/rules/default.rules`) is copied, byte for byte, to
+`rules/amplihack-user-<file>` at 0600, so the user's own rules apply in a
+local session as in an ordinary one. Subdirectories and files without the
+`.rules` suffix are not copied. A refresh rewrites a copy only when its
+source has changed, and removes an `amplihack-user-*.rules` copy whose source
+no longer exists. Other files in `rules/`, such as rules Codex writes there
+during a session, are left alone. A nested launch that reuses the home does
+not check the copies.
 
 `instructions.md` is embedded in the `amplihack` binary and is at most 1,024
 bytes of UTF-8. It tells the model it is a coding agent with a shell tool and
@@ -360,7 +404,8 @@ source is
 Every local-model launch that does not [reuse](#nested-launches) a home
 refreshes it:
 
-- All four owned files are computed before the first write. The previous
+- All four owned files, and the copies of the user's rules files, are
+  computed before the first write. The previous
   `config.toml` is read for the tables in step 4; a symbolic link there, or a
   file that does not parse, stops the launch with an error naming the file,
   and nothing is written.
@@ -370,7 +415,8 @@ refreshes it:
   renamed into place. An unchanged home therefore keeps every file's inode.
 - A changed owned setting, such as `web_search = "live"` added by hand, is
   restored.
-- Nothing else in the home is listed, changed or deleted. Codex's sessions,
+- Nothing else in the home is changed or deleted. Only `rules/` is listed, to
+  find `amplihack-user-*.rules` copies whose source is gone. Codex's sessions,
   databases and logs are left alone.
 - No lock is taken. Concurrent launches with the same inputs write the same
   bytes.
@@ -460,16 +506,18 @@ amplihack's own `--`):
   project's `.codex/config.toml` takes precedence over the generated
   `config.toml` but not over the command line, so this keeps hooks on in such
   a project. A `-c features.hooks=false` or `--disable hooks` that you pass
-  comes later on the command line and still wins.
-- **The profile's sandbox.** When the profile sets `sandbox_mode`,
-  `-c sandbox_mode="<value>"` comes next. This makes the profile's sandbox the
+  comes later on the command line and still wins, and the launch then prints
+  one stderr line saying that amplihack's command check does not run in the
+  session.
+- **The sandbox.** When the profile sets `sandbox_mode`, or, failing that,
+  the top level of the user's own `config.toml` does,
+  `-c sandbox_mode="<value>"` comes next. This makes that sandbox the
   caller's choice under the
   [agent-step rules](./launch-flag-injection.md#codex-agent-step-flags), so an
   `exec` launch does not get `--sandbox danger-full-access`, which would
   outrank the config file. A `--sandbox` or `-c sandbox_mode=…` you pass comes
-  later and still wins. Without `sandbox_mode` in the profile, nothing is
-  added and an `exec` launch gets `danger-full-access` as an ordinary agent
-  step does.
+  later and still wins. Without `sandbox_mode` in either, nothing is added and
+  an `exec` launch gets `danger-full-access` as an ordinary agent step does.
 
 Codex 0.166.0 applies hook state in the configuration layer that supplies
 the hook. Native `hooks/list` checks on a loaded thread showed that a
@@ -570,18 +618,27 @@ start-up, before step 1.
 1. Select the name and check it.
 2. Refuse a non-Unix platform, Docker and `--auto`.
 3. Resolve the user Codex home and decide whether to reuse the generated home.
-4. Unless reusing: read and check the profile, then read and filter the user
-   `hooks.json`.
+4. Unless reusing: read and check the profile, find and check the hooks
+   binary, read the user's `config.toml`, read and filter the user
+   `hooks.json`, and read the user's rules files.
 5. Run the [generic bootstrap](#start-up-and-bootstrap), unless
    `--subprocess-safe` is given or the launch is non-interactive.
-6. Find and check the hooks binary, check `~/.amplihack`, and build, refresh
-   or verify the home.
-7. Start Codex.
+6. Resolve the Codex binary. For an interactive launch, reject a Codex
+   version whose hook-trust format is not known.
+7. Check `~/.amplihack`, and build, refresh or verify the home (a reused home
+   finds and checks the hooks binary here).
+8. Start Codex.
 
-A failure before step 6 exits non-zero, starts no Codex process and creates
+A failure before step 7 exits non-zero, starts no Codex process and creates
 nothing under `codex-local`, although a bootstrap that fails in step 5 may
-already have written under `~/.amplihack` or `~/.claude`. A failure in step 6
+already have written under `~/.amplihack` or `~/.claude`. A failure in step 7
 starts no Codex process.
+
+A Codex launch in which `AMPLIHACK_CODEX_LOCAL_MODEL` is set and not empty,
+but that did not go through these steps, fails with a message giving the
+variable, rather than running as an ordinary launch. Every `amplihack codex`
+launch goes through them, so this applies only to an internal caller that
+does not.
 
 ## Errors
 
@@ -598,8 +655,14 @@ Each error exits non-zero and Codex is not started.
 | Profile not a regular file, over 1 MiB, or not valid TOML | the path, and the line for a parse error |
 | `features`, `skills` or `skills.bundled` in the profile is not a table | the path and the key |
 | User `hooks.json` malformed, wrong shape, not a regular file or over 1 MiB | the path, and the line and column for a parse error |
-| Profile or user `hooks.json`, or a directory holding one, owned by another user or writable by others | the path |
-| Hooks binary not found, relative, not a regular file, not executable, not UTF-8, containing control characters or not named `amplihack-hooks` | `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` |
+| User `config.toml` not a regular file, over 1 MiB, or not valid TOML | the path, and the line for a parse error |
+| A user rules file not a regular file or over 1 MiB, or a rules file name that is not UTF-8 | the path |
+| Profile, user `hooks.json`, user `config.toml` or a user rules file, or a directory holding one, owned by another user or writable by others | the path |
+| A symbolic link at one of those inputs whose target does not exist | the path |
+| Hooks binary not found, relative, not a regular file, not executable, not UTF-8, containing control characters or not named `amplihack-hooks` | the path, `amplihack install` and `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` |
+| Hooks binary, its directory or its link target's directory owned by another user or writable by others | the path |
+| An interactive launch on a Codex version whose hook-trust format is not known, or whose version cannot be read | the version and the known versions |
+| `AMPLIHACK_CODEX_LOCAL_MODEL` set for a Codex launch that has no local-model launch in scope | the variable |
 | `~/.amplihack` not a directory, not owned by you, or writable by others | the path |
 | A symbolic link at the home, `rules/` or an owned file; a directory with loose permissions | the path |
 | Previous generated `config.toml` does not parse | the path and the line |
@@ -623,7 +686,8 @@ your `hooks.json`. Paths and names are printed escaped.
   twice: `[features]` `hooks = true` in the generated `config.toml`, so the
   profile cannot turn them off, and `-c features.hooks=true` on the command
   line, so a trusted project's `.codex/config.toml` cannot either. A `-c` or
-  `--disable hooks` you pass after `--` still turns them off. Apart from
+  `--disable hooks` you pass after `--` still turns them off, and the launch
+  says so on stderr. Apart from
   hooks, a trusted project's `.codex/config.toml` can change settings exactly
   as in an ordinary session.
 - **Interactive hook trust is preserved.** Only amplihack's generated
@@ -641,10 +705,22 @@ your `hooks.json`. Paths and names are printed escaped.
   kept, so its XPIA check runs in a local session as it does elsewhere.
   amplihack's own entry sets no XPIA variable: it reads `XPIA_ENABLED` from the
   environment it inherits through Codex, and XPIA is off when that is unset.
-- **The profile's sandbox is kept.** A `sandbox_mode` in the profile applies
-  to `exec` launches too, recipe agent steps included, because amplihack
-  passes it on as the caller's choice. With none, an `exec` launch runs under
-  `danger-full-access`, as an ordinary agent step does.
+- **Your approval and sandbox settings apply.** The profile's
+  `approval_policy`, `sandbox_mode` and `[sandbox_workspace_write]` are used,
+  or, where the profile has none, those at the top level of your own
+  `config.toml`. A `sandbox_mode` applies to `exec` launches too, recipe agent
+  steps included, because amplihack passes it on as the caller's choice. With
+  none in either, an `exec` launch runs under `danger-full-access`, as an
+  ordinary agent step does.
+- **Your rules apply.** Each top-level `*.rules` file of yours is copied into
+  the generated home, so Codex applies your own rules there as well as
+  amplihack's.
+- **Interactive launches need a known Codex version.** amplihack trusts its
+  command check by writing the hash Codex computes for it. That hash has been
+  checked for Codex 0.166.0 only. On another version an interactive launch is
+  rejected, with a message giving the version, because Codex could otherwise
+  start the session without the command check. `exec` launches keep the
+  hook-trust bypass and are not affected.
 - **Session data stays in the generated home.** History, sessions, trust
   entries and any `auth.json` from a login made in a local session are stored
   under `~/.amplihack/codex-local/<name>/`, not in `~/.codex`. Your existing

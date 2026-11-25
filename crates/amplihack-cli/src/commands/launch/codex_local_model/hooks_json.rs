@@ -4,17 +4,20 @@
 //! pre-tool-use entry first, then the user's PreToolUse groups from their
 //! `hooks.json`, in order and otherwise unchanged, minus the handlers that
 //! run amplihack's pre-tool-use hook exactly as amplihack's own entry does
-//! (the Codex plugin's wrapper or any program named `amplihack-hooks`, bare
-//! or after `env AMPLIHACK_HOOK_PROTOCOL=codex`). A handler that sets any
+//! (the Codex plugin's wrapper, or a program named `amplihack-hooks` that
+//! resolves to the same file as the hooks binary amplihack's entry runs,
+//! bare or after `env AMPLIHACK_HOOK_PROTOCOL=codex`). A program of that name
+//! at another file, or one that cannot be resolved, is the user's and is kept. A handler that sets any
 //! other variable, such as `XPIA_ENABLED=true`, may check more than
 //! amplihack's entry does, so it is kept. A handler the filter keeps runs
 //! the guard twice, which is safe; the filter therefore removes only exact
 //! word lists, and only when every word is one the shell would take as it is
 //! (when in doubt, keep it).
 //!
-//! Pure apart from [`verify_generated`], which checks that the hooks binary
-//! named in amplihack's entry is still an executable regular file, and the
-//! one the launch itself resolves. No error
+//! Pure apart from resolving a program named `amplihack-hooks` in the user's
+//! file, and [`verify_generated`], which checks that the hooks binary named in
+//! amplihack's entry is still an executable regular file, and the one the
+//! launch itself resolves. No error
 //! quotes the file's content: a parse error gives the path, line and column.
 
 use crate::commands::install::paths::sanitize_path;
@@ -37,8 +40,14 @@ const SHELL_SPECIAL: [char; 21] = [
 
 /// The user's PreToolUse groups from `text` (their `hooks.json` at `path`),
 /// with amplihack's own pre-tool-use handlers removed and groups left empty
-/// by that dropped. `plugin_root` is `<home>/.amplihack/codex`.
-pub(super) fn user_pre_tool_use(text: &str, path: &Path, plugin_root: &Path) -> Result<Vec<Value>> {
+/// by that dropped. `plugin_root` is `<home>/.amplihack/codex`; `hooks_bin`
+/// is the hooks binary amplihack's own entry runs.
+pub(super) fn user_pre_tool_use(
+    text: &str,
+    path: &Path,
+    plugin_root: &Path,
+    hooks_bin: &Path,
+) -> Result<Vec<Value>> {
     let shown = sanitize_path(path);
     let value: Value = serde_json::from_str(text).map_err(|error| {
         anyhow!(
@@ -64,20 +73,20 @@ pub(super) fn user_pre_tool_use(text: &str, path: &Path, plugin_root: &Path) -> 
     };
     Ok(groups
         .iter()
-        .filter_map(|group| without_amplihack(group, plugin_root))
+        .filter_map(|group| without_amplihack(group, plugin_root, hooks_bin))
         .collect())
 }
 
 /// `group` without its amplihack pre-tool-use handlers; `None` when removing
 /// them left it with none. A group or handler of an unexpected shape is kept
 /// as it is.
-fn without_amplihack(group: &Value, plugin_root: &Path) -> Option<Value> {
+fn without_amplihack(group: &Value, plugin_root: &Path, hooks_bin: &Path) -> Option<Value> {
     let Some(handlers) = group.get("hooks").and_then(Value::as_array) else {
         return Some(group.clone());
     };
     let kept: Vec<Value> = handlers
         .iter()
-        .filter(|handler| !is_amplihack_handler(handler, plugin_root))
+        .filter(|handler| !is_amplihack_handler(handler, plugin_root, hooks_bin))
         .cloned()
         .collect();
     if kept.len() == handlers.len() {
@@ -91,13 +100,47 @@ fn without_amplihack(group: &Value, plugin_root: &Path) -> Option<Value> {
     Some(group)
 }
 
-/// A `type: command` handler whose command runs amplihack's pre-tool-use.
-fn is_amplihack_handler(handler: &Value, plugin_root: &Path) -> bool {
+/// A `type: command` handler whose command runs amplihack's pre-tool-use:
+/// the plugin wrapper, or the same hooks binary file as `hooks_bin`.
+fn is_amplihack_handler(handler: &Value, plugin_root: &Path, hooks_bin: &Path) -> bool {
     handler.get("type").and_then(Value::as_str) == Some("command")
         && handler
             .get("command")
             .and_then(Value::as_str)
-            .is_some_and(|command| runs_amplihack_pre_tool_use(command, plugin_root))
+            .and_then(|command| amplihack_program(command, plugin_root))
+            .is_some_and(|program| match program {
+                Program::PluginWrapper => true,
+                Program::HooksBinary(name) => same_file(&name, hooks_bin),
+            })
+}
+
+/// What [`amplihack_program`] recognised.
+#[derive(Debug, PartialEq, Eq)]
+enum Program {
+    /// The Codex plugin's wrapper under `plugin_root`.
+    PluginWrapper,
+    /// A program named `amplihack-hooks`, as the command gives it.
+    HooksBinary(String),
+}
+
+/// Whether `program` (bare, resolved through `PATH`, or a path) is the same
+/// file as `hooks_bin`. A program that cannot be resolved is not.
+fn same_file(program: &str, hooks_bin: &Path) -> bool {
+    let path = Path::new(program);
+    let found = if path.components().count() == 1 {
+        crate::commands::install::paths::find_binary(program)
+    } else if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        None
+    };
+    match (
+        found.and_then(|found| std::fs::canonicalize(found).ok()),
+        std::fs::canonicalize(hooks_bin),
+    ) {
+        (Some(found), Ok(ours)) => found == ours,
+        _ => false,
+    }
 }
 
 /// Whether `command`, split into shell words, is exactly
@@ -108,18 +151,24 @@ fn is_amplihack_handler(handler: &Value, plugin_root: &Path) -> bool {
 /// hook checks (`XPIA_ENABLED=true` turns on the XPIA check), and removing
 /// it would weaken the user's guard without a word. A command that cannot
 /// be split, is compound, or has a word that is not [inert](is_inert_word),
-/// is not amplihack's either.
+/// is not amplihack's either. This is the shape only: the filter also
+/// requires a program named `amplihack-hooks` to be the hooks binary file.
+#[cfg(test)]
 pub(super) fn runs_amplihack_pre_tool_use(command: &str, plugin_root: &Path) -> bool {
+    amplihack_program(command, plugin_root).is_some()
+}
+
+/// The program of a command of the shape [`runs_amplihack_pre_tool_use`]
+/// accepts; `None` for any other command.
+fn amplihack_program(command: &str, plugin_root: &Path) -> Option<Program> {
     // shell-words treats raw newlines as word separators and loses shell
     // command boundaries. Keep these handlers before parsing can erase them.
     if command.contains('\n') {
-        return false;
+        return None;
     }
-    let Ok(words) = shell_words::split(command) else {
-        return false;
-    };
+    let words = shell_words::split(command).ok()?;
     if !words.iter().all(|word| is_inert_word(word)) {
-        return false;
+        return None;
     }
     let rest = match words.as_slice() {
         [env, protocol, rest @ ..] if env == "env" && protocol == PROTOCOL => rest,
@@ -127,10 +176,8 @@ pub(super) fn runs_amplihack_pre_tool_use(command: &str, plugin_root: &Path) -> 
         rest => rest,
     };
     match rest {
-        [program, subcommand] if subcommand == SUBCOMMAND => {
-            is_amplihack_program(program, plugin_root)
-        }
-        _ => false,
+        [program, subcommand] if subcommand == SUBCOMMAND => classify_program(program, plugin_root),
+        _ => None,
     }
 }
 
@@ -144,16 +191,17 @@ fn is_inert_word(word: &str) -> bool {
         .any(|c| c.is_whitespace() || c.is_control() || SHELL_SPECIAL.contains(&c))
 }
 
-fn is_amplihack_program(program: &str, plugin_root: &Path) -> bool {
+fn classify_program(program: &str, plugin_root: &Path) -> Option<Program> {
     let path = Path::new(program);
     if path.file_name().and_then(|name| name.to_str()) == Some(HOOKS_BINARY) {
-        return true;
+        return Some(Program::HooksBinary(program.to_owned()));
     }
-    path.is_absolute()
+    (path.is_absolute()
         && !path.components().any(|c| c == Component::ParentDir)
         && path != plugin_root
         && path.starts_with(plugin_root)
-        && path.ends_with("bin/hook")
+        && path.ends_with("bin/hook"))
+    .then_some(Program::PluginWrapper)
 }
 
 /// The number of handlers in `groups`.

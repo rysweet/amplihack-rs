@@ -70,9 +70,48 @@ fn user_file(pre_tool_use: Value) -> String {
     .to_string()
 }
 
+/// A hooks binary that does not exist: no program named `amplihack-hooks`
+/// resolves to it, so the filter keeps every such handler.
+const ABSENT_HOOKS_BIN: &str = "/work/absent/amplihack-hooks";
+
 fn filter(pre_tool_use: Value) -> Vec<Value> {
-    user_pre_tool_use(&user_file(pre_tool_use), Path::new(USER_HOOKS), root())
-        .expect("a well-formed hooks.json")
+    filter_with(pre_tool_use, Path::new(ABSENT_HOOKS_BIN))
+}
+
+fn filter_with(pre_tool_use: Value, hooks_bin: &Path) -> Vec<Value> {
+    user_pre_tool_use(
+        &user_file(pre_tool_use),
+        Path::new(USER_HOOKS),
+        root(),
+        hooks_bin,
+    )
+    .expect("a well-formed hooks.json")
+}
+
+/// Two real executables named `amplihack-hooks` in different directories:
+/// `ours`, the binary amplihack's entry runs, and `other`.
+struct Bins {
+    _dir: tempfile::TempDir,
+    ours: PathBuf,
+    other: PathBuf,
+}
+
+fn bins() -> Bins {
+    let dir = crate::test_support::tempdir_outside_framework_roots();
+    let mut paths = Vec::new();
+    for sub in ["ours", "other"] {
+        std::fs::create_dir(dir.path().join(sub)).unwrap();
+        let path = dir.path().join(sub).join("amplihack-hooks");
+        crate::test_support::write_executable_with_mode(&path, "#!/bin/sh\nexit 0\n", 0o700);
+        paths.push(path);
+    }
+    let other = paths.pop().unwrap();
+    let ours = paths.pop().unwrap();
+    Bins {
+        _dir: dir,
+        ours,
+        other,
+    }
 }
 
 // ---- which handlers are amplihack's ----
@@ -188,11 +227,17 @@ fn a_command_with_a_shell_special_word_is_not_amplihack_pre_tool_use() {
 /// The wrapper as `amplihack install` writes it
 /// (`codex_plugin/hooks.rs`, `declarations`: the single-quoted
 /// `<package>/bin/hook` and the subcommand), and amplihack's own entry as a
-/// generated home holds it, are still recognised and removed, for home paths
-/// with the usual punctuation.
+/// generated home writes it (running the same hooks binary file), are still
+/// recognised and removed, for home paths with the usual punctuation.
 #[test]
 fn the_wrapper_as_install_writes_it_is_still_removed() {
-    for home in ["/work/fixture", "/work/first.last-2_x", "/work/a+b"] {
+    let dir = crate::test_support::tempdir_outside_framework_roots();
+    for name in ["fixture", "first.last-2_x", "a+b"] {
+        let home = dir.path().join(name).display().to_string();
+        let bin = dir.path().join(name).join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let hooks_bin = bin.join("amplihack-hooks");
+        crate::test_support::write_executable_with_mode(&hooks_bin, "#!/bin/sh\nexit 0\n", 0o700);
         let plugin_root = format!("{home}/.amplihack/codex");
         let installed = format!("'{plugin_root}/amplihack-local/amplihack/bin/hook' pre-tool-use");
         let generated = format!(
@@ -210,8 +255,13 @@ fn the_wrapper_as_install_writes_it_is_still_removed() {
             guard("shell-check"),
         ]}})
         .to_string();
-        let groups =
-            user_pre_tool_use(&text, Path::new(USER_HOOKS), Path::new(&plugin_root)).unwrap();
+        let groups = user_pre_tool_use(
+            &text,
+            Path::new(USER_HOOKS),
+            Path::new(&plugin_root),
+            &hooks_bin,
+        )
+        .unwrap();
         assert_eq!(groups, vec![guard("shell-check")], "{home}");
     }
 }
@@ -240,12 +290,16 @@ fn the_bare_wrapper_is_removed_and_the_rest_kept_in_order() {
 
 #[test]
 fn a_group_keeps_its_other_handlers() {
-    let groups = filter(json!([
-        {"matcher": "Bash", "hooks": [
-            {"type": "command", "command": "amplihack-hooks pre-tool-use"},
-            {"type": "command", "command": "echo mine"},
-        ]},
-    ]));
+    let bins = bins();
+    let groups = filter_with(
+        json!([
+            {"matcher": "Bash", "hooks": [
+                {"type": "command", "command": format!("{} pre-tool-use", bins.ours.display())},
+                {"type": "command", "command": "echo mine"},
+            ]},
+        ]),
+        &bins.ours,
+    );
     assert_eq!(
         groups,
         vec![json!({"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine"}]})]
@@ -305,12 +359,72 @@ fn a_newline_handler_survives_filtering_and_executes_the_user_check() {
 
 #[test]
 fn a_group_left_empty_is_dropped() {
-    let groups = filter(json!([
-        {"hooks": [{"type": "command", "command": "amplihack-hooks pre-tool-use"}]},
-        guard("shell-check"),
-        {"matcher": "Bash", "hooks": [{"type": "command", "command": format!("{} pre-tool-use", wrapper())}]},
-    ]));
+    let bins = bins();
+    let groups = filter_with(
+        json!([
+            {"hooks": [{"type": "command", "command": format!("{} pre-tool-use", bins.ours.display())}]},
+            guard("shell-check"),
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": format!("{} pre-tool-use", wrapper())}]},
+        ]),
+        &bins.ours,
+    );
     assert_eq!(groups, vec![guard("shell-check")]);
+}
+
+/// Item 4 of the review: a handler is dropped only when its program is the
+/// same file as the hooks binary amplihack's entry runs, directly or
+/// through a link. A different binary that happens to be named
+/// `amplihack-hooks`, or one that cannot be resolved, is the user's own
+/// check and is kept.
+#[test]
+fn only_a_handler_running_the_same_hooks_binary_file_is_dropped() {
+    let bins = bins();
+    let link = bins.ours.parent().unwrap().parent().unwrap().join("link");
+    std::fs::create_dir(&link).unwrap();
+    std::os::unix::fs::symlink(&bins.ours, link.join("amplihack-hooks")).unwrap();
+    let command = |program: &Path| {
+        json!({"hooks": [{"type": "command",
+            "command": format!("env AMPLIHACK_HOOK_PROTOCOL=codex '{}' pre-tool-use", program.display())}]})
+    };
+    let other = command(&bins.other);
+    let unresolved = command(Path::new("/work/absent-elsewhere/amplihack-hooks"));
+    let relative =
+        json!({"hooks": [{"type": "command", "command": "bin/amplihack-hooks pre-tool-use"}]});
+    let groups = filter_with(
+        json!([
+            command(&bins.ours),
+            other.clone(),
+            command(&link.join("amplihack-hooks")),
+            unresolved.clone(),
+            relative.clone(),
+            guard("shell-check"),
+        ]),
+        &bins.ours,
+    );
+    assert_eq!(
+        groups,
+        vec![other, unresolved, relative, guard("shell-check")]
+    );
+}
+
+/// A bare `amplihack-hooks` is resolved through `PATH`: dropped when that
+/// finds the hooks binary file, kept when it finds another file.
+#[test]
+fn a_bare_hooks_program_is_resolved_through_path() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let bins = bins();
+    let bare = json!({"hooks": [{"type": "command", "command": "amplihack-hooks pre-tool-use"}]});
+    let mut env = crate::test_support::EnvGuard::capture(&[]);
+    env.assign("PATH", bins.ours.parent().unwrap());
+    assert_eq!(
+        filter_with(json!([bare.clone()]), &bins.ours),
+        Vec::<Value>::new()
+    );
+    env.assign("PATH", bins.other.parent().unwrap());
+    assert_eq!(filter_with(json!([bare.clone()]), &bins.ours), vec![bare]);
+    drop(env);
 }
 
 #[test]
@@ -319,7 +433,13 @@ fn no_pre_tool_use_means_no_user_groups() {
         r#"{"hooks": {}}"#.to_string(),
         json!({"hooks": {"Stop": [guard("x.py")]}}).to_string(),
     ] {
-        let groups = user_pre_tool_use(&text, Path::new(USER_HOOKS), root()).unwrap();
+        let groups = user_pre_tool_use(
+            &text,
+            Path::new(USER_HOOKS),
+            root(),
+            Path::new(ABSENT_HOOKS_BIN),
+        )
+        .unwrap();
         assert!(groups.is_empty(), "{text}");
     }
 }
@@ -335,7 +455,13 @@ fn malformed_files_are_errors_naming_the_file_and_quoting_nothing() {
         format!("{{\"hooks\": {{\"PreToolUse\": {{\"x\": \"{secret}\"}}}}}}"),
         "not json at all".to_string(),
     ] {
-        let err = user_pre_tool_use(&text, Path::new(USER_HOOKS), root()).expect_err(&text);
+        let err = user_pre_tool_use(
+            &text,
+            Path::new(USER_HOOKS),
+            root(),
+            Path::new(ABSENT_HOOKS_BIN),
+        )
+        .expect_err(&text);
         let message = format!("{err:#}");
         assert!(message.contains(USER_HOOKS), "{message}");
         assert!(!message.contains(secret), "content in the error: {message}");

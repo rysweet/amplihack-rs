@@ -34,7 +34,9 @@ const UNSET: &str = "__UNSET__";
 const FAKE_CODEX: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$HOME/calls.log"
 case "$1" in
-  --version) echo 'codex-cli 0.166.0'; exit 0;;
+  --version)
+    if [ -f "$HOME/codex-version" ]; then cat "$HOME/codex-version"; else echo 'codex-cli 0.166.0'; fi
+    exit 0;;
   plugin)
     case "$2 $3" in
       list*)
@@ -114,10 +116,10 @@ trust_level = "trusted"
 command = "echo profile-hook"
 "#;
 
-/// The user's own `config.toml`. Nothing in it may reach a generated home.
+/// The user's own `config.toml`. Its `approval_policy` is used in a generated
+/// home whose profile sets none; nothing else in it is used.
 pub(crate) const USER_CONFIG: &str = r#"model = "gpt-5"
 approval_policy = "on-request"
-sandbox_mode = "danger-full-access"
 web_search = "live"
 
 [features]
@@ -189,6 +191,9 @@ impl Fixture {
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
         let tools = dir.path().join("tools");
         fs::create_dir(&tools).unwrap();
+        // The hooks binary lives here, and a directory others can write is
+        // rejected for it; the umask of the machine decides nothing.
+        fs::set_permissions(&tools, fs::Permissions::from_mode(0o755)).unwrap();
         for tool in [
             "sh", "cat", "mkdir", "rm", "mv", "cp", "chmod", "git", "uname",
         ] {

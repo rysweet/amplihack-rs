@@ -33,8 +33,13 @@ You need:
 - Linux, macOS or WSL. Local-model launches are not available on other
   platforms.
 - Codex installed. The settings amplihack writes were checked against
-  codex-cli 0.166.0.
-- `amplihack-hooks` installed, as `amplihack install` leaves it.
+  codex-cli 0.166.0. An interactive session needs that version, because
+  amplihack trusts its command check with the hash that version computes; on
+  another version an interactive launch is rejected. `codex exec` launches
+  run on any version.
+- `amplihack-hooks` deployed by `amplihack install`, at
+  `~/.local/bin/amplihack-hooks`. It must be owned by you, and neither it nor
+  its directory may be writable by your group or by others.
 - A server for the model that Codex can reach, for example llama.cpp's
   `llama-server` on `http://127.0.0.1:8080/v1`.
 - A Codex profile file for the model in your Codex home, named
@@ -56,9 +61,14 @@ wire_api = "responses"
 stream_max_retries = 2
 ```
 
-If the provider needs a key, name the variable that holds it with `env_key` in
-the provider table. Your `~/.codex/auth.json` is not copied into the local
-session.
+If the provider needs a key, give the variable with `env_key` in the provider
+table. Your `~/.codex/auth.json` is not copied into the local session.
+
+Your own `approval_policy`, `sandbox_mode` and `[sandbox_workspace_write]` from
+the top level of `~/.codex/config.toml` apply where the profile sets none, and
+your top-level `~/.codex/rules/*.rules` files are copied into the local
+session's home. The local session is therefore no looser than an ordinary
+one. To use other settings in a local session, set them in the profile.
 
 ## Start an interactive session
 
@@ -194,7 +204,11 @@ next local-model launch with that name builds a fresh home.
 | Error naming `~/.codex/inkling.config.toml` | The profile file is missing | Create it, or check the name. With `CODEX_HOME` set, the file is looked up there. |
 | Error about the name rule, naming the flag or `AMPLIHACK_CODEX_LOCAL_MODEL` | The name has a character outside `[A-Za-z0-9._-]`, is longer than 64 characters, or is `.` or `..` | Rename the profile file and use the new name. |
 | Error naming `--docker`, `AMPLIHACK_USE_DOCKER` or `--auto` | These modes are not available with a local model | Drop the option, or unset `AMPLIHACK_USE_DOCKER`. |
-| Error naming `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | The hooks binary was not found, was found by a relative path, or is not named `amplihack-hooks` | Run `amplihack install`, or set the variable to the absolute path of `amplihack-hooks`. |
+| Error giving an `amplihack-hooks` path and suggesting `amplihack install` | The hooks binary was not found, was found by a relative path, is not named `amplihack-hooks`, or it or its directory belongs to another user (root included) or is writable by others | Run `amplihack install`, which deploys `~/.local/bin/amplihack-hooks`. Without a deployed copy, set `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` to the absolute path of an `amplihack-hooks` you own, for example after `chmod go-w` on it and its directory. |
+| Error giving a Codex version, for an interactive launch | The hook-trust format of that Codex version is not known, so the command check could be untrusted | Use codex-cli 0.166.0 for interactive sessions, or run `amplihack codex --local-model <name> -- exec …`. |
+| Error giving `~/.codex/config.toml` or a file in `~/.codex/rules/` | The file does not parse, is not a regular file, or it or its directory is writable by others | Fix the file at the line given, or `chmod go-w` it and its directory. |
+| Error saying a symbolic link's target does not exist | A link at the profile, `hooks.json`, `config.toml` or a rules file points nowhere | Fix the link, or remove it. |
+| A stderr line saying the command check does not run in the session | Your Codex arguments include `-c features.hooks=false` or `--disable hooks` | Leave the argument out to keep the command check. |
 | Error naming `~/.codex/hooks.json` | Your `hooks.json` does not parse or has the wrong shape | Fix the file at the line given. |
 | Error saying the profile, `hooks.json` or `~/.codex` must be owned by you and not writable by others | The file or its directory belongs to another user, or others can write it | Take ownership and remove write permission for others, for example `chmod go-w ~/.codex ~/.codex/inkling.config.toml`. amplihack does not change modes itself. |
 | Error naming the generated `config.toml` | The generated file does not parse | Fix it, or delete it and launch again. |

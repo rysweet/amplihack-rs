@@ -63,9 +63,42 @@ fn resolved_hooks(f: &Fixture) -> Value {
     result.expect("native hooks/list on a loaded thread")
 }
 
+/// The Codex versions whose hook-trust format amplihack has checked, as
+/// `KNOWN_CODEX_VERSIONS` in the launcher gives them.
+const KNOWN_CODEX_VERSIONS: [&str; 1] = ["0.166.0"];
+
+/// The `--version` output of the Codex under test.
+fn native_version() -> String {
+    let binary = std::env::var("CODEX_TEST_BINARY").expect("set CODEX_TEST_BINARY");
+    let out = Command::new(binary)
+        .arg("--version")
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
 #[test]
 #[ignore = "requires real installed Codex; set CODEX_TEST_BINARY and run --ignored"]
 fn native_trust_uses_the_actual_command_and_canonical_source() {
+    let version = native_version();
+    let known = version
+        .split_whitespace()
+        .last()
+        .is_some_and(|v| KNOWN_CODEX_VERSIONS.contains(&v));
+    if !known {
+        // On a Codex whose trust format is not known, an interactive local
+        // launch is rejected with the version, never started without the
+        // command check.
+        let f = Fixture::new();
+        fs::write(f.home().join("codex-version"), format!("{version}\n")).unwrap();
+        let launch = f.local(NAME, &[]);
+        launch.assert_refused_at_run_time(&f, "an unknown native Codex version");
+        let shown = version.split_whitespace().last().unwrap_or_default();
+        assert!(launch.stderr().contains(shown), "{}", launch.stderr());
+        return;
+    }
     for linked in [false, true] {
         let f = Fixture::new();
         if linked {
