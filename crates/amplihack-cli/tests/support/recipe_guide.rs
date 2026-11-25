@@ -538,6 +538,26 @@ impl GuideFixture {
         log
     }
 
+    /// `<recipe-logs>/<session>.log`, created private and empty and opened
+    /// for appending. A `recipe run` whose standard error is sent here gives
+    /// the session the log a detached run has: the pointer lines in it are
+    /// the ones `recipe run` itself wrote, with its own run id, run folder
+    /// and pull request (PR #3190 review).
+    pub fn session_log_sink(&self, session: &str) -> Stdio {
+        let log = self.recipe_logs.join(format!("{session}.log"));
+        private_file(&log, "");
+        let file = fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .unwrap_or_else(|e| panic!("open {}: {e}", log.display()));
+        Stdio::from(file)
+    }
+
+    /// The text of `<recipe-logs>/<session>.log`, for failure messages.
+    pub fn session_log_text(&self, session: &str) -> String {
+        fs::read_to_string(self.recipe_logs.join(format!("{session}.log"))).unwrap_or_default()
+    }
+
     /// `amplihack recipe guide <args…> -` with `text` on stdin and both
     /// work-root variables unset, whatever the caller's environment.
     pub fn guide_without_work_root(&self, args: &[&str], text: &str) -> Output {

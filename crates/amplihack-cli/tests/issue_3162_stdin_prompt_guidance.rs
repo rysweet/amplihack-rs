@@ -23,8 +23,10 @@
 //!   guidance never becomes its whole prompt), the launch records
 //!   `no_prompt_on_stdin`, and the entry stays not yet read.
 //!
-//! The assertions compare values (positions, counts, JSON fields, line
-//! prefixes and reason codes). None compares prose.
+//! The assertions compare values: positions, counts, JSON fields (among
+//! them the documented launch-form label), the status value the sender is
+//! given, and reason codes, which are also looked for on the step's own
+//! stderr. None compares the wording of a message.
 
 #![cfg(unix)]
 

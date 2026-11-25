@@ -179,15 +179,10 @@ fn a_copilot_launch_with_a_prompt_on_stdin_gets_the_block_after_it() {
 
     // The guidance text is in the prompt only, never in amplihack's output.
     assert!(!stderr(&o).contains(MARKER), "{}", show(&o));
-    assert_eq!(
-        stderr(&o)
-            .matches("operator guidance added to this step's prompt")
-            .count(),
-        1,
-        "{}",
-        show(&o)
-    );
 
+    // One `guidance_injected` record. The launcher prints its notice in the
+    // same call that writes the record (`launch/mod.rs`), so the record is
+    // checked, not the notice's wording.
     let log = s.f.log(&s.guidance);
     assert_eq!(
         events(&log),
@@ -232,12 +227,10 @@ fn b_a_copilot_that_closes_stdin_early_is_a_recorded_drop() {
     assert!(o.status.success(), "{}", show(&o));
     assert_stand_in_ran(&s.f, "b", &o);
     assert_eq!(s.f.record("prompt.b"), PROMPT, "{}", show(&o));
-    assert!(
-        !stderr(&o).contains("operator guidance added"),
-        "no notice for undelivered guidance\n{}",
-        show(&o)
-    );
 
+    // The launcher prints its "guidance added" notice and writes the
+    // `guidance_injected` record together (`launch/mod.rs`), so the absence
+    // of the record below is also the absence of the notice.
     let log = s.f.log(&s.guidance);
     assert_eq!(
         events(&log),

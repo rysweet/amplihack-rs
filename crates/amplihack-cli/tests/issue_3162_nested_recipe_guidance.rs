@@ -103,8 +103,8 @@ steps:
     recipe: "issue-3162-workflow"
 "#;
 
-/// The nested workflow. `hold` records the run's correlation id and folder,
-/// then blocks until the test has sent its guidance.
+/// The nested workflow. `hold` records the run folder, then blocks until
+/// the test has sent its guidance.
 const WORKFLOW: &str = r#"name: "issue-3162-workflow"
 description: "two agent steps with a pause between them, as in default-workflow"
 version: "1.0.0"
@@ -118,7 +118,6 @@ steps:
     type: "bash"
     command: |
       set -eu
-      printf '%s\n' "$AMPLIHACK_RECIPE_RUN_ID" > "$AMPLIHACK_3162_RECORD_DIR/corr_id"
       printf '%s\n' "$AMPLIHACK_RUN_DIR" > "$AMPLIHACK_3162_RECORD_DIR/run_dir"
       read _ < "$AMPLIHACK_3162_FIFO"
   - id: "build"
@@ -230,13 +229,22 @@ impl Nested {
             .env("AMPLIHACK_3162_FIFO", &self.fifo)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            // The session log a detached run has: the pointer `recipe guide`
+            // reads is the one this `recipe run` writes, with the outer run's
+            // own run id and folder.
+            .stderr(self.f.session_log_sink(SESSION));
         c
     }
 
     fn record(&self, name: &str) -> String {
         fs::read_to_string(self.records.join(name))
             .unwrap_or_else(|e| panic!("record {name} missing: {e}"))
+    }
+
+    /// The run's standard error, which is its session log, for failure
+    /// messages.
+    fn session_log(&self) -> String {
+        format!("session log:\n{}", self.f.session_log_text(SESSION))
     }
 
     fn guidance_show_json(&self) -> serde_json::Value {
@@ -261,17 +269,16 @@ fn guidance_sent_by_session_name_reaches_the_next_agent_step_of_a_nested_recipe(
     let mut live = fifo_release::start(n.command(), &n.fifo, "amplihack recipe run");
 
     // The run is blocked in the nested workflow's `hold` step. Its session
-    // log holds the early pointer a detached run writes, with its folder.
-    let corr = n.record("corr_id");
+    // log holds the early pointer the outer `recipe run` wrote, so the
+    // sender finds the run the way it finds a detached one.
     let run_dir = PathBuf::from(n.record("run_dir").trim());
     let run_guidance = run_dir.join("guidance");
-    n.f.session_log_from_pointer(SESSION, &GuideFixture::pointer(corr.trim(), Some(&run_dir)));
 
     // The first agent step ran before the guidance existed.
     assert_eq!(n.record("agent.count").trim(), "1");
 
     let o = n.f.guide_text(&[SESSION], MARKER);
-    assert!(o.status.success(), "{}", show(&o));
+    assert!(o.status.success(), "{}\n{}", show(&o), n.session_log());
     let written = written_lines(&o);
     assert_eq!(written.len(), 1, "{}", show(&o));
     assert_eq!(written[0].0.parent().unwrap(), run_guidance, "{}", show(&o));
@@ -279,13 +286,9 @@ fn guidance_sent_by_session_name_reaches_the_next_agent_step_of_a_nested_recipe(
     assert!(drop_lines(&o).is_empty(), "{}", show(&o));
 
     let run = live.finish();
-    assert!(run.status.success(), "{}", fifo_release::describe(&run));
-    assert_eq!(
-        n.record("agent.count").trim(),
-        "2",
-        "{}",
-        fifo_release::describe(&run)
-    );
+    let described = format!("{}\n{}", fifo_release::describe(&run), n.session_log());
+    assert!(run.status.success(), "{described}");
+    assert_eq!(n.record("agent.count").trim(), "2", "{described}");
 
     // Both agent steps of the nested workflow were given the run's own
     // guidance folder, first in the list.
@@ -366,23 +369,23 @@ fn run_started_by_the_old_release(n: &Nested, launcher: &Path) -> (PathBuf, Stri
         &n.fifo,
         "older amplihack recipe run",
     );
-    let corr = n.record("corr_id");
     let run_dir = PathBuf::from(n.record("run_dir").trim());
     let run_guidance = run_dir.join("guidance");
-    n.f.session_log_from_pointer(SESSION, &GuideFixture::pointer(corr.trim(), Some(&run_dir)));
     assert_eq!(n.record("agent.count").trim(), "1");
 
-    // This binary writes to the older release's run folder.
+    // This binary finds the older run by the pointer the older `recipe run`
+    // wrote, and writes to its run folder.
     let o = n.f.guide_text(&[SESSION], MARKER);
-    assert!(o.status.success(), "{}", show(&o));
+    assert!(o.status.success(), "{}\n{}", show(&o), n.session_log());
     let written = written_lines(&o);
     assert_eq!(written.len(), 1, "{}", show(&o));
     assert_eq!(written[0].0.parent().unwrap(), run_guidance, "{}", show(&o));
     assert_eq!(status_lines(&o), ["appended; not yet read"], "{}", show(&o));
 
     let run = live.finish();
-    assert!(run.status.success(), "{}", fifo_release::describe(&run));
-    assert_eq!(n.record("agent.count").trim(), "2");
+    let described = format!("{}\n{}", fifo_release::describe(&run), n.session_log());
+    assert!(run.status.success(), "{described}");
+    assert_eq!(n.record("agent.count").trim(), "2", "{described}");
     let entry = written[0]
         .0
         .file_name()

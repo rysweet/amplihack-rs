@@ -58,6 +58,9 @@ mod issue_2575_agentic_merge_ready;
 mod issue_3129_goal_loop;
 #[path = "issue_3161_pr_url_live_run.rs"]
 mod issue_3161_pr_url_live_run;
+// PR #3190 review: the #3161 drive cases and a run that ends unread, real runner.
+#[path = "issue_3161_pinned_runner_drive.rs"]
+mod issue_3161_pinned_runner_drive;
 #[path = "issue_3162_stdin_prompt_guidance.rs"]
 mod issue_3162_stdin_prompt_guidance;
 // #3162: guidance reaches an agent step of a nested recipe, real runner.

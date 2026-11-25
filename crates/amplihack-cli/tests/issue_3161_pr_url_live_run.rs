@@ -18,7 +18,13 @@
 //! - (b3) with no live run for the pull request, the pull request folder is
 //!   written as before and the sender is told no run was found.
 //!
-//! The assertions compare paths, counts, exit codes and JSON fields.
+//! The assertions compare paths, counts, exit codes, JSON fields, the
+//! session name and the status value the sender is given. None compares the
+//! wording of a message: the lookup warning in (b3) is checked by its
+//! presence, against a log folder that passes the check.
+//!
+//! The same cases through the runner built at the pinned revision are in
+//! `issue_3161_pinned_runner_drive.rs`.
 
 #![cfg(unix)]
 
@@ -286,9 +292,19 @@ fn b3_an_unreadable_log_folder_is_reported_rather_than_read_as_no_live_run() {
     let o = f.guide_text(&[PR_URL], MARKER);
     assert!(o.status.success(), "{}", show(&o));
     assert_eq!(written_lines(&o).len(), 1, "{}", show(&o));
-    assert!(
-        stderr(&o).contains("live runs could not be looked up"),
-        "{}",
-        show(&o)
-    );
+    let warnings: Vec<String> = stderr(&o)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    assert_eq!(warnings.len(), 1, "{}", show(&o));
+    assert!(!warnings[0].contains(MARKER), "{}", show(&o));
+
+    // The same send with a log folder that passes the check prints nothing
+    // on stderr, so the line above is the lookup's report.
+    let clean = GuideFixture::new();
+    crate::support::recipe_guide::private_dir(&clean.recipe_logs);
+    let o = clean.guide_text(&[PR_URL], MARKER);
+    assert!(o.status.success(), "{}", show(&o));
+    assert!(stderr(&o).trim().is_empty(), "{}", show(&o));
 }

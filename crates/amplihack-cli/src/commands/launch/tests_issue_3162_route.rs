@@ -129,9 +129,12 @@ fn copilot_with_prompt_text_in_argv_takes_the_prompt_route() {
 
 #[test]
 fn copilot_without_prompt_text_is_never_reported_as_delivered() {
-    // Whether Copilot reads a prompt from stdin is settled by the pinned CLI
-    // (recorded in a comment beside the route). Either answer is acceptable
-    // here; claiming delivery for an interactive `-i` launch is not.
+    // With nothing on stdin, neither form has a prompt the block could
+    // follow: `-i` is an interactive session, and a launch with no prompt
+    // flag reads its prompt from stdin. The same launch with a prompt on
+    // stdin takes a `StdinTrailer` (`guidance_route.rs`, the Copilot rows of
+    // the table), covered with a stand-in Copilot by
+    // `tests/issue_3162_copilot_stdin_launcher.rs`.
     for args in [&["-i", "talk"][..], &["--model", "m"][..]] {
         assert!(
             matches!(
