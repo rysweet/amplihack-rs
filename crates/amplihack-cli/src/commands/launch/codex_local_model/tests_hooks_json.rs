@@ -281,7 +281,7 @@ fn a_newline_handler_survives_filtering_and_executes_the_user_check() {
         crate::test_support::write_executable_with_mode(&dir.path().join(name), script, 0o700);
     }
     let original = json!({"matcher": "Bash", "hooks": [{
-        "type": "command", "command": "amplihack-hooks\npre-tool-use", "timeout": 10,
+        "type": "command", "command": "amplihack-hooks\npre-tool-use",
     }]});
     let groups = filter(json!([original.clone()]));
     assert_eq!(groups, vec![original]);
