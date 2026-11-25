@@ -341,6 +341,7 @@ dependencies = [
 name = "amplihack-memory"
 version = "1.2.0"
 dependencies = [
+ "amplihack-git",
  "anyhow",
  "chrono",
  "fs4",

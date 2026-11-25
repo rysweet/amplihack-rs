@@ -1,22 +1,9 @@
 use super::project_artifact_paths;
+use super::source_files::project_source_files;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
-
-const IGNORED_DIRS: &[&str] = &[
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".pytest_cache",
-    "node_modules",
-    ".mypy_cache",
-    ".tox",
-    "dist",
-    "build",
-    ".eggs",
-];
 
 const INDEXABLE_EXTENSIONS: &[&str] = &[
     "py", "ts", "tsx", "js", "jsx", "go", "rs", "cs", "c", "cpp", "h", "hpp",
@@ -122,71 +109,34 @@ fn latest_scip_artifact(indexes_dir: &Path) -> Option<std::path::PathBuf> {
     newest.map(|(_, path)| path)
 }
 
+/// Counts the project's indexable sources and finds the newest mtime.
+///
+/// Uses the same file list as the indexer, so git-ignored paths, nested
+/// `worktrees/`, `target/` and `.amplihack/` never mark the index stale
+/// (issue #2170). Files whose metadata cannot be read, such as tracked files
+/// deleted from the working tree, are skipped.
 fn scan_source_files(project_path: &Path) -> (usize, Option<SystemTime>) {
     let mut count = 0usize;
-    let mut newest_mtime = None;
-    scan_dir(project_path, &mut count, &mut newest_mtime);
-    (count, newest_mtime)
-}
-
-fn scan_dir(path: &Path, count: &mut usize, newest_mtime: &mut Option<SystemTime>) {
-    let entries = match fs::read_dir(path) {
-        Ok(entries) => entries,
-        Err(err)
-            if matches!(
-                err.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            return;
-        }
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let entry_path = entry.path();
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if entry_path.is_dir() {
-            if should_ignore_dir(&file_name) {
-                continue;
-            }
-            scan_dir(&entry_path, count, newest_mtime);
+    let mut newest_mtime: Option<SystemTime> = None;
+    for path in project_source_files(project_path) {
+        if !is_indexable_file(&path) {
             continue;
         }
-
-        if !entry_path.is_file() || !is_indexable_file(&entry_path) {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() {
             continue;
         }
-
-        *count += 1;
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-                ) =>
-            {
-                continue;
-            }
-            Err(_) => continue,
+        count += 1;
+        let Ok(modified) = metadata.modified() else {
+            continue;
         };
-
-        let modified = match metadata.modified() {
-            Ok(modified) => modified,
-            Err(_) => continue,
-        };
-
         if newest_mtime.is_none_or(|current| modified > current) {
-            *newest_mtime = Some(modified);
+            newest_mtime = Some(modified);
         }
     }
-}
-
-fn should_ignore_dir(file_name: &str) -> bool {
-    IGNORED_DIRS.contains(&file_name) || file_name.ends_with(".egg-info")
+    (count, newest_mtime)
 }
 
 fn is_indexable_file(path: &Path) -> bool {
@@ -278,5 +228,124 @@ mod tests {
         assert!(!status.needs_indexing);
         assert_eq!(status.reason, "up-to-date (index is current)");
         assert!(status.last_indexed.is_some());
+    }
+
+    // Issue #2170: only the project's own sources decide staleness.
+
+    use std::process::Stdio;
+
+    fn git(root: &Path, args: &[&str]) {
+        let status = amplihack_git::command_in(root)
+            .args(args)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn write_with_mtime(root: &Path, relative: &str, mtime: SystemTime) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "fn main() {}\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    /// A project with a tracked source and an index written after it.
+    /// Returns the time the index was written.
+    fn indexed_project(root: &Path, git_ignore: Option<&str>) -> SystemTime {
+        let now = SystemTime::now();
+        let indexed_at = now - Duration::from_secs(60);
+        if let Some(rules) = git_ignore {
+            git(root, &["init", "-q"]);
+            fs::write(root.join(".gitignore"), rules).unwrap();
+        }
+        write_with_mtime(root, "src/main.rs", now - Duration::from_secs(120));
+        if git_ignore.is_some() {
+            git(root, &["add", "src/main.rs", ".gitignore"]);
+        }
+        write_with_mtime(root, ".amplihack/blarify.json", indexed_at);
+        indexed_at
+    }
+
+    #[test]
+    fn ignored_worktree_newer_than_index_is_not_stale() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let indexed_at = indexed_project(root, Some("worktrees/\n"));
+        write_with_mtime(
+            root,
+            "worktrees/task-1/src/lib.rs",
+            indexed_at + Duration::from_secs(30),
+        );
+
+        let status = check_index_status(root).unwrap();
+
+        assert!(!status.needs_indexing, "{}", status.reason);
+        assert_eq!(status.estimated_files, 1);
+    }
+
+    #[test]
+    fn target_and_amplihack_folders_never_mark_the_index_stale() {
+        for git_ignore in [Some("\n"), None] {
+            let project = tempfile::tempdir().unwrap();
+            let root = project.path();
+            let indexed_at = indexed_project(root, git_ignore);
+            let later = indexed_at + Duration::from_secs(30);
+            write_with_mtime(root, "target/debug/build/out.rs", later);
+            write_with_mtime(root, ".amplihack/scratch/x.rs", later);
+            write_with_mtime(root, "worktrees/task-2/src/lib.rs", later);
+
+            let status = check_index_status(root).unwrap();
+
+            assert!(
+                !status.needs_indexing,
+                "git: {}, reason: {}",
+                git_ignore.is_some(),
+                status.reason
+            );
+        }
+    }
+
+    #[test]
+    fn git_ignored_path_newer_than_index_is_not_stale() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let indexed_at = indexed_project(root, Some("generated/\n"));
+        write_with_mtime(root, "generated/x.rs", indexed_at + Duration::from_secs(30));
+
+        let status = check_index_status(root).unwrap();
+
+        assert!(!status.needs_indexing, "{}", status.reason);
+    }
+
+    #[test]
+    fn tracked_source_newer_than_index_is_stale() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let indexed_at = indexed_project(root, Some("worktrees/\n"));
+        write_with_mtime(root, "src/main.rs", indexed_at + Duration::from_secs(30));
+
+        let status = check_index_status(root).unwrap();
+
+        assert!(status.needs_indexing);
+        assert_eq!(status.reason, "stale (source files modified after index)");
+    }
+
+    #[test]
+    fn untracked_source_that_git_does_not_ignore_is_stale() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let indexed_at = indexed_project(root, Some("worktrees/\n"));
+        write_with_mtime(root, "src/new.rs", indexed_at + Duration::from_secs(30));
+
+        let status = check_index_status(root).unwrap();
+
+        assert!(status.needs_indexing);
+        assert_eq!(status.estimated_files, 2);
     }
 }

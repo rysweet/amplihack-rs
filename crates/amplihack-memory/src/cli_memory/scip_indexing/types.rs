@@ -12,20 +12,6 @@ pub(crate) const LANGUAGE_ORDER: &[&str] = &[
     "cpp",
 ];
 
-pub(super) const IGNORED_DIRS: &[&str] = &[
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".pytest_cache",
-    "node_modules",
-    ".mypy_cache",
-    ".tox",
-    "dist",
-    "build",
-    ".eggs",
-];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageStatus {
     pub language: String,

@@ -161,7 +161,7 @@ pub fn run_native_scip_indexing(
 
 pub fn detect_project_languages(project_path: &Path) -> Result<Vec<String>> {
     let mut found = BTreeMap::<String, bool>::new();
-    scan_languages(project_path, &mut found)?;
+    scan_languages(project_path, &mut found);
     Ok(LANGUAGE_ORDER
         .iter()
         .filter(|lang| found.get(**lang).copied().unwrap_or(false))
