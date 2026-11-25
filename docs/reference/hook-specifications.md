@@ -3,11 +3,13 @@
 ## Optional hook text suppression
 
 With `AMPLIHACK_HOOK_TEXT=none`, SessionStart, UserPromptSubmit and the workflow
-classification reminder run normally, then omit `additionalContext`,
-`systemMessage` and `hookSpecificOutput.additionalContext`. Empty context
+classification reminder run normally, then omit `additionalContext` and
+`hookSpecificOutput.additionalContext`. Empty context
 envelopes are removed. Other fields, including control decisions and indexing
 diagnostics, are preserved before conversion to the host's protocol. This also
-omits capacity notices from participating hooks.
+preserves `systemMessage`, which Claude Code shows to the person rather than
+adding to the model's context. Capacity notices remain visible while their model
+context is omitted. The Codex conversion already omits `systemMessage`.
 
 Stop approves without running lock mode, power steering or reflection, after
 normal input validation. Codex keeps its existing Stop no-op. Malformed input

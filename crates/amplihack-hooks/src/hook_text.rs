@@ -125,9 +125,10 @@ pub(crate) fn action(setting: HookText, text: ModelText) -> Action {
 }
 
 /// Removes the model text from a hook's output: top-level
-/// `additionalContext` and `systemMessage`, and
+/// `additionalContext` and
 /// `hookSpecificOutput.additionalContext`. `hookSpecificOutput` itself goes
 /// when left empty or holding only `hookEventName`. Other output is preserved.
+/// This includes `systemMessage`, which Claude Code shows to the person.
 ///
 /// Control fields (`decision`, `reason`, `continue`, `stopReason`,
 /// `permissionDecision` and the rest) are never touched, so a control
@@ -137,7 +138,6 @@ pub(crate) fn strip_model_text(output: Value) -> Value {
         return output;
     };
     map.remove("additionalContext");
-    map.remove("systemMessage");
     let drop_specific = match map.get_mut("hookSpecificOutput") {
         None => false,
         Some(Value::Object(specific)) => {

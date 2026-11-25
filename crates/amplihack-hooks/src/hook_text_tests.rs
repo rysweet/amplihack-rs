@@ -82,7 +82,8 @@ fn removal_preserves_control_fields_and_diagnostics() {
             "permissionDecision": "deny", "indexing_status": "started", "custom": {"additionalContext": "data"}}
     });
     let expected = json!({
-        "decision": "block", "reason": "r", "continue": false, "stopReason": "s", "warnings": ["w"],
+        "decision": "block", "reason": "r", "continue": false, "stopReason": "s",
+        "systemMessage": "notice", "warnings": ["w"],
         "hookSpecificOutput": {"hookEventName": "SessionStart", "permissionDecision": "deny",
             "indexing_status": "started", "custom": {"additionalContext": "data"}}
     });
@@ -96,8 +97,50 @@ fn empty_context_envelopes_are_removed() {
         strip_model_text(
             json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "context"}, "systemMessage": "notice"})
         ),
-        json!({})
+        json!({"systemMessage": "notice"})
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn suppression_keeps_capacity_notices_from_both_context_hooks() {
+    use crate::capacity_notice::tests::{Capacity, HOUR};
+    use crate::protocol::Hook;
+    use amplihack_types::HookInput;
+    use amplihack_utils::claude_capacity::State;
+
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for session_start in [true, false] {
+        let capacity = Capacity::new(true);
+        capacity.plant(State::Exhausted, Some(HOUR));
+        let output = if session_start {
+            crate::session_start::SessionStartHook.process(HookInput::SessionStart {
+                session_id: Some("capacity-session".into()),
+                cwd: None,
+                extra: Value::Null,
+            })
+        } else {
+            crate::user_prompt::UserPromptSubmitHook::with_prompt_root(|| None).process(
+                HookInput::UserPromptSubmit {
+                    user_prompt: Some("continue".into()),
+                    session_id: Some("capacity-session".into()),
+                    extra: Value::Null,
+                },
+            )
+        }
+        .unwrap();
+        assert!(output["systemMessage"].is_string(), "{output}");
+        let stripped = strip_model_text(output.clone());
+        assert_eq!(stripped["systemMessage"], output["systemMessage"]);
+        assert!(stripped.get("additionalContext").is_none());
+        assert!(
+            stripped
+                .pointer("/hookSpecificOutput/additionalContext")
+                .is_none()
+        );
+    }
 }
 
 #[test]

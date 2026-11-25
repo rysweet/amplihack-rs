@@ -371,9 +371,6 @@ fn model_text_fields(output: &Value) -> Vec<&'static str> {
     {
         found.push("hookSpecificOutput.additionalContext");
     }
-    if output.get("systemMessage").is_some() {
-        found.push("systemMessage");
-    }
     found
 }
 
