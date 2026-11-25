@@ -68,7 +68,7 @@ Instead, change to a folder outside the source first, or work in your own folder
 const MAIN_BRANCH_ERROR: &str = "\
 ⛔ Direct commits to '{branch}' branch are not allowed.\n\
 \n\
-Commit on a branch and open a pull request.\n\
+Commit on a new branch (`git switch -c <name>`) and open a pull request.\n\
 \n\
 This protection cannot be bypassed with --no-verify.";
 

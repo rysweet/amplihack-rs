@@ -649,6 +649,37 @@ flush:
 }
 ```
 
+**Checked on the installed Claude Code (#1773).** On 2026-11-25 this shape was
+shown to stop a command on Claude Code 2.1.329, the version installed on the
+factory host. The hook was the real `amplihack-hooks pre-tool-use` binary built
+from commit `b7e33c5e1`, registered through a throwaway settings file, with the
+user's own settings, hooks and MCP servers left out. The session used the
+existing login in place; nothing was copied. In a new git repository on `main`,
+the agent was asked to run `touch <dir>/marker && git commit --allow-empty -m live`:
+
+```sh
+claude -p --setting-sources "" --settings <settings.json> --strict-mcp-config \
+  --permission-mode bypassPermissions --model haiku --max-turns 3 "<prompt>"
+```
+
+where `<settings.json>` is
+`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"<path>/amplihack-hooks pre-tool-use"}]}]}}`.
+
+| Hook answer | Marker file | Commit | Agent's report |
+| --- | --- | --- | --- |
+| Control: a script printing the old bare `{"block": true, "message": "Blocked by test."}` | created | made | "The command ran once and created an empty commit" |
+| The deny shape above, from the real binary | absent | none | "a PreToolUse hook refused the direct commit to `main`, so neither the `touch` nor the empty commit was executed, and I did not retry it" |
+
+The control shows that the test can tell the two shapes apart. Even with
+`bypassPermissions`, Claude Code honours
+`hookSpecificOutput.permissionDecision: "deny"` and ignores the bare `block`
+field. Copilot CLI 1.0.115 was not checked in this run. Its result rests on the check recorded on
+#1773 on 2026-10-31 (Copilot CLI 1.0.105), in which Copilot stopped the call
+only on the top-level `permissionDecision: "deny"`. The deny carries that field
+too. Repeat the check above after each Claude Code upgrade, because a change to
+the hook protocol would not show in the binary tests, which assert only the
+JSON.
+
 `<M>` is this fixed message. The command itself is never echoed.
 
 > Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. A socket file named `default`, or `-L default`, also counts as the user's server, even under a sandbox directory: give a private server another name (`-S "$SB/tmux.sock"`), and end one already running on a `default` path with `tmux -S <path> kill-session -t <name>` for each of its sessions, since by default a server exits when its last session ends. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.

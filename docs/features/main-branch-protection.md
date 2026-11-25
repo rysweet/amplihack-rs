@@ -77,7 +77,7 @@ git commit -m "fix: update authentication logic"
 ```
 ⛔ Direct commits to 'main' branch are not allowed.
 
-Commit on a branch and open a pull request.
+Commit on a new branch (`git switch -c <name>`) and open a pull request.
 
 This protection cannot be bypassed with --no-verify.
 ```
@@ -97,7 +97,7 @@ git commit --amend --no-edit
 ```
 ⛔ Direct commits to 'master' branch are not allowed.
 
-Commit on a branch and open a pull request.
+Commit on a new branch (`git switch -c <name>`) and open a pull request.
 
 This protection cannot be bypassed with --no-verify.
 ```
@@ -129,7 +129,7 @@ git commit --no-verify -m "quick fix"
 ```
 ⛔ Direct commits to 'main' branch are not allowed.
 
-Commit on a branch and open a pull request.
+Commit on a new branch (`git switch -c <name>`) and open a pull request.
 
 This protection cannot be bypassed with --no-verify.
 ```
@@ -420,7 +420,7 @@ tool does not reach it.
 ```rust
 MAIN_BRANCH_ERROR_MESSAGE = """⛔ Direct commits to '{branch}' branch are not allowed.
 
-Commit on a branch and open a pull request.
+Commit on a new branch (`git switch -c <name>`) and open a pull request.
 
 This protection cannot be bypassed with --no-verify."""
 ```
