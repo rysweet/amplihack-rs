@@ -167,6 +167,25 @@ fn an_empty_claimed_folder_is_removed_without_creating_a_lock_file() {
 }
 
 #[test]
+fn an_empty_folder_that_gains_a_file_after_approval_is_kept_with_the_file() {
+    // Issue #3263: an empty folder is removed with rmdir semantics, so a file
+    // written between the check and the delete is never deleted with it.
+    let fx = Fx::new();
+    let t = fx.root.join("empty-then-written");
+    fs::create_dir(&t).unwrap();
+    let ctx = Ctx::new(&fx.run(&fx.main));
+    let Verdict::Approved(approved) = inspect(&t, &ctx) else {
+        panic!("an empty folder owned by this user is approved");
+    };
+    fs::write(t.join("late.txt"), "written after approval").unwrap();
+    assert!(remove(approved).is_err());
+    assert_eq!(
+        fs::read_to_string(t.join("late.txt")).unwrap(),
+        "written after approval"
+    );
+}
+
+#[test]
 fn a_relative_claimed_path_is_refused_with_one_warning() {
     let fx = Fx::new();
     let out = run_end(

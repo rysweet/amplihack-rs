@@ -204,6 +204,10 @@ struct Approved {
     at: PathBuf,
     /// Its `(device, inode)` when it was approved.
     identity: (u64, u64),
+    /// Whether it was empty when it was approved. An empty folder has no
+    /// Cargo markers to recognise, so it is removed only while it is still
+    /// empty, with `rmdir` semantics and never recursively (issue #3263).
+    empty: bool,
     locks: Vec<target_remove::HeldLock>,
 }
 
@@ -289,6 +293,7 @@ fn inspect(candidate: &Path, ctx: &Ctx) -> Verdict {
     Verdict::Approved(Approved {
         at,
         identity: (meta.dev(), meta.ino()),
+        empty: entries.count == 0,
         locks,
     })
 }
@@ -330,15 +335,26 @@ fn remove(approved: Approved) -> Result<(), String> {
     let Approved {
         at,
         identity,
+        empty,
         locks,
     } = approved;
     let meta = fs::symlink_metadata(&at).map_err(|error| format!("cannot examine it: {error}"))?;
     if !meta.file_type().is_dir() || (meta.dev(), meta.ino()) != identity {
         return Err("it changed while it was being checked".to_string());
     }
-    // `remove_dir_all` does not follow links inside the tree on the pinned
-    // toolchain (CVE-2022-21658).
-    let outcome = fs::remove_dir_all(&at).map_err(|error| format!("cannot remove it: {error}"));
+    // A folder approved because it was empty is removed with `remove_dir`,
+    // so it goes only if it is still empty. If anything was written into it
+    // since, the call fails and the folder and its contents are kept.
+    //
+    // A Cargo target is removed whole with `remove_dir_all`. On the pinned
+    // toolchain that call does not follow links inside the tree
+    // (CVE-2022-21658).
+    let outcome = if empty {
+        fs::remove_dir(&at)
+    } else {
+        fs::remove_dir_all(&at)
+    }
+    .map_err(|error| format!("cannot remove it: {error}"));
     drop(locks);
     outcome?;
     tracing::info!(path = ?at, "removed this run's own build output");
