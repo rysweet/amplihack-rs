@@ -247,7 +247,7 @@ fn rejected_names_change_neither_configuration_nor_index() {
 }
 
 #[test]
-fn repeating_a_command_finishes_an_interrupted_publication() {
+fn repeating_enable_publishes_a_previously_skipped_skill_when_available() {
     let _lock = test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -260,8 +260,12 @@ fn repeating_a_command_finishes_an_interrupted_publication() {
         ".claude/skills/extra/SKILL.md",
         "independent skill",
     );
-    assert!(change("extra", true).is_err());
+    change("extra", true).unwrap();
     assert!(crate::user_config::list_selection().includes_skill("extra"));
+    assert_eq!(
+        fs::read(home.path().join(".claude/skills/extra/SKILL.md")).unwrap(),
+        b"independent skill"
+    );
     fs::rename(
         home.path().join(".claude/skills/extra"),
         home.path().join("saved-extra"),
