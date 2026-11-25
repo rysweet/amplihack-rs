@@ -12,10 +12,15 @@
 //! - a claimed folder holding one unrelated file is kept with that file;
 //! - the run's exit status is the same in both cases.
 //!
-//! The first test passes on the base of #3263's fix as well: an empty claimed
-//! folder has been removed since v1.2.194 (#2906), and the host report in
-//! #3263 did not reproduce. These tests pin that behaviour for a whole run;
-//! they do not reproduce the reported fault, whose cause is not known.
+//! Both tests pass on the base of #3273 as well: an empty claimed folder has
+//! been removed since v1.2.194, the first tag containing #2906, and the host
+//! report in #3263 did not reproduce. These tests are regression pins for a
+//! whole run. They are not evidence that the host fault is fixed: they do not
+//! reproduce it, and its cause is still open in #3274. The behaviour #3273
+//! changes, removing an empty folder only while it is still empty, is tested by
+//! the unit test
+//! `an_empty_folder_that_gains_a_file_after_approval_is_kept_with_the_file`
+//! in `src/commands/cleanup/tests_build_output.rs`.
 
 #![cfg(unix)]
 

@@ -859,19 +859,27 @@ A `CARGO_TARGET_DIR` that is unset or does not exist is skipped silently.
 
 #### An empty claimed folder that was kept
 
-An empty claimed folder has been removed at the end of a run since v1.2.194
-(#2906). Releases up to v1.2.193 have no end-of-run removal of a claimed
-folder at all. If an empty claimed folder is still there after a run on
-v1.2.194 or later, and no warning names it, the end-of-run step did not
-consider it. These are the known causes:
+An empty claimed folder has been removed at the end of a run since v1.2.194,
+the first release tag that contains #2906. Releases up to v1.2.193 do not
+contain `build_output.rs`, so they have no end-of-run removal of a claimed
+folder at all. To check which case applies to a host, run `amplihack --version`
+with the binary the launcher used.
 
-- the run was nested: `AMPLIHACK_RUN_ID` was set and not empty in the
-  environment the launcher gave it, so the claim was ignored (see
-  [Nested runs](#nested-runs));
-- `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` was not exactly `1` in the
-  environment of the `amplihack recipe run` process;
-- the run never reached its end, for example because it was killed with
-  `SIGKILL`.
+If an empty claimed folder is still there after a run on v1.2.194 or later,
+and no warning names it, the end-of-run step did not consider it. The code
+allows three ways for that to happen. They are possible causes, not
+established ones: the empty folders reported in #3263 did not reproduce, and
+their cause is still open in #3274.
+
+- The run was nested. `Launch::from_env` in `build_output.rs` treats a run as
+  nested when `AMPLIHACK_RUN_ID` is set and not empty, and a nested run
+  ignores the claim (see [Nested runs](#nested-runs)).
+- `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` was not `1` in the environment of the
+  `amplihack recipe run` process. `private_target_dir_claimed` in
+  `cleanup/mod.rs` trims surrounding whitespace and then requires exactly `1`.
+- The run never reached its end. The step is called from `run_dir.rs` only
+  after the run's report is written, so a run killed with `SIGKILL`, or one
+  whose process died before then, skips it.
 
 A claimed folder that the step did consider and rejected is always named in a
 warning, with the reason.
