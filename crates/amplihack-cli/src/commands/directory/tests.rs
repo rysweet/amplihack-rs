@@ -72,6 +72,76 @@ fn a_missing_index_is_an_error_that_names_install() {
     );
 }
 
+#[test]
+fn an_index_with_no_entry_is_an_error_for_find_and_list() {
+    for text in [
+        "",
+        "not an entry\nskill\tonly-three\t/p\n",
+        "thing\tx\t/p\td\n",
+    ] {
+        let (_dir, staged) = staged_with_index(text);
+        assert!(
+            run_text(&staged, DirectoryCommands::List).is_err(),
+            "{text:?}"
+        );
+        assert!(run_text(&staged, find(&[])).is_err(), "{text:?}");
+        assert!(run_text(&staged, find(&["x"])).is_err(), "{text:?}");
+    }
+}
+
+#[test]
+fn a_word_with_a_prefix_is_matched_by_the_part_after_its_last_colon() {
+    let (_dir, staged) = staged_with_index(INDEX);
+    let out = run_text(&staged, find(&["amplihack:core:guide"])).unwrap();
+    assert_eq!(out.lines().count(), 2, "{out}");
+    assert!(out.lines().all(|line| line.starts_with("agent\tguide\t")));
+    let out = run_text(&staged, find(&["amplihack:PDF"])).unwrap();
+    assert_eq!(
+        out,
+        "skill\tpdf\tRead and write PDF files\t/h/skills/pdf/SKILL.md\n"
+    );
+    // The part before the colon is not searched.
+    assert_eq!(
+        run_text(&staged, find(&["pdf:guide"]))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    assert_eq!(run_text(&staged, find(&["guide:nomatch"])).unwrap(), "");
+}
+
+/// A writer whose reader has gone, as `head -1` is once it has its line.
+struct Closed(std::io::ErrorKind);
+
+impl Write for Closed {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(self.0.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_closed_standard_output_ends_the_command_normally() {
+    let (_dir, staged) = staged_with_index(INDEX);
+    let broken = || Closed(std::io::ErrorKind::BrokenPipe);
+    run_in(&staged, DirectoryCommands::List, &mut broken()).unwrap();
+    run_in(&staged, find(&["guide"]), &mut broken()).unwrap();
+    run_in(&staged, find(&[]), &mut broken()).unwrap();
+}
+
+#[test]
+fn another_failure_to_write_is_still_an_error() {
+    let (_dir, staged) = staged_with_index(INDEX);
+    let other = || Closed(std::io::ErrorKind::PermissionDenied);
+    assert!(run_in(&staged, DirectoryCommands::List, &mut other()).is_err());
+    assert!(run_in(&staged, find(&["guide"]), &mut other()).is_err());
+    assert!(run_in(&staged, find(&[]), &mut other()).is_err());
+}
+
 fn snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];

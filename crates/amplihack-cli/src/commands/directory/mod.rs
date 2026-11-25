@@ -23,7 +23,9 @@ use std::path::Path;
 #[derive(Subcommand, Debug)]
 pub enum DirectoryCommands {
     /// Print every skill and agent whose name or description contains all
-    /// the words, ignoring letter case. With no words, print the names only.
+    /// the words, ignoring letter case. A word that contains a colon is
+    /// matched by the part after its last colon. With no words, print the
+    /// names only.
     ///
     /// Each match is one tab-separated line: type, name, description, path.
     Find {
@@ -59,7 +61,13 @@ fn run_in(staged: &Path, command: DirectoryCommands, out: &mut impl Write) -> Re
             crate::commands::install::paths::sanitize_path(&path)
         );
     };
-    match command {
+    if entries.is_empty() {
+        bail!(
+            "the skills and agents index at {} has no entries; run `amplihack install` to write it",
+            crate::commands::install::paths::sanitize_path(&path)
+        );
+    }
+    let written = match command {
         DirectoryCommands::List => print_entries(entries.iter(), out),
         DirectoryCommands::Find { words } if words.is_empty() => print_names(&entries, out),
         DirectoryCommands::Find { words } => {
@@ -70,10 +78,19 @@ fn run_in(staged: &Path, command: DirectoryCommands, out: &mut impl Write) -> Re
             }
             print_entries(matches.into_iter(), out)
         }
+    };
+    // A reader that stops early, as in `directory find word | head -1`, closes
+    // the pipe. That is a normal end of the output, not a failure.
+    match written.and_then(|()| out.flush()) {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other.map_err(Into::into),
     }
 }
 
-fn print_entries<'a>(entries: impl Iterator<Item = &'a Entry>, out: &mut impl Write) -> Result<()> {
+fn print_entries<'a>(
+    entries: impl Iterator<Item = &'a Entry>,
+    out: &mut impl Write,
+) -> std::io::Result<()> {
     for entry in entries {
         writeln!(
             out,
@@ -87,7 +104,7 @@ fn print_entries<'a>(entries: impl Iterator<Item = &'a Entry>, out: &mut impl Wr
     Ok(())
 }
 
-fn print_names(entries: &[Entry], out: &mut impl Write) -> Result<()> {
+fn print_names(entries: &[Entry], out: &mut impl Write) -> std::io::Result<()> {
     for (kind, heading) in [(EntryKind::Skill, "skills:"), (EntryKind::Agent, "agents:")] {
         let names: BTreeSet<&str> = entries
             .iter()

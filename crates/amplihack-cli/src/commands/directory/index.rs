@@ -9,7 +9,9 @@
 //!
 //! Each line is `type \t name \t absolute path \t description \n`. Lines are
 //! sorted by type, then name, then path, and the file holds nothing else, so
-//! two installs of the same bundle write the same bytes.
+//! two installs of the same bundle write the same bytes. The reader uses the
+//! first four fields of a line and ignores any after them, so a later version
+//! can add a field.
 //!
 //! The index is built from the staged `skills` and `agents` trees only. The
 //! user's own skills live in `<home>/.claude/skills` and commands are never
@@ -59,12 +61,17 @@ pub struct Entry {
 
 impl Entry {
     /// True when every word occurs in the name or the description, without
-    /// regard to letter case. The path is not searched.
+    /// regard to letter case. The path is not searched. A word that contains
+    /// a colon is matched by the part after its last colon, so a prefixed name
+    /// such as `amplihack:core:reviewer` is looked up as `reviewer`.
     pub fn matches_all(&self, words: &[String]) -> bool {
         let haystack = format!("{} {}", self.name, self.description).to_lowercase();
-        words
-            .iter()
-            .all(|word| haystack.contains(&word.to_lowercase()))
+        words.iter().all(|word| {
+            let needle = word
+                .rsplit_once(':')
+                .map_or(word.as_str(), |(_, rest)| rest);
+            haystack.contains(&needle.to_lowercase())
+        })
     }
 }
 
@@ -124,10 +131,11 @@ pub fn render(entries: &[Entry]) -> Result<String> {
 /// sees half of it, and it is not rewritten when its bytes already match.
 ///
 /// When the index cannot be built or written, any index left from an earlier
-/// install is removed before the error is returned. Its paths point into the
-/// staging the install has just replaced, so keeping it would let
-/// `amplihack directory` serve stale paths; without it the command reports
-/// the missing index and names `amplihack install`.
+/// install is removed before the error is returned. The staged trees are
+/// replaced at the same paths, but an index that could not be rebuilt may name
+/// files the new bundle no longer has, so keeping it would let
+/// `amplihack directory` serve paths to files that are gone; without it the
+/// command reports the missing index and names `amplihack install`.
 pub fn write_index(staged: &Path) -> Result<PathBuf> {
     let result = build_and_write_index(staged);
     if result.is_err() {
@@ -159,19 +167,36 @@ fn build_and_write_index(staged: &Path) -> Result<PathBuf> {
     let parent = path.parent().context("index path has no parent")?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     let temporary = parent.join(format!(".{INDEX_FILE_NAME}.{}", uuid::Uuid::new_v4()));
-    fs::write(&temporary, rendered.as_bytes())
-        .with_context(|| format!("failed to write {}", temporary.display()))?;
-    if let Err(error) = fs::rename(&temporary, &path) {
-        let _ = fs::remove_file(&temporary);
+    write_then_rename(&temporary, &path, rendered.as_bytes(), |file, bytes| {
+        fs::write(file, bytes)
+    })?;
+    Ok(path)
+}
+
+/// Write `bytes` to `temporary` with `write`, then rename it over `path`. The
+/// temporary file is removed when either step fails.
+fn write_then_rename(
+    temporary: &Path,
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&Path, &[u8]) -> std::io::Result<()>,
+) -> Result<()> {
+    if let Err(error) = write(temporary, bytes) {
+        let _ = fs::remove_file(temporary);
+        return Err(error).with_context(|| format!("failed to write {}", temporary.display()));
+    }
+    if let Err(error) = fs::rename(temporary, path) {
+        let _ = fs::remove_file(temporary);
         return Err(error).with_context(|| format!("failed to replace {}", path.display()));
     }
-    Ok(path)
+    Ok(())
 }
 
 /// Read the index at `path`. Returns `Ok(None)` when the file does not exist.
 ///
-/// A line without exactly four fields, or with an unknown type, is skipped
-/// with a warning on stderr that gives its line number.
+/// A line with fewer than four fields, or with an unknown type, is skipped
+/// with a warning on stderr that gives its line number. Fields after the
+/// fourth are ignored.
 pub fn read_index(path: &Path) -> Result<Option<Vec<Entry>>> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -188,7 +213,7 @@ fn parse_index(text: &str) -> Vec<Entry> {
     for (number, line) in text.lines().enumerate() {
         let fields: Vec<&str> = line.split('\t').collect();
         let kind = match fields.as_slice() {
-            [kind, _, _, _] => EntryKind::parse(kind),
+            [kind, _, _, _, ..] => EntryKind::parse(kind),
             _ => None,
         };
         let Some(kind) = kind else {
@@ -285,8 +310,9 @@ struct FrontMatter {
 
 /// The `name` and `description` of the YAML front matter of `file`, each on
 /// one line. Top-level keys win over the same keys under `meta`. A file with
-/// no front matter gives empty fields; one whose front matter cannot be read
-/// gives `None` after a warning on stderr.
+/// no front matter gives empty fields; one whose front matter cannot be read,
+/// because it cannot be parsed or is opened and never closed, gives `None`
+/// after a warning on stderr.
 fn read_front_matter(file: &Path) -> Option<FrontMatter> {
     let warn = |reason: &str| {
         eprintln!(
@@ -301,8 +327,13 @@ fn read_front_matter(file: &Path) -> Option<FrontMatter> {
             return None;
         }
     };
-    let Some(yaml) = front_matter_block(&text) else {
-        return Some(FrontMatter::default());
+    let yaml = match front_matter_block(&text) {
+        FrontMatterBlock::Absent => return Some(FrontMatter::default()),
+        FrontMatterBlock::Unclosed => {
+            warn("the front matter is opened and never closed");
+            return None;
+        }
+        FrontMatterBlock::Closed(yaml) => yaml,
     };
     let value: serde_yaml::Value = match serde_yaml::from_str(yaml) {
         Ok(value) => value,
@@ -325,21 +356,34 @@ fn read_front_matter(file: &Path) -> Option<FrontMatter> {
     })
 }
 
-/// The text between an opening `---` line at the very start of `text` and
-/// the next `---` line, or `None` when the file has no front matter.
-fn front_matter_block(text: &str) -> Option<&str> {
+/// Where the front matter of a file is.
+#[derive(Debug, PartialEq, Eq)]
+enum FrontMatterBlock<'a> {
+    /// The file does not start with a `---` line.
+    Absent,
+    /// The text between the opening `---` line and the next `---` line.
+    Closed(&'a str),
+    /// A `---` line opens the front matter and no later `---` line closes it.
+    Unclosed,
+}
+
+/// Find the front matter that a `---` line at the very start of `text` opens.
+fn front_matter_block(text: &str) -> FrontMatterBlock<'_> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let rest = text
+    let Some(rest) = text
         .strip_prefix("---\n")
-        .or_else(|| text.strip_prefix("---\r\n"))?;
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
+        return FrontMatterBlock::Absent;
+    };
     let mut offset = 0;
     for line in rest.split_inclusive('\n') {
         if line.trim_end_matches(['\r', '\n']) == "---" {
-            return Some(&rest[..offset]);
+            return FrontMatterBlock::Closed(&rest[..offset]);
         }
         offset += line.len();
     }
-    None
+    FrontMatterBlock::Unclosed
 }
 
 /// `text` with every run of whitespace or control characters made one space,
@@ -450,6 +494,72 @@ mod tests {
     }
 
     #[test]
+    fn a_line_with_more_than_four_fields_is_read_and_one_with_fewer_is_skipped() {
+        let entries = parse_index(
+            "skill\ta\t/p/a/SKILL.md\tfirst\tlater field\tand another\n\
+             agent\tb\t/p/b.md\n\
+             agent\tc\t/p/c.md\tthird\n",
+        );
+        let read: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|e| (e.name.as_str(), e.description.as_str()))
+            .collect();
+        assert_eq!(read, [("a", "first"), ("c", "third")]);
+        assert_eq!(entries[0].path, Path::new("/p/a/SKILL.md"));
+    }
+
+    #[test]
+    fn front_matter_that_is_opened_and_never_closed_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str, text: &str| {
+            let path = dir.path().join(name);
+            write(&path, text);
+            path
+        };
+        // `None` is the answer that comes with a warning on stderr.
+        assert!(read_front_matter(&file("lf.md", "---\nname: x\ndescription: d\n")).is_none());
+        assert!(read_front_matter(&file("crlf.md", "---\r\nname: x\r\n")).is_none());
+        assert!(read_front_matter(&file("opener.md", "---\n")).is_none());
+        // Front matter that is closed, and a file with none, give no warning.
+        let closed = read_front_matter(&file("closed.md", "---\nname: x\n---\n")).unwrap();
+        assert_eq!(closed.name, "x");
+        let plain = read_front_matter(&file("plain.md", "# Title\n---\nbody\n")).unwrap();
+        assert_eq!((plain.name.as_str(), plain.description.as_str()), ("", ""));
+
+        let staged = dir.path().join("staged");
+        write(
+            &staged.join("agents/unclosed.md"),
+            "---\nname: named\ndescription: d\n",
+        );
+        let entries = collect_entries(&staged).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "unclosed", "the file stem");
+        assert_eq!(entries[0].description, "");
+    }
+
+    #[test]
+    fn a_failed_write_of_the_temporary_file_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let temporary = dir.path().join(".index.tmp");
+        let target = dir.path().join("index.tsv");
+        let result = write_then_rename(&temporary, &target, b"text", |file, bytes| {
+            // A write that gets part of the way, as one does on a full disk.
+            fs::write(file, &bytes[..2])?;
+            Err(std::io::Error::other("disk full"))
+        });
+        assert!(result.is_err());
+        assert!(!temporary.exists(), "the temporary file was left behind");
+        assert!(!target.exists());
+
+        write_then_rename(&temporary, &target, b"text", |file, bytes| {
+            fs::write(file, bytes)
+        })
+        .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"text");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
     fn matching_ignores_case_needs_every_word_and_skips_the_path() {
         let entry = Entry {
             kind: EntryKind::Skill,
@@ -480,6 +590,8 @@ mod tests {
         assert_eq!(read_index(&path).unwrap().unwrap().len(), 1);
     }
 
+    // Limited to Unix because other systems do not allow a tab in a file name.
+    #[cfg(unix)]
     #[test]
     fn a_failed_rewrite_removes_the_previous_index() {
         let dir = tempfile::tempdir().unwrap();

@@ -50,6 +50,24 @@ fn write_fixture_bundle(repo: &Path) {
     );
 }
 
+/// Every file called `name` anywhere under `root`.
+fn files_named(root: &Path, name: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in fs::read_dir(&folder).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                folders.push(entry.path());
+            } else if entry.file_name() == name {
+                found.push(entry.path());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 struct InstalledHome {
     _guard: std::sync::MutexGuard<'static, ()>,
     _env: crate::test_support::EnvGuard,
@@ -164,13 +182,13 @@ fn install_writes_one_line_for_each_bundle_skill_and_agent() {
         entries.iter().all(|e| e.name != USER_SKILL),
         "a skill in the user's own folder is never in the index"
     );
-    assert!(
-        !home
-            .temp
-            .path()
-            .join("elsewhere-amplihack-home")
-            .join(INDEX_FILE_NAME)
-            .exists()
+    assert_eq!(
+        files_named(
+            &home.temp.path().join("elsewhere-amplihack-home"),
+            INDEX_FILE_NAME
+        ),
+        Vec::<PathBuf>::new(),
+        "nothing is written under the folder AMPLIHACK_HOME points at"
     );
 }
 
@@ -204,4 +222,24 @@ fn directory_reads_the_index_install_wrote_when_amplihack_home_is_elsewhere() {
     })
     .unwrap();
     assert!(none.is_empty());
+}
+
+#[test]
+fn uninstall_removes_the_index() {
+    let home = installed_home();
+    home.install();
+    assert!(
+        home.index().is_file(),
+        "precondition: install wrote the index"
+    );
+
+    // `run_uninstall` deletes under HOME, so check that HOME is the fixture.
+    let canonical = |path: &Path| path.canonicalize().unwrap();
+    assert_eq!(
+        canonical(Path::new(&std::env::var_os("HOME").unwrap())),
+        canonical(home.temp.path())
+    );
+    run_uninstall().unwrap();
+
+    assert!(!home.index().exists(), "the index survived the uninstall");
 }
