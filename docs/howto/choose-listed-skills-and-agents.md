@@ -97,13 +97,21 @@ counting only entries still in the bundle and outside the selection.
 
 Only the command that writes the notice prints it, on standard error at a
 terminal and outside a recipe step. No later command displays it. The file
-remains available to read. Notice failures produce warnings and never change
-the command's result. Enable, disable and configuration changes never write
+remains available to read. If the file cannot be saved, the command still
+prints the notice and warns. Notice failures never change the command's
+result. Enable, disable and configuration changes never write
 it. A fresh default installation needs no upgrade notice.
 
 If publication fails, the command reports the failed tool and any completed
 tools. The desired configuration stays saved. Correct the reported problem
 and repeat the same command to finish applying it.
+
+## Keep your own Copilot skills
+
+In a Copilot home, amplihack manages the top-level Markdown of the skill
+folders named after bundle skills, including the nested skills
+`analyzing-deeply`, `architecting-solutions`, `creating-pull-requests`, `researching-topics`, `reviewing-code`, `setting-up-projects` and `testing-code`, under both settings, so a Copilot skill of your own needs a
+folder name the bundle does not use.
 
 ## When loading the repository as a plugin
 

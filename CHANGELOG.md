@@ -38,6 +38,10 @@ Unreleased changes appear at the top under `[Unreleased]`.
   package provides agent personas and retains `bin/hook`. Copilot no longer generates
   the combined agent section in `instructions.md`; updates remove only the
   section amplihack wrote and preserve surrounding user text.
+- In a Copilot home, amplihack now also manages the top-level Markdown of the
+  skill folders named after the seven nested bundle skills, `analyzing-deeply`, `architecting-solutions`, `creating-pull-requests`, `researching-topics`, `reviewing-code`, `setting-up-projects` and `testing-code`,
+  under both settings, so a personal Copilot skill needs a folder name the
+  bundle does not use.
 
 See [Choose which skills and agents are listed](docs/howto/choose-listed-skills-and-agents.md),
 the [directory command](docs/reference/directory-command.md) and

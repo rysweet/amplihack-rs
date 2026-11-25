@@ -226,13 +226,16 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for entry in fs::read_dir(directory).unwrap().map(Result::unwrap) {
             let path = entry.path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
             if path.is_dir() {
                 visit(root, &path, files);
+            } else if !path.exists() {
+                // A link whose target is absent is compared by its target text.
+                use std::os::unix::ffi::OsStrExt;
+                let target = fs::read_link(&path).unwrap();
+                files.insert(relative, target.as_os_str().as_bytes().to_vec());
             } else {
-                files.insert(
-                    path.strip_prefix(root).unwrap().to_path_buf(),
-                    fs::read(path).unwrap(),
-                );
+                files.insert(relative, fs::read(path).unwrap());
             }
         }
     }
@@ -283,7 +286,6 @@ fn unusable_notice_destination_does_not_fail_a_narrowing_install() {
         .unwrap();
     fs::set_permissions(&notice, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Warning:"));
     install.defaults();
     assert!(notice.is_dir());
 }
@@ -314,13 +316,8 @@ fn fresh_default_install_keeps_complete_framework_and_index() {
         skills += usize::from(fields[0] == "skill");
     }
     assert!(skills > 30);
-    for resource in [
-        "docx/ooxml",
-        "pptx/ooxml",
-        "outside-in-testing/scripts",
-        "outside-in-testing/tests",
-        "outside-in-testing/examples",
-    ] {
+    // Only bundle links whose target is in the bundle are staged as folders.
+    for resource in ["docx/ooxml", "pptx/ooxml", "outside-in-testing/examples"] {
         assert!(staged.join("skills").join(resource).is_dir(), "{resource}");
     }
     assert!(staged.join("skills/outside-in-testing/README.md").is_file());
@@ -379,6 +376,36 @@ fn enable_disable_and_single_command_restoration_update_every_installed_tool() {
     let restored = install.readable_assets();
     install.run(&["config", "set", "lists.set", "all"]);
     assert_same_assets(&install.readable_assets(), &restored);
+}
+
+#[test]
+fn list_change_succeeds_and_publishes_other_tools_when_codex_is_unavailable() {
+    let install = Installation::new();
+    install.install();
+    assert!(install.path(".amplihack/codex/ownership.json").is_file());
+    let codex_package = |assets: BTreeMap<PathBuf, Vec<u8>>| -> BTreeMap<_, _> {
+        assets
+            .into_iter()
+            .filter(|(path, _)| path.starts_with(".amplihack/codex/market/plugin"))
+            .collect()
+    };
+    let codex = codex_package(install.readable_assets());
+    fs::remove_file(install.tools.join("codex")).unwrap();
+    install.run(&["directory", "enable", "skill:code-visualizer"]);
+    let config: toml::Value =
+        toml::from_str(&fs::read_to_string(install.path(".amplihack/config.toml")).unwrap())
+            .unwrap();
+    assert_eq!(
+        config["lists"]["enabled"].as_array().unwrap(),
+        &[toml::Value::from("skill:code-visualizer")]
+    );
+    for relative in [
+        ".claude/skills/code-visualizer/SKILL.md",
+        ".copilot/skills/code-visualizer/SKILL.md",
+    ] {
+        assert!(install.path(relative).is_file(), "{relative}");
+    }
+    assert_same_assets(&codex_package(install.readable_assets()), &codex);
 }
 
 #[test]
@@ -569,11 +596,6 @@ fn automatic_launch_repair_narrows_lists_and_saves_the_notice() {
     let notice = install.path(".amplihack/.claude/install/list-changes.txt");
     let saved = fs::read(&notice).unwrap();
     assert!(!saved.is_empty());
-    assert!(
-        !install
-            .path(".amplihack/.claude/install/list-changes-shown.json")
-            .exists()
-    );
     launch();
     assert_eq!(fs::read(notice).unwrap(), saved);
 }

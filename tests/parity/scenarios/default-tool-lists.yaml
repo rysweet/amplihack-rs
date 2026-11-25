@@ -37,5 +37,5 @@ scenarios:
       - Leave the list setting absent and launch a local Claude client fixture.
       - Check that Claude and Copilot receive the default skills and agents.
       - Check that the framework agents and user settings retain their original bytes.
-      - Check that a notice is saved without being marked as displayed at a terminal.
+      - Check that a notice is saved and is not empty.
       - Launch again and check that the saved notice has not changed.

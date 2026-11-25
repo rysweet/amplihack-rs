@@ -66,8 +66,9 @@ with a pointer to `amplihack directory find` before configuration changes.
 Both mutations save qualified identities in the user-only
 [`lists.enabled` setting](user-config.md#listsset-and-listsenabled). They
 immediately apply the selection to every tool already installed for amplihack
-and leave the index unchanged. They may refresh older framework definitions
-through the existing installer before publishing tool assets. A missing or
+and leave the index unchanged. On an installation that does not match this
+binary, `enable` and `disable` reject the change, leave the configuration and
+tool assets unchanged, and ask you to run `amplihack install`. A missing or
 empty index remains an error asking for `amplihack install`.
 
 In `default` mode, tools list the default set plus extensions. In `all` mode,
@@ -80,7 +81,9 @@ only. Disabling a known non-default entry that is already unenabled succeeds.
 Repeated commands preserve the desired state and can finish publication
 interrupted by an earlier failure. If a tool fails, the command exits
 non-zero, reports that tool and any completed tools, and keeps the desired
-configuration for a retry.
+configuration for a retry. When Codex is installed for amplihack but its
+executable is not available, Codex is skipped with a warning and does not
+change the exit code.
 
 Changes apply from the next tool session. The repository plugin route always
 lists the shared defaults and does not read these settings.
@@ -94,6 +97,7 @@ lists the shared defaults and does not read these settings.
 | The index is missing, or the file has no entry | A message on standard error that the index is missing or has no entries, which asks you to run `amplihack install` | non-zero |
 | A line of the index has fewer than four fields, or an unknown type | A warning on standard error with the line number; the line is skipped | unchanged |
 | An enable or disable name is unknown or ambiguous, or disable targets a default entry | A diagnostic on standard error; configuration is unchanged | non-zero |
+| The installation does not match this binary | A message on standard error asking you to run `amplihack install`; nothing is changed | non-zero |
 | Publication fails after a mutation | A diagnostic identifying failed and completed applications; desired configuration remains saved | non-zero |
 
 ## Where the index lives

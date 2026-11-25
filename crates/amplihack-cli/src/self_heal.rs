@@ -85,9 +85,9 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     // Issue #1808: `cleanup` needs no framework assets, and its dry run must
     // write nothing at all, not even the bundle-compatibility cache.
     "cleanup",
-    // Discovery must write nothing, including the compatibility cache.
-    // Mutations validate the index first and refresh sources through the list
-    // publisher, which preserves that index and updates only installed tools.
+    // Issue #3220: `directory` only reads the index of installed skills and
+    // agents, and must not write the bundle-compatibility cache; `enable` and
+    // `disable` also save the list settings.
     "directory",
 ];
 
