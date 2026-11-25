@@ -5,9 +5,7 @@ use super::harness::*;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 fn resolved_hooks(f: &Fixture) -> Value {
     let binary = std::env::var("CODEX_TEST_BINARY").expect("set CODEX_TEST_BINARY");
@@ -19,22 +17,13 @@ fn resolved_hooks(f: &Fixture) -> Value {
         .env("CODEX_HOME", f.generated(NAME))
         .env("PATH", std::env::var_os("PATH").unwrap())
         .current_dir(f.home())
-        .process_group(0)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let result = (|| -> anyhow::Result<Value> {
         let mut request = |id: u64, method: &str, params: Value| -> anyhow::Result<Value> {
             writeln!(
@@ -43,10 +32,9 @@ fn resolved_hooks(f: &Fixture) -> Value {
                 json!({"id":id,"method":method,"params":params})
             )?;
             stdin.flush()?;
-            let deadline = Instant::now() + Duration::from_secs(30);
             loop {
-                let line =
-                    rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))??;
+                let mut line = String::new();
+                anyhow::ensure!(stdout.read_line(&mut line)? > 0, "Codex closed its output");
                 let response: Value = serde_json::from_str(&line)?;
                 if response["id"] == id {
                     anyhow::ensure!(response.get("error").is_none(), "{response}");
@@ -69,11 +57,9 @@ fn resolved_hooks(f: &Fixture) -> Value {
         let thread = request(2, "thread/start", json!({"cwd":f.home().to_str().unwrap()}))?;
         request(3, "hooks/list", json!({"threadId":thread["thread"]["id"]}))
     })();
-    // Clean up even after a protocol error or timeout, including descendants.
-    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    // Reap only the server this test started, including after a protocol error.
+    child.kill().unwrap();
     child.wait().unwrap();
-    drop(rx);
-    reader.join().unwrap();
     result.expect("native hooks/list on a loaded thread")
 }
 
