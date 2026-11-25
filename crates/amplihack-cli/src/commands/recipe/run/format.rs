@@ -384,6 +384,7 @@ fn reason_text(reason: Fallback, column: &str) -> String {
         Fallback::NoMapping => format!("no entry in the `{column}` column"),
         Fallback::NoModel => format!("the `{column}` entry names no model"),
         Fallback::Gateway => "the LiteLLM gateway routes on the model name".to_string(),
+        Fallback::LocalModel => "the local-model profile sets the model and effort".to_string(),
     }
 }
 

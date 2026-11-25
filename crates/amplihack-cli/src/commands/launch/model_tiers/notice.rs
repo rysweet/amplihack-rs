@@ -69,6 +69,12 @@ pub(crate) enum Notice {
     /// The launch goes through the LiteLLM gateway, which routes on the model
     /// name and was never configured to route the tier's model.
     Gateway { harness: String, tier: Tier },
+    /// A local-model Codex launch: its profile sets the model and the
+    /// reasoning effort, so the tier adds neither.
+    LocalModel { harness: String, tier: Tier },
+    /// A local-model Codex launch: `model.force` is not applied, because the
+    /// profile sets the model.
+    LocalModelForce { harness: String },
     /// `model.force` replaced what the command line asked for.
     Forced { harness: String, model: String },
     /// `model.force` named something that could act as another argument.
@@ -250,6 +256,15 @@ impl Notice {
                 "amplihack: model tier `{}` is not applied to `{harness}`: the LiteLLM gateway \
                  routes on the model name. Set AMPLIHACK_LITELLM_MODEL to change it.",
                 tier.as_str()
+            ),
+            Notice::LocalModel { harness, tier } => format!(
+                "amplihack: model tier `{}` is not applied to `{harness}`: a local-model launch \
+                 takes its model and reasoning effort from the profile.",
+                tier.as_str()
+            ),
+            Notice::LocalModelForce { harness } => format!(
+                "amplihack: model.force is not applied to `{harness}`: a local-model launch \
+                 takes its model from the profile."
             ),
             Notice::Forced { harness, model } => format!(
                 "amplihack: model.force is set, so `{harness}` is launched with `--model {model}` \
