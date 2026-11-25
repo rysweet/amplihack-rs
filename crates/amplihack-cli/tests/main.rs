@@ -29,6 +29,12 @@ mod isolated_amplihack;
 mod pinned_runner;
 mod support;
 
+#[path = "issue_3240_list_config.rs"]
+mod issue_3240_list_config;
+
+#[path = "issue_3240_list_scenarios.rs"]
+mod issue_3240_list_scenarios;
+
 #[path = "issue_2922_quiet_child_purge.rs"]
 mod issue_2922_quiet_child_purge;
 
@@ -623,6 +629,11 @@ mod issue_2756_user_git_config;
 // gate: the behaviour needs no `/proc`.
 #[path = "issue_2886_build_output_cleanup.rs"]
 mod issue_2886_build_output_cleanup;
+
+// Issue #3263: a claimed Cargo output folder that stayed empty because the run
+// never built with Cargo is removed when the run ends.
+#[path = "issue_3263_empty_claimed_target.rs"]
+mod issue_3263_empty_claimed_target;
 
 // Issue #2769: the #2663 outcome rule is the top-level drive's, not every
 // `autodrive-*` sub-recipe's.

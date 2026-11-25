@@ -16,13 +16,13 @@
 //! * every component path is `./`-relative and stays inside the plugin root
 //!   (symlinks or `..` escaping it are refused at load);
 //! * `agents` lists files, not directories (directories are "Invalid input"),
-//!   and covers exactly the Claude agents under `amplifier-bundle/agents/`
-//!   so a new agent cannot be silently left out;
+//!   and exposes exactly the shared default agents;
 //! * the plugin's hooks mirror the events `amplihack install` registers;
 //! * the plugin carries no `version`, so installs follow the commit;
 //! * the hook wrapper never breaks a session and never doubles hooks that
 //!   `amplihack install` already registered.
 
+use amplihack_utils::list_selection::{DEFAULT_AGENTS, DEFAULT_SKILLS};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
@@ -89,9 +89,8 @@ fn manifest_identity_matches_the_package() {
         plugin["author"].is_object() && plugin["author"]["name"].is_string(),
         "author must be an object with a name"
     );
-    // No explicit skills: the default ./skills (a symlink to
-    // amplifier-bundle/skills inside the root) already loads them, and naming
-    // amplifier-bundle/skills too would load every skill twice.
+    // Claude discovers the default ./skills folder itself. An explicit
+    // manifest entry would add another source rather than replace it.
     assert!(plugin.get("skills").is_none());
     let skills = repo_root().join("skills");
     assert!(skills.join("dev-orchestrator/SKILL.md").is_file());
@@ -111,12 +110,7 @@ fn component_paths_stay_inside_the_plugin_root() {
 }
 
 #[test]
-fn agents_list_exactly_the_bundled_claude_agents() {
-    const AGENT_DIRS: &[&str] = &[
-        "amplifier-bundle/agents/core",
-        "amplifier-bundle/agents/specialized",
-        "amplifier-bundle/agents/workflows",
-    ];
+fn agents_list_exactly_the_shared_defaults() {
     let listed: BTreeSet<String> = plugin()["agents"]
         .as_array()
         .unwrap()
@@ -124,16 +118,10 @@ fn agents_list_exactly_the_bundled_claude_agents() {
         .map(|v| v.as_str().unwrap().to_owned())
         .collect();
 
-    let mut on_disk = BTreeSet::new();
-    for dir in AGENT_DIRS {
-        for entry in fs::read_dir(repo_root().join(dir)).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_some_and(|ext| ext == "md") {
-                let name = path.file_name().unwrap().to_string_lossy();
-                on_disk.insert(format!("./{dir}/{name}"));
-            }
-        }
-    }
+    let expected: BTreeSet<_> = DEFAULT_AGENTS
+        .iter()
+        .map(|name| format!("./amplifier-bundle/agents/{name}.md"))
+        .collect();
 
     for agent in &listed {
         assert!(
@@ -145,13 +133,33 @@ fn agents_list_exactly_the_bundled_claude_agents() {
             "{agent}: ./agents/ holds non-Claude domain agents"
         );
     }
-    let missing: Vec<_> = on_disk.difference(&listed).collect();
-    let extra: Vec<_> = listed.difference(&on_disk).collect();
-    assert!(
-        missing.is_empty() && extra.is_empty(),
-        "plugin.json agents is out of sync with amplifier-bundle/agents.\n\
-         add to plugin.json: {missing:?}\nremove from plugin.json: {extra:?}"
-    );
+    assert_eq!(listed, expected);
+}
+
+#[test]
+fn root_skills_expose_exactly_the_shared_defaults() {
+    fn discover(root: &Path, names: &mut BTreeSet<String>) {
+        if root.join("SKILL.md").is_file() {
+            names.insert(root.file_name().unwrap().to_str().unwrap().to_owned());
+        }
+        for entry in fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                discover(&path, names);
+            }
+        }
+    }
+
+    let mut listed = BTreeSet::new();
+    discover(&repo_root().join("skills"), &mut listed);
+    assert_eq!(listed, DEFAULT_SKILLS.map(str::to_owned).into());
+    for name in DEFAULT_SKILLS {
+        let relative = format!("./skills/{name}");
+        assert_contained("skills", &relative);
+        let published = repo_root().join(&relative).canonicalize().unwrap();
+        assert!(published.starts_with(repo_root().join("amplifier-bundle/skills")));
+        assert_eq!(published.file_name().unwrap(), name);
+    }
 }
 
 #[test]

@@ -298,7 +298,7 @@ steps:
       for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(git rev-parse --show-toplevel)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
         [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/git-identity.sh" ] && { . "$c/amplifier-bundle/tools/git-identity.sh"; break; }
       done
-      amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
+      amplihack_prepare_git_commit_identity || { echo "ERROR: commit identity could not be resolved; the reason is printed above. Stop rather than commit under a guessed identity" >&2; exit 2; }
 
       amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging (#1528)" >&2; exit 1; }
       # Stage only this fix's explicit paths; preserve earlier index/content.

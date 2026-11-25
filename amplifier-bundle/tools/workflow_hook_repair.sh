@@ -478,10 +478,12 @@ hook_repair_step15_reason() {
 # hook_repair_push_commit <step> <message>: commits the staged fix of a push
 # round as a new commit, never an amend, through a nested commit repair. It is
 # a plain `git commit`, as step-15's own commit is. Returns the nested
-# repair's code; HOOK_REPAIR_* then describe the nested repair.
+# repair's code; HOOK_REPAIR_* then describe the nested repair. When the
+# commit identity cannot be resolved, the helper's reason is on stderr and
+# this returns 1 with HOOK_REPAIR_STATUS=not_hook, so no commit is made.
 hook_repair_push_commit() {
   if declare -F amplihack_prepare_git_commit_identity >/dev/null; then
-    amplihack_prepare_git_commit_identity || true
+    amplihack_prepare_git_commit_identity || { HOOK_REPAIR_STATUS="not_hook"; HOOK_REPAIR_ROUNDS=0; return 1; }
   fi
   hook_repair_run commit "$1" -- git commit -m "$2"
 }

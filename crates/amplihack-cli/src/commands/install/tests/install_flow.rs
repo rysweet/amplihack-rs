@@ -360,7 +360,9 @@ fn copy_dir_recursive_skips_symlinks_without_following() {
 }
 
 #[test]
-fn bundle_install_keeps_support_links_out_of_shared_staging() {
+fn bundle_install_completes_every_indexed_support_resource() {
+    use crate::commands::directory::index::{EntryKind, collect_entries, read_index, write_index};
+
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -372,12 +374,44 @@ fn bundle_install_keeps_support_links_out_of_shared_staging() {
 
     directories::copytree_manifest(&bundle, SourceLayout::Bundle, &staged).unwrap();
 
-    assert!(!staged.join("skills/docx/ooxml").exists());
-    assert!(!staged.join("skills/pptx/ooxml").exists());
-    assert!(!staged.join("skills/outside-in-testing/README.md").exists());
-    assert!(!staged.join("skills/outside-in-testing/examples").exists());
-    assert!(!staged.join("skills/outside-in-testing/scripts").exists());
-    assert!(!staged.join("skills/outside-in-testing/tests").exists());
+    let entries = collect_entries(&staged).unwrap();
+    let index = write_index(&staged).unwrap();
+    assert_eq!(read_index(&index).unwrap().unwrap(), entries);
+    for (skill, resource) in [
+        ("docx", "ooxml/scripts/pack.sh"),
+        ("pptx", "ooxml/scripts/pack.sh"),
+        ("outside-in-testing", "README.md"),
+        ("outside-in-testing", "examples/cli/calculator-basic.yaml"),
+    ] {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.kind == EntryKind::Skill && entry.name == skill)
+            .unwrap();
+        let indexed = entry.path.parent().unwrap().join(resource);
+        let original = bundle.join("skills").join(skill).join(resource);
+        let expected = fs::read(original).unwrap();
+        assert!(!expected.is_empty());
+        assert_eq!(fs::read(&indexed).unwrap(), expected, "{skill}/{resource}");
+        assert!(!indexed.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    let skills = bundle.join("skills");
+    for directory in filesystem::walk_dirs(&skills).unwrap() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let source = entry.path();
+            if !entry.file_type().unwrap().is_symlink() || !source.exists() {
+                continue;
+            }
+            let relative = source.strip_prefix(&skills).unwrap();
+            let published = staged.join("skills").join(relative);
+            assert!(published.exists(), "{}", relative.display());
+            assert!(!published.is_symlink(), "{}", relative.display());
+        }
+    }
+
+    crate::claude_plugin::complete_indexed_skill_resources(&staged).unwrap();
+    assert_eq!(collect_entries(&staged).unwrap(), entries);
 }
 
 #[test]
@@ -397,6 +431,11 @@ fn bundle_install_then_claude_sync_materializes_known_support_links() {
     let staged = temp.path().join(".amplihack/.claude");
 
     directories::copytree_manifest(&bundle, SourceLayout::Bundle, &staged).unwrap();
+    fs::write(
+        temp.path().join(".amplihack/config.toml"),
+        "[lists]\nset = 'all'\n",
+    )
+    .unwrap();
     crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
 
     let claude_skills = temp.path().join(".claude/skills");
@@ -404,8 +443,6 @@ fn bundle_install_then_claude_sync_materializes_known_support_links() {
     assert!(claude_skills.join("pptx/ooxml/scripts/pack.sh").is_file());
     assert!(claude_skills.join("outside-in-testing/README.md").is_file());
     assert!(claude_skills.join("outside-in-testing/examples").is_dir());
-    assert!(!claude_skills.join("outside-in-testing/scripts").exists());
-    assert!(!claude_skills.join("outside-in-testing/tests").exists());
 
     crate::test_support::restore_home(previous);
 }

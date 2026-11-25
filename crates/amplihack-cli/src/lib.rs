@@ -48,6 +48,7 @@ pub(crate) mod install_lock;
 pub mod install_output_contract;
 pub mod launcher;
 pub mod launcher_context;
+pub(crate) mod list_notice;
 pub mod memory_config;
 pub mod nesting;
 pub(crate) mod path_conflicts;

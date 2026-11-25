@@ -96,8 +96,8 @@ treat this script shapes what you get:
 
 | Component      | Source in the repo                          | Invoked as                              |
 | -------------- | ------------------------------------------- | --------------------------------------- |
-| Skills         | `skills/` → `amplifier-bundle/skills/`      | `amplihack:dev-orchestrator`, …         |
-| Agents         | `amplifier-bundle/agents/{core,specialized,workflows}/` | `amplihack:architect`, `amplihack:builder`, … |
+| Skills         | 30 default skill links under `skills/`      | `amplihack:dev-orchestrator`, …         |
+| Agents         | 12 default files selected by `.claude-plugin/plugin.json` | `amplihack:architect`, `amplihack:builder`, … |
 | Slash commands | `docs/claude/commands/amplihack/`           | `/amplihack:fix`, `/amplihack:analyze`, … |
 | Hooks          | `claude-plugin/hooks.json`                  | Run automatically                       |
 
@@ -107,6 +107,16 @@ itself the plugin. Claude Code refuses component paths or symlinks that leave
 the plugin directory, and the skills, agents, and commands already live in
 different parts of this repository. Using the root lets them all load without
 duplicating anything.
+
+Loading the repository directly as a plugin always exposes the shared
+default set of 30 skills and 12 agents. It does not read `lists.set` or
+`lists.enabled`. For persistent extensions or full lists, use the managed
+installation route and its [directory and configuration commands](choose-listed-skills-and-agents.md).
+Where the complete framework and its index are installed, the directory can
+also find unlisted definitions for you to read.
+
+The 23 `amplihack:` commands remain available when typed. They are excluded
+from the model's list of commands it may invoke itself.
 
 ## The native runtime
 
@@ -204,9 +214,9 @@ GitHub API. Set `AMPLIHACK_NPM_VERSION` to pin a different release.
 
 ## Relationship to `amplihack install`
 
-`install-runtime` never runs `amplihack install`. That command publishes every
-skill into `~/.claude/skills` and registers hooks in `~/.claude/settings.json`,
-which would give a plugin user each skill twice.
+`install-runtime` never runs `amplihack install`. That command publishes the
+selected skills and agents and registers managed hooks. Using both routes
+would give a plugin user duplicate listed skills.
 
 You can still use both on the same machine. Every plugin hook goes through
 `claude-plugin/bin/amplihack-hook`, which exits quietly without calling the
@@ -234,9 +244,9 @@ unprefixed (`dev-orchestrator`), and the plugin's copies appear as
 
 ## Known limitations
 
-- **Nested skills.** Plugin skill discovery only reads top-level skill
-  directories. Skills nested one level deeper under a category, such as
-  `quality/…`, are not loaded by the plugin.
+- The root skill links expose the default set, including
+  selected skills nested under categories in the complete bundle. Enabling
+  another entry through the CLI changes managed installations only.
 - **Context references.** Some agents and commands reference
   `~/.amplihack/.claude/context/*.md`. That tree exists only after `amplihack
   install`, so in a plugin-only install those references do not resolve.

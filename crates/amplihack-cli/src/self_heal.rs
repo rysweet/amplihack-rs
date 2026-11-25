@@ -86,7 +86,8 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     // write nothing at all, not even the bundle-compatibility cache.
     "cleanup",
     // Issue #3220: `directory` only reads the index of installed skills and
-    // agents, and must write nothing, not even the bundle-compatibility cache.
+    // agents, and must not write the bundle-compatibility cache; `enable` and
+    // `disable` also save the list settings.
     "directory",
 ];
 

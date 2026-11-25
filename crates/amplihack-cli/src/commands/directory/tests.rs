@@ -83,6 +83,10 @@ fn a_word_with_a_prefix_is_matched_by_the_part_after_its_last_colon() {
     let out = run_text(&staged, find(&["amplihack:core:guide"])).unwrap();
     assert_eq!(out.lines().count(), 2, "{out}");
     assert!(out.lines().all(|line| line.starts_with("agent\tguide\t")));
+    assert_eq!(
+        run_text(&staged, find(&["amplihack:amplihack:core:guide"])).unwrap(),
+        out
+    );
     let out = run_text(&staged, find(&["amplihack:PDF"])).unwrap();
     assert_eq!(
         out,

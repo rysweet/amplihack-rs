@@ -74,7 +74,12 @@ author identity and a complete committer identity in this order:
    `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and
    `GIT_COMMITTER_EMAIL`.
 3. Safe repository-local Git configuration from `user.name` and `user.email`.
-4. Authenticated provider context for the detected remote host.
+   When either value is set, this step decides: a set identity that fails
+   validation, or one with only one of the two values set, stops the commit
+   with the reason and the rule it failed. The next step is not tried.
+4. Authenticated provider context for the detected remote host, used only when
+   neither repository-local `user.name` nor `user.email` is set. A value that
+   is empty or only whitespace counts as not set.
 5. Fail-fast with remediation instructions.
 
 Every source is validated before use. Unsafe values are rejected even when they
@@ -103,8 +108,11 @@ misattributed commit.
 
 ## Provider inference
 
-Provider inference is used only after explicit variables, existing safe Git
-environment, and repository-local Git config are unavailable.
+Provider inference is used only when no explicit variables, no existing Git
+environment identity and no repository-local `user.name` or `user.email` are
+set. A repository-local identity that is set but rejected, or set only in part,
+stops the commit with the reason. It is never replaced with the provider
+identity.
 
 ### GitHub
 

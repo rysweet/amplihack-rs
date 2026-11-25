@@ -59,5 +59,21 @@ Read <path> in full and act as the agent it defines.
 Replace `<path>` with the path from the result, then give the agent its task
 after that sentence.
 
+If the tool has no way to start an agent, read the definition in full and
+follow it in the current session.
+
 Do not pass the agent's name as the agent type. An agent that is not in your
 lists is not registered under that name.
+
+## Turn an entry on for later sessions
+
+Only when the user asks, run `amplihack directory enable <name>` to keep an
+entry in the tool's lists from the next session. Never run it inside a recipe
+step: it changes the assets that tools read. Use the qualified form when a
+name is ambiguous, such as `skill:tla-plus-expert` or
+`agent:specialized/tla-plus-expert`. The command prints the alternatives for
+an ambiguous name.
+
+`amplihack directory disable <name>` removes an explicit extension. It cannot
+remove an entry from the default set. To restore the full lists in one command,
+the user can run `amplihack config set lists.set all`.

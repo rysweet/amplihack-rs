@@ -61,13 +61,15 @@ Generate runnable end-to-end tests from the user's point of view. The bundled he
 
 ## Native Helper
 
+Resolve the following paths from the folder of this SKILL.md.
+
 ```bash
 # Inspect detected app type and journey plan
-amplifier-bundle/skills/e2e-outside-in-test-generator/scripts/generate-e2e.sh plan
+./scripts/generate-e2e.sh plan
 
 # Generate a starter scenario/spec
-amplifier-bundle/skills/e2e-outside-in-test-generator/scripts/generate-e2e.sh generate --type web --output e2e
-amplifier-bundle/skills/e2e-outside-in-test-generator/scripts/generate-e2e.sh generate --type cli --output e2e
+./scripts/generate-e2e.sh generate --type web --output e2e
+./scripts/generate-e2e.sh generate --type cli --output e2e
 ```
 
 The helper intentionally creates starter artifacts only. The agent must adapt the scenarios to real project commands, routes, and assertions before claiming completion.

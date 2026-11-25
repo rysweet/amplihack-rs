@@ -70,7 +70,7 @@ impl Entry {
             let needle = word
                 .rsplit_once(':')
                 .map_or(word.as_str(), |(_, rest)| rest);
-            haystack.contains(&needle.to_lowercase())
+            !word.ends_with(':') && haystack.contains(&needle.to_lowercase())
         })
     }
 }
@@ -572,6 +572,9 @@ mod tests {
         assert!(entry.matches_all(&words(&["entra id"])));
         assert!(!entry.matches_all(&words(&["azure", "nomatch"])));
         assert!(!entry.matches_all(&words(&["kubernetes"])));
+        assert!(!entry.matches_all(&words(&["amplihack:"])));
+        assert!(!entry.matches_all(&words(&["amplihack:core:"])));
+        assert!(entry.matches_all(&words(&[""])));
     }
 
     #[test]

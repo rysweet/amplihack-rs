@@ -142,18 +142,17 @@ compliance throughout.
 
 ## Canonical Sources
 
-- **Skill documentation**: `amplifier-bundle/skills/default-workflow/SKILL.md`
+- **Skill documentation**: `SKILL.md`, relative to this skill's folder
 - **Executable source (recipe)**: `amplifier-bundle/recipes/default-workflow.yaml`
 
 The skill and recipe are the authoritative representation. Legacy
 `DEFAULT_WORKFLOW.md` files are deprecated compatibility references only.
 
-The two copies of this file — `docs/claude/skills/default-workflow/SKILL.md` and
-`amplifier-bundle/skills/default-workflow/SKILL.md` — are mirrored byte-for-byte.
-Because they live at different directory depths, cross-references to other
-repository docs must use a repo-relative inline-code path (for example
-`docs/reference/foo.md`) rather than a relative `../` markdown link, so the
-reference stays valid from both locations.
+The repository mirror at `docs/claude/skills/default-workflow/SKILL.md` is
+byte-identical to this file. Resolve this skill's own resources relative to
+its folder. Paths starting with `docs/` or `amplifier-bundle/recipes/` describe
+repository documentation or executable recipes rather than this skill's
+resources. Find an installed recipe with `amplihack recipe show <name>`.
 
 ## Execution Instructions
 
@@ -391,7 +390,7 @@ If a step fails after a checkpoint, the worktree branch retains all committed wo
 
 ## Related Files
 
-- **Skill docs**: `amplifier-bundle/skills/default-workflow/SKILL.md`
+- **Skill docs**: `SKILL.md`, relative to this skill's folder
 - **Recipe (executable)**: `amplifier-bundle/recipes/default-workflow.yaml`
 - **Command Interface**: `.claude/commands/amplihack/dev.md`
 - **Orchestrator Skill**: `.claude/skills/dev-orchestrator/`

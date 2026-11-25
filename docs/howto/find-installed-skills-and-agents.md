@@ -5,6 +5,8 @@ them is recorded in an index that `amplihack install` and `amplihack update`
 write. This page shows how to search that index and how to use an entry you
 find. For the file format and the exact behaviour, see the
 [directory command reference](../reference/directory-command.md).
+To keep an entry in future sessions' lists, see
+[Choose which skills and agents are listed](choose-listed-skills-and-agents.md).
 
 ## Before you start
 
@@ -54,6 +56,9 @@ Read <path> in full and act as the agent it defines.
 
 Replace `<path>` with the printed path, then give the agent its task. Do not
 pass the agent's name as the agent type.
+
+If your tool cannot start agents, read the definition in full and follow it
+in the current session.
 
 ## Let a model do it
 

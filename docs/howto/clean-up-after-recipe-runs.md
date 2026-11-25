@@ -838,7 +838,12 @@ removed only when all of these hold. Otherwise it is skipped with a reason:
 - it has no `.git` at its root;
 - it is empty (no entries at all) or carries the Cargo marker
   (`CACHEDIR.TAG` or `.rustc_info.json`), so a folder holding only unrelated
-  files is refused;
+  files is rejected. A run that never builds with Cargo, for example in a
+  repository with no Rust code, leaves its claimed folder empty, and that
+  folder is removed;
+- an empty folder is removed only while it is still empty, never
+  recursively. When an entry appears in it after the checks, the removal is
+  declined with one warning and the folder and the new entry are kept;
 - no build holds the `.cargo-lock` of the folder or of a folder directly
   inside it. Each lock is tried once, with no waiting and no retry;
 - it is still the same folder (same device and inode) immediately before the
@@ -851,6 +856,33 @@ by the single `.cargo-lock` attempt, and only where Cargo has written one.
 This is why the claim must be accurate.
 
 A `CARGO_TARGET_DIR` that is unset or does not exist is skipped silently.
+
+#### An empty claimed folder that was kept
+
+An empty claimed folder has been removed at the end of a run since v1.2.194,
+the first release tag that contains #2906. Releases up to v1.2.193 do not
+contain `build_output.rs`, so they have no end-of-run removal of a claimed
+folder at all. To check which case applies to a host, run `amplihack --version`
+with the binary the launcher used.
+
+If an empty claimed folder is still there after a run on v1.2.194 or later,
+and no warning names it, the end-of-run step did not consider it. The code
+allows three ways for that to happen. They are possible causes, not
+established ones: the empty folders reported in #3263 did not reproduce, and
+their cause is still open in #3274.
+
+- The run was nested. `Launch::from_env` in `build_output.rs` treats a run as
+  nested when `AMPLIHACK_RUN_ID` is set and not empty, and a nested run
+  ignores the claim (see [Nested runs](#nested-runs)).
+- `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` was not `1` in the environment of the
+  `amplihack recipe run` process. `private_target_dir_claimed` in
+  `cleanup/mod.rs` trims surrounding whitespace and then requires exactly `1`.
+- The run never reached its end. The step is called from `run_dir.rs` only
+  after the run's report is written, so a run killed with `SIGKILL`, or one
+  whose process died before then, skips it.
+
+A claimed folder that the step did consider and rejected is always named in a
+warning, with the reason.
 
 ### Entries in owned-paths are checked
 

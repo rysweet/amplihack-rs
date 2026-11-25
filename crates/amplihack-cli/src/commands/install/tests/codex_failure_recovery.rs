@@ -217,6 +217,12 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
+    fs::create_dir_all(home.join(".amplihack")).unwrap();
+    fs::write(
+        home.join(".amplihack/config.toml"),
+        "[lists]\nset = 'all'\n",
+    )
+    .unwrap();
     let source = home.join("source");
     create_source_repo(&source);
     let bin = home.join("bin");
