@@ -18,11 +18,11 @@ With no subcommand, the command prints its help.
 
 | Subcommand | Output |
 | --- | --- |
-| `find WORD...` | Every entry whose name or description contains all the words, ignoring letter case, one per line: type, name, description, path, separated by tabs, in index order. The path is not searched. A quoted word with spaces is matched as given. |
+| `find WORD...` | Every entry whose name or description contains all the words, ignoring letter case, one per line: type, name, description, path, separated by tabs, in index order. The path is not searched. A quoted word with spaces is matched as given. A word that contains a colon is matched by the part after its last colon, so `amplihack:core:reviewer` is matched as `reviewer`. |
 | `find` | The names only: `skills:`, then each skill name indented by two spaces, then `agents:` and each agent name. A name that occurs twice in one group is printed once. |
 | `list` | Every entry, in the same form as `find WORD...`. |
 
-Neither subcommand writes anything. Neither runs the start-up repair of staged assets that most other subcommands run first.
+Neither subcommand writes anything. `directory` skips the start-up repair of staged assets that most other subcommands run first, so after the binary is upgraded it reads what the last install wrote until the next install or update.
 
 ## Exit behaviour
 
@@ -30,8 +30,8 @@ Neither subcommand writes anything. Neither runs the start-up repair of staged a
 | --- | --- | --- |
 | Entries match | The entries on standard output | 0 |
 | No entry matches | Nothing on standard output; one line on standard error | 0 |
-| The index is missing | A message on standard error that the index is missing, which asks you to run `amplihack install` | non-zero |
-| A line of the index has the wrong number of fields | A warning on standard error with the line number; the line is skipped | unchanged |
+| The index is missing, or the file has no entry | A message on standard error that the index is missing or has no entries, which asks you to run `amplihack install` | non-zero |
+| A line of the index has fewer than four fields, or an unknown type | A warning on standard error with the line number; the line is skipped | unchanged |
 
 ## Where the index lives
 
@@ -53,11 +53,14 @@ the last install wrote.
 
 - One line for each skill and each agent of amplihack's own bundle.
 - Four fields separated by a tab, in this order: type (`skill` or `agent`),
-  name, absolute path, description. Each line ends with a newline.
+  name, absolute path, description. Each line ends with a newline. A reader
+  uses the first four fields of a line and ignores any after them, so a later
+  version can add a field.
 - No header, no comments and no timestamp. An empty bundle gives an empty
   file.
-- Lines are sorted by type, then name, then path, in byte order, so agents
-  come before skills. Two installs of the same bundle write the same bytes.
+- Lines are sorted by type, then name in byte order, then path, which is
+  compared one component at a time, so agents come before skills. Two
+  installs of the same bundle write the same bytes.
 - In a name or a description, every run of whitespace or control characters
   becomes one space, and the result is trimmed.
 

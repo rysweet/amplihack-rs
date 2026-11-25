@@ -27,15 +27,18 @@ amplihack directory find spreadsheet formulas
 
 Each result is one tab-separated line: type (`skill` or `agent`), name,
 description and the absolute path of its file. Every word must appear in the
-name or the description; letter case does not matter. Use fewer or broader
-words when nothing matches. `amplihack directory find` with no words prints
-the names only.
+name or the description; letter case does not matter. A word that contains a
+colon is matched by the part after its last colon, so a name with a prefix,
+such as `amplihack:core:reviewer`, is found by `reviewer`. Use fewer or
+broader words when nothing matches. `amplihack directory find` with no words
+prints the names only.
 
 Never read the whole index, and do not run `amplihack directory list` to
 browse it. Search for what the task needs.
 
-If the command reports that the index is missing, run `amplihack install`
-when you are allowed to, or tell the user that the index is missing.
+If the command reports that the index is missing or has no entries, tell the
+person that the index is missing and ask them to run `amplihack install`.
+Never run `amplihack install` yourself.
 
 ## Use a skill you found
 

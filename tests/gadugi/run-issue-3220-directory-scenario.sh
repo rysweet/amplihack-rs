@@ -12,7 +12,10 @@
 #   C. Every path that `amplihack directory list` prints is an existing file.
 #   D. A word that matches no entry prints nothing on standard output and
 #      exits 0.
-#   E. Neither subcommand writes anything under HOME.
+#   E. Neither subcommand writes anything under HOME or under AMPLIHACK_HOME.
+#   F. `amplihack directory find` against a fresh HOME with no install prints
+#      nothing on standard output, says on standard error that the index is
+#      missing and names `amplihack install`, and exits non-zero.
 #
 # HOME and AMPLIHACK_HOME are two different fresh folders, so the scenario
 # also shows that the command finds the index where the installer wrote it,
@@ -56,6 +59,8 @@ trap 'rm -rf -- "${root:?}"' EXIT
 
 qa_home="$(mktemp -d "$root/home.XXXXXX")"
 qa_amplihack_home="$(mktemp -d "$root/amplihack-home.XXXXXX")"
+fresh_home="$(mktemp -d "$root/fresh-home.XXXXXX")"
+fresh_amplihack_home="$(mktemp -d "$root/fresh-amplihack-home.XXXXXX")"
 bin="$root/bin"
 mkdir -p "$bin" "$root/tmp" "$root/work"
 
@@ -112,9 +117,15 @@ amp() {
   (cd "$root/work" && exec env -i "${CHILD_ENV[@]}" "$BIN" "$@") </dev/null
 }
 
-# Every path under HOME with its size and modification time, sorted.
+# Every path under HOME and under AMPLIHACK_HOME with its size and
+# modification time, sorted.
 snapshot() {
-  find "$qa_home" -printf '%P %s %T@\n' | LC_ALL=C sort
+  find "$qa_home" "$qa_amplihack_home" -printf '%p %s %T@\n' | LC_ALL=C sort
+}
+
+# Like amp, but in a fresh HOME and AMPLIHACK_HOME where nothing is installed.
+amp_fresh() {
+  (cd "$root/work" && exec env -i "${CHILD_ENV[@]}" "HOME=$fresh_home" "AMPLIHACK_HOME=$fresh_amplihack_home" "$BIN" "$@") </dev/null
 }
 
 # --- A. install writes the index ---------------------------------------------
@@ -178,8 +189,19 @@ if [ "$before" != "$after" ]; then
   # breaks the producer (issue #1434). awk reads all input and prints 20 lines;
   # diff exits 1 on a difference, which set -e would turn into an exit before die.
   diff <(printf "%s\n" "$before") <(printf "%s\n" "$after") | awk 'NR <= 20 { print "    " $0 }' || true
-  die "directory find or list changed files under HOME"
+  die "directory find or list changed files under HOME or AMPLIHACK_HOME"
 fi
-echo "PASS E: directory find and list wrote nothing under HOME"
+echo "PASS E: directory find and list wrote nothing under HOME or AMPLIHACK_HOME"
+
+# --- F. no install: find reports the missing index ---------------------------
+if amp_fresh directory find skill >"$root/fresh.out" 2>"$root/fresh.err"; then
+  die "directory find in a home with no install exited 0"
+fi
+[ ! -s "$root/fresh.out" ] || die "find printed output in a home with no install"
+grep -q 'amplihack install' "$root/fresh.err" || {
+  sed 's/^/    stderr: /' "$root/fresh.err"
+  die "find in a home with no install did not name amplihack install"
+}
+echo "PASS F: find in a home with no install exited non-zero and named amplihack install"
 
 echo "ALL_CASES_PASSED"
