@@ -1136,8 +1136,11 @@ and [Run amplihack codex with a Local Model](../howto/run-codex-with-a-local-mod
 
 Under `none` the hooks that add text to the model's context add none, and
 the stop hook approves without blocking. `pre-tool-use` and `limit-resume` are
-unaffected. An unknown value behaves as `full`. The rules, the output of each
-hook and which sessions inherit the value are in
+unaffected. An unknown value behaves as `full`. Because the stop hook does not
+run under `none`, lock mode, power steering and reflection are off. The value
+passes through every launcher, and an `amplihack` launch that inherits `none`
+writes one stderr line saying so. The rules, the output of each hook and which
+sessions inherit the value are in
 [Hook text setting](./hook-specifications.md#hook-text-setting).
 
 ---

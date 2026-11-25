@@ -67,9 +67,10 @@ session.
 amplihack codex --local-model inkling
 ```
 
-amplihack builds or refreshes `~/.amplihack/codex-local/inkling/`, prints one
-line to stderr naming the flags it added, and starts Codex on that home. Hook
-trust is bypassed in a local session, so read
+amplihack builds or refreshes `~/.amplihack/codex-local/inkling/`, prints a
+line to stderr saying that hook text is off (so lock mode, power steering and
+reflection do not run) and a line naming the flags it added, and starts Codex
+on that home. Hook trust is bypassed in a local session, so read
 [What differs in a local session](../reference/codex-local-model-launch.md#what-differs-in-a-local-session)
 before you trust a project in it.
 
@@ -93,8 +94,9 @@ rm -rf -- "$final_dir"
 
 Codex runs with full access, as any
 [agent step](../reference/launch-flag-injection.md#codex-agent-step-flags)
-does. Pass your own `--sandbox` after `exec` to choose another. The full
-command line is in the
+does, unless the profile sets `sandbox_mode`, which is then kept. Pass your
+own `--sandbox` after `exec` to choose another for one run. The full command
+line is in the
 [reference](../reference/codex-local-model-launch.md#command-line-and-environment-of-codex).
 
 ## Run recipe agent steps on the local model
@@ -194,12 +196,13 @@ next local-model launch with that name builds a fresh home.
 | Error naming `--docker`, `AMPLIHACK_USE_DOCKER` or `--auto` | These modes are not available with a local model | Drop the option, or unset `AMPLIHACK_USE_DOCKER`. |
 | Error naming `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | The hooks binary was not found, was found by a relative path, or is not named `amplihack-hooks` | Run `amplihack install`, or set the variable to the absolute path of `amplihack-hooks`. |
 | Error naming `~/.codex/hooks.json` | Your `hooks.json` does not parse or has the wrong shape | Fix the file at the line given. |
+| Error saying the profile, `hooks.json` or `~/.codex` must be owned by you and not writable by others | The file or its directory belongs to another user, or others can write it | Take ownership and remove write permission for others, for example `chmod go-w ~/.codex ~/.codex/inkling.config.toml`. amplihack does not change modes itself. |
 | Error naming the generated `config.toml` | The generated file does not parse | Fix it, or delete it and launch again. |
 | Error naming `~/.amplihack` | It is not a directory, is not owned by you, or is writable by others. A symbolic link at `~/.amplihack` is followed and is accepted when its target passes these checks. | Make it a directory you own and remove write permission for others, for example `chmod go-w ~/.amplihack`. amplihack does not change its mode. |
 | Error naming a path under `~/.amplihack/codex-local/` | A directory there has permissions looser than 0700, or the path is a symbolic link | `chmod 700` the directory. For a link, remove it and launch again, and amplihack creates a real directory or file in its place. amplihack does not change modes itself. |
 | A nested launch fails and asks you to relaunch from outside the session | The reused home no longer passes its checks, for example after `policy.deny_commands` changed, or after amplihack's handler was switched off in `/hooks` | Exit the session and launch again from a shell outside it. |
 | Codex reports an unknown setting such as `web_search` | A Codex release renamed a setting amplihack writes | Report it, with your `codex --version`. |
-| No amplihack hook text in a Claude or Copilot session | It was started from inside a local session and [inherited](../reference/hook-specifications.md#inheritance) `AMPLIHACK_HOOK_TEXT=none` | Start it with `env -u AMPLIHACK_HOOK_TEXT`. |
+| No amplihack hook text, and a stderr line naming `AMPLIHACK_HOOK_TEXT`, in a Claude or Copilot session | It was started from inside a local session and [inherited](../reference/hook-specifications.md#inheritance) `AMPLIHACK_HOOK_TEXT=none` | Start it with `env -u AMPLIHACK_HOOK_TEXT`. |
 
 For every rule behind these messages, see
 [Codex Local-Model Launches](../reference/codex-local-model-launch.md).

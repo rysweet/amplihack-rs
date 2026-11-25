@@ -461,9 +461,12 @@ the reasons, the stderr notice and the child environment are in
 
 amplihack puts `--dangerously-bypass-hook-trust` first, unless the Codex
 arguments already contain it ahead of any `--` among them, then
-`-c features.hooks=true`, then the Codex arguments. This happens for
-interactive launches too, not only `exec`. The `exec` injection then finds the
-hook-trust flag and adds only the sandbox, so the flag appears exactly once.
+`-c features.hooks=true`, then `-c sandbox_mode="<value>"` when the profile
+sets `sandbox_mode`, then the Codex arguments. This happens for interactive
+launches too, not only `exec`. The `exec` injection then finds the hook-trust
+flag and adds only the sandbox, so the flag appears exactly once. A profile's
+`sandbox_mode` counts as the caller's sandbox choice, so then no sandbox is
+added either.
 
 | Command | Codex receives |
 |---|---|
@@ -471,6 +474,7 @@ hook-trust flag and adds only the sandbox, so the flag appears exactly once.
 | `amplihack codex --local-model inkling -- resume --last` | `codex --dangerously-bypass-hook-trust -c features.hooks=true resume --last` |
 | `amplihack codex --local-model inkling -- exec -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true exec --sandbox danger-full-access -` |
 | `amplihack codex --local-model inkling -- exec --sandbox read-only -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true exec --sandbox read-only -` |
+| `amplihack codex --local-model inkling -- exec -`, with `sandbox_mode = "workspace-write"` in the profile | `codex --dangerously-bypass-hook-trust -c features.hooks=true -c sandbox_mode="workspace-write" exec -` |
 | `amplihack codex --local-model inkling -- --dangerously-bypass-hook-trust exec -` | `codex -c features.hooks=true --dangerously-bypass-hook-trust exec --sandbox danger-full-access -` |
 | `amplihack codex --local-model inkling -- -m inkling-2-mini exec -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true -m inkling-2-mini exec --sandbox danger-full-access -` |
 | `amplihack codex --local-model inkling -- --disable hooks exec -` | `codex --dangerously-bypass-hook-trust -c features.hooks=true --disable hooks exec --sandbox danger-full-access -`; your `--disable hooks` comes later and wins |

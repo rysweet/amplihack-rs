@@ -1375,9 +1375,11 @@ The variable passes through every amplihack launcher unchanged. A Claude,
 Copilot or Codex session started inside a session that has
 `AMPLIHACK_HOOK_TEXT=none`, for example by a recipe agent step, therefore
 also gets no hook text, and its stop hook approves without running: lock
-mode, power steering and reflection do not run in that session, and nothing
-at run time says so. amplihack sets the variable only for local-model Codex
-launches and never removes it. Set it yourself, or unset it for one child with
+mode, power steering and reflection do not run in that session. Each
+`amplihack` launch that inherits a value meaning `none` writes one line to
+stderr naming the variable and what is off, and a local-model Codex launch
+writes the same at its own start. amplihack sets the variable only for
+local-model Codex launches and never removes it. Set it yourself, or unset it for one child with
 `env -u AMPLIHACK_HOOK_TEXT`, as you need.
 
 ```sh
