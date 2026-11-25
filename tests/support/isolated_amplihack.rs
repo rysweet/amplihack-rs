@@ -158,7 +158,7 @@ pub fn shared_temp_home() -> &'static Path {
 
 #[path = "claude_profile_isolation.rs"]
 // `cli_integration` loads this file twice, here and through
-// `support/mod.rs`: one source, the same five names, and this file must not
+// `support/mod.rs`: one source, the same listed variables, and this file must not
 // name `support` because `tests/integration` and `bins/amplihack/tests` have
 // no such module (issue #2922). The included file carries its own
 // `#![allow(dead_code)]`, so repeating it here is a duplicated attribute.

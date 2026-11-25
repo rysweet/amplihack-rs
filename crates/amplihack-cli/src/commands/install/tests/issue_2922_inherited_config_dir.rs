@@ -99,11 +99,11 @@ fn check(provider: &str) {
         ("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1"),
         ("AMPLIHACK_SKIP_MMDC", "1"),
         ("AMPLIHACK_CODEX_BINARY_PATH", s.codex_bin.to_str().unwrap()),
-        ("CODEX_HOME", s.codex_home.to_str().unwrap()),
     ]);
     let before = snapshot(&s.stand_in);
     {
         let _home = HomeGuard::set(&s.home);
+        let _codex_home = EnvGuard::set([("CODEX_HOME", s.codex_home.to_str().unwrap())]);
         run_writers(&s, provider);
         let written = s.home.join(".claude/settings.json");
         assert!(
