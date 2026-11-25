@@ -54,7 +54,8 @@ pub(crate) fn record(staged: &Path, tool: &str, report: &PluginRegistration) -> 
         )?;
         replace(&path, &text)
     })?;
-    show_pending_at(staged, &mut std::io::stderr(), eligible())
+    report_display_error(show_pending_at(staged, &mut std::io::stderr(), eligible()));
+    Ok(())
 }
 
 fn eligible() -> bool {
@@ -69,12 +70,23 @@ fn eligible_in(terminal: bool, recipe_step: bool) -> bool {
 }
 
 /// Called by ordinary commands as well as publishers, to show deferred changes.
-pub(crate) fn show_pending() -> Result<()> {
+/// Display failures are warnings so inspection and recovery remain available.
+pub(crate) fn show_pending() {
     if !eligible() {
-        return Ok(());
+        return;
     }
-    let staged = crate::commands::install::paths::staging_claude_dir()?;
-    show_pending_at(&staged, &mut std::io::stderr(), true)
+    report_display_error(
+        crate::commands::install::paths::staging_claude_dir()
+            .and_then(|staged| show_pending_at(&staged, &mut std::io::stderr(), true)),
+    );
+}
+
+fn report_display_error(result: Result<()>) {
+    // Preserve strict validation and pending state without blocking recovery
+    // commands or publication that has already saved its notice history.
+    if let Err(error) = result {
+        eprintln!("Warning: could not display list changes: {error:#}");
+    }
 }
 
 fn show_pending_at(staged: &Path, out: &mut impl Write, eligible: bool) -> Result<()> {

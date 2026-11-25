@@ -122,7 +122,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 command: RecipeCommands::DetachedChild { .. }
             }
     ) {
-        crate::list_notice::show_pending()?;
+        crate::list_notice::show_pending();
     }
     match command {
         Commands::Install {

@@ -3,8 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
+use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use amplihack_utils::list_selection::{DEFAULT_AGENTS, DEFAULT_SKILLS};
 
@@ -12,6 +14,110 @@ struct Installation {
     home: tempfile::TempDir,
     source: PathBuf,
     tools: PathBuf,
+}
+
+// Notice display requires terminal stderr. Drain it concurrently so publication
+// output cannot fill the PTY and block the child.
+fn terminal_output(mut command: Command) -> Output {
+    let (mut master, mut slave) = (-1, -1);
+    // SAFETY: openpty initializes both descriptors on success; each is then
+    // transferred to exactly one File owner.
+    assert_eq!(
+        unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut::<libc::termios>(),
+                std::ptr::null_mut::<libc::winsize>(),
+            )
+        },
+        0
+    );
+    let mut reader = unsafe { fs::File::from_raw_fd(master) };
+    let terminal = unsafe { fs::File::from_raw_fd(slave) };
+    let captured = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 4096];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                // Linux reports the closed slave as EIO rather than EOF.
+                Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => panic!("reading terminal stderr: {error}"),
+            }
+        }
+        bytes
+    });
+    let mut output = command
+        .env_remove("AMPLIHACK_RECIPE_RUN_ID")
+        .stderr(terminal)
+        .output()
+        .unwrap();
+    drop(command);
+    output.stderr = captured.join().unwrap();
+    output
+}
+
+#[test]
+fn damaged_notice_does_not_block_terminal_inspection_or_full_list_restoration() {
+    for (damage, diagnostic) in [
+        ("malformed", "cannot read the list notice display position"),
+        ("shortened", "list notice history was shortened"),
+    ] {
+        let install = Installation::new();
+        install.run(&["config", "set", "lists.set", "all"]);
+        install.install();
+        let lists = [
+            ".claude/skills",
+            ".copilot/skills",
+            ".copilot/agents/amplihack",
+            ".amplihack/codex/market/plugin/skills",
+        ];
+        let full = lists.map(|path| snapshot(&install.path(path)));
+        install.run(&["config", "set", "lists.set", "default"]);
+        install.defaults();
+        let history = install.path(".amplihack/.claude/install/list-changes.txt");
+        let shown = install.path(".amplihack/.claude/install/list-changes-shown.json");
+        if damage == "shortened" {
+            let position = fs::read(&history).unwrap().len();
+            fs::write(&shown, serde_json::to_vec(&position).unwrap()).unwrap();
+            fs::write(&history, "shortened notice\n").unwrap();
+        } else {
+            fs::write(&shown, "not JSON\n").unwrap();
+        }
+        let mut pending = fs::read(&history).unwrap();
+        let position = fs::read(&shown).unwrap();
+        for (args, expected) in [
+            (vec!["config", "get", "lists.set"], Some("default\n")),
+            (vec!["config", "set", "lists.set", "all"], None),
+            (vec!["config", "get", "lists.set"], Some("all\n")),
+        ] {
+            let output = terminal_output(install.command(&args));
+            assert!(output.status.success(), "{damage}: {args:?}: {output:?}");
+            let warning = String::from_utf8_lossy(&output.stderr);
+            assert!(warning.contains("Warning:"), "{warning}");
+            assert!(warning.contains(diagnostic), "{warning}");
+            if let Some(expected) = expected {
+                assert_eq!(output.stdout, expected.as_bytes());
+            }
+            let saved = fs::read(&history).unwrap();
+            if args[1] == "set" {
+                // Publication may append a migration (Copilot restores its
+                // flat agent filenames); it must retain the pending history.
+                assert!(saved.starts_with(&pending));
+                pending = saved;
+            } else {
+                assert_eq!(saved, pending);
+            }
+            assert_eq!(fs::read(&shown).unwrap(), position);
+        }
+        for (path, expected) in lists.into_iter().zip(full) {
+            assert_eq!(snapshot(&install.path(path)), expected, "{damage}: {path}");
+        }
+    }
 }
 
 impl Installation {
