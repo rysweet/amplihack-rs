@@ -20,6 +20,19 @@ description: >
   exercise interactive bootstrap with an ordinary-launch negative control,
   preserve user state, reject symbolic links, and reject weakened nested homes.
 
+  The hooks binary cases show that the launch uses the deployed copy and
+  rejects a binary or directory that a group or others can write, or that
+  another user owns, with the path on stderr and no Codex child started. The
+  Codex version cases show that an interactive launch on an unknown or
+  unreadable version is rejected with the version on stderr, while exec and
+  ordinary launches go on. The user settings cases show that the user's
+  approval policy and sandbox settings apply when the profile has none, that
+  the profile's own value wins, and that the user's rules are copied privately
+  and follow a refresh.
+
+  Every command runs with CODEX_HOME removed, so that no case writes to the
+  host's Codex home.
+
   These scenarios establish launcher behaviour. Real Codex interactive and exec
   sessions against a local model, native hook trust and configuration precedence,
   and comparable provider token measurements require separate live evidence.
@@ -39,7 +52,7 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: "nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration codex_local_model_launch::launch:: --locked"
+      command: "env -u CODEX_HOME nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration codex_local_model_launch::launch:: --locked"
   - name: launch-cases-pass
     agent: cli-agent
     action: validate_exit_code
@@ -49,7 +62,7 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: "nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration codex_local_model_launch::errors:: --locked"
+      command: "env -u CODEX_HOME nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration codex_local_model_launch::errors:: --locked"
   - name: input-cases-pass
     agent: cli-agent
     action: validate_exit_code
@@ -59,8 +72,58 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: "nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration codex_local_model_launch::refresh:: --locked"
+      command: "env -u CODEX_HOME nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration codex_local_model_launch::refresh:: --locked"
   - name: refresh-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: hooks-binary-launches
+    agent: cli-agent
+    action: execute
+    params:
+      command: "env -u CODEX_HOME nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration --locked -- codex_local_model_launch::checks::a_hooks_binary codex_local_model_launch::checks::the_deployed_hooks_binary"
+  - name: hooks-binary-launch-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: hooks-binary-owner-and-permissions
+    agent: cli-agent
+    action: execute
+    params:
+      command: "env -u CODEX_HOME nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --lib --locked -- codex_local_model::tests_user_inputs::a_hooks_binary codex_local_model::tests_user_inputs::a_linked_hooks_binary codex_local_model::tests_user_inputs::the_deployed_hooks_binary"
+  - name: hooks-binary-owner-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: codex-version-launches
+    agent: cli-agent
+    action: execute
+    params:
+      command: "env -u CODEX_HOME nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration --locked -- codex_local_model_launch::checks::an_interactive_launch codex_local_model_launch::checks::an_exec_launch codex_local_model_launch::checks::an_ordinary_launch codex_local_model_launch::native_trust::"
+  - name: codex-version-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: user-approval-sandbox-and-rules
+    agent: cli-agent
+    action: execute
+    params:
+      command: "env -u CODEX_HOME nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --test cli_integration --locked -- codex_local_model_launch::checks::the_user_sandbox codex_local_model_launch::checks::the_user_rules"
+  - name: user-settings-launch-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: user-approval-sandbox-and-rules-precedence
+    agent: cli-agent
+    action: execute
+    params:
+      command: "env -u CODEX_HOME nice -n 15 ionice -c2 -n7 cargo test -p amplihack-cli --lib --locked -- codex_local_model::tests_user_inputs::the_user codex_local_model::tests_user_inputs::the_profile_approval codex_local_model::tests_user_inputs::with_no_policy codex_local_model::tests_user_inputs::an_unusable_user_config codex_local_model::tests_user_inputs::a_user_rules_file codex_local_model::tests_user_inputs::a_nested_launch"
+  - name: user-settings-precedence-cases-pass
     agent: cli-agent
     action: validate_exit_code
     params:
