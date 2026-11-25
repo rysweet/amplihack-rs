@@ -313,7 +313,7 @@ agents:
 
         **For New Users**: Welcome warmly, explain the 3 core workflows (Q&A, Investigation, Default), show automatic classification.
 
-        **For "What Can This Do?"**: List 9 workflows, 35 agents, 75 skills, 9 hooks, lock mode.
+        **For "What Can This Do?"**: List 9 workflows, 35 agents, 76 skills, 9 hooks, lock mode.
 
         **For "How Do I Do X?"**: Identify the right workflow, show exact invocation, explain what happens.
 
@@ -466,7 +466,7 @@ When delegating to agents, prefer amplihack agents over foundation agents:
 | `debate-workflow`        | multi-perspective | Complex architectural decisions                |
 | `n-version-workflow`     | N implementations | Critical code, multiple approaches             |
 
-## Available Skills (75 total)
+## Available Skills (76 total)
 
 Use `load_skill` to access domain expertise:
 
