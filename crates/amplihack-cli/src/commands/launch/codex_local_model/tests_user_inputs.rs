@@ -3,7 +3,7 @@
 //! files, and links that point nowhere.
 //!
 //! Each case shows that the launch is rejected, that the user's setting
-//! applies, or that a stderr line names what is left out, and never that
+//! applies, or that a stderr line says what is left out, and never that
 //! the command check or the sandbox is weakened without a word. Unix only, like the module. Every test runs in a [`LocalFixture`],
 //! which asserts that `HOME` is its own tempdir first.
 
@@ -152,12 +152,12 @@ fn the_deployed_hooks_binary_is_used() {
 }
 
 /// A hooks binary found in a build directory, with nothing deployed, is
-/// refused: the command-check entry would name a file that goes when the
-/// directory is cleaned. Named on purpose through the override, it is used
+/// rejected: the command-check entry would point at a file that goes when the
+/// directory is cleaned. Chosen on purpose through the override, it is used
 /// and the launch says on stderr that it is a build output. The deployed
 /// copy and a path outside a build directory get no line.
 #[test]
-fn a_hooks_binary_in_a_build_directory_is_refused_or_announced() {
+fn a_hooks_binary_in_a_build_directory_is_rejected_or_announced() {
     use super::home::build_tree_hooks_notice;
     let built = Path::new("/work/amplihack-rs/target/debug/amplihack-hooks");
     let error = format!(
@@ -181,7 +181,7 @@ fn a_hooks_binary_in_a_build_directory_is_refused_or_announced() {
             .unwrap()
             .is_none()
     );
-    let plain = Path::new("/home/u/.local/bin/amplihack-hooks");
+    let plain = Path::new("/opt/tools/bin/amplihack-hooks");
     assert!(
         build_tree_hooks_notice(plain, false, None)
             .unwrap()

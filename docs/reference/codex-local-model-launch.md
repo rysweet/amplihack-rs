@@ -330,10 +330,10 @@ When there is no deployed copy and the binary found lies in a build
 directory (a path with a `target` or `target-*` component, or a `debug` or
 `release` component), such as `target/debug/amplihack-hooks` beside the
 `amplihack` executable, the launch is rejected. The command-check entry would
-otherwise name a file that disappears when that directory is cleaned. The
+otherwise point at a file that disappears when that directory is cleaned. The
 message gives the path, `amplihack install` and
 `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH`. A build output that
-`AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` names is used, because it was chosen
+`AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` is set to is used, because it was chosen
 on purpose, and the launch prints one stderr line before its others:
 
 ```text
@@ -685,7 +685,7 @@ Each error exits non-zero and Codex is not started.
 | A symbolic link at one of those inputs whose target does not exist | the path |
 | Hooks binary not found, relative, not a regular file, not executable, not UTF-8, containing control characters or not named `amplihack-hooks` | the path, `amplihack install` and `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` |
 | Hooks binary, its directory or its link target's directory owned by another user or writable by others | the path |
-| Hooks binary found in a build directory with no deployed copy, unless `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` names it | the path, `amplihack install` and `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` |
+| Hooks binary found in a build directory with no deployed copy, unless `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` is set to it | the path, `amplihack install` and `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` |
 | An interactive launch on a Codex version whose hook-trust format is not known, or whose version cannot be read | the version and the known versions |
 | `AMPLIHACK_CODEX_LOCAL_MODEL` set for a Codex launch that has no local-model launch in scope | the variable |
 | `~/.amplihack` not a directory, not owned by you, or writable by others | the path |

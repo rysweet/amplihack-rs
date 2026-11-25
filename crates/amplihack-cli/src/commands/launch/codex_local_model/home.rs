@@ -630,9 +630,9 @@ fn deployed_hooks_binary() -> Result<(PathBuf, Option<String>)> {
 /// The check on a hooks binary that is not the deployed copy but lies in a
 /// build directory ([`looks_like_build_artifact`]), such as
 /// `target/debug/amplihack-hooks` found beside the running executable. The
-/// command-check entry would name a file that disappears when that
-/// directory is cleaned, so such a path is refused, unless `override_value`
-/// (the value of [`HOOKS_OVERRIDE`]) names it: a path the user set on
+/// command-check entry would point at a file that disappears when that
+/// directory is cleaned, so such a path is rejected, unless `override_value`
+/// (the value of [`HOOKS_OVERRIDE`]) is that path: a path the user set on
 /// purpose is used, and the returned line says that it is a build output.
 /// The deployed copy is never checked here.
 ///

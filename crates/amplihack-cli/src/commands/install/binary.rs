@@ -643,7 +643,7 @@ pub(crate) fn stable_hooks_binary() -> Result<PathBuf> {
 
 /// [`stable_hooks_binary`], and whether the path is the deployed copy
 /// (`true`) or the discovery fallback (`false`). A local-model launch uses
-/// this to refuse a fallback in a build directory instead of recording it.
+/// this to reject a fallback in a build directory instead of recording it.
 pub(crate) fn stable_hooks_binary_with_origin() -> Result<(PathBuf, bool)> {
     let deployed = super::paths::preferred_user_bin_dir()
         .ok()
