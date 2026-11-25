@@ -117,11 +117,19 @@ sets in its own shell, such as a toolchain on `PATH`, a virtualenv, or a
 token that a hook needs, do not exist when the hook runs.
 
 A hook that depends on such a variable fails in the bash step even though it
-passed when the agent ran it. No code change fixes that. The fixing agent is
-told to recognise this case, classify it as `environment`, report
-`not_fixable_in_code` and change nothing. When the retry then fails with
-identical hook output, the driver ends the step as `stuck` without consulting
-the evaluator, and the agent's classification is in the evidence. See
+passed when the agent ran it. When the missing input is one the worktree can
+hold, such as a `.venv` the hooks call (#3102), the fixing agent installs it
+inside the worktree by the repository's own setup instructions, read from the
+base branch, and reports `fixed` with class `environment` and the cause named,
+for example "the worktree has no .venv; the launch checkout has one". A linked
+`.venv` belongs to the launch checkout, so the agent removes the link with
+`rm <name>` and creates the worktree's own before it installs anything. It
+never uses sudo, a system package manager or a global install. A cause it
+cannot fix from inside the worktree, such as a token or a tool that needs
+privileges, is reported `not_fixable_in_code` with class `environment`. When the
+retry then fails with identical hook output, the driver ends the step as
+`stuck` without consulting the evaluator, and the agent's classification is in
+the evidence. See
 [No-progress stop](#no-progress-stop) and
 [Agent output contract](#agent-output-contract).
 
@@ -455,8 +463,9 @@ The prompt tells the agent to:
   `git -c` hook overrides, hook allowlists, or suppressions added only to
   silence the hook
 - never edit hook configuration (see [Refusal rules](#refusal-rules))
-- report `not_fixable_in_code` and change nothing when the cause is the
-  environment rather than the repository
+- install a missing host input inside the worktree by the repository's own
+  instructions from the base branch, and report `not_fixable_in_code` when the
+  environment cause cannot be fixed from inside the worktree
 
 The prompt contains no routing-marker strings, so the
 `issue_1333_leaf_steps_do_not_orchestrate` guard is not triggered.

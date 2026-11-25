@@ -170,3 +170,11 @@ mod exec_stub;
 pub(crate) fn write_executable(path: &std::path::Path, body: &str) {
     exec_stub::write_executable(path, body, 0o755);
 }
+
+/// `value` as one word of POSIX shell text, through the shared `exec_stub`
+/// quoter, so a temporary path a test writes into a stub's script reaches
+/// the shell as data and never as code.
+#[cfg(unix)]
+pub(crate) fn sh_quote(value: &str) -> String {
+    exec_stub::sh_quote(value)
+}

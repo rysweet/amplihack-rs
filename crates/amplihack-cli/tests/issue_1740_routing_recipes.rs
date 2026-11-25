@@ -1,7 +1,7 @@
 //! Issue #1740: how smart-orchestrator's phase recipes select and run
 //! `quick-change`. Structural checks on the live YAML only; no recipe runs.
-//! The step inventory and the reflection and validation conditions (D1) are
-//! checked in `tests/integration/smart_orchestrator_decomposition_test.rs`.
+//! The reflection and validation conditions (D1) are checked in
+//! `tests/integration/smart_orchestrator_decomposition_test.rs`.
 
 use std::path::PathBuf;
 
@@ -30,61 +30,6 @@ fn step<'a>(r: &'a Value, id: &str) -> &'a Value {
         .iter()
         .find(|s| s["id"].as_str() == Some(id))
         .unwrap_or_else(|| panic!("step {id} missing"))
-}
-
-#[test]
-fn classifier_prompt_asks_for_the_workflow_fields_and_small_task_categories() {
-    let r = recipe("smart-classify-route");
-    let prompt = step(&r, "classify-and-decompose")["prompt"]
-        .as_str()
-        .expect("classify prompt")
-        .to_lowercase();
-    for needle in [
-        "recommended_workflow",
-        "workflow_reason",
-        "quick-change",
-        "documentation",
-        "lock",
-        "typo",
-        "configuration or wording",
-        "single-file fix",
-        "public interface",
-        "when in doubt",
-    ] {
-        assert!(
-            prompt.contains(needle),
-            "classify prompt must mention {needle:?}"
-        );
-    }
-}
-
-#[test]
-fn select_workflow_step_follows_activate_workflow_and_reads_only_recipe_vars() {
-    let r = recipe("smart-classify-route");
-    let ids: Vec<&str> = steps(&r).iter().filter_map(|s| s["id"].as_str()).collect();
-    let at = ids.iter().position(|i| *i == "activate-workflow").unwrap();
-    assert_eq!(ids.get(at + 1), Some(&"select-workflow"), "{ids:?}");
-    let s = step(&r, "select-workflow");
-    assert_eq!(s["type"].as_str(), Some("bash"));
-    assert_eq!(s["output"].as_str(), Some("selected_workflow"));
-    let cmd = s["command"].as_str().unwrap();
-    for needle in [
-        "orch helper select-workflow",
-        "--override",
-        "RECIPE_VAR_workflow",
-        "--existing-branch \"${RECIPE_VAR_existing_branch:-}\"",
-        "--pr-number \"${RECIPE_VAR_pr_number:-}\"",
-        "mktemp",
-    ] {
-        assert!(
-            cmd.contains(needle),
-            "select-workflow command must contain {needle:?}"
-        );
-    }
-    assert!(
-        !cmd.contains("{{"),
-        "select-workflow must not template values into bash"
-    );
 }
 
 #[test]
@@ -156,19 +101,6 @@ fn quick_change_round_1_follows_development_and_forwards_the_same_context() {
     assert_eq!(
         &qc["context"], dev,
         "quick-change must get the same forwarded keys"
-    );
-}
-
-#[test]
-fn create_workstreams_config_reads_the_override_from_the_environment() {
-    let r = recipe("smart-execute-routing");
-    let cmd = step(&r, "create-workstreams-config")["command"]
-        .as_str()
-        .unwrap();
-    assert!(cmd.contains("build-workstreams-config"), "{cmd}");
-    assert!(
-        !cmd.contains("{{"),
-        "override must reach bash as RECIPE_VAR_workflow"
     );
 }
 

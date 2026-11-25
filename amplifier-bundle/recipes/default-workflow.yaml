@@ -1,40 +1,42 @@
 name: "default-workflow"
-description: "Composable 23-step development workflow — orchestrates 9 phase sub-recipes"
-version: "3.0.0"
+description: "Builds the change and opens its pull request as one goal-driven agent loop (#3129)"
+version: "4.0.0"
 author: "Amplihack Team"
-tags: ["development", "feature", "bugfix", "refactoring", "standard", "full-workflow", "composable"]
+tags: ["development", "feature", "bugfix", "refactoring", "standard", "full-workflow", "goal-loop"]
 
-# DEFAULT_WORKFLOW (v3): Composable Phase Sub-Recipes
+# DEFAULT_WORKFLOW (v4): one goal-driven agent loop (#3129 PR 2)
 #
-# Same 23-step contract as v2, but the steps live in nine focused phase bricks.
-# Every original step ID, prompt, condition, output declaration, and ordering
-# is preserved across the bricks — the LLM converges on correct behaviour
-# through many recursive review layers, so every layer must stay intact.
+# The goal is "build this change and open its pull request". workflow-prep and
+# workflow-worktree run as before. Then the shared goal loop
+# (autodrive-goal-loop) runs with the build goal tool
+# (tools/autodrive_build_goal.sh) and the goal text
+# (skills/default-workflow/goal-build-pr.md). Each turn an agent reads a fresh
+# reading of the live state, the task text and any guidance, does the work
+# itself in the worktree, and names one action: open-pr, mark-ready, review,
+# wait or prepare-worktree, or a shared word. Fixed code only reads state and
+# runs those actions; it never decides that a run ends because of how the run
+# is going. A build never merges.
 #
-# Phases (each is a sub-recipe in amplifier-bundle/recipes/):
-#   1. workflow-prep             — steps 00-03b   (requirements + issue creation)
-#   2. workflow-worktree         — step  04       (worktree + branch setup)
-#   3. workflow-design           — steps 05-06d   (design specification)
-#   4. workflow-tdd              — steps 07-08c   (tests + implementation)
-#   5. workflow-refactor-review  — steps 09-11b   (refactor + reviews)
-#   6. workflow-precommit-test   — steps 12-13    (pre-commit + tests)
-#   7. workflow-publish          — steps 14-16b   (version + commit + PR)
-#   8. workflow-pr-review        — steps 17a-19d  (PR review panels)
-#   9. workflow-finalize         — steps 20-22b   (CI + merge + finalize)
+# The loop ends at ready (the PR open and marked ready), merged, closed, a
+# hand-off to a named owner, or a stop. A failed turn is evidence for the next
+# one. build-loop fails only when the loop cannot start (an install fault);
+# every step after it is non-fatal, so a run whose work is pushed and whose PR
+# is open is never reported as failed by bookkeeping.
 #
-# Context flows automatically between sub-recipes via recipe-runner's
-# `_execute_sub_recipe()` context-merging.
-# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+# The build run never removes its worktree, its branch or its state folder:
+# callers such as autodrive-build use them afterwards (software-factory #307).
 #
-# NO-TIMEOUT POLICY: Neither this recipe nor any of its nine sub-recipes
-# declare a per-step `timeout:` YAML field. Agent steps run to natural
-# completion; the only shell `timeout` calls that appear are inside bash
-# step scripts guarding external network commands (gh, curl, git remote
-# operations) and are therefore not mid-thought abort gates.
-# This policy is enforced by CI (see crates/amplihack-cli/tests/). The
-# `--step-timeout 0` flag is optional runtime configuration for callers that
-# want to clear the runner's ambient timeout hint; it is not the policy
-# mechanism.
+# Azure DevOps: the build tools use gh only, so when workflow-prep reports
+# remote_host_type azdo the three build steps are skipped and the seven v3
+# phase steps (workflow-design ... workflow-finalize) run instead, unchanged,
+# with their own gates. For every other host the seven are skipped. The phase
+# sub-recipes keep their names, inputs and step ids for runs that loaded v3
+# (#3049). Every v3 context key is still accepted; the loop ignores the ones it
+# does not use, among them no_merge and finalization_handoff.
+# Specification: docs/reference/build-goal-loop.md.
+#
+# No step declares a per-step `timeout:`, and the loop has no timer, poll,
+# round count or retry count.
 
 recursion:
   max_depth: 6
@@ -145,25 +147,28 @@ context:
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
-  # Issue #1551: "true" tells prep and finalize agents to stop at merge-ready.
+  # Issue #1551. Accepted and ignored by the build loop (#3129): a build never merges.
   no_merge: ""
-  # Issue #1714: only autodrive-build step-02 sets "true"; standalone runs fail closed on every failure state.
+  # Issue #1714. Accepted and ignored by the build loop (#3129): a build always ends with its PR open.
   finalization_handoff: ""
   implementation_terminal_evidence: ""
   verification_terminal_evidence: ""
+  # #3129 PR 2: the build loop. build_goal_setup is setup's JSON line
+  # (state_dir, branch, worktree); build_loop_result is the loop's end line;
+  # workflow_result is the report (docs/reference/build-goal-loop.md).
+  final_requirements: ""
+  build_goal_setup: ""
+  build_loop_result: ""
+  workflow_result: ""
 
 recovery:
   version: 1
   persist:
-    context: ["base_branch", "closing_reference", "forbidden_base_branches", "pr_repository", "repository", "strict_delivery", "adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "step_recovery_dir", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
-    outputs: ["workflow-prep", "workflow-worktree", "workflow-design", "workflow-tdd", "workflow-refactor-review", "workflow-precommit-test", "workflow-publish", "workflow-pr-review", "workflow-finalize"]
+    context: ["base_branch", "closing_reference", "forbidden_base_branches", "pr_repository", "repository", "strict_delivery", "adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "build_goal_setup", "build_loop_result", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "step_recovery_dir", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workflow_result", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
+    outputs: ["workflow-prep", "workflow-worktree", "build-goal-setup", "build-loop", "build-report", "workflow-design", "workflow-tdd", "workflow-refactor-review", "workflow-precommit-test", "workflow-publish", "workflow-pr-review", "workflow-finalize"]
 
 steps:
-  # Git precondition handling lives in workflow-prep/step-01: default-workflow
-  # requires a git repo at <cwd>. When <cwd> is not a git work tree it
-  # auto-initializes a fresh repo (issue #900) so repo-creation tasks proceed;
-  # set auto_init_repo="false" for a fail-closed opt-out that restores the
-  # historical hard-fail (`git init` or rerun from a checkout).
+  # Git precondition handling lives in workflow-prep/step-01 (issue #900).
   - id: "workflow-prep"
     recovery: {"replay": "never"}
     type: "recipe"
@@ -174,39 +179,116 @@ steps:
     type: "recipe"
     recipe: "workflow-worktree"
 
+  # A fresh private state folder for this invocation, identity.json from this
+  # run's worktree_setup, and host inputs linked into the worktree (#3102).
+  - id: "build-goal-setup"
+    recovery: {"replay": "never"}
+    type: "bash"
+    condition: "remote_host_type != 'azdo'"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "ERROR: default-workflow/build-goal-setup: AMPLIHACK_HOME must be the absolute launch-bundle home" >&2; exit 2 ;; esac
+      H="$(cd "$AMPLIHACK_HOME" 2>/dev/null && pwd -P)" || { echo "ERROR: default-workflow/build-goal-setup: AMPLIHACK_HOME cannot be entered" >&2; exit 2; }
+      T="$H/amplifier-bundle/tools/autodrive_build_run.sh"
+      [ -f "$T" ] && [ ! -L "$T" ] || { echo "ERROR: default-workflow/build-goal-setup: autodrive_build_run.sh is missing from the launch bundle" >&2; exit 2; }
+      R="$(cd "${T%/*}" && pwd -P)/${T##*/}"
+      case "$R" in "$H"/*) ;; *) echo "ERROR: default-workflow/build-goal-setup: autodrive_build_run.sh resolves outside AMPLIHACK_HOME" >&2; exit 2 ;; esac
+      bash "$R" setup
+    output: "build_goal_setup"
+
+  # The shared goal loop with the build goal tool and goal text.
+  # `autodrive_build_run.sh loop` calls the loop's driver
+  # (tools/autodrive_goal_loop.sh) as the autodrive-goal-loop recipe's own step
+  # does, so each turn's `recipe run` starts from this step's depth, as under
+  # auto-drive-to-merge. A nested run of the loop recipe would put the turn's
+  # agent past the session-depth ceiling, and a sub-recipe step would merge the
+  # loop's context, autodrive_state_dir included, back into this run and its
+  # callers. The tool prints the loop's end line (loop-end.json). This step
+  # fails only when the loop cannot start (an install fault); a failure after
+  # the first turn is a fallback line and exit 0, and the report says
+  # INCOMPLETE. Nothing here grants merge authority: the build goal tool has no
+  # merge action.
+  - id: "build-loop"
+    recovery: {"replay": "never"}
+    type: "bash"
+    condition: "remote_host_type != 'azdo'"
+    command: |
+      set -uo pipefail
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "ERROR: default-workflow/build-loop: AMPLIHACK_HOME must be the absolute launch-bundle home" >&2; exit 2 ;; esac
+      H="$(cd "$AMPLIHACK_HOME" 2>/dev/null && pwd -P)" || { echo "ERROR: default-workflow/build-loop: AMPLIHACK_HOME cannot be entered" >&2; exit 2; }
+      T="$H/amplifier-bundle/tools/autodrive_build_run.sh"
+      [ -f "$T" ] && [ ! -L "$T" ] || { echo "ERROR: default-workflow/build-loop: autodrive_build_run.sh is missing from the launch bundle" >&2; exit 2; }
+      SD="$(printf '%s' "${RECIPE_VAR_build_goal_setup:-}" | jq -r '.state_dir // empty | strings')"
+      bash "$T" loop "$SD"
+    output: "build_loop_result"
+
+  # workflow_result from the loop's end and the PR's live state. Non-fatal.
+  - id: "build-report"
+    recovery: {"replay": "never"}
+    type: "bash"
+    condition: "remote_host_type != 'azdo'"
+    continue_on_error: true
+    command: |
+      set -uo pipefail
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "WARNING: default-workflow/build-report: AMPLIHACK_HOME is not absolute; no report" >&2; exit 1 ;; esac
+      H="$(cd "$AMPLIHACK_HOME" 2>/dev/null && pwd -P)" || exit 1
+      T="$H/amplifier-bundle/tools/autodrive_build_run.sh"
+      [ -f "$T" ] && [ ! -L "$T" ] || { echo "WARNING: default-workflow/build-report: autodrive_build_run.sh is missing; no report" >&2; exit 1; }
+      SD="$(printf '%s' "${RECIPE_VAR_build_goal_setup:-}" | jq -r '.state_dir // empty | strings')"
+      bash "$T" report "$SD"
+    output: "workflow_result"
+
+  # Azure DevOps (#3129 PR 2, for this release): the build tools read and write
+  # through gh only, so a run whose origin is Azure DevOps takes the v3 phase
+  # recipes unchanged, with their own az authentication and their gates. The
+  # build steps above do not run for it. A follow-up issue moves these runs onto
+  # the loop.
   - id: "workflow-design"
     recovery: {"replay": "never"}
     type: "recipe"
+    condition: "remote_host_type == 'azdo'"
     recipe: "workflow-design"
 
   - id: "workflow-tdd"
     recovery: {"replay": "never"}
     type: "recipe"
+    condition: "remote_host_type == 'azdo'"
     recipe: "workflow-tdd"
 
   - id: "workflow-refactor-review"
     recovery: {"replay": "never"}
     type: "recipe"
+    condition: "remote_host_type == 'azdo'"
     recipe: "workflow-refactor-review"
 
   - id: "workflow-precommit-test"
     recovery: {"replay": "never"}
     type: "recipe"
+    condition: "remote_host_type == 'azdo'"
     recipe: "workflow-precommit-test"
 
   - id: "workflow-publish"
     recovery: {"replay": "never"}
     type: "recipe"
+    condition: "remote_host_type == 'azdo'"
     recipe: "workflow-publish"
     context: { commit_result: "" }  # #2471: a caller's stale value must not skip push recovery
 
   - id: "workflow-pr-review"
     recovery: {"replay": "never"}
     type: "recipe"
+    condition: "remote_host_type == 'azdo'"
     recipe: "workflow-pr-review"
     context: { feedback_push_result: "" }
 
   - id: "workflow-finalize"
     recovery: {"replay": "never"}
     type: "recipe"
+    condition: "remote_host_type == 'azdo'"
     recipe: "workflow-finalize"
+
+output:
+  format: "markdown"
+  template: |
+    {{workflow_result}}

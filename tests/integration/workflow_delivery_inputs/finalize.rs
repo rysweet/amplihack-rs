@@ -278,11 +278,12 @@ fn step21_marks_a_pull_request_into_base_branch_ready() {
 
     // Control (rewritten for #2520): base_branch set to `main` on purpose is
     // never replaced by the pull request's base. The pull request into dev
-    // does not match, and nothing is changed on GitHub.
+    // does not match, and nothing is changed on GitHub. Since #2787 the run's
+    // known PR is left as it is with the reason printed, and the step exits 0.
     let (out, log) = fx.run("workflow-finalize", "step-21-pr-ready", "main");
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
     assert!(
-        text(&out.stderr).contains("no_scoped_pr"),
+        text(&out.stderr).contains("no_scoped_pr") && text(&out.stderr).contains("WARNING"),
         "{}",
         describe(&out)
     );
@@ -407,9 +408,10 @@ fn step21_refuses_a_recorded_base_that_differs_from_the_pull_request() {
             ("RECIPE_VAR_pr_publish_result", &publish),
         ],
     );
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    // #2787: the run's known PR is left as it is, with the reason printed.
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
     assert!(
-        text(&out.stderr).contains("no_scoped_pr"),
+        text(&out.stderr).contains("no_scoped_pr") && text(&out.stderr).contains("WARNING"),
         "{}",
         describe(&out)
     );
@@ -417,8 +419,10 @@ fn step21_refuses_a_recorded_base_that_differs_from_the_pull_request() {
 }
 
 /// Runs step-21 with base_branch empty and the pull request into `pr_base`,
-/// recorded in the publish result as `recorded`, and checks that it fails
-/// closed before any lookup with "unable to resolve expected base branch".
+/// recorded in the publish result as `recorded`, and checks that it stops
+/// before any lookup or mutation with "unable to resolve expected base
+/// branch". Since #2787 the run's known PR is left as it is and the step
+/// exits 0 with that reason in a WARNING.
 fn assert_step21_cannot_prove_base(fx: &FinalizeFixture, pr_base: &str, extra: &[(&str, &str)]) {
     let publish = published_on(pr_base).to_string();
     let mut vars = vec![
@@ -428,14 +432,15 @@ fn assert_step21_cannot_prove_base(fx: &FinalizeFixture, pr_base: &str, extra: &
     ];
     vars.extend_from_slice(extra);
     let (out, log) = fx.run_with("workflow-finalize", "step-21-pr-ready", &vars);
-    assert_ne!(
+    assert_eq!(
         out.status.code(),
         Some(0),
         "{pr_base}: {}\n{log}",
         describe(&out)
     );
     assert!(
-        text(&out.stderr).contains("unable to resolve expected base branch"),
+        text(&out.stderr).contains("unable to resolve expected base branch")
+            && text(&out.stderr).contains("WARNING"),
         "{pr_base}: {}\n{log}",
         describe(&out)
     );
@@ -491,9 +496,12 @@ fn step21_fails_closed_when_pr_view_fails() {
             ("RECIPE_VAR_pr_publish_result", &publish),
         ],
     );
-    assert_ne!(out.status.code(), Some(0), "{}\n{log}", describe(&out));
+    // #2787: the run's known PR is left as it is; the step exits 0 with the
+    // reason in a WARNING, and origin/HEAD is still never used.
+    assert_eq!(out.status.code(), Some(0), "{}\n{log}", describe(&out));
     assert!(
-        text(&out.stderr).contains("unable to resolve expected base branch"),
+        text(&out.stderr).contains("unable to resolve expected base branch")
+            && text(&out.stderr).contains("WARNING"),
         "{}\n{log}",
         describe(&out)
     );
@@ -540,7 +548,10 @@ fn step21_rejects_a_pr_url_for_another_repository() {
             ("RECIPE_VAR_pr_publish_result", &publish),
         ],
     );
-    assert_ne!(out.status.code(), Some(0), "{}", describe(&out));
+    // #2787: a PR URL for another repository is never validated or marked
+    // ready; the step names the reason in a WARNING and exits 0.
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    assert!(text(&out.stderr).contains("WARNING"), "{}", describe(&out));
     assert_eq!(base_views(&log), 0, "{log}");
     assert!(!marked_ready(&log), "{log}");
 }

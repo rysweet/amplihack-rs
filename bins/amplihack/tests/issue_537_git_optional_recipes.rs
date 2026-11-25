@@ -275,8 +275,9 @@ fn investigation_recipe_family_has_no_direct_git_operations() {
 
 #[test]
 fn git_required_workflow_recipes_document_loud_git_preconditions() {
+    // default-workflow 4.0.0 (#3129) runs workflow-prep first, whose step-01
+    // holds the git precondition for the whole build; it is checked there.
     for recipe in [
-        "default-workflow.yaml",
         "workflow-prep.yaml",
         "workflow-worktree.yaml",
         "workflow-tdd.yaml",

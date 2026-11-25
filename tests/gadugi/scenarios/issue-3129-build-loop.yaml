@@ -1,0 +1,120 @@
+name: issue-3129-build-loop
+description: >
+  Outside-in QA for issue #3129 PR 2: default-workflow builds a change and
+  opens its pull request as one goal-driven agent loop. The scenario (via
+  tests/gadugi/run-issue-3129-build-loop-scenario.sh) runs the shipped
+  `default-workflow` recipe, version 4.0.0, with the real binary and the
+  pinned recipe runner, on a small task in a temporary repository whose
+  origin is a local bare repository reached through a GitHub URL. The task
+  gives the pull request's own title and description, including a `Fixes #1`
+  line. Only the outside world is stood in for: `gh`, which keeps the pull
+  request's title, body and draft flag, records every call and exits 96 on any
+  call it does not answer, and `claude`. The `claude` stand-in gives
+  workflow-prep's agent steps one fixed answer and answers each turn of the
+  loop from that turn's own reading, as a competent agent would act on it:
+  commit the task's file in the run's worktree and push with plain `git push`,
+  then `open-pr` with the task's title and description, then `mark-ready`,
+  then `ready`. A git step that fails, or a turn past the eighth, ends in a
+  hand-off, so a fault ends the run rather than looping. Nothing reaches
+  GitHub or a live agent.
+
+  Nine cases, each asserted below, from recorded facts only. Build:
+  `build_opens_its_pr_with_the_task_text` (one `pr create`, with the task's
+  title and its description byte for byte), `build_marks_its_pr_ready`
+  (`pr ready 42` was recorded), `build_never_merges` (no `pr merge`),
+  `build_branch_is_pushed_at_the_worktree_head` (the branch on the bare origin
+  is at the head of the run's worktree, read from `git worktree list`, and
+  holds the task's file), `build_keeps_its_worktree_and_branch` (the worktree
+  and the local branch still exist after the run: cleanup never removes what
+  a later step needs, software-factory #307) and `build_reports_the_open_pr`
+  (the run exited 0 and build-report's workflow_result names pull request 42
+  with terminal_state IMPLEMENTED_VERIFIED or EXISTING_OPEN_PR). Issue #2787,
+  at tool level, against a second stand-in `gh`:
+  `pr_ready_tool_marks_a_head_one_commit_behind` (workflow_pr_ready.sh marks
+  ready a pull request whose head is one commit behind the local head) and
+  `pr_ready_tool_reads_the_pr_worktree_from_a_checkout_on_main` (run from a
+  checkout on main, the tool reads the pull request's linked worktree and
+  marks it ready). And one on this file:
+  `every_case_this_run_emitted_is_asserted_by_the_descriptor`.
+
+  Everything runs under `env -i` with a 0700 root, a PATH holding only the
+  scenario's own tool links, no Git system or global configuration and only
+  the file transport; the real ~/.claude and ~/.amplihack are never read or
+  written. A missing binary, runner or host tool is a failure, not a skip. The
+  driver runs in CI, in the host-install job, after the pinned recipe runner
+  is installed; it is never run by hand on a shared host.
+version: "1.0"
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, end-to-end, build, goal-loop]
+  priority: high
+  issues: ["3129", "3110", "3102", "2787"]
+steps:
+  - name: run-issue-3129-build-loop-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-3129-build-loop-scenario.sh
+  - name: all-build-loop-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+# One assertion per PASS line the script emits, so the descriptor states the
+# scenario in full rather than a subset of it.
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: the-build-opens-its-pull-request-with-the-task-text
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: build_opens_its_pr_with_the_task_text"
+  - name: the-build-marks-its-pull-request-ready
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: build_marks_its_pr_ready"
+  - name: the-build-never-merges
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: build_never_merges"
+  - name: the-branch-is-pushed-at-the-worktree-head
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: build_branch_is_pushed_at_the_worktree_head"
+  - name: the-build-keeps-its-worktree-and-branch
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: build_keeps_its_worktree_and_branch"
+  - name: the-build-reports-the-open-pull-request
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: build_reports_the_open_pr"
+  - name: pr-ready-marks-a-head-one-commit-behind
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: pr_ready_tool_marks_a_head_one_commit_behind"
+  - name: pr-ready-reads-the-worktree-from-a-checkout-on-main
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: pr_ready_tool_reads_the_pr_worktree_from_a_checkout_on_main"
+  - name: the-descriptor-states-every-case-the-script-emits
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: every_case_this_run_emitted_is_asserted_by_the_descriptor"

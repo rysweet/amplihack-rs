@@ -1172,8 +1172,31 @@ continue message is written for exactly those three, and none of them is
 recorded. Every other outcome, including
 `resumed-keys`, `resume-keys-failed`, `watch-lost`, `no-capacity-timeout`,
 `moved-on`, `session-gone`, `disabled`, `duplicate`,
-`session-record-reset`, `stop-hook-active`, `rotator-down` and
-`guard-failed`, exits `0` and prints nothing. stdout is always empty.
+`session-record-reset`, `stop-hook-active`, `rotator-down`,
+`guard-failed`, `not-limit`, `bad-session-id`, `bad-payload` and
+`panicked`, exits `0`. stdout is always empty. stderr is empty too, except
+for one fixed line when a log line cannot be written or the profile root
+cannot be resolved. A `disabled` call on a host with no `resume/` folder
+is neither: it exits `0` silently.
+
+**Every call leaves a line.** Each run writes one line to `resume.log`,
+including the early exits. `disabled` (auto-switch off) is written only
+when a private `resume/` folder already exists. The hook never creates
+one for it; with no folder the call writes no failure marker and is
+recorded by one fixed stderr line with reason `dir_missing`. `not-limit` records a stop whose `error` is a known non-limit
+value, or input that is not a `StopFailure`; `bad-session-id` a missing,
+oversized or invalid id; `bad-payload` malformed or oversized input;
+`panicked` a caught panic. Every line ends with `error=<value>`, the payload's
+`error` reduced to `[a-z_]`, at most 32 characters, never message text. The
+stop is a limit unless `error` is one of `authentication_failed`,
+`oauth_org_not_allowed`, `account_on_hold`, `verification_required`,
+`overloaded`, `invalid_request`, `model_not_found`, `server_error`,
+`max_output_tokens` or `cloud_credential_error`; the pane proof, the screen
+check and the event claim still decide whether keys are typed. A failed log
+write never changes the exit code: its reason is saved in
+`resume/log-write-failed` when that folder is private, and the log's lock is
+a blocking lock with no timeout. See the
+[resume log](profile-command.md#resume-log).
 
 It resumes with keys at most once per limit event and once per session per
 wait. There is no limit on how many times a session is resumed: each resume

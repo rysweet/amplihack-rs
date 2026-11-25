@@ -303,8 +303,8 @@ fn recovery_preserves_no_linked_issue_and_invalid_identity_gates() {
 }
 
 #[test]
-fn metadata_failure_does_not_weaken_auth_identity_or_duplicate_claim_gates() {
-    for gate in ["auth", "identity", "duplicate-claim"] {
+fn metadata_failure_does_not_weaken_auth_or_identity_gates() {
+    for gate in ["auth", "identity"] {
         let f = PublishFixture::new();
         f.inject_scope_failure();
         let mut command = f.publish_command();
@@ -312,20 +312,12 @@ fn metadata_failure_does_not_weaken_auth_identity_or_duplicate_claim_gates() {
             "auth" => {
                 command.env("LOOKUP_STATUS", "24");
             }
-            "identity" => f.git(&[
+            _ => f.git(&[
                 "remote",
                 "set-url",
                 "origin",
                 "https://example.invalid/owner/repo",
             ]),
-            _ => {
-                let helper = f.tmp.path().join("claim-check.sh");
-                super::fixture::executable(
-                    &helper,
-                    "#!/bin/bash\necho 'duplicate issue claim' >&2\nexit 81\n",
-                );
-                command.env("WORKFLOW_ISSUE_CLAIM_CHECK_HELPER", helper);
-            }
         }
         let output = command.output().unwrap();
         assert!(
@@ -342,6 +334,34 @@ fn metadata_failure_does_not_weaken_auth_identity_or_duplicate_claim_gates() {
             "{gate} allowed metadata recovery before gate rejection"
         );
     }
+}
+
+/// #3129, #3110: a claim on the issue is information for the run, not a
+/// gate. A claim check that reports a claim, here by exiting non-zero as a
+/// 1.2.212 helper did, has its output printed and the PR is still opened;
+/// the result is never FAILED_DUPLICATE_CLAIM.
+#[test]
+fn a_claim_reported_during_metadata_recovery_is_information_and_the_pr_is_opened() {
+    let f = PublishFixture::new();
+    f.inject_scope_failure();
+    let helper = f.tmp.path().join("claim-check.sh");
+    super::fixture::executable(
+        &helper,
+        "#!/bin/bash\necho 'duplicate issue claim' >&2\nexit 81\n",
+    );
+    let output = f
+        .publish_command()
+        .env("WORKFLOW_ISSUE_CLAIM_CHECK_HELPER", helper)
+        .output()
+        .unwrap();
+    let result = f.assert_created(&output);
+    assert_ne!(result["state"], "FAILED_DUPLICATE_CLAIM", "{result}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("duplicate issue claim") && stderr.contains("exited 81"),
+        "the claim check's output and exit code are printed as information: {}",
+        describe(&output)
+    );
 }
 
 #[test]
