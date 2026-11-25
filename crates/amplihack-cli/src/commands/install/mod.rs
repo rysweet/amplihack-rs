@@ -791,11 +791,13 @@ fn local_install_scoped(
 
     // Issue #3220: the index `amplihack directory` searches. It is built
     // from the trees just staged, so it lists amplihack's own skills and
-    // agents only. A failure costs a warning: the command then reports the
-    // missing index and names `amplihack install`.
+    // agents only. A failure costs a warning: `write_index` removes any index
+    // left by an earlier install, so the command reports the missing index
+    // and names `amplihack install` rather than serving stale paths.
     if let Err(error) = crate::commands::directory::index::write_index(&claude_dir) {
         eprintln!(
-            "amplihack: warning: cannot write the skills and agents index: {}",
+            "amplihack: warning: cannot write the skills and agents index; \
+             `amplihack directory` will report it missing until the next install: {}",
             paths::sanitize_text(&format!("{error:#}"))
         );
     }

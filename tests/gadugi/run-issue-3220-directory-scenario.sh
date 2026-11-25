@@ -174,7 +174,10 @@ echo "PASS D: an unmatched word printed nothing and exited 0"
 # --- E. the command wrote nothing --------------------------------------------
 after="$(snapshot)"
 if [ "$before" != "$after" ]; then
-  diff <(printf "%s\n" "$before") <(printf "%s\n" "$after") | sed "s/^/    /" | head -20
+  # No truncating stage: under pipefail an early-exit reader such as head
+  # breaks the producer (issue #1434). awk reads all input and prints 20 lines;
+  # diff exits 1 on a difference, which set -e would turn into an exit before die.
+  diff <(printf "%s\n" "$before") <(printf "%s\n" "$after") | awk 'NR <= 20 { print "    " $0 }' || true
   die "directory find or list changed files under HOME"
 fi
 echo "PASS E: directory find and list wrote nothing under HOME"

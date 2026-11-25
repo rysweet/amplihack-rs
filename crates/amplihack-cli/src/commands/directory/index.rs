@@ -122,7 +122,34 @@ pub fn render(entries: &[Entry]) -> Result<String> {
 /// Build the index of the framework staged at `staged` and write it to
 /// [`index_path`]. The file is replaced through a rename, so a reader never
 /// sees half of it, and it is not rewritten when its bytes already match.
+///
+/// When the index cannot be built or written, any index left from an earlier
+/// install is removed before the error is returned. Its paths point into the
+/// staging the install has just replaced, so keeping it would let
+/// `amplihack directory` serve stale paths; without it the command reports
+/// the missing index and names `amplihack install`.
 pub fn write_index(staged: &Path) -> Result<PathBuf> {
+    let result = build_and_write_index(staged);
+    if result.is_err() {
+        let path = index_path(staged);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return result.with_context(|| {
+                    format!(
+                        "the previous index at {} could not be removed either ({error}) \
+                         and may list stale paths",
+                        path.display()
+                    )
+                });
+            }
+        }
+    }
+    result
+}
+
+fn build_and_write_index(staged: &Path) -> Result<PathBuf> {
     let entries = collect_entries(staged)?;
     let rendered = render(&entries)?;
     let path = index_path(staged);
@@ -451,5 +478,29 @@ mod tests {
         write_index(staged).unwrap();
         assert_eq!(fs::read(&path).unwrap(), first);
         assert_eq!(read_index(&path).unwrap().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_rewrite_removes_the_previous_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let staged = dir.path();
+        write(
+            &staged.join("skills/one/SKILL.md"),
+            "---\ndescription: One\n---\n",
+        );
+        let path = write_index(staged).unwrap();
+        assert!(path.is_file());
+        // A skill folder whose name holds a tab cannot be rendered, so the
+        // rewrite fails, as it would on an update that cannot write the file.
+        write(
+            &staged.join("skills/bad\tname/SKILL.md"),
+            "---\ndescription: Bad\n---\n",
+        );
+        assert!(write_index(staged).is_err());
+        assert!(
+            !path.exists(),
+            "the stale index from the earlier install survived"
+        );
+        assert!(read_index(&path).unwrap().is_none());
     }
 }
