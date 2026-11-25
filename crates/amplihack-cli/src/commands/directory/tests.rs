@@ -1,4 +1,4 @@
-//! Behaviour of `amplihack directory find` and `list` against an index file.
+//! Behaviour of `amplihack directory find` against an index file.
 
 use super::*;
 use std::fs;
@@ -50,17 +50,9 @@ fn find_without_words_prints_names_grouped_by_type() {
 }
 
 #[test]
-fn list_prints_every_entry() {
-    let (_dir, staged) = staged_with_index(INDEX);
-    let out = run_text(&staged, DirectoryCommands::List).unwrap();
-    assert_eq!(out.lines().count(), 4);
-    assert!(out.lines().all(|line| line.split('\t').count() == 4));
-}
-
-#[test]
 fn a_missing_index_is_an_error_that_names_install() {
     let dir = tempfile::tempdir().unwrap();
-    let error = run_text(dir.path(), DirectoryCommands::List).unwrap_err();
+    let error = run_text(dir.path(), find(&[])).unwrap_err();
     assert!(
         format!("{error:#}").contains("amplihack install"),
         "{error:#}"
@@ -73,17 +65,13 @@ fn a_missing_index_is_an_error_that_names_install() {
 }
 
 #[test]
-fn an_index_with_no_entry_is_an_error_for_find_and_list() {
+fn an_index_with_no_entry_is_an_error() {
     for text in [
         "",
         "not an entry\nskill\tonly-three\t/p\n",
         "thing\tx\t/p\td\n",
     ] {
         let (_dir, staged) = staged_with_index(text);
-        assert!(
-            run_text(&staged, DirectoryCommands::List).is_err(),
-            "{text:?}"
-        );
         assert!(run_text(&staged, find(&[])).is_err(), "{text:?}");
         assert!(run_text(&staged, find(&["x"])).is_err(), "{text:?}");
     }
@@ -128,7 +116,6 @@ impl Write for Closed {
 fn a_closed_standard_output_ends_the_command_normally() {
     let (_dir, staged) = staged_with_index(INDEX);
     let broken = || Closed(std::io::ErrorKind::BrokenPipe);
-    run_in(&staged, DirectoryCommands::List, &mut broken()).unwrap();
     run_in(&staged, find(&["guide"]), &mut broken()).unwrap();
     run_in(&staged, find(&[]), &mut broken()).unwrap();
 }
@@ -137,7 +124,6 @@ fn a_closed_standard_output_ends_the_command_normally() {
 fn another_failure_to_write_is_still_an_error() {
     let (_dir, staged) = staged_with_index(INDEX);
     let other = || Closed(std::io::ErrorKind::PermissionDenied);
-    assert!(run_in(&staged, DirectoryCommands::List, &mut other()).is_err());
     assert!(run_in(&staged, find(&["guide"]), &mut other()).is_err());
     assert!(run_in(&staged, find(&[]), &mut other()).is_err());
 }
@@ -162,11 +148,10 @@ fn snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 }
 
 #[test]
-fn neither_subcommand_writes_anything() {
+fn the_command_writes_nothing() {
     let (dir, staged) = staged_with_index(INDEX);
     let before = snapshot(dir.path());
     run_text(&staged, find(&["guide"])).unwrap();
     run_text(&staged, find(&[])).unwrap();
-    run_text(&staged, DirectoryCommands::List).unwrap();
     assert_eq!(snapshot(dir.path()), before);
 }

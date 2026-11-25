@@ -9,7 +9,6 @@ runs `install`, so it rewrites the index too. For a task-based guide, see
 
 ```sh
 amplihack directory find [WORD]...
-amplihack directory list
 ```
 
 With no subcommand, the command prints its help.
@@ -20,9 +19,8 @@ With no subcommand, the command prints its help.
 | --- | --- |
 | `find WORD...` | Every entry whose name or description contains all the words, ignoring letter case, one per line: type, name, description, path, separated by tabs, in index order. The path is not searched. A quoted word with spaces is matched as given. A word that contains a colon is matched by the part after its last colon, so `amplihack:core:reviewer` is matched as `reviewer`. |
 | `find` | The names only: `skills:`, then each skill name indented by two spaces, then `agents:` and each agent name. A name that occurs twice in one group is printed once. |
-| `list` | Every entry, in the same form as `find WORD...`. |
 
-Neither subcommand writes anything. `directory` skips the start-up repair of staged assets that most other subcommands run first, so after the binary is upgraded it reads what the last install wrote until the next install or update.
+The command writes nothing. `directory` skips the start-up repair of staged assets that most other subcommands run first, so after the binary is upgraded it reads what the last install wrote until the next install or update.
 
 ## Exit behaviour
 
@@ -42,7 +40,8 @@ Neither subcommand writes anything. `directory` skips the start-up repair of sta
 `<home>` is the `HOME` of the user who ran `amplihack install`. The index sits
 in the installer's staging folder, beside the skill ownership manifest
 `claude-skills-manifest.json`. The writer and the reader find that folder
-through the same function, so they always agree.
+through the same function, so they always agree. To see every entry, read that
+file; its format is described below.
 
 The command does not read `AMPLIHACK_HOME` or `paths.home` to find the index,
 because the installer does not read them to stage the framework. A session in

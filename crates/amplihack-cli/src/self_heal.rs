@@ -1186,20 +1186,16 @@ steps:
         let tmp = TempDir::new().unwrap();
         let _g = EnvGuard::new(tmp.path(), None);
 
-        for argv in [
-            &["amplihack", "directory", "find", "kubernetes"][..],
-            &["amplihack", "directory", "list"][..],
-        ] {
-            let calls = Cell::new(0u32);
-            let mut buf = Vec::new();
-            ensure_assets_match_binary_version_with(
-                &args(argv),
-                &mut buf,
-                counting_installer(&calls, crate::VERSION),
-            )
-            .expect("ok");
-            assert_eq!(calls.get(), 0, "{argv:?} must not restage the framework");
-        }
+        let argv = ["amplihack", "directory", "find", "kubernetes"];
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&argv),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0, "{argv:?} must not restage the framework");
     }
 
     #[test]

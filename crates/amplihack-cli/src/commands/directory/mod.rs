@@ -2,7 +2,7 @@
 //! (issue #3220).
 //!
 //! The index is written by `amplihack install` (see [`index`]). This command
-//! only reads it: neither subcommand writes anything. It finds the index in
+//! only reads it: it writes nothing. It finds the index in
 //! the installer's own staging folder, through the same function the
 //! installer uses, so the two cannot disagree on its place.
 //!
@@ -32,8 +32,6 @@ pub enum DirectoryCommands {
         /// Words to look for. A quoted argument with spaces is matched as given.
         words: Vec<String>,
     },
-    /// Print every entry of the index, in the same form as `find`.
-    List,
 }
 
 /// Run a `directory` subcommand against the index of the installed framework.
@@ -68,7 +66,6 @@ fn run_in(staged: &Path, command: DirectoryCommands, out: &mut impl Write) -> Re
         );
     }
     let written = match command {
-        DirectoryCommands::List => print_entries(entries.iter(), out),
         DirectoryCommands::Find { words } if words.is_empty() => print_names(&entries, out),
         DirectoryCommands::Find { words } => {
             let matches: Vec<&Entry> = entries.iter().filter(|e| e.matches_all(&words)).collect();

@@ -9,10 +9,11 @@
 #   B. `amplihack directory find <word>` prints the entry the word should
 #      match, as a tab-separated line of type, name, description and path, and
 #      the printed path is an existing file.
-#   C. Every path that `amplihack directory list` prints is an existing file.
+#   C. Every path in the index file is an existing file.
 #   D. A word that matches no entry prints nothing on standard output and
 #      exits 0.
-#   E. Neither subcommand writes anything under HOME or under AMPLIHACK_HOME.
+#   E. `amplihack directory find`, with words and with none, writes nothing
+#      under HOME or under AMPLIHACK_HOME.
 #   F. `amplihack directory find` against a fresh HOME with no install prints
 #      nothing on standard output, says on standard error that the index is
 #      missing and names `amplihack install`, and exits non-zero.
@@ -164,16 +165,15 @@ agent_path="$(awk -F'\t' '$1 == "agent" { print $4; exit }' "$root/agent.out")"
 [ -f "$agent_path" ] || die "the printed agent path is not a file: $agent_path"
 echo "PASS B: find printed an agent for an upper-case word, and its path is a file"
 
-# --- C. every listed path exists ---------------------------------------------
-amp directory list >"$root/list.out" 2>/dev/null || die "directory list exited non-zero"
-listed="$(wc -l < "$root/list.out")"
-[ "$listed" = "$(wc -l < "$index")" ] || die "list printed $listed lines; the index has $(wc -l < "$index")"
+# --- C. every indexed path exists --------------------------------------------
+# The index file holds type, name, path and description, tab-separated.
+listed="$(wc -l < "$index")"
 missing=0
-while IFS=$'\t' read -r _type _name _description listed_path; do
-  [ -f "$listed_path" ] || { echo "    missing: $listed_path"; missing=$((missing + 1)); }
-done < "$root/list.out"
-[ "$missing" = 0 ] || die "$missing listed paths are not files"
-echo "PASS C: every one of $listed listed paths is a file"
+while IFS=$'\t' read -r _type _name indexed_path _description; do
+  [ -f "$indexed_path" ] || { echo "    missing: $indexed_path"; missing=$((missing + 1)); }
+done < "$index"
+[ "$missing" = 0 ] || die "$missing indexed paths are not files"
+echo "PASS C: every one of $listed indexed paths is a file"
 
 # --- D. a word that matches nothing ------------------------------------------
 amp directory find zqxjv-no-such-entry >"$root/none.out" 2>"$root/none.err" ||
@@ -183,15 +183,17 @@ amp directory find zqxjv-no-such-entry >"$root/none.out" 2>"$root/none.err" ||
 echo "PASS D: an unmatched word printed nothing and exited 0"
 
 # --- E. the command wrote nothing --------------------------------------------
+amp directory find >"$root/names.out" 2>/dev/null || die "directory find with no words exited non-zero"
+[ -s "$root/names.out" ] || die "find with no words printed nothing"
 after="$(snapshot)"
 if [ "$before" != "$after" ]; then
   # No truncating stage: under pipefail an early-exit reader such as head
   # breaks the producer (issue #1434). awk reads all input and prints 20 lines;
   # diff exits 1 on a difference, which set -e would turn into an exit before die.
   diff <(printf "%s\n" "$before") <(printf "%s\n" "$after") | awk 'NR <= 20 { print "    " $0 }' || true
-  die "directory find or list changed files under HOME or AMPLIHACK_HOME"
+  die "directory find changed files under HOME or AMPLIHACK_HOME"
 fi
-echo "PASS E: directory find and list wrote nothing under HOME or AMPLIHACK_HOME"
+echo "PASS E: directory find, with words and with none, wrote nothing under HOME or AMPLIHACK_HOME"
 
 # --- F. no install: find reports the missing index ---------------------------
 if amp_fresh directory find skill >"$root/fresh.out" 2>"$root/fresh.err"; then

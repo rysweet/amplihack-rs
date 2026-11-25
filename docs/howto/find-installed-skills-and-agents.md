@@ -37,12 +37,6 @@ To see only the names, grouped by type, run `find` with no words:
 amplihack directory find
 ```
 
-To print every entry, run:
-
-```sh
-amplihack directory list
-```
-
 ## Use a skill you found
 
 Read the SKILL.md at the printed path in full and follow it. Resolve the

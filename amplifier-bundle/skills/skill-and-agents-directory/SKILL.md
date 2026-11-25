@@ -33,8 +33,7 @@ such as `amplihack:core:reviewer`, is found by `reviewer`. Use fewer or
 broader words when nothing matches. `amplihack directory find` with no words
 prints the names only.
 
-Never read the whole index, and do not run `amplihack directory list` to
-browse it. Search for what the task needs.
+Never read the whole index. Search for what the task needs.
 
 If the command reports that the index is missing or has no entries, tell the
 person that the index is missing and ask them to run `amplihack install`.
