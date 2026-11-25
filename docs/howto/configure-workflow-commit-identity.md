@@ -108,6 +108,19 @@ amplihack recipe run workflow-publish \
 This writes to `.git/config` for the current repository only. Amplihack does not
 write global Git config and does not require you to set one.
 
+Set both values. When either value is set, Amplihack uses the repository-local
+identity or stops. If the identity fails validation, for example because the
+email uses a private domain such as `.local` or a service-account local part
+such as `agent@`, or if only one of the two values is set, the commit stops
+with the reason and the rule it failed. Amplihack does not replace a rejected
+repository-local identity with the authenticated provider account. To use
+provider inference instead, remove both values:
+
+```bash
+git config --local --unset user.name
+git config --local --unset user.email
+```
+
 ## Use GitHub inference
 
 For GitHub repositories, authenticate `gh` before running the workflow:
@@ -121,8 +134,9 @@ amplihack recipe run workflow-publish \
   -c task_description="Publish GitHub workflow changes"
 ```
 
-When explicit identity, complete safe Git environment variables, and safe local
-Git identity are absent, Amplihack uses the authenticated GitHub account. It uses
+When no explicit identity, no Git environment identity and no repository-local
+`user.name` or `user.email` are set, Amplihack uses the authenticated GitHub
+account. It uses
 the public email when available and the account's GitHub noreply email
 otherwise. It uses the public profile name when available and falls back to the
 login when the profile name is empty. The resulting name and email must pass
@@ -177,6 +191,11 @@ amplihack recipe run default-workflow \
 Do not fix the failure by setting `git config --global` on the VM. A global VM
 identity can leak into unrelated repositories and does not prove the intended
 attribution for the current workflow.
+
+If the rejected identity comes from repository-local Git config, the reason
+names `repo-local git config`. Either set the explicit variables above, which
+take precedence, or correct or remove the repository-local `user.name` and
+`user.email`.
 
 ## Fix a "git identity helper not found" failure
 
