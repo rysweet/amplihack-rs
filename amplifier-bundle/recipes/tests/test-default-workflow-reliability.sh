@@ -147,7 +147,7 @@ extract_step_command() {
 
 configure_identity() {
     local repo="$1"
-    git -C "${repo}" config user.email "test@example.invalid"
+    git -C "${repo}" config user.email "recipe-reliability-test@example.com"
     git -C "${repo}" config user.name "Recipe Reliability Test"
 }
 

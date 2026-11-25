@@ -349,7 +349,7 @@ steps:
         wf_helper="${WORKFLOW_HOOK_REPAIR_HELPER:-$WF_TOOLS/workflow_hook_repair.sh}"; [ -f "$wf_helper" ] || { echo "ERROR: workflow helper not found: $wf_helper" >&2; exit 2; }; . "$wf_helper"
         commit_with_pre_commit_guard() {
           local pre_commit_hook
-          amplihack_prepare_git_commit_identity
+          amplihack_prepare_git_commit_identity || return 1
           pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
           if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
             PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
