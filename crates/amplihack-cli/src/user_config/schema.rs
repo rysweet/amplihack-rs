@@ -179,7 +179,15 @@ impl KeyDef {
     /// The built-in default as a value.
     pub(crate) fn default_value(&self) -> Option<Value> {
         self.default.map(|raw| {
-            parse_raw(self.kind, raw).expect("every schema default passes its own validation")
+            // A list default is written as TOML, which only a file supplies.
+            let value = match self.kind {
+                ValueKind::EntryList => raw
+                    .parse::<toml_edit::Value>()
+                    .map_err(|error| error.to_string())
+                    .and_then(|item| from_toml(self.kind, &item)),
+                _ => parse_raw(self.kind, raw),
+            };
+            value.expect("every schema default passes its own validation")
         })
     }
 
@@ -500,12 +508,9 @@ pub(crate) fn parse_raw(kind: ValueKind, raw: &str) -> Result<Value, String> {
         ValueKind::CommandList => Err("is a list and is set by editing the user file \
              ~/.amplihack/config.toml, not from the command line"
             .to_string()),
-        ValueKind::EntryList => {
-            let item = raw
-                .parse::<toml_edit::Value>()
-                .map_err(|_| kind_requirement(kind))?;
-            from_toml(kind, &item)
-        }
+        ValueKind::EntryList => Err("is a list; use `amplihack directory enable` and \
+             `amplihack directory disable` to change individual entries"
+            .to_string()),
         ValueKind::Int { min, max } => {
             if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(kind_requirement(kind));

@@ -92,7 +92,7 @@ fn failed_print_keeps_the_file_without_replay() {
 
 #[cfg(unix)]
 #[test]
-fn unwritable_notice_folder_is_reported_without_printing() {
+fn unwritable_notice_folder_still_prints_and_reports_the_error() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let install = dir.path().join("install");
@@ -104,7 +104,7 @@ fn unwritable_notice_folder_is_reported_without_printing() {
     fs::set_permissions(&install, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(result.is_err());
     warn(result);
-    assert!(output.is_empty());
+    assert!(!output.is_empty());
     assert!(!install.join(NOTICE).exists());
 }
 

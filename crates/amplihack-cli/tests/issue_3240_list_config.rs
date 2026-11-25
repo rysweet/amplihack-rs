@@ -178,31 +178,9 @@ fn list_settings_report_defaults_and_read_typed_extensions() {
 }
 
 #[test]
-fn invalid_or_unknown_entries_leave_configuration_unchanged() {
+fn config_set_lists_enabled_fails_without_writing() {
     let install = Install::new();
     install.write_index();
-    let original = fs::read(install.config()).unwrap();
-    for raw in [
-        r#"["skill:code-visualizer"]"#,
-        "[]",
-        r#"["skill:no-such-entry"]"#,
-        r#"["agent:guide"]"#,
-        r#"["guide"]"#,
-        "[1]",
-        "true",
-    ] {
-        let result = install.run(&["config", "set", "lists.enabled", raw]);
-        assert!(!result.status.success(), "{raw}: {result:?}");
-        assert_eq!(fs::read(install.config()).unwrap(), original);
-    }
-    let result = install.run(&["config", "set", "lists.set", "everything"]);
-    assert!(!result.status.success());
-    assert_eq!(fs::read(install.config()).unwrap(), original);
-}
-
-#[test]
-fn missing_index_rejects_extensions_without_changing_configuration() {
-    let install = Install::new();
     let original = fs::read(install.config()).unwrap();
     let result = install.run(&[
         "config",
@@ -210,9 +188,18 @@ fn missing_index_rejects_extensions_without_changing_configuration() {
         "lists.enabled",
         r#"["skill:code-visualizer"]"#,
     ]);
-    assert!(!result.status.success());
+    assert!(!result.status.success(), "{result:?}");
     assert_eq!(fs::read(install.config()).unwrap(), original);
-    assert!(!install.index().exists());
+}
+
+#[test]
+fn config_set_lists_set_rejects_unknown_value_without_writing() {
+    let install = Install::new();
+    install.write_index();
+    let original = fs::read(install.config()).unwrap();
+    let result = install.run(&["config", "set", "lists.set", "everything"]);
+    assert!(!result.status.success(), "{result:?}");
+    assert_eq!(fs::read(install.config()).unwrap(), original);
 }
 
 #[test]

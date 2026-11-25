@@ -25,13 +25,26 @@ fn list_defaults_are_small_and_extensions_are_empty() {
 }
 
 #[test]
-fn extensions_are_typed_deduplicated_and_do_not_repeat_defaults() {
+fn command_line_values_for_extensions_are_rejected() {
+    for raw in ["[]", r#"["skill:extra"]"#, "skill:extra"] {
+        assert!(parse_cli("lists.enabled", raw).is_err(), "{raw}");
+    }
+}
+
+#[test]
+fn extensions_read_from_the_file_are_typed_deduplicated_and_do_not_repeat_defaults() {
+    let read = |raw: &str| {
+        from_toml(
+            ValueKind::EntryList,
+            &raw.parse::<toml_edit::Value>().unwrap(),
+        )
+    };
     assert_eq!(
-        parse_cli("lists.enabled", r#"["skill:extra", "agent:core/guide", "skill:extra", "skill:pdf", "agent:core/builder"]"#).unwrap(),
+        read(r#"["skill:extra", "agent:core/guide", "skill:extra", "skill:pdf", "agent:core/builder"]"#).unwrap(),
         Value::List(vec!["agent:core/guide".into(), "skill:extra".into()])
     );
     for raw in [
-        "extra",
+        r#""extra""#,
         "true",
         "[42]",
         r#"["extra"]"#,
@@ -39,23 +52,9 @@ fn extensions_are_typed_deduplicated_and_do_not_repeat_defaults() {
         r#"["agent:../extra"]"#,
         r#"["agent:core/guide.md"]"#,
         r#"["amplihack:extra"]"#,
-    ] {
-        assert!(parse_cli("lists.enabled", raw).is_err(), "{raw}");
-    }
-}
-
-#[test]
-fn file_arrays_have_the_same_validation_as_command_line_arrays() {
-    for raw in [
-        "[]",
-        r#"["skill:extra", "agent:core/guide"]"#,
         r#"["skill:extra", 1]"#,
     ] {
-        let item = raw.parse::<toml_edit::Value>().unwrap();
-        assert_eq!(
-            from_toml(ValueKind::EntryList, &item).ok(),
-            parse_cli("lists.enabled", raw).ok()
-        );
+        assert!(read(raw).is_err(), "{raw}");
     }
 }
 
@@ -66,7 +65,7 @@ fn writing_an_array_preserves_unrelated_content_and_comments() {
     let original = "# preferences\n[lists]\n# chosen entries\nenabled = []\n\n[recipe]\nverbose = true # keep\n";
     std::fs::write(&path, original).unwrap();
     let key = known_key("lists.enabled").unwrap();
-    let value = parse_cli(key.name, r#"["skill:extra"]"#).unwrap();
+    let value = Value::List(vec!["skill:extra".into()]);
     set_value(&path, key, &value).unwrap();
     let changed = std::fs::read_to_string(&path).unwrap();
     assert!(changed.contains("# preferences\n[lists]\n# chosen entries\n"));

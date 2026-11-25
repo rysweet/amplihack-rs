@@ -203,12 +203,6 @@ fn tighten_user_dir(path: &Path, effective: &Effective) {
 
 fn set(cwd: &Path, key: &str, raw: &str, project: bool) -> Result<(), ConfigError> {
     let def = schema::known_key(key)?;
-    if def.name == "lists.enabled" {
-        return Err(ConfigError::InvalidValue {
-            key: def.name.into(),
-            reason: "use `amplihack directory enable` and `amplihack directory disable` to change individual entries".into(),
-        });
-    }
     let value = schema::parse_cli(def.name, raw)?;
     if def.name == "paths.home" {
         validate_home_dir(Path::new(raw)).map_err(|reason| ConfigError::InvalidValue {
