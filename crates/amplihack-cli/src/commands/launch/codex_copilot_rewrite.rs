@@ -42,7 +42,8 @@
 //! | --- | --- |
 //! | `-p <text>`, `--prompt <text>`, `--prompt=<text>`, `-p<text>` | `-p`/`--prompt` and the pointer sentence |
 //! | `-i <text>`, `--interactive <text>`, `--interactive=<text>`, `-i<text>` | `-i`/`--interactive` and the pointer sentence |
-//! | a value that is already a pointer sentence | unchanged |
+//! | a value that is already a pointer sentence, and no guidance | unchanged |
+//! | a `-p` pointer sentence, with guidance (the recipe runner's form, #3162) | `-p`/`--prompt` and a pointer to a private copy of the named file with the block after it |
 //! | the same flag twice | error |
 //!
 //! Copilot reads no prompt from stdin that amplihack can rely on, so the text
@@ -57,7 +58,7 @@
 //! is written: it would run with a prompt Copilot cannot open.
 
 use super::codex_exec_args::{Scope, parse_exec_line};
-use super::passthrough_rewrite::{Rewritten, write_private_file};
+use super::passthrough_rewrite::{PromptBlock, Rewritten, write_private_file};
 use amplihack_utils::prompt_delivery::{FILE_REFERENCE_PREFIX, FILE_REFERENCE_TEMPLATE};
 use anyhow::{Result, bail};
 use tempfile::TempDir;
@@ -119,14 +120,13 @@ fn copilot_prompt_flag(arg: &str) -> Option<(&'static str, Option<&str>)> {
     None
 }
 
-/// Whether [`rewrite_copilot_passthrough`] writes a `-p`/`--prompt` file for
-/// `args`, the only Copilot form that receives operator guidance (#2535).
-pub(crate) fn copilot_has_prompt_text(args: &[String]) -> bool {
+/// The value of the first `-p`/`--prompt` in `args`, before any `--`.
+fn copilot_prompt_value(args: &[String]) -> Option<&str> {
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
         if arg == "--" {
-            return false;
+            return None;
         }
         let Some((flag, inline)) = copilot_prompt_flag(arg) else {
             i += 1;
@@ -136,14 +136,47 @@ pub(crate) fn copilot_has_prompt_text(args: &[String]) -> bool {
             Some(text) => (Some(text), 1),
             None => (args.get(i + 1).map(String::as_str), 2),
         };
-        if matches!(flag, "-p" | "--prompt")
-            && text.is_some_and(|t| !t.starts_with(FILE_REFERENCE_PREFIX))
-        {
-            return true;
+        if matches!(flag, "-p" | "--prompt") {
+            return text;
         }
         i += consumed;
     }
-    false
+    None
+}
+
+/// Whether `args` give `-p`/`--prompt` prompt text, which
+/// [`rewrite_copilot_passthrough`] moves to a private file (#2535).
+pub(crate) fn copilot_has_prompt_text(args: &[String]) -> bool {
+    copilot_prompt_value(args).is_some_and(|t| !t.starts_with(FILE_REFERENCE_PREFIX))
+}
+
+/// Whether `args` give `-p`/`--prompt` a pointer sentence naming a prompt
+/// file, the form the recipe runner starts every Copilot step with
+/// (issue #3162).
+pub(crate) fn copilot_has_prompt_pointer(args: &[String]) -> bool {
+    copilot_prompt_value(args).is_some_and(|t| t.starts_with(FILE_REFERENCE_PREFIX))
+}
+
+/// The prompt file a pointer sentence names: the text between
+/// [`FILE_REFERENCE_PREFIX`] and the rest of [`FILE_REFERENCE_TEMPLATE`].
+fn pointer_path(pointer: &str) -> Option<&str> {
+    let (_, suffix) = FILE_REFERENCE_TEMPLATE.split_once("{path}")?;
+    pointer
+        .strip_prefix(FILE_REFERENCE_PREFIX)?
+        .strip_suffix(suffix)
+        .filter(|path| path.starts_with('/'))
+}
+
+/// The prompt a caller's pointer sentence names, read in full. `None` when
+/// the sentence names no absolute path, or the path is not a regular file
+/// holding UTF-8 text. Copilot would read the same file; reading it here
+/// gives Copilot nothing it could not already open.
+fn read_pointed_prompt(pointer: &str) -> Option<String> {
+    let path = std::path::Path::new(pointer_path(pointer)?);
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
 }
 
 /// Rewrite `amplihack copilot` passthrough arguments; see the module docs.
@@ -165,8 +198,17 @@ pub(crate) fn copilot_has_prompt_text(args: &[String]) -> bool {
 ///
 /// `prompt_suffix` (issue #2535) is the operator-instructions block. It is
 /// added after one blank line to `-p`/`--prompt` text only, before the
-/// private file is written; `-i` text and a caller's own pointer sentence
-/// never receive it, and it never reaches argv.
+/// private file is written; `-i` text never receives it, and it never
+/// reaches argv.
+///
+/// A caller's own `-p` pointer sentence (issue #3162: the recipe runner
+/// starts every Copilot step this way) is passed on unchanged when there is
+/// no block. With a block, the file it names is read, and its text with the
+/// block after it goes to a private file that a new pointer sentence names,
+/// as for `-p` text. The caller's file is never written. When that file
+/// cannot be read, or Copilot could open no private file (neither
+/// `grant_dir` nor `path_access`), the caller's pointer is passed on
+/// unchanged and [`Rewritten::prompt_block`] says the block was not added.
 pub(crate) fn rewrite_copilot_passthrough(
     args: &[String],
     grant_dir: bool,
@@ -175,6 +217,7 @@ pub(crate) fn rewrite_copilot_passthrough(
 ) -> Result<Rewritten> {
     let mut out: Vec<String> = Vec::with_capacity(args.len() + 2);
     let mut dir: Option<TempDir> = None;
+    let mut prompt_block = PromptBlock::Absent;
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
@@ -198,12 +241,33 @@ pub(crate) fn rewrite_copilot_passthrough(
                 }
             },
         };
+        let prompt_mode = matches!(flag, "-p" | "--prompt");
         if text.starts_with(FILE_REFERENCE_PREFIX) {
-            out.extend(args[i..i + consumed].iter().cloned());
+            // The caller's own pointer sentence. With a block, and a private
+            // file Copilot can open, the prompt it names is copied with the
+            // block after it; otherwise it is passed on unchanged.
+            let block = prompt_suffix.filter(|_| prompt_mode && (grant_dir || path_access));
+            let copied = block.map(|block| {
+                read_pointed_prompt(text).and_then(|prompt| {
+                    let with_block = crate::run_guidance::append_block(&prompt, block);
+                    private_pointer(&mut dir, "copilot-prompt.md", flag, &with_block).ok()
+                })
+            });
+            match copied {
+                Some(Some(pointer)) => {
+                    out.push(flag.to_string());
+                    out.push(pointer);
+                    prompt_block = PromptBlock::Added;
+                }
+                Some(None) => {
+                    out.extend(args[i..i + consumed].iter().cloned());
+                    prompt_block = PromptBlock::PromptFileNotCopied;
+                }
+                None => out.extend(args[i..i + consumed].iter().cloned()),
+            }
         } else {
             // One file per flag kind: `-p` and `--prompt` share a name, so a
             // second prompt fails with "given twice" from `create_new`.
-            let prompt_mode = matches!(flag, "-p" | "--prompt");
             // `-i` is interactive: Copilot asks the user before reading the
             // file. A `-p` run has no one to ask.
             if prompt_mode && !grant_dir && !path_access {
@@ -220,17 +284,13 @@ pub(crate) fn rewrite_copilot_passthrough(
             let text = match prompt_suffix {
                 Some(block) if prompt_mode => {
                     with_suffix = crate::run_guidance::append_block(text, block);
+                    prompt_block = PromptBlock::Added;
                     with_suffix.as_str()
                 }
                 _ => text,
             };
-            let path = write_private_file(&mut dir, name, flag, text)?;
-            let path_text = path.to_string_lossy();
-            if path_text.contains('\n') || path_text.contains('\0') {
-                bail!("the private file path for {flag} contains a newline");
-            }
             out.push(flag.to_string());
-            out.push(FILE_REFERENCE_TEMPLATE.replace("{path}", &path_text));
+            out.push(private_pointer(&mut dir, name, flag, text)?);
         }
         i += consumed;
     }
@@ -243,7 +303,25 @@ pub(crate) fn rewrite_copilot_passthrough(
             ],
         );
     }
-    Ok(Rewritten::from_parts(out, None, dir))
+    let mut rewritten = Rewritten::from_parts(out, None, dir);
+    rewritten.prompt_block = prompt_block;
+    Ok(rewritten)
+}
+
+/// Writes `text` to the private file `name` and returns the pointer
+/// sentence naming it.
+fn private_pointer(
+    dir: &mut Option<TempDir>,
+    name: &str,
+    flag: &str,
+    text: &str,
+) -> Result<String> {
+    let path = write_private_file(dir, name, flag, text)?;
+    let path_text = path.to_string_lossy();
+    if path_text.contains('\n') || path_text.contains('\0') {
+        bail!("the private file path for {flag} contains a newline");
+    }
+    Ok(FILE_REFERENCE_TEMPLATE.replace("{path}", &path_text))
 }
 
 /// Whether `args` give Copilot any prompt flag (`-p`/`--prompt` or

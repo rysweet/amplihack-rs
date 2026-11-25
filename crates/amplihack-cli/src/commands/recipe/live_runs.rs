@@ -3,9 +3,19 @@
 //!
 //! `recipe guide <PR URL>` writes the entry into each live run's own
 //! `runs/<id>/guidance/` folder, which every run lists first, and
-//! `recipe guidance show <PR URL>` reads the same folders, plus those of
-//! ended runs still on record. Both find them here, so the read and the
-//! write resolve one set of folders.
+//! `recipe guidance show <PR URL>` reads the same folders. Both find them
+//! here, so the read and the write resolve one set of folders.
+//!
+//! An ended run's folder is not listed for a pull request (PR #3190
+//! review). The goal loop exports every folder `show` lists to each turn,
+//! and a launch puts every entry of every listed folder in its prompt, so a
+//! new drive would take an ended drive's session-name guidance, such as
+//! "stop", and mark it read in that run's log. An entry sent by pull
+//! request URL is also in the pull request folder, so it is still listed
+//! from there. [`runs_for_pr_by_state`] returns the ended runs' folders
+//! apart: `show` reads their logs, never their entries, so an entry a step
+//! read before its run ended is still reported as read. An ended run's own
+//! guidance is read by its session name.
 //!
 //! A run is found from the session pointer it wrote at start
 //! ([`guide_records::scan`]), which records the pull request of its context
@@ -38,8 +48,11 @@
 //! pointer's `pr_url` is.
 //!
 //! Known limits: a drive given its own `autodrive_state_dir` outside the run
-//! folder, and a run whose session log was removed, are not found. The pull
-//! request folder is still written for those, as before.
+//! folder, a run whose session log was removed, and a run started in the
+//! foreground (its start record goes to its own stderr, not to the log
+//! folder) are not found. The pull request folder is still written for
+//! those, as before, and a run with the pull request in its context reads
+//! it at its next agent step when its state folder is the sender's.
 
 use super::guide::{RootChecks, accept_recorded};
 use super::guide_records::{self, Pointer};
@@ -109,23 +122,20 @@ pub(crate) fn live_runs_for_pr(pr: &PrRef) -> Vec<LiveRun> {
         .collect()
 }
 
-/// The runs for `pr` whose guidance `recipe guidance show <PR URL>` reads:
-/// every live run (reachable or not, so an unreachable one can be shown
-/// with its reason), then each ended run whose folder still passes the
-/// checks. An ended run's folder is read so that an entry a step read
-/// before the run ended is still reported as read; nothing is written to
-/// it.
-pub(crate) fn runs_to_read_for_pr(pr: &PrRef) -> Vec<LiveRun> {
+/// For `recipe guidance show <PR URL>`: every live run for `pr` (reachable
+/// or not, so an unreachable one can be shown with its reason), and the
+/// guidance folder of each ended run whose folder still passes the checks.
+/// The live runs' folders are listed; the ended runs' folders are not, and
+/// only their logs are read, for read state. Nothing is written to either.
+pub(crate) fn runs_for_pr_by_state(pr: &PrRef) -> (Vec<LiveRun>, Vec<PathBuf>) {
     let (live, ended): (Vec<_>, Vec<_>) = runs_for_pr(pr).into_iter().partition(|(_, l)| *l);
-    live.into_iter()
-        .map(|(run, _)| run)
-        .chain(
-            ended
-                .into_iter()
-                .map(|(run, _)| run)
-                .filter(|run| run.reachable.is_ok()),
-        )
-        .collect()
+    (
+        live.into_iter().map(|(run, _)| run).collect(),
+        ended
+            .into_iter()
+            .filter_map(|(run, _)| run.reachable.ok())
+            .collect(),
+    )
 }
 
 /// Every run that records `pr`, each once, with whether it is live.

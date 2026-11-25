@@ -11,7 +11,8 @@
 //! - (b) the guidance reaches the drive's own run folder, is seen once by the
 //!   drive's next step, and `recipe guidance show <PR URL>` run under the
 //!   drive's environment (the goal loop's read) lists the folder that
-//!   `recipe guide` wrote (R7);
+//!   `recipe guide` wrote (R7). Once the drive has ended its folder is no
+//!   longer listed, and the sender's read still reports the entry as read;
 //! - (b2) a live run that cannot be reached makes the command refuse with
 //!   exit 1, the session named, and nothing written;
 //! - (b3) with no live run for the pull request, the pull request folder is
@@ -148,12 +149,7 @@ fn b_pr_url_guidance_reaches_a_drive_with_its_own_work_root() {
 
     // R7: the goal loop's read resolves the folder the sender's write used.
     let seen = d.goal_loop_show();
-    let listed: Vec<PathBuf> = seen["folders"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| PathBuf::from(f["path"].as_str().unwrap()))
-        .collect();
+    let listed = listed_folders(&seen);
     assert!(listed.contains(&d.run_guidance()), "{listed:?}");
     assert_eq!(seen["entries"].as_array().unwrap().len(), 1, "{seen}");
     assert_eq!(seen["entries"][0]["read"], false, "{seen}");
@@ -169,9 +165,41 @@ fn b_pr_url_guidance_reaches_a_drive_with_its_own_work_root() {
     assert_eq!(p2.matches(MARKER).count(), 1, "{p2:?}");
     assert_eq!(d.f.record("prompt.d.1"), "drive step one");
 
+    // The drive has ended. Its folder is no longer listed for the pull
+    // request, so a later drive's turns are not given its guidance
+    // (PR #3190 review).
     let after = d.goal_loop_show();
-    assert_eq!(after["entries"].as_array().unwrap().len(), 1, "{after}");
-    assert_eq!(after["entries"][0]["read"], true, "{after}");
+    assert!(
+        !listed_folders(&after).contains(&d.run_guidance()),
+        "{after}"
+    );
+
+    // The sender's own read lists the entry once, from the pull request
+    // folder, and reports it read: the ended run's log proves the read.
+    let sender = d.f.run_with_stdin(
+        d.f.amplihack(&["recipe", "guidance", "show", PR_URL, "--json"]),
+        None,
+    );
+    assert!(sender.status.success(), "{}", show(&sender));
+    let seen: serde_json::Value = serde_json::from_str(stdout(&sender).trim()).unwrap();
+    assert!(!listed_folders(&seen).contains(&d.run_guidance()), "{seen}");
+    assert_eq!(seen["entries"].as_array().unwrap().len(), 1, "{seen}");
+    assert_eq!(
+        PathBuf::from(seen["entries"][0]["folder"].as_str().unwrap()),
+        d.f.pr_parent().join("guidance"),
+        "{seen}"
+    );
+    assert_eq!(seen["entries"][0]["read"], true, "{seen}");
+}
+
+/// The folders a `show --json` document lists.
+fn listed_folders(doc: &serde_json::Value) -> Vec<PathBuf> {
+    doc["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| PathBuf::from(f["path"].as_str().unwrap()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

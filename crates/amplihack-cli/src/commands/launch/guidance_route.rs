@@ -7,6 +7,7 @@
 //!
 //! | Tool    | Launch form                                | Route                         |
 //! |---------|--------------------------------------------|-------------------------------|
+//! | Claude  | `--input-format` other than `text`         | `LaunchFormUnsupported` drop  |
 //! | Claude  | `-p <text>` (rewritten to stdin)           | `Prompt`                      |
 //! | Claude  | `-p`/`--print`, stdin may hold a prompt    | `StdinTrailer`                |
 //! | Claude  | `-p`/`--print`, nothing on stdin           | `NoPromptOnStdin` drop        |
@@ -15,9 +16,20 @@
 //! | Codex   | `exec … -`, nothing on stdin               | `NoPromptOnStdin` drop        |
 //! | Codex   | any other form                             | `LaunchFormUnsupported` drop  |
 //! | Copilot | `-p <text>` (prompt file)                  | `Prompt`                      |
+//! | Copilot | `-p` pointer to a prompt file (the runner) | `Prompt`, in a private copy   |
+//! | Copilot | `-p` pointer, file not read or copied      | `PromptFileNotCopied` drop    |
 //! | Copilot | no `-p`/`-i`, stdin may hold a prompt      | `StdinTrailer`                |
 //! | Copilot | no `-p`/`-i`, nothing on stdin             | `NoPromptOnStdin` drop        |
-//! | Copilot | `-i`, or a `-p` pointer given by the caller | `LaunchFormUnsupported` drop |
+//! | Copilot | `-i`, or no private file Copilot can open  | `LaunchFormUnsupported` drop  |
+//!
+//! The recipe runner starts every Copilot step with `-p` and a pointer
+//! sentence naming its own prompt file. The launcher copies that file to a
+//! private one with the block after the prompt, and points Copilot at the
+//! copy; the runner's file is never written (PR #3190 review).
+//!
+//! A Claude launch with `--input-format stream-json` (#3036) reads JSON
+//! lines on stdin, so plain text after them would corrupt the stream; it is
+//! a recorded drop, as before this route existed.
 //!
 //! "May hold a prompt" is all the route can know before the child starts:
 //! `fstat` says stdin is a pipe, a socket or a non-empty file, not what is
@@ -47,7 +59,7 @@
 //! automated form of that check.
 
 use super::codex_copilot_rewrite;
-use super::passthrough_rewrite;
+use super::passthrough_rewrite::{self, PromptBlock};
 use crate::run_guidance::{DropReason, GuidanceForLaunch, StepLabel};
 use amplihack_launcher::flag_matrix::AgentBinary;
 
@@ -101,20 +113,25 @@ pub(crate) fn guidance_route(
     }
     let unsupported = GuidanceRoute::Undeliverable(DropReason::LaunchFormUnsupported);
     match agent_binary_for_tool(tool) {
+        Some(AgentBinary::Claude) if !passthrough_rewrite::claude_input_is_text(original_args) => {
+            unsupported
+        }
         Some(AgentBinary::Claude) if rewritten.stdin_payload.is_some() => GuidanceRoute::Prompt,
         Some(AgentBinary::Claude) if passthrough_rewrite::claude_print_mode(original_args) => {
             on_stdin(stdin_may_hold_prompt)
         }
-        Some(AgentBinary::Copilot)
-            if codex_copilot_rewrite::copilot_has_prompt_text(original_args) =>
-        {
-            GuidanceRoute::Prompt
-        }
-        Some(AgentBinary::Copilot)
-            if !codex_copilot_rewrite::copilot_has_prompt_flag(original_args) =>
-        {
-            on_stdin(stdin_may_hold_prompt)
-        }
+        Some(AgentBinary::Copilot) => match rewritten.prompt_block {
+            PromptBlock::Added => GuidanceRoute::Prompt,
+            PromptBlock::PromptFileNotCopied => {
+                GuidanceRoute::Undeliverable(DropReason::PromptFileNotCopied)
+            }
+            PromptBlock::Absent
+                if !codex_copilot_rewrite::copilot_has_prompt_flag(original_args) =>
+            {
+                on_stdin(stdin_may_hold_prompt)
+            }
+            PromptBlock::Absent => unsupported,
+        },
         Some(AgentBinary::Codex)
             if rewritten.stdin_payload.is_none()
                 && crate::run_guidance::codex_trailer_applies(original_args) =>
@@ -182,7 +199,9 @@ fn agent_from_args(args: &[String]) -> Option<String> {
 fn launch_form(tool: &str, args: &[String]) -> &'static str {
     match agent_binary_for_tool(tool) {
         Some(AgentBinary::Claude) => {
-            if passthrough_rewrite::claude_print_mode(args) {
+            if !passthrough_rewrite::claude_input_is_text(args) {
+                "claude, input format other than text"
+            } else if passthrough_rewrite::claude_print_mode(args) {
                 if passthrough_rewrite::claude_print_prompt_in_argv(args) {
                     "claude -p <prompt>"
                 } else {
@@ -204,8 +223,10 @@ fn launch_form(tool: &str, args: &[String]) -> &'static str {
         Some(AgentBinary::Copilot) => {
             if codex_copilot_rewrite::copilot_has_prompt_text(args) {
                 "copilot -p <prompt>"
+            } else if codex_copilot_rewrite::copilot_has_prompt_pointer(args) {
+                "copilot -p <prompt file>"
             } else if codex_copilot_rewrite::copilot_has_prompt_flag(args) {
-                "copilot -i or a -p prompt file"
+                "copilot -i"
             } else {
                 "copilot, prompt expected on stdin"
             }

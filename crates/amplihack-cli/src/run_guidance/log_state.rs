@@ -41,6 +41,10 @@ pub(crate) enum DropReason {
     LaunchFormUnsupported,
     /// The block was due after the caller's stdin, and was not written.
     TrailerNotWritten,
+    /// The step's prompt is in a file its `-p` pointer names (the recipe
+    /// runner's Copilot form), and that file could not be read or its
+    /// private copy written.
+    PromptFileNotCopied,
 }
 
 impl DropReason {
@@ -50,6 +54,7 @@ impl DropReason {
             Self::NoPromptOnStdin => "no_prompt_on_stdin",
             Self::LaunchFormUnsupported => "launch_form_unsupported",
             Self::TrailerNotWritten => "trailer_not_written",
+            Self::PromptFileNotCopied => "prompt_file_not_copied",
         }
     }
 
@@ -64,6 +69,9 @@ impl DropReason {
             }
             Self::TrailerNotWritten => {
                 "the step ended before the guidance after its prompt was written"
+            }
+            Self::PromptFileNotCopied => {
+                "the step's prompt file could not be read or copied, so the guidance could not follow its prompt"
             }
         }
     }

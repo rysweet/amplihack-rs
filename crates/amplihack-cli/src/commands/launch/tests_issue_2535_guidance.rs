@@ -65,11 +65,17 @@ fn interactive_prompt_never_receives_the_suffix() {
 }
 
 #[test]
-fn a_pointer_prompt_given_by_the_caller_is_left_alone() {
-    // The caller already passed a file reference: amplihack writes no file,
-    // so there is nowhere to add the block; argv is unchanged.
+fn a_pointer_prompt_to_a_file_that_cannot_be_read_is_left_alone() {
+    // The caller passed a file reference to a file that does not exist: the
+    // block cannot follow its prompt, so argv is unchanged and the rewrite
+    // says so (issue #3162). A readable file is copied with the block after
+    // it; see `tests_issue_3162_route.rs`.
     let pointer = format!("{FILE_REFERENCE_PREFIX}/tmp/x/p.md. Its contents are the task prompt.");
     let input = s(&["-p", &pointer]);
     let r = rewrite_copilot_passthrough(&input, true, true, Some(BLOCK)).unwrap();
     assert_eq!(r.args, input);
+    assert_eq!(
+        r.prompt_block,
+        super::passthrough_rewrite::PromptBlock::PromptFileNotCopied
+    );
 }

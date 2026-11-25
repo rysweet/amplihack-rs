@@ -246,8 +246,12 @@ fn guide(
     // that was just written; a step that reads it records `entry_names`,
     // which `recipe guidance show` reports as `read`. "Read" means the block
     // was written in full to a step's input, not that the agent acted on it.
+    // With no detached run found, say only what was checked (PR #3190
+    // review): a run started in the foreground writes no start record to
+    // the log folder, and it reads the pull request folder at its next
+    // agent step when its state folder is the sender's.
     let status = if no_live_run {
-        "appended; not yet read; no live run for this pull request reads it until one starts with it in its context".to_string()
+        "appended; not yet read; no detached run for this pull request was found, and a run with the pull request in its context reads the pull request folder at its next agent step".to_string()
     } else if let Some(end) = ended {
         format!(
             "appended; not yet read; the run ended at {} ({})",

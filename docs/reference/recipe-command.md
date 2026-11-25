@@ -506,9 +506,10 @@ amplihack recipe guidance wait [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] --si
 Reads the guidance a run has received, from the folders
 `AMPLIHACK_RUN_GUIDANCE_DIRS` lists and then the folder of the pull request
 named by `<TARGET>` (a pull request URL) or by `--pr` with `--pr-repo`. For a
-pull request, the folders are those of its live runs, then those of its ended
-runs still on record, then its state folder: every folder `recipe guide`
-writes.
+pull request, the folders are those of its live runs, then its state folder:
+every folder `recipe guide` writes. An ended run's folder is not listed, so a
+new drive does not take an ended drive's own guidance; read it by the run's
+session name.
 
 `show` prints every entry, oldest first, as the block an agent step receives,
 with each entry's file name, and marks entries whose names sort after `--since`

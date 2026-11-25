@@ -663,16 +663,26 @@ request itself) is found through its goal record instead: the
 `autodrive-state/turns/` (a newer record with no target names nothing), read
 only when the run folder, `autodrive-state`,
 `turns`, the turn folder and the file all pass the trust checks. A drive given
-an `autodrive_state_dir` outside its run folder is not found. When no live run
-is found, the status line says so and only the state folder is written.
-Guidance to such a run goes by its session name.
+an `autodrive_state_dir` outside its run folder is not found. A run started in
+the foreground is not found either: its start record goes to its own stderr,
+not to the recipe log folder. When no detached run is found, the status line
+says only that, and only the state folder is written. A run with the pull
+request in its context, including one started in the foreground, reads that
+folder at its next agent step when its state folder (`AMPLIHACK_STATE_DIR`) is
+the sender's. Guidance to a run that is not found goes by its session name.
 
 A run is live when its process record is accepted by the same checks that
 `recipe stop` uses and the recorded process start time still matches the
 process, so a reused process ID is not taken for the run. Runs that have ended
-are not written to and never cause a refusal. `recipe guidance show` still
-reads the folders of ended runs that pass the checks, so an entry a step read
-before its run ended is still reported as read.
+are not written to and never cause a refusal. `recipe guidance show <PR URL>`
+does not list their folders either: the goal loop exports every folder it lists
+to each turn, so a new drive would otherwise take an ended drive's own guidance
+and mark it read in that run's log. An entry sent by pull request URL is also in
+the pull request's folder, so it is still listed from there. Ended runs' logs are
+still read, never their entries: when one records that a step read the entry, it
+is reported as read, even if the drive's state folder was not the sender's and
+the pull request folder's own log holds no record of it. An ended run's own
+guidance is read by its session name.
 
 **When it refuses.** A live run is reachable when its run folder passes the
 trust and work-root checks and its `guidance/` folder passes the same checks as
@@ -800,7 +810,9 @@ guidance.
 | Claude Code in print mode (`-p` or `--print` with no prompt text), prompt already on stdin | The runner's own form, such as `amplihack claude -- --system-prompt-file <file> -p --add-dir .`. After the caller's stdin closes, the block is written to Claude's stdin, so it follows the step's prompt. The block is written only if the caller's stdin gave at least one byte that is not white space; see [Stdin that gives no text](#stdin-that-gives-no-text). The stderr line above and the `guidance_injected` record are written after Claude exits, and only if the block was written in full. |
 | GitHub Copilot CLI, prompt in argv | End of the `-p <text>` prompt, before it is written to the private prompt file. |
 | GitHub Copilot CLI, no `-p` or `-i`, prompt piped on stdin | After the caller's stdin closes, as for Claude print mode. The help of the pinned Copilot CLI (1.0.114) names piped stdin as a prompt source beside `-i` and `-p`, and Copilot CLI 1.0.114 and 1.0.115 were seen to read a block after the piped prompt. That depends on Copilot, so it is checked by a test run by hand against the installed Copilot, not in CI; see [Checking Copilot's stdin](#checking-copilots-stdin). Delivery is reported only once the block was written in full, so for this route "read" means written in full to Copilot's stdin. If Copilot closed its stdin first, the launch is recorded as a `trailer_not_written` drop. With nothing on stdin it is a `no_prompt_on_stdin` drop. |
-| GitHub Copilot CLI, `-i`, or a `-p` file reference the caller gave | No guidance; recorded as a `launch_form_unsupported` drop. |
+| GitHub Copilot CLI, `-p` with a file reference (the runner's form) | The recipe runner starts every Copilot step as `-p "Read and follow the complete instructions in the file <path>. ..."`. The launcher reads that file, writes its text with the block after it to a private 0600 file, and points Copilot at the copy, granting its folder with `--add-dir` (or relying on path access under the external LiteLLM gateway). The runner's file is never written. If the file cannot be read or the copy cannot be written, the caller's reference is passed on unchanged and the launch is recorded as a `prompt_file_not_copied` drop. With no private file Copilot could open (the gateway without path access), it is a `launch_form_unsupported` drop. |
+| GitHub Copilot CLI, `-i` | No guidance; recorded as a `launch_form_unsupported` drop. |
+| Claude Code with `--input-format` other than `text` | No guidance; recorded as a `launch_form_unsupported` drop. With `stream-json` input (#3036), stdin is a stream of JSON lines, and plain text after it would corrupt the stream. |
 | Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written, if that stdin gave text. The stderr line above and the `guidance_injected` record are written after Codex exits, and only if the block was written and flushed to Codex's stdin in full. If Codex closed its stdin first, neither is written and the launch is recorded as a `trailer_not_written` drop. With nothing on stdin, it is a `no_prompt_on_stdin` drop. Other Codex forms receive no guidance and are recorded as drops. |
 
 Every runner agent step therefore takes guidance, whether its prompt arrives in
@@ -879,15 +891,16 @@ step id is not exported to the agent process, so it is not named.
 | --- | --- |
 | `no_prompt_on_stdin` | A launch that reads its prompt from stdin (Claude print mode with no prompt text, Codex `exec … -`, Copilot with no prompt flag) whose stdin gave no text. When stdin is a terminal, `/dev/null` or an empty file, this is known at launch: no forwarder is started, so the launch does not wait. When stdin is a pipe or a file that gave nothing but white space, or no text before the agent exited, the drop is recorded after the agent exits; see [Stdin that gives no text](#stdin-that-gives-no-text). |
 | `trailer_not_written` | The block was to follow the prompt on stdin, but the tool closed its stdin before the whole block was written. |
-| `launch_form_unsupported` | The launch form has no place for the block, such as an interactive Claude launch, a Copilot `-i` launch or a `-p` file reference the caller gave, or a Codex form other than `exec … -`. |
+| `launch_form_unsupported` | The launch form has no place for the block, such as an interactive Claude launch, a Claude launch whose `--input-format` is not `text`, a Copilot `-i` launch, a Copilot `-p` file reference with no private file Copilot could open, or a Codex form other than `exec … -`. |
+| `prompt_file_not_copied` | A Copilot `-p` file reference, the runner's form, whose file could not be read or whose private copy could not be written. The launch goes on with the caller's reference. |
 
 The `launch_form` labels of this release:
 
 | Tool | Labels |
 | --- | --- |
-| Claude, RustyClawd | `claude -p <prompt>`, `claude -p, prompt expected on stdin`, `claude, interactive` |
+| Claude, RustyClawd | `claude -p <prompt>`, `claude -p, prompt expected on stdin`, `claude, interactive`, `claude, input format other than text` |
 | Codex | `codex exec -, prompt expected on stdin`, `codex exec <prompt>`, `codex, interactive` |
-| Copilot | `copilot -p <prompt>`, `copilot, prompt expected on stdin`, `copilot -i or a -p prompt file` |
+| Copilot | `copilot -p <prompt>`, `copilot -p <prompt file>`, `copilot, prompt expected on stdin`, `copilot -i` |
 | Other | `amplifier`, `other` |
 
 Values for `reason` and `launch_form` come from fixed lists. Readers must
@@ -1015,12 +1028,12 @@ guidance saved for pull request: /home/alice/.amplihack/state/auto-drive/https__
 status: appended; not yet read
 ```
 
-When no live run for the pull request was found, the status line says so, and
-only the state folder is written:
+When no detached run for the pull request was found, the status line says only
+that, and only the state folder is written:
 
 ```text
 guidance saved for pull request: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
-status: appended; not yet read; no live run for this pull request reads it until one starts with it in its context
+status: appended; not yet read; no detached run for this pull request was found, and a run with the pull request in its context reads the pull request folder at its next agent step
 ```
 
 Scripts that need the path read the first line, whose format is unchanged.
@@ -1253,10 +1266,8 @@ The command reads these folders, in this order and without duplicates:
 2. when a pull request is named, the guidance folder of each live run for it
    (see [Live runs for a pull request](#live-runs-for-a-pull-request)), found
    in the same way `recipe guide` finds them. A live run that cannot be
-   reached stays in the list as `untrusted`, with its reason. Then the
-   guidance folder of each ended run recorded for the pull request whose
-   folder still passes the checks, so an entry a step read before its run
-   ended is still reported as read. Nothing is written to those folders;
+   reached stays in the list as `untrusted`, with its reason. The folder of
+   a run that has ended is not listed; read it by the run's session name;
 3. for a session name, run folder name or correlation id, that run's
    guidance folder instead of 2 and 4;
 4. the pull request's folder, `<state root>/auto-drive/<key>/guidance`. The

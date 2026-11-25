@@ -38,6 +38,22 @@ const SYSTEM_PROMPT_FILE: &str = "--system-prompt-file";
 const APPEND_PROMPT: &str = "--append-system-prompt";
 const APPEND_PROMPT_FILE: &str = "--append-system-prompt-file";
 
+/// What a Copilot `-p` rewrite did with the operator guidance block (issue
+/// #3162).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptBlock {
+    /// No block was put in a prompt file: there was none, the launch has no
+    /// `-p` prompt, or Copilot could open no private file.
+    Absent,
+    /// The block follows the prompt in the private prompt file Copilot is
+    /// pointed at.
+    Added,
+    /// The caller's `-p` named a prompt file that could not be read, or
+    /// whose private copy could not be written, so the block could not
+    /// follow it. The caller's pointer is passed on unchanged.
+    PromptFileNotCopied,
+}
+
 /// The rewritten passthrough arguments and what they need at spawn time.
 ///
 /// Holds the per-session directory: keep it alive until the child has been
@@ -52,6 +68,9 @@ pub(crate) struct Rewritten {
     pub(crate) user_supplied_append: bool,
     /// The rewrite produced a `*-file` flag, which needs the version gate.
     pub(crate) used_file_flags: bool,
+    /// Issue #3162: what the Copilot rewrite did with the operator guidance
+    /// block. Always [`PromptBlock::Absent`] for Claude and Codex.
+    pub(crate) prompt_block: PromptBlock,
     /// The per-session 0700 directory, created on first use.
     _dir: Option<TempDir>,
 }
@@ -68,6 +87,7 @@ impl std::fmt::Debug for Rewritten {
             .field("stdin_payload", &format_args!("{payload}"))
             .field("user_supplied_append", &self.user_supplied_append)
             .field("used_file_flags", &self.used_file_flags)
+            .field("prompt_block", &self.prompt_block)
             .field("dir", &self._dir.as_ref().map(|d| d.path().to_path_buf()))
             .finish()
     }
@@ -81,6 +101,7 @@ impl Rewritten {
             stdin_payload: None,
             user_supplied_append: false,
             used_file_flags: false,
+            prompt_block: PromptBlock::Absent,
             _dir: None,
         }
     }
@@ -97,6 +118,7 @@ impl Rewritten {
             stdin_payload,
             user_supplied_append: false,
             used_file_flags: false,
+            prompt_block: PromptBlock::Absent,
             _dir: dir,
         }
     }
@@ -328,6 +350,7 @@ pub(crate) fn rewrite_claude_passthrough(args: &[String]) -> Result<Rewritten> {
         stdin_payload: b.payload,
         user_supplied_append: b.append_text || b.append_file,
         used_file_flags: b.system_text || b.append_text,
+        prompt_block: PromptBlock::Absent,
         _dir: b.dir,
     })
 }
@@ -338,6 +361,25 @@ pub(crate) fn claude_print_mode(args: &[String]) -> bool {
     args.iter()
         .take_while(|a| a.as_str() != "--")
         .any(|a| matches!(classify(a), Token::Print { .. }))
+}
+
+/// Whether a print-mode launch reads plain text from stdin: no
+/// `--input-format`, or `--input-format text`, before any `--`. With
+/// `stream-json` (#3036) stdin is a stream of JSON lines, and text written
+/// after it would corrupt the stream (PR #3190 review).
+pub(crate) fn claude_input_is_text(args: &[String]) -> bool {
+    let mut iter = args.iter().take_while(|a| a.as_str() != "--");
+    while let Some(arg) = iter.next() {
+        let value = if arg == "--input-format" {
+            iter.next().map(String::as_str)
+        } else {
+            arg.strip_prefix("--input-format=")
+        };
+        if let Some(value) = value {
+            return value == "text";
+        }
+    }
+    true
 }
 
 /// Whether a print-mode launch carries its prompt text in `args`, the case

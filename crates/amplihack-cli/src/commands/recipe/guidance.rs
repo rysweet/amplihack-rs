@@ -21,7 +21,7 @@
 //! arm a waiter and did not start the command. An error or usage failure
 //! prints one stderr line and nothing on stdout.
 
-use super::live_runs::{RunEnd, run_end, runs_to_read_for_pr};
+use super::live_runs::{RunEnd, run_end, runs_for_pr_by_state};
 use crate::cli_subcommands::{GuidanceCommands, PrFolderArgs};
 use crate::command_error::exit_error;
 use crate::run_guidance::env::{DirCheck, check_guidance_dir};
@@ -138,17 +138,24 @@ fn insert_folder(list: &mut Vec<Folder>, at: usize, folder: Folder) -> usize {
 ///
 /// - A pull request (URL, or `--pr` with `--pr-repo`): the folders
 ///   `AMPLIHACK_RUN_GUIDANCE_DIRS` lists, then the guidance folder of each
-///   live run for the pull request (issue #3161), then that of each ended
-///   run still on record (so an entry a step read is still reported as
-///   read), then the pull request's folder. This holds every folder
-///   `recipe guide <PR URL>` writes, so the goal loop's read and the
-///   sender's write agree whatever the run's work root.
-///   A live run that cannot be reached is listed as untrusted, with why.
+///   live run for the pull request (issue #3161), then the pull request's
+///   folder. This holds every folder `recipe guide <PR URL>` writes, so
+///   the goal loop's read and the sender's write agree whatever the run's
+///   work root. A live run that cannot be reached is listed as untrusted,
+///   with why. An ended run's folder is not listed: the goal loop exports
+///   this list to every turn, so a new drive would otherwise take an ended
+///   drive's own guidance (PR #3190 review; see `live_runs`).
 /// - Any other target (issue #3162): the guidance folder of the run that a
 ///   detached session name, a run folder name or a correlation id names,
 ///   found as `recipe guide` finds it, after the listed folders.
 /// - No target: the listed folders.
-fn resolve_folders(args: &PrFolderArgs) -> Result<Folders, GuideError> {
+///
+/// The second value: for a pull request, the guidance folders of its ended
+/// runs that still pass the checks. They are not listed and their entries
+/// are not read; only their logs are, so an entry a step read before its
+/// run ended is still reported as read when the copy in a listed folder
+/// holds no record of it (a drive whose state folder is not the sender's).
+fn resolve_folders(args: &PrFolderArgs) -> Result<(Folders, Vec<PathBuf>), GuideError> {
     if let (Some(target), None, None) = (&args.target, &args.pr, &args.pr_repo)
         && !target.contains("://")
     {
@@ -157,10 +164,11 @@ fn resolve_folders(args: &PrFolderArgs) -> Result<Folders, GuideError> {
         let at = folders.list.len();
         let check = check_guidance_dir(&dir);
         insert_folder(&mut folders.list, at, Folder { path: dir, check });
-        return Ok(folders);
+        return Ok((folders, Vec::new()));
     }
     let pr = named_pr(args)?;
     let mut folders = Folders::resolve(pr.as_ref())?;
+    let mut ended_logs = Vec::new();
     if let Some(pr) = &pr {
         let pr_path = folders.pr.as_ref().map(|p| p.path.clone());
         let mut at = folders
@@ -168,7 +176,9 @@ fn resolve_folders(args: &PrFolderArgs) -> Result<Folders, GuideError> {
             .iter()
             .position(|f| Some(&f.path) == pr_path.as_ref())
             .unwrap_or(folders.list.len());
-        for run in runs_to_read_for_pr(pr) {
+        let (live, ended) = runs_for_pr_by_state(pr);
+        ended_logs = ended;
+        for run in live {
             let folder = match run.reachable {
                 Ok(dir) => Folder {
                     check: check_guidance_dir(&dir),
@@ -185,7 +195,7 @@ fn resolve_folders(args: &PrFolderArgs) -> Result<Folders, GuideError> {
             at = insert_folder(&mut folders.list, at, folder);
         }
     }
-    Ok(folders)
+    Ok((folders, ended_logs))
 }
 
 /// `--since`: empty, or an entry file name.
@@ -307,13 +317,25 @@ struct DropJson {
     detail: String,
 }
 
-/// What each guidance folder's log says, read once per folder.
+/// What each guidance folder's log says, read once per folder, and the
+/// guidance folders of ended runs whose logs also count as proof of a read.
 #[derive(Default)]
-struct LogStates(HashMap<PathBuf, LogState>);
+struct LogStates {
+    logs: HashMap<PathBuf, LogState>,
+    ended: Vec<PathBuf>,
+}
 
 impl LogStates {
+    /// Reads `ended` folders' logs, never their entries, for read state.
+    fn with_ended(ended: &[PathBuf]) -> Self {
+        Self {
+            logs: HashMap::new(),
+            ended: ended.to_vec(),
+        }
+    }
+
     fn of(&mut self, dir: &Path) -> &LogState {
-        self.0
+        self.logs
             .entry(dir.to_path_buf())
             .or_insert_with(|| read_log_state(dir))
     }
@@ -331,6 +353,14 @@ impl LogStates {
                 return Some(true);
             }
             unknown |= state.log_error.is_some();
+        }
+        // PR #3190 review: an ended run's log naming the entry proves a step
+        // read a copy of it. An ended run's unreadable log proves nothing
+        // and leaves the answer as it is.
+        for dir in self.ended.clone() {
+            if self.of(&dir).read.contains(&entry.name) {
+                return Some(true);
+            }
         }
         if unknown { None } else { Some(false) }
     }
@@ -353,8 +383,13 @@ fn drops_of(list: &[Folder], states: &mut LogStates) -> Vec<(PathBuf, Drop)> {
 
 /// The `show --json` document. Read state and drops come from each folder's
 /// `guidance.log`.
-fn show_json<'a>(list: &[Folder], entries: &'a [Entry], since: &'a str) -> ShowJson<'a> {
-    let mut states = LogStates::default();
+fn show_json<'a>(
+    list: &[Folder],
+    ended: &[PathBuf],
+    entries: &'a [Entry],
+    since: &'a str,
+) -> ShowJson<'a> {
+    let mut states = LogStates::with_ended(ended);
     let folders = list
         .iter()
         .map(|f| {
@@ -420,8 +455,8 @@ fn show_json<'a>(list: &[Folder], entries: &'a [Entry], since: &'a str) -> ShowJ
 /// entry has been read, then each drop since the last read, once. An entry
 /// not yet read whose run has recorded its end says so (PR #3190 review):
 /// no later step of that run started to read it.
-fn read_and_drop_lines(list: &[Folder], entries: &[Entry]) -> Vec<String> {
-    let mut states = LogStates::default();
+fn read_and_drop_lines(list: &[Folder], ended: &[PathBuf], entries: &[Entry]) -> Vec<String> {
+    let mut states = LogStates::with_ended(ended);
     let mut lines: Vec<String> = entries
         .iter()
         .map(|e| {
@@ -460,17 +495,17 @@ fn show(
 ) -> Result<(), GuideError> {
     let since = since.unwrap_or("");
     check_since(since)?;
-    let folders = resolve_folders(args)?;
+    let (folders, ended) = resolve_folders(args)?;
     folders.warn_untrusted();
     let mut entries = folders.read();
     if operator_only {
         entries.retain(|e| !e.is_from_step());
     }
     if json {
-        print_json(&show_json(&folders.list, &entries, since))
+        print_json(&show_json(&folders.list, &ended, &entries, since))
     } else {
         print_lines(&render_block_marked(&entries, Some(since)))?;
-        print_lines(&read_and_drop_lines(&folders.list, &entries).join("\n"))
+        print_lines(&read_and_drop_lines(&folders.list, &ended, &entries).join("\n"))
     }
 }
 
@@ -518,7 +553,7 @@ fn command_event(status: ExitStatus) -> Result<Event<'static>, GuideError> {
 /// `recipe guidance wait`. Returns the exit code after printing its line.
 fn wait(args: &PrFolderArgs, since: &str, command: &[OsString]) -> Result<i32, GuideError> {
     check_since(since)?;
-    let mut folders = resolve_folders(args)?;
+    let (mut folders, _) = resolve_folders(args)?;
     folders.warn_untrusted();
     let (mut waiters, problems) = arm(&folders);
     if waiters.is_empty() {
