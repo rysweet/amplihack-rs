@@ -18,7 +18,9 @@ AMPLIHACK_PROMPT_PREFERENCES=off amplihack claude
 
 The same variables work with `amplihack copilot` and `amplihack codex`. The
 session's hooks inherit the variable, so it applies to the whole session and
-to child sessions started from it. To restore the default for a child launch:
+to child sessions started from it. A child launch without the variable takes
+the value from the configuration files, or the default `on` when they do not
+set the key:
 
 ```sh
 env -u AMPLIHACK_ROUTING_TEXT amplihack claude
@@ -69,9 +71,15 @@ one escaped line about it on stderr and adds nothing to the model's context.
 
 The launcher itself does not report an unknown value. A launch with
 `AMPLIHACK_ROUTING_TEXT=OFF`, for example, appends the full launch contract
-and prints nothing about the variable. `amplihack config get text.routing`
-reports a value in the variable as invalid, so run it when a setting seems
-to have no effect.
+and prints nothing about the variable. Plain `amplihack config get
+text.routing` prints only the value in force. Add `--show-origin` to see
+where it came from, including a value in the variable that is not valid:
+
+```sh
+amplihack config get text.routing --show-origin
+```
+
+Run it when a setting seems to have no effect.
 
 ## Seeing why text was left out
 
@@ -79,7 +87,9 @@ The hooks log two further lines, at levels that the default log filter
 drops:
 
 - `text switch off`, at `info`, naming the key and where its value came
-  from, each time a hook leaves text out;
+  from, each time a setting makes a hook leave text out. Leaving the
+  preferences table out of a recipe step writes no line, because no
+  setting decides it;
 - `amplihack config file skipped`, at `warn`, when a configuration file
   cannot be read or parsed and its settings are not used.
 
