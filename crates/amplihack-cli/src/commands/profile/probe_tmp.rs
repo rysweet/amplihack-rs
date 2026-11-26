@@ -24,10 +24,15 @@ impl ProbeTmp {
     /// Makes the folder and sets [`VAR`] to it on `cmd`. When the folder
     /// cannot be made, `cmd` is left as it was and a warning is printed.
     pub(super) fn give(cmd: &mut Command) -> Self {
-        match tempfile::Builder::new()
-            .prefix("amplihack-probe-")
-            .tempdir()
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("amplihack-probe-");
+        // Owner-only whatever the umask: the default mode follows it.
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+        }
+        match builder.tempdir() {
             Ok(dir) => {
                 cmd.env(VAR, dir.path());
                 Self(Some(dir))
