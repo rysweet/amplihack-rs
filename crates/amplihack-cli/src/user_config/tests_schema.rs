@@ -47,6 +47,9 @@ fn keys_are_in_documented_order() {
             "sessions.daily_archive",
             "sessions.archive_days",
             "sessions.archive_dest",
+            // Issue #3247: the text switches, documented last.
+            "text.routing",
+            "text.prompt_preferences",
         ]
     );
 }

@@ -104,6 +104,7 @@ pub(crate) mod simple_tui_runner;
 pub mod slugify;
 pub mod terminal_launcher;
 pub mod trace_logger;
+pub mod user_config;
 pub mod uvx_manager;
 pub mod worktree;
 

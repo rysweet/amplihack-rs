@@ -28,6 +28,7 @@ files.
   - [sessions.daily_archive](#sessionsdaily_archive)
   - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
   - [policy.deny_commands](#policydeny_commands)
+  - [text.routing and text.prompt_preferences](#textrouting-and-textprompt_preferences)
 - [The config command](#the-config-command)
   - [config get](#config-get)
   - [config set](#config-set)
@@ -85,6 +86,8 @@ governor.max_reading_age_secs = 3600  # default
 sessions.daily_archive = true  # default
 sessions.archive_days = 3  # default
 sessions.archive_dest = (unset)  # default
+text.routing = "on"  # default
+text.prompt_preferences = "on"  # default
 ```
 
 `amplihack agent-binary` now answers `claude (user_config)`, even inside a tmux
@@ -191,6 +194,8 @@ command, so it never prints `flag`.
 | `sessions.daily_archive` | bool | `true` | — | — | user only |
 | `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
 | `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
+| `text.routing` | `on` or `off` | `on` | `AMPLIHACK_ROUTING_TEXT` | — | user, project |
+| `text.prompt_preferences` | `on` or `off` | `on` | `AMPLIHACK_PROMPT_PREFERENCES` | — | user, project |
 
 Any other key is an error for `config set` and a diagnostic when found in a
 file. A user-only key in a project file is reported and ignored.
@@ -714,6 +719,38 @@ CLI pick a change up on the next launch; a Codex rules file is refreshed on
 the next `amplihack codex`. Run `amplihack update` after changing it to
 write every harness at once, and to reach the managed profiles, which only
 an install refreshes.
+
+### text.routing and text.prompt_preferences
+
+Two switches for text that amplihack inserts into a session. Both take `on`
+or `off`, default to `on`, and may be set in the user file or a project
+file. With nothing set, a session receives the same text as before these
+keys existed.
+
+- `text.routing = "off"` leaves out the routing reminder on prompt events,
+  the session-start section that sends development and investigation work
+  to the orchestrator, and the router lines of the launch contract. The
+  contract keeps its rules on waiting and on stopping processes. The text
+  that tells a nested recipe session not to start a workflow stays.
+- `text.prompt_preferences = "off"` leaves out the preferences table and the
+  learned-patterns line that the prompt-event hook adds. The preferences
+  inserted at session start stay. A recipe step never receives this table
+  on a prompt event, whatever the key says.
+
+`AMPLIHACK_ROUTING_TEXT` and `AMPLIHACK_PROMPT_PREFERENCES` set the same
+values for one launch. The hook program reads these keys with the same code
+as `amplihack config get`, so the two report the same value. A value that is
+neither `on` nor `off`, in the variable or in a file, leaves `on` in force:
+the hook reports it once on stderr, and `config get` prints `on`. The layers
+below an unknown value are not consulted.
+
+```sh
+amplihack config set text.prompt_preferences off
+AMPLIHACK_ROUTING_TEXT=off amplihack claude
+```
+
+The how-to is
+[Switch off the routing text and the repeated preferences table](../howto/switch-off-routing-and-preferences-text.md).
 
 ## The config command
 

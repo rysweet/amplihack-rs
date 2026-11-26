@@ -8,7 +8,9 @@ use std::sync::{Mutex, OnceLock};
 use amplihack_utils::agent_binary::{BINARY_ENV, InheritedBinary, SOURCE_ENV, classify_inherited};
 
 use super::edit::parse_document;
-use super::files::{Project, project, same_file, user_file};
+use amplihack_utils::user_config::text_switch::{self, Layers, Source, TextSwitch, Unknown};
+
+use super::files::{Project, project, user_file};
 use super::migrate::{self, LegacyLayer};
 use super::safe::{insecure_reason, read_bounded};
 use super::schema::{KEYS, KeyDef, Scope, Value, ValueKind, from_toml, key, parse_raw};
@@ -156,16 +158,7 @@ pub(crate) fn load(ctx: &LoadCtx<'_>) -> Effective {
         .map(|path| read_layer(path, Layer::User, &mut diagnostics))
         .unwrap_or_default();
     let project_info = project(&ctx.cwd);
-    let project_path = match (&project_info, ctx.read_project) {
-        (Project::File { path, found: true }, true)
-            if !user_path
-                .as_deref()
-                .is_some_and(|user| same_file(user, path)) =>
-        {
-            Some(path.clone())
-        }
-        _ => None,
-    };
+    let project_path = text_switch::project_file(ctx.home.as_deref(), &ctx.cwd, ctx.read_project);
     let project_values = project_path
         .as_deref()
         .map(|path| read_layer(path, Layer::Project, &mut diagnostics))
@@ -174,6 +167,9 @@ pub(crate) fn load(ctx: &LoadCtx<'_>) -> Effective {
     let entries = KEYS
         .iter()
         .map(|def| {
+            if let Some(switch) = switch_for(def.name) {
+                return switch_entry(def, switch, ctx);
+            }
             let user_value = user
                 .get(def.name)
                 .cloned()
@@ -209,6 +205,60 @@ fn legacy_value(def: &KeyDef, legacy: Option<&LegacyLayer>) -> Option<(Value, Or
     legacy
         .consent
         .map(|consent| (Value::Bool(consent), Origin::Legacy(legacy.path.clone())))
+}
+
+/// The text switch `name` is, if it is one (issue #3247).
+fn switch_for(name: &str) -> Option<TextSwitch> {
+    [text_switch::ROUTING, text_switch::PROMPT_PREFERENCES]
+        .into_iter()
+        .find(|switch| switch.key == name)
+}
+
+/// A text switch's entry, from the code the hook program uses, so the two
+/// report the same value for the same files. A problem in a file is
+/// reported by [`read_layer`] as for every other key.
+fn switch_entry(def: &'static KeyDef, switch: TextSwitch, ctx: &LoadCtx<'_>) -> Entry {
+    let layers = |env: &'_ dyn Fn(&str) -> Option<String>| {
+        text_switch::read(
+            switch,
+            &Layers {
+                home: ctx.home.as_deref(),
+                cwd: &ctx.cwd,
+                read_project: ctx.read_project,
+                env,
+            },
+        )
+    };
+    let setting = layers(ctx.env);
+    let files_only = layers(&|_| None);
+    let value = |setting: &text_switch::Setting| Value::Text(setting.word().to_string());
+    let origin = match (&setting.source, &setting.unknown) {
+        (
+            _,
+            Some(Unknown {
+                source: Source::Env(var),
+                ..
+            }),
+        ) => Origin::EnvInvalid {
+            var,
+            reason: format!("{var} is not a valid value; the default is used"),
+        },
+        (Source::Env(var), _) => Origin::Env(var),
+        (Source::Project(path), _) => Origin::Project(path.clone()),
+        (Source::User(path), _) => Origin::User(path.clone()),
+        (Source::Default, _) => Origin::Default,
+    };
+    let file = match &files_only.source {
+        Source::Project(path) => Some((value(&files_only), Origin::Project(path.clone()))),
+        Source::User(path) => Some((value(&files_only), Origin::User(path.clone()))),
+        Source::Env(_) | Source::Default => None,
+    };
+    Entry {
+        key: def,
+        value: Some(value(&setting)),
+        origin,
+        file,
+    }
 }
 
 /// Combine the user (or legacy) and project values. The project file wins,

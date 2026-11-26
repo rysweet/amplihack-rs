@@ -53,29 +53,10 @@ use std::path::{Path, PathBuf};
 use toml_edit::DocumentMut;
 
 use super::ConfigError;
+pub(crate) use amplihack_utils::user_config::read::parse_document;
+
 use super::safe::{display_path, read_bounded};
 use super::schema::{KeyDef, Value, ValueKind};
-
-/// Parse `text`, or describe the syntax error by position only.
-pub(crate) fn parse_document(text: &str) -> Result<DocumentMut, String> {
-    text.parse::<DocumentMut>().map_err(|error| {
-        let at = error.span().map(|span| span.start).unwrap_or(0);
-        let (line, column) = line_column(text, at);
-        format!("TOML syntax error at line {line}, column {column}")
-    })
-}
-
-/// 1-based line and column of byte offset `at` in `text`.
-fn line_column(text: &str, at: usize) -> (usize, usize) {
-    let before = &text[..at.min(text.len())];
-    let line = before.matches('\n').count() + 1;
-    let column = before
-        .rsplit('\n')
-        .next()
-        .map(|tail| tail.chars().count() + 1)
-        .unwrap_or(1);
-    (line, column)
-}
 
 /// Read and parse `path` for editing; a missing file is an empty document.
 fn load_for_edit(path: &Path) -> Result<DocumentMut, ConfigError> {
