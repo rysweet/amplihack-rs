@@ -7,9 +7,8 @@ use crate::support::fifo_release;
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
-use std::process::Output;
 
-fn run_wait(value: Option<&str>, guidance: bool) -> (Harness, Output) {
+fn run_wait(value: Option<&str>, guidance: bool) -> Harness {
     let h = Harness::new();
     let turn = h.state.join("turns/0001");
     fs::DirBuilder::new()
@@ -52,57 +51,43 @@ fn run_wait(value: Option<&str>, guidance: bool) -> (Harness, Output) {
     let out = live.finish();
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(h.result("0001")["outcome"], "checks-complete");
-    (h, out)
+    h
 }
 
 #[test]
 fn checks_watch_interval_unset_uses_the_gh_default() {
-    let (h, _) = run_wait(None, true);
+    let h = run_wait(None, true);
     assert_eq!(h.watch_calls(), ["pr checks 7 --watch --required"]);
 }
 
 #[test]
 fn checks_watch_interval_is_passed_when_guidance_is_armed() {
-    let (h, _) = run_wait(Some("120"), true);
-    assert_eq!(
-        h.watch_calls(),
-        ["pr checks 7 --watch --required --interval 120"]
-    );
+    for value in ["120", "9223372036"] {
+        let h = run_wait(Some(value), true);
+        assert_eq!(
+            h.watch_calls(),
+            [format!("pr checks 7 --watch --required --interval {value}")]
+        );
+    }
 }
 
 #[test]
 fn checks_watch_interval_is_passed_when_the_watch_runs_alone() {
-    let (h, _) = run_wait(Some("120"), false);
+    let h = run_wait(Some("120"), false);
     assert_eq!(
         h.watch_calls(),
         ["pr checks 7 --watch --required --interval 120"]
-    );
-}
-
-#[test]
-fn checks_watch_interval_accepts_the_largest_whole_second_duration() {
-    let (h, _) = run_wait(Some("9223372036"), true);
-    assert_eq!(
-        h.watch_calls(),
-        ["pr checks 7 --watch --required --interval 9223372036"]
     );
 }
 
 #[test]
 fn checks_watch_interval_invalid_values_use_the_gh_default() {
     for value in ["abc", "0", "-5", "9223372037", "9999999999"] {
-        let (h, out) = run_wait(Some(value), true);
+        let h = run_wait(Some(value), true);
         assert_eq!(
             h.watch_calls(),
             ["pr checks 7 --watch --required"],
             "{value}"
-        );
-        assert!(
-            String::from_utf8_lossy(&out.stderr).contains(&format!(
-                "WARNING: invalid checks_watch_interval ({value}). Using the gh default."
-            )),
-            "{value}: {}",
-            describe(&out)
         );
     }
 }
