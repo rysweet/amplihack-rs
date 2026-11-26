@@ -837,7 +837,7 @@ remains the fallback and the only method that can read overflow profiles.
 ##### Probe sandbox
 
 Every `claude` that `profile usage` and the rotator start to read usage
-gets two protections: both [fallback](#fallback-probe) attempts, the
+gets three protections: both [fallback](#fallback-probe) attempts, the
 [spend probe](#spend-probe) and the rotator's
 [held-cycle spend-limit check](#pin-and-overflow).
 
@@ -857,9 +857,22 @@ gets two protections: both [fallback](#fallback-probe) attempts, the
    Inside, `projects` is empty, whether `claude` reaches it directly or
    through the profile's `projects` link, so `/usage` has no transcripts to
    read. The login files are seen in place. Nothing outside the probe
-   changes: the profile's `projects` link is not repointed, no folder is
-   created on the host, and a session started on the same profile during
+   changes: the profile's `projects` link is not repointed, the sandbox
+   creates no folder on the host, and a session started on the same profile during
    the probe writes its transcript to the shared folder as before.
+
+3. **No session folder.** Even with `--no-session-persistence`, `claude`
+   makes an empty session folder under its per-user temporary root and
+   does not remove it. Each attempt therefore runs with
+   `CLAUDE_CODE_TMPDIR` set to a new owner-only folder in the system
+   temporary directory, named `amplihack-probe-` and a random suffix.
+   amplihack removes that folder, and everything in it, once the
+   attempt's process group has ended, whether it exited, failed or was
+   stopped at the deadline. This applies with and without `bwrap`, on
+   every system. Nothing else in the temporary root is read or removed.
+   If the folder cannot be made, the probe runs without it; if it cannot
+   be removed, the probe's result stands. Each case prints one
+   `warning: usage probe:` line to stderr, without a path.
 
 **Which `projects` folder is hidden.** The folder is
 `<config dir>/projects`, with every link resolved. The config dir is read
