@@ -467,7 +467,7 @@ amplihack claude
 
 ### GitHub Copilot CLI
 
-All 41 bundled agents and 128 bundled skill names work with Copilot:
+All 41 bundled agents and 129 bundled skill names work with Copilot:
 
 ```bash
 # Default mode (no agent)
