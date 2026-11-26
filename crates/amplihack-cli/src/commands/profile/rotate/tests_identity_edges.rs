@@ -26,6 +26,12 @@ fn slow_usage_measurement_does_not_expire_unchanged_login_identity() {
     let e = fixture();
     let mut ctx = context(&e);
     ctx.measure = Some(slow_measurement);
+    ctx.reread = Some(|ctx, who, _| {
+        assert_eq!(who, &n("spare"));
+        let mut p = ok(10.0, 20.0);
+        p.observed_at = Some((ctx.now)());
+        (p, None)
+    });
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     assert_eq!(outcome, CycleOutcome::Swapped);
     assert_eq!(ino_at(&e.live()), Some(e.t));

@@ -38,8 +38,6 @@ const SLASH_COMMAND_AGENTS: &[(&str, &str)] = &[
     ("fix", "fix-agent"),
     ("analyze", "analyzer"),
     ("improve", "reviewer"),
-    ("socratic", "ambiguity"),
-    ("debate", "multi-agent-debate"),
     ("reflect", "reflection"),
     ("xpia", "xpia-defense"),
 ];
@@ -142,8 +140,6 @@ pub(crate) fn normalize_agent_name(agent_name: &str) -> String {
         "fix" => "fix-agent".to_string(),
         "analyze" => "analyzer".to_string(),
         "improve" => "reviewer".to_string(),
-        "socratic" => "ambiguity".to_string(),
-        "debate" => "multi-agent-debate".to_string(),
         "reflect" => "reflection".to_string(),
         "xpia" => "xpia-defense".to_string(),
         other => other.to_string(),

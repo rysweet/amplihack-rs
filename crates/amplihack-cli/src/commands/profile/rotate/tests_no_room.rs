@@ -137,6 +137,7 @@ fn probed(session: f64) -> Probed {
         windows: Windows {
             session: win(session),
             week: win(40.0),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,
@@ -206,6 +207,7 @@ impl Fx {
             })
         };
         let cred = SwitchReading {
+            week_models: Vec::new(),
             five_hour: window(100.0),
             seven_day: window(40.0),
             observed_at: at - 10,
@@ -477,6 +479,7 @@ fn room_comes_back_at_the_reset_of_the_full_window() {
             used: k,
             resets_at: kr,
         }),
+        week_models: Vec::new(),
         no_session_limit: false,
     };
     let measured = |session, week| Reading::Measured { session, week };

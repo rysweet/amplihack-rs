@@ -29,6 +29,9 @@ use std::path::Path;
 /// The cycle's extra inputs to the decision.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Extra {
+    /// Targets directly confirmed in this cycle, also used during the
+    /// locked revalidation, which cannot probe another target.
+    pub confirmed: BTreeSet<ProfileName>,
     /// The label of each candidate whose probe said nothing about its room.
     pub labels: BTreeMap<ProfileName, ProbeLabel>,
     /// Candidates rejected at confirmation for an unknown reading: their
@@ -192,6 +195,9 @@ impl Seen {
 /// for the login (a passive reading older than the watch's kept one) is
 /// superseded and reads as nothing (issue #3105).
 pub fn reading_used(extra: &Extra, name: &ProfileName, p: &Probed) -> Reading {
+    if extra.rejected.contains(name) {
+        return Reading::Failed;
+    }
     if p.observed_at
         .is_some_and(|at| extra.older_by(name, at).is_some())
     {

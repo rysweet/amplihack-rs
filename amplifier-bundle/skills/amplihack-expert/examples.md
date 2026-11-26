@@ -73,11 +73,11 @@ Phases:
 
 ## Command Selection Guide
 
-| Request                   | Command               | Workflow               |
-| ------------------------- | --------------------- | ---------------------- |
-| Add feature               | /ultrathink           | DEFAULT_WORKFLOW       |
-| How X works               | /ultrathink           | INVESTIGATION_WORKFLOW |
-| Fix error                 | /fix                  | FIX_WORKFLOW           |
-| Large feature (10+ files) | /amplihack:ddd:1-plan | DDD_WORKFLOW           |
-| Critical code             | /amplihack:n-version  | N_VERSION_WORKFLOW     |
-| Decision                  | /amplihack:debate     | DEBATE_WORKFLOW        |
+| Request                   | Command                  | Workflow               |
+| ------------------------- | ------------------------ | ---------------------- |
+| Add feature               | /ultrathink              | DEFAULT_WORKFLOW       |
+| How X works               | /ultrathink              | INVESTIGATION_WORKFLOW |
+| Fix error                 | /fix                     | FIX_WORKFLOW           |
+| Large feature (10+ files) | /amplihack:ddd:1-plan    | DDD_WORKFLOW           |
+| Critical code             | n-version-workflow skill | N_VERSION_WORKFLOW     |
+| Decision                  | debate-workflow skill    | DEBATE_WORKFLOW        |

@@ -346,7 +346,7 @@ What are we giving up:
 
 - **/dev**: When analysis needs extreme depth (30+ min)
 - **/consensus**: When multiple stakeholders need alignment
-- **/debate**: When competing viewpoints need exploration
+- **debate-workflow skill**: When competing viewpoints need exploration
 - **Architecting Solutions**: Once problem is understood, design solution
 
 ### References
@@ -682,7 +682,7 @@ Good deep analysis:
 
 - **Slash Command**: `/dev` for even deeper analysis
 - **Slash Command**: `/consensus` for multi-stakeholder alignment
-- **Slash Command**: `/debate` for exploring opposing viewpoints
+- **Skill**: `debate-workflow` for exploring opposing viewpoints
 - **Skill**: "Architecting Solutions" for post-analysis design
 - **Skill**: "Evaluating Tradeoffs" for decision-focused analysis
 

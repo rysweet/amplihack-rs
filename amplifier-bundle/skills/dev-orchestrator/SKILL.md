@@ -3,7 +3,7 @@ name: dev-orchestrator
 description: |
   Default task orchestrator for all development and investigation work.
   Classifies tasks, decomposes into parallel workstreams if appropriate,
-  and routes execution through the recipe runner. Replaces ultrathink-orchestrator.
+  and routes execution through the recipe runner.
 version: 2.0.0
 auto_activates:
   - "implement"
@@ -73,7 +73,7 @@ flowchart TD
 ## Purpose
 
 This is the **default orchestrator** for all non-trivial development and investigation tasks
-in amplihack. It replaces the `ultrathink-orchestrator` skill.
+in amplihack.
 
 ## Development Routing Invariant
 
@@ -286,7 +286,6 @@ just parallel workstream spawning.
 
 | Skill                     | Relationship                                         |
 | ------------------------- | ---------------------------------------------------- |
-| `ultrathink-orchestrator` | Deprecated — redirects here                          |
 | `default-workflow`        | Called by this orchestrator for single dev tasks     |
 | `investigation-workflow`  | Called by this orchestrator for research tasks       |
 | `multitask`               | Called by this orchestrator for parallel workstreams |

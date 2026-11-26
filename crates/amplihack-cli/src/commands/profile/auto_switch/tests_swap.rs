@@ -381,6 +381,7 @@ mod overflow_precheck {
             })
         };
         Reading {
+            week_models: Vec::new(),
             five_hour: w(five, 4 * 3600),
             seven_day: w(seven, 86_400),
             observed_at: NOW - 10,

@@ -288,9 +288,21 @@ To print the guidance a run has received:
 amplihack recipe guidance show --pr 3129 --pr-repo rysweet/amplihack-rs
 ```
 
-Entries that arrived after the previous reading are marked `NEW`. With `--json`
-the command prints each entry's metadata and no text. Guidance text is never put
-into JSON, context, argv or logs. See
+Entries that arrived after the previous reading are marked `NEW`, and each entry
+is marked `read` or `not yet read`. `read` means the block was delivered to an
+agent step, not that the agent acted on it; an unread entry whose run has
+recorded its end also shows that end. With `--json` the command prints each
+entry's metadata, including `read`, and a `drops` array for steps that could not
+take guidance, and no text. Guidance text is never put into JSON, context, argv
+or logs.
+
+The goal loop reads with `recipe guidance show <PR URL>`, and `recipe guide
+<PR URL>` writes to the folders that `show` reads: the folder of each live run
+for the pull request, whatever work root the run was started with, and the pull
+request's state folder. A drive started with an explicit work root and guided by
+pull request URL therefore sees the entry at its next turn. The `jq` expressions
+in the loop use `entries[]` and `folders[]` keys that have not changed; `read`
+and `drops` are additions to schema 1. See
 [recipe guidance](./recipe-cli-reference.md#amplihack-recipe-guidance).
 
 ### Stopping gracefully
@@ -439,13 +451,15 @@ After each turn the driver ends the run when:
 - the fresh PR reading shows `MERGED` or `CLOSED`;
 - the turn carried out a `handoff`, `ready` or `stop` action;
 - step recovery recorded a hand-off during the turn (the report's exit 81);
+- three turns in a row failed with the same error before any agent started
+  (#3286; see [A failure that repeats](#a-failure-that-repeats));
 - the owner stopped the run.
 
 Trust-boundary refusals also end the run: exit 79 from any child, or the
 runner's `structural_refusal` failure-class marker on a turn run's log
 (`terminal_refusal` in `autodrive_refusal.sh`; nothing reads the transcript's
-wording). Nothing reads the turn
-record to decide, and nothing counts turns, rounds or time.
+wording). Nothing reads the turn record to decide, and nothing counts time.
+The one count is of turns in which no agent started, described below.
 
 ## Failures inside a turn
 
@@ -457,15 +471,23 @@ These never end the run. They go into the next turn's reading:
 - a `gh` or `git` error while reading;
 - a wait that returns an error.
 
-A turn run that fails does not end the run either (#3129 R1). The runner's own
-handling runs first: the usage-limit wait, limit-resume and step recovery. If
-the turn run still fails, the driver resets nothing. The agent may have edited,
-committed or pushed before a later step failed, and all of that is kept. The
-turn's `result.json` has outcome `turn-failed`, the `recovery` chosen and the
-`failure`. The next turn's reading carries them as `previous`, so a fresh agent
-judges the failure. A decision the failed turn saved is not carried out. The
-guidance mark does not move, so guidance the failed turn was given shows as new
-again.
+A turn run that fails does not end the run either (#3129 R1), except in the
+cases in the table below. The runner's own handling runs first: the
+usage-limit wait, limit-resume and step recovery. If the turn run still fails,
+the driver resets nothing. The agent may have edited, committed or pushed
+before a later step failed, and all of that is kept. The turn's `result.json`
+has outcome `turn-failed`, the `recovery` chosen and the `failure`. The next
+turn's reading carries them as `previous`, so a fresh agent judges the
+failure. A decision the failed turn saved is not carried out. The guidance
+mark does not move, so guidance the failed turn was given shows as new again.
+
+Each failed turn also writes one line to the run's own log, the file named by
+`AMPLIHACK_RECIPE_LOG`, which a detached run sets (#3286). The line gives the
+turn number, the runner's class and the error: the last line of the turn log
+that is neither blank nor a failure-class marker. The write is best effort: it
+happens only when the variable names an absolute path to a regular file of
+this user that is not a symbolic link, and a failed write changes nothing
+else.
 
 The `failure` fields are evidence for the agent, and the driver decides
 nothing from them:
@@ -489,6 +511,7 @@ What runs before the next turn:
 | Case | What runs |
 |------|-----------|
 | Any failure, whether or not the agent had decided: a step after the agent failed, the agent step crashed, a setup or environment fault, a transport fault, `agent_api`, `work`, `indeterminate`, or a usage limit | The next turn starts at once, with the evidence above. |
+| The third turn in a row that failed before any agent started, with the same error as the two before it | The run ends as `failed`, with the error as its detail, and the driver exits 1. See [A failure that repeats](#a-failure-that-repeats). |
 | A failure the runner classed `usage_limit`, when the operator's own `recipe.usage_limit_wait` reads `false` | The run ends as `usage_limit` and the driver exits 1. See [The limit wait turned off](#the-limit-wait-turned-off). |
 | The launch bundle no longer holds the turn recipe, the turn tool or the goal tool, as regular files | No turn can run, so the run waits for the owner's word (`amplihack recipe guidance wait`, an event with no timer), then starts the next turn. If no wake can be armed, the question goes to the operator in a hand-off, as `wait-owner` does. This is a fact the driver checks on disk, not a reading of the log. |
 | Any failure of a `--once` turn | The run ends, as `usage_limit` for a usage limit and as `failed` otherwise, and the driver exits 1. The caller asked for one turn. |
@@ -499,25 +522,44 @@ They are trust-boundary refusals and end the run as `refused` before
 
 ### A failure that repeats
 
-A failure that happens on every turn makes the loop start turn after turn, at
-once, with no changed input. This is deliberate. The loop has no counter, no
-timer and no reading of earlier records to stop on, because a counter is the
-brittle ending #3129 removes. Two cases differ in what each turn costs:
+A failure that happens on every turn makes the loop start the next turn at
+once, with no changed input. The loop has no timer and no reading of earlier
+records to stop on. Two cases differ:
 
-- The agent step runs and a later step fails every time, for example a broken
-  publish step. Each turn runs a full agent step. That agent reads
-  `previous.failure` and can act on it, and the goal text tells it to hand off
-  when a failure repeats and nothing it can do changes the cause.
-- The agent step cannot run at all, for example because the agent's own binary
-  is gone, or because a usage limit reaches the driver while the limit wait is
-  on, as it does when the runner could not supervise the step. Each turn then
-  fails within seconds, and each writes a turn folder and takes a fresh
-  reading of GitHub. The loop goes on until the cause clears (the limit resets,
-  or the login changes) or the owner stops the run with
-  `amplihack recipe stop`. No agent runs that could hand off.
+- An agent ran. The agent step runs and a later step fails every time, for
+  example a broken publish step. Each turn runs a full agent step. That agent
+  reads `previous.failure` and can act on it, and the goal text tells it to
+  hand off when a failure repeats and nothing it can do changes the cause.
+  Nothing in code ends such a run.
+- No agent started (#3286). The turn run failed before any step ran, for
+  example because the trusted-bundle check refused a group-writable bundle.
+  No agent runs that could read the failure, hand off or act on guidance. The
+  driver counts these turns. Three in a row with the same error end the run as
+  `failed`, with that error as the detail of `loop-end.json` and of the
+  driver's stdout line, and the driver exits 1.
 
-The owner can always stop such a run. Guidance cannot end it while no agent
-runs, because only an agent acts on guidance.
+A turn counts as one in which no agent started only on positive evidence:
+the runner's last failure-class marker is present, parses, and lists
+`completed_steps` and `failed_steps` both as empty arrays, and `decision.json`
+was not written. A turn with no marker, with a marker that does not parse, or
+with one that does not list both fields, is unknown rather than pre-agent: an
+older runner writes no marker for the bundle check, and a runner killed by
+the system (an out-of-memory kill or `SIGKILL`) can die after an agent step
+ran and before it writes one. Such a turn starts the count again, as a turn
+in which an agent ran does, and the next turn's agent reads its failure. Two errors are the same when the error lines described
+in [Failures inside a turn](#failures-inside-a-turn) are equal; the driver
+compares them and reads nothing in their wording. A turn in which an agent
+ran, a turn that succeeded, or a different error starts the count again. The
+count is kept in memory, so a resumed run starts it at nought. The number,
+three, is fixed in the driver and has no setting.
+
+The runner writes its failure-class marker for a failed trusted-bundle check,
+classed `environmental` and not retryable, with empty step lists, before its
+`Error:` line, so the turn log ends with the error. Because a turn without
+that marker never counts, the end rule depends on it;
+`crates/amplihack-cli/tests/issue_3286_untrusted_bundle_marker.rs` runs the
+real `amplihack recipe run` on a group-writable bundle and checks the marker,
+its empty step lists and the error line after it.
 
 ### The limit wait turned off
 
@@ -841,9 +883,9 @@ Rust:
   one agent call per turn. The agent is told to hand off when a failure keeps
   repeating. The operator can use `amplihack recipe stop`.
 - A turn run that fails the same way every turn starts the next turn at once,
-  with no changed input, and does so on purpose
-  ([A failure that repeats](#a-failure-that-repeats)). Where no agent step can
-  run at all, nothing but the cause clearing or `amplihack recipe stop` ends it.
+  with no changed input, while an agent runs in it
+  ([A failure that repeats](#a-failure-that-repeats)). Where no agent starts,
+  three such turns in a row with the same error end the run.
 - `gh pr checks --watch` polls GitHub inside `gh`. The loop adds no poll of its
   own.
 - An operator who passes `--step-timeout` times out the whole loop step.

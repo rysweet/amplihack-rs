@@ -380,8 +380,6 @@ fn bundle_install_completes_every_indexed_support_resource() {
     for (skill, resource) in [
         ("docx", "ooxml/scripts/pack.sh"),
         ("pptx", "ooxml/scripts/pack.sh"),
-        ("outside-in-testing", "README.md"),
-        ("outside-in-testing", "examples/cli/calculator-basic.yaml"),
     ] {
         let entry = entries
             .iter()
@@ -441,8 +439,6 @@ fn bundle_install_then_claude_sync_materializes_known_support_links() {
     let claude_skills = temp.path().join(".claude/skills");
     assert!(claude_skills.join("docx/ooxml/scripts/pack.sh").is_file());
     assert!(claude_skills.join("pptx/ooxml/scripts/pack.sh").is_file());
-    assert!(claude_skills.join("outside-in-testing/README.md").is_file());
-    assert!(claude_skills.join("outside-in-testing/examples").is_dir());
 
     crate::test_support::restore_home(previous);
 }

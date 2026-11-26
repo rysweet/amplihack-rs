@@ -836,6 +836,14 @@ profile with no session window yet counts as 0% session use. A profile that is
 `session_exhausted` or `weekly_exhausted`, or at 100% on either window, has
 no room.
 
+The weekly figure is the largest of the all-models week and every available
+model week. Request and text probes record each model's percentage, reset
+and observation time in the account's stored usage. Status-line updates also
+record model weeks when supplied. A later reading that omits a model keeps
+its previous observation until its reset, without changing its age. At the
+reset time the observation expires. A model percentage without a usable
+reset can affect the direct decision but is not retained for passive use.
+
 The rotator moves `~/.claude` only to a login that has room now. A login is a
 *target* only if all of these hold:
 
@@ -900,31 +908,22 @@ still has room onto a login at or above `--session-at`. In the example,
 writes a `stay:` line until the hold ends. A swap off a login that has no
 room is never held, and nor is a swap to a login below `--session-at`.
 
-Before any swap based on usage, the target is confirmed by a fresh reading. A
-login read directly in this cycle is not read again. A stored or carried
-reading is read again once. If the fresh reading shows no room, the rotator
-writes `reject: <name> <reason>` and tries the next target. If the fresh
-reading cannot be taken (a 429, for instance), or is older than one already
-held, the rotator does not swap on it: it writes a `reject:` line and tries
-the next target. A full live login is not enough to change that. The one
-exception is a live login with a standing block (a spend, session, week or
-credit limit): no work can run on it until the block ends, so the rotator
-moves to the best target on that target's recent reading (at most 5 hours
-old, and taken after the rotator last left it), and the `swap` line ends
-`unconfirmed (<why>); live <from> has no room: <kind> until <time>`. The 23 November
-report on issue #2820 asked for this exception; the
-[reference](../reference/profile-command.md#rotate-confirmation) says how it
-differs from the rule #3105 withdrew. A login with a standing
-block is never a target, and the rotator writes
-`reject: <name> blocked until <time> (<kind>)`. If the targets are rejected only
-because their re-reads were unknown, they are still eligible, and the rotator
-stays and writes `stay: no candidate confirmed by a fresh reading`. If the
-fresh readings showed them full, they are no longer eligible, and the cycle
-writes the no-capacity ALERT when the live login is past a threshold. At most 3
-re-reads are made in a cycle, and there is no retry loop or waiting: the next
-cycle tries again.
+Before any swap based on usage, the rotator reads the chosen target once
+with the configured direct probe mechanism, even if its current reading is
+fresh. Passive readings are disabled for this confirmation. A model week at
+or above `--week-at` rejects the target, including equality. The session
+limits and all-models weekly ceiling still apply.
+
+If the target no longer qualifies, the rotator decides again using the new
+figures. A different target waits for a later cycle to receive its own
+confirmation. The cycle makes at most one target confirmation probe and
+never swaps on a failed, unusable or older confirmation. This also applies
+when the live login has a standing block. A login with a standing block is
+never a target. See the
+[confirmation reference](../reference/profile-command.md#rotate-confirmation).
+
 After a 100% to 90% swap, an older 0%/0% reading for the login just left
-cannot authorize a swap back. The rotator reads that target again and
+cannot authorise a swap back. The rotator reads that target again and
 decides on the replacement evidence. A fresh exhausted result excludes it;
 a failed or still-stale result makes it unknown for the cycle. See the
 [freshness gate](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping)
@@ -967,17 +966,15 @@ live. It never refreshes the token and writes no file. Probe modes `auto`
 and `text` keep their existing fallback behavior; dry runs use direct reads
 only and start no `claude` process.
 
-The live re-read has one probe deadline of its own. All target re-reads
-share a second deadline and are limited to three targets per cycle.
+The live re-read has one probe deadline of its own. The single target
+confirmation uses a separate existing probe deadline.
 Together they can add up to two probe deadlines after measurement: about
 240 seconds with the default settings. See the
 [re-read limits](../reference/profile-command.md#re-reads).
 
 A live re-read runs after the measurement, but it does not make the
-cycle's own candidate readings stale. A candidate read directly in the same
-measurement still counts as no older than the live login, so the re-read
-adds no target read. A candidate's stored reading from before the
-measurement is read again, as it is next to a direct live read. See the
+cycle's own candidate readings stale. Every proposed swap still requires
+its one direct target confirmation after selection. See the
 [reading-time contract](../reference/profile-command.md#reading-time).
 
 While the cache stays behind, the frozen count keeps rising on the cached
@@ -1125,10 +1122,8 @@ is at most 5 hours old and its weekly reset has not passed. It is shown as
 timer: it asks again on the next cycle.
 
 A last good reading can rank a login but, on its own, never justifies a swap:
-the swap waits for a fresh reading. The exception is a live login with a
-standing block, which is left on the target's recent last good reading (see
-above); a waiting step stays parked until a later cycle reads the new login
-with room. When the live login has no room and no candidate is
+the swap waits for successful direct confirmation, including when the live
+login has a standing block. When the live login has no room and no candidate is
 confirmed, the cycle writes `stay: no candidate confirmed by a fresh reading`
 and a hard ALERT, which pauses session resumes until a later cycle finds room.
 When the live login still has room, the ALERT is advisory and the cycle stays.
@@ -1349,6 +1344,14 @@ A profile marked as overflow is taken over only by the rules in
 never as an ordinary target.
 
 ## Read the log
+
+The cycle's `w=` figure is the same weekly maximum used for the decision.
+When a model week decides, its label follows the percentage, for example
+`w=100%(Fable)`. An all-models maximum has no model suffix. Equal maxima
+prefer all-models, then models in label order. The all-models reset window
+remains separate from the deciding model week. To inspect the age of a
+retained model observation, use its `observed_at` in the usage JSON; later
+passive readings do not refresh that time.
 
 The log is `<root>/.auto-switch.d/rotate/rotate.log`. Each line is a UTC time
 and a message. When it passes 1 MiB it is renamed to `rotate.log.1`, replacing
@@ -2102,8 +2105,7 @@ Both end with the counts of what it found:
 The counts appear in this order, and a count of zero is left out: unknown
 (with the cause, one entry per cause), not read (a login the cycle skipped before
 probing it, with the reason of its `skip:` line), failed, blocked until the earliest
-reset, exhausted, above the week ceiling, and not tried (the three re-reads of
-the cycle were used). When there is nothing to count, it reads
+reset, exhausted and above the week ceiling. When there is nothing to count, it reads
 `candidates: none`. The line never names a login.
 
 If the live login still reads below 100% on both windows, the ledger keeps

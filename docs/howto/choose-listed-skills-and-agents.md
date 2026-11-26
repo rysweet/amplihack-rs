@@ -35,9 +35,8 @@ amplihack directory enable agent:core/guide
 ```
 
 A bare name works when it identifies one entry. An ambiguous name is rejected
-with the qualified alternatives. For example, `guide` needs either
-`agent:guide` or `agent:core/guide`; `tla-plus-expert` needs its skill or agent
-qualification. The [directory reference](../reference/directory-command.md)
+with the qualified alternatives. For example, `tla-plus-expert` needs its skill
+or agent qualification. The [directory reference](../reference/directory-command.md)
 describes accepted prefixes and error results.
 
 Run enable only when you want a persistent change. In a recipe step, read an

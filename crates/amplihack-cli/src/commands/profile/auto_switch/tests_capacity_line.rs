@@ -189,6 +189,7 @@ fn win(pct: f64, resets_at: i64) -> Option<Window> {
 
 fn reading(five: Option<Window>, seven: Option<Window>) -> Reading {
     Reading {
+        week_models: Vec::new(),
         five_hour: five,
         seven_day: seven,
         observed_at: NOW - 60,

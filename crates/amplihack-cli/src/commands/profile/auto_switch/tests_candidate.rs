@@ -21,6 +21,7 @@ fn w(pct: f64, resets_in: i64) -> Option<Window> {
 
 fn reading(five: f64, seven: f64) -> Reading {
     Reading {
+        week_models: Vec::new(),
         five_hour: w(five, 3600),
         seven_day: w(seven, 86_400),
         observed_at: NOW - 10,
@@ -108,6 +109,7 @@ fn exhausted_when_either_window_reaches_threshold() {
 #[test]
 fn exhausted_window_that_has_reset_is_not_exhausted() {
     let r = Reading {
+        week_models: Vec::new(),
         five_hour: w(100.0, -5),
         seven_day: w(10.0, 86_400),
         observed_at: NOW - 7200,
@@ -188,6 +190,7 @@ fn reset_window_ranks_as_full_quota() {
         .with(
             "reset",
             Reading {
+                week_models: Vec::new(),
                 five_hour: w(100.0, -1),
                 seven_day: w(5.0, 86_400),
                 observed_at: NOW - 9000,
@@ -237,6 +240,7 @@ const GATE: Gate = Gate {
 /// A reading whose five-hour window is at `five`% and resets in `resets_in`.
 fn five_hour(five: f64, resets_in: i64) -> Reading {
     Reading {
+        week_models: Vec::new(),
         five_hour: w(five, resets_in),
         seven_day: w(10.0, 86_400),
         observed_at: NOW - 10,
@@ -489,6 +493,7 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
     let profiles = vec![n("work"), n("spare"), n("cred")];
     let now = fsx::now();
     let live = |five: f64, resets_in: i64| Reading {
+        week_models: Vec::new(),
         five_hour: Some(Window {
             used_percentage: five,
             resets_at: now + resets_in,
@@ -557,6 +562,7 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
 /// A reading with a week window and no five-hour window.
 fn weekly_only(seven: f64) -> Reading {
     Reading {
+        week_models: Vec::new(),
         five_hour: None,
         seven_day: w(seven, 86_400),
         observed_at: NOW - 10,

@@ -20,6 +20,9 @@ pub mod guide;
 /// Issue #2783: the log-pointer records `recipe guide` finds a run by.
 mod guide_records;
 pub mod list;
+/// Issue #3161: the live runs for a pull request, which `recipe guide` writes
+/// to and `recipe guidance show` reads.
+mod live_runs;
 mod parse;
 /// Issue #1606: the processes `recipe stop` signals.
 #[cfg(target_os = "linux")]
@@ -239,3 +242,6 @@ pub(crate) fn home_dir() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod recipe_tests;
+
+#[cfg(all(test, unix))]
+mod live_runs_tests;

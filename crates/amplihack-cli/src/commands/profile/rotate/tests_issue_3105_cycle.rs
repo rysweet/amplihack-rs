@@ -13,8 +13,8 @@
 //!   with the block in the ledger, with the block passed through a save for
 //!   an older reader (which now keeps it), and with no block at all;
 //! - (c) a confirming read older than one already held is rejected and the
-//!   next login is tried; a passive reading older than the kept one is not
-//!   ranked;
+//!   next login waits for another cycle; a passive reading older than the
+//!   kept one is not ranked;
 //! - (d) no swap is made without a fresh reading and no swap line says
 //!   `unconfirmed`;
 //! - (e) a block whose end has come no longer applies.
@@ -29,9 +29,14 @@ use crate::commands::profile::rotate::decide::Probed;
 use crate::commands::profile::rotate::ledger::for_older_readers;
 use crate::commands::profile::rotate::measure::ProbeLabel;
 use crate::commands::profile::rotate::tests_issue_1870::{exh, rd};
+use std::cell::Cell;
 use std::time::Duration;
 
 const KINDS: [&str; 4] = ["spend_limit", "session_limit", "week_limit", "credit_limit"];
+
+thread_local! {
+    static CONFIRMATIONS: Cell<usize> = const { Cell::new(0) };
+}
 
 #[test]
 fn a_blocked_login_with_a_roomy_reading_is_not_chosen_and_is_logged_as_rejected() {
@@ -115,7 +120,6 @@ fn replay_cycle(f: &Fleet, s: Labelled, keep: bool) -> CycleOutcome {
         &labels,
         Mode::Watch,
         &|ctx| {
-            ctx.reread = None;
             ctx.measure = Some(stub);
             if keep {
                 keep_1616(ctx);
@@ -245,12 +249,14 @@ fn a_block_whose_end_has_come_no_longer_applies() {
 // --- (a) The block line, once per cycle --------------------------------------------------
 
 /// `top` ranks first on a stale reading, is read again and found full; the
-/// decision runs again and reaches `next`. Two blocked logins with roomy
-/// readings are left out of every pass, and each has exactly one line.
+/// decision runs again but leaves `next` for another cycle. Two blocked
+/// logins with roomy readings are left out of every pass, and each has
+/// exactly one line.
 #[test]
 fn each_blocked_login_has_one_line_however_many_times_the_decision_runs() {
     fn reread(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
         assert_eq!(who.as_str(), "top", "a blocked login is never read again");
+        CONFIRMATIONS.with(|count| count.set(count.get() + 1));
         (exh(100.0, 40.0), None)
     }
     for (label, s) in BOTH {
@@ -263,6 +269,7 @@ fn each_blocked_login_has_one_line_however_many_times_the_decision_runs() {
             ("top", rd(0.0, 10.0, Some(clock() - 60))),
             ("next", rd(20.0, 60.0, None)),
         ];
+        CONFIRMATIONS.set(0);
         let out = run_full(
             &f,
             s(),
@@ -274,8 +281,9 @@ fn each_blocked_login_has_one_line_however_many_times_the_decision_runs() {
             stub,
         );
         let log = f.log();
-        assert_eq!(out, CycleOutcome::Swapped, "{label}: {log}");
-        assert!(f.live_is("next"), "{label}: {log}");
+        assert_eq!(out, CycleOutcome::StayedUnread, "{label}: {log}");
+        assert!(f.live_is("work"), "{label}: {log}");
+        assert_eq!(CONFIRMATIONS.get(), 1);
         assert!(
             log.contains("reject: top no room on a fresh reading"),
             "{label}: {log}"
@@ -339,11 +347,12 @@ fn a_cycle_that_looks_for_no_target_writes_no_block_line() {
 
 /// `held` ranks first on a passive reading taken at the time the watch kept
 /// it; its confirming read comes back dated 140 seconds before that. It is
-/// rejected, and the next login, read directly this cycle, is chosen.
+/// rejected, and the next login waits for confirmation in another cycle.
 #[test]
-fn a_confirming_read_older_than_the_kept_reading_is_rejected_for_the_next_login() {
+fn a_confirming_read_older_than_the_kept_reading_leaves_the_next_login_for_another_cycle() {
     fn reread(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
         assert_eq!(who.as_str(), "held");
+        CONFIRMATIONS.with(|count| count.set(count.get() + 1));
         (rd(0.0, 30.0, Some(clock() - 200)), None)
     }
     for (label, s) in BOTH {
@@ -352,6 +361,7 @@ fn a_confirming_read_older_than_the_kept_reading_is_rejected_for_the_next_login(
             ("held", rd(0.0, 30.0, Some(clock() - 60))),
             ("other", rd(10.0, 50.0, None)),
         ];
+        CONFIRMATIONS.set(0);
         let out = run_tuned(
             &f,
             s(),
@@ -366,12 +376,9 @@ fn a_confirming_read_older_than_the_kept_reading_is_rejected_for_the_next_login(
             },
         );
         let log = f.log();
-        assert_eq!(out, CycleOutcome::Swapped, "{label}: {log}");
-        assert!(f.live_is("other"), "{label}: {log}");
-        assert!(
-            log.contains("reject: held reading 140s older than one already held"),
-            "{label}: {log}"
-        );
+        assert_eq!(out, CycleOutcome::StayedUnread, "{label}: {log}");
+        assert!(f.live_is("work"), "{label}: {log}");
+        assert_eq!(CONFIRMATIONS.get(), 1);
     }
 }
 

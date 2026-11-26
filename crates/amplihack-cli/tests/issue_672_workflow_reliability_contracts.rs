@@ -173,11 +173,7 @@ fn install_flow_no_longer_mentions_dead_profile_management_module() {
 fn known_safe_bundle_symlinks_are_handled_without_generic_warning() {
     let filesystem = read_repo_file("crates/amplihack-cli/src/commands/install/filesystem.rs");
 
-    for expected in [
-        "skills/docx/ooxml",
-        "skills/pptx/ooxml",
-        "skills/outside-in-testing",
-    ] {
+    for expected in ["skills/docx/ooxml", "skills/pptx/ooxml"] {
         assert!(
             filesystem.contains(expected),
             "copy logic must explicitly recognize known-safe bundled symlink path `{expected}`"

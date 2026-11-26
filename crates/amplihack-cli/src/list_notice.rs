@@ -156,11 +156,6 @@ fn write_notice(publication: &Publication, out: &mut impl Write, eligible: bool)
     }
     let dir = publication.staged.join("install");
     let path = dir.join(NOTICE);
-    if fs::symlink_metadata(&path)
-        .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
-    {
-        return Ok(());
-    }
     let mut text = String::from(
         "amplihack now lists a smaller selection. These entries remain installed in the complete framework.\n",
     );
@@ -188,6 +183,9 @@ fn write_notice(publication: &Publication, out: &mut impl Write, eligible: bool)
 /// Returns false when another writer saved the notice first.
 fn save_notice(dir: &Path, path: &Path, text: &str) -> Result<bool> {
     match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            return Ok(false);
+        }
         Ok(_) => bail!("list notice destination must be a regular file"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
