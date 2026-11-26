@@ -843,33 +843,38 @@ The change records the release and the date in this section, as for
 computation in `hooks_json.rs` is changed first. Until a version is added,
 an interactive launch on it is rejected and `codex exec` still works.
 
-As of 25 November 2026, live interactive and `exec` command-check exercises
-and comparable token measurements remain **unverified**. On the review
-host, the documented `http://127.0.0.1:8080/v1/models` endpoint refused the
-connection, and `http://127.0.0.1:8000/v1/models` returned HTTP 404. No usable
-model profile or tokenizer and prompt provenance was supplied in #3224.
-These are missing validation inputs, not successful checks. Native trust
-inspection and fixture tests do not establish live safety or token savings;
-the PR must remain open without a readiness claim until that evidence exists.
+On 25 November 2026 both live command checks were run with a local model,
+on a build of #3262 at `bab0aa6bb`, and passed:
 
-The review follow-up on 25 November 2026 at 14:49 UTC repeated the provider
-checks with Codex 0.166.0 installed. Direct requests (with proxy use disabled)
-to `/v1/models` returned curl exit 7 / HTTP 000 on port 8080 and HTTP 404 on
-port 8000. The user Codex home had no `<name>.config.toml` local-model profile,
-and its main configuration defined no model providers or profiles. No
-local-model provider environment variable was present. The model request,
-interactive command check, `exec` command check and token comparison were
-therefore **not run**.
+- `exec`, on Codex 0.171.0
+  ([#3262, comment 7172703133](https://github.com/rysweet/amplihack-rs/pull/3262#issuecomment-7172703133)):
+  the command check refused a command the model issued (`tail -f /dev/null`,
+  used as a wait), and the model reported the refusal.
+- Interactive, on Codex 0.166.0
+  ([#3262, comment 7173832110](https://github.com/rysweet/amplihack-rs/pull/3262#issuecomment-7173832110)):
+  the command check refused a command the model issued in the session, and
+  the model reported that the PreToolUse hook had blocked it.
 
-The issue and PR comments were also re-read. The input request in
-[#3224, comment 7160810796](https://github.com/rysweet/amplihack-rs/issues/3224#issuecomment-7160810796)
-still had no supplied endpoint, model profile or measurement provenance;
-the latest review in
-[#3262, comment 7165838313](https://github.com/rysweet/amplihack-rs/pull/3262#issuecomment-7165838313)
-continued to identify this gap as blocking. No code correction can supply
-these external validation inputs.
+In both launches the user's `~/.codex` was unchanged apart from one empty lock
+file, and the first request the model server received held no inserted hook
+text.
 
-The validation handoff requires the following evidence before readiness:
+The prompt-token comparison has not been made in the matched form that the
+table below sets out. The first request of the `exec` launch was 2,070 tokens
+by the split method of 24 November, against 13,530 recorded for an ordinary
+`amplihack codex` launch on 24 November; the first request of the interactive
+launch was 4,772 tokens by the model server's count, most of it the session's
+seven tool definitions. The two local figures were counted by different
+methods, and no ordinary launch with an identical task prompt, tool
+configuration and counting method is recorded beside either, so they do not
+establish a token saving. Fixture tests and native trust inspection do not
+establish live command blocking or token savings.
+
+Earlier the same day, at 14:49 UTC, the checks could not run on the host that
+reviewed #3262: neither documented `/v1/models` endpoint returned a model list,
+and no local-model profile was set up.
+
+The validation handoff asks for the following evidence:
 
 | Check | Required inputs | Evidence to record |
 | --- | --- | --- |
@@ -880,9 +885,9 @@ The validation handoff requires the following evidence before readiness:
 A model declining the request without issuing a tool call does not
 demonstrate command-check blocking. Request byte counts cannot stand in for
 token counts. Preserve transcripts and measurement provenance with the
-results, excluding credentials. Until these checks run, the concern remains
-unresolved and readiness remains pending; fixture tests and native trust
-inspection cannot close it.
+results, excluding credentials. Until the prompt-token comparison is made, no
+token saving is established; fixture tests and native trust inspection cannot
+establish one.
 
 ## Related
 
