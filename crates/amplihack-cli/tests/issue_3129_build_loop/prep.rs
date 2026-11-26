@@ -1,4 +1,4 @@
-//! C1c and C1d (#3110, mistt-app-ui #480): workflow-prep, run whole through
+//! C1c and C1d (#3110, repo-c #480): workflow-prep, run whole through
 //! the real binary and runner with PR 1's harness. With no `issue_number`,
 //! step-03 takes the issue from the task's `Fixes #463` line, step-03b writes
 //! 463 to `issue_number`, and step-03c reports an open pull request on that
@@ -44,7 +44,7 @@ case "${1:-} ${2:-}" in
 esac
 "##;
 
-/// A pull request on another branch that closes #463: the mistt-app-ui #480
+/// A pull request on another branch that closes #463: the repo-c #480
 /// shape, where a run was told to continue that very pull request.
 fn claim() -> Value {
     json!([{"number": 480, "url": "https://github.com/o/r/pull/480",

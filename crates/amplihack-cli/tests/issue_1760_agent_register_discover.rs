@@ -33,10 +33,10 @@ const OPTIONS: &[&str] = &[
 ];
 
 /// `self -> claude (CLAUDE_PID) -> amplihack claude (AMP_PID) -> 1`, the
-/// claude process running `claude <args>` in `work/mistt`, in pane `%3` of
+/// claude process running `claude <args>` in `work/example-org`, in pane `%3` of
 /// session `coord`, window `main`, on the fixture's socket.
 fn tree(fx: &Fx, args: &[&str]) -> PathBuf {
-    let d = fx.dir("mistt");
+    let d = fx.dir("example-org");
     fx.profile_dir("work");
     let amp = [
         "/home/u/.local/bin/amplihack",

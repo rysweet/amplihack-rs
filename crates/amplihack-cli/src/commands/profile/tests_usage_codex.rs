@@ -27,8 +27,8 @@ use std::path::PathBuf;
 
 /// 2026-11-06T19:09:00Z, the read time of the documented example.
 const READ: i64 = 1_793_992_140;
-const ROOT: &str = "/home/ryan/.codex-profiles";
-const HOME_CODEX: &str = "/home/ryan/.codex";
+const ROOT: &str = "/home/you/.codex-profiles";
+const HOME_CODEX: &str = "/home/you/.codex";
 const MIN: i64 = 60;
 const HOUR: i64 = 3600;
 const DAY: i64 = 86_400;
@@ -80,17 +80,17 @@ const CRASH: &str =
 
 /// The seven accounts of the documented example, in its order.
 fn example_rows() -> Vec<AccountResult> {
-    let mut ggrant = reading(vec![week(34.0, 1_794_321_000)], None, Some("pro"));
-    ggrant.ordinary_usage_allowed = Some(true);
-    let mut ffarmer = reading(
+    let mut login_ag = reading(vec![week(34.0, 1_794_321_000)], None, Some("pro"));
+    login_ag.ordinary_usage_allowed = Some(true);
+    let mut login_af = reading(
         vec![five(12.0, 1_794_001_200), week(41.0, 1_794_470_400)],
         None,
         Some("plus"),
     );
-    ffarmer.ordinary_usage_allowed = Some(true);
+    login_af.ordinary_usage_allowed = Some(true);
     vec![
-        signed_in("ffarmer", ffarmer),
-        signed_in("ggrant", ggrant),
+        signed_in("login-af", login_af),
+        signed_in("login-ag", login_ag),
         signed_in(
             "hhale",
             reading(
@@ -176,7 +176,7 @@ fn a_window_without_a_length_is_named_by_its_field() {
 
 #[test]
 fn the_view_marks_the_account_codex_pick_would_choose() {
-    assert_eq!(example().next, Some(1), "ggrant, room 66");
+    assert_eq!(example().next, Some(1), "login-ag, room 66");
 }
 
 #[test]
@@ -209,9 +209,9 @@ fn no_account_with_room_means_no_marker() {
 fn the_bar_block_is_the_documented_example() {
     let got = bars_block(&example(), &utc0(), false);
     let want = "\
-Codex accounts under /home/ryan/.codex-profiles
-ffarmer   signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
-ggrant    signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+Codex accounts under /home/you/.codex-profiles
+login-af  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
+login-ag  signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
 hhale     signed in      credits 4200  plan team  read 19:09:00
 jjones    not signed in  read 19:09:00
 kkim      timed out      after 20s  read 19:09:00
@@ -224,7 +224,7 @@ mmoss     error: codex app-server exited (exit status: 1): error: unrecognized s
 #[test]
 fn utc_puts_z_on_resets_and_the_read_time() {
     let block = bars_block(&example(), &TimeView::Utc, false);
-    let l = line_of(&block, "ffarmer");
+    let l = line_of(&block, "login-af");
     assert!(
         l.contains("5h █░░░░░░░░░  12% 11-06 21:40Z in 2h 31m"),
         "{l}"
@@ -236,7 +236,7 @@ fn utc_puts_z_on_resets_and_the_read_time() {
 fn times_follow_the_zone_of_the_view() {
     let plus1 = TimeView::Fixed(FixedOffset::east_opt(3600).unwrap(), "+01:00".to_string());
     let block = bars_block(&example(), &plus1, false);
-    let l = line_of(&block, "ffarmer");
+    let l = line_of(&block, "login-af");
     assert!(l.contains("12% 11-06 22:40 in 2h 31m"), "{l}");
     assert!(l.ends_with("read 20:09:00"), "{l}");
 }
@@ -393,7 +393,7 @@ fn the_rows_keep_their_order_and_are_not_sorted_by_room() {
     assert_eq!(
         labels,
         [
-            "ffarmer", "ggrant", "hhale", "jjones", "kkim", "mmoss", "~/.codex"
+            "login-af", "login-ag", "hhale", "jjones", "kkim", "mmoss", "~/.codex"
         ]
     );
 }
@@ -408,7 +408,7 @@ fn colour_follows_the_claude_bars() {
         !l.contains("\x1b[31m"),
         "nothing here is 90% or more: {l:?}"
     );
-    let l = line_of(&block, "ggrant");
+    let l = line_of(&block, "login-ag");
     assert!(l.contains("\x1b[32m"), "34% is green: {l:?}");
     let plain = bars_block(&example(), &utc0(), false);
     assert!(!plain.contains('\x1b'), "{plain:?}");
@@ -420,7 +420,7 @@ fn no_accounts_is_one_line_naming_the_root() {
     for block in [bars_block(&v, &utc0(), false), table_block(&v, &utc0())] {
         assert_eq!(
             block.trim_start_matches('\n'),
-            "Codex: no accounts under /home/ryan/.codex-profiles\n"
+            "Codex: no accounts under /home/you/.codex-profiles\n"
         );
     }
     assert_eq!(json(&v), serde_json::json!([]));
@@ -461,15 +461,15 @@ fn the_table_block_leaves_out_the_bar_and_keeps_one_decimal() {
     assert!(
         block
             .trim_start_matches('\n')
-            .starts_with("Codex accounts under /home/ryan/.codex-profiles\n"),
+            .starts_with("Codex accounts under /home/you/.codex-profiles\n"),
         "{block}"
     );
     assert!(!block.contains('█') && !block.contains('░'), "{block}");
     assert_eq!(
-        line_of(&block, "ffarmer"),
-        "ffarmer   signed in      5h 12.5% 11-06 21:40 in 2h 31m  7d 41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00"
+        line_of(&block, "login-af"),
+        "login-af  signed in      5h 12.5% 11-06 21:40 in 2h 31m  7d 41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00"
     );
-    assert!(line_of(&block, "ggrant").ends_with("read 19:09:00  <- next"));
+    assert!(line_of(&block, "login-ag").ends_with("read 19:09:00  <- next"));
     assert_eq!(
         line_of(&block, "jjones"),
         "jjones    not signed in  read 19:09:00"
@@ -582,7 +582,7 @@ fn json_states_errors_and_empty_figures() {
         states,
         ["ok", "ok", "ok", "not_signed_in", "timeout", "error", "ok"]
     );
-    assert!(by("ffarmer")["error"].is_null());
+    assert!(by("login-af")["error"].is_null());
     assert!(
         by("jjones")["error"].is_null(),
         "not_signed_in has no reason"
@@ -602,7 +602,7 @@ fn json_states_errors_and_empty_figures() {
         serde_json::json!({"has_credits": true, "balance": 4200.0})
     );
     assert_eq!(by("~/.codex")["path"], HOME_CODEX);
-    assert_eq!(by("ggrant")["path"], "/home/ryan/.codex-profiles/ggrant");
+    assert_eq!(by("login-ag")["path"], "/home/you/.codex-profiles/login-ag");
 }
 
 #[test]
@@ -629,7 +629,7 @@ fn next_choice_is_true_on_exactly_the_marked_row() {
         .filter(|r| r["next_choice"] == true)
         .map(|r| r["account"].as_str().unwrap())
         .collect();
-    assert_eq!(marked, ["ggrant"]);
+    assert_eq!(marked, ["login-ag"]);
     for r in v.as_array().unwrap() {
         assert!(r["next_choice"].is_boolean(), "{r}");
     }

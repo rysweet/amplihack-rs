@@ -71,7 +71,7 @@ fn conversation_ids_start_with_a_letter_or_digit() {
 #[test]
 fn session_names_refuse_what_tmux_rewrites() {
     let (max, over) = ("s".repeat(64), "s".repeat(65));
-    for ok in ["mistt", "my session", "a-b_c", &*max] {
+    for ok in ["example-org", "my session", "a-b_c", &*max] {
         assert!(session_name(ok).is_ok(), "{ok:?}");
     }
     for bad in ["", "a:b", "a.b", "a#b", "a\tb", "a\u{1b}b", &*over] {

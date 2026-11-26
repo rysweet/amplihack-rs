@@ -2,7 +2,7 @@
 
 ## `issue_1970_5nov.jsonl`
 
-The usage history of candide on 5 November 2026 from 10:52Z to 19:00Z, in the
+The usage history of host-a on 5 November 2026 from 10:52Z to 19:00Z, in the
 `usage-history.jsonl` line format. Issue #1970 reported a rate of 0.483
 login-weeks an hour and a runway of 7.5 h at 16:52Z that day. The tests in
 `tests_capacity_summary.rs` replay these lines under the rate rule of release
@@ -29,7 +29,7 @@ line does. Logins the cycle skipped or could not read are left out.
   time is taken from its oldest line in the surviving history and moved back
   by whole weeks to the first reset after 10:52Z on 5 November. A reading
   taken at or after that time gets the next week's reset. Only one login's
-  week reset in the window, recovery-ryansweet's at 12:00Z, and the log shows
+  week reset in the window, login-as's at 12:00Z, and the log shows
   its fall from 100% to 0% at 12:00:57Z.
 - **No session limit.** Taken from the same surviving lines.
 - **The two `profile usage` lines.** The issue's deputy found a `profile
@@ -40,9 +40,9 @@ line does. Logins the cycle skipped or could not read are left out.
   The 20 logins left give the 360 points of headroom the issue reports. The
   log does not give the second of the reading. 16:52:30Z is used; any time
   from 16:52:11Z to 16:52:43Z prints the same rate and runway.
-- **Names.** recovery-ryansweet and ryan-mistt-personal keep their names,
+- **Names.** login-as and login-ax keep their names,
   because the issue cites them. The other logins are numbered `login-01` to
-  `login-20` in the order of their names. `login-19` is ryanc2-mistt-org.
+  `login-20` in the order of their names. `login-19` is login-az.
 
 A history line also holds passive readings and is checked against them in
 ways the log does not show, so the rebuilt lines can differ from the lost ones
@@ -59,8 +59,8 @@ log, hist, out = sys.argv[1:4]
 def ts(s): return int(datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
 def iso(t): return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 FROM, TO = ts("2026-11-05T10:52:00Z"), ts("2026-11-05T19:00:00Z")
-USAGE = [(ts("2026-11-05T13:23:37Z"), set()), (ts("2026-11-05T16:52:30Z"), {"aanderson", "ffarmer"})]
-KEEP = {"recovery-ryansweet", "ryan-mistt-personal"}
+USAGE = [(ts("2026-11-05T13:23:37Z"), set()), (ts("2026-11-05T16:52:30Z"), {"login-aa", "login-af"})]
+KEEP = {"login-as", "login-ax"}
 WEEK = 7 * 86400
 cycles = []
 for line in open(log):

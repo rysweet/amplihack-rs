@@ -768,15 +768,15 @@ fn a1_an_excluded_login_with_a_good_history_point_is_never_chosen() {
 
 #[test]
 fn e5b_a_healthy_overflow_login_does_not_leave_for_a_login_known_only_from_history() {
-    let f = fleet(&["llarame"], &[]);
+    let f = fleet(&["login-al"], &[]);
     f.mark_overflow("work");
-    f.history("llarame", 1800, 20, 30);
+    f.history("login-al", 1800, 20, 30);
     let out = run(
         &f,
         reporter(),
         rd(10.0, 10.0, None),
-        &[("llarame", unread())],
-        &[("llarame", Http429)],
+        &[("login-al", unread())],
+        &[("login-al", Http429)],
     );
     let log = f.log();
     assert_ne!(out, CycleOutcome::Swapped, "{log}");
@@ -786,16 +786,16 @@ fn e5b_a_healthy_overflow_login_does_not_leave_for_a_login_known_only_from_histo
 
 #[test]
 fn e5b_a_blocked_overflow_login_takes_no_unconfirmed_move_either() {
-    let f = fleet(&["llarame"], &[]);
+    let f = fleet(&["login-al"], &[]);
     f.mark_overflow("work");
     f.block("work", "spend_limit", clock() + 3600);
-    f.history("llarame", 1800, 20, 30);
+    f.history("login-al", 1800, 20, 30);
     let out = run(
         &f,
         reporter(),
         rd(10.0, 10.0, None),
-        &[("llarame", unread())],
-        &[("llarame", Http429)],
+        &[("login-al", unread())],
+        &[("login-al", Http429)],
     );
     let log = f.log();
     assert_ne!(out, CycleOutcome::Swapped, "{log}");
@@ -809,7 +809,7 @@ fn e5b_a_blocked_overflow_login_takes_no_unconfirmed_move_either() {
 /// identity while it does, as a `/login` in another window would.
 fn stub_identity_lost(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     private(
-        &ctx.store.root().join("llarame").join(CREDS),
+        &ctx.store.root().join("login-al").join(CREDS),
         r#"{"claudeAiOauth":{"accessToken":"fake-token-no-identity"}}"#,
     );
     stub(ctx, snap)
@@ -817,14 +817,14 @@ fn stub_identity_lost(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
 
 #[test]
 fn s4_a_429_login_whose_identity_cannot_be_read_is_not_swapped_to() {
-    let f = fleet(&["llarame"], &[]);
-    f.history("llarame", 1800, 78, 92);
+    let f = fleet(&["login-al"], &[]);
+    f.history("login-al", 1800, 78, 92);
     let out = run_full(
         &f,
         reporter(),
         exh(100.0, 40.0),
-        &[("llarame", unread())],
-        &[("llarame", Http429)],
+        &[("login-al", unread())],
+        &[("login-al", Http429)],
         Mode::Watch,
         None,
         stub_identity_lost,
@@ -832,7 +832,7 @@ fn s4_a_429_login_whose_identity_cannot_be_read_is_not_swapped_to() {
     let log = f.log();
     assert_ne!(out, CycleOutcome::Swapped, "{log}");
     assert!(f.live_is("work"), "~/.claude is untouched:\n{log}");
-    assert!(!log.contains(" swap work->llarame"), "{log}");
+    assert!(!log.contains(" swap work->login-al"), "{log}");
     let l = f.e.rs.load_ledger().unwrap().unwrap();
     assert_eq!(l.swapped_at, None, "no swap time was recorded");
     assert_eq!(l.live.as_deref(), Some("work"));

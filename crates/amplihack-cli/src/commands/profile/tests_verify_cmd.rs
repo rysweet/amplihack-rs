@@ -56,8 +56,8 @@ fn dir700(p: &Path) {
 
 fn server(uuid: &str) -> Account {
     Account::from_profile(&serde_json::json!({
-        "account": {"uuid": uuid, "email": format!("{uuid}@mistt.com")},
-        "organization": {"uuid": "org-mistt"}
+        "account": {"uuid": uuid, "email": format!("{uuid}@example.com")},
+        "organization": {"uuid": "example-org"}
     }))
     .unwrap()
 }
@@ -178,21 +178,24 @@ impl Fx {
     }
 }
 
-/// The 3 November aftermath: `nnorth`'s folder holds mmorrison's account,
-/// `mmorrison`'s folder is empty, the ledger names ffarmer.
+/// The 3 November aftermath: `login-ao`'s folder holds login-an's account,
+/// `login-an`'s folder is empty, the ledger names login-af.
 fn crossed() -> Fx {
-    let f = fx(&["ffarmer", "mmorrison", "nnorth"], Some("ffarmer"));
-    f.holds("~/.claude", "u-ffarmer");
-    f.holds("nnorth", "u-mmorrison");
+    let f = fx(&["login-af", "login-an", "login-ao"], Some("login-af"));
+    f.holds("~/.claude", "u-login-af");
+    f.holds("login-ao", "u-login-an");
     f
 }
 
 #[test]
 fn the_report_names_each_folders_server_account_against_its_record() {
-    let f = fx(&["ffarmer", "kk", "mmorrison", "nnorth"], Some("ffarmer"));
-    f.holds("~/.claude", "u-ffarmer");
-    f.holds("nnorth", "u-mmorrison");
-    f.holds("mmorrison", "u-mmorrison");
+    let f = fx(
+        &["login-af", "kk", "login-an", "login-ao"],
+        Some("login-af"),
+    );
+    f.holds("~/.claude", "u-login-af");
+    f.holds("login-ao", "u-login-an");
+    f.holds("login-an", "u-login-an");
     private(&f.place("kk").join(CREDS), &login_doc("fake-at-kk"));
     let (r, lines) = f.run(false);
     assert_eq!(
@@ -205,11 +208,11 @@ fn the_report_names_each_folders_server_account_against_its_record() {
     assert_eq!(
         lines,
         vec![
-            "~/.claude (live ffarmer) -> u-ffarmer@mistt.com: ok",
-            "ffarmer -> no login",
+            "~/.claude (live login-af) -> u-login-af@example.com: ok",
             "kk -> not read (no answer)",
-            "mmorrison -> u-mmorrison@mistt.com: ok",
-            "nnorth -> u-mmorrison@mistt.com: MISMATCH, recorded for mmorrison",
+            "login-af -> no login",
+            "login-an -> u-login-an@example.com: ok",
+            "login-ao -> u-login-an@example.com: MISMATCH, recorded for login-an",
         ]
     );
 }
@@ -225,8 +228,8 @@ fn accounts_without_records_and_home_without_a_live_profile_are_reported() {
     assert_eq!(
         lines,
         vec![
-            "~/.claude -> u-zz@mistt.com: no live profile, recorded for no profile",
-            "aa -> u-aa@mistt.com: no record, recorded for no profile",
+            "~/.claude -> u-zz@example.com: no live profile, recorded for no profile",
+            "aa -> u-aa@example.com: no record, recorded for no profile",
         ]
     );
 }
@@ -234,7 +237,7 @@ fn accounts_without_records_and_home_without_a_live_profile_are_reported() {
 #[test]
 fn without_fix_nothing_moves() {
     let f = crossed();
-    let before = f.ino("nnorth");
+    let before = f.ino("login-ao");
     let (r, _) = f.run(false);
     assert_eq!(
         r.unwrap(),
@@ -243,15 +246,15 @@ fn without_fix_nothing_moves() {
             moved: 0
         }
     );
-    assert_eq!(f.ino("nnorth"), before);
-    assert_eq!(f.ino("mmorrison"), None);
+    assert_eq!(f.ino("login-ao"), before);
+    assert_eq!(f.ino("login-an"), None);
     assert!(f.backups().is_empty());
 }
 
 #[test]
 fn fix_moves_a_crossed_login_into_its_empty_recorded_folder() {
     let f = crossed();
-    let ino = f.ino("nnorth").unwrap();
+    let ino = f.ino("login-ao").unwrap();
     let (r, lines) = f.run(true);
     assert_eq!(
         r.unwrap(),
@@ -260,10 +263,10 @@ fn fix_moves_a_crossed_login_into_its_empty_recorded_folder() {
             moved: 1
         }
     );
-    assert_eq!(f.ino("mmorrison"), Some(ino), "moved, not copied");
-    assert_eq!(f.ino("nnorth"), None);
+    assert_eq!(f.ino("login-an"), Some(ino), "moved, not copied");
+    assert_eq!(f.ino("login-ao"), None);
     assert!(
-        lines.contains(&"moved nnorth's login to mmorrison".to_string()),
+        lines.contains(&"moved login-ao's login to login-an".to_string()),
         "{lines:?}"
     );
     // The backup is the list of moves, written before the move, private.
@@ -283,20 +286,20 @@ fn fix_moves_a_crossed_login_into_its_empty_recorded_folder() {
     let text = fs::read_to_string(&list).unwrap();
     let undo = format!(
         "mv -n '{}' '{}'",
-        f.place("mmorrison").join(CREDS).display(),
-        f.place("nnorth").join(CREDS).display()
+        f.place("login-an").join(CREDS).display(),
+        f.place("login-ao").join(CREDS).display()
     );
     assert!(
-        text.contains("# nnorth -> mmorrison") && text.contains(&undo),
+        text.contains("# login-ao -> login-an") && text.contains(&undo),
         "{text}"
     );
     assert!(!text.contains("fake-at"), "no token in the backup list");
     // Exactly one file anywhere holds the moved token.
     let holders: Vec<_> = walk(&f.root)
         .into_iter()
-        .filter(|p| fs::read_to_string(p).is_ok_and(|t| t.contains("fake-at-nnorth")))
+        .filter(|p| fs::read_to_string(p).is_ok_and(|t| t.contains("fake-at-login-ao")))
         .collect();
-    assert_eq!(holders, vec![f.place("mmorrison").join(CREDS)]);
+    assert_eq!(holders, vec![f.place("login-an").join(CREDS)]);
 }
 
 fn walk(d: &Path) -> Vec<PathBuf> {
@@ -315,29 +318,29 @@ fn walk(d: &Path) -> Vec<PathBuf> {
 #[test]
 fn fix_refuses_a_target_that_holds_a_login() {
     for (target, why) in [
-        ("u-other", "mmorrison holds a different account"),
-        ("u-mmorrison", "mmorrison already holds that account"),
+        ("u-other", "login-an holds a different account"),
+        ("u-login-an", "login-an already holds that account"),
     ] {
         let f = crossed();
-        f.holds("mmorrison", target);
-        let (inos, n_ino) = (f.ino("mmorrison"), f.ino("nnorth"));
+        f.holds("login-an", target);
+        let (inos, n_ino) = (f.ino("login-an"), f.ino("login-ao"));
         let (r, lines) = f.run(true);
         assert_eq!(r.unwrap().moved, 0);
         assert!(
-            lines.contains(&format!("nnorth: not moved: {why}")),
+            lines.contains(&format!("login-ao: not moved: {why}")),
             "{lines:?}"
         );
-        assert_eq!((f.ino("mmorrison"), f.ino("nnorth")), (inos, n_ino));
+        assert_eq!((f.ino("login-an"), f.ino("login-ao")), (inos, n_ino));
         assert!(f.backups().is_empty(), "no backup when nothing moves");
     }
 }
 
 #[test]
 fn fix_never_moves_into_the_live_profile_or_out_of_home() {
-    let f = fx(&["ffarmer", "nnorth"], Some("ffarmer"));
-    f.holds("~/.claude", "u-nnorth");
-    f.holds("nnorth", "u-ffarmer");
-    let (h, n_ino) = (f.ino("~/.claude"), f.ino("nnorth"));
+    let f = fx(&["login-af", "login-ao"], Some("login-af"));
+    f.holds("~/.claude", "u-login-ao");
+    f.holds("login-ao", "u-login-af");
+    let (h, n_ino) = (f.ino("~/.claude"), f.ino("login-ao"));
     let (r, lines) = f.run(true);
     assert_eq!(
         r.unwrap(),
@@ -347,14 +350,15 @@ fn fix_never_moves_into_the_live_profile_or_out_of_home() {
         }
     );
     assert!(
-        lines
-            .contains(&"nnorth: not moved: ffarmer is live; its login is in ~/.claude".to_string()),
+        lines.contains(
+            &"login-ao: not moved: login-af is live; its login is in ~/.claude".to_string()
+        ),
         "{lines:?}"
     );
     assert!(
         lines.contains(&"~/.claude: not moved by --fix; use amplihack profile switch".to_string())
     );
-    assert_eq!((f.ino("~/.claude"), f.ino("nnorth")), (h, n_ino));
+    assert_eq!((f.ino("~/.claude"), f.ino("login-ao")), (h, n_ino));
 }
 
 #[test]
@@ -397,21 +401,21 @@ fn two_logins_for_one_empty_folder_move_only_the_first() {
 #[test]
 fn a_login_that_changes_before_the_move_stays() {
     let f = crossed();
-    // Survey: ~/.claude, ffarmer (no login: not read), mmorrison (none),
-    // nnorth: two reads. The re-read before the move sees another account.
+    // Survey: ~/.claude, login-af (no login: not read), login-an (none),
+    // login-ao: two reads. The re-read before the move sees another account.
     f.flip_after.set(Some(2));
     f.changed
         .borrow_mut()
-        .insert(f.place("nnorth"), Ok(server("u-else")));
-    let before = f.ino("nnorth");
+        .insert(f.place("login-ao"), Ok(server("u-else")));
+    let before = f.ino("login-ao");
     let (r, lines) = f.run(true);
     assert_eq!(r.unwrap().moved, 0);
     assert!(
-        lines.contains(&"nnorth: not moved: its login changed since it was read".to_string()),
+        lines.contains(&"login-ao: not moved: its login changed since it was read".to_string()),
         "{lines:?}"
     );
-    assert_eq!(f.ino("nnorth"), before);
-    assert_eq!(f.ino("mmorrison"), None);
+    assert_eq!(f.ino("login-ao"), before);
+    assert_eq!(f.ino("login-an"), None);
 }
 
 #[test]
@@ -419,11 +423,11 @@ fn fix_refuses_during_a_swap_and_moves_nothing() {
     let f = crossed();
     let rs = RotateState::new(&f.root);
     private(&rs.journal, "{}");
-    let before = f.ino("nnorth");
+    let before = f.ino("login-ao");
     let (r, lines) = f.run(true);
     assert!(matches!(r, Err(ProfileError::Verify(_))), "{r:?}");
     assert!(lines.is_empty());
-    assert_eq!(f.ino("nnorth"), before);
+    assert_eq!(f.ino("login-ao"), before);
 }
 
 #[test]
@@ -431,35 +435,35 @@ fn fix_refuses_while_the_rotate_lock_is_held() {
     let f = crossed();
     let state = State::new(&f.root).unwrap();
     let _held = state.lock().unwrap();
-    let before = f.ino("nnorth");
+    let before = f.ino("login-ao");
     // `flock` locks of two open files conflict within one process too.
     let (r, _) = f.run(true);
     assert!(matches!(r, Err(ProfileError::Verify(_))), "{r:?}");
-    assert_eq!(f.ino("nnorth"), before);
+    assert_eq!(f.ino("login-ao"), before);
 }
 
 /// The real reader against the loopback fake: one profile request per
 /// login, no usage request, no refresh, and no token in any line.
 #[test]
 fn verify_reads_the_profile_endpoint_and_prints_no_token() {
-    let f = fx(&["mmorrison", "nnorth"], None);
+    let f = fx(&["login-an", "login-ao"], None);
     private(
         &f.place("~/.claude").join(CREDS),
         &login_doc("fake-at-1886-home"),
     );
     private(
-        &f.place("nnorth").join(CREDS),
-        &login_doc("fake-at-1886-nnorth"),
+        &f.place("login-ao").join(CREDS),
+        &login_doc("fake-at-1886-login-ao"),
     );
     let fake = FakeHttp::start(|seen, _| {
         let uuid = match seen.header("authorization") {
-            Some("Bearer fake-at-1886-home") => "u-ffarmer",
-            Some("Bearer fake-at-1886-nnorth") => "u-mmorrison",
+            Some("Bearer fake-at-1886-home") => "u-login-af",
+            Some("Bearer fake-at-1886-login-ao") => "u-login-an",
             _ => return Reply::json(401, &serde_json::json!({})),
         };
         Reply::json(
             200,
-            &serde_json::json!({"account": {"uuid": uuid, "email": format!("{uuid}@mistt.com")}, "organization": {"uuid": "org-mistt"}}),
+            &serde_json::json!({"account": {"uuid": uuid, "email": format!("{uuid}@example.com")}, "organization": {"uuid": "example-org"}}),
         )
     });
     let (base, token) = (fake.base(), fake.token_url());
@@ -474,7 +478,7 @@ fn verify_reads_the_profile_endpoint_and_prints_no_token() {
     assert_eq!(s.mismatches, 1);
     assert!(
         lines.contains(
-            &"nnorth -> u-mmorrison@mistt.com: MISMATCH, recorded for mmorrison".to_string()
+            &"login-ao -> u-login-an@example.com: MISMATCH, recorded for login-an".to_string()
         ),
         "{lines:?}"
     );
@@ -505,8 +509,8 @@ mod issue_2218 {
         private(
             &f.home.join(".claude.json"),
             &serde_json::json!({"oauthAccount": {"accountUuid": uuid,
-                "emailAddress": format!("{uuid}@mistt.com"),
-                "organizationUuid": "org-mistt"}})
+                "emailAddress": format!("{uuid}@example.com"),
+                "organizationUuid": "example-org"}})
             .to_string(),
         );
     }

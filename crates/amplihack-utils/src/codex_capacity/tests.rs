@@ -745,8 +745,8 @@ fn credits_above_the_floor_give_half_a_point_only_when_there_is_no_room() {
 #[test]
 fn next_choice_is_the_row_with_the_most_window_room() {
     let rows = [
-        row("ffarmer", "/r/ffarmer", Outcome::Ok(used(&[12.0, 41.0]))),
-        row("ggrant", "/r/ggrant", Outcome::Ok(used(&[34.0]))),
+        row("login-af", "/r/login-af", Outcome::Ok(used(&[12.0, 41.0]))),
+        row("login-ag", "/r/login-ag", Outcome::Ok(used(&[34.0]))),
         row("~/.codex", "/h/.codex", Outcome::Ok(used(&[88.0, 70.0]))),
     ];
     assert_eq!(next_choice(&rows, DEFAULT_FLOOR), Some(1));
@@ -809,14 +809,14 @@ fn only_signed_in_rows_are_candidates() {
 #[test]
 fn equal_room_is_broken_by_descending_path_bytes() {
     let rows = [
-        row("ffarmer", "/r/ffarmer", Outcome::Ok(used(&[34.0]))),
-        row("ggrant", "/r/ggrant", Outcome::Ok(used(&[34.0]))),
+        row("login-af", "/r/login-af", Outcome::Ok(used(&[34.0]))),
+        row("login-ag", "/r/login-ag", Outcome::Ok(used(&[34.0]))),
         row("aaron", "/r/aaron", Outcome::Ok(used(&[34.0]))),
     ];
     assert_eq!(
         next_choice(&rows, DEFAULT_FLOOR),
         Some(1),
-        "ggrant > ffarmer"
+        "login-ag > login-af"
     );
     // Bytes, not case-folded: 'a' (0x61) sorts after 'Z' (0x5a).
     let rows = [
@@ -844,7 +844,7 @@ fn labels(accounts: &[Account]) -> Vec<&str> {
 fn accounts_are_the_root_subdirectories_in_byte_order() {
     let d = scratch();
     let root = d.path().join("profiles");
-    for n in ["ggrant", "ffarmer", "Bob", ".hidden"] {
+    for n in ["login-ag", "login-af", "Bob", ".hidden"] {
         account(&root, n);
     }
     fs::write(root.join("notes.txt"), "a file is not an account").unwrap();
@@ -855,7 +855,7 @@ fn accounts_are_the_root_subdirectories_in_byte_order() {
     fs::create_dir_all(&home).unwrap();
 
     let got = list_accounts(&root, Some(&home)).unwrap();
-    assert_eq!(labels(&got), ["Bob", "ffarmer", "ggrant", "linked"]);
+    assert_eq!(labels(&got), ["Bob", "linked", "login-af", "login-ag"]);
     for a in &got {
         assert_eq!(a.path, root.join(&a.label), "the path as built");
     }
@@ -972,7 +972,7 @@ fn listing_never_opens_a_file_inside_an_account() {
 fn reads_two_windows() {
     let d = scratch();
     let bin = answering(d.path(), &[TWO_WINDOWS]);
-    let r = ok(read(&bin, &account(d.path(), "ffarmer"), SECS_10));
+    let r = ok(read(&bin, &account(d.path(), "login-af"), SECS_10));
     assert_eq!(r.windows.len(), 2);
     assert_eq!(r.windows[0].name, WindowName::Primary);
     assert_eq!(r.windows[0].used_percent, Some(12.0));
@@ -989,7 +989,7 @@ fn reads_two_windows() {
 fn reads_a_weekly_only_account() {
     let d = scratch();
     let bin = answering(d.path(), &[WEEKLY_ONLY]);
-    let r = ok(read(&bin, &account(d.path(), "ggrant"), SECS_10));
+    let r = ok(read(&bin, &account(d.path(), "login-ag"), SECS_10));
     assert_eq!(r.windows.len(), 1);
     assert_eq!(r.windows[0].name, WindowName::Secondary);
     assert_eq!(r.windows[0].used_percent, Some(34.0));
@@ -1028,7 +1028,7 @@ printf '%s\n' '{"id":2,"result":{"rateLimits":{"secondary":{"usedPercent":34,"wi
     );
     body.push_str(LINGER);
     let bin = script(d.path(), "codex", &body);
-    let r = ok(read(&bin, &account(d.path(), "ggrant"), SECS_10));
+    let r = ok(read(&bin, &account(d.path(), "login-ag"), SECS_10));
     assert_eq!(r.windows[0].used_percent, Some(34.0));
 }
 
@@ -1392,7 +1392,7 @@ fn the_child_gets_codex_home_and_no_api_keys_and_the_parent_env_is_unchanged() {
     ));
     body.push_str(LINGER);
     let bin = script(d.path(), "codex", &body);
-    let acct = account(d.path(), "ggrant");
+    let acct = account(d.path(), "login-ag");
     ok(read(&bin, &acct, SECS_10));
 
     // NUL-separated entries: an inherited multi-line value (a recipe
@@ -1444,7 +1444,7 @@ fn no_shell_is_used_and_the_path_reaches_the_child_only_through_codex_home() {
 fn reading_never_opens_a_file_in_the_account_and_writes_nothing_there() {
     let d = scratch();
     let bin = answering(d.path(), &[TWO_WINDOWS]);
-    let acct = trapped_account(d.path(), "ffarmer");
+    let acct = trapped_account(d.path(), "login-af");
     let before: Vec<_> = fs::read_dir(&acct)
         .unwrap()
         .map(|e| e.unwrap().file_name())

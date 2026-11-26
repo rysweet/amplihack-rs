@@ -65,7 +65,7 @@ fn live(session: f64, week: f64) -> Reading {
 
 #[test]
 fn the_note_for_a_move_that_needs_more_room() {
-    let c = [m("llarame", 0.0, 95.0), m("qquinn", 88.0, 20.0)];
+    let c = [m("login-al", 0.0, 95.0), m("login-ar", 88.0, 20.0)];
     let nm = no_move(&settings(), &live(86.0, 65.0), &c, None, NOW);
     assert_eq!(
         stay_note(&nm, &settings()).as_deref(),
@@ -96,8 +96,8 @@ fn the_note_for_a_move_that_needs_more_room_at_the_deployed_settings() {
 /// rotator may move to has one either.
 #[test]
 fn the_note_never_prints_an_unmeasured_figure_as_zero() {
-    // The live probe failed: a move needs the margin, and qquinn has 2.
-    let c = [m("qquinn", 98.0, 20.0)];
+    // The live probe failed: a move needs the margin, and login-ar has 2.
+    let c = [m("login-ar", 98.0, 20.0)];
     let nm = no_move(&settings(), &Reading::Failed, &c, None, NOW);
     assert_eq!(
         nm,
@@ -126,19 +126,19 @@ fn the_note_never_prints_an_unmeasured_figure_as_zero() {
 
 #[test]
 fn the_note_for_a_move_the_hold_stops() {
-    let c = [m("qquinn", 88.0, 20.0)];
+    let c = [m("login-ar", 88.0, 20.0)];
     let nm = no_move(&settings(), &live(0.0, 95.0), &c, Some(NOW - 600), NOW);
     assert_eq!(
         stay_note(&nm, &settings()).as_deref(),
         Some(
-            "stay: held after last swap (600s of 3600s): qquinn is at s=88%, at or above --session-at"
+            "stay: held after last swap (600s of 3600s): login-ar is at s=88%, at or above --session-at"
         )
     );
 }
 
 #[test]
 fn the_held_note_counts_from_zero_and_never_goes_negative() {
-    let c = [m("qquinn", 88.0, 20.0)];
+    let c = [m("login-ar", 88.0, 20.0)];
     let nm = no_move(&settings(), &live(0.0, 95.0), &c, Some(NOW), NOW);
     let note = stay_note(&nm, &settings()).expect("held");
     assert!(note.contains("(0s of 3600s)"), "{note}");
@@ -167,7 +167,7 @@ fn no_eligible_login_is_a_summary_and_not_a_note() {
 
 #[test]
 fn a_note_is_one_line_of_plain_text() {
-    let c = [m("qquinn", 88.0, 20.0), m("llarame", 0.0, 95.0)];
+    let c = [m("login-ar", 88.0, 20.0), m("login-al", 0.0, 95.0)];
     for nm in [
         no_move(&settings(), &live(86.0, 65.0), &c, None, NOW),
         no_move(&settings(), &live(0.0, 95.0), &c[..1], Some(NOW - 1), NOW),
@@ -187,31 +187,31 @@ fn who(n: &str) -> ProfileName {
 
 #[test]
 fn each_reason_has_its_fixed_text() {
-    let l = who("llarame");
+    let l = who("login-al");
     for (why, text) in [
         (
             Why::Unfit(Unfit::Full),
-            "reject: llarame no room on a fresh reading",
+            "reject: login-al no room on a fresh reading",
         ),
         (
             Why::Unfit(Unfit::AboveCeiling),
-            "reject: llarame week above ceiling 95% on a fresh reading",
+            "reject: login-al week above ceiling 95% on a fresh reading",
         ),
         (
             Why::Unfit(Unfit::SpendLimit),
-            "reject: llarame spend limit on a fresh reading",
+            "reject: login-al spend limit on a fresh reading",
         ),
         (
             Why::Unfit(Unfit::NoReading),
-            "reject: llarame no usable reading",
+            "reject: login-al no usable reading",
         ),
         (
             Why::Unknown(ProbeLabel::Http429),
-            "reject: llarame reading unknown (HTTP 429)",
+            "reject: login-al reading unknown (HTTP 429)",
         ),
         (
             Why::Unknown(ProbeLabel::IdentityUnavailable),
-            "reject: llarame reading unknown (identity unavailable)",
+            "reject: login-al reading unknown (identity unavailable)",
         ),
     ] {
         assert_eq!(reject(&l, &why, 95), text);
@@ -234,7 +234,7 @@ fn a_reject_line_names_the_login_and_nothing_else_it_was_given() {
         ProbeLabel::StillRunning,
         ProbeLabel::ProbeError,
     ] {
-        let line = reject(&who("llarame"), &Why::Unknown(label), 95);
+        let line = reject(&who("login-al"), &Why::Unknown(label), 95);
         assert!(line.is_ascii() && !line.contains('\n'), "{line:?}");
         assert!(line.contains(label.as_str()), "{line}");
     }

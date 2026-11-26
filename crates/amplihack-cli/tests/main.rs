@@ -104,14 +104,14 @@ mod issue_1753_login_identity;
 mod issue_1753_refusal_named_once;
 #[path = "issue_1947_login_identity.rs"]
 mod issue_1947_login_identity;
-#[path = "issue_1962_candide_cause.rs"]
-mod issue_1962_candide_cause;
 #[path = "issue_1962_causes.rs"]
 mod issue_1962_causes;
 #[path = "issue_1962_dir_rule.rs"]
 mod issue_1962_dir_rule;
 #[path = "issue_1962_dry_run.rs"]
 mod issue_1962_dry_run;
+#[path = "issue_1962_host_a_cause.rs"]
+mod issue_1962_host_a_cause;
 #[path = "issue_1962_refresh_ledger.rs"]
 mod issue_1962_refresh_ledger;
 #[path = "issue_1962_seed.rs"]

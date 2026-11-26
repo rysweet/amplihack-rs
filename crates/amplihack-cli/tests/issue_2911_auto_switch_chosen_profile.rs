@@ -2,8 +2,8 @@
 //! launched on a profile *auto-switch chose*, on a host with no rotator,
 //! waits for a usage limit and carries on.
 //!
-//! On hypatia (no rotator, profiles chosen by auto-switch) the run
-//! `amp-auto-drive-to-merge-mistt-infra-20261121-213610` ended at 21:45Z
+//! On host-c (no rotator, profiles chosen by auto-switch) the run
+//! `amp-auto-drive-to-merge-repo-e-20261121-213610` ended at 21:45Z
 //! because step `step-03-resolve-pr` printed
 //!
 //! ```text
@@ -44,7 +44,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
-/// The line hypatia's step printed, byte for byte.
+/// The line host-c's step printed, byte for byte.
 const SPEND_FIVE_HOUR: &str = "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit · your 5-hour limit resets 6:30pm (America/Los_Angeles)";
 /// 2026-10-18 15:00:00 -07:00, so the stated 6:30pm is 3.5 hours ahead and
 /// inside the five-hour ceiling, as it was on the day (21:45Z, reset 18:30
@@ -87,7 +87,7 @@ fn readings(profiles: &Path, at: i64, of: &[(&str, f64)]) {
 }
 
 /// A recipe agent step that inherited profile X, with auto-switch on, the
-/// hypatia message on every profile for its first `limited` calls, and the
+/// host-c message on every profile for its first `limited` calls, and the
 /// afternoon clock.
 fn step_inheriting_x(f: &Fixture, limited: u32) -> Command {
     switch_on(f);
@@ -165,8 +165,8 @@ fn a_spend_cap_on_an_auto_switch_chosen_profile_waits_for_its_stated_reset_and_c
     f.assert_isolated("0");
 }
 
-/// The same path with the inherited profile at 100%, which is what hypatia's
-/// stderr reported (`profile "ddrumpf" is at 100% of its five-hour limit`).
+/// The same path with the inherited profile at 100%, which is what host-c's
+/// stderr reported (`profile "login-ad" is at 100% of its five-hour limit`).
 /// X is then exhausted rather than merely over the threshold, so there is no
 /// rerun to go back to it: the step waits on the first limit it meets, timed
 /// by the exhausted inherited window, and retries under X when that resets.

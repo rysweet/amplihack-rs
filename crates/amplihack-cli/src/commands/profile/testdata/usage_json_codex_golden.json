@@ -1,7 +1,7 @@
 [
   {
-    "account": "ffarmer",
-    "path": "/home/ryan/.codex-profiles/ffarmer",
+    "account": "login-af",
+    "path": "/home/you/.codex-profiles/login-af",
     "state": "ok",
     "error": null,
     "windows": [
@@ -28,8 +28,8 @@
     "next_choice": false
   },
   {
-    "account": "ggrant",
-    "path": "/home/ryan/.codex-profiles/ggrant",
+    "account": "login-ag",
+    "path": "/home/you/.codex-profiles/login-ag",
     "state": "ok",
     "error": null,
     "windows": [
@@ -50,7 +50,7 @@
   },
   {
     "account": "hhale",
-    "path": "/home/ryan/.codex-profiles/hhale",
+    "path": "/home/you/.codex-profiles/hhale",
     "state": "ok",
     "error": null,
     "windows": [],
@@ -66,7 +66,7 @@
   },
   {
     "account": "jjones",
-    "path": "/home/ryan/.codex-profiles/jjones",
+    "path": "/home/you/.codex-profiles/jjones",
     "state": "not_signed_in",
     "error": null,
     "windows": [],
@@ -79,7 +79,7 @@
   },
   {
     "account": "kkim",
-    "path": "/home/ryan/.codex-profiles/kkim",
+    "path": "/home/you/.codex-profiles/kkim",
     "state": "timeout",
     "error": "timed out after 20s",
     "windows": [],
@@ -92,7 +92,7 @@
   },
   {
     "account": "mmoss",
-    "path": "/home/ryan/.codex-profiles/mmoss",
+    "path": "/home/you/.codex-profiles/mmoss",
     "state": "error",
     "error": "codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'",
     "windows": [],
@@ -105,7 +105,7 @@
   },
   {
     "account": "~/.codex",
-    "path": "/home/ryan/.codex",
+    "path": "/home/you/.codex",
     "state": "ok",
     "error": null,
     "windows": [

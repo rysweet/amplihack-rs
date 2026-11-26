@@ -38,7 +38,7 @@ then runs `git add` or `git commit` acts on the repository they name, not on
 the one it was started in. Git sets several of them for the hooks it runs.
 
 auto-drive runs other repositories' tests in its QA and merge-readiness
-steps. In mistt-repo/Product-Management an auto-drive merge-readiness phase
+steps. In example-org/repo-a an auto-drive merge-readiness phase
 ran that repository's tests with `GIT_*` set; the tests' git commands
 committed into the real PR worktree, about 1,900 deletions on PR #742
 (#2033). amplihack-rs's own pre-push hook already stripped these variables,
@@ -319,7 +319,7 @@ the hash of every worktree file, and the list of object files.
 | Control | The suite run directly, without the tool, with all 12 git names at a throwaway repository. | The suite fails and the throwaway repository's snapshot changes. This shows the suite can detect a leak. |
 | 1. Clean | No git or run-identity variable set. | `qa_status` is `PASS`; `git_env_cleared` and `run_env_cleared` are `none`; the caller's snapshot is unchanged. |
 | 2. Decoy | All 12 git names point into the decoy; all 5 run-identity names hold `outer-…` values. | Exit status and `qa_status` equal case 1. `head_sha` is the caller's commit. The caller's and the decoy's snapshots are both unchanged. `git_env_cleared` lists all 12 names in order; `run_env_cleared` lists all 5. |
-| 3. Self | All 12 git names point at `REPO_PATH`'s own `.git`, as in the Product-Management #742 damage. | `qa_status` is `PASS` and the caller's snapshot is unchanged. |
+| 3. Self | All 12 git names point at `REPO_PATH`'s own `.git`, as in the repo-a #742 damage. | `qa_status` is `PASS` and the caller's snapshot is unchanged. |
 | 4. Commit here (extra) | A suite that commits in `REPO_PATH` itself; git names at the decoy. | The commit lands in the caller and the decoy's snapshot is unchanged. This shows where git wrote, so it is not the acceptance proof. |
 | 5. Helper missing | `git-repo-env.sh` removed from a copy of the tools directory. | Exit 1, stderr contains the exact message `ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing`, no evidence file, the caller's snapshot is unchanged. |
 | 6. Helper is a symlink | `git-repo-env.sh` replaced by a symbolic link. | The same as case 5. |
