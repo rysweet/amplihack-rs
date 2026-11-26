@@ -8,7 +8,8 @@ pub use commands::{
 };
 pub use types::{LanguageStatus, NativeScipIndexSummary, PrerequisiteResult, ScipIndexResult};
 
-pub(crate) use helpers::{language_for_path, normalize_languages};
+pub(crate) use crate::cli_memory::source_files::language_for_path;
+pub(crate) use helpers::normalize_languages;
 pub(crate) use types::LANGUAGE_ORDER;
 
 #[cfg(test)]

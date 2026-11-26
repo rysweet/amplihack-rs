@@ -1,13 +1,10 @@
 use super::project_artifact_paths;
+use super::source_files::language_for_path;
 use super::source_files::project_source_files;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
-
-const INDEXABLE_EXTENSIONS: &[&str] = &[
-    "py", "ts", "tsx", "js", "jsx", "go", "rs", "cs", "c", "cpp", "h", "hpp",
-];
 
 #[derive(Debug, Clone)]
 pub struct IndexStatus {
@@ -119,7 +116,7 @@ fn scan_source_files(project_path: &Path) -> (usize, Option<SystemTime>) {
     let mut count = 0usize;
     let mut newest_mtime: Option<SystemTime> = None;
     for path in project_source_files(project_path) {
-        if !is_indexable_file(&path) {
+        if language_for_path(&path).is_none() {
             continue;
         }
         let Ok(metadata) = fs::metadata(&path) else {
@@ -137,12 +134,6 @@ fn scan_source_files(project_path: &Path) -> (usize, Option<SystemTime>) {
         }
     }
     (count, newest_mtime)
-}
-
-fn is_indexable_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| INDEXABLE_EXTENSIONS.contains(&ext))
 }
 
 #[cfg(test)]
