@@ -1,8 +1,8 @@
 //! The pre-swap confirmation step (issue #2910, D6): for a stale target a
 //! decision chose, whether it is read again, accepted without a fresh
 //! reading, or rejected so that the decision runs again and reaches the
-//! next-ranked login. A target that is not stale needs no step: its reading
-//! stands. Pure: the freshness gate (`fresh::settle`) gathers the facts,
+//! next-ranked login. Even a fresh target is confirmed once. Pure: the
+//! freshness gate (`fresh::settle`) gathers the facts,
 //! makes any read and writes the lines.
 //!
 //! A target is swapped to only on a fresh reading (issue #3105, which
@@ -12,7 +12,8 @@
 //! a standing recorded block ([`Facts::live_blocked`]: a spend, session,
 //! week or credit limit, or the API key's block), staying on it is never
 //! better than moving, so a target with a recent reading
-//! ([`Facts::recent`]) is accepted on that reading without a fresh one. A
+//! ([`Facts::recent`]) is accepted on that reading without a fresh one,
+//! provided no stored model week reaches `--week-at` ([`Facts::model_full`]). A
 //! live login that is merely full, with no block, gets no such move: #3105
 //! pins that stay, and issue #3130 holds the decision on widening it.
 //!
@@ -66,6 +67,9 @@ pub struct Facts {
     /// (`target::standing_block`, or the API key's block). Never true for an
     /// overflow live login (E5b), and never for one that is only full.
     pub live_blocked: bool,
+    /// A model week in the target's stored reading reaches `--week-at`.
+    /// Such a target cannot use the blocked-login recovery exception.
+    pub model_full: bool,
     /// The label of the target's probe, when it was unknown.
     pub label: Option<ProbeLabel>,
     /// Issue #2820: the reading the decision used for the target has a time
@@ -80,13 +84,15 @@ impl Facts {
     /// used, without a fresh one: the live login is blocked and that reading
     /// is recent.
     fn may_take_unread(&self) -> bool {
-        self.live_blocked && self.recent
+        self.live_blocked && self.recent && !self.model_full
     }
 }
 
 /// Why the gate stopped short of a candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Limit {
+    /// The decision already used its one target confirmation probe.
+    Confirmation,
     /// The cycle's re-reads are used up.
     Count,
     /// The gate's time budget is spent.
@@ -154,6 +160,10 @@ impl Unconfirmed {
     /// The text in ` unconfirmed (<text>)` on the swap line.
     pub fn text(&self) -> String {
         match self {
+            Self::NotTried {
+                limit: Limit::Confirmation,
+                ..
+            } => "confirmation limit 1".to_string(),
             Self::Unknown(label) => label.as_str().to_string(),
             Self::NotTried {
                 limit: Limit::Count,
@@ -191,6 +201,12 @@ pub fn next(f: &Facts) -> Step {
         return stopped_short(f, Limit::Time);
     }
     Step::ReadAgain
+}
+
+/// The decision has already used its single target confirmation probe.
+/// Only blocked-login recovery can accept an alternative on recent figures.
+pub fn confirmation_spent(f: &Facts) -> Step {
+    stopped_short(f, Limit::Confirmation)
 }
 
 /// The step when the gate stops short of a read at `limit` (issue #2820):

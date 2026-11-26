@@ -14,7 +14,9 @@
 
 use super::cycle::Ctx;
 use super::decide::target::{NoMove, Unfit, fit};
-use super::decide::target_confirm::{Facts, Limit, Step, Unconfirmed, Why, after_unknown, next};
+use super::decide::target_confirm::{
+    Facts, Limit, Step, Unconfirmed, Why, after_unknown, confirmation_spent, next,
+};
 use super::decide::target_msg::{blocked, reject};
 use super::decide::target_seen::Extra;
 use super::decide::{Decision, Measured, Probed, Reading, Reason};
@@ -126,17 +128,14 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 }
 
 /// Confirms the chosen target once, including a fresh passive target, using
-/// the configured direct reader. A failed, superseded or stale confirmation
-/// cannot authorise a swap, even when the live login is blocked. A model
-/// week at or above `week_at` rejects the target. The decision then runs on
-/// the updated figures; a different target waits until a subsequent cycle
-/// for its own confirmation. Locked revalidation reuses that confirmation
-/// and never reads another target.
+/// the configured direct reader. Issue #2820 permits a recent reading when
+/// the live login has a standing block and confirmation is unavailable.
+/// A stored model week at or above `week_at` excludes that exception.
+/// Locked revalidation reuses confirmation or the blocked-login acceptance;
+/// it never reads another target.
 ///
-/// The existing probe budget and stop handling apply to the one read. The
-/// cycle has already reported invalid probe settings, so these readers stay
-/// quiet. A ledger read failure remains an error. Standing plan blocks are
-/// reported without another probe and the failed live count is unchanged.
+/// The existing budget and stop handling apply. Ledger read failures remain
+/// errors; standing blocks add no probe and the failed live count is unchanged.
 pub fn gate(
     ctx: &Ctx,
     snap: &Snap,
@@ -194,11 +193,8 @@ pub(super) fn settle_timed(
         return Ok(m);
     };
     let ledger = ctx.rs.load_ledger()?;
-    // Issue #2211: the login the last swap left is read strictly after that
-    // swap. Issue #3181: no target reading is older than the last swap or the
-    // start of the previous cycle's measurement, so `bound` is a second less.
-    // This cycle's own readings are never older: a swap made while it measured
-    // is for the revalidation under the lock.
+    // #2211/#3181: target readings must follow departure and be no older
+    // than the last swap or previous measurement. Revalidate races under lock.
     let (left, bound) = ledger.as_ref().map_or((None, None), |l| {
         let last = l
             .swapped_at
@@ -214,14 +210,9 @@ pub(super) fn settle_timed(
     let mut lines = std::mem::take(&mut m.fresh_lines);
     let mut extra = m.seen.extra.clone();
     let mut done: Vec<ProfileName> = Vec::new();
-    // Targets whose re-read logged new figures. If such a reading is still
-    // stale on the next pass, the target is made unknown with its own line,
-    // so the log does not read as if the re-read had been accepted.
-    let mut accepted: Vec<ProfileName> = Vec::new();
     let mut not_tried = BTreeSet::new();
     let (mut attempts, mut rejected_unknown, mut unconfirmed) = (0, false, None);
-    // Each name is handled at most twice: read (or made unknown), then made
-    // unknown. One more pass finds the settled decision.
+    // Bound rejections and the final pass that settles the decision.
     let max_handled = 2 * probes.len();
     let mut handled = 0;
     while let Some(to) = gated_target(&m.decision).cloned() {
@@ -236,34 +227,32 @@ pub(super) fn settle_timed(
         if extra.confirmed.contains(&to) && fresh {
             break;
         }
-        // Each decision confirms one target, even if its passive figures
-        // are fresh. A different choice after that read waits for the next
-        // cycle. Locked revalidation cannot authorise an unread target.
-        if attempts > 0 || mode == Reread::Never || ctx.reread.is_none() {
-            m.decision = Decision::Stay;
-            m.seen.why = Some(NoMove::Unconfirmed);
-            break;
-        }
         if handled >= max_handled {
             return Err(ProfileError::GateUnsettled);
         }
         handled += 1;
-        // Issue #2820: a login an earlier gate of this cycle accepted unread
-        // is accepted again while the live login is still blocked; else it
-        // counts as failed (an unknown one) or unknown with no `reject:` line.
+        // Reuse #2820 acceptance only while recovery is still eligible.
+        let model_full = reread::model_full(ctx, &to, &probes[i].1, t);
+        if (attempts > 0 || mode == Reread::Never || ctx.reread.is_none())
+            && (m.seen.live_blocked.is_none() || model_full || done.contains(&to))
+        {
+            reread::stay_unconfirmed(ctx, &mut m);
+            break;
+        }
         let known = extra.unconfirmed.get(&to).copied();
+        if let Some(why) = known
+            && m.seen.live_blocked.is_some()
+            && !model_full
+        {
+            unconfirmed = Some((to, why));
+            break;
+        }
         let known_label = known.and_then(|u| u.label());
-        // A previous failed measurement is still followed by the target's
-        // one confirmation read. It cannot permit an unconfirmed swap.
-        let failed_now = false;
+        let failed_now = known_label.is_some()
+            || (probes[i].1.reading == Reading::Failed && !probes[i].1.carried);
         let mut read = None;
         if !failed_now && (done.contains(&to) || mode == Reread::Never || ctx.reread.is_none()) {
-            // Under the lock, with no hook, or a re-read that is still not
-            // strictly later than the damping time (a clock step): unknown,
-            // with no read.
-            if accepted.contains(&to) {
-                lines.push(fresh_msg::failed(&to));
-            }
+            // No hook or locked revalidation: never make another read.
             probes[i].1 = Probed::failed();
         } else {
             if !failed_now && ctx.stopping() {
@@ -279,11 +268,17 @@ pub(super) fn settle_timed(
                 failed_now,
                 attempts,
                 can_read: !remaining.is_zero(),
-                live_blocked: false,
+                live_blocked: m.seen.live_blocked.is_some(),
+                model_full,
                 label: known_label.or_else(|| extra.labels.get(&to).copied()),
                 recent: reread::recent(at, after, t),
             };
-            match next(&facts) {
+            let step = if attempts > 0 && !failed_now {
+                confirmation_spent(&facts)
+            } else {
+                next(&facts)
+            };
+            match step {
                 // Issue #2820: no read, no line of its own, probe unchanged.
                 Step::AcceptUnconfirmed(label) => {
                     unconfirmed = Some(reread::accept(&mut extra, to, label.into()));
@@ -302,6 +297,10 @@ pub(super) fn settle_timed(
                     extra.rejected.insert(to.clone());
                     // Unknown for the rest of the cycle, as the arms below make it.
                     probes[i].1 = Probed::failed();
+                }
+                Step::NotTried(Limit::Confirmation) => {
+                    reread::stay_unconfirmed(ctx, &mut m);
+                    break;
                 }
                 Step::NotTried(Limit::Count) => {
                     lines.push(fresh_msg::limit(&to));
@@ -362,7 +361,6 @@ pub(super) fn settle_timed(
                         p = Probed::failed();
                     } else {
                         extra.confirmed.insert(to.clone());
-                        accepted.push(to.clone());
                         read = Some(p.clone());
                     }
                     probes[i].1 = p;

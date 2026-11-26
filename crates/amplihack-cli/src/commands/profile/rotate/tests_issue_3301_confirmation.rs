@@ -145,30 +145,43 @@ fn issue_3301_reconsideration_waits_for_another_cycle_to_confirm_an_alternative(
 }
 
 #[test]
-fn issue_3301_unsuccessful_confirmation_cannot_move_off_a_blocked_login() {
-    let f = fleet(&["top", "alternative"], &[]);
-    f.block("work", "session", clock() + 3600);
-    SCENE.with(|s| {
-        *s.borrow_mut() = Scene {
-            mode: ProbeMode::Text,
-            model: None,
-            stored_model: false,
-            calls: Vec::new(),
+fn issue_3301_blocked_login_recovery_requires_no_exhausted_stored_model_week() {
+    for stored_model in [true, false] {
+        let f = fleet(&["top"], &[]);
+        f.block("work", "week", clock() + 3600);
+        SCENE.with(|s| {
+            *s.borrow_mut() = Scene {
+                mode: ProbeMode::Text,
+                model: None,
+                stored_model,
+                calls: Vec::new(),
+            }
+        });
+        let out = run_full(
+            &f,
+            reporter(),
+            exh(100.0, 20.0),
+            &[],
+            &[],
+            Mode::Watch,
+            Some(confirm),
+            measure_passive,
+        );
+        assert_eq!(out == CycleOutcome::Swapped, !stored_model, "{}", f.log());
+        assert_eq!(f.live_is("top"), !stored_model);
+        assert_eq!(f.live_is("work"), stored_model);
+        SCENE.with(|s| {
+            let expected = if stored_model {
+                vec![]
+            } else {
+                vec![name("top")]
+            };
+            assert_eq!(s.borrow().calls, expected);
+        });
+        if !stored_model {
+            assert!(f.log().contains("unconfirmed (probe error)"), "{}", f.log());
         }
-    });
-    let out = run_full(
-        &f,
-        reporter(),
-        exh(100.0, 20.0),
-        &[],
-        &[],
-        Mode::Watch,
-        Some(confirm),
-        measure_passive,
-    );
-    assert_ne!(out, CycleOutcome::Swapped);
-    assert!(f.live_is("work"));
-    SCENE.with(|s| assert_eq!(s.borrow().calls, [name("top")]));
+    }
 }
 
 #[test]
@@ -195,4 +208,43 @@ fn issue_3301_stored_exhausted_model_is_never_selected_from_passive_usage() {
     assert_ne!(out, CycleOutcome::Swapped);
     assert!(f.live_is("work"));
     SCENE.with(|s| assert!(s.borrow().calls.is_empty()));
+}
+
+/// A model observation can be recorded after selection took its passive
+/// snapshot. A failed confirmation must still respect that retained limit.
+#[test]
+fn issue_3301_failed_confirmation_respects_a_model_limit_recorded_after_selection() {
+    fn observe_model_after_selection(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+        let m = measure_passive(ctx, snap)?;
+        for who in &snap.candidates {
+            let reader = measure::reader(ctx, env(ProbeMode::Text), 1, clock());
+            reader.profile_with(who, false, |mode| {
+                Probe::read(report(mode, clock(), true), Source::Fallback)
+            });
+        }
+        Ok(m)
+    }
+    let f = fleet(&["top"], &[]);
+    f.block("work", "week", clock() + 3600);
+    SCENE.with(|s| {
+        *s.borrow_mut() = Scene {
+            mode: ProbeMode::Text,
+            model: None,
+            stored_model: false,
+            calls: Vec::new(),
+        }
+    });
+    let out = run_full(
+        &f,
+        reporter(),
+        exh(100.0, 20.0),
+        &[],
+        &[],
+        Mode::Watch,
+        Some(confirm),
+        observe_model_after_selection,
+    );
+    assert_ne!(out, CycleOutcome::Swapped, "{}", f.log());
+    assert!(f.live_is("work"));
+    SCENE.with(|s| assert_eq!(s.borrow().calls, [name("top")]));
 }

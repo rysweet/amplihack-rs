@@ -174,3 +174,29 @@ pub(super) fn accept(
     extra.unconfirmed.insert(to.clone(), why);
     (to, why)
 }
+
+/// A retained model limit cannot be bypassed by #2820 recovery. A failed
+/// measurement loses its windows, so also consult the account's usage store.
+/// Model observations retain their own reset and age independently of session reads.
+pub(super) fn model_full(ctx: &Ctx, to: &ProfileName, p: &Probed, now: i64) -> bool {
+    let threshold = f64::from(ctx.settings.week_at);
+    p.windows
+        .week_models
+        .iter()
+        .any(|w| w.used_percentage >= threshold)
+        || crate::commands::profile::auto_switch::fresh_reading(
+            ctx.store.root(),
+            to.as_str(),
+            i64::MAX,
+            now,
+        )
+        .is_some_and(|r| r.week_models.iter().any(|m| m.used_percentage >= threshold))
+}
+
+/// A target without confirmation leaves the existing stay explanation visible.
+pub(super) fn stay_unconfirmed(ctx: &Ctx, m: &mut super::super::observe::Measurement) {
+    use super::super::decide::{Decision, target::NoMove, target_msg};
+    m.decision = Decision::Stay;
+    m.seen.why = Some(NoMove::Unconfirmed);
+    m.note = target_msg::stay_note(&NoMove::Unconfirmed, &ctx.settings);
+}

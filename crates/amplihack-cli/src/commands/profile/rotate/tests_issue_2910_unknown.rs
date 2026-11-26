@@ -28,9 +28,9 @@
 //!
 //! ```text
 //! struct Facts { failed_now: bool, attempts: usize, can_read: bool,
-//!                live_blocked: bool, label: Option<ProbeLabel>,
+//!                live_blocked: bool, model_full: bool, label: Option<ProbeLabel>,
 //!                recent: bool }
-//! enum Limit { Count, Time }
+//! enum Limit { Confirmation, Count, Time }
 //! enum Why { Unknown(ProbeLabel), Unfit(Unfit), Older(u64) }
 //! enum Step { AcceptUnconfirmed(ProbeLabel), AcceptStale(Limit),
 //!             ReadAgain, Reject(Why), NotTried(Limit) }
@@ -68,6 +68,7 @@ fn facts() -> Facts {
         attempts: 0,
         can_read: true,
         live_blocked: false,
+        model_full: false,
         label: None,
         recent: false,
     }
@@ -170,6 +171,7 @@ fn at_the_cap_a_failed_target_is_not_tried_and_never_accepted() {
                     attempts,
                     can_read,
                     live_blocked: false,
+                    model_full: false,
                     label,
                     recent: false,
                 };
@@ -873,4 +875,51 @@ fn a2_an_empty_extra_changes_nothing() {
     );
     assert_eq!(out, CycleOutcome::Swapped, "{}", f.log());
     assert!(f.live_is("top"));
+}
+
+#[test]
+fn issue_3301_stored_full_model_excludes_every_blocked_login_recovery_path() {
+    use super::confirmation_spent;
+    let f = Facts {
+        failed_now: true,
+        live_blocked: true,
+        model_full: true,
+        recent: true,
+        label: Some(Http429),
+        ..facts()
+    };
+    assert_eq!(next(&f), Step::Reject(Why::Unknown(Http429)));
+    assert_eq!(
+        after_unknown(Http429, &f),
+        Step::Reject(Why::Unknown(Http429))
+    );
+    assert_eq!(confirmation_spent(&f), Step::NotTried(Limit::Confirmation));
+    for limited in [
+        Facts {
+            can_read: false,
+            failed_now: false,
+            ..f
+        },
+        Facts {
+            attempts: MAX_REREADS_PER_CYCLE,
+            ..f
+        },
+    ] {
+        assert!(!matches!(
+            next(&limited),
+            Step::AcceptStale(_) | Step::AcceptUnconfirmed(_)
+        ));
+    }
+    let usable = Facts {
+        model_full: false,
+        ..f
+    };
+    assert_eq!(
+        after_unknown(Http429, &usable),
+        Step::AcceptUnconfirmed(Http429)
+    );
+    assert_eq!(
+        confirmation_spent(&usable),
+        Step::AcceptStale(Limit::Confirmation)
+    );
 }

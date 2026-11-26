@@ -390,11 +390,18 @@ fn record_limit(state: &State, account: &str, reset: i64) {
     };
     let mut file = state.load_usage_or_warn();
     let now = fsx::now();
-    let seven_day = file.accounts.get(account).and_then(|r| r.seven_day);
+    let previous = file.accounts.get(account);
+    let seven_day = previous.and_then(|r| r.seven_day);
+    let week_models = previous
+        .into_iter()
+        .flat_map(|r| &r.week_models)
+        .filter(|m| m.resets_at.is_some_and(|reset| reset > now))
+        .cloned()
+        .collect();
     file.accounts.insert(
         account.to_string(),
         Reading {
-            week_models: Vec::new(),
+            week_models,
             five_hour: Some(Window {
                 used_percentage: 100.0,
                 resets_at: reset,
@@ -1196,3 +1203,7 @@ fn next_profile(
 #[cfg(test)]
 #[path = "tests_rerun_block.rs"]
 mod tests_block;
+
+#[cfg(test)]
+#[path = "tests_rerun_model_weeks.rs"]
+mod tests_model_weeks;
