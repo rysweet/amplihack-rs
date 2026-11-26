@@ -99,7 +99,7 @@ your laptop to attach.
 
 ## Security Note
 
-Unlike the `remote-work` skill, this migration **intentionally** copies
+Unlike the `remote` command, this migration **intentionally** copies
 credentials (`~/.ssh`, `~/.config/gh/hosts.yml`) to the destination. The
 skill prints a warning before transfer. Only use with trusted destinations.
 
@@ -123,4 +123,4 @@ destination (source is authoritative until resume), and re-extracts
 
 - Full documentation: [docs/skills/migrate.md](../../../docs/skills/migrate.md)
 - `azlin` skill — destination provisioning and transport
-- `remote-work` skill — related but does not copy credentials
+- `remote` command — related but does not copy credentials

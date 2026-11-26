@@ -1,7 +1,7 @@
 //! Binary resolution and deployment for amplihack-hooks.
 
 use super::InstallMode;
-use super::paths::{find_binary, home_dir, is_executable};
+use super::paths::{find_binary, find_binary_in, home_dir, is_executable};
 use super::release_layout::{self, ReleaseTxn};
 use super::version_stamp::{VersionRelation, relation};
 use anyhow::{Context, Result, bail};
@@ -191,13 +191,22 @@ pub(super) fn deploy_binaries(
 /// A source that no longer exists (an update replaced it under a running
 /// process, #524) with `dst` present leaves `dst` as it is.
 pub(super) fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Result<bool> {
-    if let Err(e) = src.metadata()
+    #[cfg(any(test, feature = "test-support"))]
+    let source_metadata = src.symlink_metadata();
+    #[cfg(not(any(test, feature = "test-support")))]
+    let source_metadata = src.metadata();
+    if let Err(e) = source_metadata
         && e.kind() == std::io::ErrorKind::NotFound
     {
         if dst.is_file() {
             return Ok(false);
         }
         return Err(e).with_context(|| format!("source binary not found: {}", src.display()));
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        // Small files must meet the executable contract before copy-and-chmod.
+        super::test_support::artifacts::validate_executable(src)?;
     }
     let name = dst
         .file_name()
@@ -206,6 +215,16 @@ pub(super) fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Resu
     fs::create_dir_all(&bin_dir)
         .with_context(|| format!("failed to create {}", bin_dir.display()))?;
     let staged = bin_dir.join(name);
+    #[cfg(any(test, feature = "test-support"))]
+    if src.metadata()?.len() > super::test_support::artifacts::LINK_THRESHOLD {
+        use super::test_support::artifacts::{ArtifactRegistry, FilesystemLinks};
+        let mut artifacts = ArtifactRegistry::new();
+        artifacts.register(src)?;
+        artifacts.link_with(src, &staged, &bin_dir, &FilesystemLinks)?;
+        txn.linked_test_binaries.push(staged.clone());
+        txn.plan_link(dst, &staged)?;
+        return Ok(true);
+    }
     fs::copy(src, &staged)
         .with_context(|| format!("failed to copy {} to {}", src.display(), staged.display()))?;
     #[cfg(unix)]
@@ -294,15 +313,26 @@ pub(super) fn deploy_binaries_into(
         let resolver_dst = local_bin.join(RESOLVER_BIN);
         let path_lookup_allowed =
             mode == InstallMode::Explicit || resolver_dst.symlink_metadata().is_err();
-        let resolver_src = self_src
-            .parent()
-            .map(|dir| dir.join(RESOLVER_BIN))
-            .filter(|candidate| is_executable(candidate))
-            .or_else(|| {
-                path_lookup_allowed
-                    .then(|| find_binary(RESOLVER_BIN))
-                    .flatten()
-            });
+        // Issue #2182: test builds stage a private inert stub in place of the
+        // host's resolver (about 590 MB). The production discovery below is
+        // the same function in every build, and
+        // `tests::issue_2182_binary_isolation::production_resolver_discovery`
+        // calls it directly.
+        // Known limit: a test build cannot select a real resolver here, so no
+        // install test through the library or the test-support binary stages
+        // one. `AMPLIHACK_TEST_BINARY` reaches production discovery but copies.
+        // Issue #3342 tracks a test-build way to link a chosen real resolver.
+        #[cfg(any(test, feature = "test-support"))]
+        let resolver_src = {
+            let _ = path_lookup_allowed;
+            Some(super::test_support::resolver_stub()?)
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let resolver_src = discover_resolver(
+            &self_src,
+            path_lookup_allowed,
+            std::env::var_os("PATH").as_deref(),
+        );
         if let Some(resolver_src) = resolver_src {
             if !may_deploy(mode, stamp, &resolver_src, &resolver_dst) {
                 kept.push(resolver_dst);
@@ -340,6 +370,27 @@ pub(super) fn deploy_binaries_into(
     }
 
     Ok((deployed, kept))
+}
+
+/// Where a production install finds `amplihack-asset-resolver`: beside
+/// `self_src` when it is executable there, otherwise, when
+/// `path_lookup_allowed`, the first executable one on `path`. Compiled in
+/// every build. Test builds stage a stub instead (issue #2182), so their unit
+/// tests call this function directly to cover the production path.
+#[cfg_attr(all(feature = "test-support", not(test)), allow(dead_code))]
+pub(super) fn discover_resolver(
+    self_src: &Path,
+    path_lookup_allowed: bool,
+    path: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    self_src
+        .parent()
+        .map(|dir| dir.join(RESOLVER_BIN))
+        .filter(|candidate| is_executable(candidate))
+        .or_else(|| {
+            path.filter(|_| path_lookup_allowed)
+                .and_then(|path| find_binary_in(RESOLVER_BIN, path))
+        })
 }
 
 /// Prints the PATH conflict advisory for the installed `amplihack`.

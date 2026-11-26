@@ -95,6 +95,7 @@ fn pick_from(
     }
     let at = super::fsx::now();
     let reading = |used| Reading {
+        week_models: Vec::new(),
         five_hour: Some(Window {
             used_percentage: used,
             resets_at: at + 86400,

@@ -14,7 +14,9 @@
 
 use super::cycle::Ctx;
 use super::decide::target::{NoMove, Unfit, fit};
-use super::decide::target_confirm::{Facts, Limit, Step, Unconfirmed, Why, after_unknown, next};
+use super::decide::target_confirm::{
+    Facts, Limit, Step, Unconfirmed, Why, confirmation_spent, next,
+};
 use super::decide::target_msg::{blocked, reject};
 use super::decide::target_seen::Extra;
 use super::decide::{Decision, Measured, Probed, Reading, Reason};
@@ -125,39 +127,23 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
     }
 }
 
-/// Applies the gate to `m`, decided on `snap`. While the chosen target is
-/// stale, `target_confirm::next` says what to do (issue #2910, D6): read it
-/// again (with [`Reread::Allowed`] and a hook) and decide again on the new
-/// figures; otherwise reject it with a `reject:` line and decide again, which
-/// reaches the next-ranked login. A read that fails, comes back unknown or is
-/// older than one already held rejects the target too (issue #3105), unless
-/// the live login has a standing block and the target's reading is recent
-/// (issue #2820, `target_confirm`). When the decision looked for a target,
-/// the gate then writes one `reject:` line for each plan login with a
-/// standing block; that makes no read.
-/// Each name is read at most once, at most [`MAX_REREADS_PER_CYCLE`] reads and
-/// read-less rejections are made, and the loop is capped at `2n + 1` passes
-/// for `n` probes; a decision that still names a stale target at the cap is
-/// an error ([`ProfileError::GateUnsettled`]), so no swap is made. The failed
-/// live probe count is unchanged. A ledger that cannot be read is an error,
-/// never an empty damping map. A stop request seen before a re-read ends the
-/// loop with no read and [`Decision::Stay`], so nothing is swapped.
+/// Confirms the chosen target once, including a fresh passive target, using
+/// the configured direct reader. Issue #2820 permits a recent reading when
+/// the live login has a standing block and confirmation is unavailable.
+/// A stored model week at or above `week_at`, or no known per-model week
+/// (issue #3347), excludes that exception.
+/// Locked revalidation reuses confirmation or the blocked-login acceptance;
+/// it never reads another target.
 ///
-/// All re-reads of one gate share one time limit: a single probe deadline
-/// ([`measure::timeout_quiet`], 120 s by default). Each read gets only what is
-/// left of it, and once it is spent the target is unknown with no read, so
-/// a slow usage endpoint delays a swap by at most one probe deadline in
-/// total, however many re-reads the cycle makes.
-///
-/// The gate resolves the probe variables with the quiet readers: every gate
-/// follows the cycle's own measurement, which has already warned once about
-/// a bad `AMPLIHACK_PROFILE_USAGE_PROBE` or `..._TIMEOUT_SECS`.
+/// The existing budget and stop handling apply. Ledger read failures remain
+/// errors; standing blocks add no probe and the failed live count is unchanged.
 pub fn gate(
     ctx: &Ctx,
     snap: &Snap,
     m: Measurement,
     mode: Reread,
 ) -> Result<Measurement, ProfileError> {
+    let decision = m.decision.clone();
     let mut m = settle(
         ctx,
         m,
@@ -165,7 +151,7 @@ pub fn gate(
         measure::timeout_quiet(),
         |live, probes, extra, at| decide_with(ctx, snap, live, probes, at, extra),
     )?;
-    m.fresh_lines.extend(blocked(&m.seen, &m.decision));
+    m.fresh_lines.extend(blocked(&m.seen, &decision));
     Ok(m)
 }
 
@@ -208,11 +194,8 @@ pub(super) fn settle_timed(
         return Ok(m);
     };
     let ledger = ctx.rs.load_ledger()?;
-    // Issue #2211: the login the last swap left is read strictly after that
-    // swap. Issue #3181: no target reading is older than the last swap or the
-    // start of the previous cycle's measurement, so `bound` is a second less.
-    // This cycle's own readings are never older: a swap made while it measured
-    // is for the revalidation under the lock.
+    // #2211/#3181: target readings must follow departure and be no older
+    // than the last swap or previous measurement. Revalidate races under lock.
     let (left, bound) = ledger.as_ref().map_or((None, None), |l| {
         let last = l
             .swapped_at
@@ -228,14 +211,9 @@ pub(super) fn settle_timed(
     let mut lines = std::mem::take(&mut m.fresh_lines);
     let mut extra = m.seen.extra.clone();
     let mut done: Vec<ProfileName> = Vec::new();
-    // Targets whose re-read logged new figures. If such a reading is still
-    // stale on the next pass, the target is made unknown with its own line,
-    // so the log does not read as if the re-read had been accepted.
-    let mut accepted: Vec<ProfileName> = Vec::new();
     let mut not_tried = BTreeSet::new();
     let (mut attempts, mut rejected_unknown, mut unconfirmed) = (0, false, None);
-    // Each name is handled at most twice: read (or made unknown), then made
-    // unknown. One more pass finds the settled decision.
+    // Bound rejections and the final pass that settles the decision.
     let max_handled = 2 * probes.len();
     let mut handled = 0;
     while let Some(to) = gated_target(&m.decision).cloned() {
@@ -246,19 +224,26 @@ pub(super) fn settle_timed(
         let damped_at = damped.get(to.as_str()).copied();
         let after = damped_at.max(left_at).max(bound);
         let t = (ctx.now)();
-        if !stale(read_at(&probes[i].1, m.measured_at), live_at, after, t) {
+        let fresh = !stale(read_at(&probes[i].1, m.measured_at), live_at, after, t);
+        if extra.confirmed.contains(&to) && fresh {
             break;
         }
         if handled >= max_handled {
             return Err(ProfileError::GateUnsettled);
         }
         handled += 1;
-        // Issue #2820: a login an earlier gate of this cycle accepted unread
-        // is accepted again while the live login is still blocked; else it
-        // counts as failed (an unknown one) or unknown with no `reject:` line.
+        // Reuse #2820 acceptance only while recovery is still eligible.
+        let weeks = reread::model_weeks(ctx, &to, &probes[i].1, t);
+        if (attempts > 0 || mode == Reread::Never || ctx.reread.is_none())
+            && (m.seen.live_blocked.is_none() || !weeks.allow_unread() || done.contains(&to))
+        {
+            reread::stay_unconfirmed(ctx, &mut m);
+            break;
+        }
         let known = extra.unconfirmed.get(&to).copied();
         if let Some(why) = known
             && m.seen.live_blocked.is_some()
+            && weeks.allow_unread()
         {
             unconfirmed = Some((to, why));
             break;
@@ -268,12 +253,7 @@ pub(super) fn settle_timed(
             || (probes[i].1.reading == Reading::Failed && !probes[i].1.carried);
         let mut read = None;
         if !failed_now && (done.contains(&to) || mode == Reread::Never || ctx.reread.is_none()) {
-            // Under the lock, with no hook, or a re-read that is still not
-            // strictly later than the damping time (a clock step): unknown,
-            // with no read.
-            if accepted.contains(&to) {
-                lines.push(fresh_msg::failed(&to));
-            }
+            // No hook or locked revalidation: never make another read.
             probes[i].1 = Probed::failed();
         } else {
             if !failed_now && ctx.stopping() {
@@ -290,10 +270,17 @@ pub(super) fn settle_timed(
                 attempts,
                 can_read: !remaining.is_zero(),
                 live_blocked: m.seen.live_blocked.is_some(),
+                model_full: weeks.full,
+                model_known: weeks.known,
                 label: known_label.or_else(|| extra.labels.get(&to).copied()),
                 recent: reread::recent(at, after, t),
             };
-            match next(&facts) {
+            let step = if attempts > 0 && !failed_now {
+                confirmation_spent(&facts)
+            } else {
+                next(&facts)
+            };
+            match step {
                 // Issue #2820: no read, no line of its own, probe unchanged.
                 Step::AcceptUnconfirmed(label) => {
                     unconfirmed = Some(reread::accept(&mut extra, to, label.into()));
@@ -312,6 +299,10 @@ pub(super) fn settle_timed(
                     extra.rejected.insert(to.clone());
                     // Unknown for the rest of the cycle, as the arms below make it.
                     probes[i].1 = Probed::failed();
+                }
+                Step::NotTried(Limit::Confirmation) => {
+                    reread::stay_unconfirmed(ctx, &mut m);
+                    break;
                 }
                 Step::NotTried(Limit::Count) => {
                     lines.push(fresh_msg::limit(&to));
@@ -344,11 +335,17 @@ pub(super) fn settle_timed(
                     // one held, is never swapped on; one with no label failed
                     // for a reason about the login (S2). #2820: see `after_unknown`.
                     let older = p.observed_at.and_then(|at| extra.older_by(&to, at));
-                    if p == Probed::failed() || older.is_some() {
+                    let model_full = reread::probe_full(ctx, &p);
+                    let fresh = !stale(read_at(&p, m.measured_at), live_at, after, (ctx.now)());
+                    if model_full {
+                        lines.push(reject(&to, &Why::ModelWeek(ctx.settings.week_at), week_max));
+                        extra.rejected.insert(to.clone());
+                    } else if p == Probed::failed() || older.is_some() || !fresh {
                         let why = match (older, label) {
                             (Some(n), _) => Why::Older(n),
                             (None, Some(l)) => {
-                                if let Step::AcceptUnconfirmed(l) = after_unknown(l, &facts) {
+                                let step = reread::after_unknown(ctx, &to, &p, l, facts);
+                                if let Step::AcceptUnconfirmed(l) = step {
                                     unconfirmed = Some(reread::accept(&mut extra, to, l.into()));
                                     break;
                                 }
@@ -362,7 +359,7 @@ pub(super) fn settle_timed(
                         extra.rejected.insert(to.clone());
                         p = Probed::failed();
                     } else {
-                        accepted.push(to.clone());
+                        extra.confirmed.insert(to.clone());
                         read = Some(p.clone());
                     }
                     probes[i].1 = p;

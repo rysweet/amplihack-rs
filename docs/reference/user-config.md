@@ -28,6 +28,7 @@ files.
   - [sessions.daily_archive](#sessionsdaily_archive)
   - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
   - [policy.deny_commands](#policydeny_commands)
+  - [text.routing and text.prompt_preferences](#textrouting-and-textprompt_preferences)
 - [The config command](#the-config-command)
   - [config get](#config-get)
   - [config set](#config-set)
@@ -85,6 +86,8 @@ governor.max_reading_age_secs = 3600  # default
 sessions.daily_archive = true  # default
 sessions.archive_days = 3  # default
 sessions.archive_dest = (unset)  # default
+text.routing = "on"  # default
+text.prompt_preferences = "on"  # default
 ```
 
 `amplihack agent-binary` now answers `claude (user_config)`, even inside a tmux
@@ -161,36 +164,38 @@ command, so it never prints `flag`.
 
 | Key | Type | Default | Env var | Flag | Files |
 |-----|------|---------|---------|------|-------|
-| `agent.binary` | `claude`, `copilot`, `codex` or `amplifier` | (unset) | `AMPLIHACK_AGENT_BINARY` | — | user only |
-| `paths.home` | absolute path to an existing directory | (unset) | `AMPLIHACK_HOME` | — | user only |
-| `lists.set` | `default` or `all` | `default` | — | — | user only |
-| `lists.enabled` | array of qualified skill and agent identities | `[]` | — | — | user only |
-| `node.heap_consent` | bool | (unset) | — | — | user only |
-| `node.max_old_space_mb` | integer, 8192 to 32768 | (unset) | — | — | user only |
-| `recipe.verbose` | bool | `false` | — | `--verbose` | user, project |
+| `agent.binary` | `claude`, `copilot`, `codex` or `amplifier` | (unset) | `AMPLIHACK_AGENT_BINARY` | none | user only |
+| `paths.home` | absolute path to an existing directory | (unset) | `AMPLIHACK_HOME` | none | user only |
+| `lists.set` | `default` or `all` | `default` | none | none | user only |
+| `lists.enabled` | array of qualified skill and agent identities | `[]` | none | none | user only |
+| `node.heap_consent` | bool | (unset) | none | none | user only |
+| `node.max_old_space_mb` | integer, 8192 to 32768 | (unset) | none | none | user only |
+| `recipe.verbose` | bool | `false` | none | `--verbose` | user, project |
 | `recipe.step_timeout` | integer seconds, at least 1 | (unset) | `AMPLIHACK_STEP_TIMEOUT` | `--step-timeout` | user, project (lower only) |
-| `recipe.detach` | `tmux` or `none` | `none` | — | `--detach`, `--no-detach` | user, project |
-| `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
-| `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
-| `recipe.usage_limit_wait` | bool | `true` | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
-| `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | — | — | user only |
-| `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
-| `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | — | user only |
-| `model.tier_map` | absolute path | (unset: `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`) | — | — | user only |
-| `review.combined_small_diff` | bool | `false` | — | — | user only |
-| `review.combined_diff_threshold` | integer lines, 1 to 100000 | `200` | — | — | user only |
-| `governor.enabled` | bool | `false` | — | — | user only |
-| `governor.max_concurrency` | integer, 1 to 64 | `4` | — | — | user only |
-| `governor.reserve_points` | integer, 0 to 100 | `10` | — | — | user only |
-| `governor.step` | integer, 1 to 8 | `1` | — | — | user only |
-| `governor.band_pct` | integer, 0 to 50 | `10` | — | — | user only |
-| `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | — | — | user only |
-| `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | — | — | user only |
-| `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | — | — | user only |
+| `recipe.detach` | `tmux` or `none` | `none` | none | `--detach`, `--no-detach` | user, project |
+| `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | none | none | user, project |
+| `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | none | none | user only |
+| `recipe.usage_limit_wait` | bool | `true` | `AMPLIHACK_USAGE_LIMIT_WAIT` | none | user, project |
+| `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | none | none | user only |
+| `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | none | user, project (lower only) |
+| `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | none | user only |
+| `model.tier_map` | absolute path | (unset: `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`) | none | none | user only |
+| `review.combined_small_diff` | bool | `false` | none | none | user only |
+| `review.combined_diff_threshold` | integer lines, 1 to 100000 | `200` | none | none | user only |
+| `governor.enabled` | bool | `false` | none | none | user only |
+| `governor.max_concurrency` | integer, 1 to 64 | `4` | none | none | user only |
+| `governor.reserve_points` | integer, 0 to 100 | `10` | none | none | user only |
+| `governor.step` | integer, 1 to 8 | `1` | none | none | user only |
+| `governor.band_pct` | integer, 0 to 50 | `10` | none | none | user only |
+| `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | none | none | user only |
+| `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | none | none | user only |
+| `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | none | none | user only |
 | `agent.standing` | bool | `false` | none | `--standing`, `--no-standing` | user only |
-| `sessions.daily_archive` | bool | `true` | — | — | user only |
-| `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
-| `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
+| `sessions.daily_archive` | bool | `true` | none | none | user only |
+| `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | none | `--days` | user only |
+| `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | none | `--dest` | user only |
+| `text.routing` | `on` or `off` | `on` | `AMPLIHACK_ROUTING_TEXT` | none | user, project |
+| `text.prompt_preferences` | `on` or `off` | `on` | `AMPLIHACK_PROMPT_PREFERENCES` | none | user, project |
 
 Any other key is an error for `config set` and a diagnostic when found in a
 file. A user-only key in a project file is reported and ignored.
@@ -714,6 +719,38 @@ CLI pick a change up on the next launch; a Codex rules file is refreshed on
 the next `amplihack codex`. Run `amplihack update` after changing it to
 write every harness at once, and to reach the managed profiles, which only
 an install refreshes.
+
+### text.routing and text.prompt_preferences
+
+Two switches for text that amplihack inserts into a session. Both take `on`
+or `off`, default to `on`, and may be set in the user file or a project
+file. With nothing set, a session receives the same text as before these
+keys existed.
+
+- `text.routing = "off"` leaves out the routing reminder on prompt events,
+  the session-start section that sends development and investigation work
+  to the orchestrator, and the router lines of the launch contract. The
+  contract keeps its rules on waiting and on stopping processes. The text
+  that tells a nested recipe session not to start a workflow stays.
+- `text.prompt_preferences = "off"` leaves out the preferences table and the
+  learned-patterns line that the prompt-event hook adds. The preferences
+  inserted at session start stay. A recipe step never receives this table
+  on a prompt event, whatever the key says.
+
+`AMPLIHACK_ROUTING_TEXT` and `AMPLIHACK_PROMPT_PREFERENCES` set the same
+values for one launch. The hook program reads these keys with the same code
+as `amplihack config get`, so the two report the same value. A value that is
+neither `on` nor `off`, in the variable or in a file, leaves `on` in force:
+the hook reports it once on stderr, and `config get` prints `on`. The layers
+below an unknown value are not consulted.
+
+```sh
+amplihack config set text.prompt_preferences off
+AMPLIHACK_ROUTING_TEXT=off amplihack claude
+```
+
+The how-to is
+[Switch off the routing text and the repeated preferences table](../howto/switch-off-routing-and-preferences-text.md).
 
 ## The config command
 

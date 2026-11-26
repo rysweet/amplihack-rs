@@ -55,6 +55,7 @@ pub(super) struct Isolated {
     _run: EnvVarGuard,
     _step: EnvVarGuard,
     _depth: EnvVarGuard,
+    _routing: EnvVarGuard,
     pub(super) dir: tempfile::TempDir,
     _lock: MutexGuard<'static, ()>,
 }
@@ -74,6 +75,7 @@ impl Isolated {
             None => EnvVarGuard::unset(RECIPE_RUN_ID_ENV),
         };
         Self {
+            _routing: EnvVarGuard::unset(amplihack_utils::user_config::text_switch::ROUTING.env),
             _depth: EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH"),
             _step: EnvVarGuard::unset(STEP_ID_ENV),
             _run: run,

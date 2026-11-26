@@ -35,6 +35,7 @@ fn entry(name: &str, dir: &Path, caller: &str, text: &str) -> Entry {
         timestamp: "2026-11-23T18:40:02.000000000Z".to_string(),
         caller: caller.to_string(),
         text: text.to_string(),
+        also_in: Vec::new(),
     }
 }
 
@@ -120,7 +121,7 @@ fn json_lists_metadata_marks_new_entries_and_never_holds_text() {
         entry(FIRST, &run, "alice", "hold the merge ZQTEXT1"),
         entry(SECOND, &run, "alice run=abc-1", "a step note ZQTEXT2"),
     ];
-    let line = serde_json::to_string(&show_json(&list, &entries, FIRST)).unwrap();
+    let line = serde_json::to_string(&show_json(&list, &[], &entries, FIRST)).unwrap();
     assert!(!line.contains("ZQTEXT"), "no guidance text: {line}");
     assert!(!line.contains("\"text\""), "no text key: {line}");
     let v: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -147,16 +148,19 @@ fn json_lists_metadata_marks_new_entries_and_never_holds_text() {
     assert_eq!(e[0]["folder"], run.to_str().unwrap());
     assert_eq!(e[1]["new"], true);
     assert_eq!(e[1]["from_step"], true);
+    // Issue #3162 adds `read` to schema 1; no other key is added.
+    assert_eq!(e[0]["read"], false, "no guidance.log names it");
     let keys: Vec<&String> = e[0].as_object().unwrap().keys().collect();
-    assert_eq!(keys.len(), 8, "{keys:?}");
+    assert_eq!(keys.len(), 9, "{keys:?}");
+    assert_eq!(v["drops"], serde_json::json!([]));
 }
 
 #[test]
 fn json_with_no_entries_and_no_folders_is_still_one_valid_document() {
-    let line = serde_json::to_string(&show_json(&[], &[], "")).unwrap();
+    let line = serde_json::to_string(&show_json(&[], &[], &[], "")).unwrap();
     assert_eq!(
         line,
-        r#"{"schema_version":1,"since":"","newest":"","folders":[],"entries":[]}"#
+        r#"{"schema_version":1,"since":"","newest":"","folders":[],"entries":[],"drops":[]}"#
     );
 }
 
@@ -167,7 +171,7 @@ fn a_path_with_a_terminal_sequence_is_escaped_and_the_json_stays_valid() {
         path: dir,
         check: DirCheck::Missing,
     }];
-    let line = serde_json::to_string(&show_json(&list, &[], "")).unwrap();
+    let line = serde_json::to_string(&show_json(&list, &[], &[], "")).unwrap();
     assert_eq!(sanitize_line(&line), line, "nothing left to escape");
     let v: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(
@@ -244,4 +248,271 @@ fn listed_folders_keep_missing_and_untrusted_ones_with_their_state() {
     assert_eq!(listed[0], (present, DirCheck::Trusted));
     assert_eq!(listed[1], (missing, DirCheck::Missing));
     assert!(matches!(&listed[2], (p, DirCheck::Untrusted(_)) if *p == open));
+}
+
+/// Issue #3162: a `guidance.log` that cannot be read leaves the read state
+/// unknown. `show --json` says so with `read: null` and the folder's
+/// `log_error`, and plain `show` with a line saying the state is unknown.
+#[test]
+fn an_unreadable_log_makes_read_null_and_sets_the_folder_log_error() {
+    let (_t, root) = private_root();
+    let run_dir = root.join("runs").join("r1");
+    let run = run_dir.join(GUIDANCE_DIR);
+    fs::create_dir_all(&run).unwrap();
+    let target = root.join("elsewhere.log");
+    fs::write(
+        &target,
+        format!("{{\"event\":\"guidance_injected\",\"entry_names\":[\"{FIRST}\"]}}\n"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&target, run_dir.join(crate::run_guidance::GUIDANCE_LOG)).unwrap();
+    let list = vec![Folder {
+        path: run.clone(),
+        check: DirCheck::Trusted,
+    }];
+    let entries = vec![entry(FIRST, &run, "alice", "hold")];
+    let line = serde_json::to_string(&show_json(&list, &[], &entries, "")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["entries"][0]["read"], serde_json::Value::Null, "{line}");
+    assert!(
+        v["entries"][0].as_object().unwrap().contains_key("read"),
+        "read is present as null: {line}"
+    );
+    assert_eq!(
+        v["folders"][0]["log_error"], "it is a symbolic link",
+        "{line}"
+    );
+    assert_eq!(v["drops"], serde_json::json!([]));
+    assert_eq!(
+        read_and_drop_lines(&list, &[], &entries),
+        [format!(
+            "entry {FIRST}: read state unknown (log unreadable)"
+        )]
+    );
+}
+
+#[test]
+fn a_readable_log_in_another_copy_proves_the_entry_read_despite_an_unreadable_one() {
+    let (_t, root) = private_root();
+    let bad_dir = root.join("runs").join("bad");
+    let bad = bad_dir.join(GUIDANCE_DIR);
+    let good_dir = root.join("runs").join("good");
+    let good = good_dir.join(GUIDANCE_DIR);
+    fs::create_dir_all(&bad).unwrap();
+    fs::create_dir_all(&good).unwrap();
+    std::os::unix::fs::symlink(
+        "/nonexistent",
+        bad_dir.join(crate::run_guidance::GUIDANCE_LOG),
+    )
+    .unwrap();
+    let log = good_dir.join(crate::run_guidance::GUIDANCE_LOG);
+    fs::write(
+        &log,
+        format!("{{\"event\":\"guidance_injected\",\"entry_names\":[\"{FIRST}\"]}}\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&log, fs::Permissions::from_mode(0o600)).unwrap();
+    let list = vec![
+        Folder {
+            path: bad.clone(),
+            check: DirCheck::Trusted,
+        },
+        Folder {
+            path: good.clone(),
+            check: DirCheck::Trusted,
+        },
+    ];
+    let mut e = entry(FIRST, &bad, "alice", "hold");
+    e.also_in.push((good.clone(), FIRST.to_string()));
+    let v = serde_json::to_value(show_json(&list, &[], &[e], "")).unwrap();
+    assert_eq!(v["entries"][0]["read"], true, "{v}");
+    assert!(v["folders"][0].get("log_error").is_some(), "{v}");
+    assert!(v["folders"][1].get("log_error").is_none(), "{v}");
+}
+
+/// A run folder `runs/<name>` with a guidance folder and a `run.json`
+/// holding `report`.
+fn run_folder(root: &Path, name: &str, report: &str) -> PathBuf {
+    let run_dir = root.join("runs").join(name);
+    let guidance = run_dir.join(GUIDANCE_DIR);
+    fs::create_dir_all(&guidance).unwrap();
+    let path = run_dir.join("run.json");
+    fs::write(&path, report).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    guidance
+}
+
+const ENDED: &str =
+    r#"{"schema_version":1,"run_id":"r1","ended_at":"2026-11-24T18:59:41Z","outcome":"success"}"#;
+const RUNNING: &str = r#"{"schema_version":1,"run_id":"r2","outcome":""}"#;
+
+/// PR #3190 review: an entry that no step read before its run ended says
+/// so, in plain `show` and in JSON. Nothing is inferred: only the end the
+/// run's `run.json` records is reported.
+#[test]
+fn an_unread_entry_of_a_run_that_recorded_its_end_says_the_run_ended() {
+    let (_t, root) = private_root();
+    let run = run_folder(&root, "r1", ENDED);
+    let list = vec![Folder {
+        path: run.clone(),
+        check: DirCheck::Trusted,
+    }];
+    let entries = vec![entry(FIRST, &run, "alice", "hold")];
+    assert_eq!(
+        read_and_drop_lines(&list, &[], &entries),
+        [format!(
+            "entry {FIRST}: not yet read; the run ended at 2026-11-24T18:59:41Z (success)"
+        )]
+    );
+    let v = serde_json::to_value(show_json(&list, &[], &entries, "")).unwrap();
+    assert_eq!(v["entries"][0]["read"], false, "{v}");
+    assert_eq!(
+        v["entries"][0]["run_ended"],
+        serde_json::json!({"at": "2026-11-24T18:59:41Z", "outcome": "success"}),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_run_with_no_recorded_end_or_a_read_entry_adds_nothing() {
+    let (_t, root) = private_root();
+    // No end recorded: the run may still start a step.
+    let running = run_folder(&root, "r2", RUNNING);
+    let list = vec![Folder {
+        path: running.clone(),
+        check: DirCheck::Trusted,
+    }];
+    let entries = vec![entry(FIRST, &running, "alice", "hold")];
+    assert_eq!(
+        read_and_drop_lines(&list, &[], &entries),
+        [format!("entry {FIRST}: not yet read")]
+    );
+    let v = serde_json::to_value(show_json(&list, &[], &entries, "")).unwrap();
+    assert!(v["entries"][0].get("run_ended").is_none(), "{v}");
+
+    // Read before the run ended: `read`, with no suffix.
+    let ended = run_folder(&root, "r1", ENDED);
+    let log = ended
+        .parent()
+        .unwrap()
+        .join(crate::run_guidance::GUIDANCE_LOG);
+    fs::write(
+        &log,
+        format!("{{\"event\":\"guidance_injected\",\"entry_names\":[\"{FIRST}\"]}}\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&log, fs::Permissions::from_mode(0o600)).unwrap();
+    let list = vec![Folder {
+        path: ended.clone(),
+        check: DirCheck::Trusted,
+    }];
+    let entries = vec![entry(FIRST, &ended, "alice", "hold")];
+    assert_eq!(
+        read_and_drop_lines(&list, &[], &entries),
+        [format!("entry {FIRST}: read")]
+    );
+}
+
+/// PR #3190 review: an ended run's folder is not listed, but its log still
+/// proves a read. A listed copy whose own log holds no record (the sender's
+/// pull request folder, when the drive's state folder was another) is
+/// reported as read when an ended run's log names the entry, and only then.
+#[test]
+fn an_ended_runs_log_proves_a_read_without_its_folder_being_listed() {
+    let (_t, root) = private_root();
+    let pr = root.join("pr").join(GUIDANCE_DIR);
+    fs::create_dir_all(&pr).unwrap();
+    let list = vec![Folder {
+        path: pr.clone(),
+        check: DirCheck::Trusted,
+    }];
+    let entries = vec![entry(FIRST, &pr, "alice", "merge only on a conflict")];
+    let ended = run_folder(&root, "r1", ENDED);
+
+    // The ended run's log names nothing yet: not read.
+    let v =
+        serde_json::to_value(show_json(&list, std::slice::from_ref(&ended), &entries, "")).unwrap();
+    assert_eq!(v["entries"][0]["read"], false, "{v}");
+
+    let log = ended
+        .parent()
+        .unwrap()
+        .join(crate::run_guidance::GUIDANCE_LOG);
+    fs::write(
+        &log,
+        format!("{{\"event\":\"guidance_injected\",\"entry_names\":[\"{FIRST}\"]}}\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&log, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let v =
+        serde_json::to_value(show_json(&list, std::slice::from_ref(&ended), &entries, "")).unwrap();
+    assert_eq!(v["entries"][0]["read"], true, "{v}");
+    // The ended folder is not listed, and its drops are not shown.
+    assert_eq!(v["folders"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["folders"][0]["source"], Source::of(&pr).label(), "{v}");
+    assert_eq!(
+        read_and_drop_lines(&list, &[ended], &entries),
+        [format!("entry {FIRST}: read")]
+    );
+    // Without the ended run's log, the same entry is not read.
+    assert_eq!(
+        read_and_drop_lines(&list, &[], &entries),
+        [format!("entry {FIRST}: not yet read")]
+    );
+}
+
+/// A copy in a run that has not recorded an end means a step of that run
+/// may still read it, so the entry is not said to be stranded.
+#[test]
+fn a_copy_in_a_run_with_no_recorded_end_keeps_the_plain_status() {
+    let (_t, root) = private_root();
+    let ended = run_folder(&root, "r1", ENDED);
+    let running = run_folder(&root, "r2", RUNNING);
+    let list = vec![
+        Folder {
+            path: ended.clone(),
+            check: DirCheck::Trusted,
+        },
+        Folder {
+            path: running.clone(),
+            check: DirCheck::Trusted,
+        },
+    ];
+    let mut e = entry(FIRST, &ended, "alice", "hold");
+    e.also_in.push((running.clone(), FIRST.to_string()));
+    assert_eq!(
+        read_and_drop_lines(&list, &[], std::slice::from_ref(&e)),
+        [format!("entry {FIRST}: not yet read")]
+    );
+    let v = serde_json::to_value(show_json(&list, &[], &[e], "")).unwrap();
+    assert!(v["entries"][0].get("run_ended").is_none(), "{v}");
+}
+
+/// A pull request's folder is read by a later run, so it has no run end.
+#[test]
+fn a_pull_request_folder_has_no_run_end() {
+    let (_t, root) = private_root();
+    let pr = root
+        .join(AUTO_DRIVE_DIR)
+        .join("https___github.com_o_r_1")
+        .join(GUIDANCE_DIR);
+    fs::create_dir_all(&pr).unwrap();
+    fs::write(pr.parent().unwrap().join("run.json"), ENDED).unwrap();
+    assert!(super::super::live_runs::run_end(&pr).is_none());
+}
+
+/// The recorded values are a claim and are printed escaped and bounded.
+#[test]
+fn a_recorded_end_is_escaped_and_bounded() {
+    let (_t, root) = private_root();
+    let long = "x".repeat(500);
+    let report = format!(
+        r#"{{"schema_version":1,"run_id":"r3","ended_at":"2026\u001b]0;t\u0007","outcome":"{long}"}}"#
+    );
+    let run = run_folder(&root, "r3", &report);
+    let end = super::super::live_runs::run_end(&run).expect("an end is recorded");
+    assert!(!end.at.contains('\u{1b}'), "{:?}", end.at);
+    assert!(end.at.contains("\\u{001b}"), "{:?}", end.at);
+    assert_eq!(end.outcome.chars().count(), 64, "{:?}", end.outcome);
 }

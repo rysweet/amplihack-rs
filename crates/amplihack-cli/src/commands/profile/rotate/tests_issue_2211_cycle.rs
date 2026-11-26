@@ -46,8 +46,8 @@ pub(super) enum Live {
 
 /// One test's statics and its stub functions. A test fills `LIVE` (one
 /// entry per cycle; the last repeats), `OTHERS` (the candidates' probes,
-/// the same every cycle) and `REREAD` (what each re-read, live or target,
-/// returns in call order; the last repeats; empty means a failed read), and
+/// also returned by their direct confirmation) and `REREAD` (live re-read
+/// results in call order; the last repeats; empty means a failed read), and
 /// may set `MEASURE_SECS` (how long each measurement takes on the clock).
 macro_rules! lane {
     ($m:ident) => {
@@ -72,6 +72,7 @@ macro_rules! lane {
             pub static OTHERS: Mutex<Vec<(&'static str, Probed)>> = Mutex::new(Vec::new());
             pub static REREAD: Mutex<Vec<Probed>> = Mutex::new(Vec::new());
             pub static CALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+            pub static TARGET_CALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
             /// Seconds each measurement takes: the clock moves on by this
             /// much after `measured_at` is taken.
             pub static MEASURE_SECS: AtomicI64 = AtomicI64::new(0);
@@ -134,6 +135,27 @@ macro_rules! lane {
                 (hook_body(c, who, left), None)
             }
 
+            pub fn confirm(
+                _: &Ctx,
+                name: &ProfileName,
+                _: Duration,
+            ) -> (
+                Probed,
+                Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+            ) {
+                TARGET_CALLS.lock().unwrap().push(name.to_string());
+                let mut p = OTHERS
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(n, _)| *n == name.as_str())
+                    .map(|(_, p)| p.clone())
+                    .unwrap_or_else(Probed::failed);
+                p.observed_at = None;
+                p.passive = false;
+                (p, None)
+            }
+
             pub fn calls() -> Vec<String> {
                 CALLS.lock().unwrap().clone()
             }
@@ -148,16 +170,17 @@ macro_rules! lane {
 
 /// A context for `e` on the synthetic `clock`, with `--interval 120
 /// --session-at 70 --margin 5`, the stubbed measurement and, when `reread`
-/// is set, the stubbed re-read, as both the live re-read
-/// (`Ctx::reread_live`) and the target re-read (`Ctx::reread`).
+/// is set, the stubbed live re-read. Target confirmation has a separate
+/// callback so it cannot consume the live re-read script.
 fn ctx(
     e: &Env,
     clock: fn() -> i64,
     measure: super::super::cycle::MeasureFn,
     reread: Option<super::super::fresh::RereadFn>,
+    confirm: super::super::fresh::RereadFn,
 ) -> Ctx {
     let mut c = ctx_with(e, measure);
-    c.reread = reread;
+    c.reread = Some(confirm);
     c.reread_live = reread;
     c.now = clock;
     c.settings.interval = INTERVAL as u64;
@@ -256,7 +279,7 @@ fn a_a_frozen_live_reading_is_read_again_and_decided_on_the_fresh_value() {
     set(&la::LIVE, &[cached(40.0, 20.0)]);
     set(&la::OTHERS, &spare_room());
     set(&la::REREAD, &[rd(80.0, 20.0, None)]);
-    let mut c = ctx(&e, la::clock, la::measure, Some(la::reread));
+    let mut c = ctx(&e, la::clock, la::measure, Some(la::reread), la::confirm);
     assert_eq!(step(&mut c, &la::CLOCK), CycleOutcome::Stayed);
     assert_eq!(step(&mut c, &la::CLOCK), CycleOutcome::Stayed);
     assert_eq!(la::live_calls(), 0, "two identical readings are not frozen");
@@ -286,7 +309,7 @@ fn a2_a_reread_with_the_same_value_is_accepted_and_the_count_restarts() {
     set(&lb::LIVE, &[cached(40.0, 20.0)]);
     set(&lb::OTHERS, &spare_room());
     set(&lb::REREAD, &[rd(40.0, 20.0, None)]);
-    let mut c = ctx(&e, lb::clock, lb::measure, Some(lb::reread));
+    let mut c = ctx(&e, lb::clock, lb::measure, Some(lb::reread), lb::confirm);
     for _ in 0..3 {
         assert_eq!(step(&mut c, &lb::CLOCK), CycleOutcome::Stayed);
     }
@@ -318,7 +341,13 @@ fn a4_an_identical_direct_reading_is_never_read_again_or_substituted() {
     set(&ldd::LIVE, &[Live::Direct(66.0, 20.0)]);
     set(&ldd::OTHERS, &spare_room());
     set(&ldd::REREAD, &[]);
-    let mut c = ctx(&e, ldd::clock, ldd::measure, Some(ldd::reread));
+    let mut c = ctx(
+        &e,
+        ldd::clock,
+        ldd::measure,
+        Some(ldd::reread),
+        ldd::confirm,
+    );
     for i in 1..=6 {
         assert_eq!(step(&mut c, &ldd::CLOCK), CycleOutcome::Stayed, "cycle {i}");
         assert_eq!(c.live_outlook, None, "cycle {i}: no outlook");
@@ -350,7 +379,13 @@ fn a5_a_direct_reading_restarts_the_frozen_count_of_the_cache() {
     );
     set(&ldc::OTHERS, &spare_room());
     set(&ldc::REREAD, &[rd(66.0, 20.0, None)]);
-    let mut c = ctx(&e, ldc::clock, ldc::measure, Some(ldc::reread));
+    let mut c = ctx(
+        &e,
+        ldc::clock,
+        ldc::measure,
+        Some(ldc::reread),
+        ldc::confirm,
+    );
     for _ in 0..3 {
         assert_eq!(step(&mut c, &ldc::CLOCK), CycleOutcome::Stayed);
     }
@@ -378,7 +413,7 @@ fn a3_an_idle_login_at_zero_percent_is_never_read_again() {
     // Cached, so only the 0% keeps it from being frozen.
     set(&lz::LIVE, &[cached(0.0, 20.0)]);
     set(&lz::OTHERS, &spare_room());
-    let mut c = ctx(&e, lz::clock, lz::measure, Some(lz::reread));
+    let mut c = ctx(&e, lz::clock, lz::measure, Some(lz::reread), lz::confirm);
     for _ in 0..5 {
         assert_eq!(step(&mut c, &lz::CLOCK), CycleOutcome::Stayed);
     }
@@ -400,7 +435,7 @@ fn b_a_rising_rate_swaps_with_reason_projected_before_the_threshold() {
         &[Live::Direct(50.0, 41.0), Live::Direct(63.0, 41.0)],
     );
     set(&lr::OTHERS, &spare_room());
-    let mut c = ctx(&e, lr::clock, lr::measure, Some(lr::reread));
+    let mut c = ctx(&e, lr::clock, lr::measure, Some(lr::reread), lr::confirm);
     assert_eq!(step(&mut c, &lr::CLOCK), CycleOutcome::Stayed);
     let got = step(&mut c, &lr::CLOCK);
     let log = log_of(&e);
@@ -444,7 +479,7 @@ fn b2_a_projected_swap_is_not_held() {
         &[Live::Direct(50.0, 41.0), Live::Direct(63.0, 41.0)],
     );
     set(&lh::OTHERS, &spare_room());
-    let mut c = ctx(&e, lh::clock, lh::measure, Some(lh::reread));
+    let mut c = ctx(&e, lh::clock, lh::measure, Some(lh::reread), lh::confirm);
     c.settings.hold = 3600;
     step(&mut c, &lh::CLOCK);
     let got = step(&mut c, &lh::CLOCK);
@@ -474,7 +509,7 @@ fn b3_a_projected_swap_never_goes_to_a_login_above_the_week_ceiling() {
             ("work", rd(0.0, 40.0, None)),
         ],
     );
-    let mut c = ctx(&e, lw::clock, lw::measure, Some(lw::reread));
+    let mut c = ctx(&e, lw::clock, lw::measure, Some(lw::reread), lw::confirm);
     step(&mut c, &lw::CLOCK);
     let got = step(&mut c, &lw::CLOCK);
     let log = log_of(&e);
@@ -497,7 +532,7 @@ fn c_a_steady_low_rate_stays() {
         &[Live::Direct(20.0, 20.0), Live::Direct(22.0, 20.0)],
     );
     set(&ll::OTHERS, &spare_room());
-    let mut c = ctx(&e, ll::clock, ll::measure, Some(ll::reread));
+    let mut c = ctx(&e, ll::clock, ll::measure, Some(ll::reread), ll::confirm);
     assert_eq!(step(&mut c, &ll::CLOCK), CycleOutcome::Stayed);
     assert_eq!(step(&mut c, &ll::CLOCK), CycleOutcome::Stayed);
     let log = log_of(&e);
@@ -518,7 +553,7 @@ fn d_a_failed_probe_near_the_threshold_swaps_with_reason_projected() {
     // One point at 66% (no rate): near, since 66 >= 70 - 5.
     set(&ld::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
     set(&ld::OTHERS, &spare_room());
-    let mut c = ctx(&e, ld::clock, ld::measure, Some(ld::reread));
+    let mut c = ctx(&e, ld::clock, ld::measure, Some(ld::reread), ld::confirm);
     assert_eq!(step(&mut c, &ld::CLOCK), CycleOutcome::Stayed);
     let got = step(&mut c, &ld::CLOCK);
     let log = log_of(&e);
@@ -535,7 +570,13 @@ fn d2_a_failed_probe_far_from_the_threshold_keeps_failed_probe_damping() {
     seed(&ldn::CLOCK);
     set(&ldn::LIVE, &[Live::Direct(30.0, 20.0), Live::Failed]);
     set(&ldn::OTHERS, &spare_room());
-    let mut c = ctx(&e, ldn::clock, ldn::measure, Some(ldn::reread));
+    let mut c = ctx(
+        &e,
+        ldn::clock,
+        ldn::measure,
+        Some(ldn::reread),
+        ldn::confirm,
+    );
     step(&mut c, &ldn::CLOCK);
     let got = step(&mut c, &ldn::CLOCK);
     let log = log_of(&e);
@@ -552,7 +593,13 @@ fn d3_a_failed_first_probe_with_no_series_keeps_failed_probe_damping() {
     seed(&lde::CLOCK);
     set(&lde::LIVE, &[Live::Failed]);
     set(&lde::OTHERS, &spare_room());
-    let mut c = ctx(&e, lde::clock, lde::measure, Some(lde::reread));
+    let mut c = ctx(
+        &e,
+        lde::clock,
+        lde::measure,
+        Some(lde::reread),
+        lde::confirm,
+    );
     step(&mut c, &lde::CLOCK);
     let log = log_of(&e);
     assert_eq!(swaps(&log), 0, "{log}");
@@ -585,7 +632,13 @@ fn d4_failed_probes_after_66_with_a_68_candidate_make_the_failed_probe_swap() {
     seed(&ld4::CLOCK);
     set(&ld4::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
     set(&ld4::OTHERS, &spare_at_68());
-    let mut c = ctx(&e, ld4::clock, ld4::measure, Some(ld4::reread));
+    let mut c = ctx(
+        &e,
+        ld4::clock,
+        ld4::measure,
+        Some(ld4::reread),
+        ld4::confirm,
+    );
     assert_eq!(step(&mut c, &ld4::CLOCK), CycleOutcome::Stayed);
     // Failures 1 and 2: near the threshold, but the target does not beat
     // 70%, so damping applies as without the substitution: a damped stay
@@ -623,7 +676,13 @@ fn d5_a_failed_probe_after_the_last_points_window_reset_is_damped() {
     ld5::RESET.store(ld5::clock() + INTERVAL / 2, Ordering::SeqCst);
     set(&ld5::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
     set(&ld5::OTHERS, &spare_room());
-    let mut c = ctx(&e, ld5::clock, ld5::measure, Some(ld5::reread));
+    let mut c = ctx(
+        &e,
+        ld5::clock,
+        ld5::measure,
+        Some(ld5::reread),
+        ld5::confirm,
+    );
     assert_eq!(step(&mut c, &ld5::CLOCK), CycleOutcome::Stayed);
     let got = step(&mut c, &ld5::CLOCK);
     let log = log_of(&e);
@@ -643,7 +702,13 @@ fn d6_a_failed_probe_a_session_window_after_the_last_point_is_damped() {
     let at1 = ld6::clock();
     set(&ld6::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
     set(&ld6::OTHERS, &spare_room());
-    let mut c = ctx(&e, ld6::clock, ld6::measure, Some(ld6::reread));
+    let mut c = ctx(
+        &e,
+        ld6::clock,
+        ld6::measure,
+        Some(ld6::reread),
+        ld6::confirm,
+    );
     assert_eq!(step(&mut c, &ld6::CLOCK), CycleOutcome::Stayed);
     // No reset time: the 66% counts for one session window at most.
     ld6::CLOCK.store(at1 + SESSION_WINDOW_SECS, Ordering::SeqCst);
@@ -665,7 +730,13 @@ fn d7_a_home_key_stops_the_early_failed_probe_swap_as_it_stops_the_late_one() {
     seed(&ld7::CLOCK);
     set(&ld7::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
     set(&ld7::OTHERS, &spare_room());
-    let mut c = ctx(&e, ld7::clock, ld7::measure, Some(ld7::reread));
+    let mut c = ctx(
+        &e,
+        ld7::clock,
+        ld7::measure,
+        Some(ld7::reread),
+        ld7::confirm,
+    );
     assert_eq!(step(&mut c, &ld7::CLOCK), CycleOutcome::Stayed);
     let got = step(&mut c, &ld7::CLOCK);
     let log = log_of(&e);
@@ -690,7 +761,13 @@ fn e1_an_old_live_reading_is_read_again_and_decided_on_the_fresh_value() {
     set(&le1::LIVE, &[Live::Passive(40.0, 20.0, INTERVAL + 1)]);
     set(&le1::OTHERS, &spare_room());
     set(&le1::REREAD, &[rd(80.0, 20.0, None)]);
-    let mut c = ctx(&e, le1::clock, le1::measure, Some(le1::reread));
+    let mut c = ctx(
+        &e,
+        le1::clock,
+        le1::measure,
+        Some(le1::reread),
+        le1::confirm,
+    );
     let got = step(&mut c, &le1::CLOCK);
     let log = log_of(&e);
     assert_eq!(le1::calls(), ["work"], "one live re-read: {log}");
@@ -708,7 +785,13 @@ fn e1b_a_reading_exactly_one_interval_old_is_not_read_again() {
     set(&le0::LIVE, &[Live::Passive(40.0, 20.0, INTERVAL)]);
     set(&le0::OTHERS, &spare_room());
     set(&le0::REREAD, &[rd(80.0, 20.0, None)]);
-    let mut c = ctx(&e, le0::clock, le0::measure, Some(le0::reread));
+    let mut c = ctx(
+        &e,
+        le0::clock,
+        le0::measure,
+        Some(le0::reread),
+        le0::confirm,
+    );
     assert_eq!(step(&mut c, &le0::CLOCK), CycleOutcome::Stayed);
     assert_eq!(le0::live_calls(), 0);
     assert_eq!(stale_lines(&log_of(&e)), 0);
@@ -725,7 +808,13 @@ fn e2_an_old_reading_near_the_threshold_whose_reread_fails_swaps() {
     // older than one interval, and its re-read fails.
     set(&le2::LIVE, &[Live::Direct(66.0, 41.0)]);
     set(&le2::OTHERS, &spare_room());
-    let mut c = ctx(&e, le2::clock, le2::measure, Some(le2::reread));
+    let mut c = ctx(
+        &e,
+        le2::clock,
+        le2::measure,
+        Some(le2::reread),
+        le2::confirm,
+    );
     assert_eq!(step(&mut c, &le2::CLOCK), CycleOutcome::Stayed);
     le2::CLOCK.store(at1 + 2 * INTERVAL, std::sync::atomic::Ordering::SeqCst);
     set(&le2::LIVE, &[Live::Passive(66.0, 41.0, 2 * INTERVAL)]);
@@ -777,7 +866,13 @@ fn e2b_a_stale_reading_after_95_percent_is_decided_on_95_not_the_threshold() {
     // 95% in the series as the last known figure.
     set(&lsf::LIVE, &[Live::Direct(95.0, 41.0)]);
     set(&lsf::OTHERS, &spare_full());
-    let mut c = ctx(&e, lsf::clock, lsf::measure, Some(lsf::reread));
+    let mut c = ctx(
+        &e,
+        lsf::clock,
+        lsf::measure,
+        Some(lsf::reread),
+        lsf::confirm,
+    );
     assert_eq!(
         step(&mut c, &lsf::CLOCK),
         CycleOutcome::Stayed,
@@ -820,7 +915,13 @@ fn e2c_a_failed_probe_after_90_percent_is_decided_on_90_not_the_threshold() {
     seed(&lsg::CLOCK);
     set(&lsg::LIVE, &[Live::Direct(90.0, 41.0)]);
     set(&lsg::OTHERS, &spare_full());
-    let mut c = ctx(&e, lsg::clock, lsg::measure, Some(lsg::reread));
+    let mut c = ctx(
+        &e,
+        lsg::clock,
+        lsg::measure,
+        Some(lsg::reread),
+        lsg::confirm,
+    );
     assert_ne!(step(&mut c, &lsg::CLOCK), CycleOutcome::Swapped);
     // `spare` at 75%: 15 more headroom than 90%, none more than 70%.
     set(&lsg::LIVE, &[Live::Failed]);
@@ -861,7 +962,13 @@ fn e2d_a_live_reread_preserves_its_evidence_timestamp() {
     // 140 s projects 58 + 15.4 = 73.4. Dated by the clock (t1 + 240) it
     // would be 18 points over 240 s, 58 + 9 = 67, and a stay.
     set(&lst::REREAD, &[rd(58.0, 41.0, Some(t1 + 140))]);
-    let mut c = ctx(&e, lst::clock, lst::measure, Some(lst::reread));
+    let mut c = ctx(
+        &e,
+        lst::clock,
+        lst::measure,
+        Some(lst::reread),
+        lst::confirm,
+    );
     assert_eq!(step(&mut c, &lst::CLOCK), CycleOutcome::Stayed);
     assert_eq!(
         step(&mut c, &lst::CLOCK),
@@ -887,7 +994,13 @@ fn e2e_a_live_reading_stamped_after_the_clock_is_read_again() {
     set(&lfu::LIVE, &[Live::Passive(40.0, 20.0, -60)]);
     set(&lfu::OTHERS, &spare_room());
     set(&lfu::REREAD, &[rd(80.0, 20.0, None)]);
-    let mut c = ctx(&e, lfu::clock, lfu::measure, Some(lfu::reread));
+    let mut c = ctx(
+        &e,
+        lfu::clock,
+        lfu::measure,
+        Some(lfu::reread),
+        lfu::confirm,
+    );
     let got = step(&mut c, &lfu::CLOCK);
     let log = log_of(&e);
     assert_eq!(lfu::live_calls(), 1, "observed_at = t + 60: {log}");
@@ -903,7 +1016,7 @@ fn e3_an_old_reading_with_no_reread_hook_and_far_from_the_threshold_stays() {
     seed(&le3::CLOCK);
     set(&le3::LIVE, &[Live::Passive(40.0, 20.0, 3 * INTERVAL)]);
     set(&le3::OTHERS, &spare_room());
-    let mut c = ctx(&e, le3::clock, le3::measure, None);
+    let mut c = ctx(&e, le3::clock, le3::measure, None, le3::confirm);
     assert_eq!(step(&mut c, &le3::CLOCK), CycleOutcome::Stayed);
     let log = log_of(&e);
     assert_eq!(stale_lines(&log), 0, "no read was made: {log}");
@@ -927,7 +1040,7 @@ fn rising_replay_stays_until_63_then_swaps_with_reason_projected() {
     seed(&lk::CLOCK);
     set(&lk::LIVE, &rising());
     set(&lk::OTHERS, &spare_room());
-    let mut c = ctx(&e, lk::clock, lk::measure, Some(lk::reread));
+    let mut c = ctx(&e, lk::clock, lk::measure, Some(lk::reread), lk::confirm);
     for s in [22, 32, 42, 50] {
         let got = step(&mut c, &lk::CLOCK);
         assert_eq!(got, CycleOutcome::Stayed, "s={s}%: {}", log_of(&e));
@@ -957,7 +1070,13 @@ fn rising_with_no_candidate_alerts_at_63_and_rereads_the_third_identical_reading
     set(&lkn::LIVE, &script);
     set(&lkn::OTHERS, &spare_full());
     set(&lkn::REREAD, &[rd(63.0, 41.0, None)]);
-    let mut c = ctx(&e, lkn::clock, lkn::measure, Some(lkn::reread));
+    let mut c = ctx(
+        &e,
+        lkn::clock,
+        lkn::measure,
+        Some(lkn::reread),
+        lkn::confirm,
+    );
     for _ in 0..4 {
         step(&mut c, &lkn::CLOCK);
     }
@@ -1002,7 +1121,13 @@ fn rising_with_only_plan_room_stays_with_a_note_at_63_and_never_moves_for_room()
             ("work", rd(0.0, 40.0, None)),
         ],
     );
-    let mut c = ctx(&e, lpr::clock, lpr::measure, Some(lpr::reread));
+    let mut c = ctx(
+        &e,
+        lpr::clock,
+        lpr::measure,
+        Some(lpr::reread),
+        lpr::confirm,
+    );
     for _ in 0..4 {
         assert_eq!(step(&mut c, &lpr::CLOCK), CycleOutcome::Stayed);
     }
@@ -1034,7 +1159,7 @@ fn a_failed_probe_just_after_a_projected_swap_is_damped_as_usual() {
         ],
     );
     set(&ls::OTHERS, &spare_room());
-    let mut c = ctx(&e, ls::clock, ls::measure, Some(ls::reread));
+    let mut c = ctx(&e, ls::clock, ls::measure, Some(ls::reread), ls::confirm);
     step(&mut c, &ls::CLOCK);
     assert_eq!(step(&mut c, &ls::CLOCK), CycleOutcome::Swapped);
     // `spare` is live now; its first failed probe has no series behind it.
@@ -1056,7 +1181,13 @@ fn a_dry_run_rereads_an_old_live_reading_and_writes_nothing() {
     set(&ldr::OTHERS, &spare_room());
     set(&ldr::REREAD, &[rd(80.0, 20.0, None)]);
     let before = std::fs::read(&e.rs.ledger).unwrap();
-    let mut c = ctx(&e, ldr::clock, ldr::measure, Some(ldr::reread));
+    let mut c = ctx(
+        &e,
+        ldr::clock,
+        ldr::measure,
+        Some(ldr::reread),
+        ldr::confirm,
+    );
     let got = run_cycle(&mut c, Mode::DryRun).unwrap();
     assert_eq!(
         ldr::calls(),
@@ -1087,7 +1218,7 @@ fn the_live_reread_uses_the_live_hook_and_never_the_target_hook() {
     set(&lhk::LIVE, &[cached(40.0, 20.0)]);
     set(&lhk::OTHERS, &spare_room());
     set(&lhk::REREAD, &[rd(40.0, 20.0, None)]);
-    let mut c = ctx(&e, lhk::clock, lhk::measure, None);
+    let mut c = ctx(&e, lhk::clock, lhk::measure, None, lhk::confirm);
     // The target hook reads profile directories with refresh allowed; the
     // live login must never be read through it.
     c.reread = Some(lhk::reread);
@@ -1135,7 +1266,13 @@ fn a_cache_frozen_below_a_disagreeing_reread_is_read_again_every_cycle() {
             rd(71.0, 20.0, None),
         ],
     );
-    let mut c = ctx(&e, lfz::clock, lfz::measure, Some(lfz::reread));
+    let mut c = ctx(
+        &e,
+        lfz::clock,
+        lfz::measure,
+        Some(lfz::reread),
+        lfz::confirm,
+    );
     assert_eq!(step(&mut c, &lfz::CLOCK), CycleOutcome::Stayed);
     assert_eq!(step(&mut c, &lfz::CLOCK), CycleOutcome::Stayed);
     assert_eq!(lfz::live_calls(), 0);
@@ -1214,7 +1351,13 @@ fn a_moving_cache_still_below_a_disagreeing_reread_is_read_again() {
     );
     set(&llg::OTHERS, &spare_room());
     set(&llg::REREAD, &[rd(65.0, 20.0, None), rd(66.0, 20.0, None)]);
-    let mut c = ctx(&e, llg::clock, llg::measure, Some(llg::reread));
+    let mut c = ctx(
+        &e,
+        llg::clock,
+        llg::measure,
+        Some(llg::reread),
+        llg::confirm,
+    );
     for _ in 0..3 {
         assert_eq!(step(&mut c, &llg::CLOCK), CycleOutcome::Stayed);
     }
@@ -1262,7 +1405,13 @@ fn a_creeping_cache_in_the_same_window_never_clears_the_lag() {
         &lcr::REREAD,
         &[66.0, 69.0, 72.0].map(|v| in_window(rd(v, 20.0, None), resets)),
     );
-    let mut c = ctx(&e, lcr::clock, lcr::measure, Some(lcr::reread));
+    let mut c = ctx(
+        &e,
+        lcr::clock,
+        lcr::measure,
+        Some(lcr::reread),
+        lcr::confirm,
+    );
     assert_eq!(step(&mut c, &lcr::CLOCK), CycleOutcome::Stayed);
     assert_eq!(step(&mut c, &lcr::CLOCK), CycleOutcome::Stayed);
     // Cycle 3: frozen, re-read at 66%, and the cache is behind.
@@ -1304,12 +1453,19 @@ fn a_hundred_to_ninety_swap_never_bounces_back_on_older_zero_capacity() {
     set(&bounce::LIVE, &[Live::Direct(100.0, 20.0)]);
     set(&bounce::OTHERS, &[("spare", rd(65.0, 20.0, None))]);
     set(&bounce::REREAD, &[exh(100.0, 20.0)]);
-    let mut c = ctx(&e, bounce::clock, bounce::measure, Some(bounce::reread));
+    let mut c = ctx(
+        &e,
+        bounce::clock,
+        bounce::measure,
+        Some(bounce::reread),
+        bounce::confirm,
+    );
     assert_eq!(step(&mut c, &bounce::CLOCK), CycleOutcome::Swapped);
     assert_eq!(ino_at(&e.live()), Some(e.t), "65% spare becomes live");
     // Its next measured value is 100%. Work looks completely unused, but
     // that measurement predates its most recent use.
     set(&bounce::OTHERS, &[("work", rd(0.0, 0.0, Some(before_use)))]);
+    c.reread = Some(bounce::reread);
     let got = step(&mut c, &bounce::CLOCK);
     let log = log_of(&e);
     assert_ne!(got, CycleOutcome::Swapped, "{log}");
@@ -1331,25 +1487,30 @@ fn a_hundred_to_ninety_swap_never_bounces_back_on_older_zero_capacity() {
 lane!(lsl);
 
 /// The measurement takes 5 s, so the live re-read is dated 5 s after
-/// `measured_at`, where `spare`'s direct reading is dated. The target gate
-/// must not read `spare` again: here that read would fail, and the swap
-/// would become a false `no-capacity` ALERT.
+/// `measured_at`, where `spare`'s initial reading is dated. The direct
+/// confirmation still runs once and does not consume the live re-read script.
 #[test]
-fn a_live_reread_after_a_five_second_measurement_never_rereads_the_target() {
+fn a_live_reread_after_a_slow_measurement_confirms_the_target_once() {
     use std::sync::atomic::Ordering;
     let e = env();
     seed(&lsl::CLOCK);
     lsl::MEASURE_SECS.store(5, Ordering::SeqCst);
     set(&lsl::LIVE, &[Live::Passive(40.0, 20.0, INTERVAL + 1)]);
     set(&lsl::OTHERS, &spare_room());
-    // Call 1, the live re-read: 75%. Call 2 would be spare's: failed.
+    // The live re-read reports 75%; target confirmation uses its own reading.
     set(&lsl::REREAD, &[rd(75.0, 20.0, None), Probed::failed()]);
-    let mut c = ctx(&e, lsl::clock, lsl::measure, Some(lsl::reread));
+    let mut c = ctx(
+        &e,
+        lsl::clock,
+        lsl::measure,
+        Some(lsl::reread),
+        lsl::confirm,
+    );
     let got = step(&mut c, &lsl::CLOCK);
     let log = log_of(&e);
-    assert_eq!(lsl::calls(), ["work"], "no target re-read: {log}");
+    assert_eq!(lsl::calls(), ["work"]);
+    assert_eq!(*lsl::TARGET_CALLS.lock().unwrap(), ["spare"]);
     assert_eq!(stale_lines(&log), 1, "{log}");
-    assert!(!log.contains("reread: spare"), "{log}");
     assert!(!log.contains("ALERT: no profile has capacity"), "{log}");
     assert_eq!(got, CycleOutcome::Swapped, "decided on s=75%: {log}");
     assert!(log.contains("reason=threshold"), "{log}");
@@ -1388,7 +1549,13 @@ fn a_frozen_66_with_a_moving_cache_time_whose_reread_fails_swaps() {
     // Observed at each cycle's own clock: the time moves, the figures do not.
     set(&lfm::LIVE, &[Live::Passive(66.0, 41.0, 0)]);
     set(&lfm::OTHERS, &spare_room());
-    let mut c = ctx(&e, lfm::clock, lfm::measure, Some(lfm::reread));
+    let mut c = ctx(
+        &e,
+        lfm::clock,
+        lfm::measure,
+        Some(lfm::reread),
+        lfm::confirm,
+    );
     assert_eq!(step(&mut c, &lfm::CLOCK), CycleOutcome::Stayed);
     assert_eq!(step(&mut c, &lfm::CLOCK), CycleOutcome::Stayed);
     assert_eq!(lfm::live_calls(), 0);
@@ -1412,7 +1579,13 @@ fn a_frozen_66_with_a_moving_cache_time_whose_reread_fails_alerts_and_is_read_ag
     seed(&lfa::CLOCK);
     set(&lfa::LIVE, &[Live::Passive(66.0, 41.0, 0)]);
     set(&lfa::OTHERS, &spare_full());
-    let mut c = ctx(&e, lfa::clock, lfa::measure, Some(lfa::reread));
+    let mut c = ctx(
+        &e,
+        lfa::clock,
+        lfa::measure,
+        Some(lfa::reread),
+        lfa::confirm,
+    );
     assert_eq!(step(&mut c, &lfa::CLOCK), CycleOutcome::Stayed);
     assert_eq!(step(&mut c, &lfa::CLOCK), CycleOutcome::Stayed);
     assert_eq!(advisory(&e), None, "no ALERT on 66% as measured");
@@ -1458,7 +1631,13 @@ fn a_frozen_66_with_a_fixed_cache_time_whose_reread_fails_alerts_and_is_read_aga
         ],
     );
     set(&lff::OTHERS, &spare_full());
-    let mut c = ctx(&e, lff::clock, lff::measure, Some(lff::reread));
+    let mut c = ctx(
+        &e,
+        lff::clock,
+        lff::measure,
+        Some(lff::reread),
+        lff::confirm,
+    );
     assert_eq!(step(&mut c, &lff::CLOCK), CycleOutcome::Stayed);
     assert_eq!(step(&mut c, &lff::CLOCK), CycleOutcome::Stayed);
     assert_eq!(lff::live_calls(), 0);
@@ -1533,7 +1712,7 @@ fn o1_a_projected_swap_takes_the_same_organisation_login_over_more_headroom() {
                 ("third", rd(0.0, 0.0, None)),
             ],
         );
-        let mut c = ctx(e, lo1::clock, lo1::measure, Some(lo1::reread));
+        let mut c = ctx(e, lo1::clock, lo1::measure, Some(lo1::reread), lo1::confirm);
         assert_eq!(step(&mut c, &lo1::CLOCK), CycleOutcome::Stayed);
         let got = step(&mut c, &lo1::CLOCK);
         let log = log_of(e);
@@ -1574,7 +1753,7 @@ fn o5_a_projected_swap_onto_a_login_past_session_at_is_not_held() {
                 ("third", exh(100.0, 100.0)),
             ],
         );
-        let mut c = ctx(e, lo5::clock, lo5::measure, Some(lo5::reread));
+        let mut c = ctx(e, lo5::clock, lo5::measure, Some(lo5::reread), lo5::confirm);
         assert_eq!(step(&mut c, &lo5::CLOCK), CycleOutcome::Stayed);
         let got = step(&mut c, &lo5::CLOCK);
         let log = log_of(e);
@@ -1614,7 +1793,7 @@ fn o2_a_projection_never_crosses_and_a_login_with_no_room_does() {
             &lo2::OTHERS,
             &[("spare", exh(100.0, 100.0)), ("third", rd(0.0, 0.0, None))],
         );
-        let mut c = ctx(e, lo2::clock, lo2::measure, Some(lo2::reread));
+        let mut c = ctx(e, lo2::clock, lo2::measure, Some(lo2::reread), lo2::confirm);
         assert_eq!(step(&mut c, &lo2::CLOCK), CycleOutcome::Stayed);
         let got = step(&mut c, &lo2::CLOCK);
         let log = log_of(e);
@@ -1671,7 +1850,7 @@ fn o3_a_substitution_tests_the_failed_probe_swaps_own_target() {
                 ("third", rd(0.0, 0.0, None)),
             ],
         );
-        let mut c = ctx(e, lo3::clock, lo3::measure, Some(lo3::reread));
+        let mut c = ctx(e, lo3::clock, lo3::measure, Some(lo3::reread), lo3::confirm);
         assert_eq!(step(&mut c, &lo3::CLOCK), CycleOutcome::Stayed);
         for nth in 1..=2 {
             let got = step(&mut c, &lo3::CLOCK);
@@ -1716,7 +1895,7 @@ fn o4_a_substitution_never_makes_a_crossing_sooner() {
             &lo4::OTHERS,
             &[("spare", exh(100.0, 100.0)), ("third", rd(0.0, 0.0, None))],
         );
-        let mut c = ctx(e, lo4::clock, lo4::measure, Some(lo4::reread));
+        let mut c = ctx(e, lo4::clock, lo4::measure, Some(lo4::reread), lo4::confirm);
         assert_eq!(step(&mut c, &lo4::CLOCK), CycleOutcome::Stayed);
         for nth in 1..=2 {
             let got = step(&mut c, &lo4::CLOCK);

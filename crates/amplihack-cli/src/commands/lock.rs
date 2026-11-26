@@ -4,6 +4,7 @@
 //! Manages a per-project lock file under `.claude/runtime/locks/` that signals
 //! continuous work mode to the agent runtime.
 
+use amplihack_types::paths::MAX_LOCK_MESSAGE_BYTES;
 use anyhow::{Context, Result};
 use chrono::Local;
 use std::fs::{self, OpenOptions};
@@ -30,6 +31,13 @@ fn lock_dir(root: &Path) -> PathBuf {
 /// If a lock is already active, this is a no-op except that an
 /// optional `message` will overwrite the existing message file.
 pub fn run_lock(message: Option<&str>) -> Result<()> {
+    if let Some(text) = message {
+        let trimmed = text.trim();
+        anyhow::ensure!(
+            !trimmed.is_empty() && trimmed.len() <= MAX_LOCK_MESSAGE_BYTES,
+            "lock message must be nonempty after trimming and at most {MAX_LOCK_MESSAGE_BYTES} UTF-8 bytes"
+        );
+    }
     let root = project_root()?;
     let dir = lock_dir(&root);
     fs::create_dir_all(&dir)

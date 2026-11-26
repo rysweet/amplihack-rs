@@ -86,7 +86,9 @@ impl Hook for SessionStartHook {
             context_parts.push(prefs);
         }
 
-        context_parts.push(load_workflow_context(&dirs));
+        if let Some(workflow_context) = load_workflow_context(&dirs) {
+            context_parts.push(workflow_context);
+        }
 
         // Check for version mismatch natively.
         if let Some(version_notice) = check_version(&dirs) {

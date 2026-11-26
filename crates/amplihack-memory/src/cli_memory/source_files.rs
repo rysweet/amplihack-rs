@@ -14,6 +14,20 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
+/// Returns the source language for a supported source file, if any.
+pub fn language_for_path(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|ext| ext.to_str())? {
+        "py" => Some("python"),
+        "ts" | "tsx" => Some("typescript"),
+        "js" | "jsx" => Some("javascript"),
+        "go" => Some("go"),
+        "rs" => Some("rust"),
+        "cs" => Some("csharp"),
+        "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" => Some("cpp"),
+        _ => None,
+    }
+}
+
 /// Folder names that never hold the project's own sources.
 pub const EXCLUDED_DIRS: &[&str] = &[
     ".git",

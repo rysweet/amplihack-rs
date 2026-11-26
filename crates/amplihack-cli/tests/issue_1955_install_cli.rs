@@ -241,3 +241,56 @@ fn force_refresh_on_a_dev_build_with_an_older_home_never_goes_to_the_network() {
         "{all}"
     );
 }
+
+/// Issue #2182, wanted item 3: after a real install into a fake home, no
+/// executable reached from its `.local/bin` is an independent copy larger
+/// than 1 MiB. A large one must be a hardlink to, or a symlink at, the built
+/// artifact outside the home; the resolver must be the small private stub.
+#[cfg(unix)]
+#[test]
+fn an_install_leaves_no_large_independent_copy_in_the_fake_home() {
+    use std::os::unix::fs::MetadataExt;
+    const BOUND: u64 = 1024 * 1024;
+    let host = Host::new();
+    let tree = host.path("tag-worktree");
+    source_tree(&tree, amplihack_cli::VERSION);
+
+    let output = host.install(&["--force-refresh"], Some(&tree), host.temp.path());
+
+    let all = text(&output);
+    assert!(output.status.success(), "{all}");
+    let home = fs::canonicalize(&host.home).unwrap();
+    let local_bin = home.join(".local/bin");
+    let mut seen = Vec::new();
+    for entry in fs::read_dir(&local_bin).unwrap() {
+        let entry = entry.unwrap();
+        let Ok(real) = fs::canonicalize(entry.path()) else {
+            continue;
+        };
+        let meta = fs::metadata(&real).unwrap();
+        if !meta.is_file() {
+            continue;
+        }
+        seen.push(entry.file_name());
+        assert!(
+            meta.len() <= BOUND || !real.starts_with(&home) || meta.nlink() > 1,
+            "{} resolves to {}, an independent {}-byte copy inside the fake home\n{all}",
+            entry.path().display(),
+            real.display(),
+            meta.len()
+        );
+    }
+    for name in ["amplihack", "amplihack-asset-resolver"] {
+        assert!(
+            seen.iter().any(|seen| seen == name),
+            "{name} not staged in {}: {seen:?}\n{all}",
+            local_bin.display()
+        );
+    }
+    let resolver = fs::metadata(local_bin.join("amplihack-asset-resolver")).unwrap();
+    assert!(
+        resolver.len() <= BOUND,
+        "the staged resolver is {} bytes, not the private stub",
+        resolver.len()
+    );
+}

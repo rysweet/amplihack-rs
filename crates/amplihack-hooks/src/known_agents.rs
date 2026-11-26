@@ -13,10 +13,8 @@
 
 /// All built-in amplihack agent names. Keep sorted for `binary_search`.
 ///
-/// Derived from the unique `.md` basenames under `amplifier-bundle/agents/`
-/// (the `guide` basename appears under both `agents/` and `agents/core/` and is
-/// deduped to a single entry). The `registry_matches_bundled_agent_files` test
-/// fails the build if this list drifts from the bundled agent definitions.
+/// Derived from the `.md` basenames under `amplifier-bundle/agents/`. The
+/// `registry_matches_bundled_agent_files` test fails the build if this list drifts from the bundled agent definitions.
 static AMPLIHACK_AGENTS: &[&str] = &[
     "ambiguity",
     "amplifier-cli-architect",
@@ -40,7 +38,6 @@ static AMPLIHACK_AGENTS: &[&str] = &[
     "integration",
     "knowledge-archaeologist",
     "mcp-server-builder",
-    "multi-agent-debate",
     "n-version-validator",
     "openapi-scaffolder",
     "optimizer",
@@ -119,9 +116,8 @@ mod tests {
 
     #[test]
     fn agent_count_matches_unique_bundled_agents() {
-        // 43 agent `.md` files, but `guide` is duplicated across
-        // `agents/` and `agents/core/`, leaving 42 unique names.
-        assert_eq!(agent_count(), 42);
+        // One name for each of the 41 agent `.md` files.
+        assert_eq!(agent_count(), 41);
     }
 
     #[test]

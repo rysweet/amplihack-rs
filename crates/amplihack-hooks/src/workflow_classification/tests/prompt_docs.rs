@@ -172,6 +172,7 @@ fn docs_list_every_last_rule_value() {
         "harness_notice",
         "peer_message",
         "scheduled_prompt",
+        "routing_text_off",
     ] {
         assert!(docs.contains(&format!("`{rule}`")), "docs omit `{rule}`");
     }

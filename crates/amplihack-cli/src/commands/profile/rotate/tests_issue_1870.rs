@@ -77,6 +77,7 @@ fn windows(session: f64, week: f64) -> Windows {
             used: week,
             resets_at: None,
         }),
+        week_models: Vec::new(),
         no_session_limit: false,
     }
 }
@@ -496,7 +497,7 @@ fn stuck_read(
 }
 
 #[test]
-fn a_decision_that_keeps_naming_an_unknown_target_is_an_error_within_the_cap() {
+fn an_unknown_target_is_not_swapped_to_even_if_selection_proposes_it_again() {
     let e = env();
     let c = gate_ctx(&e, Some(stuck_read));
     let s = snap(&c);
@@ -528,12 +529,10 @@ fn a_decision_that_keeps_naming_an_unknown_target_is_an_error_within_the_cap() {
             Ok(again)
         },
     );
-    assert!(
-        matches!(got, Err(ProfileError::GateUnsettled)),
-        "no swap onto an unknown target: {:?}",
-        got.map(|m| m.decision)
-    );
-    assert_eq!(decisions, 2, "one name: read once, made unknown once");
+    let got = got.unwrap();
+    assert_eq!(got.decision, Decision::Stay);
+    assert!(!got.seen.extra.confirmed.contains(&n("spare")));
+    assert_eq!(decisions, 1);
     assert_eq!(*STUCK_READS.lock().unwrap(), ["spare"], "read once");
 }
 
@@ -559,48 +558,29 @@ fn slow_full(
     (exh(43.0, 100.0), None)
 }
 
-/// The rule: all re-reads of one cycle share one time limit. With a limit of
-/// 300 ms and reads of 200 ms, the first read is given the whole limit, the
-/// second exactly the 100 ms the first left, and the third is never started.
-///
-/// This test used to sleep 200 ms inside a real 300 ms limit and failed when
-/// the sleep overran on a loaded host (issue #3008). `settle_timed` takes
-/// the time spent as an argument, so the figures below are exact.
+/// Reconsidering the choice after a full target leaves other candidates
+/// unconfirmed until a later cycle, even with probe budget remaining.
 #[test]
-fn all_rereads_of_one_gate_share_one_time_limit() {
+fn a_full_target_is_read_once_and_an_alternative_waits_for_confirmation() {
+    SLOW_LEFT.lock().unwrap().clear();
+    *SLOW_SPENT.lock().unwrap() = Duration::ZERO;
     let e = env();
     let c = gate_ctx(&e, Some(slow_full));
     let s = snap(&c);
     let at = now();
-    // The live login is spent, so the readings are older than the last good
-    // age: issue #2820 accepts a recent one at the time limit.
-    let stale = |sess, week| {
-        rd(
-            sess,
-            week,
-            Some(
-                at - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS
-                    - 60,
-            ),
-        )
-    };
     let m = decide_measured(
         &c,
         &s,
         spent(),
         vec![
-            (n("first"), stale(5.0, 5.0)),
-            (n("second"), stale(10.0, 10.0)),
-            (n("third"), stale(15.0, 15.0)),
+            (n("first"), rd(5.0, 5.0, Some(at - 600))),
+            (n("second"), rd(10.0, 10.0, Some(at - 600))),
+            (n("third"), rd(15.0, 15.0, Some(at - 600))),
         ],
         at,
     )
     .unwrap();
-    assert!(
-        matches!(&m.decision, Decision::Swap { .. }),
-        "without the gate a stale reading wins: {:?}",
-        m.decision
-    );
+    assert!(matches!(&m.decision, Decision::Swap { to, .. } if to == &n("first")));
     let budget = Duration::from_millis(300);
     let got = fresh::settle_timed(
         &c,
@@ -611,48 +591,21 @@ fn all_rereads_of_one_gate_share_one_time_limit() {
         |live, probes, extra, at| decide_with(&c, &s, live, probes, at, extra),
     )
     .unwrap();
-    let left = SLOW_LEFT.lock().unwrap().clone();
-    assert_eq!(
-        left.len(),
-        2,
-        "the third read is never started; the limit is spent: {left:?}"
-    );
-    assert_eq!(left[0].1, budget, "the first read gets the whole limit");
-    assert_eq!(
-        left[1].1,
-        Duration::from_millis(100),
-        "the second read gets only what the first left, not a new deadline: {left:?}"
-    );
-    let third = got
-        .fresh_lines
+    assert_eq!(*SLOW_LEFT.lock().unwrap(), [("first".to_string(), budget)]);
+    assert_eq!(got.decision, Decision::Stay);
+    assert_eq!(got.seen.extra.confirmed, [n("first")].into());
+    let first = got
+        .others
         .iter()
-        .find(|l| l.contains("time limit reached"))
-        .unwrap_or_else(|| panic!("no time-limit line: {:?}", got.fresh_lines));
-    assert!(
-        !left.iter().any(|(name, _)| third.contains(name.as_str())),
-        "the time-limit line names the login that was not read: {third}"
-    );
-    assert!(
-        !matches!(got.decision, Decision::Swap { .. }),
-        "no swap onto a login that was not read again: {:?}",
-        got.decision
-    );
-    // Issue #2910: the login the time limit left unread is unknown
-    // (`timeout`) in the no-target counts, not "not tried (re-read limit 3)",
-    // which is for the cap of three re-reads alone.
-    let unread = ["first", "second", "third"]
-        .into_iter()
-        .find(|w| !left.iter().any(|(name, _)| name.as_str() == *w))
-        .expect("one login was not read");
-    let st = got.seen.logins.get(&n(unread)).expect("the cycle saw it");
-    assert_eq!(
-        st.basis,
-        crate::commands::profile::rotate::decide::target_seen::Basis::Unknown(
-            crate::commands::profile::rotate::measure::ProbeLabel::Timeout
-        ),
-        "{st:?}"
-    );
-    assert!(!got.seen.not_tried.contains(&n(unread)), "{:?}", got.seen);
+        .find(|(name, _)| name == &n("first"))
+        .unwrap();
+    assert_eq!(first.1, exh(43.0, 100.0).reading);
+    let second = got
+        .others
+        .iter()
+        .find(|(name, _)| name == &n("second"))
+        .unwrap();
+    assert_eq!(second.1, rd(10.0, 10.0, Some(at - 600)).reading);
 }
 
 #[test]
@@ -745,13 +698,8 @@ fn a_rejected_target_is_not_chosen_again_on_its_stale_reading() {
         "{:?}",
         got.decision
     );
-    assert!(
-        got.fresh_lines
-            .iter()
-            .any(|l| l.starts_with("reject: spare ")),
-        "{:?}",
-        got.fresh_lines
-    );
+    assert_eq!(got.decision, Decision::Stay);
+    assert!(got.seen.extra.confirmed.is_empty());
 }
 
 /// Issue #2820: a target an earlier gate of the cycle accepted without a
@@ -798,13 +746,8 @@ fn an_earlier_unconfirmed_target_is_rejected_when_the_live_login_is_not_blocked(
         got.decision
     );
     assert_eq!(got.seen.unconfirmed, None, "{:?}", got.fresh_lines);
-    assert!(
-        got.fresh_lines
-            .iter()
-            .any(|l| l.starts_with("reject: spare ")),
-        "{:?}",
-        got.fresh_lines
-    );
+    assert_eq!(got.decision, Decision::Stay);
+    assert!(got.seen.extra.confirmed.is_empty());
 }
 
 #[test]
@@ -875,7 +818,8 @@ fn gate_never_reads_under_the_lock_and_a_stale_target_is_unknown() {
     )
     .unwrap();
     let got = fresh::gate(&c, &s, m, Reread::Never).unwrap();
-    assert_eq!(got.decision, Decision::Alert);
+    assert_eq!(got.decision, Decision::Stay);
+    assert!(got.seen.extra.confirmed.is_empty());
     assert!(got.fresh_lines.is_empty(), "the Never path writes no line");
 }
 
@@ -903,7 +847,8 @@ fn gate_never_treats_a_target_damped_since_its_reading_as_unknown() {
         m.decision
     );
     let got = fresh::gate(&c, &s, m, Reread::Never).unwrap();
-    assert_eq!(got.decision, Decision::Alert);
+    assert_eq!(got.decision, Decision::Stay);
+    assert!(got.seen.extra.confirmed.is_empty());
 }
 
 #[test]
@@ -921,13 +866,14 @@ fn gate_without_a_hook_treats_a_stale_target_as_unknown() {
     )
     .unwrap();
     let got = fresh::gate(&c, &s, m, Reread::Allowed).unwrap();
-    assert_eq!(got.decision, Decision::Alert);
+    assert_eq!(got.decision, Decision::Stay);
+    assert!(got.seen.extra.confirmed.is_empty());
 }
 
 #[test]
-fn gate_leaves_a_fresh_target_and_a_stay_alone() {
+fn a_fresh_target_is_confirmed_and_a_stay_needs_no_read() {
     let e = env();
-    let c = gate_ctx(&e, Some(panics));
+    let c = gate_ctx(&e, Some(spare_full_quiet));
     let s = snap(&c);
     let at = now();
     let m = decide_measured(
@@ -939,12 +885,9 @@ fn gate_leaves_a_fresh_target_and_a_stay_alone() {
     )
     .unwrap();
     let got = fresh::gate(&c, &s, m, Reread::Allowed).unwrap();
-    assert!(
-        matches!(&got.decision, Decision::Swap { to, .. } if to == &n("spare")),
-        "{:?}",
-        got.decision
-    );
-    assert!(got.fresh_lines.is_empty());
+    assert_eq!(got.decision, Decision::Alert);
+    assert_eq!(got.others[0].1, exh(43.0, 100.0).reading);
+    let c = gate_ctx(&e, Some(panics));
     // A stay is never gated, however old its candidates' readings.
     let m = decide_measured(
         &c,

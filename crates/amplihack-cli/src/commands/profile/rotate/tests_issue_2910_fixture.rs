@@ -6,7 +6,8 @@
 //! stored profiles a test adds). Probing is stubbed with `Ctx::measure`; the
 //! stub builds the cycle's `Extra` (labels and last good readings) the way
 //! `measure_and_decide` does and then runs the real decision, `decide_with`.
-//! The re-read is installed only when a test gives one. Nothing here reads a
+//! The confirmation repeats the fixture values unless a test supplies its
+//! own confirmation hook. Nothing here reads a
 //! login, starts `claude`, uses the network or a tmux server, or inherits a
 //! profile root. The environment is guarded: `HOME` and the profile root point
 //! at the test's folder, and `CLAUDE_CONFIG_DIR` and every credential variable
@@ -46,7 +47,7 @@ use crate::commands::profile::rotate::measure::ProbeLabel;
 use crate::commands::profile::rotate::observe::{Measurement, Snap, decide_with};
 use crate::commands::profile::rotate::settings::Settings;
 use crate::commands::profile::rotate::tests_revalidate_cause::{
-    add_stored, ctx_with, log_of, probes_for,
+    add_stored, confirm_fixture as confirm_observation, ctx_with, log_of, probes_for,
 };
 use crate::commands::profile::rotate::tests_swap::{CREDS, Env, env, ino_at, login, private};
 use crate::commands::profile::usage_cmd::ENV_CREDENTIAL_VARS;
@@ -114,6 +115,21 @@ pub(in crate::commands::profile::rotate) fn stub(
         at,
         &extra,
     )
+}
+
+fn confirm_fixture(
+    ctx: &Ctx,
+    who: &ProfileName,
+    left: std::time::Duration,
+) -> (Probed, Option<ProbeLabel>) {
+    let (probe, _) = confirm_observation(ctx, who, left);
+    let label = SCENE.with(|sc| {
+        sc.borrow()
+            .labels
+            .iter()
+            .find_map(|(name, label)| (name == who.as_str()).then_some(*label))
+    });
+    (probe, label)
 }
 
 // --- The fleet ----------------------------------------------------------------------
@@ -229,6 +245,37 @@ impl Fleet {
             unknown: Vec::new(),
         };
         usage_history::append_with(&self.e.root, &entry, clock(), None).unwrap();
+    }
+
+    /// Issue #3347: a per-model week for `who` in the stored readings
+    /// (`usage.json`), `used` percent, observed 30 minutes before the decision
+    /// clock and resetting in three days, so `who`'s model weeks are known.
+    pub(in crate::commands::profile::rotate) fn model_week(&self, who: &str, used: f64) {
+        use crate::commands::profile::auto_switch::kit::{
+            ModelWeek, Reading, ReadingSource, State,
+        };
+        let dir = self.e.root.join(".auto-switch.d");
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let state = State::new(&self.e.root).unwrap();
+        let mut file = state.try_load_usage().unwrap();
+        let at = clock() - 1800;
+        file.accounts.insert(
+            who.to_string(),
+            Reading {
+                five_hour: None,
+                seven_day: None,
+                week_models: vec![ModelWeek {
+                    label: "Fable".into(),
+                    used_percentage: used,
+                    resets_at: Some(clock() + 3 * 86_400),
+                    observed_at: at,
+                }],
+                observed_at: at,
+                source: ReadingSource::Statusline,
+            },
+        );
+        state.save_usage(&file).unwrap();
     }
 
     /// Marks `who` as an overflow (credit) profile of tier 1.
@@ -358,7 +405,7 @@ pub(in crate::commands::profile::rotate) fn run_full(
     measure: MeasureFn,
 ) -> CycleOutcome {
     run_tuned(f, s, live, table, labels, mode, &|ctx| {
-        ctx.reread = reread;
+        ctx.reread = reread.or(ctx.reread);
         ctx.measure = Some(measure);
     })
 }
@@ -403,9 +450,9 @@ pub(in crate::commands::profile::rotate) fn run_tuned(
         g.clear(var);
     }
     let mut ctx = ctx_with(&f.e, stub);
+    ctx.reread = Some(confirm_fixture);
     ctx.settings = s;
     ctx.now = clock;
-    ctx.reread = None;
     tune(&mut ctx);
     run_cycle(&mut ctx, mode).expect("a cycle does not end in an error for this")
 }

@@ -177,6 +177,7 @@ fn all_plan_logins_out(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
                 used: 40.0,
                 resets_at: reset,
             }),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,
@@ -348,6 +349,12 @@ fn failing(f: &Fx) -> Ctx {
     login(&spare.join(CREDS));
     let mut c = f.ctx(|_| panic!("no move onto the API key here"));
     c.measure = Some(live_probe_fails);
+    c.reread = Some(|ctx, who, _| {
+        assert_eq!(who, &n("spare"));
+        let mut p = super::tests_revalidate_cause::ok(10.0, 10.0);
+        p.observed_at = Some((ctx.now)());
+        (p, None)
+    });
     c.failed_live = 2;
     c
 }
@@ -754,6 +761,7 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
         windows: Windows {
             session: win(100.0),
             week: win(40.0),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,
@@ -771,6 +779,7 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
         windows: Windows {
             session: win(10.0),
             week: win(10.0),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,

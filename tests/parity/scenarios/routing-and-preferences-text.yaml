@@ -1,0 +1,44 @@
+name: routing-and-preferences-text
+description: >
+  Verify the two text switches, text.routing and text.prompt_preferences,
+  from outside the hook program. Native Rust tests run the real hook binary
+  in separate temporary homes, with each setting off in a user file, a
+  project file or its environment variable, and with nothing set. Assertions
+  compare outputs with the same hook run with nothing set, JSON fields and
+  constants the code inserts, without matching model text or report wording.
+type: cli
+tags: [hooks, context, config, qa-team]
+
+scenarios:
+  - name: hooks-honour-each-setting-and-keep-todays-output-by-default
+    description: >
+      Run session start, the prompt event and the routing reminder with
+      nothing set, with files that set neither key, with a user file that
+      does not parse and with one that cannot be read; the output is the
+      same in every state and the hook exits 0. With text.routing off, the
+      routing reminder and the session-start workflow section are left out
+      and a nested recipe session keeps its text. With
+      text.prompt_preferences off, or in a recipe step, the prompt event
+      adds no preferences table. The variable wins over the files, a project
+      file is honoured, an unknown value keeps the default with one escaped
+      report on stderr, and AMPLIHACK_HOOK_TEXT=none still removes every
+      context field.
+    steps:
+      - type: command
+        command: >-
+          nice -n 15 ionice -c2 -n7 cargo test --locked
+          -p amplihack-hooks-bin --test text_switches
+        expected_exit_code: 0
+
+  - name: config-get-and-the-hook-reader-agree
+    description: >
+      Write user and project files and set variables, then compare
+      amplihack config get with the reader the hook program uses, for both
+      keys, including unknown values.
+    steps:
+      - type: command
+        command: >-
+          nice -n 15 ionice -c2 -n7 cargo test --locked
+          -p amplihack-cli --test cli_integration
+          issue_1606_config_cli::config_get_and_the_hook_reader_agree_on_the_text_switches
+        expected_exit_code: 0

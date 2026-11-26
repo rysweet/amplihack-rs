@@ -42,7 +42,6 @@ components:
       - "creative"
       - "research"
     include:
-      - "outside-in-testing"
       - "design-patterns-expert"
 
 metadata:

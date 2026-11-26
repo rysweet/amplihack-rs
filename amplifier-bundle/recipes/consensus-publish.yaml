@@ -80,12 +80,14 @@ steps:
         # #2994: merge a moved remote, never rebase; #2839: autostash keeps the unstaged report. One pull, then one push.
         # git's output goes to stderr with URL user-info redacted (step-20b's expression); a failure goes to step9-push-recovery.
         redact_to_stderr() { ( set -o pipefail; "$@" 2>&1 | sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' >&2 ); }
-        pull_rc=0; redact_to_stderr workflow_pull_merge || pull_rc=$?
+        # #1930: setup pushes nothing, so a new branch has no upstream. Its first push here sets it with -u; there is nothing to pull yet. MIRROR: consensus-pr-feedback.yaml step12.
+        FIRST_PUSH_BRANCH=""; git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 || FIRST_PUSH_BRANCH="$(git branch --show-current)"
+        pull_rc=0; [ -n "$FIRST_PUSH_BRANCH" ] || redact_to_stderr workflow_pull_merge || pull_rc=$?
         if [ "$pull_rc" -ne 0 ]; then
           echo "ERROR: git pull --no-rebase failed during consensus step9-commit (exit $pull_rc); nothing was pushed" >&2
           PUSH_REASON="push_failed"
         else
-          push_rc=0; redact_to_stderr git push || push_rc=$?
+          push_rc=0; redact_to_stderr git push ${FIRST_PUSH_BRANCH:+-u origin "HEAD:$FIRST_PUSH_BRANCH"} || push_rc=$?
           if [ "$push_rc" -eq 0 ]; then
             PUSH_RESULT=true
             PUSH_REASON="success"

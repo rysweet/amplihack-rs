@@ -66,6 +66,7 @@ fn probe(session: f64, week: f64, observed_at: Option<i64>) -> Probed {
         windows: Windows {
             session: Some(win(session)),
             week: Some(win(week)),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,

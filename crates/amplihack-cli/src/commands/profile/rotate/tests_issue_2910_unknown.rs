@@ -28,9 +28,9 @@
 //!
 //! ```text
 //! struct Facts { failed_now: bool, attempts: usize, can_read: bool,
-//!                live_blocked: bool, label: Option<ProbeLabel>,
-//!                recent: bool }
-//! enum Limit { Count, Time }
+//!                live_blocked: bool, model_full: bool, model_known: bool,
+//!                label: Option<ProbeLabel>, recent: bool }
+//! enum Limit { Confirmation, Count, Time }
 //! enum Why { Unknown(ProbeLabel), Unfit(Unfit), Older(u64) }
 //! enum Step { AcceptUnconfirmed(ProbeLabel), AcceptStale(Limit),
 //!             ReadAgain, Reject(Why), NotTried(Limit) }
@@ -68,6 +68,8 @@ fn facts() -> Facts {
         attempts: 0,
         can_read: true,
         live_blocked: false,
+        model_full: false,
+        model_known: true,
         label: None,
         recent: false,
     }
@@ -170,6 +172,8 @@ fn at_the_cap_a_failed_target_is_not_tried_and_never_accepted() {
                     attempts,
                     can_read,
                     live_blocked: false,
+                    model_full: false,
+                    model_known: true,
                     label,
                     recent: false,
                 };
@@ -305,7 +309,7 @@ fn run_with(
     )
 }
 
-// --- AC5: one re-read per candidate tried, none for a direct or failed one ----------------------
+// --- Confirmation reads one selected target per decision ----------------------
 
 static CALLS_AC5: Calls = Mutex::new(Vec::new());
 
@@ -326,7 +330,7 @@ fn reread_ac5(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeL
 /// - `direct` (room 40) was read directly this cycle; it ranks after `second`,
 ///   so it is not tried here (the next test covers a directly read target).
 #[test]
-fn ac5_a_rejected_target_is_named_and_the_next_one_is_confirmed_with_one_read_each() {
+fn ac5_a_rejected_target_leaves_the_alternatives_for_a_later_cycle() {
     let f = fleet(&["top", "lg", "second", "direct"], &[]);
     f.history("lg", 1800, 0, 45);
     let out = run_with(
@@ -341,35 +345,16 @@ fn ac5_a_rejected_target_is_named_and_the_next_one_is_confirmed_with_one_read_ea
         &[("lg", Http429)],
         Some(reread_ac5),
     );
-    let log = f.log();
-    assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("second"), "{log}");
-    // Exactly one read per candidate tried: none for `lg` (its probe failed in
-    // this cycle), and `direct` ranks after `second`, so it is never tried.
-    assert_eq!(calls(&CALLS_AC5), ["top", "second"], "{log}");
-    assert!(
-        log.contains("reject: top no room on a fresh reading"),
-        "{log}"
-    );
-    assert!(
-        log.contains("reject: lg reading unknown (HTTP 429)"),
-        "{log}"
-    );
-    assert!(
-        log.find("reject: top").unwrap() < log.find("reject: lg").unwrap(),
-        "in the order the candidates were tried:\n{log}"
-    );
-    assert!(log.contains("swap work->second"), "{log}");
-    assert!(!log.contains("unconfirmed"), "second was confirmed:\n{log}");
-    assert!(!log.contains("no profile has capacity"), "{log}");
+    assert_eq!(out, CycleOutcome::Stayed, "{}", f.log());
+    assert!(f.live_is("work"));
+    assert_eq!(calls(&CALLS_AC5), ["top"]);
+    assert_eq!(f.e.rs.load_ledger().unwrap().unwrap().swapped_at, None);
 }
 
-/// Issue #3105 (was D7 after the cap): three re-reads that each show no room
-/// use up the cycle's allowance, and a fourth candidate whose probe failed
-/// this cycle is not tried and not swapped to, though the live login is full
-/// and its last good reading shows room.
+/// A rejection ends confirmation for the cycle, even with more measured
+/// candidates and a last good reading for a candidate whose probe failed.
 #[test]
-fn ac5_after_three_rereads_a_failed_target_is_not_tried_and_nothing_is_swapped() {
+fn ac5_after_one_rejected_confirmation_nothing_is_swapped() {
     static CALLS: Calls = Mutex::new(Vec::new());
     fn reread(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
         record(&CALLS, who);
@@ -389,25 +374,22 @@ fn ac5_after_three_rereads_a_failed_target_is_not_tried_and_nothing_is_swapped()
         &[("lg", Http429)],
         Some(reread),
     );
-    let log = f.log();
-    assert_eq!(out, CycleOutcome::Alerted, "{log}");
-    assert!(f.live_is("work"), "{log}");
-    assert_eq!(calls(&CALLS), ["a", "b", "c"], "{log}");
-    assert!(
-        log.contains("reread: lg limit reached; treated as unknown"),
-        "{log}"
-    );
-    assert!(log.contains("1 not tried (re-read limit 3)"), "{log}");
-    assert!(!log.contains("unconfirmed ("), "{log}");
-    assert!(lines_with(&log, "swap work->").is_empty(), "{log}");
+    assert_eq!(out, CycleOutcome::StayedUnread, "{}", f.log());
+    assert!(f.live_is("work"));
+    assert_eq!(calls(&CALLS), ["a"]);
+    let ledger = f.e.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(ledger.swapped_at, None);
+    assert_ne!(ledger.last_cycle.unwrap().live_room, Some(true));
 }
 
-/// A candidate read directly in this cycle is not stale, so it is chosen
-/// without a second read: the hook must never run.
+/// A fresh direct measurement still needs the selected target's one
+/// confirmation, which can disclose a change since measurement.
 #[test]
-fn ac5_a_candidate_read_directly_this_cycle_is_chosen_without_a_second_read() {
+fn ac5_a_candidate_read_directly_this_cycle_is_confirmed_once_before_the_swap() {
+    static CALLS: Calls = Mutex::new(Vec::new());
     fn reread(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
-        panic!("{who} was read directly in this cycle and must not be read again")
+        record(&CALLS, who);
+        (rd(10.0, 40.0, None), None)
     }
     let f = fleet(&["direct"], &[]);
     let out = run_with(
@@ -417,13 +399,9 @@ fn ac5_a_candidate_read_directly_this_cycle_is_chosen_without_a_second_read() {
         &[],
         Some(reread),
     );
-    let log = f.log();
-    assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("direct"), "{log}");
-    assert!(
-        !log.contains("reject:") && !log.contains("reread:"),
-        "{log}"
-    );
+    assert_eq!(out, CycleOutcome::Swapped, "{}", f.log());
+    assert!(f.live_is("direct"));
+    assert_eq!(calls(&CALLS), ["direct"]);
 }
 
 #[test]
@@ -451,10 +429,10 @@ fn ac5_a_candidate_that_confirms_is_read_once_and_chosen() {
         ["top"],
         "the second candidate was not needed"
     );
-    assert!(lines_with(&f.log(), "reject:").is_empty(), "{}", f.log());
+    assert!(f.e.rs.load_ledger().unwrap().unwrap().swapped_at.is_some());
 }
 
-// --- The cap of three ---------------------------------------------------------------------------------
+// --- Larger candidate sets still receive only one confirmation ----------------
 
 static CALLS_CAP: Calls = Mutex::new(Vec::new());
 
@@ -463,11 +441,10 @@ fn reread_cap(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeL
     (exh(100.0, 10.0), None)
 }
 
-/// The live login is at 100% with no recorded block, so issue #2820's move
-/// on a recent reading does not apply (that is
-/// `prelude::tests_issue_2820_cycle`), and the cap's own rule is checked.
+/// Remaining candidates retain their readings for a subsequent cycle and
+/// cannot be swapped to without their own confirmation.
 #[test]
-fn at_most_three_candidates_are_read_and_the_rest_are_counted_as_not_tried() {
+fn only_the_selected_candidate_is_read_in_a_larger_fleet() {
     let names = ["c1", "c2", "c3", "c4", "c5"];
     let f = fleet(&names, &[]);
     let table: Vec<(&str, Probed)> = names
@@ -476,25 +453,12 @@ fn at_most_three_candidates_are_read_and_the_rest_are_counted_as_not_tried() {
         .map(|(i, who)| (*who, rd(0.0, 10.0 * (i as f64 + 1.0), stale_at())))
         .collect();
     let out = run_with(&f, exh(100.0, 40.0), &table, &[], Some(reread_cap));
-    let log = f.log();
-    assert_eq!(out, CycleOutcome::Alerted, "{log}");
-    assert!(f.live_is("work"), "{log}");
-    assert_eq!(calls(&CALLS_CAP), ["c1", "c2", "c3"], "{log}");
-    assert_eq!(lines_with(&log, "reject: ").len(), 3, "{log}");
-    assert!(
-        log.contains("reread: c4 limit reached; treated as unknown"),
-        "{log}"
-    );
-    assert!(
-        log.contains("reread: c5 limit reached; treated as unknown"),
-        "{log}"
-    );
-    assert!(
-        log.contains(
-            "ALERT: no capacity known live=work s=100% w=40% (candidates: 3 exhausted, 2 not tried (re-read limit 3))"
-        ),
-        "{log}"
-    );
+    assert_eq!(out, CycleOutcome::StayedUnread, "{}", f.log());
+    assert!(f.live_is("work"));
+    assert_eq!(calls(&CALLS_CAP), ["c1"]);
+    let ledger = f.e.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(ledger.swapped_at, None);
+    assert_ne!(ledger.last_cycle.unwrap().live_room, Some(true));
 }
 
 // --- A re-read that comes back unknown (issue #3105 withdraws D7) ---------------------------------------------
@@ -536,9 +500,8 @@ fn an_unknown_reread_is_rejected_even_when_the_live_login_has_no_room() {
     assert_eq!(l.advisory_alert, None, "a full live login: a hard ALERT");
 }
 
-/// A re-read that shows the organisation's spend limit shows a login with no
-/// room, not a read that failed: the target is rejected for it by name, and
-/// the next login is chosen.
+/// A spend-limited confirmation leaves the live login unchanged. An
+/// alternative needs its own confirmation in another cycle.
 #[test]
 fn a_reread_that_shows_a_spend_limit_is_rejected_for_it() {
     static CALLS: Calls = Mutex::new(Vec::new());
@@ -562,15 +525,12 @@ fn a_reread_that_shows_a_spend_limit_is_rejected_for_it() {
         &[],
         Some(reread),
     );
-    let log = f.log();
-    assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("next"), "{log}");
+    assert_eq!(out, CycleOutcome::StayedUnread, "{}", f.log());
+    assert!(f.live_is("work"));
     assert_eq!(calls(&CALLS), ["top"]);
-    assert!(
-        log.contains("reject: top spend limit on a fresh reading"),
-        "{log}"
-    );
-    assert!(!log.contains("no usable reading"), "{log}");
+    let ledger = f.e.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(ledger.swapped_at, None);
+    assert_ne!(ledger.last_cycle.unwrap().live_room, Some(true));
 }
 
 /// Issue #3105 (was D7): a target whose re-read said nothing is not swapped
@@ -620,15 +580,10 @@ fn d7_an_unknown_reread_is_a_rejection_when_the_live_login_has_room() {
         &[],
         Some(reread),
     );
-    let log = f.log();
-    assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("next"), "{log}");
+    assert_eq!(out, CycleOutcome::Stayed, "{}", f.log());
+    assert!(f.live_is("work"));
     assert_eq!(calls(&CALLS), ["top"]);
-    assert!(
-        log.contains("reject: top reading unknown (transport)"),
-        "{log}"
-    );
-    assert!(!log.contains("unconfirmed"), "{log}");
+    assert_eq!(f.e.rs.load_ledger().unwrap().unwrap().swapped_at, None);
 }
 
 #[test]
@@ -922,4 +877,106 @@ fn a2_an_empty_extra_changes_nothing() {
     );
     assert_eq!(out, CycleOutcome::Swapped, "{}", f.log());
     assert!(f.live_is("top"));
+}
+
+#[test]
+fn issue_3301_stored_full_model_excludes_every_blocked_login_recovery_path() {
+    use super::confirmation_spent;
+    let f = Facts {
+        failed_now: true,
+        live_blocked: true,
+        model_full: true,
+        recent: true,
+        label: Some(Http429),
+        ..facts()
+    };
+    assert_eq!(next(&f), Step::Reject(Why::Unknown(Http429)));
+    assert_eq!(
+        after_unknown(Http429, &f),
+        Step::Reject(Why::Unknown(Http429))
+    );
+    assert_eq!(confirmation_spent(&f), Step::NotTried(Limit::Confirmation));
+    for limited in [
+        Facts {
+            can_read: false,
+            failed_now: false,
+            ..f
+        },
+        Facts {
+            attempts: MAX_REREADS_PER_CYCLE,
+            ..f
+        },
+    ] {
+        assert!(!matches!(
+            next(&limited),
+            Step::AcceptStale(_) | Step::AcceptUnconfirmed(_)
+        ));
+    }
+    let usable = Facts {
+        model_full: false,
+        ..f
+    };
+    assert_eq!(
+        after_unknown(Http429, &usable),
+        Step::AcceptUnconfirmed(Http429)
+    );
+    assert_eq!(
+        confirmation_spent(&usable),
+        Step::AcceptStale(Limit::Confirmation)
+    );
+}
+
+/// Issue #3347: with no per-model week known for its current week, a target
+/// is unknown on every blocked-login recovery path, as for any other unknown
+/// read: rejected, or not tried at a limit, and never accepted unread.
+#[test]
+fn issue_3347_no_known_model_week_excludes_every_blocked_login_recovery_path() {
+    use super::confirmation_spent;
+    let f = Facts {
+        failed_now: true,
+        live_blocked: true,
+        model_known: false,
+        recent: true,
+        label: Some(Http429),
+        ..facts()
+    };
+    assert_eq!(next(&f), Step::Reject(Why::Unknown(Http429)));
+    assert_eq!(
+        after_unknown(Transport, &f),
+        Step::Reject(Why::Unknown(Transport))
+    );
+    assert_eq!(
+        next(&Facts { label: None, ..f }),
+        Step::Reject(Why::Unfit(Unfit::NoReading))
+    );
+    assert_eq!(confirmation_spent(&f), Step::NotTried(Limit::Confirmation));
+    let unread = Facts {
+        failed_now: false,
+        ..f
+    };
+    assert_eq!(
+        next(&Facts {
+            can_read: false,
+            ..unread
+        }),
+        Step::NotTried(Limit::Time)
+    );
+    assert_eq!(
+        next(&Facts {
+            attempts: MAX_REREADS_PER_CYCLE,
+            ..unread
+        }),
+        Step::NotTried(Limit::Count)
+    );
+    // The rule of #2820 is otherwise unchanged: a known week below the
+    // threshold is still taken unread.
+    let known = Facts {
+        model_known: true,
+        ..f
+    };
+    assert_eq!(next(&known), Step::AcceptUnconfirmed(Http429));
+    assert_eq!(
+        after_unknown(Transport, &known),
+        Step::AcceptUnconfirmed(Transport)
+    );
 }

@@ -490,6 +490,25 @@ Four properties make it work, and each is there for a reason:
 Directive voice, no hedging, no rationale prose. Rationale belongs in this
 document, not in per-session context.
 
+### Two parts
+
+The contract has two parts, both taken from the bytes that
+`installed_fragment()` returns, so the maintainers' comment is in neither:
+
+- The router part: the heading and every line about the router, from the
+  start of the text to the rule on waiting.
+- The process rules: the last two rules, on waiting and on stopping
+  processes.
+
+With `text.routing = on`, the default, a launch receives the whole contract.
+With `text.routing = off`, or `AMPLIHACK_ROUTING_TEXT=off` for one launch, it
+receives only the process rules, written by the same code and with the same
+checks to `<amplihack home>/private/system-prompt-append-without-routing.md`.
+Each part has its own file, so two launches with different settings never
+write over each other's file. No line is reworded in either part.
+`AMPLIHACK_NO_SYSTEM_PROMPT_APPEND=1` still drops both parts. See
+[Switch off the routing text and the repeated preferences table](howto/switch-off-routing-and-preferences-text.md).
+
 ## Security
 
 ### The fragment cannot be sourced from a repository you cloned

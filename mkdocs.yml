@@ -71,6 +71,7 @@ nav:
       - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Sessions Running: howto/keep-sessions-running.md
       - Omit Hook Context Text: howto/omit-hook-context-text.md
+      - Switch Off Routing and Preferences Text: howto/switch-off-routing-and-preferences-text.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - How a Test's Rotator Ends with Its Test: concepts/test-rotator-lifetime.md
       - Keep Tests off the Host Process Table: howto/keep-tests-off-the-host-process-table.md
@@ -184,9 +185,6 @@ nav:
       - /analyze: claude/commands/amplihack/analyze.md
       - /improve: claude/commands/amplihack/improve.md
       - /fix: claude/commands/amplihack/fix.md
-      - /n-version: claude/commands/amplihack/n-version.md
-      - /debate: claude/commands/amplihack/debate.md
-      - /cascade: claude/commands/amplihack/cascade.md
       - /customize: claude/commands/amplihack/customize.md
   - Skills:
       - Catalog: skills/SKILL_CATALOG.md

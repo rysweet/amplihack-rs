@@ -95,6 +95,7 @@ fn measured(session: f64, week: f64, s_reset: Option<i64>, w_reset: Option<i64>)
         windows: Windows {
             session: win(session, s_reset),
             week: win(week, w_reset),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,
@@ -113,6 +114,7 @@ fn exhausted(s_reset: Option<i64>, w_reset: Option<i64>) -> Probed {
         windows: Windows {
             session: win(100.0, s_reset),
             week: win(100.0, w_reset),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,
@@ -251,6 +253,7 @@ impl<'a> Case<'a> {
 
 fn uw(label: &str, used: f64, resets_at: Option<i64>) -> UsageWindow {
     UsageWindow {
+        observed_at: None,
         label: label.into(),
         used_percentage: used,
         resets_text: resets_at.map(|_| "3pm (UTC)".into()),

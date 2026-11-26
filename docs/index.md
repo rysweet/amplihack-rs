@@ -19,6 +19,7 @@ amplihack is a development framework for popular coding agent systems (Claude Co
 - [Repair a Codex installation](howto/repair-codex-installation.md) - Resolve incomplete packages and missing helpers
 - [Codex installation validation](reference/codex-installation-validation.md) - Startup checks, overrides, and recovery policy
 - [Code Atlas](atlas/index.md) - Architecture diagrams, dependency maps, and bug hunt results
+- [Test binary isolation](reference/test-binary-isolation.md) - How test builds link large executables into fake homes instead of copying them
 - [Commands & Operations](#%EF%B8%8F-commands--operations) - Execute complex tasks
 - [Workflows](#-workflows) - Structured development processes
 - [Agents & Tools](#-agents--tools) - Specialized AI capabilities
@@ -98,6 +99,7 @@ Centralized plugin system that works across all your projects:
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
 - [Find Installed Skills and Agents](howto/find-installed-skills-and-agents.md) - Search the index of every skill and agent amplihack installs with `amplihack directory find`, and use an entry you find ([reference](reference/directory-command.md))
 - [Choose Listed Skills and Agents](howto/choose-listed-skills-and-agents.md) - Extend the default set, remove an extension or restore the full lists for installed tools
+- [Switch Off Routing and Preferences Text](howto/switch-off-routing-and-preferences-text.md) - Leave out the routing text or the repeated preferences table, for one launch or for good
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
 - [Usage-Limit Waits and Limit Records](reference/usage-limit-waits.md) - A step that meets a usage, spend or credit limit records it for its login, waits for room and continues; what ends a step, the record format, the `waiting_for_capacity` line
 - [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset, for another stored login to show capacity, or for the rotator to move a new login into `~/.claude`, and run once more ([reference](reference/profile-command.md#usage-limit-wait))
@@ -130,7 +132,7 @@ amplihack copilot
 
 - Uses GitHub Copilot models (switch with `/model` command)
 - Adaptive hooks enable preference injection and context loading
-- All 42 bundled agents available via `--agent <name>` flag
+- All 41 bundled agents available via `--agent <name>` flag
 - See [GitHub Copilot CLI](COPILOT_CLI.md) for complete guide
 - See [How to Use amplihack with a Non-Claude Agent](howto/use-non-claude-agent.md) for `AMPLIHACK_AGENT_BINARY` propagation and nested Copilot compatibility details
 - Follow the [Copilot parity control-plane tutorial](tutorials/copilot-parity-control-plane.md) for step-by-step setup and validation
@@ -650,9 +652,6 @@ Execute complex tasks with simple slash commands.
 
 ### Advanced Commands
 
-- `/amplihack:n-version <task>` - Generate N independent solutions for critical code
-- `/amplihack:debate <question>` - Multi-agent structured debate for decisions
-- `/amplihack:cascade <task>` - Fallback cascade for resilient operations
 - `/amplihack:customize` - Manage user preferences and settings
 
 ### Auto Mode

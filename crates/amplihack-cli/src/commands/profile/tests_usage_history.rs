@@ -37,6 +37,7 @@ const DAY: i64 = 86_400;
 
 fn win(label: &str, pct: f64, at: Option<i64>) -> UsageWindow {
     UsageWindow {
+        observed_at: None,
         label: label.to_string(),
         used_percentage: pct,
         resets_text: Some("someone@example.com resets soon".to_string()),

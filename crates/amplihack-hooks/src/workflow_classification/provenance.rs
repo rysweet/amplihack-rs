@@ -2,7 +2,7 @@
 //!
 //! The harness writes some prompts itself: task notifications, system
 //! notices, messages from another session and loop ticks. An agent step that
-//! the recipe runner launched carries [`STEP_ID_ENV`], even when the run
+//! the recipe runner launched has `AMPLIHACK_STEP_ID` set, even when the run
 //! variable was not passed on to it. None of these is a person changing topic,
 //! so `process` inserts no routing text for them and records the rule that
 //! decided it.
@@ -14,9 +14,6 @@
 //! `docs/reference/coordination-messages.md#gate-order`.
 
 use super::rule;
-
-/// Set by the recipe runner on every agent launch, at any depth.
-pub(crate) const STEP_ID_ENV: &str = "AMPLIHACK_STEP_ID";
 
 /// The frame the harness puts in front of a notice.
 const SYSTEM_NOTICE: &str = "[SYSTEM NOTIFICATION - NOT USER INPUT]";
@@ -54,7 +51,7 @@ const LOOP_HEADERS: [&str; 3] = [
 /// The step id is checked first, then the prompt, in the order of the rules
 /// in `docs/reference/coordination-messages.md`. The first match wins.
 pub(super) fn skip_rule(prompt: &str) -> Option<&'static str> {
-    if std::env::var_os(STEP_ID_ENV).is_some_and(|v| !v.is_empty()) {
+    if crate::recipe_step::step_id_set() {
         return Some(rule::AGENT_STEP_ID);
     }
     let p = prompt.trim_start();

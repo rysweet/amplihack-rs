@@ -499,6 +499,7 @@ use std::time::{Duration, Instant};
 
 fn direct_probe(session: f64, week: f64) -> Probe {
     let w = |label: &str, p: f64| UsageWindow {
+        observed_at: None,
         label: label.into(),
         used_percentage: p,
         resets_text: None,

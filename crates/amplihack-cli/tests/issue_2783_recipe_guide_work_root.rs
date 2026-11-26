@@ -10,7 +10,8 @@
 #![cfg(unix)]
 
 use crate::support::recipe_guide::{
-    GuideFixture, one_line_error, parse_appended, private_dir, show, stderr, stdout,
+    GuideFixture, one_line_error, parse_appended, private_dir, show, status_lines, stderr, stdout,
+    written_lines,
 };
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -1245,7 +1246,10 @@ fn the_success_line_escapes_a_control_character_in_the_folder_it_names() {
     // refused and no other folder stood in for it.
     assert_eq!(f.entries(&guidance_of(&run)).len(), 1, "{}", show(&o));
     let out = stdout(&o);
-    assert_eq!(out.lines().count(), 1, "{}", show(&o));
+    // One written line, then the status line (issue #3162).
+    assert_eq!(written_lines(&o).len(), 1, "{}", show(&o));
+    assert_eq!(status_lines(&o).len(), 1, "{}", show(&o));
+    assert_eq!(out.lines().count(), 2, "{}", show(&o));
     assert!(
         out.contains("\\u{001b}") && out.contains("\\u{0007}"),
         "{out}"

@@ -8,8 +8,8 @@
 //! the crate's line budget. `provenance` holds the prompts that are not a
 //! person's (issue #2533).
 
-use super::provenance::STEP_ID_ENV;
 use super::*;
+use crate::recipe_step::{RECIPE_RUN_ID_ENV, STEP_ID_ENV};
 use std::fs;
 
 mod gates;

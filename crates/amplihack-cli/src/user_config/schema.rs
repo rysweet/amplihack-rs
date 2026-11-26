@@ -8,6 +8,7 @@ use std::fmt;
 use std::path::{Component, Path};
 
 use amplihack_utils::agent_binary::validate_binary_name;
+use amplihack_utils::user_config::text_switch;
 
 use super::ConfigError;
 use crate::commands::session_tree::state::MAX_DEPTH_CEILING;
@@ -450,6 +451,28 @@ pub(crate) static KEYS: &[KeyDef] = &[
         kind: ValueKind::AbsPath,
         env: None,
         default: None,
+        lower_only: false,
+    },
+    KeyDef {
+        // Issue #3247: the routing reminder, the session-start text that
+        // sends work to the orchestrator, and the router lines of the launch
+        // contract. The hook program reads it through the same shared code
+        // (`amplihack_utils::user_config::text_switch`), where an unknown
+        // value leaves the default in force.
+        name: text_switch::ROUTING.key,
+        scope: Scope::UserAndProject,
+        kind: ValueKind::Choice(text_switch::VALUES),
+        env: Some(text_switch::ROUTING.env),
+        default: Some(text_switch::DEFAULT),
+        lower_only: false,
+    },
+    KeyDef {
+        // Issue #3247: the preferences table the prompt-event hook adds.
+        name: text_switch::PROMPT_PREFERENCES.key,
+        scope: Scope::UserAndProject,
+        kind: ValueKind::Choice(text_switch::VALUES),
+        env: Some(text_switch::PROMPT_PREFERENCES.env),
+        default: Some(text_switch::DEFAULT),
         lower_only: false,
     },
 ];

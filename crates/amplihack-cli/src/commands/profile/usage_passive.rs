@@ -24,10 +24,26 @@ pub(super) fn fresh(root: &Path, dir: &ProfileName, max_age: u64, now: i64) -> O
     let reading = auto_switch::fresh_reading(root, dir.as_str(), max_age, now)?;
     let session = reading.session.map(|w| window(w, "session"));
     let week_all = reading.week.map(|w| window(w, "all models"));
+    let week_models: Vec<_> = reading
+        .week_models
+        .into_iter()
+        .map(|m| {
+            let mut w = window(
+                Window {
+                    used_percentage: m.used_percentage,
+                    // fresh_reading only returns models with a future reset.
+                    resets_at: m.resets_at.expect("unexpired model week"),
+                },
+                &m.label,
+            );
+            w.observed_at = Some(m.observed_at);
+            w
+        })
+        .collect();
     let full = |w: &Option<UsageWindow>| w.as_ref().is_some_and(|w| w.used_percentage >= 100.0);
     let state = if full(&session) {
         UsageState::SessionExhausted
-    } else if full(&week_all) {
+    } else if full(&week_all) || week_models.iter().any(|w| w.used_percentage >= 100.0) {
         UsageState::WeeklyExhausted
     } else {
         UsageState::Ok
@@ -36,7 +52,7 @@ pub(super) fn fresh(root: &Path, dir: &ProfileName, max_age: u64, now: i64) -> O
         state,
         session,
         week_all,
-        week_models: Vec::new(),
+        week_models,
         session_limit: !reading.no_session_window,
         observed_at: Some(reading.observed_at),
     })
@@ -44,6 +60,7 @@ pub(super) fn fresh(root: &Path, dir: &ProfileName, max_age: u64, now: i64) -> O
 
 fn window(w: Window, label: &str) -> UsageWindow {
     UsageWindow {
+        observed_at: None,
         label: label.to_string(),
         used_percentage: w.used_percentage,
         resets_text: chrono::DateTime::from_timestamp(w.resets_at, 0)

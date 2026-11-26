@@ -647,7 +647,7 @@ amplifier-shadow exec test "gadugi-agentic-test run test-scenario.yaml"
 amplifier-shadow extract test /evidence ./test-evidence
 ```
 
-See the `qa-team` skill for complete integration examples (`outside-in-testing` remains an alias).
+See the `qa-team` skill for complete integration examples.
 
 ## Best Practices [LEVEL 2]
 
@@ -893,7 +893,7 @@ amplifier-shadow extract test /workspace/results ./local-results
 
 ## Related Skills [LEVEL 1]
 
-- **qa-team**: Run agentic tests in shadow environments (legacy name: `outside-in-testing`)
+- **qa-team**: Run agentic tests in shadow environments
 - **test-gap-analyzer**: Find untested code paths (complement shadow testing)
 - **philosophy-guardian**: Verify shadow scripts follow ruthless simplicity
 
@@ -919,7 +919,7 @@ When shadow tests fail:
 - Shell scripts for standalone usage
 - Docker Compose examples for CI integration
 - Complete CLI reference and troubleshooting guide
-- Integration patterns with qa-team / outside-in-testing alias
+- Integration patterns with qa-team
 - Philosophy alignment with ruthless simplicity
 
 ---

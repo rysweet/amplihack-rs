@@ -22,9 +22,9 @@ doctest = false
 # accompanying Cargo.lock update.
 default = []
 signal = ["dep:amplihack-signal", "dep:qrcode"]
-# Re-exports cross-crate memory test helpers (`memory::ffi_test_support`,
-# `commands::memory::code_graph::test_support`) for integration tests only.
-# Never enabled in release builds; forwards to `amplihack-memory/test-support`.
+# Enables memory helpers and copy-free executable staging/private resolver
+# discovery for integration tests. Keep this out of production artifacts;
+# subprocess fixtures build it in a dedicated test output directory.
 test-support = ["amplihack-memory/test-support"]
 
 [dependencies]
