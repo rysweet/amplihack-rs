@@ -89,6 +89,7 @@ impl Fx {
             archive_dir: work.path.join("archive"),
             categories: [Category::RunTarget].into_iter().collect(),
             apply: true,
+            pull_requests: PullRequests::LocalOnly,
             report_unrecorded: false,
             deadline: None,
             recipe_log_dir: None,

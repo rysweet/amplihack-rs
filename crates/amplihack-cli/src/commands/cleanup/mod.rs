@@ -6,6 +6,7 @@ pub(crate) mod archive;
 mod build_output;
 pub(crate) mod eligibility;
 pub(crate) mod procs;
+mod pull_requests;
 pub(crate) mod run_dir;
 pub(crate) mod sweep;
 pub(crate) mod targets;
@@ -18,7 +19,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use sweep::{Entry, Settings};
+use sweep::{Entry, PullRequests, Settings};
 
 /// The only code that may delete a pre-commit target, reached from the
 /// end-of-run build output removal too (issue #2886).
@@ -293,6 +294,7 @@ fn run_cleanup(args: &CleanupArgs) -> Result<bool> {
         archive_dir,
         categories,
         apply: args.apply,
+        pull_requests: PullRequests::GitHub,
         report_unrecorded: true,
         deadline: None,
         recipe_log_dir: roots.recipe.clone(),
@@ -360,6 +362,7 @@ fn run_worktree_target(args: &CleanupArgs, checkout: &Path) -> Result<bool> {
         log_age: Duration::MAX,
         categories: [Category::RunTarget].into_iter().collect(),
         apply: args.apply,
+        pull_requests: PullRequests::LocalOnly,
         report_unrecorded: false,
         deadline: None,
         recipe_log_dir: None,

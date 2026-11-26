@@ -21,11 +21,11 @@ cleanup.
 Use this guide to find what a recipe run leaves on disk, to choose where it
 goes, and to remove or archive it with `amplihack cleanup`.
 
-Every `amplihack recipe run` now writes into one work root. At the end of each
-run the runner removes the run's temporary folder and clears out earlier runs
-whose pull request was merged or closed more than a day ago. The
-`amplihack cleanup` command does the same on demand, and also archives old
-logs and removes temporary folders left by killed runs.
+Every `amplihack recipe run` writes into one work root. At the end of each
+run the runner removes the run's temporary folder and sweeps locally eligible
+run-owned items. Use `amplihack cleanup --apply` to remove eligible worktrees
+that need a pull-request lookup. The command can also archive old logs and
+remove temporary folders left by killed runs.
 
 Cleanup keeps a folder that holds unsaved Git work it can detect. A folder with
 a Git work tree that has uncommitted changes, or commits that are not on its
@@ -285,8 +285,8 @@ The five-field format and the conditions under which the hook writes nothing
 are listed in
 [Recording the target for a run](../reference/pre-commit-build-cache.md#recording-the-target-for-a-run).
 
-A run with no recorded branch has no pull request to look up and follows the
-no-PR rule in
+When a worktree has no recorded branch, cleanup uses its checked-out branch.
+A detached worktree with no recorded branch follows the no-PR rule in
 [When a run is eligible for cleanup](#when-a-run-is-eligible-for-cleanup).
 
 A custom step that creates a worktree can record it the same way:
@@ -435,6 +435,8 @@ earlier one failed, and the final error names every failure.
       for run-owned items that are now eligible (the categories `run-tmp`,
       `run-worktree` and `run-target`), and removes them. This includes items
       from earlier runs, and from the current run if it is already eligible.
+      The sweep makes no GitHub calls. It keeps worktrees and legacy targets
+      that need a pull-request answer for `amplihack cleanup --apply`.
       When the sweep removes a worktree, that worktree's target goes with it in
       the same sweep, whether the run recorded it as `created` or `reused`; see
       [When a target is removed](#when-a-target-is-removed).
@@ -917,28 +919,25 @@ recorded in `run.json` is alive and its start time matches the recorded
 `pid_start_ticks`. The start time check stops a reused process id from making
 a dead run look alive. If `/proc` cannot be read, the run is treated as active.
 
-An inactive run is **eligible** in either of these cases:
+Cleanup keeps the worktrees of a run that ended within the keep period
+(`AMPLIHACK_CLEANUP_KEEP_HOURS`, default 24) without a GitHub lookup. For
+older or interrupted runs, a worktree is **eligible** in either of these cases:
 
-- Its pull request is merged or closed, and at least the keep period
-  (`AMPLIHACK_CLEANUP_KEEP_HOURS`, default 24) has passed since `closedAt`.
-- It has no pull request, or no recorded branch, and at least the keep period
-  has passed since the later of `ended_at` and the modification time of
-  `run.json`. A killed run with an empty `ended_at` is dated by the
-  modification time of `run.json` alone.
+- It has closed or merged pull requests and none are open. Cleanup uses each
+  pull request's closing time, falling back to its merge time, and keeps the
+  worktree until the keep period has passed since the latest of those times.
+- It has no pull request or is detached with no recorded branch. At least the
+  keep period must have passed since the later of `ended_at` and the
+  modification time of `run.json`. If `ended_at` is missing or unparseable,
+  cleanup uses the modification time alone.
 
-The pull request is found with:
-
-```bash
-gh pr list --head=<branch> --state all --json number,state,closedAt,mergedAt
-```
-
-run inside the worktree itself, using the branch recorded for it in
-`owned-paths`. Each worktree gets its own verdict, so a run with one merged
-and one open pull request loses only the merged worktree. The lookup runs only
-in a worktree that has already passed the containment and linked-worktree
-checks, never in a folder named only by `run.json`, and `gh` is started with
-the same git hardening as cleanup's own git commands. Each branch is looked up
-once per sweep, and each lookup has a 30-second limit.
+In report and apply mode, `amplihack cleanup` matches pull requests by exact
+head branch name. It identifies the GitHub repository from the local remotes
+of a verified worktree and shares one all-state REST listing across its
+checkouts. Each listing uses pages of 100, with a limit of 40 requests per
+repository and a 30-second timeout per request. If cleanup cannot identify the
+repository or finish and validate the listing, it keeps the dependent items
+and reports why.
 
 These rules decide worktrees, and targets recorded in the legacy format. A
 run's legacy targets are removed only when every worktree the run still has is
@@ -952,16 +951,15 @@ A run is **skipped**, with a reason in the output, when:
 
 - the keep period has not yet passed;
 - its pull request is still open;
-- `gh` is missing, fails, returns output that cannot be parsed, or takes longer
-  than 30 seconds;
+- a needed pull-request listing is incomplete or unusable;
 - `run.json` has a `schema_version` newer than this release understands;
 - its `owned-paths` file exists but cannot be read (reported as
   `owned-paths unreadable: ...`). Untagged targets are then also skipped,
   since that run may own them.
 
-For example, with the default keep period, a run whose PR closed one hour ago
-is skipped with the reason `within keep period`, and a run whose PR closed 25
-hours ago has its worktree and target removed.
+With the default keep period, manual cleanup keeps an older run's worktree
+if its PR closed one hour ago. If the PR closed 25 hours ago, the worktree
+is eligible for removal.
 
 ## Folders with unsaved work are kept
 

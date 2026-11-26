@@ -7,9 +7,6 @@
 //! - `pub(crate) enum Verdict { Active, Eligible { reason: String }, Skip { reason: String } }`
 //! - `pub(crate) struct PrInfo { pub number: u64, pub state: String,
 //!   pub closed_at: Option<DateTime<Utc>>, pub merged_at: Option<DateTime<Utc>> }`
-//! - `pub(crate) fn parse_pr_list(stdout: &[u8]) -> anyhow::Result<Option<PrInfo>>`:
-//!   typed serde over `gh pr list --json number,state,closedAt,mergedAt`,
-//!   strict RFC 3339, output over 1 MiB is an error, `[]` is `Ok(None)`;
 //! - `pub(crate) fn pr_verdict(pr: &PrInfo, now: DateTime<Utc>, keep: Duration) -> Verdict`;
 //! - `pub(crate) fn no_pr_verdict(ended_at: Option<DateTime<Utc>>, run_json_mtime: SystemTime,
 //!   now: SystemTime, keep: Duration) -> Verdict`;
@@ -32,30 +29,6 @@ fn skip_reason(v: &Verdict) -> &str {
         Verdict::Skip { reason } => reason,
         other => panic!("expected Skip, got {other:?}"),
     }
-}
-
-#[test]
-fn parse_pr_list_reads_merged_closed_open_and_empty() {
-    let merged = br#"[{"number":1820,"state":"MERGED","closedAt":"2026-10-31T08:02:11Z","mergedAt":"2026-10-31T08:02:11Z"}]"#;
-    let pr = parse_pr_list(merged).unwrap().unwrap();
-    assert_eq!(pr.number, 1820);
-    assert_eq!(pr.state, "MERGED");
-    assert!(pr.closed_at.is_some() && pr.merged_at.is_some());
-
-    let open = br#"[{"number":1831,"state":"OPEN","closedAt":null,"mergedAt":null}]"#;
-    assert_eq!(parse_pr_list(open).unwrap().unwrap().state, "OPEN");
-    assert!(parse_pr_list(b"[]").unwrap().is_none());
-}
-
-#[test]
-fn parse_pr_list_rejects_garbage_bad_dates_and_oversized_output() {
-    assert!(parse_pr_list(b"not json").is_err());
-    assert!(
-        parse_pr_list(br#"[{"number":1,"state":"MERGED","closedAt":"yesterday","mergedAt":null}]"#)
-            .is_err()
-    );
-    let huge = vec![b' '; 1024 * 1024 + 1];
-    assert!(parse_pr_list(&huge).is_err());
 }
 
 #[test]
@@ -108,6 +81,26 @@ fn closed_at_in_the_future_counts_as_within_keep() {
         merged_at: None,
     };
     assert!(skip_reason(&pr_verdict(&pr, Utc::now(), DAY)).contains("within keep period"));
+}
+
+#[test]
+fn pr_and_no_pr_rules_are_eligible_at_the_keep_boundary() {
+    let now = Utc::now();
+    let boundary = now - chrono::Duration::days(1);
+    let pr = PrInfo {
+        number: 3,
+        state: "MERGED".into(),
+        closed_at: Some(boundary),
+        merged_at: Some(now),
+    };
+    assert!(matches!(
+        pr_verdict(&pr, now, DAY),
+        Verdict::Eligible { .. }
+    ));
+    assert!(matches!(
+        no_pr_verdict(None, boundary.into(), now.into(), DAY),
+        Verdict::Eligible { .. }
+    ));
 }
 
 #[test]
