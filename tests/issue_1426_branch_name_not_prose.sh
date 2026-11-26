@@ -13,7 +13,7 @@
 #
 #     feat/issue-142-repository-usersyousrcrepo-gws142repo-b-github-exa
 #
-# — path separators stripped, cut mid-word at "gith" — created as a SECOND
+# — path separators stripped, cut mid-word at "exa" — created as a SECOND
 # branch beside `fix/142-band-edge-previous-slice`, which the very same task had
 # pinned and told the run not to branch away from. The same shape once produced
 # `feat/issue-1277-skip-workflow-launch-this-agent-is-already-executi`.
@@ -333,12 +333,16 @@ else
 fi
 
 # Word-boundary truncation: every hyphen-separated piece of the tail must be a
-# WHOLE word of the task description, never a fragment such as "gith".
+# WHOLE word of the task description, never a fragment such as "exa".
+# One-letter words do not count: a one-letter piece is what a cut after the
+# first letter leaves (the "b" of "band"), and the task's `repo-b` and `repo-g`
+# split into one-letter words that would otherwise let such a piece through.
 BAD_WORD=""
 LOWER_TASK="$(printf '%s' "${INCIDENT_PREAMBLE}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' ' ')"
 for piece in ${TAIL//-/ }; do
     FOUND=0
     for word in ${LOWER_TASK}; do
+        (( ${#word} > 1 )) || continue
         [[ "${word}" == "${piece}" ]] && { FOUND=1; break; }
     done
     (( FOUND )) || BAD_WORD="${piece}"

@@ -24,7 +24,7 @@ ended up on
 feat/issue-142-repository-usersyousrcrepo-gws142repo-b-github-exa
 ```
 
-— the path separators stripped out, the name cut mid-word at "gith", and created as a
+— the path separators stripped out, the name cut mid-word at "exa", and created as a
 **second** branch beside `fix/142-band-edge-previous-slice`, which the same task had
 pinned and told the run not to branch away from. The same shape once produced
 `feat/issue-1277-skip-workflow-launch-this-agent-is-already-executi`: a truncated

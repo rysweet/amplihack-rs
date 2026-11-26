@@ -10,8 +10,8 @@
 //! Run against the 1.2.99 release binary (`AMPLIHACK_TEST_BINARY=<1.2.99>`), the
 //! two `775` tests below fail with host-a's lines and no request for `work` at
 //! the fake endpoint, and the `700` control passes. Against this build all three
-//! pass. See
-//! "Cause on host-a (issue #1962)" in docs/reference/profile-command.md.
+//! pass. See the issue #1962 cause section that follows "Login directory rule"
+//! in docs/reference/profile-command.md.
 //!
 //! Every login is fake and every path is under the fixture's temp home.
 
