@@ -1055,7 +1055,7 @@ When no Claude account has capacity left, it also shows a [capacity notice](#cap
 
 Runs before Claude Code compacts the context window. Exports the current transcript so it can be referenced after compaction.
 
-The transcript copy, the original request and the compaction metadata are written to `<state root>/runtime/sessions/<session key>/logs/`; see [Hook State Root Reference](./hook-state-root.md). With no state root, the hook still succeeds and reports `transcript_path` and `metadata` as `null`. When a state root resolves, a failed transcript export or metadata write still returns the error response; see [Write failures](./hook-state-root.md#write-failures).
+The transcript copy, the original request and the compaction metadata are written to `<state root>/runtime/sessions/<session key>/logs/`; see [Hook State Root Reference](./hook-state-root.md). The hook prints `{}` on success and when no state root resolves; with no state root it writes nothing. When a state root resolves, a failed transcript export or metadata write is logged and the hook prints only the common `systemMessage` field, so the person sees the failure; see [Write failures](./hook-state-root.md#write-failures). The hook never prints `hookSpecificOutput`, which Claude Code rejects for PreCompact. The outcome and the transcript location are kept in `compaction_metadata.jsonl` and the hook log. On Codex the output is `{}`.
 
 ### 8. StopFailure — `limit-resume`
 
