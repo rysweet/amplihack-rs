@@ -498,7 +498,7 @@ mod codex_payload_contract_tests {
             serde_json::json!({}),
             serde_json::json!({"systemMessage": "export failed"}),
         ] {
-            assert_eq!(codex_output("", output), serde_json::json!({}));
+            assert_eq!(codex_output("PreCompact", output), serde_json::json!({}));
         }
     }
 
