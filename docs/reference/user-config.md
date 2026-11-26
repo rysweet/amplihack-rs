@@ -164,38 +164,38 @@ command, so it never prints `flag`.
 
 | Key | Type | Default | Env var | Flag | Files |
 |-----|------|---------|---------|------|-------|
-| `agent.binary` | `claude`, `copilot`, `codex` or `amplifier` | (unset) | `AMPLIHACK_AGENT_BINARY` | — | user only |
-| `paths.home` | absolute path to an existing directory | (unset) | `AMPLIHACK_HOME` | — | user only |
-| `lists.set` | `default` or `all` | `default` | — | — | user only |
-| `lists.enabled` | array of qualified skill and agent identities | `[]` | — | — | user only |
-| `node.heap_consent` | bool | (unset) | — | — | user only |
-| `node.max_old_space_mb` | integer, 8192 to 32768 | (unset) | — | — | user only |
-| `recipe.verbose` | bool | `false` | — | `--verbose` | user, project |
+| `agent.binary` | `claude`, `copilot`, `codex` or `amplifier` | (unset) | `AMPLIHACK_AGENT_BINARY` | none | user only |
+| `paths.home` | absolute path to an existing directory | (unset) | `AMPLIHACK_HOME` | none | user only |
+| `lists.set` | `default` or `all` | `default` | none | none | user only |
+| `lists.enabled` | array of qualified skill and agent identities | `[]` | none | none | user only |
+| `node.heap_consent` | bool | (unset) | none | none | user only |
+| `node.max_old_space_mb` | integer, 8192 to 32768 | (unset) | none | none | user only |
+| `recipe.verbose` | bool | `false` | none | `--verbose` | user, project |
 | `recipe.step_timeout` | integer seconds, at least 1 | (unset) | `AMPLIHACK_STEP_TIMEOUT` | `--step-timeout` | user, project (lower only) |
-| `recipe.detach` | `tmux` or `none` | `none` | — | `--detach`, `--no-detach` | user, project |
-| `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
-| `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
-| `recipe.usage_limit_wait` | bool | `true` | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
-| `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | — | — | user only |
-| `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
-| `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | — | user only |
-| `model.tier_map` | absolute path | (unset: `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`) | — | — | user only |
-| `review.combined_small_diff` | bool | `false` | — | — | user only |
-| `review.combined_diff_threshold` | integer lines, 1 to 100000 | `200` | — | — | user only |
-| `governor.enabled` | bool | `false` | — | — | user only |
-| `governor.max_concurrency` | integer, 1 to 64 | `4` | — | — | user only |
-| `governor.reserve_points` | integer, 0 to 100 | `10` | — | — | user only |
-| `governor.step` | integer, 1 to 8 | `1` | — | — | user only |
-| `governor.band_pct` | integer, 0 to 50 | `10` | — | — | user only |
-| `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | — | — | user only |
-| `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | — | — | user only |
-| `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | — | — | user only |
+| `recipe.detach` | `tmux` or `none` | `none` | none | `--detach`, `--no-detach` | user, project |
+| `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | none | none | user, project |
+| `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | none | none | user only |
+| `recipe.usage_limit_wait` | bool | `true` | `AMPLIHACK_USAGE_LIMIT_WAIT` | none | user, project |
+| `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | none | none | user only |
+| `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | none | user, project (lower only) |
+| `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | none | user only |
+| `model.tier_map` | absolute path | (unset: `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`) | none | none | user only |
+| `review.combined_small_diff` | bool | `false` | none | none | user only |
+| `review.combined_diff_threshold` | integer lines, 1 to 100000 | `200` | none | none | user only |
+| `governor.enabled` | bool | `false` | none | none | user only |
+| `governor.max_concurrency` | integer, 1 to 64 | `4` | none | none | user only |
+| `governor.reserve_points` | integer, 0 to 100 | `10` | none | none | user only |
+| `governor.step` | integer, 1 to 8 | `1` | none | none | user only |
+| `governor.band_pct` | integer, 0 to 50 | `10` | none | none | user only |
+| `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | none | none | user only |
+| `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | none | none | user only |
+| `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | none | none | user only |
 | `agent.standing` | bool | `false` | none | `--standing`, `--no-standing` | user only |
-| `sessions.daily_archive` | bool | `true` | — | — | user only |
-| `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
-| `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
-| `text.routing` | `on` or `off` | `on` | `AMPLIHACK_ROUTING_TEXT` | — | user, project |
-| `text.prompt_preferences` | `on` or `off` | `on` | `AMPLIHACK_PROMPT_PREFERENCES` | — | user, project |
+| `sessions.daily_archive` | bool | `true` | none | none | user only |
+| `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | none | `--days` | user only |
+| `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | none | `--dest` | user only |
+| `text.routing` | `on` or `off` | `on` | `AMPLIHACK_ROUTING_TEXT` | none | user, project |
+| `text.prompt_preferences` | `on` or `off` | `on` | `AMPLIHACK_PROMPT_PREFERENCES` | none | user, project |
 
 Any other key is an error for `config set` and a diagnostic when found in a
 file. A user-only key in a project file is reported and ignored.
