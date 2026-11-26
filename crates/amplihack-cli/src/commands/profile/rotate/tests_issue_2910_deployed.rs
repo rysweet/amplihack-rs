@@ -27,7 +27,6 @@ use crate::commands::profile::rotate::cycle::{Ctx, CycleOutcome, Mode};
 use crate::commands::profile::rotate::decide::Probed;
 use crate::commands::profile::rotate::identify::Account;
 use crate::commands::profile::rotate::ledger::LastCycle;
-use crate::commands::profile::rotate::swap_authorize::CROSS_REFUSED;
 use crate::commands::profile::rotate::tests::tests_fixture_identity;
 use crate::commands::profile::rotate::tests_issue_1870::{exh, rd};
 use crate::commands::profile::rotate::tests_swap::{CREDS, Env, login, private};
@@ -446,19 +445,12 @@ fn email_only_in_org_a(e: &Env) {
 /// another organisation. In a cycle that swaps, alpha's identity is read
 /// three times before revalidation, once by revalidation's snapshot (read
 /// 4), then once by each of the two authorisation reads (reads 5 and 6).
-/// Wherever the change is first seen, no crossing is made, and the due swap
-/// reaches beta (room 70), the next login with room in the live login's
-/// organisation:
-///
-/// - seen by revalidation (read 4): the cycle reconsiders and swaps to beta;
-/// - seen by the first authorisation read (read 5): `check_org` refuses with
-///   one ALERT, nothing moves, and the next cycle's snapshot reads alpha in
-///   `org-b`, so the decision passes over it and swaps to beta;
-/// - seen only by the read the swap acts on (read 6): `check_org` refuses
-///   there too, the prepared swap is abandoned and no journal is left, and the
-///   next cycle swaps to beta.
+/// Wherever the change is first seen, nothing moves in that cycle. Beta
+/// (room 70) needs its own direct confirmation in the next cycle, when the
+/// snapshot puts alpha in another organisation. No journal remains after
+/// either revalidation or authorisation rejects alpha.
 #[test]
-fn a_target_that_changes_organisation_is_never_crossed_into_and_the_swap_reaches_the_next() {
+fn a_target_that_changes_organisation_leaves_the_next_login_for_another_cycle() {
     let table = [
         ("alpha", rd(10.0, 20.0, None)),
         ("beta", rd(30.0, 30.0, None)),
@@ -486,33 +478,20 @@ fn a_target_that_changes_organisation_is_never_crossed_into_and_the_swap_reaches
         let out = cycle();
         let log = f.log();
         assert!(!f.live_is("alpha"), "arm {arm}: {log}");
-        assert!(!log.contains("affinity: crossing"), "arm {arm}: {log}");
         assert!(!f.e.rs.journal.exists(), "arm {arm}: no journal is left");
-        if refused {
-            assert_eq!(out, CycleOutcome::Alerted, "arm {arm}: {log}");
-            assert!(
-                f.live_is("work"),
-                "arm {arm}: a refused swap moves nothing: {log}"
-            );
-            let lines = lines_with(&log, CROSS_REFUSED);
-            assert_eq!(lines.len(), 1, "arm {arm}: one ALERT from check_org: {log}");
-            assert!(lines[0].contains(" ALERT: "), "arm {arm}: {log}");
-            set_clock(clock() + 60);
-            let out = cycle();
-            let log = f.log();
-            assert_eq!(out, CycleOutcome::Swapped, "arm {arm}: {log}");
-            assert_eq!(lines_with(&log, CROSS_REFUSED).len(), 1, "arm {arm}: {log}");
+        let expected = if refused {
+            CycleOutcome::Alerted
         } else {
-            assert_eq!(out, CycleOutcome::Swapped, "arm {arm}: {log}");
-            assert!(
-                log.contains("(account changed); reconsidered"),
-                "arm {arm}: {log}"
-            );
-            assert!(!log.contains(CROSS_REFUSED), "arm {arm}: {log}");
-        }
+            CycleOutcome::Skipped
+        };
+        assert_eq!(out, expected, "arm {arm}: {log}");
+        assert!(f.live_is("work"), "arm {arm}: {log}");
+
+        set_clock(clock() + 60);
+        let out = cycle();
         let log = f.log();
+        assert_eq!(out, CycleOutcome::Swapped, "arm {arm}: {log}");
         assert!(f.live_is("beta"), "arm {arm}: {log}");
-        assert!(log.contains("swap work->beta"), "arm {arm}: {log}");
-        assert!(!log.contains("affinity: crossing"), "arm {arm}: {log}");
+        assert!(!f.e.rs.journal.exists(), "arm {arm}: no journal is left");
     }
 }

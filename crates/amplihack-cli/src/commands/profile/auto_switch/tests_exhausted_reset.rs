@@ -15,6 +15,7 @@ fn reading(five: Option<(f64, i64)>, seven: Option<(f64, i64)>) -> Reading {
         resets_at,
     };
     Reading {
+        week_models: Vec::new(),
         five_hour: five.map(w),
         seven_day: seven.map(w),
         observed_at: NOW,

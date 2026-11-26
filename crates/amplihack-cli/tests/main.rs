@@ -391,6 +391,8 @@ mod issue_1973_wait_helpers;
 mod issue_1979_crusty_minor_followups;
 #[path = "issue_1985_codex_agent_step_flags.rs"]
 mod issue_1985_codex_agent_step_flags;
+#[path = "issue_3301_model_weeks.rs"]
+mod issue_3301_model_weeks;
 // Local-model launches of `amplihack codex`: the generated Codex home and
 // AMPLIHACK_HOOK_TEXT=none for the child.
 #[path = "codex_local_model_launch/mod.rs"]

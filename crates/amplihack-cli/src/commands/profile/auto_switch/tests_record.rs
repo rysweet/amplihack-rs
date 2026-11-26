@@ -58,6 +58,7 @@ fn obs(
     week: Option<ObservedWindow>,
 ) -> Observation {
     Observation {
+        week_models: Vec::new(),
         profile: profile.into(),
         account: account.into(),
         session,
@@ -292,6 +293,7 @@ fn a_missing_window_keeps_the_stored_one_while_it_has_not_reset() {
     accounts.insert(
         "a".to_string(),
         Reading {
+            week_models: Vec::new(),
             five_hour: Some(Window {
                 used_percentage: 10.0,
                 resets_at: t + HOUR,
@@ -307,6 +309,7 @@ fn a_missing_window_keeps_the_stored_one_while_it_has_not_reset() {
     accounts.insert(
         "b".to_string(),
         Reading {
+            week_models: Vec::new(),
             five_hour: None,
             seven_day: Some(Window {
                 used_percentage: 90.0,
@@ -357,6 +360,7 @@ fn other_accounts_in_usage_json_are_untouched() {
     let r = root(true);
     let t = now();
     let other = Reading {
+        week_models: Vec::new(),
         five_hour: Some(Window {
             used_percentage: 61.0,
             resets_at: t + HOUR,
@@ -462,6 +466,7 @@ fn stored_session_window(r: &Root, t: i64, resets_at: i64) {
     accounts.insert(
         "a".to_string(),
         Reading {
+            week_models: Vec::new(),
             five_hour: Some(Window {
                 used_percentage: 95.0,
                 resets_at,
@@ -550,6 +555,7 @@ fn seed(r: &Root, readings: &[(&str, bool, bool)]) {
             (
                 name.to_string(),
                 Reading {
+                    week_models: Vec::new(),
                     five_hour: win(*five, 20.0, t + HOUR),
                     seven_day: win(*seven, 30.0, t + DAY),
                     observed_at: t - 10,

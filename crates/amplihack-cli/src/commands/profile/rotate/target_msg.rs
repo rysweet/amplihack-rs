@@ -64,6 +64,7 @@ fn minutes(age: u64) -> u64 {
 /// `reject: <name> <reason>` (D11).
 pub fn reject(who: &ProfileName, why: &Why, week_max: u8) -> String {
     let reason = match why {
+        Why::ModelWeek(at) => format!("model week at or above {at}% on a fresh reading"),
         Why::Unfit(Unfit::Full) => "no room on a fresh reading".to_string(),
         Why::Unfit(Unfit::AboveCeiling) => {
             format!("week above ceiling {week_max}% on a fresh reading")

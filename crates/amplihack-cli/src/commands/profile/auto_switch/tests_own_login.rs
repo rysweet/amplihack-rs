@@ -225,6 +225,7 @@ fn cfg(overflow: &[&str]) -> Config {
 
 fn reading(pct: f64, now: i64) -> Reading {
     Reading {
+        week_models: Vec::new(),
         five_hour: Some(Window {
             used_percentage: pct,
             resets_at: now + 3600,

@@ -99,6 +99,12 @@ fn a_manual_login_onto_the_overflow_account_is_moved_off_while_a_plan_login_has_
     f.suspected();
     mark_overflow(&f.root, M);
     let mut c = ctx(&f, m_live_on_overflow);
+    c.reread = Some(|ctx, who, _| {
+        assert_eq!(who, &n(C));
+        let mut p = plan_ok();
+        p.observed_at = Some((ctx.now)());
+        (p, None)
+    });
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),
         CycleOutcome::Swapped,
