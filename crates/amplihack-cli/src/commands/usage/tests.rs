@@ -355,11 +355,9 @@ mod parser_invariants {
             },
         });
         let parsed_last_only = adapters::parse(&Provider::Codex, &invalid_last_only_usage);
-        assert!(
-            parsed_last_only
-                .diagnostics
-                .iter()
-                .all(|code| *code == "missing_or_invalid_token_field")
+        assert_eq!(
+            parsed_last_only.diagnostics,
+            vec!["missing_or_invalid_token_field"; 1]
         );
         assert!(parsed_last_only.event.is_some());
 
@@ -388,11 +386,9 @@ mod parser_invariants {
         });
         let parsed_last_usage_beside_total =
             adapters::parse(&Provider::Codex, &invalid_last_usage_beside_total);
-        assert!(
-            parsed_last_usage_beside_total
-                .diagnostics
-                .iter()
-                .all(|code| *code == "missing_or_invalid_token_field")
+        assert_eq!(
+            parsed_last_usage_beside_total.diagnostics,
+            vec!["missing_or_invalid_token_field"; 2]
         );
         assert!(parsed_last_usage_beside_total.event.is_some());
 
