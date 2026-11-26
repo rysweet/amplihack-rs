@@ -526,10 +526,15 @@ records to stop on. Two cases differ:
   `failed`, with that error as the detail of `loop-end.json` and of the
   driver's stdout line, and the driver exits 1.
 
-A turn counts as one in which no agent started when the runner's last
-failure-class marker lists no completed and no failed step (or there is no
-marker), `decision.json` was not written, and the marker does not list
-`decide` as completed. Two errors are the same when the error lines described
+A turn counts as one in which no agent started only on positive evidence:
+the runner's last failure-class marker is present, parses, and lists
+`completed_steps` and `failed_steps` both as empty arrays, and `decision.json`
+was not written. A turn with no marker, with a marker that does not parse, or
+with one that does not list both fields, is unknown rather than pre-agent: an
+older runner writes no marker for the bundle check, and a runner killed by
+the system (an out-of-memory kill or `SIGKILL`) can die after an agent step
+ran and before it writes one. Such a turn starts the count again, as a turn
+in which an agent ran does, and the next turn's agent reads its failure. Two errors are the same when the error lines described
 in [Failures inside a turn](#failures-inside-a-turn) are equal; the driver
 compares them and reads nothing in their wording. A turn in which an agent
 ran, a turn that succeeded, or a different error starts the count again. The
@@ -537,8 +542,12 @@ count is kept in memory, so a resumed run starts it at nought. The number,
 three, is fixed in the driver and has no setting.
 
 The runner writes its failure-class marker for a failed trusted-bundle check,
-classed `environmental` and not retryable, before its `Error:` line, so the
-turn log ends with the error.
+classed `environmental` and not retryable, with empty step lists, before its
+`Error:` line, so the turn log ends with the error. Because a turn without
+that marker never counts, the end rule depends on it;
+`crates/amplihack-cli/tests/issue_3286_untrusted_bundle_marker.rs` runs the
+real `amplihack recipe run` on a group-writable bundle and checks the marker,
+its empty step lists and the error line after it.
 
 ### The limit wait turned off
 

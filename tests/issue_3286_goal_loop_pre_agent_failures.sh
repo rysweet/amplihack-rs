@@ -10,6 +10,12 @@
 # line, with its number and the error, to the run's log
 # (AMPLIHACK_RECIPE_LOG).
 #
+# "No agent started" is read only from the runner's failure-class marker when
+# it lists no completed and no failed step. A turn with no marker, or with one
+# that does not list both, is unknown: an agent may have run and been killed
+# before the runner wrote a marker. Such a turn never counts and starts the
+# count again (crusty review of PR #3293).
+#
 # The cases run the REAL driver from a copy of this tree's bundle, with the
 # #1437 stub as `amplihack` and a fixture goal tool that never calls gh. The
 # fixture goal's `final` reading ends every run after eight turns, so a loop
@@ -132,25 +138,51 @@ AGENT_MARKER="${MARK}"'{"action":"terminal","attempt":1,"class":"agent_api","com
 AGENT_OUT="  step decide: failed
 Execution failed: 400 the session ended
 ${AGENT_MARKER}"
+# The runner's marker, then the error: what a turn now prints for a failed
+# bundle check (crates/amplihack-cli/tests/issue_3286_untrusted_bundle_marker.rs
+# holds the real runner to this).
+BX="${BUNDLE_MARKER}
+${ERR_X}"
+BY="${BUNDLE_MARKER}
+${ERR_Y}"
+# A turn in which an agent ran and the runner was killed before it wrote a
+# marker: the same last line every time, and no marker.
+KILLED="Killed: the recipe runner was stopped"
+AGENT_KILLED_OUT="  step read: completed
+  step decide: running
+${KILLED}"
 
-# --- 1. every turn fails the bundle check, with no marker (an older runner) --
+# --- 1. every turn fails with the same error and no marker: unknown, never counted
 for t in 1 2 3 4 5 6 7 8; do turn_fails "$t" "$ERR_X"; done
 run no-marker
-ok A-EXIT "the run must end with a non-zero exit: rc=${RC}" test "$RC" -ne 0
-ok A-THREE-TURNS "the run must end after three turns: turns=$(turns)" test "$(turns)" -eq 3
-ok A-ERROR-LAST "the last stdout line must carry the error: $(last_out)" contains "$(out_field '.detail // .error // empty')" "$ERR_X"
-ok A-EXIT-FIELD "the last stdout line must carry the exit: $(last_out)" test "$(out_field '.exit')" = "$RC"
-ok A-END "the end record must say failed: $(end_word)" test "$(end_word)" = failed
-ok A-LOG "one run-log line per failed turn, with its number and the error: $(cat "$LOG")" log_names_turns "$ERR_X" 1 2 3
+ok A-EXIT "a marker-less failure must not end the run; the goal's word does: rc=${RC}" test "$RC" -eq 0
+ok A-END "the goal's final word ends it: $(end_word)" test "$(end_word)" = fixture-end
+ok A-EIGHT-TURNS "every turn ran: turns=$(turns)" test "$(turns)" -eq 8
+ok A-LOG "one run-log line per failed turn, with its number and the error: $(cat "$LOG")" log_names_turns "$ERR_X" 1 2 3 4 5 6 7 8
 
-# --- 2. the same, with the marker the runner now writes ------------------------
-for t in 1 2 3 4 5 6 7 8; do turn_fails "$t" "${BUNDLE_MARKER}
+# --- 1b. an agent ran and the runner was killed before its marker, every turn ---
+for t in 1 2 3 4 5 6 7 8; do turn_fails "$t" "$AGENT_KILLED_OUT"; done
+run agent-killed
+ok A2-EXIT "a turn whose agent ran must not count as pre-agent: rc=${RC}" test "$RC" -eq 0
+ok A2-EIGHT-TURNS "every turn ran: turns=$(turns)" test "$(turns)" -eq 8
+ok A2-LOG "one run-log line per failed turn: $(cat "$LOG")" log_names_turns "$KILLED" 1 2 3 4 5 6 7 8
+
+# --- 1c. a marker that does not list the step fields is unknown too -------------
+for t in 1 2 3 4 5 6 7 8; do turn_fails "$t" "${MARK}"'{"action":"terminal","class":"environmental","retryable":false}'"
 ${ERR_X}"; done
+run marker-without-steps
+ok A3-EXIT "a marker without step lists must not end the run: rc=${RC}" test "$RC" -eq 0
+ok A3-EIGHT-TURNS "every turn ran: turns=$(turns)" test "$(turns)" -eq 8
+
+# --- 2. every turn fails the bundle check, with the marker the runner writes ----
+for t in 1 2 3 4 5 6 7 8; do turn_fails "$t" "$BX"; done
 run bundle-marker
 ok B-EXIT "the run must end with a non-zero exit: rc=${RC}" test "$RC" -ne 0
 ok B-THREE-TURNS "the run must end after three turns: turns=$(turns)" test "$(turns)" -eq 3
 ok B-ERROR-LAST "the last stdout line must carry the error: $(last_out)" contains "$(out_field '.detail // .error // empty')" "$ERR_X"
-ok B-LOG "one run-log line per failed turn: $(cat "$LOG")" log_names_turns "$ERR_X" 1 2 3
+ok B-EXIT-FIELD "the last stdout line must carry the exit: $(last_out)" test "$(out_field '.exit')" = "$RC"
+ok B-END "the end record must say failed: $(end_word)" test "$(end_word)" = failed
+ok B-LOG "one run-log line per failed turn, with its number and the error: $(cat "$LOG")" log_names_turns "$ERR_X" 1 2 3
 ok B-NOT-RETRYABLE "the turn record must read the marker as not retryable: $(jq -c .failure "${CASE}/state/turns/001/result.json" 2>/dev/null)" \
   test "$(jq -r .failure.retryable "${CASE}/state/turns/001/result.json" 2>/dev/null)" = false
 
@@ -164,15 +196,15 @@ ok C-TWO-TURNS "both turns ran: turns=$(turns)" test "$(turns)" -eq 2
 ok C-LOG "one run-log line for the one failed turn: $(cat "$LOG")" test "$(log_lines)" -eq 1
 
 # --- 4. a turn in which an agent ran starts the count again -----------------------
-turn_fails 1 "$ERR_X"; turn_fails 2 "$ERR_X"; turn_fails 3 "$AGENT_OUT"
-for t in 4 5 6 7 8; do turn_fails "$t" "$ERR_X"; done
+turn_fails 1 "$BX"; turn_fails 2 "$BX"; turn_fails 3 "$AGENT_OUT"
+for t in 4 5 6 7 8; do turn_fails "$t" "$BX"; done
 run agent-resets
 ok D-EXIT "the run must end with a non-zero exit: rc=${RC}" test "$RC" -ne 0
 ok D-SIX-TURNS "the run must end after three new turns in a row, at turn 6: turns=$(turns)" test "$(turns)" -eq 6
 ok D-LOG "one run-log line per failed turn: $(log_lines) lines" test "$(log_lines)" -eq 6
 
 # --- 5. a different error starts the count again ------------------------------------
-turn_fails 1 "$ERR_X"; turn_fails 2 "$ERR_X"; turn_fails 3 "$ERR_Y"; turn_fails 4 "$ERR_Y"
+turn_fails 1 "$BX"; turn_fails 2 "$BX"; turn_fails 3 "$BY"; turn_fails 4 "$BY"
 stub FIXTURE_END_AFTER=4
 run different-error
 ok E-EXIT "two errors, two turns each, must not end the run: rc=${RC}" test "$RC" -eq 0
@@ -180,14 +212,14 @@ ok E-END "the goal's final word ends it: $(end_word)" test "$(end_word)" = fixtu
 ok E-FOUR-TURNS "all four turns ran: turns=$(turns)" test "$(turns)" -eq 4
 
 # --- 6. a successful turn starts the count again --------------------------------------
-turn_fails 1 "$ERR_X"; turn_fails 2 "$ERR_X"
-for t in 4 5 6 7 8; do turn_fails "$t" "$ERR_X"; done
+turn_fails 1 "$BX"; turn_fails 2 "$BX"
+for t in 4 5 6 7 8; do turn_fails "$t" "$BX"; done
 run success-resets
 ok F-SIX-TURNS "the run must end after three new turns in a row, at turn 6: turns=$(turns)" test "$(turns)" -eq 6
 ok F-EXIT "the run must end with a non-zero exit: rc=${RC}" test "$RC" -ne 0
 
 # --- 7. no run log: the loop behaves the same and writes none ---------------------------
-for t in 1 2 3 4 5 6 7 8; do turn_fails "$t" "$ERR_X"; done
+for t in 1 2 3 4 5 6 7 8; do turn_fails "$t" "$BX"; done
 CASE="${WORK}/case-no-log"; mkdir -p "${CASE}/stub"; RC=0
 ( cd "$MAIN" && HOME="${WORK}/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 STUB_STATE="${CASE}/stub" \
     PATH="${WORK}/bin:${PATH}" AMPLIHACK_BIN="${WORK}/bin/amplihack" AMPLIHACK_RECIPE_LOG="relative.log" \
