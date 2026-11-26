@@ -115,6 +115,7 @@ pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, bas
 /// Environment variable through which `launch-parallel-round-1` hands the
 /// parent run's `create_issue` opt-in to every workstream (issue #1881).
 pub(super) const CREATE_ISSUE_ENV: &str = "AMPLIHACK_CREATE_ISSUE";
+const CHECKS_WATCH_INTERVAL_ENV: &str = "AMPLIHACK_CHECKS_WATCH_INTERVAL";
 
 /// Build context map for recipe-based resume.
 pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_json::Value> {
@@ -124,7 +125,7 @@ pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_jso
 /// [`build_resume_context`] with the environment lookup injected. The parent's
 /// `create_issue` value is forwarded unchanged when set; step-03 decides
 /// whether it opts in, so an unset value leaves the workstream on local
-/// tracking.
+/// tracking. The check watch validates its interval when it starts.
 pub(super) fn build_resume_context_with(
     ws: &Workstream,
     env: impl Fn(&str) -> Option<String>,
@@ -132,6 +133,12 @@ pub(super) fn build_resume_context_with(
     let mut ctx = HashMap::new();
     if let Some(v) = env(CREATE_ISSUE_ENV).filter(|v| !v.trim().is_empty()) {
         ctx.insert("create_issue".to_string(), serde_json::Value::String(v));
+    }
+    if let Some(v) = env(CHECKS_WATCH_INTERVAL_ENV) {
+        ctx.insert(
+            "checks_watch_interval".to_string(),
+            serde_json::Value::String(v),
+        );
     }
     ctx.insert(
         "task_description".to_string(),

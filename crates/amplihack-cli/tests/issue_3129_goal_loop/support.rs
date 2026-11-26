@@ -471,10 +471,21 @@ impl Harness {
 
     /// The run's own `amplihack` command, ready to spawn.
     pub fn command(&self, args: &[&str]) -> Command {
+        let mut command = self.fixture_command(&amplihack_bin());
+        command.args(args);
+        command
+    }
+
+    pub fn tool_command(&self, name: &str) -> Command {
+        let mut command = self.fixture_command(Path::new("bash"));
+        command.arg(self.bundle_root.join("amplifier-bundle/tools").join(name));
+        command
+    }
+
+    fn fixture_command(&self, program: &Path) -> Command {
         let path = format!("{}:/usr/bin:/bin", self.bin.display());
-        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
-        c.args(args)
-            .current_dir(&self.repo)
+        let mut c = crate::isolated_amplihack::isolated(program);
+        c.current_dir(&self.repo)
             .env("HOME", &self.home)
             .env("TMPDIR", &self.base)
             .env("PATH", path)
@@ -568,6 +579,13 @@ impl Harness {
             .unwrap_or_default()
             .lines()
             .map(str::to_owned)
+            .collect()
+    }
+
+    pub fn watch_calls(&self) -> Vec<String> {
+        self.calls()
+            .into_iter()
+            .filter(|call| call.starts_with(&format!("pr checks {PR} --watch")))
             .collect()
     }
 

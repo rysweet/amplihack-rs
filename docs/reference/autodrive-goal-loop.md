@@ -126,7 +126,7 @@ The agent picks one. The word is used only to dispatch the mechanical step.
 | Action | What runs |
 |--------|-----------|
 | `review` | One Crusty round (`autodrive-crusty-round`). Its verdict is evidence in the next reading. Nothing requires the reviewed head to equal the current head. |
-| `wait` | Waits for an event: the checks at the head to complete (`gh pr checks <pr> --watch`, with `--required` when asked), or the owner's answer. |
+| `wait` | Waits for the checks at the head to complete or the owner's answer. The watch uses `gh pr checks <pr> --watch`, with `--required` when asked and `--interval` when `checks_watch_interval` is valid. |
 | `merge` | Merges with an allowed merge method and `--match-head-commit`. Authority comes only from the captured authorisation. Before it merges, guidance must have been read again after the decision, and every [required outcome](#required-outcomes) is checked by name. |
 | `continue` | Nothing mechanical; the next turn reads the live state again. The agent chooses it after it pushed, installed something or did a task step. |
 | `wait-owner` | Waits for the owner's answer: `amplihack recipe guidance wait` with no command. args: `owner`, `question`. Before the wait starts, the turn tool writes `waiting.json` in the run folder and one line in the run log; `amplihack recipe waiting` lists the run while it waits, and the record is removed when the wait returns (issue #3364). |
@@ -427,13 +427,16 @@ Under `judge` and `file_all` the agent files each issue with
 
 ## Waiting
 
-Nothing times a wait out. The loop has no timer, no `sleep`, no `--interval` and
-no poll of its own, and never sets `AMPLIHACK_STEP_TIMEOUT`.
+The loop relies on gh for check refreshes and guidance for wakeups. It never
+sets `AMPLIHACK_STEP_TIMEOUT`.
 
 - Checks completing. `gh pr checks <pr> --watch` blocks until the checks
-  complete. A required check that is still running makes the run wait, and the
-  run merges once it completes. If `gh` rejects `--required`, the reading lists
-  every check with `required_known: false` and the wait watches without it.
+  complete. Set `-c checks_watch_interval=120` at startup to refresh every
+  120 seconds. An empty value uses gh's own refresh. An invalid value prints
+  a warning and uses the same default. A required check that is still running
+  makes the run wait, and the run merges once it completes. If `gh` rejects
+  `--required`, the reading lists every check with `required_known: false`
+  and the wait watches without it.
 - A login with room. The runner's usage-limit wait (#2992) handles this, and
   limit-resume (#3112) restarts the run. The loop adds nothing.
 - The owner's answer. The waiting step arms a FIFO in the run's

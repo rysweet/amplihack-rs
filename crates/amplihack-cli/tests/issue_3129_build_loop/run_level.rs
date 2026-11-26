@@ -107,6 +107,17 @@ else
 fi
 "#;
 
+const WAIT_POLICY: &str = r#"
+case "$(jq -r '.previous.outcome // "none"' "$TURN/reading.json")" in
+  marked-ready|already-ready)
+    echo '{"action":"wait","args":{},"outcomes":[],"why":"Wait for the checks."}'
+    return 0 ;;
+  checks-complete)
+    echo '{"action":"ready","args":{"text":"The checks finished."},"outcomes":[],"why":"The checks finished."}'
+    return 0 ;;
+esac
+"#;
+
 const TITLE: &str = "Build the widget";
 const BODY: &str = "Builds the widget.\n\nFixes #463\n";
 
@@ -234,6 +245,22 @@ fn worktree_of(run: &Run) -> PathBuf {
     let setup: Value = serde_json::from_str(&run.output("build-goal-setup"))
         .unwrap_or_else(|e| panic!("build-goal-setup output: {e}: {}", run.result));
     PathBuf::from(setup["worktree"].as_str().unwrap_or_default())
+}
+
+#[test]
+fn checks_watch_interval_reaches_the_build_loop_from_startup_context() {
+    let h = prepare("https://github.com/o/r.git");
+    h.policy(&format!("{WAIT_POLICY}\n{POLICY}"));
+    // The check watch reads one line and completes without blocking.
+    let release = h.gh.join("release.fifo");
+    fs::remove_file(&release).unwrap();
+    fs::write(&release, "\n").unwrap();
+
+    let run = workflow(h, &["checks_watch_interval=120"]);
+    assert!(run.out.status.success(), "{}", describe(&run.out));
+    assert_eq!(run.unexpected(), "", "{}", describe(&run.out));
+    assert_eq!(run.status("build-loop"), "completed", "{}", run.result);
+    assert_eq!(run.h.watch_calls(), ["pr checks 7 --watch --interval 120"]);
 }
 
 #[test]

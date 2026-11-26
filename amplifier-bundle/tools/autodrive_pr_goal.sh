@@ -8,7 +8,7 @@
 #   read <turn_dir>            goal.json (autodrive_pr_reading.sh)
 #   act review <turn_dir>      one Crusty round (autodrive-crusty-round); its
 #                              verdict is evidence in the next reading
-#   act wait <turn_dir>        `gh pr checks <pr> --watch [--required]` under
+#   act wait <turn_dir>        `gh pr checks <pr> --watch [--required] [--interval N]` under
 #                              `amplihack recipe guidance wait`, so new
 #                              guidance ends the wait too; no timer or poll
 #   act merge <turn_dir>       autodrive_merge.sh under the captured
@@ -26,7 +26,8 @@
 # AUTODRIVE_STATE_DIR, AUTODRIVE_REPO, AUTODRIVE_WORKTREE, AUTODRIVE_LOOP_HOME,
 # AUTODRIVE_INVOCATION_FILE, AUTODRIVE_TASK_FILE; from the run's context:
 # RECIPE_VAR_pr_number, merge_method, no_merge, autodrive_dry_run,
-# step_recovery_dir, plan_task_id. Only RECIPE_VAR_* names are read, so an
+# step_recovery_dir, plan_task_id, checks_watch_interval (seconds, empty for
+# gh's default). Only RECIPE_VAR_* names are read, so an
 # inherited bare variable never fills one in (#1561).
 # `act` writes <turn_dir>/result.json ({outcome, summary}). Exit 79 and 75
 # pass up unchanged; any other failure is an outcome, never an exit.
@@ -102,8 +103,19 @@ do_act_review() {
   case "$rc" in 79|75) exit "$rc" ;; 0) result reviewed "$s" ;; *) result review-failed "$s; the log is review.log in the turn folder" ;; esac
 }
 
+checks_watch_interval() {
+  local LC_ALL=C n="${RECIPE_VAR_checks_watch_interval:-}"
+  [ -n "$n" ] || return 0
+  if [[ "$n" =~ ^[1-9][0-9]{0,9}$ ]]; then
+    printf '%s' "$n"
+  else
+    printf 'WARNING: invalid checks_watch_interval %s. Using the gh default.\n' \
+      "$(printf '%s' "$n" | goal_clean_line)" >&2
+  fi
+}
+
 do_act_wait() {
-  local req known target since out rc ev code cmd
+  local req known target since out rc ev code cmd n
   need_pr
   req="$(jq -r '.args.required // false | tostring' "$TD/decision.json" 2>/dev/null)"
   known="$(jq -r '.goal.checks.required_known // false | tostring' "$TD/reading.json" 2>/dev/null)"
@@ -112,6 +124,8 @@ do_act_wait() {
   since="$(jq -r '.guidance_newest // empty | strings' "$TD/reading.json" 2>/dev/null)"; goal_is_entry "$since" || since=""
   cmd=(gh pr checks "$PR" --watch)
   [ "$req" = true ] && [ "$known" = true ] && cmd+=(--required)
+  n="$(checks_watch_interval)"
+  [ -z "$n" ] || cmd+=(--interval "$n")
   out="$(cd "$WORK" && "$AMPLIHACK_BIN" recipe guidance wait "--since=$since" ${target:+"$target"} -- "${cmd[@]}" 2>"$TD/wait.err")"; rc=$?
   if [ "$rc" -eq 0 ] && ev="$(printf '%s' "$out" | jq -r '.event // empty' 2>/dev/null)" && [ -n "$ev" ]; then
     if [ "$ev" = guidance ]; then result guidance-arrived "new guidance arrived during the wait; the next turn reads it"; return 0; fi

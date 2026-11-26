@@ -212,7 +212,7 @@ steps:
         true|1) COUNT=1 ;;
         *)      COUNT="$RAW_COUNT" ;;
       esac
-      # launch-parallel-round-1 forwards only create_issue, so a strict run stays on one
+      # launch-parallel-round-1 omits strict_delivery, so a strict run stays on one
       # workstream, where default-workflow runs in-process and keeps strict_delivery. Any
       # value but "" or "false" counts; step-03 refuses one it does not accept.
       STRICT="${RECIPE_VAR_strict_delivery:-}"

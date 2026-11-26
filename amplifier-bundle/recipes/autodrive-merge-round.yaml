@@ -41,6 +41,7 @@ context:
   crusty_evidence: ""
   autodrive_tools_dir: ""
   no_merge: "true"
+  checks_watch_interval: ""
   autodrive_dry_run: "false"
   merge_method: ""
   autodrive_invocation_file: ""
@@ -51,6 +52,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-goal-loop"
     context:
+      checks_watch_interval: "{{checks_watch_interval}}"
       goal_tool: "autodrive_pr_goal.sh"
       goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
       goal_once: "true"

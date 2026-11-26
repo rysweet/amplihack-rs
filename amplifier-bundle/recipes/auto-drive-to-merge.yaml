@@ -28,6 +28,7 @@ context:
   autodrive_state_dir: ""
   autodrive_dry_run: "false"
   no_merge: "false"
+  checks_watch_interval: ""
   # #1888: the merge method this drive is to use (merge, squash or rebase).
   # Empty leaves the choice to the repository's own allowed methods, which is
   # squash wherever squash is allowed. A method the repository does not allow
@@ -71,6 +72,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-build"
     context:
+      checks_watch_interval: "{{checks_watch_interval}}"
       base_branch: "{{base_branch}}"
       task_description: "{{task_description}}"
       requirements: "{{requirements}}"
@@ -102,6 +104,7 @@ steps:
     recipe: "autodrive-goal-loop"
     condition: "build_result.merged_before_run != 'true'"
     context:
+      checks_watch_interval: "{{checks_watch_interval}}"
       goal_tool: "autodrive_pr_goal.sh"
       goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
       goal_notes: ""

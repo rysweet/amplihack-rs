@@ -20,6 +20,7 @@ context:
   autodrive_state_dir: ""
   merge_loop_result: ""
   no_merge: "true"
+  checks_watch_interval: ""
   autodrive_dry_run: "false"
   autodrive_invocation_file: ""
   autodrive_authorization: ""
@@ -34,6 +35,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-goal-loop"
     context:
+      checks_watch_interval: "{{checks_watch_interval}}"
       goal_tool: "autodrive_pr_goal.sh"
       goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
       goal_once: "true"

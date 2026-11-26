@@ -27,6 +27,7 @@ recursion:
 
 context:
   base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
+  checks_watch_interval: ""
   task_description: ""
   repo_path: "."
   issue_number: ""
@@ -149,6 +150,7 @@ steps:
     condition: "quick_change_verdict == 'handover'"
     recipe: "default-workflow"
     context:
+      checks_watch_interval: "{{checks_watch_interval}}"
       base_branch: "{{base_branch}}"
       task_description: "{{task_description}}\n\n{{quick_change_handover_note}}"
       existing_branch: "{{worktree_setup.branch_name}}"
@@ -293,6 +295,7 @@ steps:
     condition: "quick_change_verdict == 'proceed' and not quick_change_pr_url"
     recipe: "default-workflow"
     context:
+      checks_watch_interval: "{{checks_watch_interval}}"
       base_branch: "{{base_branch}}"
       task_description: "{{task_description}}\n\nHand-over from quick-change: its commit, push or pull request step did not finish. The change is in the worktree on this branch, committed or not. Read the run's state, finish the change, commit through the repository's hooks, push, and open the pull request."
       existing_branch: "{{worktree_setup.branch_name}}"
