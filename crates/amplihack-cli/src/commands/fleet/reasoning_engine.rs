@@ -148,6 +148,20 @@ impl FleetSessionReasoner {
         // NOT auto-complete. Fall through to full reasoning / the guarded
         // heuristic instead of short-circuiting to MarkComplete.
 
+        // Issue #1983: the run is on another CLI, so the reasoner does not
+        // start `claude`. The heuristic proposal is the chosen result, and the
+        // diagnostic says why, rather than reporting a reasoner failure.
+        if let NativeReasonerBackend::StaysOn(cli) = &self.backend {
+            return (
+                heuristic_decision(context),
+                Some(format!(
+                    "This run is on {cli}, so the fleet reasoner did not start claude and \
+                     shows a heuristic proposal; run `amplihack fleet dry-run --backend claude` \
+                     to ask for claude."
+                )),
+            );
+        }
+
         let prompt = format!(
             "{}\n\n{}\n\nRespond with JSON only.",
             SESSION_REASONER_SYSTEM_PROMPT,
