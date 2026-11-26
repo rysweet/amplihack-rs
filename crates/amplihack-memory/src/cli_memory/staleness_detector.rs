@@ -348,4 +348,19 @@ mod tests {
         assert!(status.needs_indexing);
         assert_eq!(status.estimated_files, 2);
     }
+
+    // Issue #3249: the scan counts every file the indexer gives a language.
+
+    #[test]
+    fn every_cpp_extension_the_indexer_knows_counts_as_a_source() {
+        for name in ["main.cc", "main.cxx"] {
+            let project = tempfile::tempdir().unwrap();
+            fs::write(project.path().join(name), "int main() { return 0; }\n").unwrap();
+
+            let status = check_index_status(project.path()).unwrap();
+
+            assert!(status.needs_indexing, "{name}: {}", status.reason);
+            assert_eq!(status.estimated_files, 1, "{name}");
+        }
+    }
 }
