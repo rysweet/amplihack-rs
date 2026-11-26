@@ -231,3 +231,112 @@ fn mv_tilde_blocked() {
         );
     }
 }
+
+// Issue #3261: each removal is decided on its own simple command.
+
+/// Runs `check_cwd_deletion` on `command` with the working directory set to
+/// a fresh scratch directory, which `{cwd}` in `command` is replaced with.
+fn decide_in_scratch(command: &str) -> Option<Value> {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let dir = crate::test_support::isolated_tempdir();
+    let _cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
+    let cwd = current_cwd().unwrap();
+    let command = command.replace("{cwd}", &cwd.display().to_string());
+    check_cwd_deletion(&command).unwrap()
+}
+
+#[test]
+fn heredoc_body_mentioning_removal_is_allowed() {
+    let command = "cat > notes.md <<'EOF'\nTo clean up, run rm -rf . and then `ls`.\nEOF\n\
+                   gh issue create --body-file notes.md --title \"$HOME\"";
+    assert!(decide_in_scratch(command).is_none());
+}
+
+#[test]
+fn unquoted_heredoc_body_mentioning_removal_is_allowed() {
+    let command = "cat > notes.md <<EOF\nrm -rf {cwd}\nhome is $HOME\nEOF";
+    assert!(decide_in_scratch(command).is_none());
+}
+
+#[test]
+fn heredoc_in_substitution_mentioning_removal_is_allowed() {
+    let command = "gh issue create --body \"$(cat <<'EOF'\nThe hook rejects rm -rf . today.\nEOF\n)\" \
+                   --repo \"$HOME/x\"";
+    assert!(decide_in_scratch(command).is_none());
+}
+
+#[test]
+fn quoted_heredoc_substitution_text_is_allowed() {
+    assert!(decide_in_scratch("cat <<'EOF'\n$(rm -rf .)\nEOF").is_none());
+}
+
+#[test]
+fn quoted_string_mentioning_removal_is_allowed() {
+    assert!(decide_in_scratch("echo 'rm -rf .'; ls $HOME").is_none());
+    assert!(
+        decide_in_scratch("gh issue create --body \"Avoid rm -r . here\" --title `cat t`")
+            .is_none()
+    );
+}
+
+#[test]
+fn comment_mentioning_removal_is_allowed() {
+    assert!(decide_in_scratch("ls $HOME # rm -rf .").is_none());
+}
+
+#[test]
+fn literal_removal_after_command_with_variable_is_decided_on_its_own_path() {
+    let outside = "cd \"$DIR\" && git status; rm -r /nonexistent/issue-3261/build";
+    assert!(decide_in_scratch(outside).is_none());
+    let cwd = "cd \"$DIR\" && git status; rm -r {cwd}";
+    assert!(decide_in_scratch(cwd).is_some());
+}
+
+#[test]
+fn removal_with_expansion_in_its_own_arguments_is_rejected() {
+    for command in [
+        "rm -rf $VAR/x",
+        "rm -rf ${VAR}",
+        "rm -rf $(pwd)",
+        "rm -rf `pwd`",
+        "ls; rm -rf \"$VAR\"",
+        "rmdir $D",
+    ] {
+        assert!(decide_in_scratch(command).is_some(), "{command}");
+    }
+}
+
+#[test]
+fn nested_removals_of_cwd_are_rejected() {
+    for command in [
+        "echo $(rm -rf .)",
+        "bash -c 'rm -rf .'",
+        "eval \"rm -rf .\"",
+        "find /nonexistent -exec rm -rf {cwd} \\;",
+        "xargs -0 rm -rf . < list",
+        "sudo ionice -c2 rm -rf .",
+        "bash <<'EOF'\nrm -rf .\nEOF",
+        "cat <<EOF\n$(rm -rf .)\nEOF",
+        "bash -c 'rm -rf \"$X\"'",
+    ] {
+        assert!(decide_in_scratch(command).is_some(), "{command}");
+    }
+}
+
+#[test]
+fn recursive_flag_after_operand_is_read() {
+    assert!(decide_in_scratch("rm . -rf").is_some());
+    assert!(decide_in_scratch("rm -- -r").is_none());
+}
+
+#[test]
+fn removal_outside_cwd_is_allowed() {
+    assert!(decide_in_scratch("rm -rf /nonexistent/issue-3261/a; echo $HOME").is_none());
+    assert!(decide_in_scratch("find /nonexistent/issue-3261 -exec rm -rf {} +").is_none());
+}
+
+#[test]
+fn unreadable_input_is_decided_on_the_whole_text() {
+    assert!(decide_in_scratch("echo \"unclosed; rm -rf $X").is_some());
+    assert!(decide_in_scratch("cat <<EOF\nrm -rf $X").is_some());
+}

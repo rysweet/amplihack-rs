@@ -2,11 +2,19 @@
 //!
 //! Detects rm -r/-rf/-fr, rmdir, and mv commands that would
 //! affect the current working directory.
+//!
+//! A removal is decided on the words of its own simple command. The command
+//! line is split with the shared tokeniser (see [`removals`]), so heredoc
+//! bodies, quoted strings and the words of other commands do not affect the
+//! decision. When the line cannot be read with certainty, the whole text is
+//! checked as before.
 
+mod removals;
 #[cfg(test)]
 mod tests;
 
 use super::command;
+use super::shell;
 use regex::Regex;
 use serde_json::Value;
 use std::path::Path;
@@ -23,6 +31,10 @@ static RM_RECURSIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
 static RMDIR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\brmdir(?:\s|$)").expect("static RMDIR regex"));
 
+/// A word that may be `rm` or `rmdir`. Text without one is not tokenised.
+static RM_WORD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\brm(?:dir)?\b").expect("static RM_WORD regex"));
+
 /// Regex for mv commands (with optional sudo, env vars, command prefix, full path).
 static MV_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -30,58 +42,99 @@ static MV_RE: LazyLock<Regex> = LazyLock::new(|| {
     ).expect("static MV regex")
 });
 
-/// Check if a command would delete the current working directory.
-pub fn check_cwd_deletion(command: &str) -> anyhow::Result<Option<Value>> {
-    let has_rm = RM_RECURSIVE_RE.is_match(command);
-    let has_rmdir = RMDIR_RE.is_match(command);
+const EXPANSION_ERROR: &str = "🚫 OPERATION BLOCKED - Shell Expansion in Destructive Command\n\n\
+     The command uses shell expansion ($(...), `...`, or variable substitution) \
+     in a destructive operation. This bypasses path safety checks.\n\n\
+     Instead, write the path out literally rather than using a variable, \
+     command substitution or glob.\n\n\
+     🔒 This protection cannot be disabled programmatically.";
 
-    if !has_rm && !has_rmdir {
+/// Check if a command would delete the current working directory.
+///
+/// Each recursive `rm` and each `rmdir` the shell would run is decided on
+/// the words of its own simple command: it is rejected when one of them uses
+/// shell expansion, or when one of its operands resolves to the working
+/// directory or a directory above it.
+pub fn check_cwd_deletion(command: &str) -> anyhow::Result<Option<Value>> {
+    if !RM_WORD_RE.is_match(command) {
         return Ok(None);
     }
 
-    if has_dangerous_expansion(command) {
-        return Ok(Some(super::deny(
-            "🚫 OPERATION BLOCKED - Shell Expansion in Destructive Command\n\n\
-             The command uses shell expansion ($(...), `...`, or variable substitution) \
-             in a destructive operation. This bypasses path safety checks.\n\n\
-             Instead, write the path out literally rather than using a variable, \
-             command substitution or glob.\n\n\
-             🔒 This protection cannot be disabled programmatically.",
-        )));
-    }
-
-    let cwd = match std::env::current_dir() {
-        Ok(p) => match p.canonicalize() {
-            Ok(c) => c,
-            Err(_) => p,
-        },
-        Err(_) => return Ok(None),
+    let Some(found) = removals::removal_commands(command) else {
+        return whole_text_decision(command);
     };
 
-    let segments = command::split_segments(command);
+    if found
+        .iter()
+        .any(|r| r.words.iter().any(|w| has_dangerous_expansion(w)))
+    {
+        return Ok(Some(super::deny(EXPANSION_ERROR)));
+    }
 
-    for segment in &segments {
-        if !RM_RECURSIVE_RE.is_match(segment) && !RMDIR_RE.is_match(segment) {
-            continue;
-        }
+    let Some(cwd) = current_cwd() else {
+        return Ok(None);
+    };
 
-        let paths = command::extract_rm_paths(segment);
-        for p in &paths {
-            let target = match resolve_path(p) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if is_path_under(&cwd, &target) {
-                let message = super::CWD_DELETION_ERROR
-                    .replace("{target}", &target.display().to_string())
-                    .replace("{cwd}", &cwd.display().to_string());
-                return Ok(Some(super::deny(&message)));
-            }
+    for removal in &found {
+        let argv: Vec<&str> = removal.argv.iter().map(String::as_str).collect();
+        let paths = command::extract_rm_paths(&shell::join_argv(&argv));
+        if let Some(block) = deny_under_cwd(&paths, &cwd) {
+            return Ok(Some(block));
         }
     }
 
     Ok(None)
+}
+
+/// The decision on the whole text, used when the command line cannot be
+/// tokenised with certainty: an unclosed quote or substitution, an
+/// unterminated heredoc, input over the length limit, or nesting past the
+/// depth or work limit. Any expansion anywhere in the text is rejected.
+fn whole_text_decision(command: &str) -> anyhow::Result<Option<Value>> {
+    if !RM_RECURSIVE_RE.is_match(command) && !RMDIR_RE.is_match(command) {
+        return Ok(None);
+    }
+
+    if has_dangerous_expansion(command) {
+        return Ok(Some(super::deny(EXPANSION_ERROR)));
+    }
+
+    let Some(cwd) = current_cwd() else {
+        return Ok(None);
+    };
+
+    for segment in &command::split_segments(command) {
+        if !RM_RECURSIVE_RE.is_match(segment) && !RMDIR_RE.is_match(segment) {
+            continue;
+        }
+        if let Some(block) = deny_under_cwd(&command::extract_rm_paths(segment), &cwd) {
+            return Ok(Some(block));
+        }
+    }
+
+    Ok(None)
+}
+
+fn current_cwd() -> Option<std::path::PathBuf> {
+    let p = std::env::current_dir().ok()?;
+    Some(p.canonicalize().unwrap_or(p))
+}
+
+/// The deny response when one of `paths` resolves to `cwd` or a directory
+/// above it.
+fn deny_under_cwd(paths: &[String], cwd: &Path) -> Option<Value> {
+    for p in paths {
+        let Some(target) = resolve_path(p) else {
+            continue;
+        };
+        if is_path_under(cwd, &target) {
+            let message = super::CWD_DELETION_ERROR
+                .replace("{target}", &target.display().to_string())
+                .replace("{cwd}", &cwd.display().to_string());
+            return Some(super::deny(&message));
+        }
+    }
+    None
 }
 
 /// Check if a command would rename/move the current working directory.

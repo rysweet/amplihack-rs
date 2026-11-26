@@ -1,6 +1,7 @@
 //! The small shell tokeniser shared by the PreToolUse command guards: the
 //! tmux server guard (#1733) and the tail-follow guard (#1794). The
 //! auto-drive merge guard (#1551) that also used it was removed in #2340.
+//! The working-directory deletion check reads removals with it (#3261).
 //!
 //! This is not a shell parser and does not try to be one. It splits a command
 //! line into simple commands of unquoted words, finds each command's program
@@ -714,6 +715,123 @@ pub(super) fn read_heredoc_bodies(
         bodies.push(body.join("\n"));
     }
     (bodies, terminated)
+}
+
+/// Shells whose `-c` operand or heredoc body the command checks parse again.
+pub(super) const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
+
+/// The scripts a shell in [`SHELLS`] runs, given the words after its name:
+/// the `-c` operand when there is one, otherwise the heredoc bodies it reads
+/// on standard input. A script file given as an operand is not read, so its
+/// heredocs are data and nothing is returned.
+pub(super) fn shell_scripts<'a>(args: &'a [String], heredocs: &'a [String]) -> Vec<&'a str> {
+    let mut has_c = false;
+    let mut has_s = false;
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        i += 1;
+        if matches!(w.as_str(), "--rcfile" | "--init-file") {
+            // The next word is the file, not a script.
+            i += 1;
+            continue;
+        }
+        if w.starts_with("--") {
+            // `--norc`, `--login`, or `--` itself.
+            continue;
+        }
+        if (w.starts_with('-') || w.starts_with('+')) && w.chars().count() > 1 {
+            if w.starts_with('-') {
+                has_c |= w.chars().skip(1).any(|c| c == 'c');
+                has_s |= w.chars().skip(1).any(|c| c == 's');
+            }
+            if w.ends_with(['o', 'O']) {
+                // `-o NAME`, `-euo NAME`, `+O NAME`: the next word is the
+                // option name.
+                i += 1;
+            }
+            continue;
+        }
+        // A word that is not an option is the `-c` operand, a positional
+        // argument after `-s`, or a script file whose standard input is the
+        // heredoc. Options after it are its arguments.
+        if has_c {
+            return vec![w.as_str()];
+        }
+        if !has_s {
+            return Vec::new();
+        }
+        break;
+    }
+    if has_c {
+        // `-c` with no operand.
+        return Vec::new();
+    }
+    heredocs.iter().map(String::as_str).collect()
+}
+
+/// The bodies of the command substitutions (`$(…)` and backticks) that the
+/// shell runs when it reads `text`: those outside single quotes, `$'…'`,
+/// comments and heredoc bodies. A substitution inside another is found when
+/// its body is scanned.
+pub(super) fn substitution_bodies(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut bodies = Vec::new();
+    let mut heredocs = Vec::new();
+    let mut in_double = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let word_start = i == 0 || chars[i - 1].is_whitespace() || ";&|(".contains(chars[i - 1]);
+        match c {
+            '\\' => i += 1,
+            '"' => in_double = !in_double,
+            '$' if chars.get(i + 1) == Some(&'(') => {
+                let Some(end) = subst_close(&chars, i) else {
+                    return bodies;
+                };
+                bodies.push(chars[i + 2..end].iter().collect());
+                i = end;
+            }
+            '`' => {
+                let mut end = i + 1;
+                while end < chars.len() && chars[end] != '`' {
+                    end += if chars[end] == '\\' { 2 } else { 1 };
+                }
+                if end >= chars.len() {
+                    return bodies;
+                }
+                bodies.push(chars[i + 1..end].iter().collect());
+                i = end;
+            }
+            _ if in_double => {}
+            '$' if chars.get(i + 1) == Some(&'\'') => {
+                let Some(end) = ansi_c_close(&chars, i + 1) else {
+                    return bodies;
+                };
+                i = end;
+            }
+            '\'' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '\'' {
+                    i += 1;
+                }
+            }
+            '#' if word_start => {
+                while i + 1 < chars.len() && chars[i + 1] != '\n' {
+                    i += 1;
+                }
+            }
+            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) == Some(&'<') => i += 2,
+            '<' if chars.get(i + 1) == Some(&'<') => {
+                heredocs.push(heredoc_delim(&chars, &mut i));
+                continue;
+            }
+            '\n' => skip_heredoc_bodies(&chars, &mut i, std::mem::take(&mut heredocs)),
+            _ => {}
+        }
+        i += 1;
+    }
+    bodies
 }
 
 #[cfg(test)]
