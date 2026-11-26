@@ -46,7 +46,7 @@ Unlike traditional tools or function calling, skills:
 **Tier 2: Core Instructions (<5,000 tokens)**
 
 - Full SKILL.md content loaded when skill deemed relevant
-- All .md files in root directory load together
+- Supporting files are read only when SKILL.md sends the model to them
 - Provides complete instructions and workflows
 - Token budget critical for efficiency
 
@@ -302,12 +302,11 @@ From https://github.com/anthropics/claude-cookbooks/tree/main/skills:
 
 ### Loading Behavior
 
-**All .md files in root load together** when skill activates:
+**SKILL.md loads when the skill activates**; supporting files are read only when needed:
 
-- SKILL.md (always)
-- reference.md, examples.md, patterns.md (if present)
+- SKILL.md (always, when the skill activates)
+- reference.md, examples.md, patterns.md (only when SKILL.md sends the model to them)
 - Enables modular documentation
-- Each file focused on specific aspect
 
 **Supporting files load on-demand**:
 
