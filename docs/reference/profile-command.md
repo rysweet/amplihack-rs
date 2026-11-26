@@ -2204,8 +2204,8 @@ running on overflow: ryan-mistt-org
 
 A live overflow row whose probe shows plan capacity left prints no footer:
 work on it is still covered by the plan. A full per-model weekly window
-(for example `Fable`) does not count, because the rotator's capacity test
-reads only the session and all-models weekly windows. A live overflow row whose probe
+(for example `Fable`) does not count, because this footer reads only the
+session and all-models weekly windows. A live overflow row whose probe
 failed prints no footer either, because nothing in the run shows the limit
 was reached.
 
@@ -6353,6 +6353,11 @@ A profile has been seen read as exhausted after its reset time:
 
 *Headroom* is `100 - max(session_used, week_used)`, rounded down to a whole
 point.
+
+`week_used` is the largest of the all-models week and every per-model week
+in the reading (for example `Current week (Fable)`), and an `ok` reading with
+a per-model week at 100% or more counts as `weekly_exhausted`, so a login
+whose week for one model is used up has headroom `0` and is never chosen.
 
 | Probe result | Session used | Week used | Headroom |
 |--------------|--------------|-----------|----------|
