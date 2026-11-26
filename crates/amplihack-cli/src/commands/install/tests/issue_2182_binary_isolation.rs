@@ -219,3 +219,79 @@ fn staging_rejects_small_invalid_sources_before_writing() {
         assert_eq!(fs::read(published).unwrap(), b"existing publication");
     }
 }
+
+/// The discovery a production install uses, called directly: test builds
+/// stage a stub in `deploy_binaries_into`, so without these nothing in the
+/// test suite would reach the sibling and PATH lookup that ships.
+mod production_resolver_discovery {
+    use super::super::super::binary::discover_resolver;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    const RESOLVER: &str = "amplihack-asset-resolver";
+
+    fn executable(path: &Path) -> PathBuf {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_path_buf()
+    }
+
+    struct Layout {
+        _temp: tempfile::TempDir,
+        self_src: PathBuf,
+        sibling: PathBuf,
+        on_path: PathBuf,
+        path: std::ffi::OsString,
+    }
+
+    fn layout() -> Layout {
+        let temp = tempfile::tempdir().unwrap();
+        let self_src = executable(&temp.path().join("release/amplihack"));
+        let sibling = temp.path().join("release").join(RESOLVER);
+        let empty = temp.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let on_path = executable(&temp.path().join("path-bin").join(RESOLVER));
+        let path = std::env::join_paths([empty, temp.path().join("path-bin")]).unwrap();
+        Layout {
+            _temp: temp,
+            self_src,
+            sibling,
+            on_path,
+            path,
+        }
+    }
+
+    #[test]
+    fn an_executable_sibling_wins_over_path() {
+        let l = layout();
+        executable(&l.sibling);
+        assert_eq!(
+            discover_resolver(&l.self_src, true, Some(&l.path)),
+            Some(l.sibling.clone())
+        );
+    }
+
+    #[test]
+    fn a_non_executable_sibling_falls_back_to_path() {
+        let l = layout();
+        executable(&l.sibling);
+        fs::set_permissions(&l.sibling, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            discover_resolver(&l.self_src, true, Some(&l.path)),
+            Some(l.on_path.clone())
+        );
+    }
+
+    #[test]
+    fn path_is_searched_only_when_allowed() {
+        let l = layout();
+        assert_eq!(
+            discover_resolver(&l.self_src, true, Some(&l.path)),
+            Some(l.on_path.clone())
+        );
+        assert_eq!(discover_resolver(&l.self_src, false, Some(&l.path)), None);
+        assert_eq!(discover_resolver(&l.self_src, true, None), None);
+    }
+}

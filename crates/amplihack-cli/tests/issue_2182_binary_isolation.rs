@@ -47,20 +47,53 @@ fn subprocess_fixture_path_holds_no_resolver_directory() {
 }
 
 #[test]
-fn path_filter_drops_resolver_directories_and_keeps_the_rest() {
-    let with_resolver = tempfile::tempdir().expect("tempdir");
+fn path_filter_hides_only_the_resolver_and_keeps_tools_beside_it() {
+    use crate::isolated_amplihack::{RESOLVER_BIN, path_without_resolver};
+    use std::os::unix::fs::PermissionsExt;
+    let shared = tempfile::tempdir().expect("tempdir");
     let tools = tempfile::tempdir().expect("tempdir");
-    std::fs::write(
-        with_resolver
-            .path()
-            .join(crate::isolated_amplihack::RESOLVER_BIN),
-        "",
+    // A resolver that shares its directory with other tools, as it can in
+    // `~/.cargo/bin`, `~/.local/bin` or `/usr/local/bin`.
+    for name in [RESOLVER_BIN, "cargo", "sccache"] {
+        let file = shared.path().join(name);
+        std::fs::write(&file, "#!/bin/sh\nexit 0\n").expect("write tool");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    // A symlink to the resolver is hidden as well.
+    let linked = tempfile::tempdir().expect("tempdir");
+    std::os::unix::fs::symlink(
+        shared.path().join(RESOLVER_BIN),
+        linked.path().join(RESOLVER_BIN),
     )
-    .expect("write resolver");
-    let path = std::env::join_paths([tools.path(), with_resolver.path()]).expect("join");
+    .expect("symlink resolver");
+    std::fs::write(linked.path().join("recipe-runner-rs"), "").expect("write tool");
+    let path = std::env::join_paths([tools.path(), shared.path(), linked.path()]).expect("join");
 
-    let filtered = crate::isolated_amplihack::path_without_resolver(&path);
+    let filtered = path_without_resolver(&path);
 
     let dirs: Vec<_> = std::env::split_paths(&filtered).collect();
-    assert_eq!(dirs, vec![tools.path().to_path_buf()]);
+    assert_eq!(dirs.len(), 3, "no directory is dropped: {dirs:?}");
+    assert_eq!(
+        dirs[0],
+        tools.path(),
+        "a directory without a resolver is kept as it is"
+    );
+    for dir in &dirs {
+        assert!(
+            dir.join(RESOLVER_BIN).symlink_metadata().is_err(),
+            "{} still offers a resolver",
+            dir.display()
+        );
+    }
+    for name in ["cargo", "sccache"] {
+        let found = dirs[1].join(name);
+        assert_eq!(
+            std::fs::canonicalize(&found).expect("tool reachable"),
+            std::fs::canonicalize(shared.path().join(name)).unwrap(),
+            "{name} beside the resolver must stay on PATH"
+        );
+    }
+    assert!(dirs[2].join("recipe-runner-rs").exists());
+    // The same directory is shadowed once per process.
+    assert_eq!(path_without_resolver(&path), filtered);
 }

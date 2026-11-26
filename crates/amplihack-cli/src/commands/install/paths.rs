@@ -5,8 +5,12 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn find_binary(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
+    find_binary_in(name, &std::env::var_os("PATH")?)
+}
+
+/// [`find_binary`] over the directories of `path` instead of `$PATH`.
+pub(crate) fn find_binary_in(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    for dir in std::env::split_paths(path) {
         let candidate = dir.join(name);
         if candidate.is_file() && is_executable(&candidate) {
             return Some(candidate);

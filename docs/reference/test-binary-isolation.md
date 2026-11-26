@@ -35,13 +35,17 @@ Sources at or below 1 MiB, such as shell stubs, are still copied and made execut
 
 ## Resolver discovery
 
-Test builds use a private inert resolver stub, created once per process in a temporary directory, before sibling or PATH discovery. The stub exits with an error if it is ever run, so a test that needs real asset resolution fails instead of silently using a host resolver.
+Test builds use a private inert resolver stub, created once per process in a temporary directory, in place of sibling or PATH discovery. The stub exits with an error if it is ever run, so a test that needs real asset resolution fails instead of silently using a host resolver.
+
+The production discovery is `binary::discover_resolver()`, compiled in every build. `deploy_binaries_into()` calls it only in a non-test build, so the unit tests in `issue_2182_binary_isolation::production_resolver_discovery` call it directly: an executable sibling wins, a non-executable sibling falls back to `PATH`, and `PATH` is searched only when the install mode allows it.
 
 ## Subprocess fixtures
 
-`tests/support/amplihack_bin.rs` builds `amplihack` and `amplihack-hooks` with the `amplihack-cli/test-support` feature into a private Cargo output directory, so the feature never reaches the developer's own `target`. A set `AMPLIHACK_TEST_BINARY` stops the test with a message, because that binary is not the test-support build.
+`tests/support/amplihack_bin.rs` builds `amplihack` and `amplihack-hooks` with the `amplihack-cli/test-support` feature into `<target>/amplihack-test-support`, so the feature never reaches the developer's own `target/debug`. The folder is fixed and kept until `cargo clean`. Every test binary and every later run builds into it, so dependencies such as `lbug` are compiled once and reused, and cargo's lock serialises builds that start together. The binaries are copied out of it before any test runs them.
 
-`tests/support/isolated_amplihack.rs` gives each child a private `HOME`, clears the application and profile root overrides so they derive from that home, and passes the runner's `PATH` without any directory that holds an `amplihack-asset-resolver`.
+`AMPLIHACK_TEST_BINARY` still overrides the binary and is used as given. It is not the test-support build, so an install test run with it uses production discovery and copies a resolver found beside it into each fake home. A note on stderr says so. Leave it unset to use the protected build.
+
+`tests/support/isolated_amplihack.rs` gives each child a private `HOME` and clears the application and profile root overrides so they derive from that home. It replaces each `PATH` directory that holds an `amplihack-asset-resolver` with a private directory of symlinks to that directory's other entries, so `cargo`, `sccache` or `recipe-runner-rs` installed beside a resolver stay on the child's `PATH` in the same order.
 
 ## Internal support modules
 
@@ -55,11 +59,14 @@ These are test-support modules, not public application APIs.
 ## Tests
 
 - `commands::install::tests::issue_2182_binary_isolation` covers symlink fallback after a failed hardlink, total link failure without a copy, rejected destinations outside the staging root, rejected sources, a replaced registered source, and final release staging of large `amplihack`, `amplihack-asset-resolver` and `amplihack-hooks` sources as hardlinks with unchanged permissions.
-- `tests/issue_2182_binary_isolation.rs` checks that the subprocess fixture keeps application roots inside the private home and that its `PATH` has no directory holding an `amplihack-asset-resolver`, while other tools on the runner's `PATH` stay reachable.
+- `commands::install::tests::issue_2182_binary_isolation::production_resolver_discovery` covers the production sibling and `PATH` discovery.
+- `tests/issue_2182_binary_isolation.rs` checks that the subprocess fixture keeps application roots inside the private home, that its `PATH` offers no `amplihack-asset-resolver`, and that tools sharing a directory with a resolver, including through a symlink, stay reachable.
+- `tests/issue_1955_install_cli.rs::an_install_leaves_no_large_independent_copy_in_the_fake_home` runs a real install into a fake home and checks that nothing reached from its `.local/bin` is an independent copy over 1 MiB, and that the staged resolver is the stub.
 
 Run them with:
 
 ```sh
 cargo test -p amplihack-cli --lib issue_2182_binary_isolation
 cargo test -p amplihack-cli --test cli_integration issue_2182_binary_isolation
+cargo test -p amplihack-cli --test cli_integration an_install_leaves_no_large_independent_copy
 ```

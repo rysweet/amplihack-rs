@@ -1,7 +1,7 @@
 //! Binary resolution and deployment for amplihack-hooks.
 
 use super::InstallMode;
-use super::paths::{find_binary, home_dir, is_executable};
+use super::paths::{find_binary, find_binary_in, home_dir, is_executable};
 use super::release_layout::{self, ReleaseTxn};
 use super::version_stamp::{VersionRelation, relation};
 use anyhow::{Context, Result, bail};
@@ -311,21 +311,24 @@ pub(super) fn deploy_binaries_into(
         // Issue #1526: as for hooks, a PATH copy may only fill an empty slot
         // during an implicit re-stage.
         let resolver_dst = local_bin.join(RESOLVER_BIN);
-        #[cfg(not(any(test, feature = "test-support")))]
         let path_lookup_allowed =
             mode == InstallMode::Explicit || resolver_dst.symlink_metadata().is_err();
+        // Issue #2182: test builds stage a private inert stub in place of the
+        // host's resolver (about 590 MB). The production discovery below is
+        // the same function in every build, and
+        // `tests::issue_2182_binary_isolation::production_resolver_discovery`
+        // calls it directly.
         #[cfg(any(test, feature = "test-support"))]
-        let resolver_src = Some(super::test_support::resolver_stub()?);
+        let resolver_src = {
+            let _ = path_lookup_allowed;
+            Some(super::test_support::resolver_stub()?)
+        };
         #[cfg(not(any(test, feature = "test-support")))]
-        let resolver_src = self_src
-            .parent()
-            .map(|dir| dir.join(RESOLVER_BIN))
-            .filter(|candidate| is_executable(candidate))
-            .or_else(|| {
-                path_lookup_allowed
-                    .then(|| find_binary(RESOLVER_BIN))
-                    .flatten()
-            });
+        let resolver_src = discover_resolver(
+            &self_src,
+            path_lookup_allowed,
+            std::env::var_os("PATH").as_deref(),
+        );
         if let Some(resolver_src) = resolver_src {
             if !may_deploy(mode, stamp, &resolver_src, &resolver_dst) {
                 kept.push(resolver_dst);
@@ -363,6 +366,27 @@ pub(super) fn deploy_binaries_into(
     }
 
     Ok((deployed, kept))
+}
+
+/// Where a production install finds `amplihack-asset-resolver`: beside
+/// `self_src` when it is executable there, otherwise, when
+/// `path_lookup_allowed`, the first executable one on `path`. Compiled in
+/// every build. Test builds stage a stub instead (issue #2182), so their unit
+/// tests call this function directly to cover the production path.
+#[cfg_attr(all(feature = "test-support", not(test)), allow(dead_code))]
+pub(super) fn discover_resolver(
+    self_src: &Path,
+    path_lookup_allowed: bool,
+    path: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    self_src
+        .parent()
+        .map(|dir| dir.join(RESOLVER_BIN))
+        .filter(|candidate| is_executable(candidate))
+        .or_else(|| {
+            path.filter(|_| path_lookup_allowed)
+                .and_then(|path| find_binary_in(RESOLVER_BIN, path))
+        })
 }
 
 /// Prints the PATH conflict advisory for the installed `amplihack`.

@@ -45,16 +45,24 @@ const RUN_ID_VAR: &str = "NEXTEST_RUN_ID";
 const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Path of a current `amplihack` binary that nothing re-links while the
-/// suite runs. A set `AMPLIHACK_TEST_BINARY` stops the test with a message,
-/// because that binary is not the test-support build.
+/// suite runs. `AMPLIHACK_TEST_BINARY` overrides it and is used as given.
+///
+/// An override is not the `test-support` build, so an install it runs uses
+/// production resolver discovery and copies, and a resolver beside it is
+/// copied into each fake home (issue #2182). A note on stderr says so once
+/// per process. Leave it unset to use the protected build.
 pub fn amplihack_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
         if let Some(p) = std::env::var_os("AMPLIHACK_TEST_BINARY") {
-            panic!(
-                "AMPLIHACK_TEST_BINARY={} is unverified; use the protected test-support build",
-                PathBuf::from(p).display()
+            let p = PathBuf::from(p);
+            eprintln!(
+                "note: AMPLIHACK_TEST_BINARY={} is used as given. It is not the test-support \
+                 build, so an install test copies any amplihack-asset-resolver beside it into \
+                 each fake home (issue #2182). Unset it to use the protected build.",
+                p.display()
             );
+            return p;
         }
         let run_id = std::env::var(RUN_ID_VAR)
             .ok()
@@ -124,38 +132,25 @@ fn build() -> PathBuf {
     built_dir
 }
 
-/// The Cargo output folder of the test-support build: a private temporary
-/// directory, so the feature never reaches the build the developer's own
-/// `target` holds, and removed when this process exits. The binaries a run
-/// shares are copied out of it first.
-fn protected_target() -> &'static Path {
-    static TARGET: OnceLock<tempfile::TempDir> = OnceLock::new();
-    TARGET
-        .get_or_init(|| {
-            let dir = tempfile::Builder::new()
-                .prefix("amplihack-protected-build-")
-                .tempdir()
-                .expect("create isolated Cargo output");
-            extern "C" fn cleanup() {
-                if let Some(dir) = TARGET.get()
-                    && let Err(error) = std::fs::remove_dir_all(dir.path())
-                {
-                    eprintln!(
-                        "remove protected test build {}: {error}",
-                        dir.path().display()
-                    );
-                }
-            }
-            // Static TempDirs are never dropped. Keep artifacts through child
-            // completion, then release the dedicated build output at exit.
-            assert_eq!(
-                unsafe { libc::atexit(cleanup) },
-                0,
-                "register protected build cleanup"
-            );
-            dir
-        })
-        .path()
+/// The Cargo output folder of the test-support build:
+/// `<target>/amplihack-test-support`, beside the developer's own `debug`
+/// and `release` output and never inside them, so the feature never reaches
+/// the binaries those hold.
+///
+/// It is a fixed directory, not a temporary one, and nothing removes it but
+/// `cargo clean`. Every test binary and every later run builds into the same
+/// folder, so dependencies such as the C++ `lbug` build are compiled once,
+/// the first time, and are then reused; cargo's lock on the folder
+/// serialises builds that start together. Each run copies the binaries out
+/// of it before running them, so a later re-link does not affect a test.
+fn protected_target() -> PathBuf {
+    std::env::current_exe()
+        .expect("the test binary's path")
+        .parent() // deps
+        .and_then(Path::parent) // debug
+        .and_then(Path::parent) // target
+        .expect("the test binary lies in <target>/<profile>/deps")
+        .join("amplihack-test-support")
 }
 
 /// Where private copies are made: cargo's per-target temporary directory, or

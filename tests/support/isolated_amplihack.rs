@@ -29,9 +29,10 @@
 //!   child write its settings into a developer's live profile. As above,
 //!   `env_clear()` already drops them and the explicit removal is what holds
 //!   if the kept list changes.
-//! - the test process's `PATH` without any directory that holds an
-//!   `amplihack-asset-resolver` ([`path_without_resolver`], issue #2182), so a
-//!   child never stages a host resolver found on `PATH`;
+//! - the test process's `PATH` with each directory that holds an
+//!   `amplihack-asset-resolver` replaced by a private copy of its other
+//!   entries ([`path_without_resolver`], issue #2182), so a child never stages
+//!   a host resolver found on `PATH` and still finds every other tool;
 //! - `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true` and `SSH_ASKPASS=true`
 //!   ([`NO_GIT_PROMPT_ENV`], issue #1764) and a null stdin, through
 //!   [`no_git_prompt`], so no git the child starts can wait on a credential
@@ -218,13 +219,77 @@ pub fn reapply_proc_root(command: &mut Command) -> &mut Command {
 /// The name of the asset resolver a non-test build discovers on `PATH`.
 pub const RESOLVER_BIN: &str = "amplihack-asset-resolver";
 
-/// `path` without the directories that hold an [`RESOLVER_BIN`], so a child
-/// cannot discover and stage a host resolver through `PATH` (issue #2182).
-/// Every other directory stays, so tools such as a `RUSTC_WRAPPER`, `cargo`
-/// and `recipe-runner-rs` are still found.
+/// `path` with every directory that holds an [`RESOLVER_BIN`] replaced by a
+/// private copy of that directory made of symlinks to each of its other
+/// entries ([`shadow_without_resolver`]), so a child cannot discover and
+/// stage a host resolver through `PATH` (issue #2182). Directories are
+/// replaced, not dropped: a resolver in `~/.cargo/bin`, `~/.local/bin` or
+/// `/usr/local/bin` would otherwise take `cargo`, a `RUSTC_WRAPPER` such as
+/// `sccache`, or `recipe-runner-rs` off the child's `PATH` with it. Order is
+/// kept, so the child finds the same tool the test process would.
 pub fn path_without_resolver(path: &OsStr) -> std::ffi::OsString {
-    std::env::join_paths(std::env::split_paths(path).filter(|dir| !dir.join(RESOLVER_BIN).exists()))
-        .expect("directories split from PATH join again")
+    std::env::join_paths(std::env::split_paths(path).map(|dir| {
+        if dir.join(RESOLVER_BIN).symlink_metadata().is_ok() {
+            shadow_without_resolver(&dir)
+        } else {
+            dir
+        }
+    }))
+    .expect("directories split from PATH join again")
+}
+
+/// A private directory holding a symlink to every entry of `dir` except
+/// [`RESOLVER_BIN`]: one per `dir` and test process, made on first use under
+/// a per-process temp root that is removed at exit. Entries added to `dir`
+/// later are not seen.
+pub fn shadow_without_resolver(dir: &Path) -> PathBuf {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    static SHADOWS: Mutex<Option<HashMap<PathBuf, PathBuf>>> = Mutex::new(None);
+    let root = ROOT.get_or_init(|| {
+        let root = tempfile::Builder::new()
+            .prefix("amplihack-test-path-")
+            .tempdir()
+            .expect("create the per-process PATH shadow root")
+            .keep();
+        extern "C" fn remove_at_exit() {
+            if let Some(root) = ROOT.get() {
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+        // SAFETY: registering a plain `extern "C"` function has no
+        // preconditions; it runs once, at normal process exit.
+        unsafe { libc::atexit(remove_at_exit) };
+        root
+    });
+    let mut shadows = SHADOWS.lock().unwrap_or_else(|p| p.into_inner());
+    let shadows = shadows.get_or_insert_with(HashMap::new);
+    if let Some(shadow) = shadows.get(dir) {
+        return shadow.clone();
+    }
+    let shadow = root.join(shadows.len().to_string());
+    DirBuilder::new()
+        .mode(0o700)
+        .create(&shadow)
+        .unwrap_or_else(|e| panic!("create {}: {e}", shadow.display()));
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name == OsStr::new(RESOLVER_BIN) {
+                continue;
+            }
+            std::os::unix::fs::symlink(entry.path(), shadow.join(&name)).unwrap_or_else(|e| {
+                panic!(
+                    "link {} into {}: {e}",
+                    entry.path().display(),
+                    shadow.display()
+                )
+            });
+        }
+    }
+    shadows.insert(dir.to_path_buf(), shadow.clone());
+    shadow
 }
 
 /// A `Command` for the `amplihack` binary at `bin`, isolated as described in
