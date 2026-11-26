@@ -1070,7 +1070,8 @@ fn raw_rate(p: &RateParts) -> f64 {
 
 /// `testdata/issue_1970_5nov.jsonl`: 10:52Z to 19:00Z on 5 Nov 2026.
 const NOV5: &str = include_str!("testdata/issue_1970_5nov.jsonl");
-/// The two logins the issue names keep their names in the fixture.
+/// The two logins the issue discusses keep a name, not a number, in the
+/// fixture.
 const REC: &str = "login-as";
 const RMP: &str = "login-ax";
 /// login-az in the rotator log.

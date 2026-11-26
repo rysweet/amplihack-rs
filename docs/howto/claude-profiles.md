@@ -945,9 +945,9 @@ can disagree):
 
 ```
 Codex accounts under /home/you/.codex-profiles
-jjones    not signed in  read 19:09:00
 login-af  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
 login-ag  signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+mjones    not signed in  read 19:09:00
 ```
 
 The Codex block is printed last. The Claude rows and the capacity summary

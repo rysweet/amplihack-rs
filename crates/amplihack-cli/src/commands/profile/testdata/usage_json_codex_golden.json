@@ -49,8 +49,8 @@
     "next_choice": true
   },
   {
-    "account": "hhale",
-    "path": "/home/you/.codex-profiles/hhale",
+    "account": "mhale",
+    "path": "/home/you/.codex-profiles/mhale",
     "state": "ok",
     "error": null,
     "windows": [],
@@ -65,8 +65,8 @@
     "next_choice": false
   },
   {
-    "account": "jjones",
-    "path": "/home/you/.codex-profiles/jjones",
+    "account": "mjones",
+    "path": "/home/you/.codex-profiles/mjones",
     "state": "not_signed_in",
     "error": null,
     "windows": [],
@@ -78,8 +78,8 @@
     "next_choice": false
   },
   {
-    "account": "kkim",
-    "path": "/home/you/.codex-profiles/kkim",
+    "account": "mkim",
+    "path": "/home/you/.codex-profiles/mkim",
     "state": "timeout",
     "error": "timed out after 20s",
     "windows": [],

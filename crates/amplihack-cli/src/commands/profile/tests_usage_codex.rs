@@ -20,7 +20,7 @@
 use super::usage_codex::{CodexView, bars_block, json_rows, table_block, view, window_label};
 use super::usage_view::TimeView;
 use amplihack_utils::codex_capacity::{
-    AccountResult, Credits, Outcome, Reading, Window, WindowName,
+    self, AccountResult, Credits, Outcome, Reading, Window, WindowName,
 };
 use chrono::FixedOffset;
 use std::path::PathBuf;
@@ -92,7 +92,7 @@ fn example_rows() -> Vec<AccountResult> {
         signed_in("login-af", login_af),
         signed_in("login-ag", login_ag),
         signed_in(
-            "hhale",
+            "mhale",
             reading(
                 vec![],
                 Some(Credits {
@@ -102,8 +102,8 @@ fn example_rows() -> Vec<AccountResult> {
                 Some("team"),
             ),
         ),
-        at("jjones", Outcome::NotSignedIn),
-        at("kkim", Outcome::Timeout),
+        at("mjones", Outcome::NotSignedIn),
+        at("mkim", Outcome::Timeout),
         at("mmoss", Outcome::Error(CRASH.to_string())),
         signed_in(
             "~/.codex",
@@ -212,9 +212,9 @@ fn the_bar_block_is_the_documented_example() {
 Codex accounts under /home/you/.codex-profiles
 login-af  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
 login-ag  signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
-hhale     signed in      credits 4200  plan team  read 19:09:00
-jjones    not signed in  read 19:09:00
-kkim      timed out      after 20s  read 19:09:00
+mhale     signed in      credits 4200  plan team  read 19:09:00
+mjones    not signed in  read 19:09:00
+mkim      timed out      after 20s  read 19:09:00
 mmoss     error: codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'  read 19:09:00
 ~/.codex  signed in      5h ████████░░  88% 11-06 20:15 in 1h 6m  7d ███████░░░  70% 11-09 03:00 in 55h 51m  plan plus  read 19:09:00
 ";
@@ -348,11 +348,11 @@ fn a_signed_in_account_with_no_figures_says_so() {
 
 #[test]
 fn the_timeout_detail_is_the_deadline_that_applied() {
-    let v = view(PathBuf::from(ROOT), vec![at("kkim", Outcome::Timeout)], 7);
+    let v = view(PathBuf::from(ROOT), vec![at("mkim", Outcome::Timeout)], 7);
     let block = bars_block(&v, &utc0(), false);
     assert_eq!(
-        line_of(&block, "kkim"),
-        "kkim  timed out      after 7s  read 19:09:00"
+        line_of(&block, "mkim"),
+        "mkim  timed out      after 7s  read 19:09:00"
     );
     assert_eq!(json(&v)[0]["error"], "timed out after 7s");
 }
@@ -393,9 +393,35 @@ fn the_rows_keep_their_order_and_are_not_sorted_by_room() {
     assert_eq!(
         labels,
         [
-            "login-af", "login-ag", "hhale", "jjones", "kkim", "mmoss", "~/.codex"
+            "login-af", "login-ag", "mhale", "mjones", "mkim", "mmoss", "~/.codex"
         ]
     );
+}
+
+/// The rows are printed in the order `list_accounts` gives: the profile
+/// accounts in byte order of their names, then `~/.codex`. The documented
+/// example, and the golden file made from it, must be in an order that the
+/// listing can give for the same directories.
+#[test]
+fn the_example_is_in_the_order_the_account_listing_gives() {
+    let t = tempfile::tempdir().unwrap();
+    let (root, home) = (t.path().join("profiles"), t.path().join("home"));
+    let rows = example_rows();
+    for r in &rows {
+        let dir = if r.label == codex_capacity::HOME_LABEL {
+            home.join(".codex")
+        } else {
+            root.join(&r.label)
+        };
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let listed: Vec<String> = codex_capacity::list_accounts(&root, Some(&home))
+        .unwrap()
+        .into_iter()
+        .map(|a| a.label)
+        .collect();
+    let example: Vec<String> = rows.into_iter().map(|r| r.label).collect();
+    assert_eq!(listed, example);
 }
 
 #[test]
@@ -471,8 +497,8 @@ fn the_table_block_leaves_out_the_bar_and_keeps_one_decimal() {
     );
     assert!(line_of(&block, "login-ag").ends_with("read 19:09:00  <- next"));
     assert_eq!(
-        line_of(&block, "jjones"),
-        "jjones    not signed in  read 19:09:00"
+        line_of(&block, "mjones"),
+        "mjones    not signed in  read 19:09:00"
     );
 }
 
@@ -584,12 +610,12 @@ fn json_states_errors_and_empty_figures() {
     );
     assert!(by("login-af")["error"].is_null());
     assert!(
-        by("jjones")["error"].is_null(),
+        by("mjones")["error"].is_null(),
         "not_signed_in has no reason"
     );
-    assert_eq!(by("kkim")["error"], "timed out after 20s");
+    assert_eq!(by("mkim")["error"], "timed out after 20s");
     assert_eq!(by("mmoss")["error"], CRASH);
-    for name in ["jjones", "kkim", "mmoss"] {
+    for name in ["mjones", "mkim", "mmoss"] {
         let r = by(name);
         assert_eq!(r["windows"], serde_json::json!([]), "{name}");
         assert!(r["credits"].is_null(), "{name}");
@@ -598,7 +624,7 @@ fn json_states_errors_and_empty_figures() {
         assert_eq!(r["read_at"], "2026-11-06T19:09:00Z", "{name}");
     }
     assert_eq!(
-        by("hhale")["credits"],
+        by("mhale")["credits"],
         serde_json::json!({"has_credits": true, "balance": 4200.0})
     );
     assert_eq!(by("~/.codex")["path"], HOME_CODEX);

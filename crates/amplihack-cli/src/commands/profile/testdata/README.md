@@ -40,8 +40,10 @@ line does. Logins the cycle skipped or could not read are left out.
   The 20 logins left give the 360 points of headroom the issue reports. The
   log does not give the second of the reading. 16:52:30Z is used; any time
   from 16:52:11Z to 16:52:43Z prints the same rate and runway.
-- **Names.** login-as and login-ax keep their names,
-  because the issue cites them. The other logins are numbered `login-01` to
+- **Names.** login-as and login-ax are the two logins issue #1970 discusses.
+  They keep a name of their own rather than a number, so the tests can refer
+  to them. The issue gives their original names; this tree uses generic
+  names in their place. The other logins are numbered `login-01` to
   `login-20` in the order of their names. `login-19` is login-az.
 
 A history line also holds passive readings and is checked against them in
