@@ -186,6 +186,13 @@ impl FailureVerdict {
                  needs to resolve a base ref and push its work (issue #1323).",
             );
         }
+        // Issue #3286: decided by the error's type, so no evidence text is named.
+        if self.signal == Some(UNTRUSTED_BUNDLE_SIGNAL) {
+            return "classified `environmental`: the trusted bundle failed its owner and \
+                    mode check. Retrying cannot help, because the same bundle fails the same \
+                    way until its owner or modes are changed."
+                .to_owned();
+        }
         // Issue #1390: a usage limit states its own reset time. Quoting it is
         // the difference between "something went wrong" and "come back at
         // 9:20am"; the operator should not have to re-read the raw log.
@@ -397,8 +404,14 @@ pub(crate) fn classify_error(error: &anyhow::Error) -> FailureVerdict {
     let chain = format!("{error:#}");
     let quotes_guard = quotes_structural_guard(&chain);
     let evidence = truncate_evidence(chain);
-    let (class, signal) =
-        veto_retry_on_quoted_guard(classify_failure_text(&evidence), quotes_guard);
+    // #3286: a bundle that fails its trust check fails the same way on every
+    // attempt until its owner or modes change. Decided by the error's type,
+    // never its text, and ahead of the text tables.
+    let (class, signal) = if is_untrusted_bundle(error) {
+        (FailureClass::Environmental, Some(UNTRUSTED_BUNDLE_SIGNAL))
+    } else {
+        veto_retry_on_quoted_guard(classify_failure_text(&evidence), quotes_guard)
+    };
     FailureVerdict {
         class,
         signal,
@@ -407,6 +420,18 @@ pub(crate) fn classify_error(error: &anyhow::Error) -> FailureVerdict {
         completed_steps: Vec::new(),
         structural_refusal: false,
     }
+}
+
+/// The signal a verdict names when the trusted bundle failed its owner and
+/// mode check (#3286).
+pub(crate) const UNTRUSTED_BUNDLE_SIGNAL: &str = "untrusted bundle";
+
+/// Whether the trusted-bundle check failed anywhere in `error`'s chain, under
+/// whatever context the launch path added (#3286).
+pub(crate) fn is_untrusted_bundle(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<crate::commands::orch::autodrive::trusted::UntrustedBundle>())
 }
 
 /// Text cannot decide a refusal, but it can stop a retry (#1437 review).

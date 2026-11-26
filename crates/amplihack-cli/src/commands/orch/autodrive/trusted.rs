@@ -251,12 +251,15 @@ fn copy_tree(source: &Path, dest: &Path) -> Result<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            ensure!(
-                metadata.uid() == unsafe { libc::geteuid() }
-                    && metadata.permissions().mode() & 0o022 == 0,
-                "untrusted auto-drive asset ownership or modes: {}",
-                path.display()
-            );
+            if metadata.uid() != unsafe { libc::geteuid() }
+                || metadata.permissions().mode() & 0o022 != 0
+            {
+                return Err(UntrustedBundle {
+                    what: "untrusted auto-drive asset ownership or modes",
+                    path,
+                }
+                .into());
+            }
         }
         if metadata.is_dir() {
             copy_tree(&path, &to)?;
@@ -308,6 +311,26 @@ pub fn pin_bundle(home: &Path) -> Result<PathBuf> {
     trusted_directory(&pinned)?;
     Ok(pinned)
 }
+/// The trusted bundle, or a folder that holds it, is not owned by this user or
+/// is writable by group or others (#3286).
+///
+/// A typed error so the runner can class it without reading its text: the
+/// same bundle fails the same way on every attempt until someone changes its
+/// owner or modes, so it is `environmental` and never retried.
+#[derive(Debug)]
+pub struct UntrustedBundle {
+    what: &'static str,
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for UntrustedBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.what, self.path.display())
+    }
+}
+
+impl std::error::Error for UntrustedBundle {}
+
 fn trusted_directory(path: &Path) -> Result<()> {
     let m = fs::symlink_metadata(path)?;
     ensure!(
@@ -317,11 +340,13 @@ fn trusted_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        ensure!(
-            m.uid() == unsafe { libc::geteuid() } && m.permissions().mode() & 0o022 == 0,
-            "trusted bundle has unsafe ownership or modes: {}",
-            path.display()
-        );
+        if m.uid() != unsafe { libc::geteuid() } || m.permissions().mode() & 0o022 != 0 {
+            return Err(UntrustedBundle {
+                what: "trusted bundle has unsafe ownership or modes",
+                path: path.to_path_buf(),
+            }
+            .into());
+        }
     }
     Ok(())
 }
@@ -497,7 +522,7 @@ mod required_assets_tests {
 /// #2537: the per-invocation copy must pass its own trust check under umask 002.
 #[cfg(all(test, unix))]
 mod umask_tests {
-    use super::{LaunchBundle, REQUIRED_ASSETS, pin_bundle};
+    use super::{LaunchBundle, REQUIRED_ASSETS, UntrustedBundle, pin_bundle};
     use crate::commands::orch::autodrive::authorization::InvocationAuthorization;
     use std::collections::BTreeMap;
     use std::fs;
@@ -665,6 +690,45 @@ mod umask_tests {
                 assert!(LaunchBundle::prepare(&home, temp.path(), &mut authorization()).is_err());
             },
         );
+    }
+
+    /// The typed failure anywhere in `error`'s chain, if there is one.
+    fn untrusted(error: &anyhow::Error) -> Option<&UntrustedBundle> {
+        error.chain().find_map(|cause| cause.downcast_ref())
+    }
+
+    /// #3286: a bundle folder made under umask 002, as a clone made under it
+    /// is, fails as the typed `UntrustedBundle`, so the runner classes it by
+    /// its type and a supervising loop reads it as not retryable.
+    #[test]
+    fn bundle_made_under_umask_002_fails_as_untrusted_bundle() {
+        under_umask_002(
+            "bundle_made_under_umask_002_fails_as_untrusted_bundle",
+            || {
+                let (temp, home) = fake_home();
+                let bundle = home.join("amplifier-bundle");
+                fs::rename(&bundle, temp.path().join("installed")).unwrap();
+                fs::create_dir(&bundle).unwrap();
+                assert_eq!(mode_of(&bundle), 0o775);
+                let error = LaunchBundle::prepare(&home, temp.path(), &mut authorization())
+                    .err()
+                    .expect("a group-writable bundle fails the trust check");
+                let failure = untrusted(&error).expect("the failure is an UntrustedBundle");
+                assert_eq!(failure.path, fs::canonicalize(&bundle).unwrap());
+            },
+        );
+    }
+
+    /// #3286: a group-writable asset inside the bundle fails the same way.
+    #[test]
+    fn group_writable_asset_fails_as_untrusted_bundle() {
+        let (temp, home) = fake_home();
+        let asset = home.join("amplifier-bundle/skills/merge-ready/SKILL.md");
+        fs::set_permissions(&asset, fs::Permissions::from_mode(0o664)).unwrap();
+        let error = LaunchBundle::prepare(&home, temp.path(), &mut authorization())
+            .err()
+            .expect("a group-writable asset fails the trust check");
+        assert!(untrusted(&error).is_some(), "{error:#}");
     }
 
     /// #2959: the folder is made inside the parent the caller names (the run's

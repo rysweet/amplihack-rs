@@ -363,6 +363,17 @@ fn run_recipe_with_options(
             if let Some(code) = crate::command_error::exit_code(&error) {
                 return Err(exit_error(code));
             }
+            // Issue #3286: a failed trusted-bundle check gets the runner's
+            // marker, so a supervising loop reads it as not retryable rather
+            // than `unknown`. The marker goes first and the error line last,
+            // so the log's last line is the error itself.
+            if failure_class::is_untrusted_bundle(&error) {
+                failure_class::emit_failure_class_marker(
+                    &failure_class::classify_error(&error),
+                    1,
+                    "terminal",
+                );
+            }
             writeln!(io::stderr(), "Error: {error}")?;
             // Issue #1606: a stopped run exits the way a killed process does.
             if let Some(stopped) = error.downcast_ref::<stop_signal::StoppedBySignal>() {
@@ -516,6 +527,8 @@ mod tests_execute;
 mod tests_failure_class;
 #[cfg(test)]
 mod tests_failure_class_1437;
+#[cfg(all(test, unix))]
+mod tests_failure_class_3286;
 #[cfg(test)]
 mod tests_format;
 #[cfg(all(test, unix))]
