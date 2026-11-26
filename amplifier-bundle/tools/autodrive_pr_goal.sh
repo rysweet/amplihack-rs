@@ -106,7 +106,8 @@ do_act_review() {
 checks_watch_interval() {
   local LC_ALL=C n="${RECIPE_VAR_checks_watch_interval:-}"
   [ -n "$n" ] || return 0
-  if [[ "$n" =~ ^[1-9][0-9]{0,9}$ ]]; then
+  # gh parses seconds as a Go duration with a signed 64-bit nanosecond limit.
+  if [[ "$n" =~ ^[1-9][0-9]{0,9}$ ]] && (( n <= 9223372036 )); then
     printf '%s' "$n"
   else
     printf 'WARNING: invalid checks_watch_interval %s. Using the gh default.\n' \
