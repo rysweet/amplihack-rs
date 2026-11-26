@@ -47,7 +47,8 @@ exactly one outcome:
 
 | Condition (relative to `@{u}`) | Outcome | Exit | Emitted marker |
 | ------------------------------ | ------- | ---- | -------------- |
-| No upstream tracking branch configured | Skip push | `0` | `reason="no-upstream"` |
+| No upstream tracking branch, `origin` present | First push with `-u origin HEAD:<branch>`, which publishes the branch and sets its upstream (#1930) | `0` | `"pushed":"true"` |
+| No upstream tracking branch and no `origin` remote, or a detached HEAD | Skip push | `0` | `reason="no-upstream"` |
 | `ahead == 0` after fetch | Nothing to push | `0` | `reason="already-pushed"` |
 | `behind == 0`, `ahead > 0` | Fast-forward push | `0` | `"pushed":"true"` |
 | `ahead > 0` **and** `behind > 0` | Fail closed (no rebase) | `1` | `reason="diverged-upstream: …"` |

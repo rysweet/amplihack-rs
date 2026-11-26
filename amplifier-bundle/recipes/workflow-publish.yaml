@@ -233,19 +233,21 @@ steps:
         fi
       fi
       echo "--- Pushing to Remote ---" >&2
-      # REL-002: Detect missing upstream tracking branch before rev-list
-      if ! git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-        echo "WARNING: No upstream tracking branch configured — skipping push" >&2
+      # REL-002: Detect missing upstream tracking branch before rev-list. #1930: setup pushes nothing, so with an origin a new
+      # branch's first push publishes it with -u through the same push below; the skip stays for no origin or a detached HEAD.
+      PUSH_RB="${REMOTE_BRANCH:-$(git branch --show-current)}"; FIRST_PUSH=false; git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 || FIRST_PUSH=true
+      if [ "$FIRST_PUSH" = true ] && { [ -z "$PUSH_RB" ] || ! git remote get-url origin >/dev/null 2>&1; }; then
+        echo "WARNING: No upstream tracking branch, and no origin remote or no branch — skipping push" >&2
         reason="no-upstream"
         exit 0
       fi
-      COMMITS_AHEAD=$(git rev-list --count @{u}..HEAD)
+      COMMITS_AHEAD=1; [ "$FIRST_PUSH" = true ] || COMMITS_AHEAD=$(git rev-list --count @{u}..HEAD)
       if [ "$COMMITS_AHEAD" -ne 0 ]; then
         # FIX (#978): ancestry-aware integration — never blind `git pull --rebase`.
         # Refresh upstream, then decide by ancestry: behind==0 -> fast-forward push
         # (preserve tested commit identities); behind>0 -> fail closed with structured
         # merge-base/ahead/behind evidence. Never auto-replay already-integrated history.
-        UPSTREAM_REF=$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null || echo "unknown")
+        UPSTREAM_REF=$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null || echo "none")
         fetch_output_file=$(mktemp -t step15-fetch-XXXXXX)
         if git fetch origin >"$fetch_output_file" 2>&1; then
           redact_sensitive_file "$fetch_output_file" >&2
@@ -254,8 +256,8 @@ steps:
           redact_sensitive_file "$fetch_output_file" >&2
         fi
         rm -f "$fetch_output_file"
-        COMMITS_AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-        COMMITS_BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+        [ "$FIRST_PUSH" = true ] || COMMITS_AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+        COMMITS_BEHIND=0; [ "$FIRST_PUSH" = true ] || COMMITS_BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
         if [ "$COMMITS_AHEAD" -eq 0 ]; then
           echo "INFO: HEAD no longer ahead of upstream '$UPSTREAM_REF' after fetch — nothing to push" >&2
           raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
@@ -277,17 +279,18 @@ steps:
         echo "INFO: upstream '$UPSTREAM_REF' is an ancestor of HEAD — fast-forward push, no rebase (#978)" >&2
         # FIX (#495): capture push stderr, redact tokens before reason emission.
         push_stderr_file=$(mktemp -t step15-push-XXXXXX)
+        PUSH_ARGS=(${REMOTE_BRANCH:+origin "HEAD:$REMOTE_BRANCH"}); [ "$FIRST_PUSH" = false ] || PUSH_ARGS=(-u origin "HEAD:$PUSH_RB")
         # shellcheck disable=SC2064
         trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
         if hook_repair_run push step-15-commit-push \
           --fix-message "fix: address {hook_ids} pre-push rejection${ISSUE_NUMBER:+ ($ISSUE_TAG)}" \
-          --output "$push_stderr_file" -- git push ${REMOTE_BRANCH:+origin "HEAD:$REMOTE_BRANCH"}; then
+          --output "$push_stderr_file" -- git push ${PUSH_ARGS[@]+"${PUSH_ARGS[@]}"}; then
           redact_sensitive_file "$push_stderr_file" >&2  # kept for the step log; never printed raw (#978)
           # FIX (#1269): confirm the published commit is the tested one. A missing
           # helper warns, never fails -- see verify_pushed_ref.sh and #1268.
           V=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { V="$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done || true
           raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-          if [ -n "$V" ]; then bash "$V" origin "${REMOTE_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}" "$raw_sha" || { reason="push-verify-failed"; exit 1; }; else echo "WARNING: verify_pushed_ref.sh not reachable; published commit unverified (#1269)" >&2; fi
+          if [ -n "$V" ]; then bash "$V" origin "$PUSH_RB" "$raw_sha" || { reason="push-verify-failed"; exit 1; }; else echo "WARNING: verify_pushed_ref.sh not reachable; published commit unverified (#1269)" >&2; fi
           if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
           pushed="true"; reason="pushed"  # step-16 gate: only after verification
         else

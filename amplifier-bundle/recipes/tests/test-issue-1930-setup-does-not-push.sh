@@ -189,9 +189,8 @@ setup_case() {
     elif [[ "$state" == local-only ]]; then
         equal "$upstream" '' 'local-only upstream'
     else
-        # Creating from a remote base may inherit its tracking; never invent an
-        # origin/task ref that is absent. Publication must handle base tracking.
-        [[ "$upstream" != "origin/$TARGET" ]] || die 'fabricated task upstream'
+        # A new branch never tracks its base (#1930); its first push sets the upstream.
+        equal "$upstream" '' 'new branch upstream'
     fi
     equal "$("$REAL_GIT" -C "$REPO" rev-parse main)" "$BASE" 'base branch'
     if [[ "$state" == orphan ]]; then

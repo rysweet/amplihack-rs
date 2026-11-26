@@ -110,7 +110,7 @@ steps:
         fi
         case "$mode" in
           attach) git worktree add -- "$wt" "$branch" >&2 ;;
-          create) git worktree add -b "$branch" -- "$wt" "$ref" >&2 ;;
+          create) git worktree add --no-track -b "$branch" -- "$wt" "$ref" >&2 ;;  # #1930: never track the base
           track)  git worktree add --track -b "$branch" -- "$wt" "$ref" >&2 ;;
         esac
         wt_own created "$wt" "$branch"

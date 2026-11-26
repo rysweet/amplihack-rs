@@ -362,6 +362,11 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-1930-setup-does-not-push.sh
+      - name: Recipes — a new branch is published at its first real push (issue #1930)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-1930-first-push-publishes.sh
       - name: Recipes — re-run never destroys an existing worktree's work (issue #1565)
         shell: bash
         env:
