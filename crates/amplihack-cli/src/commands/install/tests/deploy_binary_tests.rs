@@ -119,3 +119,138 @@ fn missing_source_and_missing_dst_returns_error() {
         "should propagate NotFound, got: {err:?}"
     );
 }
+
+// ── stage_binary (issue #1954) ────────────────────────────────────────
+//
+// `deploy_binary` above is legacy code kept for these tests only; production
+// installs call `stage_binary`, which copies into a release and switches a
+// link. These tests carry the #302, #524 and #885 rules over to it.
+
+#[cfg(unix)]
+mod stage_binary {
+    use super::super::super::binary::stage_binary;
+    use super::super::super::release_layout::{ReleaseTxn, releases_dir};
+    use std::fs;
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    /// `<tmp>/.amplihack` and `<tmp>/bin`.
+    fn dirs() -> (TempDir, PathBuf, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let amp = tmp.path().join(".amplihack");
+        let bin = tmp.path().join("bin");
+        fs::create_dir_all(&amp).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        (tmp, amp, bin)
+    }
+
+    fn release_count(amp: &Path) -> usize {
+        fs::read_dir(releases_dir(amp))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// #524: an update replaced the running binary, so `src` (argv[0]) is
+    /// gone while `dst` holds the fresh install. Nothing is staged and `dst`
+    /// is left exactly as it was.
+    #[test]
+    fn deleted_source_with_existing_dst_is_noop() {
+        let (_tmp, amp, bin) = dirs();
+        let src = bin.join("src-deleted");
+        let dst = bin.join("amplihack");
+        fs::write(&src, b"old/deleted bytes").unwrap();
+        fs::write(&dst, b"freshly-installed bytes").unwrap();
+        fs::remove_file(&src).unwrap();
+
+        let mut txn = ReleaseTxn::allocate(&amp, "1.0.0").unwrap();
+        let staged = stage_binary(&mut txn, &src, &dst).expect("deleted source with dst is Ok");
+        assert!(!staged, "nothing may be staged for a deleted source");
+        let report = txn.commit().unwrap();
+
+        assert!(report.switched.is_empty(), "no link may be switched");
+        assert!(report.failed.is_none());
+        let meta = fs::symlink_metadata(&dst).unwrap();
+        assert!(meta.is_file(), "dst must stay the installed regular file");
+        assert_eq!(fs::read(&dst).unwrap(), b"freshly-installed bytes");
+    }
+
+    /// Guard rail for #524: with neither `src` nor `dst` present there is
+    /// nothing to keep, so the original `NotFound` propagates and the
+    /// unpublished release is removed.
+    #[test]
+    fn missing_source_and_missing_dst_returns_error() {
+        let (_tmp, amp, bin) = dirs();
+        let src = bin.join("nonexistent-src");
+        let dst = bin.join("amplihack");
+
+        let mut txn = ReleaseTxn::allocate(&amp, "1.0.0").unwrap();
+        let err = stage_binary(&mut txn, &src, &dst).expect_err("missing-both should error");
+        let io_err = err
+            .downcast_ref::<io::Error>()
+            .expect("root cause should be io::Error");
+        assert_eq!(
+            io_err.kind(),
+            io::ErrorKind::NotFound,
+            "should propagate NotFound, got: {err:?}"
+        );
+        drop(txn);
+
+        assert!(fs::symlink_metadata(&dst).is_err(), "dst must not appear");
+        assert_eq!(release_count(&amp), 0, "the unpublished release is removed");
+    }
+
+    /// #302 / #885: re-staging the binary that is already installed. `src`
+    /// is the file `dst` names (the running executable resolves through the
+    /// link into its release). The old release file must not be truncated or
+    /// rewritten; the new release holds a copy and `dst` names it.
+    #[test]
+    fn source_that_is_the_dst_release_target_is_copied_not_rewritten() {
+        let (_tmp, amp, bin) = dirs();
+        let built = bin.join("built");
+        fs::write(&built, b"self bytes").unwrap();
+        let dst = bin.join("amplihack");
+
+        let mut first = ReleaseTxn::allocate(&amp, "1.0.0").unwrap();
+        assert!(stage_binary(&mut first, &built, &dst).unwrap());
+        first.commit().unwrap();
+        let installed = fs::canonicalize(&dst).unwrap();
+        let installed_inode = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&installed).unwrap().ino()
+        };
+
+        for src in [installed.clone(), dst.clone()] {
+            let mut txn = ReleaseTxn::allocate(&amp, "1.0.0").unwrap();
+            assert!(
+                stage_binary(&mut txn, &src, &dst).expect("same-file stage"),
+                "same-file source {} must be staged",
+                src.display()
+            );
+            let report = txn.commit().unwrap();
+            assert!(report.failed.is_none(), "{report:?}");
+
+            assert_eq!(fs::read(&dst).unwrap(), b"self bytes");
+            assert_eq!(
+                fs::read(&installed).unwrap(),
+                b"self bytes",
+                "the previous release's binary must be left intact"
+            );
+            {
+                use std::os::unix::fs::MetadataExt;
+                assert_eq!(fs::metadata(&installed).unwrap().ino(), installed_inode);
+            }
+            assert!(fs::symlink_metadata(&dst).unwrap().file_type().is_symlink());
+        }
+        assert_ne!(
+            fs::canonicalize(&dst).unwrap(),
+            installed,
+            "dst must name the new release"
+        );
+    }
+}

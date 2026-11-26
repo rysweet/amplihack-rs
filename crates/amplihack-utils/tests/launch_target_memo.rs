@@ -9,6 +9,13 @@
 
 use std::path::Path;
 
+/// The five profile-redirecting variables (issue #2922). This binary sets
+/// `HOME` with neither `env_lock()` nor the crate's `test_support`, which is
+/// `#[cfg(test)]` and so out of reach here, and so it fires the purge itself
+/// alongside the `HOME` it sets.
+#[path = "../../../tests/support/claude_profile_isolation.rs"]
+mod claude_profile_isolation;
+
 /// A fake `claude` that records every invocation.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the test is Linux only
 fn write_recording_claude(dir: &Path, ledger: &Path) {
@@ -43,6 +50,11 @@ fn resolve_probes_once_and_resolve_uncached_reprobes() {
 
     // HOME points at the empty temp dir so the npm-prefix and fallback
     // candidates cannot find a real claude on this host.
+    // An inherited `CLAUDE_CONFIG_DIR` or login profile would survive the
+    // `HOME` move below and could send a settings write to a developer's live
+    // profile (issue #2922). There is one test in this binary, so this is the
+    // whole of its serialisation.
+    claude_profile_isolation::purge_inherited();
     unsafe {
         std::env::set_var("PATH", &bin);
         std::env::set_var("HOME", temp.path());

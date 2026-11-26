@@ -1,5 +1,6 @@
 ---
 name: amplihack:reflect
+disable-model-invocation: true
 version: 1.0.0
 description: Reflection and meta-cognitive analysis of sessions
 triggers:

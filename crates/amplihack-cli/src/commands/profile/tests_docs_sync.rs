@@ -168,6 +168,8 @@ fn rotate_has_the_documented_flags_and_hides_spawned() {
         "--upgrade-margin",
         "--hold",
         "--interval",
+        // Issue #2910: the ceiling on a login's week use for it to be a target.
+        "--target-week-max",
     ] {
         assert!(flags.iter().any(|f| f == want), "missing {want}: {flags:?}");
     }
@@ -198,8 +200,52 @@ fn reference_and_howto_document_profile_rotate() {
         "AMPLIHACK_ROTATE_UPGRADE_MARGIN",
         "AMPLIHACK_ROTATE_HOLD",
         "AMPLIHACK_ROTATE_INTERVAL",
+        "AMPLIHACK_ROTATE_TARGET_WEEK_MAX",
     ] {
         assert!(REFERENCE.contains(var), "reference is missing {var}");
+        assert!(
+            ENV_VARS.contains(&format!("`{var}`")),
+            "env-vars is missing {var}"
+        );
+    }
+}
+
+/// The usage lines of `rotate`, `rotate start` and `rotate watch` list every
+/// tuning flag, not only the settings table (issue #2910: `--target-week-max`).
+#[test]
+fn reference_usage_lines_list_every_rotate_tuning_flag() {
+    let tuning = [
+        "--session-at",
+        "--week-at",
+        "--margin",
+        "--upgrade-margin",
+        "--hold",
+        "--target-week-max",
+        "--overflow-wait",
+        "--overflow-unknown-reset",
+    ];
+    // The abbreviated `[<tuning flags>]` forms are not the spelled-out synopsis.
+    let usage: Vec<&str> = REFERENCE
+        .lines()
+        .filter(|l| {
+            [
+                "amplihack profile rotate [--dry-run]",
+                "amplihack profile rotate start ",
+                "amplihack profile rotate watch ",
+            ]
+            .iter()
+            .any(|p| l.starts_with(p))
+                && !l.contains("<tuning flags>")
+        })
+        .collect();
+    assert!(
+        usage.len() >= 3,
+        "the reference has the usage lines of rotate, start and watch: {usage:?}"
+    );
+    for line in usage {
+        for flag in tuning {
+            assert!(line.contains(flag), "`{line}` is missing {flag}");
+        }
     }
 }
 
@@ -248,6 +294,22 @@ fn rotate_log_grammar_is_documented() {
         "reason=threshold",
         "ALERT: no profile has capacity",
         "ALERT: no login in ~/.claude; no swap",
+        // Issue #2910: the target rule, its notes and its lines.
+        "ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)",
+        "reason=plan-room",
+        "reject: <name> <reason>",
+        // Issue #3105: the block and the superseded reading.
+        "reject: <name> blocked until <utc_minute> (<kind>)",
+        "reject: <name> reading <n>s older than one already held",
+        "stay: live room <R>, best other login has room <M>, a move needs <N>",
+        "stay: held after last swap (<S>s of <H>s): <name> is at s=<n>%, at or above --session-at",
+        "stay: no candidate confirmed by a fresh reading",
+        "#### Rotate target choice",
+        "#### Rotate hold",
+        "#### Rotate unknown readings",
+        "##### Last good reading",
+        "#### Rotate confirmation",
+        "#### Rotate no target",
         "idle: auto-switch is off",
         "skip: state lock busy",
         "stop: signal received; cycle abandoned",
@@ -263,6 +325,26 @@ fn rotate_log_grammar_is_documented() {
         "damp: <name> later reading shows room; swap-back allowed",
         "#### Rotate reading freshness and swap-back damping",
         "\"swapped_away\": { \"ggrant\": 1793634010 }",
+        // Issue #2211: live reading freshness and the projected swap.
+        "reason=projected",
+        "stale live reading; re-read",
+    ] {
+        assert!(REFERENCE.contains(line), "reference is missing `{line}`");
+    }
+    // Issue #2820: the unreadable process lines, and a move off a live login
+    // with a standing block on a reading the gate left unread. The re-read limit text
+    // is checked against `MAX_REREADS_PER_CYCLE` in
+    // `rotate::prelude::tests_issue_2820_cycle`, where the constant is seen.
+    for line in [
+        "#### Unreadable process lines",
+        "unreadable process <pid> (<exe>) \"<command>\": <verdict>",
+        "counted as a session on <a>, <b>",
+        "not counted (not a Claude executable)",
+        "not counted (profile cannot be told)",
+        "unreadable processes: <N> more not listed",
+        " unconfirmed (time limit)",
+        "read <N>m ago",
+        "; live <from> has no room: <kind> until <UTC minute>",
     ] {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }
@@ -276,7 +358,7 @@ fn rotate_revalidation_log_rows_are_documented() {
         "| `skip: state changed during measurement (<labels>)` |",
         "| `revalidate: target <name> no longer eligible (<reason>); reconsidered` |",
         "| `revalidate: ~/.claude.json held no account; read again` |",
-        "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`",
+        "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)`",
         "#### Rotate revalidation",
     ] {
         assert!(REFERENCE.contains(row), "reference is missing `{row}`");
@@ -867,4 +949,123 @@ fn docs_describe_credential_identity_and_display_only_claude_json() {
     assert!(ROTATE_HOWTO.contains("### Hand-change notes and alerts"));
     assert!(ROTATE_HOWTO.contains("#### No profile answers the same"));
     assert!(ROTATE_HOWTO.contains("```bash\namplihack profile rotate\n```"));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2001: the Codex block of `profile usage`
+// ---------------------------------------------------------------------------
+
+const ENV_VARS: &str = include_str!("../../../../../docs/reference/amplihack-env-vars.md");
+
+#[test]
+fn every_codex_json_key_is_in_the_reference_key_table() {
+    use super::usage_codex::{json_rows, view};
+    use amplihack_utils::codex_capacity::{AccountResult, Outcome, Reading, Window, WindowName};
+    let mut r = Reading::default();
+    r.windows = vec![Window {
+        name: WindowName::Primary,
+        used_percent: Some(1.0),
+        window_minutes: Some(300),
+        resets_at: Some(1_794_001_200),
+    }];
+    let v = view(
+        std::path::PathBuf::from("/r"),
+        vec![AccountResult::new(
+            "a",
+            std::path::PathBuf::from("/r/a"),
+            Outcome::Ok(r),
+            1_793_992_140,
+        )],
+        20,
+    );
+    let row = serde_json::to_value(json_rows(&v)).unwrap()[0].clone();
+    let mut keys: Vec<String> = row.as_object().unwrap().keys().cloned().collect();
+    keys.extend(
+        row["windows"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| format!("windows[].{k}")),
+    );
+    for k in keys {
+        assert!(
+            REFERENCE.contains(&format!("| `{k}` |")),
+            "reference has no key-table row for Codex `{k}`"
+        );
+    }
+}
+
+#[test]
+fn the_codex_settings_are_documented_in_both_references() {
+    use amplihack_utils::codex_capacity::{BIN_ENV, ROOT_ENV, TIMEOUT_ENV};
+    for var in [ROOT_ENV, BIN_ENV, TIMEOUT_ENV] {
+        assert!(REFERENCE.contains(&format!("`{var}`")), "reference: {var}");
+        assert!(ENV_VARS.contains(&format!("`{var}`")), "env-vars: {var}");
+    }
+}
+
+/// Crusty round 3 on #2001: `--json` stays the bare array, because host
+/// scripts read it with `.[]` and `.[0]` and drop stderr. Every `--json | jq`
+/// example reads the array, and every Codex example reads `--summary-json`.
+#[test]
+fn the_docs_read_json_as_an_array_and_codex_from_summary_json() {
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        for l in doc.lines() {
+            if l.contains("profile usage --json | jq") {
+                assert!(
+                    !l.contains(".claude[]") && !l.contains(".codex"),
+                    "{name}: a jq example reads `--json` as an object: {l}"
+                );
+            }
+            if l.contains(".codex[]") {
+                assert!(
+                    l.contains("profile usage --summary-json | jq"),
+                    "{name}: a Codex example does not read `--summary-json`: {l}"
+                );
+            }
+        }
+        assert!(!doc.contains(".claude[]"), "{name}");
+        assert!(!doc.contains("one break in that promise"), "{name}");
+    }
+}
+
+/// Crusty rounds 1 and 3 on #2001: the reference says `--json` has no Codex
+/// rows and why, the how-to's saved-file cron example says the file is the
+/// Claude array, and neither doc claims the `<- next` marker is
+/// `codex-pick`'s own choice (it reads session files; this view reads live).
+#[test]
+fn the_docs_keep_json_an_array_and_name_the_live_next_rule() {
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (reference, howto) = (flat(REFERENCE), flat(HOWTO));
+    assert!(reference.contains("`--json` prints one JSON array of Claude profile rows"));
+    assert!(reference.contains("`--json` has no Codex rows, and does not read Codex at all."));
+    assert!(reference.contains("Keys are only ever added, never renamed or removed"));
+    let cron = howto
+        .find("profile usage --json > /tmp/claude-usage.json")
+        .expect("howto cron example");
+    assert!(howto[cron..].contains("The saved file is the array of Claude rows"));
+    for (name, doc) in [("reference", &reference), ("howto", &howto)] {
+        assert!(!doc.contains("`codex-pick` would choose"), "{name}");
+    }
+    assert!(reference.contains("refreshing the account's login"));
+}
+
+#[test]
+fn the_reference_quotes_the_codex_texts_the_code_prints() {
+    for text in [
+        "Codex accounts under ",
+        "Codex: no accounts under ",
+        "codex binary not found: ",
+        "unexpected response from codex app-server",
+        "codex usage read is supported only on Unix",
+        "codex account authentication required to read rate limits",
+        "<- next",
+        "no windows reported",
+        "warning: AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS=\"0\" is not a whole number from 1 to 300; using 20",
+    ] {
+        assert!(
+            REFERENCE.contains(text),
+            "reference does not quote {text:?}"
+        );
+    }
 }

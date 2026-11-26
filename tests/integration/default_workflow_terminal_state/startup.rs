@@ -49,6 +49,7 @@ pub(super) fn isolate(command: &mut Command, root: &Path) {
     command
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
         .env("RECIPE_RUNNER_RS_PATH", runner)
+        .env("AMPLIHACK_WORK_ROOT", root.join("work"))
         // This test checks skip conditions. Provider startup repair has its
         // own regressions with self-heal enabled.
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")

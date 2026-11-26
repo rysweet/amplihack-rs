@@ -162,6 +162,14 @@ and `HOME` on the child's `Command` through a seam instead of calling
 with `exec /bin/sleep 60`. See
 [Keep Tests from Changing PATH and HOME](./keep-tests-from-changing-path-and-home.md).
 
+### Profile Root Is Not Valid UTF-8 in a Full Run
+
+A test that passes alone but fails in a full run with
+`AMPLIHACK_CLAUDE_PROFILE_ROOT is set but is not valid UTF-8` read the
+variable from the process while another test had set it. Pass the
+environment as an argument instead. See
+[Bug Fix #2014](../bugfixes/bugfix-2014-multitask-launcher-env-race.md).
+
 ### A Test Run Stops Instead of Failing
 
 A run under plain `timeout` from a terminal can stop, with its processes in

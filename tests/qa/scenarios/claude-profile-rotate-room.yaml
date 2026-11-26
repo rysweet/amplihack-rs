@@ -1,0 +1,54 @@
+name: claude-profile-rotate-room
+description: >
+  Isolated CLI acceptance test for the rotator's choice of target (issue #2910).
+  Runs the candidate amplihack binary against a temporary HOME, a fake Claude
+  executable and a loopback stand-in for the usage and profile endpoints
+  (socat, 127.0.0.1 only), replaying 22 November 2026: the live login reached
+  100% of its session while several logins had room, alone in its organisation.
+  Eleven cases: a dry run that reports the swap to the login with a fresh session;
+  a one-shot cycle that moves ~/.claude to it with reason=plan-room and no ALERT;
+  HTTP 429 from the usage endpoint with a last good reading in the history,
+  where the target is rejected at confirmation and nothing moves (issue #3105:
+  no swap without a fresh reading); HTTP 429 with no history, which
+  gives one "no capacity known" ALERT and moves nothing; HTTP 429 with a
+  target whose identity read returns another account, which moves nothing;
+  a dry run at the 05:48Z readings, where the live login still has room and
+  nothing it may move to qualifies, which says it would stay, with the note;
+  the stand-in's own guards, where a bad bearer token, a missing one and
+  an oversized request line are refused and serve no fixture; a login
+  carrying a recorded spend block, which is passed over for the next login
+  the ranking gives until the block's reset, with one "reject: llarame blocked
+  until <time> (spend limit)" line at 85/90 and at 95/98, and chosen again
+  after it; the
+  same readings at the thresholds the hosts run (--session-at 95 --week-at 98),
+  where the dry run and the one-shot cycle choose qquinn with reason=threshold
+  and no ALERT, the ledger records room for a waiting step, and the 05:48Z
+  readings give a plain stay; and the 23 November replay (issue #3105), where a
+  login with a spend block, failing live probes and an old, roomy reading in the
+  history is never swapped to across two one-shot cycles (95/98, then 85/90)
+  while a stand-in rotator from another build makes each ledger save take the
+  form for older readers: each cycle logs one "reject: llarame blocked until
+  <time> (spend limit)" line and the block stays in the ledger, and with no
+  block at all the old reading is rejected at confirmation and nothing moves;
+  and a usage block (issue #3105), where a session-limit block on qquinn makes
+  the one-shot cycle at 95/98 move to yyandis instead, with one "reject:
+  qquinn blocked until <time> (session limit)" line and the block kept in the
+  ledger, and a week-limit block on llarame makes the dry run at 85/90 pass it
+  over for qquinn, with one "(week limit)" reject line.
+  Needs socat; runs locally and is not part of CI.
+version: "1.0"
+environment:
+  requires: [AMPLIHACK_QA_BINARY]
+agents:
+  - name: cli-agent
+    type: cli
+steps:
+  - name: exercise-rotator-target-choice
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/claude-profile-rotate-room.sh
+    timeout: 600000
+assertions: []
+metadata:
+  tags: [cli, rotation, regression]
+  priority: high

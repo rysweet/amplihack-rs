@@ -4,6 +4,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::support::fake_proc::FakeProc;
 use crate::support::profile_rotate::*;
 use crate::support::wait::{output_within, wait_until};
 use std::fs;
@@ -12,8 +13,22 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 /// Kills whatever pid the fixture's pid file names when a test fails, so no
-/// rotator outlives its temporary HOME.
-struct Reaper(PathBuf);
+/// rotator outlives its temporary HOME. It also owns the test's fake process
+/// table (issue #2042), so the tree outlives every command that reads it.
+struct Reaper(
+    /// The fixture's pid file.
+    PathBuf,
+    /// The fake process table every command of the test reads; dropped
+    /// with the reaper, after the last command.
+    FakeProc,
+);
+
+/// A fake process table for `f`'s commands, owned by the returned reaper.
+fn reaper(f: &Fixture) -> Reaper {
+    let r = Reaper(pid_file(f), FakeProc::new());
+    f.with_proc(&r.1);
+    r
+}
 
 impl Drop for Reaper {
     fn drop(&mut self) {
@@ -70,7 +85,7 @@ fn status(f: &Fixture) -> String {
 /// that waited for a cycle would never return while probes are held, and
 /// the ceiling would fail it (issue #1973 replaced an elapsed-time check).
 fn start(f: &Fixture, extra: &[&str]) -> (Reaper, i32) {
-    let reaper = Reaper(pid_file(f));
+    let reaper = reaper(f);
     let mut args = vec![
         "profile",
         "rotate",
@@ -109,6 +124,9 @@ fn start(f: &Fixture, extra: &[&str]) -> (Reaper, i32) {
         .trim()
         .parse()
         .unwrap();
+    // The daemon this test's `start` launched: a grandchild after `setsid`,
+    // still one of the test's own descendants. Its link dangles once it exits.
+    reaper.1.link_own(pid as u32);
     (reaper, pid)
 }
 
@@ -152,7 +170,15 @@ fn start_status_and_stop() {
 fn the_daemon_swaps_and_logs_like_the_one_shot() {
     let f = Fixture::new();
     let (_reaper, pid) = start(&f, &[]);
-    wait_until("a swap", || f.log().contains("swap work->spare"));
+    // The swap that makes spare live. On a busy host spare's first reading
+    // can still be running, so the daemon may swap work->extra on threshold
+    // and then extra->spare on upgrade; either route ends with spare live,
+    // which the assertions below check.
+    wait_until("a swap to spare", || {
+        f.log()
+            .lines()
+            .any(|l| l.contains(" swap ") && l.contains("->spare live "))
+    });
     let (out, refused) = f.stop_until_gone(pid);
     f.assert_stopped(&out, refused, pid);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino));
@@ -190,6 +216,9 @@ fn a_foreign_process_named_in_the_pid_file_is_left_alone() {
             .unwrap(),
     );
     let pid = sleeper.0.id() as i32;
+    // Visible through the fake tree, so `status` rejects it by its cmdline.
+    let guard = reaper(&f);
+    guard.1.link_own(sleeper.0.id());
     fs::create_dir_all(f.rotate_dir()).unwrap();
     fs::write(pid_file(&f), format!("{pid}\n")).unwrap();
     assert!(status(&f).starts_with("rotate: stale\n"));
@@ -222,6 +251,8 @@ fn a_rotator_that_ignores_sigterm_keeps_its_pid_file() {
             .unwrap(),
     );
     let pid = stubborn.0.id() as i32;
+    let guard = reaper(&f);
+    guard.1.link_own(stubborn.0.id());
     wait_until("the stub to exec", || {
         fs::read(format!("/proc/{pid}/cmdline"))
             .is_ok_and(|c| String::from_utf8_lossy(&c).contains("watch"))
@@ -250,8 +281,14 @@ fn watch_follows_the_auto_switch_toggle() {
     let f = Fixture::new();
     f.usage("work", 10, 10);
     f.ok(&["profile", "auto-switch", "off"]);
+    let guard = reaper(&f);
     let out = f.ok(&["profile", "rotate", "start", "--interval", "1"]);
-    let _reaper = Reaper(pid_file(&f));
+    let started: u32 = fs::read_to_string(pid_file(&f))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    guard.1.link_own(started);
     assert!(
         text(&out.stderr).contains("auto-switch is off"),
         "start warns: {}",
@@ -293,11 +330,19 @@ fn stop_and_status_without_a_state_directory() {
     assert!(!f.rotate_dir().join("rotate.pid").exists());
 }
 
+/// Two `start`s at once beside a running rotator both refuse, and the pid
+/// file still names that rotator. The race between two starts with no
+/// rotator yet is not checked here: the commands read a fake process table
+/// (issue #2042), and the second `start` would check it before the test can
+/// link the first daemon's pid. `start` and autostart take the same state
+/// lock and call the same `launch_core`, and
+/// `tests_autostart::sixteen_concurrent_launches_start_exactly_one_rotator`
+/// covers that race with a spawner that records its process under the lock.
 #[test]
-fn two_starts_at_once_leave_one_rotator() {
+fn starts_beside_a_running_rotator_refuse() {
     let f = Fixture::new();
     f.usage("work", 10, 10);
-    let _reaper = Reaper(pid_file(&f));
+    let (_reaper, pid) = start(&f, &[]);
     let args = [
         "profile",
         "rotate",
@@ -312,8 +357,8 @@ fn two_starts_at_once_leave_one_rotator() {
         let b = s.spawn(|| f.run(&args));
         (a.join().unwrap(), b.join().unwrap())
     });
-    // Every rotator either `start` reports, killed when the test ends so a
-    // failure leaves no orphan behind.
+    // Any rotator a `start` reports despite the refusal is killed when the
+    // test ends, so a failure leaves no orphan behind.
     let started: Vec<KillPid> = [&a, &b]
         .iter()
         .filter_map(|o| {
@@ -326,12 +371,22 @@ fn two_starts_at_once_leave_one_rotator() {
             Some(KillPid(pid.parse().ok()?))
         })
         .collect();
-    assert_eq!(started.len(), 1, "{}\n{}", text(&a.stderr), text(&b.stderr));
-    let pid: i32 = fs::read_to_string(pid_file(&f))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    assert!(
+        started.is_empty(),
+        "{}\n{}",
+        text(&a.stderr),
+        text(&b.stderr)
+    );
+    // Each refuses: "already running" once it holds the lock, or "lock
+    // busy" while the other holds it.
+    for out in [&a, &b] {
+        assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    }
+    assert_eq!(
+        fs::read_to_string(pid_file(&f)).unwrap().trim(),
+        pid.to_string(),
+        "the running rotator keeps its pid file"
+    );
     let (out, refused) = f.stop_until_gone(pid);
     f.assert_stopped(&out, refused, pid);
 }

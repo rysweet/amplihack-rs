@@ -6,9 +6,14 @@
 //! session id, so full prior context is preserved without any PTY, ANSI
 //! parsing, or streaming.
 //!
+//! Issue #2030: the message text never goes in argv. It is written to a 0600
+//! file in a private 0700 directory; `-p` carries only the pointer sentence
+//! naming that file, and `--add-dir` grants that directory only. The file is
+//! removed when the turn ends.
+//!
 //! Two seams live here:
-//! - [`build_turn_argv`] — the pure argv builder (injection-safe: the prompt is
-//!   always exactly one argv element, never concatenated into a shell string).
+//! - [`build_turn_argv`] — the argv builder (injection-safe: the prompt never
+//!   reaches argv or a shell string; only the fixed pointer sentence does).
 //! - [`SerialTurnDriver`] — serializes turns so at most one turn per session
 //!   runs at a time, over an injectable [`TurnRunner`].
 //!
@@ -114,31 +119,87 @@ fn char_boundary_tail(s: &str, budget: usize) -> &str {
 /// syscall path and their unavoidable time-of-check/time-of-use (TOCTOU) window.
 pub type PreemptSlot = Arc<Mutex<Option<oneshot::Sender<()>>>>;
 
+/// The pointer sentence, identical to
+/// `amplihack_utils::prompt_delivery::FILE_REFERENCE_TEMPLATE` so the `/proc`
+/// argv parsers keep matching.
+pub(crate) const FILE_REFERENCE_TEMPLATE: &str = "Read and follow the complete instructions in the file {path}. Its contents are the task prompt.";
+
+/// One turn's argv plus the private directory holding its prompt file.
+///
+/// Keep it alive until the `copilot` child has exited; dropping it removes
+/// the prompt file and its directory.
+#[derive(Debug)]
+pub struct TurnArgv {
+    /// The argument list (the program, `copilot`, is supplied by the runner).
+    pub argv: Vec<String>,
+    prompt_dir: tempfile::TempDir,
+}
+
+impl TurnArgv {
+    /// The private 0700 directory holding this turn's prompt file.
+    #[must_use]
+    pub fn prompt_dir(&self) -> &std::path::Path {
+        self.prompt_dir.path()
+    }
+}
+
 /// Build the Copilot resume argv for one turn.
 ///
-/// Layout: `--session-id <SID> --no-color -s -p <PROMPT> <allowlist...>`.
+/// Layout: `--session-id <SID> --no-color -s -p <POINTER> --add-dir <DIR>
+/// <allowlist...>`.
 ///
 /// - `--session-id <SID>` pins turn continuity (resume the same session).
 /// - `--no-color` guarantees ANSI-free stdout before redaction/chunking.
 /// - `-s` (silent) captures the response only.
-/// - `-p <PROMPT>` passes the (attacker-influenced) prompt as **exactly one**
-///   argv element, verbatim — never a shell string — so metacharacters cannot
-///   inject a command.
+/// - `-p <POINTER>`: the (attacker-influenced) prompt is written to a 0600
+///   file in a private 0700 directory and `-p` carries only the fixed pointer
+///   sentence naming it (issue #2030), so the prompt is neither in argv nor
+///   in a shell string.
+/// - `--add-dir <DIR>` lets Copilot read that one directory.
 ///
-/// The returned vector is the *argument* list (the program, `copilot`, is
-/// supplied by the runner).
-#[must_use]
-pub fn build_turn_argv(session_id: &str, prompt: &str, allowlist: &ToolAllowlist) -> Vec<String> {
+/// # Errors
+///
+/// Fails when the private directory or file cannot be written.
+pub fn build_turn_argv(
+    session_id: &str,
+    prompt: &str,
+    allowlist: &ToolAllowlist,
+) -> io::Result<TurnArgv> {
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let prompt_dir = tempfile::Builder::new()
+        .prefix("amplihack-prompt-")
+        .tempdir()?;
+    #[cfg(unix)]
+    std::fs::set_permissions(prompt_dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    let path = prompt_dir.path().join("prompt.md");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&path)?;
+    file.write_all(prompt.as_bytes())?;
+    file.sync_all()?;
+    let path_text = path.to_string_lossy();
+    if path_text.contains('\n') || path_text.contains('\0') {
+        return Err(io::Error::other(
+            "turn prompt file path contains a newline or NUL",
+        ));
+    }
     let mut argv = vec![
         "--session-id".to_string(),
         session_id.to_string(),
         "--no-color".to_string(),
         "-s".to_string(),
         "-p".to_string(),
-        prompt.to_string(),
+        FILE_REFERENCE_TEMPLATE.replace("{path}", &path_text),
+        "--add-dir".to_string(),
+        prompt_dir.path().to_string_lossy().into_owned(),
     ];
     argv.extend(allowlist.to_copilot_args());
-    argv
+    Ok(TurnArgv { argv, prompt_dir })
 }
 
 /// An injectable executor of one Copilot turn given its argv.
@@ -186,10 +247,13 @@ impl<R: TurnRunner> SerialTurnDriver<R> {
 
     /// Run one turn with `prompt`, serialized against any other turn.
     pub async fn run_turn(&self, prompt: &str) -> io::Result<String> {
-        let argv = build_turn_argv(&self.session_id, prompt, &self.allowlist);
+        let turn = build_turn_argv(&self.session_id, prompt, &self.allowlist)?;
         // Hold the lock across the whole child lifetime so turns never overlap.
         let _guard = self.lock.lock().await;
-        self.runner.run_argv(argv).await
+        let result = self.runner.run_argv(turn.argv.clone()).await;
+        // Issue #2030: the prompt file lives until the turn has ended.
+        drop(turn);
+        result
     }
 }
 
@@ -407,5 +471,66 @@ impl TurnRunner for CopilotTurnRunner {
                 )))
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod issue_2030_tests {
+    //! Issue #2030: a Copilot turn never puts the message text in argv.
+
+    use super::*;
+
+    const SENTINEL: &str = "SENTINEL-2030-signal-chat-message";
+
+    #[test]
+    fn file_reference_template_matches_prompt_delivery() {
+        // This crate keeps its own copy because it does not depend on
+        // amplihack-utils outside tests; the `/proc` parsers match this
+        // exact sentence.
+        assert_eq!(
+            FILE_REFERENCE_TEMPLATE,
+            amplihack_utils::prompt_delivery::FILE_REFERENCE_TEMPLATE
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_turn_argv_puts_no_message_text_in_argv() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let turn = build_turn_argv("sid", SENTINEL, &ToolAllowlist::read_only_default())
+            .expect("turn argv builds");
+        assert!(
+            !turn.argv.iter().any(|a| a.contains(SENTINEL)),
+            "message text in argv: {:?}",
+            turn.argv
+        );
+        let p = turn.argv.iter().position(|a| a == "-p").expect("-p");
+        let pointer = &turn.argv[p + 1];
+        let prefix = FILE_REFERENCE_TEMPLATE.split("{path}").next().unwrap();
+        assert!(pointer.starts_with(prefix), "{pointer:?}");
+
+        let d = turn
+            .argv
+            .iter()
+            .position(|a| a == "--add-dir")
+            .expect("--add-dir");
+        let dir = std::path::PathBuf::from(&turn.argv[d + 1]);
+        assert_eq!(dir, turn.prompt_dir());
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let file = dir.join("prompt.md");
+        assert!(pointer.contains(file.to_str().unwrap()));
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), SENTINEL);
+
+        drop(turn);
+        assert!(!file.exists(), "the prompt file is gone after the turn");
+        assert!(!dir.exists(), "and its directory");
     }
 }

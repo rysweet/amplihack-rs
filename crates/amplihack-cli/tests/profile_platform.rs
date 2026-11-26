@@ -585,8 +585,9 @@ fn rotate_moves_onto_the_api_key_and_off_it_at_the_next_cycle() {
     assert_eq!(f.ledger().unwrap()["last_cycle"]["overflow"], "on");
 
     // spare has capacity again: off at once, though the 1-hour hold has
-    // not passed.
-    f.usage("spare", 10, 20);
+    // not passed. Issue #3181: in a later window, since use never falls in
+    // the window it was read at 100% in.
+    f.usage_resetting("spare", 10, 20, 5);
     f.ok(&["profile", "rotate"]);
     let log = f.log();
     assert!(

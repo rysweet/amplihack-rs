@@ -65,6 +65,12 @@ impl Fixture {
         for cli in ["claude", "codex"] {
             write_executable(&fx.tools().join(cli), &fake, 0o755);
         }
+        // The launcher's health check wants the helper beside a native codex.
+        write_executable(
+            &fx.tools().join("codex-code-mode-host"),
+            "#!/bin/sh\nexit 0\n",
+            0o755,
+        );
         write_executable(
             &fx.tools().join("recipe-runner-rs"),
             script::STUB_RUNNER,

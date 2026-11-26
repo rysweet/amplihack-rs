@@ -144,9 +144,11 @@ hook_repair_is_rejection() {
 }
 
 # hook_repair_terminal_refusal <rc> <log>: exit 79, or the guard's marker outside
-# input echoes. Copied from autodrive_loop.sh terminal_refusal, except that
-# the last grep reads all its input (no -q), so a marker followed by a large
-# log is not lost to SIGPIPE under pipefail.
+# input echoes. Copied from the #1510 terminal_refusal autodrive_loop.sh used to
+# have, except that the last grep reads all its input (no -q), so a marker
+# followed by a large log is not lost to SIGPIPE under pipefail. The auto-drive
+# loop no longer reads text for this (#1437, autodrive_refusal.sh); this repair
+# loop still does, and its filter must stay equal to log_body.
 hook_repair_terminal_refusal() {
   [ "${1:-0}" = "$HOOK_REPAIR_EXIT_TERMINAL" ] && return 0
   [ -f "${2:-}" ] && awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }' "$2" 2>/dev/null \
@@ -476,10 +478,12 @@ hook_repair_step15_reason() {
 # hook_repair_push_commit <step> <message>: commits the staged fix of a push
 # round as a new commit, never an amend, through a nested commit repair. It is
 # a plain `git commit`, as step-15's own commit is. Returns the nested
-# repair's code; HOOK_REPAIR_* then describe the nested repair.
+# repair's code; HOOK_REPAIR_* then describe the nested repair. When the
+# commit identity cannot be resolved, the helper's reason is on stderr and
+# this returns 1 with HOOK_REPAIR_STATUS=not_hook, so no commit is made.
 hook_repair_push_commit() {
   if declare -F amplihack_prepare_git_commit_identity >/dev/null; then
-    amplihack_prepare_git_commit_identity || true
+    amplihack_prepare_git_commit_identity || { HOOK_REPAIR_STATUS="not_hook"; HOOK_REPAIR_ROUNDS=0; return 1; }
   fi
   hook_repair_run commit "$1" -- git commit -m "$2"
 }

@@ -1,92 +1,76 @@
 //! Individual health check implementations for `amplihack doctor`.
 
-use super::{
-    MAX_ERROR_LEN, MAX_VERSION_LEN, json_contains_amplihack, settings_json_path,
-    settings_json_path_for,
-};
+use super::hook_drift::{Source, profile_error_reason, render, report};
+use super::{MAX_ERROR_LEN, MAX_VERSION_LEN, settings_json_path, settings_json_path_for};
+use crate::commands::install::hook_block::hook_target;
+use crate::commands::launch::hook_settings::launch_file_path;
+use crate::commands::profile::ProfileStore;
 use crate::util::{run_output_with_timeout, strip_ansi, truncate_chars_with_notice};
 use std::process::Command;
 use std::time::Duration;
 
 const DOCTOR_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Check 1 — amplihack hooks installed.
+/// Check 1 — amplihack hooks installed (issue #2279, D9).
 ///
-/// Passes if EITHER the global `$HOME/.claude/settings.json` OR the
-/// project-local `<cwd>/.claude/settings.json` has a `hooks` section that
-/// contains the substring `"amplihack"`. Project-local installs are valid, so
-/// a working install must not be reported as missing (issue #1088).
+/// One line per settings file that carries amplihack's hooks block:
+/// `$HOME/.claude/settings.json`, each profile's `settings.json` under the
+/// configured profile root, and the launch `--settings` file. Fails when the
+/// home file is not clean, when a present profile or launch file has
+/// drifted, cannot be parsed or is refused, or when the profiles or the
+/// launch file cannot be located. An absent home file passes when
+/// `<cwd>/.claude/settings.json` is clean, a repo-local install (#1088).
+/// Read-only.
 ///
-/// File contents are never printed; only presence/validity is reported and
-/// error strings are truncated (SEC-WS2-04).
+/// File contents are never printed; lines hold paths, event names and fixed
+/// phrases only (SEC-WS2-04).
 pub fn check_hooks_installed() -> (bool, String) {
-    // Global settings take precedence, then the project-local copy. Pass if
-    // EITHER location has amplihack hooks. A missing file (`None`) or one
-    // without amplihack hooks (`Some(Ok(false))`) falls through to the next
-    // candidate. A read/parse error on one candidate must NOT mask a valid
-    // install in the other, so errors are remembered and only surfaced when no
-    // candidate yields amplihack hooks.
-    let candidates = [
-        settings_json_path(),
-        std::env::current_dir()
-            .ok()
-            .map(|cwd| settings_json_path_for(&cwd)),
-    ];
-
-    let mut first_error: Option<String> = None;
-    for path in candidates.into_iter().flatten() {
-        match settings_has_amplihack_hooks(&path) {
-            Some(Ok(true)) => return (true, "amplihack hooks installed".to_string()),
-            Some(Err(msg)) => {
-                if first_error.is_none() {
-                    first_error = Some(msg);
-                }
-            }
-            Some(Ok(false)) | None => {}
-        }
-    }
-
-    if let Some(msg) = first_error {
-        return (false, msg);
-    }
-
-    (
-        false,
-        "amplihack hooks not found in settings.json (checked global \
-         ~/.claude/settings.json and project-local .claude/settings.json)"
-            .to_string(),
-    )
-}
-
-/// Read `path` and report whether its `hooks` section references amplihack.
-///
-/// Returns `None` when the file is absent (nothing to report for this
-/// location), `Some(Ok(bool))` when it parses, and `Some(Err(msg))` for a
-/// read/parse error whose message is truncated and never includes file
-/// contents.
-fn settings_has_amplihack_hooks(path: &std::path::Path) -> Option<Result<bool, String>> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            let msg = e.to_string();
-            return Some(Err(format!(
-                "hooks: cannot read settings.json: {}",
-                truncate_chars_with_notice(&msg, MAX_ERROR_LEN)
-            )));
-        }
+    let Some(home) = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+    else {
+        return (false, "hooks: $HOME not set".to_string());
     };
-
-    let json: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return Some(Err("hooks: settings.json is not valid JSON".to_string())),
+    let Some(target) = hook_target() else {
+        return (
+            false,
+            "hooks: no usable amplihack-hooks binary; run `amplihack install`".to_string(),
+        );
     };
-
-    let has_hooks = json
-        .get("hooks")
-        .map(json_contains_amplihack)
-        .unwrap_or(false);
-    Some(Ok(has_hooks))
+    let root = ProfileStore::from_env()
+        .map(|store| store.root().to_path_buf())
+        .map_err(|error| profile_error_reason(&error));
+    let profiles = match &root {
+        Ok(root) => Source::At(root),
+        Err(why) => Source::Unknown(why),
+    };
+    let launch = launch_file_path();
+    let launch_source = match &launch {
+        Some(path) => Source::At(path),
+        None => Source::Unknown("amplihack home unknown or not absolute"),
+    };
+    let repo_local = std::env::current_dir()
+        .ok()
+        .map(|cwd| settings_json_path_for(&cwd));
+    let reports = report(
+        &home,
+        repo_local.as_deref(),
+        profiles,
+        launch_source,
+        &target,
+    );
+    let (ok, lines) = render(&reports);
+    let head = if ok {
+        "amplihack hooks installed"
+    } else {
+        "amplihack hooks block drift; run `amplihack install` to repair"
+    };
+    let mut message = head.to_string();
+    for line in lines.lines() {
+        message.push_str("\n    ");
+        message.push_str(line);
+    }
+    (ok, message)
 }
 
 /// Check 2 — settings.json valid JSON.
@@ -245,31 +229,6 @@ pub fn check_amplihack_version() -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// TOCTOU S2 (issue #1123): collapsing the `exists()` probe + read into a
-    /// single read must preserve the absent-vs-error distinction —
-    /// `NotFound` maps to absent (`None`), while a present-but-unreadable path
-    /// still yields `Some(Err(_))`.
-    #[test]
-    fn settings_has_amplihack_hooks_distinguishes_absent_from_unreadable() {
-        let dir = tempfile::tempdir().unwrap();
-
-        // Absent file → None.
-        let missing = dir.path().join("does-not-exist.json");
-        assert!(
-            settings_has_amplihack_hooks(&missing).is_none(),
-            "a nonexistent path must map to None (absent)"
-        );
-
-        // Present-but-unreadable (a directory at the path) → Some(Err(_)),
-        // because read_to_string fails with a non-NotFound error.
-        let dir_at_path = dir.path().join("settings.json");
-        std::fs::create_dir(&dir_at_path).unwrap();
-        assert!(
-            matches!(settings_has_amplihack_hooks(&dir_at_path), Some(Err(_))),
-            "a present-but-unreadable path must map to Some(Err(_))"
-        );
-    }
 
     // ------------------------------------------------------------------
     // Issue #1424: a probe that could not run is not proof of absence.

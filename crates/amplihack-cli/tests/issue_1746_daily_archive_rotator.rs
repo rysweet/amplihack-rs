@@ -11,6 +11,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::support::fake_proc::FakeProc;
 use crate::support::profile_rotate::{Fixture, text};
 use crate::support::sessions_archive::age;
 use std::fs;
@@ -20,8 +21,16 @@ use std::time::{Duration, Instant};
 const ID: &str = "4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10";
 
 /// Kills the rotator named in the fixture's pid file when a test ends
-/// without stopping it, so none outlives its temporary HOME.
-struct Reaper(PathBuf);
+/// without stopping it, so none outlives its temporary HOME. It also owns
+/// the test's fake process table (issue #2042), so the tree outlives every
+/// command that reads it.
+struct Reaper(
+    /// The fixture's pid file.
+    PathBuf,
+    /// The fake process table every command of the test reads; dropped
+    /// with the reaper, after the last command.
+    FakeProc,
+);
 
 impl Drop for Reaper {
     fn drop(&mut self) {
@@ -73,7 +82,8 @@ fn cycles(f: &Fixture) -> usize {
 }
 
 fn start(f: &Fixture) -> Reaper {
-    let reaper = Reaper(f.rotate_dir().join("rotate.pid"));
+    let reaper = Reaper(f.rotate_dir().join("rotate.pid"), FakeProc::new());
+    f.with_proc(&reaper.1);
     let out = f.ok(&[
         "profile",
         "rotate",
@@ -88,6 +98,13 @@ fn start(f: &Fixture) -> Reaper {
         "{}",
         text(&out.stdout)
     );
+    // The daemon this test's `start` launched, from its own pid file.
+    let pid: u32 = fs::read_to_string(&reaper.0)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    reaper.1.link_own(pid);
     reaper
 }
 

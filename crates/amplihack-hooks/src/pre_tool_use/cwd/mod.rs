@@ -40,14 +40,14 @@ pub fn check_cwd_deletion(command: &str) -> anyhow::Result<Option<Value>> {
     }
 
     if has_dangerous_expansion(command) {
-        return Ok(Some(serde_json::json!({
-            "block": true,
-            "message": "🚫 OPERATION BLOCKED - Shell Expansion in Destructive Command\n\n\
-                        The command uses shell expansion ($(...), `...`, or variable substitution) \
-                        in a destructive operation. This bypasses path safety checks.\n\n\
-                        Please use literal paths instead of shell expansion in rm/rmdir commands.\n\n\
-                        🔒 This protection cannot be disabled programmatically."
-        })));
+        return Ok(Some(super::deny(
+            "🚫 OPERATION BLOCKED - Shell Expansion in Destructive Command\n\n\
+             The command uses shell expansion ($(...), `...`, or variable substitution) \
+             in a destructive operation. This bypasses path safety checks.\n\n\
+             Instead, write the path out literally rather than using a variable, \
+             command substitution or glob.\n\n\
+             🔒 This protection cannot be disabled programmatically.",
+        )));
     }
 
     let cwd = match std::env::current_dir() {
@@ -76,10 +76,7 @@ pub fn check_cwd_deletion(command: &str) -> anyhow::Result<Option<Value>> {
                 let message = super::CWD_DELETION_ERROR
                     .replace("{target}", &target.display().to_string())
                     .replace("{cwd}", &cwd.display().to_string());
-                return Ok(Some(serde_json::json!({
-                    "block": true,
-                    "message": message
-                })));
+                return Ok(Some(super::deny(&message)));
             }
         }
     }
@@ -130,10 +127,7 @@ pub fn check_cwd_rename(command: &str) -> anyhow::Result<Option<Value>> {
                 let message = super::CWD_RENAME_ERROR
                     .replace("{source}", &source.display().to_string())
                     .replace("{cwd}", &cwd.display().to_string());
-                return Ok(Some(serde_json::json!({
-                    "block": true,
-                    "message": message
-                })));
+                return Ok(Some(super::deny(&message)));
             }
         }
     }
@@ -181,10 +175,7 @@ fn check_glob_cwd_match(pattern: &str, cwd: &Path) -> Option<Value> {
             let message = super::CWD_RENAME_ERROR
                 .replace("{source}", pattern)
                 .replace("{cwd}", &cwd.display().to_string());
-            return Some(serde_json::json!({
-                "block": true,
-                "message": message
-            }));
+            return Some(super::deny(&message));
         }
         current = path.parent().map(Path::to_path_buf);
         if current.as_deref() == Some(Path::new("/")) || current.as_deref() == Some(Path::new("")) {

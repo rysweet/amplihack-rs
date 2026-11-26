@@ -1,5 +1,6 @@
 ---
 name: amplihack:install
+disable-model-invocation: true
 version: 1.0.0
 description: Install amplihack framework and tools
 triggers:

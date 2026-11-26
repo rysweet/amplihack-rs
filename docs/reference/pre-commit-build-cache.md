@@ -5,12 +5,14 @@
 The Cargo hooks in `.pre-commit-config.yaml` run through
 `scripts/git-hook-cargo.sh`. The wrapper picks a build cache for the current
 checkout, removes stale caches left by other checkouts, marks the current cache
-with `CACHEDIR.TAG`, runs the command, and reports free disk space if the
-command fails. This page describes each of those rules.
+with `CACHEDIR.TAG`, records the cache for the recipe run it belongs to, runs
+the command, and reports free disk space if the command fails. This page
+describes each of those rules.
 
 Related issues: #1278 (git environment), #1381 (per-checkout cache), #1440
 (cache location and age-based reclaim), #1771 (symlinked caches and cache
-tagging).
+tagging), #1808 (run-owned targets), #2039 (one target per checkout, removed
+with the run or worktree that made it).
 
 ## Contents
 
@@ -19,6 +21,9 @@ tagging).
 - [Per-checkout hashing](#per-checkout-hashing)
 - [Variables](#variables)
 - [Order of operations](#order-of-operations)
+- [Recording the target for a run](#recording-the-target-for-a-run)
+- [Linked targets and AMPLIHACK_TARGET_LINK_ROOTS](#linked-targets-and-amplihack_target_link_roots)
+- [Mixed amplihack versions](#mixed-amplihack-versions)
 - [Reclaim rules](#reclaim-rules)
 - [Dangling links](#dangling-links)
 - [CACHEDIR.TAG](#cachedirtag)
@@ -44,13 +49,24 @@ entry: scripts/git-hook-cargo.sh cargo run --locked --bin amplihack -- hygiene a
 
 ## Location
 
-When `CARGO_TARGET_DIR` is not set, the wrapper exports:
+When `CARGO_TARGET_DIR` is not set, the wrapper exports one of these paths:
 
-```text
-${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/amplihack-precommit-target-<hash>
-```
+| Condition | Path |
+|---|---|
+| `AMPLIHACK_WORK_ROOT` is usable | `$AMPLIHACK_WORK_ROOT/targets/amplihack-precommit-target-<hash>` |
+| Otherwise | `${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/amplihack-precommit-target-<hash>` |
 
-The directory under `amplihack/` that holds these entries is the **cache
+The work root is usable when it already exists as a real folder (not a link)
+owned by you, is not group- or world-writable, and is neither `/` nor your
+home folder. The wrapper never creates the work root; it creates `targets/`
+with mode `0700`.
+
+The name is the same inside and outside a recipe run. There is no run suffix:
+each checkout has exactly one target, and every run that commits in that
+checkout reuses it. Cargo's own fingerprints keep the output of different
+toolchains apart inside that one target.
+
+The folder that holds these entries is the **cache
 root**. Every entry whose name starts with `amplihack-precommit-target-` is
 treated as a cache owned by the wrapper.
 
@@ -59,12 +75,17 @@ exist, Cargo creates it on the first build and writes its own `CACHEDIR.TAG`.
 
 ## Per-checkout hashing
 
-`<hash>` is the first 12 hexadecimal characters of the SHA-256 of the checkout
-root, as reported by `git rev-parse --show-toplevel` after the `GIT_*`
-variables are removed. Each worktree and clone therefore gets its own cache, and
-a given checkout reuses its cache across runs. The digest comes from
-`sha256sum`, or from `shasum -a 256` where `sha256sum` is not installed (macOS).
-If `git rev-parse` fails, the current working directory is hashed instead.
+`<hash>` is the first 12 hexadecimal characters of the SHA-256 of the exact
+path printed by `git rev-parse --show-toplevel`, run after the `GIT_*`
+variables are removed. Git prints that path with links resolved, and the
+trailing newline is not part of the input. Each worktree and clone therefore
+gets its own cache, and a given checkout reuses its cache across runs and
+across recipe runs. The digest comes from `sha256sum`, or from
+`shasum -a 256` where `sha256sum` is not installed (macOS).
+
+If `git rev-parse` fails, the wrapper hashes `$PWD` instead. That target is
+not tied to a known checkout, so the wrapper records nothing for it (see
+[Recording the target for a run](#recording-the-target-for-a-run)).
 
 To find the cache for the current checkout:
 
@@ -79,9 +100,22 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/amplihack-precommit-target-$has
 echo "$cache"
 ```
 
-This prints the path under the normal cache root. If the wrapper fell back to
-the temporary directory, the cache is under `${TMPDIR:-/tmp}` instead (see
-[Fallback to TMPDIR](#fallback-to-tmpdir)).
+This prints the path under the XDG cache root. With a usable
+`AMPLIHACK_WORK_ROOT`, the same name is under `$AMPLIHACK_WORK_ROOT/targets/`.
+If the wrapper fell back to the temporary directory, the cache is under
+`${TMPDIR:-/tmp}` instead (see [Fallback to TMPDIR](#fallback-to-tmpdir)).
+
+`amplihack cleanup` computes the same hash in Rust, so it can find the target
+of a worktree that no longer exists. Its input must be the same string
+`git rev-parse --show-toplevel` printed while the checkout existed:
+
+- for a checkout that exists, the canonical path of the checkout root;
+- for a removed checkout, the canonical path of its parent folder joined with
+  the checkout's last path component.
+
+If the parent folder cannot be resolved either, cleanup does not guess a name
+and leaves any target in place. Cleanup never hashes the `$PWD` fallback,
+since the wrapper records nothing in that case.
 
 ## Variables
 
@@ -90,6 +124,11 @@ the temporary directory, the cache is under `${TMPDIR:-/tmp}` instead (see
 | `AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS` | `7` | A cache is stale when nothing near its root has been modified for more than this many days (see [Staleness](#staleness)). `0` disables the reclaim sweep. |
 | `AMPLIHACK_PRECOMMIT_CACHE_MIN_FREE_GIB` | `5` | After a failed command, free space below this many GiB on the cache's filesystem is reported as a disk problem. |
 | `CARGO_TARGET_DIR` | unset | When set, the wrapper uses it unchanged. See [Explicit CARGO_TARGET_DIR](#explicit-cargo_target_dir). |
+| `AMPLIHACK_WORK_ROOT` | unset in the wrapper | When usable, the cache root is `<work root>/targets`. See [Location](#location). |
+| `AMPLIHACK_RUN_ID`, `AMPLIHACK_RUN_DIR` | set by `amplihack recipe run` | Decide whether and where the target is recorded. See [Recording the target for a run](#recording-the-target-for-a-run). They do not change the target's name. |
+
+The wrapper never reads `AMPLIHACK_TARGET_LINK_ROOTS`. Only `amplihack cleanup`
+does; see [Linked targets](#linked-targets-and-amplihack_target_link_roots).
 
 A value that is not a positive integer, such as `-1`, `3.5` or `week`, disables
 the sweep in the same way as `0`. A value containing anything other than digits
@@ -119,10 +158,147 @@ in order:
 
 1. If the current cache path is a dangling link owned by the user, remove the
    link so Cargo can create a real directory there.
-2. Reclaim stale caches under the cache root, never touching the current cache.
-3. Write `CACHEDIR.TAG` into the current cache if it exists and has no tag.
-4. Run the command.
-5. If the command failed, report free space on the cache's filesystem.
+2. Decide the target's origin: `reused` if the path now exists (as a folder or
+   a link that resolves), `created` if it does not. A dangling link removed in
+   step 1 therefore counts as `created`. This happens before the reclaim
+   sweep, the tag and Cargo, so none of them can change the answer.
+3. Reclaim stale caches under the cache root, never touching the current cache.
+4. Write `CACHEDIR.TAG` into the current cache if it exists and has no tag.
+5. Inside a recipe run, record the target in the run's `owned-paths` (see
+   [Recording the target for a run](#recording-the-target-for-a-run)).
+6. Run the command.
+7. If the command failed, report free space on the cache's filesystem.
+
+## Recording the target for a run
+
+Inside an `amplihack recipe run`, the wrapper adds one line to
+`$AMPLIHACK_RUN_DIR/owned-paths`, so that `amplihack cleanup` can remove the
+target when the run's worktree goes away. The line has five tab-separated
+fields:
+
+```text
+target	<target path>		<origin>	<checkout path>
+```
+
+| Field | Value |
+|---|---|
+| 1 | `target` |
+| 2 | The target path the wrapper exported as `CARGO_TARGET_DIR`. |
+| 3 | Empty (the branch field, used only by `worktree` lines). |
+| 4 | `created` if the target did not exist before this call, `reused` if it did. |
+| 5 | The checkout root from `git rev-parse --show-toplevel`. |
+
+Example, for a worktree whose target this run built first:
+
+```text
+target	/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d		created	/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
+```
+
+The origin tells cleanup who made the target. A `reused` target belongs to a
+checkout someone else built in, often the main checkout, and is not removed
+at the end of this run. See
+[When a target is removed](../howto/clean-up-after-recipe-runs.md#when-a-target-is-removed).
+
+The wrapper writes nothing when any of these holds:
+
+- `AMPLIHACK_RUN_ID` is unset or does not match `^[0-9a-f-]{1,64}$`;
+- `AMPLIHACK_RUN_DIR` is not an absolute path to a real folder (not a link)
+  whose last component is the run id;
+- `owned-paths` is a link;
+- `git rev-parse --show-toplevel` failed, so the checkout is unknown;
+- the target path or the checkout path contains a tab, a carriage return or a
+  newline;
+- `owned-paths` already has a line that starts with `target<TAB><target
+  path><TAB>`. The first record wins, so a second commit in the same run
+  writes nothing, and a target first recorded as `created` stays `created`.
+
+The line is written with `printf '%s'`, so `%`, `-e` and `$(...)` in a path are
+written as plain text and never run. If the write fails, the wrapper prints
+`amplihack: warning: could not record cache ownership for <path>` and the
+command still runs.
+
+Outside a run, the wrapper uses the same target name and records nothing.
+
+Two runs that start in the same new checkout at the same moment can both
+record `created`. That is allowed: cleanup keeps a target while any other
+active run records it.
+
+## Linked targets and AMPLIHACK_TARGET_LINK_ROOTS
+
+A host can keep build output on a second disk by replacing a target folder
+with a link:
+
+```text
+~/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d -> /d0/ryan/cargo-targets/amplihack-precommit-target-5e6f7a8b9c0d
+```
+
+`amplihack cleanup` removes such a target, both the folder on the second disk
+and the link, only when the link's destination lies directly inside an
+allowed root. The allowed roots are:
+
+- the managed roots: `<work root>/targets` and the XDG cache root
+  `${XDG_CACHE_HOME:-$HOME/.cache}/amplihack`;
+- each entry of `AMPLIHACK_TARGET_LINK_ROOTS`;
+- for a link with the host cargo wrapper's layout only, the folder that holds
+  its destination.
+
+The host cargo wrapper names a moved target
+`<disk>/<name of the link's folder>-<target name>-<12 lowercase hex>`, for
+example
+`/d0/ryan/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016`
+for `~/.cache/amplihack/amplihack-precommit-target-0e047858ba2f`. When the
+destination's name is exactly that, built from the link's own name, its
+folder is allowed for that link without any setting, provided the folder
+passes the entry checks below. So candide's `/d0/ryan/cargo-targets` links
+are removed with default settings.
+
+`AMPLIHACK_TARGET_LINK_ROOTS` is a colon-separated list of absolute folders,
+for links with any other layout. It is unset by default. Set it in the
+environment of every `amplihack` process that may clean up, for example in
+your shell profile:
+
+```bash
+export AMPLIHACK_TARGET_LINK_ROOTS=/mnt/build/cargo-targets
+```
+
+Each entry, and each folder derived from a wrapper link, is resolved to its canonical path. An entry is ignored, with one
+warning naming it, when it:
+
+- is empty or relative;
+- cannot be resolved, for example because it does not exist;
+- is `/`, your home folder, or an ancestor of your home folder;
+- is not owned by you;
+- is writable by others and does not have the sticky bit.
+
+A group-writable root (mode `0775`) is accepted. A group member can then
+create a Cargo-shaped folder in it, and cleanup will remove that folder if a
+link you own points at it. Use mode `0755` or `0700` if that matters on your
+host.
+
+Use a folder that holds only build output. A folder inside your home folder,
+such as `~/src`, is accepted, but a link you own that points at a project's
+own `target/` folder under it would let cleanup remove that project's build
+output.
+
+A link to another disk that is neither in the variable nor in the wrapper's
+layout is reported as `link not followed: outside allowed roots` and left
+alone, with its destination. The other rules for linked targets are in
+[Linked targets](../howto/clean-up-after-recipe-runs.md#linked-targets).
+
+The wrapper's own TTL reclaim, described next, is separate. It does not read
+`AMPLIHACK_TARGET_LINK_ROOTS` and still follows the #1771 rules below.
+
+## Mixed amplihack versions
+
+An `amplihack` binary older than #2039 reads only lines with two or three
+fields and drops five-field target lines when it rewrites `owned-paths`. It
+never deletes anything because of such a line. The cost is a lost record: the
+target is left behind until the "checkout gone" rule of a newer binary, or the
+wrapper's TTL reclaim, removes it.
+
+Targets recorded by older wrappers carry a `-run-<run id>` suffix and a
+two- or three-field line. Cleanup handles them as before, by the run's
+eligibility and keep period. The TTL reclaim recognises both name forms.
 
 ## Reclaim rules
 
@@ -250,6 +426,11 @@ build volume was wiped.
   cache root, and the old target on the other volume is no longer linked; once
   the volume is back, remove that target by hand or link it again.
 
+- `amplihack cleanup` removes a dangling link recorded as a run's target when
+  rule (a) or (b) applies, and `--worktree-target` removes one at the target
+  path. See
+  [Linked targets](../howto/clean-up-after-recipe-runs.md#linked-targets).
+
 If the current cache path is a link owned by another user, the wrapper prints a
 warning and neither removes nor tags it. The command still runs.
 
@@ -351,8 +532,16 @@ through a second link, and `CDPATH`. The ownership checks need a second user
 account and are not exercised in CI.
 `tests/issue_1440_precommit_cache_location.sh` covers the location and the
 directory sweep. The `ci.yml` workflow runs both tests on every pull request.
+`crates/amplihack-cli/tests/issue_1808_run_cleanup/scripts.rs` covers the
+target name inside and outside a run, the `created` and `reused` records,
+the duplicate-record check, and paths that try to inject shell or `printf`
+syntax. `cleanup/tests_targets.rs` checks that the Rust hash matches
+`sha256sum` for an existing and a removed checkout.
 
 ## See also
 
 - [Artifact Guard](../artifact-guard.md): the pre-commit hook that runs through
   this wrapper.
+- [Clean Up After Recipe Runs](../howto/clean-up-after-recipe-runs.md): when
+  `amplihack cleanup` removes a recorded target, and how linked targets are
+  handled.

@@ -53,6 +53,9 @@ Verification checks:
 7. The staged `amplifier-bundle/` passes framework bundle compatibility validation, including the composable smart-orchestrator contract.
 8. Source-conditional categories such as `commands/` and `hooks/` are verified when they exist in the source-derived manifest.
 
+9. Each of `~/.local/bin/amplihack`, `amplihack-hooks`, `amplihack-asset-resolver` and `~/.amplihack/amplifier-bundle` is a symlink whose canonical target is under `~/.amplihack/releases/`, in a release that has a `.complete` marker. The links need not all point into the same release: an install that does not plan a link (for example `amplihack-asset-resolver` when no resolver binary is available) leaves it on its earlier release, and after `amplihack update` the binaries and the bundle can sit in different releases.
+10. A run alive across an install completes: a recipe step that was running when the install started finishes normally, receives no signal, and its working directory and open files still exist. See [Versioned Install Layout](../concepts/versioned-install-layout.md).
+
 If any check fails, `amplihack install` exits non-zero with an actionable error message.
 
 Copy failures must include both the source path and destination path in the diagnostic so the user can distinguish source packaging problems from destination filesystem problems.
@@ -147,7 +150,8 @@ Relevant paths:
 | Path | Purpose |
 | --- | --- |
 | `amplifier-bundle/` | Authoritative framework source for the canonical bundle layout |
-| `~/.amplihack/amplifier-bundle/` | Staged full framework bundle |
+| `~/.amplihack/amplifier-bundle` | Symlink to the staged full framework bundle in the current release |
+| `~/.amplihack/releases/<release>/` | Release directory: `bin/`, `amplifier-bundle/` and `.complete` |
 | `~/.amplihack/.claude/` | Root for mapped framework assets resolved by the installer |
 
 For exact component destinations, use the install mapping in `crates/amplihack-cli/src/commands/install/types.rs` as the source of truth.
@@ -168,5 +172,8 @@ The test asserts:
 8. A stale monolithic smart-orchestrator cannot remain staged after install/update repair.
 9. Package metadata includes `amplifier-bundle/`.
 10. Copy failures surface both source and destination paths.
+11. A run alive across an install completes (`tests/issue_1954_install_leaves_live_runs_alone.rs`).
 
 This test prevents regressions where published or local installs silently omit framework components.
+
+See [Versioned Install Layout](../concepts/versioned-install-layout.md) for the release layout these paths link into.

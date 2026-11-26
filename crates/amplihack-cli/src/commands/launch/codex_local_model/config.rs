@@ -1,0 +1,290 @@
+//! The generated `config.toml` of a local-model Codex home. Pure: no I/O.
+//!
+//! [`render`] builds the file in four steps:
+//!
+//! 1. copy the profile, minus `marketplaces`, `plugins`, `projects`, `hooks`,
+//!    `profile` and `profiles` (the last two so that a profile cannot switch
+//!    a forced setting back);
+//! 2. force `project_doc_max_bytes = 0`, `model_instructions_file`,
+//!    `web_search = "disabled"`, `[features]` (`hooks` on; `multi_agent`,
+//!    `goals`, `view_image`, `plugins` and `apps` off) and
+//!    `[skills.bundled] enabled = false`, merging into the profile's tables;
+//! 3. for each of [`INHERITED`] (`approval_policy`, `sandbox_mode` and the
+//!    `[sandbox_workspace_write]` table) the profile has none of, take the
+//!    user's own top-level value from their `config.toml`, whole; then set
+//!    `approval_policy = "never"` only when neither has one, as an ordinary
+//!    launch does. A local session is therefore never looser than the
+//!    user's own approval or sandbox setting;
+//! 4. carry `[projects.*]` and `[notice]` over from the previous generated
+//!    file, which Codex writes itself, together with `[hooks.state]` for
+//!    reviewed user and project handlers. Hook definitions are not copied.
+//!    Each refresh trusts and enables only amplihack's generated entry.
+//!
+//! [`guard_disabled`] is the check a nested launch makes on a generated file
+//! it reuses, which the session may have written to since the last refresh.
+//!
+//! The output is serialised from a value, not from the profile's layout, so
+//! it depends only on the inputs: rendering again over its own output gives
+//! the same bytes, and an unchanged home is never rewritten.
+//!
+//! Parse errors are fresh messages carrying the path and the line only. They
+//! never quote or chain the parser's error, which may hold a line of the
+//! source, so a key in the profile cannot reach a message.
+
+use crate::commands::install::paths::sanitize_path;
+use anyhow::{Result, anyhow, bail};
+use std::path::Path;
+use toml::{Table, Value};
+
+/// Top-level keys of the profile that never reach the generated file.
+const REMOVED: [&str; 6] = [
+    "marketplaces",
+    "plugins",
+    "projects",
+    "hooks",
+    "profile",
+    "profiles",
+];
+
+/// `[features]` keys forced off: the tools and listings they add are left
+/// out of the prompt.
+const FEATURES_OFF: [&str; 5] = ["multi_agent", "goals", "view_image", "plugins", "apps"];
+
+/// Top-level keys of the user's own `config.toml` a generated file takes
+/// when the profile does not set them: the approval and sandbox settings
+/// Codex 0.166 reads. Nothing else from the user's config is used.
+pub(super) const INHERITED: [&str; 3] =
+    ["approval_policy", "sandbox_mode", "sandbox_workspace_write"];
+
+/// The [`INHERITED`] settings of `user_config`, the user's own top-level
+/// `config.toml`. `[profiles.*]` and its `profile` key are not read; the
+/// launch prints [`user_profile_notice`] when they are present.
+pub(super) fn user_settings(user_config: &Table) -> Table {
+    INHERITED
+        .iter()
+        .filter_map(|key| {
+            user_config
+                .get(*key)
+                .map(|value| ((*key).to_owned(), value.clone()))
+        })
+        .collect()
+}
+
+/// The stderr line for a user `config.toml` at `path` that has a `profile`
+/// key or a `[profiles.*]` table. Codex applies a selected profile's
+/// `approval_policy`, `sandbox_mode` and `[sandbox_workspace_write]` over
+/// the top-level ones, but a local-model session reads only the top-level
+/// [`INHERITED`] settings, so a stricter setting kept in a profile does not
+/// apply. `None` when the file has neither. The profile's name and values
+/// are not quoted.
+pub(super) fn user_profile_notice(user_config: &Table, path: &Path) -> Option<String> {
+    let selects = user_config.contains_key("profile");
+    let defines = user_config
+        .get("profiles")
+        .is_some_and(|profiles| profiles.as_table().is_none_or(|table| !table.is_empty()));
+    (selects || defines).then(|| {
+        format!(
+            "{} has a `profile` key or `[profiles]` tables, which a local-model session does not \
+             read: an approval_policy, sandbox_mode or [sandbox_workspace_write] set in a profile \
+             does not apply here; set it at the top level of that file or in the local-model \
+             profile",
+            sanitize_path(path)
+        )
+    })
+}
+
+/// Parses a profile or a generated `config.toml`.
+pub(super) fn parse(text: &str, path: &Path) -> Result<Table> {
+    toml::from_str::<Table>(text).map_err(|error| {
+        let shown = sanitize_path(path);
+        match error.span() {
+            Some(span) => anyhow!(
+                "{shown} is not valid TOML (line {})",
+                line_of(text, span.start)
+            ),
+            None => anyhow!("{shown} is not valid TOML"),
+        }
+    })
+}
+
+/// The 1-based line holding byte `offset` of `text`.
+fn line_of(text: &str, offset: usize) -> usize {
+    let end = offset.min(text.len());
+    text.as_bytes()[..end]
+        .iter()
+        .filter(|b| **b == b'\n')
+        .count()
+        + 1
+}
+
+/// `features`, `skills` and `skills.bundled` must be tables (standard,
+/// inline or dotted) where the profile has them, so that amplihack's
+/// settings can be merged into them.
+pub(super) fn check_shape(profile: &Table, path: &Path) -> Result<()> {
+    if profile
+        .get("features")
+        .is_some_and(|features| !features.is_table())
+    {
+        bail!(shape_error(path, "features"));
+    }
+    if let Some(skills) = profile.get("skills") {
+        let Some(skills) = skills.as_table() else {
+            bail!(shape_error(path, "skills"));
+        };
+        if skills
+            .get("bundled")
+            .is_some_and(|bundled| !bundled.is_table())
+        {
+            bail!(shape_error(path, "skills.bundled"));
+        }
+    }
+    Ok(())
+}
+
+fn shape_error(path: &Path, key: &str) -> String {
+    format!(
+        "{}: `{key}` must be a table, so that amplihack can merge its settings into it",
+        sanitize_path(path)
+    )
+}
+
+/// The generated `config.toml` for `profile`, carrying Codex's own tables
+/// over from `previous`. `user` is the user's [`INHERITED`] settings
+/// ([`user_settings`]). `instructions` is the absolute path of the home's
+/// `instructions.md`.
+pub(super) fn render(
+    profile: &Table,
+    user: &Table,
+    previous: Option<&Table>,
+    instructions: &Path,
+    command_check: (&str, &str),
+) -> Result<String> {
+    let instructions = instructions
+        .to_str()
+        .ok_or_else(|| anyhow!("{} is not valid UTF-8", sanitize_path(instructions)))?;
+
+    // Step 1: the profile, minus what may not reach the generated home.
+    let mut out: Table = profile
+        .iter()
+        .filter(|(key, _)| !REMOVED.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+
+    // Step 2: amplihack's settings override the profile's.
+    out.insert("project_doc_max_bytes".into(), Value::Integer(0));
+    out.insert(
+        "model_instructions_file".into(),
+        Value::String(instructions.to_string()),
+    );
+    out.insert("web_search".into(), Value::String("disabled".into()));
+    let features = table_entry(&mut out, "features")?;
+    features.insert("hooks".into(), Value::Boolean(true));
+    for key in FEATURES_OFF {
+        features.insert(key.into(), Value::Boolean(false));
+    }
+    let skills = table_entry(&mut out, "skills")?;
+    let bundled = table_entry(skills, "bundled")?;
+    bundled.insert("enabled".into(), Value::Boolean(false));
+
+    // Step 3: the user's own approval and sandbox settings where the profile
+    // has none, then a default, not an override: an ordinary launch also
+    // fills in `never` only when the user's config has no policy.
+    for key in INHERITED {
+        if !out.contains_key(key)
+            && let Some(value) = user.get(key)
+        {
+            out.insert(key.into(), value.clone());
+        }
+    }
+    out.entry("approval_policy")
+        .or_insert_with(|| Value::String("never".into()));
+
+    // Step 4: state Codex wrote into the previous generated file. Hook
+    // definitions are separate inputs, never taken from previous config.
+    if let Some(previous) = previous {
+        if let Some(projects) = previous.get("projects") {
+            out.insert("projects".into(), projects.clone());
+        }
+        if let Some(notice) = previous.get("notice") {
+            out.insert("notice".into(), notice.clone());
+        }
+        if let Some(state) = previous.get("hooks").and_then(|hooks| hooks.get("state")) {
+            table_entry(&mut out, "hooks")?.insert("state".into(), state.clone());
+        }
+    }
+    let state = table_entry(table_entry(&mut out, "hooks")?, "state")?;
+    let (key, hash) = command_check;
+    state.insert(
+        key.into(),
+        Value::Table(Table::from_iter([
+            ("enabled".into(), Value::Boolean(true)),
+            ("trusted_hash".into(), Value::String(hash.into())),
+        ])),
+    );
+
+    toml::to_string(&out).map_err(|_| anyhow!("the generated config.toml could not be serialised"))
+}
+
+/// The `[hooks.state]` key prefix of the handlers in the first PreToolUse
+/// group of the `hooks.json` at `hooks_json`, which is always amplihack's.
+/// Codex keys a hook's state `<hooks.json path>:<event>:<group
+/// index>:<handler index>`. With codex-cli 0.166.0, a hand-made home showed
+/// that `enabled = false` under this key stops Codex running amplihack's
+/// handler, with `--dangerously-bypass-hook-trust` or without it.
+fn guard_state_prefix(hooks_json: &str) -> String {
+    format!("{hooks_json}:pre_tool_use:0:")
+}
+
+/// Whether `doc` (a generated `config.toml`) switches amplihack's PreToolUse
+/// handler off for any of `hooks_json_paths`: a `[hooks.state]` entry for
+/// one of them whose `enabled` is anything but `true`, or that is not a
+/// table. Fails closed: an entry of an unexpected shape counts as off. An
+/// entry with no `enabled` key leaves the handler on.
+pub(super) fn guard_disabled(doc: &Table, hooks_json_paths: &[&str]) -> bool {
+    let Some(state) = doc
+        .get("hooks")
+        .and_then(Value::as_table)
+        .and_then(|hooks| hooks.get("state"))
+        .and_then(Value::as_table)
+    else {
+        return false;
+    };
+    let prefixes: Vec<String> = hooks_json_paths
+        .iter()
+        .map(|path| guard_state_prefix(path))
+        .collect();
+    state.iter().any(|(key, entry)| {
+        let ours = prefixes.iter().any(|prefix| {
+            key.strip_prefix(prefix.as_str())
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        });
+        ours && match entry.as_table() {
+            Some(entry) => entry
+                .get("enabled")
+                .is_some_and(|enabled| enabled.as_bool() != Some(true)),
+            None => true,
+        }
+    })
+}
+
+/// The `sandbox_mode` string `doc` (a profile or a generated
+/// `config.toml`) sets, if any. A local-model launch passes it on the
+/// command line as the caller's sandbox choice, so that the agent-step
+/// injection of `--sandbox danger-full-access`, which outranks the config
+/// file, does not widen a sandbox the profile chose.
+pub(super) fn sandbox_mode(doc: &Table) -> Option<String> {
+    doc.get("sandbox_mode")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// The table at `key` in `table`, created when absent. An existing value
+/// that is not a table is refused: `render` is a guard as well as
+/// [`check_shape`].
+fn table_entry<'a>(table: &'a mut Table, key: &str) -> Result<&'a mut Table> {
+    table
+        .entry(key)
+        .or_insert_with(|| Value::Table(Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("`{key}` in the local-model profile is not a table"))
+}

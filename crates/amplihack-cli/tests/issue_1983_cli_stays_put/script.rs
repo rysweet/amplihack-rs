@@ -35,7 +35,7 @@ const FAKE_CLI: &str = r#"#!/bin/sh
 me=$(basename "$0")
 case "${1-}" in
   --version)
-    if [ "$me" = codex ]; then echo 'codex-cli 0.160.0'; else echo '2.1.0 (Claude Code)'; fi
+    if [ "$me" = codex ]; then echo 'codex-cli 0.160.0'; else echo '2.1.319 (Claude Code)'; fi
     exit 0 ;;
 esac
 # Service calls a launcher may make (plugin registration and the like) are
@@ -50,8 +50,10 @@ esac
 out=
 prev=
 last=
+print=
 for a; do
   if [ "$prev" = --output-last-message ]; then out=$a; fi
+  case "$a" in -p|--print) print=1 ;; esac
   prev=$a
   last=$a
 done
@@ -66,10 +68,12 @@ if [ -n "$out" ]; then
     *) echo "fake $me: refusing --output-last-message outside the fixture: $out" >&2; exit 43 ;;
   esac
 fi
-# `codex exec ... -` reads its prompt from stdin; read it to the end so the
-# caller never sees a broken pipe.
+# `codex exec ... -` and `claude -p` read their prompt from stdin (amplihack
+# keeps prompts out of argv, issue #2030); read it to the end so the caller
+# never sees a broken pipe.
 stdin_text=
 if [ "$me" = codex ] && [ "$last" = - ]; then stdin_text=$(cat); fi
+if [ "$me" = claude ] && [ -n "$print" ]; then stdin_text=$(cat); fi
 # The step a prompt came from, when the prompt names one.
 tag=$(printf '%s\n%s\n' "$*" "$stdin_text" | grep -o 'issue1983-level-[a-z]*' | head -n 1)
 [ -n "$tag" ] || tag='<none>'
@@ -92,6 +96,7 @@ part=$(mktemp "$RECORD_DIR/part.XXXXXX")
   printf 'self=%s\n' "$(realpath "$0")"
   printf 'role=%s\n' "${FAKE_ROLE-top}"
   printf 'prompt_tag=%s\n' "$tag"
+  printf 'prompt_head=%s\n' "$(printf '%s' "$stdin_text" | head -n 1 | cut -c1-80)"
   printf 'argv=%s\n' "$(printf '%s ' "$@" | tr '\n' ' ')"
   printf 'binary=%s\n' "${AMPLIHACK_AGENT_BINARY-<unset>}"
   printf 'source=%s\n' "${AMPLIHACK_AGENT_BINARY_SOURCE-<unset>}"
@@ -119,25 +124,24 @@ fi
 exit 0
 "#;
 
-/// The runner revision [`STUB_RUNNER`] was copied from. A test fails when
+/// The runner revision [`STUB_RUNNER`] was derived from. A test fails when
 /// `claude-plugin/recipe-runner.rev` moves away from it.
-pub const STUB_RUNNER_REV: &str = "4d5187ea";
+pub const STUB_RUNNER_REV: &str = "2833a0b8";
 
 /// The stub `recipe-runner-rs`, used by the level 1 tests. It runs three
 /// agent steps one after another; it does not nest them, and it does not
 /// stand in for the runner's sub-recipe handling, which the level 2 tests
-/// check with the real runner. Each agent step copies `build_agent_command`
+/// check with the real runner. Each agent step follows `build_agent_command`
 /// of the pinned runner (rev [`STUB_RUNNER_REV`],
-/// src/adapters/cli_subprocess.rs, lines 781 to 866; the codex branch ends at
-/// line 812): the launcher is
-/// `$AMPLIHACK_LAUNCHER_BINARY <cli> --`, codex gets
-/// `exec --output-last-message <file> -` with the prompt on stdin, and claude
-/// gets `-p <prompt> --system-prompt <text> --add-dir <cwd>`. The real runner
-/// starts every step without `CLAUDECODE`.
+/// src/adapters/cli_subprocess.rs, lines 1179 to 1272; the codex branch ends
+/// at line 1223): the launcher is `$AMPLIHACK_LAUNCHER_BINARY <cli> --`, codex
+/// gets `exec --output-last-message <file> -` with the prompt on stdin, and
+/// claude gets `--system-prompt-file <file> -p --add-dir .` with the prompt on
+/// stdin. The real runner starts every step without `CLAUDECODE`.
 pub const STUB_RUNNER: &str = r#"#!/bin/sh
 : "${RECORD_DIR:?stub runner: RECORD_DIR unset}" "${WORK_DIR:?stub runner: WORK_DIR unset}"
 if [ "${1-}" = --capabilities ]; then
-  printf '%s\n' '{"schema_version":1,"version":"stub","capabilities":["codex_exec"]}'
+  printf '%s\n' '{"schema_version":1,"version":"stub","capabilities":["codex_exec","durable_recovery_v1"]}'
   exit 0
 fi
 printf 'binary=%s\nsource=%s\n' \
@@ -148,6 +152,8 @@ case "$cli" in
   claude|codex) ;;
   *) echo "stub runner: unsupported agent binary '$cli'" >&2; exit 52 ;;
 esac
+sysfile="$RECORD_DIR/agent-system-prompt.md"
+( umask 077; printf 'stub system prompt\n' > "$sysfile" )
 for role in outer sub subsub; do
   if [ "$cli" = codex ]; then
     final=$(mktemp "$RECORD_DIR/final-message.XXXXXX")
@@ -155,10 +161,10 @@ for role in outer sub subsub; do
       "$AMPLIHACK_LAUNCHER_BINARY" codex -- exec --output-last-message "$final" - \
       >> "$RECORD_DIR/steps.log" 2>&1 || exit 53
   else
-    FAKE_ROLE="step:$role" env -u CLAUDECODE \
-      "$AMPLIHACK_LAUNCHER_BINARY" claude -- -p "issue1983-level-$role" \
-      --system-prompt "stub system prompt" --add-dir "$WORK_DIR" \
-      < /dev/null >> "$RECORD_DIR/steps.log" 2>&1 || exit 53
+    printf 'issue1983-level-%s\n' "$role" | FAKE_ROLE="step:$role" env -u CLAUDECODE \
+      "$AMPLIHACK_LAUNCHER_BINARY" claude -- --system-prompt-file "$sysfile" \
+      -p --add-dir . \
+      >> "$RECORD_DIR/steps.log" 2>&1 || exit 53
   fi
 done
 printf '%s' '{"recipe_name":"probe","success":true,"step_results":[],"context":{}}'

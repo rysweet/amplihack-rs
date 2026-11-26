@@ -2,12 +2,18 @@
 
 > [Home](../index.md) > Reference > Merge Flow
 
+> **Superseded in part, 9 Nov 2026:** the "require branches to be up to date
+> before merging" setting (strict) on `main` is now **off**, on purpose. The
+> current policy is in [Branch protection on main](../contributing/branch-protection.md).
+> Merge `main` into a pull request only to resolve a real conflict. The serial,
+> up-to-date flow and the strict policy described below are kept as history.
+
 `main` is protected by 7 required status checks (see [CI Pipeline](ci-pipeline.md)):
 `Lint & Format`, `Test`, `Install Smoke Test`, and the four `Build <target>` legs.
 
-`main` also requires that a branch be **up to date** with `main` before it can
-merge (the "strict" policy). This strict up-to-date protection, together with all
-7 required checks, stays **on**. It is intentional and must not be turned off.
+Until 9 Nov 2026, `main` also required that a branch be **up to date** with
+`main` before it could merge (the "strict" policy). Strict is now off; the 7
+required checks stay on.
 
 ## Why not a GitHub merge queue?
 
@@ -44,7 +50,11 @@ PR is merged only after it is both green and up to date with `main`:
 Do **not** use `gh pr merge --admin`, and do **not** use `--no-verify`. Every PR
 goes through the same required checks with the strict up-to-date policy in place.
 
-## Keeping the strict policy on
+## Keeping the strict policy on (superseded)
+
+> Superseded on 9 Nov 2026: strict is off on purpose. Do not turn it back on.
+> Retiring or inverting the guard is tracked in
+> [#2203](https://github.com/rysweet/amplihack-rs/issues/2203).
 
 The strict up-to-date policy above is enforced automatically by the
 [Branch Protection Guard](branch-protection-guard.md): an in-repo check that

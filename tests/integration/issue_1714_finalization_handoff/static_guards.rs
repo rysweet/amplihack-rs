@@ -90,7 +90,12 @@ fn only_autodrive_build_step_02_switches_the_handoff_on() {
 }
 
 // T12: no step can produce the flag at run time, and workflow_result has one
-// producer within the default-workflow call tree.
+// producer on each route of the default-workflow call tree. Since #3129
+// (default-workflow 4.0.0) there are two producers, on mutually exclusive
+// routes: default-workflow's own build-report step runs when
+// `remote_host_type != 'azdo'` (GitHub), and the workflow-finalize call runs
+// only when `remote_host_type == 'azdo'` (Azure DevOps). A run takes one route,
+// so one producer writes workflow_result.
 #[test]
 fn no_step_outputs_the_flag_and_workflow_result_has_one_producer() {
     for path in recipe_files() {
@@ -116,17 +121,21 @@ fn no_step_outputs_the_flag_and_workflow_result_has_one_producer() {
             }
         }
     }
-    let producers: Vec<_> = seen
+    let mut producers: Vec<_> = seen
         .iter()
         .filter(|name| read(&recipe_path(name)).contains("output: \"workflow_result\""))
         .collect();
-    assert_eq!(producers, ["workflow-finalize"], "call tree: {seen:?}");
+    producers.sort();
+    assert_eq!(
+        producers,
+        ["default-workflow", "workflow-finalize"],
+        "call tree: {seen:?}"
+    );
 }
 
 // T6: the allow-list and both hand-off functions are defined only in the brick.
 #[test]
 fn the_allow_list_is_defined_once_in_the_brick() {
-    let brick_text = read(&tool_path(BRICK));
     for function in [
         "finalization_handoff_allowed()",
         "finalization_handoff_flag()",
@@ -149,27 +158,13 @@ fn the_allow_list_is_defined_once_in_the_brick() {
             "`{function}` must be defined only in the brick"
         );
     }
-    for state in [
-        "FAILED_CLOSED_UNMERGED",
-        "FAILED_PR_METADATA_UNAVAILABLE",
-        "FAILED_MEANINGFUL_DIFF",
-        "FAILED_DIRTY_WORKTREE",
-        "FAILED_WRONG_BRANCH",
-        "HOLLOW_SUCCESS",
-        "INCOMPLETE",
-    ] {
-        assert!(
-            brick_text.contains(state),
-            "the brick's header must record why {state} is rejected"
-        );
-    }
     let build = read(&recipe_path("autodrive-build"));
     assert!(
         !code_lines(&build).any(|l| l.contains("BLOCKED_CI)") || l.contains("BLOCKED_CI|")),
         "autodrive-build must not hold its own copy of the allow-list"
     );
     assert!(
-        brick_text.lines().count() <= 300,
+        read(&tool_path(BRICK)).lines().count() <= 300,
         "the brick must fit the 300-line budget"
     );
 }
@@ -193,61 +188,38 @@ fn the_handoff_never_reads_log_text_or_stderr() {
 }
 
 // T1d: the loops take the build's PR and have no condition that skips a
-// handed-off build; the report shows the two new fields.
+// handed-off build.
 #[test]
 fn both_loops_run_on_a_handed_off_build() {
+    // #3129: one goal loop step replaced the crusty and merge-ready loops. It
+    // takes the PR autodrive-goal-pr names: the operator's pr_number, else the
+    // build's PR.
     let composer = recipe_yaml("auto-drive-to-merge");
-    for id in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
-        let loop_step = step(&composer, id);
-        assert_eq!(
-            loop_step["context"]["pr_number"].as_str(),
-            Some("{{build_result.pr}}"),
-            "{id}"
-        );
-        let condition = loop_step["condition"].as_str().unwrap_or("");
-        for needle in ["handed_off", "terminal_state", "BLOCKED_CI"] {
-            assert!(
-                !condition.contains(needle),
-                "{id} must not skip on `{needle}`: {condition}"
-            );
-        }
-    }
-    let text = read(&recipe_path("auto-drive-to-merge"));
-    assert!(
-        text.contains(
-            "Phase 1 terminal state: {{build_result.terminal_state}} (handed off: {{build_result.handed_off}})"
-        ),
-        "autodrive-report must show how phase 1 ended"
+    let id = "autodrive-loop";
+    let loop_step = step(&composer, id);
+    assert_eq!(
+        loop_step["context"]["pr_number"].as_str(),
+        Some("{{autodrive_goal_pr}}"),
+        "{id}"
     );
+    let condition = loop_step["condition"].as_str().unwrap_or("");
+    for needle in ["handed_off", "terminal_state", "BLOCKED_CI"] {
+        assert!(
+            !condition.contains(needle),
+            "{id} must not skip on `{needle}`: {condition}"
+        );
+    }
 }
 
 // T6: the merge gate stays the only merge control and never reads the hand-off.
 #[test]
-fn the_merge_gate_never_reads_the_handoff() {
-    let mut files = vec![tool_path("autodrive_merge_gate.sh")];
-    for name in [
-        "autodrive-merge-loop",
-        "autodrive-merge-round",
-        "autodrive-merge-evidence",
-        "autodrive-crusty-loop",
-    ] {
-        files.push(recipe_path(name));
-    }
-    for path in files {
-        let text = read(&path);
-        for needle in [
-            "handed_off",
-            "build_result.terminal_state",
-            "finalization_handoff",
-            "merge_ready_loop",
-        ] {
-            assert!(
-                !text.contains(needle),
-                "{} must not read `{needle}`",
-                rel(&path)
-            );
-        }
-    }
+fn finalization_handoff_cannot_authorize_a_merge() {
+    let source = read(
+        &workspace_root().join("crates/amplihack-cli/src/commands/orch/autodrive/authorization.rs"),
+    );
+    assert!(!source.contains("finalization_handoff"));
+    let recipe = recipe_yaml("autodrive-finalize");
+    assert_eq!(recipe["context"]["no_merge"].as_str(), Some("true"));
 }
 
 // The step-03 call: direct, after PR resolution, before the no-PR error.

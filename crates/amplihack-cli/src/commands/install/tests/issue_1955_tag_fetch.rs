@@ -34,14 +34,124 @@ fn recording_git(dir: &Path, then: &str) -> PathBuf {
             "#!/bin/sh\n\
              printf '%s\\n' \"$*\" >> '{log}'\n\
              env >> '{env}'\n\
-             readlink /proc/self/fd/0 >> '{stdin}'\n\
              {then}\n",
             log = dir.join("argv.log").display(),
             env = dir.join("env.log").display(),
-            stdin = dir.join("stdin.log").display(),
         ),
     );
     path
+}
+
+/// The variable that turns [`git_runs_with_no_stdin_and_in_its_own_session`]
+/// into the reporting child of [`reporting_git`]. It names the folder the
+/// report goes to. It is set in the stub's own text, because the fetcher
+/// scrubs the environment it gives git.
+const REPORT_DIR_ENV: &str = "AMPLIHACK_TEST_GIT_REPORT_DIR";
+
+/// [`recording_git`] that also reports what a shell cannot learn about itself
+/// without the host's `/proc` (issue #2931): its session and what its stdin
+/// is. The stub writes its own pid to `stub.pids`, then runs this test
+/// executable on the one entry that honours [`REPORT_DIR_ENV`]. The child
+/// inherits the stub's stdin untouched and appends one line to `report.log`
+/// ([`report_as_git_child`]); its own output goes to `child.out`, apart from
+/// the stub's. [`git_reports`] reads the two records back.
+fn reporting_git(dir: &Path, then: &str) -> PathBuf {
+    let quote = |path: &Path| {
+        crate::test_support::sh_quote(path.to_str().expect("temporary paths are UTF-8"))
+    };
+    let exe = std::env::current_exe().expect("the test executable has a path");
+    let entry = format!(
+        "{}::git_runs_with_no_stdin_and_in_its_own_session",
+        module_path!()
+            .split_once("::")
+            .expect("a module inside the crate")
+            .1
+    );
+    recording_git(
+        dir,
+        &format!(
+            "echo $$ >> {pids}\n\
+             {REPORT_DIR_ENV}={report} {exe} --exact {entry} --test-threads=1 --nocapture \
+             >> {out} 2>&1 || exit 97\n\
+             {then}",
+            pids = quote(&dir.join("stub.pids")),
+            report = quote(dir),
+            exe = quote(&exe),
+            entry = crate::test_support::sh_quote(&entry),
+            out = quote(&dir.join("child.out")),
+        ),
+    )
+}
+
+/// The reporting child of [`reporting_git`]: when [`REPORT_DIR_ENV`] is set,
+/// appends `<parent pid> <session id> <device of fd 0> <inode of fd 0>` to
+/// `report.log` in that folder and returns `true`. Otherwise does nothing and
+/// returns `false`.
+fn report_as_git_child() -> bool {
+    use std::io::Write;
+    use std::os::unix::fs::MetadataExt;
+    let Some(dir) = std::env::var_os(REPORT_DIR_ENV) else {
+        return false;
+    };
+    // SAFETY: neither call has preconditions; `getsid(0)` asks about the caller.
+    let (parent, session) = unsafe { (libc::getppid(), libc::getsid(0)) };
+    // Descriptor 0 is borrowed, never closed: `ManuallyDrop` keeps `File`
+    // from closing it.
+    // SAFETY: descriptor 0 is open for the life of the process.
+    let stdin = std::mem::ManuallyDrop::new(unsafe {
+        <fs::File as std::os::fd::FromRawFd>::from_raw_fd(0)
+    });
+    let meta = stdin.metadata().expect("fstat of descriptor 0");
+    let mut report = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(Path::new(&dir).join("report.log"))
+        .expect("open report.log");
+    writeln!(report, "{parent} {session} {} {}", meta.dev(), meta.ino()).expect("write report.log");
+    true
+}
+
+/// One run of [`reporting_git`], as the stub and its child recorded it.
+#[derive(Debug)]
+struct GitReport {
+    stub_pid: i64,
+    child_parent: i64,
+    session: i64,
+    stdin_is_dev_null: bool,
+}
+
+/// Every run [`reporting_git`] recorded in `dir`, in order. Panics when the
+/// stub ran and its child did not report, so a silent child cannot pass.
+fn git_reports(dir: &Path) -> Vec<GitReport> {
+    use std::os::unix::fs::MetadataExt;
+    let null = fs::metadata("/dev/null").expect("stat /dev/null");
+    let pids = log(dir, "stub.pids");
+    let reports = log(dir, "report.log");
+    assert_eq!(
+        pids.lines().count(),
+        reports.lines().count(),
+        "each stub run reports once\nstub.pids:\n{pids}\nreport.log:\n{reports}\nchild.out:\n{}",
+        log(dir, "child.out")
+    );
+    // Device and inode numbers are compared as text: a device number does
+    // not fit a signed type on every system.
+    let (null_dev, null_ino) = (null.dev().to_string(), null.ino().to_string());
+    let pid = |text: &str| -> i64 { text.parse().unwrap_or_else(|e| panic!("{text:?}: {e}")) };
+    pids.lines()
+        .zip(reports.lines())
+        .map(|(stub_pid, report)| {
+            let fields: Vec<&str> = report.split(' ').collect();
+            let [parent, session, dev, ino] = fields[..] else {
+                panic!("a report line has four fields: {report:?}");
+            };
+            GitReport {
+                stub_pid: pid(stub_pid),
+                child_parent: pid(parent),
+                session: pid(session),
+                stdin_is_dev_null: dev == null_dev && ino == null_ino,
+            }
+        })
+        .collect()
 }
 
 fn log(dir: &Path, name: &str) -> String {
@@ -230,15 +340,12 @@ fn inherited_git_location_variables_do_not_reach_git() {
 
 #[test]
 fn git_runs_with_no_stdin_and_in_its_own_session() {
+    // Re-entered by the stub below as its reporting child.
+    if report_as_git_child() {
+        return;
+    }
     let temp = crate::test_support::tempdir_outside_framework_roots();
-    let sessions = temp.path().join("sessions.log");
-    let git = recording_git(
-        temp.path(),
-        &format!(
-            "echo \"$$ $(cut -d' ' -f6 /proc/$$/stat)\" >> '{}'\nexit 0",
-            sessions.display()
-        ),
-    );
+    let git = reporting_git(temp.path(), "exit 0");
     let (_, http) = refused_http();
     let fetcher = ReleaseTagFetcher {
         git: Some(git),
@@ -247,14 +354,20 @@ fn git_runs_with_no_stdin_and_in_its_own_session() {
 
     let _ = fetcher.fetch(&version(), &temp.path().join("dest"), LONG);
 
-    let stdin = log(temp.path(), "stdin.log");
-    assert!(!stdin.is_empty(), "git was not run");
-    assert!(stdin.lines().all(|line| line == "/dev/null"), "{stdin}");
-    for line in fs::read_to_string(&sessions).unwrap().lines() {
-        let (pid, session) = line.split_once(' ').unwrap();
+    let reports = git_reports(temp.path());
+    assert!(!reports.is_empty(), "git was not run");
+    for report in &reports {
+        assert!(
+            report.stdin_is_dev_null,
+            "git's stdin is not /dev/null: {report:?}"
+        );
         assert_eq!(
-            pid, session,
-            "git must lead its own session so a kill reaches it"
+            report.child_parent, report.stub_pid,
+            "the report must come from this run of git: {report:?}"
+        );
+        assert_eq!(
+            report.session, report.stub_pid,
+            "git must lead its own session so a kill reaches it: {report:?}"
         );
     }
 }
@@ -272,7 +385,13 @@ fn the_real_git_route_gets_the_tag_even_when_a_branch_has_the_same_name() {
             .unwrap_or_else(|e| e.into_inner());
         which_git_in(&std::env::var_os("PATH").unwrap()).unwrap()
     };
+    // Spawn under the same lock: tests in this module set hostile `GIT_*`
+    // values (`GIT_COMMON_DIR` among them) process-wide via `with_env`, and a
+    // child spawned meanwhile would inherit them.
     let git = |dir: &Path, args: &[&str]| {
+        let _env = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let output = Command::new(&git_path)
             .args(args)
             .current_dir(dir)
@@ -628,7 +747,7 @@ fn oversized_git_describe_output_gives_unknown() {
 fn git_describe_asks_for_an_exact_v_tag_with_the_same_protections() {
     use super::super::framework_source::read_source_version_with_git;
     let temp = crate::test_support::tempdir_outside_framework_roots();
-    let git = recording_git(temp.path(), "echo v1.2.99");
+    let git = reporting_git(temp.path(), "echo v1.2.99");
 
     let version = read_source_version_with_git(temp.path(), Some(&git));
 
@@ -639,10 +758,11 @@ fn git_describe_asks_for_an_exact_v_tag_with_the_same_protections() {
         "{argv}"
     );
     assert!(argv.contains("-c core.hooksPath=/dev/null"), "{argv}");
-    assert_eq!(
-        log(temp.path(), "stdin.log").trim(),
-        "/dev/null",
-        "no prompt may wait on a tty"
+    let reports = git_reports(temp.path());
+    assert!(!reports.is_empty(), "git was not run");
+    assert!(
+        reports.iter().all(|report| report.stdin_is_dev_null),
+        "no prompt may wait on a tty: {reports:?}"
     );
 }
 

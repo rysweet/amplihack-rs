@@ -52,6 +52,10 @@ impl UserPromptSubmitHook {
 }
 
 impl Hook for UserPromptSubmitHook {
+    fn model_text(&self) -> Option<crate::hook_text::ModelText> {
+        Some(crate::hook_text::ModelText::PromptContext)
+    }
+
     fn name(&self) -> &'static str {
         "user_prompt_submit"
     }

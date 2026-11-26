@@ -122,6 +122,38 @@ quotes it expands in the new session and reads the server's markers.
 
 This makes amplihack agent-agnostic: `amplihack <command>` will use the configured binary for all agent subprocess calls (skills, recipes, orchestrator). Added in PR #3174.
 
+#### Codex agent steps
+
+With `AMPLIHACK_AGENT_BINARY=codex`, each agent step runs as
+`amplihack codex -- exec …`, and amplihack adds these flags
+directly after `exec`:
+
+```text
+--sandbox danger-full-access --dangerously-bypass-hook-trust
+```
+
+The reasons:
+
+- Codex agent steps run with the same trust as Claude agent steps, which use
+  `--dangerously-skip-permissions` (issue #2317). A step in a linked git
+  worktree can then commit, because the worktree's index and refs under the
+  main checkout's `.git/` are writable.
+- The amplihack PreToolUse hooks apply the same deny rules to both harnesses.
+  They check commands; they are not a sandbox.
+- Codex skips an untrusted hook without saying so, which would turn off the
+  command-check hook (software-factory #149) for every step.
+
+The rules: the caller's own sandbox choice in the step's arguments wins (no
+`--sandbox` is then added); amplihack adds no network override and never adds
+`--dangerously-bypass-approvals-and-sandbox` or `--yolo`; interactive
+`amplihack codex` sessions are unchanged. Prompt text must reach Codex on
+stdin, never in argv. Agent steps should run only in trusted checkouts with
+trusted task text: a step can write `.codex/hooks.json`, `~/.codex/` and
+`.git/hooks`, and because hook trust is bypassed, a hook it plants runs in
+later steps without a prompt. The full rules, the `exec resume` placement and
+the preconditions are in
+[Sandbox and hook trust for agent steps](../howto/install-codex-plugin.md#sandbox-and-hook-trust-for-agent-steps).
+
 ## Quick Examples
 
 ### Development Workflow

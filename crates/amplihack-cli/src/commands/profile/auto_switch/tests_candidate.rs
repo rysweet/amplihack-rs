@@ -250,6 +250,26 @@ struct Over {
     gate: Option<Gate>,
 }
 
+#[test]
+fn issue_2136_room_fallback_uses_its_own_eligible_same_organisation_pool() {
+    let c = Case::new(&["work", "same", "other"])
+        .with("work", reading(100.0, 100.0))
+        .with("same", reading(95.0, 95.0))
+        .with("other", reading(91.0, 91.0));
+    let o = Over::new(&[]);
+    let picked = candidate::select_restricted(
+        &c.pool(),
+        &o.pool(),
+        "work",
+        |_| false,
+        |p| p.as_str() == "same",
+    );
+    assert_eq!(picked.map(ProfileName::as_str), Some("same"));
+    assert!(
+        candidate::select_restricted(&c.pool(), &o.pool(), "work", |_| false, |_| false).is_none()
+    );
+}
+
 impl Over {
     fn new(order: &[&str]) -> Self {
         Self {

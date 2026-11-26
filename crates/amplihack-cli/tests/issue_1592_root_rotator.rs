@@ -5,6 +5,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::support::fake_proc::FakeProc;
 use crate::support::profile_rotate::*;
 use crate::support::wait::{output_within, wait_until as wait_for};
 use std::fs;
@@ -61,6 +62,9 @@ fn pid_file(f: &Fixture) -> PathBuf {
 fn the_rotator_keeps_its_start_root_and_status_finds_it() {
     let f = Fixture::new();
     f.usage("work", 10, 10);
+    // Declared before the guard, so the tree outlives the guard's `stop`.
+    let fake = FakeProc::new();
+    f.with_proc(&fake);
     let r = f.root.display().to_string();
     let out = f.ok(&[
         "profile",
@@ -77,6 +81,8 @@ fn the_rotator_keeps_its_start_root_and_status_finds_it() {
         .trim()
         .parse()
         .unwrap();
+    // The daemon this test's `start` launched (issue #2042).
+    fake.link_own(pid as u32);
     let _guard = Guard {
         pid,
         root: f.root.clone(),

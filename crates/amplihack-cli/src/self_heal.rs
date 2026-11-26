@@ -21,6 +21,8 @@
 //! When the running binary is older than the stamp, nothing is installed and
 //! one warning goes to stderr. Guard #1 runs before the bundle check, Guard #2
 //! under the install lock; explicit `amplihack install` is never guarded.
+//! The launch bootstrap's re-stage takes the lock and runs Guard #2 through
+//! the same helper, [`restage_under_install_lock`] (issue #1582).
 //!
 //! ## Failure mode
 //!
@@ -36,13 +38,11 @@
 //! fetch itself backs off for 10 minutes after a failure (`fetch_backoff`).
 
 use std::ffi::OsString;
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use anyhow::{Context, Result};
-use fs4::fs_std::FileExt;
 
 use crate::commands::install::bundle_compat_cache;
 use crate::commands::install::paths::{home_dir, sanitize_path, sanitize_text};
@@ -85,16 +85,15 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     // Issue #1808: `cleanup` needs no framework assets, and its dry run must
     // write nothing at all, not even the bundle-compatibility cache.
     "cleanup",
+    // Issue #3220: `directory` only reads the index of installed skills and
+    // agents, and must not write the bundle-compatibility cache; `enable` and
+    // `disable` also save the list settings.
+    "directory",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an
 /// install check.
 const SKIP_FLAGS: &[&str] = &["--help", "-h", "--version", "-V"];
-
-/// Filename of the inter-process advisory lock guarding the installer
-/// critical section (issue #502 R5). Sits next to the install stamp under
-/// `~/.amplihack/`.
-const INSTALL_LOCK_FILE: &str = ".install.lock";
 
 /// Issue #1526: set once this process has emitted the implicit-downgrade
 /// warning, so the launch bootstrap does not print it a second time.
@@ -128,17 +127,30 @@ pub fn ensure_assets_match_binary_version(args: &[OsString]) -> Result<()> {
 /// Use parsed CLI provider intent for startup repair, ahead of inherited hints.
 /// The scoped selection restores the caller's provider after the check.
 pub fn ensure_assets_for_command(args: &[OsString], command: &crate::Commands) -> Result<()> {
-    let provider = match command {
+    let provider = startup_provider(command);
+    crate::freshness::with_provider(provider, || ensure_assets_match_binary_version(args))
+}
+
+/// The provider start-up repair runs for. A local-model `amplihack codex`
+/// launch, by its flag or AMPLIHACK_CODEX_LOCAL_MODEL and valid or not, gets
+/// none, so the repair never installs or updates the Codex plugin in the
+/// user's Codex home.
+pub(crate) fn startup_provider(command: &crate::Commands) -> &'static str {
+    match command {
         crate::Commands::Launch { .. } | crate::Commands::Claude { .. } => "claude",
         crate::Commands::Copilot { .. } => "copilot",
+        crate::Commands::Codex { local_model, .. }
+            if crate::commands::launch::codex_local_model::requested(local_model.as_deref()) =>
+        {
+            ""
+        }
         crate::Commands::Codex { .. } => "codex",
         crate::Commands::Amplifier { .. } => "amplifier",
         crate::Commands::RustyClawd { .. } => "rustyclawd",
         // Generic commands repair generic assets; direct install retains its
         // separate all-provider semantics and is in the startup skip list.
         _ => "",
-    };
-    crate::freshness::with_provider(provider, || ensure_assets_match_binary_version(args))
+    }
 }
 
 /// Resolve ordinary Codex launches before asset repair registers native resources.
@@ -159,12 +171,6 @@ pub fn resolve_startup_client(command: &crate::Commands) -> Result<()> {
         )?;
     }
     Ok(())
-}
-
-/// Resolve the path to the install advisory lock file. Mirrors
-/// `version_stamp::installed_version_path` so both files live side-by-side.
-fn install_lock_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".amplihack").join(INSTALL_LOCK_FILE))
 }
 
 /// The five-line implicit-downgrade warning (issue #1526).
@@ -258,34 +264,10 @@ pub(crate) fn set_downgrade_warned(warned: bool) {
     DOWNGRADE_WARNED.store(warned, AtomicOrdering::Relaxed);
 }
 
-/// Run `body` while holding an exclusive advisory `flock` on the install
-/// lock file (issue #502 R5). The lock serialises concurrent
-/// `ensure_assets_match_binary_version` callers within a host so two
-/// processes never run the installer body at the same time.
-///
-/// The lock file is created with default permissions if missing — its
-/// contents are never inspected, only its inode is used as the lock token,
-/// so it does not need 0o600 like the stamp.
-fn with_install_lock<T, F: FnOnce() -> Result<T>>(body: F) -> Result<T> {
-    let lock_path = install_lock_path()?;
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let lock_file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .with_context(|| format!("failed to open install lock {}", lock_path.display()))?;
-    FileExt::lock_exclusive(&lock_file)
-        .with_context(|| format!("failed to acquire install lock {}", lock_path.display()))?;
-    let result = body();
-    // Best-effort unlock; the kernel will release on drop regardless.
-    let _ = FileExt::unlock(&lock_file);
-    result
-}
+/// The install lock (issues #502 R5 and #1954), shared with `amplihack
+/// install`, `update` and `uninstall`. Re-entrant on the owning thread, so the
+/// install this calls takes it again without deadlocking.
+pub(crate) use crate::install_lock::with_install_lock;
 
 /// Decision-logic core, factored out for testability.
 ///
@@ -393,68 +375,128 @@ where
     // via an advisory `flock` on `~/.amplihack/.install.lock`. The second
     // waiter re-reads the stamp inside the critical section; if the first
     // winner already wrote the up-to-date stamp, the waiter exits without
-    // re-running the installer.
+    // re-running the installer. Issue #1582: the launch bootstrap goes
+    // through the same helper.
+    restage_under_install_lock(
+        notice,
+        |stamp_now: Option<&str>| {
+            // Deliberately uncached: a concurrent installer may have rewritten
+            // the bundle moments ago, and this is the decision that guards
+            // against re-running the installer needlessly.
+            let installed_bundle_issue_now = installed_bundle_compatibility_issue_uncached()
+                .context("re-checking installed framework bundle compatibility under lock")?;
+            if stamp_now == Some(expected) && installed_bundle_issue_now.is_none() {
+                tracing::debug!(
+                    "self_heal: stamp and installed bundle brought current by concurrent installer; nothing to do"
+                );
+                return Ok(false);
+            }
+            Ok(true)
+        },
+        |notice: &mut W| {
+            // The install writes the stamp itself (issue #1526: not after a
+            // refused binary deploy, which only it knows about).
+            if let Err(error) = install_fn() {
+                let error = error.context("running install during startup self-heal");
+                let Some(failed) = error.downcast_ref::<SourceFetchFailed>() else {
+                    return Err(error);
+                };
+                if let Some(issue) = installed_bundle_compatibility_issue_uncached()
+                    .context("checking the installed bundle after a failed fetch")?
+                {
+                    tracing::debug!("self_heal: installed bundle can't be kept: {issue}");
+                    return Err(error);
+                }
+                // Best effort: the command runs whether or not the warning is written.
+                if let Err(e) =
+                    notice.write_all(format_kept_bundle_warning(failed, expected).as_bytes())
+                {
+                    tracing::debug!("self_heal: failed to emit kept-bundle warning: {e}");
+                }
+                return Ok(());
+            }
+            // The bundle just changed under us; drop the memoised verdict so the
+            // next invocation revalidates once and re-primes the cache.
+            if let Ok(path) = bundle_compat_cache_path() {
+                bundle_compat_cache::invalidate(&path);
+            }
+            writeln!(
+                notice,
+                "amplihack: framework assets re-staged for v{expected}"
+            )
+            .context("emitting self-heal notice")?;
+            Ok(())
+        },
+    )
+    .map(|_| ())
+}
+
+/// The outcome of a re-stage attempt (issue #1582), decided by
+/// [`restage_under_install_lock`] with the install lock held, except that the
+/// launch bootstrap also returns `NotNeeded` from its check before the lock.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LockedRestage {
+    /// The stamp re-read under the lock is newer than this binary (Guard #2):
+    /// nothing was installed, and the warning went to `notice`.
+    NewerInstalled,
+    /// Nothing to re-stage, decided either before the lock (the launch
+    /// bootstrap's check, which takes no lock) or by the caller's re-check
+    /// under it, usually because the previous lock holder had just re-staged.
+    NotNeeded,
+    /// The caller's install callback ran under the lock and returned `Ok`.
+    /// For self-heal this includes a failed fetch that kept the existing bundle.
+    Installed,
+}
+
+/// The one copy of take-lock, re-read stamp, Guard #2, re-check, install,
+/// shared by startup self-heal and the launch bootstrap (issue #1582).
+///
+/// Under the install lock, in this order:
+/// 1. re-reads the stamp (quietly: startup self-heal's first read, earlier in
+///    the same process, reports a malformed one);
+/// 2. Issue #1526 Guard #2: when the stamp is now newer than this binary, a
+///    newer install finished while this process waited, so it writes the
+///    downgrade warning and returns [`LockedRestage::NewerInstalled`];
+/// 3. asks `still_needed`, given the stamp read under the lock, and returns
+///    [`LockedRestage::NotNeeded`] when it says no;
+/// 4. runs `install` and returns [`LockedRestage::Installed`].
+///
+/// Every decision the caller made before the lock is therefore made again
+/// here, so two launches that both decided to re-stage install once. Errors
+/// from either callback are returned unchanged and the lock is released.
+/// `AMPLIHACK_SKIP_AUTO_INSTALL` is not read here: each caller decides what
+/// the bypass means for it, and the warning itself honours it.
+pub(crate) fn restage_under_install_lock<W, N, I>(
+    notice: &mut W,
+    still_needed: N,
+    install: I,
+) -> Result<LockedRestage>
+where
+    W: Write,
+    N: FnOnce(Option<&str>) -> Result<bool>,
+    I: FnOnce(&mut W) -> Result<()>,
+{
     with_install_lock(|| {
-        // Re-check after acquiring the lock — the previous holder may
-        // have already brought the stamp current.
-        // Quiet: the read above has already reported a malformed stamp.
         let stamp_now = version_stamp::read_installed_version_quiet()
             .context("re-reading install stamp under lock")?;
-        // Issue #1526 Guard #2: a newer install may have finished while this
-        // process waited on the lock.
+        let expected = crate::VERSION;
         if let Some(installed) = stamp_now.as_deref()
             && version_stamp::relation(expected, installed) == VersionRelation::Older
         {
             tracing::debug!(
-                "self_heal: install stamp became {installed} while waiting on the install lock; \
+                "install stamp became {installed} while waiting on the install lock; \
                  binary {expected} refuses implicit re-stage"
             );
             warn_implicit_downgrade_once(notice, installed);
-            return Ok(());
+            return Ok(LockedRestage::NewerInstalled);
         }
-        // Deliberately uncached: a concurrent installer may have rewritten
-        // the bundle moments ago, and this is the decision that guards
-        // against re-running the installer needlessly.
-        let installed_bundle_issue_now = installed_bundle_compatibility_issue_uncached()
-            .context("re-checking installed framework bundle compatibility under lock")?;
-        if stamp_now.as_deref() == Some(expected) && installed_bundle_issue_now.is_none() {
-            tracing::debug!(
-                "self_heal: stamp and installed bundle brought current by concurrent installer; nothing to do"
-            );
-            return Ok(());
+        if !still_needed(stamp_now.as_deref())? {
+            tracing::debug!("re-check under the install lock found nothing to re-stage");
+            return Ok(LockedRestage::NotNeeded);
         }
-        // The install writes the stamp itself (issue #1526: not after a
-        // refused binary deploy, which only it knows about).
-        if let Err(error) = install_fn() {
-            let error = error.context("running install during startup self-heal");
-            let Some(failed) = error.downcast_ref::<SourceFetchFailed>() else {
-                return Err(error);
-            };
-            if let Some(issue) = installed_bundle_compatibility_issue_uncached()
-                .context("checking the installed bundle after a failed fetch")?
-            {
-                tracing::debug!("self_heal: installed bundle can't be kept: {issue}");
-                return Err(error);
-            }
-            // Best effort: the command runs whether or not the warning is written.
-            if let Err(e) =
-                notice.write_all(format_kept_bundle_warning(failed, expected).as_bytes())
-            {
-                tracing::debug!("self_heal: failed to emit kept-bundle warning: {e}");
-            }
-            return Ok(());
-        }
-        // The bundle just changed under us; drop the memoised verdict so the
-        // next invocation revalidates once and re-primes the cache.
-        if let Ok(path) = bundle_compat_cache_path() {
-            bundle_compat_cache::invalidate(&path);
-        }
-        writeln!(
-            notice,
-            "amplihack: framework assets re-staged for v{expected}"
-        )
-        .context("emitting self-heal notice")?;
-        Ok(())
+        install(notice)?;
+        Ok(LockedRestage::Installed)
     })
 }
 
@@ -1154,6 +1196,23 @@ steps:
     }
 
     #[test]
+    fn directory_command_skips_startup_self_heal() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+
+        let argv = ["amplihack", "directory", "find", "kubernetes"];
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&argv),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0, "{argv:?} must not restage the framework");
+    }
+
+    #[test]
     fn other_hygiene_commands_still_use_startup_self_heal() {
         let tmp = TempDir::new().unwrap();
         let _g = EnvGuard::new(tmp.path(), None);
@@ -1692,5 +1751,64 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
             stamp_before,
             "the newer install's stamp must be untouched"
         );
+    }
+}
+
+/// Local-model launches of `amplihack codex`: start-up repair runs
+/// with no Codex provider for any local-model selection, valid or not, so it
+/// never installs or updates the Codex plugin in the user's Codex home.
+/// Every other command keeps its provider.
+#[cfg(test)]
+mod startup_provider_tests {
+    use super::startup_provider;
+    use crate::test_support::{EnvGuard, env_lock};
+
+    const VAR: &str = "AMPLIHACK_CODEX_LOCAL_MODEL";
+
+    /// Parsing reads `AMPLIHACK_AUTO_MAX_TURNS`, so callers hold the lock.
+    fn command(args: &[&str]) -> crate::Commands {
+        crate::Cli::try_parse_from(args)
+            .unwrap_or_else(|e| panic!("{args:?} parses: {e}"))
+            .command
+    }
+
+    #[test]
+    fn a_local_model_selection_maps_codex_to_no_provider() {
+        let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let mut env = EnvGuard::unset([VAR]);
+
+        let ordinary = command(&["amplihack", "codex", "--", "exec", "-"]);
+        assert_eq!(startup_provider(&ordinary), "codex");
+        for name in ["inkling", "../not-a-valid-name"] {
+            let by_flag = command(&["amplihack", "codex", "--local-model", name]);
+            assert_eq!(startup_provider(&by_flag), "", "flag {name:?}");
+        }
+
+        for name in ["inkling", "../not-a-valid-name", " "] {
+            env.assign(VAR, name);
+            assert_eq!(startup_provider(&ordinary), "", "variable {name:?}");
+        }
+
+        env.assign(VAR, "");
+        assert_eq!(
+            startup_provider(&ordinary),
+            "codex",
+            "empty counts as unset"
+        );
+    }
+
+    #[test]
+    fn other_commands_keep_their_provider_whatever_the_variable() {
+        let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _env = EnvGuard::set([(VAR, "inkling")]);
+        for (args, provider) in [
+            (&["amplihack", "claude"][..], "claude"),
+            (&["amplihack", "launch"][..], "claude"),
+            (&["amplihack", "copilot"][..], "copilot"),
+            (&["amplihack", "amplifier"][..], "amplifier"),
+            (&["amplihack", "recipe", "list"][..], ""),
+        ] {
+            assert_eq!(startup_provider(&command(args)), provider, "{args:?}");
+        }
     }
 }

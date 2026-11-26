@@ -4,7 +4,6 @@ version: 1.0.0
 description: Gherkin/BDD expert for writing, reviewing, and refactoring Cucumber feature files
 role: "Gherkin and BDD specialist"
 priority: normal
-model: inherit
 ---
 
 # Gherkin Expert Agent

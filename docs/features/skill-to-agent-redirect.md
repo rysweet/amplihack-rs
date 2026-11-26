@@ -50,14 +50,15 @@ Skill(name="prompt-writer")
 │  4. Bash-only checks (cwd, branch, ...)      │
 └─────────────────────────────────────────────┘
         │
-        ▼ (block)
-{ "block": true, "message": "<redirect guidance>" }
+        ▼ (deny)
+deny("<redirect guidance>")  (block, decision, permissionDecision and
+                              hookSpecificOutput.permissionDecision, #1773)
 ```
 
 Key properties:
 
 - **Skill precedence.** The redirect fires only when the name **is** a known agent and is **not** a bundled skill. The skill set is derived at runtime by scanning the on-disk skills directory (`amplifier-bundle/skills/**/SKILL.md`) and reading each frontmatter `name:` — the directory is the single source of truth (issue [#863](https://github.com/rysweet/amplihack-rs/issues/863)), not a hardcoded list. Names that exist as **both** a skill and an agent (for example `gherkin-expert` and `tla-plus-expert`, which ship both a `SKILL.md` and an agent file) keep resolving as skills with no behavior change.
-- **Non-fatal.** The hook returns a `block` with guidance — it never panics, never aborts the run, and never deletes work. The model is told what to do instead.
+- **Non-fatal.** The hook exits 0 with a deny that Claude Code, Copilot and Codex all act on (#1773), and the reason carries the guidance. It never panics, never aborts the run, and never deletes work. The model is told what to do instead.
 - **Agent registry is compile-time; skill set is directory-derived.** Agent names are baked into the binary at build time via a sorted static slice. The skill set is resolved at runtime by scanning the bundled skills directory (issue [#863](https://github.com/rysweet/amplihack-rs/issues/863)). That scan is gated behind the cheap agent check, so genuine skills and unknown names pay no I/O; only a name that collides with a known agent triggers the directory walk. The walk never follows symlinks and is depth-bounded.
 - **Fail-open.** Consistent with the rest of `PreToolUse`, any parse or lookup failure passes the tool call through unchanged (`FailurePolicy::Open`).
 
@@ -65,13 +66,18 @@ Key properties:
 
 ## What the Model Sees
 
-When the redirect fires, the model receives a `block` response whose `message` is static guidance plus the sanitized target name. For example, a `Skill(name="prompt-writer")` call returns:
+When the redirect fires, the model receives a deny whose reason (in `message`, `reason`, `permissionDecisionReason` and `hookSpecificOutput.permissionDecisionReason`) is static guidance plus the sanitized target name. For example, a `Skill(name="prompt-writer")` call returns:
 
 ```text
-"prompt-writer" is an amplihack agent, not a skill. The Skill tool cannot
-run it. Invoke it as an agent instead (use the Task/agent tool with
-agent type "prompt-writer"), or reference it from a recipe step as
-`agent: "amplihack:prompt-writer"`. Do not retry this as a Skill call.
+🔁 WRONG INTERFACE - 'prompt-writer' is an amplihack AGENT, not a skill.
+
+You invoked the Skill tool with name 'prompt-writer', but 'prompt-writer' is provided as an
+agent, not a skill. Invoking it as a skill fails with "Skill not found" and
+silently skips this step.
+
+✅ Instead, call the Agent tool with the agent 'prompt-writer', for example as "amplihack:prompt-writer".
+
+This redirect prevents the requirements-clarification phase from being skipped.
 ```
 
 The message intentionally echoes **only** the sanitized target name (`[A-Za-z0-9-]`), never the full tool input, so surrounding prompt content is not leaked into logs or transcripts.

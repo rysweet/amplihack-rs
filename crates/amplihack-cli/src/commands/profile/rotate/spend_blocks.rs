@@ -1,6 +1,13 @@
-//! Spend blocks on overflow profiles (issue #1606): when one ends and which
+//! Blocks on a login (issues #1606, #2909, #2910): when one ends and which
 //! are still in force. The records live in the rotate ledger
 //! (`RotateLedger::overflow_blocked`).
+//!
+//! The `reason` field holds a limit kind. The ledger admits any short token
+//! ([`valid_kind`]) rather than a closed list, so a kind written by a newer
+//! writer still keeps its login out of the rotator's choices until the
+//! recorded reset; [`kind_label`] keeps a stored token out of every log line.
+//! The rule and the constants are the ones on the issue #2909 branch, word
+//! for word, so the two branches agree. This change writes no new kind.
 
 use super::ledger::{
     MAX_BLOCK_SECS, MAX_BLOCKS, OVERFLOW_TAGS, OverflowBlock, RotateLedger, SPEND_LIMIT,
@@ -16,21 +23,45 @@ pub const KEY_REVOKED: &str = "key_revoked";
 pub const KEY_RATE_LIMITED: &str = "key_rate_limited";
 pub const KEY_REASONS: [&str; 3] = [KEY_EXHAUSTED, KEY_REVOKED, KEY_RATE_LIMITED];
 
+impl OverflowBlock {
+    /// A spend-limit block recorded at `at` that ends at the time the limit
+    /// message stated (issue #2890), rather than at the inferred monthly
+    /// reset of [`OverflowBlock::spend_limit`]. The reason is the same, so
+    /// every reader, [`valid_overflow`] included, is unchanged. The caller
+    /// checks the span with [`valid_span`].
+    pub fn spend_limit_until(at: i64, until: i64) -> Self {
+        Self {
+            at,
+            until,
+            reason: SPEND_LIMIT.to_string(),
+        }
+    }
+}
+
+/// The time rule every stored block obeys: recorded at a positive time,
+/// ending after it, and within [`MAX_BLOCK_SECS`] of it, so no block can be
+/// made to last for ever. An end that cannot be computed counts as invalid.
+///
+/// The one expression, shared by the loader's [`valid_overflow`] and by
+/// `step_block`, which applies it *before* inserting so that a block a step
+/// writes can never make the whole ledger unreadable.
+pub(super) fn valid_span(b: &OverflowBlock) -> bool {
+    b.at > 0
+        && b.at < b.until
+        && b.at
+            .checked_add(MAX_BLOCK_SECS)
+            .is_some_and(|max| b.until <= max)
+}
+
 /// The overflow fields of a loaded ledger: a known tag, at most
 /// [`MAX_BLOCKS`] blocks, each keyed by a profile name, for a spend limit,
 /// recorded at a positive time and ending after it but within
-/// [`MAX_BLOCK_SECS`], so no block can be made to last for ever. An end
-/// that cannot be computed counts as invalid. Issue #1700: `live_kind` is
+/// [`MAX_BLOCK_SECS`], so no block can be made to last for ever. Issue
+/// #2909: the reason is any limit kind [`valid_kind`] admits, not only a spend
+/// limit. An end that cannot be computed counts as invalid. Issue #1700: `live_kind` is
 /// absent or `platform` with a `live`, and `platform_block` has a key
 /// reason and the same time rules.
 pub(super) fn valid_overflow(l: &RotateLedger) -> bool {
-    let span_ok = |b: &OverflowBlock| {
-        b.at > 0
-            && b.at < b.until
-            && b.at
-                .checked_add(MAX_BLOCK_SECS)
-                .is_some_and(|max| b.until <= max)
-    };
     let live_kind_ok = l
         .live_kind
         .as_deref()
@@ -38,7 +69,7 @@ pub(super) fn valid_overflow(l: &RotateLedger) -> bool {
     let platform_block_ok = l
         .platform_block
         .as_ref()
-        .is_none_or(|b| KEY_REASONS.contains(&b.reason.as_str()) && span_ok(b));
+        .is_none_or(|b| KEY_REASONS.contains(&b.reason.as_str()) && valid_span(b));
     let tag_ok = l
         .last_cycle
         .as_ref()
@@ -49,8 +80,53 @@ pub(super) fn valid_overflow(l: &RotateLedger) -> bool {
         && platform_block_ok
         && l.overflow_blocked.len() <= MAX_BLOCKS
         && l.overflow_blocked.iter().all(|(name, b)| {
-            ProfileName::parse(name).is_ok() && b.reason == SPEND_LIMIT && span_ok(b)
+            ProfileName::parse(name).is_ok() && valid_kind(&b.reason) && valid_span(b)
         })
+}
+
+/// The five-hour session window ran out (issue #2909).
+pub const SESSION_LIMIT: &str = "session_limit";
+/// The seven-day window ran out.
+pub const WEEK_LIMIT: &str = "week_limit";
+/// The account's credit balance ran out.
+pub const CREDIT_LIMIT: &str = "credit_limit";
+
+/// The longest limit-kind token a stored block may carry.
+const MAX_KIND: usize = 32;
+
+/// Whether `kind` is a limit-kind token a stored block may carry:
+/// `^[a-z0-9_]{1,32}$`, checked on bytes, so no case folding, no Unicode
+/// and no separator can smuggle a path, a newline or a NUL through.
+///
+/// A token this binary does not recognise still blocks its login and, for
+/// a watching rotator (issue #2909), still contributes a wake time, which is
+/// the point: the rotator must honour a limit a newer writer recorded rather
+/// than refuse the whole ledger. Every other rule on a block is unchanged:
+/// the key is a [`ProfileName`], the span passes [`valid_span`], and a
+/// ledger holds at most [`MAX_BLOCKS`].
+pub fn valid_kind(kind: &str) -> bool {
+    !kind.is_empty()
+        && kind.len() <= MAX_KIND
+        && kind
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// Fixed text for a stored limit kind, for a log line or an ALERT. The
+/// return type is `&'static str`, so no byte a writer chose can reach the
+/// rotate log: a token outside the kinds this binary knows is labelled, not
+/// quoted.
+pub fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        SPEND_LIMIT => "spend limit",
+        SESSION_LIMIT => "session limit",
+        WEEK_LIMIT => "week limit",
+        CREDIT_LIMIT => "credit limit",
+        KEY_EXHAUSTED => "API key exhausted",
+        KEY_REVOKED => "API key revoked",
+        KEY_RATE_LIMITED => "API key rate limited",
+        _ => "a recorded limit",
+    }
 }
 
 /// When an organisation's monthly spend resets, as assumed for a block
@@ -88,3 +164,11 @@ pub fn prune_blocks(l: &mut RotateLedger, now: i64) {
         l.platform_block = None;
     }
 }
+
+#[cfg(test)]
+#[path = "tests_issue_2909.rs"]
+mod tests_issue_2909;
+
+#[cfg(test)]
+#[path = "tests_issue_2910_kind.rs"]
+mod tests_issue_2910_kind;

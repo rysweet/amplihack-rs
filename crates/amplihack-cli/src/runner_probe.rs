@@ -22,40 +22,46 @@ impl Probe {
         // failed reap with another deadline after reporting it to the caller.
         self.stopped = true;
         let deadline = Instant::now() + Duration::from_secs(1);
-        let mut failures = Vec::new();
+        // Each entry is a step name written here, followed by the operating
+        // system's error where there is one (issue #2931). Nothing the child
+        // wrote and no path goes in: the text is shown to the caller.
+        let mut failures: Vec<String> = Vec::new();
         #[cfg(unix)]
         {
             let signal = libc::SIGKILL;
             #[cfg(test)]
             let signal = testing::termination_signal(signal);
             let result = unsafe { libc::kill(-(self.child.id() as i32), signal) };
-            if result != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-                failures.push("probe group cleanup failed");
+            if result != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    failures.push(format!("probe group cleanup failed: {error}"));
+                }
             }
         }
         match self.cleanup_wait() {
             Ok(Some(_)) => {}
             Ok(None) => {
-                if self.cleanup_kill().is_err() {
-                    failures.push("probe termination failed");
+                if let Err(error) = self.cleanup_kill() {
+                    failures.push(format!("probe termination failed: {error}"));
                 }
             }
-            Err(_) => {
-                failures.push("probe status cleanup failed");
-                if self.cleanup_kill().is_err() {
-                    failures.push("probe termination failed");
+            Err(error) => {
+                failures.push(format!("probe status cleanup failed: {error}"));
+                if let Err(error) = self.cleanup_kill() {
+                    failures.push(format!("probe termination failed: {error}"));
                 }
             }
         }
         loop {
             match self.cleanup_wait() {
                 Ok(Some(_)) => break,
-                Err(_) => {
-                    failures.push("probe reap failed");
+                Err(error) => {
+                    failures.push(format!("probe reap failed: {error}"));
                     break;
                 }
                 Ok(None) if Instant::now() >= deadline => {
-                    failures.push("probe cleanup exceeded deadline");
+                    failures.push("probe cleanup exceeded deadline".to_string());
                     break;
                 }
                 Ok(None) => thread::sleep(Duration::from_millis(5)),

@@ -4,7 +4,7 @@
 
 use super::identify::{LoginKind, login_kind};
 use super::ledger::{Phase, RotateJournal, RotateState};
-use super::login_identity::{Budget, Reader, UNAVAILABLE};
+use super::login_identity::{Reader, UNAVAILABLE};
 use super::swap::Source;
 use super::swap::{
     LOGINS_MISPLACED, describe, drop_locks, finish, ino_at, remove_unused_adoption, show,
@@ -50,7 +50,9 @@ pub fn recover(
     rs: &RotateState,
     home: &Path,
 ) -> Result<RecoverOutcome, ProfileError> {
-    let budget = Budget::new();
+    // Issue #2218: as in a cycle, an excluded login's identity comes from
+    // local files (daemon start-up recovery).
+    let budget = super::identify::excluded_offline::gated_budget(store, rs, home)?;
     let read = super::login_identity::default_read();
     recover_with(
         store,
@@ -128,6 +130,11 @@ pub(super) fn recover_with(
     } else {
         return freeze(store, rs, home, j, LOGINS_MISPLACED);
     };
+    // Issue #2218: an excluded outgoing login is never read over the
+    // network, whichever folder the interrupted swap left it in.
+    if super::identify::excluded_offline::is_excluded(store, &from) {
+        reader.budget.add_local_only(outgoing);
+    }
     // Recovery may run after an earlier uncertain attempt released its
     // locks. Reacquire them before fresh evidence authorizes any action.
     let locked = (|| {
@@ -198,7 +205,14 @@ pub(super) fn recover_with(
         return freeze(store, rs, home, j, &why);
     }
     // Moving the outgoing login does not change the incoming binding.
-    finish(rs, home, &j, &auth.incoming)?;
+    // Issue #2218: no install time is recorded. The exchange happened
+    // before this run, and the locks may have been released since (an
+    // outgoing move that failed leaves `~/.claude` to Claude), so the login
+    // may have been refreshed or replaced by hand. Its change time now
+    // would read that write as the install. Without the field the proof of
+    // an excluded live login falls back to `swapped_at`, the swap's start,
+    // which is earlier than any such write.
+    finish(rs, home, &j, &auth.incoming, None)?;
     drop_locks(store, rs, home, &mut j)?;
     rs.delete_journal()?;
     super::swap_expect::settle(store, &from, auth.pending);

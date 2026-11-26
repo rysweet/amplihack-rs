@@ -1,3 +1,10 @@
+---
+title: RecipeResult reference
+description: Structured recipe results, progress, failure context, and recovery metadata.
+doc_type: reference
+last_updated: 2026-11-11
+---
+
 # RecipeResult Reference
 
 `RecipeResult` represents the outcome of running a workflow recipe. It captures whether the recipe succeeded, how many steps ran, and the result of each individual step.
@@ -10,6 +17,7 @@
 - [Step Results](#step-results)
 - [Progress and Failure Context](#progress-and-failure-context)
 - [Terminal-state failures](#terminal-state-failures)
+- [Recovery metadata](#recovery-metadata)
 - [Usage Examples](#usage-examples)
 - [Integration with Recipe Runner](#integration-with-recipe-runner)
 
@@ -28,13 +36,14 @@
 | `recipe_name`      | `str`              | The name of the recipe that was run (e.g. `"default-workflow"`).          |
 | `status`           | `RecipeStatus`     | Overall outcome: `SUCCESS`, `FAILURE`, or `PARTIAL`.                      |
 | `success`          | `bool \| None`     | Optional boolean outcome field used by CLI JSON output when present.      |
-| `step_results`     | `list[StepResult]` | Ordered list of results, one per step that executed.                      |
+| `step_results`     | `list[StepResult]` | Ordered step results. |
 | `duration_seconds` | `float`            | Wall-clock time from recipe start to finish.                              |
 | `error`            | `str \| None`      | Human-readable error message if `status` is `FAILURE`. `None` on success. |
 | `progress_summary` | `dict \| None`     | Optional live-progress summary: last phase/status, heartbeat count, and log path. |
 | `failure_context`  | `dict \| None`     | Optional actionable context for the first failing step.                    |
 | `run_id`           | `str \| None`      | Stable UUID generated for this `amplihack recipe run` invocation.          |
 | `log_pointer`      | `dict \| None`     | Concise final pointer summary with status, worktree, child PID, runner path, and log paths. |
+| `recovery` | `dict \| None` | Recovery decision, source run, restored steps, and restart location. |
 
 ---
 
@@ -246,6 +255,86 @@ terminal evidence as a successful planning run. See
 field contract.
 
 ---
+
+## Recovery metadata
+
+JSON and YAML results preserve the additive `recovery` object emitted by the
+runner. Its absence means recovery information is unavailable. The object is
+separate from saved step results and never contains semantic context or IPC
+credentials.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `mode` | string | `resumed` if an eligible source was imported; otherwise `fresh` |
+| `reason` | string | Bounded decision code from the table below |
+| `source_run_id` | string or null | Source launch's `AMPLIHACK_RUN_ID`; does not replace this result's current `run_id` |
+| `source_sequence` | integer or null | Source launch's monotonic recovery admission sequence |
+| `restored_steps` | array | Reused completion locations, each with `invocation_path` and `step_id` |
+| `restart` | object or null | First semantic step executed after replay, with `invocation_path` and `step_id`; null if none executed |
+| `invalidated_steps` | array | Rejected completion locations, each with `invocation_path`, `step_id`, and bounded `reason` |
+
+Invocation paths distinguish call sites, nested recipes, parallel branches,
+and iterations. Treat them as opaque identifiers rather than splitting
+them to infer execution order. Current live admission and authorization
+checks do not count as a semantic restart step. A completed parent can
+cover restored child work; consumers must not sum parent and child
+durations as time spent in the new launch.
+
+Illustrative recovery metadata after a design interruption:
+
+```json
+{
+  "mode": "resumed",
+  "reason": "usage_limit",
+  "source_run_id": "3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3",
+  "source_sequence": 3,
+  "restored_steps": [
+    {
+      "invocation_path": "smart-orchestrator/smart-classify-route",
+      "step_id": "classify-and-decompose"
+    }
+  ],
+  "restart": {
+    "invocation_path": "smart-orchestrator/smart-execute-routing/execute-single-round-1-development/workflow-design",
+    "step_id": "step-05b-api-design"
+  },
+  "invalidated_steps": []
+}
+```
+
+The example shows a subset of restored locations; a result reports all
+restored completions. Existing `step_results` retain original structured
+outputs and result semantics. Recorded durations belong to the original
+execution; the top-level `duration_seconds` measures the current launch.
+Recovery metadata, rather than a fabricated zero-duration success,
+distinguishes restoration from execution.
+
+| Decision or invalidation code | Meaning |
+| --- | --- |
+| `usage_limit` | Compatible progress restored from the latest eligible predecessor |
+| `fresh_requested` | Historical replay bypassed by `--fresh` |
+| `identity_unavailable` | No verifiable work identity; fresh outside shared namespaces |
+| `no_history` | No matching predecessor |
+| `latest_not_usage_limit` | Latest outcome is success, non-limit failure, or unknown |
+| `owner_active` | Previous owner is still active and cannot be recovered |
+| `state_unavailable` | Historical detail is missing, incomplete, corrupt, unsupported, or otherwise unverifiable |
+| `definition_changed` | Execution-relevant recipe, step, child, or hook definition changed |
+| `input_changed` | Effective inputs or relevant execution settings changed |
+| `repository_changed` | Current revision or worktree differs from verifiable cumulative state |
+| `resource_unavailable` | Required file, artifact, or live resource cannot be verified or rebound |
+| `persistence_disallowed` | Required semantic values cannot be saved under the recipe policy |
+| `replay_disallowed` | Step policy requires execution rather than historical reuse |
+
+An invalidated suffix can coexist with `mode: resumed` when an earlier
+prefix was restored. If no completions are reusable, `mode` is `fresh`
+and `reason` explains why. Consumers should tolerate additional reason
+codes and fields. Metadata contains no saved context, prompt bodies,
+artifact contents, or attachment credentials. Unsafe current storage and
+failed durable writes are execution errors, not successful fresh fallbacks.
+
+See [recovery contracts](recipe-recovery.md) for completion and status
+semantics and [the recovery guide](../howto/resume-recipe-after-usage-limit.md)
+for interpreting the launch decision.
 
 ## Usage Examples
 

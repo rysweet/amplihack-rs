@@ -4,7 +4,6 @@ version: 1.0.0
 description: TLA+ formal specification expert for distributed system design, model checking, and protocol verification
 role: "TLA+ specification expert and formal methods specialist"
 priority: high
-model: inherit
 ---
 
 # TLA+ Expert Agent

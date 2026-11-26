@@ -18,11 +18,14 @@ recursion:
   max_depth: 6
   max_total_steps: 100
 
-context: {}
+context:
+  # Issue #1966: required caller input (true|false), checked by consensus-tdd-impl.
+  is_critical_code: ""
 
 steps:
   - id: "step9-commit"
     type: "bash"
+    working_dir: "{{worktree_setup.worktree_path}}"
     command: |
       set -euo pipefail
       echo "Committing changes..."
@@ -32,8 +35,11 @@ steps:
       fi
 
       # Stage all changes
+      S=""; case "${WORKFLOW_STAGE_CHANGES_HELPER:-}" in /*) if [ -f "$WORKFLOW_STAGE_CHANGES_HELPER" ]; then S="$WORKFLOW_STAGE_CHANGES_HELPER"; fi;; esac; [ -n "$S" ] || for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_stage_changes.sh" ] && { S="$c/amplifier-bundle/tools/workflow_stage_changes.sh"; break; }; done
+      [ -n "$S" ] || { echo "ERROR: amplifier-bundle/tools/workflow_stage_changes.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$S"  # #2839: private root run/reports/ stays on disk and out of the index
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
+      stage_workflow_changes; amplihack hygiene artifact-guard --repo . --mode pre-publish
 
       # Issue #1570: agent text is read with write_context_value (RECIPE_VAR_* or
       # AMPLIHACK_CONTEXT_FILE) into private files and never placed in argv.
@@ -45,7 +51,7 @@ steps:
       trap 'rm -f -- "$TASK_FILE" "$REQS_SUMMARY_FILE" "$COMMIT_MSG_FILE"' EXIT
       write_context_value task_description "$TASK_FILE" || exit 1
       write_context_value final_requirements.task_summary "$REQS_SUMMARY_FILE" || { echo "WARN: final_requirements.task_summary is not available; leaving it empty" >&2; : > "$REQS_SUMMARY_FILE"; }
-      _IS_CRITICAL="${IS_CRITICAL_CODE:-}"
+      _IS_CRITICAL="${RECIPE_VAR_is_critical_code:-}"
       _ISSUE_NUM="${ISSUE_NUMBER:-}"
       SHORT_DESC=$(tr '\n\r' ' ' < "$TASK_FILE" | cut -c1-72)
       {
@@ -71,11 +77,22 @@ steps:
       PUSH_RESULT=false
       PUSH_REASON="no_remote"
       if git remote get-url origin >/dev/null 2>&1; then
-        if git pull --rebase 2>/dev/null && git push 2>/dev/null; then
-          PUSH_RESULT=true
-          PUSH_REASON="success"
-        else
+        # #2994: merge a moved remote, never rebase; #2839: autostash keeps the unstaged report. One pull, then one push.
+        # git's output goes to stderr with URL user-info redacted (step-20b's expression); a failure goes to step9-push-recovery.
+        redact_to_stderr() { ( set -o pipefail; "$@" 2>&1 | sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' >&2 ); }
+        pull_rc=0; redact_to_stderr workflow_pull_merge || pull_rc=$?
+        if [ "$pull_rc" -ne 0 ]; then
+          echo "ERROR: git pull --no-rebase failed during consensus step9-commit (exit $pull_rc); nothing was pushed" >&2
           PUSH_REASON="push_failed"
+        else
+          push_rc=0; redact_to_stderr git push || push_rc=$?
+          if [ "$push_rc" -eq 0 ]; then
+            PUSH_RESULT=true
+            PUSH_REASON="success"
+          else
+            echo "ERROR: git push failed during consensus step9-commit (exit $push_rc)" >&2
+            PUSH_REASON="push_failed"
+          fi
         fi
       else
         echo "Skipping push — no remote configured" >&2
@@ -85,12 +102,20 @@ steps:
     output: "commit_result"
     parse_json: true
 
+  # #2994: a refused merge or push goes to the agent, which merges, resolves or explains.
+  - id: "step9-push-recovery"
+    type: "recipe"
+    recipe: "push-failure-recovery"
+    condition: "commit_result.push_reason == 'push_failed'"
+    context: { push_step: "step9-commit", push_output_key: "commit_result", push_recovery_snapshot: "", push_recovery: "", push_recovery_result: "" }
+
   # ============================================================================
   # STEP 10: OPEN PULL REQUEST
   # ============================================================================
 
   - id: "step10-create-pr"
     type: "bash"
+    working_dir: "{{worktree_setup.worktree_path}}"
     command: |
       echo "Creating pull request..."
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -110,7 +135,7 @@ steps:
       write_context_value task_description "$TASK_FILE" || exit 1
       write_context_value final_requirements.explicit_requirements "$REQS_FILE" || { echo "WARN: final_requirements.explicit_requirements is not available; leaving it empty" >&2; : > "$REQS_FILE"; }
       write_context_value final_requirements.consensus_mechanism_used "$MECH_FILE" || { echo "WARN: final_requirements.consensus_mechanism_used is not available; leaving it empty" >&2; : > "$MECH_FILE"; }
-      _IS_CRITICAL="${IS_CRITICAL_CODE:-}"
+      _IS_CRITICAL="${RECIPE_VAR_is_critical_code:-}"
       _TDD_TOTAL="${TDD_TESTS_TOTAL_TESTS:-}"
       _LOCAL_PASSED="${LOCAL_TESTING_ALL_SCENARIOS_PASSED:-}"
       _ISSUE_NUM="${ISSUE_NUMBER:-}"

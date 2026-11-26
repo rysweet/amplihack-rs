@@ -10,9 +10,12 @@
 
 #![cfg(unix)]
 
+#[cfg(target_os = "linux")]
+use crate::isolated_amplihack::PROC_ROOT_ENV;
+#[cfg(target_os = "linux")]
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::sessions_archive::*;
 use std::fs;
-use std::process::{Child, Command, Stdio};
 
 fn applied(n: u32, live: u32) -> String {
     format!(
@@ -22,15 +25,6 @@ fn applied(n: u32, live: u32) -> String {
 
 fn alive_pid() -> u32 {
     std::process::id()
-}
-
-/// A `sleep` child that is killed on drop.
-struct Sleeper(Child);
-impl Drop for Sleeper {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
 }
 
 fn body(id: &str, pid: i64) -> String {
@@ -284,30 +278,29 @@ fn session_live_under_a_running_process_config_dir_is_kept() {
     let jsonl = fx.session("proc-live", 10, &[]);
     let cfg = fx.base.join("other-config");
     fs::create_dir_all(&cfg).unwrap();
-    // Long enough to outlive a first-run build of the binary, which
-    // `fx.apply()` triggers; the child is killed on drop.
-    let child = Sleeper(
-        Command::new("sleep")
-            .arg("3600")
-            .env_clear()
-            .env("CLAUDE_CONFIG_DIR", &cfg)
-            .env("SOME_TOKEN", ENVIRON_MARKER)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let pid = i64::from(child.0.id());
+    // The process is a static entry in a fake process table (issue #2042):
+    // the scan finds its config dir, and the pid file names this test
+    // process, which is alive, so no child is started.
+    let fake = FakeProc::new();
+    fake.process(FAKE_PID_BASE)
+        .cmdline(&["sleep", "3600"])
+        .status('S')
+        .environ(&[
+            ("CLAUDE_CONFIG_DIR", cfg.to_str().unwrap()),
+            ("SOME_TOKEN", ENVIRON_MARKER),
+        ]);
+    let pid = i64::from(alive_pid());
     fx.pid_file(&cfg, &pid.to_string(), &body("proc-live", pid));
-    let out = fx.apply();
+    let dest = fx.dest.to_str().unwrap().to_string();
+    let mut c = fx.cmd(&["sessions", "archive", "--apply", "--dest", &dest]);
+    c.env(PROC_ROOT_ENV, fake.path());
+    let out = fx.run_cmd(c);
     ok(&out);
     assert_stdout(&out, &applied(0, 1));
     assert!(
         jsonl.is_file(),
         "session of a running CLAUDE_CONFIG_DIR archived"
     );
-    drop(child);
 }
 
 #[test]

@@ -1,25 +1,22 @@
 pub(crate) use super::archive::extract_archive;
 pub(super) use super::archive::{binary_filename, find_binary};
-use super::checksum::verify_sha256;
+use super::checksum::{verify_sha256, verify_sha256_bytes};
+use super::gh::GhCommand;
+use super::network::{MAX_BINARY_DOWNLOAD_BYTES, validate_download_url};
 use super::*;
 use std::process::Command;
 use std::time::Duration;
 
 pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
-    let archive_bytes = super::network::http_get_with_retry(&release.asset_url)?;
-
-    if let Some(checksum_url) = &release.checksum_url {
-        verify_sha256(&archive_bytes, checksum_url)
-            .context("binary download checksum verification failed")?;
-        println!("SHA-256 checksum verified.");
-    } else {
-        tracing::warn!(
-            "no checksum file found for release {}; skipping SHA-256 verification",
-            release.version
-        );
-    }
+    let archive_bytes = fetch_release_archive(&GhCommand::default(), release)?;
     let temp_dir = tempfile::tempdir().context("failed to create update temp directory")?;
     extract_archive(&archive_bytes, temp_dir.path())?;
+
+    // Issue #1954 D6: the binaries change only while this process holds the
+    // install lock, so no install or self-heal stages at the same time. The
+    // guard drops when this function returns, before `run_update` starts the
+    // post-update install child, which takes the lock itself.
+    let _install_lock = crate::install_lock::acquire()?;
 
     let new_amplihack = find_binary(temp_dir.path(), binary_filename("amplihack"))?;
     let new_hooks = find_binary(temp_dir.path(), binary_filename("amplihack-hooks"))?;
@@ -46,6 +43,27 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     let hooks_dest = plan.hooks_destination.clone();
     let amplihack_dest = plan.amplihack_destination.clone();
 
+    // Issue #1954: a user-level install is a set of links into
+    // ~/.amplihack/releases. The new binaries go into a release of their
+    // own and the links switch to it; the installed files are never rewritten
+    // under a running process.
+    if let Some(home) = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| !home.as_os_str().is_empty())
+        && install_dir == crate::path_conflicts::preferred_user_bin(&home)
+    {
+        install_into_release(
+            &home,
+            release,
+            &new_amplihack,
+            &new_hooks,
+            &amplihack_dest,
+            &hooks_dest,
+        )?;
+        invalidate_update_cache();
+        return Ok(amplihack_dest);
+    }
+
     // Preflight: verify the destination filesystem has enough space for the
     // new binaries. Without this, a low-disk host can crash `fs::copy` with a
     // partial write that leaves a corrupt `.tmp` file behind — the user sees
@@ -71,18 +89,203 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     install_binary_atomic(&new_hooks, &hooks_dest)?;
     install_binary_atomic(&new_amplihack, &amplihack_dest)?;
 
-    // Defensive verification: exec the replaced binary with `--version` and
-    // confirm its self-reported version actually matches the release tag.
-    // This catches the "release asset was built from an un-bumped Cargo.toml"
-    // failure mode where the update claims success but the new binary still
-    // self-reports the old version — which then retriggers the update prompt
-    // forever. We warn (not fail) because the binary swap did happen; the
-    // user can choose to re-run or ignore.
-    let amplihack_ok = verify_installed_version(&amplihack_dest, &release.version);
-    // Verify the hooks binary as well — a version skew between amplihack and
-    // amplihack-hooks can silently break hook execution at runtime if the
-    // wire protocol changes between releases.
-    let hooks_ok = verify_installed_version(&hooks_dest, &release.version);
+    report_installed_versions(release, &amplihack_dest, &hooks_dest);
+    invalidate_update_cache();
+
+    Ok(amplihack_dest)
+}
+
+/// Issue #2957: downloads the release archive and verifies it against its
+/// `.sha256` file. The download goes through the user's own gh when
+/// `gh auth status` succeeds, and through the anonymous request otherwise.
+/// Both paths keep the allowed-host check, the size limit and the checksum.
+pub(super) fn fetch_release_archive(gh: &GhCommand, release: &UpdateRelease) -> Result<Vec<u8>> {
+    validate_download_url(&release.asset_url)?;
+    if let Some(checksum_url) = &release.checksum_url {
+        validate_download_url(checksum_url)?;
+    }
+    let archive_bytes = if gh.usable() {
+        fetch_via_gh(gh, release)?
+    } else {
+        fetch_anonymously(release)?
+    };
+    if release.checksum_url.is_some() {
+        println!("SHA-256 checksum verified.");
+    }
+    Ok(archive_bytes)
+}
+
+fn fetch_anonymously(release: &UpdateRelease) -> Result<Vec<u8>> {
+    let archive_bytes = super::network::http_get_with_retry(&release.asset_url)?;
+    match &release.checksum_url {
+        Some(checksum_url) => verify_sha256(&archive_bytes, checksum_url)
+            .context("binary download checksum verification failed")?,
+        None => warn_no_checksum(release),
+    }
+    Ok(archive_bytes)
+}
+
+fn warn_no_checksum(release: &UpdateRelease) {
+    tracing::warn!(
+        "no checksum file found for release {}; skipping SHA-256 verification",
+        release.version
+    );
+}
+
+fn fetch_via_gh(gh: &GhCommand, release: &UpdateRelease) -> Result<Vec<u8>> {
+    let asset = release
+        .asset_url
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    check_gh_asset_name(&asset)?;
+    check_gh_tag(&release.tag)?;
+
+    let checksum_name = format!("{asset}.sha256");
+    let mut patterns = vec![asset.as_str()];
+    if release.checksum_url.is_some() {
+        patterns.push(checksum_name.as_str());
+    }
+
+    let dir = tempfile::tempdir().context("failed to create a private download directory")?;
+    gh.download_release_assets(&release.tag, &patterns, dir.path())?;
+
+    let archive_bytes = read_gh_download(dir.path(), &asset, &release.tag)?;
+    if release.checksum_url.is_some() {
+        let checksum_body = read_gh_download(dir.path(), &checksum_name, &release.tag)?;
+        let label = format!("{checksum_name} from release {}", release.tag);
+        verify_sha256_bytes(&archive_bytes, &checksum_body, &label)
+            .context("binary download checksum verification failed")?;
+    } else {
+        warn_no_checksum(release);
+    }
+    Ok(archive_bytes)
+}
+
+/// Reads one file that `gh release download` should have written, after
+/// checking that it exists, is a regular file (not a symlink) and is within the
+/// download size limit.
+fn read_gh_download(dir: &Path, name: &str, tag: &str) -> Result<Vec<u8>> {
+    let path = dir.join(name);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            bail!("gh release download {tag} did not produce {name}")
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("cannot inspect {name} from gh release download"));
+        }
+    };
+    if !metadata.file_type().is_file() {
+        bail!("gh release download {tag} produced {name}, but it is not a regular file");
+    }
+    if metadata.len() > MAX_BINARY_DOWNLOAD_BYTES as u64 {
+        bail!(
+            "{name} from gh release download {tag} exceeds the size limit of {MAX_BINARY_DOWNLOAD_BYTES} bytes"
+        );
+    }
+    fs::read(&path).with_context(|| format!("cannot read {name} from gh release download"))
+}
+
+/// The asset name becomes a `--pattern` glob, so it must be a plain file name:
+/// no glob metacharacters, no glob escape (`\`) and no path separators.
+pub(super) fn check_gh_asset_name(name: &str) -> Result<()> {
+    let bad = name.is_empty()
+        || name.contains('/')
+        || name.contains("..")
+        || name
+            .chars()
+            .any(|c| matches!(c, '*' | '?' | '[' | '\\') || c.is_control());
+    if bad {
+        bail!("release asset name is not a plain file name: {name:?}");
+    }
+    Ok(())
+}
+
+/// The tag is passed to gh as an argument, so it must not look like a flag.
+pub(super) fn check_gh_tag(tag: &str) -> Result<()> {
+    let bad = tag.is_empty()
+        || tag.starts_with('-')
+        || tag.chars().any(|c| c.is_whitespace() || c.is_control());
+    if bad {
+        bail!("release tag is not safe to pass to gh: {tag:?}");
+    }
+    Ok(())
+}
+
+/// Issue #1954: copies the downloaded binaries into a new release, checks
+/// what the copies report, then switches `amplihack-hooks` and `amplihack`
+/// to them. `amplihack-asset-resolver` and `amplifier-bundle` stay on their
+/// earlier release until the post-update install child switches them.
+fn install_into_release(
+    home: &Path,
+    release: &UpdateRelease,
+    new_amplihack: &Path,
+    new_hooks: &Path,
+    amplihack_link: &Path,
+    hooks_link: &Path,
+) -> Result<()> {
+    use crate::commands::install::release_layout::{self, ReleaseTxn};
+    let amplihack_dir = home.join(".amplihack");
+    let releases = release_layout::releases_dir(&amplihack_dir);
+    let full_size = fs::metadata(new_amplihack)
+        .with_context(|| format!("stat {}", new_amplihack.display()))?
+        .len()
+        + fs::metadata(new_hooks)
+            .with_context(|| format!("stat {}", new_hooks.display()))?
+            .len();
+    let mut txn = ReleaseTxn::allocate(&amplihack_dir, &release.version)
+        .with_context(|| format!("cannot create a release for v{}", release.version))?;
+    // Measured on the release, which now exists, for both binaries in full:
+    // nothing already installed is replaced in place.
+    check_free_space(&releases, full_size + 8 * 1024 * 1024)?;
+
+    let bin_dir = txn.bin_dir();
+    fs::create_dir_all(&bin_dir)
+        .with_context(|| format!("failed to create {}", bin_dir.display()))?;
+    let staged_hooks = bin_dir.join(binary_filename("amplihack-hooks"));
+    let staged_amplihack = bin_dir.join(binary_filename("amplihack"));
+    install_binary_atomic(new_hooks, &staged_hooks)?;
+    install_binary_atomic(new_amplihack, &staged_amplihack)?;
+
+    // Checked before the switch (S24), on the copies the links will name.
+    report_installed_versions(release, &staged_amplihack, &staged_hooks);
+
+    txn.plan_link(hooks_link, &staged_hooks)?;
+    txn.plan_link(amplihack_link, &staged_amplihack)?;
+    let root = txn.root().to_path_buf();
+    let report = txn.commit()?;
+    if let Some((link, reason)) = &report.failed {
+        bail!(
+            "release {} is complete but switching {} to it failed: {reason}. Run \
+             `amplihack update` again to finish",
+            root.display(),
+            link.display()
+        );
+    }
+    for switch in &report.switched {
+        println!(
+            "Switched {} -> {}",
+            switch.link.display(),
+            switch.target.display()
+        );
+    }
+    Ok(())
+}
+
+/// Execs both new binaries with `--version` and reports the outcome.
+///
+/// Catches the "release asset was built from an un-bumped Cargo.toml"
+/// failure mode where the update claims success but the new binary still
+/// self-reports the old version — which then retriggers the update prompt
+/// forever. A mismatch warns rather than fails, as it always has: the user
+/// can re-run or ignore. The hooks binary is checked too, because a version
+/// skew between amplihack and amplihack-hooks can silently break hooks.
+fn report_installed_versions(release: &UpdateRelease, amplihack: &Path, hooks: &Path) {
+    let amplihack_ok = verify_installed_version(amplihack, &release.version);
+    let hooks_ok = verify_installed_version(hooks, &release.version);
 
     match (&amplihack_ok, &hooks_ok) {
         (Ok(()), Ok(())) => {
@@ -96,13 +299,13 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
             if let Err(err) = &amplihack_ok {
                 eprintln!(
                     "⚠️  amplihack was written to {} but reports an unexpected version: {err}",
-                    amplihack_dest.display()
+                    amplihack.display()
                 );
             }
             if let Err(err) = &hooks_ok {
                 eprintln!(
                     "⚠️  amplihack-hooks was written to {} but reports an unexpected version: {err}",
-                    hooks_dest.display()
+                    hooks.display()
                 );
             }
             eprintln!(
@@ -114,13 +317,13 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
             );
         }
     }
+}
 
-    // Invalidate the startup update cache regardless of outcome — its entry
-    // was written by the previous (pre-swap) binary and may lie about what
-    // version is actually installed now. Leaving it in place causes the new
-    // binary to trust the old cache for up to 24h. (Belt-and-braces: the
-    // cache's mtime-line check should already refuse stale entries, but we
-    // delete here to avoid waiting for the next launch to discover that.)
+/// Invalidates the startup update cache whatever the outcome — its entry
+/// was written by the previous (pre-swap) binary and may lie about what
+/// version is actually installed now. Leaving it in place causes the new
+/// binary to trust the old cache for up to 24h.
+fn invalidate_update_cache() {
     match super::cache_path() {
         Ok(path) => match fs::remove_file(&path) {
             Ok(()) => {}
@@ -132,8 +335,6 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
         },
         Err(err) => tracing::warn!("failed to resolve update cache path for invalidation: {err}"),
     }
-
-    Ok(amplihack_dest)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,10 +421,19 @@ fn current_process_install_target_decision(
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
         .context("HOME is not set; cannot determine safe user-level update target")?;
-    let report = crate::path_conflicts::analyze_current_process_path_conflicts(
-        home_dir,
-        current_exe.to_path_buf(),
-    )?;
+    // Issue #1954: a binary running from a release was started through its
+    // link in the user bin dir; that link, not the release, is what an update
+    // replaces.
+    let releases =
+        crate::commands::install::release_layout::releases_dir(&home_dir.join(".amplihack"));
+    let current_exe =
+        if crate::commands::install::release_layout::is_release_path(&releases, current_exe) {
+            crate::path_conflicts::preferred_user_bin(&home_dir).join(binary_filename("amplihack"))
+        } else {
+            current_exe.to_path_buf()
+        };
+    let report =
+        crate::path_conflicts::analyze_current_process_path_conflicts(home_dir, current_exe)?;
     let probes = crate::path_conflicts::probe_candidates_without_exec(&report);
     let decision = crate::path_conflicts::decide_update_install_target(
         crate::path_conflicts::TargetDecisionInput {

@@ -98,7 +98,7 @@ skills:
   pptx: { path: skills/pptx/SKILL.md }
   xlsx: { path: skills/xlsx/SKILL.md }
 
-  # Meta skills (11)
+  # Meta skills (12)
   backlog-curator: { path: skills/backlog-curator/SKILL.md }
   knowledge-extractor: { path: skills/knowledge-extractor/SKILL.md }
   learning-path-builder: { path: skills/learning-path-builder/SKILL.md }
@@ -107,6 +107,7 @@ skills:
   pm-architect: { path: skills/pm-architect/SKILL.md }
   pr-review-assistant: { path: skills/pr-review-assistant/SKILL.md }
   roadmap-strategist: { path: skills/roadmap-strategist/SKILL.md }
+  skill-and-agents-directory: { path: skills/skill-and-agents-directory/SKILL.md }
   storytelling-synthesizer: { path: skills/storytelling-synthesizer/SKILL.md }
   work-delegator: { path: skills/work-delegator/SKILL.md }
   workstream-coordinator: { path: skills/workstream-coordinator/SKILL.md }
@@ -167,7 +168,7 @@ agents:
     description: "Azure Kubernetes Service (AKS) expert with deep knowledge of production deployments, networking, security, and operations"
   amplihack:ci-diagnostic-workflow:
     path: agents/specialized/ci-diagnostic-workflow.md
-    description: "CI failure resolution workflow. Monitors CI status after push, diagnoses failures, fixes issues, and iterates until PR is mergeable (never auto-merges). Use when CI checks fail after pushing code."
+    description: "CI failure resolution workflow. Monitors CI status after push, diagnoses failures, fixes issues, and iterates until PR is mergeable, then hands the merge decision to the calling workflow. Use when CI checks fail after pushing code."
   amplihack:cleanup:
     path: agents/specialized/cleanup.md
     description: "Post-task cleanup specialist. Reviews git status, removes temporary artifacts, eliminates unnecessary complexity, ensures philosophy compliance. Use proactively after completing tasks or todo lists."
@@ -284,7 +285,7 @@ agents:
         Run auto-workflow with task: "Implement user authentication"
         ```
 
-        ### Skills Library (75 total)
+        ### Skills Library (76 total)
 
         | Category | Count | Examples |
         |----------|-------|----------|
@@ -292,7 +293,7 @@ agents:
         | Workflow Skills | 11 | default-workflow, debate, consensus |
         | Technical Skills | 21 | design-patterns, debugging, testing |
         | Document Processing | 4 | PDF, DOCX, XLSX, PPTX |
-        | Meta Skills | 11 | PR review, backlog, roadmaps |
+        | Meta Skills | 12 | PR review, backlog, roadmaps |
 
         ### Hook System (9 hooks)
 
@@ -312,7 +313,7 @@ agents:
 
         **For New Users**: Welcome warmly, explain the 3 core workflows (Q&A, Investigation, Default), show automatic classification.
 
-        **For "What Can This Do?"**: List 9 workflows, 35 agents, 75 skills, 9 hooks, lock mode.
+        **For "What Can This Do?"**: List 9 workflows, 35 agents, 76 skills, 9 hooks, lock mode.
 
         **For "How Do I Do X?"**: Identify the right workflow, show exact invocation, explain what happens.
 
@@ -465,7 +466,7 @@ When delegating to agents, prefer amplihack agents over foundation agents:
 | `debate-workflow`        | multi-perspective | Complex architectural decisions                |
 | `n-version-workflow`     | N implementations | Critical code, multiple approaches             |
 
-## Available Skills (75 total)
+## Available Skills (76 total)
 
 Use `load_skill` to access domain expertise:
 

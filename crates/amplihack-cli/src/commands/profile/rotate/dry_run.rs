@@ -2,16 +2,16 @@
 //! decision without a lock or a write. Issue #1962: read-only on every read
 //! path, so it never refreshes a token and never starts `claude`.
 
+use super::cycle::event_read::measure_and_decide;
 use super::cycle::{Ctx, CycleOutcome};
-use super::decide::Decision;
+use super::decide::{Decision, target_msg};
 use super::fresh::{self, Reread};
 use super::handfix;
+use super::identify::excluded_offline;
 use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
-use super::observe::{
-    Measurement, live_alert, live_name, measure_and_decide, platform_block_reason, snapshot,
-};
-use super::overflow_record::{alert_line, target_check};
+use super::observe::{Measurement, live_alert, live_name, platform_block_reason, snapshot};
+use super::overflow_record::target_check;
 use super::pin::{self, Gate as PinGate};
 use super::prelude::ledger_stop;
 use super::seed;
@@ -38,6 +38,9 @@ pub(super) fn would(decision: &Decision) -> CycleOutcome {
 /// cycle would have recorded.
 pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     ctx.identity_budget.reset();
+    // Issue #2218: as a real cycle does, before any identity read.
+    let dirs = excluded_offline::local_only_dirs(&ctx.store, &ctx.rs, &ctx.home)?;
+    ctx.set_excluded_dirs(dirs);
     let mut out = Sink::new(None, true, false);
     if exists(&ctx.rs.journal) {
         match ctx.rs.load_journal() {
@@ -63,8 +66,8 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         out.emit(0, "would refresh: expired login in ~/.claude");
     }
     // Issue #1962: as a real cycle stops, after what its refresh would do.
-    if ctx.rs.load_ledger().is_err() {
-        out.emit(0, &format!("would alert: {}", ledger_stop(ctx)));
+    if let Err(e) = ctx.rs.load_ledger() {
+        out.emit(0, &format!("would alert: {}", ledger_stop(ctx, &e)));
         return Ok(CycleOutcome::Alerted);
     }
     // Issues #1693, #1886: what hand-change recovery would do, from the same
@@ -73,7 +76,12 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     let read = |p: &std::path::Path| ctx.identity_reader().oauth(p);
     let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
     let gap = handfix::min_gap(ctx);
-    let lines = handfix::preview(store, rs, home, env_for, &read, gap, now())?;
+    // Issue #2218: as a real cycle, no recovery on local evidence alone.
+    let lines = if ctx.home_local_only() {
+        Vec::new()
+    } else {
+        handfix::preview(store, rs, home, env_for, &read, gap, now())?
+    };
     for l in &lines {
         out.emit(0, l);
     }
@@ -81,7 +89,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         return Ok(CycleOutcome::Alerted);
     }
     let snap = snapshot(ctx, &state)?;
-    if seed::preview(ctx, &state, &snap, &mut out) {
+    if !ctx.home_local_only() && seed::preview(ctx, &state, &snap, &mut out) {
         return Ok(CycleOutcome::Alerted);
     }
     if let Some((_, line)) = live_alert(&snap) {
@@ -101,31 +109,40 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             return Ok(CycleOutcome::Held);
         }
     }
+    // Issue #2218: where a real cycle pauses on an unreadable exclude list.
+    if let Some(alert) = excluded_offline::exclude_paused(&ctx.store, |w| out.emit(0, w)) {
+        out.emit(0, &format!("would alert: {alert}"));
+        return Ok(CycleOutcome::Alerted);
+    }
     // Tests stub the measurement as for a real cycle.
+    ctx.live_outlook = None;
     let m = match ctx.measure {
         Some(stub) => stub(ctx, &snap)?,
         None => measure_and_decide(ctx, &snap)?,
     };
-    let (live_shown, others_shown) = super::log::shown(&m);
+    // Issue #1870: the same re-reads as a real cycle; no rotate state is written.
+    let m = fresh::live::step(ctx, &snap, m)?;
+    // Issue #2889: as in a real cycle, the line reports the live figures the
+    // preview decided on, after the live step and before the target gate.
     let name = live_name(&snap.live);
+    let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded, (ctx.now)());
     out.emit(
         0,
         &msg::cycle(name, &live_shown, &others_shown, snap.shown_platform()),
     );
-    // Issue #1870: the same re-reads as a real cycle; no rotate state is written.
     let m = fresh::gate(ctx, &snap, m, Reread::Allowed)?;
     for line in &m.fresh_lines {
         out.emit(0, line);
     }
-    let (live_shown, others_shown) = super::log::shown(&m);
+    let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded, (ctx.now)());
     let Measurement {
         live,
-        others,
         decision,
         note,
         new_blocks,
         tag,
         key_held,
+        seen,
         ..
     } = m;
     let t = now();
@@ -139,24 +156,29 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         );
     }
     let outcome = would(&decision);
+    // A stay note is printed as `would stay (<the note without its prefix>)`,
+    // whether it came from damping or from the issue #2910 ALERT branch.
+    let would_stay = |t: &str| format!("would stay ({})", t.strip_prefix("stay: ").unwrap_or(t));
     match decision {
         Decision::Stay => match note {
-            Some(n) => out.emit(
-                0,
-                &format!("would stay ({})", n.strip_prefix("stay: ").unwrap_or(&n)),
-            ),
+            Some(n) => out.emit(0, &would_stay(&n)),
             None => out.emit(0, "would stay"),
         },
         Decision::Alert => {
             let reason = || platform_block_reason(ctx);
-            let (_, line) = alert_line(&snap, tag, &live, &others, &key_held, reason);
-            out.emit(
-                0,
-                &format!(
+            let s = &ctx.settings;
+            let line = target_msg::alert_line(&snap, tag, &live, &key_held, &seen, s, reason);
+            let text = &line.text;
+            // Issue #2910 (D10): a stay note is a stay, not an ALERT.
+            let shown = if line.stay {
+                would_stay(text)
+            } else {
+                format!(
                     "would alert: {}",
-                    line.strip_prefix("ALERT: ").unwrap_or(&line)
-                ),
-            );
+                    text.strip_prefix("ALERT: ").unwrap_or(text)
+                )
+            };
+            out.emit(0, &shown);
         }
         Decision::Swap { to, reason } => {
             let from = match name {
@@ -173,14 +195,9 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
                 out.emit(0, &msg::would_refuse(&to, &why));
                 return Ok(CycleOutcome::Alerted);
             }
-            let target = super::log::shown_of(&others_shown, &to);
-            out.emit(
-                0,
-                &format!(
-                    "would {}",
-                    msg::swap(&from, &to, &live_shown, &target, reason)
-                ),
-            );
+            let shown = super::log::shown_of(&others_shown, &to);
+            let line = target_msg::swap_line(&seen, &from, &to, &live_shown, shown, reason);
+            out.emit(0, &format!("would {line}"));
         }
     }
     Ok(outcome)

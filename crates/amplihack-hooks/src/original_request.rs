@@ -1,5 +1,6 @@
-use amplihack_types::ProjectDirs;
+use crate::state_dir::create_private_dir_all;
 use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub(crate) struct OriginalRequest {
@@ -12,14 +13,30 @@ pub(crate) struct OriginalRequest {
     pub(crate) success_criteria: Vec<String>,
 }
 
+/// An original request built from a prompt, and whether it was saved.
+#[derive(Debug, Clone)]
+pub(crate) struct CapturedRequest {
+    pub(crate) request: OriginalRequest,
+    /// `true` when both files were written under the session state directory.
+    pub(crate) persisted: bool,
+}
+
+/// Build the original request from `prompt` and save it under
+/// `<session_dir>/logs/` (#1963).
+///
+/// Returns `None` only when the prompt is empty or not substantial. When
+/// `session_dir` is `None` (no amplihack state root) or the write fails, the
+/// failure is logged and the request is still returned with
+/// `persisted == false`, so callers can inject it as context. The directory
+/// always comes from the caller, never from the record's `session_id`.
 pub(crate) fn capture_original_request(
-    dirs: &ProjectDirs,
+    session_dir: Option<&Path>,
     session_id: Option<&str>,
     prompt: &str,
-) -> anyhow::Result<Option<OriginalRequest>> {
+) -> Option<CapturedRequest> {
     let prompt = prompt.trim();
     if prompt.is_empty() || !is_substantial_prompt(prompt) {
-        return Ok(None);
+        return None;
     }
 
     let session_id = session_id
@@ -27,8 +44,26 @@ pub(crate) fn capture_original_request(
         .unwrap_or("session-start")
         .to_string();
     let request = build_original_request(&session_id, prompt);
-    save_original_request(dirs, &request)?;
-    Ok(Some(request))
+    let persisted = match session_dir {
+        Some(dir) => match save_original_request(dir, &request) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %error,
+                    "original request not saved: write failed"
+                );
+                false
+            }
+        },
+        None => {
+            tracing::warn!(
+                "original request not saved: no amplihack state root (set HOME or AMPLIHACK_HOME)"
+            );
+            false
+        }
+    };
+    Some(CapturedRequest { request, persisted })
 }
 
 pub(crate) fn format_original_request_context(request: &OriginalRequest) -> String {
@@ -141,9 +176,11 @@ fn extract_matching_sentences(sentences: &[&str], keywords: &[&str]) -> Vec<Stri
     matches
 }
 
-fn save_original_request(dirs: &ProjectDirs, request: &OriginalRequest) -> anyhow::Result<()> {
-    let session_dir = dirs.session_logs(&request.session_id);
-    fs::create_dir_all(&session_dir)?;
+/// Write `ORIGINAL_REQUEST.md` and `original_request.json` to
+/// `<session_dir>/logs/`, creating it with mode `0700` on Unix.
+fn save_original_request(session_dir: &Path, request: &OriginalRequest) -> anyhow::Result<()> {
+    let session_dir = session_dir.join("logs");
+    create_private_dir_all(&session_dir)?;
 
     let markdown = format!(
         "# Original User Request\n\n**Session**: {}\n**Timestamp**: {}\n**Target**: {}\n\n## Raw Request\n```\n{}\n```\n{}{}{}",

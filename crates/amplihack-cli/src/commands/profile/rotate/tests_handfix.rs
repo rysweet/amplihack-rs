@@ -92,6 +92,7 @@ fn settings() -> Settings {
         interval: 600,
         overflow_wait: 1800,
         overflow_unknown_reset: false,
+        target_week_max: 95,
     }
 }
 
@@ -159,6 +160,9 @@ fn fx_at(home_rel: &str, l_own: bool, m_own: bool, capacity: bool) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let base = tmp.path().canonicalize().unwrap();
+    // #1946: `Fx::answer` writes the synthetic identity itself, not through
+    // `body()`, so the fixture registers its root with the test reader here.
+    super::tests::tests_fixture_identity::own_root(&base);
     let home = base.join(home_rel);
     let root = base.join("root");
     let store = ProfileStore::new(root.clone());
@@ -698,39 +702,54 @@ fn an_unknown_device_refuses() {
     );
 }
 
+/// Issue #2820: an unreadable Claude executable that names `M` makes it
+/// doubtful, which refuses as a running session does; one naming another
+/// profile does not stand in the way.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_session_running_on_the_profile_refuses() {
-    let f = fx(true, false);
-    let s = Seam {
-        liveness: Liveness::Known([M.to_string()].into()),
-        ..seam()
+    use crate::commands::profile::auto_switch::{Unreadable, Verdict};
+    let doubtful = |name: &str| Liveness::Partial {
+        live: [name.to_string()].into(),
+        unreadable: vec![Unreadable {
+            pid: 700_001,
+            exe: "claude".into(),
+            argv: vec!["claude".into()],
+            verdict: Verdict::Counted([name.to_string()].into()),
+        }],
     };
-    refused(
-        &f,
-        &s,
-        &format!("a claude session is running on {M}"),
-        &format!("close the claude sessions that use {M}; the next cycle retries"),
-    );
+    for liveness in [Liveness::Known([M.to_string()].into()), doubtful(M)] {
+        let f = fx(true, false);
+        let s = Seam { liveness, ..seam() };
+        refused(
+            &f,
+            &s,
+            &format!("a claude session is running on {M}"),
+            &format!("close the claude sessions that use {M}; the next cycle retries"),
+        );
+    }
+    let other = doubtful("someone-else");
+    assert!(!other.is_live(&n(M)), "only the named profile is doubtful");
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn sessions_that_cannot_be_seen_refuse() {
-    for liveness in [Liveness::Everything, Liveness::Unsupported] {
-        let f = fx(true, false);
-        let s = Seam { liveness, ..seam() };
-        let dir = f.manual();
-        refused(
-            &f,
-            &s,
-            "cannot see running sessions",
-            &format!(
-                "close the claude sessions that use {M}, then run: mkdir -m 700 {dir} && mv -n {}/{M}/.credentials.json {dir}/",
-                f.root.display()
-            ),
-        );
-    }
+    let f = fx(true, false);
+    let s = Seam {
+        liveness: Liveness::Unsupported,
+        ..seam()
+    };
+    let dir = f.manual();
+    refused(
+        &f,
+        &s,
+        "cannot see running sessions",
+        &format!(
+            "close the claude sessions that use {M}, then run: mkdir -m 700 {dir} && mv -n {}/{M}/.credentials.json {dir}/",
+            f.root.display()
+        ),
+    );
 }
 
 #[cfg(target_os = "linux")]

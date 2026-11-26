@@ -9,14 +9,19 @@ pub use super::capacity::{Rotated, refresh_from_rotation as capacity_from_rotati
 pub use super::config::{Source, effective};
 pub use super::fsx::{
     check_root_private, dir_writable_by_others, ensure_private_dir, euid, exists, fsync_dir,
-    movable_login, now, read_bounded_nofollow, writable_by_others, write_atomic_keep_mode,
-    write_private_atomic,
+    movable_login, now, read_bounded_nofollow, same_private_bytes, writable_by_others,
+    write_atomic_keep_mode, write_private_atomic,
 };
 pub use super::liveness::{Liveness, scan_system};
+#[cfg(test)]
+pub use super::mv::{FakeExchange, HostExchange};
 pub use super::mv::{
-    MoveError, REFRESH_LOCK, abort_point, exchange_logins, move_login, release_refresh_lock_at,
-    take_refresh_lock_at,
+    LoginExchange, MoveError, REFRESH_LOCK, abort_point, exchange_logins, host_exchange,
+    move_login, release_refresh_lock_at, take_refresh_lock_at,
 };
-pub use super::state::{CLAUDE_JSON, CREDS, Ledger, Lock, MAX_CLAUDE_JSON, State, parse_position};
+pub use super::state::{
+    CLAUDE_JSON, CREDS, DIR as STATE_DIR, HOME_USAGE, Ledger, Lock, MAX_CLAUDE_JSON, State, USAGE,
+    parse_position,
+};
 pub use super::swap::{account, guard_held, read_claude_json, recover as recover_auto_switch};
 pub use super::usage::ReadingSource;

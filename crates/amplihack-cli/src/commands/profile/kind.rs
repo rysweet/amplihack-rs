@@ -6,12 +6,19 @@
 //! The kind is worked out again on every read and never stored. The
 //! evidence comes from `rotate::identify` (key names and file presence
 //! only) and from the `kind=` overrides in `<root>/.auto-switch`;
-//! [`resolve_from`] is the pure rule table. Every unsure case is a
+//! [`resolve_with`] is the pure rule table. Every unsure case is a
 //! subscription profile with no login, which [`guard`] refuses to launch,
 //! so a wrong guess refuses a launch instead of billing per token.
+//!
+//! Issue #2885: on macOS a profile's login is in the login Keychain and
+//! there is no login file. [`Ctx`] asks `keychain::detect` about such a
+//! profile, for every caller alike, so the launch guard, `kind list`,
+//! auto-switch and the rotator see one kind. A Keychain that cannot be read
+//! is a subscription profile with no login, never an API-key profile.
 
 use super::ProfileError;
 use super::auto_switch::config::{self, FileState, ReadMode};
+use super::keychain::{self, Keychain};
 use super::name::ProfileName;
 use super::rotate::identify::{self, LoginKind};
 use super::rotate::ledger::RotateState;
@@ -59,7 +66,7 @@ impl Kind {
 pub enum KindSource {
     /// A `kind=` entry in `.auto-switch`.
     Override,
-    /// Detected; the text is one of the reasons in [`resolve_from`].
+    /// Detected; the text is one of the reasons in [`resolve_with`].
     Detected(&'static str),
 }
 
@@ -95,20 +102,32 @@ pub struct Resolved {
     pub own_oauth: bool,
     /// The profile names an API-key setting.
     pub key_setting: bool,
+    /// What the macOS Keychain said about the profile's directory; `None`
+    /// when it was not asked (off macOS, a login file is there, an `api-key`
+    /// override, or no identifiable account). Apart from `own_oauth`, which
+    /// is about the login file alone.
+    pub keychain: Option<Keychain>,
 }
 
 impl Resolved {
+    /// The profile's own login is an item in the macOS Keychain.
+    pub fn keychain_login(&self) -> bool {
+        self.keychain == Some(Keychain::Present)
+    }
+
     /// An OAuth subscription profile that also names an API-key setting:
-    /// Claude may prefer the key. An explicit kind silences it.
+    /// Claude may prefer the key. An explicit kind silences it. A login in
+    /// the Keychain counts as a login file does.
     pub fn warn_key_setting(&self) -> bool {
         self.source != KindSource::Override
             && self.kind == Kind::Subscription
-            && self.own_oauth
+            && (self.own_oauth || self.keychain_login())
             && self.key_setting
     }
 
     /// Whether the profile's login file may be moved into `~/.claude`: an
-    /// OAuth login, or any login file of an API-key profile.
+    /// OAuth login, or any login file of an API-key profile. A Keychain
+    /// login has no file to move, so it does not count here.
     pub fn may_be_live(&self) -> bool {
         self.kind == Kind::Platform || self.own_oauth
     }
@@ -117,6 +136,8 @@ impl Resolved {
 const OAUTH_LOGIN: &str = "oauth login";
 const NO_OAUTH_LOGIN: &str = "login file has no oauth login";
 const LOGIN_UNREADABLE: &str = "login file unreadable";
+const KEYCHAIN_LOGIN: &str = "oauth login in the macOS Keychain";
+const KEYCHAIN_UNREADABLE: &str = "macOS Keychain unreadable";
 const LIVE_OAUTH: &str = "live in ~/.claude (oauth login)";
 const LIVE_NO_OAUTH: &str = "live in ~/.claude (no oauth login)";
 const LIVE_UNREADABLE: &str = "live in ~/.claude (login file unreadable)";
@@ -126,48 +147,82 @@ const NO_LOGIN: &str = "no login";
 /// The documented rule table; the first rule that matches wins:
 /// 1. an override;
 /// 2. the profile's own login file, when it is there;
-/// 3. when it is missing and the profile is live, the login in `~/.claude`;
-/// 4. when it is missing, an API-key setting name;
-/// 5. otherwise a subscription profile with no login.
+/// 3. when it is missing and the macOS Keychain was asked: an item there is
+///    the profile's own OAuth login, and a Keychain that could not be read
+///    is a subscription profile with no login, whatever else is set;
+/// 4. when it is missing and the profile is live, the login in `~/.claude`;
+/// 5. when it is missing, an API-key setting name;
+/// 6. otherwise a subscription profile with no login.
 ///
-/// An unreadable file is never proof of an API key.
-pub fn resolve_from(e: &Evidence) -> Resolved {
+/// `keychain` is `None` when the Keychain was not asked, and an absent item
+/// decides nothing: both go on to rule 4. An answer counts only with the
+/// login file missing, since rule 2 comes first.
+///
+/// An unreadable file or Keychain is never proof of an API key.
+pub fn resolve_with(e: &Evidence, keychain: Option<Keychain>) -> Resolved {
     use LoginKind::*;
     let own_oauth = e.own_login == OAuth;
+    let keychain = keychain.filter(|_| e.own_login == Missing);
     let done = |kind, source| Resolved {
         kind,
         source,
         own_oauth,
         key_setting: e.key_setting,
+        keychain,
     };
     if let Some(k) = e.override_kind {
         return done(k, KindSource::Override);
     }
-    let (kind, why) = match (e.own_login, e.home_login) {
-        (OAuth, _) => (Kind::Subscription, OAUTH_LOGIN),
-        (NoOAuth, _) => (Kind::Platform, NO_OAUTH_LOGIN),
-        (Unreadable, _) => (Kind::Subscription, LOGIN_UNREADABLE),
-        (Missing, Some(OAuth)) => (Kind::Subscription, LIVE_OAUTH),
-        (Missing, Some(NoOAuth)) => (Kind::Platform, LIVE_NO_OAUTH),
-        (Missing, Some(Unreadable | Missing)) => (Kind::Subscription, LIVE_UNREADABLE),
-        (Missing, None) if e.key_setting => (Kind::Platform, API_KEY_SETTING),
-        (Missing, None) => (Kind::Subscription, NO_LOGIN),
+    let (kind, why) = match (e.own_login, keychain, e.home_login) {
+        (OAuth, ..) => (Kind::Subscription, OAUTH_LOGIN),
+        (NoOAuth, ..) => (Kind::Platform, NO_OAUTH_LOGIN),
+        (Unreadable, ..) => (Kind::Subscription, LOGIN_UNREADABLE),
+        (Missing, Some(Keychain::Present), _) => (Kind::Subscription, KEYCHAIN_LOGIN),
+        (Missing, Some(Keychain::Unreadable(_)), _) => (Kind::Subscription, KEYCHAIN_UNREADABLE),
+        (Missing, Some(Keychain::Absent) | None, home) => match home {
+            Some(OAuth) => (Kind::Subscription, LIVE_OAUTH),
+            Some(NoOAuth) => (Kind::Platform, LIVE_NO_OAUTH),
+            Some(Unreadable | Missing) => (Kind::Subscription, LIVE_UNREADABLE),
+            None if e.key_setting => (Kind::Platform, API_KEY_SETTING),
+            None => (Kind::Subscription, NO_LOGIN),
+        },
     };
     done(kind, KindSource::Detected(why))
 }
 
-/// The launch guard's decision: a subscription profile without its own
-/// OAuth login is refused unless its login is `held` for it elsewhere
-/// (identified as the rotator's live login, or leased or hosted).
+/// [`resolve_with`] when the Keychain was not asked: the rule table as it is
+/// off macOS, with the same nine sources as before issue #2885. Kept for the
+/// tests that pin that table; [`Ctx`] always goes through [`resolve_with`].
+#[cfg(test)]
+pub fn resolve_from(e: &Evidence) -> Resolved {
+    resolve_with(e, None)
+}
+
+/// The launch guard's decision for a subscription profile without an OAuth
+/// login file. In order:
+/// - its login is `held` for it elsewhere (identified as the rotator's live
+///   login, or leased or hosted): allowed;
+/// - an item in the macOS Keychain: allowed;
+/// - a Keychain that could not be read: refused as
+///   [`ProfileError::KeychainUnreadable`], which is not a guess either way;
+/// - otherwise refused as [`ProfileError::SubscriptionNoLogin`].
 pub fn guard(r: &Resolved, name: &ProfileName, held: bool) -> Result<(), ProfileError> {
-    if r.kind == Kind::Subscription && !r.own_oauth && !held {
-        return Err(ProfileError::SubscriptionNoLogin(name.to_string()));
+    if r.kind != Kind::Subscription || r.own_oauth || held {
+        return Ok(());
     }
-    Ok(())
+    match r.keychain {
+        Some(Keychain::Present) => Ok(()),
+        Some(Keychain::Unreadable(cause)) => Err(ProfileError::KeychainUnreadable {
+            name: name.to_string(),
+            cause,
+        }),
+        Some(Keychain::Absent) | None => Err(ProfileError::SubscriptionNoLogin(name.to_string())),
+    }
 }
 
 /// What kind resolution reads once per command: the overrides, the rotate
-/// ledger's `live` and the login in `~/.claude`.
+/// ledger's `live` and the login in `~/.claude`. On macOS it also holds what
+/// a Keychain lookup runs in; the lookups themselves are made per profile.
 pub struct Ctx {
     /// `None` when `.auto-switch` is corrupt: no override is trusted.
     overrides: Option<BTreeMap<ProfileName, Kind>>,
@@ -175,19 +230,23 @@ pub struct Ctx {
     /// `~/.claude/.credentials.json`; read only when the ledger names a
     /// live profile. `Missing` without a home.
     home_login: Option<LoginKind>,
+    /// The platform, and the home a Keychain lookup is given as its `HOME`.
+    keychain: keychain::Env,
 }
 
 impl Ctx {
     /// Reads the overrides and the rotate ledger under the store's root, and
     /// the login in `<home>/.claude` when the ledger names a live profile.
+    /// Nothing is asked of the Keychain here. On macOS, without a `home`, a
+    /// profile that would be asked about resolves as Keychain unreadable.
     pub fn load(store: &ProfileStore, home: Option<&Path>) -> Self {
         let overrides = match config::read(store.root()) {
             FileState::Valid(c) => Some(c.kind),
             FileState::Missing => Some(BTreeMap::new()),
             FileState::Corrupt => None,
         };
-        // An unreadable ledger names no live profile: rule 3 then does not
-        // apply, and rules 4 and 5 still never make a guess that bills.
+        // An unreadable ledger names no live profile: rule 4 then does not
+        // apply, and rules 5 and 6 still never make a guess that bills.
         let ledger_live = RotateState::new(store.root())
             .load_ledger()
             .ok()
@@ -202,7 +261,14 @@ impl Ctx {
             overrides,
             ledger_live,
             home_login,
+            keychain: keychain::Env::ambient(home),
         }
+    }
+
+    /// Whether this platform keeps logins in the macOS Keychain, so that a
+    /// missing login file alone says nothing about a profile.
+    pub fn macos(&self) -> bool {
+        self.keychain.macos()
     }
 
     /// The profile the rotate ledger names as live, if any.
@@ -215,14 +281,24 @@ impl Ctx {
         self.overrides.is_none()
     }
 
-    pub fn evidence(&self, store: &ProfileStore, name: &ProfileName) -> Evidence {
-        self.evidence_with(store, name, true)
-    }
-
-    /// The evidence for `name`. With `all_keys` false, the API-key setting
-    /// names are read only when the kind depends on them (rule 4), since
-    /// that means parsing `.claude.json`, which may be large.
-    fn evidence_with(&self, store: &ProfileStore, name: &ProfileName, all_keys: bool) -> Evidence {
+    /// The evidence for `name`, and what the Keychain said about it.
+    ///
+    /// The Keychain is asked (rule 3) only when nothing before it has
+    /// decided: the profile's directory resolves, no override says
+    /// `api-key`, and there is no login file. `keychain::detect` then adds
+    /// its own two conditions, macOS and an identifiable account. A
+    /// `subscription` override keeps its kind and is still asked, because
+    /// the guard needs to know whether the profile has a login.
+    ///
+    /// With `all_keys` false, the API-key setting names are read only when
+    /// the kind depends on them (rule 5), since that means parsing
+    /// `.claude.json`, which may be large.
+    fn gather(
+        &self,
+        store: &ProfileStore,
+        name: &ProfileName,
+        all_keys: bool,
+    ) -> (Evidence, Option<Keychain>) {
         let dir = store.resolve(name).ok();
         let mut e = Evidence {
             override_kind: self.overrides.as_ref().and_then(|o| o.get(name).copied()),
@@ -234,27 +310,36 @@ impl Ctx {
                 .flatten(),
             key_setting: false,
         };
+        let ask = e.override_kind != Some(Kind::Platform) && e.own_login == LoginKind::Missing;
+        let keychain = match &dir {
+            Some(d) if ask => keychain::detect(&self.keychain, d),
+            _ => None,
+        };
         let needed = all_keys
             || (e.override_kind.is_none()
                 && e.own_login == LoginKind::Missing
-                && e.home_login.is_none());
+                && e.home_login.is_none()
+                && matches!(keychain, None | Some(Keychain::Absent)));
         e.key_setting = needed
             && dir
                 .as_ref()
                 .is_some_and(|d| identify::api_key_setting_names(d));
-        e
+        (e, keychain)
     }
 
     pub fn resolve(&self, store: &ProfileStore, name: &ProfileName) -> Resolved {
-        resolve_from(&self.evidence(store, name))
+        let (e, keychain) = self.gather(store, name, true);
+        resolve_with(&e, keychain)
     }
 
     /// [`Self::resolve`] without reading the API-key setting names when the
-    /// overrides or logins decide the kind: `kind`, `source`, `own_oauth`
-    /// and [`Resolved::may_be_live`] are the same, but `key_setting` may be
-    /// false where it is true, so not for [`Resolved::warn_key_setting`].
+    /// overrides, logins or Keychain decide the kind: `kind`, `source`,
+    /// `own_oauth`, `keychain` and [`Resolved::may_be_live`] are the same,
+    /// but `key_setting` may be false where it is true, so not for
+    /// [`Resolved::warn_key_setting`].
     pub fn resolve_kind(&self, store: &ProfileStore, name: &ProfileName) -> Resolved {
-        resolve_from(&self.evidence_with(store, name, false))
+        let (e, keychain) = self.gather(store, name, false);
+        resolve_with(&e, keychain)
     }
 
     /// `name`'s kind alone; see [`Self::resolve_kind`].
@@ -341,8 +426,10 @@ pub fn platform_profiles(store: &ProfileStore, home: &Path) -> Vec<ProfileName> 
 /// The launch guard for `name` (`profile run`, `launch`, `claude` and
 /// `switch`): refuses a subscription profile without its own OAuth login
 /// unless `held`, and, while `.auto-switch` is corrupt, any profile without
-/// its own OAuth login, since no override can then be trusted. `held` is
-/// called only when a refusal would otherwise follow.
+/// its own OAuth login, since no override can then be trusted. A login in
+/// the macOS Keychain is the profile's own OAuth login in both cases. `held`
+/// is called only when a refusal would otherwise follow; the Keychain has
+/// been asked by then, as part of resolving the kind.
 pub fn launch_guard(
     store: &ProfileStore,
     name: &ProfileName,

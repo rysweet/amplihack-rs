@@ -4,7 +4,14 @@
 //! ad-hoc `.join(".claude")` chains. Single source of truth.
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
+
+/// Session key used when a hook payload carries no usable session id.
+///
+/// An id that is absent, empty or only whitespace maps to this key, so the
+/// state for such sessions lands in `runtime/sessions/unknown-session/`.
+pub const UNKNOWN_SESSION_KEY: &str = "unknown-session";
 
 /// Sanitize a session ID to prevent path traversal and metadata injection.
 ///
@@ -31,6 +38,137 @@ pub fn sanitize_session_id(session_id: &str) -> String {
     sanitized
 }
 
+/// Accept a candidate state-root value only if it is an absolute path with
+/// no `..` component. The value is compared as an `OsStr`: it is never
+/// trimmed, canonicalised or checked against the file system.
+fn usable_root(value: &OsStr) -> Option<&Path> {
+    let path = Path::new(value);
+    let acceptable =
+        path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir));
+    acceptable.then_some(path)
+}
+
+/// True when `dir` is the root of a Git checkout, meaning `<dir>/.git`
+/// exists as a directory, a file (a linked worktree or submodule) or a
+/// symlink, including a dangling one.
+///
+/// The probe is a single `symlink_metadata` call on `<dir>/.git`. It never
+/// runs git, never follows the symlink and never climbs to parent
+/// directories, so a subdirectory of a checkout is not itself a checkout.
+/// Any error other than "not found" (for example, permission denied) also
+/// counts as a checkout, so callers that use this to reject a state root
+/// fail closed.
+///
+/// Runtime state must never be written at the root of a checkout: hooks
+/// started by `recipe run -w <checkout>` inherit `AMPLIHACK_HOME=<checkout>`,
+/// and files written there are picked up by the recipe stagers (#2361).
+///
+/// ```
+/// use amplihack_types::is_git_checkout;
+///
+/// let dir = std::env::temp_dir()
+///     .join(format!("amplihack-is-git-checkout-doc-{}", std::process::id()));
+/// let _ = std::fs::remove_dir_all(&dir);
+/// std::fs::create_dir_all(&dir).unwrap();
+/// assert!(!is_git_checkout(&dir));
+/// std::fs::write(dir.join(".git"), "gitdir: /elsewhere\n").unwrap();
+/// assert!(is_git_checkout(&dir));
+/// std::fs::remove_dir_all(&dir).unwrap();
+/// ```
+pub fn is_git_checkout(dir: &Path) -> bool {
+    !matches!(
+        std::fs::symlink_metadata(dir.join(".git")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+/// Resolve the amplihack state root from candidate environment values.
+///
+/// Returns `amplihack_home` when it is an absolute path with no `..`
+/// component and `amplihack_home_is_checkout` is `false`. Otherwise returns
+/// `<home>/.amplihack` under the same path rule for `home`, otherwise
+/// `None`.
+///
+/// `amplihack_home_is_checkout` is the caller's [`is_git_checkout`] result
+/// for `amplihack_home`. A checkout stays a valid `AMPLIHACK_HOME` for
+/// bundle and asset lookup, but never receives runtime state (#2361). `home`
+/// is not tested against the predicate.
+///
+/// Values are never trimmed, the working directory, `.` and `REPO_PATH` are
+/// never used, and nothing is read from the environment or the file system,
+/// so this function is pure.
+///
+/// ```
+/// use std::ffi::OsStr;
+/// use std::path::PathBuf;
+/// use amplihack_types::resolve_state_root;
+///
+/// let home = Some(OsStr::new("/home/alice"));
+/// let ah = Some(OsStr::new("/srv/amplihack"));
+/// assert_eq!(resolve_state_root(ah, home, false), Some(PathBuf::from("/srv/amplihack")));
+/// assert_eq!(
+///     resolve_state_root(ah, home, true),
+///     Some(PathBuf::from("/home/alice/.amplihack")),
+/// );
+/// assert_eq!(resolve_state_root(ah, None, true), None);
+/// ```
+pub fn resolve_state_root(
+    amplihack_home: Option<&OsStr>,
+    home: Option<&OsStr>,
+    amplihack_home_is_checkout: bool,
+) -> Option<PathBuf> {
+    if !amplihack_home_is_checkout && let Some(root) = amplihack_home.and_then(usable_root) {
+        return Some(root.to_path_buf());
+    }
+    home.and_then(usable_root).map(|h| h.join(".amplihack"))
+}
+
+/// The amplihack state root for hook-written runtime state (#1963, #2361).
+///
+/// Reads `AMPLIHACK_HOME` and `HOME`. When `AMPLIHACK_HOME` passes the path
+/// rule, probes it with [`is_git_checkout`], then applies
+/// [`resolve_state_root`]. An `AMPLIHACK_HOME` that is a Git checkout, such
+/// as the `-w` checkout of `recipe run` or a linked worktree, is skipped and
+/// the state goes to `$HOME/.amplihack`.
+///
+/// Returns `None` when no candidate is usable, including the case where
+/// `AMPLIHACK_HOME` is a checkout and `HOME` is unusable. Callers then skip
+/// their write; there is no fallback to the checkout, the working directory
+/// or `REPO_PATH`.
+pub fn amplihack_state_root() -> Option<PathBuf> {
+    let amplihack_home = env::var_os("AMPLIHACK_HOME");
+    let is_checkout = amplihack_home
+        .as_deref()
+        .and_then(usable_root)
+        .is_some_and(is_git_checkout);
+    resolve_state_root(
+        amplihack_home.as_deref(),
+        env::var_os("HOME").as_deref(),
+        is_checkout,
+    )
+}
+
+/// The per-session state directory `<root>/runtime/sessions/<key>`.
+///
+/// The key is [`sanitize_session_id`] of the id when the id has any
+/// non-whitespace character, and [`UNKNOWN_SESSION_KEY`] otherwise. The
+/// fallback is chosen before sanitising, so this never panics, and every key
+/// is exactly one `[A-Za-z0-9_-]+` component. There is no length cap: an id
+/// longer than the file system's `NAME_MAX` makes the later write fail.
+pub fn session_state_dir_under(root: &Path, session_id: Option<&str>) -> PathBuf {
+    let key = match session_id {
+        Some(id) if !id.trim().is_empty() => sanitize_session_id(id),
+        _ => UNKNOWN_SESSION_KEY.to_string(),
+    };
+    root.join("runtime").join("sessions").join(key)
+}
+
+/// The per-session state directory under the resolved state root, or `None`
+/// when no state root resolves. See [`session_state_dir_under`].
+pub fn session_state_dir(session_id: Option<&str>) -> Option<PathBuf> {
+    amplihack_state_root().map(|root| session_state_dir_under(&root, session_id))
+}
+
 /// Directory layout rooted at a project directory.
 ///
 /// Every path that hooks touch is defined here. To change
@@ -45,7 +183,7 @@ pub struct ProjectDirs {
     pub runtime: PathBuf,
     /// `.claude/runtime/locks/` for lock files.
     pub locks: PathBuf,
-    /// `.claude/runtime/metrics/` for tool metrics.
+    /// `.claude/runtime/metrics/`: legacy; hooks no longer write here (#1963).
     pub metrics: PathBuf,
     /// `.claude/runtime/logs/` for session logs.
     pub logs: PathBuf,
@@ -260,3 +398,7 @@ pub fn resolve_framework_file_from(start: &Path, relative_path: &str) -> Option<
 #[cfg(test)]
 #[path = "tests_paths.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests_issue_2361.rs"]
+mod tests_issue_2361;

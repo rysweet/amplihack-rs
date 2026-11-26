@@ -1,8 +1,8 @@
 ---
 title: Keep Tests out of the Real Profile Root
 type: howto
-updated: 2026-10-29
-related: issue #1699, issue #1661, issue #1690
+updated: 2026-11-08
+related: issue #1699, issue #1661, issue #1690, issue #2014
 ---
 
 # Keep Tests out of the Real Profile Root
@@ -23,6 +23,7 @@ a test that exercises the refresh, and what to do when the guard fails.
 - [The three controls](#the-three-controls)
 - [Write a test that starts the binary](#write-a-test-that-starts-the-binary)
 - [Test the profile refresh in process](#test-the-profile-refresh-in-process)
+- [Pass the profile variables to multitask launchers](#pass-the-profile-variables-to-multitask-launchers)
 - [When the real-root guard fails](#when-the-real-root-guard-fails)
 - [Limits](#limits)
 
@@ -104,6 +105,34 @@ For the whole install path, create a real executable hooks file at
 `install_registers_this_builds_hooks_in_each_profile` in
 `crates/amplihack-cli/src/commands/install/tests/profile_refresh_install.rs`
 uses this layout.
+
+## Pass the profile variables to multitask launchers
+
+The multitask launchers write `export` lines for
+`AMPLIHACK_CLAUDE_PROFILE` and `AMPLIHACK_CLAUDE_PROFILE_ROOT` into
+`run.sh`. A test that calls `write_recipe_launcher` or
+`write_classic_launcher` reads both variables from the process, and fails
+whenever another test has set the root to a value that is not valid UTF-8
+(issue #2014). Call the `_with` variants and pass the environment instead:
+
+```rust
+use super::command_builder_tests::{keep, no_env};
+use super::launcher::write_recipe_launcher_with;
+
+write_recipe_launcher_with(&ws, "amplihack claude", no_env, keep).unwrap();
+```
+
+`no_env` pins no profile, so the auto-switch substitution and the real
+profile store are never reached. To test the exports themselves, pass
+`getter(&[(PROFILE_VAR, "work"), (ROOT_VAR, "/p")])` to
+`recipe_run_script` or `classic_run_script`. `getter` is private to
+`command_builder_tests.rs`, so write such tests in that file; only `no_env`
+and `keep` are `pub(super)`. Do not widen `getter` to import it elsewhere.
+Do not set the variables in the process for these tests. The two-argument
+launchers are tested only by `issue_2014_launcher_env.rs`, under `with_env`.
+
+See [Bug Fix #2014](../bugfixes/bugfix-2014-multitask-launcher-env-race.md)
+for the seam and the regression tests.
 
 ## When the real-root guard fails
 
@@ -239,3 +268,4 @@ nothing and passes.
 - [Give Test Logins a Fake Account Identity](./give-test-logins-a-fake-account-identity.md) - Fake logins and a loopback identity endpoint for profile tests (#1753)
 - [AMPLIHACK_* environment variables](../reference/amplihack-env-vars.md) - `AMPLIHACK_CLAUDE_PROFILE_ROOT`
 - [Developing amplihack](./develop-amplihack.md) - Build and test setup
+- [Bug Fix #2014](../bugfixes/bugfix-2014-multitask-launcher-env-race.md) - Why the multitask launcher tests pass the profile variables as arguments

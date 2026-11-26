@@ -31,9 +31,12 @@ impl Fixture {
             std::os::unix::fs::symlink(amplihack_bin(), &link).unwrap();
         }
         let source = self.source_repo();
-        fs::create_dir_all(self.path("tmp")).unwrap();
+        // HOME is kept inside TMPDIR: under the test home guard a HOME
+        // outside the temp dir is discarded, and the work root needs one.
+        fs::create_dir_all(self.path("tmp").join("home")).unwrap();
         let mut c = self.cmd(args);
         c.env("TMPDIR", self.path("tmp"))
+            .env("HOME", self.path("tmp").join("home"))
             .env("AMPLIHACK_SESSION_TREE_DIR", self.path("trees"))
             .env("AMPLIHACK_REPO_PATH", &source)
             .current_dir(&source);
@@ -120,21 +123,42 @@ fn classic_workstream_stays(cli: Cli) {
     assert_only(&fx, cli, 1);
     // The launcher puts its own flags first; the prompt form comes right
     // before the prompt.
-    let argv = fx.records()[0].get("argv").to_string();
-    // Claude gets `@TASK.md`, its file mention, which attaches the task.
-    // Codex takes the prompt as plain text, so it is told to read the file;
-    // a bare `@TASK.md` would reach it as a literal string.
-    let (verb, task) = if cli == Cli::Codex {
-        ("exec", "Read TASK.md in the current directory")
+    let records = fx.records();
+    let record = &records[0];
+    let argv = record.get("argv").to_string();
+    if cli == Cli::Codex {
+        // Codex takes the prompt as plain text, so it is told to read the
+        // file; a bare `@TASK.md` would reach it as a literal string. The
+        // prompt arrives on stdin (`-`), not in argv (issue #2030).
+        assert!(
+            argv.starts_with("exec ") && argv.ends_with(" - "),
+            "codex must get its own prompt form, got argv {argv:?}\n{}",
+            fx.logs()
+        );
+        assert!(
+            record
+                .get("prompt_head")
+                .starts_with("Read TASK.md in the current directory"),
+            "codex's prompt must tell it to read the file, got {:?}\n{}",
+            record.get("prompt_head"),
+            fx.logs()
+        );
     } else {
-        ("-p", "@TASK.md")
-    };
-    assert!(
-        argv.contains(&format!(" {verb} {task} ")) || argv.starts_with(&format!("{verb} {task} ")),
-        "{} must get its own prompt form, got argv {argv:?}\n{}",
-        cli.name(),
-        fx.logs()
-    );
+        // Claude gets `@TASK.md`, its file mention, which attaches the task.
+        // amplihack keeps prompts out of argv (issue #2030): `-p` is last and
+        // the prompt arrives on stdin.
+        assert!(
+            argv.ends_with(" -p ") || argv == "-p ",
+            "claude must get its own prompt form, got argv {argv:?}\n{}",
+            fx.logs()
+        );
+        assert!(
+            record.get("prompt_head").starts_with("@TASK.md"),
+            "claude's prompt must be the file mention, got {:?}\n{}",
+            record.get("prompt_head"),
+            fx.logs()
+        );
+    }
     if cli != Cli::Claude {
         assert!(
             !argv.contains("@TASK.md"),

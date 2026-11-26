@@ -168,10 +168,15 @@ fn docs_list_every_last_rule_value() {
         "coordination_throttled",
         "classification",
         "throttled",
+        "agent_step_id",
+        "harness_notice",
+        "peer_message",
+        "scheduled_prompt",
     ] {
         assert!(docs.contains(&format!("`{rule}`")), "docs omit `{rule}`");
     }
-    assert!(docs.contains(".claude/runtime/classification_state/"));
+    assert!(docs.contains("<state root>/runtime/sessions/<session key>/classification_state.json"));
+    assert!(!docs.contains("<project>/.claude/runtime/classification_state/"));
 }
 
 /// Review round 7 of PR #1752: the follow-up check matches substrings, and

@@ -127,9 +127,12 @@ workstreams, and sets `AMPLIHACK_SESSION_TREE_DIR` inside the fixture.
   for amplifier. `<task>` is `@TASK.md` for claude, whose file mention
   attaches the file. `codex exec`, `amplifier run` and copilot's `-p` take the
   prompt as plain text, so they get "Read TASK.md in the current directory and
-  execute the task it describes." instead. The tests assert that exactly one
-  record exists, that it shows the session's CLI, that its argv starts with
-  that CLI's verb and task form, and that codex never gets `@TASK.md`.
+  execute the task it describes." instead. amplihack keeps the prompt out of
+  argv (issue #2030): the fake CLI records the first line of the prompt it
+  reads on stdin. The tests assert that exactly one record exists, that it
+  shows the session's CLI, that its argv holds that CLI's verb and ends with
+  the stdin marker (`-p` for claude, `-` for codex), that the prompt's first
+  line is that CLI's task form, and that codex never gets `@TASK.md`.
 - `orch run` is the command smart-orchestrator's `launch-parallel-round-1`
   bash step runs. It is `multitask run` in recipe mode, so the workstream's
   `launcher.sh` runs `amplihack recipe run`. A nested `recipe run` refuses to
@@ -363,11 +366,11 @@ Other behaviour of the fake:
 ## Stub recipe runner
 
 The level 1 tests use a stub runner, which `recipe run` finds through
-`RECIPE_RUNNER_RS_PATH`. The stub copies the agent step command of the
-pinned runner (rev `4d5187ea`, `src/adapters/cli_subprocess.rs`,
-`build_agent_command`, lines 781 to 866; the codex branch ends at line 812):
+`RECIPE_RUNNER_RS_PATH`. The stub follows the agent step command of the
+pinned runner (rev `2833a0b8`, `src/adapters/cli_subprocess.rs`,
+`build_agent_command`, lines 1179 to 1272; the codex branch ends at line 1223):
 
-1. `--capabilities` prints `codex_exec`.
+1. `--capabilities` prints `codex_exec` and `durable_recovery_v1`.
 2. Otherwise it writes `AMPLIHACK_AGENT_BINARY` and
    `AMPLIHACK_AGENT_BINARY_SOURCE` to `records/runner.env`.
 3. It exits 52 unless the binary is `claude` or `codex`.
@@ -380,7 +383,7 @@ pinned runner (rev `4d5187ea`, `src/adapters/cli_subprocess.rs`,
 
 | CLI | Adapter argv | Prompt |
 |---|---|---|
-| claude | `-p <prompt>`, followed by `--system-prompt` and `--add-dir` | argument |
+| claude | `--system-prompt-file <file> -p --add-dir .` | stdin |
 | codex | `exec --output-last-message <file> -` | stdin |
 
 Each step therefore crosses two process boundaries: runner to `amplihack`, and
@@ -388,7 +391,7 @@ Each step therefore crosses two process boundaries: runner to `amplihack`, and
 
 `steps.rs::stub_runner_matches_the_pinned_runner_revision` fails when
 `claude-plugin/recipe-runner.rev` no longer starts with `STUB_RUNNER_REV`
-(`4d5187ea`). Whoever moves the pin must re-derive `STUB_RUNNER` from the new
+(`2833a0b8`). Whoever moves the pin must re-derive `STUB_RUNNER` from the new
 runner's `build_agent_command` and then update `STUB_RUNNER_REV`.
 
 ## Isolation guarantees

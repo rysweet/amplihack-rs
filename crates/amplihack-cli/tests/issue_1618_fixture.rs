@@ -33,11 +33,13 @@ pub const WEEKLY_TEXT: &str =
 /// - `--version` answers like Claude Code;
 /// - counts its calls per `$STEP` in `$RECORD_DIR/count.<step>`;
 /// - records argv, `pwd -P`, `HOME`, `CLAUDE_CONFIG_DIR`, the inherited
-///   profile and the SHA-256 of all of stdin (not read with `$SKIP_STDIN`)
-///   in `call.<step>.<n>`;
-/// - with `$CHANGE_LOGIN_AFTER`, on its first call, starts a detached
-///   process that creates `$CLAUDE_CONFIG_DIR/.credentials.json` after that
-///   many seconds (a login moved into place during the wait);
+///   profile and whether it read stdin in `call.<step>.<n>`, and copies all
+///   of stdin to `stdin.<step>.<n>` (not read with `$SKIP_STDIN`, nor on its
+///   first `$SKIP_STDIN_CALLS` calls in a step). The stub
+///   calls no digest tool: `sha256sum` is not on this `PATH` on every host,
+///   and a "command not found" line on its stderr reads to amplihack as an
+///   environmental failure, not a usage limit (issue #2931).
+///   [`Fixture::call`] hashes the copy and reports it under `STDIN`;
 /// - prints `attempt <n> output` on stdout, then `$STDOUT_TEXT` if set;
 /// - for its first `$LIMIT_CALLS` calls (default 0) in step `$LIMIT_STEP`
 ///   (any step when unset), and only under profile `$LIMIT_PROFILE` when that
@@ -46,12 +48,12 @@ pub const WEEKLY_TEXT: &str =
 /// - otherwise exits 0.
 const STUB_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 step="${STEP:-0}"
 n=$(( $(cat "$RECORD_DIR/count.$step" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$RECORD_DIR/count.$step"
-if [ -n "$SKIP_STDIN" ]; then sum=skipped; else sum=$(sha256sum | cut -d' ' -f1); fi
+if [ -n "$SKIP_STDIN" ] || [ "$n" -le "${SKIP_STDIN_CALLS:-0}" ]; then sum=skipped; else cat > "$RECORD_DIR/stdin.$step.$n"; sum=recorded; fi
 {
   printf 'ARGV='
   for a in "$@"; do printf '%s|' "$a"; done
@@ -62,9 +64,6 @@ if [ -n "$SKIP_STDIN" ]; then sum=skipped; else sum=$(sha256sum | cut -d' ' -f1)
   printf 'PROFILE=%s\n' "${AMPLIHACK_CLAUDE_PROFILE-<unset>}"
   printf 'STDIN=%s\n' "$sum"
 } > "$RECORD_DIR/call.$step.$n"
-if [ -n "$CHANGE_LOGIN_AFTER" ] && [ "$n" = 1 ]; then
-  ( sleep "$CHANGE_LOGIN_AFTER"; : > "$CLAUDE_CONFIG_DIR/.credentials.json" ) </dev/null >/dev/null 2>&1 &
-fi
 limit="${LIMIT_CALLS:-0}"
 if [ -n "$LIMIT_STEP" ] && [ "$LIMIT_STEP" != "$step" ]; then limit=0; fi
 if [ -n "$LIMIT_PROFILE" ] && [ "$LIMIT_PROFILE" != "${AMPLIHACK_CLAUDE_PROFILE-}" ]; then limit=0; fi
@@ -198,7 +197,7 @@ impl Fixture {
         let start = Instant::now();
         let left = || CEILING.saturating_sub(start.elapsed()).max(POLL);
         c.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = wait::spawn_retrying("the step", c);
+        let mut child = wait::spawn_once("the step", c);
         let mut stdout_pipe = child.stdout.take().expect("piped stdout");
         let stdout_reader = std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -259,20 +258,77 @@ impl Fixture {
         }
     }
 
+    /// Runs `c` like [`Self::run_watching`], and makes `event(n)` for the
+    /// `n`th wait (from 1) that has no deadline: one whose limit stated no
+    /// usable reset, which ends only on an event (issue #2911).
+    ///
+    /// The event is made at that wait's first `progress` line, not at its
+    /// `start`: by then the wait has read its baseline, so a login change
+    /// made here is seen as a change rather than taken in as the baseline.
+    /// Waits with a deadline are left to it.
+    pub fn run_with_an_event_per_open_wait(
+        &self,
+        c: &mut Command,
+        mut event: impl FnMut(u32),
+    ) -> Output {
+        let start = format!("{WAIT_PREFIX}start ");
+        let progress = format!("{WAIT_PREFIX}progress ");
+        let mut n = 0u32;
+        let mut armed = false;
+        self.run_watching(c, |line| {
+            if line.starts_with(&start) {
+                armed = line.contains(" until=none ");
+                if armed {
+                    n += 1;
+                }
+            } else if armed && line.starts_with(&progress) {
+                armed = false;
+                event(n);
+            }
+        })
+    }
+
+    /// [`Self::run_with_an_event_per_open_wait`] where each event is a login
+    /// change in the step's config directory (`CLAUDE_CONFIG_DIR`, the
+    /// fixture's default): its `.credentials.json` appears or goes, which
+    /// changes the login fingerprint. Such a wait ends `login changed`.
+    pub fn run_with_a_login_change_per_open_wait(&self, c: &mut Command) -> Output {
+        self.run_with_a_login_change_in(&self.config.clone(), c)
+    }
+
+    /// The same, for a step whose login lives in `dir`: `$HOME/.claude`
+    /// for a step with no `CLAUDE_CONFIG_DIR`, or an inherited profile's
+    /// directory.
+    pub fn run_with_a_login_change_in(&self, dir: &Path, c: &mut Command) -> Output {
+        let dir = dir.to_path_buf();
+        self.run_with_an_event_per_open_wait(c, move |_| toggle_login(&dir))
+    }
+
     pub fn count(&self, step: &str) -> u32 {
         fs::read_to_string(self.records.join(format!("count.{step}")))
             .map(|s| s.trim().parse().unwrap())
             .unwrap_or(0)
     }
 
-    /// The `KEY=value` record of call `n` of `step`.
+    /// The `KEY=value` record of call `n` of `step`. `STDIN` is the SHA-256
+    /// of the bytes the stub read from stdin, computed here from the stub's
+    /// copy, or `skipped` when the stub did not read stdin.
     pub fn call(&self, step: &str, n: u32) -> std::collections::BTreeMap<String, String> {
         let raw = fs::read_to_string(self.records.join(format!("call.{step}.{n}")))
             .unwrap_or_else(|e| panic!("call {n} of step {step} was not recorded: {e}"));
-        raw.lines()
+        let mut call: std::collections::BTreeMap<String, String> = raw
+            .lines()
             .filter_map(|l| l.split_once('='))
             .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+            .collect();
+        if call.get("STDIN").map(String::as_str) == Some("recorded") {
+            let copy = self.records.join(format!("stdin.{step}.{n}"));
+            let bytes = fs::read(&copy).unwrap_or_else(|e| {
+                panic!("call {n} of step {step} recorded no stdin copy at {copy:?}: {e}")
+            });
+            call.insert("STDIN".to_string(), sha256_hex(&bytes));
+        }
+        call
     }
 
     /// Writes the user `config.toml`.
@@ -305,6 +361,49 @@ impl Fixture {
     }
 }
 
+/// A login change in `dir`, as a wait's fingerprint sees one.
+///
+/// A directory with no `.credentials.json` gets one; the wait never opens
+/// it, so its content does not matter. One that has one and also keeps its
+/// own `.claude.json` (a profile, or a config directory that has one) keeps
+/// its credentials, so a profile stays logged in, and the account in that
+/// `.claude.json` is changed instead: `accountUuid` gains a new suffix each
+/// time, and every other field is kept. Any other directory loses its
+/// credentials file, which is how `$HOME/.claude` changes: its account is
+/// read from `$HOME/.claude.json`, outside it.
+pub fn toggle_login(dir: &Path) {
+    let creds = dir.join(".credentials.json");
+    if !creds.exists() {
+        fs::create_dir_all(dir).unwrap();
+        private_file(&creds, "{}");
+        return;
+    }
+    let json = dir.join(".claude.json");
+    if !json.exists() {
+        fs::remove_file(&creds).unwrap();
+        return;
+    }
+    let mut v: serde_json::Value = fs::read_to_string(&json)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let account = &mut v["oauthAccount"];
+    if !account.is_object() {
+        *account = serde_json::json!({});
+    }
+    let uuid = account["accountUuid"].as_str().unwrap_or("uuid-login");
+    let next = match uuid.rsplit_once("-changed") {
+        Some((base, n)) => format!("{base}-changed{}", n.parse::<u32>().unwrap_or(0) + 1),
+        None => format!("{uuid}-changed1"),
+    };
+    account["accountUuid"] = serde_json::Value::String(next);
+    // Written aside and renamed, so the wait never reads half a file.
+    let tmp = dir.join(".claude.json.toggle");
+    private_file(&tmp, &v.to_string());
+    fs::rename(&tmp, &json).unwrap();
+}
+
 pub fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).to_string()
 }
@@ -335,12 +434,16 @@ pub fn events(out: &Output) -> Vec<String> {
         .collect()
 }
 
-/// Every `progress` line has exactly the documented shape.
+/// Every `progress` line has exactly the documented shape: seconds to the
+/// deadline, or `none` for a wait that has none (issue #2911).
 pub fn assert_progress_shape(out: &Output) {
     for l in wait_lines(out)
         .iter()
         .filter(|l| l.starts_with("progress "))
     {
+        if l == "progress remaining=none" {
+            continue;
+        }
         let secs = l
             .strip_prefix("progress remaining=")
             .and_then(|r| r.strip_suffix('s'))

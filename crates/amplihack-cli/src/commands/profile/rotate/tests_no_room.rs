@@ -144,6 +144,7 @@ fn probed(session: f64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 

@@ -242,8 +242,11 @@ fn serve(mut stream: TcpStream, script: &Mutex<Script>, stop: &AtomicBool) {
 }
 
 /// The live login `work` reads full, so a cycle wants to swap away from it.
+/// Issue #2910 (S1): every login here is in its own organisation, and a live
+/// login that still has room never crosses, so `work` reads 100% of its
+/// session (no room) rather than 90%.
 fn usage_body(who: &str) -> serde_json::Value {
-    let session = if who == "work" { 90 } else { 10 };
+    let session = if who == "work" { 100 } else { 10 };
     serde_json::json!({
         "five_hour": {"utilization": session, "resets_at":
             (chrono::Utc::now() + chrono::Duration::hours(3)).to_rfc3339()},
@@ -437,6 +440,10 @@ impl World {
 
     pub fn switch(&self, to: &str) -> Output {
         self.checked(self.command(&["profile", "switch", to]))
+    }
+
+    pub fn status(&self) -> Output {
+        self.checked(self.command(&["profile", "rotate", "status"]))
     }
 
     pub fn verify(&self) -> Output {

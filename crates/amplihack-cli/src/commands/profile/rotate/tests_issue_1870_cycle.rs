@@ -62,9 +62,19 @@ fn damped(e: &Env) -> Vec<String> {
 
 static CALLS_A: Calls = Mutex::new(Vec::new());
 
-fn reread_a(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_A, name);
-    exh(43.0, 100.0)
+fn reread_a(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_A, name);
+        exh(43.0, 100.0)
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// The 13:09Z cycle: `work` live past `--week-at`; `spare` has a passive
@@ -76,10 +86,13 @@ fn measure_a(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let probes = probes_for(
         snap,
         &[
-            ("spare", rd(11.0, 95.0, Some(at - 60))),
+            ("spare", rd(11.0, 50.0, Some(at - 60))),
             ("spare2", running),
         ],
     );
+    // Issue #2910 (D1): `work` (0/97) has room 3, so a move needs 8 more;
+    // the stale reading shows room 50, so the target qualifies and the gate
+    // reads it again (on 2 Nov the stale reading was 11/95).
     decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)
 }
 
@@ -98,11 +111,19 @@ fn a_regression_an_old_reading_is_read_again_and_the_full_login_is_not_chosen() 
     assert_eq!(swaps(&log), 0, "{log}");
     assert_eq!(calls(&CALLS_A), ["spare"]);
     assert!(
-        log.contains("reread: spare reading stale s=11% w=95%; fresh s=43% w=100%"),
+        log.contains("reread: spare reading stale s=11% w=50%; fresh s=43% w=100%"),
         "{log}"
     );
     assert!(
-        log.contains("ALERT: no profile has capacity live=work s=0% w=97% (candidates: 1 failed, 1 exhausted)"),
+        log.contains("reject: spare no room on a fresh reading"),
+        "{log}"
+    );
+    // Issue #2910 (D9): spare2's read had not finished, so it was not seen
+    // full and the wording is `no capacity known`.
+    assert!(
+        log.contains(
+            "ALERT: no capacity known live=work s=0% w=97% (candidates: 1 failed, 1 exhausted)"
+        ),
         "{log}"
     );
     assert!(
@@ -115,9 +136,19 @@ fn a_regression_an_old_reading_is_read_again_and_the_full_login_is_not_chosen() 
 
 static CALLS_B: Calls = Mutex::new(Vec::new());
 
-fn reread_b(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_B, name);
-    rd(0.0, 50.0, None)
+fn reread_b(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_B, name);
+        rd(0.0, 50.0, None)
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// `work` spent; `spare` looks best on an old reading; `third`, read now,
@@ -165,9 +196,19 @@ fn b_a_stale_target_is_read_again_and_the_decision_uses_the_fresh_figures() {
 
 static CALLS_C: Calls = Mutex::new(Vec::new());
 
-fn reread_c(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_C, name);
-    exh(100.0, 100.0)
+fn reread_c(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_C, name);
+        exh(100.0, 100.0)
+    }
+    (hook_body(c, who, left), None)
 }
 
 fn measure_c(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
@@ -190,9 +231,19 @@ fn c_a_fresh_target_is_chosen_without_a_reread() {
 
 static CALLS_C2: Calls = Mutex::new(Vec::new());
 
-fn reread_c2(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_C2, name);
-    exh(100.0, 100.0)
+fn reread_c2(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_C2, name);
+        exh(100.0, 100.0)
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// A passive reading taken at the same second as the live one is fresh.
@@ -214,13 +265,26 @@ fn c_a_passive_reading_as_new_as_the_live_one_is_fresh() {
 
 // --- (d) A failed re-read: not chosen, not recorded as exhausted ---------------
 
-fn reread_d(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
-    Probed::failed()
+fn reread_d(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
+        Probed::failed()
+    }
+    (hook_body(c, who, left), None)
 }
 
 fn measure_d(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(11.0, 95.0, Some(at - 60)))]);
+    let probes = probes_for(snap, &[("spare", rd(11.0, 50.0, Some(at - 60)))]);
+    // Issue #2910 (D1): `work` (0/97) has room 3, so a move needs 8 more;
+    // the stale reading shows room 50, so the target qualifies and the gate
+    // reads it again (on 2 Nov the stale reading was 11/95).
     decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)
 }
 
@@ -238,7 +302,10 @@ fn d_a_failed_reread_is_unknown_and_never_recorded_as_without_room() {
         log.contains("reread: spare failed; treated as unknown"),
         "{log}"
     );
-    assert!(log.contains("(candidates: 1 failed, 0 exhausted)"), "{log}");
+    // Issue #2910: a re-read that failed for no stated cause is rejected
+    // (S2: it never stands on its old reading), and counted as failed.
+    assert!(log.contains("reject: spare no usable reading"), "{log}");
+    assert!(log.contains("(candidates: 1 failed)"), "{log}");
     let l = e.rs.load_ledger().unwrap().unwrap();
     let no_room: Vec<String> = l.no_room.map(|r| r.profiles).unwrap_or_default();
     assert!(
@@ -255,16 +322,27 @@ fn d_a_failed_reread_is_unknown_and_never_recorded_as_without_room() {
 
 static CALLS_E: Calls = Mutex::new(Vec::new());
 
-fn reread_e(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_E, name);
-    exh(43.0, 100.0)
+fn reread_e(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_E, name);
+        exh(43.0, 100.0)
+    }
+    (hook_body(c, who, left), None)
 }
 
 fn measure_e(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(11.0, 93.0, Some(at - 90)))]);
-    // `work` is past --week-at; spare's gain (4) is under --margin (5) and
-    // its week is lower, so the decision is a plan-room move.
+    // Issue #2910 (D15): `work` is past --week-at with room 3; spare's stale
+    // reading (86/40, room 14) qualifies and is past --session-at, so the
+    // move is labelled plan-room (on 2 Nov the stale reading was 11/93).
+    let probes = probes_for(snap, &[("spare", rd(86.0, 40.0, Some(at - 90)))]);
     let m = decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)?;
     assert_eq!(
         m.decision,
@@ -287,7 +365,7 @@ fn e_a_plan_room_target_is_read_again_before_the_move() {
     assert_eq!(ino_at(&e.live()), Some(e.l));
     assert_eq!(calls(&CALLS_E), ["spare"]);
     assert!(
-        log.contains("reread: spare reading stale s=11% w=93%; fresh s=43% w=100%"),
+        log.contains("reread: spare reading stale s=86% w=40%; fresh s=43% w=100%"),
         "{log}"
     );
     assert!(!log.contains("reason=plan-room"), "{log}");
@@ -298,9 +376,19 @@ fn e_a_plan_room_target_is_read_again_before_the_move() {
 static CYCLE1_F: AtomicI64 = AtomicI64::new(0);
 static CALLS_F: Calls = Mutex::new(Vec::new());
 
-fn reread_f(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_F, name);
-    exh(100.0, 22.0)
+fn reread_f(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_F, name);
+        exh(100.0, 22.0)
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// Cycle 1: `work` past --session-at, `spare` with room.
@@ -313,10 +401,18 @@ fn cycle1_f(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 
 /// Cycle 2: `spare` is now live and full; `work`'s stored reading is the
 /// one taken before the swap, on which it looks better than `spare`.
+///
+/// Issue #2857 moved that stored reading from 86% to 80% session. At 86% it
+/// was past `--session-at` (85) and swapped back only through the second pass
+/// of `plan_room::choose`, which no longer exists: the rotator makes no swap
+/// onto a login at its threshold, so there was no decision left for the gate
+/// to hold. At 80% the swap back is a threshold swap onto a login with
+/// capacity, so this cycle still reaches the gate, which is what the replay
+/// tests.
 fn cycle2_f(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let before_swap = CYCLE1_F.load(Ordering::SeqCst);
-    let probes = probes_for(snap, &[("work", rd(86.0, 20.0, Some(before_swap)))]);
+    let probes = probes_for(snap, &[("work", rd(80.0, 20.0, Some(before_swap)))]);
     let m = decide_measured(ctx, snap, rd(95.0, 35.0, None), probes, at)?;
     assert!(
         matches!(&m.decision, Decision::Swap { to, .. } if to == &n("work")),
@@ -373,6 +469,10 @@ fn cycle2_g(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 fn backdate(e: &Env, name: &str, at: i64) {
     let mut l = e.rs.load_ledger().unwrap().unwrap();
     l.swapped_away.insert(name.into(), at);
+    // Model the same historical swap in both records of its use.
+    if l.previous.as_deref() == Some(name) {
+        l.swapped_at = Some(at);
+    }
     e.rs.save_ledger(&l).unwrap();
 }
 
@@ -408,9 +508,19 @@ fn g_a_reading_after_the_swap_that_shows_room_lifts_the_damping() {
 
 static CALLS_G2: Calls = Mutex::new(Vec::new());
 
-fn reread_g2(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_G2, name);
-    rd(10.0, 20.0, None)
+fn reread_g2(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_G2, name);
+        rd(10.0, 20.0, None)
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// `work`'s reading is later than the swap away but over 300 s old.
@@ -447,9 +557,19 @@ fn g_a_reread_that_shows_room_lifts_the_damping() {
 static CYCLE1_H: AtomicI64 = AtomicI64::new(0);
 static CALLS_H: Calls = Mutex::new(Vec::new());
 
-fn reread_h(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_H, name);
-    exh(100.0, 22.0)
+fn reread_h(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_H, name);
+        exh(100.0, 22.0)
+    }
+    (hook_body(c, who, left), None)
 }
 
 fn cycle1_h(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
@@ -462,7 +582,7 @@ fn cycle1_h(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 fn cycle2_h(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let before_swap = CYCLE1_H.load(Ordering::SeqCst);
-    let probes = probes_for(snap, &[("work", rd(86.0, 20.0, Some(before_swap)))]);
+    let probes = probes_for(snap, &[("work", rd(80.0, 20.0, Some(before_swap)))]);
     decide_measured(ctx, snap, rd(95.0, 35.0, None), probes, at)
 }
 
@@ -509,15 +629,28 @@ fn h_damping_survives_between_one_shot_runs_and_holds_only_names_and_integers() 
 
 static CALLS_I: Calls = Mutex::new(Vec::new());
 
-fn reread_i(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_I, name);
-    exh(100.0, 100.0)
+fn reread_i(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_I, name);
+        exh(100.0, 100.0)
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// Four candidates, each best on a stale reading and full when read again.
+/// The live login is at 100%, so the readings are older than the last good
+/// age: issue #2820 would accept a recent one at the cap.
 fn measure_i(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let old = Some(at - 60);
+    let old =
+        Some(at - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS - 60);
     let probes = probes_for(
         snap,
         &[
@@ -561,8 +694,18 @@ fn scan_busy(_: &Path) -> Liveness {
     Liveness::Known(live)
 }
 
-fn never(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    panic!("SR-3: {name} was read while the lock was held")
+fn never(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        panic!("SR-3: {name} was read while the lock was held")
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// `spare`, read now, is chosen; it then gets a session, so revalidation
@@ -600,16 +743,29 @@ fn sr3_revalidation_treats_a_stale_retry_target_as_unknown_without_reading() {
 
 static CALLS_DRY: Calls = Mutex::new(Vec::new());
 
-fn reread_dry(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_DRY, name);
-    rd(11.0, 20.0, None)
+fn reread_dry(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_DRY, name);
+        rd(11.0, 20.0, None)
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// `work` past --week-at; `spare`, damped two minutes ago, has a passive
 /// reading older than the live one.
 fn measure_dry(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(11.0, 95.0, Some(at - 60)))]);
+    let probes = probes_for(snap, &[("spare", rd(11.0, 50.0, Some(at - 60)))]);
+    // Issue #2910 (D1): `work` (0/97) has room 3, so a move needs 8 more;
+    // the stale reading shows room 50, so the target qualifies and the gate
+    // reads it again (on 2 Nov the stale reading was 11/95).
     decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)
 }
 
@@ -643,10 +799,20 @@ fn sr9_a_dry_run_reads_again_and_leaves_the_ledger_bytes_unchanged() {
 static CALLS_STOP: Calls = Mutex::new(Vec::new());
 
 /// A slow login: the read would take a probe timeout.
-fn reread_stop(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    record(&CALLS_STOP, name);
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    rd(0.0, 50.0, None)
+fn reread_stop(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        record(&CALLS_STOP, name);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        rd(0.0, 50.0, None)
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// As (b), and `rotate stop` arrives while the cycle measures.

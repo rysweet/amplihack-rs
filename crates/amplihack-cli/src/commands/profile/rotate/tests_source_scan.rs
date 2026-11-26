@@ -67,6 +67,15 @@ fn rotate_has_the_planned_files() {
         "fresh.rs",
         "fresh_msg.rs",
         "swap_back.rs",
+        // Issue #2909: the event wake, its lines, and the blocks a cycle
+        // began with.
+        "wake.rs",
+        "wake_msg.rs",
+        "wake_blocks.rs",
+        // Issue #2909, item 3: what a cycle after an event reads.
+        "event_read.rs",
+        // Issue #2095: the test-only lifetime pipe.
+        "lifetime.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }
@@ -657,7 +666,11 @@ fn live_refresh_only_refreshes_an_expired_login() {
     }
     let direct =
         fs::read_to_string(rotate_dir().parent().unwrap().join("usage_direct.rs")).unwrap();
-    let body = body_of(&direct, "refresh_expired");
+    // Issue #2019: `refresh_expired` delegates to `refresh_expired_with`,
+    // which takes an injected clock; the expiry check lives there.
+    let wrapper = body_of(&direct, "refresh_expired");
+    assert!(wrapper.contains("refresh_expired_with("));
+    let body = body_of(&direct, "refresh_expired_with");
     assert!(body.contains("at <= req.now_ms"), "only an expired token");
     assert!(!body.contains("get_usage") && !body.contains("profile_url"));
 }

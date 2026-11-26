@@ -2,16 +2,13 @@
 //! measurements and the decision.
 
 use super::cycle::Ctx;
-use super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};
-use super::decide::{Decision, Measured, Probed, Reading};
+use super::decide::target_seen::Seen;
+use super::decide::{Decision, Probed, Reading};
 use super::identify::{self, Account, CandidateInput, LiveId, LoginKind, Skip};
-use super::key_check;
 use super::log::msg;
-use super::measure::{self, Live};
-use super::overflow::{OverflowInput, Tag, decide_overflow};
+use super::overflow::Tag;
 use super::pin::{self, PinState};
-use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::now;
+use crate::commands::profile::auto_switch::Unreadable;
 use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER};
@@ -35,6 +32,11 @@ pub struct Snap {
     pub candidates: Vec<ProfileName>,
     pub skips: Vec<(ProfileName, Skip)>,
     pub sees_sessions: bool,
+    /// Issue #2820: the processes whose environment the liveness scan could
+    /// not read and that it noted, in pid order, for the `unreadable
+    /// process` lines. Only logs; the profiles they count for are already
+    /// in `skips` as `session running`.
+    pub unreadable: Vec<Unreadable>,
     /// The overflow entries with their tiers, in file order. Part of the
     /// snapshot, so a mark or tier changed during measurement skips the
     /// cycle. The API-key profile (issue #1700) is the entry at
@@ -55,6 +57,10 @@ pub struct Snap {
     pub home_no_oauth: bool,
     /// Each candidate's account; step 6 compares the target's (#1721).
     pub candidate_accounts: Vec<(ProfileName, Option<Account>)>,
+    /// Issue #2218: the live login is a known profile in the auto-switch
+    /// `exclude` list. It is never probed or refreshed, nothing measured is
+    /// recorded under its name, and the cycle moves off it.
+    pub live_excluded: bool,
 }
 
 impl Snap {
@@ -142,6 +148,13 @@ impl Snap {
     }
 }
 
+#[path = "affinity.rs"]
+pub(super) mod affinity;
+#[path = "observe_decide.rs"]
+mod decided;
+#[cfg(test)]
+pub(super) use decided::decide_measured;
+pub(super) use decided::decide_with;
 #[path = "observe_snapshot.rs"]
 mod take;
 pub use take::snapshot;
@@ -219,128 +232,13 @@ pub struct Measurement {
     pub probed: Option<Probes>,
     /// Issue #1870: the freshness gate's `reread:` and `damp:` lines.
     pub fresh_lines: Vec<String>,
+    /// Issue #2910: what the cycle saw of each login, its `Extra`, and why an
+    /// ALERT decision did not move. `Seen::default()` from a stub.
+    pub seen: Seen,
 }
 
-pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
-    let measured_at = now();
-    let platform = snap.platform();
-    let live = match &snap.live {
-        _ if snap.platform_live() => Live::Platform,
-        LiveId::Known(n) => Live::Profile(n),
-        _ => Live::Unowned,
-    };
-    // The API-key profile is never probed: it gets its synthetic reading,
-    // and it is in the overflow order, so never in the plan pool.
-    let to_probe: Vec<ProfileName> = snap
-        .candidates
-        .iter()
-        .filter(|c| Some(*c) != platform)
-        .cloned()
-        .collect();
-    // Keep the existing usage reader's refresh opportunity for otherwise
-    // eligible OAuth logins. Their readings cannot enter this decision:
-    // a later cycle must first bind identity to the refreshed credentials.
-    let unbound: Vec<ProfileName> = snap
-        .skips
-        .iter()
-        .filter(|(_, reason)| matches!(reason, Skip::NoAccount))
-        .map(|(name, _)| name.clone())
-        .collect();
-    let (probe, mut probes) = measure::measure_ordered(ctx, live, &to_probe, &unbound, measured_at);
-    if let Some(p) = platform.filter(|p| snap.candidates.contains(p)) {
-        probes.push((p.clone(), Probed::platform()));
-    }
-    decide_measured(ctx, snap, probe, probes, measured_at)
-}
-
-/// Step 5 of a cycle: the overflow-aware decision on this cycle's probes,
-/// the live profile's and each candidate's, measured from `measured_at`.
-/// Tests that stub probing call this, so they run the real decision.
-pub(super) fn decide_measured(
-    ctx: &Ctx,
-    snap: &Snap,
-    probe: Probed,
-    probes: Vec<(ProfileName, Probed)>,
-    measured_at: i64,
-) -> Result<Measurement, ProfileError> {
-    let measured: Vec<Measured> = probes
-        .iter()
-        .map(|(name, p)| Measured::new(name.clone(), p))
-        .collect();
-    // A ledger that cannot be read ends the cycle here, before any move onto
-    // credits: its spend blocks are unknown. Only a missing ledger means no
-    // blocks.
-    let ledger = ctx.rs.load_ledger()?;
-    let swapped_at = ledger.as_ref().and_then(|l| l.swapped_at);
-    let platform_block = ledger.as_ref().and_then(|l| l.platform_block.clone());
-    let blocks = ledger.map(|l| l.overflow_blocked).unwrap_or_default();
-    let live_name = match &snap.live {
-        LiveId::Known(n) => Some(n),
-        _ => None,
-    };
-    let t = now();
-    let overflow = snap.decision_overflow();
-    let unmeasured_plan = snap.unmeasured_plan();
-    let verdict = decide_overflow(&OverflowInput {
-        settings: &ctx.settings,
-        live_name,
-        live: &probe,
-        candidates: &measured,
-        unmeasured_plan: &unmeasured_plan,
-        refused: &snap.refused_plan(),
-        overflow: &overflow,
-        blocks: &blocks,
-        platform_block: platform_block.as_ref(),
-        swapped_at,
-        now: t,
-    });
-    // A spend limit on a live overflow profile is handled by its block, so
-    // it does not count towards the failed live probes.
-    let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));
-    let failed = if live_over && probe.spend_limit {
-        ctx.failed_live
-    } else {
-        next_failed(ctx.failed_live, &probe.reading)
-    };
-    let (decision, note) = damp(
-        verdict.decision,
-        &probe.reading,
-        failed,
-        swapped_at,
-        t,
-        &ctx.settings,
-    );
-    // Only here is the file read: a swap on this ground is rare. The strict
-    // reader, not `key_check::home_key`: a key Claude may not read must not
-    // keep a dead login live, and the swap it would have stopped is harmless.
-    let home_key = (is_failed_probe_swap(&decision) && !snap.platform_live())
-        .then(|| key_check::reachable(&ctx.home).ok())
-        .flatten();
-    let (decision, note) = keep_for_home_key(decision, note, home_key);
-    // A damped move off credits is a stay on them.
-    let tag = match (&decision, verdict.tag) {
-        (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),
-        (_, tag) => tag,
-    };
-    let others = probes.iter().map(|(n, p)| (n.clone(), p.reading)).collect();
-    // `probed` is always `Some` here: `Room::of` treats `None` (test stubs
-    // only) as clean.
-    Ok(Measurement {
-        live: probe.reading,
-        others,
-        probed: Some((probe, probes)),
-        decision,
-        note,
-        failed,
-        tag,
-        new_blocks: verdict.new_blocks,
-        next_plan_reset: verdict.next_plan_reset,
-        unknown_plan: verdict.unknown_plan,
-        key_held: verdict.key_held,
-        measured_at,
-        fresh_lines: Vec::new(),
-    })
-}
+// Steps 4 and 5 together, `measure_and_decide`, are in `event_read.rs`
+// (issue #2909): an event cycle reads less than an interval cycle.
 
 /// The reason of the API-key block in the ledger, for the ALERT that stays
 /// on a blocked API key.

@@ -600,9 +600,13 @@ fn error_reasons_are_the_four_fixed_texts() {
 // JSON (D14)
 // ---------------------------------------------------------------------------
 
+/// The `--json` array for `rows`.
 fn json(rows: &[Row]) -> serde_json::Value {
     let text = render_json(rows);
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
+    let v: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"));
+    assert!(v.is_array(), "{text}");
+    v
 }
 
 fn keys(v: &serde_json::Value) -> Vec<&str> {
@@ -612,7 +616,7 @@ fn keys(v: &serde_json::Value) -> Vec<&str> {
 }
 
 #[test]
-fn json_is_an_array_of_rows_with_the_exact_keys() {
+fn json_claude_is_an_array_of_rows_with_the_exact_keys() {
     let v = json(&table_rows());
     let arr = v.as_array().unwrap();
     assert_eq!(arr.len(), 2);
@@ -718,7 +722,10 @@ fn json_raw_only_when_kept_and_strings_are_escaped_not_cleaned() {
 
 #[test]
 fn json_for_no_rows_is_an_empty_array() {
-    assert_eq!(render_json(&[]).trim(), "[]");
+    // Issue #2001 keeps `--json` a bare array: host scripts read it with
+    // `.[]` and `.[0]`. The Codex rows are in `--summary-json` only.
+    let v: serde_json::Value = serde_json::from_str(&render_json(&[])).unwrap();
+    assert_eq!(v, serde_json::json!([]));
 }
 
 // ---------------------------------------------------------------------------
@@ -1175,6 +1182,34 @@ fn overflow_rows_are_marked_with_any_block() {
     assert_eq!(marks(&r), "* overflow, blocked until 2026-11-01T00:00:00Z");
 }
 
+// Issues #2890/#2882: a step's spend-limit failure blocks a plan login, which
+// is not marked overflow. Any login with an active block carries the same
+// `blocked until <time>` wording; no new column or JSON key.
+
+#[test]
+fn a_blocked_plan_login_carries_the_blocked_until_mark() {
+    let mut r = ok("wwest", Some((10.0, None)), Some((20.0, None)));
+    assert!(!r.overflow);
+    r.overflow_blocked_until = Some(1_793_491_200);
+    assert_eq!(marks(&r), "blocked until 2026-11-01T00:00:00Z");
+    r.default = true;
+    assert_eq!(marks(&r), "* blocked until 2026-11-01T00:00:00Z");
+}
+
+#[test]
+fn a_blocked_overflow_login_keeps_its_existing_wording() {
+    let mut r = ok("cred", Some((10.0, None)), Some((20.0, None)));
+    r.overflow = true;
+    r.overflow_blocked_until = Some(1_793_491_200);
+    assert_eq!(marks(&r), "overflow, blocked until 2026-11-01T00:00:00Z");
+}
+
+#[test]
+fn an_unblocked_plan_login_has_no_blocked_mark() {
+    let r = ok("wwest", Some((10.0, None)), Some((20.0, None)));
+    assert_eq!(marks(&r), "-");
+}
+
 // "running on overflow" needs the live row to be marked and its own probe in
 // this run to show a plan limit reached: an exhausted state, or the session
 // or all-models weekly window at 100%. Either limit is enough; both are not
@@ -1263,7 +1298,7 @@ fn json_rows_carry_the_overflow_fields() {
     cred.overflow = true;
     cred.overflow_blocked_until = Some(1_793_491_200);
     let v = json(&[cred, ok("work", None, Some((5.0, None)))]);
-    let arr = v.as_array().expect("still a top-level array");
+    let arr = v.as_array().expect("the `claude` array");
     assert_eq!(arr[0]["overflow"], true);
     assert_eq!(arr[0]["overflow_blocked_until"], 1_793_491_200);
     assert_eq!(arr[1]["overflow"], false);
@@ -1733,6 +1768,32 @@ mod request {
 
     const ANSWER: &str = "cat > \"$d/stdin\"; cat \"$d/answer\"";
 
+    /// Issue #1974: both probe argument sets end with this flag, so
+    /// `claude` writes no session log for the probe.
+    const NO_PERSIST: &str = "--no-session-persistence";
+
+    /// The recorded `$*` of the usage request.
+    fn req() -> String {
+        format!("{} {NO_PERSIST}", ARGS.join(" "))
+    }
+
+    /// The recorded `$*` of the `/usage` text attempt.
+    const TEXT: &str = "-p /usage --no-session-persistence";
+
+    #[test]
+    fn both_argument_sets_end_with_no_session_persistence() {
+        let f = Fake::new(ANSWER, USAGE).answer(&error_answer());
+        f.probe(ProbeMode::Auto, 20, false);
+        f.probe(ProbeMode::Text, 20, false);
+        let starts = f.starts();
+        assert_eq!(starts.len(), 3, "{starts:?}");
+        for s in &starts {
+            assert!(s.ends_with(NO_PERSIST), "{s:?} must end with {NO_PERSIST}");
+            assert_eq!(s.matches(NO_PERSIST).count(), 1, "{s:?} has the flag once");
+        }
+        assert_eq!(starts, [req(), TEXT.to_string(), TEXT.to_string()]);
+    }
+
     #[test]
     fn an_accepted_answer_is_used_with_one_start() {
         let f = Fake::new(ANSWER, USAGE).answer(&accepted());
@@ -1744,7 +1805,7 @@ mod request {
         assert_eq!(session(&p), 20.0);
         assert_eq!(p.error, None);
         assert_eq!(p.raw, None);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert_eq!(f.read("stdin"), Some(format!("{REQUEST_LINE}\n")));
     }
 
@@ -1788,7 +1849,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert_eq!(reading(&p), Reading::Failed);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
     }
 
     /// `primaryApiKey` answers like a plain plan login, so figures in that
@@ -1799,7 +1860,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert!(matches!(reading(&p), Reading::Measured { .. }));
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
     }
 
     /// With no figures, as when the usage read failed, `primaryApiKey` ends
@@ -1810,7 +1871,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert_eq!(reading(&p), Reading::Failed);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
     }
 
     #[test]
@@ -1819,7 +1880,7 @@ mod request {
         let p = f.probe(ProbeMode::Auto, 20, true);
         assert_eq!(p.report.state, UsageState::Ok);
         assert_eq!(session(&p), 37.0);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
         // `--raw` shows the attempt that gave the row.
         let raw = p.raw.unwrap();
         assert!(raw.stdout.contains("Current session"), "{raw:?}");
@@ -1848,7 +1909,7 @@ mod request {
         assert_eq!(p.report.state, UsageState::Timeout);
         assert_eq!(p.error, None);
         assert!(p.report.session.is_none() && p.report.week_all.is_none());
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert!(p.raw.is_some(), "the request attempt's output");
     }
 
@@ -1871,7 +1932,7 @@ mod request {
         let p = f.probe(ProbeMode::Text, 20, false);
         assert_eq!(p.report.state, UsageState::Ok);
         assert_eq!(session(&p), 37.0);
-        assert_eq!(f.starts(), ["-p /usage"]);
+        assert_eq!(f.starts(), [TEXT]);
         assert_eq!(f.read("stdin"), None);
         assert_eq!(f.read("stdin-usage").as_deref(), Some(""));
     }
@@ -1914,7 +1975,7 @@ mod request {
         let r = probe_with(build, ProbeMode::Auto, Duration::from_secs(20), NOW, false);
         assert!(r.is_err());
         assert_eq!(calls.get(), 2);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
     }
 
     #[test]
@@ -1946,7 +2007,7 @@ mod request {
         );
         assert_eq!(session(&probes[0]), 37.0, "cred read with /usage");
         assert_eq!(session(&probes[1]), 20.0, "plan read with the request");
-        assert_eq!(f.starts(), ["-p /usage".to_string(), ARGS.join(" ")]);
+        assert_eq!(f.starts(), [TEXT.to_string(), req()]);
     }
 
     // -----------------------------------------------------------------------
@@ -1971,7 +2032,7 @@ mod request {
     fn an_accepted_get_usage_answer_has_no_spend_to_read() {
         let f = Fake::new(ANSWER, USAGE).answer(&accepted());
         let p = f.probe(ProbeMode::Auto, 20, false);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert_eq!(p.spend, Spend::NotApplicable);
         assert_eq!(p.extra_shape, None);
     }
@@ -1993,7 +2054,7 @@ mod request {
     fn the_auto_fallback_to_usage_text_reads_the_spend() {
         let f = Fake::new(ANSWER, SPEND_TEXT).answer(&error_answer());
         let p = f.probe(ProbeMode::Auto, 20, false);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
         assert_eq!(p.spend, Spend::LimitReached);
     }
 
@@ -2026,8 +2087,9 @@ mod request {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1797: `--json` is unchanged byte for byte, and `--summary-json`
-// holds the same array
+// Issue #1797: the Claude rows of `--json` are unchanged, and
+// `--summary-json` holds the same array. Issue #2001 moved them under
+// `claude`; the golden file is still the Claude array alone.
 // ---------------------------------------------------------------------------
 
 /// Every kind of row `--json` can print, in display order, with the
@@ -2087,12 +2149,13 @@ fn golden_rows() -> Vec<Row> {
 }
 
 #[test]
-fn json_output_matches_the_golden_file_byte_for_byte() {
-    let want = include_str!("testdata/usage_json_golden.json");
+fn json_claude_rows_match_the_golden_file() {
+    let want: serde_json::Value =
+        serde_json::from_str(include_str!("testdata/usage_json_golden.json")).unwrap();
+    let got: serde_json::Value = serde_json::from_str(&render_json(&golden_rows())).unwrap();
     assert_eq!(
-        render_json(&golden_rows()),
-        want.strip_suffix('\n').unwrap_or(want),
-        "`--json` must not change (issue #1797)"
+        got, want,
+        "the `--json` array must not change (issues #1797, #2001)"
     );
 }
 
@@ -2140,27 +2203,38 @@ mod summary_1797 {
     fn summary_json_profiles_are_exactly_the_json_array() {
         let rows = golden_rows();
         let s = summary(&rows);
-        let v = parse(&render_summary_json(NOW, &rows, s.as_ref()));
+        let v = parse(&render_summary_json(NOW, &rows, s.as_ref(), &[]));
         assert_eq!(v["profiles"], parse(&render_json(&rows)));
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["at", "profiles", "summary"]);
+        assert_eq!(keys, ["at", "codex", "profiles", "summary"]);
+        assert_eq!(v["codex"], serde_json::json!([]));
     }
 
     #[test]
     fn summary_json_at_is_iso_utc_and_profile_times_stay_epoch() {
         let rows = golden_rows();
-        let v = parse(&render_summary_json(NOW, &rows, summary(&rows).as_ref()));
+        let v = parse(&render_summary_json(
+            NOW,
+            &rows,
+            summary(&rows).as_ref(),
+            &[],
+        ));
         assert_eq!(v["at"], "2026-10-16T12:00:00Z");
         assert!(v["profiles"][0]["session"]["resets_at"].is_i64());
     }
 
     #[test]
     fn summary_json_with_no_profiles_has_an_empty_array_and_null_summary() {
-        let v = parse(&render_summary_json(NOW, &[], None));
+        let v = parse(&render_summary_json(NOW, &[], None, &[]));
         assert_eq!(
             v,
-            serde_json::json!({"at": "2026-10-16T12:00:00Z", "profiles": [], "summary": null})
+            serde_json::json!({
+                "at": "2026-10-16T12:00:00Z",
+                "profiles": [],
+                "summary": null,
+                "codex": []
+            })
         );
     }
 
@@ -2237,7 +2311,7 @@ mod summary_1797 {
         for out in [&text, &json] {
             assert!(!out.contains("example.com"), "{out}");
         }
-        let whole = render_summary_json(NOW, &[r], Some(&s));
+        let whole = render_summary_json(NOW, &[r], Some(&s), &[]);
         assert_eq!(
             whole.matches("someone@example.com").count(),
             2,
@@ -2864,4 +2938,317 @@ fn the_spend_plays_no_part_in_ordering() {
     let mut rows = vec![b, a];
     order(&mut rows, NOW);
     assert_eq!(names(&rows), ["aa", "bb"]);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2271: rows for a login with no token
+//
+// Contract:
+// - `ErrorReason::NotSignedIn(why)` shows as `not signed in (<why>)`; it
+//   holds a fixed reason only.
+// - A not-signed-in row (`Probe::not_signed_in`): state `not_logged_in`,
+//   source `direct`, spend `unknown`, error `not signed in (<why>)`.
+// - `marks()` (the `--table` MARKS cell) puts the text last, after every
+//   other mark, and never adds `(fallback)`.
+// - The table shows `-` in every percentage and reset column.
+// - `error_warnings` skips these rows (D7): the reason is already in the
+//   row.
+// - `ErrorReason::json_error()` is `None` for `NotSignedIn` (D6) and
+//   `Some(as_str())` for every other variant.
+// - JSON (`--json` and the `profiles` array of `--summary-json`): `state`
+//   `not_logged_in`, `source` `direct`, `spend` `unknown`, `error` `null`,
+//   no `raw`, and no new key.
+// - `source_notes` gives nothing for the row, and a row with no `raw`
+//   prints no `(direct: no claude output)` line.
+// ---------------------------------------------------------------------------
+
+use super::usage_cmd::Probe;
+
+/// The fixed texts of `usage_direct::reason`, which is Unix-only; these
+/// tests run on every platform.
+mod direct_reason {
+    pub(super) const NO_TOKEN: &str = "no oauth token";
+    pub(super) const NO_FILE: &str = "no credentials file";
+    pub(super) const NO_REFRESH_TOKEN: &str = "no refresh token";
+}
+
+/// A row as `profile usage` builds it from `Probe::not_signed_in(why)`.
+fn not_signed_in_row(name: &str, why: &'static str) -> Row {
+    let p = Probe::not_signed_in(why);
+    let mut r = row(name, p.report);
+    r.error = p.error;
+    r.raw = p.raw;
+    r.source = p.source;
+    r.direct_failure = p.direct_failure;
+    r.spend = p.spend;
+    r.extra_shape = p.extra_shape;
+    r
+}
+
+#[test]
+fn not_signed_in_shows_the_fixed_reason() {
+    for (why, text) in [
+        (direct_reason::NO_TOKEN, "not signed in (no oauth token)"),
+        (
+            direct_reason::NO_FILE,
+            "not signed in (no credentials file)",
+        ),
+        (
+            direct_reason::NO_REFRESH_TOKEN,
+            "not signed in (no refresh token)",
+        ),
+    ] {
+        let e = ErrorReason::NotSignedIn(why);
+        assert_eq!(e.as_str(), text);
+        assert_eq!(e.to_string(), text);
+        assert!(!text.contains('/'), "no path: {text}");
+    }
+}
+
+#[test]
+fn a_not_signed_in_row_has_the_documented_fields() {
+    let r = not_signed_in_row("scratch", direct_reason::NO_FILE);
+    assert_eq!(r.report.state, UsageState::NotLoggedIn);
+    assert_eq!(r.source, Some(Source::Direct));
+    assert_eq!(r.spend, Spend::Unknown);
+    assert_eq!(r.direct_failure, Some(direct_reason::NO_FILE));
+    assert!(r.raw.is_none() && r.extra_shape.is_none());
+}
+
+#[test]
+fn the_table_marks_end_with_the_text_and_never_say_fallback() {
+    let mut r = not_signed_in_row("scratch", direct_reason::NO_TOKEN);
+    assert_eq!(marks(&r), "not signed in (no oauth token)");
+    r.default = true;
+    assert_eq!(marks(&r), "* not signed in (no oauth token)");
+    r.leased_to = Some("work".into());
+    r.overflow = true;
+    let m = marks(&r);
+    assert!(m.ends_with(" not signed in (no oauth token)"), "{m}");
+    assert!(m.starts_with("* leased→work"), "{m}");
+    assert!(!m.contains("fallback"), "{m}");
+}
+
+#[test]
+fn the_table_row_shows_the_text_the_state_and_dashes() {
+    let rows = vec![
+        ok("work", Some((20.0, None)), Some((30.0, None))),
+        not_signed_in_row("scratch", direct_reason::NO_FILE),
+    ];
+    let out = render_table(&rows);
+    let l = line_of(&out, "scratch");
+    assert!(l.contains("not signed in (no credentials file)"), "{out}");
+    assert!(l.contains("not_logged_in"), "{out}");
+    assert!(!l.contains("(fallback)") && !l.contains('%'), "{out}");
+    let cells: Vec<&str> = l.split_whitespace().collect();
+    assert_eq!(
+        cells[cells.len() - 5..],
+        ["-", "-", "-", "-", "unknown"],
+        "{l}"
+    );
+    assert_eq!(out.matches("not signed in").count(), 1, "shown once: {out}");
+}
+
+/// D7: nine identical warnings would add noise and nothing else.
+#[test]
+fn a_not_signed_in_row_prints_no_warning() {
+    let rows = [
+        ok("work", Some((1.0, None)), None),
+        not_signed_in_row("scratch", direct_reason::NO_FILE),
+        not_signed_in_row("spare", direct_reason::NO_TOKEN),
+        not_signed_in_row("old", direct_reason::NO_REFRESH_TOKEN),
+    ];
+    assert!(
+        error_warnings(&rows).is_empty(),
+        "{:?}",
+        error_warnings(&rows)
+    );
+}
+
+/// Other error rows still warn, next to the skipped not-signed-in rows.
+#[test]
+fn other_error_rows_still_warn_beside_a_not_signed_in_row() {
+    let mut broken = row("broken", report(UsageState::Error, None, None));
+    broken.error = Some(ErrorReason::Direct(direct_reason::NO_TOKEN));
+    let mut gone = row("gone", report(UsageState::Error, None, None));
+    gone.error = Some(ErrorReason::NoClaude);
+    let rows = [
+        not_signed_in_row("scratch", direct_reason::NO_TOKEN),
+        broken,
+        gone,
+    ];
+    assert_eq!(
+        error_warnings(&rows),
+        [
+            "warning: profile \"broken\": direct read: no oauth token",
+            "warning: profile \"gone\": claude not found",
+        ]
+    );
+}
+
+#[test]
+fn json_error_is_none_for_not_signed_in() {
+    for why in [
+        direct_reason::NO_TOKEN,
+        direct_reason::NO_FILE,
+        direct_reason::NO_REFRESH_TOKEN,
+    ] {
+        assert_eq!(ErrorReason::NotSignedIn(why).json_error(), None);
+    }
+}
+
+#[test]
+fn json_error_is_as_str_for_every_other_reason() {
+    for e in [
+        ErrorReason::ProfileRefused,
+        ErrorReason::StartFailed,
+        ErrorReason::ReadFailed,
+        ErrorReason::WaitFailed,
+        ErrorReason::NoClaude,
+        ErrorReason::Direct(direct_reason::NO_TOKEN),
+    ] {
+        assert_eq!(e.json_error(), Some(e.as_str()), "{e:?}");
+    }
+}
+
+#[test]
+fn json_of_a_not_signed_in_row_keeps_the_shape() {
+    let plain = sourced(
+        row("aa", report(UsageState::NotLoggedIn, None, None)),
+        Some(Source::Direct),
+    );
+    let r = not_signed_in_row("scratch", direct_reason::NO_TOKEN);
+    let v = json(&[plain, r]);
+    assert_eq!(keys(&v[1]), keys(&v[0]), "no key added");
+    assert_eq!(v[1]["state"], "not_logged_in");
+    assert_eq!(v[1]["source"], "direct");
+    assert_eq!(v[1]["spend"], "unknown");
+    assert!(v[1]["error"].is_null(), "{}", v[1]);
+    assert!(v[1]["raw"].is_null(), "{}", v[1]);
+    assert!(v[1]["session"].is_null() && v[1]["week_all"].is_null());
+}
+
+/// D6: `error` stays `null`, as it was when `claude` reported these
+/// logins, for every reason: a token-less file, no file, and an expired
+/// token with no refresh token. The state says the profile is not signed
+/// in. A real error row in the same output keeps its text.
+#[test]
+fn json_error_of_every_not_signed_in_reason_is_null() {
+    for why in [
+        direct_reason::NO_TOKEN,
+        direct_reason::NO_FILE,
+        direct_reason::NO_REFRESH_TOKEN,
+    ] {
+        let mut err = row("broken", report(UsageState::Error, None, None));
+        err.error = Some(ErrorReason::NoClaude);
+        let v = json(&[not_signed_in_row("scratch", why), err]);
+        assert!(v[0]["error"].is_null(), "{why}: {}", v[0]);
+        assert_eq!(v[0]["state"], "not_logged_in");
+        assert_eq!(v[1]["error"], "claude not found");
+    }
+}
+
+/// `--summary-json` holds the same `profiles` rows as `--json`.
+#[test]
+fn summary_json_gives_the_same_error_for_a_not_signed_in_row() {
+    use super::usage_cmd::render_summary_json;
+    let r = not_signed_in_row("scratch", direct_reason::NO_REFRESH_TOKEN);
+    let v: serde_json::Value = serde_json::from_str(&render_summary_json(
+        NOW,
+        std::slice::from_ref(&r),
+        None,
+        &[],
+    ))
+    .unwrap();
+    let row = &v["profiles"][0];
+    assert!(row["error"].is_null(), "{row}");
+    assert_eq!(row["state"], "not_logged_in");
+    assert_eq!(row["source"], "direct");
+    assert!(row["raw"].is_null(), "{row}");
+    assert_eq!(v["profiles"], json(&[r]), "the same rows as --json");
+}
+
+/// The table and bars keep the display text; JSON has `error: null`.
+#[test]
+fn the_table_keeps_the_display_text_not_the_json_text() {
+    let out = render_table(&[not_signed_in_row("scratch", direct_reason::NO_TOKEN)]);
+    assert!(out.contains("not signed in (no oauth token)"), "{out}");
+    assert!(!out.contains("direct read:"), "{out}");
+}
+
+#[test]
+fn a_not_signed_in_row_gets_no_source_note_and_no_raw_line() {
+    let r = not_signed_in_row("scratch", direct_reason::NO_FILE);
+    assert!(source_notes(std::slice::from_ref(&r)).is_empty());
+    let out = render_table(&[r]);
+    assert!(!out.contains("no claude output"), "{out}");
+    assert!(!out.contains("raw stdout"), "{out}");
+}
+
+/// D6: a not-signed-in row sorts as `(2, 0)`: after every row with a
+/// reading and before `timeout`, `unparsed` and `error` rows.
+#[test]
+fn a_not_signed_in_row_sorts_after_readings_and_before_errors() {
+    let mut err = row("aa-error", report(UsageState::Error, None, None));
+    err.error = Some(ErrorReason::NoClaude);
+    let mut rows = vec![
+        err,
+        row("ab-timeout", report(UsageState::Timeout, None, None)),
+        not_signed_in_row("ac-scratch", direct_reason::NO_TOKEN),
+        ok("zz-work", Some((90.0, None)), Some((90.0, None))),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(
+        names(&rows),
+        ["zz-work", "ac-scratch", "ab-timeout", "aa-error"]
+    );
+}
+
+/// Issue #3181: `profile usage` shows a login at no less than the rotator's
+/// highest reading of it in the same window, and only for display.
+#[cfg(unix)]
+#[test]
+fn usage_rows_are_shown_at_no_less_than_the_rotators_highest_reading() {
+    use super::rotate::ledger::{RotateLedger, RotateState};
+    use super::store::ProfileStore;
+    use super::usage_cmd::shown_rows;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = ProfileStore::new(tmp.path().join("root"));
+    store
+        .add(&super::name::ProfileName::parse("work").unwrap())
+        .unwrap();
+    let t = super::auto_switch::kit::now();
+    let reset = t + 2 * HOUR;
+    let l: RotateLedger = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "high_water": {"work": {"session": {"used": 91.0, "resets_at": reset}}},
+    }))
+    .unwrap();
+    RotateState::new(store.root()).save_ledger(&l).unwrap();
+    let rows = vec![
+        ok(
+            "work",
+            Some((70.0, Some(reset))),
+            Some((11.0, Some(reset + DAY))),
+        ),
+        ok(
+            "spare",
+            Some((20.0, Some(reset))),
+            Some((5.0, Some(reset + DAY))),
+        ),
+    ];
+    let shown = shown_rows(&store, &rows, t);
+    let session = |rs: &[Row], name: &str| {
+        let r = rs.iter().find(|r| r.profile == name).unwrap();
+        r.report.session.as_ref().unwrap().used_percentage
+    };
+    assert_eq!(session(&shown, "work"), 91.0, "the stale 70% is not shown");
+    assert_eq!(session(&shown, "spare"), 20.0, "no peak, shown as read");
+    assert_eq!(session(&rows, "work"), 70.0, "the rows as read are kept");
+    // Once the window has reset, the reading is shown as read.
+    let later = shown_rows(&store, &rows, reset + 1);
+    assert_eq!(session(&later, "work"), 70.0);
+    // Another window: shown as read.
+    let next = vec![ok("work", Some((3.0, Some(reset + 5 * HOUR))), None)];
+    assert_eq!(session(&shown_rows(&store, &next, t), "work"), 3.0);
 }

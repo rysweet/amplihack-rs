@@ -41,6 +41,11 @@ fn assert_looked_up_remote_branch(fx: &Fx, run: &Run, why: &str) {
 /// AC11 (i). With `branch_name` unset the run branch comes from the checkout
 /// (open_pr.sh:48); with it set the checked-out branch is still compared with
 /// it (pr_signal.sh:161). Both must see <B>.
+///
+/// Since #2343 the terminal state is assess-finalization's decision, so what
+/// this lookup settles is a fact rather than a verdict: the run reads the open
+/// pull request on <B> and records it. The assertions below are on those
+/// recorded facts, which is where the lookup's answer now lands.
 #[test]
 fn open_pr_check_looks_up_remote_branch() {
     for named in [false, true] {
@@ -67,10 +72,29 @@ fn open_pr_check_looks_up_remote_branch() {
         let run = run(&mut command);
 
         assert_looked_up_remote_branch(&fx, &run, why);
+        let result = run.json();
+        let facts = result["evidence_used"].as_str().unwrap_or_default();
+        for fact in [
+            format!("outcome.branch={BRANCH}"),
+            "outcome.pr=7".to_owned(),
+            "outcome.pr_state=OPEN".to_owned(),
+        ] {
+            assert!(
+                facts.contains(&fact),
+                "{why}: the facts must record {fact} for the open PR found on <B>\n{}",
+                run.describe()
+            );
+        }
         assert_eq!(
-            run.json()["terminal_state"],
-            "EXISTING_OPEN_PR",
+            result["pr_number"],
+            "7",
             "{why}: the open PR on <B> is this run's PR\n{}",
+            run.describe()
+        );
+        assert_eq!(
+            result["pr_url"],
+            PR_URL,
+            "{why}: the result names the pull request the <B> lookup found\n{}",
             run.describe()
         );
     }

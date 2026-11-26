@@ -28,7 +28,8 @@ The recipe is `amplifier-bundle/recipes/quick-change.yaml`. It was added for iss
 - [Routing from smart-orchestrator](#routing-from-smart-orchestrator)
 - [The select-workflow helper](#the-select-workflow-helper)
 - [Steps skipped after a quick change](#steps-skipped-after-a-quick-change)
-- [Recursion limits](#recursion-limits)
+- [Recursion limits and line budgets](#recursion-limits-and-line-budgets)
+- [Same context as the development route](#same-context-as-the-development-route)
 - [Security limits](#security-limits)
 - [Out of scope](#out-of-scope)
 - [Related](#related)
@@ -102,6 +103,8 @@ The run log shows the routing choice on stderr:
 | `quick_change_max_lines` | `"150"` | Line limit (additions plus deletions). Must match `^[0-9]{1,6}$`. |
 | `allow_no_op` | `"false"` | When exactly `"true"`, an empty diff finishes the run with verdict `empty` and no commit, push or PR, in place of failing it. smart-classify-route sets it for docs-only, audit, orchestration and meta tasks, and smart-execute-routing passes it on, as it does to `default-workflow`. See [Empty diff](#empty-diff). |
 | `existing_branch`, `pr_number` | `""` | Not used by `quick-change`, which always creates a new `quick/` branch. Its worktree step passes both as empty, so values inherited from the orchestrator are ignored; the orchestrator does not choose `quick-change` when either is set, or when the task text names a branch (see [Precedence](#precedence)). The recipe sets `existing_branch` itself when it invokes `default-workflow` on hand-over. |
+| `base_branch` | `""` | Declared here with default `""`. `smart-execute-routing` passes `base_branch: "{{base_branch}}"` in `execute-single-round-1-quick-change`, as in the round-1 call to `default-workflow`. The worktree step (step 1) passes it to `workflow-worktree` as empty, so the `quick/` branch starts from `origin/HEAD` and a base inherited from the orchestrator is not used; the context merged back from that step keeps it empty. `quick-change-handover` passes `base_branch: "{{base_branch}}"` to `default-workflow`, which is empty, so finalize reads the base from the pull request ([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)). |
+| `forbidden_base_branches`, `strict_delivery` | inherited | [Delivery inputs](workflow-delivery-inputs.md#where-the-inputs-apply) of `default-workflow`, not declared here. The worktree step passes `forbidden_base_branches` as empty. `strict_delivery` is passed through: when it is `"true"`, step 04 of `workflow-worktree` refuses to create the branch and the run stops. |
 
 No GitHub issue is created by `quick-change`. A hand-over can create one; see [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
@@ -122,16 +125,18 @@ A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` 
 
 | # | Step ID | Type | What it does |
 | --- | --- | --- | --- |
-| 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick` and with `existing_branch` and `pr_number` set to empty. Output `worktree_setup`. |
+| 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick` and with `existing_branch`, `pr_number`, `base_branch` and `forbidden_base_branches` set to empty. Output `worktree_setup`. |
 | 2 | `quick-change-record-base` | bash | Checks the branch (see [Branch name](#branch-name)), checks that a safe commit identity resolves, so a run that could never commit stops before the agent and the checks, removes other runs' state directories that have been idle for 14 days (see [State directory](#state-directory)), pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
 | 3 | `quick-change-implement` | agent | The only agent step. `amplihack:core:builder` makes the change in the worktree. |
 | 4 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed`, `handover`, or `empty` when the diff is empty and `allow_no_op` is `"true"`. Has no condition. Fails the run on git configuration drift, an empty diff without `allow_no_op`, or a fault in the tool. |
 | 5 | `quick-change-write-handover` | bash | On `handover`, writes the patch file and the hand-over note. |
 | 6 | `quick-change-handover` | recipe | On `handover`, runs `default-workflow`. |
 | 7 | `quick-change-run-checks` | bash | On `proceed`, runs `quick_change_checks.sh`. Output `quick_change_checks`. |
-| 8 | `quick-change-commit` | bash | On `proceed`, runs the artifact guard, stages, runs the guard again, sets the commit identity, commits with `git commit -F` and measures the committed change again. Output `quick_change_commit_repaired`: `yes` when hook repair ran, else `no`. |
-| 9 | `quick-change-push` | bash | On `proceed`, pushes the branch, measures the committed change again and verifies the remote ref. Output `quick_change_push_repaired`: `yes` when hook repair ran, else `no`. |
-| 10 | `quick-change-create-pr` | bash | On `proceed`, opens the PR, then removes the state directory. Always the last step. |
+| 8 | `quick-change-commit` | bash | On `proceed`, non-fatal, runs the artifact guard, stages, runs the guard again, sets the commit identity, commits with `git commit -F` and measures the committed change again. Output `quick_change_commit_repaired`: `yes` when hook repair ran, else `no`. |
+| 9 | `quick-change-push` | bash | On `proceed` after a commit, non-fatal, pushes the branch, measures the committed change again and verifies the remote ref. Output `quick_change_push_repaired`: `yes` when hook repair ran, else `no`. |
+| 10 | `quick-change-pr-text` | agent | On `proceed` after a push, non-fatal. A fast agent returns the PR title and body the task gives, as `quick_change_pr_text`, or an empty title. |
+| 11 | `quick-change-create-pr` | bash | On `proceed` after a push, non-fatal. Runs `quick_change_create_pr.sh`: opens the PR with the task's own text, or with the template text when the task gives no PR title, reads it back and restores it once, then removes the state directory. A refused PR text creates nothing and exits 1, so `quick-change-finish-in-loop` takes the work. Output `quick_change_pr_url`. |
+| 12 | `quick-change-finish-in-loop` | recipe | On `proceed` when no PR URL exists, runs `default-workflow` on the same branch, so the build loop finishes the change (#3129). Always the last step. |
 
 The agent works under the leaf-step constraints of #1333: it does not start an orchestrator, recipe or workflow. It is also told not to commit, and not to change git configuration, hooks, remotes or refs. These instructions are guidance; the controls that enforce them are the bash steps listed under [Security limits](#security-limits).
 
@@ -297,7 +302,7 @@ When the verdict is `handover`:
 
 1. `quick-change-write-handover` writes the full diff against the pinned base, untracked files included, to `<state dir>/quick-change-handover.patch`, and writes the hand-over note described below.
 2. Nothing is committed or pushed by `quick-change`. The worktree and branch are left as they are, including any commit the agent made against its instructions.
-3. `quick-change-handover` runs `default-workflow` with the original task, the note appended, and `existing_branch` set from `worktree_setup.branch_name`.
+3. `quick-change-handover` runs `default-workflow` with the original task, the note appended, `existing_branch` set from `worktree_setup.branch_name`, and `base_branch: "{{base_branch}}"`, which is empty after step 1.
 
 `default-workflow` then reuses the `quick/` branch through its own steps:
 
@@ -446,7 +451,7 @@ The body's first section is headed "Request" because it holds the task text as g
 
 When the checks failed, the body starts with "Checks failed"; when no check ran, it starts with "No checks ran"; when the status is `unverified`, it starts with "No build or test covered this change; the checks that passed do not read it". When hook repair ran, it also says "Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree." The create-PR step reads `quick_change_commit_repaired` and `quick_change_push_repaired` from the runner's outputs, never from the state directory, and fails when either is missing.
 
-The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, only after the snapshot (which holds a checksum of the push URL) still matches, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs through `workflow_gh_retry.sh` under an outer timeout.
+The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, only after the snapshot (which holds a checksum of the push URL) still matches, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs once, through `quick_change_create_pr.sh`, with no outer timeout and no retry (#3129).
 
 ### Hook repair
 
@@ -455,6 +460,30 @@ When a `pre-commit` or `pre-push` hook rejects the commit or push, the step uses
 - In the commit step, a change that now exceeds the limits fails the step (exit 5), and nothing is pushed.
 - In the push step, the loop commits the fix and pushes it itself, so the check runs after the push. A failure leaves the branch on `origin`, but the run stops before a PR is opened.
 - When the change is still within the limits, the PR is opened as a draft, because the checks table describes the tree before the repair.
+
+## Task pull request lines and finishing in the loop
+
+When the task gives its own pull request title and description lines, they are kept exactly, and the template body does not replace them. The steps below carry this (see [Build Goal Loop](./build-goal-loop.md#quick-change)):
+
+- `quick-change-pr-text` is a fast-tier agent step that runs after the push, when the verdict is `proceed` and `quick_change_push_repaired` is set. It returns the title and body the task gives, with its lines exactly, as `quick_change_pr_text`, or an empty title when the task gives none. It is non-fatal.
+- `quick_change_create_pr.sh` creates the pull request. It acts on `quick_change_pr_text` as the table below shows.
+
+| `quick_change_pr_text` | Result |
+| --- | --- |
+| An object with `title` `""` and a string `body` | The task gives no PR lines. The title comes from the first 72 characters of the task and the body from its first 4,000 bytes, as in [Pull request](#pull-request) |
+| A non-empty title that passes every check | The title and body are used byte for byte, and the template report (Request, Diff, Checks) is posted as one comment |
+| A non-empty title that fails a check | Nothing is created. Exit 1 |
+| Missing, unparseable, not an object, or a non-string `title` or `body` | Nothing is created. Exit 1 |
+
+A refusal prints `ERROR: quick-change-create-pr: check=<key>: <reason>; nothing was created and the work goes to the build loop`, leaves stdout empty and exits 1. The keys are `pr-text`, `title`, `body` (a title with an empty body), `secret-screen` (the shared secret screen) and `references` (a mention or closing keyword that no source allows), with the unread clause when operator guidance could not be read. `quick-change-finish-in-loop` then takes the work. A failed write of a context value is reported, and is not treated as an empty file.
+
+After creation, the tool reads the text back, corrects it with one `gh pr edit` if needed, and records any remaining difference as a warning and a short comment. It does not end the run. `gh pr create` runs without the former outer timeout.
+
+The steps after the tool behave as follows:
+
+- Commit, push and create-pr are non-fatal. `quick-change-finish-in-loop` runs `default-workflow` (now the goal loop) when the verdict is `proceed` and no pull request exists, with `existing_branch` set from the worktree's branch, the task, and a fixed hand-over note. A failed commit therefore continues in the loop with the worktree and the failure, and does not end the run.
+
+Step 04 of `workflow-worktree` links the launch checkout's git-ignored `.venv` and `.venv-*` folders into the quick-change worktree, so a hook that calls `.venv/bin/python` passes.
 
 ## Routing from smart-orchestrator
 
@@ -612,15 +641,34 @@ When `selected_workflow` is still `quick-change` after execution, these smart-or
 
 `summarize` and `complete-session` still run, including after a run that finished with verdict `empty`.
 
+The same steps also do not run when `build_loop_result` is non-empty, that is, after any build that ran the goal loop.
+
 Reflection rounds and outside-in validation exist to judge a full workflow run. Outside-in validation looks for Step 13 and qa-team evidence that `quick-change` never produces, so running it would start extra rounds and remove the saving the recipe is for. A run that hands over has run `default-workflow`, which does produce that evidence, so `handover-reselect-workflow` changes the selection and these steps run.
 
 `selected_workflow` is declared in the context of `smart-orchestrator`, `smart-classify-route`, `smart-execute-routing`, `smart-reflect-loop` and `smart-validate-summarize`, so each condition can read it.
 
-## Recursion limits
+## Recursion limits and line budgets
 
 `quick-change.yaml` sets `max_depth: 6` and `max_total_steps: 140`. On the pinned runner, limits are counted from the top-level recipe, and a `recipe` step fails when the depth it runs at has reached `max_depth`. The longest path is smart-orchestrator, smart-execute-routing, `quick-change`, then a hand-over into `default-workflow` and its sub-recipes: about 146 of 200 steps, counting `handover-reselect-workflow` and the reflection and validation steps that run after a hand-over, with the deepest sub-recipe (`workflow-terminal-adjudication`) at depth 5 of 6. A change to the runner pin can change how these are counted.
 
-`issue_1740_quick_change_recipe::handover_nesting_leaves_one_level_spare` walks the `recipe:` steps of the bundled YAML from smart-orchestrator, and from `quick-change` run on its own, through `quick-change` and its hand-over, and fails when any sub-recipe on those paths sits deeper than `max_depth - 1`. A new level of sub-recipe under `default-workflow` would use that spare level, and the test fails before it ships.
+No test checks the nesting depth, so a new level of sub-recipe under `default-workflow` must be checked against `max_depth` by hand.
+
+Two line budgets keep the recipes that run a quick change small:
+
+| File | Budget | Test |
+| --- | --- | --- |
+| `quick-change.yaml` | 300 lines | `issue_1740_quick_change_recipe::recursion_limits_and_line_budget`, which also checks `max_depth: 6` and `max_total_steps: 140` |
+| `smart-execute-routing.yaml` | 400 lines | `issue_1740_routing_recipes::smart_recipes_stay_within_400_lines` |
+
+Both files are at their budgets, so a line added to either needs a line removed. After any edit, the recipe's entry in `amplifier-bundle/recipes/_recipe_manifest.json` must be the first 16 characters of the file's SHA-256:
+
+```bash
+sha256sum amplifier-bundle/recipes/quick-change.yaml | cut -c1-16
+```
+
+## Same context as the development route
+
+`execute-single-round-1-quick-change` passes the same `context:` map as `execute-single-round-1-development`: `base_branch`, `worktree_setup`, `allow_no_op`, `skip_pre_agent_validation` and `auto_init_repo`, each as `"{{<key>}}"`. `issue_1740_routing_recipes::quick_change_round_1_follows_development_and_forwards_the_same_context` compares the two maps and fails when they differ, so a key added to one round-1 call must be added to the other. The test checks the forwarded keys, not prompt wording.
 
 ## Security limits
 

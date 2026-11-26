@@ -26,12 +26,12 @@ contract see [CI Resource Discipline](ci-resource-discipline.md).
 push / pull_request / merge_group
    ├─ check          (Lint & Format)            ── required
    ├─ test           (Test)                     ── required
-   ├─ install-smoke  (Install Smoke Test)
+   ├─ install-smoke  (Install Smoke Test)       ── required
    └─ cross-compile  (Build <target>) × 4
          ├─ Build x86_64-unknown-linux-gnu      ── required
-         ├─ Build aarch64-unknown-linux-gnu
-         ├─ Build x86_64-apple-darwin
-         └─ Build aarch64-apple-darwin
+         ├─ Build aarch64-unknown-linux-gnu     ── required
+         ├─ Build x86_64-apple-darwin           ── required
+         └─ Build aarch64-apple-darwin          ── required
 
 release  (Release)   ── tag push only, needs: [test, cross-compile]
 ```
@@ -51,8 +51,8 @@ the required-check critical path to:
 check (~15m) ─▶ test (~35m)  ≈ 50 min
 ```
 
-Under strict "branches must be up to date" protection, a fast-moving `main`
-would re-queue the branch before it could merge, so PRs could churn without ever
+Under strict "branches must be up to date" protection (on when this change was
+made; turned off on 9 Nov 2026), a fast-moving `main` would re-queue the branch before it could merge, so PRs could churn without ever
 landing. Running `test` **concurrently** with `check` drops the critical path to
 the longer single job:
 
@@ -68,8 +68,9 @@ check must still pass before merge.
 ### Correctness is preserved
 
 Removing `needs: check` changes **scheduling only**, not the merge gate. Branch
-protection still requires **Lint & Format** (`check`), **Test** (`test`), and
-**Build x86_64-unknown-linux-gnu** to be green. A lint or format regression
+protection still requires all 7 checks to be green: **Lint & Format**
+(`check`), **Test** (`test`), **Install Smoke Test**, and the four
+`cross-compile` legs. A lint or format regression
 fails `check` independently and blocks the merge exactly as before; the other
 jobs simply do not idle waiting to discover that.
 
@@ -156,24 +157,29 @@ in either workflow — is the fully optimized binary.
 | CI tag `v*` (`cross-compile`) | LTO on, 1 codegen unit (full)    |
 | `release.yml` `build`         | LTO on, 1 codegen unit (full)    |
 
-## Required checks (unchanged)
+## Required checks
 
-Parallelization did not rename or remove any required check. Branch protection on
-`main` continues to require these `name:` values:
+> **Updated 9 Nov 2026:** this section used to mark only 3 checks as required
+> and said the other build legs were enforced in a merge queue. Both were
+> wrong: all 7 are required, and there is no merge queue on this user-owned
+> repository. [Branch protection on main](../contributing/branch-protection.md)
+> is the record; where this page disagrees with it, that page wins.
+
+Parallelization did not rename or remove any check. Branch protection on `main`
+requires these `name:` values:
 
 | Job             | Check name                        | Required |
 | --------------- | --------------------------------- | -------- |
 | `check`         | `Lint & Format`                   | ✅       |
 | `test`          | `Test`                            | ✅       |
-| `install-smoke` | `Install Smoke Test`             |          |
+| `install-smoke` | `Install Smoke Test`              | ✅       |
 | `cross-compile` | `Build x86_64-unknown-linux-gnu`  | ✅       |
-| `cross-compile` | `Build aarch64-unknown-linux-gnu` |          |
-| `cross-compile` | `Build x86_64-apple-darwin`       |          |
-| `cross-compile` | `Build aarch64-apple-darwin`      |          |
+| `cross-compile` | `Build aarch64-unknown-linux-gnu` | ✅       |
+| `cross-compile` | `Build x86_64-apple-darwin`       | ✅       |
+| `cross-compile` | `Build aarch64-apple-darwin`      | ✅       |
 
-The three non-required `cross-compile` legs still run on every PR for signal;
-their coverage is enforced in the merge queue and on tagged release builds before
-any artifact publishes.
+Branch protection matches these job names, so renaming a `name:` in `ci.yml`
+leaves the old required check waiting forever and blocks every merge.
 
 ## Verifying the behavior
 

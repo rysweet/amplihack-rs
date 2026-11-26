@@ -1,5 +1,6 @@
 ---
 name: amplihack:debate
+disable-model-invocation: true
 version: 1.0.0
 description: Multi-agent debate for complex decisions and trade-offs
 triggers:

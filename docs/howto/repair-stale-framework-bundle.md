@@ -1,7 +1,7 @@
 ---
 title: Repair a stale framework bundle
 description: Diagnose and repair an install where the binary is current but smart-orchestrator recipes are stale.
-last_updated: 2026-11-05
+last_updated: 2026-11-11
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: howto
@@ -137,7 +137,7 @@ binary download still needs the network.
 ```text
 error: the staged bundle does not match its source /home/alice/src/amplihack-rs (1 missing, 0 extra, 1 changed):
   missing: recipes/default-workflow.yaml
-  changed: tools/autodrive_merge_gate.sh
+  changed: recipes/autodrive-merge-round.yaml
 ```
 
 The previous bundle is unchanged and the stamp hasn't advanced. A difference

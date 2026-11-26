@@ -1,5 +1,7 @@
+use super::command_builder_tests::{keep, no_env};
 use super::launcher::{
-    VALID_DELEGATES, write_classic_launcher, write_executable_script, write_recipe_launcher,
+    VALID_DELEGATES, write_classic_launcher_with, write_executable_script,
+    write_recipe_launcher_with,
 };
 use super::models::Workstream;
 use crate::util::run_output_with_timeout;
@@ -94,7 +96,7 @@ fn classic_script_uses_each_delegates_prompt_form() {
             "amplihack amplifier --subprocess-safe -- run \"Read TASK.md in the current directory",
         ),
     ] {
-        let script = classic_run_script(&ws, delegate).unwrap();
+        let script = classic_run_script(&ws, delegate, no_env, keep).unwrap();
         assert!(script.contains(form), "{delegate}: {script}");
         // `@file` is a Claude Code mention; any other CLI would get it as a
         // literal string instead of the task.
@@ -133,7 +135,9 @@ fn recipe_launcher_scripts_are_lf_only_and_bash_valid() {
     let ws = test_workstream(base.path(), state.path());
     fs::create_dir_all(&ws.work_dir).unwrap();
 
-    write_recipe_launcher(&ws, "amplihack copilot").unwrap();
+    // Issue #2014: the profile environment is injected. Another test in the
+    // same process may set AMPLIHACK_CLAUDE_PROFILE_ROOT to invalid UTF-8.
+    write_recipe_launcher_with(&ws, "amplihack copilot", no_env, keep).unwrap();
 
     assert_script_is_lf_only_and_bash_valid(&ws.work_dir.join("launcher.sh"));
     assert_script_is_lf_only_and_bash_valid(&ws.work_dir.join("run.sh"));
@@ -146,12 +150,13 @@ fn classic_launcher_script_is_lf_only_and_bash_valid() {
     let ws = test_workstream(base.path(), state.path());
     fs::create_dir_all(&ws.work_dir).unwrap();
 
-    write_classic_launcher(&ws, "amplihack copilot").unwrap();
+    // Issue #2014: see `recipe_launcher_scripts_are_lf_only_and_bash_valid`.
+    write_classic_launcher_with(&ws, "amplihack copilot", no_env, keep).unwrap();
 
     assert_script_is_lf_only_and_bash_valid(&ws.work_dir.join("run.sh"));
 }
 
-fn test_workstream(base_dir: &Path, state_dir: &Path) -> Workstream {
+pub(super) fn test_workstream(base_dir: &Path, state_dir: &Path) -> Workstream {
     Workstream::new(
         792,
         "feature/line-endings".to_string(),
@@ -163,7 +168,7 @@ fn test_workstream(base_dir: &Path, state_dir: &Path) -> Workstream {
     )
 }
 
-fn assert_script_is_lf_only_and_bash_valid(script: &Path) {
+pub(super) fn assert_script_is_lf_only_and_bash_valid(script: &Path) {
     let bytes = fs::read(script).unwrap();
     assert!(
         !bytes.contains(&b'\r'),

@@ -1,5 +1,6 @@
 ---
 name: amplihack:xpia
+disable-model-invocation: true
 version: 1.0.0
 description: Cross-Prompt Injection Attack defense and security management
 triggers:

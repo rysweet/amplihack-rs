@@ -109,6 +109,8 @@ impl ParallelOrchestrator {
             .timeout_policy
             .clone()
             .unwrap_or_else(|| self.default_timeout_policy.clone());
+        // Issue #1966: copied through unchanged; the recipe validates it.
+        ws.is_critical_code = config.is_critical_code.clone();
 
         let saved = persistence::load_state(&ws.state_file);
         if let Some(ref s) = saved {

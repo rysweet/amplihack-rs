@@ -125,7 +125,7 @@ fn prompt_file_without_a_path_is_a_usage_error() {
 /// prints a short answer.
 const FAKE_AGENT: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.0 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 n=$(ls "$RECORD_DIR" | grep -c '^stdin\.')
 n=$((n+1))
@@ -177,6 +177,8 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",

@@ -21,6 +21,7 @@ impl Record {
             "self",
             "role",
             "prompt_tag",
+            "prompt_head",
             "argv",
             "binary",
             "source",

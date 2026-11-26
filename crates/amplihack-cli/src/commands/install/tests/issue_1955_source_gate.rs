@@ -856,7 +856,7 @@ fn a_fifo_at_cargo_toml_gives_no_version_and_does_not_block() {
 #[cfg(unix)]
 #[test]
 fn a_fifo_at_cargo_toml_does_not_block_the_source_shape_check() {
-    // SEC-11 also covers looks_like_amplihack_source, reached from the walk-up.
+    // SEC-11 also covers looks_like_amplihack_source_in, reached from the walk-up.
     let temp = crate::test_support::tempdir_outside_framework_roots();
     let repo = temp.path().join("repo");
     fs::create_dir_all(repo.join("amplifier-bundle/recipes")).unwrap();

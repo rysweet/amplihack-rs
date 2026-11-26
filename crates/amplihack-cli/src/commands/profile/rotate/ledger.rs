@@ -18,6 +18,8 @@ use super::alert::valid_alerts;
 pub use super::hand_fields::{HandSuspect, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, unprintable};
 use super::hand_fields::{valid_guidance, valid_hand_suspect, valid_lost_login, valid_name};
 pub use super::older_readers::for_older_readers;
+#[path = "high_water.rs"]
+pub mod high_water;
 use super::plan_room::no_room::{self, NoRoom};
 #[cfg(test)]
 pub use super::spend_blocks::KEY_REASONS;
@@ -40,22 +42,24 @@ pub const SWITCHED: &str = "switched";
 pub struct LastCycle {
     /// When the cycle was recorded, at its end.
     pub at: i64,
-    /// When the cycle started measuring usage (issue #1659): a waiting
+    /// When the usage the cycle relied on was read (issue #1659): a waiting
     /// limit-resume hook trusts only a measurement taken after its limit.
-    /// Absent for a cycle that measured nothing.
+    /// A `stayed` cycle records when the live reading was taken: a passive
+    /// reading's `observed_at`, but never later than when the cycle started
+    /// measuring (see `capacity::recorded_at`). Every other rotate outcome
+    /// records when the cycle started measuring. [`SWITCHED`] records the
+    /// time of the switch. Absent for a cycle that measured nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measured_at: Option<i64>,
     pub outcome: String,
     /// The credit-backed overflow tag (issue #1606): `in`, `out` or `on`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overflow: Option<String>,
-}
-
-/// Whether `last` was written after a cycle began measuring at
-/// `measured_at`, so another writer used the ledger while that cycle held no
-/// lock. A switch record always counts, whatever the clock says.
-pub fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
-    last.is_some_and(|c| c.outcome == SWITCHED || c.at >= measured_at)
+    /// Room on the login live after this cycle, by `plan_room::room_under`
+    /// (issue #2857). Absent when nothing was measured; the wait reads that
+    /// as no room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_room: Option<bool>,
 }
 
 /// The tags `LastCycle.overflow` may hold.
@@ -90,13 +94,10 @@ impl OverflowBlock {
         }
     }
 
-    /// A spend-limit block recorded at `at`.
+    /// A spend-limit block recorded at `at`, ending at the inferred monthly
+    /// reset. [`OverflowBlock::spend_limit_until`] takes a stated end instead.
     pub fn spend_limit(at: i64) -> Self {
-        Self {
-            at,
-            until: spend_reset(at),
-            reason: SPEND_LIMIT.to_string(),
-        }
+        Self::spend_limit_until(at, spend_reset(at))
     }
 }
 
@@ -117,6 +118,9 @@ pub struct RotateLedger {
     pub since: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swapped_at: Option<i64>,
+    /// When the last swap installed the live login: `swap_finish` (#2218).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_login_at: Option<i64>,
     /// The profile swapped out by the last swap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
@@ -162,6 +166,9 @@ pub struct RotateLedger {
     /// Logins left while full, by name, at the swap's epoch seconds (#1870).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub swapped_away: BTreeMap<String, i64>,
+    /// Issue #3181: the highest reading of each login in its window.
+    #[serde(default, skip_serializing_if = "high_water::HighWater::is_empty")]
+    pub high_water: high_water::HighWater,
 }
 
 impl Default for RotateLedger {
@@ -173,6 +180,7 @@ impl Default for RotateLedger {
             login_identity: None,
             since: None,
             swapped_at: None,
+            live_login_at: None,
             previous: None,
             alert: None,
             advisory_alert: None,
@@ -186,6 +194,7 @@ impl Default for RotateLedger {
             platform_block: None,
             no_room: None,
             swapped_away: BTreeMap::new(),
+            high_water: high_water::HighWater::default(),
         }
     }
 }
@@ -211,14 +220,43 @@ pub struct RotateState {
     pub err: PathBuf,
 }
 
-/// A state file amplihack may act on: this user's, and not writable by the
-/// group or others.
+/// A state file amplihack may act on: this user's, and not writable by the group or others.
 pub(super) fn trusted(m: &std::fs::Metadata) -> bool {
     m.uid() == euid() && !writable_by_others(m)
 }
 
 fn inconsistent(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateInconsistent(msg.into())
+}
+
+/// Issue #1947: the reasons [`RotateState::load_ledger`] gives for a ledger
+/// it parsed but whose fields it refuses. Each names a field in fixed text,
+/// never a stored value, so the unreadable-ledger stop and `status` show it.
+const FIELD_REFUSALS: [&str; 7] = [
+    "unknown version",
+    "invalid profile name",
+    "invalid account or alert",
+    "invalid overflow field",
+    "invalid no_room",
+    "invalid hand-change field",
+    "invalid login_identity",
+];
+
+/// The load error for a refused field; `reason` is one of [`FIELD_REFUSALS`].
+fn refuse(reason: &'static str) -> ProfileError {
+    debug_assert!(FIELD_REFUSALS.contains(&reason), "{reason}");
+    inconsistent(format!("rotate ledger: {reason}"))
+}
+
+/// The fixed reason a failed ledger load gave when it refused a field. `None`
+/// for every other failure, such as a read or parse error, whose text may
+/// hold a path or a position and is not shown.
+pub fn refused_field(e: &ProfileError) -> Option<&'static str> {
+    let ProfileError::RotateInconsistent(m) = e else {
+        return None;
+    };
+    let reason = m.strip_prefix("rotate ledger: ")?;
+    FIELD_REFUSALS.iter().copied().find(|r| *r == reason)
 }
 
 /// An account value amplihack may store: non-empty, at most 320 bytes, no
@@ -279,27 +317,30 @@ impl RotateState {
         let mut l: RotateLedger = serde_json::from_slice(&raw)
             .map_err(|e| inconsistent(format!("{WHAT}: {}", position(&e))))?;
         if l.version != VERSION {
-            return Err(inconsistent(format!("{WHAT}: unknown version")));
+            return Err(refuse("unknown version"));
         }
         if !valid_name(l.live.as_deref()) || !valid_name(l.previous.as_deref()) {
-            return Err(inconsistent(format!("{WHAT}: invalid profile name")));
+            return Err(refuse("invalid profile name"));
         }
         if l.account.as_deref().is_some_and(|a| !safe_account(a)) || !valid_alerts(&l) {
-            return Err(inconsistent(format!("{WHAT}: invalid account or alert")));
+            return Err(refuse("invalid account or alert"));
         }
         if !valid_overflow(&l) {
-            return Err(inconsistent(format!("{WHAT}: invalid overflow field")));
+            return Err(refuse("invalid overflow field"));
         }
         if !no_room::valid(l.no_room.as_ref()) {
-            return Err(inconsistent(format!("{WHAT}: invalid no_room")));
+            return Err(refuse("invalid no_room"));
         }
         if !valid_guidance(l.guidance.as_deref())
             || !valid_lost_login(&l.lost_login)
             || !valid_hand_suspect(l.hand_suspect.as_ref())
         {
-            return Err(inconsistent(format!("{WHAT}: invalid hand-change field")));
+            return Err(refuse("invalid hand-change field"));
         }
-        l.swapped_away = super::swap_back::valid(std::mem::take(&mut l.swapped_away), now());
+        if l.login_identity.as_ref().is_some_and(|i| !i.valid()) {
+            return Err(refuse("invalid login_identity"));
+        }
+        high_water::on_load(&mut l, now());
         Ok(Some(l))
     }
 
@@ -316,7 +357,10 @@ impl RotateState {
     /// The pid of a running `profile rotate watch` whose executable is not
     /// this process's, for example one started before an upgrade.
     pub fn foreign_rotator(&self) -> Option<u32> {
-        self.foreign_rotator_at(Path::new("/proc"), std::env::current_exe().ok().as_deref())
+        self.foreign_rotator_at(
+            &super::daemon::proc_root(),
+            std::env::current_exe().ok().as_deref(),
+        )
     }
 
     /// [`Self::foreign_rotator`] against another `/proc` and executable.

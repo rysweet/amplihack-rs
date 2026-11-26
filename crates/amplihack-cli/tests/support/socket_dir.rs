@@ -9,10 +9,9 @@
 //!    fits.
 //! 2. Otherwise make a private directory under `XDG_RUNTIME_DIR`, the
 //!    per-user directory meant for sockets, when the path fits there.
-//! 3. Otherwise report that nothing fits; the caller skips, or stops with a
-//!    message naming the limit.
-//!
-//! The tests never write to `/tmp`.
+//! 3. Otherwise use a fresh owner-only directory under the canonical `/tmp`.
+//!    The returned TempDir guard removes it when the fixture ends.
+//! 4. If no candidate fits, report the limit.
 //!
 //! Used by the `cli_integration` binary (`support::socket_dir`) and, through
 //! `#[path]`, by the unit tests in `src/commands/agent/tests_socket_check.rs`,
@@ -20,6 +19,7 @@
 
 #![allow(dead_code)]
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Bytes in `sun_path` (unix(7)), including the terminating NUL.
@@ -46,25 +46,35 @@ pub fn tmux_socket_fits(dir: &Path) -> bool {
     fits(&dir.join(tmux_tail()))
 }
 
-/// A new private directory under `XDG_RUNTIME_DIR` in which `tail` fits, or
-/// `None` when that variable is unset, is not a directory, or is too long.
+/// A private short directory, preferring `XDG_RUNTIME_DIR` to `/tmp`.
+/// Neither candidate is used when its canonical socket path exceeds the limit.
 pub fn runtime_dir_for(tail: &Path) -> Option<tempfile::TempDir> {
-    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?)
-        .canonicalize()
-        .ok()?;
-    if !runtime.is_dir() || !fits(&runtime.join(TEMPDIR_NAME).join(tail)) {
-        return None;
+    let candidates = [
+        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
+        Some(PathBuf::from("/tmp")),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        let Ok(runtime) = candidate.canonicalize() else {
+            continue;
+        };
+        if !runtime.is_dir() || !fits(&runtime.join(TEMPDIR_NAME).join(tail)) {
+            continue;
+        }
+        if let Ok(dir) = tempfile::Builder::new()
+            .prefix("t")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(&runtime)
+        {
+            return Some(dir);
+        }
     }
-    tempfile::Builder::new()
-        .prefix("t")
-        .tempdir_in(&runtime)
-        .ok()
+    None
 }
 
 /// The directory in which to put a socket at `<dir>/<tail>`.
 ///
 /// `local` when the path fits there; otherwise a new directory under
-/// `XDG_RUNTIME_DIR`, returned with its guard. When neither fits, `local` is
+/// `XDG_RUNTIME_DIR` or `/tmp`, returned with its guard. When none fits, `local` is
 /// returned and the caller must check [`fits`] before binding.
 pub fn socket_dir(local: PathBuf, tail: &Path) -> (PathBuf, Option<tempfile::TempDir>) {
     if fits(&local.join(tail)) {
@@ -77,7 +87,7 @@ pub fn socket_dir(local: PathBuf, tail: &Path) -> (PathBuf, Option<tempfile::Tem
 }
 
 /// The directory to use as `TMUX_TMPDIR`: `<root>/t`, or one under
-/// `XDG_RUNTIME_DIR` when tmux's socket does not fit under `root`.
+/// `XDG_RUNTIME_DIR` or `/tmp` when tmux's socket does not fit under `root`.
 pub fn tmux_socket_dir(root: &Path) -> (PathBuf, Option<tempfile::TempDir>) {
     tmux_socket_dir_named(root, "t")
 }
@@ -88,8 +98,8 @@ pub fn tmux_socket_dir_named(root: &Path, name: &str) -> (PathBuf, Option<tempfi
 }
 
 /// A new temp directory in which a socket at `<dir>/<tail>` fits: under
-/// `TMPDIR` when it fits there, else under `XDG_RUNTIME_DIR`. `None` when
-/// neither fits.
+/// `TMPDIR` when it fits there, else under `XDG_RUNTIME_DIR` or `/tmp`.
+/// `None` when none fits.
 pub fn socket_tempdir(tail: &Path) -> Option<tempfile::TempDir> {
     let tmp = tempfile::Builder::new().prefix("t").tempdir().ok()?;
     if fits(&tmp.path().join(tail)) {
@@ -102,7 +112,31 @@ pub fn socket_tempdir(tail: &Path) -> Option<tempfile::TempDir> {
 pub fn skip_message(path: &Path) -> String {
     format!(
         "skipping: the socket {} would exceed the {SUN_PATH_MAX}-byte sun_path limit \
-         and XDG_RUNTIME_DIR offers no shorter directory; run with a shorter TMPDIR",
+         and no short private socket directory is available; set XDG_RUNTIME_DIR or use a shorter TMPDIR",
         path.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_workflow_temp_paths_get_a_private_short_socket_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let local = root.path().join("x".repeat(SUN_PATH_MAX));
+        let (path, guard) = socket_dir(local.clone(), &tmux_tail());
+        let guard = guard.expect("long TMPDIR must have a short socket fallback");
+        assert_ne!(path, local);
+        assert!(tmux_socket_fits(&path));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        drop(guard);
+        assert!(
+            !path.exists(),
+            "the fixture must remove its socket directory"
+        );
+    }
 }

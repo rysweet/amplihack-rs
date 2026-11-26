@@ -37,3 +37,10 @@ impl CycleOutcome {
         }
     }
 }
+
+/// Whether `last` was written after a cycle began measuring at
+/// `measured_at`, so another writer used the ledger while that cycle held no
+/// lock. A switch record always counts, whatever the clock says.
+pub(super) fn newer_than(last: Option<&super::super::ledger::LastCycle>, measured_at: i64) -> bool {
+    last.is_some_and(|c| c.outcome == super::super::ledger::SWITCHED || c.at >= measured_at)
+}

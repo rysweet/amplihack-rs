@@ -131,7 +131,10 @@ steps:
       2. Verify output_dir is writable and within the repository (SEC-05)
       3. Validate density thresholds (SEC-13: 1–10,000)
       4. Check tools: graphviz (dot), mermaid-cli (mmdc) — log availability
-      5. Query lsp-setup skill for LSP availability — record mode
+      5. Use the lsp-setup skill to check LSP availability and record mode.
+         If the Skill tool does not know that name, run
+         `amplihack directory find lsp-setup`, read the returned skill file
+         in full and follow it. Resolve resources relative to that file.
       6. Report prerequisite summary to user
     inputs:
       codebase_path: "{{parameters.codebase_path}}"
@@ -152,8 +155,9 @@ steps:
     type: "agent"
     agent: "amplihack:amplihack:core:builder"
     description: |
-      Build the first 4 atlas layers. Read .claude/skills/code-atlas/LAYERS.yaml
-      for slug, scope_target, and diagram_type for each layer.
+      Build the first 4 atlas layers. Run `amplihack directory find code-atlas`
+      to find the skill file. Read LAYERS.yaml beside that file for slug,
+      scope_target, and diagram_type for each layer.
 
       Build these layers (by slug, in display_order):
         1. repo-surface — source files, project structure, build systems
@@ -191,8 +195,9 @@ steps:
     type: "agent"
     agent: "amplihack:amplihack:core:builder"
     description: |
-      Build the remaining 4 atlas layers. Read .claude/skills/code-atlas/LAYERS.yaml
-      for slug, scope_target, and diagram_type for each layer.
+      Build the remaining 4 atlas layers. Run `amplihack directory find code-atlas`
+      to find the skill file. Read LAYERS.yaml beside that file for slug,
+      scope_target, and diagram_type for each layer.
 
       Build these layers (by slug, in display_order):
         5. api-contracts — HTTP routes, CLI commands, hooks, gRPC, GraphQL

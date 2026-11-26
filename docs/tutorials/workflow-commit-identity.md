@@ -99,11 +99,17 @@ amplihack_prepare_git_commit_identity
 Amplihack accepts the repo-local identity because it is complete, email-safe, and
 scoped to the current repository.
 
+If the repo-local identity is set but fails validation, for example
+`agent@example.local`, or only one of `user.name` and `user.email` is set,
+`amplihack_prepare_git_commit_identity` stops with the reason and the rule the
+value failed. It does not fall back to the provider identity. Fix or remove the
+repo-local values before you continue.
+
 ## 6. Understand provider behavior
 
-GitHub repositories can infer identity from authenticated `gh` when explicit
-identity, complete safe Git environment variables, and repo-local identity are
-unavailable:
+GitHub repositories can infer identity from authenticated `gh` when no explicit
+identity, no Git environment identity and no repo-local `user.name` or
+`user.email` are set:
 
 ```bash
 gh auth status

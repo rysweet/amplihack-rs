@@ -1,13 +1,13 @@
-//! Locks the smart-orchestrator brick decomposition into CI.
+//! Checks on the smart-orchestrator phase sub-recipes.
 //!
-//! These tests assert the v3 composer + 4 phase sub-recipes preserve
-//! the v2 contract verbatim:
-//!   * exact step inventory in exact order (#1740 added select-workflow,
-//!     execute-single-round-1-quick-change and the three reselect steps)
-//!   * 4 sub-recipes in 4 calls, in order
+//!   * every phase recipe parses and has steps
 //!   * brick rule (≤400 LOC) on every phase recipe
 //!   * no duplicate step IDs across phases
-//!   * critical routing/recovery steps still present
+//!   * the quick-change conditions on reflection and validation (#1740, D1)
+//!
+//! The checks that pinned the step inventory, its order and the composer's
+//! calls were removed under #3129: tests check values and behaviour, never
+//! wording, step lists or step order (Ryan, 23 Nov 2026).
 
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -22,66 +22,9 @@ const PHASE_RECIPES: &[&str] = &[
     "smart-validate-summarize",
 ];
 
-const EXPECTED_STEP_INVENTORY: &[&str] = &[
-    "preflight-validation",
-    "classify-and-decompose",
-    "parse-decomposition",
-    "activate-workflow",
-    "select-workflow",
-    "materialize-force-single-workstream",
-    "materialize-allow-no-op",
-    "setup-session",
-    "handle-qa",
-    "handle-ops-agent",
-    "ops-file-change-check",
-    "derive-recursion-guard",
-    "execute-single-round-1-development",
-    "execute-single-round-1-quick-change",
-    "handover-reselect-workflow",
-    "execute-single-round-1-investigation",
-    "create-workstreams-config",
-    "launch-parallel-round-1",
-    "blocked-fallback-reselect-workflow",
-    "execute-single-fallback-blocked-development",
-    "execute-single-fallback-blocked-investigation",
-    "detect-execution-gap",
-    "file-routing-bug",
-    "adaptive-reselect-workflow",
-    "adaptive-execute-development",
-    "adaptive-execute-investigation",
-    "cleanup-helper",
-    "reflect-round-1",
-    "execute-round-2",
-    "reflect-round-2",
-    "execute-round-3",
-    "reflect-final",
-    "validate-outside-in-testing",
-    "summarize",
-    "complete-session",
-];
-
-/// Critical routing + recovery + reflection steps that must never be silently
-/// dropped — they implement the orchestrator's safety guarantees.
-const MANDATORY_STEPS: &[&str] = &[
-    "preflight-validation",                          // input validation
-    "classify-and-decompose",                        // task type detection
-    "derive-recursion-guard",                        // recursion budget
-    "execute-single-fallback-blocked-development",   // BLOCKED path
-    "execute-single-fallback-blocked-investigation", // BLOCKED path
-    "detect-execution-gap",                          // hollow-success detector
-    "file-routing-bug",                              // observable failure
-    "reflect-round-1",                               // goal-seeking gate
-    "reflect-final",                                 // last-ditch reflection
-    "validate-outside-in-testing",                   // outside-in gate
-    "complete-session",                              // cleanup
-];
-
 #[derive(Debug, Deserialize)]
 struct Step {
     id: String,
-    #[serde(rename = "type")]
-    step_type: Option<String>,
-    recipe: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,44 +50,11 @@ fn load(name: &str) -> Recipe {
 }
 
 #[test]
-fn composer_calls_four_phase_subrecipes_in_order() {
-    let composer = load("smart-orchestrator");
-    let calls: Vec<&str> = composer
-        .steps
-        .iter()
-        .filter(|s| s.step_type.as_deref() == Some("recipe"))
-        .map(|s| s.recipe.as_deref().unwrap_or(""))
-        .collect();
-    assert_eq!(
-        calls, PHASE_RECIPES,
-        "composer must call exactly the 4 phase sub-recipes in order"
-    );
-}
-
-#[test]
 fn every_phase_subrecipe_loads_and_has_steps() {
     for name in PHASE_RECIPES {
         let r = load(name);
         assert!(!r.steps.is_empty(), "{name} must have steps");
     }
-}
-
-#[test]
-fn composed_step_inventory_matches_expected_in_order() {
-    let mut composed: Vec<String> = Vec::new();
-    for name in PHASE_RECIPES {
-        for s in load(name).steps {
-            composed.push(s.id);
-        }
-    }
-    let expected: Vec<String> = EXPECTED_STEP_INVENTORY
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    assert_eq!(
-        composed, expected,
-        "composed step inventory must match v2 byte-for-byte"
-    );
 }
 
 #[test]
@@ -169,22 +79,6 @@ fn every_phase_subrecipe_under_400_lines() {
         assert!(
             n <= LIMIT,
             "{name}.yaml is {n} lines, must be ≤ {LIMIT} (brick rule)"
-        );
-    }
-}
-
-#[test]
-fn critical_routing_and_recovery_steps_present() {
-    let mut composed = HashSet::new();
-    for name in PHASE_RECIPES {
-        for s in load(name).steps {
-            composed.insert(s.id);
-        }
-    }
-    for must in MANDATORY_STEPS {
-        assert!(
-            composed.contains(*must),
-            "MANDATORY step `{must}` missing from composed smart-orchestrator"
         );
     }
 }

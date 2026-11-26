@@ -1,4 +1,22 @@
+---
+title: Clean up after recipe runs
+description: Locate, retain, remove, or archive run-owned files and recovery state, and see which folders cleanup keeps because they hold unsaved Git work.
+doc_type: howto
+last_updated: 2026-11-22
+---
+
 # Clean Up After Recipe Runs
+
+Recipe steps run in the named checkout and its task or PR worktree. The
+runner does not create or release a private execution repository or review
+launch folder. Interrupted runs retain uncommitted and unpushed work, branches,
+and worktree registration. Runtime files and recoverable repository data are
+separate; see [execution and retention](../reference/recipe-checkout-isolation.md#recovery-and-cleanup).
+
+Legacy private execution/review directories may contain recoverable work.
+Removal of their ownership and release machinery does not authorize sweeping
+those directories. Inspect and preserve their contents before any operator
+cleanup.
 
 Use this guide to find what a recipe run leaves on disk, to choose where it
 goes, and to remove or archive it with `amplihack cleanup`.
@@ -9,13 +27,26 @@ whose pull request was merged or closed more than a day ago. The
 `amplihack cleanup` command does the same on demand, and also archives old
 logs and removes temporary folders left by killed runs.
 
+Cleanup keeps a folder that holds unsaved Git work it can detect. A folder with
+a Git work tree that has uncommitted changes, or commits that are not on its
+upstream, is kept, and cleanup says so once per pass on stderr. The check has
+limits: it does not see a stash, other branches or ignored files. See
+[Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept) and
+[What the check does not cover](#what-the-check-does-not-cover).
+
 ## Contents
 
 - [Quick start](#quick-start)
 - [Settings](#settings)
 - [Where a run writes](#where-a-run-writes)
+- [Preserve or retire recovery state](#preserve-or-retire-recovery-state)
 - [What happens when a run ends](#what-happens-when-a-run-ends)
+- [Remove a run's own build output](#remove-a-runs-own-build-output)
 - [When a run is eligible for cleanup](#when-a-run-is-eligible-for-cleanup)
+- [Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept)
+- [When a target is removed](#when-a-target-is-removed)
+- [Linked targets](#linked-targets)
+- [Remove the target of a removed worktree](#remove-the-target-of-a-removed-worktree)
 - [Preview and apply cleanup](#preview-and-apply-cleanup)
 - [Cleanup categories](#cleanup-categories)
 - [Build output: CACHEDIR.TAG and target names](#build-output-cachedirtag-and-target-names)
@@ -48,8 +79,19 @@ amplihack cleanup --apply --only run-tmp --only tmp-leftover
 
 No configuration is needed for the end-of-run cleanup. It runs after every
 `amplihack recipe run` unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set. A
-`recipe run --dry-run` still removes its own `runtime/` folder but never runs
-the sweep.
+`recipe run --dry-run` still removes its temporary `amplihack-dry-*` folder
+(`RunWorkspace::dry_runtime`) but never runs the sweep. A dry run creates no
+`runs/` folder, so there is nothing else to remove.
+
+A folder that holds unsaved Git work is left in place by every one of these
+commands, with one line on stderr naming it:
+
+```text
+amplihack: leaving "/home/ryan/.amplihack/work/r/3f0c9a526d1e" in place: work tree "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs": has unpushed commits
+```
+
+To clear such a folder, save or discard the work, then run cleanup again. See
+[Free a kept folder](#free-a-kept-folder).
 
 ## Settings
 
@@ -65,6 +107,8 @@ for these settings.
 | `AMPLIHACK_LOG_ARCHIVE_DAYS` | `--log-days N` | `30` | Recipe logs and session logs whose modification time is older than this are archived. Maximum `36500`. |
 | `AMPLIHACK_LOG_ARCHIVE_DIR` | none | `<work root>/archive` | Where log archives and `MANIFEST.jsonl` are written. |
 | `AMPLIHACK_CLEANUP_ON_EXIT` | none | `1` | Set to `0` to skip the end-of-run sweep. The run's `runtime/` folder is still removed. |
+| `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` | none | unset | Set to exactly `1` by the launcher to state that the folder named by `CARGO_TARGET_DIR` is private to this run, so the run removes it when it ends. Any other value, including an empty one, means the folder is not private. The setting carries no path. See [Remove a run's own build output](#remove-a-runs-own-build-output). |
+| `AMPLIHACK_TARGET_LINK_ROOTS` | none | unset | Extra colon-separated absolute folders where linked targets may point. Not needed for links made by the host cargo wrapper. See [Linked targets](#linked-targets). |
 
 Recipe logs stay in `recipe.log_dir` (default `~/.amplihack/recipe-logs`).
 The work root does not change where they are written.
@@ -98,10 +142,13 @@ The runner creates one folder per run:
 │       ├── run.json              # the run report (kept)
 │       ├── owned-paths           # worktrees and targets this run created
 │       ├── cleanup-record.json   # written only when cleanup removed something
+│       ├── recovery/             # private completions and required artifact copies
+│       ├── procs/                # one record per running attempt, for recipe stop (Linux)
 │       └── runtime/              # removed when the run ends
 │           ├── tmp/              # TMPDIR, TMP and TEMP for every step
+│           ├── context/          # 0700; holds the run's 0600 context file
 │           └── artifacts/        # AMPLIHACK_WORKFLOW_ARTIFACT_DIR
-├── targets/                      # cargo targets from git-hook-cargo.sh
+├── targets/                      # one cargo target per checkout, from git-hook-cargo.sh
 ├── clones/                       # repositories cloned by the launcher inside a run (never swept)
 ├── worktrees/                    # only when AMPLIHACK_WORK_ROOT is set
 ├── archive/                      # log archives and MANIFEST.jsonl
@@ -132,6 +179,11 @@ Every step of the run sees these variables:
 
 A sub-recipe started by a step gets its own run folder, its own run id and its
 own temporary folder.
+
+Trusted delegated executions also attach to the enclosing
+recovery tree.
+Their completion records are published through the root runner's writer;
+their own temporary folders are not recovery authority.
 
 If `<run dir>/runtime/tmp` would be longer than 80 bytes, which can happen
 with a long home path, the runtime folder is placed at
@@ -184,10 +236,11 @@ grep -l "\"$ATTEMPT_ID\"" "$WORK_ROOT"/runs/*/run.json | xargs -r dirname
 # /home/ryan/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3
 ```
 
-Run folders themselves are never removed. After cleanup a folder holds only
+Run folders themselves are never removed. After cleanup a folder retains
 `run.json`, `cleanup-record.json` and, while some recorded path remains,
-`owned-paths`. Together they take a few kilobytes. Pruning old run folders is
-not part of this feature.
+`owned-paths`. These summary files take a few kilobytes. The recovery
+feature will retain additional `recovery/` contents, which can be much larger.
+Pruning old run folders is not part of this feature.
 
 ### Recording owned paths
 
@@ -204,17 +257,33 @@ it in `owned-paths`. The bundled helpers do this for you:
   every run that used it, and cleanup keeps it while any of those runs is
   active. A worktree you made by hand is never recorded, even when a run
   reuses it.
-- `scripts/git-hook-cargo.sh` records the target it creates.
+- `scripts/git-hook-cargo.sh` records the target it uses, whether it built
+  it first (`created`) or found it already there (`reused`), together with the
+  checkout it builds.
 
-Each line has three tab-separated fields, `kind`, `path` and `branch`. The
-branch field is empty for a target, so the helpers write a target line that
-ends with a tab. A line with only two fields is also accepted and read as
-having an empty branch, which is the form shown for the target below:
+A worktree line has three tab-separated fields, `kind`, `path` and `branch`.
+A target line written by the current hook has five: `kind`, `path`, an empty
+branch, the origin (`created` or `reused`) and the checkout path:
 
 ```text
-worktree	/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-1808	feat/issue-1808
-target	/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b-run-3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3
+worktree	/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039	feat/issue-2039
+target	/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d		created	/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
 ```
+
+Cleanup also accepts the older forms: a line with two fields, or three with an
+empty branch. Such a **legacy** target line comes from a hook older than
+#2039, names a target with a `-run-<run id>` suffix, and is handled by the
+rules in [When a run is eligible for cleanup](#when-a-run-is-eligible-for-cleanup).
+
+Any other line is dropped when cleanup reads the file: four fields, six or
+more, an origin other than `created` or `reused`, a relative checkout path, a
+five-field line whose kind is not `target` or whose branch is not empty, and
+any line with a control character. Cleanup never repairs a line. It keeps
+valid lines byte for byte when it rewrites the file.
+
+The five-field format and the conditions under which the hook writes nothing
+are listed in
+[Recording the target for a run](../reference/pre-commit-build-cache.md#recording-the-target-for-a-run).
 
 A run with no recorded branch has no pull request to look up and follows the
 no-PR rule in
@@ -279,18 +348,107 @@ The default work root (`$HOME/.amplihack/work`) applies to run folders,
 targets, clones and the archive whether or not the variable is set. Only
 worktrees need the variable set explicitly.
 
+## Preserve or retire recovery state
+
+Durable recovery storage and `--fresh` are supported. Recovery retirement
+remains a separate operation; existing cleanup categories do not retire recovery
+history or its latest-attempt markers.
+
+Keep `<run dir>/recovery/` when you need a future launch to recover after
+a usage limit. The identity index under the work root selects only the
+latest attempt. Keep that metadata as well; moving a run directory alone
+does not establish a matching recovery identity.
+
+The `run-tmp` category and normal end-of-run runtime removal exclude durable
+recovery state. Required temporary artifacts are copied into private
+recovery storage before completion is published, so runtime cleanup does
+not erase replayable outputs. An output that refers to an unavailable,
+uncopied artifact is invalidated on relaunch.
+
+Use `--fresh` on the next `recipe run` to bypass history without deleting
+it. Do not delete a latest marker to reach an older usage-limit run.
+Retention must preserve a latest-attempt tombstone when detailed history is
+retired, so a later failure or success continues to exclude older history.
+Deleting the latest attempt's detail means future recovery falls back
+fresh if that detail is needed.
+
+**Retirement tooling is unresolved.** Existing `amplihack cleanup`
+categories cover runtime files, worktrees, targets, and logs; they do not
+provide a coordinated recovery-retirement operation. No supported command
+or manual deletion procedure is specified for retiring sensitive recovery
+records. Deleting directories or markers manually cannot meet the
+concurrency contract. The planned `--fresh` flag only bypasses replay; it
+does not remove records.
+
+A supported retirement interface must coordinate with admission and
+imports, exclude active owners and in-progress imports, and durably preserve
+the latest-attempt sequence/tombstone before deleting detailed records.
+Interrupted retirement must not expose older history as eligible. Its
+selection/reporting contract must account for sensitive inherited copies
+in later attempts: retiring an ancestor does not erase those copies.
+Recovery records never authorize deleting external dependencies or
+worktrees. The command, locking protocol, and handling of interrupted
+retirement must be specified and implemented before publishing operational
+retirement instructions.
+
+Recovery copies can retain allowed prompts, typed context, outputs, and
+artifact contents after their runtime originals disappear. They are
+private sensitive data: directories are `0700`, regular files `0600`.
+They are not included in a summary-only `run.json`, and log archiving does
+not retire them. Retention policy must cover these durable copies as well
+as logs, but enforcing that policy requires the unresolved retirement
+interface. Private permissions do not provide encryption.
+
+For launch behavior, see
+[Resume a recipe after a usage limit](resume-recipe-after-usage-limit.md).
+For publication and retention invariants, see
+[private recovery storage](../reference/recipe-recovery.md#private-storage-and-publication).
+
 ## What happens when a run ends
 
 When `amplihack recipe run` finishes, whether the run succeeded, failed or
-panicked, the runner:
+panicked, the runner does these steps in order. Each step runs even when an
+earlier one failed, and the final error names every failure.
 
-1. Removes `<run dir>/runtime/`, including everything steps wrote to
-   `TMPDIR` and `artifacts/`.
-2. Finalises `run.json` with the end time, outcome and step summary.
-3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
-   run-owned items that are now eligible (the categories `run-tmp`,
-   `run-worktree` and `run-target`), and removes them. This includes items
-   from earlier runs, and from the current run if it is already eligible.
+1. Finishes the recovery admission with an outcome judged from the run.
+2. Finishes the workspace (`finish_workspace`):
+   1. Removes `<run dir>/runtime/`, including everything steps wrote to
+      `TMPDIR` and `artifacts/`, unless a running process still uses it,
+      running processes cannot be seen on this system, or it holds unsaved
+      Git work.
+      Durable `recovery/` state and copied artifacts remain outside that
+      disposable folder. See
+      [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept),
+      [Where running processes cannot be seen](#where-running-processes-cannot-be-seen),
+      [Locked folders inside the runtime folder](#locked-folders-inside-the-runtime-folder)
+      and
+      [Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept).
+      A folder that was replaced by another one is kept and the run fails;
+      see [A replaced runtime folder is refused](#a-replaced-runtime-folder-is-refused).
+   2. Finalises `run.json` with the end time, outcome and step summary.
+   3. Removes the run's own build output: the private `CARGO_TARGET_DIR` and
+      `target/` in each linked worktree the run owns or was started in. This
+      happens after the report is written, after a success or a failure, and
+      does not depend on `AMPLIHACK_CLEANUP_ON_EXIT`. See
+      [Remove a run's own build output](#remove-a-runs-own-build-output).
+   4. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root
+      for run-owned items that are now eligible (the categories `run-tmp`,
+      `run-worktree` and `run-target`), and removes them. This includes items
+      from earlier runs, and from the current run if it is already eligible.
+      When the sweep removes a worktree, that worktree's target goes with it in
+      the same sweep, whether the run recorded it as `created` or `reused`; see
+      [When a target is removed](#when-a-target-is-removed).
+
+There is no execution-copy release step. The selected checkout and retained
+task or PR worktree remain available for recovery; legacy execution and review
+directories are not swept by this finalization.
+
+`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 2.4. Everything
+before it always runs, including the removal of build output.
+
+A run that fails before its first step, for example on an unborn `HEAD`,
+still finishes its recovery admission as `Failure`, so the next launch does
+not try to resume it.
 
 The sweep is best effort. If another cleanup holds the lock, the sweep is
 skipped. It stops after 120 seconds. Any problem is printed as a warning and
@@ -315,7 +473,7 @@ When the sweep removes something from a run, it adds an entry to that run's
         },
         {
           "kind": "run-target",
-          "path": "/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b-run-3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3",
+          "path": "/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d",
           "size_bytes": 4294967296
         }
       ],
@@ -327,10 +485,430 @@ When the sweep removes something from a run, it adds an entry to that run's
 
 If nothing was removed, no record is written.
 
-If the work root cannot be used, for example because it is group-writable,
-the runner prints a warning and falls back to a private temporary folder for
-`runtime/`, as earlier releases did. No run folder or cleanup happens for that
-run.
+A real run starts its workspace with `RunWorkspace::begin_durable`. If the
+work root cannot be used, for example because it is group-writable, the run
+fails before any step starts, with an error that names the work root. Fix
+its permissions (`chmod g-w,o-w`) or point `AMPLIHACK_WORK_ROOT` at a private
+absolute directory. A real run never falls back to a temporary folder.
+
+The error names the work root and the operation that failed, for example
+opening the work root or creating the run's runtime folder. The run opens every
+component of the work root without following symbolic links, so a work root that
+passes through a link is unusable, as it has always been. When a link is on the
+path, the error also names the first component that is a symbolic link, but not
+the place it points to. Name the folder by its canonical path
+(`realpath "$AMPLIHACK_WORK_ROOT"`) to avoid the link. On macOS, `/var` and `/tmp`
+are links to `/private/var` and `/private/tmp`, so `/var/tmp` is reached through
+one; a path under any of them goes through a link there. A `--dry-run` uses
+`RunWorkspace::dry_runtime`: a temporary `amplihack-dry-*` folder that is
+removed on exit, with no run folder and no checkout.
+
+### A runtime folder still in use is kept
+
+A step can start a process that outlives the run, such as a build server, a
+language server or a background job a test left behind. If the runner removed
+`runtime/` under such a process, the process, and any agent that inherited its
+`TMPDIR`, would be left pointing at a folder that no longer exists.
+
+So before step 2.1 removes `runtime/`, the runner checks the process table once.
+The folder is in use if any running process other than the runner itself:
+
+- has its working folder inside it;
+- holds a file open inside it; or
+- has `TMPDIR`, `TMP` or `TEMP` set to a path inside it.
+
+These are the same checks the sweep and `amplihack cleanup` make for
+`run-tmp`. If the folder is in use, the runner leaves it in place, does not
+change its permissions or move it, and prints one line on stderr:
+
+```text
+amplihack: runtime folder "~/.amplihack/work/r/<id>" is still in use by a running process; leaving it in place — the end-of-run cleanup sweep will remove it later
+```
+
+The real message shows the full absolute path of the runtime folder in double
+quotes: `<work root>/runs/<run id>/runtime`, or `<work root>/r/<short id>`
+when that path would be too long. The run's exit
+status does not change. The message names only the folder, never the process
+or its environment.
+
+The kept folder is an ordinary `run-tmp` candidate. Once the run has ended it
+is no longer active, so the next sweep, from a later run or from
+`amplihack cleanup --apply`, removes it after checking again that no process
+uses it. A process that runs for a long time keeps the folder until a sweep
+runs after that process exits. To remove it now, stop the process and run:
+
+```bash
+amplihack cleanup --apply --only run-tmp
+```
+
+#### Where running processes cannot be seen
+
+The check needs `/proc`. A system without `/proc`, as macOS is, gives the
+runner no view of running processes, so it cannot tell whether `runtime/` is
+still in use. It then keeps the folder, changes nothing in it, and prints one
+line on stderr:
+
+```text
+amplihack: running processes cannot be seen on this system, so whether runtime folder "~/.amplihack/work/r/<id>" is still in use is not known; leaving it in place. Cleanup will not remove it either: delete it by hand once nothing started by the run is still running
+```
+
+The run's exit status does not change. Before issue #2935 the runner removed
+the folder in this case.
+
+The sweep and `amplihack cleanup --apply` have the same limit: they keep every
+folder they cannot prove unused, so on such a system neither removes a kept
+`runtime/` folder later. These folders stay until they are deleted by hand.
+See [the troubleshooting entry](#troubleshooting) for how to check that
+nothing still uses a folder before deleting it.
+
+##### What this costs, and how to list the kept folders
+
+On such a system every run leaves its `runtime/` folder behind, and nothing
+removes it until the system gets a view of running processes (issue #2936).
+The folder holds what the run's steps wrote to `TMPDIR` and to `artifacts/`,
+so its size is whatever they left there; there is no upper limit.
+
+Sizes measured on one macOS host on 22 November 2026, over the 14 runtime
+folders it held, each read with `du -sk` while its run was in progress:
+
+| Runtime folders | Size of each |
+| --- | --- |
+| 8 of the 14 | under 1 MiB (0 to 660 KiB) |
+| 5, each an auto-drive run, whose launcher copies its recipe bundle into `TMPDIR` | 12.4 MiB |
+| 1, the largest | 42.2 MiB |
+
+So a run that writes little to `TMPDIR` leaves well under 1 MiB, and an
+auto-drive run about 12 MiB. A step that builds in `TMPDIR` can leave far more
+than any figure above. At 12.4 MiB a run, a host that makes 50 auto-drive runs
+a day keeps about 620 MiB a day.
+
+The dry run lists them. It removes nothing:
+
+```bash
+amplihack cleanup --only run-tmp
+```
+
+```text
+CATEGORY        ACTION                             SIZE  PATH
+run-tmp         skipped                        12.4 MiB  /Users/ryan/.amplihack/work/r/3f0c9a526d1e
+                reason: running processes cannot be seen on this system
+run-tmp         skipped                               -  /Users/ryan/.amplihack/work/r/7b1e44c0a2d9
+                reason: run is active
+```
+
+A folder with the reason `running processes cannot be seen on this system`
+belongs to a run that has ended, or was killed, and is waiting to be deleted
+by hand. Its size is shown in the dry run only: `--apply`, and the sweep at
+the end of each run, report the same reason without reading the folder. A
+folder with `run is active` belongs to a run that is still going; leave it
+alone. The reason `in use by a running process` appears only where processes
+can be seen, so it is never printed for these folders.
+
+To see only the kept folders, or their total size:
+
+```bash
+amplihack cleanup --only run-tmp | grep -B1 'cannot be seen'
+amplihack cleanup --only run-tmp --format json \
+  | jq '[.entries[] | select(.reason | contains("cannot be seen")) | .size_bytes] | add'
+```
+
+The folder of a `recipe run --dry-run` is not checked: it lives in the system
+temporary folder, no sweep ever looks at it, and keeping it would leave it
+there for good. It is removed at the end of the dry run.
+
+### Locked folders inside the runtime folder
+
+A step can leave a folder under `TMPDIR` that its owner cannot write to or
+search, for example a test fixture left at mode `000` or `0500`. Removing the
+contents of such a folder fails with `Permission denied (os error 13)`.
+
+So once the runner has found that no process uses `runtime/`, and before it
+removes it, the runner walks the folder from its root and gives the owner back
+read, write and search access (`u+rwx`) on every folder the run owns. It adds
+only those three owner bits: group and other bits stay as they were, and no
+bit is ever removed. File modes are never changed, because removing a file
+depends on the mode of the folder that holds it, not on the file's own mode.
+
+The walk does not follow symbolic links. A link inside `runtime/` is removed
+as a link, and the folder it points to keeps its mode and its contents.
+
+The walk leaves alone, and does not enter, any entry that:
+
+- belongs to another user; or
+- is on another filesystem than the runtime folder, such as a bind mount.
+
+It names each such entry in a warning on stderr and leaves its permissions
+unchanged:
+
+```text
+amplihack: warning: leaving permissions unchanged on "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/fixture" in the runtime folder: not owned by this user or on another filesystem
+```
+
+At most 20 entries are named on stderr; any further ones are counted in one
+last line, `amplihack: warning: … and 37 more entries left unchanged`. Every
+path is quoted, so a name with a newline or control characters in it is shown
+escaped. The full list is written to the debug log only, which is off by
+default. To see every path, run with `RUST_LOG=amplihack_cli=debug` (or
+`RUST_LOG=debug`); the entries then appear on stderr.
+
+These warnings never change the run's exit status. The runner then checks
+`runtime/` for [unsaved work](#folders-with-unsaved-work-are-kept), after the
+access was restored so that a locked folder cannot hide a work tree from the
+check, and removes it as usual if it holds none. A folder kept for unsaved work
+keeps the owner access that was just restored; no bit is taken away again.
+
+If an entry the walk left alone stops the removal, the folder
+stays in place and the run fails with `release owned runtime directory`
+and the underlying error. A later sweep tries again, but it fails for as long as the
+entry still belongs to another user or a folder in it is still locked, so fix
+the folder by hand as shown below.
+
+This applies to the runner's own removal of `runtime/` at the end of a run.
+The sweep and `amplihack cleanup` do not change permissions. When the `run-tmp`
+folder itself, a folder directly inside it, or a folder two levels inside it is
+locked, the check for unsaved work cannot open it, so the folder is kept as `skipped` with
+`cannot check for unpushed commits: …` and `amplihack cleanup` still exits `0`.
+A locked folder three or more levels inside the `run-tmp` folder is not looked
+at by that check; it still stops the removal, the `run-tmp` folder is reported
+as failed and kept, and `amplihack cleanup` exits with a non-zero status. Give the owner access back on
+the folders only, then run the sweep again. Point `find` at the runtime folder
+itself, which is `<work root>/runs/<run id>/runtime` or, when that path is too
+long, `<work root>/r/<short id>`:
+
+```bash
+RUNTIME="$HOME/.amplihack/work/r/3f0c9a526d1e"   # or .../runs/<run id>/runtime
+find "$RUNTIME" -type d -exec chmod u+rwx {} +
+amplihack cleanup --apply --only run-tmp
+```
+
+The `-type d` test leaves file modes unchanged, as the runner does. Avoid
+`chmod -R u+rwx`, which also makes every file executable. Entries owned by
+another user need that user, or root, to change or remove them.
+
+Unverifiable historical records instead cause a logged fresh execution
+after secure admission of the new attempt.
+
+### A replaced runtime folder is refused
+
+While a run lives, the runner holds its runtime folder open. When the run
+starts, it opens the folder with `O_DIRECTORY | O_NOFOLLOW` and records the
+device and inode number of the open folder. A symbolic link or a file at that
+path fails to open, and the run does not start. If the folder at the path
+changes between the check and the open, the run also does not start.
+
+Because the folder stays open, the filesystem cannot free its inode number
+and give it to another folder. On ext4, a new folder made at the same path
+would otherwise often get the number that was just freed and look like the
+original.
+
+Before each step, the runner compares the folder at the path with the one it
+holds:
+
+| Folder at the path | What the runner does |
+| --- | --- |
+| The same folder | Launches the step. |
+| Missing | Creates it again with mode `0700`, opens and records the new folder, then launches the step. |
+| A different folder, a symbolic link or a file | Refuses the step and fails the run. |
+| A new folder that cannot be opened | Refuses the step. The old record stays in place, so at the end of the run the new folder is kept and the run fails. |
+
+A refused step prints:
+
+```text
+amplihack: this run's runtime folder cannot be used: "/home/ryan/.amplihack/work/r/3f0c9a526d1e" is no longer this run's runtime folder; refusing to launch the step
+```
+
+When the run ends, the runner checks the folder again in the same way while
+it still holds it open. It removes only the folder it holds open. If the
+runner created the folder again during the run, that new folder is the one it
+holds and the one it removes. Any other folder at the path is kept, and the
+run fails with:
+
+```text
+runtime resource identity changed; replacement retained at /home/ryan/.amplihack/work/r/3f0c9a526d1e
+```
+
+See step 2.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
+
+The open folder does not count as "in use" when the run ends, because the runner
+skips its own process. Step processes do not inherit it, because it is opened
+close-on-exec. Another amplihack process's sweep sees the open folder and
+keeps it, which is correct while the run lives.
+
+## Remove a run's own build output
+
+Build output holds no unsaved work, so a run removes the build output it made
+for itself when it ends, whether it succeeded or failed. This
+step runs after `run.json` is written and before the sweep, and does not depend
+on `AMPLIHACK_CLEANUP_ON_EXIT`.
+It removes:
+
+- the folder named by `CARGO_TARGET_DIR`, when the launcher states that the
+  folder is private to the run;
+- `target/` at the root of each worktree listed in the run's `owned-paths`;
+- `target/` at the root of the folder the run was started in, when that
+  folder is a linked worktree and the run is not nested inside another run.
+
+A main checkout is never touched, and only the `target` folder at a worktree
+root is considered, not those of nested crates.
+
+**A linked worktree's `target/` is removed at the end of every run, and there
+is no setting that turns this off.** If you run recipes from a linked
+worktree, the next build there starts from scratch. Removing a large target
+delays the end of the run until it is done. The removal has no deadline and
+no retry. A partial removal is harmless, because build output can be rebuilt.
+
+### Say that a target folder is private
+
+The launcher states privacy; amplihack never decides it from a path. Set
+`AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR=1` next to `CARGO_TARGET_DIR` for the
+run:
+
+```bash
+CARGO_TARGET_DIR="$AMPLIHACK_WORK_ROOT/targets/issue-2886" \
+AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR=1 \
+  amplihack recipe run default-workflow -c task_description="Fix the parser"
+```
+
+Only the value `1` (spaces around it are ignored) counts. The setting claims
+that the whole folder belongs to this run alone. It is an assertion made by
+the launcher and is not checked, so do not set it for a folder that several
+runs or checkouts share. The runner clears the setting in the environment it
+gives to steps, in a normal run and in a `--dry-run`, so a recipe started from
+a step never inherits the claim. With `--detach` the launcher's setting is
+passed to the detached pane, because the claim has to survive into it.
+
+### What a run prints
+
+Each removal is one line on stderr naming the folder and the space freed.
+When two or more folders were removed, a last line gives the total. Standard
+output is unchanged, so `--format json` stays parseable.
+
+```text
+amplihack: removed this run's build output "<work root>/targets/issue-2886" (12.4 GiB)
+amplihack: removed this run's build output "<work root>/worktrees/<repository>-<hash>/<branch>/target" (6.1 GiB)
+amplihack: end-of-run cleanup removed 2 build output folders, freeing 18.5 GiB in total
+```
+
+When the size of a folder cannot be measured, its line says `size unknown` in
+place of the size and the folder is still removed. The total line then counts
+only the known sizes and reads `at least`, for example `amplihack: end-of-run
+cleanup removed 2 build output folders, freeing at least 12.4 GiB in total
+(size unknown for one or more of them)`.
+
+A folder named twice, for example as the private `CARGO_TARGET_DIR` and as a
+worktree's `target/`, is removed and reported once. Paths in these lines are
+quoted, and a reason that contains a control character is printed with the
+character escaped, so one problem is always one line.
+
+A worktree that holds unsaved work is kept. The build-output step prints one
+`amplihack: leaving` line for it. The sweep that follows prints no second line
+for the same worktree only while the run that just ended is still inside the
+keep period. With `AMPLIHACK_CLEANUP_KEEP_HOURS=0` the sweep may print a
+second line. See
+[Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept). Its
+`target/` is still removed. The worktree itself is never removed by this step.
+
+### A folder that is skipped or cannot be removed
+
+A removal that is refused or fails prints one warning and never changes the
+run's result or exit status:
+
+```text
+amplihack: warning: end-of-run cleanup could not remove "<work root>/targets/issue-2886": in use: .cargo-lock is held
+```
+
+The reason after the colon is the wording of whichever check applied, so it
+varies. `in use: .cargo-lock is held`, `not a cargo target` and `owned by
+another user` are the same words the sweep uses for the same findings.
+
+Every folder passes the same checks, whichever setting or file named it. It is
+removed only when all of these hold. Otherwise it is skipped with a reason:
+
+- the path is absolute and resolves to a real folder, and the folder itself is
+  not a symbolic link;
+- you own it, and its parent is not writable by other users unless the parent
+  has the sticky bit;
+- it has a parent folder, so `/` is refused, and it is neither the folder
+  `HOME` names nor an ancestor of it, and neither the run's folder, its work
+  root nor its launch folder nor an ancestor of any of them. The home folder
+  is read from `HOME` alone; when `HOME` is unset or empty there is no home
+  folder to protect and the other checks still apply;
+- it is on the same device as its parent, and so are its immediate
+  subfolders, so a mount point at the folder or directly inside it is refused;
+- it has no `.git` at its root;
+- it is empty (no entries at all) or carries the Cargo marker
+  (`CACHEDIR.TAG` or `.rustc_info.json`), so a folder holding only unrelated
+  files is rejected. A run that never builds with Cargo, for example in a
+  repository with no Rust code, leaves its claimed folder empty, and that
+  folder is removed;
+- an empty folder is removed only while it is still empty, never
+  recursively. When an entry appears in it after the checks, the removal is
+  declined with one warning and the folder and the new entry are kept;
+- no build holds the `.cargo-lock` of the folder or of a folder directly
+  inside it. Each lock is tried once, with no waiting and no retry;
+- it is still the same folder (same device and inode) immediately before the
+  removal, and links inside it are never followed.
+
+These checks have limits. A volume mounted more than one level inside the
+folder is not detected. A folder that carries a Cargo marker next to unrelated
+files, and has no `.git`, is still removed. An active build is protected only
+by the single `.cargo-lock` attempt, and only where Cargo has written one.
+This is why the claim must be accurate.
+
+A `CARGO_TARGET_DIR` that is unset or does not exist is skipped silently.
+
+#### An empty claimed folder that was kept
+
+An empty claimed folder has been removed at the end of a run since v1.2.194,
+the first release tag that contains #2906. Releases up to v1.2.193 do not
+contain `build_output.rs`, so they have no end-of-run removal of a claimed
+folder at all. To check which case applies to a host, run `amplihack --version`
+with the binary the launcher used.
+
+If an empty claimed folder is still there after a run on v1.2.194 or later,
+and no warning names it, the end-of-run step did not consider it. The code
+allows three ways for that to happen. They are possible causes, not
+established ones: the empty folders reported in #3263 did not reproduce, and
+their cause is still open in #3274.
+
+- The run was nested. `Launch::from_env` in `build_output.rs` treats a run as
+  nested when `AMPLIHACK_RUN_ID` is set and not empty, and a nested run
+  ignores the claim (see [Nested runs](#nested-runs)).
+- `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` was not `1` in the environment of the
+  `amplihack recipe run` process. `private_target_dir_claimed` in
+  `cleanup/mod.rs` trims surrounding whitespace and then requires exactly `1`.
+- The run never reached its end. The step is called from `run_dir.rs` only
+  after the run's report is written, so a run killed with `SIGKILL`, or one
+  whose process died before then, skips it.
+
+A claimed folder that the step did consider and rejected is always named in a
+warning, with the reason.
+
+### Entries in owned-paths are checked
+
+The `owned-paths` file lives in the run's folder, which steps can write, so
+its entries are not trusted. An entry is used only when it is an absolute path
+to a linked worktree: a folder whose `.git` is a regular file starting with
+`gitdir:`. A main checkout, a path that does not resolve and an entry that
+fails the checks above are skipped, with a warning where the entry looked like
+a worktree. Only the `target/` at the worktree root is ever removed.
+
+### Nested runs
+
+A recipe started from a step of another run is a nested run. A run is nested
+when `AMPLIHACK_RUN_ID` is set and not empty in its environment. It removes
+`target/` only from worktrees in its own `owned-paths`, and leaves the
+inherited `CARGO_TARGET_DIR` and the launch folder's `target/` alone.
+
+This protection has a limit. A worktree that a nested run reuses is recorded
+in that run's `owned-paths` as well, so when a sub-recipe reuses its parent's
+worktree, the sub-recipe removes that worktree's `target/` when it ends, while
+the parent may still be building there. The parent's next build starts from
+scratch. A run
+started with `amplihack recipe run --detach` is treated as its own outermost
+run, because the detached pane starts without `AMPLIHACK_RUN_ID`. The
+launcher's `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` setting is kept for the pane,
+and the pane's own runner then clears it for its steps.
 
 ## When a run is eligible for cleanup
 
@@ -362,10 +940,13 @@ checks, never in a folder named only by `run.json`, and `gh` is started with
 the same git hardening as cleanup's own git commands. Each branch is looked up
 once per sweep, and each lookup has a 30-second limit.
 
-A run's targets are removed only when every worktree the run still has is
+These rules decide worktrees, and targets recorded in the legacy format. A
+run's legacy targets are removed only when every worktree the run still has is
 eligible. If a recorded worktree could not be checked, the targets are kept.
 When none of the run's worktrees is left, the targets follow the no-PR rule
-above.
+above. Targets recorded in the five-field format follow
+[When a target is removed](#when-a-target-is-removed) instead, and the keep
+period does not apply to them.
 
 A run is **skipped**, with a reason in the output, when:
 
@@ -382,6 +963,475 @@ For example, with the default keep period, a run whose PR closed one hour ago
 is skipped with the reason `within keep period`, and a run whose PR closed 25
 hours ago has its worktree and target removed.
 
+## Folders with unsaved work are kept
+
+A step can leave a repository copy in its temporary folder, with a commit it
+never pushed or a file it never committed. Before cleanup removes a folder, it
+judges whether the folder holds a Git work tree with work that exists nowhere
+else. If it does, cleanup keeps the folder, says so once on stderr, and carries
+on. If it does not, the folder is removed as described in the rest of this
+guide.
+
+Keeping a folder is a skip, never a failure. It does not change the exit status
+of `amplihack cleanup`, and it never ends or fails a run. There is no flag and
+no environment variable that turns the check off.
+
+### What counts as unsaved work
+
+The check reports the first of these that applies to a work tree, in this
+order:
+
+| Reason | Meaning |
+| --- | --- |
+| `has uncommitted changes` | `git status` lists a modified, staged or untracked file. Ignored files are not listed. A `git status` that fails or times out is reported as `cannot check for unpushed commits` instead, so this reason always means changes Git actually saw. |
+| `has unpushed commits` | The checked-out branch has an upstream, and `HEAD` has commits that are not on it. |
+| `has no upstream and commits on no remote branch` | The checked-out branch has no upstream, and `HEAD` has commits that no remote-tracking branch contains. |
+| `cannot check for unpushed commits: <detail>` | Cleanup could not tell. Not knowing is a reason to keep, never to delete. |
+
+These are the reasons the `run-worktree` category gives, with one difference:
+`run-worktree` has only "remove it or keep it" to settle, so it counts a
+`git status` it could not run as uncommitted changes, whereas this check says
+a line and so names what it met. Either way the folder is kept. The check
+reads only local state. It runs no `fetch` and contacts no remote, and it runs
+Git with the same hardening as the rest of cleanup.
+
+### Which removals are checked
+
+| Removal | When the folder is judged |
+| --- | --- |
+| `run-tmp` | When cleanup plans it, and again just before removal. |
+| The runner's own removal of `runtime/` at the end of a run | After the process check and the owner-access restore, just before removal. |
+| `run-target` recorded in the legacy format as a plain folder | When cleanup plans it, and again just before removal. |
+| `untagged-target` | Just before removal. |
+| `tmp-leftover` | Just before removal. |
+
+These are not checked:
+
+- `run-worktree`. It already requires no uncommitted changes and no unpushed
+  commits; see [Safety rules](#safety-rules).
+- Targets recorded in the five-field format, and linked targets. They hold
+  build output, not user work, and keep their
+  [`.cargo-lock` checks](#safety-rules).
+- `recipe-log` and `session-log`. They are archived, not deleted.
+- Clones under `<work root>/clones/`. They are never swept.
+
+A dry run judges what it plans, so `amplihack cleanup` lists a `run-tmp` that
+holds unsaved work as `skipped`. It judges `untagged-target` and `tmp-leftover`
+folders only at removal, so a dry run can list one as `would-remove` and
+`amplihack cleanup --apply` then keeps it. Trust `--apply` for the outcome.
+
+### How cleanup finds a work tree
+
+Cleanup looks for a `.git` entry, a folder or a file, in the folder itself, in
+a folder directly inside it, and in a folder two levels inside it. That finds
+a repository copy a step left under the run's runtime folder, such as
+`<run dir>/runtime/tmp/amplihack-rs/.git`. A repository three or more levels
+down is not found.
+
+- **No `.git` there.** The folder is removed as described in the rest of this
+  guide. No Git command is run.
+- **Symbolic links.** Cleanup never follows one, and a candidate folder that is
+  itself a link is not judged, because the removal refuses links anyway.
+- **Each `.git` must belong to its own folder.** Cleanup runs
+  `git rev-parse --show-toplevel` in the folder that holds the `.git` and
+  requires the answer to be that same folder, compared byte for byte. A folder
+  that only sits inside some enclosing repository, with no `.git` of its own, is
+  not judged by that repository and is removed as usual. Without this rule, a
+  run folder under a work root inside a repository would never be removed.
+- **Several work trees in one folder.** Cleanup judges each one and stops at the
+  first that holds unsaved work. It reports that one.
+- **A `.git` that is not a repository.** A `.git` folder with no `HEAD` in it
+  is ignored, whatever else it holds, and the folder is removed as usual.
+  Nothing inside it is read beyond the presence of `HEAD`.
+
+Anything cleanup cannot settle is kept, with
+`cannot check for unpushed commits: …`:
+
+- Git cannot be run, or does not answer within 60 seconds.
+- A `.git` that is a file or a link, or a folder with a `HEAD`, which Git
+  refuses or places somewhere else: for example a `.git` file that says
+  `gitdir: /nonexistent`, a corrupt repository, or a repository Git calls
+  unsafe because of its owner.
+- The folder or its `.git` belongs to another user. Cleanup does not run Git in
+  it.
+- The folder itself, a folder directly inside it, or a folder two levels inside
+  it cannot be opened, for example because it is mode `000`.
+- A path cannot be resolved.
+- One folder holds more than eight work trees. The detail is
+  `more work trees than can be checked`. Only the `.git` entries described
+  above count: an ignored `.git` folder with no `HEAD` and a candidate that is
+  a symbolic link do not. The cap is reached while the work trees are being
+  found, before any of them is judged, so more than eight keeps the folder
+  without judging any of them.
+
+A folder kept for one of these reasons stays until a person fixes the
+repository or removes the folder by hand. Cleanup does not retry, wait for an
+age to pass, or offer an override.
+
+### What cleanup prints
+
+When cleanup keeps a folder it prints one `amplihack: leaving` line on stderr.
+The line names the folder and the reason. It names the work tree as well when
+the work tree is not the folder itself:
+
+```text
+amplihack: leaving "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/fixture" in place: has uncommitted changes
+amplihack: leaving "/home/ryan/.amplihack/work/r/3f0c9a526d1e" in place: work tree "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs": has unpushed commits
+```
+
+The line goes to stderr whatever `RUST_LOG` is set to, so it is in any log that
+captures the run's stderr. When `RUST_LOG` is set to `warn` or a more verbose
+level, cleanup also writes a `tracing` warning record for the same event on
+stderr. That record is for diagnosis; its layout is not a stable interface, so
+match on the `amplihack: leaving` line. Standard output is untouched, so
+`--format json` stays parseable.
+
+In the report, the item is `skipped` and its `reason` is the text after the
+colon:
+
+```bash
+amplihack cleanup --apply --only run-tmp --format json 2>/dev/null
+```
+
+```json
+{
+  "dry_run": false,
+  "work_root": "/home/ryan/.amplihack/work",
+  "entries": [
+    {
+      "category": "run-tmp",
+      "path": "/home/ryan/.amplihack/work/r/3f0c9a526d1e",
+      "size_bytes": 222298112,
+      "reason": "work tree \"/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs\": has unpushed commits",
+      "action": "skipped",
+      "run_id": "3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3"
+    }
+  ]
+}
+```
+
+Rules for the line:
+
+- **Once per pass.** One folder gets one `amplihack: leaving` line in one
+  cleanup pass. At the end of a run, two passes can reach the same
+  `runtime/` folder: the runner's own removal, and then the sweep, which finds
+  the folder once `run.json` is finalised. The sweep does not run when
+  `AMPLIHACK_CLEANUP_ON_EXIT=0` is set or another cleanup holds the lock. A
+  later `amplihack cleanup` is another pass. A folder that still holds unsaved
+  work is reported by each pass that reaches it.
+- **Paths are quoted and escaped.** A folder name with a newline, a terminal
+  escape or a right-to-left override in it cannot start a second line, change
+  your terminal, or reverse the line it appears in. The same escaping is
+  applied to Git's words in the detail.
+- **Only paths and the reason.** The line never shows a remote URL, a commit id,
+  a branch name or any other Git output. The detail after
+  `cannot check for unpushed commits:` has credentials in URLs removed and is
+  shortened.
+- **The runner's line.** When the runner's own removal of `runtime/` keeps the
+  folder, the line is the same and the run goes on. The run's exit status does
+  not change.
+
+### Free a kept folder
+
+Set `WT` to the work tree from the message. When the message names no work
+tree, it is the folder itself.
+
+```bash
+WT="$HOME/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs"
+git -C "$WT" status --short
+git -C "$WT" log --oneline '@{upstream}..HEAD'
+```
+
+For `has no upstream and commits on no remote branch`, list the commits with:
+
+```bash
+git -C "$WT" log --oneline HEAD --not --remotes
+```
+
+Then save the work or decide to drop it:
+
+```bash
+# Keep it: commit anything uncommitted, then push.
+git -C "$WT" add -A
+git -C "$WT" commit -m "Save work from the killed run"
+git -C "$WT" push -u origin HEAD
+
+# Or drop it: delete the folder yourself.
+rm -rf "$HOME/.amplihack/work/r/3f0c9a526d1e"
+```
+
+After a push, run cleanup again. The folder is judged afresh, and is removed if
+it holds nothing unsaved and is otherwise eligible:
+
+```bash
+amplihack cleanup --apply --only run-tmp
+```
+
+For `cannot check for unpushed commits`, read the detail after the colon. Fix
+what it names, such as the owner of the folder, a broken `.git` file or a
+locked folder, or inspect the folder and remove it by hand.
+
+### What the check does not cover
+
+The check is deliberately narrow. It asks the same questions as the
+`run-worktree` category, but what a wrong answer costs is not the same. A
+`run-worktree` removal takes away a linked worktree, and the branches and the
+stash stay behind in the main repository. Removing a folder that holds a clone
+takes that clone's branches and stash with it, and nothing is left behind.
+
+- It looks at `HEAD` and the working tree. It does not look at `refs/stash`,
+  at local branches other than the checked-out one, or at ignored files. A
+  clone whose checked-out branch is clean and pushed is therefore removed even
+  when another local branch holds a commit that is on no remote, or the stash
+  holds changes.
+- A remote-tracking branch that is out of date can make a commit look pushed.
+  Cleanup never fetches to find out.
+- An upstream can itself be a local branch, as `git checkout -b feature
+  --track master` sets up. A commit that has reached that local branch then
+  counts as pushed, even when the local branch has never been pushed anywhere.
+- A bare repository has no work tree, so it is not judged.
+- A repository three or more levels inside the folder is not found, so the
+  folder can be removed with it.
+- The check and the removal are two steps. Work added to a folder between them
+  is not seen.
+
+## When a target is removed
+
+A target recorded in the five-field format is removed only when one of three
+events happens. There is no age rule: `--keep-hours` and
+`AMPLIHACK_CLEANUP_KEEP_HOURS` do not delay or cause the removal, and a target
+is never removed because it is old.
+
+| Event | Which targets | Reason in the report |
+| --- | --- | --- |
+| **(a) Run end.** The sweep removes a worktree that this run recorded. | Targets this run recorded as `created` for that worktree's path. | `worktree removed by run cleanup` |
+| **(b) Checkout gone.** The checkout path in the line no longer exists. | Any recorded target for that checkout, `created` or `reused`. | `checkout gone` |
+| **(c) Worktree teardown.** A worktree is removed by `amplihack cleanup` (including the run-end sweep) or by a bundled recipe helper. | The target of that worktree path, unless rule (a) already covers it. This includes a `reused` target of the run's own worktree. See [Remove the target of a removed worktree](#remove-the-target-of-a-removed-worktree). | `worktree removed` |
+
+In every other case the target is kept and the entry says why:
+
+| Case | Reason |
+| --- | --- |
+| The run's worktree for that checkout is kept, for example because its PR is open. | `worktree kept` |
+| The sweep does not include the `run-worktree` category (`--only run-target`), so no worktree is removed and rule (a) cannot apply. | `worktree kept: run-worktree not selected` |
+| The checkout is not a worktree this run recorded, such as the main checkout or a worktree the run adopted. | `checkout not owned by this run` |
+| The origin is `reused` and the checkout still exists, for example the main checkout. | `reused target; checkout still exists` |
+| The checkout path could not be checked, for example `EACCES`. | `checkout state unknown: <error>` |
+| Another active run records the same target. | the existing `recorded by active run <id>` reason |
+
+So the target of your main checkout is never removed at the end of a run, even
+when a run built in it first, because the main checkout is never a worktree
+the sweep removes. It goes only if the main checkout folder itself
+is deleted (event b).
+
+Rule (a) needs the worktree to be gone. Cleanup removes worktrees before
+targets, and just before removing a target under rule (a) it checks the
+checkout path again. Anything other than "not found", including a worktree
+that `git worktree remove` refused, keeps the target with the reason
+`worktree kept`.
+
+Every removal, whatever the event, also needs the checks in
+[Safety rules](#safety-rules), including a free `.cargo-lock`.
+
+Issue #2039 asked that a run's target be gone when the run ends. Cleanup
+instead removes it when the run's worktree is removed (events a and c). While
+the worktree is kept, for example an auto-drive PR worktree waiting for
+review, its target stays, because the next commit in that worktree would
+otherwise rebuild it from nothing (2-5 GB of build output). The target goes
+in the same sweep that removes the worktree, or when the checkout folder is
+deleted by any other means (event b).
+
+Example: a run builds in a new worktree for `feat/issue-2039`, commits, and
+its PR merges. At the next sweep the worktree passes its checks and is
+removed, and its target goes with it in the same sweep:
+
+```text
+CATEGORY        ACTION                         SIZE     PATH
+run-worktree    removed                        1.8 MiB  /home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
+                reason: PR #2071 merged 2026-11-08T14:02:11Z
+run-target      removed                        4.0 GiB  /home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d
+                reason: worktree removed by run cleanup
+```
+
+The report lists entries in the order they were processed, so a worktree
+always comes before the target that went with it.
+
+The same run also committed once in the main checkout and recorded that
+target as `reused`. That target stays:
+
+```text
+run-target      skipped                        6.2 GiB  /home/ryan/.amplihack/work/targets/amplihack-precommit-target-0a1b2c3d4e5f
+                reason: reused target; checkout still exists
+```
+
+## Linked targets
+
+A target in `<work root>/targets` or the hook's cache folder can be a link to
+a folder on another disk. Cleanup removes a linked target, first the
+destination folder and then the link, only when every one of these holds,
+both when the plan is made and again just before removal:
+
+- the link is owned by you;
+- the link points in one step at a real folder: not dangling, not at another
+  link, with no link anywhere in the destination's path;
+- the destination is a direct child of an allowed root (see below), not the
+  root itself, or the link has the host cargo wrapper's layout (see
+  [Links made by the host cargo wrapper](#links-made-by-the-host-cargo-wrapper));
+- the destination is owned by you;
+- the destination looks like a Cargo target: a `CACHEDIR.TAG` with Cargo's
+  signature, a `.rustc_info.json`, or `<profile>/.fingerprint` or
+  `<profile>/.cargo-lock`; links inside it are not followed;
+- at removal, the link still points at the same destination, and the target
+  has the same shape (folder, link or dangling link) it had when planned.
+
+The allowed roots are `<work root>/targets`, the hook's XDG cache folder, and
+the folders in `AMPLIHACK_TARGET_LINK_ROOTS`:
+
+```bash
+export AMPLIHACK_TARGET_LINK_ROOTS=/mnt/build/cargo-targets
+amplihack cleanup --only run-target
+```
+
+### Links made by the host cargo wrapper
+
+A host cargo wrapper, such as the one on candide, moves a new target off the
+root disk and leaves a link in its place:
+
+```text
+~/.cache/amplihack/amplihack-precommit-target-0e047858ba2f
+  -> /d0/ryan/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016
+```
+
+Cleanup follows such a link with no setting. The destination's name must be
+exactly `<name of the link's folder>-<target name>-<12 lowercase hex>`, so it
+carries the checkout's own hash, and the folder that holds the destination
+must pass the same checks as an entry of `AMPLIHACK_TARGET_LINK_ROOTS`
+(below). Every other rule in this list still applies. On candide, therefore,
+`AMPLIHACK_TARGET_LINK_ROOTS` does not need to be set; it is only for links
+with some other layout.
+
+Use a folder that holds only build output for each entry of
+`AMPLIHACK_TARGET_LINK_ROOTS`, such as `/mnt/build/cargo-targets`. An entry
+such as `~/src` is accepted, because it is not your home folder or one of
+its parents, but a link you own that points at a project's own `target/`
+folder under it would then let cleanup remove that project's build output.
+
+Entries of `AMPLIHACK_TARGET_LINK_ROOTS`, and the folder derived from a
+wrapper link, that are
+`/`, your home folder or one of its parents, relative, missing, owned by
+someone else, or writable by others without the sticky bit are ignored with a
+warning. The full rules are in
+[Linked targets and AMPLIHACK_TARGET_LINK_ROOTS](../reference/pre-commit-build-cache.md#linked-targets-and-amplihack_target_link_roots).
+
+When a check fails, the link and its destination are left alone and the
+entry is skipped with one of these reasons:
+
+| Reason | Meaning |
+| --- | --- |
+| `link not followed: outside allowed roots` | The destination is not a direct child of an allowed root, and its name is not the host cargo wrapper's layout, or its folder failed the root checks. Set `AMPLIHACK_TARGET_LINK_ROOTS`. |
+| `link not followed: not a cargo target` | The destination does not look like a Cargo target. |
+| `link not followed: link chain` | The link points at another link, or the destination's path contains one. |
+| `link not followed: foreign owner` | The link or the destination belongs to another user. |
+| `changed since plan` | The link now points elsewhere, or the target changed shape between plan and removal. |
+
+A dangling link is not checked against these rules, since there is nothing
+behind it to remove. When rule (a) or (b) applies to a recorded target that
+is a dangling link, or `--worktree-target` finds one at the target path, the
+link alone is removed with `remove_file`, after the ownership check. The
+report gives the reason of the rule that applied, for example `checkout gone`.
+A link that resolved when planned and is dangling at removal is skipped as
+`changed since plan`.
+
+Untagged targets (the `untagged-target` category) still skip every link,
+with the reason `symbolic link; not followed`.
+
+## Remove the target of a removed worktree
+
+When `amplihack cleanup` removes a worktree, including during the run-end
+sweep, it then removes that worktree's target by itself. The one exception is
+a target for which the same sweep has already planned a rule (a) removal as
+its own entry; the follow-on step skips that one to avoid handling it twice.
+A `created` record alone is not enough: under `--only run-worktree`, or when
+the rule (a) entry was refused at plan time (for example because its
+`.cargo-lock` was held), there is no such entry, and this step checks the
+target again after the worktree is gone. A target recorded as `reused` for
+the run's own worktree, or not recorded at all, is also removed by this step
+in the same sweep, with the reason `worktree removed`; it does not wait for
+rule (b) at a later sweep.
+
+Whatever happens to the target, it is listed in the report. A target this
+step keeps is shown as `skipped` with its reason, in both text and JSON
+output, and a warning is written to the log. A target is listed once: when
+this step reports it, a plan-time entry for the same target is dropped. The
+result never changes the worktree's own entry.
+
+The bundled recipe helpers do the same after their own worktree removals, in
+`workflow-worktree.yaml`, `workflow_worktree_sweep.sh` and
+`workflow_runtime_artifacts.sh`. Each one calls:
+
+```bash
+command -v amplihack >/dev/null 2>&1 \
+  && amplihack cleanup --apply --worktree-target "$wt" >/dev/null || true
+```
+
+The report on stdout is discarded, but errors and refusals still go to
+stderr, so they appear in the step log. No helper deletes a target with `rm`.
+
+When a helper runs inside an active run, that run usually records the
+target itself, so the call skips it as recorded by another live run. This
+is expected: the target is removed under rule (b) once the run has ended,
+because its checkout is gone by then. If `amplihack` is not installed, the
+target stays and is removed later under rule (b), if a run recorded it, or by
+the hook's stale-cache reclaim.
+
+You can call the option yourself after removing a worktree by hand:
+
+```bash
+git worktree remove ~/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
+amplihack cleanup --worktree-target ~/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
+```
+
+```text
+CATEGORY        ACTION                         SIZE     PATH
+run-target      would-remove                   4.0 GiB  /home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d
+                reason: worktree removed
+```
+
+Add `--apply` to remove it. The option computes the target name from the
+checkout path, looks for it under `<work root>/targets` and the hook's cache
+folder, and applies the same checks as the sweep: owned by you, Cargo-shaped,
+lock free, the [linked target](#linked-targets) rules, and not recorded by any
+active run. A dangling link at the target path is removed.
+
+It refuses, writes one line to stderr and exits with code `1`, when the
+checkout path:
+
+| Case | Message |
+| --- | --- |
+| is relative | `amplihack cleanup: --worktree-target needs an absolute path: <path>` |
+| still exists, including the main checkout or a dangling link at that path | `amplihack cleanup: --worktree-target: checkout still exists: <path>` |
+| has a parent folder that cannot be resolved | `amplihack cleanup: --worktree-target: cannot resolve the parent of <path>` |
+| cannot be examined, for example because a parent folder denies access | `amplihack cleanup: --worktree-target: cannot examine checkout <path>: <error>` |
+
+Only "not found" counts as removed. Any other error leaves the checkout's
+state unknown, and the target is kept.
+
+The target name is computed from the checkout's parent folder, so that folder
+must still exist. When a helper removes the folder that held the worktree as
+well as the worktree, the call exits with `1` and the message
+`cannot resolve the parent of <path>`, and the target stays. The bundled
+helpers end the call in `|| true`, so this does not fail the step; the
+message is in the step log. The target is then removed under rule (b), if a
+run recorded it, or by the hook's stale-cache reclaim.
+
+It does not take the cleanup lock, so it can run while a sweep is in
+progress. It exits with `0` when nothing was found or the target was skipped,
+and with `1` only if a removal failed.
+
+`git worktree remove` run directly does not call it. Such a target stays
+until a sweep finds its checkout gone, if a run recorded it, or until the
+hook's TTL reclaim removes it.
+
 ## Preview and apply cleanup
 
 A dry run lists every candidate and what would happen to it:
@@ -392,7 +1442,7 @@ amplihack cleanup
 
 ```text
 CATEGORY        ACTION                         SIZE     PATH
-run-target      would-remove                   4.0 GiB  /home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b-run-3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3
+run-target      would-remove                   4.0 GiB  /home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d
                 reason: PR #1820 merged 2026-10-31T08:02:11Z
 run-worktree    would-remove                   1.8 MiB  /home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-1808
                 reason: PR #1820 merged 2026-10-31T08:02:11Z
@@ -431,7 +1481,7 @@ amplihack cleanup --format json
   "entries": [
     {
       "category": "run-target",
-      "path": "/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b-run-3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3",
+      "path": "/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d",
       "size_bytes": 4294967296,
       "reason": "PR #1820 merged 2026-10-31T08:02:11Z",
       "action": "would-remove",
@@ -469,7 +1519,7 @@ amplihack cleanup --apply --skip-logs
 | --- | --- | --- |
 | `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`) left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive and no running process (such as a child the killed run left behind) uses it. | remove |
 | `run-worktree` | Worktrees recorded in a run's `owned-paths`, under `<work root>/worktrees/` or `<main checkout>/worktrees/`, once the run is eligible. | `git worktree remove`; the branch is kept |
-| `run-target` | Targets recorded in a run's `owned-paths`, once the run is eligible. | remove |
+| `run-target` | Targets recorded in a run's `owned-paths`: on the events in [When a target is removed](#when-a-target-is-removed), or for legacy lines once the run is eligible. Also the target removed by `--worktree-target`. A linked target loses both its destination and the link. | remove |
 | `untagged-target` | Folders directly under `<work root>/targets/`, and `amplihack-precommit-target-*` folders in the hook cache base, that no run recorded and that have not been modified within the keep period. | remove |
 | `tmp-leftover` | Top-level `replay-*`, `release-*` and `amplihack-workflow-*` folders in the system temporary folder that you own, that are older than the keep period, that hold no `pid` marker naming a live process, and that no running process has as its working folder, holds a file open in, or has as its `TMPDIR`, `TMP` or `TEMP`. | remove |
 | `recipe-log` | Files in `recipe.log_dir` older than `--log-days`. | archive |
@@ -483,9 +1533,24 @@ only collects them.
 The `tmp-leftover` category is skipped entirely when cleanup runs as root, and
 when the system temporary folder is neither owned by you nor sticky.
 
+In the `run-tmp`, `untagged-target` and `tmp-leftover` categories, and for
+`run-target` folders recorded in the legacy format, a folder that holds a Git
+work tree with unsaved work is skipped instead of removed. See
+[Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept).
+
 Clones under `<work root>/clones/` belong to no category. They are never
 recorded in `owned-paths` and never swept; remove them by hand when you no
 longer need them.
+
+An auto-drive loop killed part way through a round can likewise leave a
+`pre-review.*` baseline directory in its state directory, mode `0700` with
+`0600` contents. `autodrive_loop.sh` removes the baseline once the round
+returns and the loop goes on, so one survives an interrupted round, and also a
+round that ended the run on an orphaned driver, a policy refusal, a usage limit
+or a recorded step-recovery handoff; the next run's first round reclaims it. No
+cleanup category covers that path, and the directory holds the contents of the
+worktree's untracked files, so remove it by hand once no recovery needs it. See
+[pre-review evidence](../reference/recipe-checkout-isolation.md#pre-review-evidence).
 
 ## Build output: CACHEDIR.TAG and target names
 
@@ -510,13 +1575,14 @@ The tag is written by:
   they create a target folder;
 - the Rust helper `create_tagged_target_dir`.
 
-`git-hook-cargo.sh` chooses its folder like this:
+`git-hook-cargo.sh` chooses its folder like this, inside or outside a run:
 
 | Condition | Folder |
 | --- | --- |
-| `AMPLIHACK_WORK_ROOT` usable, inside a run | `$AMPLIHACK_WORK_ROOT/targets/amplihack-precommit-target-<hash>-run-<run id>` |
-| `AMPLIHACK_WORK_ROOT` usable, outside a run | `$AMPLIHACK_WORK_ROOT/targets/amplihack-precommit-target-<hash>` |
-| `AMPLIHACK_WORK_ROOT` not set, or not usable | the XDG cache path used by earlier releases, with the same naming |
+| `AMPLIHACK_WORK_ROOT` usable | `$AMPLIHACK_WORK_ROOT/targets/amplihack-precommit-target-<hash>` |
+| `AMPLIHACK_WORK_ROOT` not set, or not usable | `${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/amplihack-precommit-target-<hash>` |
+
+`<hash>` is the first 12 hex digits of the SHA-256 of the checkout path.
 
 The hook uses the work root only when it already exists as a real folder (not
 a symbolic link) owned by you, is not group- or world-writable, and is neither
@@ -525,29 +1591,24 @@ a symbolic link) owned by you, is not group- or world-writable, and is neither
 it prints `amplihack: warning: could not record cache ownership for <path>`
 and the build goes ahead.
 
-The `-run-<run id>` suffix uses `AMPLIHACK_RUN_ID`, not the attempt id, and
-is added only when that variable is set and matches `^[0-9a-f-]{1,64}$`, the
-same pattern cleanup requires of every id it reads from a folder name. Inside a run, the script also records the
-target in `owned-paths`. Its stale-cache reclaim recognises both name forms
-and considers only folders you own.
+Each checkout has one target. Every run that commits in a checkout reuses
+its target, so a second run in the same worktree does not build from
+scratch. Inside a run, the script records the target in `owned-paths` as
+`created` or `reused`, and cleanup removes it on the events in
+[When a target is removed](#when-a-target-is-removed). Its stale-cache
+reclaim recognises both the current names and the older
+`-run-<run id>` names, and considers only folders you own.
 
-Because the suffix changes with every run, each run that commits in a
-worktree starts with an empty target and builds from scratch, even in a
-worktree an earlier run already built. The earlier run's target, often
-several gigabytes for this workspace, stays until that run is eligible for
-cleanup: at least `AMPLIHACK_CLEANUP_KEEP_HOURS` (default 24) after its PR
-closes or the run ends. On a host that runs many recipes, check free space
-with `df -h` and run `amplihack cleanup --apply --only run-target` when it is
-low. This follows the design choice that one run never deletes another
-run's build output.
+The runner does not set `CARGO_TARGET_DIR`. A worktree's own `target/` is
+removed when the run ends (see
+[Remove a run's own build output](#remove-a-runs-own-build-output)), and any
+that remains is removed with the worktree.
 
-The runner does not set `CARGO_TARGET_DIR`. A worktree's own `target/` stays
-inside the worktree, Cargo tags it, and it is removed with the worktree.
-
-To find the build output of a run, look for its id:
+To list the targets a run recorded, with their origin and checkout:
 
 ```bash
-ls -d ~/.amplihack/work/targets/*-run-3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3
+grep '^target' ~/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/owned-paths
+# target	/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d		created	/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
 ```
 
 ## Archive and restore logs
@@ -686,8 +1747,18 @@ expects:
   `<main checkout>/worktrees/`;
 - folders directly under `<work root>/targets/`, and
   `amplihack-precommit-target-*` folders in the hook cache base;
+- for a [linked target](#linked-targets), the destination folder directly
+  inside an allowed root, and then the link;
+- the private `CARGO_TARGET_DIR` a run was told to remove, and `target/` at
+  the root of a linked worktree it owns or started in, as described in
+  [Remove a run's own build output](#remove-a-runs-own-build-output);
 - the `tmp-leftover` folders described above;
 - log originals, after their archive is verified.
+
+The `owned-paths` rules below apply to runtime cleanup and recorded legitimate
+worktrees/targets. There is no execution-copy ownership manifest or end-of-run
+release of a private repository. The retired `run-exec` category is not swept;
+legacy execution and review directories remain for recovery.
 
 An entry in `owned-paths` is a request, not a permission. A recorded path
 outside these folders is reported as skipped.
@@ -704,12 +1775,23 @@ A worktree is removed only if all of these hold:
   recorded it (a run whose `run.json` cannot be read counts as active);
 - `git worktree remove` succeeds without `--force`.
 
+The other folders cleanup removes get a narrower version of the same
+protection. Before it removes a `run-tmp`, a legacy `run-target` folder, an
+`untagged-target`, a `tmp-leftover` or the run's own `runtime/` folder, it
+looks for Git work trees in the folder and keeps the folder if one has
+uncommitted changes or commits that are not on its upstream, or if it cannot
+tell. See [Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept).
+
 Git commands against a candidate run with hooks and fsmonitor disabled and
 with the system git configuration ignored. A repository's own
 `.git/config` can still name clean and smudge filters, and those can run
-during `git status` and `git worktree remove`, and inside `gh`. Cleanup runs
-as you, on worktrees of your own runs, so such a filter has no more rights
-than whoever could already write that configuration.
+during `git status` and `git worktree remove`, and inside `gh`. The
+[unsaved-work check](#folders-with-unsaved-work-are-kept) widens where that
+applies: it runs Git in any repository copy up to two levels inside a
+candidate folder, which can be one a step downloaded or extracted rather than
+one a run recorded. Cleanup runs as you, and only in a folder whose `.git`
+belongs to you, so such a filter has no more rights than whoever could
+already write into that folder.
 
 Before each removal, cleanup resolves the path again and requires it to
 resolve to the same place it did when the item was collected, and still to lie
@@ -718,7 +1800,54 @@ step wrote. It also refuses symbolic links and repeats the liveness, Cargo
 lock and cleanliness checks; if the run's `run.json` can no longer be read,
 the item is skipped. An item that fails one of these checks is reported as
 `skipped` with the reason. Symbolic links are not followed when counting
-sizes.
+sizes. A run target that is a link is checked by the
+[linked target](#linked-targets) rules instead of being refused outright.
+
+Every target removal, whether by the sweep, after a worktree removal or by
+`--worktree-target`, goes through one routine that:
+
+1. takes an exclusive, non-blocking lock on `<target>/.cargo-lock` and on the
+   `.cargo-lock` of each real subfolder, such as `debug/` and `release/`.
+   Lock files are opened without following links and are never created.
+   A `.cargo-lock` that is itself a link counts as held, because Cargo never
+   makes one;
+2. if any lock is held, skips the target with `in use: .cargo-lock is held`
+   and deletes nothing. If a lock or a subfolder cannot be checked, it skips
+   the target with a reason that names the problem and the path, and deletes
+   nothing:
+
+   | Reason | Meaning |
+   | --- | --- |
+   | `in use: .cargo-lock is held` | A build holds the lock. |
+   | `linked lock: <path>` | The `.cargo-lock` is a link. Cargo never makes one. |
+   | `permission denied: <path>` | The lock file or folder cannot be opened. |
+   | `lock check failed: <path>: <error>` | Any other error while opening or locking. |
+
+3. keeps every lock until the removal is finished, so a build cannot start in
+   the target while it is being deleted;
+4. removes the resolved target folder without following links inside it,
+   then, for a linked target, the link;
+5. logs each removal at `info` level with the path and shape, and a second
+   line with the event (`a`, `b` or `c` from
+   [When a target is removed](#when-a-target-is-removed)), the reason and the
+   run id.
+
+The locks are kept while `remove_dir_all` runs, so the `.cargo-lock` files
+are deleted while cleanup still holds them. A build that opened one of them
+just before that point finds its target folder gone and fails; nothing else
+is removed. The next build in that checkout starts from an empty target.
+
+A held lock never makes cleanup wait or retry. The target is skipped and
+looked at again by the next sweep. A running process with a file open in the
+target also keeps it.
+
+Locks are checked one folder level deep only. A cross-compiled profile keeps
+its lock at `<target>/<triple>/<profile>/.cargo-lock`, which is not locked;
+such a build is protected by the running-process check instead.
+
+An error of any kind while checking a target, such as a permission error, a
+path in an unknown state, or a folder that cannot be listed, is a reason to
+keep the target, never to remove it.
 
 If a run's `cleanup-record.json` cannot be parsed, it is renamed to
 `cleanup-record.json.corrupt-<time>`, a warning is printed, and a new record
@@ -736,6 +1865,7 @@ worktrees on missing or unmounted paths.
 ```text
 amplihack cleanup [--apply] [--format text|json] [--keep-hours N]
                   [--log-days N] [--only <category>]... [--skip-logs]
+amplihack cleanup [--apply] [--format text|json] --worktree-target <checkout path>
 amplihack cleanup restore <manifest-or-archive-path> [--dest <dir>]
 ```
 
@@ -747,6 +1877,7 @@ amplihack cleanup restore <manifest-or-archive-path> [--dest <dir>]
 | `--log-days N` | Overrides `AMPLIHACK_LOG_ARCHIVE_DAYS`. |
 | `--only <category>` | Limit to one category. Repeat for several. Cannot be combined with `--skip-logs`. |
 | `--skip-logs` | Leave `recipe-log` and `session-log` alone. |
+| `--worktree-target <path>` | Hidden. Remove only the target of the removed worktree at `<path>`. Cannot be combined with `--only`, `--skip-logs`, `--keep-hours` or `--log-days`. See [Remove the target of a removed worktree](#remove-the-target-of-a-removed-worktree). |
 
 Actions in the output are `would-remove`, `removed`, `would-archive`,
 `archived`, `skipped` and `failed`. The explanation for each action is in
@@ -754,7 +1885,7 @@ Actions in the output are `would-remove`, `removed`, `would-archive`,
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | Success, including when items were skipped. |
+| `0` | Success, including when items were skipped, such as folders kept for [unsaved work](#folders-with-unsaved-work-are-kept). |
 | `1` | At least one apply or restore action failed, or a fatal error occurred. The remaining items are still processed. Errors are printed as `amplihack cleanup: <message>`. |
 | `2` | Bad usage, such as an unknown category or `--only` with `--skip-logs`. |
 
@@ -763,6 +1894,100 @@ output stay as described in [Hygiene Cleanup](../operations/hygiene-cleanup.md).
 
 ## Troubleshooting
 
+**`git worktree list` shows a `prunable` entry under `runs/`.** A run was
+killed with `SIGKILL`, so it could not remove its own checkout. The
+end-of-run sweep deleted the folder later, but the worktree record is still in
+the repository's `.git/worktrees/`. It does no harm. `amplihack cleanup` never
+prunes records, so remove it from the repository yourself:
+
+```bash
+git -C ~/src/myapp worktree prune --dry-run --verbose
+git -C ~/src/myapp worktree prune
+```
+
+Check the dry-run list first: `prune` also drops records of worktrees on a
+disk that is not mounted.
+
+**A run printed `runtime folder ... is still in use by a running process`.**
+A process started during the run still has its working folder, an open file
+or its `TMPDIR` in the run's runtime folder. Nothing needs to be done: a later
+sweep removes the folder once that process exits. To find processes that
+hold it, set `DIR` to the path from the message:
+
+```bash
+DIR="$HOME/.amplihack/work/r/<id>"   # the quoted path from the message
+for p in /proc/[0-9]*; do
+  { readlink "$p/cwd"; ls -l "$p/fd";
+    tr '\0' '\n' < "$p/environ" | grep -E '^(TMPDIR|TMP|TEMP)='; } 2>/dev/null \
+    | grep -qE "$DIR(/|$)" && echo "${p#/proc/} $(tr '\0' ' ' < "$p/cmdline")"
+done
+```
+
+The loop reads every process, so it can take a minute or more on a busy host.
+
+See [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept).
+
+**A run printed `running processes cannot be seen on this system`.** The
+system has no `/proc` (macOS, for example), so the runner could not check
+whether the run's runtime folder is still in use, and kept it. No later sweep
+and no `amplihack cleanup --apply` removes it, for the same reason. Once
+nothing that the run started is still running, check the folder and delete it.
+Set `DIR` to the quoted path from the message:
+
+```bash
+DIR="$HOME/.amplihack/work/r/<id>"   # the quoted path from the message
+lsof +D "$DIR"                       # lists processes with a file or working folder inside it
+rm -rf -- "$DIR"                     # only when lsof printed nothing
+```
+
+`amplihack cleanup --only run-tmp` lists every folder kept this way, with its
+size; see
+[What this costs, and how to list the kept folders](#what-this-costs-and-how-to-list-the-kept-folders).
+
+`lsof +D` does not show a process whose only link to the folder is a `TMPDIR`
+value, so also make sure that no build server, language server or background
+job from that run is still alive. If the folder holds a Git work tree, look
+for uncommitted or unpushed work in it first: deleting by hand skips the check
+described in the next entry.
+
+See [Where running processes cannot be seen](#where-running-processes-cannot-be-seen).
+
+**A folder stays, and stderr says `leaving "<folder>" in place`.** The folder
+holds a Git work tree with uncommitted changes or unpushed commits, or cleanup
+could not check it. The message names the work tree and the reason. Nothing is
+wrong with cleanup, and the run's exit status did not change. Commit and push
+the work, or remove the folder by hand if you do not need it, as shown in
+[Free a kept folder](#free-a-kept-folder).
+
+**A folder is kept with `cannot check for unpushed commits: …`.** Git could not
+answer for a repository inside the folder. Read the detail after the colon:
+`not owned by the current user`, a `.git` file whose `gitdir:` points nowhere,
+a repository Git calls unsafe, a locked folder, a timeout, or more than eight
+work trees in one folder. Cleanup keeps such a folder until you fix the cause
+or remove the folder yourself. A folder that cleanup tried to check and could
+not is kept; a repository the check never looks at is not covered, as listed in
+[What the check does not cover](#what-the-check-does-not-cover).
+
+**A folder that sits inside a repository was removed.** Cleanup judges only a
+`.git` in the folder itself, in a folder directly inside it, or in a folder two
+levels inside it, and only when that `.git` belongs to the folder it sits in.
+The enclosing repository is not judged, and a repository three or more levels
+inside the folder is not found. Keep work you care about in a checkout or
+worktree outside the folders cleanup manages.
+
+**A dry run fails with `inherited TMPDIR ... does not exist (or is not a
+directory)` or `is not an absolute directory`.** `recipe run --dry-run`
+creates its folder inside `TMPDIR`, and the `TMPDIR` it inherited is missing,
+is a file, or is a relative path. This happens most often in a shell that was
+started inside an earlier run, whose runtime folder has since been removed.
+The runner does not create the folder for you, because that path may belong
+to another run. Point `TMPDIR` at a folder that exists:
+
+```bash
+export TMPDIR=/tmp
+amplihack recipe run default-workflow --dry-run -c task_description="Check plan"
+```
+
 **`work root ... is writable by group or others`.** An existing
 `~/.amplihack/work` created with a permissive umask is refused. Fix it with:
 
@@ -770,7 +1995,7 @@ output stay as described in [Hygiene Cleanup](../operations/hygiene-cleanup.md).
 chmod 700 ~/.amplihack/work
 ```
 
-Until then, runs fall back to a private temporary folder and print a warning.
+Until then, `amplihack recipe run` stops with this error before any step runs.
 
 **A worktree is always skipped with `not recorded in owned-paths`.** The
 worktree was created outside the bundled helpers, or by a release before this
@@ -783,13 +2008,50 @@ PR state.
 **Skipped with `cleanup lock held`.** Another `amplihack cleanup --apply` or an
 end-of-run sweep is running. Wait for it to finish and run the command again.
 
+**A linked target is skipped with `link not followed: outside allowed roots`.**
+The link points at a disk that is not in `AMPLIHACK_TARGET_LINK_ROOTS`, and
+the destination's name is not the host cargo wrapper's layout. Add the folder
+that holds the destinations, for example
+`export AMPLIHACK_TARGET_LINK_ROOTS=/mnt/build/cargo-targets`, and run cleanup
+again. If cleanup prints a warning that it ignored the entry, check that the
+folder exists, is owned by you, and is not writable by others. A wrapper
+link with this reason means the folder holding its destination failed those
+same checks.
+
+**A target is skipped with `in use: .cargo-lock is held`.** A Cargo build is
+using it. The next sweep looks at it again; nothing needs to be done.
+
+**A target is skipped with `linked lock`, `permission denied` or
+`lock check failed`.** Cleanup could not check a `.cargo-lock` at the path
+shown. Fix the permissions, or remove the link if you made it, and run
+cleanup again.
+
+**A target stays after its worktree was removed.** Check how the worktree was
+removed. `git worktree remove` run by hand does not remove the target; call
+`amplihack cleanup --apply --worktree-target <path>` with the same path.
+
 **A tool cannot create a socket in `TMPDIR`.** Check the length of
 `$TMPDIR`. Runs switch to the shorter `<work root>/r/<short id>` layout when
 the default path is over 80 bytes; a very long `AMPLIHACK_WORK_ROOT` can still
 exceed the socket limit, so choose a shorter one.
+
+**`amplihack cleanup` lists a folder as `would-remove`, but `--apply` keeps
+it.** A dry run reports a kept folder only for the categories it judges while
+planning, `run-tmp` and legacy `run-target`. For an `untagged-target` or a
+`tmp-leftover`, the check for unsaved work runs just before removal, so only
+`--apply` shows it. Look inside such a folder yourself before you apply.
+
+**An older run left private execution or review directories.** Those resources
+are no longer allocated, retired, or released by recipe runs. They are not
+collected by a replacement cleanup category. They can contain uncommitted
+files, staged content, unpushed commits, or repositories on which linked
+worktrees depend. Preserve them and inspect their Git state before deciding
+whether any data can be removed. Do not infer that a directory is disposable
+from an old ownership record or an inactive run.
 
 ## Related documentation
 
 - [Hygiene Cleanup](../operations/hygiene-cleanup.md) - Opt-in cleanup of stale worktrees, detached Cargo targets and session artifacts outside recipe runs
 - [Configure Workflow Runtime Isolation](configure-workflow-runtime-isolation.md) - Where workflow runtime output is written
 - [Correlate Recipe Runs with Logs](correlate-recipe-runs.md) - Match a run id to its logs and processes
+- [Recipe Execution in Named Checkouts](../reference/recipe-checkout-isolation.md) - Working directories and retained repository data

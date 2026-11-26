@@ -263,3 +263,19 @@ where
         stale
     }
 }
+
+/// A trust change does not permit two reads of one stored login at once.
+/// Results retain the key (and trust class) they had when started.
+pub(super) fn join_pending(fl: &super::measure::Reads, keys: &mut [super::measure::Key]) {
+    use super::measure::Key;
+    for key in keys {
+        let other = match key {
+            Key::Candidate(name) => Key::UnboundCandidate(name.clone()),
+            Key::UnboundCandidate(name) => Key::Candidate(name.clone()),
+            _ => continue,
+        };
+        if fl.busy(&other) {
+            *key = other;
+        }
+    }
+}

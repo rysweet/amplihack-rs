@@ -259,6 +259,8 @@ fn returns_additional_context_without_mutating_prompt() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -310,6 +312,8 @@ fn extracts_prompt_from_extra_prompt_key() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -339,6 +343,8 @@ fn extracts_prompt_from_user_message_dict() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -370,6 +376,8 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -381,10 +389,11 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
         })
         .unwrap();
 
-    let workflow_state = dir
+    let workflow_state = home
         .path()
-        .join(".claude/runtime/workflow_state/workflow-session.json");
+        .join(".amplihack/runtime/sessions/workflow-session/workflow_state.json");
     assert!(workflow_state.exists());
+    assert!(!dir.path().join(".claude/runtime/workflow_state").exists());
     assert!(
         result["hookSpecificOutput"]["additionalContext"]
             .as_str()
@@ -597,4 +606,117 @@ fn prompt_is_noted_for_a_waiting_limit_resume_hook_only_when_resume_dir_exists()
     let text = fs::read_to_string(&marker).unwrap();
     assert!(text.trim_end().parse::<i64>().unwrap() > 0, "{text:?}");
     assert!(!text.contains("prompt-session"));
+}
+
+/// Writes `content` as the project's preferences file and loads it through the
+/// per-prompt path. The project file takes precedence over `AMPLIHACK_ROOT`
+/// and `~/.amplihack`, so the host's own preferences cannot affect the result.
+fn load_preferences_fixture(content: &str) -> (Option<String>, bool) {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let base = crate::test_support::scratch_base::scratch_base();
+    let project = tempfile::tempdir_in(&base).unwrap();
+    let context_dir = project.path().join(".claude/context");
+    fs::create_dir_all(&context_dir).unwrap();
+    fs::write(context_dir.join("USER_PREFERENCES.md"), content).unwrap();
+    preferences::load_user_preferences_with_patterns(&ProjectDirs::new(project.path()))
+}
+
+#[test]
+fn shipped_preferences_file_has_no_learned_patterns() {
+    let shipped = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../amplifier-bundle/context/USER_PREFERENCES.md"),
+    )
+    .unwrap();
+
+    let (_, has_learned_patterns) = load_preferences_fixture(&shipped);
+
+    assert!(!has_learned_patterns);
+}
+
+#[test]
+fn ordinary_line_under_learned_patterns_sets_the_flag() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Verbosity | balanced |
+
+## Learned Patterns
+
+Prefer small pull requests.
+";
+
+    let (_, has_learned_patterns) = load_preferences_fixture(content);
+
+    assert!(has_learned_patterns);
+}
+
+#[test]
+fn comment_only_learned_patterns_before_next_section_leaves_the_flag_unset() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Verbosity | balanced |
+
+## Learned Patterns
+
+<!--
+Learned behaviours are added here.
+## Not a heading
+-->
+
+## Managing Preferences
+
+Use the customise command to change these.
+";
+
+    let (_, has_learned_patterns) = load_preferences_fixture(content);
+
+    assert!(!has_learned_patterns);
+}
+
+#[test]
+fn not_set_preference_is_left_out_of_the_table() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Verbosity | balanced |
+| Coding Standards | (not set) |
+";
+
+    let (context, _) = load_preferences_fixture(content);
+
+    let context = context.unwrap();
+    assert!(context.contains("**Verbosity**"));
+    assert!(!context.contains("**Coding Standards**"));
+}
+
+#[test]
+fn no_table_when_every_preference_is_not_set() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Verbosity | (not set) |
+| Communication Style | (Not Set) |
+| Coding Standards |   (NOT SET)   |
+";
+
+    let (context, _) = load_preferences_fixture(content);
+
+    assert!(context.is_none());
+}
+
+#[test]
+fn value_containing_not_set_in_other_text_is_kept() {
+    let content = "\
+| Setting | Value |
+| --- | --- |
+| Coding Standards | not set by default, use rustfmt |
+";
+
+    let (context, _) = load_preferences_fixture(content);
+
+    assert!(context.unwrap().contains("**Coding Standards**"));
 }
