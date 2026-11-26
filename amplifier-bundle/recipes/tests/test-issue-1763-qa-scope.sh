@@ -475,12 +475,22 @@ REMOVE
     qa_polluted_run QA_RM_MODE=fail AUTODRIVE_QA_COMMAND='qa-probe completes'
     expect hermetic-cleanup-refused "a refused cleanup keeps the measured result" qa_status=PASS qa_exit_code=0 \
         qa_suite_commands_count=1
-    expect_summary_has hermetic-cleanup-refused-cause "QA scratch not removed: "
+    # The behaviour checked is that the scratch which survived is the one the
+    # record and stderr name: its path, not the wording around it.
+    local leftover="" survivors=0
+    while IFS= read -r p; do
+        if [ -d "$p" ]; then leftover="$p"; survivors=$((survivors + 1)); fi
+    done < "$allocation_log"
+    if [ "$survivors" -eq 1 ]; then
+        expect_summary_has hermetic-cleanup-refused-cause "$leftover"
+        if grep -qF -- "$leftover" "$ERR"; then pass hermetic-cleanup-refused-warning "the leftover scratch path is on stderr"
+        else fail hermetic-cleanup-refused-warning "stderr does not name the leftover scratch $leftover"; fi
+    else
+        fail hermetic-cleanup-refused-cause "want exactly one surviving owned scratch, found $survivors"
+    fi
     if [ "$rc" -eq 0 ] && [ -f "$evidence" ] && [ "$(cat "$evidence")" = "$OUT" ] && [ -s "$obs" ]; then
         pass hermetic-cleanup-refused-evidence "the record is published after the refused cleanup (exit 0)"
     else fail hermetic-cleanup-refused-evidence "exit=$rc, or the record was not published"; fi
-    if grep -q 'WARNING: QA scratch not removed: ' "$ERR"; then pass hermetic-cleanup-refused-warning "the leftover is named on stderr"
-    else fail hermetic-cleanup-refused-warning "no warning names the leftover scratch"; fi
     # Allocation and later temporary-file failures must never fall back to the
     # polluted TMPDIR. The latter also tests an owned directory's early cleanup.
     for mode in fail fail-file; do
