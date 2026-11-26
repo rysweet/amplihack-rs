@@ -345,32 +345,42 @@ REMOVE
     # Prints the first broken expectation and returns 1, or returns 0.
     qa_check_records() {
         local want="$1" want_target="$2" want_btarget="$3" line k v n=0 shared="" exp_argv exp_cwd
-        local -A r=()
+        # One scalar per record key, chosen by a case: macOS /bin/bash 3.2 has no associative
+        # arrays, and tests/issue_1423_bash4_constructs.sh refuses them in shipped shell.
+        local r_argv r_cwd r_contamination r_exists r_markers r_scratch r_tmp r_temp r_target r_build_target r_warm r_home r_path r_build r_artifact
+        qa_record_reset() { r_argv=""; r_cwd=""; r_contamination=""; r_exists=""; r_markers=""; r_scratch=""; r_tmp=""; r_temp=""; r_target=""; r_build_target=""; r_warm=""; r_home=""; r_path=""; r_build=""; r_artifact=""; }
+        qa_record_reset
         local -a expected=()
         while IFS= read -r line; do [ -z "$line" ] || expected+=("$line"); done <<< "$want"
         while IFS= read -r line; do
-            if [ "$line" != -- ]; then k="${line%%=*}"; v="${line#*=}"; r[$k]="$v"; continue; fi
+            if [ "$line" != -- ]; then k="${line%%=*}"; v="${line#*=}"
+                case "$k" in
+                    argv|cwd|contamination|exists|markers|scratch|tmp|temp|target|build_target|warm|home|path|build|artifact) printf -v "r_$k" '%s' "$v" ;;
+                    *) echo "unknown record key: $k"; return 1 ;;
+                esac
+                continue
+            fi
             [ "$n" -lt "${#expected[@]}" ] || { echo "child count exceeds ${#expected[@]}"; return 1; }
             exp_argv="${expected[$n]%%$'\t'*}"; exp_cwd="${expected[$n]#*$'\t'}"; n=$((n + 1))
-            [ "${r[argv]}" = "$exp_argv" ] || { echo "argv ${r[argv]}, want $exp_argv"; return 1; }
+            [ "${r_argv}" = "$exp_argv" ] || { echo "argv ${r_argv}, want $exp_argv"; return 1; }
             if [ "$exp_cwd" = . ]; then exp_cwd="$REPO"; else exp_cwd="$REPO/$exp_cwd"; fi
-            [ "${r[cwd]}" = "$exp_cwd" ] || { echo "cwd ${r[cwd]}, want $exp_cwd"; return 1; }
-            [ -z "${r[contamination]// /}" ] || { echo "inherited selector names: ${r[contamination]}"; return 1; }
-            [ "${r[exists]}" = yes ] && [ "${r[markers]}" = no ] || { echo "scratch absent or framework ancestor found"; return 1; }
-            case "${r[scratch]}/" in "$WORK/"*) echo "caller scratch reused"; return 1 ;; esac
-            case "${r[scratch]}/" in "$REPO/"*) echo "scratch inside checkout"; return 1 ;; esac
-            [ ! -e "${r[scratch]}" ] && [ ! -L "${r[scratch]}" ] || { echo "owned scratch survived wrapper exit"; return 1; }
+            [ "${r_cwd}" = "$exp_cwd" ] || { echo "cwd ${r_cwd}, want $exp_cwd"; return 1; }
+            [ -z "${r_contamination// /}" ] || { echo "inherited selector names: ${r_contamination}"; return 1; }
+            [ "${r_exists}" = yes ] && [ "${r_markers}" = no ] || { echo "scratch absent or framework ancestor found"; return 1; }
+            case "${r_scratch}/" in "$WORK/"*) echo "caller scratch reused"; return 1 ;; esac
+            case "${r_scratch}/" in "$REPO/"*) echo "scratch inside checkout"; return 1 ;; esac
+            [ ! -e "${r_scratch}" ] && [ ! -L "${r_scratch}" ] || { echo "owned scratch survived wrapper exit"; return 1; }
             for k in tmp temp; do
-                [ "${r[$k]}" = "<unset>" ] || [ "${r[$k]}" = "${r[scratch]}" ] || { echo "$k escaped scratch: ${r[$k]}"; return 1; }
+                v="r_$k"; v="${!v}"; [ "$v" = "<unset>" ] || [ "$v" = "$r_scratch" ] || { echo "$k escaped scratch: $v"; return 1; }
             done
-            [ "${r[target]}" = "$want_target" ] || { echo "CARGO_TARGET_DIR ${r[target]}, want $want_target"; return 1; }
-            [ "${r[build_target]}" = "$want_btarget" ] || { echo "CARGO_BUILD_TARGET_DIR ${r[build_target]}, want $want_btarget"; return 1; }
-            if [ "$want_target" != "<unset>" ] && [ "${r[warm]}" != yes ]; then echo "the caller's warm target was not visible"; return 1; fi
-            [ "${r[home]}" = "$fake" ] && [ "${r[path]}" = "$bin:$SYSPATH" ] || { echo "HOME or PATH changed"; return 1; }
-            [ "${r[build]}" = "2|-j2|1.97.0|-Cdebuginfo=1" ] || { echo "build configuration changed: ${r[build]}"; return 1; }
-            [ "${r[artifact]}" = yes ] || { echo "explicit owned artifact inaccessible"; return 1; }
-            [ -z "$shared" ] || [ "$shared" = "${r[scratch]}" ] || { echo "commands did not share their invocation scratch"; return 1; }
-            shared="${r[scratch]}"; r=()
+            [ "${r_target}" = "$want_target" ] || { echo "CARGO_TARGET_DIR ${r_target}, want $want_target"; return 1; }
+            [ "${r_build_target}" = "$want_btarget" ] || { echo "CARGO_BUILD_TARGET_DIR ${r_build_target}, want $want_btarget"; return 1; }
+            if [ "$want_target" != "<unset>" ] && [ "${r_warm}" != yes ]; then echo "the caller's warm target was not visible"; return 1; fi
+            [ "${r_home}" = "$fake" ] && [ "${r_path}" = "$bin:$SYSPATH" ] || { echo "HOME or PATH changed"; return 1; }
+            [ "${r_build}" = "2|-j2|1.97.0|-Cdebuginfo=1" ] || { echo "build configuration changed: ${r_build}"; return 1; }
+            [ "${r_artifact}" = yes ] || { echo "explicit owned artifact inaccessible"; return 1; }
+            [ -z "$shared" ] || [ "$shared" = "${r_scratch}" ] || { echo "commands did not share their invocation scratch"; return 1; }
+            shared="$r_scratch"; qa_record_reset
         done < "$obs"
         [ "$n" -eq "${#expected[@]}" ] || { echo "child count: $n, want ${#expected[@]}"; return 1; }
         if grep -qxF -- "$shared" "$scratch_history"; then echo "scratch reused across invocations"; return 1; fi
