@@ -11,8 +11,8 @@ to extend the lists or restore the full lists through a managed installation.
 
 ## Summary
 
-- **Unique bundled skill names:** 134
-- **Skill definition files:** 134
+- **Unique bundled skill names:** 129
+- **Skill definition files:** 129
 
 ## Bundled Skills
 
@@ -28,7 +28,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `aspire` | `aspire/SKILL.md` |
 | `authenticated-web-scraper` | `authenticated-web-scraper/SKILL.md` |
 | `auto-drive-to-merge` | `auto-drive-to-merge/SKILL.md` |
-| `awesome-copilot-sync` | `awesome-copilot-sync/SKILL.md` |
 | `azure-admin` | `azure-admin/SKILL.md` |
 | `azure-devops` | `azure-devops/SKILL.md` |
 | `backlog-curator` | `backlog-curator/SKILL.md` |
@@ -99,7 +98,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `n-version-workflow` | `n-version-workflow/SKILL.md` |
 | `novelist-analyst` | `novelist-analyst/SKILL.md` |
 | `npe-hunting-workflow` | `npe-hunting-workflow/SKILL.md` |
-| `outside-in-testing` | `outside-in-testing/SKILL.md` |
 | `oxidizer-workflow` | `oxidizer-workflow/SKILL.md` |
 | `pdf` | `pdf/SKILL.md` |
 | `philosopher-analyst` | `philosopher-analyst/SKILL.md` |
@@ -116,7 +114,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `psychologist-analyst` | `psychologist-analyst/SKILL.md` |
 | `qa-team` | `qa-team/SKILL.md` |
 | `quality-audit` | `quality-audit/SKILL.md` |
-| `remote-work` | `remote-work/SKILL.md` |
 | `repository-oom-audit` | `repository-oom-audit/SKILL.md` |
 | `researching-topics` | `research/researching-topics/SKILL.md` |
 | `reviewing-code` | `quality/reviewing-code/SKILL.md` |
@@ -143,12 +140,10 @@ to extend the lists or restore the full lists through a managed installation.
 | `testing-code` | `quality/testing-code/SKILL.md` |
 | `tla-plus-expert` | `tla-plus-expert/SKILL.md` |
 | `transcript-viewer` | `transcript-viewer/SKILL.md` |
-| `ultrathink-orchestrator` | `ultrathink-orchestrator/SKILL.md` |
 | `urban-planner-analyst` | `urban-planner-analyst/SKILL.md` |
 | `verus-expert` | `verus-expert/SKILL.md` |
 | `work-delegator` | `work-delegator/SKILL.md` |
 | `work-iq` | `work-iq/SKILL.md` |
-| `workflow-enforcement` | `workflow-enforcement/SKILL.md` |
 | `workiq-wsl` | `workiq-wsl/SKILL.md` |
 | `workstream-coordinator` | `workstream-coordinator/SKILL.md` |
 | `xlsx` | `xlsx/SKILL.md` |

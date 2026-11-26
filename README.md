@@ -316,7 +316,7 @@ These are the features you'll use daily:
 ### Everything Else
 
 <details>
-<summary>Orchestration & Execution (6 features)</summary>
+<summary>Orchestration & Execution (4 features)</summary>
 
 - **[dev-orchestrator (`/dev`)](/dev)** — Unified task orchestrator with
   goal-seeking loop
@@ -326,9 +326,6 @@ These are the features you'll use daily:
   agentic loops
 - **[Multitask](amplifier-bundle/skills/multitask/SKILL.md)** — Parallel
   workstream execution
-- **[Expert Panel](/amplihack:expert-panel)** — Multi-expert review with voting
-- **[N-Version Programming](/amplihack:n-version)** — Generate multiple
-  implementations, select best
 
 **Recipe CLI** — Run recipes directly from your shell (outside interactive
 sessions):
@@ -347,7 +344,7 @@ Full reference:
 </details>
 
 <details>
-<summary>Workflows & Methodologies (5 features)</summary>
+<summary>Workflows & Methodologies (4 features)</summary>
 
 - **[Document-Driven Development](https://rysweet.github.io/amplihack-rs/document_driven_development/)**
   — Docs-first for large features
@@ -355,7 +352,6 @@ Full reference:
   — Fix linting before push
 - **[CI Diagnostics](docs/claude/agents/amplihack/specialized/ci-diagnostic-workflow.md)**
   — Iterate until PR is mergeable
-- **[Cascade Fallback](/amplihack:cascade)** — Graceful degradation
 - **[Quality Audit](/amplihack:analyze)** — Seek/validate/fix/recurse quality
   loop
 
@@ -394,11 +390,9 @@ Full reference:
 </details>
 
 <details>
-<summary>Quality, Security & Customization (5 features)</summary>
+<summary>Quality, Security & Customization (4 features)</summary>
 
 - **[Security Analysis](/amplihack:xpia)** — Cross-prompt injection defense (opt-in: set `XPIA_ENABLED=true`; see [XPIA configuration](docs/reference/xpia-configuration.md))
-- **[Socratic Questioning](/amplihack:socratic)** — Challenge claims and clarify
-  requirements
 - **[Benchmarking](https://rysweet.github.io/amplihack-rs/BENCHMARKING/)** —
   Performance measurement
 - **[Customization](/amplihack:customize)** — User preferences (verbosity,
@@ -473,7 +467,7 @@ amplihack claude
 
 ### GitHub Copilot CLI
 
-All 42 bundled agents and 120 bundled skill names work with Copilot:
+All 41 bundled agents and 129 bundled skill names work with Copilot:
 
 ```bash
 # Default mode (no agent)

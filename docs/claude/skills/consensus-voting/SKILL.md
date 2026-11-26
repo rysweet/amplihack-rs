@@ -311,7 +311,7 @@ Based on configured voting mode:
 
 ### Recommendation
 
-- Escalate to `/amplihack:debate` for structured trade-off analysis
+- Escalate to the `debate-workflow` skill for structured trade-off analysis
 - OR: Gather more information and re-vote
 - OR: Accept simple majority with documented risk
 ```
@@ -396,7 +396,7 @@ Based on configured voting mode:
 - reviewer: monolith (MEDIUM) - "Easier to maintain initially"
 - tester: microservices (LOW) - "Harder to test but more isolated"
 
-**Result:** No consensus (52.1%) - Escalate to `/amplihack:debate`
+**Result:** No consensus (52.1%) - Escalate to the `debate-workflow` skill
 
 ## Integration with Other Workflows
 

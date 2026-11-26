@@ -84,7 +84,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | aspire | Enumerated | No |
 | authenticated-web-scraper | Enumerated | No |
 | auto-drive-to-merge | Enumerated | Yes |
-| awesome-copilot-sync | Enumerated | No |
 | azure-admin | Enumerated | Yes |
 | azure-devops | Enumerated | No |
 | backlog-curator | Enumerated | Yes |
@@ -157,7 +156,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | n-version-workflow | Enumerated | Yes |
 | novelist-analyst | Enumerated | Yes |
 | npe-hunting-workflow | Enumerated | No |
-| outside-in-testing | Enumerated | Yes |
 | oxidizer-workflow | Enumerated | No |
 | pdf | Enumerated | Yes |
 | philosopher-analyst | Enumerated | Yes |
@@ -176,7 +174,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | quality/reviewing-code | Enumerated | Yes |
 | quality/testing-code | Enumerated | Yes |
 | quality-audit | Enumerated | Yes |
-| remote-work | Enumerated | Yes |
 | repository-oom-audit | Enumerated | No |
 | research/researching-topics | Enumerated | Yes |
 | roadmap-strategist | Enumerated | Yes |
@@ -198,12 +195,10 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | test-gap-analyzer | Enumerated | Yes |
 | tla-plus-expert | Enumerated | Yes |
 | transcript-viewer | Enumerated | Yes |
-| ultrathink-orchestrator | Enumerated | Yes |
 | urban-planner-analyst | Enumerated | Yes |
 | verus-expert | Enumerated | Yes |
 | work-delegator | Enumerated | Yes |
 | work-iq | Enumerated | No |
-| workflow-enforcement | Enumerated | No |
 | workiq-wsl | Enumerated | No |
 | workstream-coordinator | Enumerated | Yes |
 | xlsx | Enumerated | Yes |

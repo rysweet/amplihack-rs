@@ -7,7 +7,6 @@ components:
     include:
       - "amplihack:ultrathink"
       - "amplihack:knowledge-builder"
-      - "amplihack:expert-panel"
 
   context:
     include:

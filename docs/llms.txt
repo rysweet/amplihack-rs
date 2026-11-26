@@ -23,7 +23,6 @@
 - [mcp-server-builder](/.claude/agents/amplihack/specialized/mcp-server-builder.md): Build MCP servers in any language
 
 ## Skills
-- [ultrathink-orchestrator](/.claude/skills/ultrathink-orchestrator/SKILL.md): Deep analysis orchestration for complex tasks
 - [default-workflow](/.claude/skills/default-workflow/SKILL.md): Standard 23-step development workflow
 - [investigation-workflow](/.claude/skills/investigation-workflow/SKILL.md): 6-phase research and exploration
 - [smart-test](/.claude/skills/smart-test/SKILL.md): Intelligent test generation and execution
@@ -34,7 +33,6 @@
 - [docx](/.claude/skills/docx/SKILL.md): Word document handling
 - [xlsx](/.claude/skills/xlsx/SKILL.md): Excel spreadsheet handling
 - [multitask](/.claude/skills/multitask/SKILL.md): Parallel workstream execution
-- [awesome-copilot-sync](/.claude/skills/awesome-copilot-sync/SKILL.md): Monitor awesome-copilot releases for drift
 
 ## Recipes
 - [default-workflow](/amplifier-bundle/recipes/default-workflow.yaml): Standard development workflow (23 steps)
@@ -53,9 +51,6 @@
 - [/analyze](/.claude/commands/amplihack/analyze.md): Comprehensive code review for philosophy compliance
 - [/improve](/.claude/commands/amplihack/improve.md): Self-improvement and learning capture
 - [/fix](/.claude/commands/amplihack/fix.md): Intelligent fix workflow for common error patterns
-- [/cascade](/.claude/commands/amplihack/cascade.md): Fallback cascade execution
-- [/debate](/.claude/commands/amplihack/debate.md): Multi-agent debate for decisions
-- [/n-version](/.claude/commands/amplihack/n-version.md): N-version programming
 - [/reflect](/.claude/commands/amplihack/reflect.md): Reflection and learning
 - [/customize](/.claude/commands/amplihack/customize.md): User preference management
 - [/modular-build](/.claude/commands/amplihack/modular-build.md): Modular code generation
