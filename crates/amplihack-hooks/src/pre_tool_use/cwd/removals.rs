@@ -4,7 +4,7 @@
 //! ([`shell::tokenise`]), which keeps quoted text inside its word and never
 //! reads a heredoc body as commands. A simple command is a removal when one
 //! of its words is `rm` followed by a recursive flag (a short option cluster
-//! with `r` or `R` in it, or `--recursive`, before `--`), or is `rmdir`. The
+//! holding `r` or `R`, or `--recursive`, before `--`), or is `rmdir`. The
 //! word may be in any position, because `sudo`, `xargs`, `find -exec` and
 //! many other programs run their arguments, and this module does not try to
 //! tell which programs do. `git rm -r "$f"` is therefore read as a removal,
@@ -20,7 +20,7 @@
 //!
 //! Some text is run as commands in a way the tokeniser does not follow. For
 //! that text the caller keeps the decision the check made before #3261, on
-//! the whole string ([`Reading::WholeText`]):
+//! the whole string, and its message says so and why ([`Reading::WholeText`]):
 //!
 //! - the tokeniser cannot read the line (an unclosed quote or substitution,
 //!   or an unterminated heredoc);
@@ -55,35 +55,37 @@ pub(super) struct Removal {
 pub(super) enum Reading {
     /// Decide on each of these removals by its own words.
     Commands(Vec<Removal>),
-    /// Decide on the whole text, for one of the reasons in the module notes.
-    WholeText,
+    /// Decide on the whole text, for the reason given, which completes the
+    /// sentence "the hook read the whole command text because …".
+    WholeText(&'static str),
 }
 
-/// Why `text` has to be read whole.
-#[derive(Debug)]
-struct ReadWhole;
+const UNREADABLE: &str = "it could not split the text into commands (an unclosed quote or substitution, \
+     or a heredoc with no closing delimiter line)";
+const RUNS_SCRIPT: &str = "a command runs `eval` or a shell (`sh`, `bash`, `zsh`, `dash`, \
+     `ksh`), which can run quoted text or a heredoc as commands";
+const HEREDOC_SUBSTITUTION: &str = "a heredoc with an unquoted delimiter has `$(` or a backtick \
+     in its body, which the shell runs";
+const TOO_DEEP: &str = "command substitutions are nested too deeply to read";
 
 /// How to decide on `text`.
 pub(super) fn read(text: &str) -> Reading {
     let mut found = Vec::new();
     match collect(text, 0, &mut found) {
         Ok(()) => Reading::Commands(found),
-        Err(ReadWhole) => Reading::WholeText,
+        Err(reason) => Reading::WholeText(reason),
     }
 }
 
-/// Adds the removals in `text` to `found`, or reports that the text has to
-/// be read whole.
-fn collect(text: &str, depth: usize, found: &mut Vec<Removal>) -> Result<(), ReadWhole> {
-    // Substitutions nested too deeply to read.
+/// Adds the removals in `text` to `found`, or gives the reason the text has
+/// to be read whole.
+fn collect(text: &str, depth: usize, found: &mut Vec<Removal>) -> Result<(), &'static str> {
     if depth > MAX_DEPTH {
-        return Err(ReadWhole);
+        return Err(TOO_DEEP);
     }
-    // An unclosed quote or substitution, or a heredoc with no closing
-    // delimiter line.
     let parsed = shell::tokenise(text);
     if !parsed.complete {
-        return Err(ReadWhole);
+        return Err(UNREADABLE);
     }
     for command in &parsed.commands {
         if command
@@ -92,18 +94,15 @@ fn collect(text: &str, depth: usize, found: &mut Vec<Removal>) -> Result<(), Rea
             .map(|w| basename(w))
             .any(|name| name == "eval" || SHELLS.contains(&name))
         {
-            // `eval` or a shell may run quoted text or a heredoc as commands.
-            return Err(ReadWhole);
+            return Err(RUNS_SCRIPT);
         }
-        // The shell runs a substitution in the body of a heredoc whose
-        // delimiter is unquoted before the program reads the body.
         let substituted_heredoc = command
             .heredocs
             .iter()
             .zip(&command.heredoc_expands)
             .any(|(body, expands)| *expands && (body.contains("$(") || body.contains('`')));
         if substituted_heredoc {
-            return Err(ReadWhole);
+            return Err(HEREDOC_SUBSTITUTION);
         }
         if let Some(removal) = removal(command) {
             found.push(removal);

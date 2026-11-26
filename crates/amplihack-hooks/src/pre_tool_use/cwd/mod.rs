@@ -7,7 +7,8 @@
 //! line is split with the shared tokeniser (see [`removals`]), so heredoc
 //! bodies, quoted strings and the words of other commands do not affect the
 //! decision. Text that runs commands the tokeniser does not follow (`eval`,
-//! a shell, an unreadable line) is checked on the whole string as before.
+//! a shell, an unreadable line) is checked on the whole string as before,
+//! and the refusal says so.
 
 mod removals;
 #[cfg(test)]
@@ -54,8 +55,9 @@ const EXPANSION_ERROR: &str = "🚫 OPERATION BLOCKED - Shell Expansion in Destr
 /// Each recursive `rm` and each `rmdir` is decided on the words of its own
 /// simple command (see [`removals`]): it is rejected when one of them uses
 /// shell expansion, or when one of its operands resolves to the working
-/// directory or a directory above it. Text that runs commands the tokeniser
-/// does not follow is decided on the whole string.
+/// directory or a directory above it. The deny message names the command.
+/// Text that runs commands the tokeniser does not follow is decided on the
+/// whole string, and the message says so and why.
 pub fn check_cwd_deletion(command: &str) -> anyhow::Result<Option<Value>> {
     if !RM_WORD_RE.is_match(command) {
         return Ok(None);
@@ -63,14 +65,18 @@ pub fn check_cwd_deletion(command: &str) -> anyhow::Result<Option<Value>> {
 
     let found = match removals::read(command) {
         removals::Reading::Commands(found) => found,
-        removals::Reading::WholeText => return whole_text_decision(command),
+        removals::Reading::WholeText(reason) => return whole_text_decision(command, reason),
     };
 
-    if found
+    if let Some(removal) = found
         .iter()
-        .any(|r| r.words.iter().any(|w| has_dangerous_expansion(w)))
+        .find(|r| r.words.iter().any(|w| has_dangerous_expansion(w)))
     {
-        return Ok(Some(super::deny(EXPANSION_ERROR)));
+        let message = format!(
+            "{EXPANSION_ERROR}\n\nRefused command: {}",
+            command_text(&removal.words)
+        );
+        return Ok(Some(super::deny(&message)));
     }
 
     let Some(cwd) = current_cwd() else {
@@ -80,6 +86,10 @@ pub fn check_cwd_deletion(command: &str) -> anyhow::Result<Option<Value>> {
     for removal in &found {
         let paths = command::extract_rm_paths(&command_text(&removal.argv));
         if let Some(message) = message_under_cwd(&paths, &cwd) {
+            let message = format!(
+                "{message}\n\nRefused command: {}",
+                command_text(&removal.words)
+            );
             return Ok(Some(super::deny(&message)));
         }
     }
@@ -93,17 +103,28 @@ fn command_text(words: &[String]) -> String {
     shell::join_argv(&words)
 }
 
+/// The note added to a refusal decided on the whole text.
+fn whole_text_note(reason: &str) -> String {
+    format!(
+        "The hook read the whole command text, heredoc bodies and quoted strings \
+         included, rather than each command, because {reason}. If nothing in this \
+         call removes a directory, write the text to a file in one call and use the \
+         file in another, or run the removal in a call of its own."
+    )
+}
+
 /// The decision made before #3261, on the whole text: any expansion
 /// anywhere in a text with a recursive removal is rejected, and each segment
 /// with one is checked for a target at or above the working directory. Used
 /// for the text [`removals::read`] does not read command by command.
-fn whole_text_decision(command: &str) -> anyhow::Result<Option<Value>> {
+fn whole_text_decision(command: &str, reason: &str) -> anyhow::Result<Option<Value>> {
     if !RM_RECURSIVE_RE.is_match(command) && !RMDIR_RE.is_match(command) {
         return Ok(None);
     }
 
     if has_dangerous_expansion(command) {
-        return Ok(Some(super::deny(EXPANSION_ERROR)));
+        let message = format!("{EXPANSION_ERROR}\n\n{}", whole_text_note(reason));
+        return Ok(Some(super::deny(&message)));
     }
 
     let Some(cwd) = current_cwd() else {
@@ -115,6 +136,7 @@ fn whole_text_decision(command: &str) -> anyhow::Result<Option<Value>> {
             continue;
         }
         if let Some(message) = message_under_cwd(&command::extract_rm_paths(segment), &cwd) {
+            let message = format!("{message}\n\n{}", whole_text_note(reason));
             return Ok(Some(super::deny(&message)));
         }
     }
@@ -127,7 +149,7 @@ fn current_cwd() -> Option<std::path::PathBuf> {
     Some(p.canonicalize().unwrap_or(p))
 }
 
-/// The deny message when one of `paths` resolves to `cwd` or a directory
+/// The refusal message when one of `paths` resolves to `cwd` or a directory
 /// above it.
 fn message_under_cwd(paths: &[String], cwd: &Path) -> Option<String> {
     for p in paths {

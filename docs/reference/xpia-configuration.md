@@ -130,27 +130,29 @@ The CWD deletion check splits the command into simple commands and decides on
 each recursive `rm` and each `rmdir` by the words of that command alone. Heredoc
 bodies, quoted strings and comments are not commands, so text that only
 mentions a removal is allowed, and a variable or substitution in another
-command of the same call does not change the decision.
+command of the same call does not change the decision. A refusal names the
+command it refused.
 
 A simple command is a removal when one of its unquoted words is `rm` with a
 recursive flag after it, or is `rmdir`. The word may stand anywhere in the
 command, because `sudo`, `xargs`, `find -exec` and many other programs run
 their arguments, and the check does not try to tell which programs do. So
-`git rm -r "$f"`, `echo rm -rf $X` and `xargs grep rm -r "$X"` are rejected,
+`git rm -r "$f"`, `echo rm -rf $X` and `xargs grep rm -r "$X"` are refused,
 as they were before #3261. The body of each `$(...)` or backtick substitution
 is decided in the same way, so a commit message or pull request body passed
 as `"$(cat <<'EOF' ... EOF)"` is text, not commands.
 
 Some calls are still decided on the whole text, as every call was before
-#3261: any variable, substitution or backtick anywhere in the text is rejected
+#3261: any variable, substitution or backtick anywhere in the text is refused
 beside a recursive removal. This applies when the text cannot be split into
 commands (an unclosed quote or substitution, or a heredoc with no closing
 delimiter line), when any word of the call is `eval`, `sh`, `bash`, `zsh`,
 `dash` or `ksh`, and when a heredoc with an unquoted delimiter has `$(` or a
-backtick in its body. To avoid it, write the text to a file in one call and
-use the file in another, or run the removal in a call of its own. The
-whole-text decision does not look inside a quoted script, so
-`bash -c 'rm -rf .'` and `eval "rm -rf ."` are not rejected, as before.
+backtick in its body. The refusal then says that it read the whole text and
+which of these was the reason. To avoid it, write the text to a file in one
+call and use the file in another, or run the removal in a call of its own.
+The whole-text decision does not look inside a quoted script, so
+`bash -c 'rm -rf .'` and `eval "rm -rf ."` are not refused, as before.
 
 The check does not follow `cd`, so `cd .. && rm -rf amplihack-rs` is not
 recognised as deleting the working directory. It also does not see
