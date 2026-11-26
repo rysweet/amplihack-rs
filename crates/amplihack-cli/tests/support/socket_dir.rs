@@ -14,10 +14,8 @@
 //! 4. If no candidate fits, report the limit.
 //!
 //! Used by the `cli_integration` binary (`support::socket_dir`) and, through
-//! `#[path]` in `src/test_support.rs` (`crate::test_support::socket_dir`), by
-//! the library's unit tests, such as `src/commands/agent/tests_socket_check.rs`
-//! and the legacy skill cleanup test in `src/copilot_setup/staging.rs`, so all
-//! follow the one rule.
+//! `#[path]`, by the unit tests in `src/commands/agent/tests_socket_check.rs`,
+//! so both follow the one rule.
 
 #![allow(dead_code)]
 

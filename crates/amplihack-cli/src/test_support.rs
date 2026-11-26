@@ -129,12 +129,6 @@ mod scratch_base;
 #[allow(dead_code)]
 pub(crate) mod exit_witness;
 
-/// Directories for test Unix sockets that fit in `sun_path`; one copy,
-/// shared with `cli_integration`.
-#[cfg(unix)]
-#[path = "../tests/support/socket_dir.rs"]
-pub(crate) mod socket_dir;
-
 /// Issue #2931: `ls -ldn` parsing for stubs that inspect a file the test
 /// removes afterwards; one copy, shared with `cli_integration`.
 #[cfg(unix)]

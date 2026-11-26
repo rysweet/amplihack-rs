@@ -539,16 +539,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn legacy_cli_skill_cleanup_rejects_unsupported_file_type() {
-        use crate::test_support::socket_dir;
         use std::os::unix::net::UnixListener;
 
-        // The socket must fit in `sun_path`, which a long workflow `TMPDIR`
-        // leaves no room for; the shared rule picks a short directory.
-        let tail = Path::new(".copilot/skills/azure-devops-cli");
-        let Some(temp) = socket_dir::socket_tempdir(tail) else {
-            eprintln!("{}", socket_dir::skip_message(tail));
-            return;
-        };
+        let temp = tempfile::Builder::new().prefix("ah-").tempdir().unwrap();
         let copilot_home = temp.path().join(".copilot");
         let legacy_parent = copilot_home.join("skills");
         fs::create_dir_all(&legacy_parent).unwrap();
