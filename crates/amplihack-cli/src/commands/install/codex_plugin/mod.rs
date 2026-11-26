@@ -2,6 +2,7 @@
 //! Canonical skills remain provider-neutral; generated instruction skills are
 //! installation outputs. Native trust is deliberately left to Codex.
 use super::paths::home_dir;
+use amplihack_utils::list_selection::{ListSelection, ListSet};
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -174,6 +175,8 @@ mod recovery_test_support;
 mod recovery_tests;
 #[cfg(all(test, unix))]
 mod rollback_durability_tests;
+#[cfg(test)]
+mod selection_tests;
 #[cfg(test)]
 mod tests;
 

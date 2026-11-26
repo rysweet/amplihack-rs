@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(super) fn find_binary(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_binary(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(name);
@@ -60,7 +60,7 @@ pub(super) fn global_claude_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".claude"))
 }
 
-pub(super) fn staging_claude_dir() -> Result<PathBuf> {
+pub(crate) fn staging_claude_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".amplihack").join(".claude"))
 }
 

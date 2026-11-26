@@ -232,6 +232,9 @@ jobs:
       - name: Recipes — every committing recipe prepares its identity (issue #1394)
         shell: bash
         run: bash tests/recipe_commit_identity_static_test.sh
+      - name: Git identity helper, resolution order and repo-local stop (issue #3267)
+        shell: bash
+        run: bash tests/git_identity_test.sh
       - name: Invisible-char scan — stays dependency-free (issue #1397)
         shell: bash
         run: bash tests/issue_1397_invisible_scan_stays_dependency_free.sh
@@ -844,6 +847,13 @@ jobs:
       - name: "Outside-in: continuation, quick-change and investigation starts (issue #3129)"
         shell: bash
         run: AMPLIHACK_3129_START_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-3129-start-kinds-scenario.sh
+      # Issue #3220: install into a fresh HOME writes the skills and agents
+      # index; `amplihack directory find` prints a matching entry whose path is
+      # an existing file, an unmatched word prints nothing, and neither
+      # subcommand writes anything.
+      - name: "Outside-in: the directory of installed skills and agents (issue #3220)"
+        shell: bash
+        run: AMPLIHACK_3220_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-3220-directory-scenario.sh
       # Issue #2966: a red CI at finalisation sends the run back to repair it and
       # never ends it. The shipped workflow-finalize recipe runs against the
       # binary installed above and the pinned runner, with `gh` and `claude` as

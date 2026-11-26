@@ -1,5 +1,33 @@
 # Hook Specifications Reference
 
+## Optional hook text suppression
+
+With `AMPLIHACK_HOOK_TEXT=none`, SessionStart, UserPromptSubmit and the workflow
+classification reminder run normally, then omit `additionalContext` and
+`hookSpecificOutput.additionalContext`. Empty context
+envelopes are removed. Other fields, including control decisions and indexing
+diagnostics, are preserved before conversion to the host's protocol. This also
+preserves `systemMessage`, which Claude Code shows to the person rather than
+adding to the model's context. Capacity notices remain visible while their model
+context is omitted. The Codex conversion already omits `systemMessage`.
+
+Stop approves without running lock mode, power steering or reflection, after
+normal input validation. Codex keeps its existing Stop no-op. Malformed input
+and hook failures retain the existing failure policy and response. PreToolUse,
+PostToolUse, PreCompact, SessionEnd, precommit-prefs and StopFailure limit-resume
+are outside the setting. Command enforcement remains active.
+
+Only exact `none` suppresses text. An unset variable preserves behaviour
+silently. Any other explicit value, including an empty or non-UTF-8 value,
+preserves behaviour with one bounded, escaped diagnostic on stderr from each
+participating hook invocation. The variable is read before stdin, so invalid
+input does not hide that diagnostic.
+
+The variable is inherited by child sessions. The shared Claude, Copilot and
+Codex launcher reports suppression and the skipped Stop functions on stderr.
+See [Omit hook context text](../howto/omit-hook-context-text.md) for use and
+restoring the default for a child session.
+
 amplihack registers 8 hooks in `~/.claude/settings.json` when you run `amplihack install`. This page documents each hook: its Claude Code event, the binary or script that runs, and its timeout.
 
 ## Canonical Hook Table
@@ -270,16 +298,16 @@ either one can deny, so a harmless `command` does not hide a `cmd` that kills
 the user's server.
 
 **Position.** The guard is the first check `PreToolUseHook::process` makes for
-a shell tool: it runs before the XPIA check, the Skill redirect, the merge
-guard and the non-Bash early return. The checks after it answer with a bare
-`{"block": true, "message": …}`, which Claude Code does not act on (#1773).
+a shell tool: it runs before the XPIA check, the Skill redirect and the non-Bash early
+return. Every check answers a refusal in the same deny shape, shown under
+**Response** below (#1773).
 XPIA is off by default (#1734). When a user opts in with `XPIA_ENABLED=true`,
 its command-injection pattern matches a separator or newline followed by `rm`,
 `kill` and similar words. If XPIA ran first, it would answer for `TMUX_TMPDIR=$SB/tmuxsock tmux
 kill-server; rm -rf "$SB"`, for a `tmux -C attach <<EOF` heredoc whose body is
-`kill-server`, and for `tmux new -d 'sleep 1' \; kill-server`, and on Claude
-Code the command would run. Running the guard first gives those commands the
-deny shown under **Response** below. The guard only ever denies, so running
+`kill-server`, and for `tmux new -d 'sleep 1' \; kill-server`, and its reason
+would replace the guard's own. Running the guard first gives those commands
+the guard's reason. The guard only ever denies, so running
 it first cannot let through a command that a later check refuses: a command
 the guard allows goes on to XPIA and the other checks unchanged.
 
@@ -649,6 +677,37 @@ flush:
 }
 ```
 
+**Checked on the installed Claude Code (#1773).** On 2026-11-25 this shape was
+shown to stop a command on Claude Code 2.1.329, the version installed on the
+factory host. The hook was the real `amplihack-hooks pre-tool-use` binary built
+from commit `b7e33c5e1`, registered through a throwaway settings file, with the
+user's own settings, hooks and MCP servers left out. The session used the
+existing login in place; nothing was copied. In a new git repository on `main`,
+the agent was asked to run `touch <dir>/marker && git commit --allow-empty -m live`:
+
+```sh
+claude -p --setting-sources "" --settings <settings.json> --strict-mcp-config \
+  --permission-mode bypassPermissions --model haiku --max-turns 3 "<prompt>"
+```
+
+where `<settings.json>` is
+`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"<path>/amplihack-hooks pre-tool-use"}]}]}}`.
+
+| Hook answer | Marker file | Commit | Agent's report |
+| --- | --- | --- | --- |
+| Control: a script printing the old bare `{"block": true, "message": "Blocked by test."}` | created | made | "The command ran once and created an empty commit" |
+| The deny shape above, from the real binary | absent | none | "a PreToolUse hook refused the direct commit to `main`, so neither the `touch` nor the empty commit was executed, and I did not retry it" |
+
+The control shows that the test can tell the two shapes apart. Even with
+`bypassPermissions`, Claude Code honours
+`hookSpecificOutput.permissionDecision: "deny"` and ignores the bare `block`
+field. Copilot CLI 1.0.115 was not checked in this run. Its result rests on the check recorded on
+#1773 on 2026-10-31 (Copilot CLI 1.0.105), in which Copilot stopped the call
+only on the top-level `permissionDecision: "deny"`. The deny carries that field
+too. Repeat the check above after each Claude Code upgrade, because a change to
+the hook protocol would not show in the binary tests, which assert only the
+JSON.
+
 `<M>` is this fixed message. The command itself is never echoed.
 
 > Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. A socket file named `default`, or `-L default`, also counts as the user's server, even under a sandbox directory: give a private server another name (`-S "$SB/tmux.sock"`), and end one already running on a `default` path with `tmux -S <path> kill-session -t <name>` for each of its sessions, since by default a server exits when its last session ends. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.
@@ -818,8 +877,8 @@ is allowed; this differs from the tmux guard, which joins the string
 elements and checks them.
 
 **Position.** The guard runs in `PreToolUseHook::process` directly after the
-tmux guard, and before the XPIA check, the Skill redirect, the merge guard and
-the non-Bash early return. When both guards match, the tmux guard's deny is
+tmux guard, and before the XPIA check, the Skill redirect and the non-Bash
+early return. When both guards match, the tmux guard's deny is
 returned.
 
 **What it denies.** A command in which, after tokenising with the shared

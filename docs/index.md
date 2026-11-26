@@ -96,6 +96,8 @@ Centralized plugin system that works across all your projects:
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
 - [Update amplihack with gh's login](howto/update-with-gh-login.md) - Use gh's existing login for release lookup and download, and read a GitHub rate-limit refusal
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
+- [Find Installed Skills and Agents](howto/find-installed-skills-and-agents.md) - Search the index of every skill and agent amplihack installs with `amplihack directory find`, and use an entry you find ([reference](reference/directory-command.md))
+- [Choose Listed Skills and Agents](howto/choose-listed-skills-and-agents.md) - Extend the default set, remove an extension or restore the full lists for installed tools
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
 - [Usage-Limit Waits and Limit Records](reference/usage-limit-waits.md) - A step that meets a usage, spend or credit limit records it for its login, waits for room and continues; what ends a step, the record format, the `waiting_for_capacity` line
 - [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset, for another stored login to show capacity, or for the rotator to move a new login into `~/.claude`, and run once more ([reference](reference/profile-command.md#usage-limit-wait))
@@ -141,6 +143,8 @@ amplihack copilot
 - [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
 - [Recover an interrupted Codex installation](howto/install-codex-plugin.md#recover-an-interrupted-installation) - Retry safely or preserve a pending journal with `--reset-recovery`
 - [Codex agent-step launch flags](reference/launch-flag-injection.md#codex-agent-step-flags) - Sandbox, hook trust, and the directory-check bypass for validated review launch directories
+- [Run amplihack codex with a Local Model](howto/run-codex-with-a-local-model.md) - Interactive sessions, single tasks and recipe agent steps on a model served from your own machine, with a small prompt
+- [Codex Local-Model Launches](reference/codex-local-model-launch.md) - Selection, the generated Codex home, its `config.toml` and `hooks.json`, refresh, nested launches and errors
 - [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, installer downgrade guard, and diagnostics
 - [Recipe Context Transport Reference](reference/recipe-context-transport.md) - How `recipe run` hands context to the runner without argv
 - [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies

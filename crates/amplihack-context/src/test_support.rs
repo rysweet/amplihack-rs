@@ -2,7 +2,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-/// The five profile-redirecting variables and the guards that keep a test's
+/// The six profile-redirecting variables and the guards that keep a test's
 /// settings writes inside its own temporary home (issue #2922). One
 /// definition, shared with the other crates' `test_support`.
 #[path = "../../../tests/support/claude_profile_isolation.rs"]

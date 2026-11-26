@@ -178,6 +178,15 @@ pub fn run_uninstall() -> Result<()> {
 
     let _ = fs::remove_file(&manifest_path);
 
+    // Issue #3220: the skills and agents index names files this uninstall has
+    // just removed. A binary still on the machine would otherwise print paths
+    // to files that are gone.
+    match fs::remove_file(crate::commands::directory::index::index_path(&claude_dir)) {
+        Ok(()) => removed_any = true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => println!("  ⚠️  Could not remove the skills and agents index: {error}"),
+    }
+
     // Issue #1954: with every link gone, every release and retired tree is
     // removed unless a running process still uses it.
     if let Some(amplihack_dir) = claude_dir.parent() {

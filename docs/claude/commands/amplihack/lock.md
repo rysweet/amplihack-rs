@@ -1,5 +1,6 @@
 ---
 name: amplihack:lock
+disable-model-invocation: true
 version: 1.0.0
 description: Enable continuous work mode without stopping
 triggers:

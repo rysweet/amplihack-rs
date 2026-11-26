@@ -145,6 +145,14 @@ other Claude launch. The Claude Code that the gateway installs is pinned to
 `--effort` and prints the notice described there until that pin moves. Codex is
 not routed by the gateway, so its tiers apply as usual.
 
+A [local-model Codex launch](./codex-local-model-launch.md) ignores tiers as
+well. Its profile sets the model and the reasoning effort, so amplihack removes
+the tier's `--model` pair and adds nothing in its place: no
+`-c model_reasoning_effort`, no forced model and no default model. One stderr
+line says the tier was not applied, and the record's `fallback` is
+`local_model`. A concrete `--model <id>` and a caller's own `-c` reach Codex
+unchanged.
+
 `model.force` outranks an explicit `--model`, because the forced value comes
 from your own user config or environment. A forced launch keeps the tier's
 reasoning effort, so forcing one model across a mixed-tier recipe does not
@@ -154,7 +162,8 @@ flatten the effort to one value on Claude or on Codex.
 
 A tier falls back when the harness has no column, the tier has no entry in that
 column, the entry names an effort but no model (as every shipped Codex entry
-does), or the launch goes through the gateway. Falling back removes the tier
+does), or the launch goes through the gateway or is a local-model Codex launch.
+Falling back removes the tier
 word from the command line and never substitutes a model name of its own. On a
 Claude-compatible launch amplihack's existing chain then applies, exactly as
 for a launch that never mentioned a model: `AMPLIHACK_LITELLM_MODEL` on a
@@ -581,8 +590,8 @@ effort still applies, so on Codex a `fast` step keeps `low`, and on Claude a
 and `amplihack config list --show-origin` names its origin. Where the command
 line carries a `--model` the forced value replaces it in place; where it
 carries none the pair is inserted at the end of amplihack's own options, before
-any `--`. A gateway launch is the one place a forced model does not take
-effect.
+any `--`. A forced model does not take effect on a gateway launch, nor on a
+local-model Codex launch, which says so on stderr.
 
 ## Measuring what each step ran on
 
@@ -625,7 +634,7 @@ used; `tier`, one of the three words or `null`; `requested_model` and
 `requested_effort`, what the mapping or an override asked for;
 `effective_model` and `effective_effort`, what reached the command line, each
 `null` when it carries none; and `fallback`, one of `no_column`, `no_mapping`,
-`no_model`, `gateway`, or `null`. The line above is a `strong` Codex step on
+`no_model`, `gateway`, `local_model`, or `null`. The line above is a `strong` Codex step on
 the shipped mapping: the cell names an effort and no model, so the model falls
 back with `no_model` while the effort is passed. A launch that the contract
 gate refuses still records its effort as `null` when the version rule withholds

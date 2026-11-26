@@ -7,6 +7,7 @@ pub mod code_graph;
 mod command_error;
 pub mod indexing_job;
 pub mod scip_indexing;
+pub mod source_files;
 pub mod staleness_detector;
 pub mod time_estimator;
 pub mod transfer;

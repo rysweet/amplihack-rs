@@ -22,14 +22,15 @@ priority_score: 38.0
 
 Manage pre-commit hooks with preference memory and template-based configuration.
 
-Use the bundled native helper for repeatable operations:
+Resolve paths from the folder of this SKILL.md. Use the bundled native helper
+for repeatable operations:
 
 ```bash
-amplifier-bundle/skills/pre-commit-manager/scripts/pre-commit-manager.sh status
-amplifier-bundle/skills/pre-commit-manager/scripts/pre-commit-manager.sh configure generic
-amplifier-bundle/skills/pre-commit-manager/scripts/pre-commit-manager.sh install
-amplifier-bundle/skills/pre-commit-manager/scripts/pre-commit-manager.sh enable
-amplifier-bundle/skills/pre-commit-manager/scripts/pre-commit-manager.sh disable
+./scripts/pre-commit-manager.sh status
+./scripts/pre-commit-manager.sh configure generic
+./scripts/pre-commit-manager.sh install
+./scripts/pre-commit-manager.sh enable
+./scripts/pre-commit-manager.sh disable
 ```
 
 ## Operations

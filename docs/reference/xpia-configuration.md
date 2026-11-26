@@ -25,11 +25,9 @@ value that turns it on. The other pre-tool-use guards, such as the
 working-directory deletion guard and the `--no-verify` guard, do not depend
 on XPIA and run whether XPIA is on or off.
 
-Running a check is not the same as stopping the tool call. On Claude Code and
-Copilot, only the tmux guard's and the tail-follow guard's answers stop the
-call; the XPIA block and the other guards' blocks are not acted on (#1773). See
-[Enforcement by agent CLI](#enforcement-by-agent-cli) before relying on any
-of them.
+Every guard answers a refusal in the deny shape that Claude Code, Copilot and
+Codex act on (#1773). See
+[Enforcement by agent CLI](#enforcement-by-agent-cli).
 
 ## Contents
 
@@ -95,19 +93,19 @@ tool (`Bash`, `bash`, `Monitor`, Codex's shell tools and others); steps 4 to
 
 | Step | Check | Default | What it refuses | Answer shape |
 | ---- | ----- | ------- | --------------- | ------------ |
-| 0a | tmux guard (#1733) | on | `tmux kill-server` or `kill-session -a` without `-S` or `-L` | full deny |
-| 0b | tail-follow guard (#1794) | on | `tail -f`, `-F` or `--follow` on `/dev/null` or another device that never ends; fails open on input it cannot parse | full deny |
-| 1 | XPIA scan | **off** (opt-in) | Prompt-injection patterns in any tool call | bare `block` |
-| 2 | Skill redirect | on | Tool calls that a skill must handle instead | bare `block` |
-| 3 | Merge guard | off unless its own env var is set | In an auto-drive run, merges outside the merge gate (#1551) | bare `block` |
-| 4 | CWD deletion | on | `rm -rf`, `rmdir` and the shell-expansion forms that target the working directory or a parent of it | bare `block` |
-| 5 | CWD rename/move | on | `mv` of the working directory or a parent of it | bare `block` |
-| 6 | Commit on `main` or `master` | on | `git commit` while the checked-out branch is `main` or `master` | bare `block` |
-| 7 | `--no-verify` | on | `git commit`, `push`, `rebase`, `merge`, `cherry-pick` or `am` with `--no-verify` | bare `block` |
+| 0a | tmux guard (#1733) | on | `tmux kill-server` or `kill-session -a` without `-S` or `-L` | deny |
+| 0b | tail-follow guard (#1794) | on | `tail -f`, `-F` or `--follow` on `/dev/null` or another device that never ends; fails open on input it cannot parse | deny |
+| 1 | XPIA scan | **off** (opt-in) | Prompt-injection patterns in any tool call | deny |
+| 2 | Skill redirect | on | A `Skill` call that names an amplihack agent rather than a skill | deny |
+| 4 | CWD deletion | on | `rm -rf`, `rmdir` and the shell-expansion forms that target the working directory or a parent of it | deny |
+| 5 | CWD rename/move | on | `mv` of the working directory or a parent of it | deny |
+| 6 | Commit on `main` or `master` | on | `git commit` while the checked-out branch is `main` or `master` | deny |
+| 7 | `--no-verify` | on | `git commit`, `push`, `rebase`, `merge`, `cherry-pick` or `am` with `--no-verify` | deny |
+
+Step 3, the auto-drive merge guard (#1551), was removed in #2340.
 
 Steps 0a, 0b and 4 to 7 always run. `XPIA_ENABLED` does not change them, and no
-environment variable turns them off. Whether their answer stops the tool call
-depends on the agent CLI and on the answer shape; see
+environment variable turns them off. Each refusal stops the tool call on every agent CLI; see
 [Enforcement by agent CLI](#enforcement-by-agent-cli).
 
 Example, with `XPIA_ENABLED` unset, run from the root of an amplihack-rs
@@ -118,13 +116,13 @@ echo '{"tool_name":"Bash","tool_input":{"command":"false || rm -rf ."}}' \
   | amplihack-hooks pre-tool-use
 ```
 
-The hook prints a bare block whose message contains:
+The hook prints a deny whose reason contains:
 
 ```
 🚫 OPERATION BLOCKED - Working Directory Deletion Prevented
 ```
 
-Codex denies the call on that answer. Claude Code and Copilot run it.
+Claude Code, Copilot and Codex deny the call on that answer.
 
 ### Known gaps in the CWD guard
 
@@ -146,41 +144,37 @@ CLI:
 
 ## Enforcement by agent CLI
 
-The hook answers in one of two shapes:
+Every step answers a refusal in one shape, built by `deny()` in
+`crates/amplihack-hooks/src/pre_tool_use/mod.rs` (#1773): `block: true` and
+`message`, `decision: "block"` and `reason`, a top-level
+`permissionDecision: "deny"` with `permissionDecisionReason`, and
+`hookSpecificOutput.permissionDecision: "deny"` with its
+`permissionDecisionReason`. All four reason fields carry the same text, which
+says what to do instead. The hook exits 0 on a refusal.
 
-- **bare `block`:** `{"block": true, "message": …}`. Steps 1 to 7 answer this
-  way.
-- **full deny:** the bare fields plus `decision: "block"`, a top-level
-  `permissionDecision: "deny"` and
-  `hookSpecificOutput.permissionDecision: "deny"`. Only the tmux guard
-  (step 0a) and the tail-follow guard (step 0b) answer this way.
-
-On the Claude Code path the hook's JSON is written out unchanged. Only the
-Codex path translates a bare `block` into a deny (`codex_output` in
+On the Claude Code path the hook's JSON is written out unchanged. The Codex
+path reduces it to `hookSpecificOutput` (`codex_output` in
 `crates/amplihack-hooks/src/protocol/codex.rs`).
 
-| Agent CLI | bare `block` (steps 1 to 7) | full deny (steps 0a and 0b) |
-| --------- | --------------------------- | ------------------ |
-| Claude Code 2.1.316 | **not acted on; the call runs** | call stopped |
-| Copilot CLI 1.0.105 | **not acted on; the call runs** | call stopped |
-| Codex | call stopped (translated by the hook) | call stopped |
+| Agent CLI | Field it reads | A refusal |
+| --------- | -------------- | --------- |
+| Claude Code | `hookSpecificOutput.permissionDecision` | call stopped |
+| Copilot CLI | top-level `permissionDecision` | call stopped |
+| Codex | `hookSpecificOutput.permissionDecision` (translated by the hook) | call stopped |
 
-The Claude Code and Copilot rows were checked on 2026-10-31 with a
-throwaway PreToolUse hook that always printed the shape under test, in place
-of `amplihack-hooks`, and a prompt asking the agent to run
-`touch <marker>`. With the bare `block` the marker file was created on both.
-With the full deny it was not. Copilot also ran the call when the answer had
+The Claude Code and Copilot rows were checked on 2026-10-31 (Claude Code
+2.1.316, Copilot CLI 1.0.105) with a throwaway PreToolUse hook that always
+printed the shape under test, in place of `amplihack-hooks`, and a prompt
+asking the agent to run `touch <marker>`. With a bare
+`{"block": true, "message": …}` the marker file was created on both. With
+the shape above it was not. Copilot also ran the call when the answer had
 `hookSpecificOutput.permissionDecision: "deny"` but no top-level
-`permissionDecision`. The Codex row comes from the translation code and its
-tests, not from a run of Codex. The fix is tracked in #1773.
+`permissionDecision`, which is why the shape carries both. The Codex row
+comes from the translation code and its tests, not from a run of Codex.
 
-Until #1773 is fixed, on Claude Code and Copilot:
-
-- turning XPIA on does not stop the calls listed under
-  [Accepted risks with XPIA off](#accepted-risks-with-xpia-off). The scan
-  runs and its answer is ignored;
-- the CWD deletion, CWD rename, commit-on-`main`/`master`, `--no-verify`,
-  skill redirect and merge guard checks run and are likewise ignored.
+Steps 4 to 7 read the `Bash` tool only. Codex's shell tools are renamed to
+`Bash` before the checks run. Copilot's shell tool arrives as `bash`, so on
+Copilot steps 4 to 7 do not run; steps 0a, 0b, 1 and 2 do.
 
 ## What XPIA adds when it is on
 
@@ -192,9 +186,8 @@ tail-follow guards and before the other guards above. It checks:
 - other tool calls such as `Read`, `Write` and `Task`, for injection text in
   their input.
 
-A call it refuses gets a bare `block` with this message. On Claude Code and
-Copilot the call still runs; see
-[Enforcement by agent CLI](#enforcement-by-agent-cli).
+A call it refuses gets a deny with this message, which every agent CLI acts
+on; see [Enforcement by agent CLI](#enforcement-by-agent-cli).
 
 ```
 🛡️ XPIA Security Alert: Request blocked due to potential security risk.
@@ -217,9 +210,8 @@ by XPIA under the old default and are now allowed on every agent CLI:
 | Path traversal in a tool input | `Read` of `../../etc/shadow` |
 | Injected instructions in a tool input | a `WebFetch` prompt that says to ignore previous instructions |
 
-Setting `XPIA_ENABLED=true` makes the hook refuse them. Only Codex acts on
-that refusal today; on Claude Code and Copilot they run whether XPIA is on or
-off (#1773).
+Setting `XPIA_ENABLED=true` makes the hook refuse them, and every agent CLI
+acts on that refusal (#1773).
 
 ## Supervised resumes do not keep XPIA_ENABLED
 

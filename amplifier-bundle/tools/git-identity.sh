@@ -92,9 +92,13 @@ amplihack_resolve_git_identity() {
         return 1
     fi
 
-    if _amplihack_get_repo_local_identity author_name author_email; then
+    if _amplihack_get_repo_local_identity author_name author_email reason; then
         _amplihack_print_identity "$author_name" "$author_email" "$author_name" "$author_email"
         return 0
+    fi
+    if [ -n "$reason" ]; then
+        _amplihack_fail_identity "$reason"
+        return 1
     fi
 
     if _amplihack_get_provider_identity author_name author_email; then
@@ -194,20 +198,28 @@ _amplihack_get_existing_git_env_identity() {
 }
 
 _amplihack_get_repo_local_identity() {
-    local __author_name_ref="$1" __author_email_ref="$2"
+    local __author_name_ref="$1" __author_email_ref="$2" __reason_ref="$3"
     local name email
 
-    name="$(git config --local --get user.name 2>/dev/null || true)"
-    email="$(git config --local --get user.email 2>/dev/null || true)"
+    name="$(_amplihack_trim "$(git config --local --get user.name 2>/dev/null || true)")"
+    email="$(_amplihack_trim "$(git config --local --get user.email 2>/dev/null || true)")"
     if [ -z "$name" ] && [ -z "$email" ]; then
+        printf -v "$__reason_ref" '%s' ""
         return 1
     fi
-    if amplihack_validate_git_identity "$name" "$email" "from repo-local git config" >/dev/null 2>&1; then
-        printf -v "$__author_name_ref" '%s' "$(_amplihack_trim "$name")"
-        printf -v "$__author_email_ref" '%s' "$(_amplihack_trim "$email")"
-        return 0
+    if [ -z "$name" ] || [ -z "$email" ]; then
+        printf -v "$__reason_ref" '%s' "repo-local git config user.name and user.email must both be set"
+        return 1
     fi
-    return 1
+    if ! amplihack_validate_git_identity "$name" "$email" "identity from repo-local git config"; then
+        printf -v "$__reason_ref" '%s' "repo-local git config user.name/user.email identity is invalid or unsafe"
+        return 1
+    fi
+
+    printf -v "$__author_name_ref" '%s' "$name"
+    printf -v "$__author_email_ref" '%s' "$email"
+    printf -v "$__reason_ref" '%s' ""
+    return 0
 }
 
 _amplihack_get_provider_identity() {

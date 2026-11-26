@@ -3,7 +3,6 @@ name: ci-diagnostic-workflow
 version: 1.0.0
 description: CI failure resolution workflow. Monitors CI status after push, diagnoses failures, fixes issues, and iterates until PR is mergeable, then hands the merge decision to the calling workflow. Use when CI checks fail after pushing code.
 role: "CI failure resolution workflow orchestrator"
-model: inherit
 ---
 
 # CI Diagnostic Workflow Agent

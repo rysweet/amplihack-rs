@@ -4,7 +4,6 @@ version: 1.0.0
 description: Verus deductive-verification expert for proving Rust functional correctness, panic-freedom, and arithmetic-overflow-freedom with SMT-backed specifications and LLM-assisted proof synthesis
 role: "Verus formal verification expert and Rust proof-engineering specialist"
 priority: high
-model: inherit
 ---
 
 # Verus Expert Agent

@@ -76,7 +76,7 @@ pub fn in_quiet_process(module_path: &str, name: &str, body: impl FnOnce()) {
 /// This is for a test whose subject is what the child inherits: it is the only
 /// way to put a variable into a quiet child from the parent, where changing
 /// the environment would be unsound. The child's own purge still runs first
-/// (issue #2922), so the five profile variables do not survive being exported
+/// (issue #2922), so the six profile variables do not survive being exported
 /// this way; that is what the purge is for, and what
 /// `issue_2922_quiet_child_purge` asserts.
 pub fn in_quiet_process_with_env(
@@ -129,7 +129,7 @@ fn require_quiet_child(what: &str) {
 /// as the in-process `HomeGuard` and `set_home`: a temporary `HOME` is never
 /// left alongside a `CLAUDE_CONFIG_DIR` or login profile that would send a
 /// settings write somewhere else. The child's own startup purge has already
-/// run by this point; the repeat is what holds if the body set one of the five
+/// run by this point; the repeat is what holds if the body set one of the six
 /// itself before moving `HOME`.
 pub fn child_set_var(key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
     require_quiet_child("child_set_var");

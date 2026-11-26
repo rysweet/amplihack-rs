@@ -31,6 +31,10 @@ use migration::{code_graph_compatibility_notice, memory_graph_compatibility_noti
 pub struct SessionStartHook;
 
 impl Hook for SessionStartHook {
+    fn model_text(&self) -> Option<crate::hook_text::ModelText> {
+        Some(crate::hook_text::ModelText::SessionContext)
+    }
+
     fn name(&self) -> &'static str {
         "session_start"
     }

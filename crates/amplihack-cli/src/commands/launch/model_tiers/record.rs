@@ -37,6 +37,9 @@ pub(crate) enum Fallback {
     /// The launch goes through the LiteLLM gateway, which routes on the
     /// model name.
     Gateway,
+    /// A local-model Codex launch, whose profile sets the model and the
+    /// reasoning effort.
+    LocalModel,
 }
 
 /// One launch's tier decision.

@@ -30,6 +30,7 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn prepare_launcher(tool: &str) -> Result<()> {
+    let _notice = crate::list_notice::begin();
     freshness::with_provider(tool, || prepare_selected_launcher(tool))
 }
 

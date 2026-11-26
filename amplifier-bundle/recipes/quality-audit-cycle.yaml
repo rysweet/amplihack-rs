@@ -507,7 +507,10 @@ steps:
       Fix ALL confirmed findings (verdict: "confirmed"). Skip false positives.
 
       **Execution:** Use the full DEFAULT_WORKFLOW for each fix by invoking
-      Skill(skill="default-workflow"). The fix-agent orchestrates the complete
+      Skill(skill="default-workflow"). If the Skill tool does not know that
+      name, run `amplihack directory find default-workflow`, read the returned
+      skill file in full and follow it. Resolve resources relative to that file.
+      The fix-agent orchestrates the complete
       22-step development workflow (understand → design → implement → test →
       verify) for each confirmed finding, ensuring proper quality gates.
 

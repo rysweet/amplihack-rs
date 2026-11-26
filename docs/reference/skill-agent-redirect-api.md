@@ -78,10 +78,15 @@ A `#[cfg(test)]` consistency test globs `amplifier-bundle/agents/**/*.md`, colle
 ```rust
 /// Static guidance template for an agent-only Skill invocation.
 const SKILL_IS_AGENT_REDIRECT: &str = "\
-\"{name}\" is an amplihack agent, not a skill. The Skill tool cannot run it. \
-Invoke it as an agent instead (use the Task/agent tool with agent type \
-\"{name}\"), or reference it from a recipe step as `agent: \"amplihack:{name}\"`. \
-Do not retry this as a Skill call.";
+🔁 WRONG INTERFACE - '{name}' is an amplihack AGENT, not a skill.\n\
+\n\
+You invoked the Skill tool with name '{name}', but '{name}' is provided as an\n\
+agent, not a skill. Invoking it as a skill fails with \"Skill not found\" and\n\
+silently skips this step.\n\
+\n\
+✅ Instead, call the Agent tool with the agent '{name}', for example as \"amplihack:{name}\".\n\
+\n\
+This redirect prevents the requirements-clarification phase from being skipped.";
 ```
 
 Only the sanitized target name is substituted into the template. The full tool input is never echoed.
@@ -114,10 +119,8 @@ Semantics:
        // build redirect
    }
    ```
-4. On match, return:
-   ```json
-   { "block": true, "message": "<SKILL_IS_AGENT_REDIRECT with name substituted>" }
-   ```
+4. On match, return `deny(<SKILL_IS_AGENT_REDIRECT with name substituted>)`,
+   the shared PreToolUse refusal (#1773); see [Output Contract](#output-contract).
    where `name` is sanitized to `[A-Za-z0-9-]` before substitution.
 
 ### Wiring
@@ -156,12 +159,23 @@ Placing the check before the `Bash` gate is required because `Skill` is not `Bas
 
 ## Output Contract
 
-A matched redirect produces a standard `PreToolUse` block response:
+A matched redirect produces the standard `PreToolUse` deny (#1773), which
+Claude Code, Copilot and Codex all act on. The hook exits 0. `M` is the
+redirect message with the name substituted:
 
 ```json
 {
   "block": true,
-  "message": "\"prompt-writer\" is an amplihack agent, not a skill. ..."
+  "message": "M",
+  "decision": "block",
+  "reason": "M",
+  "permissionDecision": "deny",
+  "permissionDecisionReason": "M",
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "M"
+  }
 }
 ```
 

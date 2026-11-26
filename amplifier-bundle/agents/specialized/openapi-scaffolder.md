@@ -8,7 +8,6 @@ description: |
   models, routes, validation, and tests generated from the spec.
   Inspired by awesome-copilot's openapi-to-application generators.
 role: "OpenAPI-to-application scaffolding specialist"
-model: inherit
 triggers:
   - "scaffold from openapi"
   - "generate server from spec"

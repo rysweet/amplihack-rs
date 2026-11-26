@@ -1,5 +1,6 @@
 ---
 name: amplihack:modular-build
+disable-model-invocation: true
 version: 1.0.0
 description: Build modular code following brick philosophy
 triggers:

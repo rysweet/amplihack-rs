@@ -1,0 +1,49 @@
+name: hook-text-none
+description: >
+  Verify that a session can omit amplihack hook context without losing command
+  enforcement or limit recovery. Native Rust tests run the real hook binary
+  and launcher in separate temporary homes. Assertions compare behaviour and
+  JSON fields, without matching model text or notice wording.
+type: cli
+tags: [hooks, context, launch, qa-team]
+
+scenarios:
+  - name: context-is-omitted-with-operational-output-preserved
+    description: >
+      Run context hooks with preferences and a routing prompt under both host
+      protocols. Compare unset and unsupported values, then exact none. Check
+      context fields, bookkeeping, indexing diagnostics, Stop lock behaviour,
+      destructive command denial and malformed input. Failed stderr writes
+      must not change the hook result.
+    steps:
+      - type: command
+        command: >-
+          nice -n 15 ionice -c2 -n7 cargo test --locked
+          -p amplihack-hooks-bin --test hook_text_setting
+        expected_exit_code: 0
+
+  - name: limit-recovery-is-independent
+    description: >
+      Compare the StopFailure hook with the variable unset and with none.
+      Compare exit status, streams, resume outcomes and terminal keys when
+      rotation is absent, when the hook wakes a session and when it sends keys.
+    steps:
+      - type: command
+        command: >-
+          nice -n 15 ionice -c2 -n7 cargo test --locked
+          -p amplihack-hooks-bin --test hook_text_limit_resume
+        expected_exit_code: 0
+
+  - name: inherited-suppression-is-visible-to-the-operator
+    description: >
+      Launch Claude, Copilot and Codex against isolated stub executables.
+      Exact none produces one suppression notice on stderr. Unset and
+      unsupported values produce no launch suppression notice. Stdout is
+      exactly the agent output in every case.
+    steps:
+      - type: command
+        command: >-
+          nice -n 15 ionice -c2 -n7 cargo test --locked
+          -p amplihack-cli --test cli_integration
+          issue_2585_launch_notices_stderr::
+        expected_exit_code: 0

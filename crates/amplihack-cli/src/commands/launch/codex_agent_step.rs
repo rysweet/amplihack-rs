@@ -147,6 +147,14 @@ fn caller_bypassed_hook_trust(items: &[Item<'_>]) -> bool {
         .any(|item| matches!(item, Item::Opt { name, value: None, .. } if *name == HOOK_TRUST))
 }
 
+/// Whether `args` (a Codex argv tail) already passes the hook-trust bypass
+/// as a flag before any `--`. The local-model launch adds the flag only when
+/// this is false, by the same rule as the agent-step injection, so the two
+/// agree and the flag appears exactly once.
+pub(super) fn has_hook_trust_bypass(args: &[String]) -> bool {
+    caller_bypassed_hook_trust(&items(args))
+}
+
 /// What the agent-step injection adds to one argv tail. The argv and the
 /// stderr notice are both derived from this, so they cannot disagree.
 struct Plan {

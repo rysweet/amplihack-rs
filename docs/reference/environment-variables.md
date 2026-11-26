@@ -40,7 +40,9 @@ Several of these variables have a persistent equivalent in the [user config file
   - [Context-derived recipe variables](#context-derived-recipe-variables)
   - [AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES](#amplihack_context_env_budget_bytes)
 - [Variables read by amplihack](#variables-read-by-amplihack)
+  - [AMPLIHACK_HOOK_TEXT](#amplihack_hook_text)
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
+  - [AMPLIHACK_CODEX_LOCAL_MODEL](#amplihack_codex_local_model)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
   - [AMPLIHACK_GOVERNOR](#amplihack_governor)
@@ -1025,7 +1027,20 @@ for the derivation, essential-key set, and smallest-first fill.
 
 ## Variables read by amplihack
 
-These variables influence `amplihack`'s behaviour but are not set by it.
+### AMPLIHACK_HOOK_TEXT
+
+Set exactly `none` to omit the text participating hooks add to model context.
+Unset preserves existing behaviour silently. Every other explicit value,
+including an empty value, preserves behaviour and produces an escaped
+diagnostic on stderr from a participating hook.
+
+Context hooks still run their bookkeeping. Stop approves without lock mode,
+power steering or reflection. PreToolUse enforcement, StopFailure limit-resume,
+other hooks, control fields and failure output remain unchanged. Claude,
+Copilot and Codex launches report suppression on stderr. Child sessions inherit
+the setting. See [Omit hook context text](../howto/omit-hook-context-text.md).
+
+A local-model Codex launch sets `AMPLIHACK_HOOK_TEXT=none` for its child process.
 
 ---
 
@@ -1100,6 +1115,28 @@ or out of either backend without modifying on-disk state.
 
 See [Memory Backend Reference](./memory-backend.md) for the complete
 backend configuration reference.
+
+---
+
+### AMPLIHACK_CODEX_LOCAL_MODEL
+
+**Type:** string (Codex profile name)
+**Values:** 1 to 64 characters from `A-Z`, `a-z`, `0-9`, `.`, `_` and `-`; not `.` or `..`
+**Default:** unset, which gives an ordinary `amplihack codex` launch
+**Config key:** none
+**Read by:** `amplihack codex`, including recipe agent steps on Codex
+**Set by:** a local-model `amplihack codex` launch, for the Codex process it starts
+
+Makes an `amplihack codex` launch a
+[local-model launch](./codex-local-model-launch.md), built from the profile
+`<user Codex home>/<name>.config.toml`. It is the environment form of
+`amplihack codex --local-model <name>`, for recipe agent steps, which cannot
+add flags. The flag wins when both are given, an empty value counts as unset,
+and an invalid name is an error. Other launchers ignore it. A Codex launch
+with the variable set that does not go through `amplihack codex` fails with a
+message giving the variable, rather than running as an ordinary launch. See
+[Selecting a local-model launch](./codex-local-model-launch.md#selecting-a-local-model-launch)
+and [Run amplihack codex with a Local Model](../howto/run-codex-with-a-local-model.md).
 
 ---
 

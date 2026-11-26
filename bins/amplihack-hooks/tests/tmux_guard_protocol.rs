@@ -326,8 +326,9 @@ const KILLS_XPIA_ALSO_MATCHES: &[&str] = &[
 ];
 
 /// Crusty round 7, concern 1: with XPIA opted in, these commands get the
-/// guard's deny, not XPIA's bare `{"block": true}`, which
-/// Claude Code does not enforce (#1773). Claude Code acts on
+/// guard's deny rather than XPIA's. XPIA's refusal was once a bare
+/// `{"block": true}` that Claude Code did not enforce (fixed by #1773).
+/// Claude Code acts on
 /// `hookSpecificOutput.permissionDecision == "deny"` (or
 /// `decision == "block"`), so that is what is asserted; a `block` key alone
 /// would not count.

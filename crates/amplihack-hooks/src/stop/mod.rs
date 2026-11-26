@@ -26,6 +26,10 @@ const DEFAULT_CONTINUATION_PROMPT: &str =
 pub struct StopHook;
 
 impl Hook for StopHook {
+    fn model_text(&self) -> Option<crate::hook_text::ModelText> {
+        Some(crate::hook_text::ModelText::StopDecision)
+    }
+
     fn name(&self) -> &'static str {
         "stop"
     }
