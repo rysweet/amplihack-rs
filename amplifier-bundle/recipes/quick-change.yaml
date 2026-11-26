@@ -20,11 +20,9 @@ tags: ["development", "small-change", "single-session"]
 # worktree. Untrusted values reach bash only through RECIPE_VAR_*.
 # Pager safety: quick_change_common.sh sets GIT_PAGER=cat/PAGER=cat.
 # Contract: docs/reference/quick-change-recipe.md
-
 recursion:
   max_depth: 6
   max_total_steps: 140
-
 context:
   base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   checks_watch_interval: ""
@@ -46,7 +44,6 @@ context:
   quick_change_push_repaired: ""
   quick_change_pr_text: ""
   quick_change_pr_url: ""
-
 steps:
   # Step 1: a new quick/ branch from origin/HEAD, the base quick-change-create-pr targets; inherited targets and base_branch are cleared, strict_delivery is not (docs/reference/workflow-delivery-inputs.md).
   - id: "quick-change-worktree"

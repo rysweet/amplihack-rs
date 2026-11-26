@@ -36,6 +36,7 @@ context:
   # Read by the review action's goal tool; declared so no enclosing run's value
   # reaches it (#1561).
   merge_method: ""
+  checks_watch_interval: ""
 steps:
   - id: "review"
     type: "bash"
