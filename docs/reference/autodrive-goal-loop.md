@@ -458,8 +458,9 @@ turn's reading or end a CI wait when the guidance wake is available.
 Set `checks_watch_interval` when you start `auto-drive-to-merge`,
 `auto-drive-light`, `autodrive-build` or `default-workflow`. The recipe passes
 it to the wait as `RECIPE_VAR_checks_watch_interval`. Give a positive whole
-number of seconds. An empty or omitted value uses 120 seconds. An invalid
-value also uses 120 seconds and prints one warning to stderr.
+number of seconds with up to ten digits and no leading zero. An empty or
+omitted value uses 120 seconds. An invalid value also uses 120 seconds and
+prints one warning to stderr.
 
 ```bash
 amplihack recipe run auto-drive-to-merge -c pr_number=3129 -c checks_watch_interval=180

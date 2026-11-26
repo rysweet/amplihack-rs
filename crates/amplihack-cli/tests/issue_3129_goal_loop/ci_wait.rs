@@ -171,7 +171,7 @@ fn a_required_check_on_the_next_page_can_complete_the_wait_with_failure() {
         r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
 printf '%s\n' '{"check_runs":[{"name":"integration","status":"completed","conclusion":"failure"}]}' > "$GH_STATE/checks-page-2.json""#,
     );
-    let result = wait(&h, "-5");
+    let result = wait(&h, "037");
     assert_eq!(result["outcome"], "checks-complete", "{result}");
     assert_eq!(result["checks_state"], "failed");
     assert_eq!(sleeps(&h), [120]);

@@ -491,19 +491,6 @@ _gh_retry_attempts() {
 
 # --- goal-loop reads and CI waits (#1918) ---------------------------------
 
-# Empty uses the REST wait's default. Use the setting shared with #3378.
-gh_poll_interval_secs() {
-  local value="${RECIPE_VAR_checks_watch_interval:-}"
-  if [ -z "$value" ]; then
-    printf '120\n'
-  elif [[ "$value" =~ ^0*([1-9][0-9]*)$ ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
-  else
-    printf '%s\n' 'WARNING: checks_watch_interval must be a positive whole number of seconds. Using 120.' >&2
-    printf '120\n'
-  fi
-}
-
 # Call in the shell that owns the operation, with an EXIT trap that calls
 # gh_goal_cancel. Bash can handle a signal immediately while in builtin wait.
 gh_goal_command() {
