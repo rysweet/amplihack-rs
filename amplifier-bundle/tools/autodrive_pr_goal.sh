@@ -110,7 +110,7 @@ checks_watch_interval() {
     printf '%s' "$n"
   else
     printf 'WARNING: invalid checks_watch_interval %s. Using the gh default.\n' \
-      "$(printf '%s' "$n" | goal_clean_line)" >&2
+      "$(printf '(%q)' "$n" | goal_clean_line)" >&2
   fi
 }
 
