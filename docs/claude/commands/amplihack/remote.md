@@ -19,13 +19,15 @@ Execute amplihack commands on remote Azure VMs using azlin for provisioning.
 /amplihack:remote [OPTIONS] COMMAND PROMPT
 ```
 
+Run `amplihack remote exec [OPTIONS] COMMAND PROMPT` with the supplied arguments.
+
 ## Arguments
 
 - **COMMAND**: Amplihack command to execute
   - `auto` - Autonomous coding mode
-  - `ultrathink` - Deep analysis mode
-  - `analyze` - Code analysis
-  - `fix` - Issue fixing mode
+
+Only `auto` is supported for execution. The parser also accepts `ultrathink`,
+`analyze` and `fix`, but execution fails for those modes.
 
 - **PROMPT**: Task description (required)
 
@@ -36,7 +38,7 @@ Execute amplihack commands on remote Azure VMs using azlin for provisioning.
 - `--vm-name NAME` - Reuse specific VM by name
 - `--keep-vm` - Don't cleanup VM after execution (for debugging)
 - `--no-reuse` - Always provision fresh VM (skip reuse logic)
-- `--timeout MINUTES` - Max execution time in minutes (default: 120, range: 5-480)
+- `--timeout MINUTES` - Maximum time without output in minutes (default: 120, range: 5-480)
 - `--region REGION` - Azure region (default: from azlin config)
 
 ## Examples
@@ -60,7 +62,7 @@ Execute with custom max turns:
 Keep VM for debugging:
 
 ```bash
-/amplihack:remote --keep-vm ultrathink "analyze performance bottlenecks"
+/amplihack:remote --keep-vm auto "analyse performance bottlenecks"
 ```
 
 Use specific VM size for compute-intensive tasks:
@@ -74,7 +76,7 @@ Use specific VM size for compute-intensive tasks:
 Reuse a specific VM:
 
 ```bash
-/amplihack:remote --vm-name amplihack-ryan-20251120-143022 auto "continue previous work"
+/amplihack:remote --vm-name amplihack-user-20251120-143022 auto "continue previous work"
 ```
 
 Force fresh VM (no reuse):
@@ -83,7 +85,7 @@ Force fresh VM (no reuse):
 /amplihack:remote --no-reuse auto "start clean implementation"
 ```
 
-Set timeout for long-running tasks:
+Set the idle timeout for long-running tasks:
 
 ```bash
 /amplihack:remote --timeout 240 auto "comprehensive refactoring"
@@ -94,9 +96,9 @@ Set timeout for long-running tasks:
 The command executes the following workflow:
 
 1. **Validate Environment**
-   - Check azlin installation
+   - Check azlin installation before provisioning
    - Verify git repository
-   - Validate .claude directory
+   - Validate .claude directory during packaging
 
 2. **Package Context**
    - Scan for hardcoded secrets (fails if found)
@@ -111,22 +113,21 @@ The command executes the following workflow:
 
 4. **Transfer Context**
    - Upload context archive to VM
-   - Verify transfer integrity
 
 5. **Execute Remote Command**
    - Extract context on VM
    - Restore git repository
-   - Install amplihack
+   - Use amplihack already installed on the VM
    - Run specified command with prompt
    - Monitor execution with timeout
 
 6. **Retrieve Results**
    - Download execution logs
    - Fetch git branches and commits
-   - Copy logs to `~/.amplihack/.claude/runtime/logs/remote/`
+   - Copy retrieved logs to `.claude/runtime/logs/remote/` in the local repository
 
 7. **Cleanup**
-   - Delete VM (unless `--keep-vm` set)
+   - Delete VM after success or an idle timeout (unless `--keep-vm` set)
    - Clean up temporary files
    - Display integration summary
 
@@ -158,7 +159,7 @@ The command performs comprehensive secret scanning before packaging:
 - Azure/AWS credentials
 - Passwords and tokens
 
-**Auto-Excluded Files**:
+**Files Excluded from Scanning**:
 
 - `.env*` files
 - SSH keys (`.ssh/`, `*.pem`, `*.key`)
@@ -167,9 +168,14 @@ The command performs comprehensive secret scanning before packaging:
 
 **Hard Requirement**: Command fails immediately if secrets detected.
 
+These exclusions apply to scanning, not to the git bundle or the `.claude`
+archive. Remove sensitive content from tracked history and from `.claude` before
+packaging it.
+
 ### API Key Transfer
 
-Only `ANTHROPIC_API_KEY` is transferred to remote VM, using secure SSH environment passing.
+The command reads `ANTHROPIC_API_KEY` and sends it over the SSH command's standard
+input, followed by the prompt. The remote script exports it for amplihack.
 
 ## VM Management
 
@@ -177,16 +183,17 @@ Only `ANTHROPIC_API_KEY` is transferred to remote VM, using secure SSH environme
 
 By default, the command tries to reuse existing VMs matching:
 
-- Tag: `amplihack_workflow=true`
-- Age: < 24 hours
+- Name: Starts with `amplihack-`
+- Age: At most 24 hours when creation time is available
 - Size: Matches requested `--vm-size`
-- Status: Available (not running another task)
+
+Reuse does not check whether a VM is already running another task.
 
 ### VM Naming
 
 VMs are named using pattern: `amplihack-{username}-{timestamp}`
 
-Example: `amplihack-ryan-20251120-143022`
+Example: `amplihack-user-20251120-143022`
 
 ### Manual VM Management
 
@@ -199,13 +206,13 @@ azlin list
 Connect to VM:
 
 ```bash
-azlin connect amplihack-ryan-20251120-143022
+azlin connect amplihack-user-20251120-143022
 ```
 
 Delete VM manually:
 
 ```bash
-azlin kill amplihack-ryan-20251120-143022
+azlin kill amplihack-user-20251120-143022
 ```
 
 ## Error Handling
@@ -223,7 +230,7 @@ Content: ANTHROPIC_API_KEY = "sk-ant-1234..."
 
 Action required:
   1. Remove hardcoded API key from source code
-  2. Add to .env file (already excluded from transfer)
+  2. Supply credentials outside tracked history and the .claude archive
   3. Retry command
 ```
 
@@ -235,22 +242,20 @@ Action required:
 
 ```
 ERROR: Azlin not found. Please install:
-  pip install azlin
-  azlin configure
+  cargo install azlin
 ```
 
-**Solution**: Install and configure azlin.
+**Solution**: Install azlin and configure Azure access as its documentation describes.
 
 ### Execution Errors
 
 **Timeout**:
 
 ```
-Execution timed out after 120.0 minutes
-VM preserved for inspection: amplihack-ryan-20251120-143022
+Reaped after 7200s with no output (idle window)
 ```
 
-**Solution**: Increase timeout or inspect VM for issues.
+**Solution**: Increase the idle timeout or use `--keep-vm` to retain the VM for inspection.
 
 ### Integration Errors
 
@@ -284,41 +289,44 @@ Branches available in 'remote-exec/' namespace for manual merge:
 
 ### Execution Fails
 
-VM is preserved automatically. Inspect it:
+Non-zero command exits preserve the VM. For idle timeouts, use `--keep-vm` to
+prevent cleanup. Inspect a retained VM:
 
 ```bash
-azlin connect amplihack-ryan-20251120-143022
-cd ~/workspace/remote-task
-cat .claude/runtime/logs/auto_claude_*.log
+azlin connect amplihack-user-20251120-143022
+cd ~/workspace
+ls .claude/runtime/logs/
 ```
 
 ### Results Not Retrieved
 
-If retrieval fails, VM is preserved. Manual retrieval:
+Retrieval failure alone does not preserve the VM. Use `--keep-vm` if manual
+retrieval may be needed:
 
 ```bash
 # Connect to VM
-azlin connect amplihack-ryan-20251120-143022
+azlin connect amplihack-user-20251120-143022
 
 # Create bundle and logs in home directory (azlin cp requires ~/ paths)
-cd ~/workspace/remote-task
+cd ~/workspace
 git bundle create ~/results.bundle --all
 tar czf ~/logs.tar.gz .claude/runtime/logs/
 
 # Download locally (azlin cp uses session:path notation)
-azlin cp amplihack-ryan-20251120-143022:~/results.bundle results.bundle
-azlin cp amplihack-ryan-20251120-143022:~/logs.tar.gz logs.tar.gz
+azlin cp amplihack-user-20251120-143022:~/results.bundle results.bundle
+azlin cp amplihack-user-20251120-143022:~/logs.tar.gz logs.tar.gz
 ```
 
 ## Requirements
 
 ### Local Machine
 
-- **azlin**: Installed and configured (`pip install azlin`, `azlin configure`)
-- **Git**: Version 2.30.0 or higher
-- **Azure CLI**: Version 2.50.0 or higher (used by azlin)
+- **azlin**: Installed (`cargo install azlin`) with Azure access configured
+- **Git** and **tar**: Available on the local machine
+- **Azure CLI**: Available as required by azlin
 - **ANTHROPIC_API_KEY**: Set in environment
-- **Clean git state**: Or auto-stash enabled
+- **Git repository**: Includes a `.claude` directory; commit source changes before
+  execution because the git bundle includes committed history, not uncommitted edits
 
 ### Azure Subscription
 
@@ -326,9 +334,9 @@ azlin cp amplihack-ryan-20251120-143022:~/logs.tar.gz logs.tar.gz
 - Sufficient VM quota (Standard_D series)
 - Network access to Azure regions
 
-### Python
+### Remote VM
 
-- Python 3.11 or higher (local and remote)
+- **amplihack**, **Git** and **tar**: Already installed and available on the VM
 
 ## Cost Considerations
 
@@ -341,9 +349,9 @@ Estimated costs (as of 2025):
 
 ### Cost Optimization
 
-1. **VM Reuse**: Automatically reuses VMs < 24 hours old
-2. **Auto-Cleanup**: VMs deleted after successful execution
-3. **Timeout**: Prevents runaway costs
+1. **VM Reuse**: Automatically reuses VMs at most 24 hours old
+2. **Auto-Cleanup**: VMs deleted after success or an idle timeout unless `--keep-vm` is set
+3. **Timeout**: Stops execution after the configured period without output
 4. **Keep-VM Flag**: Use sparingly (for debugging only)
 
 ### Monitor Costs
@@ -356,7 +364,7 @@ azlin list
 azlin list | grep amplihack
 
 # Cleanup old VMs
-azlin kill amplihack-ryan-OLD-TIMESTAMP
+azlin kill amplihack-user-OLD-TIMESTAMP
 ```
 
 ## Logs
@@ -376,9 +384,9 @@ Log files include:
 
 ## Best Practices
 
-1. **Always check for secrets**: Run a test package first
+1. **Always check for secrets**: Review tracked history and `.claude` before packaging
 2. **Use VM reuse**: Saves 5-7 minutes provisioning time
-3. **Set appropriate timeouts**: Prevent cost overruns
+3. **Set appropriate idle timeouts**: Stop runs that produce no output
 4. **Preserve VMs on failure**: Use `--keep-vm` for debugging
 5. **Clean up manually**: Check `azlin list` periodically
 6. **Monitor costs**: Track VM usage and Azure bills
