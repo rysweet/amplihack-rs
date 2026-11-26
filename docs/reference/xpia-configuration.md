@@ -130,7 +130,13 @@ The CWD deletion check splits the command into simple commands and decides on
 each recursive `rm` and each `rmdir` by the words of that command alone. Heredoc
 bodies, quoted strings and comments are not commands, so text that only
 mentions a removal is allowed, and a variable or substitution in another
-command of the same call does not change the decision. The check also reads
+command of the same call does not change the decision. A command is a removal
+when the program it runs is `rm` or `rmdir`, after `sudo`, `env`, `command`,
+`timeout` and the other wrappers the command guards share. `rm` as an argument
+of another program, as in `git rm -r "$f"` or `echo rm -rf $X`, is not a
+removal. The command run by `xargs`, `ionice`, `setsid`, `stdbuf`, `chrt`,
+`taskset`, `flock`, `doas` or `parallel`, and by each `-exec`, `-execdir`,
+`-ok` or `-okdir` of `find`, is checked as well. The check also reads
 the text the shell runs as a command: the body of a `$(...)` or backtick
 substitution, the `-c` script of `sh`, `bash`, `zsh`, `dash` and `ksh` (or the
 heredoc such a shell reads as its script), the arguments of `eval`, and the

@@ -340,3 +340,38 @@ fn unreadable_input_is_decided_on_the_whole_text() {
     assert!(decide_in_scratch("echo \"unclosed; rm -rf $X").is_some());
     assert!(decide_in_scratch("cat <<EOF\nrm -rf $X").is_some());
 }
+
+#[test]
+fn removal_word_as_argument_of_another_program_is_not_a_removal() {
+    for command in [
+        "git rm -r \"$x\"",
+        "git rm -r {cwd}",
+        "echo rm -rf $X",
+        "echo rmdir $D",
+        "printf '%s\\n' rm -rf $HOME",
+        "grep -r rm $DIR",
+    ] {
+        assert!(decide_in_scratch(command).is_none(), "{command}");
+    }
+}
+
+#[test]
+fn removal_run_through_a_wrapper_or_launcher_is_decided() {
+    for command in [
+        "/bin/rm -rf .",
+        "command rm -rf .",
+        "env X=1 rm -rf .",
+        "timeout 5 rm -rf .",
+        "sudo -u root rm -rf {cwd}",
+        "xargs -I{} rm -rf $X",
+        "find /nonexistent -name x -exec echo {} \\; -exec rm -rf {cwd} \\;",
+        "find /nonexistent -execdir sudo rm -rf {cwd} \\;",
+    ] {
+        assert!(decide_in_scratch(command).is_some(), "{command}");
+    }
+}
+
+#[test]
+fn find_exec_of_another_program_is_not_a_removal() {
+    assert!(decide_in_scratch("find $D -name rm -exec echo rm -rf {} \\;").is_none());
+}

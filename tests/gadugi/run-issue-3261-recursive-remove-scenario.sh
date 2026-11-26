@@ -21,6 +21,8 @@
 #     variable. Allowed.
 #   - literal-after-variable-cwd: the same call removing the working directory
 #     itself. Rejected, on its own path.
+#   - rm-as-argument: `rm` as an argument of another program (`git rm -r`,
+#     `echo rm -rf`) with a variable beside it. Allowed: neither runs `rm`.
 #
 # Where it runs: CI's cross-compile job runs this script against the release
 # `amplihack-hooks` binary it builds for x86_64 Linux. CI does not run
@@ -109,6 +111,8 @@ check own-variable deny 'rm -rf "$TARGET/build"'
 check literal-after-variable-outside allow 'cd "$DIR" && git status; rm -r /nonexistent/issue-3261-qa/build'
 
 check literal-after-variable-cwd deny "cd \"\$DIR\" && git status; rm -r $CWD"
+
+check rm-as-argument allow 'git rm -r "$FILE"; echo rm -rf $X'
 
 echo "cases passed: $passed"
 if [ "$fail" -eq 0 ]; then

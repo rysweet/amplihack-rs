@@ -772,22 +772,43 @@ pub(super) fn shell_scripts<'a>(args: &'a [String], heredocs: &'a [String]) -> V
 /// The bodies of the command substitutions (`$(…)` and backticks) that the
 /// shell runs when it reads `text`: those outside single quotes, `$'…'`,
 /// comments and heredoc bodies. A substitution inside another is found when
-/// its body is scanned.
+/// its body is scanned. An unclosed substitution ends the scan.
 pub(super) fn substitution_bodies(text: &str) -> Vec<String> {
+    scan_substitutions(text, false).0
+}
+
+/// The bodies of the command substitutions in the body of a heredoc whose
+/// delimiter is unquoted, which the shell expands before the program reads
+/// the body, or `None` when one is unclosed.
+///
+/// This is [`substitution_bodies`] with the rules bash applies to such a
+/// body: it reads it as it reads the inside of a double-quoted string,
+/// except that `"` is an ordinary character. Quotes do not hide a
+/// substitution and a backslash escapes the next character.
+pub(super) fn heredoc_substitution_bodies(body: &str) -> Option<Vec<String>> {
+    let (bodies, complete) = scan_substitutions(body, true);
+    complete.then_some(bodies)
+}
+
+/// The one scanner behind [`substitution_bodies`] and
+/// [`heredoc_substitution_bodies`]: the substitution bodies in `text` and
+/// whether every substitution was closed. With `heredoc_body`, the text is
+/// read as if inside a double-quoted string that `"` never ends.
+fn scan_substitutions(text: &str, heredoc_body: bool) -> (Vec<String>, bool) {
     let chars: Vec<char> = text.chars().collect();
     let mut bodies = Vec::new();
     let mut heredocs = Vec::new();
-    let mut in_double = false;
+    let mut in_double = heredoc_body;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
         let word_start = i == 0 || chars[i - 1].is_whitespace() || ";&|(".contains(chars[i - 1]);
         match c {
             '\\' => i += 1,
-            '"' => in_double = !in_double,
+            '"' if !heredoc_body => in_double = !in_double,
             '$' if chars.get(i + 1) == Some(&'(') => {
                 let Some(end) = subst_close(&chars, i) else {
-                    return bodies;
+                    return (bodies, false);
                 };
                 bodies.push(chars[i + 2..end].iter().collect());
                 i = end;
@@ -798,7 +819,7 @@ pub(super) fn substitution_bodies(text: &str) -> Vec<String> {
                     end += if chars[end] == '\\' { 2 } else { 1 };
                 }
                 if end >= chars.len() {
-                    return bodies;
+                    return (bodies, false);
                 }
                 bodies.push(chars[i + 1..end].iter().collect());
                 i = end;
@@ -806,7 +827,7 @@ pub(super) fn substitution_bodies(text: &str) -> Vec<String> {
             _ if in_double => {}
             '$' if chars.get(i + 1) == Some(&'\'') => {
                 let Some(end) = ansi_c_close(&chars, i + 1) else {
-                    return bodies;
+                    return (bodies, false);
                 };
                 i = end;
             }
@@ -831,7 +852,7 @@ pub(super) fn substitution_bodies(text: &str) -> Vec<String> {
         }
         i += 1;
     }
-    bodies
+    (bodies, true)
 }
 
 #[cfg(test)]

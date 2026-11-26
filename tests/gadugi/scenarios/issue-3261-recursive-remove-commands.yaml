@@ -62,3 +62,8 @@ assertions:
     params:
       target: stdout
       expected: "PASS: literal-after-variable-cwd -> deny"
+  - name: rm-as-argument-allowed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: rm-as-argument -> allow"
