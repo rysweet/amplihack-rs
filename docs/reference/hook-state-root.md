@@ -332,7 +332,8 @@ remain project-owned inputs and are not moved into `S`.
 | Feature | Control | Behaviour |
 | --- | --- | --- |
 | Lock | `.claude/runtime/locks/.lock_active` | Enables lock mode |
-| Lock | `.claude/runtime/locks/.continuation_prompt` | Supplies the continuation prompt; missing, blank or overlong content uses the default |
+| Lock | `.claude/runtime/locks/.lock_message` | Written by `amplihack lock --message` and `amplifier-bundle/recipes/auto-workflow.yaml`; first choice for the continuation prompt |
+| Lock | `.claude/runtime/locks/.continuation_prompt` | Handwritten continuation prompt; used when `.lock_message` is unusable |
 | Lock | `AMPLIHACK_MAX_LOCK_ITERATIONS` | Safety-valve threshold; default `50` |
 | Power steering | `.claude/tools/amplihack/.power_steering_config` | Enables processing when present and enabled; `{"enabled": true}` enables it and `{"enabled": false}` disables it |
 | Power steering | `.claude/runtime/power-steering/.disabled` or presence of `AMPLIHACK_SKIP_POWER_STEERING` | Disables enforcement |
@@ -343,7 +344,14 @@ remain project-owned inputs and are not moved into `S`.
 ### Continuation, completion and presentation
 
 An active lock successfully increments its session counter before evaluating
-the safety valve. Below the threshold it blocks with the continuation prompt.
+the safety valve. Below the threshold it blocks with the first usable text from
+`.lock_message`, then `.continuation_prompt`, then the default prompt. Each file
+is read independently. Missing, unreadable, invalid UTF-8, blank or overlong
+content falls through to the next source. Usable text is nonempty after trimming
+and at most 1000 UTF-8 bytes after trimming; the hook uses the trimmed text.
+`amplihack lock --message` checks these requirements before changing lock state.
+`amplihack unlock` removes `.lock_active` and `.lock_message` but preserves
+`.continuation_prompt`.
 When the counter reaches or exceeds the safety-valve threshold, it
 removes the project controls
 `.lock_active`, `.lock_goal`, `.lock_message` and `.continuation_prompt` from
