@@ -637,5 +637,161 @@ head -20 .github/skills/my-skill/SKILL.md
 
 ---
 
+## GitHub Integration Examples
+
+### Create a Pull Request
+
+```bash
+> Add input validation to the user registration endpoint
+/diff
+> Create a pull request for these changes with a descriptive title and body
+```
+
+Copilot creates the pull request on GitHub with you as the author.
+
+### Work on an Issue
+
+```bash
+> I've been assigned issue https://github.com/myorg/myrepo/issues/42
+> Start working on this in a new branch
+```
+
+Copilot creates a branch, reads the issue and starts the work.
+
+### Review or Manage a Pull Request
+
+```bash
+> Check the changes in PR https://github.com/myorg/myrepo/pull/123
+> Report any bugs, security issues, or code quality problems
+
+> Close PR #45 on myorg/myrepo with a comment explaining why
+```
+
+### Use the Built-in GitHub MCP Server
+
+```bash
+> Use the GitHub MCP server to find good first issues in octocat/hello-world
+> Show me the recent GitHub Actions runs for this repo
+> Add the "needs-review" label to issue #42
+```
+
+### GitHub Actions
+
+```bash
+> Create a GitHub Actions workflow that runs ESLint on changed files
+> for pull requests to main, shows errors as annotations and fails on errors
+
+> The CI pipeline is failing. Check .github/workflows/ci.yml and the
+> recent run logs to diagnose the issue.
+```
+
+---
+
+## Programmatic Examples
+
+### CI/CD Step
+
+```yaml
+- name: Generate Docs
+  run: |
+    copilot -p "Generate API documentation for src/api/" \
+      --allow-tool 'write' \
+      --allow-tool 'shell(npm)'
+```
+
+### Scripted Test Generation
+
+```bash
+#!/bin/bash
+# generate-tests.sh <file>
+copilot -p "Generate unit tests for $1" \
+  --allow-tool 'write' \
+  --allow-tool 'shell(npm test)'
+```
+
+### Batch Fix with Dangerous Commands Denied
+
+```bash
+copilot -p "Fix all ESLint errors in src/" \
+  --allow-all-tools \
+  --deny-tool 'shell(rm)' \
+  --deny-tool 'shell(git push)'
+```
+
+### Read-Only Git Analysis
+
+```bash
+copilot -p "Analyze the git history and summarize changes" \
+  --allow-tool 'shell(git log)' \
+  --allow-tool 'shell(git show)' \
+  --allow-tool 'shell(git diff)' \
+  --deny-tool 'shell(git push)' \
+  --deny-tool 'shell(git reset)' \
+  --deny-tool 'shell(rm)'
+```
+
+### Read-Only Audit
+
+```bash
+copilot -p "Audit this codebase for security issues" \
+  --deny-tool 'write' \
+  --deny-tool 'shell'
+```
+
+---
+
+## Built-in Agent Examples
+
+```bash
+> Use the explore agent to find all API endpoints in this project
+> Use the plan agent to create an implementation plan for adding OAuth support
+> Use the code-review agent to review the changes in the staging branch
+```
+
+The explore agent answers without adding its work to the main context, which keeps long sessions small.
+
+---
+
+## Session Examples
+
+```bash
+/usage                # Session statistics
+copilot --continue    # Resume the most recent session
+copilot --resume      # Pick from all sessions
+```
+
+---
+
+## Prompt Tips
+
+### Be Specific
+
+```
+# Instead of:
+Fix the bug
+
+# Say:
+Fix the TypeError in @src/api/users.py line 42 where user.email
+is accessed before checking if user exists
+```
+
+### Reference Several Files or a Directory
+
+```
+> Explain the relationship between @src/models/user.py and @src/api/auth.py
+> Review all files in @tests/ for test coverage gaps
+```
+
+### Build in Small Steps
+
+```
+> Create the data model for a blog post
+> Add validation to the BlogPost model
+> Create an API endpoint to create blog posts
+/diff
+```
+
+---
+
 **Maintainer**: amplihack framework
 **Last Review**: 2026-01-25

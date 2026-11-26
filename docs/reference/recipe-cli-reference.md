@@ -18,6 +18,7 @@ Command-line reference for `amplihack recipe`.
 - [Nested runs and orphan stops](#nested-runs-and-orphan-stops)
 - [amplihack recipe guide](#amplihack-recipe-guide)
 - [amplihack recipe guidance](#amplihack-recipe-guidance)
+- [amplihack recipe waiting](#amplihack-recipe-waiting)
 - [amplihack recipe validate](#amplihack-recipe-validate)
 - [Recipe text encoding](#recipe-text-encoding)
 - [amplihack recipe show](#amplihack-recipe-show)
@@ -1448,6 +1449,62 @@ exit codes are unchanged.
 - After `SIGTERM`, `wait` waits for the command to exit, with no timeout. A
   command that ignores `SIGTERM` keeps `wait` waiting until
   `amplihack recipe stop` ends both.
+
+## amplihack recipe waiting
+
+List the runs on this host that wait for their owner, and the runs that ended
+with open decisions (issue #3364). The command is read-only: it writes,
+creates and waits for nothing, and it is allowed inside recipe runs.
+
+```bash
+amplihack recipe waiting [--json]
+```
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--json` | Print a JSON array instead of lines | off |
+
+### Records
+
+A run keeps each record in its own run folder, `AMPLIHACK_RUN_DIR`.
+
+| File | Written by | Fields | Listed while |
+| --- | --- | --- | --- |
+| `waiting.json` | The goal loop's turn tool, `autodrive_goal_turn.sh wait-owner`, before it starts `amplihack recipe guidance wait`. The tool removes it when the wait returns, whatever the exit. | `kind` (`waiting`), `run_id`, `target` (the guidance target, or empty), `owner`, `question`, `turn`, `started_at` (RFC 3339, UTC) | The run is live. A record left behind by a run that has ended is not listed. |
+| `open-decisions.json` | The agent of `step-18b-implement-feedback` in `workflow-pr-review.yaml`, when a disagreement or design question stays open after its comments are posted. | `kind` (`open-decisions`), `run_id`, `target` (the pull request URL), `questions` (array), `where` (array of comment URLs), `created_at` (RFC 3339, UTC) | No guidance entry newer than `created_at` is in the run's guidance folder or the pull request's, and `gh pr view` does not report the pull request `MERGED` or `CLOSED`. |
+
+### How runs are found
+
+Waiting records are read from the run folders the session pointers in the
+recipe log folder name, the way `amplihack recipe guide <PR URL>` finds live
+runs ([Live runs for a pull request](#live-runs-for-a-pull-request)), and only
+for a run that is live. Open-decisions records are read from those run folders
+and from the run folders directly under the work root's `runs/` folder, since a
+nested run has no session pointer of its own. Each run folder passes the same
+checks `recipe guide` applies to a recorded run folder, and is read once.
+
+### Output
+
+One line per record, with five fields separated by tabs: the kind, the age
+(for example `2h13m`), the owner (`-` for open decisions), the question (for
+open decisions, the first question and how many are open) and the run id. An
+empty field is `-`.
+
+```text
+waiting	2h13m	the operator	Merge now, or wait for the second review?	5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81
+```
+
+With `--json`, an array of objects with `kind`, `run_id`, `run_dir`, `target`
+and `age_seconds`, then, for a waiting run, `owner`, `question`, `turn` and
+`started_at`, and for open decisions, `questions`, `where`, `created_at` and
+`pr_state` (`OPEN`, or `unknown` when `gh` could not report it, or `null` when
+the target is not a pull request URL). With nothing to list, nothing is
+printed, or `[]` with `--json`.
+
+The exit code is 0 whenever the listing ran, and 2 for a usage error. A record
+that exists but cannot be read, and a pull request whose state `gh` cannot
+report, each give one warning line on stderr. The command calls `gh pr view`
+at most once for each pull request it lists.
 
 ## amplihack recipe validate
 

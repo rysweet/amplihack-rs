@@ -152,7 +152,7 @@ fn distinct_accounts_have_no_pairs() {
 
 #[test]
 fn the_same_user_in_another_org_is_not_a_duplicate() {
-    // Bug 1: ryan-mistt-org and ryan-mistt-personal.
+    // Bug 1: login-aw and login-ax.
     let e = env();
     e.profile("a", &acct("u-same", Some("o-team")));
     e.profile("b", &acct("u-same", Some("o-personal")));
@@ -475,8 +475,8 @@ fn without_records_amplihack_cannot_tell() {
 
 #[test]
 fn a_matching_profile_paired_with_an_unrecorded_one_names_the_unrecorded_one() {
-    // Issue #1845's own case: after 'ryan-mistt-personal' is logged in
-    // again it has a matching record, and 'bbuck', which a backfill will
+    // Issue #1845's own case: after 'login-ax' is logged in
+    // again it has a matching record, and 'login-ab', which a backfill will
     // not record while another profile holds the account, is named.
     let e = dup_a_c();
     e.record("a", "u-same");
@@ -720,7 +720,7 @@ fn warnings_never_write_a_record() {
 
 #[test]
 fn the_same_user_in_another_organization_is_mismatched() {
-    // ryan-mistt-org recorded in its team organization, holding the same
+    // login-aw recorded in its team organization, holding the same
     // user's personal-organization login.
     let e = dup_a_c();
     e.record("a", "u-same");
@@ -763,11 +763,11 @@ fn record_warnings_skip_matching_and_unrecorded_profiles_and_need_a_state() {
 
 #[test]
 fn the_record_warning_names_the_profile_and_no_account() {
-    let w = record_warning(&p("bbuck"));
+    let w = record_warning(&p("login-ab"));
     assert_eq!(
         w,
-        "profile 'bbuck' holds a login that is not the account recorded for it; fix: run \
-         'amplihack profile login bbuck' with the browser signed out of claude.ai or in a \
+        "profile 'login-ab' holds a login that is not the account recorded for it; fix: run \
+         'amplihack profile login login-ab' with the browser signed out of claude.ai or in a \
          private window."
     );
 }

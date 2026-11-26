@@ -3,8 +3,8 @@
 //! own token (`usage_direct::account`), and compared with the account
 //! recorded for each profile (#1845's expected account). Never by
 //! `.claude.json`, `claude auth status` or usage reset times: accounts
-//! created together share reset times (issue #1886, 3 November, nnorth and
-//! mmorrison). See "Credential identity" in docs/reference/profile-command.md.
+//! created together share reset times (issue #1886, 3 November, login-ao and
+//! login-an). See "Credential identity" in docs/reference/profile-command.md.
 //!
 //! Only directory paths are passed to `usage_direct`, the one module that
 //! opens a login file. Reads never refresh (so never write a login), start

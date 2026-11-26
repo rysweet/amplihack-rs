@@ -46,7 +46,7 @@ Unlike traditional tools or function calling, skills:
 **Tier 2: Core Instructions (<5,000 tokens)**
 
 - Full SKILL.md content loaded when skill deemed relevant
-- All .md files in root directory load together
+- Supporting files are read only when SKILL.md sends the model to them
 - Provides complete instructions and workflows
 - Token budget critical for efficiency
 
@@ -211,7 +211,7 @@ From https://github.com/anthropics/claude-cookbooks/tree/main/skills:
 1. **YAML Syntax**: Must parse correctly with yaml.safe_load()
 2. **Required Fields**: Both name and description must be present
 3. **Name Format**: Lowercase letters, numbers, hyphens only
-4. **Description Length**: Between 10 and 1,024 characters
+4. **Description Length**: Between 1 and 1,024 characters
 5. **No Duplicates**: Name must be unique across all skills
 
 ---
@@ -302,12 +302,11 @@ From https://github.com/anthropics/claude-cookbooks/tree/main/skills:
 
 ### Loading Behavior
 
-**All .md files in root load together** when skill activates:
+**SKILL.md loads when the skill activates**; supporting files are read only when needed:
 
-- SKILL.md (always)
-- reference.md, examples.md, patterns.md (if present)
+- SKILL.md (always, when the skill activates)
+- reference.md, examples.md, patterns.md (only when SKILL.md sends the model to them)
 - Enables modular documentation
-- Each file focused on specific aspect
 
 **Supporting files load on-demand**:
 
@@ -741,8 +740,6 @@ def validate_skill_name(name):
     pattern = r'^[a-z0-9]+(-[a-z0-9]+)*$'
     if not re.match(pattern, name):
         return False, "Name must be kebab-case"
-    if len(name) < 3:
-        return False, "Name too short (minimum 3 characters)"
     if len(name) > 64:
         return False, "Name too long (maximum 64 characters)"
     return True, "Name is valid"
@@ -770,8 +767,6 @@ def validate_yaml_frontmatter(content):
 
         # Validate description length
         desc_len = len(frontmatter['description'])
-        if desc_len < 10:
-            return False, f"Description too short ({desc_len} chars, min 10)"
         if desc_len > 1024:
             return False, f"Description too long ({desc_len} chars, max 1024)"
 

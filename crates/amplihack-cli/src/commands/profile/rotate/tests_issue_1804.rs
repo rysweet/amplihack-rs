@@ -209,17 +209,17 @@ impl Case {
     }
 }
 
-/// The 19:42:56Z cycle from issue #1804: live iivanovich at 87/61 and
+/// The 19:42:56Z cycle from issue #1804: live login-ai at 87/61 and
 /// seven plan candidates. Every reset is four hours away.
 fn replay() -> Case {
-    Case::new("iivanovich", measured(87.0, 61.0, FAR))
-        .cand("aanderson", measured(25.0, 95.0, FAR))
-        .cand("bbuck", measured(50.0, 97.0, FAR))
-        .cand("ccapstone", measured(11.0, 92.0, FAR))
-        .cand("ddrumpf", measured(0.0, 92.0, FAR))
-        .cand("eelsworth", measured(98.0, 17.0, FAR))
-        .cand("ggrant", exhausted(FAR))
-        .cand("ryan-mistt-personal", measured(0.0, 96.0, FAR))
+    Case::new("login-ai", measured(87.0, 61.0, FAR))
+        .cand("login-aa", measured(25.0, 95.0, FAR))
+        .cand("login-ab", measured(50.0, 97.0, FAR))
+        .cand("login-ac", measured(11.0, 92.0, FAR))
+        .cand("login-ad", measured(0.0, 92.0, FAR))
+        .cand("login-ae", measured(98.0, 17.0, FAR))
+        .cand("login-ag", exhausted(FAR))
+        .cand("login-ax", measured(0.0, 96.0, FAR))
 }
 
 // --- Reason ------------------------------------------------------------------------
@@ -300,23 +300,23 @@ fn the_replay_stays_on_a_live_login_with_more_room_than_any_other() {
     );
 }
 
-/// D2 and F3: with the live login full, ccapstone and ddrumpf both have
-/// room 8 and week 92, so the name decides; aanderson (25/95, room 5) is at
-/// the ceiling and eligible but has less room; bbuck and the 96% login are
+/// D2 and F3: with the live login full, login-ac and login-ad both have
+/// room 8 and week 92, so the name decides; login-aa (25/95, room 5) is at
+/// the ceiling and eligible but has less room; login-ab and the 96% login are
 /// above the ceiling.
 #[test]
 fn the_replay_with_the_live_login_full_takes_the_most_room_now() {
     let c = replay();
     let d = decide(&c.s, &full(), &plan_of(&c), None, NOW);
-    assert_eq!(d, swap("ccapstone", Reason::Threshold));
+    assert_eq!(d, swap("login-ac", Reason::Threshold));
     assert_eq!(
         ranked_names(&c.s, &plan_of(&c)),
-        ["ccapstone", "ddrumpf", "aanderson", "eelsworth"]
+        ["login-ac", "login-ad", "login-aa", "login-ae"]
     );
     let at_70 = replay().at(70);
     assert_eq!(
         decide(&at_70.s, &full(), &plan_of(&at_70), None, NOW),
-        swap("ccapstone", Reason::Threshold)
+        swap("login-ac", Reason::Threshold)
     );
 }
 
@@ -371,9 +371,9 @@ fn a_login_exactly_at_session_at_ranks_in_the_second_tier() {
 fn logins_at_98_to_100_percent_session_do_not_trade_places() {
     let s = settings(85);
     let plan = vec![
-        m("bbuck", &measured(99.0, 40.0, FAR)),
-        m("ccapstone", &measured(99.9, 20.0, FAR)),
-        m("ddrumpf", &measured(100.0, 10.0, FAR)),
+        m("login-ab", &measured(99.0, 40.0, FAR)),
+        m("login-ac", &measured(99.9, 20.0, FAR)),
+        m("login-ad", &measured(100.0, 10.0, FAR)),
     ];
     let live = Reading::Measured {
         session: 98.0,
@@ -444,7 +444,7 @@ fn the_ranking_leaves_out_failed_exhausted_and_full_logins() {
 }
 
 /// D1: a login with the same room as the live one, or less, is not a
-/// target: a move needs `max(--margin, 1)` more room now. ccapstone has the
+/// target: a move needs `max(--margin, 1)` more room now. login-ac has the
 /// live login's room 8; spare has 8 against the live login's 5, short of 10.
 #[test]
 fn a_login_with_the_same_room_as_the_live_one_is_not_a_target() {
@@ -453,7 +453,7 @@ fn a_login_with_the_same_room_as_the_live_one_is_not_a_target() {
         session: 0.0,
         week: 92.0,
     };
-    let plan = vec![m("ccapstone", &measured(11.0, 92.0, FAR))];
+    let plan = vec![m("login-ac", &measured(11.0, 92.0, FAR))];
     assert_eq!(decide(&s, &live, &plan, None, NOW), Decision::Alert);
     let live = Reading::Measured {
         session: 10.0,
@@ -496,20 +496,20 @@ fn t2_the_replay_with_the_api_key_marked_and_the_gate_open_still_stays() {
 // --- decide_overflow: the plan-room swap -------------------------------------------
 
 #[test]
-fn the_flapping_guard_keeps_ddrumpf_live() {
-    let v = Case::new("ddrumpf", measured(0.0, 92.0, FAR))
-        .cand("ccapstone", measured(11.0, 92.0, FAR))
+fn the_flapping_guard_keeps_login_ad_live() {
+    let v = Case::new("login-ad", measured(0.0, 92.0, FAR))
+        .cand("login-ac", measured(11.0, 92.0, FAR))
         .run();
     assert_eq!(v.decision, Decision::Alert, "{v:?}");
 }
 
-/// Issue #2910 changed this expectation (ruling D1): ccapstone and ddrumpf
+/// Issue #2910 changed this expectation (ruling D1): login-ac and login-ad
 /// both have room 8, so neither leaves the other; the margin, with a floor
 /// of 1, is the flapping guard now.
 #[test]
-fn the_margin_keeps_ccapstone_from_moving_to_a_login_with_the_same_room() {
-    let v = Case::new("ccapstone", measured(11.0, 92.0, FAR))
-        .cand("ddrumpf", measured(0.0, 92.0, FAR))
+fn the_margin_keeps_login_ac_from_moving_to_a_login_with_the_same_room() {
+    let v = Case::new("login-ac", measured(11.0, 92.0, FAR))
+        .cand("login-ad", measured(0.0, 92.0, FAR))
         .run();
     assert_eq!(v.decision, Decision::Alert, "{v:?}");
 }
@@ -629,18 +629,18 @@ fn a_threshold_swap_that_meets_the_margin_is_not_replaced() {
 }
 
 /// The issue's cycle with the live login further along. Issue #2910 changed
-/// this expectation (ruling F3): ccapstone and ddrumpf tie on tier, room now
+/// this expectation (ruling F3): login-ac and login-ad tie on tier, room now
 /// (8) and week (92), so the name decides; session is not a key beyond the
 /// tier. `decide_overflow` gives the threshold swap; the cycle labels it
 /// `plan-room` (D15), since the target's week is past --week-at.
 #[test]
 fn a_threshold_swap_without_capacity_follows_the_one_ranking() {
-    let v = Case::new("iivanovich", measured(98.0, 61.0, FAR))
-        .cand("ccapstone", measured(11.0, 92.0, FAR))
-        .cand("ddrumpf", measured(0.0, 92.0, FAR))
-        .cand("eelsworth", measured(98.0, 17.0, FAR))
+    let v = Case::new("login-ai", measured(98.0, 61.0, FAR))
+        .cand("login-ac", measured(11.0, 92.0, FAR))
+        .cand("login-ad", measured(0.0, 92.0, FAR))
+        .cand("login-ae", measured(98.0, 17.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("ccapstone", Reason::Threshold), "{v:?}");
+    assert_eq!(v.decision, swap("login-ac", Reason::Threshold), "{v:?}");
 }
 
 #[test]
@@ -869,16 +869,16 @@ fn a_failed_plan_probe_keeps_the_api_key_out_and_names_the_login() {
 
 #[test]
 fn a_busy_plan_login_keeps_the_api_key_out_and_names_the_login() {
-    // Crusty round 13: `work` at 100%, `ccapstone` with a session on it at
+    // Crusty round 13: `work` at 100%, `login-ac` with a session on it at
     // s=11% w=92%. It is skipped, so nothing here knows it has room.
     let v = Case::new("work", exhausted(FAR))
         .cand("spare", exhausted(FAR))
-        .busy("ccapstone")
+        .busy("login-ac")
         .marked_key()
         .run();
     assert_eq!(v.decision, Decision::Alert, "{v:?}");
     assert_eq!(v.tag, None);
-    assert_eq!(v.key_held, [n("ccapstone")]);
+    assert_eq!(v.key_held, [n("login-ac")]);
 }
 
 #[test]
@@ -896,7 +896,7 @@ fn an_unknown_plan_login_does_not_name_itself_when_the_gate_stopped_the_key() {
     // The wait said no, so the unknown login is not why the key was unused.
     let v = Case::new("work", exhausted(NEAR))
         .cand("spare", exhausted(NEAR))
-        .busy("ccapstone")
+        .busy("login-ac")
         .marked_key()
         .run();
     assert_eq!(v.decision, Decision::Alert, "{v:?}");
@@ -913,12 +913,12 @@ fn credit_tiers_do_not_wait_for_a_busy_login_or_a_read_state_and_report_the_coun
     };
     let v = Case::new("work", exhausted(FAR))
         .cand("spare", read_a_state)
-        .busy("ccapstone")
+        .busy("login-ac")
         .credits(measured(10.0, 10.0, FAR))
         .marked_key()
         .run();
     assert_eq!(v.decision, swap("credits", Reason::OverflowIn), "{v:?}");
-    assert_eq!(v.unknown_plan, [n("ccapstone"), n("spare")]);
+    assert_eq!(v.unknown_plan, [n("login-ac"), n("spare")]);
     assert!(v.key_held.is_empty(), "{v:?}");
 }
 
@@ -926,7 +926,7 @@ fn credit_tiers_do_not_wait_for_a_busy_login_or_a_read_state_and_report_the_coun
 fn blocked_credits_do_not_move_to_the_api_key_past_a_busy_plan_login() {
     let mut c = Case::new("credits", measured(10.0, 10.0, FAR))
         .cand("work", exhausted(FAR))
-        .busy("ccapstone")
+        .busy("login-ac")
         .marked_key()
         .spend_blocked("credits");
     c.overflow.push(OverflowEntry::new(n("credits"), 1));
@@ -1281,8 +1281,8 @@ fn a_lone_login_is_ranked_exactly_when_it_is_eligible_and_never_without_room() {
 fn a_plan_whose_logins_all_have_room_but_none_under_session_at() {
     let s = settings(85);
     let plan = vec![
-        m("aanderson", &measured(98.0, 60.0, FAR)),
-        m("bbuck", &measured(99.0, 40.0, FAR)),
+        m("login-aa", &measured(98.0, 60.0, FAR)),
+        m("login-ab", &measured(99.0, 40.0, FAR)),
     ];
     assert!(plan.iter().all(|p| has_room(&p.reading)), "all have room");
     let live = Reading::Measured {
@@ -1292,7 +1292,7 @@ fn a_plan_whose_logins_all_have_room_but_none_under_session_at() {
     assert_eq!(decide(&s, &live, &plan, None, NOW), Decision::Alert);
     assert_eq!(
         decide(&s, &full(), &plan, None, NOW),
-        swap("aanderson", Reason::Threshold)
+        swap("login-aa", Reason::Threshold)
     );
 }
 

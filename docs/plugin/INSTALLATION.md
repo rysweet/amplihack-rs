@@ -28,7 +28,7 @@ amplihack plugin install
 ```
 Installing amplihack plugin to ~/.amplihack/.claude/
 ✓ Created plugin directory structure
-✓ Installed agents (41 agents)
+✓ Installed agents (38 agents)
 ✓ Installed commands (18 commands)
 ✓ Installed skills (12 skills)
 ✓ Installed workflows (5 workflows)
@@ -79,7 +79,7 @@ Verifying amplihack plugin installation...
 
 ✓ Plugin directory exists: ~/.amplihack/.claude/
 ✓ Plugin manifest valid: .claude-plugin/plugin.json
-✓ Agents directory: 41 agents found
+✓ Agents directory: 38 agents found
 ✓ Commands directory: 18 commands found
 ✓ Skills directory: 12 skills found
 ✓ Workflows directory: 5 workflows found
@@ -97,7 +97,7 @@ After installation, your `~/.amplihack/.claude/` directory contains:
 ~/.amplihack/.claude/
 ├── .claude-plugin/
 │   └── plugin.json              # Plugin manifest
-├── agents/                       # 41 specialized agents
+├── agents/                       # 38 specialized agents
 │   └── amplihack/
 │       ├── core/                 # Core agents
 │       ├── specialized/          # Domain-specific agents

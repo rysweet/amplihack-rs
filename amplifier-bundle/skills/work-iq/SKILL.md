@@ -1,7 +1,7 @@
 ---
 name: work-iq
 version: 1.0.0
-description: Microsoft Work IQ MCP integration for querying M365 data (emails, meetings, Teams, documents) with natural language. Enables searching your Microsoft 365 workspace directly from Claude Code.
+description: Microsoft Work IQ MCP integration for querying M365 data (emails, meetings, Teams, documents) with natural language. Enables searching your Microsoft 365 workspace directly from Claude Code. Also covers WSL, including access through the Windows bridge.
 license: MIT
 auto_activate:
   - "work-iq"
@@ -136,6 +136,15 @@ I load automatically when you mention:
 | "Authentication failed"  | Re-run query to trigger fresh auth flow |
 | "Admin consent required" | Contact your M365 tenant administrator  |
 | "WSL browser issues"     | Install `xdg-utils` and `wslu` packages |
+
+## Using WorkIQ from WSL
+
+There are two routes on WSL2:
+
+1. **Native**: Run the MCP server inside WSL as above. If the browser sign-in fails, install `xdg-utils` and `wslu`.
+2. **Windows bridge**: If the native sign-in still does not work, send each query through `powershell.exe` to the Copilot CLI on the Windows host, with the WorkIQ plugin installed there.
+
+Setup, the bridge command, WSL detection and limits are in [reference.md](./reference.md#using-workiq-from-wsl-through-windows).
 
 ## Documentation
 

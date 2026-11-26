@@ -451,8 +451,8 @@ fn does_not_redirect_real_skill() {
 #[test]
 fn does_not_redirect_overlapping_skill_and_agent_names() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    // gherkin-expert, tla-plus-expert, and verus-expert are BOTH a skill and an
-    // agent. Skills take precedence, so these must pass through (resolve as skills).
+    // tla-plus-expert and verus-expert are BOTH a skill and an agent. Skills
+    // take precedence, so these must pass through (resolve as skills).
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -460,7 +460,7 @@ fn does_not_redirect_overlapping_skill_and_agent_names() {
     let _root = EnvRestore::set("AMPLIHACK_HOME", root.to_str().unwrap());
     let _cwd = crate::test_support::CwdGuard::set(&root).unwrap();
     let hook = PreToolUseHook;
-    for name in ["gherkin-expert", "tla-plus-expert", "verus-expert"] {
+    for name in ["tla-plus-expert", "verus-expert"] {
         let result = hook.process(make_skill_input(name)).unwrap();
         assert!(
             result.as_object().unwrap().is_empty(),
@@ -669,11 +669,11 @@ fn bundled_skill_names_membership_is_exact_and_case_sensitive() {
 
 #[test]
 fn bundled_skill_names_contains_overlap_names() {
-    // gherkin-expert, tla-plus-expert, and verus-expert exist as BOTH a skill
-    // and an agent. They must be present in the skill set so the redirect
-    // logic's skill-precedence keeps them from being redirected.
+    // tla-plus-expert and verus-expert exist as BOTH a skill and an agent.
+    // They must be present in the skill set so the redirect logic's
+    // skill-precedence keeps them from being redirected.
     let skills = checkout_skill_names();
-    for name in ["gherkin-expert", "tla-plus-expert", "verus-expert"] {
+    for name in ["tla-plus-expert", "verus-expert"] {
         assert!(
             skills.contains(name),
             "overlap name {name:?} must be present so it resolves as a skill"

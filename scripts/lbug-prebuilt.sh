@@ -5,7 +5,7 @@
 # CMake inside each target directory. sccache does not see that build, and
 # every worktree has its own target directory. So each new worktree, and each
 # parallel agent, compiled the same unchanged library again: 48 C++ compilers
-# at once on candide on 8 November 2026, with the load at 600 on 72 cores.
+# at once on host-a on 8 November 2026, with the load at 600 on 72 cores.
 #
 # What: the lbug crate already supports a prebuilt library. When
 # LBUG_LIBRARY_DIR and LBUG_INCLUDE_DIR are both set, its build script skips

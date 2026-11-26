@@ -57,7 +57,7 @@ deny("<redirect guidance>")  (block, decision, permissionDecision and
 
 Key properties:
 
-- **Skill precedence.** The redirect fires only when the name **is** a known agent and is **not** a bundled skill. The skill set is derived at runtime by scanning the on-disk skills directory (`amplifier-bundle/skills/**/SKILL.md`) and reading each frontmatter `name:` — the directory is the single source of truth (issue [#863](https://github.com/rysweet/amplihack-rs/issues/863)), not a hardcoded list. Names that exist as **both** a skill and an agent (for example `gherkin-expert` and `tla-plus-expert`, which ship both a `SKILL.md` and an agent file) keep resolving as skills with no behavior change.
+- **Skill precedence.** The redirect fires only when the name **is** a known agent and is **not** a bundled skill. The skill set is derived at runtime by scanning the on-disk skills directory (`amplifier-bundle/skills/**/SKILL.md`) and reading each frontmatter `name:` — the directory is the single source of truth (issue [#863](https://github.com/rysweet/amplihack-rs/issues/863)), not a hardcoded list. Names that exist as **both** a skill and an agent (for example `tla-plus-expert` and `verus-expert`, which ship both a `SKILL.md` and an agent file) keep resolving as skills with no behavior change.
 - **Non-fatal.** The hook exits 0 with a deny that Claude Code, Copilot and Codex all act on (#1773), and the reason carries the guidance. It never panics, never aborts the run, and never deletes work. The model is told what to do instead.
 - **Agent registry is compile-time; skill set is directory-derived.** Agent names are baked into the binary at build time via a sorted static slice. The skill set is resolved at runtime by scanning the bundled skills directory (issue [#863](https://github.com/rysweet/amplihack-rs/issues/863)). That scan is gated behind the cheap agent check, so genuine skills and unknown names pay no I/O; only a name that collides with a known agent triggers the directory walk. The walk never follows symlinks and is depth-bounded.
 - **Fail-open.** Consistent with the rest of `PreToolUse`, any parse or lookup failure passes the tool call through unchanged (`FailurePolicy::Open`).
@@ -93,7 +93,7 @@ The message intentionally echoes **only** the sanitized target name (`[A-Za-z0-9
 | `builder`                 | no           | yes          | **Blocked + redirect to agent** |
 | `default-workflow`        | yes          | no           | Pass through (runs as skill)    |
 | `pdf`                     | yes          | no           | Pass through (runs as skill)    |
-| `gherkin-expert`          | yes          | yes          | Pass through (skill precedence) |
+| `gherkin-expert`          | yes          | no           | Pass through (runs as skill)    |
 | `tla-plus-expert`         | yes          | yes          | Pass through (skill precedence) |
 | `guide`                   | no           | yes          | **Blocked + redirect to agent** |
 | `totally-unknown-name`    | no           | no           | Pass through (no opinion)       |

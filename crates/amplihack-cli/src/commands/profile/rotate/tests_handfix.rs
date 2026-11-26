@@ -6,9 +6,9 @@
 //! sleeps; the time is fixed.
 //!
 //! The fixture is the 27 Oct case, made recoverable: the ledger names
-//! `ryan-ryansweet` (L), which keeps a login of its own; `~/.claude` answers
-//! as `ryan-mistt-org` (M), which has its own copy (`m_own`);
-//! `rssourcelabs` (C) is a logged-in profile with capacity. `suspected()`
+//! `login-ay` (L), which keeps a login of its own; `~/.claude` answers
+//! as `login-aw` (M), which has its own copy (`m_own`);
+//! `login-au` (C) is a logged-in profile with capacity. `suspected()`
 //! records the first reading of M one interval before `T`, so the step at
 //! `T` is the confirming second reading.
 //!
@@ -50,9 +50,9 @@ use std::path::{Path, PathBuf};
 /// 2026-10-27T03:17:05Z, the first hand-change ALERT in the #1693 log.
 pub(super) const T: i64 = 1_793_071_025;
 const STAMP: &str = "20261027T031705Z";
-pub(super) const L: &str = "ryan-ryansweet";
-pub(super) const M: &str = "ryan-mistt-org";
-pub(super) const C: &str = "rssourcelabs";
+pub(super) const L: &str = "login-ay";
+pub(super) const M: &str = "login-aw";
+pub(super) const C: &str = "login-au";
 pub(super) const CREDS: &str = ".credentials.json";
 /// The rotation interval the step is given (the default `--interval`).
 pub(super) const GAP: i64 = 600;
@@ -178,7 +178,7 @@ fn fx_at(home_rel: &str, l_own: bool, m_own: bool, capacity: bool) -> Fx {
     );
     private(
         &root.join(M).join(".claude.json"),
-        &acct("u-mistt", "mistt@example.com"),
+        &acct("u-example-org", "example-org@example.com"),
     );
     let l = l_own.then(|| oauth_login(&root.join(L).join(CREDS)));
     let m = m_own.then(|| oauth_login(&root.join(M).join(CREDS)));
@@ -193,7 +193,7 @@ fn fx_at(home_rel: &str, l_own: bool, m_own: bool, capacity: bool) -> Fx {
     dir700(&home.join(".claude"));
     private(
         &home.join(".claude.json"),
-        &acct("u-mistt", "mistt@example.com"),
+        &acct("u-example-org", "example-org@example.com"),
     );
     let h = oauth_login(&home.join(".claude").join(CREDS));
     let rs = RotateState::new(&root);
@@ -1153,7 +1153,7 @@ fn preview_without_a_hand_change_prints_nothing() {
     let f = fx(true, false);
     let mut l = f.ledger();
     l.live = Some(M.into());
-    l.account = Some("u-mistt".into());
+    l.account = Some("u-example-org".into());
     f.rs.save_ledger(&l).unwrap();
     assert!(f.preview_with(seam, T).is_empty());
 }
@@ -1167,14 +1167,14 @@ fn accounts_never_appear_in_the_log_status_or_preview() {
         let f = fx_at("home", l_own, true, true);
         for (p, e) in [
             (L, "rs@example.com"),
-            (M, "mistt@example.com"),
+            (M, "example-org@example.com"),
             (C, "src@example.com"),
         ] {
             private(&f.root.join(p).join(".claude.json"), &email_only(e));
         }
         private(
             &f.home.join(".claude.json"),
-            &email_only("mistt@example.com"),
+            &email_only("example-org@example.com"),
         );
         let mut l = f.ledger();
         l.account = Some("rs@example.com".into());
@@ -1189,7 +1189,7 @@ fn accounts_never_appear_in_the_log_status_or_preview() {
         for line in &text {
             assert!(!line.contains("@example.com"), "{line}");
             assert!(
-                !line.contains("u-mistt") && !line.contains("u-rs"),
+                !line.contains("u-example-org") && !line.contains("u-rs"),
                 "{line}"
             );
         }

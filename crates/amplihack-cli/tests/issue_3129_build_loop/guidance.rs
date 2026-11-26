@@ -284,3 +284,69 @@ fn guidance_text_never_reaches_a_kept_record() {
             .is_empty()
     );
 }
+
+// ---- references the task text gives inside code ---------------------------
+//
+// The reference check reads the description with code stripped and the task
+// text with code kept, so a closing line or @mention the task text writes in
+// backticks counts as given. The numbers used here reach the allowed text
+// only through the code under test: no issue number or closing reference is
+// set, and the default task text names another number.
+
+fn open_pr_with_task(task: &str, body: &str) -> Value {
+    let s = setup(PR_URL);
+    fs::write(&s.task, task).unwrap();
+    open_pr(&s, body, 0, "")
+}
+
+#[test]
+fn a_closing_line_in_a_code_span_of_the_task_allows_it_in_the_description() {
+    let r = open_pr_with_task(
+        "Build the widget. The last line is `Fixes #41`.\n",
+        "Builds the widget.\n\nFixes #41",
+    );
+    assert_ne!(r["outcome"], "invalid-args", "{r}");
+    assert!(r.get("refused").is_none(), "{r}");
+}
+
+#[test]
+fn a_mention_in_a_code_span_of_the_task_allows_it_in_the_description() {
+    let r = open_pr_with_task(
+        "Build the widget and ask `@octo-user` to read it.\n",
+        "Builds the widget. @octo-user, please read it.",
+    );
+    assert_ne!(r["outcome"], "invalid-args", "{r}");
+    assert!(r.get("refused").is_none(), "{r}");
+}
+
+#[test]
+fn a_closing_line_in_a_fenced_block_of_the_task_allows_it_in_the_description() {
+    for fence in ["```", "~~~"] {
+        let r = open_pr_with_task(
+            &format!("Build the widget. End with:\n\n{fence}\nFixes #41\n{fence}\n"),
+            "Builds the widget.\n\nFixes #41",
+        );
+        assert_ne!(r["outcome"], "invalid-args", "{fence}: {r}");
+        assert!(r.get("refused").is_none(), "{fence}: {r}");
+    }
+}
+
+#[test]
+fn a_closing_line_the_task_never_names_is_still_refused() {
+    let r = open_pr_with_task(
+        "Build the widget. The last line is `Fixes #41`.\n",
+        "Builds the widget.\n\nFixes #12",
+    );
+    assert_eq!(r["outcome"], "invalid-args", "{r}");
+    assert_eq!(r["refused"], "closing reference 12", "{r}");
+}
+
+#[test]
+fn a_closing_line_in_a_code_span_of_the_description_is_still_ignored() {
+    let r = open_pr_with_task(
+        "Build the widget.\n",
+        "Builds the widget. A reader may write `Fixes #55` to close it.",
+    );
+    assert_ne!(r["outcome"], "invalid-args", "{r}");
+    assert!(r.get("refused").is_none(), "{r}");
+}

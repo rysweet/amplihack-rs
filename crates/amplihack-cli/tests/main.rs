@@ -64,6 +64,9 @@ mod issue_2575_agentic_merge_ready;
 mod issue_3129_goal_loop;
 #[path = "issue_3161_pr_url_live_run.rs"]
 mod issue_3161_pr_url_live_run;
+// #3364: the waiting record and `recipe waiting`.
+#[path = "issue_3364_waiting_listing.rs"]
+mod issue_3364_waiting_listing;
 // PR #3190 review: the #3161 drive cases and a run that ends unread, real runner.
 #[path = "issue_3161_pinned_runner_drive.rs"]
 mod issue_3161_pinned_runner_drive;
@@ -104,14 +107,14 @@ mod issue_1753_login_identity;
 mod issue_1753_refusal_named_once;
 #[path = "issue_1947_login_identity.rs"]
 mod issue_1947_login_identity;
-#[path = "issue_1962_candide_cause.rs"]
-mod issue_1962_candide_cause;
 #[path = "issue_1962_causes.rs"]
 mod issue_1962_causes;
 #[path = "issue_1962_dir_rule.rs"]
 mod issue_1962_dir_rule;
 #[path = "issue_1962_dry_run.rs"]
 mod issue_1962_dry_run;
+#[path = "issue_1962_host_a_cause.rs"]
+mod issue_1962_host_a_cause;
 #[path = "issue_1962_refresh_ledger.rs"]
 mod issue_1962_refresh_ledger;
 #[path = "issue_1962_seed.rs"]

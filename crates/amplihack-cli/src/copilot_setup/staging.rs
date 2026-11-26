@@ -539,14 +539,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn legacy_cli_skill_cleanup_rejects_unsupported_file_type() {
-        use std::os::unix::net::UnixListener;
+        use std::os::unix::ffi::OsStrExt;
 
         let temp = tempfile::Builder::new().prefix("ah-").tempdir().unwrap();
         let copilot_home = temp.path().join(".copilot");
         let legacy_parent = copilot_home.join("skills");
         fs::create_dir_all(&legacy_parent).unwrap();
         let legacy_path = legacy_parent.join("azure-devops-cli");
-        let _listener = UnixListener::bind(&legacy_path).unwrap();
+        // A FIFO is neither a file, a directory nor a symlink. Unlike a Unix
+        // socket, its path has no length limit, so the test does not depend on
+        // how long the temporary folder's path is (#3204).
+        let c_path = std::ffi::CString::new(legacy_path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
 
         let err = remove_legacy_cli_skill(&copilot_home).unwrap_err();
 

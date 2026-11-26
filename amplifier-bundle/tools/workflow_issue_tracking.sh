@@ -110,7 +110,7 @@ _tracking_issue_candidates() {
 }
 
 # tracking_issue_reference: which issue this run is about, and where the number
-# came from (#3129, mistt-app-ui #480). The build loop's reading calls it every
+# came from (#3129, repo-c #480). The build loop's reading calls it every
 # turn, so the agent knows that a PR naming that issue may be the very work it
 # is continuing. An explicit issue number (EXISTING_ISSUE_NUMBER) wins as
 # `context`; otherwise the first task-text candidate, marked references first,

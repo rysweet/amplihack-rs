@@ -331,22 +331,8 @@ pub(in crate::commands::profile::rotate) const BOTH: [Labelled; 2] =
 /// Names of the logins in the 05:56:57Z cycle that have a reading. The live
 /// login is `work`.
 pub(in crate::commands::profile::rotate) const NAMES: &[&str] = &[
-    "aanderson",
-    "bbuck",
-    "ddrumpf",
-    "eelsworth",
-    "ffarmer",
-    "ggrant",
-    "jjansport",
-    "kkane",
-    "llarame",
-    "nnorth",
-    "ppatton",
-    "qquinn",
-    "rraborne",
-    "ssorrel",
-    "uunze",
-    "yyandis",
+    "login-aa", "login-ab", "login-ad", "login-ae", "login-af", "login-ag", "login-aj", "login-ak",
+    "login-al", "login-ao", "login-aq", "login-ar", "login-at", "ssorrel", "login-bd", "login-bh",
 ];
 
 /// The probes of the 05:56:57Z cycle (and of 05:48Z, which differs only in
@@ -354,28 +340,28 @@ pub(in crate::commands::profile::rotate) const NAMES: &[&str] = &[
 pub(in crate::commands::profile::rotate) fn nov22_table() -> Vec<(&'static str, Probed)> {
     use crate::commands::profile::rotate::tests_issue_1870::{exh, rd};
     vec![
-        ("aanderson", exh(0.0, 100.0)),
-        ("bbuck", exh(0.0, 100.0)),
-        ("ddrumpf", exh(100.0, 74.0)),
-        ("eelsworth", rd(96.0, 82.0, None)),
-        ("ffarmer", unread()),
-        ("ggrant", exh(100.0, 12.0)),
-        ("jjansport", rd(90.0, 10.0, None)),
-        ("kkane", unread()),
-        ("llarame", rd(0.0, 95.0, None)),
-        ("nnorth", exh(100.0, 50.0)),
-        ("ppatton", exh(100.0, 99.0)),
-        ("qquinn", rd(88.0, 20.0, None)),
-        ("rraborne", exh(100.0, 22.0)),
+        ("login-aa", exh(0.0, 100.0)),
+        ("login-ab", exh(0.0, 100.0)),
+        ("login-ad", exh(100.0, 74.0)),
+        ("login-ae", rd(96.0, 82.0, None)),
+        ("login-af", unread()),
+        ("login-ag", exh(100.0, 12.0)),
+        ("login-aj", rd(90.0, 10.0, None)),
+        ("login-ak", unread()),
+        ("login-al", rd(0.0, 95.0, None)),
+        ("login-ao", exh(100.0, 50.0)),
+        ("login-aq", exh(100.0, 99.0)),
+        ("login-ar", rd(88.0, 20.0, None)),
+        ("login-at", exh(100.0, 22.0)),
         ("ssorrel", rd(93.0, 22.0, None)),
-        ("uunze", rd(90.0, 71.0, None)),
-        ("yyandis", rd(88.0, 71.0, None)),
+        ("login-bd", rd(90.0, 71.0, None)),
+        ("login-bh", rd(88.0, 71.0, None)),
     ]
 }
 
 pub(in crate::commands::profile::rotate) const STILL_RUNNING: &[(&str, ProbeLabel)] = &[
-    ("ffarmer", ProbeLabel::StillRunning),
-    ("kkane", ProbeLabel::StillRunning),
+    ("login-af", ProbeLabel::StillRunning),
+    ("login-ak", ProbeLabel::StillRunning),
 ];
 
 /// An unread probe, as a 429 or a transport failure leaves it.

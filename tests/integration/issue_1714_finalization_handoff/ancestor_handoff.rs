@@ -1,4 +1,4 @@
-//! #1714 case 2, hand-off half: on the mistt #138 history built in
+//! #1714 case 2, hand-off half: on the example-org #138 history built in
 //! `ancestor.rs`, auto-drive hands a `FAILED_IMPLEMENTATION` on the confirmed
 //! open PR to its loops; a standalone run, and a PR the open-PR check did not
 //! confirm, still fail closed.
@@ -10,7 +10,7 @@ use super::ancestor::{
 };
 use super::fixture::*;
 
-// The mistt #138 history while CI has not reported and this run has no
+// The example-org #138 history while CI has not reported and this run has no
 // verification evidence. Since #2343 and #2784 this is not an implementation
 // failure at all: the pull request is open at a head that carries the run's
 // work, so the run succeeds and hands that request on, named, with or without

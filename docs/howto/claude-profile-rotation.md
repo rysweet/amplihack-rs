@@ -891,20 +891,20 @@ can use now, not the one with the lowest weekly use. It ranks them by:
 4. the name that sorts first.
 
 For example, with `--session-at 85`, `--week-at 90` and `--margin 3`, the live
-`rrowan` reaches 100% of its session. `llarame` reads `s=0%,w=95%` (room 5),
-`qquinn` `s=88%,w=20%` (room 12) and `jjansport` `s=90%,w=10%` (room 10).
-`llarame` is the only one below `--session-at`, so it ranks first, and the
+`rrowan` reaches 100% of its session. `login-al` reads `s=0%,w=95%` (room 5),
+`login-ar` `s=88%,w=20%` (room 12) and `login-aj` `s=90%,w=10%` (room 10).
+`login-al` is the only one below `--session-at`, so it ranks first, and the
 swap is made at once with `reason=plan-room`, because its week is past
 `--week-at`. Before the swap, `rrowan` at `s=86%,w=65%` had room 14, so it
-stayed: `llarame` did not have `14 + 3`.
+stayed: `login-al` did not have `14 + 3`.
 
 The hold stops flapping. Just after a swap, the account that was swapped out
 often has its session window reset and looks fresh; without the hold the next
 cycle would swap straight back. Two kinds of move are held for `--hold`
 seconds after the last swap: an upgrade, and a swap off a login that
 still has room onto a login at or above `--session-at`. In the example,
-`llarame` now has room 5, and `qquinn` has room 12, which would qualify, but
-`qquinn` is at 88% of its session, so the rotator stays on `llarame` and
+`login-al` now has room 5, and `login-ar` has room 12, which would qualify, but
+`login-ar` is at 88% of its session, so the rotator stays on `login-al` and
 writes a `stay:` line until the hold ends. A swap off a login that has no
 room is never held, and nor is a swap to a login below `--session-at`.
 
@@ -1101,7 +1101,7 @@ that login as *unknown*. It never counts it as exhausted. The cycle line shows
 the probe's own error beside the login it was for:
 
 ```
-2026-11-22T00:02:05Z cycle live=rrowan rrowan:s=100%,w=71% llarame:unknown, HTTP 429, last s=78%,w=92% 41m ago qquinn:unknown, HTTP 429 wwest:failed
+2026-11-22T00:02:05Z cycle live=rrowan rrowan:s=100%,w=71% login-al:unknown, HTTP 429, last s=78%,w=92% 41m ago login-ar:unknown, HTTP 429 login-bf:failed
 ```
 
 | Shown as | Cause |
@@ -1283,7 +1283,7 @@ ignores the status line's own readings.
 
 Before the probe sandbox, every `claude` usage probe wrote a small session
 log into `~/.claude/projects/<encoded home>`, for example
-`~/.claude/projects/-home-ryan`. Thousands of them slow down any `/usage`
+`~/.claude/projects/-home-you`. Thousands of them slow down any `/usage`
 run outside the sandbox. Remove them once, after upgrading:
 
 1. Check that no interactive `claude` session is open in your home
@@ -1313,7 +1313,7 @@ rotator was started in, so if you started it outside `$HOME`, the logs are
 in that directory's folder. To clean another folder, pass `--dir`:
 
 ```bash
-amplihack profile prune-probe-logs --dir ~/.claude/projects/-home-ryan-src --dry-run
+amplihack profile prune-probe-logs --dir ~/.claude/projects/-home-you-src --dry-run
 ```
 
 The rule is in the
@@ -1397,7 +1397,7 @@ grep -E ' (swap|ALERT:|stay:|reject:) ' ~/.claude-profiles/.auto-switch.d/rotate
 
 ```
 2026-11-22T05:48:27Z stay: live room 14, best other login has room 12, a move needs 17
-2026-11-23T09:14:02Z reject: llarame no room on a fresh reading
+2026-11-23T09:14:02Z reject: login-al no room on a fresh reading
 ```
 
 The `cycle` line also says why each login was left out: `unknown, HTTP 429`,
@@ -2172,15 +2172,15 @@ for another, so it is ranked after every login below `--session-at` and
 needs the margin as well.
 
 When the live login has room and no other login has enough more, the rotator
-makes no swap and writes one `stay:` line, not an ALERT. Live `aanderson` at
-`s=90%,w=80%` has room 10, and `bbuck` at `s=95%,w=60%` has room 5, with the
+makes no swap and writes one `stay:` line, not an ALERT. Live `login-aa` at
+`s=90%,w=80%` has room 10, and `login-ab` at `s=95%,w=60%` has room 5, with the
 default `--margin 5`:
 
 ```
 2026-11-19T20:31:07Z stay: live room 10, best other login has room 5, a move needs 15
 ```
 
-The rotator stays on `aanderson` and records the cycle as `stayed`. The line
+The rotator stays on `login-aa` and records the cycle as `stayed`. The line
 is written once while the situation lasts. Later cycles with the same
 readings write nothing more.
 
@@ -2267,16 +2267,16 @@ at its plan limit like any other, and the rotator gets nothing from it.
 The account needs a logged-in profile, as for rotation in general. Mark it:
 
 ```bash
-amplihack profile overflow add ryan-mistt-org
+amplihack profile overflow add login-aw
 ```
 
 ```
-overflow: added ryan-mistt-org
-note: ryan-mistt-org is used only when no measured plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
+overflow: added login-aw
+note: login-aw is used only when no measured plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
 note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap.
 ```
 
-The mark is stored as `overflow=ryan-mistt-org` in `<root>/.auto-switch`,
+The mark is stored as `overflow=login-aw` in `<root>/.auto-switch`,
 next to the auto-switch exclude list, and not in `config.toml`. The rotator
 and auto-switch already read that file on every cycle and every check, so a
 running rotator picks the mark up without a restart, and auto-switch skips
@@ -2301,7 +2301,7 @@ amplihack profile overflow list
 ```
 
 ```
-ryan-mistt-org
+login-aw
 ```
 
 A marked name with no profile directory under the root is listed with
@@ -2432,7 +2432,7 @@ Each overflow mark has a tier from 1 to 9 (default 1). Lower tiers are tried
 first, so a cheaper kind of overflow comes before a dearer one:
 
 ```bash
-amplihack profile overflow add ryan-mistt-org          # tier 1
+amplihack profile overflow add login-aw                # tier 1
 amplihack profile overflow add team-credits --tier 2   # tried after tier 1
 amplihack profile overflow list
 ```
@@ -2499,12 +2499,12 @@ profile to the same log, as a `per-token` line that ends `auto-switch from
 <profile>`:
 
 ```
-2026-10-24T09:00:05Z cycle live=work work:s=100%,w=91% personal:s=100%,w=100% ryan-mistt-org:s=100%,w=100%
-2026-10-24T09:00:05Z per-token ryan-mistt-org: no measured plan login below 100%, 0 not measured; earliest reset 2026-10-24T14:00:00Z beyond overflow_wait; marked overflow tier 1; probe ok, no spend limit
-2026-10-24T09:00:05Z swap work->ryan-mistt-org live s=100% w=91% target s=100% w=100% reason=overflow-in
-2026-10-24T09:00:05Z overflow: on ryan-mistt-org; no measured plan login below 100%, next plan reset 2026-10-24T14:00:00Z
-2026-10-24T14:10:05Z swap ryan-mistt-org->personal live s=100% w=100% target s=0% w=62% reason=overflow-out
-2026-10-24T14:10:05Z overflow: off ryan-mistt-org; back on plan profile personal
+2026-10-24T09:00:05Z cycle live=work work:s=100%,w=91% personal:s=100%,w=100% login-aw:s=100%,w=100%
+2026-10-24T09:00:05Z per-token login-aw: no measured plan login below 100%, 0 not measured; earliest reset 2026-10-24T14:00:00Z beyond overflow_wait; marked overflow tier 1; probe ok, no spend limit
+2026-10-24T09:00:05Z swap work->login-aw live s=100% w=91% target s=100% w=100% reason=overflow-in
+2026-10-24T09:00:05Z overflow: on login-aw; no measured plan login below 100%, next plan reset 2026-10-24T14:00:00Z
+2026-10-24T14:10:05Z swap login-aw->personal live s=100% w=100% target s=0% w=62% reason=overflow-out
+2026-10-24T14:10:05Z overflow: off login-aw; back on plan profile personal
 ```
 
 To see only overflow moves:
@@ -2525,10 +2525,10 @@ rotate: running
 autostart: on (default)
 owner: none
 pid: 48213
-live: ryan-mistt-org
+live: login-aw
 last cycle: 2026-10-24T09:10:05Z stayed overflow=on
-overflow: ryan-mistt-org
-on overflow: yes (ryan-mistt-org)
+overflow: login-aw
+on overflow: yes (login-aw)
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -2536,9 +2536,9 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 profile, and the rotator's last cycle recorded `overflow=in` or
 `overflow=on`, meaning it found no plan capacity. If you put the overflow
 login in `~/.claude` yourself while a plan login still has capacity, the line
-reads `on overflow: no (ryan-mistt-org is overflow; plan capacity remains)`
+reads `on overflow: no (login-aw is overflow; plan capacity remains)`
 until the next cycle moves it out. After `amplihack profile switch
-ryan-mistt-org`, the line reads `on overflow: yes (ryan-mistt-org, held by
+login-aw`, the line reads `on overflow: yes (login-aw, held by
 switch)`: the hold keeps you on credits until `amplihack profile switch
 --none`. `status` runs no probe.
 
@@ -2546,12 +2546,12 @@ When the default pointer names an overflow profile, `status` adds a warning
 line:
 
 ```
-default: ryan-mistt-org (overflow; launches use it directly)
+default: login-aw (overflow; launches use it directly)
 ```
 
 `profile usage` marks the profile `overflow` and, when its login is in
 `~/.claude` and its own probe in that run shows the session or all-models
-weekly limit reached, ends with `running on overflow: ryan-mistt-org`. A live overflow
+weekly limit reached, ends with `running on overflow: login-aw`. A live overflow
 login that still has plan capacity is not on credits and gets no footer. While the
 rotator is on credits it reports capacity, so the no-capacity warning clears.
 The [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit) does not
@@ -2571,18 +2571,18 @@ next month, writes one ALERT, and moves to the next overflow profile, a plan
 profile, or nowhere:
 
 ```
-2026-10-24T11:20:05Z ALERT: overflow profile ryan-mistt-org hit its spend limit; blocked until 2026-11-01T00:00:00Z
+2026-10-24T11:20:05Z ALERT: overflow profile login-aw hit its spend limit; blocked until 2026-11-01T00:00:00Z
 ```
 
 It does not retry the profile on every cycle. After raising the spend limit
 or adding credits, lift the block:
 
 ```bash
-amplihack profile overflow clear ryan-mistt-org
+amplihack profile overflow clear login-aw
 ```
 
 ```
-overflow: cleared the spend block on ryan-mistt-org
+overflow: cleared the spend block on login-aw
 ```
 
 `clear` waits up to 10 seconds for a running cycle and otherwise fails with
@@ -2624,11 +2624,11 @@ launch.
 Then remove the mark:
 
 ```bash
-amplihack profile overflow remove ryan-mistt-org
+amplihack profile overflow remove login-aw
 ```
 
 ```
-overflow: removed ryan-mistt-org
+overflow: removed login-aw
 ```
 
 The next cycle treats the profile as a plan profile again. If its login is
@@ -2669,8 +2669,8 @@ To go back to an older binary:
 3. Remove each mark, then lift each block. `clear` works on a name that is
    no longer marked:
    ```bash
-   amplihack profile overflow remove ryan-mistt-org
-   amplihack profile overflow clear ryan-mistt-org
+   amplihack profile overflow remove login-aw
+   amplihack profile overflow clear login-aw
    ```
 4. Stop the rotator, then run one cycle by hand. With no marks left, the
    cycle records `last_cycle` without the `overflow` field:
@@ -2956,8 +2956,8 @@ on separate cycles. The tokens are used in memory only, in the request
 header; they are never printed, logged or stored.
 
 The examples below use the root `/home/you/.claude-profiles`, a ledger
-naming `ryan-ryansweet`, and a `/login` in `~/.claude` as the account of
-profile `ryan-mistt-org`, which also has its own login.
+naming `login-ay`, and a `/login` in `~/.claude` as the account of
+profile `login-aw`, which also has its own login.
 
 #### Right after a swap
 
@@ -2965,44 +2965,44 @@ For 10 minutes after a swap the rotator skips hand-change recovery,
 whatever `~/.claude.json` says. Normal swap authorization still requires
 trusted identity evidence. In
 [#1886](https://github.com/rysweet/amplihack-rs/issues/1886) the rotator
-swapped from `rssourcelabs` to `hharkness`, and two minutes later a running
-session still had `rssourcelabs` in `~/.claude.json`. An earlier release took
-that as a `/login` and moved `rssourcelabs`'s only login aside. Now the next
+swapped from `login-au` to `login-ah`, and two minutes later a running
+session still had `login-au` in `~/.claude.json`. An earlier release took
+that as a `/login` and moved `login-au`'s only login aside. Now the next
 cycles simply carry on:
 
 ```
-2026-11-03T04:50:10Z swap rssourcelabs->hharkness live s=91% w=40% target s=3% w=22% reason=threshold
-2026-11-03T04:52:10Z cycle live=hharkness hharkness:s=4%,w=22% rssourcelabs:s=91%,w=40%
+2026-11-03T04:50:10Z swap login-au->login-ah live s=91% w=40% target s=3% w=22% reason=threshold
+2026-11-03T04:52:10Z cycle live=login-ah login-ah:s=4%,w=22% login-au:s=91%,w=40%
 ```
 
-After 10 minutes, the server reports `hharkness`'s account for the login in
-`~/.claude`, which is the account recorded for `hharkness`, so nothing
-happens then either. On 3 November the same pattern hit `nnorth` and
-`mmorrison`, whose usage windows reset at the same times; because identity
+After 10 minutes, the server reports `login-ah`'s account for the login in
+`~/.claude`, which is the account recorded for `login-ah`, so nothing
+happens then either. On 3 November the same pattern hit `login-ao` and
+`login-an`, whose usage windows reset at the same times; because identity
 is now the server's account, a swap between those two goes ahead with no
 note and no ALERT.
 
 #### One profile answers the same
 
-The first cycle that finds `~/.claude` answering as `ryan-mistt-org` writes a
+The first cycle that finds `~/.claude` answering as `login-aw` writes a
 note and stops without swapping:
 
 ```
-2026-10-27T03:17:05Z note: ~/.claude holds the same account as profile ryan-mistt-org (ledger names ryan-ryansweet); nothing moved, the next cycle reads again
-2026-10-27T03:17:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no swap
+2026-10-27T03:17:05Z note: ~/.claude holds the same account as profile login-aw (ledger names login-ay); nothing moved, the next cycle reads again
+2026-10-27T03:17:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=login-ay); no swap
 ```
 
 On a later cycle, if the reading is the same, the rotator would keep the copy
-in `~/.claude` and move `ryan-mistt-org`'s copy to a backup. Here it does
-not: `ryan-ryansweet`'s only login was the one the `/login` replaced, and
-recording `ryan-mistt-org` as live would leave `ryan-ryansweet` with no login
+in `~/.claude` and move `login-aw`'s copy to a backup. Here it does
+not: `login-ay`'s only login was the one the `/login` replaced, and
+recording `login-aw` as live would leave `login-ay` with no login
 anywhere. The rotator refuses, leaves both logins where they are, and says
 what to do:
 
 ```
-2026-10-27T03:19:05Z ALERT: ~/.claude holds the same account as profile ryan-mistt-org on two readings (ledger names ryan-ryansweet), but ryan-ryansweet has no login of its own, so recording ryan-mistt-org would leave ryan-ryansweet with no login anywhere; nothing moved, no swap
-2026-10-27T03:19:05Z fix 1: if a /login in ~/.claude replaced ryan-ryansweet's login: close every claude session that uses ~/.claude, then run: mkdir -m 700 /home/you/.claude-profiles/.rejected-logins/manual-20261027T031905Z && mv -n /home/you/.claude-profiles/ryan-mistt-org/.credentials.json /home/you/.claude-profiles/.rejected-logins/manual-20261027T031905Z/ && rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json; then run: amplihack profile login ryan-ryansweet
-2026-10-27T03:19:05Z fix 2: if ryan-ryansweet and ryan-mistt-org are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles
+2026-10-27T03:19:05Z ALERT: ~/.claude holds the same account as profile login-aw on two readings (ledger names login-ay), but login-ay has no login of its own, so recording login-aw would leave login-ay with no login anywhere; nothing moved, no swap
+2026-10-27T03:19:05Z fix 1: if a /login in ~/.claude replaced login-ay's login: close every claude session that uses ~/.claude, then run: mkdir -m 700 /home/you/.claude-profiles/.rejected-logins/manual-20261027T031905Z && mv -n /home/you/.claude-profiles/login-aw/.credentials.json /home/you/.claude-profiles/.rejected-logins/manual-20261027T031905Z/ && rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json; then run: amplihack profile login login-ay
+2026-10-27T03:19:05Z fix 2: if login-ay and login-aw are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles
 ```
 
 The server reported one account for both logins, so this is not a
@@ -3010,20 +3010,20 @@ coincidence of reset times. If you ran `/login` in `~/.claude`, follow
 `fix 1`. If you did not, the two profiles hold one account: run
 `amplihack profile verify` and remove one of them.
 
-`amplihack profile login ryan-ryansweet` can run straight after `rm`; you do
-not need to run a rotate cycle first. With no ledger, it treats `ryan-ryansweet` as
-the live profile only if `~/.claude.json` still names `ryan-ryansweet`'s
-account. If it is refused with `profile 'ryan-ryansweet' is the rotator's
+`amplihack profile login login-ay` can run straight after `rm`; you do
+not need to run a rotate cycle first. With no ledger, it treats `login-ay` as
+the live profile only if `~/.claude.json` still names `login-ay`'s
+account. If it is refused with `profile 'login-ay' is the rotator's
 live profile`, a session rewrote that file before you closed it. Run plain
 `claude` without `/login` and quit it, so that it writes the account it
 holds; remove the ledger again if a cycle has rewritten it; then run
-`amplihack profile login ryan-ryansweet` again.
+`amplihack profile login login-ay` again.
 
-The rotator moves a copy itself only when `ryan-ryansweet` still has its own
+The rotator moves a copy itself only when `login-ay` still has its own
 login in its folder, so that no profile is left with none. Then the line is:
 
 ```
-2026-10-27T03:19:05Z recovered: ~/.claude and ryan-mistt-org held the same account; kept ~/.claude, moved ryan-mistt-org's copy to /home/you/.claude-profiles/.rejected-logins/rotate-ryan-mistt-org-20261027T031905Z/.credentials.json; recorded ryan-mistt-org as live
+2026-10-27T03:19:05Z recovered: ~/.claude and login-aw held the same account; kept ~/.claude, moved login-aw's copy to /home/you/.claude-profiles/.rejected-logins/rotate-login-aw-20261027T031905Z/.credentials.json; recorded login-aw as live
 ```
 
 The backup directory is `0700`. If that name is taken, `-2`, `-3` and so on
@@ -3032,10 +3032,10 @@ changed.
 
 Before that move, the rotator checks that:
 
-- no `claude` session is running on `ryan-mistt-org`, and the rotator can
+- no `claude` session is running on `login-aw`, and the rotator can
   see running sessions at all;
-- Claude is not refreshing its token in `~/.claude` or in `ryan-mistt-org`;
-- auto-switch has not lent `ryan-mistt-org`'s login to a session, and its
+- Claude is not refreshing its token in `~/.claude` or in `login-aw`;
+- auto-switch has not lent `login-aw`'s login to a session, and its
   directory does not host another account's login;
 - the profile's login is a private regular file with one link;
 - `~/.claude`, the profile and the profile root are on the same filesystem,
@@ -3048,8 +3048,8 @@ When a check fails, nothing moves and the cycle writes an ALERT and one
 `fix` line:
 
 ```
-2026-10-27T03:19:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); profile ryan-mistt-org holds the same account and has its own login; recovery refused: a claude session is running on ryan-mistt-org; no swap
-2026-10-27T03:19:05Z fix 1: close the claude sessions that use ryan-mistt-org; the next cycle retries
+2026-10-27T03:19:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=login-ay); profile login-aw holds the same account and has its own login; recovery refused: a claude session is running on login-aw; no swap
+2026-10-27T03:19:05Z fix 1: close the claude sessions that use login-aw; the next cycle retries
 ```
 
 Refusals, with the fix line written for each (`<dir>` is
@@ -3061,11 +3061,11 @@ Refusals, with the fix line written for each (`<dir>` is
 | `HOME is not a directory owned by you` | `make /home/you owned by you and run: chmod go-w /home/you` |
 | `~/.claude is not a private directory owned by you` | `make /home/you/.claude owned by you and run: chmod 700 /home/you/.claude` |
 | `profile root is owned by another user`, `profile root is writable by other users` | `make /home/you/.claude-profiles owned by you and run: chmod 700 /home/you/.claude-profiles` |
-| `a claude session is running on ryan-mistt-org` | `close the claude sessions that use ryan-mistt-org; the next cycle retries` |
-| `cannot see running sessions` | `close the claude sessions that use ryan-mistt-org, then run: mkdir -m 700 <dir> && mv -n /home/you/.claude-profiles/ryan-mistt-org/.credentials.json <dir>/` |
+| `a claude session is running on login-aw` | `close the claude sessions that use login-aw; the next cycle retries` |
+| `cannot see running sessions` | `close the claude sessions that use login-aw, then run: mkdir -m 700 <dir> && mv -n /home/you/.claude-profiles/login-aw/.credentials.json <dir>/` |
 | `Claude holds its refresh lock` | `wait; the next cycle retries` |
-| `ryan-mistt-org's login is lent out or it hosts another login` | `wait for the auto-switch session to end; the next cycle retries` |
-| `a login file is not a private regular file with one link`, `~/.claude and the profile root are on different devices`, `cannot create the backup directory: <error>`, `backup directory is not private: <path>`, `no free backup name` | `move ryan-mistt-org's copy by hand: mkdir -m 700 <dir> && mv -n /home/you/.claude-profiles/ryan-mistt-org/.credentials.json <dir>/` |
+| `login-aw's login is lent out or it hosts another login` | `wait for the auto-switch session to end; the next cycle retries` |
+| `a login file is not a private regular file with one link`, `~/.claude and the profile root are on different devices`, `cannot create the backup directory: <error>`, `backup directory is not private: <path>`, `no free backup name` | `move login-aw's copy by hand: mkdir -m 700 <dir> && mv -n /home/you/.claude-profiles/login-aw/.credentials.json <dir>/` |
 | `~/.claude changed during recovery` | `none needed; the next cycle retries` |
 
 #### No profile answers the same
@@ -3138,13 +3138,13 @@ amplihack profile verify
 ```
 
 ```
-~/.claude (live ffarmer) -> ffarmer@mistt.com: ok
-ffarmer -> no login
-mmorrison -> no login
-nnorth -> mmorrison@mistt.com: MISMATCH, recorded for mmorrison
+~/.claude (live login-af) -> user-af@example.com: ok
+login-af -> no login
+login-an -> no login
+login-ao -> user-an@example.com: MISMATCH, recorded for login-an
 ```
 
-Here `nnorth`'s folder holds `mmorrison`'s login, as the 3 November misfire
+Here `login-ao`'s folder holds `login-an`'s login, as the 3 November misfire
 left it. To correct a folder, run `amplihack profile login <name>` with the
 browser signed out of claude.ai or in a private window. Do not use the `--fix`
 flag until [#1960](https://github.com/rysweet/amplihack-rs/issues/1960) is
@@ -3160,7 +3160,7 @@ ownership evidence, and on a ledger written before login identities were kept
 it logs:
 
 ```
-note: no record for live profile ryan-mistt-personal: the ledger has no login identity; nothing moved; run: amplihack profile seed-record ryan-mistt-personal
+note: no record for live profile login-ax: the ledger has no login identity; nothing moved; run: amplihack profile seed-record login-ax
 ```
 
 Do this once, in this order:
@@ -3181,17 +3181,17 @@ Do this once, in this order:
 3. Preview the record. This writes nothing:
 
    ```bash
-   amplihack profile seed-record ryan-mistt-personal
+   amplihack profile seed-record login-ax
    ```
 
    ```
-   ryan-mistt-personal -> you@example.com, organization 00000000-0000-0000-0000-000000000000: no record; nothing written; run with --write to record it
+   login-ax -> you@example.com, organization 00000000-0000-0000-0000-000000000000: no record; nothing written; run with --write to record it
    ```
 
 4. Check that this is the right account and organization. Then write it:
 
    ```bash
-   amplihack profile seed-record ryan-mistt-personal --write
+   amplihack profile seed-record login-ax --write
    ```
 
 If step 3 refuses with
@@ -3204,7 +3204,7 @@ describes. Then run `amplihack profile login <name>` to give `<name>` a login of
 its own.
 
 The command moves no login and never overwrites a usable record. Two profiles
-that share an e-mail, such as `ryan-mistt-personal` and `ryan-mistt-org`, are
+that share an e-mail, such as `login-ax` and `login-aw`, are
 told apart by account uuid and organization. If they cannot be, the command
 refuses, and a rotate cycle's alert names both.
 
@@ -3250,9 +3250,9 @@ condition cannot establish which account the moving credential belongs to.
 `amplihack profile rotate status` shows the current note or ALERT lines:
 
 ```
-live: ryan-ryansweet
+live: login-ay
 last cycle: 2026-10-27T03:17:05Z alerted
-note: ~/.claude holds the same account as profile ryan-mistt-org (ledger names ryan-ryansweet); nothing moved, the next cycle reads again
+note: ~/.claude holds the same account as profile login-aw (ledger names login-ay); nothing moved, the next cycle reads again
 ```
 
 A profile that an earlier release recorded as having lost its login is
@@ -3260,7 +3260,7 @@ still reported on every cycle, and in `status` as a `warning:` line, until
 it is logged in again:
 
 ```
-2026-10-27T03:17:05Z ALERT: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet
+2026-10-27T03:17:05Z ALERT: profile login-ay has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login login-ay
 ```
 
 The rotator no longer adds profiles to that list, because it refuses any
@@ -3285,7 +3285,7 @@ it reports `would recover:` only when a real cycle has already recorded one
 for the same profile.
 
 ```
-would note: ~/.claude holds the same account as profile ryan-mistt-org (ledger names ryan-ryansweet); nothing moved, the next cycle reads again
+would note: ~/.claude holds the same account as profile login-aw (ledger names login-ay); nothing moved, the next cycle reads again
 ```
 
 ### Go back to an older amplihack
@@ -3365,10 +3365,10 @@ Check that the profile is detected as an API-key profile:
 
 ```
 $ amplihack profile kind list
-api-key         api-key       (detected: login file has no oauth login)
-ryan-mistt      subscription  (detected: oauth login)
-ryan-mistt-org  subscription  (detected: oauth login)
-ryan-ryansweet  subscription  (detected: oauth login)
+api-key   api-key       (detected: login file has no oauth login)
+login-av  subscription  (detected: oauth login)
+login-aw  subscription  (detected: oauth login)
+login-ay  subscription  (detected: oauth login)
 ```
 
 A profile with no `.credentials.json` at all shows
@@ -3443,7 +3443,7 @@ the reason before the swap:
 
 ```
 per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 10; login check passed (primaryApiKey set)
-swap iivanovich->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
+swap login-ai->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
 moved ~/.claude onto API key profile api-key (billed per token)
 ```
 
@@ -3451,7 +3451,7 @@ A plan login that was skipped as busy or failed its probe may have room, so
 it keeps the key out, and the rotator writes one ALERT naming it:
 
 ```
-ALERT: API key not used live=iivanovich: no measured plan login has room, but these were not measured and may have: ccapstone
+ALERT: API key not used live=login-ai: no measured plan login has room, but these were not measured and may have: login-ac
 ```
 
 A login in the `amplihack profile auto-switch exclude` list does not count,
@@ -3485,7 +3485,7 @@ to credits, which cost less than tokens. All three use
 `reason=overflow-out` and log:
 
 ```
-moved ~/.claude off API key profile api-key to ryan-mistt
+moved ~/.claude off API key profile api-key to login-av
 ```
 
 It never moves from a plan login to credits, or to the API key, while a
@@ -3494,7 +3494,7 @@ reading may have room, so it keeps auto-switch off the API key too, and
 auto-switch writes its own form of the ALERT:
 
 ```
-ALERT: API key not used session=work: no measured plan login has room, but these were not measured and may have: ccapstone; auto-switch from work
+ALERT: API key not used session=work: no measured plan login has room, but these were not measured and may have: login-ac; auto-switch from work
 ```
 
 `session=` names the account of the session that ran out, which is not the

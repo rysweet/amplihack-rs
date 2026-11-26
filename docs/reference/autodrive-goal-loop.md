@@ -129,7 +129,7 @@ The agent picks one. The word is used only to dispatch the mechanical step.
 | `wait` | Waits for an event: the checks at the head to complete (`gh pr checks <pr> --watch`, with `--required` when asked), or the owner's answer. |
 | `merge` | Merges with an allowed merge method and `--match-head-commit`. Authority comes only from the captured authorisation. Before it merges, guidance must have been read again after the decision, and every [required outcome](#required-outcomes) is checked by name. |
 | `continue` | Nothing mechanical; the next turn reads the live state again. The agent chooses it after it pushed, installed something or did a task step. |
-| `wait-owner` | Waits for the owner's answer: `amplihack recipe guidance wait` with no command. args: `owner`, `question`. |
+| `wait-owner` | Waits for the owner's answer: `amplihack recipe guidance wait` with no command. args: `owner`, `question`. Before the wait starts, the turn tool writes `waiting.json` in the run folder and one line in the run log; `amplihack recipe waiting` lists the run while it waits, and the record is removed when the wait returns (issue #3364). |
 | `handoff` | Posts one PR comment naming the owner, the decision and the evidence. The run ends. args: `owner`, `decision`, `text`. |
 | `ready` | Posts one PR comment that the PR is ready. The run ends. args: `text`, and `owner` when someone other than the operator decides. |
 | `stop` | The owner asked the run to stop. Posts the continuation note. The run ends as `stopped`. args: `owner`, `text`. |

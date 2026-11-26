@@ -938,7 +938,7 @@ fn the_table_keeps_its_header_and_ends_with_the_order_line() {
 /// row is as wide as before.
 #[test]
 fn bar_marks_add_the_spend_unless_it_is_n_a() {
-    let mut r = ok("mistt", Some((35.0, None)), Some((52.0, None)));
+    let mut r = ok("example-org", Some((35.0, None)), Some((52.0, None)));
     assert!(bar_marks(&r).is_empty());
     r.default = true;
     for (spend, mark) in [
@@ -951,7 +951,7 @@ fn bar_marks_add_the_spend_unless_it_is_n_a() {
         assert_eq!(bar_marks(&r), ["*", mark]);
         let out = render_bars(std::slice::from_ref(&r), &TimeView::Utc, false);
         assert!(
-            line_of(&out, "mistt").ends_with(&format!("* {mark}")),
+            line_of(&out, "example-org").ends_with(&format!("* {mark}")),
             "{out}"
         );
     }

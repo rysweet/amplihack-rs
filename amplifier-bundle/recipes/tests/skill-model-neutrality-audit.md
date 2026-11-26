@@ -189,7 +189,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | gherkin-expert | Pass | Yes |
 | github | Pass | No |
 | github-copilot-cli | Pass | No |
-| github-copilot-cli-expert | Pass | No |
 | github-copilot-sdk | Pass | No |
 | goal-seeking-agent-pattern | Pass | Yes |
 | historian-analyst | Pass | Yes |
@@ -259,6 +258,5 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | verus-expert | Pass | Yes |
 | work-delegator | Pass | Yes |
 | work-iq | Pass | No |
-| workiq-wsl | Pass | No |
 | workstream-coordinator | Pass | Yes |
 | xlsx | Pass | Yes |

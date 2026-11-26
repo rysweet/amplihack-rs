@@ -199,7 +199,6 @@ Gherkin scenarios map directly to test cases. TLA+ invariants map to property as
 
 | Agent                                                                    | Type        | Role                                                                              |
 | ------------------------------------------------------------------------ | ----------- | --------------------------------------------------------------------------------- |
-| gherkin-expert                                                           | Specialized | Writes Gherkin scenarios, applies BDD patterns, domain modeling through scenarios |
 | tla-plus-expert                                                          | Specialized | Writes TLA+ specs, model checking, applies Demirbas's 7 mental models             |
 | [prompt-writer](#) | Specialized | Tri-path judgment: decides when to use English, Gherkin, or TLA+                  |
 
@@ -217,7 +216,7 @@ You're implementing a rate limiter with sliding window, burst allowance, and per
 /gherkin-expert write rate limiter with sliding window, burst allowance, and per-client quotas
 ```
 
-The gherkin-expert agent produces a `.feature` file:
+The gherkin-expert skill produces a `.feature` file:
 
 ```gherkin
 Feature: Rate Limiter

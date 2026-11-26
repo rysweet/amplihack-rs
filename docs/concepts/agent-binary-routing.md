@@ -224,6 +224,8 @@ settings. They do not resolve per-binary script files.
 
 `amplihack-utils::llm_client::resolve_binary`, `claude_cli::get_claude_cli_path`, `knowledge_builder`, and `workflows::cascade` all call into the shared resolver. There is exactly one read implementation in Rust.
 
+`amplihack multitask` and the fleet reasoner follow the run's CLI too. With no valid `AMPLIHACK_DELEGATE`, a multitask workstream is delegated to `amplihack <active binary>` and started in that CLI's own prompt form (`-p` for `claude` and `copilot`, `exec` for `codex`, `run` for `amplifier`). With the default `auto` backend, the fleet reasoner uses its heuristic proposals when the active binary was set explicitly or observed from a live session and is not `claude`, and says so once; `amplihack fleet dry-run --backend claude` still asks for `claude`.
+
 ## Hook registration
 
 Installed settings register native hook commands such as:

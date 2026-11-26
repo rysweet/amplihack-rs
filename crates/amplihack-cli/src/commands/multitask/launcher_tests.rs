@@ -24,7 +24,89 @@ fn test_valid_delegates() {
     assert!(VALID_DELEGATES.contains(&"amplihack claude"));
     assert!(VALID_DELEGATES.contains(&"amplihack copilot"));
     assert!(VALID_DELEGATES.contains(&"amplihack amplifier"));
+    assert!(VALID_DELEGATES.contains(&"amplihack codex"));
     assert!(!VALID_DELEGATES.contains(&"rm -rf /"));
+}
+
+/// Issue #1983: every binary the resolver can name has a delegate, so a
+/// workstream never falls back to another CLI because its own is missing.
+#[test]
+fn every_allowlisted_binary_has_a_delegate() {
+    for binary in amplihack_utils::agent_binary::ALLOWED_BINARIES {
+        let delegate = format!("amplihack {binary}");
+        assert!(VALID_DELEGATES.contains(&delegate.as_str()), "{delegate}");
+    }
+    assert_eq!(
+        VALID_DELEGATES.len(),
+        amplihack_utils::agent_binary::ALLOWED_BINARIES.len()
+    );
+}
+
+/// Issue #1983: with no `AMPLIHACK_DELEGATE`, the delegate is the active agent
+/// binary, not a fixed `amplihack claude`.
+#[test]
+fn delegate_follows_the_active_agent_binary() {
+    use super::command_builder::delegate_for;
+    for binary in amplihack_utils::agent_binary::ALLOWED_BINARIES {
+        assert_eq!(delegate_for(None, binary), format!("amplihack {binary}"));
+    }
+}
+
+/// Issue #1983: `AMPLIHACK_DELEGATE='amplihack codex'` is an explicit choice
+/// and is honoured; an invalid value falls back to the active binary, not to
+/// claude.
+#[test]
+fn explicit_delegate_wins_and_an_invalid_one_falls_back_to_the_active_binary() {
+    use super::command_builder::delegate_for;
+    assert_eq!(
+        delegate_for(Some("amplihack codex"), "claude"),
+        "amplihack codex"
+    );
+    assert_eq!(
+        delegate_for(Some("amplihack claude"), "codex"),
+        "amplihack claude"
+    );
+    assert_eq!(delegate_for(Some("rm -rf /"), "codex"), "amplihack codex");
+    assert_eq!(delegate_for(Some(""), "codex"), "amplihack codex");
+}
+
+/// Issue #1983: classic mode starts each delegate in its own non-interactive
+/// form. Codex takes `exec` (its `-p` is `--profile`), and only Claude reads
+/// the `@TASK.md` file mention.
+#[test]
+fn classic_script_uses_each_delegates_prompt_form() {
+    use super::command_builder::classic_run_script;
+    let base = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let ws = test_workstream(base.path(), state.path());
+
+    let claude = classic_run_script(&ws, "amplihack claude", no_env, keep).unwrap();
+    assert!(
+        claude.contains("amplihack claude --subprocess-safe -- -p \"@TASK.md"),
+        "{claude}"
+    );
+
+    let codex = classic_run_script(&ws, "amplihack codex", no_env, keep).unwrap();
+    assert!(
+        codex.contains("amplihack codex --subprocess-safe -- exec \""),
+        "{codex}"
+    );
+    assert!(codex.contains("TASK.md"), "{codex}");
+    assert!(!codex.contains("@TASK.md"), "{codex}");
+
+    let amplifier = classic_run_script(&ws, "amplihack amplifier", no_env, keep).unwrap();
+    assert!(
+        amplifier.contains("amplihack amplifier --subprocess-safe -- run \""),
+        "{amplifier}"
+    );
+    assert!(!amplifier.contains("@TASK.md"), "{amplifier}");
+
+    let copilot = classic_run_script(&ws, "amplihack copilot", no_env, keep).unwrap();
+    assert!(
+        copilot.contains("amplihack copilot --subprocess-safe -- -p \""),
+        "{copilot}"
+    );
+    assert!(!copilot.contains("@TASK.md"), "{copilot}");
 }
 
 #[test]

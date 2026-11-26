@@ -715,12 +715,12 @@ amplihack profile usage
 ```
 
 ```
-PROFILE  WEEK             W-RESET      SESSION           S-RESET     STATE
-review   █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00 ok
-work     ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok                 *
-mistt    █████░░░░░  52%  11-05 09:00  ███░░░░░░░  35%   11-01 13:00 ok                 spend:not_probed
-team     █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50 session_exhausted
-scratch  not signed in (no credentials file)                         not_logged_in      spend:unknown
+PROFILE      WEEK             W-RESET      SESSION           S-RESET     STATE
+review       █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00 ok
+work         ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok                 *
+example-org  █████░░░░░  52%  11-05 09:00  ███░░░░░░░  35%   11-01 13:00 ok                 spend:not_probed
+team         █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50 session_exhausted
+scratch      not signed in (no credentials file)                         not_logged_in      spend:unknown
 times: Europe/London
 order: rotator pick (most room in the worse of session and week, then name)
 ```
@@ -762,13 +762,13 @@ Such rows are marked `(fallback)`, and with `--raw` a `note:` line on
 stderr says why the direct read failed. A profile marked as
 [overflow](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
 is always read with `/usage`, because only `/usage` shows a used-up spend
-limit. For any other account with usage credits turned on, such as `mistt`
+limit. For any other account with usage credits turned on, such as `example-org`
 above, the session and weekly figures still come from the direct read, no
 `claude` is started, and the row ends in `spend:not_probed` (the `SPEND`
 column with `--table`). To read the spend limit too, add `--spend`:
 
 ```bash
-amplihack profile usage --spend mistt
+amplihack profile usage --spend example-org
 ```
 
 That runs one `/usage` probe per such account, only to fill its spend
@@ -889,7 +889,7 @@ amplihack profile usage --json | jq -r '.[] | "\(.profile) \(.source)"'
 ```
 review direct
 work passive
-mistt direct
+example-org direct
 team direct
 scratch direct
 ```
@@ -944,10 +944,10 @@ marks the account `codex-pick`'s rule picks from these live readings
 can disagree):
 
 ```
-Codex accounts under /home/ryan/.codex-profiles
-ffarmer  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
-ggrant   signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
-jjones   not signed in  read 19:09:00
+Codex accounts under /home/you/.codex-profiles
+login-af  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
+login-ag  signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+mjones    not signed in  read 19:09:00
 ```
 
 The Codex block is printed last. The Claude rows and the capacity summary
@@ -964,7 +964,7 @@ amplihack profile usage --summary-json | jq -r '.codex[] | select(.next_choice) 
 ```
 
 ```
-ggrant
+login-ag
 ```
 
 See [Codex accounts](../reference/profile-command.md#codex-accounts) for
@@ -981,15 +981,15 @@ on for that account. If you did not
 expect that, run the profile with `--raw` (here with `--spend` as well):
 
 ```bash
-amplihack profile usage --raw --spend mistt
+amplihack profile usage --raw --spend example-org
 ```
 
 Two `note:` lines on stderr describe what the usage endpoint sent in its
 `extra_usage` field:
 
 ```
-note: profile "mistt": direct read gave usage credits on; windows direct, spend from claude
-note: profile "mistt": extra_usage: object; keys: currency, is_enabled, monthly_limit, org_id, used_credits; is_enabled: bool true
+note: profile "example-org": direct read gave usage credits on; windows direct, spend from claude
+note: profile "example-org": extra_usage: object; keys: currency, is_enabled, monthly_limit, org_id, used_credits; is_enabled: bool true
 ```
 
 The second line lists the key names and shows `is_enabled` with its JSON
@@ -1215,7 +1215,7 @@ by `profile login`, `profile usage`, `auto-switch status`, auto-switch swaps
 and the rotator. No credentials file is read to decide it, and the values
 are never printed.
 
-For example, profiles `ryan-mistt-org` and `ryan-mistt-personal` share a user
+For example, profiles `login-aw` and `login-ax` share a user
 but have different organizations. They are two accounts, and no command
 warns about them.
 
@@ -1268,7 +1268,7 @@ When the login is accepted and the profile had a previous login, that login
 is kept too:
 
 ```
-note: the previous login of profile 'work' was moved to /home/ryan/.amplihack/claude-profiles/.rejected-logins/work-20261020T171502Z-replaced
+note: the previous login of profile 'work' was moved to /home/you/.amplihack/claude-profiles/.rejected-logins/work-20261020T171502Z-replaced
 ```
 
 If Claude exits with an error, or you press Ctrl-C, the previous login is
@@ -1394,7 +1394,7 @@ matches its own record is never named. When `~/.claude` is the one off its
 record, the fix is a `/login` there rather than `profile login`:
 
 ```
-note: profiles '~/.claude' and 'bbuck' are signed in to the same account and organization (duplicate login); the login in ~/.claude is not the account recorded for profile 'work'; fix: run plain 'claude' and '/login' to the account 'work' is meant for, with the browser signed out of claude.ai or in a private window.
+note: profiles '~/.claude' and 'login-ab' are signed in to the same account and organization (duplicate login); the login in ~/.claude is not the account recorded for profile 'work'; fix: run plain 'claude' and '/login' to the account 'work' is meant for, with the browser signed out of claude.ai or in a private window.
 ```
 
 The rotator refuses to swap in the same state, with the same reason. The
@@ -1411,7 +1411,7 @@ another organization counting as another account, and print one line for
 each that differs:
 
 ```
-warning: profile 'bbuck' holds a login that is not the account recorded for it; fix: run 'amplihack profile login bbuck' with the browser signed out of claude.ai or in a private window.
+warning: profile 'login-ab' holds a login that is not the account recorded for it; fix: run 'amplihack profile login login-ab' with the browser signed out of claude.ai or in a private window.
 ```
 
 ## Switch accounts automatically
@@ -1454,7 +1454,7 @@ amplihack profile auto-switch install
 ```
 
 ```
-root: /home/ryan/.claude-profiles
+root: /home/you/.claude-profiles
 installed  personal (no previous status line)
 unchanged  review
 installed  work     (wrapped existing status line)
@@ -1479,7 +1479,7 @@ amplihack profile auto-switch repair
 ```
 
 ```
-root: /home/ryan/.claude-profiles
+root: /home/you/.claude-profiles
 unchanged  personal
 repaired   review   (wrapper pointed at a different binary)
 unchanged  work
@@ -1544,7 +1544,7 @@ amplihack profile auto-switch status
 ```
 
 ```
-root: /home/ryan/.claude-profiles
+root: /home/you/.claude-profiles
 switch: on (file)
 autostart: on (default)
 threshold: 90%
@@ -1942,9 +1942,9 @@ file. The full rules are in
 
 ```
 $ amplihack profile kind list
-api-key         api-key       (detected: login file has no oauth login)
-ryan-mistt      subscription  (detected: oauth login)
-ryan-ryansweet  subscription  (detected: oauth login)
+api-key   api-key       (detected: login file has no oauth login)
+login-av  subscription  (detected: oauth login)
+login-ay  subscription  (detected: oauth login)
 ```
 
 `amplihack profile kind set <name> <subscription|api-key|auto>` overrides a
@@ -1966,7 +1966,7 @@ note: api-key is billed per token; it is used only when every plan login is meas
 
 ```
 $ amplihack profile overflow list
-ryan-mistt-org  tier 1  marked
+login-aw  tier 1  marked
 api-key  api-key tier  not marked (not used)
 ```
 

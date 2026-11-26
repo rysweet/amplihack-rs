@@ -3,7 +3,7 @@
 # failed a development run whose PR had been opened by an agent step rather
 # than by the publish step.
 #
-# The incident (mistt-ui-platform #47): pr_publish_result.pr_url was empty, so
+# The incident (repo-h #47): pr_publish_result.pr_url was empty, so
 # workflow_final_status.sh never asked GitHub whether the branch already had an
 # open PR. It reported FAILED_MISSING_TERMINAL_EVIDENCE and exited 1 while a
 # live PR for the run's own branch sat open.
@@ -854,7 +854,7 @@ assert_no_lookup "16-1561-empty-base-stale-nested-worktree: base \"\" + stale ne
 assert_unchanged_failure "16-1561-empty-base-stale-nested-worktree-a: base \"\" + stale nested worktree -> unchanged failure"
 
 # --- 17. issue #1679: no recorded outputs at all -----------------------------
-# jamestown #926: step-22b failed with missing_evidence=implementation_completed,
+# repo-b #926: step-22b failed with missing_evidence=implementation_completed,
 # publish_state_reached,... and observed_phases=unknown while the run's PR was
 # open, clean and pushed at the worktree's HEAD. Reproduce that state through
 # step-22b's own command: no implementation, verification or publish outputs,

@@ -164,7 +164,7 @@ CLAUDE
 # ── One case ────────────────────────────────────────────────────────────────
 
 TIMED_WAIT_SCREEN='Usage limit reached · Continuing automatically at 1:50am'
-SHELL_SCREEN='ryan@candide:~/src/amplihack-rs$ '
+SHELL_SCREEN='you@host-a:~/src/amplihack-rs$ '
 
 write_standin_tmux() {
   local w=$1

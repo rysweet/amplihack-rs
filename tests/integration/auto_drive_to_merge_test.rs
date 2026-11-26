@@ -1282,7 +1282,7 @@ fn autodrive_gadugi_required_follows_the_qa_team_table() {
         (&["a/Cargo.toml"], None, "rust-cli", "false"),
         (&["a/Cargo.toml", "b/Cargo.toml"], None, "unknown", "false"),
         (&["target/Cargo.toml"], None, "unknown", "false"),
-        // #1516: a root manifest wins over a nested crate (jamestown shape).
+        // #1516: a root manifest wins over a nested crate (repo-b shape).
         (
             &["pyproject.toml", "grid-encode-decode/Cargo.toml"],
             None,

@@ -498,7 +498,6 @@ Security-focused code auditing without modification capabilities.
 
 ❌ `DataTransformer` (not kebab-case)
 ❌ `data_transformer` (underscore not allowed)
-❌ `dt` (too short, min 3 chars)
 ❌ `data transformer` (space not allowed)
 ❌ `ThisIsWayTooLongOfANameForASkillAndShouldBeRejected` (>64 chars)
 
@@ -634,10 +633,6 @@ Expected: Error - "Name must be kebab-case"
 # Test invalid type
 /amplihack:skill-builder data-tool invalid "Description"
 Expected: Error - "Type must be: skill, agent, command, scenario"
-
-# Test short description
-/amplihack:skill-builder data-tool skill "Short"
-Expected: Warning - "Description too short (min 10 chars)"
 
 # Test long description
 /amplihack:skill-builder data-tool skill "..."  # 1500 chars
@@ -1026,7 +1021,6 @@ Showing how a skill evolves:
 ---
 name: experimental-parser
 description: Parses log files (experimental)
-maturity: experimental
 ---
 
 # Log Parser (Experimental)
@@ -1044,7 +1038,6 @@ Basic log file parsing and analysis.
 ---
 name: log-parser
 description: Parses system logs (Apache, nginx, syslog) and extracts error patterns
-maturity: beta
 ---
 
 # Log Parser
@@ -1062,8 +1055,8 @@ Production-ready log parsing with error pattern detection.
 ---
 name: log-analyzer
 description: Comprehensive log analysis for Apache, nginx, syslog formats with error detection, pattern recognition, and anomaly identification
-maturity: stable
-version: 2.0.0
+metadata:
+  version: 2.0.0
 ---
 
 # Log Analyzer

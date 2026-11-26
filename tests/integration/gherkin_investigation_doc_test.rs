@@ -157,13 +157,3 @@ fn gherkin_skill_definition_exists() {
          removing it would break the gherkin-expert capability (see #434)"
     );
 }
-
-#[test]
-fn gherkin_agent_definition_exists() {
-    let path = workspace_root().join("amplifier-bundle/agents/specialized/gherkin-expert.md");
-    assert!(
-        path.exists(),
-        "amplifier-bundle/agents/specialized/gherkin-expert.md must exist — \
-         removing it would break the gherkin-expert capability (see #434)"
-    );
-}

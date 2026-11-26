@@ -216,7 +216,7 @@ fn a_clock_far_behind_the_reading_does_not_overflow() {
 
 #[test]
 fn every_swap_chosen_by_reading_is_gated_and_overflow_in_is_not() {
-    let to = n("ggrant");
+    let to = n("login-ag");
     for reason in [
         Reason::Threshold,
         Reason::Upgrade,
@@ -243,39 +243,39 @@ fn every_swap_chosen_by_reading_is_gated_and_overflow_in_is_not() {
 
 #[test]
 fn the_reread_lines_hold_only_the_name_and_whole_percentages() {
-    let g = n("ggrant");
+    let g = n("login-ag");
     assert_eq!(
         fresh_msg::stale(
             &g,
             &Shown::of(&rd(11.4, 95.2, Some(T - 60))),
             &Shown::of(&exh(43.0, 100.0))
         ),
-        "reread: ggrant reading stale s=11% w=95%; fresh s=43% w=100%"
+        "reread: login-ag reading stale s=11% w=95%; fresh s=43% w=100%"
     );
     assert_eq!(
         fresh_msg::failed(&g),
-        "reread: ggrant failed; treated as unknown"
+        "reread: login-ag failed; treated as unknown"
     );
     assert_eq!(
         fresh_msg::limit(&g),
-        "reread: ggrant limit reached; treated as unknown"
+        "reread: login-ag limit reached; treated as unknown"
     );
     assert_eq!(
         fresh_msg::time_limit(&g),
-        "reread: ggrant time limit reached; treated as unknown"
+        "reread: login-ag time limit reached; treated as unknown"
     );
 }
 
 #[test]
 fn the_damp_lines_are_fixed_text() {
-    let g = n("ggrant");
+    let g = n("login-ag");
     assert_eq!(
         fresh_msg::still_damped(&g),
-        "damp: ggrant swapped away exhausted; no later reading shows room"
+        "damp: login-ag swapped away exhausted; no later reading shows room"
     );
     assert_eq!(
         fresh_msg::lifted(&g),
-        "damp: ggrant later reading shows room; swap-back allowed"
+        "damp: login-ag later reading shows room; swap-back allowed"
     );
 }
 
@@ -312,7 +312,7 @@ fn room_is_below_both_thresholds_and_never_for_an_unknown_reading() {
 fn valid_drops_bad_names_and_impossible_times() {
     let now = T;
     let mut m = BTreeMap::new();
-    m.insert("ggrant".to_string(), now - 60);
+    m.insert("login-ag".to_string(), now - 60);
     m.insert("bad name".to_string(), now - 60);
     m.insert("../etc".to_string(), now - 60);
     m.insert(String::new(), now - 60);
@@ -322,7 +322,7 @@ fn valid_drops_bad_names_and_impossible_times() {
     m.insert("skew".to_string(), now + MAX_READING_AGE_SECS);
     let got = swap_back::valid(m, now);
     let keys: Vec<&str> = got.keys().map(String::as_str).collect();
-    assert_eq!(keys, ["ggrant", "skew"]);
+    assert_eq!(keys, ["login-ag", "skew"]);
 }
 
 #[test]
@@ -374,20 +374,20 @@ fn the_ledger_loads_damping_and_drops_bad_entries_rather_than_failing() {
     let e = env();
     let t = now();
     let mut l = RotateLedger::default();
-    l.swapped_away.insert("ggrant".into(), t - 60);
+    l.swapped_away.insert("login-ag".into(), t - 60);
     l.swapped_away.insert("bad name".into(), t - 60);
     l.swapped_away.insert("future".into(), t + 10_000);
     e.rs.save_ledger(&l).unwrap();
     let got = e.rs.load_ledger().unwrap().expect("a ledger");
     let keys: Vec<&str> = got.swapped_away.keys().map(String::as_str).collect();
-    assert_eq!(keys, ["ggrant"]);
-    assert_eq!(got.swapped_away["ggrant"], t - 60);
+    assert_eq!(keys, ["login-ag"]);
+    assert_eq!(got.swapped_away["login-ag"], t - 60);
 }
 
 #[test]
 fn an_older_reader_never_sees_the_damping_map() {
     let mut l = RotateLedger::default();
-    l.swapped_away.insert("ggrant".into(), T);
+    l.swapped_away.insert("login-ag".into(), T);
     assert!(for_older_readers(&l, true).swapped_away.is_empty());
     assert_eq!(for_older_readers(&l, false).swapped_away.len(), 1);
 }

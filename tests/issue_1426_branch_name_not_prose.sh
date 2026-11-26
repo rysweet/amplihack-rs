@@ -8,12 +8,12 @@
 #     TASK_SLUG=$(printf '%s' "$TASK_DESC" | tr … | cut -c1-50 …)
 #     BRANCH_NAME="${BRANCH_PREFIX}/issue-${ISSUE_NUMBER}-${TASK_SLUG}"
 #
-# A task whose opening line was `Repository: /Users/ryan/src/mistt-qa/ws/142/
-# jamestown (GitHub mistt-repo/jamestown).` produced
+# A task whose opening line was `Repository: /Users/you/src/repo-g/ws/142/
+# repo-b (GitHub example-org/repo-b).` produced
 #
-#     feat/issue-142-repository-usersryansrcmistt-qaws142jamestown-gith
+#     feat/issue-142-repository-usersyousrcrepo-gws142repo-b-github-exa
 #
-# — path separators stripped, cut mid-word at "gith" — created as a SECOND
+# — path separators stripped, cut mid-word at "exa" — created as a SECOND
 # branch beside `fix/142-band-edge-previous-slice`, which the very same task had
 # pinned and told the run not to branch away from. The same shape once produced
 # `feat/issue-1277-skip-workflow-launch-this-agent-is-already-executi`.
@@ -87,7 +87,7 @@ pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf '  PASS[%s]: %b\n' "$1" "$2"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf '  FAIL[%s]: %b\n' "$1" "$2" >&2; }
 
 # --- The incident's task description ----------------------------------------
-INCIDENT_PREAMBLE='Repository: /Users/ryan/src/mistt-qa/ws/142/jamestown (GitHub mistt-repo/jamestown).
+INCIDENT_PREAMBLE='Repository: /Users/you/src/repo-g/ws/142/repo-b (GitHub example-org/repo-b).
 
 Fix the band edge so the previous slice is used.'
 
@@ -319,7 +319,12 @@ else
     fail "B2-issue-keyed" "rc=${RUN_RC} branch='${DERIVED}'\nstderr:\n${RUN_ERR}"
 fi
 
-if [[ "${DERIVED}" != *usersryan* && "${DERIVED}" != *jamestown* && "${DERIVED}" != *mistt* ]]; then
+# The generic names have two parts, so one part on its own is rejected too:
+# `example` anywhere, and `repo` or `org` as a whole piece of the ref
+# (`repository` is a word of the task and stays allowed). B5 rejects the
+# one-letter parts `b` and `g`.
+if [[ "${DERIVED}" != *usersyou* && "${DERIVED}" != *repo-b* && "${DERIVED}" != *example* && "${DERIVED}" != *repo-g* \
+      && "-${DERIVED//\//-}-" != *-repo-* && "-${DERIVED//\//-}-" != *-org-* ]]; then
     pass "B3-no-paths" "the filesystem path in the task did not leak into the ref"
 else
     fail "B3-no-paths" "path fragments leaked into the branch name: '${DERIVED}'"
@@ -333,12 +338,16 @@ else
 fi
 
 # Word-boundary truncation: every hyphen-separated piece of the tail must be a
-# WHOLE word of the task description, never a fragment such as "gith".
+# WHOLE word of the task description, never a fragment such as "exa".
+# One-letter words do not count: a one-letter piece is what a cut after the
+# first letter leaves (the "b" of "band"), and the task's `repo-b` and `repo-g`
+# split into one-letter words that would otherwise let such a piece through.
 BAD_WORD=""
 LOWER_TASK="$(printf '%s' "${INCIDENT_PREAMBLE}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' ' ')"
 for piece in ${TAIL//-/ }; do
     FOUND=0
     for word in ${LOWER_TASK}; do
+        (( ${#word} > 1 )) || continue
         [[ "${word}" == "${piece}" ]] && { FOUND=1; break; }
     done
     (( FOUND )) || BAD_WORD="${piece}"
@@ -422,7 +431,7 @@ fi
 
 # --- C4: an explicitly named branch that does NOT exist is created verbatim --
 REPO_B="$(build_repo b)"
-run_step "${REPO_B}" 143 "Repository: /Users/ryan/src/mistt-qa/ws/143/jamestown (GitHub mistt-repo/jamestown).
+run_step "${REPO_B}" 143 "Repository: /Users/you/src/repo-g/ws/143/repo-b (GitHub example-org/repo-b).
 
 Branch: fix/143-brand-new-branch"
 C4_BRANCH="$(json_field "${RUN_JSON}" branch_name)"
@@ -444,7 +453,7 @@ else
     fail "C5-issue-keyed" "rc=${RUN_RC} branch='${C5_BRANCH}'\nstderr:\n${RUN_ERR}"
 fi
 
-if [[ "${C5_BRANCH}" != *usersryan* && "${C5_BRANCH}" != *jamestown* ]]; then
+if [[ "${C5_BRANCH}" != *usersyou* && "${C5_BRANCH}" != *repo-b* && "-${C5_BRANCH//\//-}-" != *-repo-* ]]; then
     pass "C6-no-path-leak" "no filesystem path leaked into the derived branch"
 else
     fail "C6-no-path-leak" "derived branch carries the task's path: ${C5_BRANCH}"
@@ -565,7 +574,7 @@ fi
 
 # The half of #1426 that IS won even while refusing: no second, prose-derived
 # branch is invented alongside the one the task pinned. On pre-fix main this is
-# precisely where `feat/issue-142-repository-usersryansrcmistt-qaws142jamestown-gith`
+# precisely where `feat/issue-142-repository-usersyousrcrepo-gws142repo-b-github-exa`
 # came from.
 E2_COMPETING="$(git -C "${REPO_E2}" for-each-ref --format='%(refname:short)' 'refs/heads/feat/*')"
 if [[ -z "${E2_COMPETING}" ]]; then

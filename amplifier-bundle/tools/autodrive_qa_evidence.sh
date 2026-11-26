@@ -37,12 +37,17 @@
 #                          leaves the change set unknown, never guessed at.
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
+# The suite commands get a private TMPDIR, TMP and TEMP and lose recipe
+# selectors (#1923); the caller's CARGO_TARGET_DIR is kept unless it has a
+# framework ancestor outside the checkout. A scratch that cannot be had or
+# removed is named in qa_summary, and the record is still published.
 # Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE
 # itself, never a sibling path, so step-00d's hash of that path stays a tamper
 # check on what was measured. Exit 0 whenever a record was produced, PASS or
-# not; exit 1 when REPO_PATH, a temporary file or the helpers beside this file
-# are unavailable, so no record exists. Executed, never sourced.
-set -uo pipefail
+# not; exit 1 when REPO_PATH or the helpers beside this file are unavailable,
+# so no record exists. Executed, never sourced.
+# Switch off options a caller exported in SHELLOPTS (allexport, noclobber, -e, -v, -x).
+set +aCevx; set -uo pipefail
 # This file's own directory, found before the cd below (BASH_SOURCE may be
 # relative); without the helpers there, no evidence. An exported CDPATH would
 # make a relative `cd` run the suite outside the repository (#1516).
@@ -174,19 +179,62 @@ else
     fi
   fi
 fi
-LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
+# Only suite commands are isolated (#1923): TMPDIR, TMP and TEMP name a scratch
+# allocated under /tmp or /var/tmp; without one, no suite runs (qa-command-missing).
+QA_TMP=""; QA_ERR=""; QA_LEFT=""; QA_BASE=""; QA_DROP=""; LOG=""
+qa_framework_free() { # <physical path>: no framework marker at it or above it
+  local d="$1" m
+  while :; do
+    for m in .claude src/amplihack/.claude amplifier-bundle; do { [ -e "$d/$m" ] || [ -L "$d/$m" ]; } && return 1; done
+    [ -n "$d" ] && [ "$d" != / ] || return 0; d="${d%/*}"
+  done
+}
+qa_clean_path() { # <existing dir>: outside the checkout and framework-free
+  local d; d="$(cd -- "$1" 2>/dev/null && pwd -P)" && [ -n "$d" ] || return 1
+  case "$d/" in "$ROOT/"*) return 1 ;; esac; qa_framework_free "$d"
+}
+qa_cleanup() { [ -z "$QA_TMP" ] || [ ! -d "$QA_TMP" ] || [ -L "$QA_TMP" ] || rm -rf -- "$QA_TMP" || return 1; QA_TMP=""; }
+trap 'qa_cleanup || echo "WARNING: QA scratch not removed: $QA_TMP" >&2' EXIT
+trap 'exit 1' INT TERM
+for d in /tmp /var/tmp; do qa_clean_path "$d" && { QA_BASE="$(cd -- "$d" && pwd -P)"; break; }; done
+if [ -z "$QA_BASE" ]; then QA_ERR="no QA scratch base without framework ancestry under /tmp or /var/tmp"
+elif ! QA_TMP="$(mktemp -d "$QA_BASE/autodrive-qa.XXXXXX")" || [ -z "$QA_TMP" ]; then QA_TMP=""; QA_ERR="cannot allocate QA scratch under $QA_BASE"
+elif ! qa_clean_path "$QA_TMP"; then QA_ERR="QA scratch has framework ancestry or lies in the checkout"; qa_cleanup || QA_LEFT="$QA_TMP"
+elif ! LOG="$(mktemp "$QA_TMP/autodrive-qa-XXXXXX")"; then LOG=""; QA_ERR="cannot create a QA log in the scratch"; fi
+[ -z "$QA_ERR" ] || { echo "ERROR: ${QA_ERR}; no suite command runs" >&2; cause "$(printf '%s' "$QA_ERR" | san | ascii)"; }
+# The build cache stays the caller's, unless its target has a framework ancestor
+# outside the checkout or cannot be placed; cargo then uses the project's own.
+for v in CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR; do
+  [ -n "${!v+x}" ] || continue; t="${!v}"
+  case "$t" in /*) case "$t/" in */./*|*/../*) t="" ;; esac ;; *) t="" ;; esac
+  [ -z "$t" ] || { while [ -n "$t" ] && [ ! -d "$t" ]; do t="${t%/*}"; done; t="$(cd -- "${t:-/}" 2>/dev/null && pwd -P)" || t=""; }
+  [ -n "$t" ] && { case "$t/" in "$ROOT/"*) ;; *) qa_framework_free "$t" ;; esac; } && continue
+  QA_DROP="$QA_DROP $v"; echo "INFO: $v is withheld from the suite: a framework ancestor, or it cannot be placed" >&2
+done
+qa_child() (
+  # Selectors go by namespace: a new one belongs in AMPLIHACK_*, AUTODRIVE_* or
+  # RECIPE_*, or it reaches the suite. Tool and build settings stay.
+  while IFS= read -r v; do
+    case "$v" in AMPLIHACK_*|AUTODRIVE_*|RECIPE_*|REPO_PATH|BASH_ENV|ENV|ZDOTDIR|CDPATH|GLOBIGNORE) unset "$v" || exit 1 ;; esac
+  done < <(compgen -e)
+  while IFS= read -r v; do unset -f "$v" || exit 1; done < <(compgen -A function)
+  for v in $QA_DROP; do unset "$v" || exit 1; done
+  export -n SHELLOPTS BASHOPTS QA_TMP; export TMPDIR="$QA_TMP" TMP="$QA_TMP" TEMP="$QA_TMP"
+  "$@"
+)
 CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
 if [ "${#TEXTS[@]}" -eq 0 ] && [ -z "${QUNRES}${CFGBAD}" ]; then
   S_MISSING="true"; [ -n "$NOSCOPE" ] || cause "no repository test command for repository type ${TYPE}"
 fi
 i=0
+[ -z "$QA_ERR" ] || { i="${#TEXTS[@]}"; for text in "${TEXTS[@]}"; do CMDTEXT="${CMDTEXT}${CMDTEXT:+; }${text}"; done; }
 while [ "$i" -lt "${#TEXTS[@]}" ]; do
   kind="${KINDS[$i]}"; text="${TEXTS[$i]}"; i=$((i + 1))
   CMDTEXT="${CMDTEXT}${CMDTEXT:+; }${text}"
   if [ "$kind" = "entry" ]; then
     # Its own process from the repository root: a `cd` in one entry
     # never reaches the next, and entries are never joined or sourced.
-    ( cd -- "$ROOT" && bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
+    ( cd -- "$ROOT" && qa_child bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
     rc=$?
   else
     dir="$QA_DIR"
@@ -204,13 +252,13 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
     # `.venv/bin/pytest` on PATH is used as it is. `./` keeps a relative `-`
     # from meaning $OLDPWD. No timeout: a suite is never cut off mid-run.
     case "$dir" in /*) ;; *) dir="./$dir" ;; esac
-    if ! ( cd -- "$dir" 2>/dev/null && { command -v -- "$first" >/dev/null 2>&1 \
+    if ! ( cd -- "$dir" 2>/dev/null && { qa_child command -v -- "$first" >/dev/null 2>&1 \
            || { [ "$kind" = "word" ] && [ -x "./${first}" ]; }; } ); then
       S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed"
       continue
     fi
     # shellcheck disable=SC2086
-    ( set -f; cd -- "$dir" && $text ) >>"$LOG" 2>&1 </dev/null
+    ( set -f; cd -- "$dir" && qa_child $text ) >>"$LOG" 2>&1 </dev/null
     rc=$?
   fi
   RAN=$((RAN + 1))
@@ -219,9 +267,7 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
 done
 [ "$S_FAILED" = "true" ] && cause "repository test failure"
 RC=""; [ "$RAN" -gt 0 ] && RC="${FIRST_NZ:-0}"
-TAIL="$(tail -n 5 "$LOG" | san | ascii | cut -c1-300)"
-tail -n 60 "$LOG" >&2 || true
-rm -f "$LOG"
+TAIL=""; [ -z "$LOG" ] || { TAIL="$(tail -n 5 "$LOG" | san | ascii | cut -c1-300)"; tail -n 60 "$LOG" >&2; rm -f "$LOG"; }
 # --- the scenario directory ------------------------------------------
 # Consulted only where gadugi is required. AUTODRIVE_QA_SCENARIO_DIR comes from
 # the environment only; without it the directory is the first of tests/agentic,
@@ -309,6 +355,7 @@ pick() { [ -n "$REASON" ] || { REASON="$1"; STATUS="$2"; }; }
 [ -n "$NOSCOPE" ] && pick "qa-command-missing" BLOCKED
 [ -n "$QUNRES" ] && pick "qa-unresolved" QA_UNRESOLVED
 [ -n "$CFGBAD" ] && pick "qa-config-invalid" BLOCKED
+[ -n "$QA_ERR" ] && pick "qa-command-missing" BLOCKED
 [ "$S_FAILED" = "true" ] && pick "qa-command-failed" FAIL
 [ "$G_STATUS" = "NO_SCENARIOS" ] && pick "no-scenarios" FAIL
 [ "$S_MISSING" = "true" ] && pick "qa-command-missing" BLOCKED
@@ -322,6 +369,8 @@ if [ -z "$REASON" ] && { [ "$RAN" -eq 0 ] || [ "$G_DONE" != "true" ]; }; then
   echo "ERROR: nothing failed by name, yet the measurement is incomplete (suite commands run=${RAN}, gadugi=${G_STATUS}); recording it as incomplete so the judgement sees a fact rather than a pass." >&2
   pick "qa-command-missing" BLOCKED
 fi
+qa_cleanup || { QA_LEFT="$QA_TMP"; QA_TMP=""; }
+[ -z "$QA_LEFT" ] || { echo "WARNING: QA scratch not removed: $QA_LEFT; the record names it" >&2; cause "QA scratch not removed: $(printf '%s' "$QA_LEFT" | san | ascii | cut -c1-200)"; }
 SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san | ascii)"
 # The evidence format: every field a string, so a reader never has to guess a type.
 F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_dir":"%s","qa_command":"%s",'

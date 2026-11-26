@@ -690,10 +690,10 @@ fn docs_quote_the_record_warning_and_compare_the_organization() {
     let name = |s: &str| super::name::ProfileName::parse(s).unwrap();
     let line = format!(
         "warning: {}",
-        record_warning(&Holder::Profile(name("bbuck")))
+        record_warning(&Holder::Profile(name("login-ab")))
     );
     assert!(HOWTO.contains(&line), "how-to is missing {line:?}");
-    let generic = line.replace("bbuck", "<name>");
+    let generic = line.replace("login-ab", "<name>");
     assert!(
         REFERENCE.contains(&generic),
         "reference is missing {generic:?}"
