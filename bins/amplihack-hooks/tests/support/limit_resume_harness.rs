@@ -232,15 +232,10 @@ impl Rig {
         } else {
             String::new()
         };
-        // Only built-ins: the script's `PATH` is its own directory. The record
-        // line is built first and appended with one `printf`, so concurrent
-        // calls each append a whole line. Writing one argument at a time let
-        // two calls interleave their arguments within a line.
+        // Only built-ins: the script's `PATH` is its own directory.
         let script = format!(
             "#!/bin/sh\n\
-             line=''\n\
-             for a in \"$@\"; do line=\"$line[$a]\"; done\n\
-             printf '%s\\n' \"$line\" >> '{record}'\n\
+             {{ for a in \"$@\"; do printf '[%s]' \"$a\"; done; printf '\\n'; }} >> '{record}'\n\
              case \"$1\" in\n\
              display-message)\n{barrier_code}    printf '%s\\n' \"$AMPLIHACK_TEST_PANE_TTY\" ;;\n\
              capture-pane)\n    while IFS= read -r l; do printf '%s\\n' \"$l\"; done < '{screen}' ;;\n\
