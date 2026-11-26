@@ -53,6 +53,7 @@ fn minus1() -> TimeView {
 
 fn win(label: &str, pct: f64, at: Option<i64>) -> UsageWindow {
     UsageWindow {
+        observed_at: None,
         label: label.to_string(),
         used_percentage: pct,
         resets_text: Some(format!("text-{label}-{pct}")),

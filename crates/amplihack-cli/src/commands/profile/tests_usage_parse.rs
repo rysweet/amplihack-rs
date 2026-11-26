@@ -34,6 +34,7 @@ fn parse(stdout: &str) -> UsageReport {
 
 fn window(label: &str, pct: f64, text: &str, at: Option<i64>) -> UsageWindow {
     UsageWindow {
+        observed_at: None,
         label: label.to_string(),
         used_percentage: pct,
         resets_text: Some(text.to_string()),
@@ -715,6 +716,7 @@ fn empty_reports_keep_the_session_limit() {
 fn settle_session_drops_the_window_only_when_the_week_was_read_with_no_reset_at_0() {
     let at = |pct: f64| {
         Some(UsageWindow {
+            observed_at: None,
             label: "session".into(),
             used_percentage: pct,
             resets_text: None,

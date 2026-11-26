@@ -206,6 +206,16 @@ fn record(
     input: &[u8],
     wrapper: bool,
 ) -> Option<usage::RateLimits> {
+    record_at(state, owner, input, wrapper, fsx::now())
+}
+
+fn record_at(
+    state: &State,
+    owner: &ProfileName,
+    input: &[u8],
+    wrapper: bool,
+    now: i64,
+) -> Option<usage::RateLimits> {
     let eff = config::effective(&state.root);
     let on = eff.on;
     if !on && !state.exists() {
@@ -230,7 +240,6 @@ fn record(
     if !on {
         return None;
     }
-    let now = fsx::now();
     let rl = usage::parse_statusline_input(input, now)?;
     let ledger = state.load_ledger().ok()?;
     if let Attribution::Record(account) =
@@ -649,3 +658,7 @@ fn install_one(
 #[cfg(test)]
 #[path = "tests_statusline.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests_issue_3301_statusline.rs"]
+mod tests_issue_3301;

@@ -118,6 +118,7 @@ fn cfg(overflow: &[&str]) -> Config {
 
 fn reading(pct: f64, resets_in: i64, now: i64) -> Reading {
     Reading {
+        week_models: Vec::new(),
         five_hour: Some(Window {
             used_percentage: pct,
             resets_at: now + resets_in,
@@ -475,6 +476,7 @@ fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {
         resets_at: now + 4 * 3600,
     });
     let rl = RateLimits {
+        week_models: Vec::new(),
         five_hour: window,
         seven_day: window,
     };
@@ -604,6 +606,7 @@ fn swap_check_never_swaps_a_marked_key_into_a_session() {
         resets_at: now + 4 * 3600,
     });
     let rl = RateLimits {
+        week_models: Vec::new(),
         five_hour: window,
         seven_day: window,
     };
@@ -769,6 +772,7 @@ fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
         resets_at: now + 4 * 3600,
     });
     let rl = RateLimits {
+        week_models: Vec::new(),
         five_hour: window,
         seven_day: window,
     };
@@ -828,6 +832,7 @@ fn crossing_run(spare_org: &str) -> (Fx, Vec<String>, Option<String>) {
         resets_at: now + 4 * 3600,
     });
     let rl = RateLimits {
+        week_models: Vec::new(),
         five_hour: window,
         seven_day: window,
     };

@@ -1,6 +1,6 @@
-//! Issue #2820: the rotator keeps switching logins when it cannot read every
-//! process, and never stays on a blocked live login. Wired from
-//! `prelude.rs`.
+//! Issue #2820: unreadable processes do not prevent a confirmed swap off a
+//! blocked live login. Issue #3301 requires direct target confirmation even
+//! when the live login has a block. Wired from `prelude.rs`.
 //!
 //! The fixture is `tests_issue_2910_fixture`: the real swap, ledger and log
 //! under a temporary HOME and profile root (0700), a stubbed probe, a
@@ -28,7 +28,7 @@ use crate::commands::profile::rotate::decide::target::LiveRoom;
 use crate::commands::profile::rotate::decide::target_confirm::{
     Facts, Limit, Step, Unconfirmed, after_unknown, next,
 };
-use crate::commands::profile::rotate::decide::target_msg::{unconfirmed, utc_minute};
+use crate::commands::profile::rotate::decide::target_msg::unconfirmed;
 use crate::commands::profile::rotate::decide::target_seen::Extra;
 use crate::commands::profile::rotate::decide::target_seen::tests_issue_2910_fixture::{
     BOTH, Fleet, clock, expired, fleet, name, run, run_full, run_tuned, set_clock, stub, unread,
@@ -42,6 +42,7 @@ use crate::commands::profile::rotate::observe::{decide_with, snapshot};
 use crate::commands::profile::rotate::tests_issue_1870::{exh, rd};
 use crate::commands::profile::rotate::tests_revalidate_cause::ctx_with;
 use amplihack_utils::rotator_status::{CycleStatus, parse_cycle};
+use std::cell::Cell;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -332,15 +333,13 @@ fn assert_moved(label: &str, f: &Fleet, out: CycleOutcome, to: &str) -> String {
     log
 }
 
-/// AC5 (i): every candidate's probe failed with a label (429) and has a
-/// last good reading. The live login is spend-blocked, so the rotator moves
-/// to the best last good reading at once, and the swap line says why the
-/// move was not confirmed and why the live login has no room.
+/// Last good readings rank candidates, but a failed confirmation leaves
+/// the live login unchanged even when it has a spend block.
 #[test]
-fn ac5_i_a_blocked_live_login_moves_on_the_last_good_readings_of_unread_candidates() {
+fn ac5_i_a_blocked_live_login_stays_when_confirmation_of_the_last_good_target_fails() {
     for (label, s) in BOTH {
         let f = fleet(&["aa", "bb"], &[]);
-        let until = block_live(&f);
+        block_live(&f);
         f.history("aa", 1800, 30, 40);
         f.history("bb", 1800, 50, 50);
         let out = run(
@@ -350,16 +349,9 @@ fn ac5_i_a_blocked_live_login_moves_on_the_last_good_readings_of_unread_candidat
             &[("aa", unread()), ("bb", unread())],
             &[("aa", ProbeLabel::Http429), ("bb", ProbeLabel::Http429)],
         );
-        let log = assert_moved(label, &f, out, "aa");
-        assert!(
-            log.contains("target s=30% w=40% last 30m ago reason="),
-            "{label}: {log}"
-        );
-        let tail = format!(
-            " unconfirmed (HTTP 429); live work has no room: spend limit until {}",
-            utc_minute(until)
-        );
-        assert!(log.contains(&tail), "{label}: {tail}\n{log}");
+        assert_ne!(out, CycleOutcome::Swapped, "{label}: {}", f.log());
+        assert!(f.live_is("work"), "{label}: {}", f.log());
+        assert_waits_held(label, &wait_view(&f), limit_hits());
     }
 }
 
@@ -385,9 +377,13 @@ fn ac5_ii_a_blocked_live_login_whose_probe_failed_moves_at_once() {
     }
 }
 
-/// Every stale candidate's re-read fails for a reason about the login, so
-/// it is rejected with no label and counts against the cap.
+thread_local! {
+    static TARGET_READS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Confirmation fails for a reason about the login.
 fn reread_fails(_: &Ctx, _: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
+    TARGET_READS.with(|reads| reads.set(reads.get() + 1));
     (expired(), None)
 }
 
@@ -409,6 +405,7 @@ fn route3(f: &Fleet, s: SettingsFn, live: Probed) -> CycleOutcome {
 }
 
 fn route3_on(f: &Fleet, s: SettingsFn, live: Probed, table: &[(&str, Probed)]) -> CycleOutcome {
+    TARGET_READS.with(|reads| reads.set(0));
     run_full(
         f,
         s(),
@@ -421,28 +418,18 @@ fn route3_on(f: &Fleet, s: SettingsFn, live: Probed, table: &[(&str, Probed)]) -
     )
 }
 
-/// AC5 (iii), stay route 3: three re-reads fail and use up the cycle's cap,
-/// so the fourth target is left unread (`NotTried`). Before #2820 it was
-/// made unknown and the rotator stayed on the blocked live login. Now it is
-/// accepted on its reading, which is recent, and the swap line says so.
+/// A failed confirmation does not start another target's probe or permit
+/// a swap, even when the live login has a spend block.
 #[test]
-fn ac5_iii_a_blocked_live_login_moves_onto_a_target_the_reread_cap_left_unread() {
+fn ac5_iii_a_blocked_live_login_stays_after_one_failed_target_probe() {
     for (label, s) in BOTH {
         let f = fleet(&["a1", "a2", "a3", "d"], &[]);
-        let until = block_live(&f);
+        block_live(&f);
         let out = route3(&f, s, rd(94.0, 75.0, None));
-        let log = assert_moved(label, &f, out, "d");
-        assert_eq!(count(&log, "reject: a"), 3, "{label}: {log}");
-        assert!(
-            log.contains("target s=30% w=30% read 20m ago reason="),
-            "{label}: {log}"
-        );
-        let tail = format!(
-            " unconfirmed (re-read limit {MAX_REREADS_PER_CYCLE}); live work has no room: spend limit until {}",
-            utc_minute(until)
-        );
-        assert!(log.contains(&tail), "{label}: {tail}\n{log}");
-        assert!(!log.contains("reread: d limit reached"), "{label}: {log}");
+        assert_ne!(out, CycleOutcome::Swapped, "{label}: {}", f.log());
+        assert!(f.live_is("work"), "{label}: {}", f.log());
+        assert_eq!(TARGET_READS.with(Cell::get), 1, "{label}");
+        assert_waits_held(label, &wait_view(&f), limit_hits());
     }
 }
 
@@ -452,29 +439,34 @@ fn ac5_iii_a_blocked_live_login_moves_onto_a_target_the_reread_cap_left_unread()
 /// spend-blocked. It is never chosen; the move goes to the next login.
 #[test]
 fn ac6_a_blocked_candidate_is_never_chosen_on_its_last_good_reading() {
+    fn confirm_bb(_: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLabel>) {
+        assert_eq!(who, &name("bb"));
+        (rd(50.0, 50.0, None), None)
+    }
     for (label, s) in BOTH {
         let f = fleet(&["aa", "bb"], &[]);
         block_live(&f);
         block(&f, "aa", clock() + BLOCK);
         f.history("aa", 1800, 5, 5);
         f.history("bb", 1800, 50, 50);
-        let out = run(
+        let out = run_full(
             &f,
             s(),
             rd(94.0, 75.0, None),
             &[("aa", unread()), ("bb", unread())],
             &[("aa", ProbeLabel::Http429), ("bb", ProbeLabel::Http429)],
+            Mode::Watch,
+            Some(confirm_bb),
+            stub,
         );
-        let log = assert_moved(label, &f, out, "bb");
-        assert!(!log.contains("swap work->aa"), "{label}: {log}");
+        assert_moved(label, &f, out, "bb");
     }
 }
 
-/// AC6 on stay route 3: a blocked login whose stale reading is the best is
-/// never the target, so the cap's acceptance never reaches it: three other
-/// logins use up the cap, and the move goes to `d`.
+/// A blocked candidate remains ineligible, and a failed confirmation of
+/// another candidate cannot permit an unconfirmed swap.
 #[test]
-fn ac6_a_blocked_candidate_is_never_accepted_at_the_reread_cap() {
+fn ac6_a_blocked_candidate_is_not_chosen_after_another_confirmation_fails() {
     for (label, s) in BOTH {
         let f = fleet(&["blocked", "a1", "a2", "a3", "d"], &[]);
         block_live(&f);
@@ -482,12 +474,9 @@ fn ac6_a_blocked_candidate_is_never_accepted_at_the_reread_cap() {
         let mut table = vec![("blocked", rd(1.0, 1.0, Some(clock() - 900)))];
         table.extend(stale_four());
         let out = route3_on(&f, s, rd(94.0, 75.0, None), &table);
-        let log = assert_moved(label, &f, out, "d");
-        assert!(!log.contains("swap work->blocked"), "{label}: {log}");
-        assert!(
-            !log.contains("reread: blocked"),
-            "{label}: never tried: {log}"
-        );
+        assert_ne!(out, CycleOutcome::Swapped, "{label}: {}", f.log());
+        assert!(f.live_is("work"), "{label}: {}", f.log());
+        assert_eq!(TARGET_READS.with(Cell::get), 1, "{label}");
     }
 }
 
@@ -515,27 +504,21 @@ fn ac7_without_a_block_a_failed_live_probe_is_still_damped() {
     }
 }
 
-/// AC7, stay route 3: with room on the live login (past `--session-at` at
-/// both settings), a target the cap left unread is unknown as before, and
-/// nothing is accepted unconfirmed.
+/// The same failed confirmation rule applies without a live spend block.
 #[test]
-fn ac7_with_room_on_the_live_login_the_reread_cap_still_leaves_the_target_unknown() {
+fn ac7_with_room_on_the_live_login_one_failed_confirmation_leaves_it_unchanged() {
     for (label, s) in BOTH {
         let f = fleet(&["a1", "a2", "a3", "d"], &[]);
         let out = route3(&f, s, rd(96.0, 40.0, None));
         let log = f.log();
         assert_ne!(out, CycleOutcome::Swapped, "{label}: {log}");
         assert!(f.live_is("work"), "{label}: {log}");
-        assert!(log.contains("reread: d limit reached"), "{label}: {log}");
-        assert!(!log.contains("unconfirmed"), "{label}: {log}");
+        assert_eq!(TARGET_READS.with(Cell::get), 1, "{label}");
     }
 }
 
-/// AC7 and issue #3105: the live login is full (session at 100%) but has no
-/// recorded block, and every candidate is known only from a last good
-/// reading. Nothing is taken without a fresh reading: the candidates are
-/// rejected and the rotator stays with `no candidate confirmed`. With the
-/// same readings and a spend block on the live login, AC5 (i) moves.
+/// A full live login also stays when the chosen target's confirmation
+/// fails. Its last good reading cannot establish current capacity.
 #[test]
 fn ac7_a_full_live_login_with_no_block_does_not_move_on_last_good_readings() {
     for (label, s) in BOTH {
@@ -552,15 +535,7 @@ fn ac7_a_full_live_login_with_no_block_does_not_move_on_last_good_readings() {
         let log = f.log();
         assert_ne!(out, CycleOutcome::Swapped, "{label}: {log}");
         assert!(f.live_is("work"), "{label}: {log}");
-        assert!(!log.contains("unconfirmed ("), "{label}: {log}");
-        assert!(
-            log.contains("reject: aa reading unknown (HTTP 429)"),
-            "{label}: {log}"
-        );
-        assert!(
-            log.contains("stay: no candidate confirmed by a fresh reading"),
-            "{label}: {log}"
-        );
+        assert_waits_held(label, &wait_view(&f), limit_hits());
     }
 }
 
@@ -626,12 +601,10 @@ fn t3a_a_confirmed_move_off_a_blocked_live_login_wakes_the_waits_on_its_own_reco
     }
 }
 
-/// AC8 T3b: a move on a reading the cap left unread claims no room it did
-/// not read (#2857), so the waits are woken by the write but stay held. The
-/// next cycle reads the new live login below `--session-at`, records room,
-/// and every wait ends. No timer: the rotator's own next cycle.
+/// Waiting work stays pending after failed confirmation and wakes when
+/// a subsequent cycle confirms and swaps to a login with room.
 #[test]
-fn t3b_an_unconfirmed_move_holds_the_waits_until_a_cycle_reads_the_new_login_with_room() {
+fn t3b_failed_confirmation_keeps_waits_pending_until_a_later_confirmed_swap() {
     for (label, s) in BOTH {
         let f = fleet(&["a1", "a2", "a3", "d"], &[]);
         set_clock(now() - 600);
@@ -639,22 +612,23 @@ fn t3b_an_unconfirmed_move_holds_the_waits_until_a_cycle_reads_the_new_login_wit
         block(&f, "work", until);
         let hits = limit_hits();
         let out = route3(&f, s, rd(94.0, 75.0, None));
-        assert_moved(label, &f, out, "d");
+        assert_eq!(out, CycleOutcome::StayedUnread, "{label}: {}", f.log());
+        assert!(f.live_is("work"), "{label}: {}", f.log());
+        assert_eq!(TARGET_READS.with(Cell::get), 1, "{label}");
         let v = wait_view(&f);
-        assert_eq!(v.live_room, Some(false), "{label}: {v:?}");
-        assert_waits_held(&format!("{label}, after the move"), &v, hits);
+        assert_waits_held(label, &v, hits);
 
         set_clock(now());
         let table = [
-            ("work", rd(94.0, 75.0, None)),
+            ("d", rd(30.0, 30.0, None)),
             ("a1", rd(10.0, 10.0, None)),
             ("a2", rd(15.0, 15.0, None)),
             ("a3", rd(20.0, 20.0, None)),
         ];
-        let out = run(&f, s(), rd(30.0, 30.0, None), &table, &[]);
+        let out = run(&f, s(), rd(94.0, 75.0, None), &table, &[]);
         let log = f.log();
-        assert_eq!(out, CycleOutcome::Stayed, "{label}: {log}");
-        assert!(f.live_is("d"), "{label}: {log}");
+        assert_eq!(out, CycleOutcome::Swapped, "{label}: {log}");
+        assert!(f.live_is("a1"), "{label}: {log}");
         let v = wait_view(&f);
         assert_eq!(v.live_room, Some(true), "{label}: {v:?}");
         assert_waits_wake(&format!("{label}, after the next cycle"), &v, hits);
@@ -751,12 +725,6 @@ fn the_unconfirmed_suffix_names_the_label_or_the_limit() {
         age: 60,
     };
     assert_eq!(unconfirmed(time), " unconfirmed (time limit)");
-    // The reference documents the limit text with the constant's value.
-    const REFERENCE: &str = include_str!("../../../../../../docs/reference/profile-command.md");
-    assert!(
-        REFERENCE.contains(&unconfirmed(count)),
-        "the reference names it"
-    );
     assert_eq!(count.label(), None);
     assert_eq!(
         Unconfirmed::from(ProbeLabel::Transport).label(),
@@ -873,10 +841,10 @@ fn swap_to(m: &crate::commands::profile::rotate::observe::Measurement) -> Option
     }
 }
 
-/// C11, the time limit: with the re-read hook set and no time left, a
-/// recent reading is accepted when the live login is blocked.
+/// A spent probe budget cannot confirm a swap onto a recent reading,
+/// even when the live login has a spend block.
 #[test]
-fn at_the_time_limit_a_blocked_live_login_moves_on_a_recent_reading() {
+fn at_the_time_limit_a_blocked_live_login_cannot_move_on_an_unconfirmed_reading() {
     let f = fleet(&["aa"], &[]);
     block_live(&f);
     let m = gate_out_of_time(
@@ -885,25 +853,12 @@ fn at_the_time_limit_a_blocked_live_login_moves_on_a_recent_reading() {
         vec![(name("aa"), rd(30.0, 30.0, Some(clock() - 900)))],
         |_| {},
     );
-    assert_eq!(swap_to(&m), Some(&name("aa")), "{:?}", m.decision);
-    assert_eq!(
-        m.seen.unconfirmed,
-        Some((
-            name("aa"),
-            Unconfirmed::NotTried {
-                limit: Limit::Time,
-                age: 900
-            }
-        ))
-    );
+    assert_eq!(swap_to(&m), None, "{:?}", m.decision);
+    assert_eq!(m.seen.unconfirmed, None);
+    assert!(m.seen.extra.confirmed.is_empty());
     assert_eq!(
         m.seen.live_blocked.map(|(_, kind)| kind),
         Some("spend limit")
-    );
-    assert!(
-        m.fresh_lines.is_empty(),
-        "no read and no line: {:?}",
-        m.fresh_lines
     );
 }
 
@@ -932,7 +887,12 @@ fn a_reading_from_before_the_target_was_left_never_moves_back_onto_it() {
         vec![(name("aa"), rd(30.0, 30.0, Some(clock() - 120)))],
         |_| {},
     );
-    assert_eq!(swap_to(&m), Some(&name("aa")), "read after it was left");
+    assert_eq!(
+        swap_to(&m),
+        None,
+        "a later reading still needs confirmation"
+    );
+    assert!(m.seen.extra.confirmed.is_empty());
 }
 
 /// C3: a target an earlier gate accepted at a limit is not accepted again

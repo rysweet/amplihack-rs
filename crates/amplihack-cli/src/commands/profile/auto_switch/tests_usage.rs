@@ -111,6 +111,7 @@ fn reset_times_outside_minus_one_to_plus_eight_days_drop_the_window() {
 #[test]
 fn fingerprint_is_full_sha256_of_the_documented_text() {
     let rl = RateLimits {
+        week_models: Vec::new(),
         five_hour: Some(win(93.0, 100)),
         seven_day: Some(win(61.5, 200)),
     };
@@ -124,6 +125,7 @@ fn fingerprint_is_full_sha256_of_the_documented_text() {
     assert_eq!(got, want);
 
     let missing = RateLimits {
+        week_models: Vec::new(),
         five_hour: None,
         seven_day: Some(win(1.0, 2)),
     };
@@ -139,6 +141,7 @@ fn hex(bytes: &[u8]) -> String {
 
 fn limits(five: f64) -> RateLimits {
     RateLimits {
+        week_models: Vec::new(),
         five_hour: Some(win(five, NOW + 3600)),
         seven_day: Some(win(10.0, NOW + 86_400)),
     }
@@ -195,6 +198,7 @@ fn reading_identical_to_the_pre_swap_one_is_ignored_after_the_cooldown() {
 
 fn reading(five: f64, observed_at: i64) -> Reading {
     Reading {
+        week_models: Vec::new(),
         five_hour: Some(win(five, NOW + 3600)),
         seven_day: None,
         observed_at,
@@ -392,6 +396,7 @@ fn a_status_line_with_only_seven_day_is_accepted() {
 fn the_5h_cell_says_no_session_window_only_for_a_week_without_five_hour() {
     use super::cli::five_cell;
     let reading = |five: Option<Window>, seven: Option<Window>| Reading {
+        week_models: Vec::new(),
         five_hour: five,
         seven_day: seven,
         observed_at: NOW - 10,

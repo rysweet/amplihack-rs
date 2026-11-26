@@ -304,6 +304,7 @@ fn window(v: &Value, label: &str, now: i64) -> Option<UsageWindow> {
         .map(|t| t.timestamp())
         .filter(|t| *t <= now.saturating_add(MAX_AHEAD));
     Some(UsageWindow {
+        observed_at: None,
         label: label.to_string(),
         // `-0.0 + 0.0` is `0.0`, so the table never shows `-0`.
         used_percentage: pct + 0.0,

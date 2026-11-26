@@ -55,6 +55,7 @@ fn measured(session: f64, week: f64, now: i64) -> Probed {
         windows: Windows {
             session: win(session),
             week: win(week),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         ..rd(session, week, None)

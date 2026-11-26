@@ -394,6 +394,7 @@ fn record_limit(state: &State, account: &str, reset: i64) {
     file.accounts.insert(
         account.to_string(),
         Reading {
+            week_models: Vec::new(),
             five_hour: Some(Window {
                 used_percentage: 100.0,
                 resets_at: reset,

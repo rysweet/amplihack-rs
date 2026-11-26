@@ -70,6 +70,8 @@ mod tests_home_line;
 #[cfg(all(test, unix))]
 mod tests_issue_1804;
 #[cfg(all(test, unix))]
+mod tests_issue_3301;
+#[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;
@@ -435,6 +437,7 @@ pub struct Observation {
     pub account: String,
     pub session: Option<ObservedWindow>,
     pub week: Option<ObservedWindow>,
+    pub week_models: Vec<(String, ObservedWindow)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -591,9 +594,21 @@ pub fn fresh_reading(root: &Path, dir: &str, max_age: i64, now: i64) -> Option<F
     let ok =
         |w: &Option<Window>| w.and_then(|w| usage::plausible(w.used_percentage, w.resets_at, now));
     let (session, week) = (ok(&r.five_hour), ok(&r.seven_day));
-    (session.is_some() || week.is_some()).then_some(FreshReading {
+    let week_models: Vec<_> = r
+        .week_models
+        .iter()
+        .filter(|m| {
+            m.observed_at <= now
+                && m.resets_at.is_some_and(|reset| {
+                    reset > now && usage::plausible(m.used_percentage, reset, now).is_some()
+                })
+        })
+        .cloned()
+        .collect();
+    (session.is_some() || week.is_some() || !week_models.is_empty()).then_some(FreshReading {
         session,
         week,
+        week_models,
         // The same test as [`no_session_window_profiles`]; a stored session
         // window dropped as implausible is unknown, not absent.
         no_session_window: r.no_session_window() && week.is_some(),
@@ -602,10 +617,11 @@ pub fn fresh_reading(root: &Path, dir: &str, max_age: i64, now: i64) -> Option<F
 }
 
 /// The plausible windows of a fresh stored reading (issue #1844).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FreshReading {
     pub session: Option<Window>,
     pub week: Option<Window>,
+    pub week_models: Vec<usage::ModelWeek>,
     /// Issue #1818: the reading has a week window and no session window, so
     /// it has no session limit.
     pub no_session_window: bool,
@@ -670,69 +686,87 @@ pub fn no_session_window_line(root: &Path, names: &[String]) -> Option<String> {
 /// read, and writes `usage.json` at most once.
 pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutcome, ProfileError> {
     #[cfg(unix)]
-    {
-        use usage::{Reading, ReadingSource, Window};
-        if !recording_enabled(root) {
-            return Ok(RecordOutcome::NotSetUp);
-        }
-        let state = state::State::new(root)?;
-        let Some(_lock) = state.try_lock(statusline::LOCK_WAIT)? else {
-            return Ok(RecordOutcome::Busy);
-        };
-        if state.load_journal()?.is_some() {
-            return Ok(RecordOutcome::SwapInProgress);
-        }
-        let ledger = state.load_ledger()?;
-        let now = fsx::now();
-        let bounded = |w: Option<ObservedWindow>| {
-            w.and_then(|w| usage::plausible(w.used_percentage, w.resets_at?, now))
-        };
-        let still_valid = |w: Option<Window>| w.filter(|w| w.resets_at > now);
-        let mut file = None;
-        let (mut written, mut moved) = (Vec::new(), Vec::new());
-        for o in observed {
-            if ledger.account_in(&o.profile) != o.account {
-                moved.push(o.profile.clone());
-                continue;
-            }
-            let (five_hour, seven_day) = (bounded(o.session), bounded(o.week));
-            if five_hour.is_none() && seven_day.is_none() {
-                continue;
-            }
-            let file = file.get_or_insert_with(|| state.load_usage_or_warn());
-            let old = file.accounts.get(&o.account);
-            let reading = Reading {
-                // Issue #1818: a reading with no session limit keeps a stored
-                // session window until its reset passes. A 0%, reset-less
-                // reading may be stale, and a live window that contradicts
-                // it is the cautious answer; the cost is at most one
-                // five-hour window in which the login is passed over.
-                five_hour: five_hour.or_else(|| still_valid(old.and_then(|r| r.five_hour))),
-                seven_day: seven_day.or_else(|| still_valid(old.and_then(|r| r.seven_day))),
-                observed_at: now,
-                // Deliberate: the usage file's format is fixed, and a
-                // `/usage` reading means the same as a status-line one.
-                source: ReadingSource::Statusline,
-            };
-            let merged = usage::merge(old, reading);
-            file.accounts.insert(o.account.clone(), merged);
-            written.push(o.account.clone());
-        }
-        if let Some(file) = file {
-            state.save_usage(&file)?;
-            // Issue #2885: `profile usage` is where the capacity warning
-            // sends the user, so the Keychain cause is said here, on stderr.
-            for note in capacity::refresh(&state, &file, &ledger, "usage") {
-                eprintln!("{note}");
-            }
-        }
-        Ok(RecordOutcome::Recorded { written, moved })
-    }
+    return record_usage_at(root, observed, fsx::now());
     #[cfg(not(unix))]
     {
         let _ = (root, observed);
         Ok(RecordOutcome::NotSetUp)
     }
+}
+
+#[cfg(unix)]
+fn record_usage_at(
+    root: &Path,
+    observed: &[Observation],
+    now: i64,
+) -> Result<RecordOutcome, ProfileError> {
+    use usage::{Reading, ReadingSource, Window};
+    if !recording_enabled(root) {
+        return Ok(RecordOutcome::NotSetUp);
+    }
+    let state = state::State::new(root)?;
+    let Some(_lock) = state.try_lock(statusline::LOCK_WAIT)? else {
+        return Ok(RecordOutcome::Busy);
+    };
+    if state.load_journal()?.is_some() {
+        return Ok(RecordOutcome::SwapInProgress);
+    }
+    let ledger = state.load_ledger()?;
+    let bounded = |w: Option<ObservedWindow>| {
+        w.and_then(|w| usage::plausible(w.used_percentage, w.resets_at?, now))
+    };
+    let still_valid = |w: Option<Window>| w.filter(|w| w.resets_at > now);
+    let mut file = None;
+    let (mut written, mut moved) = (Vec::new(), Vec::new());
+    for o in observed {
+        if ledger.account_in(&o.profile) != o.account {
+            moved.push(o.profile.clone());
+            continue;
+        }
+        let (five_hour, seven_day) = (bounded(o.session), bounded(o.week));
+        let week_models: Vec<_> = o
+            .week_models
+            .iter()
+            .filter(|(_, w)| w.used_percentage.is_finite())
+            .map(|(label, w)| usage::ModelWeek {
+                label: label.clone(),
+                used_percentage: w.used_percentage.clamp(0.0, 100.0),
+                resets_at: bounded(Some(*w)).map(|w| w.resets_at),
+                observed_at: now,
+            })
+            .collect();
+        if five_hour.is_none() && seven_day.is_none() && week_models.is_empty() {
+            continue;
+        }
+        let file = file.get_or_insert_with(|| state.load_usage_or_warn());
+        let old = file.accounts.get(&o.account);
+        let reading = Reading {
+            // Issue #1818: a reading with no session limit keeps a stored
+            // session window until its reset passes. A 0%, reset-less
+            // reading may be stale, and a live window that contradicts
+            // it is the cautious answer; the cost is at most one
+            // five-hour window in which the login is passed over.
+            five_hour: five_hour.or_else(|| still_valid(old.and_then(|r| r.five_hour))),
+            seven_day: seven_day.or_else(|| still_valid(old.and_then(|r| r.seven_day))),
+            week_models,
+            observed_at: now,
+            // Deliberate: the usage file's format is fixed, and a
+            // `/usage` reading means the same as a status-line one.
+            source: ReadingSource::Statusline,
+        };
+        let merged = usage::merge(old, reading);
+        file.accounts.insert(o.account.clone(), merged);
+        written.push(o.account.clone());
+    }
+    if let Some(file) = file {
+        state.save_usage(&file)?;
+        // Issue #2885: `profile usage` is where the capacity warning
+        // sends the user, so the Keychain cause is said here, on stderr.
+        for note in capacity::refresh(&state, &file, &ledger, "usage") {
+            eprintln!("{note}");
+        }
+    }
+    Ok(RecordOutcome::Recorded { written, moved })
 }
 
 #[cfg(test)]

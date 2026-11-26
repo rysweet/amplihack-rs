@@ -1115,7 +1115,7 @@ mod evidence {
     }
 
     #[test]
-    fn a_reading_after_recorded_use_remains_eligible_without_rereading() {
+    fn a_reading_after_recorded_use_remains_eligible_with_confirmation() {
         let (e, c, snap) = fixture();
         let t = clock();
         let mut ledger = e.rs.load_ledger().unwrap().unwrap();
@@ -1123,6 +1123,7 @@ mod evidence {
         ledger.swapped_at = Some(t - 10);
         ledger.swapped_away.insert("spare".into(), t - 20);
         e.rs.save_ledger(&ledger).unwrap();
+        script([rd(10.0, 20.0, None)]);
         let m = observe::decide_measured(
             &c,
             &snap,
@@ -1133,7 +1134,8 @@ mod evidence {
         .unwrap();
         let m = fresh::gate(&c, &snap, m, fresh::Reread::Allowed).unwrap();
         assert!(matches!(m.decision, Decision::Swap { to, .. } if to == n("spare")));
-        CALLS.with_borrow(|v| assert!(v.is_empty()));
+        CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["spare"]));
+        assert!(m.seen.extra.confirmed.contains(&n("spare")));
     }
 
     /// Crusty round 6: the live step runs after the measurement, so a live
@@ -1150,9 +1152,12 @@ mod evidence {
         for (took, dated) in [(0, false), (1, false), (5, false), (5, true), (90, false)] {
             let (_e, mut c, snap) = fixture();
             let t = clock();
-            // The live re-read reads 75%. A target re-read would fail, which
-            // would leave no candidate and turn the swap into an ALERT.
-            script([rd(75.0, 20.0, dated.then_some(t + took)), Probed::failed()]);
+            // The live re-read reads 75%. Confirming the target once must
+            // preserve the swap despite the later live observation.
+            script([
+                rd(75.0, 20.0, dated.then_some(t + took)),
+                rd(0.0, 40.0, None),
+            ]);
             let m = observe::decide_measured(
                 &c,
                 &snap,
@@ -1172,14 +1177,9 @@ mod evidence {
                 "took {took} s, dated {dated}: {:?}",
                 m.fresh_lines
             );
-            CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["work"], "took {took} s"));
-            assert!(
-                !m.fresh_lines.iter().any(|l| l.contains("spare")),
-                "no target re-read line: {:?}",
-                m.fresh_lines
-            );
-            ANSWERS
-                .with_borrow(|v| assert_eq!(v.len(), 1, "the failing target read was never made"));
+            CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["work", "spare"], "took {took} s"));
+            assert!(m.seen.extra.confirmed.contains(&n("spare")));
+            ANSWERS.with_borrow(|v| assert!(v.is_empty()));
         }
     }
 
@@ -1240,11 +1240,9 @@ mod evidence {
         }
     }
 
-    /// A dated re-read that is itself still stale is logged with its new
-    /// figures and then as failed, so the log never reads as if the re-read
-    /// had been accepted.
+    /// A dated confirmation that is still stale cannot supply capacity.
     #[test]
-    fn a_still_stale_dated_reread_is_logged_as_failed() {
+    fn a_still_stale_dated_reread_is_rejected() {
         let (e, c, snap) = fixture();
         let t = clock();
         let mut ledger = e.rs.load_ledger().unwrap().unwrap();
@@ -1263,13 +1261,8 @@ mod evidence {
         let m = fresh::gate(&c, &snap, m, fresh::Reread::Allowed).unwrap();
         assert!(!matches!(m.decision, Decision::Swap { .. }));
         assert_eq!(m.probed.as_ref().unwrap().1[0].1, Probed::failed());
-        assert_eq!(
-            m.fresh_lines,
-            [
-                "reread: spare reading stale s=0% w=20%; fresh s=0% w=0%",
-                "reread: spare failed; treated as unknown",
-            ]
-        );
+        assert!(m.seen.extra.rejected.contains(&n("spare")));
+        assert!(!m.seen.extra.confirmed.contains(&n("spare")));
         CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["spare"]));
     }
 
@@ -1344,14 +1337,13 @@ mod evidence {
         assert!(matches!(checked.verdict, revalidate::Verdict::Skip(_)));
     }
 
-    /// B7: an unchanged snapshot with a gated swap whose target is still
-    /// fresh is retried under the lock; the same decision proceeds.
+    /// An unchanged snapshot with a confirmed, fresh target proceeds under
+    /// the lock without another external read.
     #[test]
     fn unchanged_snapshot_with_a_fresh_target_proceeds_under_the_lock() {
         let (e, mut c, snap) = fixture();
         let t = clock();
-        c.reread = Some(no_read);
-        c.reread_live = Some(no_read);
+        script([rd(0.0, 20.0, Some(t - 20))]);
         let m = observe::decide_measured(
             &c,
             &snap,
@@ -1361,6 +1353,10 @@ mod evidence {
         )
         .unwrap();
         assert!(matches!(&m.decision, Decision::Swap { to, .. } if *to == n("spare")));
+        let m = fresh::gate(&c, &snap, m, fresh::Reread::Allowed).unwrap();
+        assert!(m.seen.extra.confirmed.contains(&n("spare")));
+        c.reread = Some(no_read);
+        c.reread_live = Some(no_read);
         let state = State::new(&e.root).unwrap();
         let _lock = state.try_lock(Duration::ZERO).unwrap().unwrap();
         let checked = revalidate::check(&mut c, &state, &snap, &m, 0).unwrap();
@@ -1368,21 +1364,19 @@ mod evidence {
             matches!(checked.verdict, revalidate::Verdict::Proceed),
             "the same retried decision proceeds"
         );
+        CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["spare"]));
         e.assert_unchanged();
     }
 
-    /// B7: an unchanged snapshot whose swap target ages past
-    /// [`fresh::MAX_READING_AGE_SECS`] under the lock is decided once more on
-    /// the stored probes; another fresh target is taken, with the
-    /// `stale reading` line.
+    /// A confirmed target that expires under the lock cannot be replaced
+    /// by an alternative that has not had its own confirmation.
     #[test]
-    fn unchanged_snapshot_stale_target_with_a_fresh_alternative_is_reconsidered() {
+    fn unchanged_snapshot_stale_target_leaves_an_unconfirmed_alternative_for_another_cycle() {
         let (e, mut c, _) = fixture();
         super::super::super::tests_revalidate_cause::add_stored(&e, "spare2");
         let snap = observe::snapshot(&c, &State::new(&e.root).unwrap()).unwrap();
         let t = clock();
-        c.reread = Some(no_read);
-        c.reread_live = Some(no_read);
+        script([rd(0.0, 20.0, Some(t - 50))]);
         let mut spent = exh(100.0, 20.0);
         spent.observed_at = Some(t - 100);
         let m = observe::decide_measured(
@@ -1397,22 +1391,18 @@ mod evidence {
         )
         .unwrap();
         assert!(matches!(&m.decision, Decision::Swap { to, .. } if *to == n("spare")));
+        let m = fresh::gate(&c, &snap, m, fresh::Reread::Allowed).unwrap();
+        assert!(m.seen.extra.confirmed.contains(&n("spare")));
+        assert!(!m.seen.extra.confirmed.contains(&n("spare2")));
+        c.reread = Some(no_read);
+        c.reread_live = Some(no_read);
         // Only `spare` is older than the age limit at the later clock.
         CLOCK.set(t - 50 + fresh::MAX_READING_AGE_SECS + 1);
         let state = State::new(&e.root).unwrap();
         let _lock = state.try_lock(Duration::ZERO).unwrap().unwrap();
         let checked = revalidate::check(&mut c, &state, &snap, &m, 0).unwrap();
-        match checked.verdict {
-            revalidate::Verdict::Reconsidered { line, m, .. } => {
-                assert_eq!(line, revalidate::reconsidered(&n("spare"), "stale reading"));
-                assert!(
-                    matches!(&m.decision, Decision::Swap { to, .. } if *to == n("spare2")),
-                    "{:?}",
-                    m.decision
-                );
-            }
-            _ => panic!("expected a reconsidered swap"),
-        }
+        assert!(matches!(checked.verdict, revalidate::Verdict::Skip(_)));
+        CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["spare"]));
         e.assert_unchanged();
     }
 

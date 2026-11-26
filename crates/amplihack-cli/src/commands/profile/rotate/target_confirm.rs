@@ -96,6 +96,8 @@ pub enum Limit {
 /// Why a candidate was rejected at confirmation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Why {
+    /// A model's week is at or above the swap threshold.
+    ModelWeek(u8),
     /// Its reading is unknown.
     Unknown(ProbeLabel),
     /// Its fresh reading makes it ineligible.
