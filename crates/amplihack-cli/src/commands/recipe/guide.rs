@@ -95,6 +95,7 @@
 
 use super::detach::MAX_DETACHED_SESSION_CHARS;
 use super::guide_records::{self, Pointer};
+use super::live_runs::{live_runs_for_pr, run_end};
 use crate::command_error::exit_error;
 use crate::commands::cleanup::run_dir::{RUN_JSON, RunReport};
 use crate::commands::cleanup::work_root;
@@ -107,10 +108,11 @@ use crate::run_guidance::pr_key::{
 // and the launcher's warnings. Paths reach it from `check_dir`, the work
 // root validator and `run.json`, which build their own text, so it is
 // applied once, to the whole line, just before printing.
+use crate::run_guidance::log_state::{read_log_state, render_drop_line};
 use crate::run_guidance::sanitize::{escaped, needs_escape, sanitize_line};
 use crate::run_guidance::{
     AUTO_DRIVE_DIR, GUIDANCE_DIR, GuideError, HEADER_ROOM, MAX_GUIDANCE_ENTRY_BYTES, Source,
-    append_entry, caller_identity, check_text,
+    append_entry_at, caller_identity, check_text,
 };
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -182,56 +184,126 @@ fn guide(
         dir,
         source,
         warning,
+        live_runs,
+        no_live_run,
     } = resolve_target(target)?;
-    let appended = append_entry(&dir, &text, &caller_identity())?;
-    // PR #2567 M1: a PR folder is read only by runs started with the pull
-    // request in their context, so a PR entry is not reported as "appended"
-    // to anything that will read it.
-    let verb = match source {
-        Source::Pr => "guidance saved for pull request",
-        _ => "guidance appended",
+    // PR #3190 review: a run named by session or id may already have ended;
+    // the sender is told what its `run.json` records rather than left to
+    // wait for a step that will not start.
+    let ended = match source {
+        Source::Run if live_runs.is_empty() => run_end(&dir),
+        _ => None,
     };
-    // Success goes through `sanitize_line` as failure does. The destination
-    // is no longer only the caller's own environment: a log's `run_dir` can
-    // steer it (issue #2783), and the threat model of that lookup is a
-    // same-uid process planting a log. `accept_recorded` passes over a
-    // recorded folder whose path holds one of these characters, so a log
-    // cannot reach this line; the escaping here also covers a work root or a
-    // state folder the operator named (issue #2818).
-    println!(
-        "{}",
-        sanitize_line(&format!(
-            "{verb}: {} ({} bytes, {})",
-            appended.path.display(),
-            appended.bytes,
-            source.label()
-        ))
-    );
-    if source == Source::Pr {
+    // Issue #3161: each live run's own folder first, then the destination.
+    // One time for every copy, so a reader of several of them sees one entry.
+    let mut folders: Vec<(PathBuf, Source)> =
+        live_runs.into_iter().map(|d| (d, Source::Run)).collect();
+    folders.push((dir, source));
+    let now = chrono::Utc::now();
+    let caller = caller_identity();
+    let total = folders.len();
+    let mut appended_all = Vec::with_capacity(total);
+    for (written, (folder, source)) in folders.iter().enumerate() {
+        let appended = match append_entry_at(folder, &text, &caller, now) {
+            Ok(appended) => appended,
+            Err(error) => {
+                if written > 0 {
+                    // Not rolled back: a run may already have read an entry,
+                    // and removing it would misreport what happened.
+                    eprintln!(
+                        "recipe guide: {written} of {total} folders were written before the failure"
+                    );
+                }
+                return Err(error);
+            }
+        };
+        // PR #2567 M1: a PR folder is read only by runs started with the pull
+        // request in their context, so a PR entry is not reported as
+        // "appended" to anything that will read it.
+        let verb = match source {
+            Source::Pr => "guidance saved for pull request",
+            _ => "guidance appended",
+        };
+        // Success goes through `sanitize_line` as failure does. The
+        // destination is no longer only the caller's own environment: a
+        // log's `run_dir` can steer it (issue #2783), and the threat model of
+        // that lookup is a same-uid process planting a log. `accept_recorded`
+        // passes over a recorded folder whose path holds one of these
+        // characters, so a log cannot reach this line; the escaping here also
+        // covers a work root or a state folder the operator named (#2818).
         println!(
             "{}",
             sanitize_line(&format!(
-                "written to {}; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.",
-                dir.display()
+                "{verb}: {} ({} bytes, {})",
+                appended.path.display(),
+                appended.bytes,
+                source.label()
             ))
         );
+        appended_all.push(appended);
+    }
+    // Issue #3162: the sender is told the truth. No step has read an entry
+    // that was just written; a step that reads it records `entry_names`,
+    // which `recipe guidance show` reports as `read`. "Read" means the block
+    // was written in full to a step's input, not that the agent acted on it.
+    // With no detached run found, say only what was checked (PR #3190
+    // review): a run started in the foreground writes no start record to
+    // the log folder, and it reads the pull request folder at its next
+    // agent step when its state folder is the sender's.
+    let status = if no_live_run {
+        "appended; not yet read; no detached run for this pull request was found, and a run with the pull request in its context reads the pull request folder at its next agent step".to_string()
+    } else if let Some(end) = ended {
+        format!(
+            "appended; not yet read; the run ended at {} ({})",
+            end.at, end.outcome
+        )
+    } else {
+        "appended; not yet read".to_string()
+    };
+    println!("{}", sanitize_line(&format!("status: {status}")));
+    // Launches since the last read that could not take the guidance, in
+    // each folder written. One fan-out launch logs one drop in every folder
+    // it read, so a line is printed once.
+    let mut shown: Vec<String> = Vec::new();
+    for (folder, _) in &folders {
+        let state = read_log_state(folder);
+        if let Some(reason) = &state.log_error {
+            // An unreadable log says nothing about drops; say that rather
+            // than print nothing, which would read as "none".
+            println!(
+                "{}",
+                sanitize_line(&format!(
+                    "drop state unknown for {}: guidance.log cannot be read: {reason}",
+                    folder.display()
+                ))
+            );
+        }
+        for drop in state.drops_since_injection {
+            let line = render_drop_line(&drop);
+            if !shown.contains(&line) {
+                println!("{line}");
+                shown.push(line);
+            }
+        }
     }
     // After the append, so a failed append still prints exactly one line.
     if let Some(warning) = warning {
         eprintln!("recipe guide: warning: {}", sanitize_line(&warning));
     }
-    if let Some(error) = appended.log_error {
-        // The message holds the `guidance.log` path, so it carries whatever
-        // the destination's ancestors are named.
-        eprintln!(
-            "recipe guide: warning: the entry was added but guidance.log was not: {}",
-            sanitize_line(&error)
-        );
-    }
-    // Issue #3129: the entry is stored whether or not a waiter was woken,
-    // so this is a warning and the exit code stays 0.
-    if let Some(warning) = appended.wake_warning {
-        eprintln!("recipe guide: warning: {}", sanitize_line(&warning));
+    for appended in appended_all {
+        if let Some(error) = appended.log_error {
+            // The message holds the `guidance.log` path, so it carries
+            // whatever the destination's ancestors are named.
+            eprintln!(
+                "recipe guide: warning: the entry was added but guidance.log was not: {}",
+                sanitize_line(&error)
+            );
+        }
+        // Issue #3129: the entry is stored whether or not a waiter was
+        // woken, so this is a warning and the exit code stays 0.
+        if let Some(warning) = appended.wake_warning {
+            eprintln!("recipe guide: warning: {}", sanitize_line(&warning));
+        }
     }
     Ok(())
 }
@@ -347,6 +419,11 @@ struct Destination {
     /// newest was taken -- and what [`Resolver::with_passed_over`] adds:
     /// the records that named this target and were not used.
     warning: Option<String>,
+    /// Issue #3161: the guidance folders of the live runs for a pull
+    /// request, written before [`Self::dir`] with the same entry.
+    live_runs: Vec<PathBuf>,
+    /// A pull request target for which no live run was found.
+    no_live_run: bool,
 }
 
 impl Destination {
@@ -355,6 +432,8 @@ impl Destination {
             dir: run_dir.join(GUIDANCE_DIR),
             source: Source::Run,
             warning,
+            live_runs: Vec::new(),
+            no_live_run: false,
         }
     }
 }
@@ -488,7 +567,7 @@ fn check_recorded_path(path: &Path, want_dir: bool) -> Result<(), String> {
 /// defeats both. What stands between a swapped link and the entry is the
 /// check on the destination at write time, which is unchanged.
 #[derive(Default)]
-struct RootChecks(HashMap<PathBuf, Result<(), String>>);
+pub(super) struct RootChecks(HashMap<PathBuf, Result<(), String>>);
 
 impl RootChecks {
     /// The work root and `runs` folder of `runs` are usable. Computed once
@@ -540,7 +619,7 @@ impl RootChecks {
 /// match the target against the attempts the report lists without asking
 /// this function to conflate "the record is trustworthy" with "this folder
 /// holds the target" (issue #2818).
-fn accept_recorded(
+pub(super) fn accept_recorded(
     recorded: &str,
     run_id: Option<&str>,
     roots: &mut RootChecks,
@@ -1016,6 +1095,21 @@ fn resolve_target(target: &str) -> Result<Destination, GuideError> {
     }
 }
 
+/// Issue #3162: the guidance folder of the run that `target` names as a
+/// detached session, a run folder name or a correlation id (rules 3 and 4),
+/// for `recipe guidance show|wait`. Reads and creates nothing.
+pub(super) fn run_guidance_dir(target: &str) -> Result<PathBuf, GuideError> {
+    let mut resolver = Resolver::new(target);
+    let found = match resolver.session_destination()? {
+        Some(found) => Some(found),
+        None => resolver.run_destination()?,
+    };
+    match found {
+        Some(found) => Ok(found.dir),
+        None => Err(resolver.not_found()),
+    }
+}
+
 /// The first rule that matches `target`, or `None` when every rule misses.
 fn first_match(
     resolver: &mut Resolver<'_>,
@@ -1032,15 +1126,45 @@ fn first_match(
             return Ok(resolver.issue_destination(Some(&issue), issue.number));
         }
         let pr = parse_pr_url(target)?;
+        // Issue #3161: every live run for the pull request reads its own
+        // run folder, whatever its work root and state folder, so the entry
+        // goes there as well. Found before anything is created: a live run
+        // that cannot be reached is a refusal, and a refusal writes nothing.
+        let live = live_runs_for_pr(&pr);
+        let unreachable: Vec<String> = live
+            .iter()
+            .filter_map(|run| {
+                run.reachable
+                    .as_ref()
+                    .err()
+                    .map(|reason| format!("session {} ({reason})", quoted(&run.session)))
+            })
+            .collect();
+        if !unreachable.is_empty() {
+            return Err(GuideError::Unreachable(format!(
+                "refusing to add guidance for {target}: {} live run(s) for this pull request cannot be reached: {}; nothing was written. Repair the run folder, or guide the run by its session name once it can be read",
+                unreachable.len(),
+                unreachable.join("; ")
+            )));
+        }
         let root = state_root().map_err(|reason| {
             GuideError::NotFound(format!("cannot find the state folder: {reason}"))
         })?;
         let key = pr_key(&pr.owner, &pr.repo, pr.number);
         ensure_private_chain(&root, &[AUTO_DRIVE_DIR, &key])?;
+        let pr_dir = pr_guidance_parent(&root, &key).join(GUIDANCE_DIR);
+        let mut live_runs: Vec<PathBuf> = Vec::new();
+        for dir in live.into_iter().filter_map(|run| run.reachable.ok()) {
+            if dir != pr_dir && !live_runs.contains(&dir) {
+                live_runs.push(dir);
+            }
+        }
         return Ok(Some(Destination {
-            dir: pr_guidance_parent(&root, &key).join(GUIDANCE_DIR),
+            dir: pr_dir,
             source: Source::Pr,
             warning: None,
+            no_live_run: live_runs.is_empty(),
+            live_runs,
         }));
     }
     if let Some(found) = resolver.session_destination()? {

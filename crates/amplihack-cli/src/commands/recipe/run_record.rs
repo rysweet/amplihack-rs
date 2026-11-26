@@ -174,8 +174,7 @@ pub(crate) fn find(work_root: &Path, run_id: &str) -> Result<Option<Record>> {
     }
     let entries = fs::read_dir(&runs).with_context(|| format!("cannot list {}", runs.display()))?;
     let name = file_name(run_id);
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let euid = unsafe { libc::geteuid() };
+    let euid = current_euid();
     let mut first_error: Option<anyhow::Error> = None;
     for entry in entries {
         let found = entry
@@ -190,6 +189,13 @@ pub(crate) fn find(work_root: &Path, run_id: &str) -> Result<Option<Record>> {
         }
     }
     first_error.map_or(Ok(None), Err)
+}
+
+/// The effective user id of this process, which a trusted record must be
+/// owned by.
+fn current_euid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
 }
 
 /// The acceptable record `name` in the `procs` folder of run folder `entry`.
@@ -211,6 +217,27 @@ fn record_in(entry: &fs::DirEntry, name: &str, run_id: &str, euid: u32) -> Resul
         }
     }
     read_record(&procs.join(name), run_id, euid)
+}
+
+/// The record of attempt `run_id` in the run folder `run_dir` itself, under
+/// the rules of [`find`]: `Ok(None)` when there is none that can be trusted,
+/// `Err` when one could not be read. Issue #3161: `recipe guide` asks this
+/// of the folder a session pointer names, whatever work root it is under.
+pub(crate) fn read_in(run_dir: &Path, run_id: &str) -> Result<Option<Record>> {
+    if !validate_run_id(run_id) {
+        return Ok(None);
+    }
+    let procs = run_dir.join(PROCS);
+    match fs::symlink_metadata(&procs) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot check {}", procs.display()));
+        }
+    }
+    let euid = current_euid();
+    read_record(&procs.join(file_name(run_id)), run_id, euid)
 }
 
 fn read_record(path: &Path, run_id: &str, euid: u32) -> Result<Option<Record>> {
