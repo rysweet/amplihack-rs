@@ -285,7 +285,7 @@ expect AC3-merge-state-unknown UNREADABLE facts-unreadable "" \
   "a merge state GitHub has not computed, beside an unreadable count, is a failed measurement"
 SPLIT_LABELS="${SPLIT_LABELS} AC3-merge-state-unknown"
 
-# The shape PR #999 (mistt-repo/Product-Management) stopped on. Its round-3
+# The shape PR #999 (example-org/repo-a) stopped on. Its round-3
 # platform facts, still in that run's merge-ready-round-3.log, were
 # merge_state=UNKNOWN, mergeable=UNKNOWN, an empty reviewDecision and no
 # readable count, read straight after a push, before GitHub had computed the

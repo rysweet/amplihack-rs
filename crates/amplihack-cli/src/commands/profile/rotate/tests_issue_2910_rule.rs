@@ -131,28 +131,28 @@ fn swapped(d: &Decision) -> Option<(&str, Reason)> {
 /// still running" is an unread probe. The live login is `rrowan` (100/67).
 fn nov22_candidates() -> Vec<Measured> {
     vec![
-        out("aanderson", 0.0, 100.0),
-        out("bbuck", 0.0, 100.0),
-        out("ccapstone", 0.0, 100.0),
-        out("ddrumpf", 100.0, 74.0),
-        m("eelsworth", 96.0, 82.0),
-        unread("ffarmer"),
-        out("ggrant", 100.0, 12.0),
-        out("hharkness", 0.0, 100.0),
-        out("iivanovich", 0.0, 100.0),
-        m("jjansport", 90.0, 10.0),
-        unread("kkane"),
-        m("llarame", 0.0, 95.0),
-        unread("mmorrison"),
-        out("nnorth", 100.0, 50.0),
-        out("oole", 0.0, 100.0),
-        out("ppatton", 100.0, 99.0),
-        m("qquinn", 88.0, 20.0),
-        out("rraborne", 100.0, 22.0),
-        out("rssourcelabs", 0.0, 100.0),
+        out("login-aa", 0.0, 100.0),
+        out("login-ab", 0.0, 100.0),
+        out("login-ac", 0.0, 100.0),
+        out("login-ad", 100.0, 74.0),
+        m("login-ae", 96.0, 82.0),
+        unread("login-af"),
+        out("login-ag", 100.0, 12.0),
+        out("login-ah", 0.0, 100.0),
+        out("login-ai", 0.0, 100.0),
+        m("login-aj", 90.0, 10.0),
+        unread("login-ak"),
+        m("login-al", 0.0, 95.0),
+        unread("login-an"),
+        out("login-ao", 100.0, 50.0),
+        out("login-ap", 0.0, 100.0),
+        out("login-aq", 100.0, 99.0),
+        m("login-ar", 88.0, 20.0),
+        out("login-at", 100.0, 22.0),
+        out("login-au", 0.0, 100.0),
         m("ssorrel", 93.0, 22.0),
-        m("uunze", 90.0, 71.0),
-        m("yyandis", 88.0, 71.0),
+        m("login-bd", 90.0, 71.0),
+        m("login-bh", 88.0, 71.0),
     ]
 }
 
@@ -295,10 +295,10 @@ fn upgrade_floor_needs_a_gain_above_zero_and_the_upgrade_margin() {
 
 #[test]
 fn tier_one_ranks_before_a_larger_room_in_tier_two() {
-    // llarame: session 0 (tier 1), room 5. qquinn: session 88 (tier 2), room 12.
-    let c = [m("qquinn", 88.0, 20.0), m("llarame", 0.0, 95.0)];
+    // login-al: session 0 (tier 1), room 5. login-ar: session 88 (tier 2), room 12.
+    let c = [m("login-ar", 88.0, 20.0), m("login-al", 0.0, 95.0)];
     let r = ranked(&nov22(), &c, 0);
-    assert_eq!(names(&r), ["llarame", "qquinn"]);
+    assert_eq!(names(&r), ["login-al", "login-ar"]);
     assert_eq!(r[0].1, 5);
     assert_eq!(r[1].1, 12);
 }
@@ -322,8 +322,8 @@ fn within_a_tier_the_larger_room_wins_then_the_lower_week_then_the_name() {
 #[test]
 fn a_lower_week_beats_a_higher_one_at_equal_room() {
     // Both room 12; both tier 2.
-    let c = [m("yyandis", 88.0, 71.0), m("qquinn", 88.0, 20.0)];
-    assert_eq!(names(&ranked(&nov22(), &c, 0)), ["qquinn", "yyandis"]);
+    let c = [m("login-bh", 88.0, 71.0), m("login-ar", 88.0, 20.0)];
+    assert_eq!(names(&ranked(&nov22(), &c, 0)), ["login-ar", "login-bh"]);
 }
 
 #[test]
@@ -426,7 +426,7 @@ fn a_target_with_room_that_is_past_a_threshold_is_a_plan_room_swap() {
     assert_eq!(
         swap_reason(&s, &live(0.0, 95.0)),
         Reason::PlanRoom,
-        "llarame"
+        "login-al"
     );
 }
 
@@ -437,25 +437,25 @@ fn a_target_with_room_that_is_past_a_threshold_is_a_plan_room_swap() {
 #[test]
 fn s1_leaves_a_session_fresh_week_high_login_for_the_one_with_more_room() {
     let c = [
-        m("llarame", 87.0, 54.0), // room 13
-        m("ffarmer", 93.0, 54.0), // room 7
-        m("oole", 97.0, 54.0),    // room 3
-        m("nnorth", 98.0, 55.0),  // room 2
+        m("login-al", 87.0, 54.0), // room 13
+        m("login-af", 93.0, 54.0), // room 7
+        m("login-ap", 97.0, 54.0), // room 3
+        m("login-ao", 98.0, 55.0), // room 2
     ];
     let d = decide(&defaults(), &live(28.0, 95.0), &c, None, NOW);
-    assert_eq!(swapped(&d), Some(("llarame", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-al", Reason::Threshold)), "{d:?}");
 }
 
 /// S2: the login with the same room as the live one is never the target.
 #[test]
 fn s2_never_chooses_the_login_that_leaves_no_more_room() {
     let c = [
-        m("ccapstone", 92.0, 13.0), // room 8, the same as the live login's
-        m("nnorth", 86.0, 53.0),    // room 14
-        m("oole", 86.0, 53.0),      // room 14
+        m("login-ac", 92.0, 13.0), // room 8, the same as the live login's
+        m("login-ao", 86.0, 53.0), // room 14
+        m("login-ap", 86.0, 53.0), // room 14
     ];
     let d = decide(&defaults(), &live(92.0, 54.0), &c, None, NOW);
-    assert_eq!(swapped(&d), Some(("nnorth", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-ao", Reason::Threshold)), "{d:?}");
 }
 
 /// S3: a login that just fails the margin is never chosen over ones that pass,
@@ -463,14 +463,14 @@ fn s2_never_chooses_the_login_that_leaves_no_more_room() {
 #[test]
 fn s3_never_chooses_a_login_below_the_floor_and_breaks_ties_by_week_then_name() {
     let c = [
-        m("ddrumpf", 92.0, 13.0),   // room 8, below the floor of 4 + 5
-        m("kkane", 87.0, 68.0),     // room 13
-        m("mmorrison", 87.0, 67.0), // room 13
-        m("nnorth", 87.0, 67.0),    // room 13
-        out("bbuck", 0.0, 100.0),
+        m("login-ad", 92.0, 13.0), // room 8, below the floor of 4 + 5
+        m("login-ak", 87.0, 68.0), // room 13
+        m("login-an", 87.0, 67.0), // room 13
+        m("login-ao", 87.0, 67.0), // room 13
+        out("login-ab", 0.0, 100.0),
     ];
     let d = decide(&defaults(), &live(96.0, 70.0), &c, None, NOW);
-    assert_eq!(swapped(&d), Some(("mmorrison", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-an", Reason::Threshold)), "{d:?}");
 }
 
 // --- 22 November (AC2, AC9) ---------------------------------------------------------
@@ -479,7 +479,7 @@ fn s3_never_chooses_a_login_below_the_floor_and_breaks_ties_by_week_then_name() 
 /// is below 100% on both windows is a target, with no margin (D2), and the one
 /// whose session is fresh ranks first.
 #[test]
-fn the_22_nov_0556_cycle_swaps_to_llarame() {
+fn the_22_nov_0556_cycle_swaps_to_login_al() {
     let d = decide(
         &nov22(),
         &live_out(100.0, 67.0),
@@ -487,18 +487,18 @@ fn the_22_nov_0556_cycle_swaps_to_llarame() {
         None,
         NOW,
     );
-    assert_eq!(swapped(&d), Some(("llarame", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-al", Reason::Threshold)), "{d:?}");
 }
 
 #[test]
-fn without_llarame_the_22_nov_cycle_takes_the_login_with_the_most_room() {
+fn without_login_al_the_22_nov_cycle_takes_the_login_with_the_most_room() {
     let c: Vec<Measured> = nov22_candidates()
         .into_iter()
-        .filter(|c| c.name.as_str() != "llarame")
+        .filter(|c| c.name.as_str() != "login-al")
         .collect();
     let d = decide(&nov22(), &live_out(100.0, 67.0), &c, None, NOW);
-    // qquinn and yyandis both have room 12; qquinn's week is lower.
-    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    // login-ar and login-bh both have room 12; login-ar's week is lower.
+    assert_eq!(swapped(&d), Some(("login-ar", Reason::Threshold)), "{d:?}");
 }
 
 #[test]
@@ -511,7 +511,7 @@ fn with_no_room_on_the_live_login_the_hold_does_not_stop_the_move() {
         Some(NOW - 10),
         NOW,
     );
-    assert_eq!(swapped(&d), Some(("llarame", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-al", Reason::Threshold)), "{d:?}");
 }
 
 /// 05:48:27Z. The live login (86/65) has 14 points of room and is past
@@ -530,13 +530,13 @@ fn the_22_nov_0548_cycle_stays_because_no_login_leaves_17_points() {
     }
 }
 
-/// One cycle after the 05:57Z swap: the live login is llarame (0/95, room 5),
+/// One cycle after the 05:57Z swap: the live login is login-al (0/95, room 5),
 /// and the best login that leaves it 3 more is past `--session-at`. Inside
 /// `--hold` the rotator stays; once the hold has run out it moves (D3).
 #[test]
 fn after_the_swap_a_move_to_a_login_past_session_at_waits_for_the_hold() {
     let mut c = nov22_candidates();
-    c.retain(|c| c.name.as_str() != "llarame");
+    c.retain(|c| c.name.as_str() != "login-al");
     c.push(out("rrowan", 100.0, 67.0));
     let l = live(0.0, 95.0);
 
@@ -544,7 +544,7 @@ fn after_the_swap_a_move_to_a_login_past_session_at_waits_for_the_hold() {
     assert_eq!(decide(&nov22(), &l, &c, inside, NOW), Decision::Alert);
     match no_move(&nov22(), &l, &c, inside, NOW) {
         NoMove::Held { to, session, since } => {
-            assert_eq!(to.as_str(), "qquinn");
+            assert_eq!(to.as_str(), "login-ar");
             assert_eq!(session as i64, 88);
             assert_eq!(since, 600);
         }
@@ -553,10 +553,10 @@ fn after_the_swap_a_move_to_a_login_past_session_at_waits_for_the_hold() {
 
     let after = Some(NOW - 7200);
     let d = decide(&nov22(), &l, &c, after, NOW);
-    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-ar", Reason::Threshold)), "{d:?}");
     // A ledger with no swap time holds nothing.
     let d = decide(&nov22(), &l, &c, None, NOW);
-    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-ar", Reason::Threshold)), "{d:?}");
 }
 
 /// `decide` and `no_move` each apply the hold; this keeps them in step. Over a
@@ -613,8 +613,8 @@ fn decide_and_no_move_agree_on_the_hold() {
 
 #[test]
 fn the_hold_never_stops_a_move_to_a_login_below_session_at() {
-    // llarame is live and spent on its week; a fresh login is available.
-    let c = [m("fresh", 10.0, 20.0), m("qquinn", 88.0, 20.0)];
+    // login-al is live and spent on its week; a fresh login is available.
+    let c = [m("fresh", 10.0, 20.0), m("login-ar", 88.0, 20.0)];
     let d = decide(&nov22(), &live(0.0, 95.0), &c, Some(NOW - 10), NOW);
     assert_eq!(swapped(&d), Some(("fresh", Reason::Threshold)), "{d:?}");
 }
@@ -622,25 +622,25 @@ fn the_hold_never_stops_a_move_to_a_login_below_session_at() {
 #[test]
 fn a_failed_live_probe_is_not_held_by_the_move_hold() {
     // Damping holds failed-probe swaps itself; this rule must not add to it.
-    let c = [m("qquinn", 88.0, 20.0)];
+    let c = [m("login-ar", 88.0, 20.0)];
     let d = decide(&nov22(), &Reading::Failed, &c, Some(NOW - 10), NOW);
-    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-ar", Reason::Threshold)), "{d:?}");
 }
 
 #[test]
 fn hold_zero_lets_the_move_go_at_once() {
     let mut c = nov22_candidates();
-    c.retain(|c| c.name.as_str() != "llarame");
+    c.retain(|c| c.name.as_str() != "login-al");
     let s = Settings { hold: 0, ..nov22() };
     let d = decide(&s, &live(0.0, 95.0), &c, Some(NOW - 1), NOW);
-    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-ar", Reason::Threshold)), "{d:?}");
 }
 
 // --- 22 November at the deployed thresholds, 95/98 -----------------------------------
 
 /// Every 22 November login with room and a session below 95% is in the first
-/// tier, so the ranking is by room now: qquinn and yyandis (12, qquinn's week
-/// is lower), jjansport and uunze (10), ssorrel (7), llarame (5). eelsworth
+/// tier, so the ranking is by room now: login-ar and login-bh (12, login-ar's week
+/// is lower), login-aj and login-bd (10), ssorrel (7), login-al (5). login-ae
 /// (96%) is in the second tier.
 #[test]
 fn at_the_deployed_settings_the_22_nov_logins_rank_by_room_now() {
@@ -649,25 +649,19 @@ fn at_the_deployed_settings_the_22_nov_logins_rank_by_room_now() {
     assert_eq!(
         names(&r),
         [
-            "qquinn",
-            "yyandis",
-            "jjansport",
-            "uunze",
-            "ssorrel",
-            "llarame",
-            "eelsworth"
+            "login-ar", "login-bh", "login-aj", "login-bd", "ssorrel", "login-al", "login-ae"
         ]
     );
 }
 
 /// 05:56:57Z at 95/98: the live login is full, every login below 100% on
-/// both windows qualifies, and qquinn ranks first. Its windows are below both
+/// both windows qualifies, and login-ar ranks first. Its windows are below both
 /// deployed thresholds, so the swap is a threshold swap.
 #[test]
-fn the_22_nov_0556_cycle_at_the_deployed_settings_swaps_to_qquinn() {
+fn the_22_nov_0556_cycle_at_the_deployed_settings_swaps_to_login_ar() {
     let s = deployed();
     let d = decide(&s, &live_out(100.0, 67.0), &nov22_candidates(), None, NOW);
-    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-ar", Reason::Threshold)), "{d:?}");
     assert_eq!(swap_reason(&s, &live(88.0, 20.0)), Reason::Threshold);
     // The hold never stops a move off a login with no room.
     let d = decide(
@@ -677,7 +671,7 @@ fn the_22_nov_0556_cycle_at_the_deployed_settings_swaps_to_qquinn() {
         Some(NOW - 10),
         NOW,
     );
-    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-ar", Reason::Threshold)), "{d:?}");
 }
 
 /// 05:48:27Z at 95/98: the live login (86/65, room 14) is below both
@@ -697,13 +691,13 @@ fn the_22_nov_0548_cycle_at_the_deployed_settings_is_a_plain_stay() {
 }
 
 /// At 95/98 the live login reaches `--session-at` with room 5. A move needs
-/// room 8, and qquinn (room 12) is below `--session-at`, so the hold does
+/// room 8, and login-ar (room 12) is below `--session-at`, so the hold does
 /// not apply and it moves at once.
 #[test]
 fn at_the_deployed_settings_a_live_login_at_95_percent_moves_at_once() {
     let l = live(95.0, 66.0);
     let d = decide(&deployed(), &l, &nov22_candidates(), Some(NOW - 10), NOW);
-    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-ar", Reason::Threshold)), "{d:?}");
     // One point below the threshold nothing needs to move.
     let d = decide(
         &deployed(),
@@ -839,7 +833,7 @@ fn no_move_names_the_case_with_no_eligible_login() {
 
 #[test]
 fn no_move_counts_since_from_the_swap_and_never_goes_negative() {
-    let c = [m("qquinn", 88.0, 20.0)];
+    let c = [m("login-ar", 88.0, 20.0)];
     let l = live(0.0, 95.0);
     match no_move(&nov22(), &l, &c, Some(NOW - 5), NOW) {
         NoMove::Held { since, .. } => assert_eq!(since, 5),
@@ -847,5 +841,5 @@ fn no_move_counts_since_from_the_swap_and_never_goes_negative() {
     }
     // A swap time in the future is not a hold (S11), so the move goes ahead.
     let d = decide(&nov22(), &l, &c, Some(NOW + 500), NOW);
-    assert_eq!(swapped(&d), Some(("qquinn", Reason::Threshold)), "{d:?}");
+    assert_eq!(swapped(&d), Some(("login-ar", Reason::Threshold)), "{d:?}");
 }

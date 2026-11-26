@@ -155,7 +155,7 @@ scope unit of its own:
 
 ```text
 systemd-run --user --scope --collect --quiet --unit=amplihack-tmux-server-1793349461-1 -- \
-  tmux new-session -d -s coordinator -n main -c /home/alex/src/mistt -- ...
+  tmux new-session -d -s coordinator -n main -c /home/alex/src/example-org -- ...
 ```
 
 The name ends in the Unix time of the launch and a counter that starts at 1
@@ -177,7 +177,7 @@ systemctl --user status 'amplihack-tmux-server-*'
      Loaded: loaded (/run/user/1000/systemd/transient/amplihack-tmux-server-1793349461-1.scope; transient)
      Active: active (running) since Thu 2026-10-29 23:27:41 UTC; 9h ago
      CGroup: /user.slice/user-1000.slice/user@1000.service/app.slice/amplihack-tmux-server-1793349461-1.scope
-             ├─48211 tmux new-session -d -s coordinator -n main -c /home/alex/src/mistt ...
+             ├─48211 tmux new-session -d -s coordinator -n main -c /home/alex/src/example-org ...
              ├─48214 /home/alex/.local/bin/amplihack claude --no-reflection --profile work --supervise coordinator ...
              └─48230 claude --resume 0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c ...
 ```
@@ -256,7 +256,7 @@ Create a tmux session for the agent, then start Claude Code in it with
 `--supervise NAME`:
 
 ```bash
-tmux new-session -s coordinator -n main -c ~/src/mistt
+tmux new-session -s coordinator -n main -c ~/src/example-org
 ```
 
 In the new tmux session:
@@ -299,7 +299,7 @@ it. From inside the session, use Claude Code's `!` prefix:
 ```
 
 ```text
-registered coordinator: session coordinator, window main, conversation 0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c, directory /home/alex/src/mistt
+registered coordinator: session coordinator, window main, conversation 0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c, directory /home/alex/src/example-org
 ```
 
 From any other shell, name the tmux pane the session runs in:
@@ -401,15 +401,15 @@ amplihack agent status
 ```
 
 ```text
-NAME          STATE   CONVERSATION                          DIRECTORY               LAST RECOVERY
-area-billing  active  5c2f8e1a-7d3b-4a9e-b6c4-1e8f2a7d3c95  /home/alex/src/billing  -
-area-docs     active  2b7e4f1c-8d3a-4c6e-9f2b-5a1d7e3c8b64  /home/alex/src/docs     -
-area-ingest   active  9a4e7c21-5b3d-4e8f-a1c6-3f2d8b7e6a90  /home/alex/src/ingest   -
-area-reports  active  6f3b9d2e-4a7c-4e1b-8c5d-2e9a7f1b4d36  /home/alex/src/reports  -
-area-search   active  e7b1d4c9-2a6f-4e3b-8d5c-9f1a7e2b6d48  /home/alex/src/search   -
-coordinator   active  0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c  /home/alex/src/mistt    -
-custodian     active  3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57  /home/alex/src/mistt    -
-writer        active  b4e9a2d7-6c1f-4d8b-a3e5-7f2c9d6b1a84  /home/alex/src/mistt    -
+NAME          STATE   CONVERSATION                          DIRECTORY                   LAST RECOVERY
+area-billing  active  5c2f8e1a-7d3b-4a9e-b6c4-1e8f2a7d3c95  /home/alex/src/billing      -
+area-docs     active  2b7e4f1c-8d3a-4c6e-9f2b-5a1d7e3c8b64  /home/alex/src/docs         -
+area-ingest   active  9a4e7c21-5b3d-4e8f-a1c6-3f2d8b7e6a90  /home/alex/src/ingest       -
+area-reports  active  6f3b9d2e-4a7c-4e1b-8c5d-2e9a7f1b4d36  /home/alex/src/reports      -
+area-search   active  e7b1d4c9-2a6f-4e3b-8d5c-9f1a7e2b6d48  /home/alex/src/search       -
+coordinator   active  0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c  /home/alex/src/example-org  -
+custodian     active  3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57  /home/alex/src/example-org  -
+writer        active  b4e9a2d7-6c1f-4d8b-a3e5-7f2c9d6b1a84  /home/alex/src/example-org  -
 ```
 
 `status` reads the registry only; it checks no processes and no tmux
@@ -520,15 +520,15 @@ journalctl --user -u amplihack-agent-supervisor.service -f
 `LAST RECOVERY` column:
 
 ```text
-NAME          STATE   CONVERSATION                          DIRECTORY               LAST RECOVERY
-area-billing  active  5c2f8e1a-7d3b-4a9e-b6c4-1e8f2a7d3c95  /home/alex/src/billing  2026-10-29T23:27:41Z resumed
-area-docs     active  2b7e4f1c-8d3a-4c6e-9f2b-5a1d7e3c8b64  /home/alex/src/docs     2026-10-29T23:27:42Z resumed
-area-ingest   active  9a4e7c21-5b3d-4e8f-a1c6-3f2d8b7e6a90  /home/alex/src/ingest   2026-10-29T23:27:42Z resumed
-area-reports  active  6f3b9d2e-4a7c-4e1b-8c5d-2e9a7f1b4d36  /home/alex/src/reports  2026-10-29T23:27:43Z resumed
-area-search   active  e7b1d4c9-2a6f-4e3b-8d5c-9f1a7e2b6d48  /home/alex/src/search   2026-10-29T23:27:43Z resumed
-coordinator   active  0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c  /home/alex/src/mistt    2026-10-29T23:27:41Z resumed
-custodian     active  3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57  /home/alex/src/mistt    2026-10-29T23:28:43Z resumed
-writer        active  b4e9a2d7-6c1f-4d8b-a3e5-7f2c9d6b1a84  /home/alex/src/mistt    2026-10-29T23:28:44Z resumed
+NAME          STATE   CONVERSATION                          DIRECTORY                   LAST RECOVERY
+area-billing  active  5c2f8e1a-7d3b-4a9e-b6c4-1e8f2a7d3c95  /home/alex/src/billing      2026-10-29T23:27:41Z resumed
+area-docs     active  2b7e4f1c-8d3a-4c6e-9f2b-5a1d7e3c8b64  /home/alex/src/docs         2026-10-29T23:27:42Z resumed
+area-ingest   active  9a4e7c21-5b3d-4e8f-a1c6-3f2d8b7e6a90  /home/alex/src/ingest       2026-10-29T23:27:42Z resumed
+area-reports  active  6f3b9d2e-4a7c-4e1b-8c5d-2e9a7f1b4d36  /home/alex/src/reports      2026-10-29T23:27:43Z resumed
+area-search   active  e7b1d4c9-2a6f-4e3b-8d5c-9f1a7e2b6d48  /home/alex/src/search       2026-10-29T23:27:43Z resumed
+coordinator   active  0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c  /home/alex/src/example-org  2026-10-29T23:27:41Z resumed
+custodian     active  3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57  /home/alex/src/example-org  2026-10-29T23:28:43Z resumed
+writer        active  b4e9a2d7-6c1f-4d8b-a3e5-7f2c9d6b1a84  /home/alex/src/example-org  2026-10-29T23:28:44Z resumed
 ```
 
 ## Clean exits stay ended
@@ -563,9 +563,9 @@ Ending an agent writes no line in the log. `amplihack agent status` shows an
 ended agent's state with the time and the source:
 
 ```text
-NAME          STATE                                 CONVERSATION                          DIRECTORY               LAST RECOVERY
+NAME          STATE                                 CONVERSATION                          DIRECTORY                   LAST RECOVERY
 ...
-writer        ended 2026-10-30T08:02:15Z (wrapper)  b4e9a2d7-6c1f-4d8b-a3e5-7f2c9d6b1a84  /home/alex/src/mistt    2026-10-29T23:28:44Z resumed
+writer        ended 2026-10-30T08:02:15Z (wrapper)  b4e9a2d7-6c1f-4d8b-a3e5-7f2c9d6b1a84  /home/alex/src/example-org  2026-10-29T23:28:44Z resumed
 ```
 
 To supervise an ended agent again, start it with
@@ -587,9 +587,9 @@ resume it. It marks the agent `stopped` and writes an alert:
 the table:
 
 ```text
-NAME          STATE    CONVERSATION                          DIRECTORY               LAST RECOVERY
+NAME          STATE    CONVERSATION                          DIRECTORY                   LAST RECOVERY
 ...
-custodian     stopped  3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57  /home/alex/src/mistt    2026-10-30T00:41:40Z stopped: restart limit
+custodian     stopped  3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57  /home/alex/src/example-org  2026-10-30T00:41:40Z stopped: restart limit
 ...
 ALERT custodian: stopped: restart limit (3 restarts in the last hour)
 ```
@@ -632,7 +632,7 @@ jq '.agents.custodian | {tmux_session, tmux_window, launch_dir, conversation_id,
 {
   "tmux_session": "custodian",
   "tmux_window": "main",
-  "launch_dir": "/home/alex/src/mistt",
+  "launch_dir": "/home/alex/src/example-org",
   "conversation_id": "3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57",
   "model": "opus",
   "effort": "high",
@@ -651,7 +651,7 @@ Then open the agent's tmux session with a shell, and start the session there
 with the same options:
 
 ```bash
-tmux new-session -s custodian -n main -c /home/alex/src/mistt
+tmux new-session -s custodian -n main -c /home/alex/src/example-org
 ```
 
 ```bash

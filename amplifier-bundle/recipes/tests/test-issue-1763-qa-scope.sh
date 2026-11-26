@@ -571,10 +571,10 @@ echo "== #1763 helper: autodrive_qa_target, the reference table =="
 repo Cargo.toml crates/x/Cargo.toml crates/x/src/lib.rs; base; change crates/x/src/lib.rs
 expect_helper t-root-ws autodrive_qa_target $'rust-cli\t.' "$B"
 repo pyproject.toml grid-encode-decode/Cargo.toml grid-encode-decode/src/lib.rs; base
-expect_helper t-jamestown-nobase autodrive_qa_target $'python\t.'
+expect_helper t-repo-b-nobase autodrive_qa_target $'python\t.'
 change grid-encode-decode/src/lib.rs
-expect_helper t-jamestown-crate autodrive_qa_target $'rust-cli\tgrid-encode-decode' "$B"
-expect_helper t-jamestown-crate-type autodrive_repo_type "rust-cli" "$B"
+expect_helper t-repo-b-crate autodrive_qa_target $'rust-cli\tgrid-encode-decode' "$B"
+expect_helper t-repo-b-crate-type autodrive_repo_type "rust-cli" "$B"
 repo Cargo.toml web/package.json web/src/app.ts README.md; base; change web/src/app.ts
 expect_helper t-web autodrive_qa_target $'node\tweb' "$B"
 expect_helper t-web-greq autodrive_gadugi_required "true" "$B"
@@ -1010,7 +1010,7 @@ ci_repo "$(steps $'      - run: cargo test\n        working-directory: .//engine
 ci_detected ci-wd-dot-double-slash "a .// working-directory" unsafe-dir
 ci_repo "$(steps $'      - run: cargo test\n        working-directory: ./../x\n')"
 ci_detected ci-wd-dot-parent "a ./.. working-directory" unsafe-dir
-# jamestown shape: a root pyproject.toml, a nested Rust crate, a root pytest step.
+# repo-b shape: a root pyproject.toml, a nested Rust crate, a root pytest step.
 repo pyproject.toml tests/test_x.py grid-encode-decode/Cargo.toml grid-encode-decode/src/lib.rs
 put .github/workflows/ci.yml "$(steps $'      - run: pytest\n')"; base; change grid-encode-decode/src/lib.rs
 : > "$CALLS"; run_tool "$B"

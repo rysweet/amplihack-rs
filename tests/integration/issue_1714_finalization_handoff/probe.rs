@@ -3,7 +3,7 @@
 //! must agree with the open-PR check about "is this the same PR?".
 //!
 //! Before this, the probe accepted only a PR head that is an ancestor of the
-//! local HEAD (#1467). On the mistt #138 history, with the merge of main
+//! local HEAD (#1467). On the example-org #138 history, with the merge of main
 //! already on the PR before finalization starts (another checkout, or
 //! GitHub's "Update branch" button), it reported `FAILED_INVALID_INPUT`
 //! ("stale PR metadata"), and the validator failed closed on that prior state
@@ -51,7 +51,7 @@ pub(super) fn answer(fx: &Fixture, pr_head: &str, rollup: Value) {
     fx.gh_list(&json!([view]));
 }
 
-/// The mistt #138 history with M only on the remote: the local HEAD is L,
+/// The example-org #138 history with M only on the remote: the local HEAD is L,
 /// origin/<branch> last held L (this checkout's own push), and M is not in
 /// the local object store.
 pub(super) fn merged_on_remote_before_finalize() -> (Fixture, String, String) {

@@ -192,7 +192,7 @@ tests/
 ### Run All Stop Hook Tests
 
 ```bash
-cd /Users/ryan/src/tempsaturday/worktree-issue-962
+cd /Users/you/src/tempsaturday/worktree-issue-962
 python -m pytest tests/unit/test_stop_hook*.py tests/unit/test_hook_processor_run.py \
                  tests/integration/test_stop_hook*.py tests/e2e/test_stop_hook*.py -v
 ```

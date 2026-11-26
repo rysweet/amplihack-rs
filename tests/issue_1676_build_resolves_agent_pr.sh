@@ -2,7 +2,7 @@
 # Regression tests for issue #1676 — autodrive-build step-03-resolve-pr stopped
 # a run with "phase 1 finished without a pull request" although an agent step
 # had opened the PR on the run's own branch, at the run's HEAD
-# (mistt-ui-platform #73, #80, #81).
+# (repo-h #73, #80, #81).
 #
 # Issue #2329 retired step-03's bash body: step-03 is now an agent step and
 # the duties the old command carried are stated in its prompt. This test pins

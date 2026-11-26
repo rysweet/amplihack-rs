@@ -328,7 +328,7 @@ stderr, a claim prints an `INFO` line and the claim list. A new `--json` flag
 prints one schema-1 line:
 
 ```json
-{"issue":463,"repo":"mistt-repo/mistt-app-ui","result":"claimed","reason":"open pull request #480 is working on issue #463","claims":[{"number":480,"url":"https://github.com/mistt-repo/mistt-app-ui/pull/480","state":"open","head":"feat/issues-463-464-runner-content-follow-ups","via":"closing-ref","source":"search","own":false}]}
+{"issue":463,"repo":"example-org/repo-c","result":"claimed","reason":"open pull request #480 is working on issue #463","claims":[{"number":480,"url":"https://github.com/example-org/repo-c/pull/480","state":"open","head":"feat/issues-463-464-runner-content-follow-ups","via":"closing-ref","source":"search","own":false}]}
 ```
 
 `--issue` must be numeric, `--head` a valid branch name and `--repo`

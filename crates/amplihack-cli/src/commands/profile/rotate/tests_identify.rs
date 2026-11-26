@@ -332,7 +332,7 @@ fn without_a_ledger_the_single_login_less_match_is_live() {
 
 #[test]
 fn login_less_profiles_of_one_user_in_two_orgs_are_not_ambiguous() {
-    // ryan-mistt-org and ryan-mistt-personal: one user, two subscriptions.
+    // login-aw and login-ax: one user, two subscriptions.
     let e = env();
     e.store.add(&n("personal")).unwrap();
     private(

@@ -122,9 +122,9 @@ fn a_move_off_the_key_makes_no_claim_about_plan_room() {
 #[test]
 fn the_key_held_alert_names_the_logins_not_measured() {
     assert_eq!(
-        msg::alert_key_held("work", &[n("ccapstone"), n("spare")]),
+        msg::alert_key_held("work", &[n("login-ac"), n("spare")]),
         "ALERT: API key not used live=work: no measured plan login has room, \
-         but these were not measured and may have: ccapstone, spare"
+         but these were not measured and may have: login-ac, spare"
     );
 }
 

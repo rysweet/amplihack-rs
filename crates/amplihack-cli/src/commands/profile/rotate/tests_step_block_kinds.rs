@@ -85,8 +85,8 @@ fn every_kind_with_a_stated_reset_is_stored_with_the_spend_reason() {
         LimitKind::Credits,
     ] {
         let r = root();
-        note_limit_block(&r.path, &n("wwest"), NOW, Some(NOW + 2 * HOUR), kind);
-        let b = block(&r, "wwest").unwrap_or_else(|| panic!("{kind:?}: no block"));
+        note_limit_block(&r.path, &n("login-bf"), NOW, Some(NOW + 2 * HOUR), kind);
+        let b = block(&r, "login-bf").unwrap_or_else(|| panic!("{kind:?}: no block"));
         assert_eq!((b.at, b.until), (NOW, NOW + 2 * HOUR), "{kind:?}");
         assert_eq!(b.reason, SPEND_LIMIT, "{kind:?}: older readers need this");
     }
@@ -103,16 +103,16 @@ fn a_session_block_lasts_at_most_five_hours_whatever_reset_it_states() {
     let r = root();
     note_limit_block(
         &r.path,
-        &n("wwest"),
+        &n("login-bf"),
         NOW,
         Some(NOW + 30 * DAY),
         LimitKind::Session,
     );
-    let b = block(&r, "wwest").expect("a session limit is still recorded");
+    let b = block(&r, "login-bf").expect("a session limit is still recorded");
     assert_eq!((b.at, b.until), (NOW, NOW + 5 * HOUR));
     // The ALERT names the end that was stored, not the one stated.
     let log = log_text(&r);
-    let alert = msg::alert_step_limit_block(&n("wwest"), LimitKind::Session, NOW + 5 * HOUR);
+    let alert = msg::alert_step_limit_block(&n("login-bf"), LimitKind::Session, NOW + 5 * HOUR);
     assert!(log.contains(&alert), "{log}");
 }
 
@@ -121,12 +121,12 @@ fn a_weekly_block_lasts_at_most_seven_days_whatever_reset_it_states() {
     let r = root();
     note_limit_block(
         &r.path,
-        &n("wwest"),
+        &n("login-bf"),
         NOW,
         Some(NOW + 30 * DAY),
         LimitKind::Weekly,
     );
-    let b = block(&r, "wwest").expect("a weekly limit is still recorded");
+    let b = block(&r, "login-bf").expect("a weekly limit is still recorded");
     assert_eq!((b.at, b.until), (NOW, NOW + WEEK));
 }
 
@@ -138,8 +138,8 @@ fn a_reset_inside_its_window_is_stored_unchanged() {
         (LimitKind::Weekly, NOW + WEEK),
     ] {
         let r = root();
-        note_limit_block(&r.path, &n("wwest"), NOW, Some(until), kind);
-        assert_eq!(block(&r, "wwest").unwrap().until, until, "{kind:?}");
+        note_limit_block(&r.path, &n("login-bf"), NOW, Some(until), kind);
+        assert_eq!(block(&r, "login-bf").unwrap().until, until, "{kind:?}");
     }
 }
 
@@ -147,9 +147,9 @@ fn a_reset_inside_its_window_is_stored_unchanged() {
 fn a_spend_or_credit_block_keeps_its_stated_reset() {
     for kind in [LimitKind::Spend, LimitKind::Credits] {
         let r = root();
-        note_limit_block(&r.path, &n("wwest"), NOW, Some(NOW + 20 * DAY), kind);
+        note_limit_block(&r.path, &n("login-bf"), NOW, Some(NOW + 20 * DAY), kind);
         assert_eq!(
-            block(&r, "wwest").unwrap().until,
+            block(&r, "login-bf").unwrap().until,
             NOW + 20 * DAY,
             "{kind:?}"
         );
@@ -162,8 +162,8 @@ fn a_reset_outside_the_span_rule_is_refused_before_any_window_shortens_it() {
     // reported as out of range rather than quietly cut to the window.
     for kind in [LimitKind::Session, LimitKind::Weekly] {
         let r = root();
-        note_limit_block(&r.path, &n("wwest"), NOW, Some(NOW + 400 * DAY), kind);
-        assert!(block(&r, "wwest").is_none(), "{kind:?}");
+        note_limit_block(&r.path, &n("login-bf"), NOW, Some(NOW + 400 * DAY), kind);
+        assert!(block(&r, "login-bf").is_none(), "{kind:?}");
         let log = log_text(&r);
         assert!(log.contains("stated reset out of range"), "{kind:?}: {log}");
     }
@@ -174,7 +174,7 @@ fn a_shortened_block_is_still_never_extended() {
     let r = root();
     note_limit_block(
         &r.path,
-        &n("wwest"),
+        &n("login-bf"),
         NOW,
         Some(NOW + 30 * DAY),
         LimitKind::Session,
@@ -183,12 +183,12 @@ fn a_shortened_block_is_still_never_extended() {
     // as it is, so a run of such lines cannot chain one block into another.
     note_limit_block(
         &r.path,
-        &n("wwest"),
+        &n("login-bf"),
         NOW + HOUR,
         Some(NOW + 30 * DAY),
         LimitKind::Session,
     );
-    assert_eq!(block(&r, "wwest").unwrap().until, NOW + 5 * HOUR);
+    assert_eq!(block(&r, "login-bf").unwrap().until, NOW + 5 * HOUR);
 }
 
 #[test]
@@ -196,14 +196,14 @@ fn the_stored_ledger_has_no_field_an_older_reader_would_refuse() {
     let r = root();
     note_limit_block(
         &r.path,
-        &n("wwest"),
+        &n("login-bf"),
         NOW,
         Some(NOW + WEEK),
         LimitKind::Weekly,
     );
     let raw: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&r.rs.ledger).unwrap()).unwrap();
-    let rec = &raw["overflow_blocked"]["wwest"];
+    let rec = &raw["overflow_blocked"]["login-bf"];
     assert_eq!(rec["reason"], "spend_limit");
     let mut keys: Vec<_> = rec.as_object().unwrap().keys().cloned().collect();
     keys.sort();
@@ -213,28 +213,28 @@ fn the_stored_ledger_has_no_field_an_older_reader_would_refuse() {
 #[test]
 fn a_spend_limit_with_no_stated_reset_falls_back_to_the_monthly_reset() {
     let r = root();
-    note_limit_block(&r.path, &n("wwest"), NOW, None, LimitKind::Spend);
-    assert_eq!(block(&r, "wwest").unwrap().until, spend_reset(NOW));
+    note_limit_block(&r.path, &n("login-bf"), NOW, None, LimitKind::Spend);
+    assert_eq!(block(&r, "login-bf").unwrap().until, spend_reset(NOW));
 }
 
 #[test]
 fn a_session_or_weekly_limit_with_no_stated_reset_writes_nothing() {
     for kind in [LimitKind::Session, LimitKind::Weekly, LimitKind::Credits] {
         let r = root();
-        note_limit_block(&r.path, &n("wwest"), NOW, None, kind);
-        assert!(block(&r, "wwest").is_none(), "{kind:?}");
+        note_limit_block(&r.path, &n("login-bf"), NOW, None, kind);
+        assert!(block(&r, "login-bf").is_none(), "{kind:?}");
         let log = log_text(&r);
         assert!(log.contains("no stated reset"), "{kind:?}: {log}");
-        assert!(log.contains("wwest"), "{log}");
+        assert!(log.contains("login-bf"), "{log}");
     }
 }
 
 #[test]
 fn the_spend_alert_is_the_one_1_2_193_wrote() {
     assert_eq!(
-        msg::alert_step_limit_block(&n("wwest"), LimitKind::Spend, NOW + WEEK),
+        msg::alert_step_limit_block(&n("login-bf"), LimitKind::Spend, NOW + WEEK),
         format!(
-            "ALERT: login wwest hit its spend limit; blocked until {}",
+            "ALERT: login login-bf hit its spend limit; blocked until {}",
             timestamp(NOW + WEEK)
         )
     );
@@ -249,10 +249,10 @@ fn each_kind_has_its_own_alert_wording() {
         LimitKind::Credits,
     ]
     .iter()
-    .map(|&k| msg::alert_step_limit_block(&n("wwest"), k, NOW + DAY))
+    .map(|&k| msg::alert_step_limit_block(&n("login-bf"), k, NOW + DAY))
     .collect();
     for l in &lines {
-        assert!(l.starts_with("ALERT: login wwest hit its "), "{l}");
+        assert!(l.starts_with("ALERT: login login-bf hit its "), "{l}");
         assert!(l.contains(&timestamp(NOW + DAY)), "{l}");
     }
     let mut unique = lines.clone();
@@ -266,20 +266,20 @@ fn the_weekly_block_is_logged_once_and_never_extended() {
     let r = root();
     note_limit_block(
         &r.path,
-        &n("wwest"),
+        &n("login-bf"),
         NOW,
         Some(NOW + WEEK),
         LimitKind::Weekly,
     );
     note_limit_block(
         &r.path,
-        &n("wwest"),
+        &n("login-bf"),
         NOW + 60,
         Some(NOW + 2 * WEEK),
         LimitKind::Weekly,
     );
-    assert_eq!(block(&r, "wwest").unwrap().until, NOW + WEEK);
-    let first = msg::alert_step_limit_block(&n("wwest"), LimitKind::Weekly, NOW + WEEK);
+    assert_eq!(block(&r, "login-bf").unwrap().until, NOW + WEEK);
+    let first = msg::alert_step_limit_block(&n("login-bf"), LimitKind::Weekly, NOW + WEEK);
     assert_eq!(log_text(&r).matches(&first).count(), 1, "{}", log_text(&r));
 }
 
@@ -293,8 +293,8 @@ fn a_reset_that_would_make_the_ledger_unreadable_is_not_stored() {
         Some(NOW + 400 * DAY),
     ] {
         let r = root();
-        note_limit_block(&r.path, &n("wwest"), NOW, until, LimitKind::Weekly);
-        assert!(block(&r, "wwest").is_none(), "{until:?}");
+        note_limit_block(&r.path, &n("login-bf"), NOW, until, LimitKind::Weekly);
+        assert!(block(&r, "login-bf").is_none(), "{until:?}");
         assert!(
             r.rs.load_ledger().is_ok(),
             "{until:?}: the ledger still loads"
@@ -324,7 +324,7 @@ fn a_missing_ledger_is_never_created_for_any_kind() {
     for kind in [LimitKind::Session, LimitKind::Weekly, LimitKind::Credits] {
         let tmp = tempfile::tempdir().unwrap();
         fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        note_limit_block(tmp.path(), &n("wwest"), NOW, Some(NOW + DAY), kind);
+        note_limit_block(tmp.path(), &n("login-bf"), NOW, Some(NOW + DAY), kind);
         assert!(!RotateState::new(tmp.path()).ledger.exists(), "{kind:?}");
     }
 }

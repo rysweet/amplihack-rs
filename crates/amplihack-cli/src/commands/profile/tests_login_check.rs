@@ -251,7 +251,7 @@ fn an_accepted_login_moves_the_previous_one_to_replaced() {
 
 #[test]
 fn the_same_user_in_another_org_is_accepted() {
-    // R2.2: ryan-mistt-org and ryan-mistt-personal.
+    // R2.2: login-aw and login-ax.
     let e = env();
     e.check("fresh", || {
         e.claude_logs_in("fresh", "user-SENTINEL-other", "org-SENTINEL-personal");

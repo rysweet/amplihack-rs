@@ -1,6 +1,6 @@
 //! Issue #1962, D4 and S5: the dry run writes nothing, sends no refresh and never
 //! starts `claude`, on every read path. Host acceptance runs this mode on real
-//! logins, so this has to hold before any run on candide.
+//! logins, so this has to hold before any run on host-a.
 
 #![cfg(unix)]
 

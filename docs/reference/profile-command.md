@@ -3133,6 +3133,9 @@ It is read from the [usage history](#usage-history):
    at or before the time it was taken belongs to a week that has ended and
    is not used, and neither is this run's reading of a login when it is a
    stale passive reading by the rule under [Stale readings](#stale-readings).
+    For example, with a level of 50, a fall to 30 is stale when a later
+    reading of the week is 40, and stays when the highest later reading is
+    39, which then counts 9 points of use.
 5. The rate is the sum of each login's use times its [weight](#capacity-weights),
    divided by 100 and by the hours between the two ends. It is weighted;
    when every weight is `1.0` it equals the unweighted rate. It is never

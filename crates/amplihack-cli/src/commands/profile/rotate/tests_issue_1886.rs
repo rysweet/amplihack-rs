@@ -99,25 +99,25 @@ fn a_profile_answer_names_the_account_and_its_organization() {
     );
 }
 
-/// The 3 November collision: nnorth and mmorrison reset at the same times.
+/// The 3 November collision: login-ao and login-an reset at the same times.
 /// Identity no longer looks at reset times, so they stay two accounts.
 #[test]
 fn accounts_with_equal_reset_times_are_still_two_accounts() {
-    let nnorth = Account::from_profile(&json!({
-        "account": {"uuid": "u-nnorth", "email": "nnorth@mistt.com"},
-        "organization": {"uuid": "org-mistt"},
+    let login_ao = Account::from_profile(&json!({
+        "account": {"uuid": "u-login-ao", "email": "user-ao@example.com"},
+        "organization": {"uuid": "example-org"},
         "five_hour": {"resets_at": "2026-11-03T14:40:00Z"},
         "seven_day": {"resets_at": "2026-11-06T05:00:00Z"}
     }))
     .unwrap();
-    let mmorrison = Account::from_profile(&json!({
-        "account": {"uuid": "u-mmorrison", "email": "mmorrison@mistt.com"},
-        "organization": {"uuid": "org-mistt"},
+    let login_an = Account::from_profile(&json!({
+        "account": {"uuid": "u-login-an", "email": "user-an@example.com"},
+        "organization": {"uuid": "example-org"},
         "five_hour": {"resets_at": "2026-11-03T14:40:00Z"},
         "seven_day": {"resets_at": "2026-11-06T05:00:00Z"}
     }))
     .unwrap();
-    assert!(!nnorth.same(&mmorrison));
+    assert!(!login_ao.same(&login_an));
 }
 
 #[test]
