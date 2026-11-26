@@ -369,6 +369,12 @@ amplihack: nothing records when this limit lifts, so this step waits with no dea
 A login-change wait takes only the last three: no capacity reading ends it
 ([Login-change wait](./profile-command.md#login-change-wait)).
 
+One rotator write can both change the login and record room. Such a write
+ends the wait `rotator capacity`. Before a wait that reads capacity ends
+`login changed`, it reads the rotator's capacity again, so the end does not
+depend on when the rotator's write lands during the wait's reads
+([#3124](https://github.com/rysweet/amplihack-rs/issues/3124)).
+
 On a host with no rotator and no other stored login, nothing ends such a wait
 by itself. A person who wants the step to run again makes an event:
 

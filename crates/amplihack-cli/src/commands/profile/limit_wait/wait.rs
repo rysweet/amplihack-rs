@@ -15,6 +15,10 @@
 //! fingerprint, another login's capacity, then the named login key. One
 //! rotator write both swaps the login and records the cycle's room, and such
 //! a wait ends `rotator capacity`, the reason auto-drive and operators read.
+//! The pass reads the rotate ledger more than once, so before it ends
+//! `login changed` on a wait that reads capacity it reads the rotator's
+//! capacity again (issue #3124). The end is then `rotator capacity` whether
+//! the rotator's rename landed before the pass began or part-way through it.
 //! Another login's capacity ends a wait of any kind, not only a capacity wait
 //! (issue #2694): a step whose own reset is hours away still moves to a login
 //! with room as soon as one is seen, unless its own login changed in the
@@ -222,7 +226,7 @@ fn read_files<D: WaitDeps>(
             None => *base = Some(probe),
             Some(b) => {
                 if probe != *b && deps.change_may_end() {
-                    return Some(End::LoginChanged);
+                    return Some(login_change_end(capacity, start, deps));
                 }
             }
         }
@@ -234,7 +238,26 @@ fn read_files<D: WaitDeps>(
     // and gated on room as the fingerprint is (issue #2857). The key is read
     // first, so a wait that sees no change asks nothing about room.
     if deps.login_changed() && deps.change_may_end() {
-        return Some(End::LoginChanged);
+        return Some(login_change_end(capacity, start, deps));
     }
     None
+}
+
+/// The end of a pass that saw the login change, once the room read has
+/// said the change may end the wait.
+///
+/// The rotator swaps the login and records the cycle's room in one rename
+/// of its ledger, and the pass reads that ledger more than once. A rename
+/// that lands after the pass's first capacity read but before its change
+/// check would otherwise end the wait `login changed` (issue #3124). So a
+/// wait that reads capacity reads it once more here: this read sees the
+/// ledger the room read saw or a newer one, and room recorded after the
+/// wait's start ends the pass `rotator capacity`. A login-change wait reads
+/// no capacity and ends `login changed`, as before.
+fn login_change_end<D: WaitDeps>(capacity: bool, start: i64, deps: &mut D) -> End {
+    if capacity && deps.rotator_capacity(start) {
+        End::RotatorCapacity
+    } else {
+        End::LoginChanged
+    }
 }
