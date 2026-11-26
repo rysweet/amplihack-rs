@@ -159,31 +159,44 @@ fn evidence(o: &Output) -> Value {
     serde_json::from_str(line).unwrap_or_else(|e| panic!("bad JSON {line:?}: {e}\n{}", show(o)))
 }
 
-/// A refusal: non-zero exit, a `STOP: step-05` line naming #2519 and #1528,
-/// and nothing on stdout for `parse_json` to read as `commits: 0`.
-fn assert_stopped(o: &Output) -> String {
-    assert!(
-        !o.status.success(),
+/// The values of the `<key>=<reason>` marker lines step-05 writes to stderr.
+/// The markers are the script's stable interface; the prose beside them is
+/// not asserted, so rewording a diagnostic breaks no test.
+fn markers(text: &str, key: &str) -> Vec<String> {
+    let prefix = format!("{key}=");
+    text.lines()
+        .filter_map(|l| l.strip_prefix(&prefix))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn warnings(o: &Output) -> Vec<String> {
+    markers(&stderr(o), "step05_warning")
+}
+
+/// A refusal: exit 1, exactly one `step05_refusal=<reason>` marker naming
+/// `reason`, and nothing on stdout for `parse_json` to read as `commits: 0`.
+/// Returns stderr so a test can check the paths it reports.
+fn assert_stopped(o: &Output, reason: &str) -> String {
+    assert_eq!(
+        o.status.code(),
+        Some(1),
         "step-05 must stop, not report\n{}",
         show(o)
     );
     let err = stderr(o);
-    let line = err
-        .lines()
-        .find(|l| l.contains("STOP: step-05"))
-        .unwrap_or_else(|| panic!("no `STOP: step-05` line\n{}", show(o)))
-        .to_string();
-    assert!(
-        line.contains("(#2519, #1528)"),
-        "STOP line must name #2519 and #1528: {line}"
+    assert_eq!(
+        markers(&err, "step05_refusal"),
+        vec![reason.to_owned()],
+        "{}",
+        show(o)
     );
-    let out = stdout(o);
     assert!(
-        !out.contains("\"commits\"") && out.trim().is_empty(),
+        stdout(o).trim().is_empty(),
         "a stopped step-05 writes nothing to stdout\n{}",
         show(o)
     );
-    line
+    err
 }
 
 // --- Case 1: step-04 committed in the PR worktree; start is the clone root ---
@@ -210,8 +223,9 @@ fn step05_reports_the_commit_step04_made_in_the_pr_worktree() {
     );
     assert_eq!(v["git_observed"], json!("true"), "{}", show(&o));
     assert_eq!(v["dirty_worktree"], json!("false"), "{}", show(&o));
+    assert_eq!(v["head_descends_from_base"], json!("true"), "{}", show(&o));
     assert!(
-        !stderr(&o).contains("NO commit"),
+        warnings(&o).is_empty(),
         "a round with a commit must not warn\n{}",
         show(&o)
     );
@@ -229,7 +243,31 @@ fn step05_keeps_the_zero_commit_warning_for_a_measured_zero() {
     assert_eq!(v["commits"], json!(0), "{}", show(&o));
     assert_eq!(v["head_sha"], json!(f.h0), "{}", show(&o));
     assert_eq!(v["git_observed"], json!("true"), "{}", show(&o));
-    assert!(stderr(&o).contains("NO commit"), "{}", show(&o));
+    assert_eq!(v["head_descends_from_base"], json!("true"), "{}", show(&o));
+    assert_eq!(warnings(&o), vec!["no-commit"], "{}", show(&o));
+}
+
+/// A head rewound behind the reviewed head counts 0 commits; the JSON says
+/// HEAD does not descend from the base, so the evaluator need not read stderr.
+#[test]
+fn step05_reports_a_head_that_does_not_descend_from_the_base() {
+    if skip() {
+        return;
+    }
+    let f = Fixture::new();
+    let h1 = f.commit_in_worktree();
+    git(&f.worktree, &["reset", "-q", "--hard", "HEAD~1"]);
+    let rewound = git(&f.worktree, &["rev-parse", "HEAD"]);
+    let o = f.run(&f.root, &s(&f.worktree), &h1, &s(&f.root));
+    assert!(o.status.success(), "{}", show(&o));
+    let v = evidence(&o);
+    assert_eq!(v["base_sha"], json!(h1), "{}", show(&o));
+    assert_eq!(v["head_sha"], json!(rewound.trim()), "{}", show(&o));
+    assert_eq!(v["commits"], json!(0), "{}", show(&o));
+    assert_eq!(v["head_descends_from_base"], json!("false"), "{}", show(&o));
+    let mut w = warnings(&o);
+    w.sort();
+    assert_eq!(w, vec!["head-not-descendant", "no-commit"], "{}", show(&o));
 }
 
 #[test]
@@ -293,7 +331,7 @@ fn step05_stops_when_repo_path_is_the_main_checkout() {
     // Started in the PR worktree and REPO_PATH names it too: neither may be
     // used in place of repo_path.
     let o = f.run(&f.worktree, &s(&f.root), &f.h0, &s(&f.worktree));
-    let line = assert_stopped(&o);
+    let line = assert_stopped(&o, "not-pr-worktree");
     assert!(line.contains(&s(&f.root)), "STOP gives repo_path: {line}");
     assert!(
         line.contains(&s(&f.worktree)),
@@ -309,7 +347,7 @@ fn step05_stops_when_the_worktree_is_on_another_branch() {
     let f = Fixture::new();
     git(&f.worktree, &["checkout", "-q", "-b", "other/branch"]);
     let o = f.run(&f.root, &s(&f.worktree), &f.h0, &s(&f.root));
-    let line = assert_stopped(&o);
+    let line = assert_stopped(&o, "not-pr-worktree");
     assert!(line.contains(&s(&f.worktree)), "{line}");
     assert!(line.contains(&s(&f.root)), "{line}");
 }
@@ -322,7 +360,7 @@ fn step05_stops_when_repo_path_does_not_exist() {
     let f = Fixture::new();
     let absent = canon(f.repo.tmp.path()).join("absent");
     let o = f.run(&f.root, &s(&absent), &f.h0, &s(&f.worktree));
-    let line = assert_stopped(&o);
+    let line = assert_stopped(&o, "repo-path-unreachable");
     assert!(line.contains(&s(&absent)), "STOP names repo_path: {line}");
     assert!(
         line.contains(&s(&f.root)),
@@ -340,7 +378,7 @@ fn step05_stops_when_repo_path_is_empty() {
     // Started in the PR worktree itself: an empty repo_path must not fall
     // back to it (`cd ""` would succeed and stay put).
     let o = f.run(&f.worktree, "", &f.h0, &s(&f.worktree));
-    assert_stopped(&o);
+    assert_stopped(&o, "no-repo-path");
 }
 
 // --- head_sha from the round context is data, not a git expression ---
@@ -354,7 +392,7 @@ fn step05_stops_on_a_head_sha_that_is_not_hex() {
     // `HEAD` and `HEAD~1` resolve in git, but are not commit ids.
     for given in ["HEAD", "HEAD~1", ""] {
         let o = f.run(&f.root, &s(&f.worktree), given, &s(&f.root));
-        assert_stopped(&o);
+        assert_stopped(&o, "no-usable-base");
     }
 }
 
@@ -384,10 +422,9 @@ fn step05_masks_control_characters_in_a_rejected_head_sha() {
     }
     let f = Fixture::new();
     let o = f.run(&f.root, &s(&f.worktree), "abc\u{1b}[31mdef", &s(&f.root));
-    assert_stopped(&o);
+    assert_stopped(&o, "no-usable-base");
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!err.contains('\u{1b}'), "{}", show(&o));
-    assert!(err.contains("abc?[31mdef"), "{}", show(&o));
 }
 
 #[test]
@@ -398,7 +435,7 @@ fn step05_stops_on_a_hex_head_sha_that_is_not_a_commit_here() {
     let f = Fixture::new();
     let missing = "0123456789abcdef0123456789abcdef01234567";
     let o = f.run(&f.root, &s(&f.worktree), missing, &s(&f.root));
-    assert_stopped(&o);
+    assert_stopped(&o, "base-not-a-commit");
 }
 
 // --- the base is the loop's measurement, not the agent-written head_sha ---
@@ -455,8 +492,7 @@ fn step05_falls_back_to_the_context_head_sha_without_a_measurement() {
         assert!(o.status.success(), "measured {measured:?}: {}", show(&o));
         assert_eq!(evidence(&o)["base_sha"], json!(f.h0), "{}", show(&o));
     }
-    // With neither a measurement nor a usable context head, it stops and
-    // says both were missing.
+    // With neither a measurement nor a usable context head, it stops.
     let o = f.run_with(
         &f.root,
         &s(&f.worktree),
@@ -464,11 +500,7 @@ fn step05_falls_back_to_the_context_head_sha_without_a_measurement() {
         &s(&f.root),
         &[("RECIPE_VAR_reviewed_head_sha", OsStr::new(""))],
     );
-    let line = assert_stopped(&o);
-    assert!(
-        line.contains("no loop-measured reviewed_head_sha"),
-        "{line}"
-    );
+    assert_stopped(&o, "no-usable-base");
 }
 
 // --- a STOP reaches the next turn's agent; it does not end the run ---
@@ -499,7 +531,7 @@ RECIPE_VAR_repo_path="$rp" RECIPE_VAR_pr_number="$pr" RECIPE_VAR_reviewed_head_s
 /// #2519 with #3129: step-05 refuses to measure in a checkout that is not the
 /// PR's linked worktree. The refusal fails the round, the goal tool records
 /// the turn as `review-failed` and exits 0, so the loop goes on, and the
-/// `STOP: step-05` line is in the turn's review.log for the next turn's agent
+/// refusal marker is in the turn's review.log for the next turn's agent
 /// to read as `previous`.
 #[test]
 fn step05_stop_reaches_the_next_turn_as_a_failed_review() {
@@ -562,9 +594,9 @@ fn step05_stop_reaches_the_next_turn_as_a_failed_review() {
         "the result points the next turn at the log: {result}"
     );
     let log = std::fs::read_to_string(td.join("review.log")).unwrap();
-    assert!(
-        log.lines()
-            .any(|l| l.contains("STOP: step-05") && l.contains("(#2519, #1528)")),
-        "the STOP line is in the turn's review.log\n{log}"
+    assert_eq!(
+        markers(&log, "step05_refusal"),
+        vec!["not-pr-worktree"],
+        "the refusal is in the turn's review.log\n{log}"
     );
 }
