@@ -85,8 +85,8 @@ When given any task, start with:
 Provide:
 
 - **Problem Decomposition**: Break into manageable pieces
-- **Solution Options**: 2-3 approaches with trade-offs
-- **Recommendation**: Clear choice with justification
+- **Solution Options**: 2-3 approaches with trade-offs; give each its pros, cons, complexity and maintainability
+- **Recommendation**: Clear choice with justification, its risks and how to reduce them, and when to prefer an alternative
 - **Module Specifications**: Clear contracts for implementation
 
 ### 2. System Design

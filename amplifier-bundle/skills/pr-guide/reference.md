@@ -730,3 +730,30 @@ statement, an architectural mermaid diagram, an exemplar snippet with a
 "same pattern applied elsewhere" summary, a configurable-constant callout, a
 deep diff link (with hash fallback noted), a screenshot with textual fallback,
 explicit trade-offs, and a focused testing summary.
+
+---
+
+## 14. Titles and size of a pull request
+
+A repository's own convention for titles comes before this one. Where it has
+none, use these.
+
+**Title.** Write `<type>: <short description>`. The types are `feat:` (new
+feature), `fix:` (bug fix), `docs:` (documentation only), `refactor:` (no
+change in behaviour), `perf:` (performance), `test:` (tests) and `chore:`
+(maintenance). Say what changed, not only where; keep it to 50 to 72
+characters; start with a verb; give enough context to understand it.
+`feat: Add user authentication with JWT` and
+`fix: Resolve race condition in cache invalidation` are good titles.
+`Update stuff`, `WIP` and `Fix bug` are not.
+
+**Size.** Under 200 changed lines is small and quick to review; 200 to 500 is
+manageable; 500 to 1,000 needs extra effort; over 1,000 should be split. Split
+a pull request when it holds unrelated changes, parts that can be deployed on
+their own, a large refactoring together with a feature, or parts that need
+different reviewers. For example, "Rewrite authentication and add OAuth"
+becomes one pull request that makes the existing authentication modular, and a
+second that adds OAuth on top of it.
+
+The description of a pull request that is ready to merge follows the template
+in the merge-ready skill, `merge-ready/pr-description-template.md`.

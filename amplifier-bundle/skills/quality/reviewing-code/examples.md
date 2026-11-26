@@ -1,4 +1,4 @@
-# PR Review Assistant - Detailed Examples
+# Pull Request Review Examples
 
 ## Example 1: Over-Engineering with Unnecessary Abstraction
 

@@ -266,7 +266,7 @@ shadow.create(local_sources=["~/repos/lib:org/lib"])
 - **shadow-testing**: Complete shadow environment setup and usage
 - **test-gap-analyzer**: Find untested code paths
 - **philosophy-guardian**: Review test philosophy compliance
-- **pr-review-assistant**: Include tests in PR reviews
+- **reviewing-code**: Include tests in PR reviews
 - **module-spec-generator**: Generate specs with test scenarios
 
 ### Further Reading

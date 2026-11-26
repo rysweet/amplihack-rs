@@ -525,7 +525,7 @@ fn malformed_skill_payloads_pass_through_without_panic() {
 //   * Uses the frontmatter `name:` as the skill identity — NOT the directory
 //     path — so nested-category skills (e.g. migrate/ -> "amplihack-migrate")
 //     are keyed by their published name.
-//   * Never contains directory-path forms (e.g. "development/architecting-...").
+//   * Never contains directory-path forms (e.g. "development/setting-up-...").
 //   * Membership is exact and case-sensitive.
 //   * Contains overlap names (both skill and agent) so skill-precedence in the
 //     redirect logic keeps them from being redirected.
@@ -625,10 +625,10 @@ fn bundled_skill_names_uses_frontmatter_name_for_nested_skills() {
     // are identified by their frontmatter `name:`, not the directory path.
     let skills = checkout_skill_names();
     for name in [
-        "amplihack-migrate",      // dir: migrate/
-        "architecting-solutions", // dir: development/architecting-solutions/
-        "reviewing-code",         // dir: quality/reviewing-code/
-        "analyzing-deeply",       // dir: meta-cognitive/analyzing-deeply/
+        "amplihack-migrate",   // dir: migrate/
+        "setting-up-projects", // dir: development/setting-up-projects/
+        "reviewing-code",      // dir: quality/reviewing-code/
+        "analyzing-deeply",    // dir: meta-cognitive/analyzing-deeply/
     ] {
         assert!(
             skills.contains(name),
@@ -644,7 +644,7 @@ fn bundled_skill_names_excludes_directory_path_forms() {
     // bare parent-dir names must NOT be members.
     let skills = checkout_skill_names();
     for path_form in [
-        "development/architecting-solutions",
+        "development/setting-up-projects",
         "quality/reviewing-code",
         "meta-cognitive/analyzing-deeply",
         "migrate",

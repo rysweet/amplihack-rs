@@ -188,7 +188,7 @@ The knowledge-builder will:
 
 - **/knowledge-builder**: Deep comprehensive research
 - **/dev**: Complex decision making with research
-- **Architecting Solutions Skill**: Apply research to design decisions
+- **architect agent**: Apply research to design decisions
 
 ### Saves To
 
@@ -303,7 +303,7 @@ Use GraphQL when:
 [... more research ...]
 
 This is a complex architectural decision. Would you like me to:
-1. Activate "Architecting Solutions" skill for deeper analysis?
+1. Ask the architect agent for deeper analysis?
 2. Use /dev for comprehensive tradeoff evaluation?
 ```
 
@@ -403,7 +403,7 @@ Good research provides:
 
 - **Slash Command**: `/knowledge-builder` for comprehensive deep research
 - **Skill**: "Explaining Concepts" for teaching/learning focus
-- **Skill**: "Architecting Solutions" for applying research to design
+- **Agent**: `architect` for applying research to design
 - **Slash Command**: `/dev` for research-based decision making
 
 ---

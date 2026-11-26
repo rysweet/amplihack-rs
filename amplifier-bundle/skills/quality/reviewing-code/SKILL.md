@@ -1,6 +1,6 @@
 ---
 name: reviewing-code
-description: "Performs systematic code review checking for correctness, maintainability, security, and best practices. Activates when user requests review, before creating PRs, or when significant code changes are ready. Ensures quality gates are met before code proceeds to production."
+description: "Performs systematic code review checking for correctness, maintainability, security, and best practices. Activates when user requests review, before creating PRs, or when significant code changes are ready. Ensures quality gates are met before code proceeds to production. Also reviews pull requests and posts the findings with gh."
 allowed-tools: ["Read", "Grep", "Glob", "Bash"]
 ---
 
@@ -126,6 +126,10 @@ Format findings as:
 
 [Clear action items]
 ```
+
+## Reviewing a Pull Request
+
+When the code is a pull request, or the findings are to be posted to one, read `pull-request-review.md` beside this file. It gives the steps, the feedback template, posting with `gh`, the over-engineering patterns and the key questions. Worked reviews of pull requests are in `examples.md`.
 
 ## Review Dimensions
 
@@ -526,7 +530,7 @@ Good code review:
 - **Agent**: Security agent for deep security analysis
 - **Agent**: Tester agent for test improvements
 - **Slash Command**: `/fix` to implement suggestions
-- **Skill**: "Testing Code" for test generation
+- **Skill**: `test-gap-analyzer` for test generation
 
 ---
 

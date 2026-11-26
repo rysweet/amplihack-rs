@@ -220,3 +220,6 @@ All implementation detail — exact CLI commands, field mappings, the diff-ancho
 hash algorithm, exemplar/constant heuristics, the Playwright flow, temp-file
 handling, and a complete worked example — lives in
 [`reference.md`](./reference.md).
+
+Titles and size of a pull request, and when to split one: `reference.md` →
+§14.

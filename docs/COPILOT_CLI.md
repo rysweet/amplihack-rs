@@ -829,7 +829,7 @@ gh copilot suggest -a .github/agents/amplihack/core/builder.md \
 - **backlog-curator**: Backlog management
 - **roadmap-strategist**: Roadmap planning
 - **test-gap-analyzer**: Test coverage analysis
-- **pr-review-assistant**: PR review automation
+- **reviewing-code**: Code and PR review
 
 ## MCP Servers
 
