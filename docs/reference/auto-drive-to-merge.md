@@ -24,6 +24,7 @@ operator sets and sees.
 - [What the agent decides](#what-the-agent-decides)
 - [Minor review findings](#minor-review-findings)
 - [How a run ends](#how-a-run-ends)
+- [Crusty round fix evidence](#crusty-round-fix-evidence)
 - [Retired inputs](#retired-inputs)
 - [How to](#how-to)
 - [Related](#related)
@@ -109,6 +110,62 @@ Finding identifiers are exact stable tokens. The shared finding rules
 (`autodrive_finding_rules.sh`) remove control characters from display cells and
 escape HTML or table delimiters. Summaries are data; they cannot create new
 records or change a finding's identifier or severity.
+
+## Crusty round fix evidence
+
+In a round that ended with concerns, `step-05-verify-concerns-addressed` runs
+`autodrive_crusty_concerns_evidence.sh` to measure the fix (#2519). It enters
+`repo_path`, the PR's linked worktree where step-04 commits, clears the
+repository-selecting `GIT_*` variables through
+[`git-repo-env.sh`](git-repo-env-helper.md) and runs
+`autodrive_worktree_guard.sh commit-dir <pr>`. It never reads `REPO_PATH` and
+never measures in the folder it started in.
+
+The base is `reviewed_head_sha`, the commit the loop measured with
+`git rev-parse` before the round started, as the round record uses it (#2814).
+The round context's `head_sha`, which an agent writes, is read only when no
+full lowercase commit id arrived as `reviewed_head_sha`; it must then be a hex
+commit id, never a git expression such as `HEAD~1`. Either way the base must
+resolve to a commit in that worktree. The step reports `base_sha`, `head_sha`
+(the worktree's `HEAD`), `commits`, `dirty_worktree`, `git_observed` and
+`head_descends_from_base`. The last is `"false"` when `HEAD` no longer
+descends from the base. `commits` counts the commits in `HEAD` that are not
+reachable from the base, which is 0 after a plain rewind.
+
+When it cannot measure, it exits 1 and prints nothing on stdout, rather than an
+unmeasured `commits: 0`. On stderr it writes a `step05_refusal=<reason>` line
+and a `STOP: step-05` line that gives `repo_path` and the start folder.
+Warnings take the same form, `step05_warning=<reason>`. The reason codes are
+the stable interface, and tests assert on them; the prose beside them may be
+reworded.
+
+| Marker | Meaning |
+| --- | --- |
+| `step05_refusal=no-repo-path` | `repo_path` is empty |
+| `step05_refusal=no-pr-number` | `pr_number` is missing or not numeric |
+| `step05_refusal=repo-path-unreachable` | `repo_path` cannot be entered |
+| `step05_refusal=helper-missing` | `git-repo-env.sh` could not be loaded |
+| `step05_refusal=not-a-git-repo` | `repo_path` is not a git work tree |
+| `step05_refusal=not-pr-worktree` | the worktree guard refused `repo_path` |
+| `step05_refusal=no-usable-base` | no `reviewed_head_sha`, and the context `head_sha` is not hex |
+| `step05_refusal=base-not-a-commit` | the base does not resolve to a commit in `repo_path` |
+| `step05_refusal=head-unreadable` | `HEAD` cannot be read |
+| `step05_refusal=count-failed` | `git rev-list --count` failed |
+| `step05_refusal=ancestry-unreadable` | `git merge-base --is-ancestor` failed |
+| `step05_refusal=worktree-state-unreadable` | `git diff --quiet` failed |
+| `step05_warning=no-commit` | `commits` is 0 |
+| `step05_warning=head-not-descendant` | `head_descends_from_base` is `"false"` |
+
+The failed step fails the round, and a failed
+round does not end the run. The goal loop's `review` action
+(`do_act_review` in `autodrive_pr_goal.sh`) records the turn as
+`review-failed`, with the round's whole output, the `STOP` line included, in
+the turn folder's `review.log`. The next turn's agent reads that result as
+`previous` and judges the cause (see
+[Failures inside a turn](autodrive-goal-loop.md#failures-inside-a-turn)). The
+test `step05_stop_reaches_the_next_turn_as_a_failed_review` in
+`crates/amplihack-cli/tests/issue_2519_crusty_step05_worktree.rs` runs that
+path with the real script.
 
 ## Retired inputs
 

@@ -330,14 +330,18 @@ steps:
   - id: "step-05-verify-concerns-addressed"
     condition: "crusty_verdict.crusty_verdict == 'CONCERNS'"
     type: "bash"
+    working_dir: "{{repo_path}}"
     parse_json: true
     command: |
       # Pager safety stays in the recipe, where the file-scoped check for it
       # reads, and the exported value reaches the script below.
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       # The body of this step lives in amplifier-bundle/tools/autodrive_crusty_concerns_evidence.sh,
-      # extracted for the brick budget (issue #1619). It is unchanged and
-      # reads the same RECIPE_VAR_* variables the runner exports.
+      # extracted for the brick budget (issue #1619). It reads the RECIPE_VAR_*
+      # variables the runner exports and measures in repo_path only (#2519).
+      # A STOP: step-05 exit fails the round, not the run: the goal loop's
+      # do_act_review records review-failed with the STOP line in review.log
+      # and the next turn's agent judges it (test: issue_2519_crusty_step05_worktree.rs).
       H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_crusty_concerns_evidence.sh" ] && { H="$c/amplifier-bundle/tools/autodrive_crusty_concerns_evidence.sh"; break; }; done
       [ -n "$H" ] || { echo "ERROR: autodrive_crusty_concerns_evidence.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
       bash "$H"
