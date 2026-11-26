@@ -221,7 +221,6 @@ workstream decomposition, and adaptive error recovery on top of this workflow.
 
 **Purpose**: Create durable documentation so this investigation never needs to be repeated.
 
-- **Store discoveries in memory** using the `amplihack memory store-discovery` CLI command
 - **Update .claude/context/PATTERNS.md** if reusable patterns found
 
 ## Transitioning to Development Workflow

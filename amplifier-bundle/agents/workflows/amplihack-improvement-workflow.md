@@ -306,19 +306,6 @@ security_issues: [count]
 time_to_complete: [duration]
 ```
 
-### Store Discoveries in Memory
-
-When patterns emerge, use `amplihack memory store-discovery`:
-
-```markdown
-## Improvement Pattern Discovered
-
-**Pattern**: Tests exceeding 3x implementation indicates over-engineering
-**Detection**: test_lines > (implementation_lines \* 3)
-**Resolution**: Focus on behavior tests at module boundaries
-**Frequency**: 40% of improvements
-```
-
 ## Common Failure Patterns
 
 ### Pattern: Feature Creep
