@@ -19,6 +19,7 @@ amplihack is a development framework for popular coding agent systems (Claude Co
 - [Repair a Codex installation](howto/repair-codex-installation.md) - Resolve incomplete packages and missing helpers
 - [Codex installation validation](reference/codex-installation-validation.md) - Startup checks, overrides, and recovery policy
 - [Code Atlas](atlas/index.md) - Architecture diagrams, dependency maps, and bug hunt results
+- [Test binary isolation](reference/test-binary-isolation.md) - How test builds link large executables into fake homes instead of copying them
 - [Commands & Operations](#%EF%B8%8F-commands--operations) - Execute complex tasks
 - [Workflows](#-workflows) - Structured development processes
 - [Agents & Tools](#-agents--tools) - Specialized AI capabilities

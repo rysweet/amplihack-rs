@@ -285,6 +285,8 @@ pub struct ReleaseTxn {
     root: PathBuf,
     version: String,
     links: Vec<(PathBuf, PathBuf)>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) linked_test_binaries: Vec<PathBuf>,
     committed: bool,
 }
 
@@ -317,6 +319,8 @@ impl ReleaseTxn {
                         root,
                         version: version.to_string(),
                         links: Vec::new(),
+                        #[cfg(any(test, feature = "test-support"))]
+                        linked_test_binaries: Vec::new(),
                         committed: false,
                     });
                 }
@@ -375,7 +379,11 @@ impl ReleaseTxn {
         let marker = self.root.join(COMPLETE_MARKER);
         fs::write(&marker, format!("{}\n", utc_stamp()))
             .with_context(|| format!("failed to write {}", marker.display()))?;
-        normalize_release_modes(&self.root)?;
+        normalize_release_modes(
+            &self.root,
+            #[cfg(any(test, feature = "test-support"))]
+            &self.linked_test_binaries,
+        )?;
         seal_installed_by(&self.root)?;
         // From here the release may be named by a link: never remove it on drop.
         self.committed = true;
@@ -636,15 +644,25 @@ fn switch_rank(link: &Path) -> usize {
 }
 
 /// No file in a release is writable by group or others (S16); the root is
-/// 0755. Symlinks are skipped, never followed.
+/// 0755. Symlinks are skipped, never followed. Test builds also preserve the
+/// modes of explicitly staged artifact links to avoid chmodding their sources.
 #[cfg(unix)]
-fn normalize_release_modes(root: &Path) -> Result<()> {
+fn normalize_release_modes(
+    root: &Path,
+    #[cfg(any(test, feature = "test-support"))] linked_test_binaries: &[PathBuf],
+) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
         let meta = fs::symlink_metadata(&path)
             .with_context(|| format!("failed to inspect {}", path.display()))?;
         if meta.file_type().is_symlink() {
+            continue;
+        }
+        // Test staging shares these executable inodes with build artifacts.
+        // chmod would also change the source, including on retained releases.
+        #[cfg(any(test, feature = "test-support"))]
+        if linked_test_binaries.contains(&path) {
             continue;
         }
         let mode = meta.permissions().mode() & 0o7777;
@@ -672,7 +690,10 @@ fn normalize_release_modes(root: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn normalize_release_modes(_root: &Path) -> Result<()> {
+fn normalize_release_modes(
+    _root: &Path,
+    #[cfg(any(test, feature = "test-support"))] _linked_test_binaries: &[PathBuf],
+) -> Result<()> {
     Ok(())
 }
 

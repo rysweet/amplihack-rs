@@ -48,6 +48,16 @@ pub struct Repo {
     pub base: String,
 }
 
+/// The `PATH` a child started through `isolated(..)` gets, which is the one
+/// [`Repo::run`] snapshots and measures with.
+pub fn fixture_path() -> std::ffi::OsString {
+    crate::isolated_amplihack::isolated("bash")
+        .get_envs()
+        .find(|(key, _)| *key == std::ffi::OsStr::new("PATH"))
+        .and_then(|(_, value)| value.map(std::ffi::OsString::from))
+        .unwrap_or_default()
+}
+
 impl Repo {
     /// A clone of a bare origin holding a README, a lockfile, a manifest and
     /// a small Rust file; the base is pinned and the snapshot recorded.
@@ -128,13 +138,15 @@ impl Repo {
     }
 
     /// [`Repo::measure`] with `dir` first on `PATH`, so a shim there (an
-    /// `awk`, say) replaces the real program for the tool.
+    /// `awk`, say) replaces the real program for the tool. The rest of
+    /// `PATH` is the one [`Repo::run`] uses, so the snapshot and this run see
+    /// the same programs.
     pub fn measure_with_path(&self, dir: &Path) -> Output {
-        let path = std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(
-            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
-        ))
-        .unwrap();
         let mut c = crate::isolated_amplihack::isolated("bash");
+        let path = std::env::join_paths(
+            std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&fixture_path())),
+        )
+        .unwrap();
         c.arg(tool())
             .args([self.wt.to_str().unwrap(), "--base", self.base.as_str()])
             .env("HOME", self.tmp.path())

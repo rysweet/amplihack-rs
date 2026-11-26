@@ -409,10 +409,11 @@ fn handover_reasons_in_the_diff_tool() -> BTreeSet<String> {
 
 /// A `git` first on `PATH` that adds a record with no NUL terminator to
 /// `diff --numstat` output, so the diff tool cannot parse it. It wraps the
-/// `git` the snapshot was taken with, the first on `PATH`: another build
-/// can read another system configuration, which the tool reports as drift.
+/// `git` the snapshot was taken with, the first on the fixture's `PATH`:
+/// another build can read another system configuration, which the tool
+/// reports as drift.
 fn truncating_git(r: &Repo) -> PathBuf {
-    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path = crate::support::quick_change_repo::fixture_path();
     let real = std::env::split_paths(&path)
         .map(|dir| dir.join("git"))
         .find(|p| p.is_file())

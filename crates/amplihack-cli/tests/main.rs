@@ -578,6 +578,9 @@ mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
 
+#[path = "issue_2182_binary_isolation.rs"]
+mod issue_2182_binary_isolation;
+
 #[path = "issue_2279_doctor.rs"]
 mod issue_2279_doctor;
 
