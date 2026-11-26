@@ -16,15 +16,15 @@ What do you need to do?
 │     └─ Note: /auto runs in subprocess, /ultrathink in current session
 │
 ├─ DECISION MAKING
-│  ├─ Need discussion/debate? → /debate
+│  ├─ Need discussion/debate? → debate-workflow skill
 │  │  └─ Interactive facilitated discussion converging to consensus
-│  └─ Need expert voting? → /expert-panel
+│  └─ Need expert voting? → consensus-voting skill
 │     └─ Independent reviews with weighted voting
 │
 ├─ FAULT TOLERANCE
-│  ├─ Need reliability/fallbacks? → /cascade
-│  ├─ Need critical correctness? → /n-version
-│  └─ Need decision consensus? → /debate
+│  ├─ Need reliability/fallbacks? → cascade-workflow skill
+│  ├─ Need critical correctness? → n-version-workflow skill
+│  └─ Need decision consensus? → debate-workflow skill
 │
 └─ INVESTIGATION & IMPROVEMENT
    ├─ Understand codebase? → /investigate
@@ -40,10 +40,6 @@ What do you need to do?
 | Module building      | `/modular-build`         | Creating new self-contained module (brick)     |
 | Feature development  | `/ultrathink`            | Multi-step feature with workflow orchestration |
 | Autonomous work      | `/auto`                  | Long-running task in external subprocess       |
-| Debate decision      | `/debate <question>`     | Need facilitated discussion to consensus       |
-| Expert consensus     | `/expert-panel <topic>`  | Need independent expert votes                  |
-| Fallback resilience  | `/cascade <task>`        | Need graceful degradation (API calls, etc.)    |
-| Critical correctness | `/n-version <task>`      | Security code, core algorithms (3-4x cost)     |
 | Code understanding   | `/investigate <path>`    | Deep dive into codebase structure              |
 | Session analysis     | `/reflect`               | Review session and create improvement issues   |
 | Philosophy check     | `/analyze <path>`        | Validate code against amplihack principles     |
@@ -57,13 +53,6 @@ What do you need to do?
 - **`/auto`**: Spawns external subprocess with autonomous loop
 - **Use `/ultrathink` for**: Interactive development, want to see progress
 - **Use `/auto` for**: Hands-off background work, long-running tasks
-
-### `/debate` vs `/expert-panel`
-
-- **`/debate`**: Interactive discussion with back-and-forth, facilitated convergence
-- **`/expert-panel`**: Independent reviews without cross-talk, then voting
-- **Use `/debate` for**: Exploring trade-offs, need discussion
-- **Use `/expert-panel` for**: Clear decision with expert consensus
 
 ### `/ultrathink` vs `/modular-build`
 
@@ -82,14 +71,6 @@ What do you need to do?
 /analyze .                     # Check philosophy compliance
 ```
 
-### Complex Decision Workflow: Debate → N-Version → Reflect
-
-```bash
-/debate "Should we use REST or GraphQL?"
-/n-version "Implement chosen API approach"
-/reflect                       # Analyze decisions made
-```
-
 ### Investigation Workflow: Investigate → Ultrathink
 
 ```bash
@@ -105,16 +86,6 @@ What do you need to do?
 - `/modular-build` - Create self-contained modules (bricks)
 - `/ultrathink` - Full development workflow
 - `/auto` - Autonomous external subprocess
-
-### Decision Making Commands
-
-- `/debate` - Facilitated multi-agent discussion
-- `/expert-panel` - Independent expert review with voting
-
-### Fault Tolerance Commands
-
-- `/cascade` - Graceful degradation with fallbacks
-- `/n-version` - N-version programming for critical code
 
 ### Investigation Commands
 
@@ -138,7 +109,6 @@ What do you need to do?
 - `/customize` - Manage user preferences
 - `/skill-builder` - Create new Claude Code skills
 - `/knowledge-builder` - Build knowledge bases
-- `/socratic` - Generate Socratic questions
 - `/transcripts` - Manage conversation transcripts
 - `/lock` / `/unlock` - Continuous work mode
 - `/install` / `/uninstall` - System setup

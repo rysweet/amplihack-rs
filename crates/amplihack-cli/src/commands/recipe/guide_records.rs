@@ -60,6 +60,17 @@ pub(super) struct Pointer {
     pub(super) run_dir: Option<String>,
     pub(super) issue_number: Option<String>,
     pub(super) issue_url: Option<String>,
+    /// Issue #3161: the pull request in the run's context, as recorded.
+    /// Untrusted text: `live_runs` validates it before matching.
+    pub(super) pr_url: Option<String>,
+    pub(super) pr_number: Option<String>,
+    /// The run's working folder and git top level, which a number-only
+    /// pull request is resolved against.
+    pub(super) cwd: Option<String>,
+    pub(super) worktree: Option<String>,
+    /// The stem of the log the record was read from: the detached session
+    /// name. Set by [`scan`] and [`read_named`], not by the pointer line.
+    pub(super) session: Option<String>,
 }
 
 /// What a scan of the log directory found.
@@ -128,7 +139,21 @@ fn parse_line(line: &[u8]) -> Result<Pointer, String> {
         run_dir: field(&value, "run_dir"),
         issue_number: field(&value, "issue_number"),
         issue_url: field(&value, "issue_url"),
+        pr_url: field(&value, "pr_url"),
+        pr_number: field(&value, "pr_number"),
+        cwd: field(&value, "cwd"),
+        worktree: field(&value, "worktree"),
+        session: None,
     })
+}
+
+/// `record` with the session its log is named after.
+fn with_session(mut record: Pointer, log: &Path) -> Pointer {
+    record.session = log
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_string);
+    record
 }
 
 /// The first pointer line of `log`, read through one handle that is opened
@@ -214,12 +239,14 @@ pub(super) fn read_named(log: &Path) -> Result<Option<Pointer>, GuideError> {
         ))
     };
     let line = found.ok_or_else(missing)?;
-    parse_line(&line).map(Some).map_err(|reason| {
-        GuideError::NotFound(format!(
-            "{} has an unusable amplihack.recipe.log_pointer line: {reason}",
-            log.display()
-        ))
-    })
+    parse_line(&line)
+        .map(|record| Some(with_session(record, log)))
+        .map_err(|reason| {
+            GuideError::NotFound(format!(
+                "{} has an unusable amplihack.recipe.log_pointer line: {reason}",
+                log.display()
+            ))
+        })
 }
 
 /// One log worth opening: a regular file named `*.log`, with the time it
@@ -281,7 +308,7 @@ pub(super) fn scan(log_dir: &Path) -> Scan {
     let mut records = Vec::with_capacity(logs.len());
     for (_, log) in logs {
         let record = match read_pointer_line(&log) {
-            Ok(Some(line)) => parse_line(&line),
+            Ok(Some(line)) => parse_line(&line).map(|record| with_session(record, &log)),
             Ok(None) => Err("no pointer line".to_string()),
             Err(e) => Err(e.to_string()),
         };

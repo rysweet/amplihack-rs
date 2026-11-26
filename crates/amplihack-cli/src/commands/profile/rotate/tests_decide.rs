@@ -62,6 +62,7 @@ fn swap(to: &str, reason: Reason) -> Decision {
 
 fn window(label: &str, used: f64) -> UsageWindow {
     UsageWindow {
+        observed_at: None,
         label: label.into(),
         used_percentage: used,
         resets_text: None,

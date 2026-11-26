@@ -33,6 +33,7 @@ use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::probe_sandbox::{self, NO_PERSIST, Notice, ProbeSandbox};
+use super::probe_tmp::ProbeTmp;
 use super::rotate::decide::Reading;
 use super::store::ProfileStore;
 use super::usage_codex::{self, CodexJsonRow, CodexView};
@@ -390,6 +391,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         excluded: Some(excluded),
         now,
         keep_raw: raw,
+        record_usage: false, // The command records its rows together after output.
     };
     let pool = match mode {
         ProbeMode::Auto | ProbeMode::Text => claude_bound,
@@ -1218,6 +1220,9 @@ pub(super) struct RowReader {
     pub(super) excluded: Option<Vec<ProfileName>>,
     pub(super) now: i64,
     pub(super) keep_raw: bool,
+    /// Rotator reads record their observations before returning the result.
+    /// The usage command records its completed rows as one batch instead.
+    pub(super) record_usage: bool,
 }
 
 impl RowReader {
@@ -1229,9 +1234,6 @@ impl RowReader {
     /// One profile, against `~/.claude` when `live`. An excluded profile is
     /// [`Probe::excluded`], decided before anything is read.
     pub(super) fn profile(&self, name: &ProfileName, live: bool) -> Probe {
-        if self.is_excluded(name) {
-            return Probe::excluded();
-        }
         let claude = |m: ProbeMode| {
             usage_source::fallback_with(&self.binary, |bin| {
                 self.gate.run(|| {
@@ -1248,16 +1250,69 @@ impl RowReader {
                 })
             })
         };
+        self.profile_with(name, live, claude)
+    }
+
+    /// The production reading path with an injectable text/request probe.
+    pub(super) fn profile_with(
+        &self,
+        name: &ProfileName,
+        live: bool,
+        claude: impl FnOnce(ProbeMode) -> Probe,
+    ) -> Probe {
+        if self.is_excluded(name) {
+            return Probe::excluded();
+        }
         let Some(plan) = self.plan(name, live) else {
             return Probe::failed(ErrorReason::ProfileRefused, None);
         };
-        self.finish(usage_source::read(
+        // Capture attribution before the read. The recorder checks it again
+        // under the state lock, as it does for the usage command's batch.
+        let account = if self.record_usage {
+            match auto_switch::lease_view(self.store.root()) {
+                Ok(view) => Some(
+                    view.as_ref()
+                        .map_or(name.as_str(), |v| v.account_in(name.as_str()))
+                        .to_string(),
+                ),
+                Err(e) => {
+                    eprintln!("auto-switch: {e}; usage record not updated");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let live_before = (self.record_usage && live)
+            .then(|| default_live::detect(&self.store, self.home.as_deref()).0)
+            .flatten()
+            .filter(|l| &l.name == name);
+        let p = self.finish(usage_source::read(
             &self.env,
             &plan,
             self.store.root(),
             self.now,
             claude,
-        ))
+        ));
+        let unchanged = !live
+            || live_before
+                .as_ref()
+                .is_some_and(|l| default_live::still_live(&self.store, self.home.as_deref(), l));
+        if self.record_usage && !unchanged {
+            eprintln!("{}", swap_warning(name));
+        }
+        if let Some(account) = account.filter(|_| unchanged)
+            && p.error.is_none()
+            && p.source != Some(Source::Passive)
+            && recordable(&p.report)
+        {
+            persist(
+                &self.store,
+                &[observation(name.as_str(), &account, &p.report)],
+                false,
+            );
+        }
+        p
     }
 
     /// How `name` is read; `None` when its directory is refused.
@@ -1698,7 +1753,18 @@ struct Attempt {
 /// On Unix the child leads its own process group, and the whole group is
 /// killed before the child is reaped on every path, so processes `claude`
 /// started (MCP servers, for example) do not outlive it.
+///
+/// Each attempt gets its own private temporary folder (issue #3292), which
+/// is removed after the group has been ended, however the attempt ended.
 fn attempt(mut cmd: Command, input: Option<&[u8]>, deadline: Instant) -> Attempt {
+    let tmp = ProbeTmp::give(&mut cmd);
+    let a = run_attempt(cmd, input, deadline);
+    tmp.close();
+    a
+}
+
+/// The body of [`attempt`], run while the private folder exists.
+fn run_attempt(mut cmd: Command, input: Option<&[u8]>, deadline: Instant) -> Attempt {
     let stdin = if input.is_some() {
         Stdio::piped()
     } else {
@@ -2416,31 +2482,40 @@ pub(super) fn not_saved_warnings(rows: &[Row]) -> Vec<String> {
 /// Rows auto-switch may record: the usable and exhausted ones. A spend limit
 /// is not tied to the windows, so it is left out.
 pub(super) fn observations(rows: &[Row]) -> Vec<Observation> {
-    let observed = |w: &Option<UsageWindow>| {
-        w.as_ref().map(|w| ObservedWindow {
-            used_percentage: w.used_percentage,
-            resets_at: w.resets_at,
-        })
-    };
     rows.iter()
         // Issue #2218: an excluded row has no reading to record.
         .filter(|r| r.is_login())
         // Issue #1844: a passive row is a stored reading; recording it again
         // would keep it fresh for ever.
         .filter(|r| r.source != Some(Source::Passive))
-        .filter(|r| {
-            matches!(
-                r.report.state,
-                UsageState::Ok | UsageState::SessionExhausted | UsageState::WeeklyExhausted
-            )
-        })
-        .map(|r| Observation {
-            profile: r.profile.clone(),
-            account: r.account.clone(),
-            session: observed(&r.report.session),
-            week: observed(&r.report.week_all),
-        })
+        .filter(|r| recordable(&r.report))
+        .map(|r| observation(&r.profile, &r.account, &r.report))
         .collect()
+}
+
+fn recordable(report: &UsageReport) -> bool {
+    matches!(
+        report.state,
+        UsageState::Ok | UsageState::SessionExhausted | UsageState::WeeklyExhausted
+    )
+}
+
+fn observation(profile: &str, account: &str, report: &UsageReport) -> Observation {
+    let observed = |w: &UsageWindow| ObservedWindow {
+        used_percentage: w.used_percentage,
+        resets_at: w.resets_at,
+    };
+    Observation {
+        profile: profile.to_string(),
+        account: account.to_string(),
+        session: report.session.as_ref().map(observed),
+        week: report.week_all.as_ref().map(observed),
+        week_models: report
+            .week_models
+            .iter()
+            .map(|w| (w.label.clone(), observed(w)))
+            .collect(),
+    }
 }
 
 /// The stderr lines for a recording outcome. The not-set-up note is for

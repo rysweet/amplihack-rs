@@ -267,6 +267,7 @@ fn the_status_line_names_the_source() {
 
 fn sw(five: f64, resets_in: i64) -> SwitchReading {
     SwitchReading {
+        week_models: Vec::new(),
         five_hour: Some(Window {
             used_percentage: five,
             resets_at: NOW + resets_in,
@@ -361,6 +362,7 @@ fn probed(session: f64, resets_at: i64) -> Probed {
                 used: 10.0,
                 resets_at: Some(NOW + 100 * HOUR),
             }),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,
@@ -458,6 +460,7 @@ fn auto_switch_spends_at(threshold: u8, g: Gate, live: f64, spare: f64, resets_i
 /// an hour, the week in 100 hours.
 fn sw2(session: f64, week: f64) -> SwitchReading {
     SwitchReading {
+        week_models: Vec::new(),
         five_hour: Some(Window {
             used_percentage: session,
             resets_at: NOW + HOUR,
@@ -483,6 +486,7 @@ fn probed2(session: f64, week: f64) -> Probed {
                 used: week,
                 resets_at: Some(NOW + 100 * HOUR),
             }),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,

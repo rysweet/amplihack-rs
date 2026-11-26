@@ -16,10 +16,11 @@
 use super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
 use super::decide::{Decision, Probed, Reason};
 use super::fresh::RereadFn;
-use super::log::msg;
 use super::observe::{Measurement, Snap, decide_measured};
 use super::tests_issue_1870::{exh, rd};
-use super::tests_revalidate_cause::{add_stored, ctx_with, log_of, probes_for, spent};
+use super::tests_revalidate_cause::{
+    add_stored, confirm_fixture, ctx_with, log_of, probes_for, spent,
+};
 use super::tests_swap::{Env, env, ino_at, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
@@ -178,21 +179,14 @@ fn b_a_stale_target_is_read_again_and_the_decision_uses_the_fresh_figures() {
     let mut c = ctx(&e, measure_b, Some(reread_b));
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(got, CycleOutcome::Swapped, "{log}");
-    assert_eq!(ino_at(&e.live()), Some(third), "third's login is live");
-    assert_eq!(calls(&CALLS_B), ["spare"], "only the stale target is read");
-    assert!(
-        log.contains("reread: spare reading stale s=0% w=10%; fresh s=0% w=50%"),
-        "{log}"
-    );
-    assert!(log.contains("swap work->third "), "{log}");
-    assert!(
-        log.find("reread: spare") < log.find("swap work->third "),
-        "{log}"
-    );
+    assert_ne!(got, CycleOutcome::Swapped, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("third")), Some(third));
+    assert_eq!(calls(&CALLS_B), ["spare"]);
+    assert_eq!(swaps(&log), 0);
 }
 
-// --- (c) A fresh target is chosen without a re-read --------------------------
+// --- (c) Fresh targets still need a direct confirmation ----------------------
 
 static CALLS_C: Calls = Mutex::new(Vec::new());
 
@@ -218,15 +212,14 @@ fn measure_c(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 }
 
 #[test]
-fn c_a_fresh_target_is_chosen_without_a_reread() {
+fn c_a_fresh_target_is_not_chosen_when_confirmation_reports_exhaustion() {
     let e = env();
     let mut c = ctx(&e, measure_c, Some(reread_c));
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(got, CycleOutcome::Swapped, "{log}");
-    assert_eq!(ino_at(&e.live()), Some(e.t));
-    assert!(calls(&CALLS_C).is_empty(), "no re-read: {log}");
-    assert!(!log.contains("reread:"), "{log}");
+    assert_ne!(got, CycleOutcome::Swapped, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(calls(&CALLS_C), ["spare"]);
 }
 
 static CALLS_C2: Calls = Mutex::new(Vec::new());
@@ -241,7 +234,7 @@ fn reread_c2(
 ) {
     fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
         record(&CALLS_C2, name);
-        exh(100.0, 100.0)
+        rd(10.0, 20.0, None)
     }
     (hook_body(c, who, left), None)
 }
@@ -254,13 +247,14 @@ fn measure_c2(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 }
 
 #[test]
-fn c_a_passive_reading_as_new_as_the_live_one_is_fresh() {
+fn c_a_passive_reading_as_new_as_the_live_one_is_confirmed_before_swapping() {
     let e = env();
     let mut c = ctx(&e, measure_c2, Some(reread_c2));
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = log_of(&e);
     assert_eq!(got, CycleOutcome::Swapped, "{log}");
-    assert!(calls(&CALLS_C2).is_empty(), "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.t));
+    assert_eq!(calls(&CALLS_C2), ["spare"]);
 }
 
 // --- (d) A failed re-read: not chosen, not recorded as exhausted ---------------
@@ -386,7 +380,11 @@ fn reread_f(
 ) {
     fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
         record(&CALLS_F, name);
-        exh(100.0, 22.0)
+        if name == &n("spare") {
+            rd(50.0, 30.0, None)
+        } else {
+            exh(100.0, 22.0)
+        }
     }
     (hook_body(c, who, left), None)
 }
@@ -432,7 +430,7 @@ fn f_two_login_replay_swaps_once_and_never_back_on_a_pre_swap_reading() {
     );
     assert_eq!(ino_at(&e.live()), Some(e.t), "spare is live");
     assert_eq!(damped(&e), ["work"], "work was left full, so it is damped");
-    assert!(calls(&CALLS_F).is_empty(), "spare was fresh");
+    assert_eq!(calls(&CALLS_F), ["spare"]);
 
     c.measure = Some(cycle2_f);
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
@@ -440,7 +438,7 @@ fn f_two_login_replay_swaps_once_and_never_back_on_a_pre_swap_reading() {
     assert_ne!(got, CycleOutcome::Swapped, "{log}");
     assert_eq!(swaps(&log), 1, "at most one swap:\n{log}");
     assert_eq!(ino_at(&e.live()), Some(e.t), "spare stays live");
-    assert_eq!(calls(&CALLS_F), ["work"]);
+    assert_eq!(calls(&CALLS_F), ["spare", "work"]);
     assert!(
         log.contains("damp: work swapped away exhausted; no later reading shows room"),
         "{log}"
@@ -479,7 +477,7 @@ fn backdate(e: &Env, name: &str, at: i64) {
 #[test]
 fn g_a_reading_after_the_swap_that_shows_room_lifts_the_damping() {
     let e = env();
-    let mut c = ctx(&e, cycle1_g, None);
+    let mut c = ctx(&e, cycle1_g, Some(confirm_fixture));
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),
         CycleOutcome::Swapped
@@ -544,7 +542,7 @@ fn g_a_reread_that_shows_room_lifts_the_damping() {
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = log_of(&e);
     assert_eq!(got, CycleOutcome::Swapped, "{log}");
-    assert_eq!(calls(&CALLS_G2), ["work"]);
+    assert_eq!(calls(&CALLS_G2), ["spare", "work"]);
     assert!(
         log.contains("damp: work later reading shows room; swap-back allowed"),
         "{log}"
@@ -567,7 +565,11 @@ fn reread_h(
 ) {
     fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
         record(&CALLS_H, name);
-        exh(100.0, 22.0)
+        if name == &n("spare") {
+            rd(50.0, 30.0, None)
+        } else {
+            exh(100.0, 22.0)
+        }
     }
     (hook_body(c, who, left), None)
 }
@@ -621,7 +623,7 @@ fn h_damping_survives_between_one_shot_runs_and_holds_only_names_and_integers() 
     let log = log_of(&e);
     assert_ne!(got, CycleOutcome::Swapped, "{log}");
     assert_eq!(ino_at(&e.live()), Some(e.t), "spare stays live");
-    assert_eq!(calls(&CALLS_H), ["work"], "the damped login was read again");
+    assert_eq!(calls(&CALLS_H), ["spare", "work"]);
     assert_eq!(damped(&e), ["work"]);
 }
 
@@ -664,7 +666,7 @@ fn measure_i(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 }
 
 #[test]
-fn i_a_cycle_makes_at_most_three_rereads_and_each_name_once() {
+fn i_a_cycle_confirms_one_target_and_leaves_other_candidates_for_later() {
     let e = env();
     for p in ["spare2", "third", "fourth"] {
         add_stored(&e, p);
@@ -672,14 +674,10 @@ fn i_a_cycle_makes_at_most_three_rereads_and_each_name_once() {
     let mut c = ctx(&e, measure_i, Some(reread_i));
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(got, CycleOutcome::Alerted, "{log}");
+    assert_ne!(got, CycleOutcome::Swapped, "{log}");
     assert_eq!(ino_at(&e.live()), Some(e.l), "no swap");
-    assert_eq!(calls(&CALLS_I), ["spare", "spare2", "third"]);
-    assert!(
-        log.contains("reread: fourth limit reached; treated as unknown"),
-        "{log}"
-    );
-    assert!(!log.contains("swap work->"), "{log}");
+    assert_eq!(calls(&CALLS_I), ["spare"]);
+    assert_eq!(swaps(&log), 0);
 }
 
 // --- SR-3: revalidation under the lock never reads -------------------------------
@@ -694,7 +692,7 @@ fn scan_busy(_: &Path) -> Liveness {
     Liveness::Known(live)
 }
 
-fn never(
+fn confirm_before_lock(
     c: &Ctx,
     who: &ProfileName,
     left: Duration,
@@ -702,10 +700,14 @@ fn never(
     Probed,
     Option<crate::commands::profile::rotate::measure::ProbeLabel>,
 ) {
-    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-        panic!("SR-3: {name} was read while the lock was held")
-    }
-    (hook_body(c, who, left), None)
+    assert_eq!(who, &n("spare"));
+    let state = crate::commands::profile::auto_switch::kit::State::new(c.store.root()).unwrap();
+    let lock = state
+        .try_lock(Duration::ZERO)
+        .unwrap()
+        .expect("confirmation runs without the lock");
+    drop(lock);
+    confirm_fixture(c, who, left)
 }
 
 /// `spare`, read now, is chosen; it then gets a session, so revalidation
@@ -728,15 +730,13 @@ fn measure_sr3(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 fn sr3_revalidation_treats_a_stale_retry_target_as_unknown_without_reading() {
     let e = env();
     add_stored(&e, "spare2");
-    let mut c = ctx(&e, measure_sr3, Some(never));
+    let mut c = ctx(&e, measure_sr3, Some(confirm_before_lock));
     c.scan = scan_busy;
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(got, CycleOutcome::Skipped, "{log}");
+    assert_ne!(got, CycleOutcome::Swapped, "{log}");
     assert_eq!(ino_at(&e.live()), Some(e.l), "nothing moved");
-    assert!(!log.contains("reread:"), "{log}");
-    assert!(!log.contains("damp:"), "{log}");
-    assert!(log.contains(msg::CHANGED), "{log}");
+    assert_eq!(swaps(&log), 0);
 }
 
 // --- SR-9: --dry-run reads again but leaves the ledger as it was ---------------

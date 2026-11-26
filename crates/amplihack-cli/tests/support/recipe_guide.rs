@@ -69,7 +69,10 @@ for arg in "$@"; do
   prev=$arg
 done
 if [ -n "$CODEX_CLOSE_STDIN" ]; then
-  # Stops reading at once: closes stdin and exits without reaching EOF.
+  # Reads the first line of its prompt, then stops reading: closes stdin
+  # and exits without reaching EOF.
+  IFS= read -r first || true
+  printf '%s\n' "$first" > "$RECORD_DIR/prompt.$step"
   exec 0<&-
   exit 0
 fi
@@ -353,10 +356,17 @@ impl GuideFixture {
 
     /// An isolated `amplihack` command with the fixture's environment.
     pub fn amplihack(&self, args: &[&str]) -> Command {
+        self.amplihack_at(&amplihack_bin(), args)
+    }
+
+    /// [`Self::amplihack`] with another `amplihack` binary, such as an older
+    /// release (PR #3190 review: a run started by an older release and read
+    /// by this one).
+    pub fn amplihack_at(&self, bin: &Path, args: &[&str]) -> Command {
         // `HOME`, `TMPDIR`, the profile root and the process table come from
         // the private environment, so the child's temp dir is the fixture
         // root whatever this process's own `TMPDIR` is (issue #2931).
-        let mut c = self.env.command(amplihack_bin());
+        let mut c = self.env.command(bin);
         c.args(args)
             .current_dir(&self.root)
             .env("PATH", self.path_var())
@@ -528,6 +538,26 @@ impl GuideFixture {
         log
     }
 
+    /// `<recipe-logs>/<session>.log`, created private and empty and opened
+    /// for appending. A `recipe run` whose standard error is sent here gives
+    /// the session the log a detached run has: the pointer lines in it are
+    /// the ones `recipe run` itself wrote, with its own run id, run folder
+    /// and pull request (PR #3190 review).
+    pub fn session_log_sink(&self, session: &str) -> Stdio {
+        let log = self.recipe_logs.join(format!("{session}.log"));
+        private_file(&log, "");
+        let file = fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .unwrap_or_else(|e| panic!("open {}: {e}", log.display()));
+        Stdio::from(file)
+    }
+
+    /// The text of `<recipe-logs>/<session>.log`, for failure messages.
+    pub fn session_log_text(&self, session: &str) -> String {
+        fs::read_to_string(self.recipe_logs.join(format!("{session}.log"))).unwrap_or_default()
+    }
+
     /// `amplihack recipe guide <args…> -` with `text` on stdin and both
     /// work-root variables unset, whatever the caller's environment.
     pub fn guide_without_work_root(&self, args: &[&str], text: &str) -> Output {
@@ -600,6 +630,19 @@ impl GuideFixture {
         args: &[&str],
         extra_env: &[(&str, &str)],
     ) -> Output {
+        let c = self.recipe_run_command(runner_body, args, extra_env);
+        self.run_with_stdin(c, None)
+    }
+
+    /// The command [`Self::recipe_run`] runs, not yet started, with stdin at
+    /// /dev/null and stdout and stderr piped. A test that holds the run live
+    /// on a FIFO (`support::fifo_release::start`) starts this form.
+    pub fn recipe_run_command(
+        &self,
+        runner_body: &str,
+        args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> Command {
         let runner = self.tools.join("recipe-runner-rs");
         let _ = fs::remove_file(&runner);
         executable(&runner, &format!("{RUNNER_HEAD}{runner_body}{RUNNER_TAIL}"));
@@ -615,7 +658,10 @@ impl GuideFixture {
         for (k, v) in extra_env {
             c.env(k, v);
         }
-        self.run_with_stdin(c, None)
+        c.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        c
     }
 
     /// `amplihack claude --subprocess-safe -- -p <prompt>` run directly, with
@@ -650,52 +696,57 @@ impl GuideFixture {
     }
 }
 
-/// The second stdout line `recipe guide` prints for a pull request target
-/// (PR #2567 M1), for the guidance folder `dir`.
-pub fn pr_where_line(dir: &Path) -> String {
-    format!(
-        "written to {}; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.",
-        dir.display()
-    )
-}
-
-/// The stdout of a successful `recipe guide`: the line
-/// `guidance appended: <path> (<n> bytes, run)`, or for a pull request
-/// `guidance saved for pull request: <path> (<n> bytes, pr)` and exactly one
-/// more line, [`pr_where_line`] for the entry's folder. Returns
-/// (path, n, source).
+/// The first stdout line of a successful `recipe guide`:
+/// `guidance appended: <path> (<n> bytes, run)` or
+/// `guidance saved for pull request: <path> (<n> bytes, pr)`. Lines after the
+/// written lines (`status:` and `dropped by` lines, issue #3162) are read with
+/// [`status_lines`] and [`drop_lines`]. Returns (path, n, source).
 pub fn parse_appended(o: &Output) -> (PathBuf, usize, String) {
     let out = stdout(o);
-    let lines: Vec<&str> = out.lines().collect();
-    assert!(!lines.is_empty(), "no stdout line: {}", show(o));
+    let first = out.lines().next();
+    assert!(first.is_some(), "no stdout line: {}", show(o));
+    let (path, bytes, source) = parse_written_line(first.unwrap())
+        .unwrap_or_else(|| panic!("stdout line does not match the contract: {}", show(o)));
+    (path, bytes, source)
+}
+
+/// Parses one written line; `None` when `line` is not one.
+pub fn parse_written_line(line: &str) -> Option<(PathBuf, usize, String)> {
     let re = regex::Regex::new(
         r"^(guidance appended|guidance saved for pull request): (/.+\.md) \((\d+) bytes, (run|pr)\)$",
     )
     .unwrap();
-    let caps = re
-        .captures(lines[0])
-        .unwrap_or_else(|| panic!("stdout line does not match the contract: {}", show(o)));
-    let path = PathBuf::from(&caps[2]);
+    let caps = re.captures(line)?;
     let source = caps[4].to_string();
     let verb = if source == "pr" {
         "guidance saved for pull request"
     } else {
         "guidance appended"
     };
-    assert_eq!(&caps[1], verb, "{}", show(o));
-    match source.as_str() {
-        "run" => assert_eq!(lines.len(), 1, "exactly one stdout line: {}", show(o)),
-        _ => {
-            assert_eq!(lines.len(), 2, "exactly two stdout lines: {}", show(o));
-            assert_eq!(
-                lines[1],
-                pr_where_line(path.parent().unwrap()),
-                "{}",
-                show(o)
-            );
-        }
-    }
-    (path, caps[3].parse().unwrap(), source)
+    assert_eq!(&caps[1], verb, "{line}");
+    Some((PathBuf::from(&caps[2]), caps[3].parse().unwrap(), source))
+}
+
+/// Every written line of a successful `recipe guide`, in print order.
+pub fn written_lines(o: &Output) -> Vec<(PathBuf, usize, String)> {
+    stdout(o).lines().filter_map(parse_written_line).collect()
+}
+
+/// The `status:` lines, without the prefix.
+pub fn status_lines(o: &Output) -> Vec<String> {
+    stdout(o)
+        .lines()
+        .filter_map(|l| l.strip_prefix("status: ").map(str::to_string))
+        .collect()
+}
+
+/// The `dropped by …` lines.
+pub fn drop_lines(o: &Output) -> Vec<String> {
+    stdout(o)
+        .lines()
+        .filter(|l| l.starts_with("dropped by "))
+        .map(str::to_string)
+        .collect()
 }
 
 /// A failure prints exactly one line on stderr.

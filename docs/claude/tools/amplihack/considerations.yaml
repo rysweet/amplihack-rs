@@ -217,8 +217,8 @@
 
 - id: workflow_invocation
   category: Workflow Process Adherence
-  question: Did the ultrathink-orchestrator explicitly invoke a workflow using either the Skill tool (for workflow skills) or the Read tool (to load a workflow markdown file), rather than skipping workflow invocation entirely?
-  description: Validates that ultrathink-orchestrator used either Skill tool to invoke a workflow skill or Read tool to load a workflow markdown file - not bypassing workflow invocation (Issue #2040)
+  question: Did the dev-orchestrator explicitly invoke a workflow using either the Skill tool (for workflow skills) or the Read tool (to load a workflow markdown file), rather than skipping workflow invocation entirely?
+  description: Validates that dev-orchestrator used either Skill tool to invoke a workflow skill or Read tool to load a workflow markdown file - not bypassing workflow invocation (Issue #2040)
   severity: blocker
   checker: _check_workflow_invocation
   enabled: true

@@ -45,6 +45,7 @@ fn n(s: &str) -> ProfileName {
 
 fn five_hour(five: f64, resets_in: i64) -> Reading {
     Reading {
+        week_models: Vec::new(),
         five_hour: Some(Window {
             used_percentage: five,
             resets_at: NOW + resets_in,

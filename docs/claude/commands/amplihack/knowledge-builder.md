@@ -8,9 +8,6 @@ triggers:
   - "build knowledge base"
   - "research comprehensive understanding"
   - "generate question hierarchy"
-invokes:
-  - type: command
-    name: /socratic
 philosophy:
   - principle: Analysis First
     application: 270 questions across 4 depth levels ensure deep understanding

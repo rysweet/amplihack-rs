@@ -117,6 +117,9 @@ pub struct UsageWindow {
     pub resets_text: Option<String>,
     /// `resets_text` as Unix epoch seconds, when it could be resolved.
     pub resets_at: Option<i64>,
+    /// When this window was observed, if it came from a stored reading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -262,6 +265,7 @@ fn parse_line(line: &str, now: i64) -> Option<(bool, UsageWindow)> {
     let resets_text = caps.get(4).map(|m| m.as_str().to_string());
     let resets_at = resets_text.as_deref().and_then(|t| resolve_reset(t, now));
     let window = UsageWindow {
+        observed_at: None,
         label,
         used_percentage: pct,
         resets_text,

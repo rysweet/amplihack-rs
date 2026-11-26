@@ -22,10 +22,36 @@ use super::tests_swap::{CREDS, Env, env, ino_at, login, n, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{FakeExchange, Liveness, State, now};
 use crate::commands::profile::name::ProfileName;
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+thread_local! {
+    static CONFIRMATIONS: RefCell<Vec<(ProfileName, Probed)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A separate direct observation with the values this fixture supplied to
+/// measurement. Tests of changed or failed confirmations replace this hook.
+pub(super) fn confirm_fixture(
+    ctx: &Ctx,
+    who: &ProfileName,
+    _: Duration,
+) -> (Probed, Option<super::measure::ProbeLabel>) {
+    let mut probe = CONFIRMATIONS.with(|table| {
+        table
+            .borrow()
+            .iter()
+            .find(|(name, _)| name == who)
+            .map_or_else(Probed::failed, |(_, p)| p.clone())
+    });
+    probe.passive = false;
+    probe.carried = false;
+    probe.observed_at = Some((ctx.now)());
+    (probe, None)
+}
 
 // --- Fixture ---------------------------------------------------------------
 
@@ -57,11 +83,13 @@ pub(super) fn env3() -> (Env, u64, u64) {
 /// exchange is a fake (issue #2935): what the cycle decides does not depend
 /// on what the host can see or exchange.
 pub(super) fn ctx_with(e: &Env, measure: MeasureFn) -> Ctx {
+    CONFIRMATIONS.with(|table| table.borrow_mut().clear());
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     ctx.scan = |_| Liveness::Known(BTreeSet::new());
     ctx.exchange = FakeExchange::working();
     ctx.measure = Some(measure);
+    ctx.reread = Some(confirm_fixture);
     ctx
 }
 
@@ -94,6 +122,9 @@ pub(super) fn spent() -> Probed {
 /// Probes for the candidates in `snap`, read from `table`; a candidate the
 /// table does not name is not probed.
 pub(super) fn probes_for(snap: &Snap, table: &[(&str, Probed)]) -> Vec<(ProfileName, Probed)> {
+    CONFIRMATIONS.with(|observations| {
+        *observations.borrow_mut() = table.iter().map(|(name, p)| (n(name), p.clone())).collect();
+    });
     table
         .iter()
         .filter(|(name, _)| snap.candidates.contains(&n(name)))

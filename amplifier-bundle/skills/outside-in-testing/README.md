@@ -1,1 +1,0 @@
-../qa-team/README.md

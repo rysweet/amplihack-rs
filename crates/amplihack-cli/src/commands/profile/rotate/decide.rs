@@ -17,6 +17,8 @@ pub(super) mod target_confirm;
 pub(super) mod target_msg;
 #[path = "target_seen.rs"]
 pub(super) mod target_seen;
+#[path = "weekly.rs"]
+mod weekly;
 
 /// What one probe showed, reduced to what the rule needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,7 +49,8 @@ impl Reading {
     pub fn from_report(r: &UsageReport) -> Self {
         let used = |w: &Option<UsageWindow>| w.as_ref().map(|w| w.used_percentage);
         let models = r.week_models.iter().map(|w| w.used_percentage);
-        let week = used(&r.week_all).map(|w| models.clone().fold(w, f64::max));
+        let windows = Windows::from_report(r);
+        let week = windows.deciding_week().map(|w| w.used);
         let model_full = models.clone().any(|u| u >= 100.0);
         let full =
             |w: Option<f64>| Some(w.filter(|u| u.is_finite()).map_or(100.0, |u| u.max(100.0)));
@@ -115,6 +118,8 @@ pub struct Win {
 pub struct Windows {
     pub session: Option<Win>,
     pub week: Option<Win>,
+    /// Individual model observations, separate from the all-models reset.
+    pub week_models: Vec<UsageWindow>,
     /// Issue #1818: the reading showed no session window, so no session
     /// limit applies (`UsageReport::session_limit` is `false`). `false` for
     /// a session that was read and for a probe that read nothing, so a
@@ -131,6 +136,7 @@ impl Windows {
         Self {
             session: r.session.as_ref().map(win),
             week: r.week_all.as_ref().map(win),
+            week_models: r.week_models.clone(),
             no_session_limit: !r.session_limit,
         }
     }

@@ -64,6 +64,7 @@ fn win(pct: f64, resets_at: i64) -> Option<Window> {
 
 fn reading(five: Option<Window>, week: Option<Window>, at: i64) -> Reading {
     Reading {
+        week_models: Vec::new(),
         five_hour: five,
         seven_day: week,
         observed_at: at,
@@ -495,6 +496,7 @@ fn evidence_for_profiles_not_listed_is_ignored() {
 fn a_usage_limit_failure_counts_as_the_hard_limit() {
     let failure = |pct: f64| {
         Evidence::Usage(Reading {
+            week_models: Vec::new(),
             five_hour: win(pct, T + HOUR),
             seven_day: None,
             observed_at: T,
@@ -518,6 +520,7 @@ fn a_usage_limit_failure_whose_window_reset_is_not_over() {
         &ev(vec![(
             "a",
             Evidence::Usage(Reading {
+                week_models: Vec::new(),
                 five_hour: win(100.0, T - 1),
                 seven_day: None,
                 observed_at: T - HOUR,

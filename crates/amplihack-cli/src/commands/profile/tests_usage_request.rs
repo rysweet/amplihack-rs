@@ -88,6 +88,7 @@ fn limits(p: &mut Value) -> &mut Value {
 
 fn window(label: &str, pct: f64, text: &str, at: i64) -> UsageWindow {
     UsageWindow {
+        observed_at: None,
         label: label.to_string(),
         used_percentage: pct,
         resets_text: Some(text.to_string()),

@@ -115,7 +115,7 @@ installation route and its [directory and configuration commands](choose-listed-
 Where the complete framework and its index are installed, the directory can
 also find unlisted definitions for you to read.
 
-The 23 `amplihack:` commands remain available when typed. They are excluded
+The 18 `amplihack:` commands remain available when typed. They are excluded
 from the model's list of commands it may invoke itself.
 
 ## The native runtime

@@ -142,7 +142,9 @@ All Python tool references in skill files replaced with the Rust CLI equivalent:
 | `python .claude/tools/amplihack/lock_tool.py lock` | `amplihack lock` |
 
 The `amplihack lock` subcommand creates lock files at
-`~/.amplihack/.claude/runtime/locks/` and is the only supported lock mechanism.
+`<project>/.claude/runtime/locks/` and is the only supported lock mechanism.
+The project folder is `$CLAUDE_PROJECT_DIR`, or the current directory when that
+variable is unset. Use `amplihack lock [--message TEXT]` to enable lock mode.
 
 ### Usage
 
@@ -154,13 +156,13 @@ amplihack lock
 amplihack unlock
 
 # Check lock status
-ls ~/.amplihack/.claude/runtime/locks/
+amplihack lock-status
 ```
 
 ### Configuration
 
-No configuration required. Lock file location is fixed at
-`~/.amplihack/.claude/runtime/locks/`.
+No configuration required. Lock files are under the project folder at
+`.claude/runtime/locks/`.
 
 ---
 

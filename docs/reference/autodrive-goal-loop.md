@@ -288,9 +288,21 @@ To print the guidance a run has received:
 amplihack recipe guidance show --pr 3129 --pr-repo rysweet/amplihack-rs
 ```
 
-Entries that arrived after the previous reading are marked `NEW`. With `--json`
-the command prints each entry's metadata and no text. Guidance text is never put
-into JSON, context, argv or logs. See
+Entries that arrived after the previous reading are marked `NEW`, and each entry
+is marked `read` or `not yet read`. `read` means the block was delivered to an
+agent step, not that the agent acted on it; an unread entry whose run has
+recorded its end also shows that end. With `--json` the command prints each
+entry's metadata, including `read`, and a `drops` array for steps that could not
+take guidance, and no text. Guidance text is never put into JSON, context, argv
+or logs.
+
+The goal loop reads with `recipe guidance show <PR URL>`, and `recipe guide
+<PR URL>` writes to the folders that `show` reads: the folder of each live run
+for the pull request, whatever work root the run was started with, and the pull
+request's state folder. A drive started with an explicit work root and guided by
+pull request URL therefore sees the entry at its next turn. The `jq` expressions
+in the loop use `entries[]` and `folders[]` keys that have not changed; `read`
+and `drops` are additions to schema 1. See
 [recipe guidance](./recipe-cli-reference.md#amplihack-recipe-guidance).
 
 ### Stopping gracefully

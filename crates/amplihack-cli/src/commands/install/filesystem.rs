@@ -259,10 +259,6 @@ fn is_known_safe_bundle_symlink(path: &Path) -> bool {
             if *skills == OsStr::new("skills")
                 && (*skill == OsStr::new("docx") || *skill == OsStr::new("pptx"))
                 && *ooxml == OsStr::new("ooxml")
-    ) || matches!(
-        relative,
-        [skills, skill, _first_child, ..]
-            if *skills == OsStr::new("skills") && *skill == OsStr::new("outside-in-testing")
     )
 }
 
@@ -630,11 +626,7 @@ mod tests {
         assert!(is_known_safe_bundle_symlink(path));
         let path = Path::new("/repo/amplifier-bundle/skills/pptx/ooxml");
         assert!(is_known_safe_bundle_symlink(path));
-        let path = Path::new("/repo/amplifier-bundle/skills/outside-in-testing/fixtures/link");
-        assert!(is_known_safe_bundle_symlink(path));
         let path = Path::new("/repo/amplifier-bundle/skills/docx");
-        assert!(!is_known_safe_bundle_symlink(path));
-        let path = Path::new("/repo/amplifier-bundle/skills/outside-in-testing");
         assert!(!is_known_safe_bundle_symlink(path));
         let path = Path::new("/repo/amplifier-bundle/skills/other/link");
         assert!(!is_known_safe_bundle_symlink(path));

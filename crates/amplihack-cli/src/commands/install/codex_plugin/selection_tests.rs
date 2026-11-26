@@ -97,12 +97,11 @@ fn default_package_has_exactly_the_regular_and_persona_skills() {
 }
 
 #[test]
-fn default_extensions_include_analysts_and_distinct_agent_paths() {
+fn default_extensions_include_analysts_and_agent_paths() {
     let selection = ListSelection::new(
         ListSet::Default,
         [
             "skill:economist-analyst".parse().unwrap(),
-            "agent:guide".parse().unwrap(),
             "agent:core/guide".parse().unwrap(),
         ],
     );
@@ -110,7 +109,6 @@ fn default_extensions_include_analysts_and_distinct_agent_paths() {
     let mut expected = defaults();
     expected.extend([
         "economist-analyst".to_owned(),
-        "amplihack-persona-guide".to_owned(),
         "amplihack-persona-core-guide".to_owned(),
     ]);
     assert_eq!(inventory(&dir.path().join("package")), expected);
@@ -127,14 +125,14 @@ fn full_package_retains_commands_personas_and_analyst_exclusions() {
             .iter()
             .filter(|name| name.starts_with("amplihack-command-"))
             .count(),
-        23
+        18
     );
     assert_eq!(
         entries
             .iter()
             .filter(|name| name.starts_with("amplihack-persona-"))
             .count(),
-        43
+        41
     );
     assert!(entries.len() > 100);
     assert!(!root.join("skills/economist-analyst").exists());

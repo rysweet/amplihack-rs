@@ -16,6 +16,8 @@ pub struct Shown {
     pub reading: Reading,
     pub session: Option<f64>,
     pub week: Option<f64>,
+    /// The deciding model; `None` denotes the all-models week.
+    pub week_model: Option<String>,
     /// The read had not finished when the cycle stopped waiting for it.
     pub still_running: bool,
     /// Issue #2218: the live login of an excluded profile, never probed.
@@ -37,10 +39,12 @@ pub struct Shown {
 impl Shown {
     /// The reading and the windows of one probe.
     pub fn of(p: &Probed) -> Self {
+        let week = p.windows.deciding_week();
         Self {
             reading: p.reading,
             session: p.windows.session.map(|w| w.used),
-            week: p.windows.week.map(|w| w.used),
+            week: week.map(|w| w.used),
+            week_model: week.and_then(|w| w.model.map(str::to_owned)),
             still_running: p.still_running,
             excluded: false,
             cached: None,
@@ -60,6 +64,7 @@ impl Shown {
             reading,
             session,
             week,
+            week_model: None,
             still_running: false,
             excluded: false,
             cached: None,
@@ -193,7 +198,16 @@ pub(in crate::commands::profile::rotate) fn usage(r: &Shown, sep: &str) -> Strin
         }
         Reading::Failed => return "failed".to_string(),
     };
-    format!("s={}%{sep}w={}{}{note}", pct(session), week(w), r.age(sep))
+    let origin = r
+        .week_model
+        .as_ref()
+        .map_or_else(String::new, |m| format!("({m})"));
+    format!(
+        "s={}%{sep}w={}{origin}{}{note}",
+        pct(session),
+        week(w),
+        r.age(sep)
+    )
 }
 
 /// Issue #2218: what the rotate log says about an excluded profile, which
