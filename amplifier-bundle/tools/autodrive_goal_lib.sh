@@ -29,6 +29,9 @@
 #   goal_json_file <file> <max>  0 when <file> is a regular file of at most
 #                                <max> bytes holding one JSON object
 #   goal_turn_numbers <turns>    the turn folder names in <turns>, ascending
+#   goal_last_line <log>         the last line that is neither blank nor a
+#                                failure_class marker, cleaned
+#   goal_run_log_line <text>     one line appended to $AMPLIHACK_RECIPE_LOG
 #
 # docs/reference/autodrive-goal-loop.md is the specification.
 
@@ -102,6 +105,26 @@ goal_json_file() {
 goal_turn_numbers() {
   find "${1:-}" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | sed 's#.*/##' \
     | grep -E '^[0-9]{1,9}$' | sort -n
+}
+
+# goal_last_line <log>: the log's last line that is neither blank nor a
+# runner failure_class marker, as one clean line. Nothing is matched against
+# its wording: the loop only compares one turn's line with the next (#3286).
+goal_last_line() {
+  [ -f "${1:-}" ] || return 0
+  LC_ALL=C awk '!/^amplihack\.recipe\.failure_class / && /[^[:space:]]/ { last = $0 } END { print last }' "$1" 2>/dev/null \
+    | goal_clean_line 300
+}
+
+# goal_run_log_line <text>: one line appended to the run's own log, named by
+# AMPLIHACK_RECIPE_LOG, when that is an absolute path to a regular file of
+# this user that is not a symlink. Best effort and silent: a log that cannot
+# be written never changes what the loop does (#3286).
+goal_run_log_line() {
+  local log="${AMPLIHACK_RECIPE_LOG:-}"
+  case "$log" in /*) ;; *) return 0 ;; esac
+  [ -f "$log" ] && [ ! -L "$log" ] && [ -O "$log" ] || return 0
+  printf '%s\n' "$(printf '%s' "${1:-}" | goal_clean_line 2000)" >> "$log" 2>/dev/null || :
 }
 
 # goal_secret_screen <file>: token prefixes, AWS keys, PEM keys, Authorization
