@@ -307,6 +307,7 @@ Each outcome is recorded in the state file's `last_rule` field. These values are
 | Task notification or system notice | `{}` | `harness_notice` | unchanged |
 | Message from another session | `{}` | `peer_message` | unchanged |
 | Loop tick or loop sentinel | `{}` | `scheduled_prompt` | unchanged |
+| `text.routing` is `off` (checked first) | `{}` | `routing_text_off` | unchanged |
 
 The note path leaves `last_classified_turn` unchanged because no classification took place, so a note never starts or extends the three-turn throttle window. A note still counts as a turn. The next unmarked prompt is judged at its own turn number, so after two notes in a fresh session it is at turn 2: past the rule that routes turns 0 and 1 unconditionally, and subject to the follow-up wording check like any later prompt. In a session where nothing has been classified, `last_classified_turn` is absent and the window does not apply, so a new topic after the notes receives the routing prompt.
 

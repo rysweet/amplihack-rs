@@ -28,6 +28,20 @@ Codex launcher reports suppression and the skipped Stop functions on stderr.
 See [Omit hook context text](../howto/omit-hook-context-text.md) for use and
 restoring the default for a child session.
 
+Two narrower switches act inside the hooks: `text.routing`
+(`AMPLIHACK_ROUTING_TEXT`) and `text.prompt_preferences`
+(`AMPLIHACK_PROMPT_PREFERENCES`). Each hook applies them in its own
+processing, and `AMPLIHACK_HOOK_TEXT=none` then removes the context fields
+from whatever is left. So `none` takes precedence over both: with `none`,
+no context field is output whatever the two settings say. Without `none`,
+`text.routing = off` leaves out the routing reminder and the session-start
+workflow section, and records `routing_text_off` as the routing hook's rule;
+`text.prompt_preferences = off` leaves out the preferences table and the
+learned-patterns line on prompt events. The hooks read the two keys with the
+same precedence as `amplihack config get`. A file that cannot be read or
+parsed is skipped with one line in the hook's log. See
+[Switch off the routing text and the repeated preferences table](../howto/switch-off-routing-and-preferences-text.md).
+
 amplihack registers 8 hooks in `~/.claude/settings.json` when you run `amplihack install`. This page documents each hook: its Claude Code event, the binary or script that runs, and its timeout.
 
 ## Canonical Hook Table

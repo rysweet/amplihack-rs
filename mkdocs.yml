@@ -71,6 +71,7 @@ nav:
       - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Sessions Running: howto/keep-sessions-running.md
       - Omit Hook Context Text: howto/omit-hook-context-text.md
+      - Switch Off Routing and Preferences Text: howto/switch-off-routing-and-preferences-text.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - How a Test's Rotator Ends with Its Test: concepts/test-rotator-lifetime.md
       - Keep Tests off the Host Process Table: howto/keep-tests-off-the-host-process-table.md

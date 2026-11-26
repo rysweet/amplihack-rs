@@ -37,3 +37,6 @@ skills, plugins or the agent's own instructions.
 
 See the [hook reference](../reference/hook-specifications.md#optional-hook-text-suppression)
 for the response fields and participating hooks.
+
+To leave out only the routing text or the repeated preferences table, see
+[Switch off the routing text and the repeated preferences table](switch-off-routing-and-preferences-text.md).
