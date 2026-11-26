@@ -29,6 +29,9 @@
 //!   child write its settings into a developer's live profile. As above,
 //!   `env_clear()` already drops them and the explicit removal is what holds
 //!   if the kept list changes.
+//! - the test process's `PATH` without any directory that holds an
+//!   `amplihack-asset-resolver` ([`path_without_resolver`], issue #2182), so a
+//!   child never stages a host resolver found on `PATH`;
 //! - `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true` and `SSH_ASKPASS=true`
 //!   ([`NO_GIT_PROMPT_ENV`], issue #1764) and a null stdin, through
 //!   [`no_git_prompt`], so no git the child starts can wait on a credential
@@ -212,6 +215,18 @@ pub fn reapply_proc_root(command: &mut Command) -> &mut Command {
     command.env(PROC_ROOT_ENV, shared_empty_proc_root())
 }
 
+/// The name of the asset resolver a non-test build discovers on `PATH`.
+pub const RESOLVER_BIN: &str = "amplihack-asset-resolver";
+
+/// `path` without the directories that hold an [`RESOLVER_BIN`], so a child
+/// cannot discover and stage a host resolver through `PATH` (issue #2182).
+/// Every other directory stays, so tools such as a `RUSTC_WRAPPER`, `cargo`
+/// and `recipe-runner-rs` are still found.
+pub fn path_without_resolver(path: &OsStr) -> std::ffi::OsString {
+    std::env::join_paths(std::env::split_paths(path).filter(|dir| !dir.join(RESOLVER_BIN).exists()))
+        .expect("directories split from PATH join again")
+}
+
 /// A `Command` for the `amplihack` binary at `bin`, isolated as described in
 /// the module docs.
 pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
@@ -229,7 +244,9 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     }
     command.env_remove(PROFILE_ROOT_ENV);
     claude_profile_isolation::remove_from_command(&mut command);
-    command.env("PATH", "/usr/bin:/bin");
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path_without_resolver(&path));
+    }
     no_git_prompt(&mut command);
     // The toolchain lives under the real HOME unless these say otherwise; a
     // child that runs cargo must still find it after HOME moves.

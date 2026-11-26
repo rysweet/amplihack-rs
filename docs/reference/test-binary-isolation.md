@@ -41,7 +41,7 @@ Test builds use a private inert resolver stub, created once per process in a tem
 
 `tests/support/amplihack_bin.rs` builds `amplihack` and `amplihack-hooks` with the `amplihack-cli/test-support` feature into a private Cargo output directory, so the feature never reaches the developer's own `target`. A set `AMPLIHACK_TEST_BINARY` stops the test with a message, because that binary is not the test-support build.
 
-`tests/support/isolated_amplihack.rs` gives each child a private `HOME`, clears the application and profile root overrides so they derive from that home, and sets an explicit `PATH`.
+`tests/support/isolated_amplihack.rs` gives each child a private `HOME`, clears the application and profile root overrides so they derive from that home, and passes the runner's `PATH` without any directory that holds an `amplihack-asset-resolver`.
 
 ## Internal support modules
 
@@ -55,11 +55,11 @@ These are test-support modules, not public application APIs.
 ## Tests
 
 - `commands::install::tests::issue_2182_binary_isolation` covers symlink fallback after a failed hardlink, total link failure without a copy, rejected destinations outside the staging root, rejected sources, a replaced registered source, and final release staging of large `amplihack`, `amplihack-asset-resolver` and `amplihack-hooks` sources as hardlinks with unchanged permissions.
-- `tests/issue_2182_binary_isolation.rs` checks that the subprocess fixture keeps application roots inside the private home and does not inherit the runner's `PATH`.
+- `tests/issue_2182_binary_isolation.rs` checks that the subprocess fixture keeps application roots inside the private home and that its `PATH` has no directory holding an `amplihack-asset-resolver`, while other tools on the runner's `PATH` stay reachable.
 
 Run them with:
 
 ```sh
 cargo test -p amplihack-cli --lib issue_2182_binary_isolation
-cargo test -p amplihack-cli --test main issue_2182_binary_isolation
+cargo test -p amplihack-cli --test cli_integration issue_2182_binary_isolation
 ```

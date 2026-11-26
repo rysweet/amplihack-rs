@@ -30,16 +30,37 @@ fn subprocess_fixture_keeps_all_application_roots_inside_the_private_home() {
 }
 
 #[test]
-fn subprocess_fixture_does_not_inherit_host_resolver_discovery() {
+fn subprocess_fixture_path_holds_no_resolver_directory() {
     let command = crate::isolated_amplihack::isolated("amplihack");
     let vars: std::collections::HashMap<_, _> = command.get_envs().collect();
     let path = vars
         .get(OsStr::new("PATH"))
         .and_then(|value| *value)
         .expect("fixture must explicitly control PATH");
-    let host_path = std::env::var_os("PATH").expect("test runner PATH");
-    assert_ne!(
-        path, host_path,
-        "inheriting the runner PATH permits host resolver discovery"
-    );
+    for dir in std::env::split_paths(path) {
+        assert!(
+            !dir.join(crate::isolated_amplihack::RESOLVER_BIN).exists(),
+            "{} would let the child discover a host resolver",
+            dir.display()
+        );
+    }
+}
+
+#[test]
+fn path_filter_drops_resolver_directories_and_keeps_the_rest() {
+    let with_resolver = tempfile::tempdir().expect("tempdir");
+    let tools = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        with_resolver
+            .path()
+            .join(crate::isolated_amplihack::RESOLVER_BIN),
+        "",
+    )
+    .expect("write resolver");
+    let path = std::env::join_paths([tools.path(), with_resolver.path()]).expect("join");
+
+    let filtered = crate::isolated_amplihack::path_without_resolver(&path);
+
+    let dirs: Vec<_> = std::env::split_paths(&filtered).collect();
+    assert_eq!(dirs, vec![tools.path().to_path_buf()]);
 }
