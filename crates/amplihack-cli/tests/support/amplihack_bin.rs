@@ -88,9 +88,9 @@ pub fn amplihack_bin() -> PathBuf {
     .clone()
 }
 
-/// Runs `cargo build -p amplihack` with the `amplihack-cli/test-support`
-/// feature into a Cargo output folder of its own, and returns the directory
-/// the binary was linked into (issue #2182).
+/// Builds `amplihack` and `amplihack-hooks` with the
+/// `amplihack-cli/test-support` feature into a Cargo output folder of its own,
+/// and returns the directory they were linked into (issue #2182).
 fn build() -> PathBuf {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let status = Command::new(cargo)
@@ -99,8 +99,12 @@ fn build() -> PathBuf {
             "--quiet",
             "-p",
             "amplihack",
+            "-p",
+            "amplihack-hooks-bin",
             "--bin",
             "amplihack",
+            "--bin",
+            "amplihack-hooks",
             "--features",
             "amplihack-cli/test-support",
             "--target-dir",

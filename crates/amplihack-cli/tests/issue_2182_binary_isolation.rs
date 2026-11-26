@@ -1,5 +1,7 @@
 //! Subprocess fixture contracts: inspect the actual child command without
 //! executing an unprotected CLI or staging any host binary in the red phase.
+#![cfg(unix)]
+
 use std::ffi::OsStr;
 use std::path::Path;
 
