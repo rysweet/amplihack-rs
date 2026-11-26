@@ -14,12 +14,19 @@
 //! - Rate: from the oldest entry no more than 6 h old that covers every
 //!   current login (a `profile usage` line, or a rotator line that read
 //!   them all), which must be at least 4.5 h old. Issue #1970: each login
-//!   counts its net rise in `w` within each week. A reset is `w_reset`
-//!   passing or a fall of more than [`RESET_FALL`] points; a smaller fall is
-//!   a stale reading and adds nothing, so the rate is never negative.
-//!   Readings from a week already over, and a stale passive reading now,
-//!   are left out. Each login's use is weighted. Runway is weighted
-//!   headroom over the rate.
+//!   counts its rises in `w` within each week. Issue #3258: a new week
+//!   starts only when `w_reset` passes or moves later by more than
+//!   [`SAME_WEEK_SLACK`]; a fall alone is never a reset. A fall that a
+//!   later reading in the week reverses is a stale reading and is skipped; a
+//!   fall that stays lowers the level and adds no use, so the rate is never
+//!   negative. Readings from a week already over, and a stale passive
+//!   reading now, are left out. Each login's use is weighted.
+//! - Runway: weighted headroom over the rate (`runway_hours`). Issue #3258:
+//!   the printed runway also allows for the weekly renewals of the next 24 h.
+//!   It steps from renewal to renewal, taking away the rate and
+//!   adding each renewal, and gives the time the room first reaches zero,
+//!   or says the room lasts beyond 24 h with the lowest room on the way.
+//!   With no renewal listed it is the plain runway.
 //! - `rotate status` takes no runway from a rotator line that left logins
 //!   out; see [`status_line`].
 //! - Rounding is half away from zero and happens only when printed; a value
@@ -27,7 +34,7 @@
 
 use super::capacity_weight::Weights;
 use super::usage_cmd::{sanitize_display, utc_time as iso};
-use super::usage_history::{Entry, Point, Snapshot, Writer, stale};
+use super::usage_history::{Entry, Point, SAME_WEEK_SLACK, Snapshot, Writer, stale};
 use serde::{Serialize, Serializer};
 use std::collections::BTreeMap;
 
@@ -35,9 +42,10 @@ use std::collections::BTreeMap;
 pub(super) const RATE_WINDOW: i64 = 6 * 3600;
 /// The youngest start the rate accepts.
 const RATE_MIN_SPAN: i64 = 4 * 3600 + 30 * 60;
-/// Issue #1970: a fall in a login's week of more than this many points
-/// between two readings is a reset. A smaller fall is a stale reading.
-pub(super) const RESET_FALL: u8 = 10;
+/// Issue #3258: a reading below a login's level is a stale one when a later
+/// reading in the same week comes back to within this many points of the
+/// level. A fall is never a reset on its own.
+pub(super) const STALE_MARGIN: u8 = 10;
 /// Session resets this close to the earliest are one reset.
 const RESET_GROUP: i64 = 60;
 /// Weekly resets up to this far ahead are listed.
@@ -84,7 +92,59 @@ pub(super) struct Summary {
     /// Weighted login-weeks an hour; `None` without enough history.
     rate: Option<f64>,
     runway: Option<f64>,
+    /// Issue #3258: the runway with the renewals of the next 24 h.
+    renewals: Option<Walk>,
     resets: Vec<WeeklyReset>,
+}
+
+/// Issue #3258: the room stepped through the next 24 h at the rate, with
+/// each listed weekly renewal added at its time.
+#[derive(Debug, Clone, PartialEq)]
+struct Walk {
+    /// Hours until the room first reaches zero; `None` when it lasts the
+    /// 24 h and some renewal falls inside them.
+    hours: Option<f64>,
+    /// Lowest weighted room on the way, in login-weeks.
+    lowest: f64,
+}
+
+/// The [`Walk`] from weighted `room` (login-weeks) at `rate` (login-weeks
+/// an hour, above 0) through `resets`, sorted by time, after `now`.
+///
+/// With no renewal listed the runway is the plain `room / rate`, even past
+/// 24 h. Otherwise the room is taken down to each renewal and checked before
+/// the renewal is added; after the last one it runs on to 24 h.
+fn walk(room: f64, rate: f64, resets: &[WeeklyReset], now: i64) -> Walk {
+    let horizon = RESETS_AHEAD as f64 / 3600.0;
+    if resets.is_empty() {
+        return Walk {
+            hours: Some(room / rate),
+            lowest: (room - rate * horizon).max(0.0),
+        };
+    }
+    let mut t = 0.0;
+    let mut room = room;
+    let mut lowest = room;
+    let stops = resets
+        .iter()
+        .map(|r| ((r.at - now) as f64 / 3600.0, r.restores))
+        .chain(std::iter::once((horizon, 0.0)));
+    for (at, restores) in stops {
+        let before = room - rate * (at - t);
+        if before <= 0.0 {
+            return Walk {
+                hours: Some(t + room / rate),
+                lowest: 0.0,
+            };
+        }
+        lowest = lowest.min(before);
+        room = before + restores;
+        t = at;
+    }
+    Walk {
+        hours: None,
+        lowest,
+    }
 }
 
 /// `x` rounded half away from zero to `dp` decimals; `None` when `x` is not
@@ -116,11 +176,13 @@ fn shown(name: &str) -> String {
 }
 
 /// Whether the week reset between reading `a` and reading `b`, which was
-/// taken at `b_at`: `a`'s reset time has passed, or `w` fell by more than
-/// [`RESET_FALL`] points. Anthropic can reset a week early, so a large fall
-/// is a reset even while `a`'s reset time is still ahead.
+/// taken at `b_at`: `a`'s reset time has passed, or `b`'s reset time is
+/// later than `a`'s by more than [`SAME_WEEK_SLACK`], which is how a week
+/// reset early shows. Issue #3258: a fall in `w` is not a reset on its own;
+/// without reset times nothing is inferred.
 fn reset_between(a: &Point, b: &Point, b_at: i64) -> bool {
-    a.w_reset.is_some_and(|r| r <= b_at) || a.w.saturating_sub(b.w) > RESET_FALL
+    a.w_reset.is_some_and(|r| r <= b_at)
+        || matches!((a.w_reset, b.w_reset), (Some(ra), Some(rb)) if rb.saturating_sub(ra) > SAME_WEEK_SLACK)
 }
 
 /// Whether `p`, taken at `at`, is a figure from a week that had already
@@ -133,32 +195,49 @@ fn week_ended(p: &Point, at: i64) -> bool {
 /// first is the start.
 ///
 /// The readings are split into weeks at each reset ([`reset_between`]).
-/// Within a week the true figure only rises, so each week counts its
-/// highest figure minus the figure it started at: the start's for the
-/// first week, 0 for each later one. A lower reading within a week is a
-/// stale one and adds nothing. The highest figure, not the last, is used,
-/// because the last before a reset may be stale. Never negative: the
-/// highest figure of a week is at least the figure it started at.
+/// Issue #3258: each week keeps a level, the start's figure for the first
+/// week and 0 for each later one. A reading above the level is use, and
+/// raises the level. A reading below it is stale when a later reading in
+/// the same week comes back to within [`STALE_MARGIN`] points of the level,
+/// and is skipped. Otherwise the fall stays: it lowers the level to the new
+/// figure and adds no use. Never negative.
 fn used_over(readings: &[(i64, &Point)]) -> i64 {
-    let Some(((_, first), rest)) = readings.split_first() else {
+    let mut weeks: Vec<Vec<i64>> = Vec::new();
+    let mut prev: Option<&Point> = None;
+    for (at, p) in readings {
+        match (prev, weeks.last_mut()) {
+            (Some(a), Some(week)) if !reset_between(a, p, *at) => week.push(i64::from(p.w)),
+            _ => {
+                // A later week counts from 0: a leading 0 stands for it.
+                let start = if prev.is_some() { vec![0] } else { Vec::new() };
+                weeks.push(start);
+                if let Some(week) = weeks.last_mut() {
+                    week.push(i64::from(p.w));
+                }
+            }
+        }
+        prev = Some(*p);
+    }
+    weeks.iter().map(|w| used_in_week(w)).sum()
+}
+
+/// Use within one week of figures, oldest first; see [`used_over`].
+fn used_in_week(figures: &[i64]) -> i64 {
+    let Some((&first, rest)) = figures.split_first() else {
         return 0;
     };
-    let mut week_start = i64::from(first.w);
-    let mut peak = week_start;
-    let mut prev = *first;
+    let margin = i64::from(STALE_MARGIN);
+    let mut level = first;
     let mut used = 0i64;
-    for (at, p) in rest {
-        let w = i64::from(p.w);
-        if reset_between(prev, p, *at) {
-            used = used.saturating_add(peak - week_start);
-            week_start = 0;
-            peak = w;
-        } else {
-            peak = peak.max(w);
+    for (i, &w) in rest.iter().enumerate() {
+        if w > level {
+            used = used.saturating_add(w - level);
+            level = w;
+        } else if w < level && !rest[i + 1..].iter().any(|&later| later >= level - margin) {
+            level = w;
         }
-        prev = *p;
     }
-    used.saturating_add(peak - week_start)
+    used
 }
 
 /// Whether `e` may be the start of the rate for the logins in `current`.
@@ -318,9 +397,9 @@ pub(super) fn compute(i: &Inputs<'_>) -> Summary {
     resets.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.profile.cmp(&b.profile)));
 
     let rate = rate_of(i);
-    let runway = rate
-        .filter(|r| *r > 0.0)
-        .map(|r| weighted_points / 100.0 / r);
+    let positive = rate.filter(|r| *r > 0.0);
+    let runway = positive.map(|r| weighted_points / 100.0 / r);
+    let renewals = positive.map(|r| walk(weighted_points / 100.0, r, &resets, i.now));
 
     let mut unknown = i.current.unknown.clone();
     unknown.sort();
@@ -338,6 +417,7 @@ pub(super) fn compute(i: &Inputs<'_>) -> Summary {
         next_session_reset,
         rate,
         runway,
+        renewals,
         resets,
     }
 }
@@ -408,7 +488,7 @@ pub(super) fn status_line(
         .filter(|e| e.at >= from && e.at < newest.at)
         .find(|e| reads_every_login(e))
         .and_then(|e| {
-            let h = summary_of(e, earlier, weights, threshold).runway_hours()?;
+            let h = summary_of(e, earlier, weights, threshold).runway_short()?;
             Some(format!("{h} from the {} entry ({left_out})", iso(e.at)))
         })
         .unwrap_or_else(|| format!("unknown ({left_out})"));
@@ -454,9 +534,29 @@ impl Summary {
         format!("{} of {} logins", self.usable, self.valid)
     }
 
-    /// `~H h`, or `None` when the runway is unknown.
-    fn runway_hours(&self) -> Option<String> {
-        self.runway.map(|h| format!("~{} h", fixed(h, 0)))
+    /// The runway with renewals: `~H h`, or `beyond 24 h` when the room
+    /// lasts the next 24 h; `None` when the runway is unknown.
+    fn runway_text(&self) -> Option<String> {
+        let walk = self.renewals.as_ref()?;
+        Some(match walk.hours {
+            Some(h) => format!("~{} h", fixed(h, 0)),
+            None => "beyond 24 h".to_string(),
+        })
+    }
+
+    /// [`Self::runway_text`] for the `rotate status` line, with the lowest
+    /// room when the room lasts beyond 24 h.
+    fn runway_short(&self) -> Option<String> {
+        let text = self.runway_text()?;
+        Some(match self.renewals.as_ref() {
+            Some(Walk {
+                hours: None,
+                lowest,
+            }) => {
+                format!("{text} (lowest {} login-weeks)", fixed(*lowest, 2))
+            }
+            _ => text,
+        })
     }
 
     /// The six lines printed after the table, labels padded to 21
@@ -474,8 +574,14 @@ impl Summary {
                 )
             }
         };
-        let runway = match (self.runway_hours(), self.rate) {
-            (Some(h), Some(rate)) => {
+        let runway = match (self.runway_text(), self.rate, &self.renewals) {
+            (Some(h), Some(rate), Some(walk)) if walk.hours.is_none() => format!(
+                "{h} at the last 6 h rate ({} login-weeks/h; lowest {} login-weeks, \
+                 with the resets below)",
+                fixed(rate, 3),
+                fixed(walk.lowest, 2)
+            ),
+            (Some(h), Some(rate), _) => {
                 format!(
                     "{h} at the last 6 h rate ({} login-weeks/h)",
                     fixed(rate, 3)
@@ -528,7 +634,7 @@ impl Summary {
     /// `profile usage` reads every subscription login, a rotate cycle only
     /// the profiles it probed. A line with no known writer names none.
     pub(super) fn status_line(&self, at: i64, now: i64, by: Option<Writer>) -> String {
-        let runway = self.runway_hours().unwrap_or_else(|| "unknown".to_string());
+        let runway = self.runway_short().unwrap_or_else(|| "unknown".to_string());
         self.status_line_with_runway(at, now, by, &runway)
     }
 
@@ -581,6 +687,13 @@ impl Summary {
             }),
             rate_login_weeks_per_hour: self.rate.and_then(|r| rounded(r, 3)),
             runway_hours: self.runway.and_then(|h| rounded(h, 1)),
+            runway_with_renewals_hours: self
+                .renewals
+                .as_ref()
+                .and_then(|w| w.hours)
+                .and_then(|h| rounded(h, 1)),
+            runway_beyond_24h: self.renewals.as_ref().is_some_and(|w| w.hours.is_none()),
+            lowest_room_login_weeks: self.renewals.as_ref().and_then(|w| rounded(w.lowest, 2)),
             weekly_resets_next_24h: self
                 .resets
                 .iter()
@@ -619,6 +732,9 @@ struct SummaryJson<'a> {
     next_session_reset: Option<SessionResetJson<'a>>,
     rate_login_weeks_per_hour: Option<f64>,
     runway_hours: Option<f64>,
+    runway_with_renewals_hours: Option<f64>,
+    runway_beyond_24h: bool,
+    lowest_room_login_weeks: Option<f64>,
     weekly_resets_next_24h: Vec<WeeklyResetJson<'a>>,
 }
 

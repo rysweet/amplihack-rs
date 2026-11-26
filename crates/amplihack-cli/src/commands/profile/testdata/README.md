@@ -106,6 +106,83 @@ open(out, "w").write("".join(r + "\n" for _, _, r in rows))
 
 Run as `python3 -I gen.py rotate.log.1 usage-history.jsonl issue_1970_5nov.jsonl`.
 
+## `issue_3258_26nov.jsonl`
+
+A usage history of 19 `profile usage` lines, one every 20 minutes from
+2026-11-25T20:28:00Z to 2026-11-26T02:28:00Z, in the `usage-history.jsonl`
+line format. It reproduces the patterns that issue #3258 recorded on the
+night of 25 to 26 November, under generic names. It is made up, not copied
+from a host. The tests in `tests_capacity_summary.rs` take the last line as
+now and the others as the history.
+
+| Login | Pattern | Use counted by hand |
+|-------|---------|---------------------|
+| `login-a` | 43 rising to 46, with three single readings of 29 that the next reading reverses | 3 |
+| `login-b` | 78 rising to 87, with one reading of 72 between 82 and 83 | 9 |
+| `login-c` | 70 to 74, then a fall to 30 that stays, then 30 to 34 | 8 |
+| `login-d` | 74, then a fall to 24 that stays, then 24 to 27 | 3 |
+| `login-e` | no session window; 85 to 87, then a fall to 37 that stays, then 37 to 39 | 4 |
+| `login-f`, `login-g`, `login-h` | steady use: 20 to 74, 10 to 82, 40 to 76 | 54, 72, 36 |
+| `login-i`, `login-j` | idle at 0 and 75 | 0 |
+| `login-r1` to `login-r5` | full at 100, renewing 4.5, 6.5 and 9.5 hours after the last line, and two at 16.5 hours | 0 |
+
+Every fall keeps the login's `w_reset`. The use is 189 points over 6 hours,
+0.315 login-weeks an hour. The weighted headroom is 4.6 login-weeks, and the
+five renewals give back 5.0 login-weeks within 24 hours, so the headroom lasts
+beyond 24 hours at that rate.
+
+### How it was made
+
+```python
+import json, sys
+from datetime import datetime, timezone
+def ts(s): return int(datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
+def iso(t): return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+NOW = ts("2026-11-26T02:28:00Z")
+START = NOW - 6 * 3600
+FAR = iso(ts("2026-11-29T17:00:00Z"))
+def at_h(h): return iso(NOW + int(h * 3600))
+def w_of(n, i):
+    if n == "login-a":
+        return 29 if i in (5, 9, 13) else 43 + i // 5
+    if n == "login-b":
+        return 72 if i == 10 else 78 + i // 2
+    if n == "login-c":
+        return [70, 70, 71, 71, 72, 72, 73, 74][i] if i < 8 else 30 + (i - 8) * 4 // 10
+    if n == "login-d":
+        return 74 if i < 6 else 24 + (i - 6) // 4
+    if n == "login-e":
+        return 85 + i // 4 if i < 12 else 37 + (i - 12) // 3
+    if n == "login-f":
+        return 20 + 3 * i
+    if n == "login-g":
+        return 10 + 4 * i
+    if n == "login-h":
+        return 40 + 2 * i
+    if n == "login-i":
+        return 0
+    if n == "login-j":
+        return 75
+    return 100
+RESET = {"login-r1": at_h(4.5), "login-r2": at_h(6.5), "login-r3": at_h(9.5),
+         "login-r4": at_h(16.5), "login-r5": at_h(16.5)}
+NAMES = ["login-a", "login-b", "login-c", "login-d", "login-e", "login-f", "login-g",
+         "login-h", "login-i", "login-j", "login-r1", "login-r2", "login-r3", "login-r4", "login-r5"]
+def point(n, i):
+    d = {"s": None, "session_limit": False} if n == "login-e" else {"s": 10}
+    d["w"] = w_of(n, i)
+    d["w_reset"] = RESET.get(n, FAR)
+    return d
+out = []
+for i in range(19):
+    o = {"at": iso(START + i * 20 * 60), "by": "usage",
+         "profiles": {n: point(n, i) for n in NAMES}}
+    out.append(json.dumps(o, separators=(",", ":")))
+open(sys.argv[1], "w").write("".join(l + "\n" for l in out))
+```
+
+Run as `python3 -I gen.py issue_3258_26nov.jsonl`.
+
 ## `usage_json_golden.json`
 
 The `profile usage --json` output for the rows of `golden_rows` in

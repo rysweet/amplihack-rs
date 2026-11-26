@@ -1,0 +1,29 @@
+name: issue-3258-usage-rate-runway
+description: >
+  Isolated CLI acceptance test for the use rate and the runway line of
+  `amplihack profile usage` (issue #3258). Runs the candidate amplihack binary
+  against a temporary HOME, a fake Claude executable and a loopback stand-in
+  for the usage and profile endpoints (socat, 127.0.0.1 only), with the usage
+  history seeded from testdata/issue_3258_26nov.jsonl, which reproduces the
+  readings of the night of 25 to 26 November 2026. Three cases: the summary
+  JSON gives a rate of about 0.3 login-weeks an hour and says the room lasts
+  beyond 24 hours once the weekly renewals are counted, with a lowest room
+  above zero; the plain text gives no runway of a few hours; and --json still
+  gives the rows as one array. Needs socat and jq; runs locally and is not
+  part of CI.
+version: "1.0"
+environment:
+  requires: [AMPLIHACK_QA_BINARY]
+agents:
+  - name: cli-agent
+    type: cli
+steps:
+  - name: exercise-usage-rate-and-runway
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/issue-3258-usage-rate-runway.sh
+    timeout: 300000
+assertions: []
+metadata:
+  tags: [cli, usage, regression]
+  priority: high
