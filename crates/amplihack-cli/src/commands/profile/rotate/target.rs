@@ -140,6 +140,14 @@ pub fn live_room(live: &Reading, blocked: bool) -> LiveRoom {
     }
 }
 
+/// Whether a measured reading's week use is at or above `--week-at`. The
+/// threshold test (`needs_swap`) and the crossing test (issue #3368) both
+/// read it, so the two never disagree. An exhausted or failed reading is not
+/// measured and gives false here.
+pub fn week_reached(s: &Settings, live: &Reading) -> bool {
+    matches!(live, Reading::Measured { week, .. } if *week >= f64::from(s.week_at))
+}
+
 /// The least room now a login needs to relieve a live login past a
 /// threshold (F2): nothing with no room (D2), the margin after a failed
 /// probe, and the live room plus `max(margin, 1)` otherwise (D1).

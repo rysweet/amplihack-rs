@@ -126,7 +126,7 @@ Generating report...
 ================================================================================
 
 Analysis complete!
-Report saved to: /Users/ryan/src/project/.claude/runtime/TRACE_LOG_ANALYSIS.md
+Report saved to: /Users/you/src/project/.claude/runtime/TRACE_LOG_ANALYSIS.md
 ```
 
 ### Example 2: Deep Analysis

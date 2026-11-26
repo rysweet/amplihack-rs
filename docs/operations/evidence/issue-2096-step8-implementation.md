@@ -27,7 +27,7 @@ The observed current main is
 commits after merge base `def287b8222c7a1df014e9397cf961d6536d8185`.
 **Main was not incorporated.** Ordinary `git fetch origin main` fails opening
 the worktree's `FETCH_HEAD`, and ordinary staging fails creating `index.lock`:
-the shared Git metadata under `/home/ryan/src/amplihack-rs/.git` is read-only.
+the shared Git metadata under `/home/you/src/amplihack-rs/.git` is read-only.
 No implementation commit or PR push succeeded. No rebase, force push, hook
 bypass, or merge to main was attempted.
 

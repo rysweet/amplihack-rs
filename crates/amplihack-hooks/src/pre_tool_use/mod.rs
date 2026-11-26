@@ -148,7 +148,7 @@ fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
         .or_else(|| tool_input.get("name").and_then(Value::as_str))?;
 
     // Skills take precedence: only redirect agent-only names. This keeps
-    // overlapping names (e.g. gherkin-expert) resolving as skills. The set of
+    // overlapping names (e.g. tla-plus-expert) resolving as skills. The set of
     // skills is derived from the on-disk skills directory (issue #863) — the
     // directory is the single source of truth, not a hardcoded list.
     //

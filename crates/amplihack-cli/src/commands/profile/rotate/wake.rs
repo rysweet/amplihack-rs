@@ -4,7 +4,7 @@
 //! records it for the login it ran under, in the ledger's
 //! `overflow_blocked`, and the rotator must act on that record at once
 //! rather than find it on its next tick. On 21 November 2026 about
-//! twenty-five runs on calypso used one login's five-hour window in about
+//! twenty-five runs on host-b used one login's five-hour window in about
 //! twenty minutes; every one of them then met the limit and waited for a
 //! six-hundred-second cycle that already had the answer.
 //!

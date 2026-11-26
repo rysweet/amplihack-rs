@@ -169,9 +169,6 @@ agents:
   amplihack:cleanup:
     path: agents/specialized/cleanup.md
     description: "Post-task cleanup specialist. Reviews git status, removes temporary artifacts, eliminates unnecessary complexity, ensures philosophy compliance. Use proactively after completing tasks or todo lists."
-  amplihack:concept-extractor:
-    path: agents/specialized/concept-extractor.md
-    description: 'Use this agent when processing articles, papers, or documents to extract knowledge components for synthesis. This agent should be used proactively after reading or importing articles to build a structured knowledge base. It excels at identifying atomic concepts, relationships between ideas, and preserving productive tensions or contradictions in the source material. Examples: <example>Context: The user has just imported or read an article about distributed systems. user: "I''ve added a new article about CAP theorem to the knowledge base" assistant: "I''ll use the concept-extractor agent to extract the key concepts and relationships from this article" <commentary>Since new article content has been added, use the concept-extractor agent to process it and extract structured knowledge components.</commentary></example> <example>Context: The user is building a knowledge synthesis system and needs to process multiple articles. user: "Process these three articles on microservices architecture" assistant: "Let me use the concept-extractor agent to extract and structure the knowledge from these articles" <commentary>Multiple articles need processing for knowledge extraction, perfect use case for the concept-extractor agent.</commentary></example> <example>Context: The user wants to understand contradictions between different sources. user: "These two papers seem to disagree about event sourcing benefits" assistant: "I''ll use the concept-extractor agent to extract and preserve the tensions between these viewpoints" <commentary>When dealing with conflicting information that needs to be preserved rather than resolved, the concept-extractor agent is ideal.</commentary></example>'
   amplihack:database:
     path: agents/specialized/database.md
     description: "Database design and optimization specialist. Use for schema design, query optimization, migrations, indexing strategies, and data architecture decisions."
@@ -184,9 +181,6 @@ agents:
   amplihack:fix-agent:
     path: agents/specialized/fix-agent.md
     description: "Workflow orchestrator for fix operations. Executes all 22 steps of DEFAULT_WORKFLOW with pattern-specific context for robust error resolution."
-  amplihack:insight-synthesizer:
-    path: agents/specialized/insight-synthesizer.md
-    description: 'Use this agent when you need to discover revolutionary connections between disparate concepts, find breakthrough insights through collision-zone thinking, identify meta-patterns across domains, or discover simplification cascades that dramatically reduce complexity. Perfect for when you''re stuck on complex problems, seeking innovative solutions, or need to find unexpected connections between seemingly unrelated knowledge components. <example>Context: The user wants to find innovative solutions by combining unrelated concepts. user: "I''m trying to optimize our database architecture but feel stuck in conventional approaches" assistant: "Let me use the insight-synthesizer agent to explore revolutionary connections and find breakthrough approaches to your database architecture challenge" <commentary>Since the user is seeking new perspectives on a complex problem, the insight-synthesizer agent will discover unexpected connections and simplification opportunities.</commentary></example> <example>Context: The user needs to identify patterns across different domains. user: "We keep seeing similar failures in our ML models, API design, and user interfaces but can''t figure out the connection" assistant: "I''ll deploy the insight-synthesizer agent to identify meta-patterns across these different domains and find the underlying principle" <commentary>The user is looking for cross-domain patterns, so use the insight-synthesizer agent to perform pattern-pattern recognition.</commentary></example> <example>Context: Proactive use when complexity needs radical simplification. user: "Our authentication system has grown to 15 different modules and 200+ configuration options" assistant: "This level of complexity suggests we might benefit from a fundamental rethink. Let me use the insight-synthesizer agent to search for simplification cascades" <commentary>Proactively recognizing excessive complexity, use the insight-synthesizer to find revolutionary simplifications.</commentary></example>'
   amplihack:integration:
     path: agents/specialized/integration.md
     description: "External integration specialist. Designs and implements connections to third-party APIs, services, and external systems. Handles authentication, rate limiting, error handling, and retries. Use when integrating external services, not for internal API design (use api-designer)."
@@ -307,7 +301,7 @@ agents:
 
         **For New Users**: Welcome warmly, explain the 3 core workflows (Q&A, Investigation, Default), show automatic classification.
 
-        **For "What Can This Do?"**: List 9 workflows, 34 agents, 74 skills, 9 hooks, lock mode.
+        **For "What Can This Do?"**: List 9 workflows, 32 agents, 74 skills, 9 hooks, lock mode.
 
         **For "How Do I Do X?"**: Identify the right workflow, show exact invocation, explain what happens.
 

@@ -153,7 +153,10 @@ fn sanitize_replaces_control_characters_and_cuts() {
         "é".repeat(200),
         "cut on a char boundary"
     );
-    assert_eq!(sanitize("/home/u/src/mistt", 200), "/home/u/src/mistt");
+    assert_eq!(
+        sanitize("/home/u/src/example-org", 200),
+        "/home/u/src/example-org"
+    );
     assert_eq!(sanitize("", 10), "");
 }
 

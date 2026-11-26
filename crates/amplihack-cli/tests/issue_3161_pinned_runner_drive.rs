@@ -27,7 +27,7 @@
 //! - (b2) a live drive whose run folder fails the trust rule: `recipe guide`
 //!   exits 1, names the session and writes nothing;
 //! - (e) guidance that arrives after the run's last agent step (the
-//!   mistt-ingest #396 case): the run ends with the entry unread,
+//!   repo-f #396 case): the run ends with the entry unread,
 //!   `recipe guidance show` reports it as not read with the run's end, and
 //!   the next `recipe guide` to the session tells its sender that the run
 //!   has ended.

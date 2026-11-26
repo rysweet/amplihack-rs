@@ -53,7 +53,6 @@ Introduce users to the 35 available agents:
 - `amplihack:database` - Database design
 - `amplihack:integration` - System integration
 - `amplihack:documentation-writer` - Documentation
-- `amplihack:insight-synthesizer` - Pattern recognition
 - `amplihack:fix-agent` - Bug fixing specialist
 - And 20 more...
 

@@ -3,7 +3,7 @@
 **Status**: ✅ Complete and Production Ready
 **Implementation Date**: 2025-11-15
 **Specification**: `Specs/microsoft-agent-framework-skill.md`
-**Work Location**: `/Users/ryan/src/ampliratetmp/worktrees/feat/issue-1344-microsoft-agent-framework-skill`
+**Work Location**: `/Users/you/src/ampliratetmp/worktrees/feat/issue-1344-microsoft-agent-framework-skill`
 
 ## Implementation Overview
 

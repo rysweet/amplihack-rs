@@ -16,29 +16,11 @@ These agents were ported from amplifier to enhance amplihack's knowledge process
 - Key capability: Temporal analysis of knowledge - how ideas evolve, decay, and resurrect
 - Output: Temporal layers, lineage trees, paradigm shifts, decay patterns, revival candidates
 
-#### 2. concept-extractor
-
-**Value: MEDIUM** - Extracts structured knowledge from documents
-
-- Use when: Processing articles, papers, or documents for knowledge synthesis
-- Key capability: Identifies atomic concepts, relationships, tensions, and uncertainties
-- Output: Structured JSON with concepts, relationships, tensions, uncertainties
-
-#### 3. insight-synthesizer
-
-**Value: MEDIUM** - Discovers revolutionary connections and breakthrough insights
-
-- Use when: Stuck on complex problems, seeking innovative solutions, need unexpected connections
-- Key capability: Collision-zone thinking, pattern-pattern recognition, simplification cascades
-- Output: Collision experiments, cross-domain patterns, simplifications, revolutionary insights
-
 ## Integration with Amplihack Philosophy
 
 These agents complement amplihack's existing capabilities:
 
 - **knowledge-archaeologist** + **analyzer**: Understand code evolution and why patterns were chosen
-- **concept-extractor** + **knowledge-builder**: Enhance documentation and knowledge base creation
-- **insight-synthesizer** + **optimizer**: Find breakthrough simplifications and novel solutions
 
 For ambiguity handling and post-task cleanup, use the production agents in `amplihack/specialized/`:
 
@@ -54,29 +36,13 @@ User: "Why did we choose this specific architecture pattern?"
 Claude: "Let me invoke the knowledge-archaeologist agent to trace the evolution of this pattern and document the reasoning"
 ```
 
-### Using concept-extractor for documentation:
-
-```
-User: "Process these design documents and extract the key concepts"
-Claude: "I'll use the concept-extractor agent to build a structured knowledge base from these documents"
-```
-
-### Using insight-synthesizer for innovation:
-
-```
-User: "We need a breakthrough approach to this performance bottleneck"
-Claude: "Let me deploy the insight-synthesizer agent to explore revolutionary connections and find simplification cascades"
-```
-
 ## Agent Interaction Patterns
 
 ### Sequential Pattern (Common)
 
-1. **concept-extractor** → Extract knowledge from documents
-2. **insight-synthesizer** → Find revolutionary connections
-3. **architect** → Design implementation
-4. **builder** → Implement solution
-5. **cleanup** (amplihack/specialized) → Ensure quality
+1. **architect** → Design implementation
+2. **builder** → Implement solution
+3. **cleanup** (amplihack/specialized) → Ensure quality
 
 ### Parallel Pattern (When Appropriate)
 
@@ -85,10 +51,9 @@ Claude: "Let me deploy the insight-synthesizer agent to explore revolutionary co
 
 ### Iterative Pattern (For Exploration)
 
-1. **insight-synthesizer** → Generate multiple approaches
-2. **ambiguity** (amplihack/specialized) → Preserve tensions between approaches
-3. **architect** → Design solution that accommodates multiple paths
-4. **builder** → Implement flexible architecture
+1. **ambiguity** (amplihack/specialized) → Preserve tensions between approaches
+2. **architect** → Design solution that accommodates multiple paths
+3. **builder** → Implement flexible architecture
 
 ## Philosophy Alignment
 
@@ -104,8 +69,6 @@ The new agents enhance these principles by:
 - Preserving valuable complexity (use amplihack/specialized/ambiguity)
 - Learning from past simplifications (knowledge-archaeologist)
 - Enforcing simplicity post-implementation (use amplihack/specialized/cleanup)
-- Structuring knowledge clearly (concept-extractor)
-- Finding breakthrough simplifications (insight-synthesizer)
 
 ## Contributing New Agents
 
@@ -126,9 +89,6 @@ Test new agents with:
 ```bash
 # Test agent loads correctly
 claude --agent knowledge-archaeologist
-
-# Test agent with sample task
-claude --agent concept-extractor "Extract concepts from this architecture document"
 ```
 
 ## See Also

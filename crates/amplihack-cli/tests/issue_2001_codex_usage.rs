@@ -63,15 +63,15 @@ IFS= read -r req || exit 67
 case "$req" in *'"method":"account/rateLimits/read"'*) ;; *) echo "third line: $req" >&2; exit 67;; esac
 now=$(date +%s)
 case "$name" in
-  ffarmer)
+  login-af)
     printf '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":41,"windowDurationMins":10080,"resetsAt":%s},"credits":null,"planType":"plus","rateLimitReachedType":null,"ordinaryUsageAllowed":true}}}\n' $((now + 9060)) $((now + 478260)) ;;
-  ggrant)
+  login-ag)
     printf '{"id":2,"result":{"rateLimits":{"primary":null,"secondary":{"usedPercent":34,"windowDurationMins":10080,"resetsAt":%s},"planType":"pro","ordinaryUsageAllowed":true}}}\n' $((now + 328860)) ;;
-  hhale)
+  mhale)
     printf '%s\n' '{"id":2,"result":{"rateLimits":{"credits":{"hasCredits":true,"balance":"4200"},"planType":"team"}}}' ;;
-  jjones)
+  mjones)
     printf '%s\n' '{"error":{"code":-32600,"message":"codex account authentication required to read rate limits"},"id":2}' ;;
-  kkim)
+  mkim)
     sleep 600 >/dev/null 2>&1 &
     echo $! > "$CODEX_PID_DIR/$!"
     sleep 600 ;;
@@ -92,15 +92,15 @@ esac
 exec cat >/dev/null
 "#;
 
-const ACCOUNTS: [&str; 6] = ["ffarmer", "ggrant", "hhale", "jjones", "kkim", "mmoss"];
+const ACCOUNTS: [&str; 6] = ["login-af", "login-ag", "mhale", "mjones", "mkim", "mmoss"];
 
 /// The account whose fake app server never answers, so its read ends only at
 /// the limit.
-const HANGING: &str = "kkim";
+const HANGING: &str = "mkim";
 
 /// [`ACCOUNTS`] without [`HANGING`]: each fake answers at once, with figures,
 /// a refusal or an exit.
-const ANSWERING: [&str; 5] = ["ffarmer", "ggrant", "hhale", "jjones", "mmoss"];
+const ANSWERING: [&str; 5] = ["login-af", "login-ag", "mhale", "mjones", "mmoss"];
 
 /// The read limit of a fixture that holds [`HANGING`]. The product has one
 /// limit for all accounts of a run and no way for a test to supply the
@@ -213,7 +213,7 @@ impl Codex {
             .collect()
     }
 
-    /// Every pid a fake wrote, and the background `sleep` of `kkim`.
+    /// Every pid a fake wrote, and the background `sleep` of `mkim`.
     fn pids(&self) -> Vec<i32> {
         fs::read_dir(&self.pid_dir)
             .unwrap()
@@ -466,7 +466,7 @@ fn the_next_choice_is_marked_on_exactly_one_row() {
         .filter(|r| r["next_choice"] == true)
         .map(|r| r["account"].as_str().unwrap())
         .collect();
-    assert_eq!(marked, ["ggrant"], "room 66 beats 59");
+    assert_eq!(marked, ["login-ag"], "room 66 beats 59");
 }
 
 #[test]
@@ -497,12 +497,12 @@ fn the_bar_view_prints_the_codex_block_after_the_claude_output() {
         assert!(s[..at].contains(p), "Claude rows first: {s}");
     }
     let block = codex_block(&s);
-    assert!(line_of(block, "ggrant").ends_with("<- next"), "{block}");
-    assert!(line_of(block, "ffarmer").contains("5h █"), "{block}");
-    assert!(line_of(block, "ffarmer").contains("7d ████"), "{block}");
-    assert!(line_of(block, "hhale").contains("credits 4200"), "{block}");
+    assert!(line_of(block, "login-ag").ends_with("<- next"), "{block}");
+    assert!(line_of(block, "login-af").contains("5h █"), "{block}");
+    assert!(line_of(block, "login-af").contains("7d ████"), "{block}");
+    assert!(line_of(block, "mhale").contains("credits 4200"), "{block}");
     assert!(
-        line_of(block, "jjones").contains("not signed in"),
+        line_of(block, "mjones").contains("not signed in"),
         "{block}"
     );
     assert!(
@@ -525,8 +525,8 @@ fn the_table_view_prints_the_block_without_bars() {
     let s = text(&ok(c.cmd(&["--table"])).stdout);
     let block = codex_block(&s);
     assert!(!block.contains('█') && !block.contains('░'), "{block}");
-    assert!(line_of(block, "ffarmer").contains("5h 12% "), "{block}");
-    assert!(line_of(block, "ggrant").ends_with("<- next"), "{block}");
+    assert!(line_of(block, "login-af").contains("5h 12% "), "{block}");
+    assert!(line_of(block, "login-ag").ends_with("<- next"), "{block}");
 }
 
 #[test]
@@ -574,7 +574,7 @@ fn no_login_file_is_opened_and_no_api_key_reaches_codex() {
 fn no_codex_process_outlives_the_command() {
     let c = Codex::with_hang();
     // `run` returns only once the command and every process it started,
-    // including `kkim`'s app server and its background `sleep 600`, have
+    // including `mkim`'s app server and its background `sleep 600`, have
     // exited (see its witness pipe). The pid files show the fakes ran.
     ok(c.cmd(&["--summary-json"]));
     let pids = c.pids();
@@ -594,7 +594,7 @@ fn every_account_is_started_once() {
 
 #[test]
 fn codex_failures_never_change_the_exit_status() {
-    let c = Codex::with(&["jjones", "kkim", "mmoss"]);
+    let c = Codex::with(&["mjones", "mkim", "mmoss"]);
     let out = run(c.cmd(&[]));
     assert!(out.status.success(), "{}", text(&out.stderr));
     let missing = Codex::new();
@@ -621,12 +621,12 @@ fn codex_failures_never_change_the_exit_status() {
 
 #[test]
 fn home_codex_is_listed_last_when_signed_in() {
-    let c = Codex::with(&["ggrant"]);
+    let c = Codex::with(&["login-ag"]);
     trapped(&c.home_codex());
     let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env("FAKE_HOME_STATE", "ok");
     let rows = codex_rows(&json(&ok(cmd)));
-    assert_eq!(field(&rows, "account"), ["ggrant", "~/.codex"]);
+    assert_eq!(field(&rows, "account"), ["login-ag", "~/.codex"]);
     assert_eq!(
         rows[1]["path"].as_str().unwrap(),
         c.home_codex().to_str().unwrap()
@@ -636,10 +636,10 @@ fn home_codex_is_listed_last_when_signed_in() {
 
 #[test]
 fn home_codex_is_dropped_when_not_signed_in() {
-    let c = Codex::with(&["ggrant"]);
+    let c = Codex::with(&["login-ag"]);
     trapped(&c.home_codex());
     let rows = codex_rows(&json(&ok(c.cmd(&["--summary-json"]))));
-    assert_eq!(field(&rows, "account"), ["ggrant"]);
+    assert_eq!(field(&rows, "account"), ["login-ag"]);
     assert!(c.runs().contains(&".codex".to_string()), "it was read");
     let s = text(&ok(c.cmd(&[])).stdout);
     assert!(!codex_block(&s).contains("~/.codex"), "{s}");
@@ -647,35 +647,35 @@ fn home_codex_is_dropped_when_not_signed_in() {
 
 #[test]
 fn home_codex_linked_to_a_profile_is_not_read_twice() {
-    let c = Codex::with(&["ggrant"]);
-    std::os::unix::fs::symlink(c.root.join("ggrant"), c.home_codex()).unwrap();
+    let c = Codex::with(&["login-ag"]);
+    std::os::unix::fs::symlink(c.root.join("login-ag"), c.home_codex()).unwrap();
     let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env("FAKE_HOME_STATE", "ok");
     let rows = codex_rows(&json(&ok(cmd)));
-    assert_eq!(field(&rows, "account"), ["ggrant"]);
-    assert_eq!(c.runs(), ["ggrant"]);
+    assert_eq!(field(&rows, "account"), ["login-ag"]);
+    assert_eq!(c.runs(), ["login-ag"]);
 }
 
 #[test]
 fn hidden_directories_and_files_in_the_root_are_not_accounts() {
-    let c = Codex::with(&["ggrant", ".hidden"]);
+    let c = Codex::with(&["login-ag", ".hidden"]);
     fs::write(c.root.join("notes.txt"), "not an account").unwrap();
     let rows = codex_rows(&json(&ok(c.cmd(&["--summary-json"]))));
-    assert_eq!(field(&rows, "account"), ["ggrant"]);
+    assert_eq!(field(&rows, "account"), ["login-ag"]);
 }
 
 #[test]
 fn the_default_root_is_home_codex_profiles() {
     let c = Codex::with(&[]);
     let default_root = c.f.home.join(".codex-profiles");
-    trapped(&default_root.join("ggrant"));
+    trapped(&default_root.join("login-ag"));
     let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env_remove("CODEX_PROFILES_ROOT");
     let rows = codex_rows(&json(&ok(cmd)));
-    assert_eq!(field(&rows, "account"), ["ggrant"]);
+    assert_eq!(field(&rows, "account"), ["login-ag"]);
     assert_eq!(
         rows[0]["path"].as_str().unwrap(),
-        default_root.join("ggrant").to_str().unwrap()
+        default_root.join("login-ag").to_str().unwrap()
     );
 }
 
@@ -721,7 +721,7 @@ fn an_empty_or_missing_root_is_one_line_and_an_empty_array() {
 
 #[test]
 fn an_unreadable_root_warns_and_still_prints_the_claude_output() {
-    let c = Codex::with(&["ggrant"]);
+    let c = Codex::with(&["login-ag"]);
     fs::set_permissions(&c.root, fs::Permissions::from_mode(0o000)).unwrap();
     let readable_anyway = fs::read_dir(&c.root).is_ok();
     let text_out = run(c.cmd(&[]));
@@ -759,7 +759,7 @@ fn an_unreadable_root_warns_and_still_prints_the_claude_output() {
 
 #[test]
 fn a_bad_timeout_warns_once_and_uses_20_seconds() {
-    let c = Codex::with(&["ggrant"]);
+    let c = Codex::with(&["login-ag"]);
     let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env("AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS", "0");
     let out = ok(cmd);

@@ -284,3 +284,6 @@ pub(in crate::commands::profile::rotate) mod tests_issue_2910_fixture;
 #[cfg(test)]
 #[path = "tests_issue_3105_cycle.rs"]
 mod tests_issue_3105_cycle;
+#[cfg(test)]
+#[path = "tests_issue_3368_cycle.rs"]
+mod tests_issue_3368_cycle;

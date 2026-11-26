@@ -5,7 +5,8 @@
 #   autodrive_goal_turn.sh decision <turn_dir>      the agent's reply -> decision.json (exit 0)
 #   autodrive_goal_turn.sh end <handoff|ready|stop> <turn_dir>
 #                                                   end.md, screened, published -> result.json
-#   autodrive_goal_turn.sh wait-owner <turn_dir>    wait for the owner's answer -> result.json
+#   autodrive_goal_turn.sh wait-owner <turn_dir>    wait for the owner's answer -> result.json;
+#                                                   waiting.json in the run folder while it waits
 #   autodrive_goal_turn.sh outcomes <turn_dir>      the decision's required outcomes -> the
 #                                                   run's ledger, <state>/outcomes.json; a
 #                                                   rejected one is answered in a comment
@@ -196,17 +197,34 @@ publish_end() {
   fi
 }
 
+# do_wait_owner (#3364): before the wait starts, the run's own folder
+# (AMPLIHACK_RUN_DIR) gets waiting.json with the run id, the guidance target,
+# the owner, the question, the turn and the start time, and the run log gets
+# one line. `amplihack recipe waiting` lists the record while the run is live.
+# The record is removed when the wait returns, whatever its exit. Writing the
+# record or the line is best effort and changes nothing else the turn does.
 do_wait_owner() {
-  local target since out rc question owner
+  local target since out rc question owner waiting=""
   target="$(jq -r '.goal.guidance_target // empty | strings' "$TD/reading.json" 2>/dev/null)"
   since="$(jq -r '.guidance_newest // empty | strings' "$TD/reading.json" 2>/dev/null)"
   goal_is_entry "$since" || since=""
   case "$target" in https://*) ;; *) target="" ;; esac
+  owner="$(arg owner | goal_clean_line 200)"; question="$(arg question | goal_clean_line 1000)"
+  case "${AMPLIHACK_RUN_DIR:-}" in
+    /*) [ -d "$AMPLIHACK_RUN_DIR" ] && [ ! -L "$AMPLIHACK_RUN_DIR" ] && waiting="${AMPLIHACK_RUN_DIR%/}/waiting.json" ;;
+  esac
+  if [ -n "$waiting" ]; then
+    jq -cn --arg r "${AMPLIHACK_RUN_ID:-}" --arg t "$target" --arg o "$owner" --arg q "$question" \
+      --arg n "${TD##*/}" --arg s "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{kind:"waiting", run_id:$r, target:$t, owner:$o, question:$q, turn:$n, started_at:$s}' \
+      | goal_atomic_write "$waiting" 2>/dev/null || waiting=""
+  fi
+  goal_run_log_line "goal loop turn ${TD##*/}: the run waits for its owner (${owner:-the operator who started this run})"
   out="$("$AMPLIHACK_BIN" recipe guidance wait "--since=$since" ${target:+"$target"} 2>"$TD/wait.err")"; rc=$?
+  [ -z "$waiting" ] || rm -f -- "$waiting"
   case "$rc" in
     0) result guidance-arrived "new guidance arrived ($(printf '%s' "$out" | jq -r '.entry // "entry"' 2>/dev/null))" ;;
     3) # D4 fallback: no wake could be armed, so the question ends in a hand-off.
-       owner="$(arg owner | goal_clean_line 200)"; question="$(arg question | goal_clean_line 1000)"
        ARGS_FILE="$TD/.fallback.json"
        jq -cn --arg o "${owner:-the operator who started this run}" --arg q "${question:-the question in this turn record}" \
          '{args:{owner:$o, decision:$q, text:("The run needs an answer from " + $o + ": " + $q + " It could not wait for guidance here, because no wake folder could be armed, so it hands the question off.")}}' \

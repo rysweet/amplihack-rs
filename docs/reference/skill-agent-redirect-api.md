@@ -32,13 +32,13 @@ static AMPLIHACK_AGENTS: &[&str] = &[
     "analyzer",
     "api-designer",
     "architect",
-    // ... 41 unique names total, sorted ...
+    // ... 38 unique names total, sorted ...
     "worktree-manager",
     "xpia-defense",
 ];
 ```
 
-The registry contains the **41 unique** agent names sourced from `amplifier-bundle/agents/**/*.md`. The duplicate `guide.md` basename is deduplicated so the slice stays unique and sorted.
+The registry contains the **38 unique** agent names sourced from `amplifier-bundle/agents/**/*.md`. The duplicate `guide.md` basename is deduplicated so the slice stays unique and sorted.
 
 ### Functions
 
@@ -62,7 +62,7 @@ assert!(is_amplihack_agent("prompt-writer"));
 assert!(is_amplihack_agent("architect"));
 assert!(!is_amplihack_agent("default-workflow")); // that's a skill
 assert!(!is_amplihack_agent(""));
-assert_eq!(agent_count(), 41);
+assert_eq!(agent_count(), 38);
 ```
 
 ### Registry Consistency Test
@@ -198,7 +198,7 @@ A non-match produces an empty object (`{}`), identical to any other allowed non-
 | Location                                  | Coverage                                                                                                    |
 | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `known_agents.rs` (`#[cfg(test)]`)        | Membership (`prompt-writer` → true, unknown → false), slice-is-sorted assertion, `agent_count` value, and the filesystem consistency test against `amplifier-bundle/agents/**/*.md`. |
-| `pre_tool_use/mod.rs` (`#[cfg(test)]`)    | `Skill(prompt-writer)` → blocked + redirect; `gherkin-expert` / `tla-plus-expert` / `default-workflow` → pass (skill precedence); `totally-unknown` → pass; malformed inputs (`{}`, `{"skill":123}`, `{"skill":null}`, nested junk) → pass-through with no panic. |
+| `pre_tool_use/mod.rs` (`#[cfg(test)]`)    | `Skill(prompt-writer)` → blocked + redirect; `tla-plus-expert` / `verus-expert` / `default-workflow` → pass (skill precedence); `totally-unknown` → pass; malformed inputs (`{}`, `{"skill":123}`, `{"skill":null}`, nested junk) → pass-through with no panic. |
 
 Run them with:
 

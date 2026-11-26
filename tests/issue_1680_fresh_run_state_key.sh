@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regression tests for issue #1680 — a fresh auto-drive run (no pr_number, no
 # existing_branch) kept its whole state under a key made from the base
-# checkout's branch (…_mistt-ui-platform_main), so two fresh runs in one
+# checkout's branch (…_repo-h_main), so two fresh runs in one
 # repository at once shared verdict files.
 #
 # Issue #2329 retired the bash bodies of autodrive-build's step-01 and step-03:

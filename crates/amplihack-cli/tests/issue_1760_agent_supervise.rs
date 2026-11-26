@@ -54,8 +54,8 @@ struct Resumed {
 /// A lost `coordinator` with every option recorded, a socket and profile
 /// `work`; one supervise pass with the client variables planted.
 fn resume_full(fx: &Fx) -> Resumed {
-    let dir = fx.dir("mistt");
-    let docs = fx.dir("mistt-docs");
+    let dir = fx.dir("example-org");
+    let docs = fx.dir("repo-d");
     let profile = fx.profile_dir("work");
     fx.transcript_in(&profile, &dir, CONV_A);
     let mut e = fx.entry("coord", &dir, Some(CONV_A));

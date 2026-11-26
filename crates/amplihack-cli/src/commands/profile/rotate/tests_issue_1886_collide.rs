@@ -1,5 +1,5 @@
 //! Issue #1886, the 3 November collision (crusty round 2, concern 2):
-//! nnorth and mmorrison reset at the same times. A swap leaves the live
+//! login-ao and login-an reset at the same times. A swap leaves the live
 //! profile `work` with no login of its own, its login only in `~/.claude`;
 //! `spare` holds its own login of another account whose usage windows reset
 //! at exactly the same moments. With identity by reset times `~/.claude`

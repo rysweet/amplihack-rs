@@ -1,4 +1,4 @@
-//! Issue #1714, case 2 (mistt-ui-platform PR #138): the local HEAD was
+//! Issue #1714, case 2 (repo-h PR #138): the local HEAD was
 //! 5174029 and the PR head was 50e41db, a merge of main pushed from another
 //! checkout whose first parent was 5174029. The open-PR check required the two
 //! to be equal, found no signal, and the run ended `FAILED_IMPLEMENTATION`
@@ -133,7 +133,7 @@ pub(super) fn descends(fx: &Fixture) -> String {
     fx.fact(BRANCH, Some("7"), "pr_head_descends_local_head")
 }
 
-// The mistt #138 history with green checks: the PR head really does carry the
+// The example-org #138 history with green checks: the PR head really does carry the
 // run's work, and the facts say so without deciding anything.
 #[test]
 fn an_ancestor_local_head_with_green_checks_is_the_same_pr() {

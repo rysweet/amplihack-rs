@@ -37,6 +37,7 @@ mod run_record;
 pub mod show_validate;
 /// Issue #1606: `recipe stop`.
 pub mod stop;
+pub mod waiting;
 
 pub use list::run_list;
 pub(crate) use run::reject_removed_context_keys;

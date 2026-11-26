@@ -191,7 +191,7 @@ Windows_
 ### Apply Fix #1 (Environment Variable Support)
 
 ```bash
-cd /Users/ryan/src/tempsaturday/worktree-issue-962
+cd /Users/you/src/tempsaturday/worktree-issue-962
 
 # Edit hook_processor.py to add env var support
 # (See solution above for exact code)

@@ -3133,6 +3133,9 @@ It is read from the [usage history](#usage-history):
    at or before the time it was taken belongs to a week that has ended and
    is not used, and neither is this run's reading of a login when it is a
    stale passive reading by the rule under [Stale readings](#stale-readings).
+    For example, with a level of 50, a fall to 30 is stale when a later
+    reading of the week is 40, and stays when the highest later reading is
+    39, which then counts 9 points of use.
 5. The rate is the sum of each login's use times its [weight](#capacity-weights),
    divided by 100 and by the hours between the two ends. It is weighted;
    when every weight is `1.0` it equals the unweighted rate. It is never
@@ -6576,11 +6579,15 @@ first group that has a qualifying login:
 1. logins in the live login's organisation, whatever their tier;
 2. logins whose organisation is unresolved;
 3. logins in another organisation, a confirmed crossing, only when the live
-   login has no room now, is an overflow profile, or its probe failed.
+   login has no room now, has its week use at or above `--week-at`, is an
+   overflow profile, or its probe failed.
 
-An upgrade never crosses, and a live login that still has room never crosses,
-so a projected or threshold move that only another organisation can satisfy
-is a stay. A live login whose probe failed may cross only by the
+The crossing test counts a live login whose week use is at or above
+`--week-at` as having no room, because its week does not reset within hours.
+An upgrade never crosses, and a live login that still has room and whose week
+use is below `--week-at` never crosses, even past `--session-at`, so a
+projected or threshold move that only another organisation can satisfy is a
+stay. A live login whose probe failed may cross only by the
 [failed-probe swap](#rotate-failed-live-probes), after three failures in a
 row, as before this rule. Every crossing writes the
 existing [`affinity:` warning](profile-organisation-affinity.md#warnings) in

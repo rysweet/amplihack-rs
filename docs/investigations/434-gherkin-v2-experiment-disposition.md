@@ -74,6 +74,8 @@ exists — it is bundled, documented, and registered.
 | Create eval scenario? | No — skill already functions; eval is orthogonal |
 | Issue disposition | Closed as not-planned |
 
+The agent copy of `gherkin-expert` was later folded into the skill and removed (#3345).
+
 ## 5. Risks Considered
 
 - **False positive from narrow grep**: The original issue was filed based on a

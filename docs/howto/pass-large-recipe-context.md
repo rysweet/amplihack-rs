@@ -111,7 +111,7 @@ When a key is set more than once, the later source in this list wins:
 amplihack recipe run default-workflow \
   --context-file /tmp/base-context.json \
   --context-from-file task_description=/tmp/issue-1570.md \
-  -c repo_path=/home/ryan/src/amplihack-rs
+  -c repo_path=/home/you/src/amplihack-rs
 ```
 
 ## Read a context value of any size in a bash step

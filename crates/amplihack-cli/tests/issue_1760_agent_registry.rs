@@ -18,7 +18,7 @@ fn mode(p: &std::path::Path) -> u32 {
 #[test]
 fn register_prints_one_line_and_writes_a_flat_version_1_entry() {
     let fx = Fx::new();
-    let d = fx.dir("mistt");
+    let d = fx.dir("example-org");
     let before = now();
     let o = fx.register("coordinator", "coord", &d, CONV_A, &[]);
     expect_code(&o, 0);

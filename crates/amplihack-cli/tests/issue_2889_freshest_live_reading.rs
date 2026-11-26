@@ -8,7 +8,7 @@
 //! `profile rotate` output and the rotate log. Nothing reaches into the
 //! rotator's own types.
 //!
-//! The incident (candide, 21 Nov) was a live login whose `cycle` line
+//! The incident (host-a, 21 Nov) was a live login whose `cycle` line
 //! alternated between a fresh reading and the cached one taken when the
 //! login was swapped in, with nothing on the line to tell them apart. The
 //! two scenarios below pin the two halves of the fix at that boundary:

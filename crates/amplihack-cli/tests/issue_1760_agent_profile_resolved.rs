@@ -172,7 +172,7 @@ fn a_launch_under_an_inherited_profile_records_and_resumes_it() {
 #[test]
 fn register_records_the_profile_whose_directory_holds_the_sessions_file() {
     let fx = Fx::new();
-    let dir = fx.dir("mistt");
+    let dir = fx.dir("example-org");
     let work = logged_in_profile(&fx, "work");
     set_pointer(&fx, "work");
     let claude = Proc::new(5000, 1, &["claude"], &dir)
@@ -253,7 +253,7 @@ fn an_explicit_live_profile_records_none_and_resumes_after_rotation() {
 #[test]
 fn register_with_a_profile_records_where_the_sessions_file_is() {
     let fx = Fx::new();
-    let dir = fx.dir("mistt");
+    let dir = fx.dir("example-org");
     logged_in_profile(&fx, "x");
     let claude = Proc::new(5000, 1, &["claude"], &dir)
         .start(START)
