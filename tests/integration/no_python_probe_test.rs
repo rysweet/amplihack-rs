@@ -2257,11 +2257,9 @@ fn tc36_fleet_tui_apply_without_selection_shows_warning_without_python() {
 
     let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
     probe.wait_for_text("q quit");
-    probe.send_and_wait_for(
-        b"/missing-session\n",
-        "No sessions match the current search. Press Esc to clear.",
-    );
-    probe.send_and_wait_for(b"a", "No session selected to apply.");
+    // Queue apply with the search so selection must be reconciled before
+    // the next action, without waiting for another fleet refresh.
+    probe.send_and_wait_for(b"/missing-session\na", "No session selected to apply.");
 
     let cleaned = probe.finish();
     assert!(
