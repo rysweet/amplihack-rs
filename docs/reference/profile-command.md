@@ -7237,6 +7237,12 @@ confirmation and retains its separate existing probe deadline. No new
 schedule or retry is introduced. A stop received before confirmation makes
 no further read and no swap.
 
+Older versions could swap off a blocked live login without confirming the
+target. Their swap lines could include ` unconfirmed (time limit)`,
+`read <N>m ago` and `; live <from> has no room: <kind> until <UTC minute>`.
+These suffixes describe the older behaviour. A failed confirmation now
+leaves the live login unchanged for that cycle.
+
 `--dry-run` makes the same re-reads, since they write no rotate state, and
 prints their `reread:` lines and any
 `damp: <name> swapped away exhausted; no later reading shows room` line. It
@@ -10606,6 +10612,7 @@ run and prints their `reread:` lines; see
 | `reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%` | The chosen swap target received its required confirmation by the [probe method](#probe-method), with passive readings off. The first figures are those the decision used, the second those of the new read, formatted as in the `swap` line (`w=?` when no weekly window was read). The decision was then made again on the new figures. |
 | `stale live reading; re-read` | The live login's reading was [frozen, old or lagging](#stale-live-reading) and was read again by the configured probe method, with passive readings off. A direct read uses the supplied home's live credentials and never refreshes them. Written at most once per cycle, before the decision. The line holds no name or figures. |
 | `reread: <name> failed; treated as unknown` | The read failed or remained stale. A target cannot be swapped to on this confirmation, including when the active login has a standing block. For a failed live re-read, the existing [near-threshold rule](#failed-or-stale-reading-near-the-threshold) applies. |
+| `reread: <name> limit reached; treated as unknown` | The cycle has already used its one target confirmation. Selection is reconsidered, but another target waits for a later cycle. |
 | `reread: <name> time limit reached; treated as unknown` | The existing target probe deadline left no time for confirmation. The target remains unconfirmed and no swap is made. The live re-read has a separate existing budget. |
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |

@@ -4,13 +4,14 @@
 use super::cycle::{Ctx, CycleOutcome, Mode};
 use super::decide::Probed;
 use super::decide::target_seen::tests_issue_2910_fixture::{
-    clock, fleet, name, reporter, run_full,
+    clock, fleet, name, reporter, run_full, set_clock,
 };
 use super::measure::{self, ProbeLabel};
 use super::observe::{Measurement, Snap, decide_measured};
 use super::tests_issue_1870::exh;
 use super::tests_issue_3301_reading::{env, report};
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::ProbeMode;
 use crate::commands::profile::usage_cmd::{ErrorReason, Probe};
@@ -44,6 +45,12 @@ fn measure_passive(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> 
                     if who.as_str() == "top" { 10.0 } else { 99.0 };
                 Probe::read(r, Source::Fallback)
             });
+            // Recording uses its own clock. The fixture may have waited for
+            // the environment lock since fleet creation, so reconstruct at
+            // the recorded observation time rather than before it.
+            let state = State::new(ctx.store.root()).unwrap();
+            let observed_at = state.try_load_usage().unwrap().accounts[who.as_str()].observed_at;
+            set_clock(observed_at);
             let reader = measure::reader(ctx, env(ProbeMode::Ordered), 1, clock());
             let p = reader.profile_with(who, false, |_| panic!("expected passive reconstruction"));
             assert_eq!(p.source, Some(Source::Passive));
