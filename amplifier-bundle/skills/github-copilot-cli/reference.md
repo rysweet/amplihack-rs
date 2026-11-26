@@ -19,6 +19,10 @@ Complete technical reference for GitHub Copilot CLI.
 9. [Permissions System](#permissions-system)
 10. [Environment Variables](#environment-variables)
 11. [Configuration Files](#configuration-files)
+12. [Command Line Options](#command-line-options)
+13. [Programmatic Mode](#programmatic-mode)
+14. [Updating and Version Management](#updating-and-version-management)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -143,7 +147,7 @@ export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 | `/compact`            | Summarize history to reduce context     |
 | `/context`            | Show token usage visualization          |
 | `/exit`, `/quit`      | Exit the CLI                            |
-| `/session`            | Show session info and workspace summary |
+| `/session [checkpoints [n]\|files\|plan\|rename <name>]` | Show session info, checkpoints, files or plan |
 | `/resume [sessionId]` | Switch to different session             |
 | `/rename <name>`      | Rename current session                  |
 | `/usage`              | Display session usage metrics           |
@@ -160,7 +164,7 @@ export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 
 | Command              | Description                      |
 | -------------------- | -------------------------------- |
-| `/model [model]`     | Select AI model                  |
+| `/model [model]`, `/models` | Select AI model           |
 | `/agent`             | Browse and select agents         |
 | `/delegate [prompt]` | Hand off to Copilot coding agent |
 | `/plan [prompt]`     | Create implementation plan       |
@@ -169,6 +173,8 @@ export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 **Available Models** (use `/model` to see current list):
 
 Use the runtime’s current model list and configured default; availability depends on the account and installation.
+
+Each prompt costs premium requests multiplied by the model's multiplier. `/model` shows the current multipliers.
 
 ### Tools & Extensions
 
@@ -374,9 +380,21 @@ copilot --agent=plan --prompt "Design authentication system"
 
 `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`: Additional directories for instructions
 
+All custom instruction files are combined. None of them replaces another by priority.
+
 ---
 
 ## Permissions System
+
+### Trusted Directories
+
+On first launch in a directory, Copilot asks whether to trust it:
+
+1. **Yes, proceed**: Trust for this session only
+2. **Yes, and remember**: Trust for all future sessions
+3. **No, exit**: Cancel the session
+
+Remembered directories are kept in the `trusted_folders` array of `~/.copilot/config.json`, where they can be edited.
 
 ### Path Permissions
 
@@ -421,6 +439,8 @@ copilot --allow-url github.com
 copilot --allow-all-urls
 ```
 
+**Limitations**: URLs inside files and configuration are not detected, and obfuscated URLs may bypass the check.
+
 ### Tool Approval
 
 When Copilot requests tool use:
@@ -428,6 +448,31 @@ When Copilot requests tool use:
 1. **Yes**: Approve once
 2. **Yes, and approve for session**: Approve for remaining session
 3. **No (Esc)**: Deny and redirect
+
+### Approval Flags
+
+```bash
+--allow-all-tools         # Allow all tools without approval
+--allow-tool <spec>       # Allow a specific tool (repeatable)
+--deny-tool <spec>        # Deny a specific tool (repeatable)
+```
+
+Tool specification formats:
+
+- `'shell'`: all shell commands
+- `'shell(git)'`: one command
+- `'shell(git push)'`: a command with a subcommand
+- `'write'`: file modification tools
+- `'MCP_SERVER_NAME'`: all tools from an MCP server
+- `'MCP_SERVER_NAME(tool_name)'`: one MCP tool
+
+### Risk Mitigation
+
+With `--allow-all-tools` in automated workflows:
+
+- Run in a VM, a container or another isolated environment
+- Restrict network access
+- Deny dangerous commands with `--deny-tool`
 
 ---
 
@@ -446,6 +491,7 @@ When Copilot requests tool use:
 
 | File                      | Location            | Purpose                  |
 | ------------------------- | ------------------- | ------------------------ |
+| `config.json`             | `~/.copilot/`       | Trusted folders, theme   |
 | `mcp-config.json`         | `~/.copilot/`       | MCP server configuration |
 | `copilot-instructions.md` | `~/.copilot/`       | User-global instructions |
 | `copilot-instructions.md` | `.github/`          | Repository instructions  |
@@ -463,12 +509,110 @@ Options:
   --resume              Cycle through and resume sessions
   --continue            Resume most recent session
   --agent=<name>        Use specific agent
-  --prompt "<text>"     Start with specific prompt
+  -p, --prompt "<text>" Run a single prompt (programmatic mode)
+  --allow-all-tools     Allow all tools without approval
+  --allow-tool <spec>   Allow a specific tool (repeatable)
+  --deny-tool <spec>    Deny a specific tool (repeatable)
   --allow-all-paths     Disable path verification
   --allow-all-urls      Disable URL verification
   --allow-url <domain>  Pre-approve specific domain
   --version             Show version
   --help                Show help
+```
+
+### Help Topics
+
+```bash
+copilot help              # General help
+copilot help config       # Configuration settings
+copilot help environment  # Environment variables
+copilot help logging      # Logging levels
+copilot help permissions  # Tool permissions
+```
+
+---
+
+## Programmatic Mode
+
+`-p` (or `--prompt`) runs one prompt and exits, for scripts and CI.
+
+```bash
+# Simple query
+copilot -p "What does this repo do?"
+
+# With one tool approved
+copilot -p "Run the tests" --allow-tool 'shell(npm)'
+
+# Full automation with dangerous commands denied
+copilot -p "Fix linting errors and commit" \
+  --allow-all-tools \
+  --deny-tool 'shell(git push)' \
+  --deny-tool 'shell(rm)'
+
+# Piping input
+echo "Explain this code" | copilot
+cat script.sh | copilot -p "What does this do?"
+```
+
+See [Approval Flags](#approval-flags) for the tool specification formats.
+
+---
+
+## Updating and Version Management
+
+```bash
+copilot --version         # Check the installed version
+```
+
+- **Update**: Each installation method above gives its update command (`brew upgrade copilot-cli`, `npm update -g @github/copilot`, `winget upgrade GitHub.Copilot`). For the install script, run it again to install the latest version.
+- **Specific version**: `npm install -g @github/copilot@<version>`, or set `VERSION` for the install script.
+- **Prerelease**: Each installation method above gives its prerelease command.
+- **Releases**: https://github.com/github/copilot-cli/releases/
+
+---
+
+## Troubleshooting
+
+### "Copilot not found"
+
+- Restart the terminal after installation
+- Check that the install location is in `$PATH`:
+  - Homebrew: `/opt/homebrew/bin` or `/usr/local/bin`
+  - npm: the global npm bin directory
+  - Install script: `$HOME/.local/bin` or `/usr/local/bin`
+- Run `which copilot` (Unix) or `where copilot` (Windows)
+
+### "Not logged in"
+
+Run `/login` in interactive mode, or set `GH_TOKEN` or `GITHUB_TOKEN` (see [Authentication](#authentication)).
+
+### "No subscription"
+
+- Check the subscription at https://github.com/settings/copilot
+- Make sure the plan includes CLI access
+- Run `/logout`, then `/login`
+
+### "Tool permission denied"
+
+- Add the directory: `/add-dir /path`
+- Or restart with `--allow-all-paths` or `--allow-all-urls`
+- Check `trusted_folders` in `~/.copilot/config.json`
+- Approve tools one by one when prompted
+
+### "Context window full"
+
+```bash
+/context    # View token usage
+/compact    # Summarise and free space
+/clear      # Start fresh (loses context)
+```
+
+### MCP Server Errors
+
+```bash
+/mcp show            # Check status
+/mcp edit <name>     # Fix configuration
+/mcp disable <name>  # Disable for now
 ```
 
 ---

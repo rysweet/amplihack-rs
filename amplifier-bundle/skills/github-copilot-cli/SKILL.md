@@ -1,12 +1,13 @@
 ---
 name: github-copilot-cli
 version: 1.0.0
-description: Expert knowledge of GitHub Copilot CLI - installation, configuration, usage, MCP servers, skills, custom agents, and troubleshooting. Use when asking about copilot cli, installing copilot, gh copilot, copilot commands, MCP setup, or copilot extensibility.
+description: Expert knowledge of GitHub Copilot CLI - installation, updating and version management, configuration, usage, MCP servers, skills, custom agents, and troubleshooting. Use when asking about copilot cli, installing or updating copilot, copilot version, gh copilot, copilot commands, MCP setup, or copilot extensibility.
 source_urls:
   - https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli
   - https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
   - https://docs.github.com/en/copilot/how-tos/use-copilot-agents/use-copilot-cli
   - https://docs.github.com/en/copilot/concepts/agents/about-agent-skills
+  - https://github.com/github/copilot-cli
 ---
 
 # GitHub Copilot CLI Expert
@@ -48,6 +49,17 @@ Automatically when you mention:
 | macOS/Linux (Script)   | `curl -fsSL https://gh.io/copilot-install \| bash` |
 
 **Prerelease versions**: Add `@prerelease` or use `GitHub.Copilot.Prerelease`
+
+### Updating and Version Management
+
+| Method   | Update command                 |
+| -------- | ------------------------------ |
+| Homebrew | `brew upgrade copilot-cli`     |
+| npm      | `npm update -g @github/copilot` |
+| WinGet   | `winget upgrade GitHub.Copilot` |
+| Script   | Run the install script again   |
+
+Check the version with `copilot --version`. Pinning a version and the release list are in reference.md.
 
 ### Authentication
 
@@ -99,6 +111,8 @@ export GH_TOKEN=your_token
 - Full permissions system documentation
 - Advanced configuration options
 - Environment variables reference
+- Programmatic mode, updating and version management
+- Troubleshooting in detail
 
 **examples.md** - Read when you need:
 
@@ -107,6 +121,7 @@ export GH_TOKEN=your_token
 - Skill creation examples
 - Custom agent examples
 - Real-world usage scenarios
+- GitHub integration and scripted (programmatic) examples
 
 ## Core Concepts
 
@@ -156,6 +171,26 @@ Repository-specific guidance for Copilot:
 - `.github/instructions/**/*.instructions.md` - Path-specific
 - `AGENTS.md` - Agent behavior instructions
 
+### Programmatic Mode
+
+`copilot -p "<prompt>"` runs one prompt and exits, for scripts and CI. Approve tools with `--allow-tool 'shell(git)'`, `--allow-all-tools` or `--deny-tool 'shell(rm)'`. Formats and examples are in reference.md.
+
+### Security Model
+
+- **Trusted directories**: Confirmed on first launch
+- **Tool approval**: Required for file modifications
+- **Path permissions**: Current directory, subdirectories and temp by default
+- **URL permissions**: All URLs require approval
+
+Flags and limits are under "Permissions System" in reference.md.
+
+## Common Patterns
+
+- `@path` includes a file in the prompt: `Fix the bug in @src/app.js`
+- `/delegate <task>` hands the work to the Copilot coding agent, which opens a PR
+- `copilot --continue` resumes the latest session; `copilot --resume` picks one
+- `--allow-tool` and `--deny-tool` approve or refuse tools without prompts
+
 ## Troubleshooting Quick Tips
 
 | Issue                  | Solution                                                 |
@@ -165,6 +200,12 @@ Repository-specific guidance for Copilot:
 | Policy disabled        | Check org/enterprise Copilot settings                    |
 | MCP server not loading | Verify `~/.copilot/mcp-config.json` syntax               |
 | Skill not activating   | Restart Copilot CLI, check SKILL.md YAML                 |
+| Not found after install | Restart terminal, check `PATH`, run `which copilot`     |
+| "No subscription"      | Check plan at github.com/settings/copilot, then `/login` |
+| Tool permission denied | `/add-dir <path>` or `--allow-all-paths`                 |
+| Context window full    | `/compact`, or `/clear` to start again                   |
+
+More detail is under "Troubleshooting" in reference.md.
 
 ---
 
