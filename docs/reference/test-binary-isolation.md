@@ -18,6 +18,8 @@ All of the behaviour below is compiled only under `cfg(any(test, feature = "test
 - [Subprocess fixtures](#subprocess-fixtures)
 - [Internal support modules](#internal-support-modules)
 - [Tests](#tests)
+- [Status of the issue #2182 wanted items](#status-of-the-issue-2182-wanted-items)
+- [Known limits](#known-limits)
 
 ## Staging
 
@@ -70,3 +72,18 @@ cargo test -p amplihack-cli --lib issue_2182_binary_isolation
 cargo test -p amplihack-cli --test cli_integration issue_2182_binary_isolation
 cargo test -p amplihack-cli --test cli_integration an_install_leaves_no_large_independent_copy
 ```
+
+## Status of the issue #2182 wanted items
+
+| Item | Status |
+| --- | --- |
+| 1. No real binaries copied into fake homes | Met in test builds by the resolver stub and by linking sources over 1 MiB. |
+| 2. Production linking | Not changed here. Left to [issue #2147](https://github.com/rysweet/amplihack-rs/issues/2147). |
+| 3. Check that a fake home's `.local/bin` holds no large copy | Partly met. One test, `an_install_leaves_no_large_independent_copy_in_the_fake_home`, checks one real install. Other fixtures that build fake homes are not checked. [Issue #3334](https://github.com/rysweet/amplihack-rs/issues/3334) tracks a check in the shared test support. |
+| 3. Before-and-after bytes written by `cargo test -p amplihack-cli` | Not measured. The repository's own tools do not report it. [Issue #3334](https://github.com/rysweet/amplihack-rs/issues/3334) tracks it. |
+| 4. No timers; tests never touch the real home | Met. |
+
+## Known limits
+
+- A test build always stages the inert stub. No install test through the library or the `test-support` binary can stage a real resolver, and `AMPLIHACK_TEST_BINARY` reaches production discovery but copies. [Issue #3342](https://github.com/rysweet/amplihack-rs/issues/3342) tracks a test-build way to link a chosen real resolver.
+- The `PATH` shadow directory is a snapshot of each shadowed directory's entries at first use. A tool installed into that directory later in the same test process is not visible to children.

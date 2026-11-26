@@ -318,6 +318,10 @@ pub(super) fn deploy_binaries_into(
         // the same function in every build, and
         // `tests::issue_2182_binary_isolation::production_resolver_discovery`
         // calls it directly.
+        // Known limit: a test build cannot select a real resolver here, so no
+        // install test through the library or the test-support binary stages
+        // one. `AMPLIHACK_TEST_BINARY` reaches production discovery but copies.
+        // Issue #3342 tracks a test-build way to link a chosen real resolver.
         #[cfg(any(test, feature = "test-support"))]
         let resolver_src = {
             let _ = path_lookup_allowed;
