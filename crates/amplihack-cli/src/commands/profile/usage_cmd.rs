@@ -33,6 +33,7 @@ use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::probe_sandbox::{self, NO_PERSIST, Notice, ProbeSandbox};
+use super::probe_tmp::ProbeTmp;
 use super::rotate::decide::Reading;
 use super::store::ProfileStore;
 use super::usage_codex::{self, CodexJsonRow, CodexView};
@@ -1752,7 +1753,18 @@ struct Attempt {
 /// On Unix the child leads its own process group, and the whole group is
 /// killed before the child is reaped on every path, so processes `claude`
 /// started (MCP servers, for example) do not outlive it.
+///
+/// Each attempt gets its own private temporary folder (issue #3292), which
+/// is removed after the group has been ended, however the attempt ended.
 fn attempt(mut cmd: Command, input: Option<&[u8]>, deadline: Instant) -> Attempt {
+    let tmp = ProbeTmp::give(&mut cmd);
+    let a = run_attempt(cmd, input, deadline);
+    tmp.close();
+    a
+}
+
+/// The body of [`attempt`], run while the private folder exists.
+fn run_attempt(mut cmd: Command, input: Option<&[u8]>, deadline: Instant) -> Attempt {
     let stdin = if input.is_some() {
         Stdio::piped()
     } else {

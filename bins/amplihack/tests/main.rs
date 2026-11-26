@@ -30,6 +30,8 @@ mod issue_1525_migrate_detect_cli_uses_the_resolver;
 mod issue_1810_usage_startup;
 #[path = "issue_2284_reset_before_update.rs"]
 mod issue_2284_reset_before_update;
+#[path = "issue_3287_lock_message.rs"]
+mod issue_3287_lock_message;
 #[path = "issue_537_git_optional_recipes.rs"]
 mod issue_537_git_optional_recipes;
 #[path = "issue_538_install_completeness.rs"]

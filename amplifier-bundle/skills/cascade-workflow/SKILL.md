@@ -9,8 +9,6 @@ auto_activates:
   - "high availability"
   - "fallback strategy"
   - "resilient operation"
-explicit_triggers:
-  - /amplihack:cascade
 confirmation_required: false
 token_budget: 3500
 ---

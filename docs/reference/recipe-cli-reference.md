@@ -453,8 +453,14 @@ string or a fragment is allowed and ignored. These are refused with exit 2:
 
 The pull request is not looked up on GitHub. A well-formed URL is accepted
 and its folder is created if it does not exist, so you can add guidance
-before you relaunch a drive. A pull request target writes only to that state
-folder; a run started with the pull request already reads it.
+before you relaunch a drive.
+
+A pull request target is written to two kinds of folder. Every live run for
+the pull request gets the entry in its own `runs/<run folder name>/guidance/`
+folder, whatever work root the run was started with. The pull request's state
+folder gets the entry as well, for runs that start later. See
+[Live runs for a pull request](#live-runs-for-a-pull-request) for how the runs
+are found and when the command refuses.
 
 **Finding a run without the environment:**
 
@@ -556,7 +562,7 @@ repeat the text.
 | Target | Folder |
 | --- | --- |
 | Run ID or session name | `<work root>/runs/<run folder name>/guidance/` |
-| Pull request URL | `${AMPLIHACK_STATE_DIR:-$HOME/.amplihack/state}/auto-drive/<key>/guidance/` |
+| Pull request URL | The `runs/<run folder name>/guidance/` folder of every live run for the pull request, and `${AMPLIHACK_STATE_DIR:-$HOME/.amplihack/state}/auto-drive/<key>/guidance/` |
 
 `<work root>` is `AMPLIHACK_WORK_ROOT`, default `$HOME/.amplihack/work`; see
 [Settings](../howto/clean-up-after-recipe-runs.md#settings).
@@ -635,6 +641,77 @@ start at the state folder (or the work root's `runs/` folder) and do not
 cover the folders above it, so do not set `AMPLIHACK_STATE_DIR` to a path
 under a folder that other users can write to, such as `/tmp`.
 
+### Live runs for a pull request
+
+A run's own `runs/<run folder name>/guidance/` folder is always the first
+folder its agent steps read, whatever work root or state folder the run was
+started with. For a pull request URL, `recipe guide` therefore writes there,
+so a drive started with the pull request in its context receives the entry,
+whatever its work root. The pull request's state folder is written
+as well, so a drive that starts later also reads it.
+
+**How the runs are found.** The command reads the session pointer lines that
+`recipe run` records at start. A run is associated with the pull request when
+its pointer records the same `pr_url`, or a `pr_number` whose repository (the
+`origin` remote of the run's worktree, or of its working directory when it has
+no worktree) is the same. Owner and repository are compared without regard to
+case. A pull request number alone never matches. Pointers have recorded the pull
+request of the run's context since #761, so runs started by 1.2.215 are found.
+A run whose pointer records no pull request (a drive that opened the pull
+request itself) is found through its goal record instead: the
+`guidance_target` of the newest readable `goal.json` under the run folder's
+`autodrive-state/turns/` (a newer record with no target names nothing), read
+only when the run folder, `autodrive-state`,
+`turns`, the turn folder and the file all pass the trust checks. A drive given
+an `autodrive_state_dir` outside its run folder is not found. A run started in
+the foreground is not found either: its start record goes to its own stderr,
+not to the recipe log folder. When no detached run is found, the status line
+says only that, and only the state folder is written. A run with the pull
+request in its context, including one started in the foreground, reads that
+folder at its next agent step when its state folder (`AMPLIHACK_STATE_DIR`) is
+the sender's. Guidance to a run that is not found goes by its session name.
+
+A run is live when its process record is accepted by the same checks that
+`recipe stop` uses and the recorded process start time still matches the
+process, so a reused process ID is not taken for the run. Runs that have ended
+are not written to and never cause a refusal. `recipe guidance show <PR URL>`
+does not list their folders either: the goal loop exports every folder it lists
+to each turn, so a new drive would otherwise take an ended drive's own guidance
+and mark it read in that run's log. An entry sent by pull request URL is also in
+the pull request's folder, so it is still listed from there. Ended runs' logs are
+still read, never their entries: when one records that a step read the entry, it
+is reported as read, even if the drive's state folder was not the sender's and
+the pull request folder's own log holds no record of it. An ended run's own
+guidance is read by its session name.
+
+**When it refuses.** A live run is reachable when its run folder passes the
+trust and work-root checks and its `guidance/` folder passes the same checks as
+any guidance folder. If any live run for the pull request is not reachable, the
+command exits 1, writes nothing, creates no folder and names the session of
+each run that could not be reached:
+
+```console
+$ amplihack recipe guide https://github.com/rysweet/amplihack-rs/pull/3143 - <<'EOF'
+Hold the merge until the owner answers.
+EOF
+recipe guide: refusing to add guidance for https://github.com/rysweet/amplihack-rs/pull/3143: 1 live run(s) for this pull request cannot be reached: session "amp-auto-drive-3143-20261123-2354" (/srv/work/runs/3d52a1c8-6b0e-4f7a-8e19-5c4d7a9b2f60: it is owned by uid 0, not uid 1000); nothing was written. Repair the run folder, or guide the run by its session name once it can be read
+```
+
+The reason in brackets is the one the folder checks of `recipe guide` give for any recorded run folder: the path, then the fault.
+
+Guidance to such a run goes by its session name, once the cause named in the
+message is repaired. A pull request with no live run is not refused: the
+state folder is written, as it was before, so guidance can be given before a
+drive starts.
+
+**Several folders.** Each folder written gets its own first line, in the order
+written: the live runs' folders, then the state folder. All use one
+timestamp, so the entries have the same name in every folder. A run that reads
+two of these folders (its own and the state folder) uses the entry once. If a
+write fails after earlier ones succeeded, the command prints
+`<n> of <m> folders were written before the failure`, does not remove the
+entries already written, and exits with the failure's code.
+
 ### Guidance from an agent step
 
 Inside a recipe run, where `AMPLIHACK_RECIPE_RUN_ID` is set, the command is
@@ -673,8 +750,9 @@ to the list of guidance folders for that run:
    the run starts, so a run that opens its pull request part-way through
    (an `auto-drive-to-merge` started without `pr_url` or `pr_number`) does
    not read the pull request folder. Later drive rounds, which start as new
-   runs with the pull request in their context, do. To reach the run that
-   opened the pull request, give its run ID or session name;
+   runs with the pull request in their context, do. A pull request URL given
+   to `recipe guide` still reaches that run, because the command writes to the
+   run's own folder (see [Live runs for a pull request](#live-runs-for-a-pull-request));
 3. the list it inherited, if any, so that a nested `recipe run` also reads
    the outer runs' guidance. These come last so that the 16-folder limit
    never leaves out the innermost run's own folders.
@@ -728,9 +806,105 @@ guidance.
 
 | Agent CLI | Where the block goes |
 | --- | --- |
-| Claude Code, `launch`, RustyClawd | End of the prompt sent on stdin, after the `-p` text. When input is also piped to `amplihack`, the block comes after that input. |
-| GitHub Copilot CLI | End of the `-p` prompt, before it is written to the private prompt file. An interactive `-i` launch receives no guidance. |
-| Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written. The stderr line above and the `guidance_injected` record are written after Codex exits, and only if the block was written and flushed to Codex's stdin in full. If Codex closed its stdin first, neither is written. Other Codex forms receive no guidance and the launcher prints one note to stderr. |
+| Claude Code, `launch`, RustyClawd, prompt in argv | End of the prompt sent on stdin, after the `-p` text. When input is also piped to `amplihack`, the block comes after that input. |
+| Claude Code in print mode (`-p` or `--print` with no prompt text), prompt already on stdin | The runner's own form, such as `amplihack claude -- --system-prompt-file <file> -p --add-dir .`. After the caller's stdin closes, the block is written to Claude's stdin, so it follows the step's prompt. The block is written only if the caller's stdin gave at least one byte that is not white space; see [Stdin that gives no text](#stdin-that-gives-no-text). The stderr line above and the `guidance_injected` record are written after Claude exits, and only if the block was written in full. |
+| GitHub Copilot CLI, prompt in argv | End of the `-p <text>` prompt, before it is written to the private prompt file. |
+| GitHub Copilot CLI, no `-p` or `-i`, prompt piped on stdin | After the caller's stdin closes, as for Claude print mode. The help of the pinned Copilot CLI (1.0.114) names piped stdin as a prompt source beside `-i` and `-p`, and Copilot CLI 1.0.114 and 1.0.115 were seen to read a block after the piped prompt. That depends on Copilot, so it is checked by a test run by hand against the installed Copilot, not in CI; see [Checking Copilot's stdin](#checking-copilots-stdin). Delivery is reported only once the block was written in full, so for this route "read" means written in full to Copilot's stdin. If Copilot closed its stdin first, the launch is recorded as a `trailer_not_written` drop. With nothing on stdin it is a `no_prompt_on_stdin` drop. |
+| GitHub Copilot CLI, `-p` with a file reference (the runner's form) | The recipe runner starts every Copilot step as `-p "Read and follow the complete instructions in the file <path>. ..."`. The launcher reads that file, writes its text with the block after it to a private 0600 file, and points Copilot at the copy, granting its folder with `--add-dir` (or relying on path access under the external LiteLLM gateway). The runner's file is never written. If the file cannot be read or the copy cannot be written, the caller's reference is passed on unchanged and the launch is recorded as a `prompt_file_not_copied` drop. With no private file Copilot could open (the gateway without path access), it is a `launch_form_unsupported` drop. |
+| GitHub Copilot CLI, `-i` | No guidance; recorded as a `launch_form_unsupported` drop. |
+| Claude Code with `--input-format` other than `text` | No guidance; recorded as a `launch_form_unsupported` drop. With `stream-json` input (#3036), stdin is a stream of JSON lines, and plain text after it would corrupt the stream. |
+| Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written, if that stdin gave text. The stderr line above and the `guidance_injected` record are written after Codex exits, and only if the block was written and flushed to Codex's stdin in full. If Codex closed its stdin first, neither is written and the launch is recorded as a `trailer_not_written` drop. With nothing on stdin, it is a `no_prompt_on_stdin` drop. Other Codex forms receive no guidance and are recorded as drops. |
+
+Every runner agent step therefore takes guidance, whether its prompt arrives in
+argv or already on stdin, and the block always comes after the step's own
+prompt.
+
+#### Stdin that gives no text
+
+Before the agent starts, the launcher can only tell what kind of file its
+stdin is. A terminal, `/dev/null` or an empty file cannot hold a prompt, and
+the launch is recorded as a `no_prompt_on_stdin` drop at once. A pipe, a
+socket or a non-empty file may hold one, but its type says nothing about what
+is in it. For those the launcher decides by reading: it copies the caller's
+stdin to the agent as it arrives, and writes the block after it only if at
+least one copied byte was not white space. A pipe that closes empty, or with
+only blank lines, gives the agent exactly what it gave, with no block, and the
+launch is recorded as a `no_prompt_on_stdin` drop when the agent exits. The
+same happens when the agent exits before an open pipe has given any text. The
+guidance is then never the agent's whole prompt, and the entry is not
+reported as read.
+
+#### Checking Copilot's stdin
+
+Two things must hold for guidance on this route to reach the model, and they
+are checked in different ways.
+
+What amplihack does is checked in CI.
+`crates/amplihack-cli/tests/issue_3162_copilot_stdin_launcher.rs` runs the
+real launcher in the Copilot form (no `-p` or `-i`) against a stand-in Copilot
+that copies its stdin to a file. It checks that the stand-in gets the caller's
+prompt and then one block, with a single `guidance_injected` record naming the
+entry; that a Copilot which closes its stdin before the block gets no block
+and a `trailer_not_written` drop, with the entry still not read; and that a
+launch with nothing on stdin is a `no_prompt_on_stdin` drop.
+
+Whether Copilot reads a block after a piped prompt is Copilot's behaviour, not
+amplihack's, and no CI job checks it.
+`crates/amplihack-cli/tests/issue_3162_copilot_stdin_live.rs` starts the real
+launcher with the real Copilot CLI, a piped prompt that asks for one token and
+guidance that asks for another, and checks that Copilot's answer holds both
+and that the step recorded the entry as read. It needs a signed-in Copilot and
+makes one model call, so it is marked `#[ignore]` and is run by hand after a
+Copilot upgrade:
+
+```console
+$ cargo test -p amplihack-cli --test cli_integration -- --ignored issue_3162_copilot_stdin_live
+```
+
+Until that check has an automated form, a Copilot release that stops reading
+past the first prompt would still be reported as read, because the block was
+written in full. Issue
+[#3225](https://github.com/rysweet/amplihack-rs/issues/3225) tracks the
+automated check.
+
+### When a step cannot take guidance
+
+When guidance exists for a step and the step cannot take it, the launcher does
+two things. It prints one line on stderr, which is the run's log:
+
+```text
+amplihack: warning: operator guidance was not delivered to claude (claude -p, prompt expected on stdin): no_prompt_on_stdin: the step reads its prompt from standard input, and standard input gave no text
+```
+
+It also appends a `guidance_dropped` record to the
+[guidance log](#the-guidance-log) of each folder it read. `recipe guide` and
+`recipe guidance show` report that record, so the sender learns of the drop
+without opening the run's log. No record is written when there was no guidance
+to deliver.
+
+The step is named by what the launcher knows: the run, the tool, the launch
+form and, when the command line gives one, the agent. The agent is the value of
+`--agent`, or the file name stem of `--system-prompt-file`. The recipe's own
+step id is not exported to the agent process, so it is not named.
+
+| Reason code | Meaning |
+| --- | --- |
+| `no_prompt_on_stdin` | A launch that reads its prompt from stdin (Claude print mode with no prompt text, Codex `exec … -`, Copilot with no prompt flag) whose stdin gave no text. When stdin is a terminal, `/dev/null` or an empty file, this is known at launch: no forwarder is started, so the launch does not wait. When stdin is a pipe or a file that gave nothing but white space, or no text before the agent exited, the drop is recorded after the agent exits; see [Stdin that gives no text](#stdin-that-gives-no-text). |
+| `trailer_not_written` | The block was to follow the prompt on stdin, but the tool closed its stdin before the whole block was written. |
+| `launch_form_unsupported` | The launch form has no place for the block, such as an interactive Claude launch, a Claude launch whose `--input-format` is not `text`, a Copilot `-i` launch, a Copilot `-p` file reference with no private file Copilot could open, or a Codex form other than `exec … -`. |
+| `prompt_file_not_copied` | A Copilot `-p` file reference, the runner's form, whose file could not be read or whose private copy could not be written. The launch goes on with the caller's reference. |
+
+The `launch_form` labels of this release:
+
+| Tool | Labels |
+| --- | --- |
+| Claude, RustyClawd | `claude -p <prompt>`, `claude -p, prompt expected on stdin`, `claude, interactive`, `claude, input format other than text` |
+| Codex | `codex exec -, prompt expected on stdin`, `codex exec <prompt>`, `codex, interactive` |
+| Copilot | `copilot -p <prompt>`, `copilot -p <prompt file>`, `copilot, prompt expected on stdin`, `copilot -i` |
+| Other | `amplifier`, `other` |
+
+Values for `reason` and `launch_form` come from fixed lists. Readers must
+accept values they do not know, because later releases may add some.
 
 **What the launcher skips.** A listed folder is skipped, with a warning that
 names it, when the path is not absolute, its last part is not `guidance`, or
@@ -772,16 +946,33 @@ An append writes:
 ```
 
 An agent step that received guidance writes to the log of each folder it
-read. For most agent CLIs this happens once the agent process has started.
-For Codex it happens after Codex exits, and only when the block was written
-to Codex's stdin in full; see [Agent CLIs](#what-the-agent-receives). A
-successful write means the pipe accepted the bytes, not that Codex read them.
+read. When the block is part of a prompt given in argv, this happens once the
+agent process has started. When the block follows a prompt on stdin (Claude
+print mode, Codex `exec … -`, Copilot with no prompt flag), it happens after
+the agent exits, and only when the block was written to the agent's stdin in
+full; see [Agent CLIs](#what-the-agent-receives). A successful write means
+the pipe accepted the bytes, not that the agent read them.
 
 ```json
-{"event":"guidance_injected","ts":"2026-11-12T09:20:11.554013873Z","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81","entries":2,"bytes":231}
+{"event":"guidance_injected","ts":"2026-11-12T09:20:11.554013873Z","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81","entries":2,"bytes":231,"entry_names":["20261112T091405.120458911Z-48211-0.md","20261112T091722.003114920Z-48390-0.md"]}
 ```
 
-Neither record holds the guidance text. A refused append is reported on
+`entries` and `bytes` are totals for the step. `entry_names` lists only the
+entries read from this log's folder, and is how a read is told from an unread
+entry (see [Read state](#read-state)). A record without `entry_names`, written
+by a launcher of 1.2.219 or earlier, proves no particular entry was read.
+
+A step that could not take guidance writes:
+
+```json
+{"event":"guidance_dropped","ts":"2026-11-12T09:20:11.554013873Z","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81","tool":"claude","launch_form":"claude -p, prompt expected on stdin","agent":"builder","reason":"no_prompt_on_stdin","detail":"the step reads its prompt from standard input, and standard input gave no text","entries":2}
+```
+
+`agent` is left out when the command line gives none. `launch_form` is a fixed
+label and holds no command-line text. Readers from 1.2.215 skip the new field
+and the new event.
+
+No record holds the guidance text. A refused append is reported on
 stderr only and is not logged. If the entry is written but the log line
 cannot be, the command prints a warning and still exits 0; the entry is not
 removed.
@@ -802,22 +993,80 @@ stdout:
 guidance appended: /home/alice/.amplihack/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15/guidance/20261112T091405.120458911Z-48211-0.md (141 bytes, run)
 ```
 
+A second line reports what is known about the entry:
+
+```text
+status: appended; not yet read
+```
+
+The status is `appended; not yet read` until an agent step has read the entry.
+The command writes the entry and returns, so for a new entry this is the
+status it prints. The line does not promise when the entry will be read.
+"Read" means the block was written in full to an agent step's input; it does
+not mean the agent acted on it (see [Read state](#read-state)).
+
+When the target is a run (a session name, run folder name or correlation ID)
+whose `run.json` already records its end, the status says so, with the end
+time and outcome the run recorded:
+
+```text
+status: appended; not yet read; the run ended at 2026-11-24T18:59:41Z (success)
+```
+
+No step of that run started after the entry was written. Only an end the run
+recorded is reported; a run that stopped without recording one is shown as
+`appended; not yet read`.
+
 For a pull request URL the first line says `guidance saved for pull
-request` rather than `guidance appended`, and a second line names the pull
-request's guidance folder and says which runs read it:
+request` rather than `guidance appended` and ends `pr` rather than `run`. One
+first line is printed for each folder written, directly after that write: one
+for each live run, then one for the pull request's state folder.
+
+```text
+guidance appended: /srv/builds/work/runs/3d52a1c8-6b0e-4f7a-8e19-5c4d7a9b2f60/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, run)
+guidance saved for pull request: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
+status: appended; not yet read
+```
+
+When no detached run for the pull request was found, the status line says only
+that, and only the state folder is written:
 
 ```text
 guidance saved for pull request: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
-written to /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.
+status: appended; not yet read; no detached run for this pull request was found, and a run with the pull request in its context reads the pull request folder at its next agent step
 ```
 
-The command does not check whether any run reads the folder. A drive that
-opened the pull request during its build step was started without it and
-does not read this folder; see [Known limits](#known-limits).
+Scripts that need the path read the first line, whose format is unchanged.
+Match the `status:` prefix and the `dropped by` prefix rather than the words
+after them.
+
+**Drops.** If a step has recorded that it could not take guidance since the
+last step that did, one line for each such drop follows the status line, for
+each folder written:
+
+```text
+status: appended; not yet read
+dropped by claude (claude -p, prompt expected on stdin) agent builder in run 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15: no_prompt_on_stdin: the step reads its prompt from standard input, and standard input gave no text
+```
+
+The format is `dropped by TOOL (LAUNCH_FORM)[ agent AGENT] in run RUN_ID:
+CODE: DETAIL`. A drop earlier than a successful injection is not repeated.
+The drop concerns guidance that existed when the step started, which may be an
+earlier entry than the one just written; use `recipe guidance show` to see
+which.
+
+If a folder's `guidance.log` exists but cannot be read, its drops are
+unknown, and this line is printed in place of its drop lines:
+
+```text
+drop state unknown for /srv/work/runs/3d52a1c8-6b0e-4f7a-8e19-5c4d7a9b2f60/guidance: guidance.log cannot be read: it is a symbolic link
+```
 
 | Code | Meaning | Example message on stderr |
 | --- | --- | --- |
 | `0` | The entry was written | |
+| `1` | A pull request URL, and a live run for that pull request cannot be reached. Nothing is written or created. The message names each such run's session and the reason | `recipe guide: refusing to add guidance for https://github.com/rysweet/amplihack-rs/pull/3143: 1 live run(s) for this pull request cannot be reached: session "amp-auto-drive-3143-20261123-2354" (/srv/work/runs/3d52a1c8-6b0e-4f7a-8e19-5c4d7a9b2f60: it is owned by uid 0, not uid 1000); nothing was written. Repair the run folder, or guide the run by its session name once it can be read` |
+| `1` | A pull request URL with several folders, and a write after the first failed. Earlier entries stay. The exit code is the failed write's | `recipe guide: 1 of 2 folders were written before the failure` |
 | `0` | The entry was written, and a record that names the target was not used. Stdout is unchanged; the warning names the folder left out and why | `recipe guide: warning: 1 record(s) that name "2783" were not used: /home/alice/.amplihack/work/runs/9c8b7a65-4d3e-4f21-a0b9-8c7d6e5f4a3b: it is writable by group or others (mode 0777)` |
 | `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the `run.json` of each recorded run folder, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run or detached session named "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s)), the attempts in run.json of 3 recorded run folder(s), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
 | `1` | An issue URL that no recorded run names. Nothing is created under the state folder | `recipe guide: no recipe run or detached session named "https://github.com/rysweet/amplihack-rs/issues/2783"; looked at pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s))` |
@@ -872,13 +1121,14 @@ is never a way for a terminal sequence to reach the terminal.
   no session log, so it cannot be found by session name or from the log
   directory. It is addressable only through the environment (the work root
   in `AMPLIHACK_WORK_ROOT`) or by a pull request URL.
-- **A drive that has not opened its pull request yet.** Guidance given by
-  pull request URL reaches every drive or round started with that pull
-  request in its context, including relaunches. A drive still in its first
-  build step was started without a pull request, so it does not read that
-  folder, even after it opens the pull request. The command prints a second
-  line saying so (see [Output and exit codes](#output-and-exit-codes)). Use
-  the drive's run ID or session name instead.
+- **A drive with its state folder outside the run folder.** A run whose
+  pointer records no pull request is found through the goal record in its
+  run folder's `autodrive-state`. A drive started with
+  `-c autodrive_state_dir=<elsewhere>` and no pull request in its context has
+  neither, so it is not found. The status line says no live run was found,
+  and the sender uses the run's session name.
+- **A session log that was rotated or deleted.** The run's pointer is then
+  not found, so the run is treated as not live for the pull request.
 - **Large Claude prompts.** When a prompt is too large for one argument, the
   launcher passes a short preview with `-p` and the rest in a system prompt
   file. The block follows the preview on stdin; the system prompt file is not
@@ -888,8 +1138,45 @@ is never a way for a terminal sequence to reach the terminal.
   guidance to your runs. There is no other check.
 - **Where the text goes.** The command takes the text only from stdin or a
   file, so it does not appear in `ps` output or shell history. Guidance is
-  sent to the model provider and is kept in the agent CLI's transcripts. Do
-  not put secrets in it.
+  sent to the model provider and is kept in the agent CLI's transcripts. It
+  is stored as plain text in files readable only by you (mode 0600). Do not
+  put secrets in it.
+
+### Read state
+
+An entry is read when a `guidance_injected` record in its folder's
+`guidance.log` lists its name in `entry_names`. Otherwise it is not yet read.
+
+"Read" means delivered to a step, not acted on. The launcher writes the record
+once the block was written in full to the agent's input: when the agent starts,
+for a prompt in argv, or after the agent exits, for a block after a prompt on
+stdin. Nothing records whether the agent followed the instructions; to judge
+that, read the step's output or the run's log.
+
+An entry that no step has read when its run ends stays not yet read. When every
+run folder holding the entry belongs to a run whose `run.json` records its end,
+`show` adds that end to the line, as
+`entry <name>: not yet read; the run ended at <ended_at> (<outcome>)`, and
+`show --json` gives `run_ended` on the entry. This is the case of a run that
+finished before any later agent step started. Only an end the run recorded is
+used; an entry held only in a pull request's state folder has no run end,
+because the next run started for the pull request reads that folder.
+The status is worked out from the log each time it is asked for, so no other
+file holds it. Entries that were also written to a second folder (the run
+folder and the state folder get the same entry name) count as read when either
+copy is listed. Records from a launcher of 1.2.219 or earlier have no
+`entry_names`, so they leave every entry not yet read. This understates reads
+and never overstates them.
+
+A `guidance.log` that exists but cannot be read (a symbolic link, a file not
+owned by you or writable by others, or a read error) says nothing about reads
+or drops. Its entries are then reported as read state unknown, not as not yet
+read, unless the log of another folder holding the same entry lists them. The
+reader prints one warning on stderr naming the log and the cause. `show` prints
+`entry <name>: read state unknown (log unreadable)`, and `show --json` gives
+`"read":null` on the entry and `log_error` on the folder. `recipe guide` prints
+`drop state unknown for <folder>: guidance.log cannot be read: <cause>` for
+each folder it wrote whose log could not be read.
 
 ### Worked example: correcting a detached run
 
@@ -927,13 +1214,24 @@ keeps the instruction:
 $ amplihack recipe guide https://github.com/rysweet/amplihack-rs/pull/2535 - <<'EOF'
 Do not change the CI workflow files in this pull request.
 EOF
+guidance appended: /srv/builds/work/runs/3d52a1c8-6b0e-4f7a-8e19-5c4d7a9b2f60/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, run)
 guidance saved for pull request: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
-written to /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.
+status: appended; not yet read
 ```
 
-If the drive opened this pull request itself and is still running, also give
-the instruction to the drive's run ID or session name, as in the first
-example; the drive's current run does not read the pull request folder.
+The first line is the live drive's own folder, under the explicit work root it
+was started with. The drive reads it at its next agent step. The second is the
+state folder, which a relaunch reads.
+
+To see whether the step has read it, ask for the guidance:
+
+```console
+$ amplihack recipe guidance show https://github.com/rysweet/amplihack-rs/pull/2535
+```
+
+After the block, one line for each entry says `entry <name>: read` or
+`entry <name>: not yet read`, or `entry <name>: read state unknown (log
+unreadable)` when the log cannot be read.
 
 ## amplihack recipe guidance
 
@@ -948,7 +1246,7 @@ amplihack recipe guidance wait [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] --si
 
 | Option | Description |
 | --- | --- |
-| `<TARGET>` | A pull request URL, `https://github.com/<owner>/<repo>/pull/<n>`. Any other value is a usage error. |
+| `<TARGET>` | A pull request URL, `https://github.com/<owner>/<repo>/pull/<n>`, or the detached session name, run folder name or correlation id of one run, found as `recipe guide` finds it. Any other URL is a usage error; a name that matches no run is exit 1. |
 | `--pr <N>` | The pull request number: digits only, not starting with `0`, at most 18446744073709551615. Needs `--pr-repo`. |
 | `--pr-repo <OWNER/REPO>` | The repository of `--pr`: a GitHub account name, `/`, a repository name. Needs `--pr`. |
 | `--since <ENTRY>` | An entry file name, such as `20261123T184002.123456789Z-4242-0.md`, or the empty string. An entry is new when its name sorts after this one. Empty, or absent for `show`, makes every entry new. Required for `wait`. |
@@ -965,9 +1263,22 @@ The command reads these folders, in this order and without duplicates:
 
 1. the folders `AMPLIHACK_RUN_GUIDANCE_DIRS` lists, which `recipe run` sets for
    the steps of a run;
-2. the pull request's folder, `<state root>/auto-drive/<key>/guidance`, when a
-   pull request is named. The state root is `$AMPLIHACK_STATE_DIR`, or
-   `~/.amplihack/state` when that is unset.
+2. when a pull request is named, the guidance folder of each live run for it
+   (see [Live runs for a pull request](#live-runs-for-a-pull-request)), found
+   in the same way `recipe guide` finds them. A live run that cannot be
+   reached stays in the list as `untrusted`, with its reason. The folder of
+   a run that has ended is not listed; read it by the run's session name;
+3. for a session name, run folder name or correlation id, that run's
+   guidance folder instead of 2 and 4;
+4. the pull request's folder, `<state root>/auto-drive/<key>/guidance`. The
+   state root is `$AMPLIHACK_STATE_DIR`, or `~/.amplihack/state` when that is
+   unset.
+
+Duplicates are removed by canonical path. For a pull request URL this holds
+every folder `recipe guide` writes, so a goal loop that reads with `show`
+sees what `recipe guide` wrote, whatever work root or state folder the run was
+started with. If the live runs cannot be listed, the command warns on stderr
+and reads the other folders.
 
 Each folder is checked as the agent-step launcher checks it: the path is
 absolute and ends in `guidance`, and both the folder and its parent pass the
@@ -992,8 +1303,14 @@ caller treats that as guidance it could not read.
 
 Without `--json`, `show` prints the entries as the operator-instructions block
 an agent step receives, oldest first. Each entry's header line also carries the
-entry's file name, then `NEW` when the entry is new. Nothing is printed when
-there are no entries.
+entry's file name, then `NEW` when the entry is new. After the block, one line
+for each entry says `entry <name>: read`, `entry <name>: not yet read`,
+`entry <name>: not yet read; the run ended at <ended_at> (<outcome>)` or
+`entry <name>: read state unknown (log unreadable)` (see
+[Read state](#read-state)), then one line for each drop recorded since the last
+injection in a folder, printed once, in the format
+described under [Output and exit codes](#output-and-exit-codes). Nothing is
+printed when there are no entries.
 
 ```
 $ amplihack recipe guidance show --pr 3129 --pr-repo rysweet/amplihack-rs \
@@ -1008,6 +1325,9 @@ Keep the public API unchanged.
 [2] 2026-11-23T18:55:41.987654321Z from alice (pr) 20261123T185541.987654321Z-4301-0.md NEW
 Hold: wait for the owner's answer on #3109.
 ===== END OPERATOR INSTRUCTIONS FOR THIS RUN =====
+entry 20261123T184002.123456789Z-4242-0.md: read
+entry 20261123T185541.987654321Z-4301-0.md: not yet read
+dropped by claude (claude -p, prompt expected on stdin) agent builder in run 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15: no_prompt_on_stdin: the step reads its prompt from standard input, and standard input gave no text
 ```
 
 With `--json`, `show` prints exactly one line, schema 1, shown here across
@@ -1023,20 +1343,31 @@ several lines. It never holds guidance text: no field is named `text`, and
  "entries":[{"name":"20261123T184002.123456789Z-4242-0.md",
              "folder":"/home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_3129/guidance",
              "timestamp":"2026-11-23T18:40:02.123456789Z","caller":"alice","source":"pr",
-             "from_step":false,"new":false,"bytes":30},
+             "from_step":false,"new":false,"read":true,"bytes":30},
             {"name":"20261123T185541.987654321Z-4301-0.md",
              "folder":"/home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_3129/guidance",
              "timestamp":"2026-11-23T18:55:41.987654321Z","caller":"alice","source":"pr",
-             "from_step":false,"new":true,"bytes":43}]}
+             "from_step":false,"new":true,"read":false,"bytes":43}],
+ "drops":[{"folder":"/home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_3129/guidance",
+           "ts":"2026-11-23T19:02:10.554013873Z","step_run_id":"8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15",
+           "tool":"claude","launch_form":"claude -p, prompt expected on stdin","agent":"builder",
+           "reason":"no_prompt_on_stdin"}]}
 ```
+
+The output stays at schema 1 because the change only adds fields: `read` and
+`run_ended` on each entry, `log_error` on a folder and the top-level `drops`
+array. A consumer
+that reads the existing keys is not affected. A consumer that reads `read`
+must treat `null` as unknown, not as false.
 
 | Field | Meaning |
 | --- | --- |
 | `schema_version` | `1`. |
 | `since` | The `--since` value, or `""`. |
 | `newest` | The largest entry name read, or `""` when there is none. |
-| `folders[]` | Every folder in the list, in order: `path`; `source`, `pr` when the folder's grandparent is named `auto-drive` and `run` otherwise; `state`, one of `present`, `missing` or `untrusted`; and, only for `untrusted`, `reason`. |
-| `entries[]` | Every entry read, oldest first: `name`, the file name; `folder`; `timestamp`; `caller`; `source`; `from_step`, true when an agent step added it with `recipe guide --from-step`; `new`; and `bytes`, the size of the text in UTF-8 bytes. |
+| `folders[]` | Every folder in the list, in order: `path`; `source`, `pr` when the folder's grandparent is named `auto-drive` and `run` otherwise; `state`, one of `present`, `missing` or `untrusted`; and, only for `untrusted`, `reason`; and, only for a `present` folder whose `guidance.log` exists but could not be read, `log_error`, the cause. Drops in such a folder are unknown and none are listed. |
+| `entries[]` | Every entry read, oldest first: `name`, the file name; `folder`; `timestamp`; `caller`; `source`; `from_step`, true when an agent step added it with `recipe guide --from-step`; `new`; `read`, true when `entry_names` in that folder's `guidance.log` (or in the log of another folder holding the same entry) lists it, `null` when none lists it and the log of at least one of those folders could not be read, and false otherwise (true means delivered to a step, not acted on); `run_ended`, present only when every run folder holding the entry belongs to a run whose `run.json` records its end, as `{"at": <ended_at>, "outcome": <outcome>}`; and `bytes`, the size of the text in UTF-8 bytes. |
+| `drops[]` | One for each `guidance_dropped` record since the last `guidance_injected` record in a folder: `folder`; `ts`; `step_run_id`; `tool`; `launch_form`; `agent`, left out when unknown; and `reason`, the code. The array is empty when there are none. |
 
 Every line the command prints, JSON included, has control, bidirectional and
 zero-width characters escaped as `\u{..}`, so a path can never add a line or a
@@ -1092,8 +1423,8 @@ $ amplihack recipe guidance wait --pr 3129 --pr-repo rysweet/amplihack-rs \
 | Exit | Meaning |
 | --- | --- |
 | 0 | `show` printed the entries. `wait` saw new guidance, or the command finished, whatever its own exit code. |
-| 1 | Error, such as no usable state root for a named pull request, a command that cannot be started, or an I/O error. |
-| 2 | Usage error: a `<TARGET>` that is not a pull request URL; a bad `--pr`, `--pr-repo` or `--since`; `--pr` without `--pr-repo`; both a URL and `--pr`; or `wait` without `--since`. |
+| 1 | Error, such as no usable state root for a named pull request, a session name or run ID that matches no run, a command that cannot be started, or an I/O error. |
+| 2 | Usage error: a `<TARGET>` URL that is not a pull request URL; a bad `--pr`, `--pr-repo` or `--since`; `--pr` without `--pr-repo`; both a URL and `--pr`; or `wait` without `--since`. |
 | 3 | `wait` could not arm a wake FIFO. The command was not started. |
 
 An error or a usage error prints one line on stderr and nothing on stdout.

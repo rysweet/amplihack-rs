@@ -262,11 +262,13 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     // #3195: the 23 `-analyst` skills are left out of the Codex package, so
     // the floor is the earlier 196 less those 23. #3220 adds
     // `skill-and-agents-directory`, which the package copies with no new code.
+    // #3291 removes five skills, five commands and two agent files, and the
+    // floor is the count measured after that.
     let names = fs::read_dir(skills)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    assert!(names.len() >= 174, "{} packaged skills", names.len());
+    assert!(names.len() >= 171, "{} packaged skills", names.len());
     assert!(
         names
             .iter()

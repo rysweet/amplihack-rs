@@ -15,8 +15,8 @@
 #![cfg(unix)]
 
 use crate::support::recipe_guide::{
-    GuideFixture, LIMIT, PR_KEY, PR_URL, one_line_error, parse_appended, private_dir, show, stderr,
-    stdout,
+    GuideFixture, LIMIT, PR_KEY, PR_URL, drop_lines, one_line_error, parse_appended, private_dir,
+    show, status_lines, stderr, stdout, written_lines,
 };
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -904,43 +904,42 @@ fn b2_routing_phrase_text_is_accepted() {
 }
 
 // ---------------------------------------------------------------------------
-// PR #2567 M1: a PR target says where the entry went and when it is read
+// #3162: a target says where the entry went and that it has not been read
 // ---------------------------------------------------------------------------
+//
+// The earlier test here compared the second stdout line with a sentence about
+// when a pull request entry is read. It pinned wording and the sentence told
+// the sender an entry "is read at the next step" before any step had read it,
+// so it is removed. The checks below read values: the parsed first line, and
+// the `status:` prefix.
 
 #[test]
-fn m1_pr_target_prints_where_and_when() {
+fn m1_pr_target_reports_the_folder_and_that_it_is_not_yet_read() {
     let f = GuideFixture::new();
     let o = f.guide_text(&[PR_URL], "Do not change CI files.");
     assert!(o.status.success(), "{}", show(&o));
     let dir = f.pr_parent().join("guidance");
-    let out = stdout(&o);
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 2, "{}", show(&o));
+    let (path, bytes, source) = parse_appended(&o);
+    assert_eq!(path.parent().unwrap(), dir, "{}", show(&o));
+    assert_eq!(bytes, 23);
+    assert_eq!(source, "pr");
+    let status = status_lines(&o);
+    assert_eq!(status.len(), 1, "{}", show(&o));
     assert!(
-        lines[0].starts_with(&format!(
-            "guidance saved for pull request: {}/",
-            dir.display()
-        )) && lines[0].ends_with(" (23 bytes, pr)"),
-        "{}",
-        lines[0]
+        status[0].starts_with("appended; not yet read"),
+        "{status:?}"
     );
-    assert_eq!(
-        lines[1],
-        format!(
-            "written to {}; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.",
-            dir.display()
-        )
-    );
+    assert!(drop_lines(&o).is_empty(), "{}", show(&o));
     assert!(stderr(&o).trim().is_empty(), "{}", show(&o));
 }
 
 #[test]
-fn m1_run_target_prints_one_line() {
+fn m1_run_target_reports_one_written_line_and_a_status() {
     let f = GuideFixture::new();
     f.make_run(RUN_FOLDER, CORRELATION);
     let o = f.guide_text(&[RUN_FOLDER], "Run only the crate tests.");
     assert!(o.status.success(), "{}", show(&o));
-    let out = stdout(&o);
-    assert_eq!(out.lines().count(), 1, "{}", show(&o));
-    assert!(!out.contains("written to"), "{out}");
+    assert_eq!(written_lines(&o).len(), 1, "{}", show(&o));
+    let status = status_lines(&o);
+    assert_eq!(status, ["appended; not yet read"], "{}", show(&o));
 }

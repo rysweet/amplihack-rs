@@ -14,22 +14,22 @@ triggers:
 
 **Purpose**: Enable continuous work mode to prevent Claude from stopping until explicitly unlocked.
 
-**Usage**: `amplihack:lock [optional lock message]`
+**Usage**: `amplihack lock [--message TEXT]`
 
 When locked, Claude will:
 
-- use the Bash tool to run the amplihack lock tool:,
+- Use the Bash tool to run `amplihack lock`.
 
 **Basic usage (default continuation prompt):**
 
 ```bash
-python .claude/tools/amplihack/lock_tool.py lock
+amplihack lock
 ```
 
 **With custom instruction:**
 
 ```bash
-python .claude/tools/amplihack/lock_tool.py lock --message "Focus on security fixes first"
+amplihack lock --message "Focus on security fixes first"
 ```
 
 - Continue working through all TODOs and next steps
@@ -41,7 +41,7 @@ Use this mode when you want Claude to work autonomously through a complex task w
 
 ## Custom Continuation Messages
 
-The optional message a user can supply on the /amplihack:lock command will be passed to the lock tool with the `--message` flag and allows you to provide a custom instruction that Claude sees when attempting to stop.
+Pass the optional message with `--message` to provide a custom instruction that Claude sees when attempting to stop.
 This enables:
 
 - Task-specific guidance
@@ -58,27 +58,37 @@ This enables:
 "When condition X is met, you may remove the lock file."
 ```
 
-**Note**: Messages are limited to 1000 characters. Messages over 500 characters will show a warning.
+Messages must be nonempty after trimming and at most 1000 UTF-8 bytes after
+trimming. Invalid messages cause an error without changing existing lock state.
+The Stop hook uses the trimmed `.lock_message` first, then a usable handwritten
+`.continuation_prompt`, then its default prompt. The same text requirements
+apply to both files.
 
 ---
 
 ## Instructions
 
-Use the Bash tool to run the lock tool:
+Use the Bash tool to run the Rust CLI:
 
 **Basic usage (default continuation prompt):**
 
 ```bash
-python .claude/tools/amplihack/lock_tool.py lock
+amplihack lock
 ```
 
 **With custom instruction:**
 
 ```bash
-python .claude/tools/amplihack/lock_tool.py lock --message "Focus on security fixes first"
+amplihack lock --message "Focus on security fixes first"
 ```
 
 **Lock files:**
 
-- Lock flag: `~/.amplihack/.claude/runtime/locks/.lock_active`
-- Custom message: `~/.amplihack/.claude/runtime/locks/.lock_message`
+The project folder is `$CLAUDE_PROJECT_DIR`, or the current directory when that
+variable is unset.
+
+- Lock flag: `<project>/.claude/runtime/locks/.lock_active`
+- Custom message: `<project>/.claude/runtime/locks/.lock_message`
+
+Run `amplihack lock-status` to check the lock and `amplihack unlock` to disable it.
+See [hook state and message precedence](../../../reference/hook-state-root.md#project-configuration) for the project controls.

@@ -62,6 +62,22 @@ mod issue_2575_agentic_merge_ready;
 // #3129: the goal loop, its shared module and its behaviour tests.
 #[path = "issue_3129_goal_loop/mod.rs"]
 mod issue_3129_goal_loop;
+#[path = "issue_3161_pr_url_live_run.rs"]
+mod issue_3161_pr_url_live_run;
+// PR #3190 review: the #3161 drive cases and a run that ends unread, real runner.
+#[path = "issue_3161_pinned_runner_drive.rs"]
+mod issue_3161_pinned_runner_drive;
+#[path = "issue_3162_stdin_prompt_guidance.rs"]
+mod issue_3162_stdin_prompt_guidance;
+// #3162: guidance reaches an agent step of a nested recipe, real runner.
+#[path = "issue_3162_nested_recipe_guidance.rs"]
+mod issue_3162_nested_recipe_guidance;
+// PR #3190 review: Copilot reads a block after a stdin prompt (run by hand).
+#[path = "issue_3162_copilot_stdin_live.rs"]
+mod issue_3162_copilot_stdin_live;
+// PR #3190 review: the launcher's half of the Copilot stdin route, in CI.
+#[path = "issue_3162_copilot_stdin_launcher.rs"]
+mod issue_3162_copilot_stdin_launcher;
 // #3129 PR 2: the build goal loop and the old tools it keeps alive.
 #[path = "issue_3129_build_loop/mod.rs"]
 mod issue_3129_build_loop;

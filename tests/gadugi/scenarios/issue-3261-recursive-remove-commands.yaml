@@ -1,0 +1,74 @@
+name: issue-3261-recursive-remove-commands
+description: >
+  Outside-in QA for issue #3261. The command-check hook decides on each
+  recursive remove command by that command's own arguments. The scenario runs
+  the real amplihack-hooks binary (via
+  tests/gadugi/run-issue-3261-recursive-remove-scenario.sh) with a PreToolUse
+  event for a Bash call, from a fresh scratch directory, and checks only the
+  decision. A heredoc whose body mentions a recursive remove is allowed. A
+  recursive remove with a variable in its own arguments is rejected. A literal
+  recursive remove after a separate command that uses a variable is decided on
+  its own path. CI's cross-compile job runs the runner script directly against
+  the release binary it builds; CI does not run gadugi-test, so this file is
+  for running the same cases through gadugi-test by hand.
+version: "1.0"
+config:
+  timeout: 300000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, hooks, pre-tool-use, regression]
+  priority: high
+  issues: ["3261"]
+steps:
+  - name: run-issue-3261-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-3261-recursive-remove-scenario.sh
+    timeout: 280000
+  - name: all-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: heredoc-body-allowed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: heredoc-body -> allow"
+  - name: own-variable-rejected
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: own-variable -> deny"
+  - name: literal-removal-outside-allowed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: literal-after-variable-outside -> allow"
+  - name: literal-removal-of-cwd-rejected
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: literal-after-variable-cwd -> deny"
+  - name: quoted-text-allowed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: quoted-text -> allow"
+  - name: shell-script-rejected
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: shell-script -> deny"

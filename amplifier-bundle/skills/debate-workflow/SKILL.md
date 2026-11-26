@@ -9,8 +9,6 @@ auto_activates:
   - "major refactoring"
   - "controversial change"
   - "multiple valid approaches"
-explicit_triggers:
-  - /amplihack:debate
 confirmation_required: true
 token_budget: 3500
 ---
@@ -196,6 +194,23 @@ Performance, Cost, Maintainability, Scalability
 - Provide 3-5 supporting arguments
 - Identify risks of alternative approaches
 - Quantify claims where possible
+
+### Debate Facilitation Rules
+
+**Structured Protocol:**
+
+1. No circular arguments (track claims)
+2. Must address direct challenges
+3. Acknowledge valid points from opponents
+4. Seek common ground explicitly
+5. Quantify claims when possible
+
+**Anti-Patterns:**
+
+- Ignoring opponent arguments
+- Restating position without new info
+- Ad hominem (attacking approach, not reasoning)
+- Moving goalposts
 
 ### Step 3: Debate Round 1 - Initial Positions
 

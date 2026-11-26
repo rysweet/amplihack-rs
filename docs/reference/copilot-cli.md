@@ -331,7 +331,6 @@ gh copilot suggest --context .github/agents/amplihack/core/builder.md \
 - **design-patterns-expert**: GoF design patterns
 - **documentation-writing**: Clear documentation
 - **module-spec-generator**: Module specification generation
-- **outside-in-testing**: Agentic testing framework
 
 #### Workflow Skills
 
@@ -391,9 +390,6 @@ gh copilot suggest \
 - **fix**: Intelligent fix dispatch
 - **ddd** (Document-Driven Development): Phases 0-5
 - **customize**: User preference management
-- **n-version**: N-version programming
-- **debate**: Multi-agent debate
-- **cascade**: Fallback cascade
 
 **Usage**:
 
@@ -741,7 +737,6 @@ gh copilot suggest -a .github/agents/amplihack/core/builder.md \
 - **design-patterns-expert**: GoF design patterns
 - **documentation-writing**: Clear documentation following Eight Rules
 - **module-spec-generator**: Generates module specifications
-- **outside-in-testing**: Agentic testing framework
 - **goal-seeking-agent-pattern**: When to use autonomous agents
 
 ### Workflow Skills (6)

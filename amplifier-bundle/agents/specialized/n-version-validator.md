@@ -196,11 +196,7 @@ From research (PR #946):
 
 ## Usage
 
-This pattern is implemented as a workflow. Use the `/amplihack:n-version` command:
-
-```bash
-/amplihack:n-version "Implement password hashing function"
-```
+This pattern is implemented as a workflow. Use the `n-version-workflow` skill.
 
 The `n-version-workflow` skill/recipe can be configured to adjust:
 

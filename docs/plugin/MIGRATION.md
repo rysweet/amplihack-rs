@@ -74,7 +74,7 @@ amplihack plugin install
 ```
 Installing amplihack plugin to ~/.amplihack/.claude/
 ✓ Created plugin directory structure
-✓ Installed 42 agents
+✓ Installed 41 agents
 ✓ Installed 18 commands
 ✓ Installed 12 skills
 ✓ Installed 5 workflows
