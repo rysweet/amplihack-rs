@@ -14,6 +14,8 @@ mod preferences;
 mod tests;
 #[cfg(all(test, unix))]
 mod tests_capacity;
+#[cfg(all(test, unix))]
+mod tests_text_switches;
 
 use crate::post_tool_use::begin_workflow_enforcement_tracking;
 use crate::prompt_input::extract_user_prompt;
