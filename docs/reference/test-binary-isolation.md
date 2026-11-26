@@ -23,7 +23,6 @@ The subprocess helper now requests a dedicated `test-support` build and rejects 
 - The broader installation run finished with 473 passed, 144 failed, and one ignored. A focused source-gate rerun traced failures to `src/test_support.rs:48`, which attempts to create temporary directories under read-only `/var/tmp`. Its output also includes attempts to update a global npm installation rejected by the read-only filesystem. This run does not establish complete fixture isolation or a passing installation suite.
 - A rerun with `TMPDIR=/tmp AMPLIHACK_SKIP_MMDC=1` finished with 477 passed, 140 failed, and one ignored. Remaining failures include `/var/tmp` creation, rejection of the sandbox's root-directory permissions by status-line ownership checks, and a native Codex inventory probe. Full output was retained in `/tmp/issue2182-install-isolated.log`; these failures have not been classified against the baseline.
 - The pinned Rust 1.97 formatting shim could not write to the read-only Rustup directory. Formatting succeeded using the installed 1.99.1 toolchain explicitly.
-- `scripts/measure_issue_2182.py` provides Linux subreaper/zombie I/O accounting and preserves full logs, but has not yet been validated with comparable baseline and fixed runs. No before/after write totals or full-suite success are claimed.
 
 ### Review remediation checkpoint (10 November 2026)
 
@@ -34,7 +33,6 @@ Implemented at this checkpoint:
 - Directory boundaries (HOME, `.local`, application root, `releases`, each release, and each `bin`) use `symlink_metadata`. Only `NotFound` is skipped for optional paths. Directory symlinks, including dangling and cyclic links, and unexpected types are rejected.
 - External binary targets require registered provenance at every size. Publication links to confined release files remain valid; all retained and unpublished release bins are still inspected.
 - Test-enabled staging validates small sources as executable regular-file targets before copying or changing destination permissions. Dangling source links cannot take the missing-source no-op path. Production source handling remains unchanged.
-- `scripts/measure_issue_2182.py --self-test` exercises parent, child, grandchild, and orphan writers. It accounted exactly 10,485,760 payload bytes through `wchar`, matching the files' combined lengths, without duplicate accounting. The test also recorded 10,485,760 `write_bytes` on this filesystem. This is a synthetic accounting check, not a suite measurement or a write-reduction claim.
 
 Eighteen focused binary-isolation tests passed after the final remediation (0.04 seconds excluding compilation). Four added regressions cover the directory-boundary matrix, small external links and valid publication links, invalid small staging sources, and nested uninspected release targets. Twenty existing binary discovery/deployment tests also passed. The focused command is `rustup run 1.99.1 cargo test -p amplihack-cli --lib issue_2182_binary_isolation`.
 
