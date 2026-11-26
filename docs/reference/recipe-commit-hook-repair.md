@@ -105,7 +105,7 @@ hook_repair_run push step-15-commit-push \
 ```
 
 The checks that run before step-15's push are untouched: the #978 divergence
-check, the no-upstream check and the already-pushed check. After a push that
+check, the no-upstream check (a branch with no upstream and an `origin` remote is pushed with `-u` through the same `hook_repair_run`, #1930) and the already-pushed check. After a push that
 succeeds, `verify_pushed_ref.sh` (#1269) still runs.
 
 ## Launcher environment and agent environment

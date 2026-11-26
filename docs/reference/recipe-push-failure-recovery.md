@@ -76,7 +76,7 @@ step-15 traps `EXIT` and prints a `commit_result` object on every exit path,
 including `hook-rejected-*`, `diverged-upstream`, the #1762 branch refusal
 and `push-failed`. The runner keeps no output from a step that exits
 non-zero, and step-15 exits non-zero on every path that leads to recovery
-(`no-upstream` exits 0 and is excluded by the condition). So the failed
+(`no-upstream`, which means a checkout with no `origin` remote, exits 0 and is excluded by the condition). So the failed
 step's `reason` does not reach the recovery: `commit_result` keeps the empty
 value the phase recipe declared, and the agent works from its own evidence.
 step-18c prints plain text, not an object, and has no reason field either.
@@ -158,7 +158,7 @@ for word, followed by a test that the push did not happen:
 The repeated push-step condition stops recovery from running after a push step
 that was skipped on purpose.
 
-`no-upstream` is excluded on step-15 because it is a reported outcome, not a
+`no-upstream` is excluded on step-15 because it is a reported outcome for a checkout with no `origin` remote, not a
 failure.
 
 Neither step has an intended skip path, so a missing linked worktree always
