@@ -1005,6 +1005,13 @@ jobs:
         shell: bash
         run: bash tests/issue_1483_memory_injection_outside_in.sh "target/${{ matrix.target }}/release/amplihack-hooks"
 
+      # Outside-in: the real hooks binary decides on each recursive remove
+      # command by its own arguments (issue #3261).
+      - name: "Outside-in: recursive remove commands (issue #3261)"
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: bash tests/gadugi/run-issue-3261-recursive-remove-scenario.sh "target/${{ matrix.target }}/release/amplihack-hooks"
+
       # Cross build (Linux ARM64)
       - name: Build (cross)
         if: matrix.cross
