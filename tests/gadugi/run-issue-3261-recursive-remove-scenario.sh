@@ -116,7 +116,7 @@ check literal-after-variable-outside allow 'cd "$DIR" && git status; rm -r /none
 check literal-after-variable-cwd deny "cd \"\$DIR\" && git status; rm -r $CWD"
 
 check quoted-text allow "echo 'rm -rf .' \"\$HOME\"; git commit -m \"\$(cat <<'EOF'
-Refuse rm -rf \`pwd\` but not text.
+Reject rm -rf \`pwd\` but not text.
 EOF
 )\""
 
