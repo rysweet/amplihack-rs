@@ -1489,4 +1489,22 @@ mod open_work_root_tests {
         assert!(error.contains(&root.display().to_string()), "{error}");
         assert!(!error.contains("symbolic link"), "{error}");
     }
+
+    #[test]
+    fn a_regular_file_work_root_keeps_its_io_cause() {
+        let tmp = tempfile::tempdir().unwrap();
+        let blocker = tmp.path().join("blocker");
+        fs::write(&blocker, b"not a folder").unwrap();
+        let error = open_work_root(&blocker).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("cannot open work root {}", blocker.display())
+        );
+
+        let io_error = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .expect("the work root error keeps its I/O cause");
+        assert_eq!(io_error.kind(), std::io::ErrorKind::NotADirectory);
+    }
 }

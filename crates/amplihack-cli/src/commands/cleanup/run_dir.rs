@@ -738,8 +738,12 @@ pub(crate) fn open_work_root(
                 link.display()
             ));
         }
-        error.context(message)
+        open_error(error, message)
     })
+}
+
+fn open_error(error: anyhow::Error, message: String) -> anyhow::Error {
+    error.context(message)
 }
 
 /// The shortest prefix of `path` that is a symbolic link, if any.
