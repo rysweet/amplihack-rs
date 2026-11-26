@@ -118,6 +118,22 @@ fn unusable_files_fall_through_to_handwritten_text_then_default() {
     assert_eq!(default["decision"], "block");
     assert!(!default["reason"].as_str().unwrap().is_empty());
 
+    for path in [
+        f.dirs.lock_message_file(),
+        f.dirs.continuation_prompt_file(),
+    ] {
+        fs::write(path, "").unwrap();
+    }
+    assert_eq!(f.stop(), default);
+    fs::write(
+        f.dirs.continuation_prompt_file(),
+        "Empty-file fallback fixture",
+    )
+    .unwrap();
+    assert_eq!(f.stop()["reason"], "Empty-file fallback fixture");
+    fs::remove_file(f.dirs.lock_message_file()).unwrap();
+    fs::remove_file(f.dirs.continuation_prompt_file()).unwrap();
+
     // Missing, blank, over-limit, invalid UTF-8 and unreadable sources all
     // receive the same treatment, independently at both precedence levels.
     for invalid in [
