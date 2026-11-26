@@ -1,7 +1,7 @@
 //! Trusted snapshot acquisition, separated from measurement and decisions.
 use super::{CandidateInput, Ctx, LiveId, LoginKind, Skip, Snap, identify, kind, pin};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{CREDS, Liveness, State};
+use crate::commands::profile::auto_switch::kit::{CREDS, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
 
@@ -29,7 +29,10 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
     }
     let (live, proto) = identify::live_with(&ctx.store, &ctx.rs, &ctx.home, trusted_live.as_ref())?;
     let liveness = (ctx.scan)(root);
-    let sees_sessions = matches!(liveness, Liveness::Known(_));
+    // Issue #2820: an unreadable process no longer hides every session;
+    // only a process table that cannot be used does.
+    let sees_sessions = liveness.supported();
+    let unreadable = liveness.unreadable().to_vec();
     let live_name = match &live {
         LiveId::Known(n) => Some(n.clone()),
         _ => None,
@@ -95,6 +98,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         candidates,
         skips,
         sees_sessions,
+        unreadable,
         overflow,
         pin: pin::read(&ctx.rs),
         ignored,

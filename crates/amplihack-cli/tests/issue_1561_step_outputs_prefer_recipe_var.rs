@@ -17,8 +17,10 @@
 //! - every `RECIPE_VAR_` key a recipe step (or a tool it names) reads is
 //!   declared in `context:` or produced by an earlier unconditional step;
 //! - the bare `NO_MERGE` override can only turn merging off;
-//! - the merge round stops, without running any tool, when its tools dir is
-//!   empty, relative or not a directory, whatever `AUTODRIVE_TOOLS_DIR` says;
+//! - the goal loop's step stops, without running any tool, when its launch
+//!   bundle (`AMPLIHACK_HOME`) is unset, empty, relative, not a directory or
+//!   holds symlinked tools, whatever `AUTODRIVE_TOOLS_DIR` or the retired
+//!   `autodrive_tools_dir` key says (#3129 replaced the merge round);
 //! - no recipe step or bundle tool reads a step output through a plain bare
 //!   name (#1684), beyond a per-read list that can only shrink;
 //! - behavioural decoy tests for `rv_field`, `worktree_setup_path.sh` and the
@@ -832,104 +834,115 @@ fn only_recipe_var_sh_reads_the_bare_no_merge() {
     }
 }
 
-// ── The merge round's tools dir fails closed ─────────────────────────────────
+// ── The goal loop's tools resolve only in the launch bundle ─────────────────
 
-/// The merge-round steps that run a tool from `autodrive_tools_dir`.
-fn merge_round_tool_steps() -> Vec<(String, String)> {
-    let yaml = read_repo_file(&format!("{RECIPES_DIR}/autodrive-merge-round.yaml"));
-    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
-    doc["steps"]
-        .as_sequence()
-        .unwrap()
-        .iter()
-        .filter_map(|s| {
-            let body = s.get("command")?.as_str()?;
-            body.contains("RECIPE_VAR_autodrive_tools_dir")
-                .then(|| (s["id"].as_str().unwrap().to_string(), body.to_string()))
-        })
-        .collect()
+/// #3129 replaced the merge round, whose steps ran tools from
+/// `autodrive_tools_dir`, with the shared goal loop. The loop's one command
+/// step, `goal-loop` in `autodrive-goal-loop.yaml`, takes its tools only from
+/// the launch bundle under `AMPLIHACK_HOME`, as regular files.
+fn goal_loop_step() -> (String, String) {
+    let id = "goal-loop";
+    let body = step_body(
+        &read_repo_file(&format!("{RECIPES_DIR}/autodrive-goal-loop.yaml")),
+        id,
+    )
+    .unwrap_or_else(|| panic!("autodrive-goal-loop.yaml has no step {id}"));
+    (id.to_string(), body)
 }
 
-/// A tools dir whose every tool writes `marker` when run or sourced.
-fn decoy_tools(dir: &Path, marker: &Path) {
-    std::fs::create_dir_all(dir).unwrap();
-    for name in [
-        "autodrive_merge_ready_files.sh",
-        "autodrive_platform_facts.sh",
-        "autodrive_round_evidence.sh",
-        "autodrive_trust.sh",
-    ] {
+/// The tools the goal loop's step runs or sources.
+const GOAL_LOOP_TOOLS: [&str; 2] = ["autodrive_goal_loop.sh", "recipe_context_value.sh"];
+
+/// A launch bundle under `home` whose every tool writes `marker` when run or
+/// sourced. Returns its tools dir.
+fn decoy_home(home: &Path, marker: &Path) -> PathBuf {
+    let dir = home.join("amplifier-bundle/tools");
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in GOAL_LOOP_TOOLS {
         std::fs::write(
             dir.join(name),
             format!("echo {name} >> '{}'\n", marker.display()),
         )
         .unwrap();
     }
+    dir
 }
 
 #[test]
-fn the_merge_round_runs_no_tool_from_an_unusable_tools_dir() {
-    let steps = merge_round_tool_steps();
-    assert!(
-        steps.len() >= 2,
-        "only {} merge-round steps read autodrive_tools_dir",
-        steps.len()
-    );
+fn the_goal_loop_runs_no_tool_from_an_unusable_launch_bundle() {
+    let (id, body) = goal_loop_step();
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("repo");
     let marker = tmp.path().join("marker");
-    let decoy = tmp.path().join("decoy-tools");
-    decoy_tools(&decoy, &marker);
-    decoy_tools(&repo.join("rel-tools"), &marker);
+    let scratch = tmp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let decoy = tmp.path().join("decoy-home");
+    let decoy_tools = decoy_home(&decoy, &marker);
+    decoy_home(&repo.join("rel-home"), &marker);
+    // A bundle whose tools are symbolic links to the decoy's: the launch
+    // bundle's tools must be regular files.
+    let linked = tmp.path().join("linked-home");
+    let linked_tools = linked.join("amplifier-bundle/tools");
+    std::fs::create_dir_all(&linked_tools).unwrap();
+    for name in GOAL_LOOP_TOOLS {
+        std::os::unix::fs::symlink(decoy_tools.join(name), linked_tools.join(name)).unwrap();
+    }
     let plain = tmp.path().join("plain-file");
     std::fs::write(&plain, "x").unwrap();
     let decoy_s = decoy.display().to_string();
+    let decoy_tools_s = decoy_tools.display().to_string();
+    let linked_s = linked.display().to_string();
     let plain_s = plain.display().to_string();
     let repo_s = repo.display().to_string();
+    let scratch_s = scratch.display().to_string();
     let home = tmp.path().display().to_string();
-    for (id, body) in &steps {
-        // Positive control: the same step does run a tool from a usable dir,
-        // so a step that stops early for another reason cannot pass below.
+    // Positive control: the same step does run a tool from a usable bundle,
+    // so a step that stops early for another reason cannot pass below.
+    let _ = std::fs::remove_file(&marker);
+    bash_clean(
+        &body,
+        &[
+            ("RECIPE_VAR_repo_path", &repo_s),
+            ("HOME", &home),
+            ("TMPDIR", &scratch_s),
+            ("AMPLIHACK_HOME", &decoy_s),
+        ],
+        &repo,
+    );
+    assert!(
+        marker.exists(),
+        "{id}: control: no tool ran from a valid launch bundle"
+    );
+    for (what, value) in [
+        ("unset", None),
+        ("empty", Some("")),
+        ("relative", Some("rel-home")),
+        ("not a directory", Some(plain_s.as_str())),
+        ("two lines", Some("/tmp\n/x")),
+        ("with symlinked tools", Some(linked_s.as_str())),
+    ] {
         let _ = std::fs::remove_file(&marker);
-        bash_clean(
-            body,
-            &[
-                ("REPO_PATH", &repo_s),
-                ("HOME", &home),
-                ("RECIPE_VAR_autodrive_tools_dir", &decoy_s),
-            ],
-            &repo,
-        );
-        assert!(
-            marker.exists(),
-            "{id}: control: no tool ran from a valid autodrive_tools_dir"
-        );
-        for (what, value) in [
-            ("unset", None),
-            ("empty", Some("")),
-            ("relative", Some("rel-tools")),
-            ("not a directory", Some(plain_s.as_str())),
-            ("two lines", Some("/tmp\n/x")),
-        ] {
-            let _ = std::fs::remove_file(&marker);
-            let mut env = vec![
-                ("REPO_PATH", repo_s.as_str()),
-                ("HOME", home.as_str()),
-                ("AUTODRIVE_TOOLS_DIR", decoy_s.as_str()), // deliberately stale (#1607)
-            ];
-            if let Some(v) = value {
-                env.push(("RECIPE_VAR_autodrive_tools_dir", v));
-            }
-            let out = bash_clean(body, &env, &repo);
-            assert!(
-                !out.status.success() && !marker.exists(),
-                "{id}: autodrive_tools_dir {what}: want a non-zero exit and no tool run; \
-                 rc={:?} ran={} stderr={}",
-                out.status.code(),
-                marker.exists(),
-                String::from_utf8_lossy(&out.stderr)
-            );
+        let mut env = vec![
+            ("RECIPE_VAR_repo_path", repo_s.as_str()),
+            ("HOME", home.as_str()),
+            ("TMPDIR", scratch_s.as_str()),
+            // Deliberately stale (#1607), and the retired key: neither names
+            // where the loop's tools come from.
+            ("AUTODRIVE_TOOLS_DIR", decoy_tools_s.as_str()),
+            ("RECIPE_VAR_autodrive_tools_dir", decoy_tools_s.as_str()),
+        ];
+        if let Some(v) = value {
+            env.push(("AMPLIHACK_HOME", v));
         }
+        let out = bash_clean(&body, &env, &repo);
+        assert!(
+            !out.status.success() && !marker.exists(),
+            "{id}: AMPLIHACK_HOME {what}: want a non-zero exit and no tool run; \
+             rc={:?} ran={} stderr={}",
+            out.status.code(),
+            marker.exists(),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }
 

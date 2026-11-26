@@ -27,7 +27,7 @@ use super::switch::not_a_candidate;
 use super::switch::{Switched, switch_in};
 use super::tests_swap::{CREDS, Env, env, ino_at, n, private};
 use super::tests_switch::assert_refused;
-use crate::commands::profile::auto_switch::kit::Liveness;
+use crate::commands::profile::auto_switch::kit::{FakeExchange, Liveness};
 use crate::commands::profile::pointer;
 use crate::test_support::proc::FAKE_PID_BASE;
 use std::fs;
@@ -227,6 +227,7 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
         candidates: Vec::new(),
         skips: vec![(n("work"), Skip::Live), (n("spare"), skip)],
         sees_sessions,
+        unreadable: Vec::new(),
         overflow: Vec::new(),
         pin: PinState::None,
         ignored: Vec::new(),
@@ -323,6 +324,7 @@ fn switch_without_liveness(e: &Env, name: &str) -> Switched {
     let s = settings::resolve(&TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     ctx.scan = |_| Liveness::Unsupported;
+    ctx.exchange = FakeExchange::working();
     match switch_in(ctx, &n(name)) {
         Ok(Ok(s)) => s,
         Ok(Err(f)) => panic!("unexpected partial failure: {}", f.what),

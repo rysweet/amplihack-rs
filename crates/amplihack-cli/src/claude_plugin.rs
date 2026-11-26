@@ -932,9 +932,7 @@ fn mirror_is_current(source: &Path, target: &Path) -> Result<bool> {
         }
     };
     if metadata.file_type().is_symlink() {
-        return Ok(fs::read_link(target)
-            .with_context(|| format!("failed to read symlink {}", target.display()))?
-            == source);
+        return link_points_at(source, target);
     }
     if !metadata.is_dir() {
         return Ok(false);
@@ -944,6 +942,46 @@ fn mirror_is_current(source: &Path, target: &Path) -> Result<bool> {
     // Comparing digests costs a read of both trees, which is cheaper than the
     // rewrite it avoids — and, unlike the rewrite, it destroys nothing.
     Ok(hash_directory_tree(target)? == hash_copy_plan(source)?)
+}
+
+/// Whether the symbolic link at `target` points at `source`. The caller has
+/// just seen a link there.
+///
+/// A read that fails with "invalid argument" or "not found" answers `false`
+/// and is not an error (issue #2931). Either means the name changed after the
+/// caller looked at it: `readlink(2)` gives EINVAL for a name that is not a
+/// link and ENOENT for one that is gone. The mirror is then not known to be
+/// current, and `replace_mirror` publishes over whatever is there now. Every
+/// other failure is still an error.
+///
+/// On macOS the first of these also happens while the name is a link the
+/// whole time. `replace_mirror` publishes with `rename(2)` of a new link over
+/// the old one, and a `readlink` that runs during such a rename fails with
+/// EINVAL. Measured on macOS 26.7 (APFS) with one thread renaming a new link
+/// over a name and another reading it 20,000 times: `lstat` reported a link
+/// every time, and `readlink` failed with EINVAL 248 to 273 times (1.2 to
+/// 1.4 per cent) and with nothing else; with two renaming threads, 467 to 479
+/// times; with none, never. The same was not measured on Linux; the test
+/// below has never failed this way in Linux CI.
+///
+/// That rate is why
+/// `issue_1273_concurrent_mirroring_never_exposes_a_missing_asset_tree`
+/// failed in 40 of 40 runs on macOS before this arm existed: its two writers
+/// make 1,600 reads while the other renames, so a run with no EINVAL is not
+/// to be expected. It is a race, and one that almost every run of that test
+/// loses. The arm itself is tested without a race, on a name that is not a
+/// link and on one that is absent
+/// (`a_name_that_stopped_being_a_link_is_not_current_and_not_an_error`).
+fn link_points_at(source: &Path, target: &Path) -> Result<bool> {
+    match fs::read_link(target) {
+        Ok(current) => Ok(current == source),
+        Err(error) if matches!(error.kind(), ErrorKind::InvalidInput | ErrorKind::NotFound) => {
+            Ok(false)
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to read symlink {}", target.display()))
+        }
+    }
 }
 
 /// Put a fresh mirror of `source` at `target` without ever leaving that path
@@ -2090,14 +2128,14 @@ mod tests {
     }
 
     #[test]
-    fn real_corpus_publishes_all_132_skills_in_isolated_home() {
+    fn real_corpus_publishes_all_133_skills_in_isolated_home() {
         let (_lock, temp, _home) = isolated_home();
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/skills");
         let mut sources = Vec::new();
         find_skill_dirs(&root, &mut sources).unwrap();
-        assert_eq!(sources.len(), 132);
+        assert_eq!(sources.len(), 133);
         let expected: BTreeSet<_> = sources.iter().map(|(name, _)| name.clone()).collect();
-        assert_eq!(expected.len(), 132);
+        assert_eq!(expected.len(), 133);
         let staged = temp.path().join(".amplihack/.claude/skills");
         copy_dir_recursive(&root, &staged).unwrap();
         ensure_claude_plugin_installed().unwrap();
@@ -3111,6 +3149,95 @@ mod tests {
             !mirror_is_current(&source, &target).unwrap(),
             "a stale copy-fallback mirror must be detected"
         );
+    }
+
+    /// The arm of `link_points_at` for a name that changed after the caller
+    /// saw a link there (issue #2931), reached without a race: `readlink(2)`
+    /// answers EINVAL for a name that is not a link and ENOENT for one that
+    /// is gone, on every Unix. Both mean "not current", and neither is an
+    /// error, so the next step publishes the mirror again.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_stopped_being_a_link_is_not_current_and_not_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+
+        let folder = temp.path().join("now-a-folder");
+        fs::create_dir_all(&folder).unwrap();
+        let file = temp.path().join("now-a-file");
+        fs::write(&file, "not a link\n").unwrap();
+        let gone = temp.path().join("gone");
+
+        // The operating system's own answers, so the test fails if a system
+        // reports these two cases as some other kind.
+        for not_a_link in [&folder, &file] {
+            assert_eq!(
+                fs::read_link(not_a_link).unwrap_err().kind(),
+                ErrorKind::InvalidInput,
+                "{}",
+                not_a_link.display()
+            );
+            assert!(!link_points_at(&source, not_a_link).unwrap());
+        }
+        assert_eq!(
+            fs::read_link(&gone).unwrap_err().kind(),
+            ErrorKind::NotFound
+        );
+        assert!(!link_points_at(&source, &gone).unwrap());
+
+        // The answers for a link are unchanged.
+        let current = temp.path().join("current");
+        std::os::unix::fs::symlink(&source, &current).unwrap();
+        assert!(link_points_at(&source, &current).unwrap());
+        let elsewhere = temp.path().join("elsewhere");
+        std::os::unix::fs::symlink(temp.path().join("other"), &elsewhere).unwrap();
+        assert!(!link_points_at(&source, &elsewhere).unwrap());
+    }
+
+    /// Only those two kinds are taken as "not current". A read that fails for
+    /// another reason is still an error that names the path: here a name
+    /// below a regular file, which is ENOTDIR.
+    #[cfg(unix)]
+    #[test]
+    fn any_other_failure_to_read_the_link_is_still_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("file");
+        fs::write(&file, "x\n").unwrap();
+        let below = file.join("mirror");
+
+        let error = link_points_at(temp.path(), &below).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("failed to read symlink"),
+            "{error:#}"
+        );
+        assert!(format!("{error:#}").contains("mirror"), "{error:#}");
+    }
+
+    /// After a mirror stops being a link, the next pass publishes it again
+    /// and nothing is left missing: the whole path from the arm to the repair.
+    #[cfg(unix)]
+    #[test]
+    fn a_mirror_that_is_no_longer_a_link_is_published_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged = temp.path().join("staged");
+        for asset in MIRRORED_ASSETS {
+            fs::create_dir_all(staged.join(asset)).unwrap();
+        }
+        fs::write(staged.join("context/guide.md"), "current\n").unwrap();
+        let plugin_dir = temp.path().join("wrapper");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        let mut scratch = Scratch::new(temp.path());
+        mirror_assets(&staged, &plugin_dir, &mut scratch).unwrap();
+
+        // A folder where the link was, and not a copy of the source either.
+        let target = plugin_dir.join("context");
+        fs::remove_file(&target).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        assert!(!link_points_at(&staged.join("context"), &target).unwrap());
+
+        assert!(mirror_assets(&staged, &plugin_dir, &mut scratch).unwrap());
+        assert_eq!(fs::read_link(&target).unwrap(), staged.join("context"));
     }
 
     #[cfg(unix)]

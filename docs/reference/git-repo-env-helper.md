@@ -154,8 +154,9 @@ recipe run, as amplihack-rs's do, must not join or write into the outer one.
 | --- | --- | --- | --- |
 | [`scripts/git-hook-cargo.sh`](../../scripts/git-hook-cargo.sh) (amplihack-rs `pre-commit` and `pre-push`) | yes | no | First thing after `set -euo pipefail`. |
 | [`autodrive_qa_evidence.sh`](../../amplifier-bundle/tools/autodrive_qa_evidence.sh) | yes | yes | Straight after its helper directory `H` is found, before `cd "$REPO_PATH"`, the scan subshell and `git rev-parse HEAD`. |
-| `autodrive-merge-evidence.yaml` `step-01-sync-with-base` | yes | yes | Before its first `git` command. Its `git push` runs the target repository's pre-push hook and tests. |
+| `autodrive-merge-evidence.yaml` `step-01-sync-with-base` | yes | yes | Before its first `git` command. The step only observes (it fetches and reads) and no longer pushes. |
 | `autodrive-merge-evidence.yaml` `step-02-qa-team-scenarios` | yes | yes | Before `git rev-parse` and before it runs `autodrive_qa_evidence.sh`. |
+| `autodrive-merge-loop.yaml` `step-03b-base-sync` (merge and resolve) | yes | yes | Before every shell call that runs tests, hooks, `cargo`, `npm` or `pytest` while it checks a resolved conflict. The merge loop has no round tools directory, so the line loads the helper from `$AMPLIHACK_HOME/amplifier-bundle/tools`. As in `step-04`, the prompt is advice to an agent, not a shell wrapper. |
 | `autodrive-merge-round.yaml` `step-04` (fix and commit) | yes | yes | Twice, because each of the agent's shell calls is a new process that inherits the agent's environment. The "Running tests or hooks" instruction tells the agent to start every shell call that runs tests, hooks, `cargo`, `npm` or `pytest` with the helper line, so the tests it runs while fixing blockers see no inherited `GIT_*`. The bash block that commits and pushes loads it again; there it replaces the old partial `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE`, and `unset GH_REPO` stays. The prompt is advice to an agent, not a shell wrapper: a test command the agent runs without the line is not covered. |
 
 `autodrive-merge-round.yaml` `step-00-tools-dir` lists `git-repo-env.sh` in
@@ -168,7 +169,7 @@ helper from.
 does not load the helper. Its only loader, `autodrive_qa_evidence.sh`, has
 cleared both lists before it sources the file.
 
-Steps that run no repository command are unchanged: `step-00-merge-ready-files`,
+Steps that run no repository command are unchanged:
 the steps of `auto-drive-to-merge.yaml`, `autodrive-prerequisites`,
 `autodrive-check-unmerged`, and the `type: recipe` delegations (the delegated
 recipe's own steps do the clearing).
@@ -249,9 +250,10 @@ jq -r '.git_env_cleared, .run_env_cleared' "$AUTODRIVE_STATE_DIR/qa-evidence.jso
 # none
 ```
 
-`qa_status`, `qa_reason`, `head_sha` and every other field mean what they
-meant before; see the [evidence table](auto-drive-to-merge.md#criterion-1-qa-team-scenarios-by-repository-type)
-in the auto-drive reference.
+`autodrive_qa_evidence.sh` writes these fields into the record at
+`AUTODRIVE_QA_EVIDENCE`, which is the only file holding them; nothing copies
+them from a second file. For `qa_status`, `qa_reason`, `head_sha` and the
+other fields, see [the measured record](auto-drive-qa.md#the-measured-record).
 
 ## The drift guard
 
@@ -346,7 +348,7 @@ bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
 
 - **Not a sandbox.** Clearing the variables stops tests from acting on another
   repository by accident. The suite still runs the branch's code, as
-  described under [Running the suite commands](auto-drive-to-merge.md#running-the-suite-commands).
+  described under [source precedence](auto-drive-qa.md#source-precedence).
 - **Equal trust for `REPO_PATH`.** Step-00 of the merge round may pick the
   tools directory from the PR's own tree. That trusts the tree no more than
   running its QA tool and tests already does, and `$AMPLIHACK_HOME` is

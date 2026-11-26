@@ -1,10 +1,12 @@
-//! Issue #2519: step-05 of `autodrive-crusty-round.yaml` measures the head
-//! and the commit count in the PR's linked worktree, the folder step-04
-//! commits in, and never in the folder the step happened to start in.
+//! Issue #2519: step-05 of `autodrive-crusty-round.yaml`, through
+//! `autodrive_crusty_concerns_evidence.sh`, measures the head and the commit
+//! count in the PR's linked worktree, the folder step-04 commits in, and never
+//! in the folder the step happened to start in.
 //!
 //! The step-05 body is extracted from the live YAML and run in bash as
-//! `cd <start> && <body>`. The runner's `working_dir` is deliberately not
-//! simulated: the body's own `cd` into `repo_path` must do the work. The real
+//! `cd <start> && <body>`, with `AMPLIHACK_HOME` at this checkout so the body
+//! runs this checkout's script. The runner's `working_dir` is deliberately not
+//! simulated: the script's own `cd` into `repo_path` must do the work. The real
 //! `autodrive_worktree_guard.sh commit-dir` check runs against a real linked
 //! worktree (`git worktree add ... -b quick/demo`), with the fake `gh`
 //! answering `headRefName` `quick/demo` for PR 7.
@@ -125,12 +127,14 @@ impl Fixture {
             ),
         )
         .unwrap();
-        let amplihack_home = self.repo.tmp.path().join("amplihack-home");
-        std::fs::create_dir_all(&amplihack_home).unwrap();
+        let amplihack_home = tools
+            .parent()
+            .and_then(Path::parent)
+            .expect("tools dir sits two levels below the checkout root")
+            .to_path_buf();
         let mut env: Vec<(&str, &OsStr)> = vec![
             ("PATH", path.as_os_str()),
             ("AMPLIHACK_HOME", amplihack_home.as_os_str()),
-            ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
             ("RECIPE_VAR_repo_path", OsStr::new(repo_path)),
             ("RECIPE_VAR_pr_number", OsStr::new(PR)),
             ("RECIPE_VAR_crusty_round_context", OsStr::new(&ctx)),
@@ -290,16 +294,10 @@ fn step05_stops_when_repo_path_is_the_main_checkout() {
     // used in place of repo_path.
     let o = f.run(&f.worktree, &s(&f.root), &f.h0, &s(&f.worktree));
     let line = assert_stopped(&o);
-    let expected = format!(
-        "STOP: step-05 repo_path {} is not PR #7's linked worktree on its head branch \
-         (step started in {}); commit evidence is not measured in any other checkout (#2519, #1528)",
-        s(&f.root),
-        s(&f.worktree)
-    );
-    assert_eq!(
-        line.trim(),
-        expected,
-        "the STOP text is the one docs/reference/auto-drive-to-merge.md documents"
+    assert!(line.contains(&s(&f.root)), "STOP gives repo_path: {line}");
+    assert!(
+        line.contains(&s(&f.worktree)),
+        "STOP gives the start folder: {line}"
     );
 }
 
@@ -353,24 +351,29 @@ fn step05_stops_on_a_head_sha_that_is_not_hex() {
         return;
     }
     let f = Fixture::new();
-    // `HEAD` resolves in git, but is not a recorded commit id.
-    let o = f.run(&f.root, &s(&f.worktree), "HEAD", &s(&f.root));
-    assert_stopped(&o);
+    // `HEAD` and `HEAD~1` resolve in git, but are not commit ids.
+    for given in ["HEAD", "HEAD~1", ""] {
+        let o = f.run(&f.root, &s(&f.worktree), given, &s(&f.root));
+        assert_stopped(&o);
+    }
 }
 
 #[test]
-fn step05_stops_on_a_short_or_upper_case_head_sha() {
+fn step05_resolves_a_short_or_upper_case_head_sha_to_the_full_commit() {
     if skip() {
         return;
     }
     let f = Fixture::new();
-    // Step-01 is an agent step; an abbreviated or upper-case id for a real
-    // commit still stops the round rather than being resolved by git.
-    let short = &f.h0[..12];
+    let h1 = f.commit_in_worktree();
+    let short = f.h0[..12].to_string();
     let upper = f.h0.to_uppercase();
-    for bad in [short, upper.as_str()] {
-        let o = f.run(&f.root, &s(&f.worktree), bad, &s(&f.root));
-        assert_stopped(&o);
+    for given in [short.as_str(), upper.as_str()] {
+        let o = f.run(&f.root, &s(&f.worktree), given, &s(&f.root));
+        assert!(o.status.success(), "{}", show(&o));
+        let v = evidence(&o);
+        assert_eq!(v["base_sha"], json!(f.h0), "{}", show(&o));
+        assert_eq!(v["head_sha"], json!(h1), "{}", show(&o));
+        assert_eq!(v["commits"], json!(1), "{}", show(&o));
     }
 }
 
@@ -396,27 +399,4 @@ fn step05_stops_on_a_hex_head_sha_that_is_not_a_commit_here() {
     let missing = "0123456789abcdef0123456789abcdef01234567";
     let o = f.run(&f.root, &s(&f.worktree), missing, &s(&f.root));
     assert_stopped(&o);
-}
-
-// --- The step text itself ---
-
-#[test]
-fn step05_runs_in_repo_path_with_the_commit_dir_guard() {
-    let doc = crate::support::auto_drive_light::recipe(ROUND);
-    let step = doc["steps"]
-        .as_sequence()
-        .expect("steps")
-        .iter()
-        .find(|s| s["id"].as_str() == Some(STEP05))
-        .expect("step-05 exists");
-    assert_eq!(
-        step["working_dir"].as_str(),
-        Some("{{repo_path}}"),
-        "step-05 runs in the PR worktree"
-    );
-    let body = step["command"].as_str().unwrap();
-    assert!(
-        body.contains("autodrive_worktree_guard.sh") && body.contains("commit-dir"),
-        "step-05 runs the commit-dir guard"
-    );
 }

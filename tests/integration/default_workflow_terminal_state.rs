@@ -266,6 +266,28 @@ fn run_terminal_state_with_issue(
     fake_path: &Path,
     issue_number: &str,
 ) -> TerminalRun {
+    run_terminal_state_in_mode(
+        repo_path,
+        worktree_path,
+        branch_name,
+        pr_url,
+        fake_path,
+        issue_number,
+        None,
+    )
+}
+
+/// The probe with `terminal_fail_mode` set to `fail_mode` (`report` or
+/// `exit`), or left unset for the recipe default, which is `exit`.
+fn run_terminal_state_in_mode(
+    repo_path: &Path,
+    worktree_path: Option<&Path>,
+    branch_name: &str,
+    pr_url: Option<&str>,
+    fake_path: &Path,
+    issue_number: &str,
+    fail_mode: Option<&str>,
+) -> TerminalRun {
     let command = step_commands(&load_recipe("workflow-terminal-state"));
     let old_path = std::env::var("PATH").unwrap_or_default();
     let path = format!("{}:{old_path}", fake_path.display());
@@ -319,7 +341,11 @@ fn run_terminal_state_with_issue(
             "WORKFLOW_GITHUB_REPO_HELPER",
             workspace_helper_path("workflow_github_repo.sh"),
         )
-        .env("RECIPE_VAR_goal_already_met", "false")
+        .env("RECIPE_VAR_goal_already_met", "false");
+    if let Some(mode) = fail_mode {
+        cmd.env("RECIPE_VAR_terminal_fail_mode", mode);
+    }
+    cmd
         // Conflicting stale bare names a parent run could leave behind.
         .env("BRANCH_NAME", "stale/issue-1561-parent-branch") // deliberately stale (#1561)
         .env("PR_URL", "https://github.com/stale/parent/pull/9999") // deliberately stale (#1561)
@@ -441,7 +467,6 @@ fn terminal_state_probe_detects_outcomes_in_safe_fail_closed_order() {
             "MERGED",
             "closed-unmerged",
             "CLOSED_OBSOLETE",
-            "BLOCKED_CI",
             "git diff --quiet",
             "NO_DIFF_SUCCESS",
             "FOLLOWUP_CREATED",
@@ -449,10 +474,11 @@ fn terminal_state_probe_detects_outcomes_in_safe_fail_closed_order() {
         "terminal-state detection order",
     );
 
+    // #2966: a red check is not among the probe's blockers. It is repaired
+    // after the probe, so only the blockers a run cannot repair remain here.
     assert_contains_all(
         &command,
         &[
-            "BLOCKED_CI",
             "FAILED_CLOSED_UNMERGED",
             "FAILED_MEANINGFUL_DIFF",
             "ambiguous",
@@ -965,13 +991,80 @@ fn terminal_state_treats_merged_pr_as_success_even_with_historical_failing_check
     assert_eq!(run.json["terminal_state"], "MERGED");
 }
 
+// #2966: failing checks on the run's own open PR are work for the CI repair
+// loop, not a terminal state. The probe lets the run continue, in both fail
+// modes (`exit` is workflow-publish's, `report` is workflow-finalize's), with
+// the publish, finalize and CI-wait gates open and no terminal success.
 #[test]
-fn terminal_state_blocks_active_pr_with_real_failing_checks() {
+fn failing_checks_continue_to_ci_repair() {
+    let failing_rollups = [
+        serde_json::json!([{ "conclusion": "FAILURE" }]),
+        serde_json::json!([
+            { "__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": "TIMED_OUT" }
+        ]),
+        serde_json::json!([
+            { "__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS" },
+            { "__typename": "CheckRun", "name": "smoke", "status": "COMPLETED", "conclusion": "CANCELLED" }
+        ]),
+        serde_json::json!([
+            { "__typename": "StatusContext", "context": "legacy", "state": "ERROR" }
+        ]),
+        serde_json::json!([
+            { "__typename": "CheckRun", "name": "ci", "status": "IN_PROGRESS", "conclusion": null }
+        ]),
+    ];
+    for rollup in failing_rollups {
+        for mode in [None, Some("exit"), Some("report")] {
+            let why = format!("rollup {rollup}, terminal_fail_mode={mode:?}");
+            let fixture = setup_repo();
+            let worktree = create_feature_worktree(&fixture);
+            commit_feature_change(&worktree);
+            let mut pr: JsonValue = serde_json::from_str(&matching_pr_json(&worktree, "OPEN", ""))
+                .expect("matching PR JSON");
+            pr["statusCheckRollup"] = rollup.clone();
+            let fake_tmp = TempDir::new().expect("fake gh tempdir");
+            let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
+
+            let run = run_terminal_state_in_mode(
+                &fixture.repo,
+                Some(&worktree),
+                "feature",
+                Some("https://github.com/owner/repo/pull/7"),
+                &fake_path,
+                "",
+                mode,
+            );
+
+            assert!(
+                run.success,
+                "{why}: a red check must not end the run at the probe\nstdout:\n{}\nstderr:\n{}",
+                run.stdout, run.stderr
+            );
+            assert_eq!(run.json["terminal_state"], "FOLLOWUP_CREATED", "{why}");
+            assert_eq!(run.json["terminal_success"], "false", "{why}");
+            assert_eq!(run.json["should_publish"], "true", "{why}");
+            assert_eq!(run.json["should_finalize"], "true", "{why}");
+            assert_eq!(run.json["should_run_ci_wait"], "true", "{why}");
+            assert!(
+                !run.stdout.contains("BLOCKED_CI") && !run.stderr.contains("BLOCKED_CI"),
+                "{why}: the probe no longer names BLOCKED_CI\nstdout:\n{}\nstderr:\n{}",
+                run.stdout,
+                run.stderr
+            );
+        }
+    }
+}
+
+// Only the failing-check blocker went. A closed PR that still holds unmerged
+// work is still a failure, red checks or not, because no repair of CI can
+// reopen it.
+#[test]
+fn a_closed_unmerged_pr_with_failing_checks_is_still_failed_closed_unmerged() {
     let fixture = setup_repo();
     let worktree = create_feature_worktree(&fixture);
     commit_feature_change(&worktree);
     let mut pr: JsonValue =
-        serde_json::from_str(&matching_pr_json(&worktree, "OPEN", "")).expect("matching PR JSON");
+        serde_json::from_str(&matching_pr_json(&worktree, "CLOSED", "")).expect("matching PR JSON");
     pr["statusCheckRollup"] = serde_json::json!([{ "conclusion": "FAILURE" }]);
     let fake_tmp = TempDir::new().expect("fake gh tempdir");
     let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
@@ -984,11 +1077,8 @@ fn terminal_state_blocks_active_pr_with_real_failing_checks() {
         &fake_path,
     );
 
-    assert!(
-        !run.success,
-        "active failing checks must block terminal success"
-    );
-    assert_eq!(run.json["terminal_state"], "BLOCKED_CI");
+    assert!(!run.success, "a closed PR with unmerged work fails closed");
+    assert_eq!(run.json["terminal_state"], "FAILED_CLOSED_UNMERGED");
 }
 
 #[test]

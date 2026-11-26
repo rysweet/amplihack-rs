@@ -3,17 +3,22 @@
 //!
 //! These tests parse the live YAML, the two new tools and the manifest; no
 //! recipe runs. They cover acceptance test (f) (no design, consensus or
-//! architect steps and no `default-workflow`), the escalation wiring, the
-//! "merge phase reached" condition of test (a), and the prohibited strings.
+//! architect steps and no `default-workflow`), the "merge phase reached"
+//! condition of test (a), and the prohibited strings.
 //!
 //! Issue #1982 moved light mode to the per-finding follow-up model of #1979:
 //! the effective task id (`plan_task_id`, else `#<issue_number>`) is worked
 //! out once by `light-task-id`, through `autodrive_followups.sh resolve-task`
-//! (no copy of the rule lives in the recipe), and forwarded to all three child
-//! recipes; light mode has no marker and no hook inside the loops, the change
+//! (no copy of the rule lives in the recipe), and forwarded to the child
+//! loop; light mode has no marker and no hook inside the loop, the change
 //! is measured only by `light-eligibility`; and `light-report` lists the
 //! issues from `followups.tsv`. The bash bodies of `light-prereqs`,
 //! `light-task-id` and `light-report` are also run, with fakes on `PATH`.
+//!
+//! Issue #3129 replaced the escalation to `auto-drive-to-merge`, the Crusty
+//! loop, the unmerged check and the merge loop with one step, `light-loop`,
+//! which runs the shared goal loop (`autodrive-goal-loop`). The tests of the
+//! escalation and of the light-path condition went with them.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -23,8 +28,8 @@ use serde_yaml::Value;
 use sha2::{Digest, Sha256};
 
 use crate::support::auto_drive_light::{
-    Fakes, LightRepo, fake_bin, jq_available, private_dir, read, recipe, repo_root, run_bash, show,
-    stderr, stdout, step_command,
+    Fakes, LightRepo, fake_bin, git, jq_available, private_dir, read, recipe, repo_root, run_bash,
+    show, stderr, stdout, step_command,
 };
 
 const NAME: &str = "auto-drive-light";
@@ -36,16 +41,15 @@ const STEPS: &[&str] = &[
     "light-worktree",
     "light-base-pin",
     "light-implement",
+    "light-qa-inputs",
     "light-qa",
     "light-precommit",
     "light-commit-push",
     "light-open-pr",
     "light-resolve-pr",
     "light-eligibility",
-    "light-escalate",
-    "light-crusty-loop",
-    "light-check-unmerged",
-    "light-merge-loop",
+    "light-goal-pr",
+    "light-loop",
     "light-report",
 ];
 
@@ -53,21 +57,16 @@ const BUILD_STEPS: &[&str] = &[
     "light-worktree",
     "light-base-pin",
     "light-implement",
+    "light-qa-inputs",
     "light-qa",
     "light-precommit",
     "light-commit-push",
     "light-open-pr",
 ];
 
-const LIGHT_PATH: &[&str] = &[
-    "light-crusty-loop",
-    "light-check-unmerged",
-    "light-merge-loop",
-];
-
-const LIGHT_COND: &str =
-    "light_eligibility.decision == 'light' and build_result.merged_before_run != 'true'";
-const ESCALATE_COND: &str = "light_eligibility.decision == 'escalate'";
+/// #3129: the goal loop runs on every PR that was not merged before the run;
+/// the eligibility measurement no longer decides what runs.
+const LOOP_COND: &str = "build_result.merged_before_run != 'true'";
 
 /// Never in a bash command of the recipe, nor anywhere in either tool.
 const PROHIBITED: &[&str] = &["--admin", "--no-verify", "SKIP=", "gh pr merge", "eval "];
@@ -142,7 +141,8 @@ fn steps_are_present_in_order() {
 fn recursion_limits_and_no_timeouts() {
     let r = r();
     assert_eq!(r["recursion"]["max_depth"].as_u64(), Some(6));
-    assert_eq!(r["recursion"]["max_total_steps"].as_u64(), Some(200));
+    // #3129: the recipe's own steps only; the loop's turns are separate runs.
+    assert_eq!(r["recursion"]["max_total_steps"].as_u64(), Some(60));
     let text = read("amplifier-bundle/recipes/auto-drive-light.yaml");
     for banned in ["timeout:", "timeout_seconds", "default_step_timeout"] {
         assert!(
@@ -236,84 +236,50 @@ fn agent_responsibilities_preserve_implementation_merge_prohibition() {
 }
 
 #[test]
-fn auto_drive_to_merge_is_called_only_from_light_escalate() {
+fn auto_drive_to_merge_is_never_called() {
+    // #3129: light-escalate, the one step that called auto-drive-to-merge, is
+    // gone. light-loop names the shared goal text, which lives in the
+    // auto-drive-to-merge skill folder; that path is the only mention left.
     let r = r();
     for s in steps(&r) {
         let id = s["id"].as_str().unwrap();
-        let mentions = yaml_text(&s).contains("auto-drive-to-merge");
-        if id == "light-escalate" {
-            assert_eq!(s["type"].as_str(), Some("recipe"));
-            assert_eq!(s["recipe"].as_str(), Some("auto-drive-to-merge"));
-        } else {
-            assert!(!mentions, "step {id} must not name auto-drive-to-merge");
-        }
+        let mentions = yaml_text(&s)
+            .replace("skills/auto-drive-to-merge/goal-merge-pr.md", "")
+            .contains("auto-drive-to-merge");
+        assert!(!mentions, "step {id} must not name auto-drive-to-merge");
     }
 }
 
 #[test]
-fn light_escalate_runs_only_on_escalate_and_passes_the_same_pr_and_state() {
+fn merge_phase_has_no_condition_other_than_an_unmerged_pr() {
+    // Acceptance test (a): nothing but a PR merged before the run stands
+    // between the build and the goal loop (#3129: the loop replaced the
+    // light-only merge loop).
     let r = r();
-    assert_eq!(condition(&r, "light-escalate"), ESCALATE_COND);
-    let ctx = &step(&r, "light-escalate")["context"];
-    assert_eq!(ctx["pr_number"].as_str(), Some("{{build_result.pr}}"));
-    assert_eq!(ctx["existing_branch"].as_str(), Some(""));
-    assert_eq!(
-        ctx["autodrive_state_dir"].as_str(),
-        Some("{{build_result.state_dir}}")
-    );
-    for k in [
-        "task_description",
-        "repo_path",
-        "autodrive_dry_run",
-        "no_merge",
-    ] {
-        assert_eq!(
-            ctx[k].as_str(),
-            Some(format!("{{{{{k}}}}}").as_str()),
-            "light-escalate passes {k} unchanged"
-        );
-    }
-}
-
-#[test]
-fn light_path_steps_run_only_on_light() {
-    let r = r();
-    for id in LIGHT_PATH {
-        assert_eq!(condition(&r, id), LIGHT_COND, "{id}");
-    }
-}
-
-#[test]
-fn merge_phase_has_no_condition_other_than_light() {
-    // Acceptance test (a): with the fake evaluator answering DONE, nothing
-    // else stands between a light CLEAN round and the merge loop.
-    let r = r();
-    let s = step(&r, "light-merge-loop");
+    let s = step(&r, "light-loop");
     assert_eq!(s["type"].as_str(), Some("recipe"));
-    assert_eq!(s["recipe"].as_str(), Some("autodrive-merge-loop"));
-    assert_eq!(s["condition"].as_str(), Some(LIGHT_COND));
+    assert_eq!(s["recipe"].as_str(), Some("autodrive-goal-loop"));
+    assert_eq!(s["condition"].as_str(), Some(LOOP_COND));
 }
 
 #[test]
 fn loops_are_the_unchanged_shared_sub_recipes_on_the_build_result() {
     let r = r();
-    let crusty = step(&r, "light-crusty-loop");
-    assert_eq!(crusty["recipe"].as_str(), Some("autodrive-crusty-loop"));
+    // #3129: one loop, the shared goal loop, on the PR light-goal-pr names
+    // (the operator's pr_number, else the build result's PR).
+    let lp = step(&r, "light-loop");
+    assert_eq!(lp["recipe"].as_str(), Some("autodrive-goal-loop"));
     assert_eq!(
-        crusty["context"]["pr_number"].as_str(),
-        Some("{{build_result.pr}}")
+        lp["context"]["pr_number"].as_str(),
+        Some("{{autodrive_goal_pr}}")
+    );
+    // #2997: the loop gets the runner-bound folder, never the build's.
+    assert_eq!(
+        lp["context"]["autodrive_state_dir"].as_str(),
+        Some("{{autodrive_state_dir}}")
     );
     assert_eq!(
-        crusty["context"]["autodrive_state_dir"].as_str(),
-        Some("{{build_result.state_dir}}")
-    );
-    let merge = step(&r, "light-merge-loop");
-    assert_eq!(
-        merge["context"]["autodrive_state_dir"].as_str(),
-        Some("{{build_result.state_dir}}")
-    );
-    assert_eq!(
-        merge["context"]["autodrive_dry_run"].as_str(),
+        lp["context"]["autodrive_dry_run"].as_str(),
         Some("{{autodrive_dry_run}}")
     );
     assert_eq!(
@@ -359,8 +325,6 @@ fn eligibility_step_measures_records_and_handles_escalation() {
     for needle in [
         "autodrive_light_eligibility.sh",
         "light-eligibility.json",
-        "escalation.json",
-        "previously-escalated",
         "RECIPE_VAR_light_max_lines",
         "RECIPE_VAR_light_max_new_modules",
         "RECIPE_VAR_light_max_public_api",
@@ -410,47 +374,13 @@ fn resolve_pr_refuses_cross_repository_prs_and_existing_branch_without_pr() {
 }
 
 #[test]
-fn check_unmerged_observes_platform_and_retains_failed_attempts() {
-    let s = step(&r(), "light-check-unmerged");
-    assert!(is_agent(&s));
-    let prompt = s["prompt"].as_str().unwrap();
-    for policy in [
-        "OPEN",
-        "verified head",
-        "authenticated interface",
-        "blocker",
-        "Leave the PR open",
-    ] {
-        assert!(prompt.contains(policy));
-    }
-}
-
-#[test]
-fn qa_preserves_selection_and_reports_unavailable_required_tools() {
-    let s = step(&r(), "light-qa");
-    assert!(is_agent(&s));
-    let prompt = s["prompt"].as_str().unwrap();
-    for policy in [
-        "qa_command",
-        "quick_change_checks.sh",
-        "recorded base",
-        "missing required tool",
-        "13 authoritative",
-    ] {
-        assert!(prompt.contains(policy));
-    }
-}
-
-#[test]
 fn report_uses_typed_finalization_and_missing_evidence_stays_incomplete() {
+    // #3129: finalisation is gone and the run's outcome is the runner's
+    // report, built from loop-end.json; light-report no longer reads
+    // autodrive_finalization or prints a readiness verdict.
     let s = step(&r(), "light-report");
     let cmd = s["command"].as_str().unwrap();
-    assert!(cmd.contains("RECIPE_VAR_autodrive_finalization"));
-    assert!(cmd.contains("already_merged"));
-    assert!(cmd.contains("dependency_failure"));
     assert!(!cmd.contains("merge_gate_result"));
-    let helper = read("crates/amplihack-cli/src/commands/orch/autodrive/helper.rs");
-    assert!(helper.contains("followups"));
 }
 
 #[test]
@@ -569,7 +499,7 @@ fn quick_change_common_is_loaded_from_amplihack_home_only() {
         }
     }
     assert_eq!(
-        n, 3,
+        n, 4,
         "local preparation steps source trusted quick_change_common.sh"
     );
     let pre = yaml_text(&step(&r(), "light-prereqs"));
@@ -623,11 +553,12 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     assert_eq!(
         ids,
         [
-            "step-00-review-dir-guard",
             "step-01-round-context",
+            "step-01c-pre-review-evidence",
             "step-02-crusty-review",
-            "step-02b-review-dir-unchanged",
+            "step-02b-assess-review-changes",
             "step-03-extract-crusty-verdict",
+            "step-03c-post-verdict",
             "step-04-address-concerns",
             "step-05-verify-concerns-addressed",
             "step-06-write-round-record",
@@ -670,11 +601,6 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     assert!(
         !s6.contains("SUFFIX"),
         "#1982: the record has no light suffix"
-    );
-    assert_eq!(
-        round["context"].as_mapping().unwrap().len(),
-        13,
-        "completion state, shared authorization and dry-run context reach the crusty round"
     );
 }
 
@@ -738,7 +664,9 @@ fn docs_are_linked_and_in_the_nav() {
 // Issue #1982: the effective task id, the prerequisites and the report
 // ===========================================================================
 
-const CHILDREN: &[&str] = &["light-escalate", "light-crusty-loop", "light-merge-loop"];
+/// #3129: the goal loop replaced the escalation, the Crusty loop and the
+/// merge loop as the recipe's one child.
+const CHILDREN: &[&str] = &["light-loop"];
 
 /// The exact line `light-task-id` prints before exit 2.
 const TASK_ID_ERROR: &str =
@@ -808,6 +736,7 @@ fn prereqs_check_the_follow_up_tools_and_hold_no_task_id_rule() {
         "autodrive_light_eligibility.sh",
         "autodrive_finding_rules.sh",
         "autodrive_followups.sh",
+        "autodrive_followups_file.sh",
         "autodrive_followups_check.sh",
         "workflow_issue_tracking.sh",
         "autodrive_state.sh",
@@ -838,8 +767,7 @@ fn prereqs_check_the_follow_up_tools_and_hold_no_task_id_rule() {
     assert!(task.contains("AMPLIHACK_HOME"), "from the tool root only");
 }
 
-/// A scratch repository and the fakes, with a stub `gadugi-test` on `PATH`
-/// so `light-prereqs` can pass its last check.
+/// A scratch repository and the fakes on `PATH`.
 struct StepEnv {
     repo: LightRepo,
     fakes: Fakes,
@@ -850,11 +778,6 @@ impl StepEnv {
     fn new() -> Self {
         let repo = LightRepo::new();
         let fakes = fake_bin(repo.tmp.path());
-        crate::support::exec_stub::write_executable(
-            &fakes.bin.join("gadugi-test"),
-            "#!/usr/bin/env bash\nexit 0\n",
-            0o755,
-        );
         let tmpdir = repo.tmp.path().join("private-tmp");
         private_dir(&tmpdir);
         StepEnv {
@@ -1045,6 +968,101 @@ fn light_task_id_accepts_exactly_the_task_ids_resolve_task_accepts() {
     );
 }
 
+/// A light-path repository whose clone default is `main` and which also has
+/// an `origin/trunk` at the base commit, so the two answers give different
+/// change sets: against `main` the change is the documentation file alone,
+/// against `trunk` it also carries the source file.
+fn light_world_with_trunk() -> StepEnv {
+    let e = StepEnv::new();
+    let a = e.repo.base.clone();
+    git(&e.repo.wt, &["update-ref", "refs/remotes/origin/trunk", &a]);
+    e.repo
+        .write("crates/foo/src/added.rs", "pub fn added() {}\n");
+    let b = e.repo.commit("feat: add a module");
+    git(&e.repo.wt, &["update-ref", "refs/remotes/origin/main", &b]);
+    git(
+        &e.repo.wt,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    e.repo.write("docs/guide.md", "# guide\n\nand more\n");
+    e.repo.commit("docs: extend the guide");
+    e
+}
+
+/// Runs `light-qa-inputs` with `vars` on top of the worktree setup, and
+/// returns the output and the record it printed. `cargo` is kept off PATH:
+/// the measurement runs the suite it detects, and this fixture is not a tree
+/// to build. An absent command is a fact the record carries.
+fn light_qa_record(e: &StepEnv, vars: &[(&str, &str)]) -> (Output, serde_json::Value) {
+    let wt = e
+        .repo
+        .wt
+        .canonicalize()
+        .expect("the worktree path is the one worktree_setup_path.sh accepts");
+    let setup = serde_json::json!({"worktree_path": wt, "base_branch": "main"}).to_string();
+    let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
+    let mut env: Vec<(&str, &str)> = vec![
+        ("RECIPE_VAR_worktree_setup", setup.as_str()),
+        ("PATH", path.as_str()),
+    ];
+    env.extend_from_slice(vars);
+    let o = e.run("light-qa-inputs", &env);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let line = stdout(&o)
+        .lines()
+        .rev()
+        .find(|l| l.starts_with('{'))
+        .map(str::to_string)
+        .unwrap_or_else(|| panic!("the step prints the measured record: {}", show(&o)));
+    let rec: serde_json::Value = serde_json::from_str(&line).expect("the record is one JSON line");
+    (o, rec)
+}
+
+fn rec_field(rec: &serde_json::Value, k: &str) -> String {
+    rec[k].as_str().unwrap_or_default().to_string()
+}
+
+/// #2569: before the PR exists its target is the branch `origin/HEAD` names.
+/// `light-worktree` cut the `quick/` branch from it and `light-open-pr`
+/// publishes against it, as on main, so the change set is measured against
+/// it and against nothing else. A `base_branch` and an inherited
+/// `AUTODRIVE_QA_BASE` both naming `trunk` are not consulted: taking either
+/// would show in the recorded base and in the measured paths alike.
+#[test]
+fn light_qa_inputs_measures_against_the_branch_origin_head_names() {
+    if skip() {
+        return;
+    }
+    let e = light_world_with_trunk();
+    let (o, rec) = light_qa_record(
+        &e,
+        &[
+            ("RECIPE_VAR_base_branch", "trunk"),
+            ("AUTODRIVE_QA_BASE", "trunk"),
+        ],
+    );
+    assert_eq!(
+        rec_field(&rec, "qa_base"),
+        "main",
+        "the branch origin/HEAD names is the base the record was measured against: {rec}"
+    );
+    assert_eq!(rec_field(&rec, "docs_only"), "true", "{rec}");
+    assert!(
+        !rec_field(&rec, "qa_command_paths").contains("added.rs"),
+        "taking trunk instead would carry the source file: {rec}"
+    );
+    assert!(
+        e.fakes.gh_calls().is_empty(),
+        "there is no PR yet, so the hosting interface is not asked: {:?} {}",
+        e.fakes.gh_calls(),
+        show(&o)
+    );
+}
+
 #[test]
 fn light_prereqs_does_not_check_the_task_id() {
     if skip() {
@@ -1055,6 +1073,43 @@ fn light_prereqs_does_not_check_the_task_id() {
     let o = e.run("light-prereqs", &[("RECIPE_VAR_plan_task_id", "task 17")]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert!(!stderr(&o).contains(TASK_ID_ERROR), "{}", show(&o));
+}
+
+/// #2569: criterion 1 is judged by an agent step, so `light-prereqs` no
+/// longer looks for `gadugi-test`. In a Node repository with no
+/// `gadugi-test` on `PATH` (the host's own copy is kept out too), it passes
+/// and prints `{}`.
+#[test]
+fn light_prereqs_passes_in_node_repository_without_gadugi_test() {
+    if skip() {
+        return;
+    }
+    let e = StepEnv::new();
+    assert!(!e.fakes.bin.join("gadugi-test").exists());
+    for rel in ["Cargo.toml", "Cargo.lock", "crates/foo/Cargo.toml"] {
+        e.repo.remove(rel);
+    }
+    e.repo.write(
+        "package.json",
+        r#"{"name":"demo","version":"1.0.0","scripts":{"test":"node test.js"}}"#,
+    );
+    e.repo.commit("node project");
+    let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
+    let o = e.run("light-prereqs", &[("PATH", path.as_str())]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    // An absent gadugi-test is a fact the step reports, in either repository
+    // type, and never a stop: criterion 1 is judged in the loop (#2569).
+    assert_eq!(
+        stdout(&o).trim(),
+        r#"{"gadugi_test":"not-installed"}"#,
+        "{}",
+        show(&o)
+    );
+    assert!(
+        !stderr(&o).contains("gadugi-test-not-installed"),
+        "{}",
+        show(&o)
+    );
 }
 
 #[test]

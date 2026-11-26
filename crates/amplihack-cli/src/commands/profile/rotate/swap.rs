@@ -5,8 +5,6 @@
 
 use super::identify::{Account, LoginKind, login_kind};
 use super::ledger::{Phase, RotateJournal, RotateState};
-#[cfg(test)]
-use super::login_identity::Budget;
 use super::login_identity::{Reader, UNAVAILABLE};
 pub use super::recover::{RecoverOutcome, recover};
 use super::swap_authorize::{Proof, authorize};
@@ -21,8 +19,8 @@ use super::swap_expect::{relabel, settle};
 pub(super) use super::swap_finish::{finish, remove_unused_adoption};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    CLAUDE_JSON, CREDS, MoveError, REFRESH_LOCK, abort_point, check_root_private, exchange_logins,
-    exists, movable_login, move_login, read_claude_json, release_refresh_lock_at,
+    CLAUDE_JSON, CREDS, LoginExchange, MoveError, REFRESH_LOCK, abort_point, check_root_private,
+    exchange_logins, exists, movable_login, move_login, read_claude_json, release_refresh_lock_at,
     take_refresh_lock_at, write_private_atomic,
 };
 use crate::commands::profile::kind::{self, Kind};
@@ -79,35 +77,17 @@ pub(super) fn describe(e: MoveError) -> String {
     }
 }
 
-/// Runs the swap after structural and trusted-identity authorization.
-/// Returns the outgoing profile; refused authorization moves no login.
 #[cfg(test)]
-pub fn swap(
-    store: &ProfileStore,
-    rs: &RotateState,
-    home: &Path,
-    from: Source,
-    to: &ProfileName,
-    now: i64,
-) -> Result<ProfileName, ProfileError> {
-    let budget = Budget::new();
-    let read = super::login_identity::default_read();
-    swap_with(
-        store,
-        rs,
-        home,
-        from,
-        to,
-        now,
-        Reader {
-            read: &read,
-            budget: &budget,
-        },
-        None,
-    )
-}
+#[path = "swap_for_tests.rs"]
+mod for_tests;
+#[cfg(test)]
+pub use for_tests::{swap, swap_by};
 
-/// Shared swap checked against the accepted snapshot (None in legacy unit primitives).
+/// Runs the swap through `exchange` after structural and trusted-identity
+/// authorization, checked against the accepted snapshot (None in legacy
+/// unit primitives) and, for a rotator swap, the decision's `may_cross`
+/// (S4). Returns the outgoing profile; refused authorization moves no
+/// login.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn swap_with(
     store: &ProfileStore,
@@ -118,6 +98,8 @@ pub(super) fn swap_with(
     now: i64,
     reader: Reader<'_>,
     basis: Option<&super::observe::Snap>,
+    may_cross: Option<bool>,
+    exchange: &dyn LoginExchange,
 ) -> Result<ProfileName, ProfileError> {
     check_root_private(store.root()).map_err(|e| refused(format!("profile root {e}")))?;
     let dot = check_home(home)?;
@@ -146,7 +128,9 @@ pub(super) fn swap_with(
     if dev(&dot).is_none() || dev(&dot) != dev(&to_dir) {
         return Err(refused(DIFFERENT_DEVICES));
     }
-    if !cfg!(target_os = "linux") {
+    // A host with no atomic exchange (every system but Linux) declines
+    // here, before anything is written.
+    if !exchange.supported() {
         return Err(refused(NO_EXCHANGE));
     }
     // Refuses before anything is written; the locks are taken below.
@@ -176,6 +160,7 @@ pub(super) fn swap_with(
         Proof::Live,
     )?;
     super::swap_authorize::check_snapshot(&first, basis, to)?;
+    super::swap_authorize::check_org(&first, may_cross)?;
     // Persist owned locks before final identity requests can block or terminate.
     let mut j = prepare::begin(store, rs, home, &from, to, now, &l, &t)?;
     let checked = authorize(
@@ -189,7 +174,10 @@ pub(super) fn swap_with(
         platform_out,
         reader,
         Proof::Live,
-    );
+    )
+    // S4 again on the read the swap acts on: `same` compares an account with
+    // no uuid by e-mail alone, so it would pass a change of organisation.
+    .and_then(|auth| super::swap_authorize::check_org(&auth, may_cross).map(|()| auth));
     let mut auth = match checked {
         Ok(auth) if first.same(&auth) && auth.current(store) => auth,
         other => {
@@ -253,7 +241,7 @@ pub(super) fn swap_with(
     }
     abort_point("rotate-J0");
 
-    if let Err(e) = exchange_logins(&t, &l) {
+    if let Err(e) = exchange_logins(exchange, &t, &l) {
         // Only a target that still holds its own login was not exchanged.
         // A failed sync after the exchange still exchanged the logins: go
         // on as journalled, or they would be filed under the wrong profiles
@@ -273,6 +261,10 @@ pub(super) fn swap_with(
         }
         eprintln!("warning: {}; the swap goes on", describe(e));
     }
+    // Issue #2218: the install time, read before anything else can write
+    // the login. The refresh locks are still held, and they are held until
+    // `finish` has recorded it.
+    let live_login_at = super::swap_finish::installed_at(home);
     step(rs, &mut j, Phase::S1)?;
     let s = store.root().join(from.as_str()).join(CREDS);
     if let Err(e) = move_login(&t, &s, &show) {
@@ -292,7 +284,7 @@ pub(super) fn swap_with(
         .map_err(|_| ProfileError::RotateInconsistent(UNAVAILABLE.into()))?;
     super::swap_authorize::check_record(store, to, incoming.account())
         .map_err(|_| ProfileError::RotateInconsistent(UNAVAILABLE.into()))?;
-    finish(rs, home, &j, &incoming)?;
+    finish(rs, home, &j, &incoming, live_login_at)?;
     drop_locks(store, rs, home, &mut j)?;
     rs.delete_journal()?;
     settle(store, &from, pending);

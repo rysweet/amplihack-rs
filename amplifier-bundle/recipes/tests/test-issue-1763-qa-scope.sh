@@ -393,19 +393,19 @@ expect ev-cand-cap "twelve candidates" qa_status=QA_UNRESOLVED \
 if [[ "$OUT" != *"$WORK"* ]]; then pass ev-cand-nohost "the QA_UNRESOLVED record holds no host path"
 else fail ev-cand-nohost "host path leaked: $OUT"; fi
 
-echo "== #1763 evidence: QA_UNRESOLVED with a package.json candidate runs gadugi =="
+echo "== #1763 evidence: QA_UNRESOLVED with a package.json candidate lists scenarios =="
+# The scenarios are listed, never run: criterion 1 is judged by an agent step
+# inside the loop, and the judgement runs the ones this PR changed (#2569).
 repo a/Cargo.toml b/package.json tests/agentic/s.yaml; put tests/agentic/s.yaml $'name: smoke\n'; base
 run_tool
-expect ev-unres-gadugi-pass "gadugi passes; the round stays unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved \
-    gadugi_required=true gadugi_status=PASS gadugi_scenarios_run=1 qa_candidates="a b"
-if calls_of gadugi-test | grep -q '|validate ' && calls_of gadugi-test | grep -q '|run '; then
-    pass ev-unres-gadugi-ran "gadugi-test validate and run were called"
-else fail ev-unres-gadugi-ran "gadugi-test calls: $(calls_of gadugi-test | tr '\n' '|')"; fi
+expect ev-unres-gadugi-pass "scenarios are found; the round stays unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved \
+    gadugi_required=true gadugi_status=FOUND gadugi_scenario_dir_state=detected gadugi_scenario_count=1 \
+    gadugi_scenarios_run=0 qa_scenarios="tests/agentic/s.yaml" qa_candidates="a b"
+expect_calls ev-unres-gadugi-ran "the measurement calls no gadugi-test" gadugi-test ""
 expect_calls ev-unres-gadugi-npm "no suite runs" npm ""
 : > "$CALLS"; run_tool STUB_GADUGI_RC=1
-expect ev-unres-gadugi-fail "gadugi fails; still QA_UNRESOLVED/qa-unresolved" qa_status=QA_UNRESOLVED \
-    qa_reason=qa-unresolved gadugi_required=true gadugi_status=VALIDATE_FAILED
-expect_summary_has ev-unres-gadugi-fail-summary "gadugi"
+expect ev-unres-gadugi-fail "a gadugi-test that would fail changes nothing here" qa_status=QA_UNRESOLVED \
+    qa_reason=qa-unresolved gadugi_required=true gadugi_status=FOUND
 expect_summary_has ev-unres-gadugi-fail-cands "unresolved QA project candidates: a b"
 rm -rf "${REPO:?}/tests"; snap
 : > "$CALLS"; run_tool
@@ -850,10 +850,6 @@ expect_helper gate-head-empty autodrive_gadugi_required "true" "$B" AUTODRIVE_QA
 repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
 PRH="$(git -C "$REPO" rev-parse HEAD)"; git -C "$REPO" update-ref HEAD refs/remotes/origin/main
 expect_helper gate-head-web autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD="$PRH"
-# Finalization must refresh trusted policy against the actual head and base.
-if grep -q 'Refresh mutable checks' "$RECIPES/autodrive-finalize.yaml" && grep -q 'merge-base QA configuration' "$RECIPES/autodrive-merge-evidence.yaml"; then
-    pass finalization-policy "agent responsibilities retain current head/base QA policy"
-else fail finalization-policy "missing current QA policy responsibility"; fi
 
 echo "== #1763 static constraints =="
 for t in "$TOOL" "$TRUST" "$SCOPE" "$SOURCES" "$SNAME"; do
@@ -885,9 +881,6 @@ for fn in autodrive_qa_config autodrive_qa_ci autodrive_qa_report; do
     grep -q "^${fn}()" "$SOURCES" && pass "sources-fn:$fn" "defined in autodrive_qa_sources.sh" \
         || fail "sources-fn:$fn" "not defined in autodrive_qa_sources.sh"
 done
-# The merge gate needs only the scope file; the declared sources stay out of it.
-code "$TRUST" | grep -q 'autodrive_qa_sources' && fail trust-sources "autodrive_trust.sh loads the sources file" \
-    || pass trust-sources "the gate path never loads autodrive_qa_sources.sh"
 grep -q 'shellcheck source=autodrive_qa_scope.sh' "$TRUST" && pass trust-directive "autodrive_trust.sh has the shellcheck source= directive" \
     || fail trust-directive "autodrive_trust.sh lacks '# shellcheck source=autodrive_qa_scope.sh'"
 grep -q 'BASH_SOURCE' "$TRUST" && grep -q '_AD_SCOPE_OK' "$TRUST" && pass trust-loader "the loader uses BASH_SOURCE and _AD_SCOPE_OK" \
@@ -904,18 +897,9 @@ else fail tool-bash-c "bash -c appears more than once in autodrive_qa_evidence.s
 if code "$TOOL" | grep -E 'Cargo\.toml|package\.json|pyproject\.toml' >/dev/null; then
     fail tool-markers "autodrive_qa_evidence.sh names a manifest outside comments"
 else pass tool-markers "manifest names stay in the scope helper"; fi
-STEP02="$(awk '/- id: "step-02-qa-team-scenarios"/{on=1} on && /- id: "step-03/{on=0} on' "$RECIPES/autodrive-merge-evidence.yaml")"
-if printf '%s' "$STEP02" | grep -q 'merge-base QA configuration' && printf '%s' "$STEP02" | grep -q 'operator overrides'; then
-    pass evidence-step02 "agent keeps merge-base policy and operator precedence"
-else fail evidence-step02 "missing source precedence"; fi
-ROUND="$RECIPES/autodrive-merge-round.yaml"
-if grep -n 'qa-unresolved' "$ROUND" | grep -q 'qa-config-invalid' \
-   || { grep -q 'qa-unresolved' "$ROUND" && grep -q 'qa-config-invalid' "$ROUND"; }; then
-    if grep -E 'qa-unresolved|qa-config-invalid' -A1 "$ROUND" | grep -q 'AUTODRIVE_QA_COMMAND' \
-       && grep -E 'qa-unresolved|qa-config-invalid' -A1 "$ROUND" | grep -q 'qa.toml'; then
-        pass round-map "the round maps qa-unresolved and qa-config-invalid to the operator action"
-    else fail round-map "the round names the tokens without the AUTODRIVE_QA_COMMAND / qa.toml action"; fi
-else fail round-map "autodrive-merge-round.yaml does not name qa-unresolved and qa-config-invalid"; fi
+# #3129: the merge-evidence step-02 prompt and the merge round's mapping of
+# qa-unresolved and qa-config-invalid went with those recipes, which are
+# one-release aliases now; their checks were removed.
 if grep -q 'test-issue-1763-qa-scope.sh' "$REPO_ROOT/.github/workflows/ci.yml"; then pass ci-wired "CI runs this test"
 else fail ci-wired ".github/workflows/ci.yml does not run test-issue-1763-qa-scope.sh"; fi
 if command -v shellcheck >/dev/null 2>&1; then

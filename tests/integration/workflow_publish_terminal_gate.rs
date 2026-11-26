@@ -55,8 +55,17 @@ fn step_condition<'a>(recipe: &'a Value, id: &str) -> &'a str {
         .unwrap_or_else(|| panic!("workflow-publish step `{id}` must declare a condition"))
 }
 
+/// The recipe, plus the shell of every step whose body was extracted into
+/// `amplifier-bundle/tools/` for the brick budget (issue #1619), so a text
+/// search still sees what the steps really run.
 fn recipe_text(recipe: &Value) -> String {
-    serde_yaml::to_string(recipe).expect("serialize workflow-publish")
+    let mut text = serde_yaml::to_string(recipe).expect("serialize workflow-publish");
+    for step in steps(recipe) {
+        if let Some(command) = step.get("command").and_then(Value::as_str) {
+            text.push_str(&crate::recipe_step_body::resolved(command));
+        }
+    }
+    text
 }
 
 #[test]
@@ -267,12 +276,18 @@ fn publish_uses_required_terminal_and_followup_status_vocabulary() {
     let recipe = load_publish_recipe();
     let text = recipe_text(&recipe);
 
+    // #2966: `BLOCKED_CI` is no longer a status the publish gate can reach. A
+    // failing check on the run's own pull request lets the probe continue, so
+    // finalization repairs it; the state now comes only from the assessment, for
+    // a cause the run cannot fix. What a red check does at the publish gate is
+    // shown by behaviour, in `default_workflow_terminal_state`
+    // (`failing_checks_continue_to_ci_repair`, in the probe's `exit` mode), so
+    // this vocabulary no longer pins the token.
     for status in [
         "MERGED",
         "CLOSED_OBSOLETE",
         "NO_DIFF_SUCCESS",
         "FOLLOWUP_CREATED",
-        "BLOCKED_CI",
     ] {
         assert!(
             text.contains(status),

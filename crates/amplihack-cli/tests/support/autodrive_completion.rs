@@ -85,8 +85,6 @@ impl Drive {
             "id":"docs-typo", "severity":"minor", "summary":"Typo in example", "evidence":"README.md:4"
         }]}).to_string());
         for (file, id) in [
-            ("guard.sh", "step-00-review-dir-guard"),
-            ("guard-check.sh", "step-02b-review-dir-unchanged"),
             ("classify.sh", "step-03-extract-crusty-verdict"),
             ("record.sh", "step-06-write-round-record"),
         ] {
@@ -131,6 +129,8 @@ impl Drive {
             .env("FIXTURE", self.tmp.path())
             .env("FAKE_LOG", &self.fakes.log)
             .env("FAKE_GH_HEAD", self.head())
+            // #2333: completion reads the PR head by number over REST.
+            .env("PR_NUMBER", "7")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("AMPLIHACK_SESSION_DEPTH", "2")
             .env("AMPLIHACK_MAX_DEPTH", "6");
@@ -189,7 +189,8 @@ impl Drive {
             .env("AUTODRIVE_ROUND_LABEL", &label)
             .env("AUTODRIVE_ROUND_RECORD", &record)
             .env("AUTODRIVE_LAUNCH_TOOLS", tools_dir())
-            .env("REVIEW_DIR", &self.review)
+            .env("REVIEWED_HEAD_SHA", self.head())
+            .env("RECIPE_VAR_reviewed_head_sha", self.head())
             .env("REPO_PATH", &self.repo)
             .env("PR_NUMBER", "7")
             .output()
@@ -239,8 +240,6 @@ impl Drive {
                 record.as_os_str(),
                 OsStr::new("--repo"),
                 self.repo.as_os_str(),
-                OsStr::new("--review-dir"),
-                self.review.as_os_str(),
                 OsStr::new("--launch-tools"),
                 tools_dir().as_os_str(),
                 OsStr::new("--evaluator-context-file"),
@@ -288,23 +287,34 @@ impl Drive {
         assert!(o.status.success(), "Rust writer: {}", show(&o));
     }
 
-    pub fn run_loop(&self) -> Output {
-        let script = step_command("autodrive-crusty-loop", "step-02-crusty-loop");
-        self.script(&script)
-            .env("REPO_PATH", &self.review)
-            .env(
-                "RECIPE_VAR_crusty_loop_preflight",
-                // The #2329 preflight agent's contract includes the review dir.
-                json!({
-                    "should_run":"true", "repo":self.repo, "pr":"7", "state_dir":self.state,
-                    "review_dir":self.review
-                })
-                .to_string(),
-            )
-            .env("RECIPE_VAR_task_description", "Fix issue #2336")
-            .env("PR_URL", "https://github.com/o/r/pull/7")
+    /// #3129: the goal loop's review action, `autodrive_pr_goal.sh act review
+    /// <turn_dir>`, for turn 001. It runs one autodrive-crusty-round at the PR
+    /// worktree's head through `amplihack recipe run` (the shim above), which
+    /// replaces the Crusty loop's rounds. Returns the action's output, its
+    /// `result.json` (null when none was written) and the round record's path.
+    pub fn review_turn(&self) -> (Output, Value, PathBuf) {
+        private_dir(&self.state.join("turns"));
+        let turn = self.state.join("turns/001");
+        private_dir(&turn);
+        let o = self
+            .cmd("bash")
+            .arg(tools_dir().join("autodrive_pr_goal.sh"))
+            .args(["act", "review"])
+            .arg(&turn)
+            .env("AUTODRIVE_GOAL_CONTRACT", "1")
+            .env("AUTODRIVE_STATE_DIR", &self.state)
+            .env("AUTODRIVE_REPO", &self.review)
+            .env("AUTODRIVE_WORKTREE", &self.repo)
+            .env("AUTODRIVE_LOOP_HOME", tools_dir())
+            .env("AUTODRIVE_TASK_FILE", &self.task)
+            .env("RECIPE_VAR_pr_number", "7")
             .output()
-            .unwrap()
+            .unwrap();
+        let result = std::fs::read_to_string(turn.join("result.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(Value::Null);
+        (o, result, self.p("crusty-round-turn-001.json"))
     }
 
     /// The crusty loop's step-03 is an agent step (#2329). The fixture plays
@@ -321,43 +331,6 @@ impl Drive {
             c.env("FAKE_GH_FAIL", "issue create");
         }
         c.output().unwrap()
-    }
-
-    pub fn rereview(&self, fail: bool) -> Output {
-        let mut c = self.cmd("bash");
-        c.arg(tools_dir().join("autodrive_crusty_rereview.sh"))
-            .arg("--repo")
-            .arg(&self.repo)
-            .arg("--review-dir")
-            .arg(&self.review)
-            .arg("--state-dir")
-            .arg(&self.state)
-            .args(["-c", "pr_number=7", "-c", "plan_task_id=#2336"])
-            .arg("--context-from-file")
-            .arg(format!("task_description={}", self.task.display()));
-        if fail {
-            c.env("FAKE_GH_FAIL", "issue create");
-        }
-        c.output().unwrap()
-    }
-
-    pub fn enable_rereview(&self) {
-        self.set("review.json", r#"{"crusty_verdict":"CLEAN","concerns":[]}"#);
-        self.record(1);
-        private_file(
-            &self.p("crusty-result.json"),
-            r#"{"loop":"crusty","loop_result":"DONE","round_label":"round-1","round_verdict":"CLEAN"}"#,
-        );
-        let o = self.finalize(false, false);
-        assert!(
-            o.status.success() && self.marked(),
-            "baseline completion: {}",
-            show(&o)
-        );
-        std::fs::write(self.repo.join("code.rs"), "fn new_code() {}\n").unwrap();
-        self.git(&self.repo, &["add", "code.rs"]);
-        self.git(&self.repo, &["commit", "-qm", "code needs re-review"]);
-        self.set("review.json", r#"{"crusty_verdict":"CONCERNS","concerns":[{"id":"docs-typo","severity":"minor","summary":"Typo","evidence":"README.md:4"}]}"#);
     }
 }
 

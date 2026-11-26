@@ -1,3 +1,4 @@
+use super::assessed::decided;
 use super::fixtures::*;
 use serde_json::json;
 
@@ -124,11 +125,27 @@ fn producer_objects_flow_through_collector_validator_and_completion() {
         collected.json()["completion"]["verification_completed"],
         "true"
     );
+    // The collector records the outcome it read, and assess-finalization
+    // decides the terminal state on that record (#2343, #2809). The producers'
+    // completion records ride beside the decision and are reported as read.
     let mut context = context;
     context["finalization_evidence"] = collected.json();
+    assert!(
+        collected.json()["outcome"].is_object(),
+        "the collector must record the outcome: {}",
+        collected.json()
+    );
+    context["finalization_assessment"] = decided("IMPLEMENTED_VERIFIED", "");
     let validated = Fixture::new().file(context.clone()).finalizer("validate");
     validated.exit(0);
     assert_eq!(validated.json()["terminal_state"], "IMPLEMENTED_VERIFIED");
+    for key in ["implementation_completed", "verification_completed"] {
+        assert_eq!(
+            validated.json()[key],
+            "true",
+            "the producers' {key} must arrive"
+        );
+    }
     context["workflow_result"] = validated.json();
     let complete = Fixture::new().file(context).finalizer("complete");
     complete.exit(0);

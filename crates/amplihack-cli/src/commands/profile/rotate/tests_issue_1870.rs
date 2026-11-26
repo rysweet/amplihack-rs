@@ -3,7 +3,7 @@
 //! Contract (`rotate::fresh`, `rotate::swap_back`, `rotate::fresh_msg`):
 //! - `fresh::MAX_READING_AGE_SECS: i64 = 300` and
 //!   `fresh::MAX_REREADS_PER_CYCLE: usize = 3`.
-//! - `fresh::RereadFn = fn(&Ctx, &ProfileName, Duration) -> Probed`, and
+//! - `fresh::RereadFn = fn(&Ctx, &ProfileName, Duration) -> (Probed, Option<ProbeLabel>)`, and
 //!   `fresh::Reread::{Allowed, Never}`.
 //! - `fresh::read_at(&Probed, measured_at) -> Option<i64>`: `None` for a
 //!   carried, still-running, unknown or failed probe; else `observed_at`, or
@@ -38,7 +38,7 @@ use super::fresh::{self, MAX_READING_AGE_SECS, MAX_REREADS_PER_CYCLE, Reread, Re
 use super::fresh_msg;
 use super::ledger::{RotateLedger, for_older_readers};
 use super::log::Shown;
-use super::observe::{Measurement, Snap, decide_measured, snapshot};
+use super::observe::{Measurement, Snap, decide_measured, decide_with, snapshot};
 use super::settings::Settings;
 use super::swap_back::{self, MAX_AGE_SECS, MAX_ENTRIES};
 use super::tests_revalidate_cause::{ctx_with, spent};
@@ -63,6 +63,7 @@ fn settings() -> Settings {
         interval: 600,
         overflow_wait: 1800,
         overflow_unknown_reset: false,
+        target_week_max: 95,
     }
 }
 
@@ -407,15 +408,35 @@ fn snap(c: &Ctx) -> Snap {
     snapshot(c, &State::new(c.store.root()).unwrap()).unwrap()
 }
 
-fn panics(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    panic!("no read may happen here, but {name} was read")
+fn panics(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        panic!("no read may happen here, but {name} was read")
+    }
+    (hook_body(c, who, left), None)
 }
 
 static GATE_CALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-fn spare_full(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    GATE_CALLS.lock().unwrap().push(name.to_string());
-    exh(43.0, 100.0)
+fn spare_full(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        GATE_CALLS.lock().unwrap().push(name.to_string());
+        exh(43.0, 100.0)
+    }
+    (hook_body(c, who, left), None)
 }
 
 #[test]
@@ -459,9 +480,19 @@ fn only_production_call_sites_wire_the_direct_reread() {
 
 static STUCK_READS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-fn stuck_read(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-    STUCK_READS.lock().unwrap().push(name.to_string());
-    Probed::failed()
+fn stuck_read(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        STUCK_READS.lock().unwrap().push(name.to_string());
+        Probed::failed()
+    }
+    (hook_body(c, who, left), None)
 }
 
 #[test]
@@ -490,9 +521,9 @@ fn a_decision_that_keeps_naming_an_unknown_target_is_an_error_within_the_cap() {
         m,
         Reread::Allowed,
         Duration::from_secs(120),
-        |live, probes, at| {
+        |live, probes, extra, at| {
             decisions += 1;
-            let mut again = decide_measured(&c, &s, live, probes, at)?;
+            let mut again = decide_with(&c, &s, live, probes, at, extra)?;
             again.decision = stuck.clone();
             Ok(again)
         },
@@ -508,20 +539,51 @@ fn a_decision_that_keeps_naming_an_unknown_target_is_an_error_within_the_cap() {
 
 static SLOW_LEFT: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
 
-/// A slow endpoint: each read takes 200 ms and finds the login full.
-fn slow_full(_: &Ctx, name: &ProfileName, left: Duration) -> Probed {
+/// The time the slow endpoint's reads have taken so far. `settle_timed` is
+/// told this figure in place of the clock's.
+static SLOW_SPENT: Mutex<Duration> = Mutex::new(Duration::ZERO);
+
+/// A slow endpoint: each read takes 200 ms and finds the login full. It
+/// takes them on `SLOW_SPENT`, not on the clock, so the test waits for
+/// nothing and a loaded host cannot make a read take longer (issue #3008).
+fn slow_full(
+    _: &Ctx,
+    name: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
     SLOW_LEFT.lock().unwrap().push((name.to_string(), left));
-    std::thread::sleep(Duration::from_millis(200));
-    exh(43.0, 100.0)
+    *SLOW_SPENT.lock().unwrap() += Duration::from_millis(200);
+    (exh(43.0, 100.0), None)
 }
 
+/// The rule: all re-reads of one cycle share one time limit. With a limit of
+/// 300 ms and reads of 200 ms, the first read is given the whole limit, the
+/// second exactly the 100 ms the first left, and the third is never started.
+///
+/// This test used to sleep 200 ms inside a real 300 ms limit and failed when
+/// the sleep overran on a loaded host (issue #3008). `settle_timed` takes
+/// the time spent as an argument, so the figures below are exact.
 #[test]
 fn all_rereads_of_one_gate_share_one_time_limit() {
     let e = env();
     let c = gate_ctx(&e, Some(slow_full));
     let s = snap(&c);
     let at = now();
-    let stale = |sess, week| rd(sess, week, Some(at - 60));
+    // The live login is spent, so the readings are older than the last good
+    // age: issue #2820 accepts a recent one at the time limit.
+    let stale = |sess, week| {
+        rd(
+            sess,
+            week,
+            Some(
+                at - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS
+                    - 60,
+            ),
+        )
+    };
     let m = decide_measured(
         &c,
         &s,
@@ -540,9 +602,14 @@ fn all_rereads_of_one_gate_share_one_time_limit() {
         m.decision
     );
     let budget = Duration::from_millis(300);
-    let got = fresh::settle(&c, m, Reread::Allowed, budget, |live, probes, at| {
-        decide_measured(&c, &s, live, probes, at)
-    })
+    let got = fresh::settle_timed(
+        &c,
+        m,
+        Reread::Allowed,
+        budget,
+        || *SLOW_SPENT.lock().unwrap(),
+        |live, probes, extra, at| decide_with(&c, &s, live, probes, at, extra),
+    )
     .unwrap();
     let left = SLOW_LEFT.lock().unwrap().clone();
     assert_eq!(
@@ -550,9 +617,10 @@ fn all_rereads_of_one_gate_share_one_time_limit() {
         2,
         "the third read is never started; the limit is spent: {left:?}"
     );
-    assert!(left[0].1 <= budget, "the first read gets at most the limit");
-    assert!(
-        left[1].1 < Duration::from_millis(150),
+    assert_eq!(left[0].1, budget, "the first read gets the whole limit");
+    assert_eq!(
+        left[1].1,
+        Duration::from_millis(100),
         "the second read gets only what the first left, not a new deadline: {left:?}"
     );
     let third = got
@@ -569,6 +637,22 @@ fn all_rereads_of_one_gate_share_one_time_limit() {
         "no swap onto a login that was not read again: {:?}",
         got.decision
     );
+    // Issue #2910: the login the time limit left unread is unknown
+    // (`timeout`) in the no-target counts, not "not tried (re-read limit 3)",
+    // which is for the cap of three re-reads alone.
+    let unread = ["first", "second", "third"]
+        .into_iter()
+        .find(|w| !left.iter().any(|(name, _)| name.as_str() == *w))
+        .expect("one login was not read");
+    let st = got.seen.logins.get(&n(unread)).expect("the cycle saw it");
+    assert_eq!(
+        st.basis,
+        crate::commands::profile::rotate::decide::target_seen::Basis::Unknown(
+            crate::commands::profile::rotate::measure::ProbeLabel::Timeout
+        ),
+        "{st:?}"
+    );
+    assert!(!got.seen.not_tried.contains(&n(unread)), "{:?}", got.seen);
 }
 
 #[test]
@@ -581,7 +665,19 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
         &c,
         &s,
         spent(),
-        vec![(n("spare"), rd(11.0, 20.0, Some(at - 60)))],
+        // Older than the last good age: issue #2820 accepts a recent
+        // reading at the time limit while the live login is spent.
+        vec![(
+            n("spare"),
+            rd(
+                11.0,
+                20.0,
+                Some(
+                    at - crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS
+                        - 60,
+                ),
+            ),
+        )],
         at,
     )
     .unwrap();
@@ -590,7 +686,7 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
         m,
         Reread::Allowed,
         Duration::ZERO,
-        |live, probes, at| decide_measured(&c, &s, live, probes, at),
+        |live, probes, extra, at| decide_with(&c, &s, live, probes, at, extra),
     )
     .unwrap();
     assert_eq!(
@@ -601,6 +697,113 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
         !matches!(got.decision, Decision::Swap { .. }),
         "{:?}",
         got.decision
+    );
+}
+
+/// A target the gate rejects is unknown for the rest of the cycle, whatever
+/// its probe read before. Here `spare`'s probe failed this cycle with a
+/// label (HTTP 429), and the decision chose it on its stale figures; the gate
+/// rejects it without a read, and the decision must not come back to it: the
+/// gate settles instead of ending the cycle in `GateUnsettled` (issue #2910).
+/// Issue #3105: the failed probe stands for the earlier gate's unconfirmed
+/// acceptance this test used to start from; the next test keeps that start.
+#[test]
+fn a_rejected_target_is_not_chosen_again_on_its_stale_reading() {
+    use crate::commands::profile::rotate::measure::ProbeLabel;
+    let e = env();
+    let c = gate_ctx(&e, None);
+    let s = snap(&c);
+    let at = now();
+    let mut m = decide_measured(
+        &c,
+        &s,
+        rd(86.0, 65.0, None),
+        vec![(n("spare"), rd(0.0, 40.0, Some(at - 600)))],
+        at,
+    )
+    .unwrap();
+    assert!(
+        matches!(&m.decision, Decision::Swap { to, .. } if to == &n("spare")),
+        "without the gate the stale reading wins: {:?}",
+        m.decision
+    );
+    // The probe failed in this cycle, with the label its error earned.
+    if let Some((_, probes)) = m.probed.as_mut() {
+        probes[0].1 = Probed::failed();
+    }
+    m.seen.extra.labels.insert(n("spare"), ProbeLabel::Http429);
+    let got = fresh::settle(
+        &c,
+        m,
+        Reread::Never,
+        Duration::from_secs(120),
+        |live, probes, extra, at| decide_with(&c, &s, live, probes, at, extra),
+    )
+    .expect("the gate settles, it does not end the cycle in an error");
+    assert!(
+        !matches!(got.decision, Decision::Swap { .. }),
+        "{:?}",
+        got.decision
+    );
+    assert!(
+        got.fresh_lines
+            .iter()
+            .any(|l| l.starts_with("reject: spare ")),
+        "{:?}",
+        got.fresh_lines
+    );
+}
+
+/// Issue #2820: a target an earlier gate of the cycle accepted without a
+/// fresh reading is accepted again only while the live login is blocked.
+/// Here the live login has room and no block, so the earlier acceptance
+/// counts as a probe that failed: the gate rejects `spare`, and the decision
+/// does not come back to it.
+#[test]
+fn an_earlier_unconfirmed_target_is_rejected_when_the_live_login_is_not_blocked() {
+    use crate::commands::profile::rotate::measure::ProbeLabel;
+    let e = env();
+    let c = gate_ctx(&e, None);
+    let s = snap(&c);
+    let at = now();
+    let mut m = decide_measured(
+        &c,
+        &s,
+        rd(86.0, 65.0, None),
+        vec![(n("spare"), rd(0.0, 40.0, Some(at - 600)))],
+        at,
+    )
+    .unwrap();
+    assert!(
+        matches!(&m.decision, Decision::Swap { to, .. } if to == &n("spare")),
+        "without the gate the stale reading wins: {:?}",
+        m.decision
+    );
+    assert_eq!(m.seen.live_blocked, None, "the live login has no block");
+    m.seen
+        .extra
+        .unconfirmed
+        .insert(n("spare"), ProbeLabel::Http429.into());
+    let got = fresh::settle(
+        &c,
+        m,
+        Reread::Never,
+        Duration::from_secs(120),
+        |live, probes, extra, at| decide_with(&c, &s, live, probes, at, extra),
+    )
+    .expect("the gate settles, it does not end the cycle in an error");
+    assert!(
+        !matches!(got.decision, Decision::Swap { .. }),
+        "{:?}",
+        got.decision
+    );
+    assert_eq!(got.seen.unconfirmed, None, "{:?}", got.fresh_lines);
+    assert!(
+        got.fresh_lines
+            .iter()
+            .any(|l| l.starts_with("reject: spare ")),
+        "{:?}",
+        got.fresh_lines
     );
 }
 
@@ -641,9 +844,13 @@ fn gate_rereads_a_stale_target_and_decides_again_without_writing() {
     let probed = &got.probed.as_ref().expect("probes kept").1;
     let p = probed.iter().find(|(n_, _)| n_ == &n("spare")).unwrap();
     assert_eq!(p.1.reading, exh(43.0, 100.0).reading);
+    // Issue #2910 (D11): a rejection at confirmation gets its own line.
     assert_eq!(
         got.fresh_lines,
-        ["reread: spare reading stale s=11% w=20%; fresh s=43% w=100%"]
+        [
+            "reread: spare reading stale s=11% w=20%; fresh s=43% w=100%",
+            "reject: spare no room on a fresh reading"
+        ]
     );
     assert_eq!(
         e.rs.load_ledger().unwrap().unwrap().account.as_deref(),
@@ -774,8 +981,18 @@ fn a_gate_that_reads_again_leaves_the_ledger_bytes_unchanged() {
     assert_eq!(fs::read(&e.rs.ledger).unwrap(), before, "SR-9: read-only");
 }
 
-fn spare_full_quiet(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
-    exh(43.0, 100.0)
+fn spare_full_quiet(
+    c: &Ctx,
+    who: &ProfileName,
+    left: Duration,
+) -> (
+    Probed,
+    Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+) {
+    fn hook_body(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
+        exh(43.0, 100.0)
+    }
+    (hook_body(c, who, left), None)
 }
 
 /// The gate passes a measurement with no probes unchanged; only test stubs
@@ -805,6 +1022,7 @@ fn every_production_measurement_keeps_its_probes() {
         }
     }
     assert_eq!(built.len(), 1, "one production literal: {built:?}");
-    assert_eq!(built[0].0, "observe.rs");
+    // Issue #2910: the decision moved to `observe_decide.rs` for the line budget.
+    assert_eq!(built[0].0, "observe_decide.rs");
     assert!(built[0].1.contains("probed: Some("), "{built:?}");
 }

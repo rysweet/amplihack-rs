@@ -5,7 +5,7 @@
 //!
 //! Order of checks (see [`decide::gate`]): auto-switch on, a limit stop
 //! with a usable session id, no `stop_hook_active`, an event not resumed
-//! before, a session under its cap, a rotator that runs (see
+//! before, a rotator that runs (see
 //! [`rotator_status::rotator_down`]). Then the hook takes a snapshot of the
 //! swap record (`rotate/swap.json`), arms its watches ([`Deps::arm`]),
 //! reads the record once, and blocks in [`Deps::wait_event`] until the
@@ -16,20 +16,42 @@
 //! [`judge_at`] says so: different from the snapshot, swapped after the
 //! stop, onto a login below 100% on both windows.
 //!
-//! On a resume the hook re-checks the toggle and moved-on, looks for a
-//! verified tmux pane, records the resume with [`guard::GuardStore::commit`]
-//! under the lock, and then takes exactly one path (D7): with a pane it
-//! sends Escape, C-u, `continue` and Enter ([`keys::RESUME_KEYS`]) and exits
-//! 0 (`resumed-keys`); without one it exits 2 with exactly `RESUME_MSG` and
-//! a newline on stderr (`resumed`). A key that fails stops the rest
-//! (`resume-keys-failed`) and never falls back to exit 2. Stdout is never
-//! written.
+//! On a resume the hook re-checks the toggle and moved-on, takes a verdict
+//! on its tmux pane ([`keys::PaneCheck`]) and, for a proved pane, on what
+//! that pane is showing ([`keys::ScreenCheck`]), and then takes exactly one
+//! path (D7). With a pane proved to be its own terminal, showing a screen
+//! the keys answer, it records the resume with
+//! [`guard::GuardStore::commit`] under the lock, sends Escape, C-u,
+//! `continue` and Enter ([`keys::RESUME_KEYS`]) and exits 0
+//! (`resumed-keys`). Otherwise it records nothing and exits 2 with
+//! `RESUME_MSG` and a newline on stderr. A key that fails stops the rest
+//! (`resume-keys-failed`), releases the commit with
+//! [`guard::GuardStore::release`] so the event stays armed, and never falls
+//! back to exit 2. Stdout is never written.
+//!
+//! Only a resume that reached the session is recorded (issue #3104). The
+//! exit-2 wake cannot answer Claude Code's usage-limit menu, which holds
+//! the session's input, so it records nothing and the next room event tries
+//! again. The four outcomes that take it are told apart in the log instead
+//! of falling through silently (issue #2695): `not-resumed` when no pane
+//! was named or found, `pane-unverified` when a pane was named or found but
+//! not proved to be the session's own terminal (with the reason in
+//! `detail`), `pane-not-reading` when the terminal is the session's but the
+//! session is not the process reading it, and `screen-unrecognised` when
+//! the terminal is the session's but it was not showing a screen the keys
+//! answer. The last also writes [`UNRECOGNISED_MSG`] before `RESUME_MSG`,
+//! so a refusal to type is not left to the log alone. Before a wake the
+//! hook reads the guard once more, without the lock, and ends as
+//! `duplicate` if another hook has resumed the session with keys since this
+//! one started, so it never wakes a session into a running turn.
 //!
 //! The hook reads only the toggle, the profile-root pointer, the rotate
 //! ledger, swap record and pid file, the rotator's `/proc/<pid>/cmdline`,
-//! Claude Code's `/proc/<pid>/{stat,fd/0}`, `$TMUX` and `$TMUX_PANE`, and
-//! its own resume state; it never opens a login file. Of the transcript it
-//! reads only the last entry's `timestamp`, through
+//! `/proc/<pid>/{stat,fd/0}` of its own ancestry, `$TMUX`, `$TMUX_PANE`,
+//! the tmux pane ids and ttys of its server when the environment names no
+//! pane, and the visible text of its own pane (all matched and dropped;
+//! never logged), and its own resume state; it never opens a login file. Of
+//! the transcript it reads only the last entry's `timestamp`, through
 //! [`swap_record::read_stop_time`] in `amplihack-utils`, to learn when the
 //! session stopped; nothing from it is logged, hashed or echoed.
 
@@ -48,8 +70,9 @@ use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT};
 use amplihack_utils::secure_files::{euid, read_bounded};
 use decide::{Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key};
 use guard::{CommitError, FsGuard, GuardStore};
-use keys::{Key, Pane, RESUME_KEYS};
+use keys::{Key, Pane, PaneCheck, RESUME_KEYS, ScreenCheck};
 use log::LogEntry;
+use std::cell::Cell;
 use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -60,8 +83,12 @@ use std::time::{Duration, Instant};
 pub const RESUME_MSG: &str = "amplihack: the login rotator reports a login with capacity. \
      Continue the task you were working on; if the usage limit is still in place, stop and wait.";
 
-/// Resumes allowed per session in any 24 hours.
-pub const MAX_RESUMES_PER_SESSION: u32 = 3;
+/// What the woken model is told before [`RESUME_MSG`] when the hook proved
+/// the pane but did not recognise what it was showing, so it typed nothing.
+/// Fixed text: no part of the capture is echoed into the model's context.
+pub const UNRECOGNISED_MSG: &str = "amplihack: limit-resume proved this session's terminal but did not recognise what it was \
+     showing, so it typed nothing into it. If a usage-limit prompt is still there, press Esc \
+     and continue the session by hand.";
 
 /// Larger hook payloads are ignored.
 pub const MAX_STDIN_BYTES: u64 = 1024 * 1024;
@@ -72,17 +99,41 @@ const LOG_KEY_CHARS: usize = 12;
 /// The `detail` logged when the session exits while keys are sent.
 const SESSION_GONE: &str = "session-gone";
 
+/// The `detail` logged with `not-resumed` when no tmux pane was named by
+/// the session's environment or found on its terminal, so there was
+/// nothing to send keys to. A fixed word, like the refusal reasons in
+/// [`keys::UNVERIFIED_REASONS`] but distinct from them: no environment
+/// value, pane id, tty or `/proc` text is ever logged.
+const NO_PANE: &str = "no-tmux-pane";
+
 /// How one invocation ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
+    /// A new swap record with room was seen and the session given the
+    /// exit-2 wake, but no tmux pane was named or found (`detail` is
+    /// `no-tmux-pane`). Nothing was typed and nothing was recorded, so the
+    /// event stays armed and the next room event tries again. A session
+    /// held on the usage-limit menu stays there until then.
+    NotResumed,
+    /// As `NotResumed`, for a pane, named or found, that the hook could not
+    /// prove is the session's own terminal. `detail` carries one of
+    /// [`keys::UNVERIFIED_REASONS`].
+    PaneUnverified,
+    /// As `NotResumed`, for a session whose pane is its own terminal but
+    /// which is not the process reading it.
+    PaneNotReading,
+    /// As `NotResumed`, for a session whose pane was proved but whose
+    /// screen held none of [`keys::SCREEN_MARKERS`], or could not be read at
+    /// all. `detail` carries one of [`keys::UNRECOGNISED_REASONS`]. The
+    /// wake says so on stderr as well as in the log.
+    ScreenUnrecognised,
     /// A new swap record with room was seen, the resume recorded, and the
-    /// session woken with exit 2 (no verified tmux pane).
-    Resumed,
-    /// As `Resumed`, but the resume keys were sent to the session's pane
-    /// and the hook exits 0.
+    /// resume keys were sent to the session's own pane; the hook exits 0.
+    /// The only outcome that records a resume.
     ResumedKeys,
-    /// The resume was recorded but a key could not be sent, or the session
-    /// exited while they were sent. Never followed by exit 2.
+    /// A key could not be sent, or the session exited while they were sent.
+    /// The commit is released, so the event stays armed. Never followed by
+    /// exit 2.
     ResumeKeysFailed,
     /// A watch could not be set up or was lost: the hook cannot see a
     /// swap, so it stops without a resume.
@@ -96,10 +147,14 @@ pub enum Outcome {
     NoCapacityTimeout,
     /// The user sent a prompt in the session while the hook waited.
     MovedOn,
-    /// This limit event was already resumed.
+    /// This limit event was already resumed with keys, or the session was
+    /// resumed with keys after this hook started.
     Duplicate,
-    /// The session reached its resume cap.
-    Cap,
+    /// Logged only (issue #2912): the session's record of earlier resumes
+    /// could not be parsed, so it is read as no earlier resumes and the
+    /// commit rewrites it. The resume itself goes on and is logged under
+    /// its own outcome.
+    SessionRecordReset,
     /// The payload had `stop_hook_active: true`.
     StopHookActive,
     /// The Claude Code session that started the hook has exited.
@@ -107,7 +162,10 @@ pub enum Outcome {
     /// No rotator runs, or its ledger cannot be read, when the hook starts:
     /// no swap can come, so the hook does not wait.
     RotatorDown,
-    /// The resume state could not be read or written safely.
+    /// The resume state could not be read or written safely. Usually the
+    /// run's own line, but it can also be logged alone before the run's own
+    /// line: when the read before a wake fails (the session is still woken)
+    /// or when a release fails after failed keys (the event stays used).
     GuardFailed,
     /// Auto-switch is off. Logged only when it was turned off while
     /// waiting.
@@ -119,7 +177,10 @@ pub enum Outcome {
 impl Outcome {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Resumed => "resumed",
+            Self::NotResumed => "not-resumed",
+            Self::PaneUnverified => "pane-unverified",
+            Self::PaneNotReading => "pane-not-reading",
+            Self::ScreenUnrecognised => "screen-unrecognised",
             Self::ResumedKeys => "resumed-keys",
             Self::ResumeKeysFailed => "resume-keys-failed",
             Self::WatchLost => "watch-lost",
@@ -128,7 +189,7 @@ impl Outcome {
             Self::NoCapacityTimeout => "no-capacity-timeout",
             Self::MovedOn => "moved-on",
             Self::Duplicate => "duplicate",
-            Self::Cap => "cap",
+            Self::SessionRecordReset => "session-record-reset",
             Self::StopHookActive => "stop-hook-active",
             Self::SessionGone => "session-gone",
             Self::RotatorDown => "rotator-down",
@@ -138,10 +199,24 @@ impl Outcome {
         }
     }
 
-    /// 2 wakes the session (`asyncRewake`), only on `Resumed`; everything
-    /// else, `ResumedKeys` included, is 0.
+    /// Whether this outcome wakes the session with exit 2 and the
+    /// `RESUME_MSG` line: no keys were sent and nothing was recorded. One
+    /// predicate drives both, so a new outcome cannot exit 2 without its
+    /// message or print the message without exiting 2.
+    pub fn wakes(self) -> bool {
+        matches!(
+            self,
+            Self::NotResumed
+                | Self::PaneUnverified
+                | Self::PaneNotReading
+                | Self::ScreenUnrecognised
+        )
+    }
+
+    /// 2 for the outcomes that wake the session (see [`Outcome::wakes`]);
+    /// everything else, `ResumedKeys` included, is 0.
     pub fn exit_code(self) -> i32 {
-        if self == Self::Resumed { 2 } else { 0 }
+        if self.wakes() { 2 } else { 0 }
     }
 }
 
@@ -185,8 +260,15 @@ pub trait Deps {
     /// When the session stopped, epoch seconds, from its transcript; `None`
     /// with no transcript or when it is refused. Never logged.
     fn stop_time(&mut self, transcript: Option<&Path>, start: i64) -> Option<i64>;
-    /// The session's tmux pane, only when it passes the pane check now.
-    fn pane(&mut self) -> Option<Pane>;
+    /// The verdict on the session's tmux pane, taken now: the pane the
+    /// session's environment names, or else the one pane on the session's
+    /// terminal (see [`keys::check_pane_owned`]). Every refusal names
+    /// itself, so no branch is silent.
+    fn pane_check(&mut self) -> PaneCheck;
+    /// Whether the proved `pane` is showing a screen the resume keys
+    /// answer. Read once, after the pane is proved and before anything is
+    /// typed; no screen text is returned.
+    fn screen_check(&mut self, pane: &Pane) -> ScreenCheck;
     /// Sends one key to `pane`; an error when it was not delivered.
     fn send_keys(&mut self, pane: &Pane, key: Key) -> io::Result<()>;
     /// Whether the session still runs and is in its terminal's foreground,
@@ -272,6 +354,51 @@ fn swap(r: &SwapRecord) -> Note<'_> {
     }
 }
 
+/// How this resume reaches the session.
+enum Delivery {
+    /// The pane is this session's own terminal and it is showing a screen
+    /// the keys answer: type into it.
+    Keys(Pane),
+    /// Type nothing. The session gets the exit-2 wake under this outcome,
+    /// with this fixed `detail`.
+    Wake(Outcome, Option<&'static str>),
+}
+
+/// Chooses the path for one resume, before any commit (D7), so a session
+/// never gets both keys and an exit-2 wake. Each refusal is its own
+/// outcome with its own reason, so the operator can tell "no tmux" from
+/// "ownership unproven" from "the session is not reading this terminal"
+/// from "that is not a screen the keys answer", without reading the pane.
+///
+/// Nothing is typed until both questions are answered: the pane is this
+/// session's terminal, and it is showing a prompt Escape and `continue`
+/// are the right answer to.
+fn delivery<D: Deps + ?Sized>(deps: &mut D) -> Delivery {
+    match deps.pane_check() {
+        PaneCheck::None => Delivery::Wake(Outcome::NotResumed, Some(NO_PANE)),
+        PaneCheck::Unverified(reason) => Delivery::Wake(Outcome::PaneUnverified, Some(reason)),
+        PaneCheck::NotReading => Delivery::Wake(Outcome::PaneNotReading, None),
+        PaneCheck::Ready(pane) => match deps.screen_check(&pane) {
+            ScreenCheck::Held => Delivery::Keys(pane),
+            ScreenCheck::Unrecognised(reason) => {
+                Delivery::Wake(Outcome::ScreenUnrecognised, Some(reason))
+            }
+        },
+    }
+}
+
+/// Whether another hook has resumed this session with keys since this hook
+/// started: `event` has a marker, or the session's last resume is later
+/// than `start`. These are the two rules [`GuardStore::commit`] applies,
+/// read here without the lock and writing nothing, so a wake path refuses
+/// only where a commit would also have refused (issue #3104).
+fn claimed(guard: &mut dyn GuardStore, event: &str, session: &str, start: i64) -> io::Result<bool> {
+    if guard.seen(event)? {
+        return Ok(true);
+    }
+    Ok(guard.last_resume(session)?.is_some_and(|t| t > start))
+}
+
 /// Decides one hook invocation.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     run_with_affinity(input, deps, &mut None)
@@ -313,7 +440,6 @@ fn run_with_affinity<D: Deps + ?Sized>(
         session_ok: session_id_ok(session_id.as_deref()),
         stop_hook_active: *stop_hook_active == Some(true),
         duplicate: false,
-        capped: false,
     };
     match gate(&facts) {
         Gate::Disabled => return Outcome::Disabled,
@@ -355,6 +481,10 @@ fn run_with_affinity<D: Deps + ?Sized>(
         _ => live_at_start,
     };
     let event = event_key(session_id, error, details, message, key_login);
+    // Evidence for every line logged after the session record is read
+    // (#2912). A `Cell` so the logging closure below reads the latest value
+    // without taking the count as an argument at each call.
+    let resumes: Cell<Option<u32>> = Cell::new(None);
     let note = |deps: &mut D, now: i64, outcome: Outcome, n: Note<'_>| {
         let entry = LogEntry {
             session: session[..LOG_KEY_CHARS].to_string(),
@@ -366,6 +496,7 @@ fn run_with_affinity<D: Deps + ?Sized>(
             swap_live: n.swap.map(|r| r.live_login.clone()),
             pane: n.pane.map(Pane::log_tag),
             keys_sent: n.keys_sent,
+            resumes: resumes.get(),
             detail: n.detail,
         };
         deps.log(now, &entry);
@@ -377,24 +508,30 @@ fn run_with_affinity<D: Deps + ?Sized>(
     if stop_hook {
         return finish(deps, start, Outcome::StopHookActive);
     }
-    // Checked here so a duplicate or capped event exits at once; checked
-    // again under the lock by `commit`.
+    // Checked here so a duplicate event exits at once; checked again before
+    // a wake and under the lock by `commit`.
     match deps.guard().seen(&event) {
         Ok(seen) => facts.duplicate = seen,
         Err(_) => return finish(deps, start, Outcome::GuardFailed),
     }
-    match deps.guard().resumes(&session, start) {
-        Ok(n) => facts.capped = n >= MAX_RESUMES_PER_SESSION,
+    // Read for the log only: no count refuses a resume (#2912).
+    let record = match deps.guard().resumes(&session, start) {
+        Ok(r) => r,
         Err(_) => return finish(deps, start, Outcome::GuardFailed),
+    };
+    resumes.set(Some(record.count));
+    if record.malformed {
+        // Loud and at once, so an operator sees the damaged record even if
+        // the wait that follows ends some other way. The commit rewrites
+        // the file; nothing of its contents is logged.
+        note(deps, start, Outcome::SessionRecordReset, Note::default());
     }
     let resumed_at = match resumed {
         Ok(t) => t,
         Err(_) => return finish(deps, start, Outcome::GuardFailed),
     };
-    match gate(&facts) {
-        Gate::Duplicate => return finish(deps, start, Outcome::Duplicate),
-        Gate::Cap => return finish(deps, start, Outcome::Cap),
-        _ => {}
+    if gate(&facts) == Gate::Duplicate {
+        return finish(deps, start, Outcome::Duplicate);
     }
     if deps.rotator_down(start) {
         return finish(deps, start, Outcome::RotatorDown);
@@ -466,46 +603,80 @@ fn run_with_affinity<D: Deps + ?Sized>(
         Ok(true) => return note(deps, now, Outcome::MovedOn, swap(&record)),
         Err(_) => return note(deps, now, Outcome::GuardFailed, swap(&record)),
     }
-    // D7: the path is chosen before the commit, so a session never gets
-    // both keys and an exit-2 wake.
-    let pane = deps.pane();
-    match deps.guard().commit(&event, &session, start, now) {
+    // D7: the path is chosen first, so a session never gets both keys and
+    // an exit-2 wake. Only the keys path records a resume (#3104).
+    let pane = match delivery(deps) {
+        Delivery::Keys(pane) => pane,
+        Delivery::Wake(outcome, reason) => {
+            // The wake reaches no session held on the menu, so nothing is
+            // recorded and the event stays armed for the next room event.
+            // A session another hook has just resumed with keys is not
+            // woken into its running turn.
+            match claimed(deps.guard(), &event, &session, start) {
+                Ok(false) => {}
+                Ok(true) => return note(deps, now, Outcome::Duplicate, swap(&record)),
+                // Logged alone, and the session is still woken: a wake
+                // types and records nothing, so it cannot repeat a resume
+                // with keys, and leaving the session stopped is worse.
+                Err(_) => {
+                    note(deps, now, Outcome::GuardFailed, swap(&record));
+                }
+            }
+            // The swap that woke this wait carries its own organisation
+            // outcome (#2136). Nothing else is consulted.
+            *affinity = record.affinity.filter(|a| a.warning().is_some());
+            let n = Note {
+                detail: reason.map(str::to_string),
+                ..swap(&record)
+            };
+            return note(deps, now, outcome, n);
+        }
+    };
+    // Claimed before the first key, so only one hook types into a session
+    // for an event.
+    let committed_at = now;
+    match deps.guard().commit(&event, &session, start, committed_at) {
         Ok(()) => {}
         Err(e) => {
             let outcome = match e {
                 CommitError::Duplicate => Outcome::Duplicate,
-                CommitError::Cap => Outcome::Cap,
                 CommitError::Io => Outcome::GuardFailed,
             };
             return note(deps, now, outcome, swap(&record));
         }
     }
-    // The swap that woke this wait carries its own organisation outcome
-    // (#2136). Nothing else is consulted: there is no per-session state.
     *affinity = record.affinity.filter(|a| a.warning().is_some());
-    let Some(pane) = pane else {
-        return note(deps, now, Outcome::Resumed, swap(&record));
-    };
     let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, *affinity) {
         Ok(()) => (Outcome::ResumedKeys, RESUME_KEYS.len() as u8, None),
         Err(f) => (Outcome::ResumeKeysFailed, f.sent, Some(f.detail())),
     };
+    // Keys that did not all arrive are no resume: the claim is taken back
+    // before any line is logged, so nothing is logged under the guard lock.
+    let released = outcome != Outcome::ResumeKeysFailed
+        || deps.guard().release(&event, &session, committed_at).is_ok();
+    let now = deps.now();
+    if !released {
+        // The event stays used, as it would have before #3104.
+        note(deps, now, Outcome::GuardFailed, swap(&record));
+    }
     let n = Note {
         swap: Some(&record),
         pane: Some(&pane),
         keys_sent: Some(keys_sent),
         detail,
     };
-    let now = deps.now();
     note(deps, now, outcome, n)
 }
 
 /// Reads at most `MAX_STDIN_BYTES` of payload from `stdin`, decides, and
-/// writes `RESUME_MSG` to `stderr` only on `Resumed`, preceded by the swap
-/// record's organisation warning when it has one (#2136). On `ResumedKeys`
-/// the warning went with the keys instead. Returns the exit code: 2 on
-/// `Resumed`, 0 otherwise, including after keys were sent, for an
-/// oversized or malformed payload and for a panic.
+/// writes `RESUME_MSG` to `stderr` for every outcome [`Outcome::wakes`]
+/// holds for, preceded by the swap record's organisation warning when it
+/// has one (#2136), and, for `ScreenUnrecognised` alone, by
+/// [`UNRECOGNISED_MSG`], so a refusal to type reaches the model and not
+/// only the log. These wakes record nothing (#3104). On `ResumedKeys` the
+/// warning went with the keys instead. Returns the exit code: 2 for those
+/// outcomes, 0 otherwise, including after keys were sent, for an oversized
+/// or malformed payload and for a panic.
 pub fn run_with_io<D: Deps + ?Sized>(
     stdin: impl Read,
     stderr: &mut dyn Write,
@@ -521,15 +692,18 @@ pub fn run_with_io<D: Deps + ?Sized>(
         Some(run_with_affinity(&input, deps, &mut affinity))
     }));
     match decided {
-        Ok(Some(Outcome::Resumed)) => {
-            // The resume is already recorded; exit 2 alone wakes the
-            // session, so a failed write still exits 2.
+        Ok(Some(outcome)) if outcome.wakes() => {
+            // Exit 2 alone wakes the session, so a failed write still
+            // exits 2. Nothing was recorded for this wake.
+            if outcome == Outcome::ScreenUnrecognised {
+                let _ = writeln!(stderr, "{UNRECOGNISED_MSG}");
+            }
             if let Some(text) = affinity.and_then(Affinity::warning) {
                 let _ = writeln!(stderr, "{text}");
             }
             let _ = writeln!(stderr, "{RESUME_MSG}");
             let _ = stderr.flush();
-            Outcome::Resumed.exit_code()
+            outcome.exit_code()
         }
         Ok(Some(outcome)) => outcome.exit_code(),
         Ok(None) | Err(_) => 0,
@@ -568,8 +742,10 @@ struct SystemDeps {
     guard: FsGuard,
     /// The hook's parent when it started: the Claude Code process.
     parent: u32,
-    /// `$TMUX_PANE` when the hook started, if it is a pane id under `$TMUX`;
-    /// verified by [`Deps::pane`] just before commit.
+    /// `$TMUX_PANE` when the hook started, if it is a pane id under `$TMUX`.
+    /// When it is `None`, [`Deps::pane_check`] looks the pane up by the
+    /// session's terminal instead; either pane is proved to be this
+    /// session's terminal before anything is typed.
     pane: Option<Pane>,
     /// Set by [`Deps::arm`].
     waiter: Option<Waiter>,
@@ -666,11 +842,12 @@ impl Deps for SystemDeps {
         transcript.and_then(|p| swap_record::read_stop_time(p, start))
     }
 
-    fn pane(&mut self) -> Option<Pane> {
-        self.pane
-            .as_ref()
-            .filter(|p| keys::verify_pane(self.parent, p))
-            .cloned()
+    fn pane_check(&mut self) -> PaneCheck {
+        keys::check_pane_owned(self.pane.as_ref(), self.parent)
+    }
+
+    fn screen_check(&mut self, pane: &Pane) -> ScreenCheck {
+        keys::screen_of(pane)
     }
 
     fn send_keys(&mut self, pane: &Pane, key: Key) -> io::Result<()> {

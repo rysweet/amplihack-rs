@@ -208,9 +208,14 @@ case "$NAME" in ''|*[!A-Za-z0-9._-]*) skip "origin-not-parseable-as-owner/repo" 
 
 # Only GitHub remotes are in scope. Azure DevOps and everything else have their
 # own credential paths and are not this check's business.
+#
+# The host must be non-empty to match GH_HOST. A `file://` origin parses to no
+# host at all, and an empty host compared against an unset GH_HOST is equal,
+# which sent a local path to the GitHub API as though `file:///a/b.git` named
+# the repository `a/b`.
 case "$HOST" in
   github.com|*.ghe.com|*.githubenterprise.com) ;;
-  *) [ "$HOST" = "${GH_HOST:-}" ] || skip "non-github-remote:${HOST}" ;;
+  *) { [ -n "$HOST" ] && [ "$HOST" = "${GH_HOST:-}" ]; } || skip "non-github-remote:${HOST}" ;;
 esac
 
 command -v gh >/dev/null 2>&1 || unknown "gh-not-installed"

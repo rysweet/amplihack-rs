@@ -35,6 +35,11 @@ exec </dev/null
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 WORKTREE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-worktree.yaml"
 PUBLISH_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-publish.yaml"
 PUBLISH_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_publish_pr.sh"
@@ -1061,14 +1066,14 @@ assert_terminal_status_case \
     "terminal-failure-overrides-success-looking-markers" \
     "1" \
     "false" \
-    "BLOCKED_CI" \
+    "FAILED_MEANINGFUL_DIFF" \
     "terminal_failure=true" \
     "OBSERVED_PHASES=workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-precommit-test" \
     "RECIPE_VAR_implementation_terminal_evidence__implementation_completed=true" \
     "RECIPE_VAR_verification_terminal_evidence__verification_completed=true" \
     "RECIPE_VAR_terminal_state__terminal_failure=true" \
-    "RECIPE_VAR_terminal_state__terminal_state=BLOCKED_CI" \
-    "RECIPE_VAR_terminal_state__terminal_reason=required checks failed"
+    "RECIPE_VAR_terminal_state__terminal_state=FAILED_MEANINGFUL_DIFF" \
+    "RECIPE_VAR_terminal_state__terminal_reason=goal_already_met=true is ambiguous because meaningful unmerged diff remains"
 
 assert_terminal_recipe_uses_final_status_tool
 assert_yaml_step_not_fatal_false "workflow-finalize final status" "${FINALIZE_RECIPE}" "step-22b-final-status"
@@ -2058,7 +2063,9 @@ assert_pr_title_from_issue_on_moved_base() {
     git -C "${repo}" remote set-url origin "https://example.invalid/acme/widgets.git"
     rc=0; run_publish_1968_case "${repo}" "${tag}" answer "" || rc=$?
     [ "${rc}" -ne 0 ] || publish_1968_fail "${tag}" "issue #1968 case 7b: a rejected origin must fail the publish"
-    cat "${WORK}/publish-1968-${tag}.out" "${WORK}/publish-1968-${tag}.err" | grep -qF 'FAILED_PR_IDENTITY' \
+    # grep reads both files itself: piping cat into grep -q under pipefail
+    # fails when grep exits on a match while cat still writes (SIGPIPE, #1820).
+    grep -qF 'FAILED_PR_IDENTITY' "${WORK}/publish-1968-${tag}.out" "${WORK}/publish-1968-${tag}.err" \
         || publish_1968_fail "${tag}" "issue #1968 case 7b: expected FAILED_PR_IDENTITY"
     if grep -q '^issue view' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 7b: gh issue view ran without a repository identity"; fi
     if grep -q '^pr create' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 7b: gh pr create ran without a repository identity"; fi

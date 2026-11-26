@@ -1,12 +1,12 @@
-//! Portable workflow records. These helpers neither access a host nor merge PRs.
+//! Portable auto-drive helpers. None of them merges a PR: the only merge path
+//! is the goal loop's `merge` action (`autodrive_merge.sh`), gated by the
+//! captured invocation that `helper autodrive authorization` reports.
 pub mod authorization;
-pub(crate) mod completion;
-pub(crate) mod followups;
 pub mod helper;
-pub mod outcome;
-pub mod records;
+pub mod identity;
+pub(crate) mod private_mode;
 pub(crate) mod report;
-pub mod review;
+#[cfg(test)]
+mod report_goal_tests;
 pub mod state;
 pub(crate) mod trusted;
-pub mod validation;

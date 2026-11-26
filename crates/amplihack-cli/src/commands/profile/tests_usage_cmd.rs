@@ -1182,6 +1182,34 @@ fn overflow_rows_are_marked_with_any_block() {
     assert_eq!(marks(&r), "* overflow, blocked until 2026-11-01T00:00:00Z");
 }
 
+// Issues #2890/#2882: a step's spend-limit failure blocks a plan login, which
+// is not marked overflow. Any login with an active block carries the same
+// `blocked until <time>` wording; no new column or JSON key.
+
+#[test]
+fn a_blocked_plan_login_carries_the_blocked_until_mark() {
+    let mut r = ok("wwest", Some((10.0, None)), Some((20.0, None)));
+    assert!(!r.overflow);
+    r.overflow_blocked_until = Some(1_793_491_200);
+    assert_eq!(marks(&r), "blocked until 2026-11-01T00:00:00Z");
+    r.default = true;
+    assert_eq!(marks(&r), "* blocked until 2026-11-01T00:00:00Z");
+}
+
+#[test]
+fn a_blocked_overflow_login_keeps_its_existing_wording() {
+    let mut r = ok("cred", Some((10.0, None)), Some((20.0, None)));
+    r.overflow = true;
+    r.overflow_blocked_until = Some(1_793_491_200);
+    assert_eq!(marks(&r), "overflow, blocked until 2026-11-01T00:00:00Z");
+}
+
+#[test]
+fn an_unblocked_plan_login_has_no_blocked_mark() {
+    let r = ok("wwest", Some((10.0, None)), Some((20.0, None)));
+    assert_eq!(marks(&r), "-");
+}
+
 // "running on overflow" needs the live row to be marked and its own probe in
 // this run to show a plan limit reached: an exhausted state, or the session
 // or all-models weekly window at 100%. Either limit is enough; both are not

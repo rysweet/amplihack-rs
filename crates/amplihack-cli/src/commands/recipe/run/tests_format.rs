@@ -362,3 +362,53 @@ fn test_meaningful_stderr_tail_includes_prior_buffer_drops() {
 fn which_recipe_runner_available() -> bool {
     crate::rust_toolchain::find_recipe_runner().is_some()
 }
+
+// =========================================================================
+// Issue #1619 (TDD): the Model tiers section is additive.
+//
+// The run summary gains a section naming the model and effort each step ran
+// on. The step status line and the `    Output: ` line are a machine-read
+// contract — `amplifier-bundle/tools/autodrive_loop.sh` parses them with awk
+// to read the LOOP_HEALTH verdict (issue #1512) — so this pins their exact
+// shape before the section is added. `tests_autodrive_health_log.rs` runs the
+// script's own awk over this output; this test states the shape in one place
+// so a reviewer can see what must not move.
+// =========================================================================
+
+#[test]
+fn the_machine_read_step_lines_keep_their_exact_shape() {
+    let result = RecipeRunResult {
+        recipe_name: "tiered".to_string(),
+        success: true,
+        step_results: vec![RecipeRunStepResult {
+            step_id: "step-04-enforce-loop-verdict".to_string(),
+            status: "completed".to_string(),
+            output: "LOOP_HEALTH: HEALTHY".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let table = format::format_recipe_run_result(&result, OutputFormat::Table, false)
+        .expect("format failed");
+    assert!(
+        table.contains("  ✓ step-04-enforce-loop-verdict: completed"),
+        "two spaces, the symbol, the label, a colon and the status — adding a model \
+         tiers section must not reshape this line:\n{table}"
+    );
+    assert!(
+        table.contains("    Output: LOOP_HEALTH: HEALTHY"),
+        "four spaces and `Output: ` — the awk in autodrive_loop.sh reads this:\n{table}"
+    );
+}
+
+#[test]
+fn a_run_with_no_tiered_launch_prints_no_model_tiers_section() {
+    let result = make_result(true);
+    let table = format::format_recipe_run_result(&result, OutputFormat::Table, false)
+        .expect("format failed");
+    assert!(
+        !table.contains("Model tiers:"),
+        "the section appears only when a launch recorded a tier; an empty heading is \
+         noise in every summary that has nothing to report:\n{table}"
+    );
+}

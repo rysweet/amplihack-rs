@@ -23,8 +23,8 @@
 #   8. Job matching rules 1-4, the best match, expression-only names;
 #      8b. block-scalar and multi-line job names (real cpython/tokio shapes).
 #   9. Security: S1 spoof, S2 paths and run ids, name injection, jq version.
-#  10. Callers: merge-evidence step-03's agent prompt (#2329 retired the
-#      shell gate), light drive, platform facts comment, docs.
+#  10. Callers: the platform facts comment and the SKILL.md copies (#3129
+#      removed merge-evidence step-03 and the light drive's merge loop).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -198,7 +198,7 @@ bad_arg lock-base "$HEAD" 'main.lock'
 bad_arg space-base "$HEAD" 'ma in'
 bad_arg dollar-base "$HEAD" 'ma$(id)'
 bad_arg empty-base "$HEAD" ''
-bad_arg three-args "$HEAD" main extra
+bad_arg four-args "$HEAD" main job extra  # #2458: a third argument is the optional JOB
 # A good nested base passes validation (and reads branches/release/1.x).
 FXR="$(new_fx)"
 run_helper "$FXR" "$HEAD" release/1.x
@@ -1487,31 +1487,20 @@ check "EC-exported-fn" "an exported gh function cannot answer for the helper" \
 # ---------------------------------------------------------------------------
 # 10. Callers.
 # ---------------------------------------------------------------------------
-# #2329 retired the shell merge gate, and merge-evidence step-03 is an agent
-# step: its prompt must run the helper from AMPLIHACK_HOME and keep MISSING,
-# PENDING and RED from passing.
-S3_PROMPT="$(awk '/id: "step-03-wait-for-ci"/{f=1} f&&/^output:/{f=0} f' "${RECIPES}/autodrive-merge-evidence.yaml")"
-check "EC-S3-amplihack-home" "step-03 runs the helper from \$AMPLIHACK_HOME/amplifier-bundle/tools only" \
-  bash -c 'printf "%s" "$1" | grep -qF "/bin/bash -p \"\$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_expected_checks.sh\"" && printf "%s" "$1" | grep -qF "never a copy from the PR worktree"' _ "$S3_PROMPT"
-check "EC-S3-missing-blocks" "step-03 lowers GREEN to RED, PENDING or MISSING and never passes a missing check" \
-  bash -c 'printf "%s" "$1" | grep -qF "RED, PENDING or MISSING replace it" && printf "%s" "$1" | grep -qF "is MISSING, not a pass"' _ "$S3_PROMPT"
-
-# The light drive's merge loop runs the same gate (D17).
-check "EC-D17-light-uses-merge-loop" "auto-drive-light runs autodrive-merge-loop" \
-  grep -qE 'recipe: "autodrive-merge-loop"' "${RECIPES}/auto-drive-light.yaml"
+# #3129 removed the parsed-record readiness gates: merge-evidence step-03, the
+# one caller left after #2329 retired the shell merge gate, is a one-release
+# alias now, and auto-drive-light no longer runs autodrive-merge-loop. Their
+# checks (EC-S3-amplihack-home, EC-S3-missing-blocks,
+# EC-D17-light-uses-merge-loop) went with them, and so did the checks of the
+# reference doc's and SKILL.md's expected-checks wording, which #3129 rewrote
+# (EC-docs-ci-green, EC-docs-limits, EC-skill-mentions).
 # Platform facts: CHECKS is advisory (D18).
 check "EC-D18-advisory" "autodrive_platform_facts.sh says CHECKS is advisory and the helper decides" \
   bash -c 'grep -iE "^[[:space:]]*#.*advisory" "$1" | grep -qF "autodrive_expected_checks"' _ "${TOOLS}/autodrive_platform_facts.sh"
 
-# Docs and the two SKILL.md copies.
-DOC="${REPO_ROOT}/docs/reference/auto-drive-to-merge.md"
-check "EC-docs-ci-green" "the reference doc defines CI green" \
-  grep -qF 'CI green means every expected check exists at the head SHA and passed' "$DOC"
-check "EC-docs-limits" "the reference doc has the limits section" grep -qF '### Limits of the expected set' "$DOC"
+# The two SKILL.md copies.
 check "EC-skill-copies-identical" "both auto-drive-to-merge SKILL.md copies are identical" \
   cmp -s "${REPO_ROOT}/amplifier-bundle/skills/auto-drive-to-merge/SKILL.md" "${REPO_ROOT}/docs/claude/skills/auto-drive-to-merge/SKILL.md"
-check "EC-skill-mentions" "SKILL.md states the expected-checks rule" \
-  grep -qF 'autodrive_expected_checks' "${REPO_ROOT}/amplifier-bundle/skills/auto-drive-to-merge/SKILL.md"
 
 echo
 echo "=== #2186 expected checks: ${PASS_COUNT} passed, ${FAIL_COUNT} failed ==="

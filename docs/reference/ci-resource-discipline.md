@@ -23,7 +23,12 @@ concurrency:
 ```
 
 Release workflows that publish immutable artifacts use `cancel-in-progress:
-false` for publish jobs and keep validation jobs cancellable.
+false`, so a run already in flight is never cancelled part-way through.
+`release.yml` declares a single workflow-level group rather than splitting
+publish and validation jobs, so its whole lane — `version-bump`, `build`,
+`release` — serializes: a second release queues behind the first instead of
+cancelling it. See [Auto Release](./ci-pipeline.md#what-this-guarantees) for
+why queueing cannot resurrect a superseded commit.
 
 ## Timeouts
 

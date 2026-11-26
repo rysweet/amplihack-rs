@@ -50,7 +50,6 @@ impl FakeAgents {
             "branch": "feat/issue-2552",
             "state_dir": "",
             "repo": "",
-            "review_dir": "",
             "attempts": ["gh pr list --head feat/issue-2552 --state all"],
         });
         let facts = match &self.prs {

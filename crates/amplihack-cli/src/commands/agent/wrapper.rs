@@ -1,22 +1,29 @@
 //! `amplihack claude --supervise NAME` (design 5.2, D1, D3, D4): records the
 //! session before the unchanged launch, finds its Claude process and
 //! conversation in the background, and marks it `ended` only after a clean
-//! return with no SIGHUP or SIGTERM. A non-zero Claude exit never returns
-//! here (`run_launch_core` exits the process), so the entry stays `active`
-//! and the supervisor resumes it. Nothing is written to the terminal while
-//! Claude runs (B4).
+//! return with no SIGHUP or SIGTERM. A non-zero Claude exit comes back here
+//! as a `CliExitError`, so the entry stays `active` and the supervisor
+//! resumes it. Nothing is written to the terminal while Claude runs (B4).
+//!
+//! Issue #2912: a session marked standing is launched again in the same
+//! pane when its process exits other than by its owner. The decision, the
+//! wait for a login with room and the logging are all in
+//! [`super::standing`]; this file owns the loop that acts on it.
 
 use super::WrapRequest;
+use super::entry::{mark_ended, record_claude, start};
 use super::fields::{Launch, check_profile, check_socket, subject};
-use super::registry::{self, AmplihackFlags, EndedBy, State};
-use super::store::{self, AgentsDir};
+use super::launch::continue_args;
+use super::registry::{self, AmplihackFlags};
+use super::standing::{Exit, Standing};
+use super::store::AgentsDir;
 use super::tmux::{self, Tmux};
 use super::{cmdline, env_record, procfs, report, sessions, validate};
 use anyhow::{anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 const NO_TMUX: &str = "amplihack claude --supervise needs tmux: $TMUX and $TMUX_PANE are not set";
 const PRINT_MODE: &str = "amplihack claude --supervise needs an interactive session; \
@@ -26,7 +33,7 @@ const ID_WATCH_SECS: u32 = 120;
 
 pub fn run_wrapped(
     req: &WrapRequest,
-    launch: impl FnOnce() -> anyhow::Result<()>,
+    launch: impl Fn(&[String]) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     if !cfg!(target_os = "linux") {
         bail!("amplihack claude --supervise needs Linux; nothing was started");
@@ -72,7 +79,7 @@ pub fn run_wrapped(
         socket,
         session,
         window,
-        launch_dir: cwd,
+        launch_dir: cwd.clone(),
         conversation: cmdline::resume_as_conversation(&opts).map(String::from),
         model: opts.model,
         effort: opts.effort,
@@ -93,55 +100,69 @@ pub fn run_wrapped(
             .map_err(|e| anyhow!("cannot watch for SIGHUP and SIGTERM: {e}"))?;
     }
     let dir = AgentsDir::open(&home)?;
-    let launch_id = registry::new_launch_id();
+    let mut launch_id = registry::new_launch_id();
+    let first_conversation = fields.conversation.clone();
+    let mut since = registry::now();
     start(&dir, req.name, &launch_id, fields)?;
-    watch_for_claude(dir.clone(), home, req.name.to_string(), launch_id.clone());
-    let result = launch();
-    if result.is_ok()
-        && !stopped.load(Ordering::SeqCst)
-        && let Err(e) = mark_ended(&dir, req.name, &launch_id)
-    {
-        eprintln!(
-            "warning: could not mark agent {} as ended: {e:#}; the supervisor may resume it",
-            req.name
+
+    // Issue #2912: whether this session keeps running, settled once.
+    let standing = Standing::resolve(req.standing, req.name, &home);
+
+    let mut args: Vec<String> = req.claude_args.to_vec();
+    // Issue #2912: the relaunches since the model last replied, carried from
+    // one turn of the loop to the next so the session's record can say how
+    // long the chain has run. Evidence for the supervisor agent; nothing
+    // here decides on it.
+    let mut quiet = None;
+    loop {
+        // One per run, so the id thread of an earlier run can never say
+        // that this one started. Dropping it ends that thread.
+        let run = watch_for_claude(
+            dir.clone(),
+            home.clone(),
+            req.name.to_string(),
+            launch_id.clone(),
         );
-    }
-    result
-}
-
-/// Creates the entry, or updates it in place keeping its restart history,
-/// `registered_at` and `last_recovery` (D3).
-fn start(dir: &AgentsDir, name: &str, launch_id: &str, fields: Launch) -> anyhow::Result<()> {
-    let now = registry::now();
-    store::update(dir, now, |reg| {
-        fields.check_conflicts(reg, name)?;
-        match reg.agents.get_mut(name) {
-            Some(e) => {
-                e.activate(now, launch_id);
-                fields.apply(e);
-            }
-            None => {
-                let mut e = fields.into_entry(registry::fmt_ts(now));
-                e.activate(now, launch_id);
-                reg.agents.insert(name.to_string(), e);
-            }
-        }
-        Ok(())
-    })
-}
-
-/// The clean-exit write, only while the entry is this launch's and active.
-fn mark_ended(dir: &AgentsDir, name: &str, launch_id: &str) -> anyhow::Result<()> {
-    let now = registry::now();
-    store::update(dir, now, |reg| {
-        if let Some(e) = reg.agents.get_mut(name)
-            && e.state == State::Active
-            && e.launch_id == launch_id
+        // Issue #2912: when this run began. Whether the model wrote a reply
+        // to the session's conversation from then on is read once, after
+        // the exit, for the record of the relaunch; see `standing::Quiet`.
+        let started = SystemTime::now();
+        let result = launch(&args);
+        drop(run);
+        let replied = standing.replied(&dir, &home, &cwd, req.name, started);
+        let signalled = stopped.load(Ordering::SeqCst);
+        if result.is_ok()
+            && !signalled
+            && let Err(e) = mark_ended(&dir, req.name, &launch_id)
         {
-            e.end(now, EndedBy::Wrapper);
+            eprintln!(
+                "warning: could not mark agent {} as ended: {e:#}; the supervisor may resume it",
+                req.name
+            );
         }
-        Ok(())
-    })
+        // Issue #2912: either the next launch of a standing session, or
+        // nothing, in which case this wrapper is done and returns what
+        // Claude Code gave it.
+        let exit = Exit {
+            launch_id: &launch_id,
+            since,
+            first_conversation: first_conversation.as_deref(),
+            result: &result,
+            signalled,
+            replied,
+            quiet,
+        };
+        let Some(next) = standing.next(&dir, req.name, &exit, &stopped) else {
+            return result;
+        };
+        launch_id = next.launch_id;
+        quiet = next.quiet;
+        since = registry::now();
+        // Through the same launch path as the first run, so the relaunch
+        // gets what the first launch got from the launcher and nothing
+        // more; only the Claude arguments are rebuilt from the record.
+        args = continue_args(&next.entry);
+    }
 }
 
 /// A detached thread: every second for up to two minutes it looks for the
@@ -149,7 +170,17 @@ fn mark_ended(dir: &AgentsDir, name: &str, launch_id: &str) -> anyhow::Result<()
 /// once found (D4). Giving up, or failing to record them, appends one
 /// `WARNING:` line to the supervisor log with the last reason; nothing is
 /// written to the terminal (B4).
-fn watch_for_claude(dir: AgentsDir, home: PathBuf, name: String, launch_id: String) {
+///
+/// Issue #2912: a standing session's wrapper outlives each run, so the
+/// thread stops, silently, as soon as the [`RunWatch`] it returns is
+/// dropped. The drop wakes it rather than leaving it to its next tick, so a
+/// session that exits at once on every start leaves no sleeping thread per
+/// run behind. Nothing in the standing-session decision rests on what this
+/// thread saw: the record of a relaunch reads the conversation and its
+/// transcript off the disk after the exit.
+fn watch_for_claude(dir: AgentsDir, home: PathBuf, name: String, launch_id: String) -> RunWatch {
+    let over = Arc::new(AtomicBool::new(false));
+    let run = Arc::clone(&over);
     let spawned = std::thread::Builder::new()
         .name("agent-id-watch".into())
         .spawn(move || {
@@ -157,7 +188,9 @@ fn watch_for_claude(dir: AgentsDir, home: PathBuf, name: String, launch_id: Stri
             let dirs = || sessions::config_dirs_from(&home, |k| std::env::var_os(k));
             let mut last_error = None;
             for _ in 0..ID_WATCH_SECS {
-                std::thread::sleep(Duration::from_secs(1));
+                if !tick(&run) {
+                    return;
+                }
                 match find_claude(&root, dirs) {
                     Ok(Some(found)) => {
                         if let Err(e) = record_claude(&dir, &home, &name, &launch_id, found) {
@@ -176,8 +209,47 @@ fn watch_for_claude(dir: AgentsDir, home: PathBuf, name: String, launch_id: Stri
             });
             not_recorded(&dir, &name, &reason);
         });
-    if let Err(e) = spawned {
-        tracing::debug!("agent: could not start the id thread: {e}");
+    let thread = match spawned {
+        Ok(h) => Some(h.thread().clone()),
+        Err(e) => {
+            tracing::debug!("agent: could not start the id thread: {e}");
+            None
+        }
+    };
+    RunWatch { over, thread }
+}
+
+/// One run's id thread, from the wrapper's side (issue #2912). Dropping it
+/// tells the thread the run is over and wakes it, so the thread ends on
+/// every way out of the run: its return, an early return or a panic.
+pub(super) struct RunWatch {
+    /// The run has returned, so its id thread has nothing left to find.
+    pub(super) over: Arc<AtomicBool>,
+    pub(super) thread: Option<std::thread::Thread>,
+}
+
+impl Drop for RunWatch {
+    fn drop(&mut self) {
+        self.over.store(true, Ordering::SeqCst);
+        if let Some(t) = &self.thread {
+            t.unpark();
+        }
+    }
+}
+
+/// The id thread's one-second tick (D4): `true` when the second has passed,
+/// `false` as soon as `over` is set, during the second or before it.
+pub(super) fn tick(over: &AtomicBool) -> bool {
+    let until = Instant::now() + Duration::from_secs(1);
+    loop {
+        if over.load(Ordering::SeqCst) {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= until {
+            return true;
+        }
+        std::thread::park_timeout(until - now);
     }
 }
 
@@ -223,39 +295,4 @@ pub(super) struct Found {
     pub start: u64,
     pub conversation: String,
     pub config_dir: PathBuf,
-}
-
-/// Records what the id thread found, unless the entry is no longer this
-/// launch's or the conversation belongs to another active agent (C3).
-/// The profile recorded is the one whose directory held the sessions file,
-/// with or without `--profile`: without it the launch may still have run
-/// under a profile (an inherited `AMPLIHACK_CLAUDE_PROFILE`, possibly
-/// redirected by auto-switch, or the default pointer), and with
-/// `--profile NAME` naming the rotator's live login it ran against
-/// `~/.claude`, so no profile is recorded. Either way the resume uses the
-/// directory that holds the conversation, not one the rotator may since
-/// have given back its own login.
-fn record_claude(
-    dir: &AgentsDir,
-    home: &Path,
-    name: &str,
-    launch_id: &str,
-    found: Found,
-) -> anyhow::Result<()> {
-    let profile = sessions::profile_of_config_dir(home, &found.config_dir);
-    store::update(dir, registry::now(), |reg| {
-        let held = reg
-            .active_with_conversation(&found.conversation, name)
-            .is_some();
-        if let Some(e) = reg.agents.get_mut(name)
-            && e.state == State::Active
-            && e.launch_id == launch_id
-            && !held
-        {
-            e.set_process(Some((found.pid, found.start)));
-            e.conversation_id = Some(found.conversation.clone());
-            e.amplihack_flags.profile = profile.clone();
-        }
-        Ok(())
-    })
 }

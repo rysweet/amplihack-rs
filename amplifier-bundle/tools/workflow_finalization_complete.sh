@@ -15,7 +15,9 @@ complete_workflow() {
       if [ -z "$value" ]; then
         case "$key" in
           terminal_success) value='false' ;;
-          terminal_state) value='FAILED_INVALID_EVIDENCE' ;;
+          # #2343: the validated result never arrived. That is an unfinished
+          # run, not evidence that the run's data was invalid.
+          terminal_state) value='INCOMPLETE' ;;
           terminal_reason) value='validated workflow_result missing from context' ;;
           required_next_action) value='Inspect validate-agentic-finalization output.' ;;
           hollow_success_detected) value='false' ;;

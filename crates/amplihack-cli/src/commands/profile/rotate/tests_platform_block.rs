@@ -337,10 +337,30 @@ fn invalid_platform_fields_make_the_ledger_inconsistent() {
             "too long",
             block("key_exhausted", NOW, NOW + MAX_BLOCK_SECS + 1),
         ),
+        // Issue #2909 widened `overflow_blocked`'s `reason` from the single
+        // `spend_limit` token to any limit kind, so a key reason there is
+        // now admitted and blocks its login rather than refusing the
+        // ledger. What still refuses it is a reason outside the token rule
+        // (`^[a-z0-9_]{1,32}$`), which is what keeps a writer from putting
+        // text of its own choosing where a reader might render it.
         (
-            "key reason in overflow_blocked",
+            "upper-case reason in overflow_blocked",
             format!(
-                r#""overflow_blocked":{{"credits":{{"at":{NOW},"until":{},"reason":"key_exhausted"}}}}"#,
+                r#""overflow_blocked":{{"credits":{{"at":{NOW},"until":{},"reason":"Key_Exhausted"}}}}"#,
+                NOW + HOUR
+            ),
+        ),
+        (
+            "hyphenated reason in overflow_blocked",
+            format!(
+                r#""overflow_blocked":{{"credits":{{"at":{NOW},"until":{},"reason":"key-exhausted"}}}}"#,
+                NOW + HOUR
+            ),
+        ),
+        (
+            "empty reason in overflow_blocked",
+            format!(
+                r#""overflow_blocked":{{"credits":{{"at":{NOW},"until":{},"reason":""}}}}"#,
                 NOW + HOUR
             ),
         ),

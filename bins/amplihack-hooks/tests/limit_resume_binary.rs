@@ -21,6 +21,7 @@
 #[path = "../../../tests/support/isolated_hook.rs"]
 mod isolated_hook;
 
+#[cfg(target_os = "linux")]
 use amplihack_hooks::limit_resume::RESUME_MSG;
 #[cfg(target_os = "linux")]
 use amplihack_utils::file_event::{Waiter, Watch, Woke};
@@ -176,9 +177,10 @@ fn spawn(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (std::process::Child, I
 /// Both forms are built by the [`HookSandbox`] (#2361). Its cleared
 /// environment carries no AMPLIHACK_CLAUDE_AUTO_SWITCH, TMUX or TMUX_PANE
 /// from the test process, and the shell passes on the environment it was
-/// given, so the hook sees the same environment either way. With no pane, a
-/// resume takes the exit-2 path and never sends keys to the terminal the
-/// tests run in.
+/// given, so the hook sees the same environment either way. With no pane in
+/// the environment and no `tmux` on `PATH`, no pane is found, so a resume
+/// takes the exit-2 path and never sends keys to the terminal the tests run
+/// in.
 fn spawn_via(
     e: &Env,
     toggle: Option<&str>,
@@ -195,7 +197,15 @@ fn spawn_via(
         c.arg("limit-resume");
         c
     };
+    // PATH is an empty private directory of the sandbox, so the hook can
+    // never reach a real tmux server: with no pane in its environment it
+    // looks one up with `tmux list-panes` (#3104), and a test run from a
+    // tmux pane must not have its own pane found. The hook and `/bin/sh`
+    // are started by absolute path.
+    let empty_path = e.sandbox.root().join("empty-path");
+    private_dir(&empty_path);
     cmd.env("HOME", &e.home)
+        .env("PATH", &empty_path)
         .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &e.root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -326,9 +336,15 @@ fn resumes_when_a_fresh_cycle_has_capacity() {
     assert_eq!(out.stderr, format!("{RESUME_MSG}\n").into_bytes());
     assert!(took < Duration::from_secs(30), "took {took:?}");
 
+    // The test has no tmux pane, so the wake reached no session: nothing is
+    // recorded and the event stays armed (#3104).
     let resume = e.root.join(".auto-switch.d/resume");
-    assert_eq!(fs::read_dir(resume.join("events")).unwrap().count(), 1);
-    assert!(resume.join("resume.log").is_file());
+    let events = resume.join("events");
+    assert!(!events.exists() || fs::read_dir(&events).unwrap().count() == 0);
+    let log = resume_log(&e);
+    assert!(log.contains("outcome=not-resumed"), "{log}");
+    assert!(log.contains("detail=no-tmux-pane"), "{log}");
+    assert!(!log.contains("outcome=resumed "), "{log}");
 }
 
 /// Issue #2136, crusty PR #2295 round 3: the organisation warning goes out
@@ -374,21 +390,33 @@ fn shell_wrapped_hook_delivers_the_warning_from_the_swap_record_alone() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn second_run_on_the_same_event_is_a_silent_duplicate() {
+fn a_second_run_on_the_same_event_after_a_wake_wakes_again_and_records_nothing() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
     let (first, _) = run_with_swap(&e, Some("1"), limit_payload("sess-1").as_bytes());
     assert_eq!(first.status.code(), Some(2));
-    let (second, took) = run(&e, Some("1"), limit_payload("sess-1").as_bytes());
-    assert_silent_zero(&second);
-    assert!(
-        took < Duration::from_secs(10),
-        "duplicate must not wait: {took:?}"
+    let (second, _) = run_with_swap(&e, Some("1"), limit_payload("sess-1").as_bytes());
+    assert_eq!(
+        second.status.code(),
+        Some(2),
+        "woken again, not a duplicate"
     );
+    assert_eq!(second.stderr, format!("{RESUME_MSG}\n").into_bytes());
     let log = resume_log(&e);
-    assert!(log.contains("outcome=resumed"), "{log}");
-    assert!(log.contains("outcome=duplicate"), "{log}");
+    assert_eq!(log.matches("outcome=not-resumed").count(), 2, "{log}");
+    assert!(!log.contains("outcome=duplicate"), "{log}");
+    let events: Vec<&str> = log
+        .lines()
+        .filter_map(|l| l.split(' ').find(|w| w.starts_with("event=")))
+        .collect();
+    assert_eq!(events.len(), 2, "{log}");
+    assert_eq!(
+        events[0], events[1],
+        "the same room event both times: {log}"
+    );
+    let dir = e.root.join(".auto-switch.d/resume/events");
+    assert!(!dir.exists() || fs::read_dir(&dir).unwrap().count() == 0);
 }
 
 #[test]

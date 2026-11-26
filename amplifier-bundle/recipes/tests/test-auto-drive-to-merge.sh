@@ -44,12 +44,16 @@ RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 TOOLS="${REPO_ROOT}/amplifier-bundle/tools"
 SKILL="${REPO_ROOT}/amplifier-bundle/skills/auto-drive-to-merge/SKILL.md"
 
+# #3129: the goal loop's recipes and tools first; the old loop recipes and
+# tools stay listed because they are one-release aliases (#3049).
 AUTODRIVE_RECIPES=(
-  auto-drive-to-merge autodrive-build autodrive-crusty-round
+  auto-drive-to-merge auto-drive-light autodrive-goal-loop autodrive-goal-turn
+  autodrive-build autodrive-crusty-round autodrive-handoff
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop autodrive-finalize
 )
-AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_message.sh autodrive_merge_ready_files.sh
+AUTODRIVE_TOOLS=(autodrive_goal_loop.sh autodrive_goal_turn.sh autodrive_goal_lib.sh autodrive_pr_goal.sh autodrive_pr_reading.sh
+  autodrive_refusal.sh autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_message.sh autodrive_merge.sh autodrive_round_word.sh
   autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
   autodrive_trust.sh autodrive_unmerged.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
@@ -58,9 +62,6 @@ AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rere
 # context.rs shell_env_vars); the step bodies run here get the first form. A
 # case that needs another directory, or none, sets it on its own command.
 export RECIPE_VAR_autodrive_tools_dir="${TOOLS}"
-# The resolver is new in #1517. Its absence is a test failure (section 6a),
-# not a harness error, so every other section still runs and reports.
-RESOLVER="${TOOLS}/autodrive_merge_ready_files.sh"
 STATE_HELPER="${TOOLS}/autodrive_state.sh"
 # The range and qa evidence checks are new in #1517 too. A missing file fails
 # the sections that use it (5k, 6f to 6h) and every other section still runs.
@@ -69,7 +70,7 @@ TRUST_HELPER="${TOOLS}/autodrive_trust.sh"
 for r in "${AUTODRIVE_RECIPES[@]}"; do
   [[ -f "${RECIPES}/${r}.yaml" ]] || { echo "HARNESS-ERROR: missing ${RECIPES}/${r}.yaml" >&2; exit 2; }
 done
-for t in autodrive_loop.sh autodrive_state.sh; do
+for t in "${AUTODRIVE_TOOLS[@]}"; do
   [[ -f "${TOOLS}/${t}" ]] || { echo "HARNESS-ERROR: missing ${TOOLS}/${t}" >&2; exit 2; }
 done
 command -v git >/dev/null 2>&1 || { echo "HARNESS-ERROR: git is required to hash crusty round records" >&2; exit 2; }
@@ -115,7 +116,7 @@ for tool in "$TOOLS"/autodrive_*.sh; do
     echo "FAIL: platform-specific prerequisite in $tool" >&2; exit 1
   fi
 done
-for retired in "$TOOLS/autodrive_merge_gate.sh" "$TOOLS/gh-merge-guard/gh"; do
+for retired in "$TOOLS/autodrive_merge_gate.sh" "$TOOLS/gh-merge-guard/gh" "$TOOLS/autodrive_merge_ready_files.sh"; do
   [ ! -e "$retired" ] || { echo "FAIL: retired dependency $retired" >&2; exit 1; }
 done
 # Crusty still fails safe, and the shared evaluator retains its exact tokens.

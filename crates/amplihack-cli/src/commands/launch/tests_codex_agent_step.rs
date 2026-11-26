@@ -872,8 +872,9 @@ fn notice_ignores_argument_content() {
     assert!(line.is_ascii(), "{line:?}");
 }
 
-/// The line is `Some` exactly when `--sandbox danger-full-access` is spliced in,
-/// and it never names something the argv does not contain.
+/// The line is `Some` exactly when `--sandbox danger-full-access` or
+/// `--skip-git-repo-check` is spliced in, and it never names something the
+/// argv does not contain.
 #[test]
 fn notice_matches_the_injected_argv() {
     let mut inputs = every_input();
@@ -884,24 +885,33 @@ fn notice_matches_the_injected_argv() {
         "sandbox_workspace_write.network_access=false",
         HOOK_TRUST,
     ]));
+    inputs.push(v(&["exec", "--skip-git-repo-check", "-"]));
+    inputs.push(v(&["exec", "--sandbox", "read-only", HOOK_TRUST, "-"]));
     for input in inputs {
-        let out = codex_agent_step_args(&input);
-        let added = |token: &str| count(&out, token) > count(&input, token);
-        let line = codex_agent_step_notice(&input);
-        assert_eq!(
-            line.is_some(),
-            added("danger-full-access"),
-            "input {input:?}: argv {out:?}, notice {line:?}"
-        );
-        let Some(line) = line else { continue };
-        assert!(!line.contains("network"), "{input:?}: {line}");
-        assert!(!line.contains("workspace-write"), "{input:?}: {line}");
-        assert_eq!(
-            line.contains(HOOK_TRUST),
-            added(HOOK_TRUST),
-            "{input:?}: {line}"
-        );
-        assert_eq!(line.lines().count(), 1, "{line:?}");
+        {
+            let out = codex_agent_step_args(&input);
+            let added = |token: &str| count(&out, token) > count(&input, token);
+            let line = codex_agent_step_notice(&input);
+            assert_eq!(
+                line.is_some(),
+                added("danger-full-access") || added("--skip-git-repo-check"),
+                "input {input:?}: argv {out:?}, notice {line:?}"
+            );
+            let Some(line) = line else { continue };
+            assert!(!line.contains("network"), "{input:?}: {line}");
+            assert!(!line.contains("workspace-write"), "{input:?}: {line}");
+            assert_eq!(
+                line.contains(HOOK_TRUST),
+                added(HOOK_TRUST),
+                "{input:?}: {line}"
+            );
+            assert_eq!(
+                line.contains("--skip-git-repo-check"),
+                added("--skip-git-repo-check"),
+                "{input:?}: {line}"
+            );
+            assert_eq!(line.lines().count(), 1, "{line:?}");
+        }
     }
 }
 
@@ -927,9 +937,11 @@ fn full_access_injected_only_after_exec() {
 fn notice_is_pure_and_repeatable() {
     let argv = v(&["exec", "-"]);
     let before = argv.clone();
-    assert_eq!(
-        codex_agent_step_notice(&argv),
-        codex_agent_step_notice(&argv)
-    );
+    {
+        assert_eq!(
+            codex_agent_step_notice(&argv),
+            codex_agent_step_notice(&argv)
+        );
+    }
     assert_eq!(argv, before);
 }

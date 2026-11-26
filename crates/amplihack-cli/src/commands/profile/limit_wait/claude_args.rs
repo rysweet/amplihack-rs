@@ -21,10 +21,17 @@
 //! as the prompt. Claude rejects truly unknown options, so a missing entry
 //! only ever hides a real option of a newer Claude. Reading too few prompts
 //! is the safe direction: `prompt` only matters when stdin is a pipe, and
-//! there `prompt: false` means "no wait, no rerun" (the old behaviour),
-//! while a wrongly found prompt would mean a long wait and then a rerun with
-//! no prompt. The ignored test `the_tables_cover_claude_help` (run with
-//! `--ignored` where `claude` is installed) reports drift.
+//! there `prompt: false` means the pipe is copied aside and replayed, while
+//! a wrongly found prompt would mean a long wait and then a rerun with no
+//! prompt. What the copy costs when the prompt was in argv after all is a
+//! file, and, if the step meets a limit while its caller still holds the
+//! pipe open, a retry that waits for the caller to close it: the copier
+//! reads the caller's pipe on its own thread and is joined only when it is
+//! certain to end (`scratch::Capture::settle`), and the retry's wait for it
+//! answers stop signals and the end of the session (issues #2816, #3036).
+//! The ignored test
+//! `the_tables_cover_claude_help` (run with `--ignored` where `claude` is
+//! installed) reports drift.
 
 /// Long options that take exactly one value (`<value>`).
 pub(super) const REQUIRED: &[&str] = &[
@@ -189,11 +196,19 @@ pub(crate) fn parse<S: AsRef<str>>(args: &[S]) -> ClaudeArgs {
         }
         let kind = if let Some(long) = arg.strip_prefix("--") {
             let (name, inline) = match long.split_once('=') {
-                Some((name, _)) => (name, true),
-                None => (long, false),
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
             };
-            out.print |= name == "print" && !inline;
-            if inline { Kind::Flag } else { long_kind(name) }
+            out.print |= name == "print" && inline.is_none();
+            // `--input-format` needs nothing of its own here (issue #3036):
+            // a stream channel on stdin is copied and replayed as any piped
+            // input is, so all that matters is that its value is skipped
+            // and never read as the prompt, which `REQUIRED` already does.
+            if inline.is_some() {
+                Kind::Flag
+            } else {
+                long_kind(name)
+            }
         } else if let Some(shorts) = arg.strip_prefix('-').filter(|s| !s.is_empty()) {
             short_cluster(shorts, &mut out)
         } else {

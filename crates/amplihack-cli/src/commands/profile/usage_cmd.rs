@@ -713,6 +713,18 @@ pub(super) fn home_dir() -> Option<std::path::PathBuf> {
         .filter(|h| h.is_absolute())
 }
 
+/// The process's own values of `names`, in that order, for a child that is
+/// started with nothing else (the Keychain lookup, issue #2885). A name that
+/// is unset or empty is left out, so the child never sees an empty value.
+#[cfg(unix)]
+pub(super) fn child_vars(names: &[&'static str]) -> Vec<(&'static str, std::ffi::OsString)> {
+    names
+        .iter()
+        .filter_map(|name| Some((*name, std::env::var_os(name)?)))
+        .filter(|(_, value)| !value.is_empty())
+        .collect()
+}
+
 /// The Codex read of one `profile usage` run (issue #2001), running on its
 /// own thread from before the Claude probes until [`CodexRead::finish`].
 struct CodexRead {
@@ -899,7 +911,7 @@ fn read_marks(store: &ProfileStore) -> Marks {
         None
     });
     let overflow = super::overflow::overflow_names(store.root());
-    let blocked = overflow_blocks(store, &overflow);
+    let blocked = overflow_blocks(store);
     Marks {
         default,
         lease,
@@ -908,15 +920,14 @@ fn read_marks(store: &ProfileStore) -> Marks {
     }
 }
 
-/// The active spend blocks, read only when a profile is marked overflow.
+/// The active spend blocks, by profile name.
+///
+/// Issue #2890: read for every run, not only when something is marked
+/// overflow. A failed agent step blocks the plan login it ran under, and
+/// such a login is in no overflow list, so an early return on an empty list
+/// would hide exactly the blocks this reads for.
 #[cfg(unix)]
-fn overflow_blocks(
-    store: &ProfileStore,
-    overflow: &[ProfileName],
-) -> std::collections::BTreeMap<String, i64> {
-    if overflow.is_empty() {
-        return Default::default();
-    }
+fn overflow_blocks(store: &ProfileStore) -> std::collections::BTreeMap<String, i64> {
     super::rotate::overflow_blocks(store.root(), now_secs()).unwrap_or_else(|e| {
         eprintln!("warning: could not read the rotate ledger ({e}); no spend-block marks");
         Default::default()
@@ -924,10 +935,7 @@ fn overflow_blocks(
 }
 
 #[cfg(not(unix))]
-fn overflow_blocks(
-    _store: &ProfileStore,
-    _overflow: &[ProfileName],
-) -> std::collections::BTreeMap<String, i64> {
+fn overflow_blocks(_store: &ProfileStore) -> std::collections::BTreeMap<String, i64> {
     Default::default()
 }
 
@@ -1036,10 +1044,9 @@ fn build_rows(
                     .map(str::to_string),
                 live_in: live == Some(name),
                 overflow: overflow.contains(name),
-                overflow_blocked_until: overflow
-                    .contains(name)
-                    .then(|| blocked.get(n).copied())
-                    .flatten(),
+                // Issue #2890: any login with an active block, not only a
+                // marked overflow profile.
+                overflow_blocked_until: blocked.get(n).copied(),
                 api_key: false,
                 api_key_blocked: None,
                 report: p.report,
@@ -1818,8 +1825,10 @@ fn kill_group(_child: &std::process::Child) {}
 /// The order every view prints (issue #1813): usable rows by the
 /// rotator's headroom, most first, then usable rows with no headroom;
 /// exhausted rows by when they are back (unknown last); API-key rows;
-/// unavailable rows by state. Every tie goes to the name, as in the
-/// rotator's `best()`.
+/// unavailable rows by state. Every tie goes to the name. The rotator's own
+/// ranking (`rotate::decide::target::order`) also puts a session below
+/// `--session-at` first and the lower week before the name, and applies the
+/// week ceiling; this view orders by headroom alone.
 pub(super) fn order(rows: &mut [Row], now: i64) {
     rows.sort_by(|a, b| {
         row_key(a, now)
@@ -1956,11 +1965,13 @@ pub(super) fn marks_parts(row: &Row, with_live: bool) -> Vec<String> {
     if let Some((reason, until)) = &row.api_key_blocked {
         parts.push(format!("blocked until {} ({reason})", utc_time(*until)));
     }
-    if row.overflow {
-        parts.push(match row.overflow_blocked_until {
-            Some(t) => format!("overflow, blocked until {}", utc_time(t)),
-            None => "overflow".to_string(),
-        });
+    match (row.overflow, row.overflow_blocked_until) {
+        (true, Some(t)) => parts.push(format!("overflow, blocked until {}", utc_time(t))),
+        (true, None) => parts.push("overflow".to_string()),
+        // Issue #2890: a plan login a step blocked carries the same
+        // wording without the `overflow` prefix, which would be untrue.
+        (false, Some(t)) => parts.push(format!("blocked until {}", utc_time(t))),
+        (false, None) => {}
     }
     if row.source == Some(Source::Fallback) {
         parts.push("(fallback)".to_string());
@@ -2154,8 +2165,8 @@ pub(super) fn state_label(r: &Row) -> &'static str {
 
 /// The row's own probe in this run shows a plan limit reached: an
 /// exhausted state, or the session or all-models weekly window at 100%.
-/// Either is enough. These are the two windows the rotator's capacity test
-/// (`plan_usable` in rotate/overflow.rs) reads; a per-model weekly window is
+/// Either is enough. These are the two windows the shared capacity test
+/// (`overflow::Gate::plan_capacity`) reads; a per-model weekly window is
 /// not. A failed or spend-limited probe is not evidence of credits.
 fn plan_limit_reached(r: &Row) -> bool {
     let full = |w: &UsageWindow| w.used_percentage >= 100.0;

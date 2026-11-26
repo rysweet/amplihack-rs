@@ -2,16 +2,20 @@ use super::*;
 use crate::commands::governor::{self, AdmitRequest, Denied, GovernorArgs};
 
 mod binary;
+/// Issues #964/#1903/#2814 — the named checkout's `core.bare`, before and after.
+mod checkout_bare;
 /// Issue #1570: `--context-file` and `--context-from-file`.
 pub(crate) mod context_sources;
+/// Issue #2582: recipe context reaches the runner in a 0600 file when it can.
+mod context_transport;
 mod correlation;
 pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
 /// Issue #1437 — evidence gathering and the marker tables `failure_class` reads.
-mod failure_evidence;
+pub(crate) mod failure_evidence;
 mod failure_markers;
-mod format;
+pub(crate) mod format;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
@@ -23,6 +27,8 @@ mod recovery;
 pub(crate) mod removed_keys;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
+/// Issue #1619 — an instance overrides the model tier of one named step.
+pub(crate) mod step_tiers;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
 pub(crate) mod stop_signal;
 /// Issue #1437 — a failed step's terminating exit status, from the runner's envelope.
@@ -249,7 +255,16 @@ fn run_recipe_with_options(
         return Err(exit_error(1));
     }
 
-    let working_dir = working_dir.unwrap_or(".");
+    // An explicit -w wins. Otherwise repo_path names the execution checkout,
+    // resolved against the invoking directory before the runner starts.
+    let context_checkout = working_dir
+        .is_none()
+        .then(|| context.get("repo_path"))
+        .flatten()
+        .filter(|path| !path.is_empty());
+    let working_dir = working_dir
+        .or(context_checkout.map(String::as_str))
+        .unwrap_or(".");
     let abs_working_dir = validate_path(working_dir, false)?;
     // Issue #1606: `recipe.verbose` turns --verbose on; it cannot turn it off.
     let verbose = verbose || crate::user_config::recipe_verbose(&abs_working_dir);
@@ -273,6 +288,14 @@ fn run_recipe_with_options(
         } else {
             infer_missing_context(&recipe.context, &context)
         };
+    if context_checkout.is_some() {
+        // Preserve raw explicit inputs for authorization. Derived context uses
+        // the same resolved path as cwd, so a relative path is not joined twice.
+        merged_context.insert(
+            "repo_path".into(),
+            abs_working_dir.to_string_lossy().into_owned(),
+        );
+    }
     if verbose {
         writeln!(io::stderr(), "Executing recipe: {}", recipe.name)?;
         if dry_run {
@@ -355,7 +378,7 @@ fn run_recipe_with_options(
         Ok(())
     } else {
         failure_class::emit_final_failure_class_marker(&result);
-        Err(exit_error(1))
+        Err(exit_error(termination::failed_run_exit_code(&result)))
     }
 }
 
@@ -480,7 +503,11 @@ fn scalar_to_context_value(value: &Value) -> String {
 }
 
 #[cfg(test)]
+mod tests_autodrive_final_status;
+#[cfg(test)]
 mod tests_autodrive_health_log;
+#[cfg(test)]
+mod tests_autodrive_success;
 #[cfg(test)]
 mod tests_context;
 #[cfg(test)]
@@ -491,6 +518,10 @@ mod tests_failure_class;
 mod tests_failure_class_1437;
 #[cfg(test)]
 mod tests_format;
+#[cfg(all(test, unix))]
+mod tests_issue_3049_release_pin;
+#[cfg(test)]
+mod tests_limit_kind;
 #[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]
@@ -498,9 +529,15 @@ mod tests_limit_reset;
 #[cfg(all(test, unix))]
 mod tests_merge_guard_pin;
 #[cfg(test)]
+mod tests_model_tiers_summary;
+#[cfg(test)]
 mod tests_parent_watch;
 #[cfg(test)]
 mod tests_root_sandbox;
+#[cfg(test)]
+mod tests_runner_git_environment;
+#[cfg(test)]
+mod tests_step_tiers;
 #[cfg(test)]
 mod tests_teardown;
 #[cfg(test)]
@@ -509,3 +546,6 @@ mod tests_terminal_record;
 mod tests_termination;
 #[cfg(test)]
 mod tests_termination_contract;
+
+#[cfg(all(test, unix))]
+mod test_runner;
