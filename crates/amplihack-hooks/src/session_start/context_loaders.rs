@@ -46,14 +46,23 @@ pub(super) fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
     None
 }
 
-pub(super) fn load_workflow_context(dirs: &ProjectDirs) -> String {
+/// The workflow text for session start. A nested recipe session or a session
+/// with an active workflow gets the text that tells it not to start another
+/// one, whatever `text.routing` says. Otherwise the Default Workflow section,
+/// which sends work to the orchestrator, is inserted only while
+/// `text.routing` is on (issue #3247).
+pub(super) fn load_workflow_context(dirs: &ProjectDirs) -> Option<String> {
     // Nested recipe sessions should not get top-level /dev rules to prevent
     // recursive workflow invocation (ported from Python PR #4142).
     if is_nested_recipe_session() || is_workflow_active(dirs) {
-        return build_suppressed_workflow_rules();
+        return Some(build_suppressed_workflow_rules());
     }
 
-    workflow::DEFAULT_WORKFLOW_SESSION_CONTEXT.to_string()
+    if !crate::text_switches::routing_on() {
+        return None;
+    }
+
+    Some(workflow::DEFAULT_WORKFLOW_SESSION_CONTEXT.to_string())
 }
 
 pub(super) fn check_version(dirs: &ProjectDirs) -> Option<String> {
@@ -186,7 +195,9 @@ fn build_suppressed_workflow_rules() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{EnvVarGuard, env_lock};
+    use crate::test_support::{
+        CwdGuard, EnvVarGuard, env_lock, isolate_state_home, text_switch_vars_unset,
+    };
     use amplihack_memory::cli_memory::code_graph::import_blarify_json;
     use amplihack_memory::cli_memory::resolve_code_graph_db_path_for_project;
     use std::fs;
@@ -235,6 +246,9 @@ mod tests {
         let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
         let project = tempfile::tempdir().unwrap();
         let framework = tempfile::tempdir().unwrap();
+        let _switches = text_switch_vars_unset();
+        let _home = isolate_state_home(project.path());
+        let _cwd = CwdGuard::set(project.path()).unwrap();
         fs::create_dir_all(framework.path().join(".claude/workflow")).unwrap();
         fs::write(
             framework
@@ -246,7 +260,7 @@ mod tests {
         let previous = std::env::var_os("AMPLIHACK_ROOT");
         unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
 
-        let context = load_workflow_context(&ProjectDirs::new(project.path()));
+        let context = load_workflow_context(&ProjectDirs::new(project.path())).unwrap();
 
         match previous {
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
@@ -268,6 +282,9 @@ mod tests {
         let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
         let project = tempfile::tempdir().unwrap();
         let framework = tempfile::tempdir().unwrap();
+        let _switches = text_switch_vars_unset();
+        let _home = isolate_state_home(project.path());
+        let _cwd = CwdGuard::set(project.path()).unwrap();
         fs::create_dir_all(framework.path().join(".claude/workflow")).unwrap();
         fs::write(
             framework
@@ -279,7 +296,7 @@ mod tests {
         let previous = std::env::var_os("AMPLIHACK_ROOT");
         unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
 
-        let context = load_workflow_context(&ProjectDirs::new(project.path()));
+        let context = load_workflow_context(&ProjectDirs::new(project.path())).unwrap();
 
         match previous {
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },

@@ -41,6 +41,8 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES](#amplihack_context_env_budget_bytes)
 - [Variables read by amplihack](#variables-read-by-amplihack)
   - [AMPLIHACK_HOOK_TEXT](#amplihack_hook_text)
+  - [AMPLIHACK_ROUTING_TEXT](#amplihack_routing_text)
+  - [AMPLIHACK_PROMPT_PREFERENCES](#amplihack_prompt_preferences)
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [AMPLIHACK_CODEX_LOCAL_MODEL](#amplihack_codex_local_model)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
@@ -1041,6 +1043,29 @@ Copilot and Codex launches report suppression on stderr. Child sessions inherit
 the setting. See [Omit hook context text](../howto/omit-hook-context-text.md).
 
 A local-model Codex launch sets `AMPLIHACK_HOOK_TEXT=none` for its child process.
+
+---
+
+### AMPLIHACK_ROUTING_TEXT
+
+`on` or `off`; unset means the `text.routing` key, whose default is `on`.
+With `off`, the routing reminder, the session-start workflow section and the
+router lines of the launch contract are left out. The contract keeps its
+rules on waiting and on stopping processes. Takes precedence over the key in
+any file. An empty value counts as unset; any other value leaves `on` in
+force with one escaped line on stderr. Child sessions inherit it. See
+[Switch off the routing text and the repeated preferences table](../howto/switch-off-routing-and-preferences-text.md).
+
+---
+
+### AMPLIHACK_PROMPT_PREFERENCES
+
+`on` or `off`; unset means the `text.prompt_preferences` key, whose default
+is `on`. With `off`, the prompt-event hook leaves out the preferences table
+and the learned-patterns line. Session-start preferences are unchanged, and a
+recipe step never receives the table on a prompt event. Values are read as
+for `AMPLIHACK_ROUTING_TEXT`. See
+[Switch off the routing text and the repeated preferences table](../howto/switch-off-routing-and-preferences-text.md).
 
 ---
 

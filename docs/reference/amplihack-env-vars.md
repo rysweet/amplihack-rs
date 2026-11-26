@@ -170,6 +170,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_PROJECT_ID` | user preference |  | Memory learning project id. |
 | `AMPLIHACK_PROJECT_ROOT` | internal |  | Project root exported by the uvx manager. |
 | `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses: `auto` (default), `stdin` or `tempfile`. No value puts the prompt in argv: any other value, including `argv`, logs a warning and is treated as `auto`. Never set it in recipes or bundle config. See [Agent Prompt Channels](agent-prompt-channels.md#automatic-prompt-delivery-never-selects-argv). |
+| `AMPLIHACK_PROMPT_PREFERENCES` | user preference | `text.prompt_preferences` | `off` leaves out the preferences table and learned-patterns line on prompt events. See [Switch off the routing text](../howto/switch-off-routing-and-preferences-text.md). |
 | `AMPLIHACK_QUEUE_PATH` | test-only |  | Fleet test fixture. |
 | `AMPLIHACK_RECIPE_LOG` | internal |  | Absolute path of a detached run's recipe log, exported by `amplihack recipe run --detach` so each step can append its usage-limit wait's `start` and `end` lines to it. Inherited by nested foreground runs, which append to the enclosing run's log; a nested detached run overwrites it with its own. Never read from configuration. See [The wait in the recipe log](profile-command.md#the-wait-in-the-recipe-log). |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | user preference |  | Path for structured runner events. |
@@ -197,6 +198,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_ROTATE_TARGET_WEEK_MAX` | user preference |  | Default for `amplihack profile rotate --target-week-max` (`1`-`100`, default `95`): a login whose week use is above it is never a move target. Auto-switch does not read it; see [Rotate target choice](profile-command.md#rotate-target-choice). |
 | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | user preference |  | Default for `amplihack profile rotate --upgrade-margin`. |
 | `AMPLIHACK_ROTATE_WEEK_AT` | user preference |  | Default for `amplihack profile rotate --week-at`; also auto-switch's plan-capacity test for overflow while no rotator runs. |
+| `AMPLIHACK_ROUTING_TEXT` | user preference | `text.routing` | `off` leaves out the routing reminder, the session-start workflow section and the contract's router lines. See [Switch off the routing text](../howto/switch-off-routing-and-preferences-text.md). |
 | `AMPLIHACK_RUNTIME_DIR` | user preference |  | Worktree runtime directory override. |
 | `AMPLIHACK_RUNTIME_ROOT` | internal |  | Runtime root handed to recipe steps. |
 | `AMPLIHACK_RUN_DIR` | internal |  | Run folder `<work root>/runs/<run id>` handed to recipe steps. |

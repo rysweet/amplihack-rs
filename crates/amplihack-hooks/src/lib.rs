@@ -9,9 +9,11 @@ mod capacity_notice;
 pub mod hook_text;
 mod original_request;
 mod prompt_input;
+mod recipe_step;
 mod state_dir;
 #[cfg(test)]
 pub(crate) mod test_support;
+mod text_switches;
 
 #[cfg(test)]
 mod layering_guard;

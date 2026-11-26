@@ -32,6 +32,8 @@ const SCHEMA_ORDER: &[&str] = &[
     "sessions.daily_archive",
     "sessions.archive_days",
     "sessions.archive_dest",
+    "text.routing",
+    "text.prompt_preferences",
 ];
 
 /// Records argv and its environment, then reports success in the runner's
@@ -383,6 +385,8 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "sessions.daily_archive = true",
             "sessions.archive_days = 3",
             "sessions.archive_dest = (unset)",
+            "text.routing = \"on\"",
+            "text.prompt_preferences = \"on\"",
         ]
     );
 }
@@ -1501,4 +1505,79 @@ fn doctor_prints_effective_config_with_origins() {
         "{text}"
     );
     assert!(text.contains("Config problems:"), "{text}");
+}
+
+/// Issue #3247: `amplihack config get` and the reader the hook program uses
+/// (`amplihack_utils::user_config::text_switch::read`) give the same value
+/// for the same files and variables.
+#[test]
+fn config_get_and_the_hook_reader_agree_on_the_text_switches() {
+    use amplihack_utils::user_config::text_switch::{self, Layers};
+
+    /// The user file, the project file and the variables of one case.
+    type Case<'a> = (Option<&'a str>, Option<&'a str>, &'a [(&'a str, &'a str)]);
+    let cases: &[Case<'_>] = &[
+        (None, None, &[]),
+        (
+            Some("[text]\nrouting = \"off\"\nprompt_preferences = \"off\"\n"),
+            None,
+            &[],
+        ),
+        (
+            Some("[text]\nrouting = \"off\"\n"),
+            Some("[text]\nrouting = \"on\"\nprompt_preferences = \"off\"\n"),
+            &[],
+        ),
+        (
+            Some("[text]\nrouting = \"off\"\n"),
+            None,
+            &[
+                ("AMPLIHACK_ROUTING_TEXT", "on"),
+                ("AMPLIHACK_PROMPT_PREFERENCES", "off"),
+            ],
+        ),
+        (
+            Some("[text]\nrouting = \"sideways\"\n"),
+            Some("[text]\nprompt_preferences = 3\n"),
+            &[],
+        ),
+        (
+            Some("[text]\nrouting = \"off\"\n"),
+            None,
+            &[("AMPLIHACK_ROUTING_TEXT", "bogus")],
+        ),
+    ];
+    for (user, project, env) in cases {
+        let fx = Fx::new();
+        if let Some(body) = user {
+            fx.write_user(body);
+        }
+        if let Some(body) = project {
+            fx.write_project(body);
+        }
+        for switch in [text_switch::ROUTING, text_switch::PROMPT_PREFERENCES] {
+            let out = fx.amp_env(&["config", "get", switch.key], env);
+            assert_ok(&out);
+            let lookup = |name: &str| {
+                env.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| (*v).to_string())
+            };
+            let hook = text_switch::read(
+                switch,
+                &Layers {
+                    home: Some(&fx.home),
+                    cwd: &fx.project,
+                    read_project: true,
+                    env: &lookup,
+                },
+            );
+            assert_eq!(
+                stdout(&out).trim_end(),
+                hook.word(),
+                "{} with user {user:?}, project {project:?}, env {env:?}",
+                switch.key
+            );
+        }
+    }
 }

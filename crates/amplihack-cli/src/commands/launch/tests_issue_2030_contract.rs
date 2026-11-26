@@ -16,8 +16,9 @@
 
 use super::command::build_command_for_dir;
 use super::system_prompt_append::{
-    CONTRACT_PATH_MISSING, CONTRACT_RELATIVE_PATH, FRAGMENT, MIN_APPEND_PROMPT_FILE_VERSION,
-    OPT_OUT_ENV, ensure_contract_file, ensure_contract_file_as, installed_fragment,
+    CONTRACT_PATH_MISSING, CONTRACT_RELATIVE_PATH, CONTRACT_WITHOUT_ROUTING_RELATIVE_PATH,
+    ContractPart, FRAGMENT, MIN_APPEND_PROMPT_FILE_VERSION, OPT_OUT_ENV, contract_text,
+    ensure_contract_file, ensure_contract_file_as, ensure_contract_part_file, installed_fragment,
     parse_claude_version, require_append_prompt_file_capability,
 };
 use crate::binary_finder::BinaryInfo;
@@ -174,6 +175,47 @@ fn version_gate_unparseable_or_missing_fails_naming_resolved_binary() {
 #[test]
 fn contract_relative_path_is_under_private() {
     assert_eq!(CONTRACT_RELATIVE_PATH, "private/system-prompt-append.md");
+}
+
+fn top_level_items(text: &str) -> usize {
+    text.lines().filter(|line| line.starts_with("- ")).count()
+}
+
+/// Issue #3247: with `text.routing = off` the contract keeps its last two
+/// top-level items, the rules on waiting and on stopping processes, and
+/// nothing above them. Both parts are built on `installed_fragment()`.
+#[test]
+fn the_contract_without_routing_is_its_last_two_items() {
+    let full = contract_text(ContractPart::Full).unwrap();
+    let reduced = contract_text(ContractPart::WithoutRouting).unwrap();
+    assert_eq!(full, installed_fragment().unwrap());
+    assert!(full.ends_with(reduced) && reduced.len() < full.len());
+    assert_eq!(top_level_items(reduced), 2);
+    assert!(top_level_items(full) > 2);
+    assert!(reduced.starts_with("- "), "no heading: {reduced:?}");
+    assert!(!reduced.contains("<!--"));
+}
+
+#[test]
+fn each_contract_part_has_its_own_private_file() {
+    let home = tempfile::tempdir().unwrap();
+    let full = ensure_contract_part_file(home.path(), ContractPart::Full).unwrap();
+    let reduced = ensure_contract_part_file(home.path(), ContractPart::WithoutRouting).unwrap();
+    assert_eq!(full, home.path().join(CONTRACT_RELATIVE_PATH));
+    assert_eq!(
+        reduced,
+        home.path().join(CONTRACT_WITHOUT_ROUTING_RELATIVE_PATH)
+    );
+    assert_good_contract(&full);
+    assert_eq!(mode(&reduced), 0o600);
+    assert_eq!(
+        std::fs::read_to_string(&reduced).unwrap(),
+        contract_text(ContractPart::WithoutRouting).unwrap()
+    );
+    assert_eq!(
+        ensure_contract_part_file(home.path(), ContractPart::WithoutRouting).unwrap(),
+        reduced
+    );
 }
 
 #[test]

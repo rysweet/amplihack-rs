@@ -22,6 +22,7 @@ chrono = { workspace = true }
 libc = { workspace = true }
 base64 = "0.22"
 tempfile = { workspace = true }
+toml_edit = "0.22"
 
 [dev-dependencies]
 # `test-util` powers `#[tokio::test(start_paused = true)]` in `backoff.rs`,

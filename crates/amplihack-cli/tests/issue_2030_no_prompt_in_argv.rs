@@ -340,6 +340,120 @@ fn claude_launch_uses_contract_file() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Issue #3247: the launcher's choice of contract part
+// ---------------------------------------------------------------------------
+
+/// The contract as the model reads it: the source file without its leading
+/// comment, as `claude_launch_uses_contract_file` checks.
+fn delivered_full_contract() -> String {
+    let source = contract_text();
+    let end = source.find("-->").expect("the source opens with a comment") + "-->".len();
+    source[end..].trim_start().to_string()
+}
+
+/// Byte offsets of the contract's top-level items (lines that open `- `).
+fn top_level_items(text: &str) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("- ") {
+            offsets.push(at);
+        }
+        at += line.len();
+    }
+    offsets
+}
+
+fn write_file(path: &Path, text: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+/// Run `amplihack claude` and return the contract file's content.
+fn launched_contract(f: &Fixture, envs: &[(&str, &str)]) -> String {
+    let mut c = f.cmd(&["claude", "--", "--verbose"]);
+    c.env_remove("AMPLIHACK_ROUTING_TEXT");
+    for (k, v) in envs {
+        c.env(k, v);
+    }
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.runs(), 1, "{}", describe(&out));
+    f.content(1, "--append-system-prompt-file")
+}
+
+/// The reduced part: the last two top-level items of the full contract, and
+/// nothing of the heading or the items above them.
+fn assert_reduced_part(delivered: &str) {
+    let full = delivered_full_contract();
+    let items = top_level_items(&full);
+    assert!(items.len() >= 3, "fixture check: {full:?}");
+    let kept_from = items[items.len() - 2];
+    assert_eq!(
+        delivered,
+        &full[kept_from..],
+        "the reduced part is the last two top-level items, unchanged"
+    );
+    for line in full[..kept_from].lines().filter(|l| !l.trim().is_empty()) {
+        assert!(
+            !delivered.contains(line),
+            "a line above the kept items is left out: {line:?}"
+        );
+    }
+}
+
+#[test]
+fn nothing_set_gives_the_full_contract_in_four_file_states() {
+    let full = delivered_full_contract();
+    let other_keys = "# no text keys\n[sessions]\narchive_days = 7\n";
+    type Prepare = fn(&Fixture, &str);
+    let states: [(&str, Prepare); 4] = [
+        ("no configuration file", |_, _| {}),
+        ("files present with neither key", |f, text| {
+            write_file(&f.home.join(".amplihack/config.toml"), text);
+            write_file(&f.work.join(".git/HEAD"), "ref: refs/heads/main\n");
+            write_file(&f.work.join(".amplihack/config.toml"), text);
+        }),
+        ("a user file that does not parse", |f, _| {
+            write_file(
+                &f.home.join(".amplihack/config.toml"),
+                "this is = = not [toml\n",
+            );
+        }),
+        ("a user file that cannot be read", |f, _| {
+            fs::create_dir_all(f.home.join(".amplihack/config.toml")).unwrap();
+        }),
+    ];
+    for (label, prepare) in states {
+        let f = Fixture::new();
+        prepare(&f, other_keys);
+        let delivered = launched_contract(&f, &[]);
+        assert_eq!(delivered, full, "{label}: the full contract is delivered");
+        assert_eq!(
+            f.file(1, "--append-system-prompt-file").path,
+            f.contract_path(),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn routing_off_in_the_user_file_gives_the_reduced_contract() {
+    let f = Fixture::new();
+    write_file(
+        &f.home.join(".amplihack/config.toml"),
+        "[text]\nrouting = \"off\"\n",
+    );
+    assert_reduced_part(&launched_contract(&f, &[]));
+}
+
+#[test]
+fn routing_off_in_the_variable_gives_the_reduced_contract() {
+    let f = Fixture::new();
+    assert_reduced_part(&launched_contract(&f, &[("AMPLIHACK_ROUTING_TEXT", "off")]));
+}
+
 #[test]
 fn launch_subcommand_uses_contract_file() {
     let f = Fixture::new();

@@ -600,8 +600,20 @@ fn run_launch_core(
         }
     }
     let contract_file = if inject_contract {
-        Some(system_prompt_append::ensure_contract_file(
+        // Issue #3247: with `text.routing = off` the contract keeps only its
+        // rules on waiting and on stopping processes.
+        let part = if crate::user_config::routing_text_on(&current_dir) {
+            system_prompt_append::ContractPart::Full
+        } else {
+            tracing::info!(
+                key = "text.routing",
+                "routing text off: the launch contract leaves out its router lines"
+            );
+            system_prompt_append::ContractPart::WithoutRouting
+        };
+        Some(system_prompt_append::ensure_contract_part_file(
             &system_prompt_append::contract_home()?,
+            part,
         )?)
     } else {
         None
