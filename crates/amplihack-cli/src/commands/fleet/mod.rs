@@ -151,3 +151,5 @@ mod tests;
 mod tests_issue_1570_admiral;
 #[cfg(all(test, unix))]
 mod tests_issue_1570_reasoner;
+#[cfg(all(test, unix))]
+mod tests_issue_1983_reasoner;

@@ -13,22 +13,74 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use tracing::warn;
 
-/// Valid delegate commands for subprocess execution.
+/// Valid delegate commands for subprocess execution: one per allowlisted
+/// agent binary (`amplihack_utils::agent_binary::ALLOWED_BINARIES`).
 pub(super) const VALID_DELEGATES: &[&str] = &[
-    "amplihack claude",
-    "amplihack copilot",
     "amplihack amplifier",
+    "amplihack claude",
+    "amplihack codex",
+    "amplihack copilot",
 ];
 
 /// Detect which delegate command to use from the environment.
+///
+/// Issue #1983: a workstream runs on the CLI of the session that started it.
+/// `AMPLIHACK_DELEGATE` is an explicit choice and wins when valid; otherwise
+/// the delegate is `amplihack <binary>` for the binary the shared resolver
+/// names, never a fixed `amplihack claude`.
 pub(super) fn detect_delegate() -> String {
-    if let Ok(delegate) = std::env::var("AMPLIHACK_DELEGATE") {
-        if VALID_DELEGATES.contains(&delegate.as_str()) {
-            return delegate;
+    delegate_for(
+        std::env::var("AMPLIHACK_DELEGATE").ok().as_deref(),
+        &crate::env_builder::active_agent_binary(),
+    )
+}
+
+/// The rule behind [`detect_delegate`], with its inputs passed in so it is
+/// testable without changing the process environment.
+pub(super) fn delegate_for(requested: Option<&str>, active_binary: &str) -> String {
+    if let Some(delegate) = requested {
+        if VALID_DELEGATES.contains(&delegate) {
+            return delegate.to_string();
         }
-        warn!("AMPLIHACK_DELEGATE={delegate:?} is not valid. Using default.");
+        warn!("AMPLIHACK_DELEGATE={delegate:?} is not valid. Using the active agent binary.");
     }
-    "amplihack claude".to_string()
+    let resolved = format!("amplihack {active_binary}");
+    if VALID_DELEGATES.contains(&resolved.as_str()) {
+        resolved
+    } else {
+        // `active_agent_binary` only returns allowlisted names, so this is
+        // reached only if the two lists drift apart.
+        format!(
+            "amplihack {}",
+            amplihack_utils::agent_binary::DEFAULT_BINARY
+        )
+    }
+}
+
+/// The arguments after `--` that make `delegate` run `prompt` once,
+/// non-interactively: `-p` for claude and copilot, `exec` for codex and `run`
+/// for amplifier, as the launcher's prompt delivery does
+/// (`amplihack_launcher::prompt_delivery::add_prompt_prefix_args`).
+pub(super) fn delegate_prompt_verb(delegate: &str) -> &'static str {
+    match delegate {
+        "amplihack codex" => "exec",
+        "amplihack amplifier" => "run",
+        _ => "-p",
+    }
+}
+
+/// How the classic-mode prompt points `delegate` at the task file.
+///
+/// `@TASK.md` is Claude Code's file mention: claude attaches the file's
+/// contents to the prompt. `codex exec`, `amplifier run` and copilot's `-p`
+/// take the prompt as plain text, so for them `@TASK.md` would arrive as a
+/// literal string. They get a plain instruction to read the file instead; the
+/// script `cd`s into the workstream directory, where `TASK.md` is written.
+pub(super) fn delegate_task_reference(delegate: &str) -> &'static str {
+    match delegate {
+        "amplihack claude" => "@TASK.md",
+        _ => "Read TASK.md in the current directory and execute the task it describes.",
+    }
 }
 
 /// The scope's repository is `owner/repo` for a GitHub origin (issue #1642).
@@ -232,7 +284,7 @@ export AMPLIHACK_TREE_ID='{tree_id}'
 export AMPLIHACK_SESSION_DEPTH='{depth}'
 export AMPLIHACK_MAX_DEPTH='{max_depth}'
 export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
-{profile_exports}{delegate} --subprocess-safe -- -p "@TASK.md Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
+{profile_exports}{delegate} --subprocess-safe -- {prompt_verb} "{task_reference} Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
 "#,
         work_dir = ws.work_dir.display(),
         tree_id = tree_id,
@@ -240,6 +292,8 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
         max_depth = max_depth,
         max_sessions = max_sessions,
         delegate = delegate,
+        prompt_verb = delegate_prompt_verb(delegate),
+        task_reference = delegate_task_reference(delegate),
         workflow_selection = workflow::DEFAULT_WORKFLOW_SELECTION,
         dev_orchestrator = workflow::DEV_ORCHESTRATOR_SKILL,
         smart_orchestrator = workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND,
