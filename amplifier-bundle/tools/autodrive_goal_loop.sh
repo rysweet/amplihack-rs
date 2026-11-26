@@ -6,26 +6,20 @@
 # run), a fresh reading (goal tool `read` and guidance), the turn run (one
 # agent step that does any agentic work and names one action), a guidance
 # check, the mechanical action, and the turn record. Fixed code here only reads
-# state and dispatches: it never decides that a run ends because of how the run
-# is going. Nothing counts turns, rounds or time, and nothing reads a record
-# to stop. There is no sleep, timer or poll.
+# state and dispatches: it never decides that a run ends because of how an
+# agent's work is going, nothing reads a record to stop, and there is no
+# sleep, timer or poll.
 #
 # The run ends when: the goal tool's `final` prints a word (merged, closed,
 # refused, or the goal's own), the turn carried out `handoff`, `ready` or
 # `stop`, or the owner stops it. Exit 79 and 75 pass up unchanged.
 #
-# A turn run that fails after the runner's own handling (limit wait,
-# limit-resume) does not end the run (failed_turn, #3129 R1). The agent may
-# have edited, committed or pushed before a later step failed, so nothing is
-# reset: the worktree and the remote stay as the turn left them. The failure's
-# evidence goes into the turn's result.json, which the next turn's reading
-# carries as `previous`, and the next turn starts at once, whether or not the
-# failed turn's agent had decided: a fresh agent judges it. A failure that
-# recurs every turn starts turn after turn on purpose, because nothing counts
-# them; the agent hands off or the owner stops the run. Two cases end the run:
-# the operator's own `recipe.usage_limit_wait = false`, which asks for the
-# limit result at once, and `--once`, which asks for one turn. A launch bundle
-# that lost the files a turn needs waits for the owner's word.
+# A turn run that fails after the runner's own handling does not end the run
+# (failed_turn, #3129 R1): nothing is reset, the evidence goes into result.json
+# and one line into the run's own log, and a fresh agent judges it next turn.
+# Three cases end the run: `--once`; the operator's `recipe.usage_limit_wait =
+# false`; and three turns in a row that failed with the same error before any
+# agent started (#3286), since no agent then runs to read the failure.
 #
 #   autodrive_goal_loop.sh --goal-tool <name.sh> --goal-file <bundle-relative path>
 #     --state-dir <dir> --repo <dir> [--task-file <f>] [--notes-file <f>]
@@ -53,6 +47,7 @@ CALLER_UMASK="$(umask)"
 
 GOAL_TOOL=""; GOAL_FILE=""; STATE=""; REPO=""; TASK_FILE=""; NOTES_FILE=""; INVOCATION=""; RECOVERY=""; ONCE=false
 LOOP_END_WRITTEN=false; TURN=0; RUN_ID=""; MERGE_ALLOWED=false; SUBJECT=""
+PRE_AGENT_END=3; PRE_AGENT_RUN=0; PRE_AGENT_ERR="" # #3286: same-error turns in a row with no agent
 
 say() { printf 'auto-drive goal loop: %s\n' "$*" >&2; }
 finish() { # finish <rc> [error]: the one stdout line, then exit
@@ -195,13 +190,12 @@ guidance_show() { # guidance_show <since> <out>: metadata only (never text)
 }
 
 # failed_turn <rc>: a turn run that failed after the runner's own handling
-# (R1). Nothing is reset; the evidence goes into result.json (the next
-# reading's `previous`) and the next turn's fresh agent decides. Nothing here
-# classifies the failure or reads the log's wording: class, retryable and the
-# step lists are the runner's own failure_class marker, copied as evidence.
-# What else runs, from facts read directly (--once, the operator's setting via
-# `amplihack config get`, the bundle's files), is in docs/reference/
-# autodrive-goal-loop.md#failures-inside-a-turn. Returns 0 for the next turn.
+# (R1). The evidence goes into result.json (the next reading's `previous`).
+# Nothing here classifies the failure or reads the log's wording: class,
+# retryable and the step lists are the runner's own marker, copied as evidence.
+# What else runs, from facts read directly (--once, `amplihack config get`, the
+# bundle's files, whether the marker shows no step ran), is in docs/
+# reference/autodrive-goal-loop.md#failures-inside-a-turn. Returns 0 for the next turn.
 bundle_whole() {
   local f
   for f in recipes/autodrive-goal-turn.yaml tools/autodrive_goal_turn.sh "tools/$GOAL_TOOL"; do
@@ -209,14 +203,20 @@ bundle_whole() {
   done
 }
 failed_turn() {
-  local rc="$1" summary judged=false limit=false lwait="" recovery=next-turn wrc
+  local rc="$1" summary judged=false limit=false lwait="" recovery=next-turn wrc err pre=false repeat=false nosteps=false
   local why="the next turn starts at once; its agent reads this failure and the turn log and decides"
   classify_child "$TD/turn.log" >"$W/marker" # sets CHILD_FAILURE_* from the runner's last marker
   summary="$(child_failure_summary "$rc" "$TD/turn.log")"
   sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -c '{completed:[.completed_steps // [] | .[] | strings], failed:[.failed_steps // [] | .[] | strings]}' >"$W/steps" 2>/dev/null
   goal_json_file "$W/steps" 65536 || echo '{"completed":[],"failed":[]}' >"$W/steps"
-  jq -e '.completed | index("decide") != null' "$W/steps" >/dev/null 2>&1 && judged=true
-  [ -f "$TD/decision.json" ] && [ ! -L "$TD/decision.json" ] && judged=true
+  sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -e '.completed_steps == [] and .failed_steps == []' >/dev/null 2>&1 && nosteps=true # only a marker shows no step ran; none is unknown
+  jq -e '.completed | index("decide") != null' "$W/steps" >/dev/null 2>&1 && judged=true; [ -f "$TD/decision.json" ] && [ ! -L "$TD/decision.json" ] && judged=true
+  err="$(goal_last_line "$TD/turn.log")"; [ -n "$err" ] || err="$summary"
+  if [ "$judged" = false ] && [ "$nosteps" = true ]; then # no agent started (#3286)
+    pre=true; [ "$PRE_AGENT_RUN" -gt 0 ] && [ "$err" = "$PRE_AGENT_ERR" ] || { PRE_AGENT_RUN=0; PRE_AGENT_ERR="$err"; }
+    PRE_AGENT_RUN=$((PRE_AGENT_RUN + 1))
+  else PRE_AGENT_RUN=0; fi
+  goal_run_log_line "auto-drive goal loop: turn ${TURN} failed (${summary}): ${err}"
   if [ "$CHILD_FAILURE_CLASS" = usage_limit ]; then
     limit=true
     lwait="$(cd "$WORK" && "$AMPLIHACK_BIN" config get recipe.usage_limit_wait 2>/dev/null | tr -d '[:space:]')"
@@ -229,6 +229,9 @@ failed_turn() {
   elif ! bundle_whole; then
     recovery=owner-wait
     why="the launch bundle no longer holds the turn recipe, the turn tool or the goal tool, so no turn can run until the owner restores it; the run waits for the owner's word"
+  elif [ "$pre" = true ] && [ "$PRE_AGENT_RUN" -ge "$PRE_AGENT_END" ]; then
+    recovery=ended; repeat=true; why="no agent started in this turn or in the $((PRE_AGENT_END - 1)) turns before it, and all ${PRE_AGENT_END} failed with the same error, so no agent can read the failure; the run ends with that error"
+  elif [ "$pre" = true ]; then why="no agent started in this turn, which is ${PRE_AGENT_RUN} of ${PRE_AGENT_END} turns in a row to fail with the same error before any agent started; the next turn starts at once, and the run ends at ${PRE_AGENT_END}"
   fi
   jq -cn --arg s "the turn run failed after the runner's own recovery (${summary}): ${why}" --arg rc "$rc" \
     --arg class "$CHILD_FAILURE_CLASS" --arg retryable "$CHILD_FAILURE_RETRYABLE" --slurpfile st "$W/steps" \
@@ -242,6 +245,7 @@ failed_turn() {
   case "$recovery" in
     next-turn) return 0 ;;
     ended)
+      if [ "$repeat" = true ]; then end_run failed "$err"; finish 1 "$err"; fi
       if [ "$limit" = true ]; then end_run usage_limit "$why"; else end_run failed "the turn run failed (${summary}) and this was a --once turn"; fi
       finish 1 "$why" ;;
   esac
@@ -316,7 +320,7 @@ while :; do
     failed_turn "$rc"
     continue
   fi
-  ACTION=""
+  PRE_AGENT_RUN=0; ACTION=""
   if goal_json_file "$TD/decision.json" 131072 && [ "$(jq -r '.valid' "$TD/decision.json")" = true ]; then
     ACTION="$(jq -r '.action // empty | strings' "$TD/decision.json")"
     goal_is_word "$ACTION" || ACTION=""

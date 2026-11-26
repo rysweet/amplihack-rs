@@ -226,6 +226,9 @@ jobs:
       - name: Auto-drive — an agent/API failure is not a policy refusal (issue #1437)
         shell: bash
         run: bash tests/issue_1437_autodrive_loop.sh
+      - name: Auto-drive, the goal loop ends on a repeated failure before any agent starts (issue #3286)
+        shell: bash
+        run: bash tests/issue_3286_goal_loop_pre_agent_failures.sh
       - name: Test stubs — only a blob mode reads stdin (issue #2582)
         shell: bash
         run: bash tests/issue_2582_stub_stdin_contract.sh
