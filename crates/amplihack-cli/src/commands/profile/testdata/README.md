@@ -42,9 +42,8 @@ line does. Logins the cycle skipped or could not read are left out.
   from 16:52:11Z to 16:52:43Z prints the same rate and runway.
 - **Names.** login-as and login-ax are the two logins issue #1970 discusses.
   They keep a name of their own rather than a number, so the tests can refer
-  to them. The issue gives their original names; this tree uses generic
-  names in their place. The other logins are numbered `login-01` to
-  `login-20` in the order of their names. `login-19` is login-az.
+  to them. The other logins are numbered `login-01` to `login-20` in the
+  order of their names. `login-19` is login-az.
 
 A history line also holds passive readings and is checked against them in
 ways the log does not show, so the rebuilt lines can differ from the lost ones
