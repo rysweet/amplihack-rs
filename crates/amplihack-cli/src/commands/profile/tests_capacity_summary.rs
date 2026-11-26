@@ -1357,6 +1357,28 @@ fn a_fall_of_exactly_ten_is_not_a_reset() {
 }
 
 #[test]
+fn a_reading_back_to_ten_below_the_level_makes_the_fall_stale() {
+    // The fall is stale when the later reading is 10 below the level.
+    let cur = snap(T, &[("a", pt(Some(0), 40))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", pt(Some(0), 50))]),
+        entry(T - 3 * HOUR, &[("a", pt(Some(0), 30))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 0);
+}
+
+#[test]
+fn a_reading_back_to_eleven_below_the_level_leaves_the_fall() {
+    // The fall stays when the later reading is 11 below the level.
+    let cur = snap(T, &[("a", pt(Some(0), 39))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", pt(Some(0), 50))]),
+        entry(T - 3 * HOUR, &[("a", pt(Some(0), 30))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 9);
+}
+
+#[test]
 fn a_fall_of_eleven_is_not_a_reset() {
     // Issue #3258: 50, 60, then 49 and 55 with no new reset time. The 49 is
     // stale, since 55 comes back to within 10 of 60: one week, 10 points.
