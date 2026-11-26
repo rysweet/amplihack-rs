@@ -24,6 +24,11 @@
 //! - no `AMPLIHACK_CLAUDE_PROFILE_ROOT` (issue #1699), so an install under the
 //!   temp `HOME` cannot refresh the developer's real profiles. `env_clear()`
 //!   already drops it; the explicit removal holds if the kept list changes.
+//! - none of the other [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`]
+//!   either (issue #2922), so an inherited `CLAUDE_CONFIG_DIR` cannot make the
+//!   child write its settings into a developer's live profile. As above,
+//!   `env_clear()` already drops them and the explicit removal is what holds
+//!   if the kept list changes.
 //! - `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true` and `SSH_ASKPASS=true`
 //!   ([`NO_GIT_PROMPT_ENV`], issue #1764) and a null stdin, through
 //!   [`no_git_prompt`], so no git the child starts can wait on a credential
@@ -32,6 +37,21 @@
 //!   test that calls `.env()` or `.stdin()` afterwards wins, and a test that
 //!   clears another command's environment calls [`no_git_prompt`] itself
 //!   after `env_clear()`.
+//! - `AMPLIHACK_TEST_PROBE_WAIT=exit` ([`PROBE_WAIT_ENV`], issue #2019), so a
+//!   debug build's `--version` probe of a stub waits for the stub to exit
+//!   instead of giving up after 3 s on a busy host. Release builds never read
+//!   it.
+//! - no `AMPLIHACK_WORK_ROOT`, `AMPLIHACK_WORK_ROOT_EXPLICIT`,
+//!   `AMPLIHACK_RUN_DIR` or `AMPLIHACK_RUN_ID` (issue #2712). `env_clear()`
+//!   already drops them; what matters is that a test which starts a recipe
+//!   shell suite starts it through [`isolated`], because a suite that
+//!   inherits an explicit work root puts its worktrees under
+//!   `<work root>/worktrees` instead of its own scratch, outside its `EXIT`
+//!   trap. The suites clear the same names themselves by sourcing
+//!   `amplifier-bundle/recipes/tests/recipe-test-env.sh`, which also clears
+//!   the five `AMPLIHACK_RUN_IDENTITY_VARS` of
+//!   `amplifier-bundle/tools/git-repo-env.sh`; this is the other half of that
+//!   contract, for the Rust side.
 //! - `AMPLIHACK_TEST_PROC_ROOT` ([`PROC_ROOT_ENV`], issue #2042) set to
 //!   [`shared_empty_proc_root`], so `profile` and `sessions` commands read an
 //!   empty fake process table instead of the host's `/proc`. A test that
@@ -41,9 +61,8 @@
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
-use std::fs::{DirBuilder, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs::DirBuilder;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -61,8 +80,26 @@ pub const HOME_GUARD_ENV: &str = "AMPLIHACK_TEST_HOME_GUARD";
 /// The variable that turns the rotator's launch autostart off.
 pub const ROTATE_AUTOSTART_ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
 
+/// The debug-only knob that makes the launch-target `--version` probe wait
+/// for the candidate's exit instead of its 3 s / 10 s deadline (issue #2019).
+pub const PROBE_WAIT_ENV: &str = "AMPLIHACK_TEST_PROBE_WAIT";
+
 /// The variable naming the Claude login profile root.
 pub const PROFILE_ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
+
+/// The debug-only variable that makes `profile rotate` and `profile switch`
+/// exchange two logins with a stand-in made of plain renames, in place of
+/// the host's atomic exchange, which only Linux has (issue #2935). The
+/// binary honours it only together with [`HOME_GUARD_ENV`], and only for
+/// the value [`LOGIN_EXCHANGE_STAND_IN`]. The stand-in moves two files only
+/// when both lie inside the child's temp dir, so a fixture keeps its `HOME`
+/// and its profile root under the `TMPDIR` it gives the child. A rotation
+/// fixture sets it on every system, so that what its tests decide does not
+/// depend on the host.
+pub const LOGIN_EXCHANGE_ENV: &str = "AMPLIHACK_TEST_LOGIN_EXCHANGE";
+
+/// The one value [`LOGIN_EXCHANGE_ENV`] takes.
+pub const LOGIN_EXCHANGE_STAND_IN: &str = "renames";
 
 /// The variable naming the process table the binary reads instead of
 /// `/proc` (issue #2042). The binary honours it only under the home guard,
@@ -119,30 +156,24 @@ pub fn shared_temp_home() -> &'static Path {
     })
 }
 
-/// The constant `self/environ` of every fake process table.
-pub const SELF_ENVIRON: &[u8] = b"AMPLIHACK_FAKE=1\0";
+#[path = "claude_profile_isolation.rs"]
+// `cli_integration` loads this file twice, here and through
+// `support/mod.rs`: one source, the same listed variables, and this file must not
+// name `support` because `tests/integration` and `bins/amplihack/tests` have
+// no such module (issue #2922). The included file carries its own
+// `#![allow(dead_code)]`, so repeating it here is a duplicated attribute.
+#[allow(clippy::duplicate_mod)]
+pub mod claude_profile_isolation;
 
-/// Fill an existing directory `root` with the files every fake process
-/// table holds: `self/` (mode 0700) and `self/environ` (mode 0600) with
-/// [`SELF_ENVIRON`]. `self/environ` must exist, or the liveness scan reports
-/// "unsupported" and counts every profile as live. The one builder for both
-/// [`shared_empty_proc_root`] and `FakeProc` (issue #2042); panics on any
-/// I/O failure.
-pub fn seed_proc_tree(root: &Path) {
-    let dir = root.join("self");
-    DirBuilder::new()
-        .mode(0o700)
-        .create(&dir)
-        .unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
-    let environ = dir.join("environ");
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&environ)
-        .and_then(|mut f| f.write_all(SELF_ENVIRON))
-        .unwrap_or_else(|e| panic!("write {}: {e}", environ.display()));
-}
+#[path = "proc_tree_seed.rs"]
+// `cli_integration` loads this file twice, here and through the other of
+// `isolated_amplihack.rs` / `fake_proc.rs`: one source, the same constants,
+// and `fake_proc.rs` must not name `isolated_amplihack` so the lib tests can
+// include it too (issue #2196).
+#[allow(dead_code, clippy::duplicate_mod)]
+mod proc_tree_seed;
+#[allow(unused_imports)]
+pub use proc_tree_seed::{SELF_ENVIRON, seed_proc_tree};
 
 /// An empty fake process table shared by this test process:
 /// `<shared_temp_home>/fake-proc/`, mode 0700, seeded by [`seed_proc_tree`]
@@ -196,9 +227,8 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
             command.env(&key, value);
         }
     }
-    command.env(PROFILE_ROOT_ENV, shared_temp_home().join("profiles"));
-    command.env("AMPLIHACK_HOME", shared_temp_home().join(".amplihack"));
-    command.env("CLAUDE_CONFIG_DIR", shared_temp_home().join(".claude"));
+    command.env_remove(PROFILE_ROOT_ENV);
+    claude_profile_isolation::remove_from_command(&mut command);
     command.env("PATH", "/usr/bin:/bin");
     no_git_prompt(&mut command);
     // The toolchain lives under the real HOME unless these say otherwise; a
@@ -214,7 +244,117 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     command
         .env("HOME", shared_temp_home())
         .env(HOME_GUARD_ENV, "1")
-        .env(ROTATE_AUTOSTART_ENV, "0");
+        .env(ROTATE_AUTOSTART_ENV, "0")
+        .env(PROBE_WAIT_ENV, "exit");
     reapply_proc_root(&mut command);
     command
+}
+
+/// A fixture root of the test's own, and the environment that points a child
+/// at it (issue #2931).
+///
+/// Use it when a test gives the binary a `HOME` it made. Setting `HOME` by
+/// hand on an [`isolated`] command leaves `TMPDIR`, the profile root and the
+/// process table where the test process had them, and two faults follow:
+///
+/// - the test home check discards a `HOME` outside the child's temp dir, so a
+///   fixture made under `scratch_base()` (which falls back to `/var/tmp`
+///   when `TMPDIR` lies inside a framework install) reads as "HOME is not
+///   set". Here `TMPDIR` is the root and `HOME` lies inside it, whatever the
+///   test process's own `TMPDIR` is.
+/// - on BSD file systems (macOS) a new entry takes its folder's group, and
+///   under `/var/tmp` that is not the user's own, so checks that refuse a
+///   foreign group refuse the fixture. Here the root's group is set to the
+///   effective group before anything is made in it.
+///
+/// Issue #1699 stands: the profile root named here lies inside the root, so
+/// an install under this `HOME` cannot refresh real profiles. Issue #2922
+/// asks for the same private environment for every test that sets `HOME`;
+/// this type is written for that work to adopt, and only the fixtures behind
+/// the #2931 failures use it so far.
+///
+/// Everything a test writes goes under [`PrivateEnv::root`], which is removed
+/// when the value is dropped.
+pub struct PrivateEnv {
+    _tmp: tempfile::TempDir,
+    root: PathBuf,
+    home: PathBuf,
+    proc_root: PathBuf,
+}
+
+/// A [`PrivateEnv`] whose root is a new folder inside `base`: mode 0700 from
+/// creation, a random name, canonical, and in the effective group. Holds
+/// `home/` (0700) and a seeded, empty process table `fake-proc/` (0700).
+/// Panics on any I/O failure.
+pub fn private_env_in(base: impl AsRef<Path>) -> PrivateEnv {
+    use std::os::unix::fs::PermissionsExt;
+    let base = base.as_ref();
+    let tmp = tempfile::Builder::new()
+        .prefix("private-env-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(base)
+        .unwrap_or_else(|e| panic!("create a private root in {}: {e}", base.display()));
+    let root = tmp
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|e| panic!("resolve {}: {e}", tmp.path().display()));
+    // Before any entry is made, so every entry inherits it where the file
+    // system hands a folder's group down. Not recursive: the root is empty.
+    // SAFETY: getegid has no preconditions.
+    let group = unsafe { libc::getegid() };
+    std::os::unix::fs::chown(&root, None, Some(group))
+        .unwrap_or_else(|e| panic!("set the group of {}: {e}", root.display()));
+    let home = root.join("home");
+    let proc_root = root.join("fake-proc");
+    for dir in [&home, &proc_root] {
+        DirBuilder::new()
+            .mode(0o700)
+            .create(dir)
+            .unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+    }
+    seed_proc_tree(&proc_root);
+    PrivateEnv {
+        _tmp: tmp,
+        root,
+        home,
+        proc_root,
+    }
+}
+
+impl PrivateEnv {
+    /// The root: canonical, mode 0700, in the effective group.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// `<root>/home`, the child's `HOME`.
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
+    /// `<root>/profiles`, the child's Claude login profile root. Not created.
+    pub fn profile_root(&self) -> PathBuf {
+        self.root.join("profiles")
+    }
+
+    /// `<root>/claude-config`, the child's `CLAUDE_CONFIG_DIR`. Not created.
+    pub fn claude_config_dir(&self) -> PathBuf {
+        self.root.join("claude-config")
+    }
+
+    /// [`isolated`]`(bin)` with every variable that names user state pointed
+    /// inside the root: `HOME`, `TMPDIR` (the root itself, so the test home
+    /// check accepts the `HOME`), the profile root, the process table,
+    /// `CLAUDE_CONFIG_DIR` and `AMPLIHACK_HOME`. A later `.env()` call wins.
+    pub fn command(&self, bin: impl AsRef<OsStr>) -> Command {
+        let mut command = isolated(bin);
+        command
+            .env("HOME", &self.home)
+            .env("TMPDIR", &self.root)
+            .env(PROC_ROOT_ENV, &self.proc_root)
+            .env(PROFILE_ROOT_ENV, self.profile_root())
+            .env("CLAUDE_CONFIG_DIR", self.claude_config_dir())
+            .env("AMPLIHACK_HOME", self.home.join(".amplihack"));
+        command
+    }
 }

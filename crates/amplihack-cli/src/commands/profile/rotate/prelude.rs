@@ -11,6 +11,7 @@ use super::cycle::{Ctx, LOCK_WAIT};
 use super::handfix;
 use super::handfix_msg::ledger_unreadable;
 use super::identify::Skip;
+use super::identify::excluded_offline::local_only_dirs;
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{Snap, live_alert, live_name, snapshot};
 use super::overflow_record::log_ignored;
@@ -24,6 +25,9 @@ use std::path::Path;
 
 #[path = "live_refresh.rs"]
 mod live_refresh;
+#[cfg(test)]
+#[path = "tests_issue_2820_cycle.rs"]
+mod tests_issue_2820_cycle;
 
 pub enum Prelude {
     /// Recovered and identified, the lock still held. The snapshot is boxed
@@ -78,6 +82,10 @@ pub fn locked_prelude(
         }
         return Ok((out, Prelude::AutoSwitchInconsistent));
     }
+    // Issue #2218: once per cycle, before any identity read: excluded
+    // folders, and `~/.claude` when it holds an excluded login, are
+    // identified from local files only, so no request carries their token.
+    ctx.set_excluded_dirs(local_only_dirs(&ctx.store, &ctx.rs, &ctx.home)?);
     match super::recover::recover_with(&ctx.store, &ctx.rs, &ctx.home, ctx.identity_reader()) {
         Ok(RecoverOutcome::None) => {}
         Ok(RecoverOutcome::RolledBack { from, to }) => {
@@ -102,7 +110,11 @@ pub fn locked_prelude(
     }
     // Issue #1693: after swap recovery, so the ledger it reads is settled,
     // and before the snapshot, so the snapshot reads the recovered ledger.
-    if hand_change && handfix::step(ctx, &state, &mut out, now())? == handfix::Step::Guided {
+    // Issue #2218: not on local evidence alone, which may be stale.
+    if hand_change
+        && !ctx.home_local_only()
+        && handfix::step(ctx, &state, &mut out, now())? == handfix::Step::Guided
+    {
         return Ok((out, Prelude::Guided));
     }
     let first = snapshot(ctx, &state)?;
@@ -114,7 +126,11 @@ pub fn locked_prelude(
         );
     }
     // Issue #1962: a rotate cycle only; `profile switch` never seeds.
-    if hand_change && let Some(line) = seed::in_cycle(ctx, &state, &first, &mut out) {
+    // Issue #2218: no record is seeded for an excluded login.
+    if hand_change
+        && !ctx.home_local_only()
+        && let Some(line) = seed::in_cycle(ctx, &state, &first, &mut out)
+    {
         let live = live_name(&first.live).cloned();
         let kind = seed::SAME_ACCOUNT;
         return Ok((out, Prelude::LiveUnusable { kind, live, line }));
@@ -172,6 +188,9 @@ fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
         }
         ctx.last_skips = Some(skips);
     }
+    // Issue #2820: from the cycle's first snapshot only, never from
+    // revalidation, and once for each process.
+    ctx.note_unreadable(out, t, msg::unreadable_lines(&snap.unreadable));
 }
 
 /// Fails with `RotatePrototypeRunning` while the external rotator holds

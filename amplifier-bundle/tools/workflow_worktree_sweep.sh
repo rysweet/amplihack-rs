@@ -316,34 +316,62 @@ has_uncommitted_work() {
 
 # common_git_dir <repo> — print the absolute, symlink-resolved common git dir
 # of <repo>, so the main checkout and every linked worktree print the same
-# string. Prints nothing and returns 1 on failure.
+# string. Prints nothing and returns 1 on failure. GIT_DIR, GIT_WORK_TREE and
+# GIT_COMMON_DIR are cleared so an exported value (e.g. from a hook) cannot
+# point the exclude write or the sweep lock at another repository (#2335 R5).
 common_git_dir() {
     local repo="$1" common
-    common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    common="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+        git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
     [ -n "$common" ] || return 1
     case "$common" in /*) ;; *) common="${repo}/${common}" ;; esac
     (cd -- "$common" 2>/dev/null && pwd -P) || return 1
 }
 
-# exclude_worktrees_dir <repo> — add `/worktrees/` to the repository's
-# info/exclude (shared by all its worktrees; no tracked file changes). Task
-# worktrees under <repo>/worktrees/ are kept rather than deleted (#1494, #1560),
-# and untracked they would fail every clean-status gate on the main checkout
-# and invite `git add -A` to stage them. Idempotent; best-effort.
+# exclude_worktrees_dir <repo> — add `/worktrees/` and amplihack's runtime
+# paths to the repository's info/exclude (shared by all its worktrees; no
+# tracked file changes). Task worktrees under <repo>/worktrees/ are kept rather
+# than deleted (#1494, #1560), and untracked they would fail every clean-status
+# gate on the main checkout and invite `git add -A` to stage them. The runtime
+# paths (#2335) are written here, at step-04 worktree setup, so every worktree
+# created or adopted afterwards is covered before the indexer or an agent's
+# `git add -A` sees its files. Idempotent; best-effort; never writes through a
+# symlinked info/ or info/exclude.
+#
+# The runtime list lives only in workflow_runtime_artifacts.sh beside this
+# file. It is sourced in a subshell, so its `set -euo pipefail` cannot leak
+# into a shell that sources this sweep.
 exclude_worktrees_dir() {
-    local repo="$1" common exclude
+    local repo="$1" common exclude_file info helper
     common="$(common_git_dir "$repo")" || return 0
-    exclude="${common}/info/exclude"
-    if [ -f "$exclude" ] && grep -qxF '/worktrees/' "$exclude" 2>/dev/null; then
+    info="${common}/info"
+    exclude_file="${info}/exclude"
+    if [ -L "$info" ] || [ -L "$exclude_file" ]; then
+        log_warn "Not writing exclusions through a symlink: ${exclude_file}."
         return 0
     fi
-    mkdir -p "${common}/info" 2>/dev/null || { log_warn "Could not create ${common}/info."; return 0; }
-    # End an unterminated last line first, or the user's last rule and ours merge.
-    if [ -s "$exclude" ] && [ -n "$(tail -c1 "$exclude" 2>/dev/null)" ]; then
-        printf '\n' >> "$exclude" 2>/dev/null || true
+    if ! { [ -f "$exclude_file" ] && grep -qxF '/worktrees/' "$exclude_file" 2>/dev/null; }; then
+        if mkdir -p "$info" 2>/dev/null; then
+            # End an unterminated last line first, or the user's last rule and ours merge.
+            local entry='/worktrees/'$'\n'
+            if [ -s "$exclude_file" ] && [ -n "$(tail -c1 "$exclude_file" 2>/dev/null)" ]; then
+                entry=$'\n'"$entry"
+            fi
+            { printf '%s' "$entry" >> "$exclude_file"; } 2>/dev/null \
+                || log_warn "Could not add /worktrees/ to ${exclude_file}."
+        else
+            log_warn "Could not create ${info}."
+        fi
     fi
-    printf '/worktrees/\n' >> "$exclude" 2>/dev/null \
-        || log_warn "Could not add /worktrees/ to ${exclude}."
+    helper="$(dirname -- "${BASH_SOURCE[0]}")/workflow_runtime_artifacts.sh"
+    if [ ! -f "$helper" ]; then
+        log_warn "Missing ${helper}: amplihack runtime paths were not added to ${exclude_file}; the step-15 and step-16 preflights add them later (#2335)."
+        return 0
+    fi
+    # shellcheck source=workflow_runtime_artifacts.sh
+    if ! ( . "$helper" && _amplihack_exclude_runtime_paths "$repo" ); then
+        log_warn "Could not load ${helper}: amplihack runtime paths were not added to ${exclude_file} (#2335)."
+    fi
     return 0
 }
 

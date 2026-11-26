@@ -233,6 +233,10 @@ with `HOME` set to a fresh directory. It takes about 70 seconds.
 
 ## Related
 
+- [Draft PR metadata recovery and diagnostics](bugfix-2306-publish-metadata-recovery-diagnostics.md)
+  documents GitHub recovery when title or body derivation fails, and
+  verified diagnostics through the pinned recipe runner; the successful
+  title selection rules above remain in use.
 - [Bug Fix #929: PR titles and no-merge directives](bugfix-929-pr-title-and-no-merge.md)
   introduced the scope rules the template title still uses.
 - [Default workflow overview](../workflows.md)

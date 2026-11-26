@@ -21,25 +21,22 @@ pub(super) fn setup_blarify_indexing(dirs: &ProjectDirs) -> anyhow::Result<Blari
         ));
     }
 
-    let status = check_index_status(&dirs.root)?;
-    let db_path = resolve_code_graph_db_path_for_project(&dirs.root)?;
-    let code_graph_missing = !db_path.exists();
-    let needs_setup = status.needs_indexing || code_graph_missing;
-    if !needs_setup {
-        return Ok(BlarifySetupResult::ready());
-    }
-
+    // Issue #2170: the disable setting is read before the staleness scan and
+    // the database probe, so a disabled session start touches no project files.
     if std::env::var("AMPLIHACK_DISABLE_BLARIFY").as_deref() == Ok("1") {
         return Ok(BlarifySetupResult::with_notice(
             false,
-            super::format_code_graph_status(format!(
+            super::format_code_graph_status(
                 "Automatic code-graph refresh is disabled by `AMPLIHACK_DISABLE_BLARIFY=1`, \
-                 but setup is still needed because {}. The current code graph may be missing or stale.",
-                describe_blarify_need(&status, code_graph_missing)
-            )),
+                 so no staleness check was run. The current code graph may be missing or stale."
+                    .to_string(),
+            ),
         ));
     }
 
+    let status = check_index_status(&dirs.root)?;
+    let db_path = resolve_code_graph_db_path_for_project(&dirs.root)?;
+    let code_graph_missing = !db_path.exists();
     if !status.needs_indexing && !code_graph_missing {
         return Ok(BlarifySetupResult::ready());
     }
@@ -219,10 +216,9 @@ fn describe_blarify_action(action: BlarifyIndexAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::env_lock;
+    use crate::test_support::{blarify_not_disabled, env_lock};
     use amplihack_types::ProjectDirs;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::time::Duration;
 
@@ -482,6 +478,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let saved_graph_db = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
 
@@ -572,6 +569,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         let src_dir = dir.path().join("src");
@@ -584,15 +582,13 @@ mod tests {
 
         let stub_log = dir.path().join("amplihack-sync.log");
         let stub = dir.path().join("amplihack-sync");
-        fs::write(
+        crate::test_support::write_executable(
             &stub,
-            format!(
+            &format!(
                 "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then echo amplihack-test; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\n",
                 stub_log.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         unsafe {
             std::env::set_var("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub);
             std::env::set_var("AMPLIHACK_BLARIFY_MODE", "sync");
@@ -618,6 +614,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -641,6 +638,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -660,5 +658,102 @@ mod tests {
         assert!(context.contains("## Code Graph Status"));
         assert!(context.contains("AMPLIHACK_BLARIFY_MODE=skip"));
         assert!(context.contains("missing or stale"));
+    }
+
+    /// A project whose only source is newer than its index, so the index is
+    /// stale and code-graph setup would start if it were allowed to.
+    fn stale_project(root: &Path) {
+        let now = std::time::SystemTime::now();
+        let artifact_dir = root.join(".amplihack");
+        fs::create_dir_all(&artifact_dir).unwrap();
+        fs::write(artifact_dir.join("blarify.json"), "{}\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(artifact_dir.join("blarify.json"))
+            .unwrap()
+            .set_modified(now - Duration::from_secs(60))
+            .unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/app.py"), "print('hi')\n").unwrap();
+    }
+
+    #[test]
+    fn disabled_setup_returns_before_any_scan_or_index_job() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _disabled = crate::test_support::EnvVarGuard::set("AMPLIHACK_DISABLE_BLARIFY", "1");
+        let _mode = crate::test_support::EnvVarGuard::set("AMPLIHACK_BLARIFY_MODE", "background");
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        stale_project(dir.path());
+        let stub_log = dir.path().join("stub-ran.log");
+        let stub = dir.path().join("amplihack-disabled");
+        crate::test_support::write_executable(
+            &stub,
+            &format!(
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" >> \"{}\"\n",
+                stub_log.display()
+            ),
+        );
+        let _binary =
+            crate::test_support::EnvVarGuard::set("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub);
+
+        let result = setup_blarify_indexing(&dirs).unwrap();
+
+        assert!(!result.indexing_active);
+        assert!(result.status_context.is_some());
+        assert!(
+            !amplihack_memory::cli_memory::background_index_job_path(dir.path()).exists(),
+            "a disabled session start must not record an index job"
+        );
+        assert!(
+            !stub_log.exists(),
+            "a disabled session start ran the indexer"
+        );
+    }
+
+    /// Session start hands indexing to a background process and returns at
+    /// once. The stub indexer opens a FIFO that the test holds back, so it is
+    /// still running when `setup_blarify_indexing` returns. The test then
+    /// lets it finish by opening and closing the FIFO's write end.
+    #[test]
+    fn background_setup_returns_while_the_indexer_is_still_running() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
+        let _mode = crate::test_support::EnvVarGuard::set("AMPLIHACK_BLARIFY_MODE", "background");
+        let _graph_db = crate::test_support::EnvVarGuard::unset("AMPLIHACK_GRAPH_DB_PATH");
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        stale_project(dir.path());
+        let fifo = dir.path().join("indexer-gate");
+        let made = Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(made.success(), "mkfifo failed");
+        let stub = dir.path().join("amplihack-blocking");
+        crate::test_support::write_executable(
+            &stub,
+            &format!(
+                "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then echo amplihack-test; exit 0; fi\nexec cat \"{}\"\n",
+                fifo.display()
+            ),
+        );
+        let _binary =
+            crate::test_support::EnvVarGuard::set("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub);
+
+        let result = setup_blarify_indexing(&dirs).unwrap();
+        let job_active =
+            amplihack_memory::cli_memory::background_index_job_active(dir.path()).unwrap();
+        // Release the stub: opening the write end waits for the stub to open
+        // the read end, and closing it gives the stub end-of-file.
+        drop(fs::OpenOptions::new().write(true).open(&fifo).unwrap());
+
+        assert!(result.indexing_active);
+        assert!(result.status_context.is_some());
+        assert!(
+            job_active,
+            "the indexer must still be running when session start returns"
+        );
     }
 }

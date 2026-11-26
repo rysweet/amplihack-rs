@@ -13,15 +13,20 @@
 # These tests drive the real helpers and the real recipe steps against real git
 # repositories and a fake `gh`. Four properties are under test:
 #
-#   1. an issue already claimed by an open or recently-merged PR stops the run,
-#      and the refusal names the PR and how to continue it instead;
+#   1. an issue already claimed by an open or recently-merged PR is reported
+#      (exit 0, the `claimed` key line) with the PR named, as information for
+#      the run's agent to judge (#3129; it ended the run before);
 #   2. a mere mention is NOT a claim, and our own branch is not a competitor;
 #   3. a check that cannot be made warns and continues — no `gh`, no `jq`, no
 #      network, a rate limit, a 403 or a missing helper must never stop a run
 #      (#1268), and no token value is ever printed;
 #   4. `Closes #N` is earned by the diff: a change that only writes a planning
-#      document gets `Refs`, and both emitters (the step-15 commit message and
-#      the PR body in workflow_publish_pr.sh) go through that decision.
+#      document gets `Refs` from workflow_issue_reference.sh.
+#
+# The checks that read the helper's --help wording, the step-03c lookup text,
+# the order of calls in workflow_publish_pr.sh, the emitters' text and the
+# helper's pipeline shape were removed under #3129: tests check values and
+# behaviour, never wording (Ryan, 23 Nov 2026).
 #
 # Every token in this file is an obvious fake.
 
@@ -29,20 +34,21 @@ set -uo pipefail
 # Issue #1764: no git this script runs may wait on a credential prompt.
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
 exec </dev/null
+# An enclosing run may export these; each one makes the claim check skip, which
+# would leave nothing here to test.
+unset ALLOW_EXISTING_PR AMPLIHACK_ALLOW_EXISTING_PR AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLAIM="$ROOT/amplifier-bundle/tools/workflow_issue_claim_check.sh"
 IREF="$ROOT/amplifier-bundle/tools/workflow_issue_reference.sh"
 PREP="$ROOT/amplifier-bundle/recipes/workflow-prep.yaml"
-PUBLISH_RECIPE="$ROOT/amplifier-bundle/recipes/workflow-publish.yaml"
-PUBLISH_TOOL="$ROOT/amplifier-bundle/tools/workflow_publish_pr.sh"
 
 fails=0
 pass() { printf '  ok    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 need() { [ -f "$1" ] || { echo "missing $1"; exit 1; }; }
 
-need "$CLAIM"; need "$IREF"; need "$PREP"; need "$PUBLISH_RECIPE"; need "$PUBLISH_TOOL"
+need "$CLAIM"; need "$IREF"; need "$PREP"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/issue1361.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -94,6 +100,30 @@ for a in "\$@"; do [ "\$prev" = "--state" ] && state="\$a"; prev="\$a"; done
 # The default-branch lookup. FAKE_DEFAULT_BRANCH may be set empty, or to a
 # reply that is not a branch name, to exercise the fallback.
 if [ "\${1:-}" = "repo" ]; then printf '%s\n' "\${FAKE_DEFAULT_BRANCH-main}"; exit 0; fi
+# The issue's own state (#2238). A merged pull request claims the issue only
+# while the issue is not open, so the helper reads this once, and only when a
+# recently-merged claim is in the window. FAKE_ISSUE_STATE carries the reply
+# (including a malformed one); FAKE_ISSUE_RC makes the lookup fail. Neither
+# may be read by the helper as a source of the state itself.
+#
+# FAKE_ISSUE_BYTES asks for a single line of that many bytes instead, built
+# here rather than carried in. A 300 KiB reply cannot travel through the
+# environment: Linux caps any ONE argv or environment string at 128 KiB
+# (MAX_ARG_STRLEN), so setting FAKE_ISSUE_STATE to 300 KiB fails the exec
+# with E2BIG, while macOS has no such per-string cap and only a total. This
+# is also the truer shape, since the real reply reaches the helper down a
+# pipe from gh and never through its environment.
+#
+# Note for anyone editing this fake: it is written by an UNQUOTED heredoc, so
+# a backtick in a comment here is a command substitution at generation time.
+if [ "\${1:-}" = "issue" ]; then
+  if [ -n "\${FAKE_ISSUE_BYTES:-}" ]; then
+    awk -v n="\$FAKE_ISSUE_BYTES" 'BEGIN { s = "PAYLOAD2238"; while (length(s) < n) s = s s; print substr(s, 1, n) }'
+  else
+    printf '%s\n' "\${FAKE_ISSUE_STATE-OPEN}"
+  fi
+  exit "\${FAKE_ISSUE_RC-0}"
+fi
 # A token-shaped string is present in every error path so redaction is exercised.
 case "\${FAKE_GH:-none}" in
   none)        printf '[]\n' ;;
@@ -104,6 +134,14 @@ case "\${FAKE_GH:-none}" in
   mention)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":903,"url":"https://github.com/o/r/pull/903","title":"Update something similar to #1084 elsewhere","state":"OPEN","mergedAt":null,"headRefName":"fix/timeouts","closingIssuesReferences":[{"number":77}]}]' || printf '[]\n' ;;
   merged_new)  [ "\$state" = "merged" ] && printf '%s\n' '[{"number":1132,"url":"https://github.com/o/r/pull/1132","title":"Update crates (#1084)","state":"MERGED","mergedAt":"$NOW","headRefName":"fix/1084-winner","closingIssuesReferences":[{"number":1084}]}]' || printf '[]\n' ;;
   merged_old)  [ "\$state" = "merged" ] && printf '%s\n' '[{"number":40,"url":"https://github.com/o/r/pull/40","title":"Update crates (#1084)","state":"MERGED","mergedAt":"$OLD","headRefName":"fix/1084-ancient","closingIssuesReferences":[{"number":1084}]}]' || printf '[]\n' ;;
+  # #2238: two shapes of merged pull request that leave the issue OPEN. The
+  # first was linked to the issue but only referenced it, so merging it closed
+  # nothing; the second closed a sibling issue and used a keyword GitHub could
+  # not link (non-default base). In both the follow-up work is still to do, and
+  # the recorded incidents were refused for hours with no bypass but
+  # allow_existing_pr=true.
+  merged_linked_open) [ "\$state" = "merged" ] && printf '%s\n' '[{"number":1140,"url":"https://github.com/o/r/pull/1140","title":"Update crates (#1084)","state":"MERGED","mergedAt":"$NOW","headRefName":"fix/1084-partial","closingIssuesReferences":[{"number":1084}],"body":"BODYTEXT-1140 Refs #1084, which stays open until the follow-up lands"}]' || printf '[]\n' ;;
+  merged_fixes_open)  [ "\$state" = "merged" ] && printf '%s\n' '[{"number":1141,"url":"https://github.com/o/r/pull/1141","title":"Tidy something","state":"MERGED","mergedAt":"$NOW","headRefName":"fix/1084-sibling","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1141\\n\\nFixes #1084"}]' || printf '[]\n' ;;
   # #1707: a bare number in another tool's branch is not a claim; a body
   # closing keyword is. Every PR body carries a BODYTEXT marker so the tests
   # can prove body text never reaches the output.
@@ -176,6 +214,10 @@ for b in main trunk; do
   git -C "$WORK/originhead_$b" update-ref "refs/remotes/origin/$b" HEAD
   git -C "$WORK/originhead_$b" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$b"
 done
+# A working directory standing on the head branch of the pull request that
+# merged (#1448 + #2238): reviewing or following up on one's own merged work.
+mkrepo "$WORK/ownmerged" "https://github.com/o/r.git"
+git -C "$WORK/ownmerged" checkout -q -b fix/1084-winner
 mkdir -p "$WORK/notagit"
 
 # run <repo> [env...] -- [extra helper args] ; sets OUT / RC
@@ -192,22 +234,39 @@ run() {
   RC=$?
 }
 
-echo "== 1. an issue already claimed by a pull request stops the run =="
+echo "== 1. an issue already claimed by a pull request is reported as a claim =="
 claimed() { # claimed <label> <expected-pr-number>
   local label="$1" num="$2" missing=""
   grep -q "#${num}" <<<"$OUT" || missing="$missing pr-number"
   grep -q '#1084' <<<"$OUT" || missing="$missing issue"
-  grep -q 'existing_branch=' <<<"$OUT" || missing="$missing how-to-continue"
-  if [ "$RC" -eq 1 ] && [ -z "$missing" ]; then
-    pass "$label refuses (exit 1) naming the claiming PR and how to continue it"
+  grep -q '^issue_claim_check: claimed issue=1084 ' <<<"$OUT" || missing="$missing claimed-key-line"
+  if [ "$RC" -eq 0 ] && [ -z "$missing" ]; then
+    pass "$label is reported (exit 0, claimed) naming the claiming PR"
   else
     fail "$label: rc=$RC missing:${missing:-none} out=${OUT:0:400}"
   fi
 }
 run "$WORK/gh" FAKE_GH=closing_ref; claimed "an open PR whose body closes the issue" 1128
+grep -q 'open pull request #1128 is already working on issue #1084.' <<<"$OUT" \
+  && pass "an open claim's headline says the pull request is open" \
+  || fail "the headline does not name an open PR #1128: ${OUT:0:400}"
+grep -q 'issue state:' <<<"$OUT" \
+  && fail "an issue state was reported although no merged claim was in the window" \
+  || pass "no issue state is reported when the lookup did not run"
 run "$WORK/gh" FAKE_GH=title_paren; claimed "an open PR whose title carries (#N)" 900
 run "$WORK/gh" FAKE_GH=branch_name; claimed "an open PR on an issue-N branch" 901
-run "$WORK/gh" FAKE_GH=merged_new;  claimed "a PR merged inside the recent window" 1132
+# A merged pull request claims the issue only while the issue is not open
+# (#2238). This scenario has always meant the closed-by-that-PR race of
+# #1123/#1126/#1128, so the issue state is now declared explicitly. Without
+# this line the #1361 merged-window guard would no longer be covered at all.
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_STATE=CLOSED
+claimed "a PR merged inside the recent window, the issue closed" 1132
+grep -q 'recently-merged pull request #1132 is already working on issue #1084.' <<<"$OUT" \
+  && pass "the refusal headline says which kind of pull request claims the issue" \
+  || fail "the refusal headline does not name a recently-merged PR #1132: ${OUT:0:400}"
+grep -q 'issue state: CLOSED' <<<"$OUT" \
+  && pass "the refusal reports the issue state it read" \
+  || fail "the refusal does not report the issue state: ${OUT:0:400}"
 
 # #1707: the branch signal is the workflow's own `<prefix>/issue-<N>` shape, and
 # a closing keyword in the body is a claim even when GitHub left
@@ -272,7 +331,7 @@ grep -q 'BODYTEXT' <<<"$OUT" \
 # This is the case the branch-scoped lookup could never see: no PR exists for
 # OUR head, and a duplicate would have been opened.
 run "$WORK/gh" FAKE_GH=closing_ref -- --head "fix/1084-a-brand-new-branch"
-[ "$RC" -eq 1 ] \
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: claimed issue=1084 ' <<<"$OUT" \
   && pass "a competitor on a DIFFERENT branch is still a claim (the #1361 hole)" \
   || fail "a different-branch competitor was not detected: rc=$RC out=${OUT:0:300}"
 
@@ -336,28 +395,95 @@ claimed "a body keyword on a PR to main when the local origin/HEAD says trunk" 1
 grep -q '^repo view' "$WORK/calls.log" \
   && fail "the API was asked although origin/HEAD -> origin/trunk exists" \
   || pass "a stale local origin/HEAD is used without asking the API"
+# Every result exits 0 since #3129, so the key line is what says no claim.
 run "$WORK/gh" FAKE_GH=own_branch -- --head "fix/1084-mine"
-[ "$RC" -eq 0 ] \
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
   && pass "the run's own branch is excluded via --head" \
   || fail "our own PR was treated as a duplicate: rc=$RC out=${OUT:0:300}"
 run "$WORK/gh" FAKE_GH=merged_old
-[ "$RC" -eq 0 ] \
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
   && pass "a PR merged long ago does not block later work on a reopened issue" \
   || fail "an ancient merge blocked the run: rc=$RC out=${OUT:0:300}"
+
+# --- #2238: a merged pull request claims the issue only while it is closed ---
+# Two Product-Management lanes were refused for hours on this. In each, a pull
+# request had merged inside the window and left the issue open: the follow-up
+# work the issue asked for was exactly what the refused run was for. The
+# discriminator is the issue's own state, read once and only when a
+# recently-merged claim is in the window.
+unclaimed merged_linked_open "a merged PR that only referenced an issue still open"
+grep -q '#1140' <<<"$OUT" && grep -q '#1084' <<<"$OUT" && grep -q '2238' <<<"$OUT" \
+  && pass "the allowance says which merged pull request it set aside, and why" \
+  || fail "the allowance does not name the dropped PR, the issue and #2238: ${OUT:0:400}"
+unclaimed merged_fixes_open "a merged PR closing a sibling issue, this one still open"
+
+# Fail-safe direction. The issue state can only ever DROP a claim, so every way
+# of not getting a usable answer must leave the merged pull request counting;
+# otherwise an API hiccup silently disables the #1361 guard. The reply is still
+# the one that would allow the run; only the exit status differs.
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_RC=1
+claimed "a merged claim whose issue state could not be read" 1132
+grep -q 'issue state: (unreadable)' <<<"$OUT" \
+  && pass "an unreadable issue state is reported as unreadable" \
+  || fail "an unreadable issue state was not reported as such: ${OUT:0:400}"
+
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_STATE='ghp_FAKEFAKEFAKEFAKEFAKEFAKE0002'
+claimed "a merged claim whose issue state is malformed" 1132
+grep -q 'ghp_FAKEFAKEFAKEFAKEFAKEFAKE0002' <<<"$OUT" \
+  && fail "a malformed issue state reached the output" \
+  || pass "a malformed issue state never reaches the output"
+
+# The printed state is an exact match against what the API defines, not a test
+# of its shape: a letters-and-underscore pattern admits a credential shape and
+# up to 64 characters of any other provider text, and this is the only
+# provider-derived value in the helper that reaches a log without passing
+# redact() (#2238 security review). The case above carries digits and so would
+# be rejected by either rule; this one would not.
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_STATE='ghp_FAKEFAKEFAKEFAKEFAKEFAKE'
+claimed "a merged claim whose issue state is an all-letter token shape" 1132
+grep -q 'ghp_' <<<"$OUT" \
+  && fail "an all-letter token shape reached the output" \
+  || pass "a state the API does not define never reaches the output"
+grep -q 'issue state: (unreadable)' <<<"$OUT" \
+  && pass "a state the API does not define is reported as unreadable" \
+  || fail "an undefined issue state was not reported as such: ${OUT:0:400}"
+
+# A reply served in place of a state word is not length-bounded, and every
+# pattern-matching parameter expansion in bash is quadratic in its subject.
+# The helper therefore cuts the reply to 64 bytes BEFORE it takes the first
+# line, not after, inside a guard both callers block on. The ordering is left
+# to this one behavioural case rather than also asserted against the helper's
+# source: a run of the two orderings on the #2238 review host measured 1s for
+# the bound-first helper against 389s for a bound-last one, so the margin
+# either side of the limit below is more than a factor of ten, and a source
+# assertion would only add coupling to how the bound is spelled (#1707 family,
+# #2238 review).
+HUGE_T0=$SECONDS
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_BYTES=300000
+HUGE_ELAPSED=$((SECONDS - HUGE_T0))
+claimed "a merged claim whose issue state is a 300 KiB single line" 1132
+[ "$HUGE_ELAPSED" -lt 30 ] \
+  && pass "an oversized issue-state reply is normalised in bounded time (${HUGE_ELAPSED}s)" \
+  || fail "an oversized issue-state reply took ${HUGE_ELAPSED}s to normalise"
+grep -q 'PAYLOAD2238' <<<"$OUT" \
+  && fail "an oversized issue-state reply reached the output" \
+  || pass "an oversized issue-state reply never reaches the output"
+
+# The #1448 allowance and the #2238 filter meet on a working directory standing
+# on the merged pull request's own head branch. Both outcomes are exit 0; which
+# token stdout carries says which rule allowed the run.
+run "$WORK/ownmerged" FAKE_GH=merged_new FAKE_ISSUE_STATE=CLOSED
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok-own-pr issue=1084' <<<"$OUT" \
+  && pass "a merged claim on our own head branch is this run continuing it (#1448)" \
+  || fail "own-head merged claim mishandled: rc=$RC out=${OUT:0:400}"
+run "$WORK/ownmerged" FAKE_GH=merged_new
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
+  && pass "a merged claim on our own head branch with the issue open is no claim at all" \
+  || fail "own-head merged claim with an open issue mishandled: rc=$RC out=${OUT:0:400}"
 run "$WORK/gh" FAKE_GH=none
 [ "$RC" -eq 0 ] && grep -q 'issue_claim_check: ok' <<<"$OUT" \
   && pass "an unclaimed issue passes" \
   || fail "an unclaimed issue was refused: rc=$RC out=${OUT:0:300}"
-
-# --help prints the whole header and stops at the exit-code table, however
-# long the header grows (#1707 lengthened it past a fixed line number).
-# The output is captured whole and its last line taken by substring, not
-# piped into `tail`: the #1434 guard forbids early-exit pipeline stages.
-HELP_OUT="$(bash "$CLAIM" --help 2>&1)"
-HELP_LAST="${HELP_OUT##*$'\n'}"
-[ "$HELP_LAST" = "#   1  an existing pull request already claims this issue" ] \
-  && pass "--help ends at the last exit-code line" \
-  || fail "--help stops in the wrong place; last line: ${HELP_LAST:0:200}"
 
 echo "== 3. a check that cannot be made warns and continues =="
 continues() { # continues <label> <expected-substring>
@@ -434,7 +560,7 @@ kw() { printf '%s\n' "$1" | bash "$IREF" --keyword; }
   || fail "an ordinary docs change was demoted to Refs"
 [ "$(kw '')" = "Refs" ] && pass "an empty diff yields Refs" || fail "an empty diff did not yield Refs"
 
-echo "== 5. the recipes and the publish helper are wired to all of it =="
+echo "== 5. the recipe step carries all of it end to end =="
 STEP="$WORK/step03c.sh"
 if python3 - "$PREP" "$STEP" <<'PY'
 import sys, yaml
@@ -453,16 +579,12 @@ else
 fi
 
 if [ -s "$STEP" ]; then
-  for tok in AMPLIHACK_HOME .copilot .amplihack workflow_issue_claim_check.sh; do
-    grep -q -- "$tok" "$STEP" || fail "step-03c must resolve the helper through the standard cascade (missing $tok)"
-  done
-  pass "step-03c resolves the helper through the AMPLIHACK_HOME / REPO_PATH / cwd / ~/.copilot / ~/.amplihack cascade"
-
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" FAKE_GH=closing_ref AMPLIHACK_HOME="$ROOT" \
         REPO_PATH="$WORK/gh" RECIPE_VAR_issue_number=1084 bash "$STEP" 2>&1)"; RC=$?
-  [ "$RC" -eq 1 ] && grep -q 'already working on issue #1084' <<<"$OUT" \
-    && pass "the recipe step stops a run whose issue is already claimed" \
-    || fail "recipe step did not refuse: rc=$RC out=${OUT:0:300}"
+  [ "$RC" -eq 0 ] && grep -q 'already working on issue #1084' <<<"$OUT" \
+    && grep -q '^issue_claim_check: claimed issue=1084 ' <<<"$OUT" \
+    && pass "the recipe step reports the claim on an already-claimed issue and carries on" \
+    || fail "recipe step did not report the claim: rc=$RC out=${OUT:0:300}"
 
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" FAKE_GH=none AMPLIHACK_HOME="$ROOT" \
         REPO_PATH="$WORK/gh" RECIPE_VAR_issue_number=1084 bash "$STEP" 2>&1)"; RC=$?
@@ -483,49 +605,6 @@ if [ -s "$STEP" ]; then
     && pass "a missing helper warns and continues rather than gating the run" \
     || fail "missing helper gated the run: rc=$RC out=${OUT:0:300}"
 fi
-
-# The claim check must be consulted BEFORE the create call, not after it.
-# One awk per value, over the whole file. The `tail`/`head`-terminated pipelines
-# this replaces left `grep` writing into a closed pipe; under `pipefail` either
-# position collapses to "" and the ordering assertion silently becomes vacuous
-# (issue #1434).
-claim_pos=$(awk 'index($0, "workflow_issue_claim_check.sh") { n = FNR } END { if (n) print n }' "$PUBLISH_TOOL")
-create_pos=$(awk 'n == 0 && index($0, "PR_URL_RESULT=\"$(gh_pr_create_with_retry)\"") { n = FNR } END { if (n) print n }' "$PUBLISH_TOOL")
-if [ -n "$claim_pos" ] && [ -n "$create_pos" ] && [ "$claim_pos" -lt "$create_pos" ]; then
-  pass "workflow_publish_pr.sh consults the claim check before it creates a PR"
-else
-  fail "workflow_publish_pr.sh does not claim-check before creating a PR (claim=$claim_pos create=$create_pos)"
-fi
-grep -q 'workflow_issue_reference.sh' "$PUBLISH_TOOL" \
-  && ! grep -q 'ISSUE_LINK="Closes #' "$PUBLISH_TOOL" \
-  && pass "the PR body's closing keyword comes from the diff, not a hardcoded Closes" \
-  || fail "workflow_publish_pr.sh still hardcodes 'Closes #N' in the PR body"
-
-STEP15="$WORK/step15.sh"
-python3 - "$PUBLISH_RECIPE" "$STEP15" <<'PY'
-import sys, yaml
-steps = yaml.safe_load(open(sys.argv[1]))["steps"]
-step = next(s for s in steps if s["id"] == "step-15-commit-push")
-open(sys.argv[2], "w").write(step["command"])
-PY
-grep -q 'workflow_issue_reference.sh' "$STEP15" && ! grep -q 'ISSUE_REF="Closes #' "$STEP15" \
-  && pass "the step-15 commit message's closing keyword comes from the diff too" \
-  || fail "step-15 still hardcodes 'Closes #N' in the commit message"
-
-# The claim-check helper is called from workflow-prep.yaml and the publish
-# helper, not from .github/workflows, so the #1434 guard's derived script list
-# never scans it. Apply the same shape rule to it here. The pattern is built
-# from fragments so this file never contains a literal the guard would flag.
-STOPS_EARLY="$(printf '%s|%s' head tail)"
-EARLY_EXIT_RE="[|][[:space:]]*(${STOPS_EARLY})([[:space:]]|\$)|grep[[:space:]]+-[[:alnum:]]*m[[:space:]]"
-EARLY_HITS=$(awk -v re="$EARLY_EXIT_RE" '
-  /^[[:space:]]*#/   { next }
-  /# early-exit-ok:/ { next }
-  $0 ~ re            { printf "%d:%s\n", FNR, $0 }
-' "$CLAIM")
-[ -z "$EARLY_HITS" ] \
-  && pass "the claim-check helper has no early-exit pipeline stage (#1434)" \
-  || fail "the claim-check helper has an early-exit pipeline stage (#1434): $EARLY_HITS"
 
 echo
 if [ "$fails" -eq 0 ]; then

@@ -8,12 +8,14 @@
 //! profile root and the fixture's fake `claude`, which counts its `/usage`
 //! probes per account. The fixture's logins cannot be read directly, so a
 //! re-read that ignored the mode would fail and log
-//! `reread: spare failed; treated as unknown` without a second probe.
+//! `reread: spare failed; treated as unknown` without a second probe or a
+//! reading.
 //!
 //! `spare` is made stale by a `swapped_away` entry 200 s ahead of now, the
 //! furthest a loaded ledger keeps is 300 s. Its re-read is therefore read
 //! (and logged) but still not strictly later than the damping time, so it
-//! is then made unknown and the swap goes to `extra`.
+//! is then logged as failed (issue #2211), made unknown, and the swap goes
+//! to `extra`.
 
 #![cfg(target_os = "linux")]
 
@@ -58,7 +60,7 @@ fn rotate(f: &Fixture, probe: Option<&str>) -> String {
     if let Some(v) = probe {
         c.env("AMPLIHACK_PROFILE_USAGE_PROBE", v);
     }
-    let out = c.output().unwrap();
+    let out = crate::support::wait::output_within("amplihack profile rotate", &mut c);
     assert_no_secrets(&out);
     assert!(
         out.status.success(),
@@ -80,13 +82,23 @@ fn assert_reread_through_claude(probe: Option<&str>) {
         2,
         "{probe:?}: spare is read by the cycle and again by the gate, both through claude:\n{log}"
     );
+    // The re-read gave a reading, which is still stale, so the failure line
+    // follows it directly. A re-read that failed for want of a direct read
+    // would log the failure with no reading before it.
+    let lines: Vec<&str> = log.lines().collect();
+    let read_at = lines
+        .iter()
+        .position(|l| l.ends_with("reread: spare reading stale s=10% w=20%; fresh s=10% w=20%"));
     assert!(
-        log.contains("reread: spare reading stale s=10% w=20%; fresh s=10% w=20%"),
-        "{probe:?}: the re-read gave a reading:\n{log}"
+        read_at.is_some_and(|i| lines
+            .get(i + 1)
+            .is_some_and(|l| l.ends_with("reread: spare failed; treated as unknown"))),
+        "{probe:?}: the re-read gave a reading, still stale, so it failed:\n{log}"
     );
-    assert!(
-        !log.contains("reread: spare failed"),
-        "{probe:?}: the re-read did not fail for want of a direct read:\n{log}"
+    assert_eq!(
+        log.matches("reread: spare failed").count(),
+        1,
+        "{probe:?}: expected exactly one failure line for the stale re-read:\n{log}"
     );
     assert!(
         log.contains("swap work->extra"),
@@ -116,12 +128,12 @@ fn unset_a_failed_direct_reread_falls_back_to_claude() {
 fn a_bad_probe_variable_warns_once_per_cycle_even_with_a_reread() {
     let f = damped_spare();
     let probes_before = f.usage_probes("spare");
-    let out = f
-        .cmd(&["profile", "rotate"])
-        .env("AMPLIHACK_PROFILE_USAGE_PROBE", "bogus")
-        .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "bogus")
-        .output()
-        .unwrap();
+    let out = crate::support::wait::output_within(
+        "amplihack profile rotate",
+        f.cmd(&["profile", "rotate"])
+            .env("AMPLIHACK_PROFILE_USAGE_PROBE", "bogus")
+            .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "bogus"),
+    );
     assert_no_secrets(&out);
     let stderr = text(&out.stderr);
     assert!(out.status.success(), "rotate failed: {stderr}");

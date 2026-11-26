@@ -1,5 +1,6 @@
 ---
 name: amplihack:n-version
+disable-model-invocation: true
 version: 1.0.0
 description: N-version programming for Byzantine-robust critical implementations
 triggers:

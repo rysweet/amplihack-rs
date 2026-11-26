@@ -47,7 +47,10 @@ fn assert_good_contract(path: &Path) {
     );
     assert_eq!(meta.permissions().mode() & 0o777, 0o600);
     assert_eq!(meta.uid(), euid());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), FRAGMENT);
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        installed_fragment().unwrap()
+    );
     let dir = path.parent().unwrap();
     let dmeta = std::fs::symlink_metadata(dir).unwrap();
     assert!(dmeta.file_type().is_dir());
@@ -181,6 +184,36 @@ fn ensure_contract_file_creates_0600_file_in_0700_dir() {
     assert_good_contract(&path);
 }
 
+/// Issue #3202: the maintainers' comment that opens the source file is not
+/// written to the file the model reads; the rest of the source is.
+#[test]
+fn contract_file_omits_the_maintainers_comment() {
+    let home = tempfile::tempdir().unwrap();
+    let path = ensure_contract_file(home.path()).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        written.starts_with("# Amplihack operating contract"),
+        "the file must open with the contract heading: {written:?}"
+    );
+    assert!(
+        !written.contains("<!--"),
+        "the file must hold no HTML comment: {written:?}"
+    );
+    let removed = FRAGMENT
+        .strip_suffix(written.as_str())
+        .expect("the file must hold the rest of the source unchanged");
+    let removed = removed.trim();
+    assert!(
+        removed.starts_with("<!--") && removed.ends_with("-->"),
+        "only the leading comment is left out: {removed:?}"
+    );
+    assert_eq!(
+        removed.matches("-->").count(),
+        1,
+        "exactly one comment is left out: {removed:?}"
+    );
+}
+
 #[test]
 fn ensure_contract_file_is_idempotent_and_leaves_no_temp_files() {
     let home = tempfile::tempdir().unwrap();
@@ -223,11 +256,12 @@ fn contract_file_repairs_same_length_wrong_content() {
     // The length check is a shortcut, not the whole comparison.
     let home = tempfile::tempdir().unwrap();
     let path = ensure_contract_file(home.path()).unwrap();
-    let flipped: String = FRAGMENT
+    let written = installed_fragment().unwrap();
+    let flipped: String = written
         .chars()
         .map(|c| if c == 'a' { 'b' } else { c })
         .collect();
-    assert_eq!(flipped.len(), FRAGMENT.len());
+    assert_eq!(flipped.len(), written.len());
     std::fs::write(&path, flipped).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert_good_contract(&ensure_contract_file(home.path()).unwrap());
@@ -364,6 +398,7 @@ fn claude_launch_emits_file_flag_with_contract_path() {
                 false,
                 None,
                 Some(&contract),
+                None,
             )
             .unwrap(),
         )
@@ -400,6 +435,7 @@ fn contract_path_missing_is_an_error_when_injecting() {
             false,
             None,
             None,
+            None,
         )
         .expect_err("injecting without a contract path is a bug, not a silent skip")
     });
@@ -425,6 +461,7 @@ fn user_supplied_append_file_suppresses_injection() {
                 false,
                 None,
                 Some(&contract),
+                None,
             )
             .unwrap(),
         )
@@ -449,13 +486,97 @@ fn copilot_and_codex_get_no_contract_and_need_no_path() {
         };
         let argv = without_opt_out(|| {
             args_of(
-                &build_command_for_dir(&bin, false, false, false, &[], None, false, None, None)
-                    .unwrap_or_else(|e| panic!("{name}: {e:#}")),
+                &build_command_for_dir(
+                    &bin,
+                    false,
+                    false,
+                    false,
+                    &[],
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap_or_else(|e| panic!("{name}: {e:#}")),
             )
         });
         assert!(
             !argv.iter().any(|a| a.starts_with("--append-system-prompt")),
             "{name}: {argv:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2361: the contract home is never a Git checkout
+// ---------------------------------------------------------------------------
+
+mod contract_home_choice {
+    use super::super::contract_file::contract_home_from;
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+
+    fn os(value: &str) -> Option<&OsStr> {
+        Some(OsStr::new(value))
+    }
+
+    #[test]
+    fn non_checkout_amplihack_home_is_used() {
+        assert_eq!(
+            contract_home_from(os("/srv/amplihack"), os("/home/alice"), false).unwrap(),
+            PathBuf::from("/srv/amplihack")
+        );
+    }
+
+    #[test]
+    fn checkout_amplihack_home_falls_through_to_home_dot_amplihack() {
+        assert_eq!(
+            contract_home_from(os("/srv/checkout"), os("/home/alice"), true).unwrap(),
+            PathBuf::from("/home/alice/.amplihack")
+        );
+    }
+
+    // The exact message is listed in the "Errors" table of
+    // docs/reference/agent-prompt-channels.md; change both together.
+    #[test]
+    fn checkout_amplihack_home_without_home_is_an_error() {
+        let err = contract_home_from(os("/srv/checkout"), None, true)
+            .expect_err("a checkout is never the contract home");
+        assert_eq!(
+            format!("{err:#}"),
+            "cannot locate the amplihack home: AMPLIHACK_HOME is a Git checkout, which never \
+             holds runtime state (#2361), and HOME is not set"
+        );
+        assert!(contract_home_from(os("/srv/checkout"), os(""), true).is_err());
+    }
+
+    #[test]
+    fn unset_or_empty_amplihack_home_uses_home_dot_amplihack() {
+        for amp in [None, os("")] {
+            assert_eq!(
+                contract_home_from(amp, os("/home/alice"), false).unwrap(),
+                PathBuf::from("/home/alice/.amplihack")
+            );
+        }
+    }
+
+    // Listed in the same "Errors" table.
+    #[test]
+    fn neither_value_is_an_error() {
+        let err = contract_home_from(None, None, false).expect_err("no home to choose");
+        assert_eq!(
+            format!("{err:#}"),
+            "cannot locate the amplihack home: neither AMPLIHACK_HOME nor HOME is set"
+        );
+    }
+
+    #[test]
+    fn relative_non_checkout_amplihack_home_is_still_accepted() {
+        // Unchanged in this PR; tightening it is in the follow-up issue.
+        assert_eq!(
+            contract_home_from(os("relative/amp"), os("/home/alice"), false).unwrap(),
+            PathBuf::from("relative/amp")
         );
     }
 }

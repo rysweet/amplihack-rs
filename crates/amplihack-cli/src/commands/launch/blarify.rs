@@ -73,7 +73,7 @@ where
 
     let project_path = current_dir.context("failed to resolve current directory")?;
     if let Some(notice) = code_graph_compatibility_notice_for_project(project_path, None)? {
-        println!("⚠️ Compatibility mode: {notice}");
+        eprintln!("⚠️ Compatibility mode: {notice}");
     }
     prompt_runner(project_path).with_context(|| {
         format!(
@@ -133,7 +133,7 @@ fn maybe_prompt_blarify_indexing(project_path: &Path) -> Result<()> {
 
     match parse_blarify_prompt_choice(response.as_deref()) {
         BlarifyPromptChoice::Skip => {
-            println!(
+            eprintln!(
                 "\n⏭️  Skipping code indexing (run later with: {})\n",
                 manual_indexing_hint(project_path, &json_path, action)
             );
@@ -141,7 +141,7 @@ fn maybe_prompt_blarify_indexing(project_path: &Path) -> Result<()> {
         }
         BlarifyPromptChoice::Never => {
             save_blarify_consent(project_path)?;
-            println!("\n⏭️  Code indexing skipped (won't ask again for this project)\n");
+            eprintln!("\n⏭️  Code indexing skipped (won't ask again for this project)\n");
             Ok(())
         }
         BlarifyPromptChoice::Foreground => {
@@ -161,44 +161,44 @@ fn print_blarify_prompt_banner(
     action: BlarifyIndexAction,
 ) -> Result<()> {
     let estimate = estimate_indexing_time(project_path, &[]);
-    println!();
-    println!("{}", "=".repeat(60));
-    println!("Code Indexing with Blarify");
-    println!("{}", "=".repeat(60));
-    println!("Project: {}", project_path.display());
-    println!("Status: {status_reason}");
-    println!("Files to index: {estimated_files}");
-    println!(
+    eprintln!();
+    eprintln!("{}", "=".repeat(60));
+    eprintln!("Code Indexing with Blarify");
+    eprintln!("{}", "=".repeat(60));
+    eprintln!("Project: {}", project_path.display());
+    eprintln!("Status: {status_reason}");
+    eprintln!("Files to index: {estimated_files}");
+    eprintln!(
         "Estimated time: {}",
         format_duration_seconds(estimate.total_seconds)
     );
-    println!();
-    println!("Language breakdown:");
+    eprintln!();
+    eprintln!("Language breakdown:");
     for (language, seconds) in &estimate.by_language {
         let file_count = estimate.file_counts.get(language).copied().unwrap_or(0);
         if file_count == 0 {
             continue;
         }
-        println!(
+        eprintln!(
             "  • {}: {} files ({})",
             language_label(language),
             file_count,
             format_duration_seconds(*seconds)
         );
     }
-    println!();
-    println!("Blarify enables code-aware features:");
-    println!("  • Code context in memory retrieval");
-    println!("  • Function and class awareness");
-    println!("  • Automatic code-memory linking");
-    println!();
+    eprintln!();
+    eprintln!("Blarify enables code-aware features:");
+    eprintln!("  • Code context in memory retrieval");
+    eprintln!("  • Function and class awareness");
+    eprintln!("  • Automatic code-memory linking");
+    eprintln!();
     if json_path.exists() && action == BlarifyIndexAction::ImportExistingJson {
-        println!("Native import input: {}", json_path.display());
+        eprintln!("Native import input: {}", json_path.display());
     } else {
-        println!("Rust will use native SCIP artifact generation to refresh the code graph.");
+        eprintln!("Rust will use native SCIP artifact generation to refresh the code graph.");
     }
-    println!("{}", "=".repeat(60));
-    io::stdout()
+    eprintln!("{}", "=".repeat(60));
+    io::stderr()
         .flush()
         .context("failed to flush prompt banner")
 }
@@ -280,20 +280,20 @@ fn run_code_indexing(
             }
         };
         record_background_index_pid(project_path, child.id())?;
-        println!("\n📊 Started code indexing in the background.\n");
+        eprintln!("\n📊 Started code indexing in the background.\n");
         return Ok(());
     }
 
     match action {
         BlarifyIndexAction::ImportExistingJson => {
-            println!("\n📊 Importing code graph data...\n");
+            eprintln!("\n📊 Importing code graph data...\n");
             run_index_code(json_path, Some(&db_path), false)?;
-            println!("\n✅ Code graph import complete.\n");
+            eprintln!("\n✅ Code graph import complete.\n");
         }
         BlarifyIndexAction::GenerateNativeScip => {
-            println!("\n📊 Generating native SCIP artifacts...\n");
+            eprintln!("\n📊 Generating native SCIP artifacts...\n");
             run_index_scip(Some(project_path), &[])?;
-            println!("\n✅ Native SCIP artifact generation complete.\n");
+            eprintln!("\n✅ Native SCIP artifact generation complete.\n");
         }
     }
     Ok(())

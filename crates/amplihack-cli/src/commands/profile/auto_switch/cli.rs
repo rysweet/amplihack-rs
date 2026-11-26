@@ -4,6 +4,7 @@
 use super::config::{self, ReadMode};
 use super::fsx;
 use super::liveness::{self, Liveness};
+use super::own_login::{OwnLogin, OwnLogins};
 use super::state::{CREDS, Ledger, PHASE_INCONSISTENT, State};
 use super::statusline;
 use super::swap;
@@ -28,7 +29,13 @@ pub enum AutoSwitchCommand {
         exclude: Option<Vec<String>>,
     },
     /// Turn auto-switch off (keeps the threshold and exclusions)
-    Off,
+    Off {
+        /// Profiles never switched to (comma-separated); needed only when
+        /// the settings file does not parse or is writable by group or
+        /// others, so its list is unknown
+        #[arg(long, value_delimiter = ',')]
+        exclude: Option<Vec<String>>,
+    },
     /// Show the setting, readings, where each login is, and the wrapper state
     /// (read-only)
     Status,
@@ -63,12 +70,38 @@ fn exclude_arg(names: &[String]) -> Result<Vec<ProfileName>, ProfileError> {
         .collect()
 }
 
+/// The refusal of `on` or `off` over a `.auto-switch` that does not parse
+/// or that others can write (issue #2218).
+use super::config::EXCLUDE_UNKNOWN_REFUSAL;
+
+/// Issue #2218: `on` and `off` rewrite a corrupt file from the defaults,
+/// keeping its exclude list when it is a private file of yours that parses.
+/// When it does not parse, or group or others can write it (so anyone could
+/// have removed an entry), there is no list to keep, and writing an empty one would let the rotator probe
+/// and refresh the logins that were excluded, so they refuse unless the
+/// list is given with `--exclude`. A symlink or someone else's file is
+/// left to `config::update`, which refuses it with
+/// `config::unreplaceable_refusal`: no command can replace it, and the
+/// refusal says how to make it replaceable without deleting it.
+fn require_recoverable_exclude(root: &std::path::Path) -> Result<(), ProfileError> {
+    if config::exclude_recoverable(root) || !config::own_regular_file(root) {
+        Ok(())
+    } else {
+        Err(ProfileError::AutoSwitchExcludeAtRisk(
+            EXCLUDE_UNKNOWN_REFUSAL.into(),
+        ))
+    }
+}
+
 pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
     let root = store.root();
     match cmd {
         AutoSwitchCommand::On { threshold, exclude } => {
             let threshold = threshold.as_deref().map(threshold_arg).transpose()?;
             let exclude = exclude.as_deref().map(exclude_arg).transpose()?;
+            if exclude.is_none() {
+                require_recoverable_exclude(root)?;
+            }
             let c = config::update(root, ReadMode::DefaultOnInvalid, |c| {
                 c.enabled = true;
                 if let Some(t) = threshold {
@@ -89,9 +122,16 @@ pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
                 }
             }
         }
-        AutoSwitchCommand::Off => {
+        AutoSwitchCommand::Off { exclude } => {
+            let exclude = exclude.as_deref().map(exclude_arg).transpose()?;
+            if exclude.is_none() {
+                require_recoverable_exclude(root)?;
+            }
             config::update(root, ReadMode::DefaultOnInvalid, |c| {
                 c.enabled = false;
+                if let Some(e) = exclude {
+                    c.exclude = e;
+                }
                 Ok(())
             })?;
             println!("auto-switch: off");
@@ -299,12 +339,15 @@ fn status(store: &ProfileStore) -> Result<String> {
     let ledger = state.load_ledger();
     let usage = state.load_usage_or_warn();
     let wrapper = |n: &ProfileName| statusline::wrapper_state(store, &state.root, n).to_string();
+    // The launch guard's own answer about each profile's login (issue #2885).
+    let home = usage_cmd::home_dir();
+    let own = OwnLogins::new(store, home.as_deref());
     let rows: Vec<Row> = names
         .iter()
         .map(|n| {
             let r = usage.accounts.get(n.as_str());
             let mut login = match &ledger {
-                Ok(l) => login_place(&state, l, n),
+                Ok(l) => login_place(l, &own, n),
                 Err(_) => "unknown".to_string(),
             };
             if swap::swaps_disabled(&state, n.as_str()) {
@@ -334,6 +377,9 @@ fn status(store: &ProfileStore) -> Result<String> {
             }
         }
         Err(_) => writeln!(out, "hosted directories: unknown (ledger unreadable)")?,
+    }
+    if let Some(line) = super::affinity::status_line(&state, |t| ago(Some(t), now)) {
+        writeln!(out, "{line}")?;
     }
     let pending = swap::pending_journal(&state);
     let problem = match &ledger {
@@ -442,19 +488,27 @@ fn swaps_label(live: &Liveness) -> &'static str {
     }
 }
 
-fn login_place(state: &State, ledger: &Ledger, n: &ProfileName) -> String {
-    let n = n.as_str();
+/// The `login` column: where the profile's login is. A leased or parked
+/// profile is not asked about the Keychain. `home` says only that the login
+/// file exists; `keychain` and `keychain unreadable` are the launch guard's
+/// own answers on macOS. An API-key profile with no login file shows `none`:
+/// the column says where a login file or Keychain item is, and it has
+/// neither.
+pub(super) fn login_place(ledger: &Ledger, own: &OwnLogins<'_>, name: &ProfileName) -> String {
+    let n = name.as_str();
     if let Some(dir) = ledger.leased_to(n) {
         return format!("live in {dir}");
     }
     if ledger.hosts.contains_key(n) {
         return "parked".into();
     }
-    if fsx::exists(&state.live_creds(n)) {
-        "home".into()
-    } else {
-        "none".into()
+    match own.of(name) {
+        OwnLogin::File => "home",
+        OwnLogin::Keychain => "keychain",
+        OwnLogin::KeychainUnreadable(_) => "keychain unreadable",
+        OwnLogin::KeyProfile | OwnLogin::None => "none",
     }
+    .into()
 }
 
 fn invariant_problem(state: &State, ledger: &Ledger, names: &[ProfileName]) -> Option<String> {

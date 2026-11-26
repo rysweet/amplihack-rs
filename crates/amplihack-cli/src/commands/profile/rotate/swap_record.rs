@@ -32,6 +32,7 @@ fn percent(p: f64) -> u8 {
 /// record's plus one, or 1 when there is none or it cannot be read; a
 /// previous record that exists but cannot be read or parsed is one line on
 /// `out`. The write is private (0600) and atomic.
+#[cfg(test)]
 pub(super) fn record_swap(
     rs: &RotateState,
     out: &mut Sink,
@@ -41,9 +42,38 @@ pub(super) fn record_swap(
     measured_at: i64,
     t: i64,
 ) -> Result<bool, ProfileError> {
+    record_with_affinity(
+        rs,
+        out,
+        from,
+        to,
+        reading,
+        measured_at,
+        t,
+        None,
+        None,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_with_affinity(
+    rs: &RotateState,
+    out: &mut Sink,
+    from: &ProfileName,
+    to: &ProfileName,
+    reading: &Reading,
+    measured_at: i64,
+    t: i64,
+    from_org: Option<&str>,
+    to_org: Option<&str>,
+    explicit: bool,
+) -> Result<bool, ProfileError> {
     let Reading::Measured { session, week } = *reading else {
         return Ok(false);
     };
+    let from_org = from_org.filter(|id| amplihack_utils::organisation_affinity::valid_id(id));
+    let to_org = to_org.filter(|id| amplihack_utils::organisation_affinity::valid_id(id));
     if !session.is_finite() || !week.is_finite() {
         return Ok(false);
     }
@@ -62,6 +92,10 @@ pub(super) fn record_swap(
         }
     };
     let record = SwapRecord {
+        from_org: from_org.map(str::to_owned),
+        to_org: to_org.map(str::to_owned),
+        affinity: explicit
+            .then(|| amplihack_utils::organisation_affinity::Affinity::between(from_org, to_org)),
         seq: previous.map_or(1, |p| p.seq.saturating_add(1)),
         live_login: to.as_str().to_string(),
         from_login: from.as_str().to_string(),
@@ -82,6 +116,7 @@ pub(super) fn record_swap(
 /// when the ledger on disk shows `to` live. Any reason it is not written is
 /// one log line; the swap stands and the cycle outcome is unchanged.
 /// `swapped_at` is when `swap_with` returned, never the cycle's start time.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn after_swap(
     rs: &RotateState,
     out: &mut Sink,
@@ -90,6 +125,7 @@ pub(super) fn after_swap(
     others: &[(ProfileName, Reading)],
     measured_at: i64,
     swapped_at: i64,
+    organisations: (Option<&str>, Option<&str>),
 ) {
     let live = match rs.load_ledger() {
         Ok(Some(l)) => l.live,
@@ -110,7 +146,18 @@ pub(super) fn after_swap(
         out.emit(now(), &format!("{NOT_WRITTEN}: no reading of {to}"));
         return;
     };
-    match record_swap(rs, out, from, to, reading, measured_at, swapped_at) {
+    match record_with_affinity(
+        rs,
+        out,
+        from,
+        to,
+        reading,
+        measured_at,
+        swapped_at,
+        organisations.0,
+        organisations.1,
+        true,
+    ) {
         Ok(true) => {}
         Ok(false) => out.emit(
             now(),

@@ -482,6 +482,7 @@ fn update_applies_the_change_and_returns_the_result() {
 
 #[test]
 fn update_of_a_missing_file_starts_from_the_defaults() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     for mode in [ReadMode::Editable, ReadMode::DefaultOnInvalid] {
         let tmp = private_root();
         let root = tmp.path();
@@ -509,13 +510,19 @@ fn editable_update_refuses_a_corrupt_file_and_leaves_it() {
         Ok(())
     })
     .unwrap_err();
-    assert!(matches!(err, ProfileError::AutoSwitchConfig(_)), "{err:?}");
+    // Issue #2218: a corrupt file of yours is refused with the recovery that
+    // keeps its exclude list, not the generic "remove the file" error.
+    assert!(
+        matches!(err, ProfileError::AutoSwitchExcludeAtRisk(_)),
+        "{err:?}"
+    );
     assert!(!called, "the closure never sees a corrupt file");
     assert_eq!(file_text(root), "enabled=maybe\noverflow=cred\n");
 }
 
 #[test]
 fn default_on_invalid_update_replaces_a_corrupt_file() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let tmp = private_root();
     let root = tmp.path();
     write_file(root, "enabled=maybe\n");
@@ -706,4 +713,266 @@ fn config_write_is_called_only_from_update() {
         }
     }
     assert!(offenders.is_empty(), "unlocked writers: {offenders:?}");
+}
+
+// --- Issue #2218: one exclude reader, and `on`/`off` keep the list -----------
+
+#[test]
+fn default_on_invalid_update_keeps_the_exclude_list_of_an_invalid_private_file() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
+    let tmp = private_root();
+    let root = tmp.path();
+    write_file(
+        root,
+        "enabled=on\nthreshold=70\nexclude=work,spare\noverflow=cred\nkind=work:bogus\n",
+    );
+    // A private file of yours with an unknown kind: `read` calls it
+    // corrupt, `read_exclude` still trusts its list.
+    assert_eq!(config::read(root), FileState::Corrupt);
+    assert_eq!(
+        config::read_exclude(root),
+        config::ExcludeFile::Read {
+            names: names(&["work", "spare"]),
+            trusted: false
+        }
+    );
+    let c = config::update(root, ReadMode::DefaultOnInvalid, |c| {
+        c.enabled = true;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(c.exclude, names(&["work", "spare"]));
+    // The other settings of the invalid file are not trusted: defaults.
+    assert_eq!(
+        file_text(root),
+        "enabled=on\nthreshold=90\nexclude=work,spare\n"
+    );
+}
+
+#[test]
+fn an_unparseable_file_is_not_recoverable_and_a_parseable_one_is() {
+    let tmp = private_root();
+    let root = tmp.path();
+    assert!(config::exclude_recoverable(root), "missing");
+    write_file(root, "enabled=maybe\nexclude=work\n");
+    assert!(!config::exclude_recoverable(root), "does not parse");
+    write_file(
+        root,
+        "enabled=on\nthreshold=90\nexclude=work\nkind=work:bogus\n",
+    );
+    assert!(
+        config::exclude_recoverable(root),
+        "private, invalid kind, parses"
+    );
+    // Anyone who can write the file could have removed an entry, so a list
+    // others can write is unknown even though it parses. (Group write by
+    // your own private group does not count: `writable_by_others`.)
+    for mode in [0o602, 0o666] {
+        write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
+        fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(
+            config::read_exclude(root),
+            config::ExcludeFile::Unreadable,
+            "mode {mode:o}"
+        );
+        assert!(!config::exclude_recoverable(root), "mode {mode:o}");
+    }
+}
+
+#[test]
+fn excluded_profiles_is_the_list_or_every_profile() {
+    let tmp = private_root();
+    let root = tmp.path();
+    for p in ["work", "spare"] {
+        fs::create_dir(root.join(p)).unwrap();
+    }
+    assert_eq!(config::excluded_profiles(root).unwrap(), names(&[]));
+    write_file(
+        root,
+        "enabled=on\nthreshold=90\nexclude=work\nkind=work:bogus\n",
+    );
+    assert_eq!(config::excluded_profiles(root).unwrap(), names(&["work"]));
+    for body in [
+        "enabled=maybe\nexclude=work\n",
+        "enabled=on\nthreshold=90\nexclude=\n",
+    ] {
+        write_file(root, body);
+        if !body.contains("maybe") {
+            // Writable by others with an empty list: it cannot un-exclude.
+            fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666))
+                .unwrap();
+        }
+        let mut every = config::excluded_profiles(root).unwrap();
+        every.sort();
+        assert_eq!(every, names(&["spare", "work"]), "{body:?}");
+    }
+}
+
+#[test]
+fn excluded_profiles_is_an_error_not_empty_when_the_store_cannot_be_listed() {
+    let tmp = private_root();
+    let real = tmp.path().join("real");
+    fs::create_dir(&real).unwrap();
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir(real.join("work")).unwrap();
+    write_file(&real, "enabled=maybe\nexclude=work\n");
+    // The store refuses a symlinked root, so listing it fails.
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert!(config::excluded_profiles(&link).is_err());
+    assert!(
+        crate::commands::profile::usage_cmd::exclude_list(&link, |_| {}).is_err(),
+        "the fail-closed fallback never comes back empty"
+    );
+}
+
+#[test]
+fn effective_applies_the_shared_exclude_list_to_a_corrupt_file() {
+    let tmp = private_root();
+    let root = tmp.path();
+    fs::create_dir(root.join("work")).unwrap();
+    fs::create_dir(root.join("spare")).unwrap();
+    write_file(
+        root,
+        "enabled=on\nthreshold=90\nexclude=work\nkind=work:bogus\n",
+    );
+    // Whatever AMPLIHACK_CLAUDE_AUTO_SWITCH says: it decides `on`, not the list.
+    assert_eq!(config::read(root), FileState::Corrupt);
+    let eff = config::effective(root);
+    assert_eq!(
+        eff.config.exclude,
+        names(&["work"]),
+        "invalid kind: its list"
+    );
+    write_file(root, "enabled=maybe\n");
+    let mut every = config::effective(root).config.exclude;
+    every.sort();
+    assert_eq!(
+        every,
+        names(&["spare", "work"]),
+        "unparseable: every profile"
+    );
+    write_file(root, "enabled=on\nthreshold=90\nexclude=\n");
+    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    let mut every = config::effective(root).config.exclude;
+    every.sort();
+    assert_eq!(every, names(&["spare", "work"]), "unsafe: every profile");
+}
+
+/// Issue #2218: an edit that keeps the other keys refuses a corrupt file of
+/// yours with the recovery that keeps its exclude list, never with the
+/// generic "remove the file" hint.
+#[test]
+fn an_edit_over_a_corrupt_file_of_yours_names_the_recovery_that_keeps_the_list() {
+    let tmp = private_root();
+    let root = tmp.path();
+    let edit = |root: &std::path::Path| {
+        config::update(root, ReadMode::Editable, |c| {
+            c.threshold = 50;
+            Ok(())
+        })
+        .unwrap_err()
+    };
+    write_file(root, "enabled=maybe\nexclude=work\n");
+    let err = edit(root);
+    let ProfileError::AutoSwitchExcludeAtRisk(msg) = &err else {
+        panic!("{err:?}");
+    };
+    assert!(msg.contains("exclude list is unknown"), "{msg}");
+    assert!(msg.contains("off --exclude"), "{msg}");
+    assert!(err.hint().starts_with("do not remove"), "{}", err.hint());
+    assert_eq!(file_text(root), "enabled=maybe\nexclude=work\n");
+
+    // Group-writable: its list is unknown too, so the same refusal.
+    write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
+    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    let err = edit(root);
+    let ProfileError::AutoSwitchExcludeAtRisk(msg) = &err else {
+        panic!("{err:?}");
+    };
+    assert!(msg.contains("exclude list is unknown"), "{msg}");
+
+    write_file(
+        root,
+        "enabled=on\nthreshold=90\nexclude=work\nkind=work:bogus\n",
+    );
+    let err = edit(root);
+    let ProfileError::AutoSwitchExcludeAtRisk(msg) = &err else {
+        panic!("{err:?}");
+    };
+    assert!(msg.contains("keep its exclude list"), "{msg}");
+}
+
+/// Issue #2218: a `.auto-switch` no command may replace (a symlink, a
+/// directory, or a file owned by another user, which shares this code path
+/// but cannot be created without root) makes every profile count as
+/// excluded while it is there, so every write over it is refused with a
+/// hint that never says remove: removing it would leave no exclusions. Nothing is written, and the target is untouched.
+#[test]
+fn a_write_over_an_unreplaceable_file_never_advises_removing_it() {
+    for (kind, setup) in [
+        ("is a symlink", 0u8),
+        ("is a symlink", 1),
+        ("is not a regular file", 2),
+    ] {
+        let tmp = private_root();
+        let root = tmp.path();
+        let target = root.join("elsewhere");
+        match setup {
+            // Unparseable target: read_exclude calls it Unreadable.
+            0 => {
+                fs::write(&target, "enabled=maybe\n").unwrap();
+                std::os::unix::fs::symlink(&target, root.join(".auto-switch")).unwrap();
+            }
+            // Parseable target with a list in it.
+            1 => {
+                fs::write(&target, "enabled=on\nthreshold=90\nexclude=work\n").unwrap();
+                std::os::unix::fs::symlink(&target, root.join(".auto-switch")).unwrap();
+            }
+            _ => fs::create_dir(root.join(".auto-switch")).unwrap(),
+        }
+        let edits: [(ReadMode, Option<Vec<ProfileName>>); 3] = [
+            (ReadMode::Editable, None),
+            (ReadMode::DefaultOnInvalid, None),
+            (ReadMode::DefaultOnInvalid, Some(names(&["work"]))),
+        ];
+        for (mode, exclude) in edits {
+            let err = config::update(root, mode, |c| {
+                c.enabled = true;
+                if let Some(e) = exclude.clone() {
+                    c.exclude = e;
+                }
+                Ok(())
+            })
+            .unwrap_err();
+            let ProfileError::AutoSwitchExcludeAtRisk(msg) = &err else {
+                panic!("{kind}: {err:?}");
+            };
+            assert!(msg.contains(kind), "{msg}");
+            assert!(msg.contains("Do not delete it"), "{msg}");
+            assert!(msg.contains("chown"), "{msg}");
+            assert!(err.hint().starts_with("do not remove"), "{}", err.hint());
+            assert!(!err.hint().contains("remove <root>/.auto-switch and run"));
+        }
+        assert!(!config::own_regular_file(root));
+        if setup < 2 {
+            assert!(
+                fs::symlink_metadata(root.join(".auto-switch"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+    }
+}
+
+/// The refusal is only for files no command may replace: a missing file
+/// or a regular file of yours gets none.
+#[test]
+fn a_missing_or_own_file_is_replaceable() {
+    let tmp = private_root();
+    let root = tmp.path();
+    assert!(config::unreplaceable_refusal(root).is_none());
+    write_file(root, "enabled=maybe\n");
+    assert!(config::unreplaceable_refusal(root).is_none());
 }

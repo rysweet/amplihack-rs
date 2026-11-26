@@ -27,7 +27,8 @@
 //!
 //! `std` and `libc` only. There is no timeout parameter anywhere here.
 
-#![cfg(unix)]
+// Its FIFO protocol relies on Linux open semantics, and only Linux tests use it (#2286).
+#![cfg(target_os = "linux")]
 
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};

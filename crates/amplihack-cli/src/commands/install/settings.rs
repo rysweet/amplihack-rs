@@ -1,24 +1,22 @@
 //! Settings.json configuration, hook contract validation, and framework verification.
 
-use super::hooks::{
-    ensure_array, ensure_object, is_own_wrapper, remove_hook_wrappers, update_hook_paths,
-    wrapper_matches,
-};
+use super::hook_block::{self, FileMerge, HookTarget};
+use super::hooks::{ensure_array, ensure_object, is_own_wrapper, wrapper_matches};
 use super::paths::xpia_hooks_dir;
 use super::types::*;
 use crate::commands::profile::is_amplihack_statusline;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Configure the given settings.json with amplihack hook registrations.
 ///
 /// The target `settings_path` is chosen by the caller (global `~/.claude` or
-/// a repo-local `<repo>/.claude`), keeping this writer scope-agnostic. Backup,
-/// parent-directory creation, and atomic-write semantics are keyed off
-/// `settings_path.parent()`.
+/// a repo-local `<repo>/.claude`), keeping this writer scope-agnostic. Backup
+/// and parent-directory creation are keyed off `settings_path.parent()`.
 ///
 /// `status_line`: the `statusLine` command to install (issue #1745). Two
 /// callers pass one, both writing `~/.claude/settings.json`: the explicit
@@ -36,50 +34,6 @@ pub(super) fn ensure_settings_json(
     hooks_bin: &Path,
     status_line: Option<&str>,
 ) -> Result<(bool, Vec<String>)> {
-    if let Some(parent) = settings_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let backup_path = settings_path
-        .parent()
-        .context("settings path missing parent")?
-        .join(format!("settings.json.backup.{timestamp}"));
-    if settings_path.exists() {
-        fs::copy(settings_path, &backup_path).with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                settings_path.display(),
-                backup_path.display()
-            )
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&backup_path, std::fs::Permissions::from_mode(0o600));
-        }
-        let backup_dir = staging_dir.join("runtime").join("sessions");
-        fs::create_dir_all(&backup_dir)
-            .with_context(|| format!("failed to create {}", backup_dir.display()))?;
-        // Use serde_json::json! to guarantee valid JSON even with special chars in paths
-        let metadata = json!({
-            "settings_path": settings_path.to_string_lossy().as_ref(),
-            "backup_path": backup_path.to_string_lossy().as_ref(),
-        });
-        fs::write(
-            backup_dir.join(format!("install_{timestamp}_backup.json")),
-            serde_json::to_string_pretty(&metadata)?,
-        )
-        .context("failed to write install backup metadata")?;
-        println!("  💾 Backup created at {}", backup_path.display());
-        println!("  📋 Found existing settings.json");
-    } else {
-        fs::write(settings_path, "{}\n")
-            .with_context(|| format!("failed to write {}", settings_path.display()))?;
-    }
-
-    let mut settings = read_settings_json(settings_path)?;
-    ensure_permissions(&mut settings);
-    let with_xpia = xpia_hooks_dir()?.exists();
     let old_claude = claude_too_old_for_limit_resume();
     if let Some(version) = &old_claude {
         println!(
@@ -88,44 +42,159 @@ pub(super) fn ensure_settings_json(
              `amplihack install` again"
         );
     }
-    let limit_resume = old_claude.is_none();
-    register_hooks(&mut settings, hooks_bin, with_xpia, limit_resume);
-    let status_line = status_line.map(|cmd| ensure_status_line(&mut settings, cmd));
-
-    fs::write(
+    ensure_settings_json_for(
         settings_path,
-        serde_json::to_string_pretty(&settings)? + "\n",
+        staging_dir,
+        timestamp,
+        hooks_bin,
+        status_line,
+        old_claude.is_none(),
     )
-    .with_context(|| format!("failed to write {}", settings_path.display()))?;
+}
+
+/// [`ensure_settings_json`] with `limit_resume` already decided.
+///
+/// Issue #2279: the file goes through `hook_block::update_file_with_backup`,
+/// so it is read without following a symlink, written atomically at mode
+/// 0600, and backed up (from the bytes read, at 0600) only when it changes.
+/// An absent file is created. A file that is not JSON, or that may not be
+/// written, is an error and is left unchanged.
+pub(super) fn ensure_settings_json_for(
+    settings_path: &Path,
+    staging_dir: &Path,
+    timestamp: u64,
+    hooks_bin: &Path,
+    status_line: Option<&str>,
+    limit_resume: bool,
+) -> Result<(bool, Vec<String>)> {
+    let target = HookTarget::new(hooks_bin.to_path_buf(), limit_resume).with_context(|| {
+        format!(
+            "hooks binary path {} holds a shell-unsafe character; hooks were not registered",
+            hooks_bin.display()
+        )
+    })?;
+    let parent = settings_path
+        .parent()
+        .context("settings path missing parent")?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+
+    let status = Cell::new(None);
+    let drift_lines = std::cell::RefCell::new(Vec::new());
+    let update = |settings: &mut Value| {
+        ensure_permissions(settings);
+        hook_block::merge(settings, &target);
+        if let Some(cmd) = status_line {
+            status.set(Some(ensure_status_line(settings, cmd)));
+        }
+        drift_lines.replace(validate_amplihack_native_hook_contract(
+            settings,
+            limit_resume,
+            hooks_bin,
+        ));
+    };
+    let backup_path = free_backup_path(parent, timestamp);
+    let shown = super::paths::sanitize_path(settings_path);
+    match hook_block::update_file_with_backup(settings_path, &backup_path, &update) {
+        FileMerge::Written => {
+            record_backup(settings_path, &backup_path, staging_dir, timestamp)?;
+            println!("  💾 Backup created at {}", backup_path.display());
+            println!("  📋 Found existing settings.json");
+        }
+        FileMerge::AlreadyCurrent => println!("  📋 Found existing settings.json"),
+        FileMerge::Absent => match hook_block::create_file(settings_path, &update) {
+            FileMerge::Written => {}
+            other => bail!("failed to create {shown}: {}", merge_reason(&other)),
+        },
+        FileMerge::Unparseable(reason) => bail!(
+            "failed to parse JSON in {shown} ({reason}). The original file was left unchanged; \
+             fix the malformed settings.json or move it aside before running install"
+        ),
+        FileMerge::Refused(reason) => {
+            // A symlinked, hard-linked or foreign-owned file is reported and
+            // left as it is; the rest of the install still runs.
+            eprintln!(
+                "  ⚠️  {shown} was not changed ({reason}); hooks were not registered there. \
+                 Replace it with a regular file you own, then run `amplihack install` again"
+            );
+            // Issue #2589 (SEC-C3): the merge refused this file before
+            // `update` ran, so `ensure_permissions` never reached
+            // `apply_deny_policy` and the file is absent from the record.
+            // Without this the policy section reads an empty record and
+            // reports that there is no Claude settings file on this machine,
+            // while one exists and took no entries.
+            crate::policy::claude::record(
+                HOME_SETTINGS_LABEL,
+                &crate::policy::claude::DenyOutcome::Unparseable(reason),
+            );
+            return Ok((false, Vec::new()));
+        }
+    }
     println!("  ✅ settings.json configured");
-    if let Some(message) = status_line.and_then(StatusLineOutcome::message) {
+    if let Some(message) = status.get().and_then(StatusLineOutcome::message) {
         println!("  {message}");
     }
 
-    let hook_contract_drift = validate_amplihack_native_hook_contract(&settings, limit_resume);
+    let hook_contract_drift = drift_lines.take();
     if hook_contract_drift.is_empty() {
         println!("  ✅ Native amplihack hook contract matches hooks.json");
     } else {
-        // `update_hook_paths` rewrites amplihack-native hooks in canonical
-        // order on every install, so surviving drift here indicates a real
-        // spec mismatch (new hook added upstream, third-party wrapper that
-        // masquerades as ours, etc.) rather than harmless reordering.
         println!("  ⚠️  Native amplihack hook contract drift detected after reorder:");
         for issue in hook_contract_drift {
             println!("     • {issue}");
         }
     }
 
-    // Collect deduplicated event names that were registered
-    let registered_events: Vec<String> = {
-        let mut seen = BTreeSet::new();
-        for spec in amplihack_specs(limit_resume) {
-            seen.insert(spec.event.to_string());
-        }
-        seen.into_iter().collect()
-    };
-
+    let registered_events: Vec<String> = hook_block::specs(limit_resume)
+        .iter()
+        .map(|spec| spec.event.to_string())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     Ok((true, registered_events))
+}
+
+/// `settings.json.backup.<timestamp>` beside the file, or the first
+/// `.<n>` variant that does not exist yet, so two installs in one second do
+/// not collide. The backup itself is created with `O_EXCL`.
+fn free_backup_path(parent: &Path, timestamp: u64) -> PathBuf {
+    let base = format!("settings.json.backup.{timestamp}");
+    std::iter::once(base.clone())
+        .chain((1..100).map(|n| format!("{base}.{n}")))
+        .map(|name| parent.join(name))
+        .find(|path| fs::symlink_metadata(path).is_err())
+        .unwrap_or_else(|| parent.join(base))
+}
+
+/// Records where the backup went, for `amplihack uninstall`.
+fn record_backup(
+    settings_path: &Path,
+    backup_path: &Path,
+    staging_dir: &Path,
+    timestamp: u64,
+) -> Result<()> {
+    let backup_dir = staging_dir.join("runtime").join("sessions");
+    fs::create_dir_all(&backup_dir)
+        .with_context(|| format!("failed to create {}", backup_dir.display()))?;
+    // serde_json::json! guarantees valid JSON even with special chars in paths.
+    let metadata = json!({
+        "settings_path": settings_path.to_string_lossy().as_ref(),
+        "backup_path": backup_path.to_string_lossy().as_ref(),
+    });
+    fs::write(
+        backup_dir.join(format!("install_{timestamp}_backup.json")),
+        serde_json::to_string_pretty(&metadata)?,
+    )
+    .context("failed to write install backup metadata")
+}
+
+/// The reason inside a failed [`FileMerge`].
+fn merge_reason(result: &FileMerge) -> String {
+    match result {
+        FileMerge::Unparseable(r) => format!("unparseable ({r})"),
+        FileMerge::Refused(r) => format!("refused ({r})"),
+        FileMerge::Absent => "absent".into(),
+        FileMerge::Written | FileMerge::AlreadyCurrent => "written".into(),
+    }
 }
 
 /// What [`ensure_status_line`] did.
@@ -215,46 +284,39 @@ pub(super) fn too_old_for_limit_resume(version: &str) -> bool {
     semver::Version::parse(version).is_ok_and(|v| v < LIMIT_RESUME_MIN_CLAUDE)
 }
 
-/// The amplihack hook specs to register: all of them, less `StopFailure`
-/// when `limit_resume` is false.
-fn amplihack_specs(limit_resume: bool) -> Vec<HookSpec> {
-    AMPLIHACK_HOOK_SPECS
-        .iter()
-        .filter(|spec| limit_resume || spec.event != LIMIT_RESUME_EVENT)
-        .cloned()
-        .collect()
-}
-
-/// Replaces amplihack's hook entries in `settings` (and xpia's, when its hooks
-/// are installed) with this build's, leaving every other entry in place.
-/// Without `limit_resume`, amplihack's `StopFailure` entry is removed.
-pub(super) fn register_hooks(
-    settings: &mut Value,
-    hooks_bin: &Path,
-    with_xpia: bool,
-    limit_resume: bool,
-) {
-    update_hook_paths(
-        settings,
-        "amplihack",
-        &amplihack_specs(limit_resume),
-        hooks_bin,
-    );
-    if !limit_resume {
-        for spec in AMPLIHACK_HOOK_SPECS
-            .iter()
-            .filter(|s| s.event == LIMIT_RESUME_EVENT)
-        {
-            remove_hook_wrappers(settings, spec, "amplihack");
+/// Issue #2279: gives `settings` amplihack's hooks block for `hooks_bin`
+/// (see `hook_block::merge`), leaving every other entry in place. Without
+/// `limit_resume`, amplihack's `StopFailure` entry is removed. No XPIA hook
+/// is ever registered, and an existing one is removed (D2). An unsafe
+/// `hooks_bin` leaves `settings` unchanged and is logged.
+pub(super) fn register_hooks(settings: &mut Value, hooks_bin: &Path, limit_resume: bool) {
+    match HookTarget::new(hooks_bin.to_path_buf(), limit_resume) {
+        Some(target) => {
+            hook_block::merge(settings, &target);
         }
-    }
-    if with_xpia {
-        update_hook_paths(settings, "xpia", XPIA_HOOK_SPECS, hooks_bin);
+        None => tracing::warn!(
+            "hooks binary path {} holds a shell-unsafe character; hooks were not registered",
+            hooks_bin.display()
+        ),
     }
 }
 
 /// Unit tests set this to let `refresh_profile_hooks` run.
 pub(super) const PROFILE_REFRESH_TEST_OPT_IN: &str = "AMPLIHACK_TEST_PROFILE_REFRESH";
+
+/// Issue #2589 (R6): how the managed profile root itself is named in a
+/// policy warning, when the run could not reach the profiles and so has no
+/// profile to name.
+///
+/// A literal with no interpolation, which is what keeps it apart from the
+/// per-profile labels. The record is keyed by label and a later entry
+/// replaces an earlier one, so a label that collided with a profile's would
+/// silently drop one of the two outcomes. `ProfileName::parse` admits only
+/// ASCII alphanumerics and `. _ -`, so no profile can be called
+/// `managed profiles` and no per-profile label can equal this one. That
+/// argument is recorded here because relaxing the name charset later would
+/// break it with no signal at this site.
+pub(super) const PROFILE_ROOT_LABEL: &str = "managed profiles";
 
 /// Issue #1661: gives every profile's existing `settings.json` the same hook
 /// registrations as `~/.claude/settings.json`. Never fails the install: a
@@ -271,11 +333,15 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     if cfg!(test) && std::env::var_os(PROFILE_REFRESH_TEST_OPT_IN).is_none() {
         return;
     }
-    let with_xpia = xpia_hooks_dir().is_ok_and(|dir| dir.exists());
     let limit_resume = claude_too_old_for_limit_resume().is_none();
-    let results = refresh_profile_settings(hooks_bin, &|settings| {
-        register_hooks(settings, hooks_bin, with_xpia, limit_resume)
+    let refresh = refresh_profile_settings(hooks_bin, &|name, settings| {
+        register_hooks(settings, hooks_bin, limit_resume);
+        // Issue #2589: every managed profile gets the same deny entries as
+        // the user's own settings file. The profile is named, because a
+        // warning that does not say which profile cannot be acted on.
+        apply_deny_policy(settings, &format!("profile {name}"));
     });
+    let results = refresh.results;
     let updated = results
         .iter()
         .filter(|(_, r)| *r == Refresh::Updated)
@@ -286,16 +352,40 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     for (name, result) in &results {
         if let Refresh::Skipped(reason) = result {
             println!("  ⚠️  Profile {name}: settings.json not refreshed ({reason})");
+            // Issue #2589 (SEC-C3): `update_file` refused this profile before
+            // the closure above ran, so `apply_deny_policy` never met it and
+            // it left no record. The label must be byte-identical to the one
+            // the closure uses, because the record is keyed by label.
+            //
+            // `Refresh::Missing` stays unrecorded on purpose: a profile with
+            // no settings.json is nothing to write into, not a refusal, which
+            // matches `FileMerge::Absent => None` in `ProfileStore`.
+            crate::policy::claude::record(
+                &format!("profile {name}"),
+                &crate::policy::claude::DenyOutcome::Unparseable(reason.clone()),
+            );
         }
+    }
+    // Issue #2589 (R6): the root itself could not be read, so no profile was
+    // visited and none can be named. Without this the pass looks exactly
+    // like a root that holds no profiles, and the policy section goes on to
+    // claim the entries were written "in every managed profile that has
+    // one" after a run that read none of them (SEC-C3). The plural names
+    // the root, beside the `Profile <name>:` lines it is shaped after.
+    if let Some(reason) = refresh.root_failure {
+        println!("  ⚠️  Profiles: settings.json not refreshed ({reason})");
+        crate::policy::claude::record(
+            PROFILE_ROOT_LABEL,
+            &crate::policy::claude::DenyOutcome::Unparseable(reason),
+        );
     }
 }
 
 /// Issue #1526: the amplihack hook registrations this build would add or
 /// change in `settings`, as `Event (subcommand)`: missing, or registered
 /// with another `timeout` or `asyncRewake` (#1659). `StopFailure` counts
-/// only with `limit_resume`. Empty when `settings` holds no amplihack hook
-/// at all: that file is unconfigured rather than out of date, and the launch
-/// bootstrap registers hooks in it.
+/// only with `limit_resume`. Issue #2279 (D8): a file with no amplihack hook
+/// at all reports every registration, so a stripped file is named too.
 pub(super) fn missing_hook_registrations(settings: &Value, limit_resume: bool) -> Vec<String> {
     let wrappers = |spec: &HookSpec| {
         settings
@@ -305,15 +395,7 @@ pub(super) fn missing_hook_registrations(settings: &Value, limit_resume: bool) -
             .map(Vec::as_slice)
             .unwrap_or_default()
     };
-    let specs = amplihack_specs(limit_resume);
-    let ours = |spec: &HookSpec| {
-        wrappers(spec)
-            .iter()
-            .any(|wrapper| is_own_wrapper(wrapper, spec, "amplihack"))
-    };
-    if !specs.iter().any(ours) {
-        return Vec::new();
-    }
+    let specs = hook_block::specs(limit_resume);
     let current = |spec: &HookSpec| {
         wrappers(spec)
             .iter()
@@ -479,163 +561,90 @@ pub(super) fn read_settings_json(settings_path: &Path) -> Result<Value> {
 
 pub(super) fn ensure_permissions(settings: &mut Value) {
     let root = ensure_object(settings);
-    let permissions = root
-        .entry("permissions")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let permissions = ensure_object(permissions);
+    // SEC-C2: a `permissions` value amplihack cannot merge is left exactly as
+    // the user wrote it. Replacing it with these defaults would discard what
+    // they set and hide the fact that the file took no deny entries; the
+    // policy writer below reports it instead of overwriting it.
+    if matches!(root.get("permissions"), None | Some(Value::Object(_))) {
+        let permissions = root
+            .entry("permissions")
+            .or_insert_with(|| Value::Object(Map::new()));
+        let permissions = ensure_object(permissions);
 
-    permissions
-        .entry("allow")
-        .or_insert_with(|| json!(["Bash", "TodoWrite", "WebSearch", "WebFetch"]));
-    permissions
-        .entry("deny")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    permissions
-        .entry("defaultMode")
-        .or_insert_with(|| Value::String("bypassPermissions".to_string()));
+        permissions
+            .entry("allow")
+            .or_insert_with(|| json!(["Bash", "TodoWrite", "WebSearch", "WebFetch"]));
+        permissions
+            .entry("deny")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        permissions
+            .entry("defaultMode")
+            .or_insert_with(|| Value::String("bypassPermissions".to_string()));
 
-    let additional = permissions
-        .entry("additionalDirectories")
-        .or_insert_with(|| json!([".claude", "Specs"]));
-    let additional = ensure_array(additional);
-    for dir in [".claude", "Specs"] {
-        if !additional.iter().any(|value| value.as_str() == Some(dir)) {
-            additional.push(Value::String(dir.to_string()));
+        let additional = permissions
+            .entry("additionalDirectories")
+            .or_insert_with(|| json!([".claude", "Specs"]));
+        let additional = ensure_array(additional);
+        for dir in [".claude", "Specs"] {
+            if !additional.iter().any(|value| value.as_str() == Some(dir)) {
+                additional.push(Value::String(dir.to_string()));
+            }
+        }
+    }
+
+    // Issue #2589: the dangerous-command deny entries, from amplihack's one
+    // policy list plus this installation's own additions. The entries
+    // already in the file, including the user's own, are kept. Reached
+    // whichever way the branch above went, so an unmergeable `permissions`
+    // value is still met and reported.
+    apply_deny_policy(settings, HOME_SETTINGS_LABEL);
+}
+
+/// How the user's own `settings.json` is named in a policy warning. The
+/// labels are the ones `docs/reference/dangerous-command-policy.md` prints.
+const HOME_SETTINGS_LABEL: &str = "home settings";
+
+/// Issue #2589: adds the dangerous-command deny entries to `settings`,
+/// reporting rather than replacing a `permissions` value that cannot take
+/// them (SEC-C2). `label` names the file and never holds file content.
+///
+/// Returns the reason the file took no entries, and records the same thing
+/// for the install's policy section, which prints it on its own channel: a
+/// safety control that is not installed must not be silent (SEC-C3).
+pub(crate) fn apply_deny_policy(settings: &mut Value, label: &str) -> Option<String> {
+    use crate::policy::claude::{DenyOutcome, ensure_deny, record};
+    let instance = crate::user_config::policy_deny_commands();
+    let outcome = ensure_deny(settings, &instance);
+    record(label, &outcome);
+    match outcome {
+        DenyOutcome::Written | DenyOutcome::AlreadyCurrent => None,
+        DenyOutcome::Unparseable(reason) => {
+            tracing::warn!(
+                "{label}: the dangerous-command deny entries were not written ({reason}); the \
+                 existing permissions value was left as it is"
+            );
+            Some(reason)
         }
     }
 }
 
-/// Drift between `settings` and the canonical hook contract. `StopFailure`
-/// is checked only with `limit_resume`.
+/// Issue #2279: drift between `settings` and this build's hooks block, one
+/// line per kind, naming events only. The selected hooks binary path also
+/// identifies registrations written with a custom binary name.
+/// `StopFailure` is checked only with `limit_resume`.
 pub(super) fn validate_amplihack_native_hook_contract(
     settings: &Value,
     limit_resume: bool,
+    hooks_bin: &Path,
 ) -> Vec<String> {
-    let mut drift = Vec::new();
-    let mut seen_events = Vec::new();
-
-    for entry in CANONICAL_AMPLIHACK_HOOK_CONTRACT {
-        if !limit_resume && entry.event == LIMIT_RESUME_EVENT {
-            continue;
-        }
-        if !seen_events.contains(&entry.event) {
-            seen_events.push(entry.event);
-        }
-    }
-
-    for event in seen_events {
-        let expected = canonical_native_hooks_for_event(event);
-        let actual = observed_native_hooks_for_event(settings, event);
-
-        for (index, expected_entry) in expected.iter().enumerate() {
-            match actual.get(index) {
-                Some(observed)
-                    if observed.subcmd == expected_entry.native_subcmd.unwrap_or_default()
-                        && observed.timeout == expected_entry.timeout
-                        && observed.matcher.as_deref() == expected_entry.matcher => {}
-                Some(observed) => drift.push(format!(
-                    "{event}[{index}] expected {} but found {}",
-                    describe_expected_native_hook(expected_entry),
-                    describe_observed_native_hook(observed)
-                )),
-                None => drift.push(format!(
-                    "{event}[{index}] missing {}; expected native hook order from hooks.json/HOOK_CONFIGS",
-                    describe_expected_native_hook(expected_entry)
-                )),
-            }
-        }
-
-        for extra in actual.iter().skip(expected.len()) {
-            drift.push(format!(
-                "{event} has unexpected native hook {}",
-                describe_observed_native_hook(extra)
-            ));
-        }
-    }
-
-    drift
-}
-
-fn canonical_native_hooks_for_event(event: &str) -> Vec<&'static CanonicalHookContractEntry> {
-    CANONICAL_AMPLIHACK_HOOK_CONTRACT
-        .iter()
-        .filter(|entry| entry.event == event && entry.native_subcmd.is_some())
-        .collect()
-}
-
-fn observed_native_hooks_for_event(
-    settings: &Value,
-    event: &str,
-) -> Vec<ObservedNativeHookContractEntry> {
-    settings
-        .as_object()
-        .and_then(|root| root.get("hooks"))
-        .and_then(Value::as_object)
-        .and_then(|hooks| hooks.get(event))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flat_map(|wrappers| wrappers.iter())
-        .flat_map(|wrapper| {
-            let matcher = wrapper
-                .get("matcher")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            wrapper
-                .get("hooks")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flat_map(move |hooks| {
-                    let matcher = matcher.clone();
-                    hooks.iter().filter_map(move |hook| {
-                        let command = hook.get("command").and_then(Value::as_str)?;
-                        let subcmd = extract_native_hook_subcommand(command)?;
-                        Some(ObservedNativeHookContractEntry {
-                            subcmd: subcmd.to_string(),
-                            timeout: hook.get("timeout").and_then(Value::as_u64),
-                            matcher: matcher.clone(),
-                        })
-                    })
-                })
-        })
-        .collect()
-}
-
-fn extract_native_hook_subcommand(command: &str) -> Option<&str> {
-    command
-        .contains("amplihack-hooks")
-        .then(|| command.split_whitespace().last())
-        .flatten()
-}
-
-fn describe_expected_native_hook(entry: &CanonicalHookContractEntry) -> String {
-    format!(
-        "subcmd=`{}`, timeout={}, matcher={}, source={}",
-        entry.native_subcmd.unwrap_or_default(),
-        format_optional_timeout(entry.timeout),
-        format_optional_matcher(entry.matcher),
-        entry.hook_file.unwrap_or("<native-only>")
+    hook_block::drift(
+        settings,
+        &HookTarget {
+            bin: hooks_bin.to_path_buf(),
+            limit_resume,
+        },
     )
-}
-
-fn describe_observed_native_hook(entry: &ObservedNativeHookContractEntry) -> String {
-    format!(
-        "subcmd=`{}`, timeout={}, matcher={}",
-        entry.subcmd,
-        format_optional_timeout(entry.timeout),
-        format_optional_matcher(entry.matcher.as_deref())
-    )
-}
-
-fn format_optional_timeout(timeout: Option<u64>) -> String {
-    timeout
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string())
-}
-
-fn format_optional_matcher(matcher: Option<&str>) -> String {
-    matcher
-        .map(str::to_string)
-        .unwrap_or_else(|| "none".to_string())
+    .lines()
 }
 
 pub(super) fn missing_framework_paths(claude_dir: &Path) -> Result<Vec<String>> {
@@ -769,46 +778,78 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // extract_native_hook_subcommand
+    // issue #2589: apply_deny_policy reports what it met
     // -----------------------------------------------------------------------
 
+    /// A temp HOME and the shared env lock, restored on drop.
+    ///
+    /// `apply_deny_policy` reads `$HOME/.amplihack/config.toml` through
+    /// `user_config::policy_deny_commands()`. Without this the three tests
+    /// below read the developer's real config and race every other
+    /// HOME-mutating test in the binary.
+    ///
+    /// The fields drop in declaration order, so `HOME` is restored before the
+    /// temp directory goes and the lock is released last.
+    struct TempHome {
+        _home: crate::test_support::HomeGuard,
+        _dir: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TempHome {
+        fn set() -> Self {
+            let lock = crate::test_support::env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let dir = crate::test_support::tempdir_outside_framework_roots();
+            Self {
+                _home: crate::test_support::HomeGuard::set(dir.path()),
+                _dir: dir,
+                _lock: lock,
+            }
+        }
+    }
+
+    /// The reason reaches the caller. Returning `()` and logging through
+    /// `tracing::warn!` left an ordinary install with no sign that a
+    /// settings file had taken no deny entries at all.
     #[test]
-    fn extract_subcmd_from_amplihack_hooks() {
-        let cmd = "/path/to/amplihack-hooks user-prompt-submit";
+    fn apply_deny_policy_returns_the_reason_a_file_could_not_take_the_entries() {
+        let _home = TempHome::set();
+        let mut settings = json!({"permissions": {"deny": "Bash(curl:*)"}});
+        let reason = apply_deny_policy(&mut settings, "home settings")
+            .expect("a deny value that is not an array is reported");
+        assert!(reason.contains("deny"), "{reason}");
         assert_eq!(
-            extract_native_hook_subcommand(cmd),
-            Some("user-prompt-submit")
+            settings["permissions"]["deny"], "Bash(curl:*)",
+            "and the value is left as it was found"
         );
+        // This test records an `Unparseable` for `home settings`; leaving it
+        // behind would be read by whatever runs next on this thread.
+        crate::policy::claude::clear_record();
     }
 
     #[test]
-    fn extract_subcmd_not_amplihack_hooks() {
-        let cmd = "some-other-binary run";
-        assert_eq!(extract_native_hook_subcommand(cmd), None);
+    fn apply_deny_policy_returns_nothing_when_the_entries_were_written() {
+        let _home = TempHome::set();
+        let mut settings = json!({"permissions": {"deny": []}});
+        assert!(apply_deny_policy(&mut settings, "home settings").is_none());
+        let deny = settings["permissions"]["deny"].as_array().unwrap().clone();
+        assert!(deny.iter().any(|v| v == "Bash(pkill:*)"), "{deny:?}");
+        crate::policy::claude::clear_record();
     }
 
-    // -----------------------------------------------------------------------
-    // format helpers
-    // -----------------------------------------------------------------------
-
+    /// SEC-C2: `ensure_permissions` must not replace a `permissions` value it
+    /// cannot merge. Replacing it discards whatever the user set there and
+    /// hides the fact that the file took no deny entries.
     #[test]
-    fn format_optional_timeout_some() {
-        assert_eq!(format_optional_timeout(Some(30)), "30");
-    }
-
-    #[test]
-    fn format_optional_timeout_none() {
-        assert_eq!(format_optional_timeout(None), "none");
-    }
-
-    #[test]
-    fn format_optional_matcher_some() {
-        assert_eq!(format_optional_matcher(Some("*.rs")), "*.rs");
-    }
-
-    #[test]
-    fn format_optional_matcher_none() {
-        assert_eq!(format_optional_matcher(None), "none");
+    fn ensure_permissions_leaves_a_permissions_value_it_cannot_merge_alone() {
+        let _home = TempHome::set();
+        let mut settings = json!({"language": "en", "permissions": "bypassPermissions"});
+        ensure_permissions(&mut settings);
+        assert_eq!(settings["permissions"], "bypassPermissions");
+        assert_eq!(settings["language"], "en");
+        crate::policy::claude::clear_record();
     }
 
     // -----------------------------------------------------------------------
@@ -818,7 +859,8 @@ mod tests {
     #[test]
     fn validate_empty_settings_reports_missing() {
         let settings = json!({});
-        let drift = validate_amplihack_native_hook_contract(&settings, true);
+        let drift =
+            validate_amplihack_native_hook_contract(&settings, true, Path::new("/amplihack-hooks"));
         // With no hooks configured, all expected hooks should be missing
         assert!(!drift.is_empty());
         assert!(drift.iter().any(|d| d.contains("missing")));

@@ -7,24 +7,21 @@
 # after that head and allows only base merges and description or evidence
 # changes; anything else goes back to crusty. Criterion 1 is met by the qa
 # evidence, which an agent step running as the same user could edit after it
-# was measured; autodrive_qa_trusted accepts it only through the hash chain
-# that starts at the loop's merge-ready-records.tsv manifest.
-# autodrive_gadugi_required says whether criterion 1 needs gadugi-test in a
-# repository at all; it follows qa-team's repo-type table. The QA target and
-# command sources (autodrive_qa_target and friends, #1763) live in
-# autodrive_qa_scope.sh, which this file loads from its own directory.
+# was measured; the merge-ready agent reads it as evidence for its write-up,
+# and nothing here accepts it as a merge condition (#2575).
+# autodrive_gadugi_required says whether criterion 1 needs gadugi-test at all.
+# The QA target (#1763) lives in autodrive_qa_scope.sh and the qa.toml reader
+# (#2458) in autodrive_qa_sources.sh, both loaded from this file's directory.
 #
 # Every function here prints only a fixed token, a hex SHA, or a JSON line
 # built from those. Commit subjects, paths and file contents are never
 # printed, so nothing from the branch under review reaches a log or a prompt
 # through here; autodrive_qa_scope.sh documents its own sanitised output.
-#
 # Callers source autodrive_state.sh first: autodrive_blob_hash,
 # autodrive_manifest_row, autodrive_crusty_final and autodrive_clear_phase live
-# there. This file only DEFINES functions, two read-only variables and the
-# _AD_SCOPE_OK flag; sourcing it has no other side effect. Needs bash 3.2 or
-# later, git and coreutils.
-#
+# there. This file only DEFINES functions, two read-only variables,
+# AUTODRIVE_TRUST_GIT_UNSET_VARS and the _AD_SCOPE_OK and _AD_SOURCES_OK flags;
+# sourcing it has no other side effect. Needs bash 3.2 or later, git and coreutils.
 # Same-user limit: these checks catch an agent following instructions found in
 # branch text, an accidental edit, and the replay of an older record. They are
 # not a boundary against a deliberate forger running as the same user; the
@@ -56,14 +53,20 @@ autodrive_is_sha() {
   return 0
 }
 
-# autodrive_trust_git <repo> <git args...>: git with history rewriting turned
-# off. Replace refs and grafts cannot change what is walked, an inherited
-# GIT_DIR or GIT_WORK_TREE cannot point git at another repository, and git
-# never prompts for credentials.
+# Copy git-repo-env.sh's 12 names, then GIT_REPLACE_REF_BASE to forbid history
+# rewriting. This GATE_FILE cannot source another helper without widening the
+# guard's trusted set. tests/issue_1278_git_env_isolation.sh checks the copy.
+# Assign unconditionally so the environment cannot shorten it (#2033).
+AUTODRIVE_TRUST_GIT_UNSET_VARS="GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE GIT_REPLACE_REF_BASE"
+
+# autodrive_trust_git <repo> <git args...>: git without history rewriting,
+# inherited repository selection or credential prompts.
 autodrive_trust_git() {
-  local repo="$1"; shift
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_REPLACE_REF_BASE \
+  local repo="$1" v
+  local -a unset_args=()
+  shift
+  for v in $AUTODRIVE_TRUST_GIT_UNSET_VARS; do unset_args+=(-u "$v"); done
+  env "${unset_args[@]}" \
     GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null GIT_TERMINAL_PROMPT=0 LC_ALL=C \
     git -C "$repo" "$@"
 }
@@ -215,15 +218,44 @@ EOF
 #
 #   {"rereview":"true|false","range":"<token>","first_unreviewed_sha":"<sha>","base_sha":"<sha>"}
 #
-# Only a crusty loop that ended DONE and CLEAN is checked; otherwise range is
-# `not-checked`, and step-01b reports why. Only crusty-unreviewed-commits
+# No crusty-records.tsv, or one with no rows, is `no-record`: the crusty-loop
+# marker is cleared and rereview is "true", so the Crusty round runs (#2628).
+# So is a final CLEAN record with no `<WORD> <sha>` line for its reviewed head
+# in crusty-verdict-posted.txt: its verdict is not on the PR (#2575 B1).
+# Otherwise only a crusty loop that ended DONE and CLEAN is checked; else
+# range is `not-checked`. Besides no-record, only crusty-unreviewed-commits
 # removes the `crusty-loop` row from phases.tsv and asks for a re-review. An
 # unreadable range does not: re-running crusty cannot deepen a clone or fix
 # git, so step-01b, step-03 and the merge gate block on it instead.
 autodrive_rereview_decision() {
-  local dir="${1:-}" repo="${2:-}" ref="${3:-}" reviewed="" base="" head="" res="" first="" again="false"
+  local dir="${1:-}" repo="${2:-}" ref="${3:-}" reviewed="" base="" head="" res="" first="" again="false" rec=""
+  # #2628: no crusty record at all (a new or emptied state dir) runs Crusty,
+  # which records and posts its verdict; a missing file never blocks or skips.
+  rec="${dir%/}/crusty-records.tsv"
+  if [ -n "$dir" ] && [ -d "$dir" ] && [ ! -L "$dir" ] && [ ! -L "$rec" ] \
+    && { [ ! -e "$rec" ] || { [ -f "$rec" ] && ! grep -q '[^[:space:]]' "$rec" 2>/dev/null; }; }; then
+    if autodrive_clear_phase "$dir" "crusty-loop"; then
+      printf '{"rereview":"true","range":"no-record","first_unreviewed_sha":"","base_sha":""}\n'
+    else
+      echo "ERROR: could not clear the crusty-loop phase in the state dir; crusty is not run and criterion 3 stays unmet." >&2
+      printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
+    fi
+    return 0
+  fi
   if ! reviewed="$(autodrive_crusty_final "$dir" 2>/dev/null)"; then
     printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
+    return 0
+  fi
+  # #2575 B1: a clean record whose verdict was never read back on the PR
+  # (autodrive_crusty_posted.sh) is no record: Crusty runs and posts again.
+  rec="${dir%/}/crusty-verdict-posted.txt"
+  if [ -L "$rec" ] || [ ! -f "$rec" ] || ! grep -Eqx "(CLEAN|MINOR_ONLY) ${reviewed}" "$rec" 2>/dev/null; then
+    if autodrive_clear_phase "$dir" "crusty-loop"; then
+      printf '{"rereview":"true","range":"no-record","first_unreviewed_sha":"","base_sha":""}\n'
+    else
+      echo "ERROR: could not clear the crusty-loop phase in the state dir; crusty is not run and criterion 3 stays unmet." >&2
+      printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
+    fi
     return 0
   fi
   base="$(autodrive_base_sha "$repo" "$ref")" || base=""
@@ -257,46 +289,6 @@ autodrive_qa_evidence_sha() {
   printf '%s\n' "$h"
 }
 
-# autodrive_qa_trusted <state_dir> <record_copy> <qa_copy> <head_sha> -> `ok`
-# or the token of the first check that failed:
-#
-#   qa-manifest-missing   merge-ready-records.tsv absent, a symlink, or its last
-#                         row malformed (file name ^merge-ready-[A-Za-z0-9._-]+\.json$)
-#   qa-record-modified    record_copy's hash differs from the manifest hash, or it
-#                         is not one line starting with {"merge_ready_verdict":",
-#                         or it lacks one 40- or 64-hex qa_evidence_sha
-#   qa-evidence-modified  qa_copy's hash differs from qa_evidence_sha
-#   qa-evidence-stale     qa_copy's one head_sha is not <head_sha>
-#
-# record_copy and qa_copy are the caller's private copies; they are hashed and
-# parsed as given and the originals are never re-read, so what the caller
-# reads afterwards is what was verified. The manifest is read once.
-autodrive_qa_trusted() {
-  local -x LC_ALL=C
-  local dir="${1:-}" rec="${2:-}" qa="${3:-}" head="${4:-}" row="" want="" qsha="" qhead=""
-  row="$(autodrive_manifest_row "$dir" merge-ready)" || { printf 'qa-manifest-missing\n'; return 1; }
-  want="${row#* }"
-  if [ -z "$rec" ] || [ ! -f "$rec" ] \
-     || [ "$(autodrive_blob_hash "$dir" < "$rec")" != "$want" ] \
-     || [ "$(awk 'END { print NR }' "$rec")" != "1" ] \
-     || ! grep -q '^{"merge_ready_verdict":"' "$rec" \
-     || [ "$(grep -o '"qa_evidence_sha":' "$rec" | wc -l | tr -d ' ')" != "1" ]; then
-    printf 'qa-record-modified\n'; return 1
-  fi
-  qsha="$(sed -n 's/.*"qa_evidence_sha":"\([^"]*\)".*/\1/p' "$rec")"
-  autodrive_is_sha "$qsha" || { printf 'qa-record-modified\n'; return 1; }
-  if [ -z "$qa" ] || [ ! -f "$qa" ] || [ "$(autodrive_blob_hash "$dir" < "$qa")" != "$qsha" ]; then
-    printf 'qa-evidence-modified\n'; return 1
-  fi
-  if [ "$(grep -o '"head_sha":' "$qa" | wc -l | tr -d ' ')" = "1" ]; then
-    qhead="$(sed -n 's/.*"head_sha":"\([^"]*\)".*/\1/p' "$qa")"
-  fi
-  if ! autodrive_is_sha "$head" || [ "$qhead" != "$head" ]; then
-    printf 'qa-evidence-stale\n'; return 1
-  fi
-  printf 'ok\n'
-}
-
 # --- per-scenario results (D6) ---------------------------------------------
 
 # autodrive_scenario_results <list> -> the gadugi_scenario_results field.
@@ -322,35 +314,36 @@ autodrive_scenario_results() {
 }
 
 # --- criterion 1: where gadugi-test is required ----------------------------
-#
-# Criterion 1 follows qa-team's repo-type table
-# (amplifier-bundle/skills/qa-team/SKILL.md, "Repo-Type Detection"). Only a
-# Node repository runs its scenarios with gadugi-agentic-test. A Rust CLI
-# repository substitutes `cargo test` and does not require gadugi, and a
-# Python repository, including a root that also has package.json (#1516),
-# runs `pytest`. #1517 asked for this rule. Every auto-drive step that
-# decides whether gadugi-test is needed asks the functions below and nothing
-# else: auto-drive's first step, merge round step-00, the qa evidence tool
-# and the merge gate. None needs autodrive_state.sh.
+# qa-team's repo-type table (skills/qa-team/SKILL.md, "Repo-Type Detection",
+# #1517): only Node runs gadugi-agentic-test; Rust CLI substitutes `cargo
+# test`, Python (even beside package.json, #1516) `pytest`. Every step that
+# asks whether gadugi-test is needed (auto-drive's first step, merge round
+# step-00, the evidence tool) asks the functions below only.
 
-# The QA target lives in autodrive_qa_scope.sh, loaded only from the physical
-# directory of this file, only when it is a regular file and not a symlink.
-# _AD_SCOPE_OK is set only when it loaded. Without it autodrive_qa_target says
-# `unknown .` and autodrive_gadugi_required says true, so a broken install
-# blocks and never passes.
-_AD_SCOPE_OK=""
+# The QA target lives in autodrive_qa_scope.sh, then the qa.toml reader in
+# autodrive_qa_sources.sh, each loaded only from the physical directory of this
+# file and only when it is a regular file and not a symlink. _AD_SCOPE_OK and
+# _AD_SOURCES_OK are set only when they loaded; functions a caller defined
+# under the sources' names are dropped first (S6). Without the scope file
+# autodrive_qa_target says `unknown .` and autodrive_gadugi_required says
+# true; without the sources no declaration counts. A broken install blocks.
+_AD_SCOPE_OK=""; _AD_SOURCES_OK=""
+builtin unset -f autodrive_qa_config autodrive_qa_declaration autodrive_qa_lifting_declaration autodrive_qa_report
 _ad_scope="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || _ad_scope=""
+_ad_src="${_ad_scope:+${_ad_scope}/autodrive_qa_sources.sh}"
 _ad_scope="${_ad_scope:+${_ad_scope}/autodrive_qa_scope.sh}"
 # shellcheck source=autodrive_qa_scope.sh
 if [ -n "$_ad_scope" ] && [ -f "$_ad_scope" ] && [ ! -L "$_ad_scope" ] && . "$_ad_scope"; then
   _AD_SCOPE_OK="1"
+  # shellcheck source=autodrive_qa_sources.sh
+  if [ -n "$_ad_src" ] && [ -f "$_ad_src" ] && [ ! -L "$_ad_src" ] && . "$_ad_src"; then _AD_SOURCES_OK="1"; fi
 else
   autodrive_qa_target() { printf 'unknown\t.\n'; }
   # Nothing was measured, so nothing is documentation-only: `unknown` is not
   # `true`, and autodrive_gadugi_required refuses before it asks in any case.
   autodrive_qa_docs_only() { printf 'unknown\n'; }
 fi
-unset _ad_scope
+unset _ad_scope _ad_src
 
 # autodrive_repo_type <dir> -> rust-cli, node, python or unknown: the type
 # autodrive_qa_target chose, with unresolved reported as unknown.
@@ -363,22 +356,21 @@ autodrive_repo_type() {
 # autodrive_gadugi_required <dir> -> true or false. The result is true when
 # the operator sets AUTODRIVE_QA_SCENARIO_DIR in the environment (gadugi
 # scenarios in any repository type), when the scope helper did not load, when
-# the chosen project is Node, and when the choice is unresolved and any
-# candidate directory is a Node project (_autodrive_qa_needs_gadugi).
-# Otherwise it is false.
+# the merge base is unknown, when the chosen project is Node, and when the
+# choice is unresolved and any candidate directory is a Node project
+# (_autodrive_qa_needs_gadugi). Otherwise it is false.
 #
-# One exception, issue #2219: a pull request that changes documentation and
-# nothing else does not need a gadugi scenario, because it changes no
-# user-facing surface for one to drive. autodrive_qa_docs_only decides that,
-# so the answer is a measurement and not an agent's reading of the diff
-# (#1517, #1518), and the merge round and the merge gate read the same
-# function and cannot disagree.
+# Two exceptions. #2219: a pull request that changes documentation and nothing
+# else changes no user-facing surface for a scenario to drive
+# (autodrive_qa_docs_only, a measurement, not an agent's reading of the diff).
+# #2458: where detection says true, a declaration other than `none` from the
+# base branch's qa.toml (autodrive_qa_declaration) says how criterion 1 is met
+# instead. The merge round reads these same functions.
 #
-# Precedence, all fail-closed. The operator's AUTODRIVE_QA_SCENARIO_DIR and a
-# scope helper that did not load are both tested FIRST and both still force
-# true; `unknown` is not `true`. The exemption narrows what evidence criterion
-# 1 requires and nothing else: the repository's own suite, CI, crusty review
-# and every other criterion still apply.
+# Precedence, all fail-closed: the scenario directory and a missing scope
+# helper first (true); then docs-only (false); then detection; then the
+# declaration, which only counts when autodrive_qa_sources.sh loaded here.
+# The exemptions narrow what evidence criterion 1 requires and nothing else.
 autodrive_gadugi_required() {
   if [ -n "${AUTODRIVE_QA_SCENARIO_DIR:-}" ] || [ -z "${_AD_SCOPE_OK:-}" ] \
      || ! declare -F _autodrive_qa_needs_gadugi >/dev/null; then
@@ -386,9 +378,12 @@ autodrive_gadugi_required() {
   elif declare -F autodrive_qa_docs_only >/dev/null \
        && [ "$(autodrive_qa_docs_only "${1:-.}")" = "true" ]; then
     printf 'false\n'
-  elif _autodrive_qa_needs_gadugi "${1:-.}"; then
-    printf 'true\n'
-  else
+  elif ! _autodrive_qa_needs_gadugi "${1:-.}"; then
     printf 'false\n'
+  elif [ -n "${_AD_SOURCES_OK:-}" ] && declare -F autodrive_qa_declaration >/dev/null \
+       && case "$(autodrive_qa_declaration "${1:-.}")" in multi-area-command|ci-job:?*) true ;; *) false ;; esac; then
+    printf 'false\n'
+  else
+    printf 'true\n'
   fi
 }

@@ -41,9 +41,6 @@ const SUBSTANTIAL_PROMPT: &str = "Implement complete hook parity. Do not regress
 
 const ORIGINAL_REQUEST_HEADING: &str = "## 🎯 ORIGINAL USER REQUEST - PRESERVE THESE REQUIREMENTS";
 
-const NO_ROOT_MESSAGE: &str =
-    "Pre-compact state not saved: no amplihack state root (set HOME or AMPLIHACK_HOME)";
-
 // ---------------------------------------------------------------------------
 // Fixture
 // ---------------------------------------------------------------------------
@@ -84,6 +81,7 @@ impl Fixture {
 
         let mut env = vec![
             EnvVarGuard::unset("AMPLIHACK_RECIPE_RUN_ID"),
+            EnvVarGuard::unset("AMPLIHACK_STEP_ID"),
             EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH"),
             EnvVarGuard::unset("AMPLIHACK_ROOT"),
             EnvVarGuard::unset("AMPLIHACK_GRAPH_DB_PATH"),
@@ -570,10 +568,7 @@ fn hostile_session_ids_stay_inside_sessions_dir() {
 
         bash(Some(id));
         let out = pre_compact(Some(id), Some(&transcript), json!({}));
-        assert_eq!(
-            out["hookSpecificOutput"]["status"], "success",
-            "id {id:?}: {out}"
-        );
+        assert_eq!(out, json!({}), "id {id:?}: {out}");
         classify(Some(id), None, "Build a login page for the admin area");
 
         let keys = assert_all_under_sessions(&fx.state_root());
@@ -683,6 +678,42 @@ fn amplihack_home_with_parent_component_falls_back_to_home_dot_amplihack() {
     assert_unchanged(fx.project(), &before, "the metric write");
 }
 
+/// #2361: an `AMPLIHACK_HOME` that is a Git checkout (the `-w` checkout of a
+/// recipe run) is skipped; the state goes to `$HOME/.amplihack` and the
+/// checkout's index and working tree are unchanged.
+#[test]
+fn checkout_amplihack_home_falls_through_to_home_dot_amplihack() {
+    let base = scratch_base::scratch_base();
+    let checkout = tempfile::tempdir_in(&base).unwrap();
+    git(
+        checkout.path(),
+        &["-c", "init.defaultBranch=main", "init", "-q"],
+    );
+    let fx = Fixture::with_root(Root::HomeAndAmplihackHome(checkout.path().to_path_buf()));
+    let before = snapshot(checkout.path());
+
+    bash(Some("checkout-1"));
+
+    assert!(
+        fx.session("checkout-1")
+            .join("metrics/post_tool_use_metrics.jsonl")
+            .exists(),
+        "the metric must land under $HOME/.amplihack"
+    );
+    assert!(!checkout.path().join("runtime").exists());
+    assert_unchanged(checkout.path(), &before, "the metric write");
+    let status = git(
+        checkout.path(),
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ],
+    );
+    assert_eq!(status, "", "post-tool-use dirtied the checkout:\n{status}");
+}
+
 fn parent_component_path() -> PathBuf {
     scratch_base::scratch_base()
         .join("x")
@@ -723,7 +754,7 @@ fn no_root_post_tool_use_writes_nothing_and_succeeds() {
 }
 
 #[test]
-fn no_root_pre_compact_returns_exact_success_shape() {
+fn no_root_pre_compact_prints_empty_object() {
     let fx = Fixture::with_root(Root::None);
     let transcript = fx.project().join("input.jsonl");
     fs::write(&transcript, "{\"role\":\"user\",\"content\":\"hello\"}\n").unwrap();
@@ -735,34 +766,19 @@ fn no_root_pre_compact_returns_exact_success_shape() {
         json!({"conversation": [{"role": "user", "content": SUBSTANTIAL_PROMPT}]}),
     );
 
-    assert_eq!(
-        out,
-        json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreCompact",
-                "status": "success",
-                "message": NO_ROOT_MESSAGE,
-                "transcript_path": null,
-                "metadata": null,
-            }
-        })
-    );
-    let object = out["hookSpecificOutput"].as_object().unwrap();
-    assert!(object.contains_key("transcript_path") && object.contains_key("metadata"));
+    assert!(out.get("hookSpecificOutput").is_none(), "{out}");
+    assert_eq!(out, json!({}));
     assert_unchanged(fx.project(), &before, "pre-compact with no state root");
 }
 
 #[test]
-fn no_root_pre_compact_without_session_id_returns_same_shape() {
+fn no_root_pre_compact_without_session_id_prints_empty_object() {
     let fx = Fixture::with_root(Root::None);
     let before = snapshot(fx.project());
 
     let out = pre_compact(None, None, json!({}));
 
-    assert_eq!(out["hookSpecificOutput"]["status"], "success");
-    assert_eq!(out["hookSpecificOutput"]["message"], NO_ROOT_MESSAGE);
-    assert!(out["hookSpecificOutput"]["transcript_path"].is_null());
-    assert!(out["hookSpecificOutput"]["metadata"].is_null());
+    assert_eq!(out, json!({}));
     assert_unchanged(fx.project(), &before, "pre-compact with no state root");
 }
 
@@ -1107,32 +1123,22 @@ fn pre_compact_exports_transcript_and_metadata_under_session_logs() {
 
     let out = pre_compact(Some("pc-1"), Some(&transcript), json!({"trigger": "auto"}));
 
-    let output = &out["hookSpecificOutput"];
-    assert_eq!(output["status"], "success", "{out}");
+    assert!(out.get("hookSpecificOutput").is_none(), "{out}");
+    assert_eq!(out, json!({}));
     let logs = fx.session("pc-1").join("logs");
     let exported = logs.join("transcript_pre_compact.jsonl");
-    assert_eq!(
-        output["transcript_path"].as_str(),
-        Some(exported.to_string_lossy().as_ref()),
-        "transcript_path reports the new location"
-    );
     assert_eq!(fs::read_to_string(&exported).unwrap(), body);
-    assert!(
-        output["message"]
-            .as_str()
-            .unwrap()
-            .contains(exported.to_string_lossy().as_ref())
-    );
-    assert_eq!(
-        output["metadata"]["transcript_path"].as_str(),
-        Some(exported.to_string_lossy().as_ref())
-    );
-    assert_eq!(output["metadata"]["compaction_trigger"], "auto");
 
     let lines = jsonl(&logs.join("compaction_metadata.jsonl"));
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["event"], "pre_compact");
     assert_eq!(lines[0]["session_id"], "pc-1");
+    assert_eq!(
+        lines[0]["transcript_path"].as_str(),
+        Some(exported.to_string_lossy().as_ref()),
+        "the metadata record keeps the transcript's new location"
+    );
+    assert_eq!(lines[0]["compaction_trigger"], "auto");
 
     assert_unchanged(fx.project(), &before, "pre-compact");
 }
@@ -1151,12 +1157,10 @@ fn pre_compact_saves_original_request_under_session_logs() {
         }),
     );
 
-    assert_eq!(out["hookSpecificOutput"]["status"], "success");
-    assert_eq!(
-        out["hookSpecificOutput"]["metadata"]["original_request_preserved"],
-        true
-    );
+    assert_eq!(out, json!({}));
     let logs = fx.session("pc-2").join("logs");
+    let lines = jsonl(&logs.join("compaction_metadata.jsonl"));
+    assert_eq!(lines.last().unwrap()["original_request_preserved"], true);
     assert!(logs.join("ORIGINAL_REQUEST.md").exists());
     assert_eq!(
         read_json(&logs.join("original_request.json"))["session_id"],
@@ -1182,10 +1186,9 @@ fn pre_compact_original_request_from_transcript_lands_under_session_logs() {
 
     let out = pre_compact(Some("pc-3"), Some(&transcript), Value::Null);
 
-    assert_eq!(
-        out["hookSpecificOutput"]["metadata"]["original_request_preserved"],
-        true
-    );
+    assert_eq!(out, json!({}));
+    let lines = jsonl(&fx.session("pc-3").join("logs/compaction_metadata.jsonl"));
+    assert_eq!(lines.last().unwrap()["original_request_preserved"], true);
     assert!(fx.session("pc-3").join("logs/ORIGINAL_REQUEST.md").exists());
     assert_unchanged(fx.project(), &before, "pre-compact");
 }
@@ -1197,7 +1200,7 @@ fn pre_compact_without_session_id_uses_generated_key() {
 
     let out = pre_compact(None, None, json!({}));
 
-    assert_eq!(out["hookSpecificOutput"]["status"], "success");
+    assert_eq!(out, json!({}));
     let keys = assert_all_under_sessions(&fx.state_root());
     assert_eq!(keys.len(), 1, "{keys:?}");
     let key = &keys[0];
@@ -1214,8 +1217,9 @@ fn pre_compact_without_session_id_uses_generated_key() {
     assert_unchanged(fx.project(), &before, "pre-compact");
 }
 
-/// Only the no-root case reports success with null fields. A failed write
-/// under a resolved root is still an error, as before.
+/// A failed write under a resolved root is still an error, as before. The hook
+/// shows it with the common `systemMessage` field only, never with
+/// `hookSpecificOutput`, which Claude Code rejects for PreCompact.
 #[test]
 fn pre_compact_write_failure_under_resolved_root_is_an_error() {
     let fx = Fixture::new();
@@ -1226,15 +1230,17 @@ fn pre_compact_write_failure_under_resolved_root_is_an_error() {
     let before = snapshot(fx.project());
 
     let with_transcript = pre_compact(Some("pc-fail"), Some(&transcript), json!({}));
-    assert_eq!(
-        with_transcript["hookSpecificOutput"]["status"], "error",
-        "{with_transcript}"
-    );
-
     let metadata_only = pre_compact(Some("pc-fail"), None, json!({}));
-    assert_eq!(
-        metadata_only["hookSpecificOutput"]["status"], "error",
-        "{metadata_only}"
+    for out in [&with_transcript, &metadata_only] {
+        let object = out.as_object().expect("an object");
+        assert!(object.get("hookSpecificOutput").is_none(), "{out}");
+        assert_eq!(object.len(), 1, "{out}");
+        assert!(object["systemMessage"].is_string(), "{out}");
+    }
+    assert!(
+        !fx.session("pc-fail")
+            .join("logs/compaction_metadata.jsonl")
+            .exists()
     );
 
     assert_unchanged(fx.project(), &before, "a failed pre-compact");

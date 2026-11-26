@@ -29,6 +29,176 @@ fn fixture() -> (tempfile::TempDir, PathBuf, ProfileStore) {
     (d, source, store)
 }
 
+fn numbered_files(dir: &Path, count: usize) {
+    fs::create_dir_all(dir).unwrap();
+    for i in 0..count {
+        fs::write(dir.join(format!("{i}.md")), format!("skill {i}\n")).unwrap();
+    }
+}
+
+/// Issue #2522: Claude Code's per-account skill cache can hold more entries
+/// than the whole copy budget, which used to make `profile add` fail. Both
+/// caches are now skipped before they are inspected, copied or counted, while
+/// user-owned assets are still copied and the source keeps its caches.
+#[test]
+fn issue_2522_account_skill_caches_are_omitted_and_sources_preserved() {
+    let (_d, source, store) = fixture();
+    numbered_files(&source.join("skills/synced"), 5_001);
+    numbered_files(&source.join("skills/.trash"), 3);
+    let included = [
+        ("skills/review/SKILL.md", b"review\n".as_slice()),
+        ("skills/build/SKILL.md", b"build\n".as_slice()),
+        ("agents/reviewer.md", b"reviewer\n".as_slice()),
+    ];
+    for (relative, bytes) in included {
+        fs::create_dir_all(source.join(relative).parent().unwrap()).unwrap();
+        fs::write(source.join(relative), bytes).unwrap();
+    }
+
+    let profile = store
+        .add(&n("work"))
+        .expect("excluded caches use no copy budget");
+
+    for (relative, bytes) in included {
+        assert_eq!(fs::read(profile.join(relative)).unwrap(), bytes);
+        assert_eq!(fs::read(source.join(relative)).unwrap(), bytes);
+    }
+    for (relative, count) in [("skills/synced", 5_001), ("skills/.trash", 3)] {
+        assert_eq!(
+            fs::symlink_metadata(profile.join(relative))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound,
+            "excluded path {relative} must not be created"
+        );
+        assert_eq!(
+            fs::read_dir(source.join(relative)).unwrap().count(),
+            count,
+            "excluded path {relative} must be left alone in the source"
+        );
+    }
+}
+
+/// The exclusion is two exact, case-sensitive paths, not a name match, so
+/// everything else a user owns keeps being copied.
+#[test]
+fn issue_2522_exclusions_match_only_the_two_exact_skill_paths() {
+    let (_d, source, store) = fixture();
+    let included = [
+        "agents/synced/agent.md",
+        "agents/.trash/agent.md",
+        "commands/synced/command.md",
+        "output-styles/.trash/style.md",
+        "rules/synced/rule.md",
+        "skills/custom/.trash/SKILL.md",
+        "skills/custom/synced/SKILL.md",
+        "skills/synced-custom/SKILL.md",
+        "skills/.trash-custom/SKILL.md",
+    ];
+    for relative in included {
+        fs::create_dir_all(source.join(relative).parent().unwrap()).unwrap();
+        fs::write(source.join(relative), relative).unwrap();
+    }
+    for relative in ["skills/synced", "skills/.trash"] {
+        fs::create_dir_all(source.join(relative)).unwrap();
+    }
+
+    let profile = store.add(&n("work")).unwrap();
+
+    for relative in included {
+        assert_eq!(
+            fs::read(profile.join(relative)).unwrap(),
+            relative.as_bytes()
+        );
+    }
+    for relative in ["skills/synced", "skills/.trash"] {
+        assert!(fs::symlink_metadata(profile.join(relative)).is_err());
+        assert!(source.join(relative).is_dir());
+    }
+}
+
+/// The budget counts directory entries as well as files, so an excluded
+/// directory entry that still consumed one would move this boundary.
+#[test]
+fn issue_2522_excluded_directory_entries_do_not_consume_the_exact_5000_budget() {
+    let (_d, source, store) = fixture();
+    // 2,499 agent files + the custom directory entry + 2,500 skill files.
+    numbered_files(&source.join("agents"), 2_499);
+    numbered_files(&source.join("skills/custom"), 2_500);
+    for relative in ["skills/synced", "skills/.trash"] {
+        fs::create_dir_all(source.join(relative)).unwrap();
+    }
+
+    let profile = store
+        .add(&n("work"))
+        .expect("exactly 5,000 included entries fit");
+
+    assert_eq!(fs::read_dir(profile.join("agents")).unwrap().count(), 2_499);
+    assert_eq!(
+        fs::read_dir(profile.join("skills/custom")).unwrap().count(),
+        2_500
+    );
+    assert_eq!(fs::read_dir(profile.join("skills")).unwrap().count(), 1);
+}
+
+/// No CI target builds for a non-Unix platform, so the portable walker that
+/// those platforms seed with is compiled under `cfg(test)` and driven directly
+/// here, where the descriptor-relative walker would otherwise be the only one
+/// any test reaches.
+///
+/// Two phases over one tree. First: the same two paths are excluded, without
+/// charging the budget, while a user-owned sibling is copied. Then the 5,001
+/// excluded entries are renamed into a folder that is not excluded, and the
+/// sibling removed, so the same walker overruns the budget on a tree whose
+/// shape is known: `skills` charges only the `vendored` entry, and
+/// `skills/vendored` charges the 5,000 files that reach the limit. Rolling the
+/// half-written profile back belongs to `ProfileStore::add`, not to either
+/// walker, and is asserted by
+/// `excessive_entry_count_fails_closed_and_names_the_folders_that_spent_it`.
+#[test]
+fn issue_2522_portable_walker_excludes_the_caches_and_charges_the_rest() {
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    let included = d.path().join("profile-included");
+    numbered_files(&source.join("skills/synced"), 5_001);
+    numbered_files(&source.join("skills/.trash"), 3);
+    fs::create_dir_all(source.join("skills/custom")).unwrap();
+    fs::write(source.join("skills/custom/SKILL.md"), b"custom\n").unwrap();
+    fs::create_dir_all(&included).unwrap();
+
+    super::store::portable_seed_shared_assets(&source, &included)
+        .expect("excluded caches use no copy budget");
+
+    assert_eq!(
+        fs::read(included.join("skills/custom/SKILL.md")).unwrap(),
+        b"custom\n"
+    );
+    for relative in ["skills/synced", "skills/.trash"] {
+        assert!(fs::symlink_metadata(included.join(relative)).is_err());
+        assert!(source.join(relative).is_dir());
+    }
+
+    fs::rename(source.join("skills/synced"), source.join("skills/vendored")).unwrap();
+    fs::remove_dir_all(source.join("skills/custom")).unwrap();
+    let overrun = d.path().join("profile-overrun");
+    fs::create_dir_all(&overrun).unwrap();
+
+    let error = super::store::portable_seed_shared_assets(&source, &overrun).unwrap_err();
+
+    let ProfileError::SharedAssetLimit(detail) = error else {
+        panic!("expected an entry-limit error, got {error:?}");
+    };
+    let vendored = format!("{:?}", Path::new("skills").join("vendored"));
+    assert_eq!(
+        detail,
+        format!(
+            "more than 5000 entries; charged before stopping: \
+             {vendored} 5000, \"skills\" 1"
+        )
+    );
+    assert!(fs::symlink_metadata(overrun.join("skills/.trash")).is_err());
+}
+
 #[test]
 fn credentials_history_and_state_are_never_copied() {
     let (_d, source, store) = fixture();
@@ -234,17 +404,39 @@ fn excessive_depth_fails_closed_and_rolls_back() {
     assert!(!store.root().join("work").exists());
 }
 
+/// The budget is aggregate, so no single folder here exceeds it and the folder
+/// holding the 5,001st entry is simply where the walk stopped. The diagnostic
+/// therefore names the folders that spent the budget, largest first, at the
+/// granularity of one subtree of one allowlisted directory: `skills/vendored`,
+/// which a user can move or delete, rather than `skills`, which they cannot.
+/// Walk order is `agents`, `commands`, `output-styles`, `rules`, `skills`, so
+/// the counts below are fixed: the first four folders are walked whole, and
+/// `skills` is cut short at the limit after its `vendored` entry (1) and 1,500
+/// of that subtree's 1,600 files.
 #[test]
-fn excessive_entry_count_fails_closed_and_rolls_back() {
+fn excessive_entry_count_fails_closed_and_names_the_folders_that_spent_it() {
     let (_d, source, store) = fixture();
-    fs::create_dir_all(source.join("commands")).unwrap();
-    for i in 0..5_100 {
-        fs::write(source.join(format!("commands/c{i}.md")), "x").unwrap();
-    }
-    assert!(matches!(
-        store.add(&n("work")),
-        Err(ProfileError::SharedAssetLimit(_))
-    ));
+    numbered_files(&source.join("agents"), 1_400);
+    numbered_files(&source.join("commands"), 1_300);
+    numbered_files(&source.join("output-styles"), 600);
+    numbered_files(&source.join("rules"), 200);
+    numbered_files(&source.join("skills/vendored"), 1_600);
+
+    let error = store.add(&n("work")).unwrap_err();
+
+    let ProfileError::SharedAssetLimit(detail) = error else {
+        panic!("expected an entry-limit error, got {error:?}");
+    };
+    // `output-styles` 600, `rules` 200 and `skills` 1 are the three folders
+    // past the three named.
+    let vendored = format!("{:?}", Path::new("skills").join("vendored"));
+    assert_eq!(
+        detail,
+        format!(
+            "more than 5000 entries; charged before stopping: \
+             {vendored} 1500, \"agents\" 1400, \"commands\" 1300, and 3 more"
+        )
+    );
     assert!(!store.root().join("work").exists());
 }
 

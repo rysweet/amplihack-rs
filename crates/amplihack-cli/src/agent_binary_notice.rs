@@ -272,17 +272,52 @@ fn tmux_server_holds_marker(
 /// the marker, and the run goes on.
 const TMUX_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The wait one `tmux show-environment` gets: `None` means "until it exits".
+///
+/// Always [`TMUX_QUERY_TIMEOUT`] in a release build. In a debug build a test
+/// that set `AMPLIHACK_TEST_PROBE_WAIT=exit` gets `None`, so that a stub
+/// `tmux` on a busy host is waited for and not read as a server that does not
+/// hold the marker (issue #2931). The unit tests of this module get `None`
+/// too: each asks a stand-in script it wrote a moment before, and on macOS
+/// the first start of a new script can take longer than the limit.
+/// [`tmux_holds_within`] takes the limit as an argument, and one test gives
+/// it both.
+fn tmux_query_limit() -> Option<Duration> {
+    if cfg!(test) {
+        return None;
+    }
+    #[cfg(debug_assertions)]
+    if amplihack_utils::launch_target::test_waits_for_exit() {
+        return None;
+    }
+    Some(TMUX_QUERY_TIMEOUT)
+}
+
 /// Whether `tmux show-environment -g <variable>` prints `<variable>=<value>`.
 ///
 /// Inside a tmux pane the client finds the server through `$TMUX`. Any failure
 /// -- no tmux binary, no server, a timeout, an unset or removed variable --
 /// is `false`: nothing then suggests the marker came from the server.
 fn tmux_global_environment_holds(tmux: &OsStr, variable: &str, value: &OsStr) -> bool {
+    tmux_holds_within(tmux, variable, value, tmux_query_limit())
+}
+
+/// [`tmux_global_environment_holds`] with the wait given: `Some(limit)` gives
+/// up at the limit, `None` waits for `tmux` to exit.
+fn tmux_holds_within(tmux: &OsStr, variable: &str, value: &OsStr, limit: Option<Duration>) -> bool {
     let mut command = Command::new(tmux);
     command
         .args(["show-environment", "-g", variable])
         .stdin(Stdio::null());
-    let Ok(output) = crate::util::run_output_with_timeout(command, TMUX_QUERY_TIMEOUT) else {
+    let answer = match limit {
+        Some(limit) => crate::util::run_output_with_timeout(command, limit),
+        None => command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(anyhow::Error::from),
+    };
+    let Ok(output) = answer else {
         return false;
     };
     if !output.status.success() {
@@ -557,7 +592,7 @@ fn handed_on_tmux_server_marker_notice(lead: &str, marker: SessionMarker) -> Str
 mod tests {
     use super::{
         EnvBinaryValue, Reporter, agent_binary_notice, answer_from_tmux_server_marker,
-        tmux_global_environment_holds, tmux_server_holds_marker,
+        tmux_global_environment_holds, tmux_holds_within, tmux_server_holds_marker,
     };
     use amplihack_utils::agent_binary::{
         Resolution, ResolutionSource, SessionMarker, UnusableContext,
@@ -873,12 +908,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_tmux_server_holds_a_marker_only_with_the_same_value() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
+        // Written by the shared stub writer, which never holds the file open
+        // for writing in this process. A stub written here with
+        // `std::fs::write` can be inherited open by a sibling test's fork and
+        // then fail to run ("text file busy"), which reads as `false`.
         let stub = |name: &str, body: &str| {
             let path = dir.path().join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::test_support::write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
             path
         };
         // Echoes its arguments' variable back as tmux does for a set one.
@@ -919,6 +956,64 @@ mod tests {
         ));
     }
 
+    /// Issue #2931: what ends the query is an input. With no limit a `tmux`
+    /// that answers late is still heard; with a limit one that never answers
+    /// is given up on. The stand-in blocks on a named pipe, so the first case
+    /// is decided by the write that releases it and not by a sleep.
+    #[cfg(unix)]
+    #[test]
+    fn the_tmux_query_waits_for_exit_without_a_limit_and_gives_up_at_one() {
+        let dir = crate::test_support::tempdir_outside_framework_roots();
+        let pipe = dir.path().join("release");
+        let pipe_c = std::ffi::CString::new(pipe.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path and a plain mode.
+        assert_eq!(unsafe { libc::mkfifo(pipe_c.as_ptr(), 0o600) }, 0);
+        let tmux = dir.path().join("waiting-tmux");
+        crate::test_support::write_executable(
+            &tmux,
+            &format!(
+                "#!/bin/sh\nIFS= read -r _ < {}\necho \"$3=1\"\n",
+                crate::test_support::sh_quote(pipe.to_str().unwrap())
+            ),
+        );
+        let value = OsStr::new("1");
+
+        // Opening the pipe for writing blocks until the stand-in has opened
+        // it for reading, so the answer below can only follow a wait for it.
+        let opener = std::thread::spawn({
+            let pipe = pipe.clone();
+            move || std::fs::write(pipe, "go\n").expect("write to the pipe")
+        });
+        assert!(tmux_holds_within(
+            tmux.as_os_str(),
+            "COPILOT_CLI",
+            value,
+            None
+        ));
+        opener.join().expect("the pipe was written");
+
+        // A limit that is not reached changes nothing: the answer is read
+        // through the capture the shipped binary uses. The minute is a
+        // ceiling on a failure, not a wait.
+        let prompt = dir.path().join("prompt-tmux");
+        crate::test_support::write_executable(&prompt, "#!/bin/sh\necho \"$3=1\"\n");
+        assert!(tmux_holds_within(
+            prompt.as_os_str(),
+            "COPILOT_CLI",
+            value,
+            Some(std::time::Duration::from_secs(60))
+        ));
+
+        // Nothing writes to the pipe now: the stand-in never answers, and is
+        // stopped at the limit.
+        assert!(!tmux_holds_within(
+            tmux.as_os_str(),
+            "COPILOT_CLI",
+            value,
+            Some(std::time::Duration::from_millis(50))
+        ));
+    }
+
     /// Crusty round 2 of #1490: Claude Code sets `CLAUDECODE=1` in every
     /// session, so a Claude Code session in a pane of a server another one
     /// started was told its marker "may come from whatever started the
@@ -930,19 +1025,21 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_amplihack_launch_is_told_from_the_servers_starter_by_its_nonce() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let tmux = dir.path().join("from-amplihack-copilot");
-        std::fs::write(
+        // Written by the shared stub writer, which never holds the file
+        // open for writing in this process. A stub written here with
+        // `std::fs::write` can be inherited open by a sibling test's fork and
+        // then fail to run ("text file busy"), which reads as `false` and
+        // made this test fail under the full suite (issue #1973).
+        crate::test_support::write_executable(
             &tmux,
             "#!/bin/sh\n[ \"$1 $2\" = \"show-environment -g\" ] || exit 2\n\
              case \"$3\" in\n\
              COPILOT_CLI) echo COPILOT_CLI=1 ;;\n\
              AMPLIHACK_SESSION_NONCE) echo AMPLIHACK_SESSION_NONCE=starter-nonce ;;\n\
              *) echo \"unknown variable: $3\" >&2; exit 1 ;;\nesac\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let copilot = SessionMarker {
             variable: "COPILOT_CLI",
             binary: "copilot",
@@ -972,8 +1069,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_claude_session_is_told_from_the_servers_starter_by_its_session_id() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
+        // The shared stub writer, for the reason given in the nonce test
+        // above: a stub this process writes itself can be left "text file
+        // busy" by a sibling test's fork (issue #1973).
         let server = |name: &str, global_env: &str| {
             let path = dir.path().join(name);
             let body = format!(
@@ -981,8 +1080,7 @@ mod tests {
                  case \"$3\" in\n{global_env}\
                  *) echo \"unknown variable: $3\" >&2; exit 1 ;;\nesac\n"
             );
-            std::fs::write(&path, body).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::test_support::write_executable(&path, &body);
             path
         };
         // Started from a Claude Code session, as crusty's reproduction was.
@@ -1053,17 +1151,17 @@ mod tests {
     #[test]
     fn a_session_tag_the_tmux_server_holds_is_named_like_a_marker() {
         use amplihack_utils::agent_binary::SOURCE_ENV;
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let tmux = dir.path().join("tmux");
-        std::fs::write(
+        // The shared stub writer, for the reason given in the nonce test
+        // above: a stub this process writes itself can be left "text file
+        // busy" by a sibling test's fork (issue #1973).
+        crate::test_support::write_executable(
             &tmux,
             "#!/bin/sh\n[ \"$1 $2 $3\" = \"show-environment -g AMPLIHACK_AGENT_BINARY_SOURCE\" ] \
              && echo AMPLIHACK_AGENT_BINARY_SOURCE=session:codex && exit 0\n\
              echo \"unknown variable: $3\" >&2\nexit 1\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let described = SessionMarker {
             variable: SOURCE_ENV,
             binary: "codex",

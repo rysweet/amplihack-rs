@@ -7,7 +7,6 @@ description: |
   module structure, security defaults, and cost awareness.
   Inspired by awesome-copilot's Terraform and Bicep specialist agents.
 role: "Infrastructure-as-Code planning and generation specialist"
-model: inherit
 triggers:
   - "plan infrastructure"
   - "create terraform"

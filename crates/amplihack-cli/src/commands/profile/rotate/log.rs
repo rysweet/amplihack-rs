@@ -2,7 +2,7 @@
 //! that is rotated once it passes 1 MiB, and the message grammar. Messages
 //! hold only profile names, percentages, phases and fixed text.
 
-use super::decide::{Reading, Reason};
+use super::decide::Reason;
 use crate::commands::profile::auto_switch::kit::euid;
 use crate::commands::profile::usage_cmd::sanitize_display;
 use std::fs;
@@ -190,44 +190,23 @@ pub fn cut(s: &str, max: usize) -> String {
 
 #[path = "log_shown.rs"]
 mod shown;
+#[path = "unreadable_msg.rs"]
+mod unreadable_msg;
+/// Issue #2909: the lines about the rotator's event wake. Read through
+/// `log::wake_msg` rather than re-exported into [`msg`]: the waiter writes
+/// them itself, between cycles, and no cycle builds one.
+#[path = "wake_msg.rs"]
+pub mod wake_msg;
 pub use shown::{Shown, shown, shown_of};
 
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
 pub mod msg {
-    use super::{Reading, Reason, Shown};
+    use super::{Reason, Shown};
     use crate::commands::profile::name::ProfileName;
 
-    /// A percentage as a whole number, rounded down.
-    fn pct(p: f64) -> u64 {
-        if p.is_finite() && p > 0.0 {
-            p.floor() as u64
-        } else {
-            0
-        }
-    }
-
-    /// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
-    /// exhausted shows its stored figures; no session window is `s=0%`, as
-    /// in D1 (#1846), so a weekly-only login never logs a session limit it
-    /// does not have. An unread week is `w=?`, failed `failed`, in flight
-    /// `unknown, still running`.
-    pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
-        if r.still_running {
-            return "unknown, still running".to_string();
-        }
-        let week = |w: Option<f64>| w.map_or_else(|| "?".to_string(), |w| format!("{}%", pct(w)));
-        match r.reading {
-            Reading::Measured { session, .. } => {
-                let s = r.session.unwrap_or(session);
-                format!("s={}%{sep}w={}", pct(s), week(r.week))
-            }
-            Reading::Exhausted { session, week: w } => {
-                let s = session.or(r.session).unwrap_or(0.0);
-                format!("s={}%{sep}w={}", pct(s), week(w.or(r.week)))
-            }
-            Reading::Failed => "failed".to_string(),
-        }
-    }
+    pub(in super::super) use super::shown::{pct, usage};
+    /// Issue #2820: the `unreadable process` lines.
+    pub use super::unreadable_msg::lines as unreadable_lines;
 
     pub fn swap(
         from: &ProfileName,
@@ -275,6 +254,8 @@ pub mod msg {
     pub const LIVE_REFRESHED: &str =
         "refresh: expired login in ~/.claude refreshed; identity read again";
     pub const LIVE_REFRESH_FAILED: &str = "refresh: expired login in ~/.claude not refreshed";
+    /// Issue #2218: the lines about an excluded live or pinned profile.
+    pub use super::shown::excluded::*;
     pub const CHANGED: &str = "skip: state changed during measurement";
     pub const NO_LIVENESS: &str = "skip: cannot see running sessions; no candidates";
     pub const STOPPED: &str = "stop: signal received; cycle abandoned";

@@ -823,6 +823,7 @@ mod note_live_account {
             candidates: Vec::new(),
             skips: Vec::new(),
             sees_sessions: true,
+            unreadable: Vec::new(),
             overflow: Vec::new(),
             pin: PinState::None,
             ignored: Vec::new(),
@@ -830,6 +831,7 @@ mod note_live_account {
             detected_mark: None,
             home_no_oauth: api_key,
             candidate_accounts: Vec::new(),
+            live_excluded: false,
         }
     }
 

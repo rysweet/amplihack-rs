@@ -89,7 +89,9 @@ pub(super) fn alert(
     } else {
         alert_once(out, &mut l, &alert_key(kind, live), t, line);
     }
-    save(ctx, &mut l, CycleOutcome::Alerted, t, None, None)
+    // Issue #2857: this ALERT ends the cycle before it measured the login
+    // left in place, so it records no room.
+    save(ctx, &mut l, CycleOutcome::Alerted, t, None, None, None)
 }
 
 /// The ALERT key kind for a refused swap: its reason, without control

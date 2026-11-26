@@ -38,7 +38,7 @@
 //! follows a symlink, ignores owner and mode, and reads each file on its own.
 //! It never allows anything and decides nothing, and it returns only the
 //! setting's name. The failed-probe stay is a decision, so it uses
-//! [`reachable`] (`observe::decide_measured`).
+//! [`reachable`] (`observe::decide_with`).
 
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, MAX_CLAUDE_JSON, euid, read_bounded_nofollow, writable_by_others,

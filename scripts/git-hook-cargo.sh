@@ -103,19 +103,19 @@
 #      and a failed write never fails the hook.
 set -euo pipefail
 
-unset \
-    GIT_ALTERNATE_OBJECT_DIRECTORIES \
-    GIT_CEILING_DIRECTORIES \
-    GIT_COMMON_DIR \
-    GIT_DIR \
-    GIT_DISCOVERY_ACROSS_FILESYSTEM \
-    GIT_INDEX_FILE \
-    GIT_INDEX_VERSION \
-    GIT_NAMESPACE \
-    GIT_OBJECT_DIRECTORY \
-    GIT_PREFIX \
-    GIT_QUARANTINE_PATH \
-    GIT_WORK_TREE
+# The repository-selecting GIT_* names live in one shell file shared with
+# auto-drive (#2033). It is found from this script's own path, never by asking
+# git, because GIT_DIR may still be set here.
+_git_repo_env="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/amplifier-bundle/tools/git-repo-env.sh"
+if [ ! -f "$_git_repo_env" ] || [ -L "$_git_repo_env" ]; then
+    echo "ERROR: git-repo-env.sh missing or a symlink at $_git_repo_env; refusing to run tests with inherited GIT_* (#2033)" >&2
+    exit 1
+fi
+# shellcheck source-path=SCRIPTDIR/..
+# shellcheck source=amplifier-bundle/tools/git-repo-env.sh
+. "$_git_repo_env"
+amplihack_clear_git_repo_env
+unset _git_repo_env
 
 # Reclaim caches whose directory has not been touched in this many days. cargo
 # writes into the target dir throughout a build, so an untouched-for-days

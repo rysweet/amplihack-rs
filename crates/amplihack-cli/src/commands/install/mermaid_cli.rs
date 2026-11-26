@@ -66,12 +66,10 @@ pub(super) enum Outcome {
 /// child's stdout/stderr are discarded via `Stdio::null()` — this both keeps
 /// the install console quiet and avoids allocating/reading capture pipes.
 /// `configure` runs last, just before the spawn; production passes a no-op.
-fn version_probe_succeeds(bin: &str, configure: &dyn Fn(&mut Command)) -> bool {
-    version_probe_succeeds_within(bin, configure, VERSION_PROBE_TIMEOUT)
-}
-
-/// [`version_probe_succeeds`] with the time limit as a parameter, so a test
-/// whose subject is not the limit can allow a loaded host more time.
+///
+/// The time limit is a parameter, so a test whose subject is not the limit
+/// can allow a loaded host more time. Production passes
+/// [`VERSION_PROBE_TIMEOUT`] (see [`ensure_mermaid_cli`]).
 fn version_probe_succeeds_within(
     bin: &str,
     configure: &dyn Fn(&mut Command),
@@ -92,13 +90,26 @@ fn version_probe_succeeds_within(
 /// `Ok` — a missing/broken mmdc must never block `amplihack install`. See the
 /// module docs for the full decision flow.
 pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
-    ensure_mermaid_cli_with(&|_| {})
+    ensure_mermaid_cli_with(&|_| {}, VERSION_PROBE_TIMEOUT)
 }
 
 /// [`ensure_mermaid_cli`] with `configure` applied to every child (both
-/// probes, the install and the re-probe) just before it is spawned. Tests use
-/// it to give each child its own PATH and HOME (issue #1765).
-pub(super) fn ensure_mermaid_cli_with(configure: &dyn Fn(&mut Command)) -> Result<Outcome> {
+/// probes, the install and the re-probe) just before it is spawned, and with
+/// the limit on each version probe as `probe_limit`. Tests use `configure` to
+/// give each child its own PATH and HOME (issue #1765).
+///
+/// The limit is a parameter for the reason [`version_probe_succeeds_within`]
+/// has one (issues #1973, #2931): a test of the decision flow starts stub
+/// executables it has just written, and the first start of a new executable
+/// can take longer than the 500 ms the product allows (measured on macOS at
+/// 0.5 to 6.4 s while the suite runs, issue #2970). Such a test passes a
+/// limit no loaded host reaches, so its result depends on what the stubs
+/// answer and not on how soon. [`ensure_mermaid_cli`] is the only caller
+/// outside tests and always passes [`VERSION_PROBE_TIMEOUT`].
+pub(super) fn ensure_mermaid_cli_with(
+    configure: &dyn Fn(&mut Command),
+    probe_limit: Duration,
+) -> Result<Outcome> {
     // (1) Opt-out: any non-empty value disables the attempt entirely, taking
     // precedence over every probe (for minimal/offline environments).
     let skip = std::env::var_os("AMPLIHACK_SKIP_MMDC")
@@ -109,12 +120,12 @@ pub(super) fn ensure_mermaid_cli_with(configure: &dyn Fn(&mut Command)) -> Resul
     }
 
     // (2) Preflight: already installed? Skip without touching npm.
-    if version_probe_succeeds("mmdc", configure) {
+    if version_probe_succeeds_within("mmdc", configure, probe_limit) {
         return Ok(Outcome::AlreadyPresent);
     }
 
     // (3) Preflight: npm available? If not, skip (not an error).
-    if !version_probe_succeeds("npm", configure) {
+    if !version_probe_succeeds_within("npm", configure, probe_limit) {
         return Ok(Outcome::SkippedNoNpm);
     }
 
@@ -131,7 +142,7 @@ pub(super) fn ensure_mermaid_cli_with(configure: &dyn Fn(&mut Command)) -> Resul
         Ok(status) if status.success() => {
             // (5) Re-probe: npm may have succeeded but placed mmdc in a prefix
             // that isn't on PATH. Don't claim success unless mmdc is reachable.
-            if version_probe_succeeds("mmdc", configure) {
+            if version_probe_succeeds_within("mmdc", configure, probe_limit) {
                 Ok(Outcome::Installed)
             } else {
                 tracing::warn!(
@@ -192,9 +203,13 @@ mod tests {
         let fake_bin = write_fake(temp.path(), "mmdc", "#!/bin/sh\nexec /bin/sleep 60\n");
 
         let started = std::time::Instant::now();
-        let result = version_probe_succeeds(fake_bin.to_str().unwrap(), &|cmd: &mut Command| {
-            cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
-        });
+        let result = version_probe_succeeds_within(
+            fake_bin.to_str().unwrap(),
+            &|cmd: &mut Command| {
+                cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+            VERSION_PROBE_TIMEOUT,
+        );
         let elapsed = started.elapsed();
 
         assert!(

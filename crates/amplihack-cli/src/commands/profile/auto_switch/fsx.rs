@@ -47,6 +47,18 @@ pub fn movable_login(path: &Path) -> bool {
         .is_ok_and(|m| m.is_file() && m.uid() == euid() && m.mode() & 0o077 == 0 && m.nlink() == 1)
 }
 
+/// Issue #2218: whether two files hold the same bytes. Each is read without
+/// following a symlink, from a regular file owned by the current user, at
+/// most `limit` bytes. A file that is missing, unsafe or unreadable never
+/// matches. Only the answer leaves this function, never the content.
+pub fn same_private_bytes(a: &Path, b: &Path, limit: u64) -> bool {
+    let read = |p: &Path| match read_bounded_nofollow(p, limit) {
+        Ok(Some((raw, meta))) if meta.uid() == euid() && meta.mode() & 0o022 == 0 => Some(raw),
+        _ => None,
+    };
+    matches!((read(a), read(b)), (Some(x), Some(y)) if x == y)
+}
+
 /// Sets the modification time to now without following a symlink, so Claude
 /// notices the file changed.
 pub fn touch_nofollow(path: &Path) -> io::Result<()> {

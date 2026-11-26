@@ -119,8 +119,20 @@ fn liveness_unsupported_blocks_swap() {
         &Liveness::Known(BTreeSet::new()),
         &x
     ));
-    // Everything live: swaps may run, but no unhosted candidate is eligible.
-    assert!(Liveness::Everything.is_live(&x));
+    // Issue #2820: after an unreadable process, swaps may run, and only the
+    // profile it names counts as live.
+    let partial = Liveness::Partial {
+        live: ["X".to_string()].into(),
+        unreadable: vec![super::super::Unreadable {
+            pid: 700_001,
+            exe: "claude".into(),
+            argv: vec!["claude".into()],
+            verdict: super::super::Verdict::Counted(["X".to_string()].into()),
+        }],
+    };
+    assert!(swap_allowed(&r.state, &partial, &x));
+    assert!(partial.is_live(&x));
+    assert!(!partial.is_live(&ProfileName::parse("Y").unwrap()));
 }
 
 #[test]
@@ -128,7 +140,18 @@ fn rerun_buffer_names_give_their_supervisor() {
     let pid = |s: &str| rerun_owner(std::ffi::OsStr::new(s));
     assert_eq!(pid("1234-1.out"), Some(1234));
     assert_eq!(pid("1234-12.out"), Some(1234));
+    // Issue #2815: the captured prompt of a step, `<pid>-0.in`.
+    assert_eq!(pid("1234-0.in"), Some(1234));
     for bad in [
+        "1234-1.in",
+        "1234-12.in",
+        "1234-x.in",
+        "x-0.in",
+        "0-0.in",
+        "-1-0.in",
+        "1234.in",
+        "1234-0.in.bak",
+        "1234-0.inx",
         "1234.out",
         "x-1.out",
         "1234-x.out",

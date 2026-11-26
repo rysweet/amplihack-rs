@@ -1,10 +1,7 @@
+use super::assessed::completion;
 use super::fixtures::*;
-use serde_json::{Value, json};
+use serde_json::json;
 
-fn completion(positive: bool) -> Value {
-    json!({"implementation_terminal_evidence":{"implementation_completed":positive,"terminal_no_op":false},
-        "verification_terminal_evidence":{"verification_completed":positive},"allow_no_op":false})
-}
 fn collect(f: &Fixture, implemented: &str, verified: &str, noop: &str, allow: &str) {
     let r = f.finalizer("collect");
     r.exit(0);
@@ -18,16 +15,6 @@ fn collect(f: &Fixture, implemented: &str, verified: &str, noop: &str, allow: &s
         assert_eq!(j["completion"][key], value, "collect field {key}: {j}");
     }
 }
-fn validate(f: Fixture, state: &str, code: i32) {
-    let r = f.finalizer("validate");
-    r.exit(code);
-    assert_eq!(r.json()["terminal_state"], state);
-    assert_eq!(
-        r.json()["terminal_success"],
-        if code == 0 { "true" } else { "false" }
-    );
-}
-
 #[test]
 fn collector_file_completion_records_are_consumed() {
     collect(
@@ -175,116 +162,33 @@ fn collector_invalid_authoritative_file_never_borrows_completion() {
     }
 }
 #[test]
-fn validator_file_completion_records_match_collector() {
-    validate(
-        Fixture::new().file(completion(true)),
-        "IMPLEMENTED_VERIFIED",
-        0,
-    );
-}
-#[test]
-fn validator_file_negative_beats_stale_completion_and_noop() {
-    validate(
-        Fixture::new()
-            .file(completion(false))
-            .env("IMPLEMENTATION_COMPLETED", "true")
-            .env("VERIFICATION_COMPLETED", "true")
-            .env("TERMINAL_NO_OP", "true")
-            .env("ALLOW_NO_OP", "true"),
-        "FAILED_IMPLEMENTATION",
-        1,
-    );
-}
-#[test]
-fn validator_file_noop_requires_both_implementation_noop_and_optout() {
-    validate(
-        Fixture::new().file(
-            json!({"allow_no_op":true,"implementation_terminal_evidence":{"terminal_no_op":true}}),
-        ),
-        "ALLOW_NO_OP",
-        0,
-    );
-    validate(
-        Fixture::new().file(
-            json!({"allow_no_op":true,"verification_terminal_evidence":{"terminal_no_op":true}}),
-        ),
-        "FAILED_IMPLEMENTATION",
-        1,
-    );
-}
-#[test]
-fn validator_canonical_root_negative_beats_stale_completion() {
-    validate(
-        Fixture::new()
-            .env(
-                "RECIPE_VAR_implementation_terminal_evidence",
-                json!({"implementation_completed":false}).to_string(),
-            )
-            .env("IMPLEMENTATION_COMPLETED", "true")
-            .env("VERIFICATION_COMPLETED", "true"),
-        "FAILED_IMPLEMENTATION",
-        1,
-    );
-}
-#[test]
-fn validator_file_reporting_failure_retains_failed_reporting_split() {
-    let mut context = completion(true);
-    context["finalizer_step_status"] = json!({"status":"failed","reporting_failure":true});
-    validate(Fixture::new().file(context), "FAILED_REPORTING", 1);
-}
-#[test]
-fn validator_legacy_hard_blockers_are_not_bypassed_by_completion() {
-    for (evidence, state) in [
-        (
-            json!({"git":{"dirty_worktree":"true"}}),
-            "FAILED_DIRTY_WORKTREE",
-        ),
-        (
-            json!({"tooling":{"missing":"jq"}}),
-            "FAILED_MISSING_TOOLING",
-        ),
-        (
-            json!({"agent_outputs":{"hollow_success_signals":"true"}}),
-            "HOLLOW_SUCCESS",
-        ),
-        (
-            json!({"prior_terminal_state":{"terminal_state":"BLOCKED_CI"}}),
-            "BLOCKED_CI",
-        ),
-    ] {
-        validate(
-            Fixture::new()
-                .env("FINALIZATION_EVIDENCE", evidence.to_string())
-                .env("IMPLEMENTATION_COMPLETED", "true")
-                .env("VERIFICATION_COMPLETED", "true"),
-            state,
-            1,
-        );
-    }
-    validate(
-        Fixture::new()
-            .env("FINALIZATION_EVIDENCE", "{bad")
-            .env("IMPLEMENTATION_COMPLETED", "true")
-            .env("VERIFICATION_COMPLETED", "true"),
-        "FAILED_INVALID_EVIDENCE",
-        1,
-    );
-}
-#[test]
-fn validator_file_dirty_blocker_cannot_be_overridden_by_stale_clean_evidence() {
-    let mut context = completion(true);
-    context["finalization_evidence"] = json!({"git":{"dirty_worktree":"true"}});
-    validate(
-        Fixture::new()
-            .file(context)
-            .env("FINALIZATION_EVIDENCE", "{}")
-            .env("IMPLEMENTATION_COMPLETED", "true")
-            .env("VERIFICATION_COMPLETED", "true"),
-        "FAILED_DIRTY_WORKTREE",
-        1,
-    );
-}
-#[test]
 fn finalizer_invalid_mode_retains_error_two() {
     Fixture::new().finalizer("invalid").exit(2);
+}
+
+// #2966: the collector used to derive `ci.state` from the terminal-state
+// probe's record: `FAILURE` when the probe had said `BLOCKED_CI`, `UNKNOWN`
+// otherwise. That was a second, older reading of CI beside the live one the
+// `outcome` facts carry, and nothing read it. It is gone, so a stale record of
+// the old probe's blocker cannot turn into a CI fact. The record itself is still
+// carried, as what the probe said, under `prior_terminal_state`.
+#[test]
+fn collector_derives_no_ci_state_from_the_probes_record() {
+    for prior in ["BLOCKED_CI", "FOLLOWUP_CREATED", "MERGED"] {
+        let f = Fixture::new().env(
+            "RECIPE_VAR_terminal_state",
+            json!({"terminal_state": prior}).to_string(),
+        );
+        let r = f.finalizer("collect");
+        r.exit(0);
+        let j = r.json();
+        assert!(
+            j.get("ci").is_none(),
+            "{prior}: the collector must not derive a CI state from the probe's record: {j}"
+        );
+        assert_eq!(
+            j["prior_terminal_state"]["terminal_state"], prior,
+            "{prior}: the probe's record is still carried as what the probe said: {j}"
+        );
+    }
 }

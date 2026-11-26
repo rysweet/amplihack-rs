@@ -115,6 +115,20 @@ flowchart TD
     P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
 ```
 
+## Goal Loop (version 4.0.0)
+
+`default-workflow` builds the change and opens its pull request by running the
+shared goal loop. Its steps are `workflow-prep`, `workflow-worktree`,
+`build-goal-setup`, `build-loop`, two steps that restore the caller's context,
+and `build-report`. Each turn an agent reads
+the live state and the task text and chooses one action: `open-pr`,
+`mark-ready`, `review`, `wait` or `prepare-worktree`, or it edits and commits in
+the worktree itself. The run ends when the pull request is open and marked
+ready, merged, closed, or handed to a named owner for a decision. A build never
+merges; `no_merge` and `finalization_handoff` are accepted and ignored. The
+phase recipes below remain for one release for runs that loaded the earlier
+version. See `docs/reference/build-goal-loop.md`.
+
 ## Purpose
 
 This skill provides the standard development workflow for all non-trivial code changes
@@ -128,18 +142,17 @@ compliance throughout.
 
 ## Canonical Sources
 
-- **Skill documentation**: `amplifier-bundle/skills/default-workflow/SKILL.md`
+- **Skill documentation**: `SKILL.md`, relative to this skill's folder
 - **Executable source (recipe)**: `amplifier-bundle/recipes/default-workflow.yaml`
 
 The skill and recipe are the authoritative representation. Legacy
 `DEFAULT_WORKFLOW.md` files are deprecated compatibility references only.
 
-The two copies of this file — `docs/claude/skills/default-workflow/SKILL.md` and
-`amplifier-bundle/skills/default-workflow/SKILL.md` — are mirrored byte-for-byte.
-Because they live at different directory depths, cross-references to other
-repository docs must use a repo-relative inline-code path (for example
-`docs/reference/foo.md`) rather than a relative `../` markdown link, so the
-reference stays valid from both locations.
+The repository mirror at `docs/claude/skills/default-workflow/SKILL.md` is
+byte-identical to this file. Resolve this skill's own resources relative to
+its folder. Paths starting with `docs/` or `amplifier-bundle/recipes/` describe
+repository documentation or executable recipes rather than this skill's
+resources. Find an installed recipe with `amplihack recipe show <name>`.
 
 ## Execution Instructions
 
@@ -294,8 +307,13 @@ Git-verified `origin/HEAD`, then fall back to `origin/master`, then
 `origin/develop`. `origin/HEAD` may target `origin/main`, `origin/master`,
 `origin/develop`, or another remote default branch as long as Git verifies it as
 a remote-tracking ref under `refs/remotes/origin/`. If no supported remote base
-source exists, fail closed with a clear error; do not bootstrap from local
-`HEAD` or silently skip push/upstream setup.
+source exists, fail loudly: name each base source that was tried and what it
+returned, and stop the step with an actionable message. Do not bootstrap from
+local `HEAD`, do not silently skip push/upstream setup, and do not accept an
+unverified ref to keep going. This step has no agentic recovery hand-off today:
+`workflow-worktree` is not among the steps listed in
+`docs/reference/step-failure-recovery.md`, so the loud error is where it ends.
+Giving it one is a recipe change, not a documentation change.
 
 ### Step 4 — Initial Push (network transient)
 
@@ -315,7 +333,7 @@ source exists, fail closed with a clear error; do not bootstrap from local
 **Failure (#978)**: A temporary workstream branch tracks an unrelated/stale upstream; a blind `git pull --rebase` replays already-integrated historical commits and produces add/add conflicts.
 **Resilience**: Step 15 is ancestry-aware. After fetching, it compares HEAD to `@{u}`:
 - upstream is an ancestor of HEAD (behind == 0) → fast-forward push, preserving the tested commit identities (no history rewrite, no rebase);
-- histories diverged (behind > 0) → **fail closed** with structured `merge-base / ahead / behind` evidence and require an explicit merge/rebase decision. Step 15 never auto-rebases divergent history onto a possibly-unrelated upstream.
+- histories diverged (behind > 0) → **fail loudly** with structured `merge-base / ahead / behind` evidence, and hand that failure to recovery instead of ending the run. `step-15-commit-push` carries `continue_on_error: true`, so its non-zero exit falls through to `step-15-push-recovery`, which runs the `push-failure-recovery` sub-recipe and gives an agent the merge-or-rebase decision (`docs/reference/recipe-push-failure-recovery.md`). That recovery works from its own snapshot of the worktree and the remote, not from step-15's `reason`: the runner keeps no output from a step that exited non-zero, so the loud message survives only in the step log. Step 15 never auto-rebases divergent history onto a possibly-unrelated upstream, and recovery must not rewrite pushed history to make the push succeed.
 
 ### Step 16 — PR Creation (already exists / no commits)
 
@@ -372,8 +390,12 @@ If a step fails after a checkpoint, the worktree branch retains all committed wo
 
 ## Related Files
 
-- **Skill docs**: `amplifier-bundle/skills/default-workflow/SKILL.md`
+- **Skill docs**: `SKILL.md`, relative to this skill's folder
 - **Recipe (executable)**: `amplifier-bundle/recipes/default-workflow.yaml`
 - **Command Interface**: `.claude/commands/amplihack/dev.md`
 - **Orchestrator Skill**: `.claude/skills/dev-orchestrator/`
 - **Investigation Workflow**: `.claude/skills/investigation-workflow/`
+
+## Stopping background jobs and time-boxing tests
+
+Stop a background job you started by the PID you recorded with `$!`, or by a process group you created for the job with `set -m` or `setsid`, using `kill -- -PGID`. Never use `pkill -f`, `pgrep -f` with `kill` or `xargs kill`, or `killall <name>`: a pattern matches every process whose command line contains the same words, including the recipe runner and other agents. Time-box test runs with the test runner's own options (for example nextest `slow-timeout` with `terminate-after`, or vitest `--testTimeout`) instead of killing the run afterwards.

@@ -1141,8 +1141,23 @@ fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_string()).collect()
 }
 
+/// #2317: a Codex agent step gets the same trust as a Claude step.
 #[test]
-fn codex_agent_step_gets_sandbox_network_and_hook_trust_after_exec() {
+fn codex_agent_step_args_carry_no_workspace_write() {
+    let extra = strings(&["exec", "--output-last-message", "/run/final-message", "-"]);
+    let args = with_uvx_detection_disabled(|| {
+        argv_of(build_command(&codex_binary(), false, false, false, &extra))
+    });
+    assert!(
+        !args
+            .iter()
+            .any(|a| a.contains("workspace-write") || a.contains("sandbox_workspace_write")),
+        "{args:?}"
+    );
+}
+
+#[test]
+fn codex_agent_step_gets_full_access_and_hook_trust_after_exec() {
     let extra = strings(&["exec", "--output-last-message", "/run/final-message", "-"]);
     let args = with_uvx_detection_disabled(|| {
         argv_of(build_command(&codex_binary(), false, false, false, &extra))
@@ -1152,9 +1167,7 @@ fn codex_agent_step_gets_sandbox_network_and_hook_trust_after_exec() {
         strings(&[
             "exec",
             "--sandbox",
-            "workspace-write",
-            "-c",
-            "sandbox_workspace_write.network_access=true",
+            "danger-full-access",
             "--dangerously-bypass-hook-trust",
             "--output-last-message",
             "/run/final-message",
@@ -1191,7 +1204,8 @@ fn codex_agent_step_never_gets_approvals_bypass_from_build_command() {
     for forbidden in [
         "--dangerously-bypass-approvals-and-sandbox",
         "--yolo",
-        "danger-full-access",
+        "workspace-write",
+        "sandbox_workspace_write.network_access=true",
     ] {
         assert!(
             !args.iter().any(|a| a == forbidden),
@@ -1255,6 +1269,8 @@ fn non_codex_tools_get_no_codex_agent_step_flags() {
     });
     for args in [&claude, &copilot] {
         for flag in [
+            "--sandbox",
+            "danger-full-access",
             "workspace-write",
             "sandbox_workspace_write.network_access=true",
             "--dangerously-bypass-hook-trust",

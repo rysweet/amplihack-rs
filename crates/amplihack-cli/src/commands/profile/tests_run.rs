@@ -105,36 +105,25 @@ fn run_refuses_group_writable_profile_before_spawn() {
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
 
-struct DockerEnvGuard(Option<std::ffi::OsString>);
-impl DockerEnvGuard {
-    fn set(v: &str) -> Self {
-        let prev = std::env::var_os("AMPLIHACK_USE_DOCKER");
-        unsafe { std::env::set_var("AMPLIHACK_USE_DOCKER", v) };
-        Self(prev)
-    }
-}
-impl Drop for DockerEnvGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.0 {
-                Some(v) => std::env::set_var("AMPLIHACK_USE_DOCKER", v),
-                None => std::env::remove_var("AMPLIHACK_USE_DOCKER"),
-            }
-        }
-    }
-}
+// Issue #2196: the Docker tests give the probe's answer instead of running
+// `docker info` and reading `/proc/1/cgroup`, so they need no Docker daemon
+// and read nothing of the host. `should_use_docker_from_state` and
+// `is_in_docker_from_state` are tested in `docker/mod.rs`.
 
 #[test]
 fn reject_docker_env_errors_when_env_active() {
     let _l = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let _g = DockerEnvGuard::set("1");
-    let err = super::reject_docker_env()
+    let err = super::reject_docker_mode(true)
         .unwrap_err()
         .to_string()
         .to_lowercase();
     assert!(err.contains("docker"), "{err}");
+    assert!(
+        super::reject_docker_mode(false).is_ok(),
+        "without Docker activation nothing is refused"
+    );
 }
 
 #[test]
@@ -142,12 +131,11 @@ fn profile_run_fails_closed_under_docker_env_before_touching_disk() {
     let _l = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let _g = DockerEnvGuard::set("1");
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("root");
     let s = ProfileStore::new(root.clone());
     let missing = ProfileName::parse("ghost").unwrap();
-    let err = super::run::run(&s, &missing, vec![])
+    let err = super::run::run_in_mode(&s, &missing, vec![], true)
         .unwrap_err()
         .to_string()
         .to_lowercase();

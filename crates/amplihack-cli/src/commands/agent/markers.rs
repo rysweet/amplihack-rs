@@ -60,6 +60,16 @@ pub fn read(dir: &Path, now: i64) -> Result<Vec<Marker>, String> {
     Ok(out)
 }
 
+/// Whether `dir` holds a valid SessionEnd marker for conversation `id`
+/// written at or after `since` (issue #2912), which the wrapper of a
+/// standing session reads as its owner having ended the run that began at
+/// `since`. Only that one file is opened, and nothing is written or
+/// removed: the supervisor owns deletion. An id that is not a conversation
+/// id is not joined to a path at all.
+pub(super) fn ended_since(dir: &Path, id: &str, since: i64) -> bool {
+    is_conversation_id(id) && parse(&dir.join(id), id).is_some_and(|m| m.at >= since)
+}
+
 /// A marker named `name` at `path`: a valid id, a regular private file of
 /// this user of at most 4 KiB, and JSON naming the same id with a clean
 /// reason.

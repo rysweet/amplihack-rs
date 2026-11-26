@@ -53,6 +53,7 @@ pub(super) struct Isolated {
     _amp_home: EnvVarGuard,
     _root: EnvVarGuard,
     _run: EnvVarGuard,
+    _step: EnvVarGuard,
     _depth: EnvVarGuard,
     pub(super) dir: tempfile::TempDir,
     _lock: MutexGuard<'static, ()>,
@@ -74,6 +75,7 @@ impl Isolated {
         };
         Self {
             _depth: EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH"),
+            _step: EnvVarGuard::unset(STEP_ID_ENV),
             _run: run,
             _root: EnvVarGuard::unset("AMPLIHACK_ROOT"),
             _amp_home: EnvVarGuard::unset("AMPLIHACK_HOME"),

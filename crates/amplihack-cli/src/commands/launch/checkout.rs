@@ -36,7 +36,7 @@ pub(super) fn resolve_checkout_repo_in_with(
         .with_context(|| format!("failed to create checkout directory {}", base_dir.display()))?;
 
     if target_dir.join(".git").is_dir() {
-        println!("Using existing repository: {}", target_dir.display());
+        eprintln!("Using existing repository: {}", target_dir.display());
         return Ok(target_dir);
     }
 
@@ -62,7 +62,7 @@ pub(super) fn resolve_checkout_repo_in_with(
         );
     }
 
-    println!("Cloned repository to: {}", target_dir.display());
+    eprintln!("Cloned repository to: {}", target_dir.display());
     Ok(target_dir)
 }
 

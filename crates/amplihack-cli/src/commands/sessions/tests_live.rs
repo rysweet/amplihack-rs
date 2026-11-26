@@ -385,10 +385,12 @@ fn unreadable_config_dirs_fail_the_build_closed() {
         ..Default::default()
     };
     let err = build(&t.home, &t.root, &p).unwrap_err();
+    // The error names the process-table root `build` read: in lib tests
+    // that is the shared fake table, never `/proc` (issue #2196).
     assert_eq!(
         err,
         (
-            PathBuf::from("/proc"),
+            crate::test_support::proc::shared_default_root().to_path_buf(),
             io::ErrorKind::PermissionDenied.into()
         )
     );
@@ -416,6 +418,34 @@ fn claude_config_dirs_fails_closed() {
     );
     // A Claude process whose environment cannot be read is an error.
     fs::write(d.join("cmdline"), b"/usr/bin/claude\0--resume\0").unwrap();
+    assert!(claude_config_dirs(p, 1, 1000).is_err());
+}
+
+/// Issue #2820: the archive judges an unreadable process by its executable,
+/// not by text in its command line. An amplihack executable still fails
+/// closed; a `tailscaled` SSH child whose remote command mentions amplihack
+/// is skipped like any other unreadable process.
+#[test]
+fn claude_config_dirs_judges_an_unreadable_process_by_its_executable() {
+    use crate::commands::profile::claude_config_dirs;
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path();
+    let d = p.join("21");
+    fs::create_dir_all(&d).unwrap();
+    fs::create_dir(d.join("environ")).unwrap(); // reading a directory fails
+    let status = |name: &str| format!("Name:\t{name}\nState:\tS\nUid:\t1000\t1000\t1000\t1000\n");
+    fs::write(d.join("status"), status("tailscaled")).unwrap();
+    fs::write(
+        d.join("cmdline"),
+        b"tailscaled\0be-child\0ssh\0amplihack recipe run wait\0",
+    )
+    .unwrap();
+    assert_eq!(
+        claude_config_dirs(p, 1, 1000).unwrap(),
+        Vec::<PathBuf>::new()
+    );
+    fs::write(d.join("status"), status("amplihack-hooks")).unwrap();
+    fs::write(d.join("cmdline"), b"/usr/bin/amplihack-hooks\0stop\0").unwrap();
     assert!(claude_config_dirs(p, 1, 1000).is_err());
 }
 

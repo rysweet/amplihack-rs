@@ -4,26 +4,26 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 #[test]
-fn subprocess_fixture_owns_all_application_roots() {
+fn subprocess_fixture_keeps_all_application_roots_inside_the_private_home() {
     let command = crate::isolated_amplihack::isolated("amplihack");
     let vars: std::collections::HashMap<_, _> = command.get_envs().collect();
     let home = vars
         .get(OsStr::new("HOME"))
         .and_then(|value| *value)
         .expect("fixture must explicitly set HOME");
+    // The fixture clears these (issues #1699 and #2922), so the binary derives
+    // each root from the private HOME. A value that is passed must lie inside it.
     for key in [
         "AMPLIHACK_HOME",
         "CLAUDE_CONFIG_DIR",
         "AMPLIHACK_CLAUDE_PROFILE_ROOT",
     ] {
-        let root = vars
-            .get(OsStr::new(key))
-            .and_then(|value| *value)
-            .unwrap_or_else(|| panic!("fixture must explicitly own {key}"));
-        assert!(
-            Path::new(root).starts_with(Path::new(home)),
-            "{key} must be inside the private HOME"
-        );
+        if let Some(root) = vars.get(OsStr::new(key)).and_then(|value| *value) {
+            assert!(
+                Path::new(root).starts_with(Path::new(home)),
+                "{key} must be inside the private HOME"
+            );
+        }
     }
 }
 

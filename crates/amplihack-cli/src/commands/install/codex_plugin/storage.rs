@@ -40,6 +40,8 @@ pub(super) fn atomic_json(path: &Path, value: &Value, original: Option<Value>) -
     let parent = path.parent().context("JSON destination has no parent")?;
     fs::create_dir_all(parent)?;
     path_scope::check()?;
+    #[cfg(test)]
+    testing::check_write()?;
     let mut staged = tempfile::NamedTempFile::new_in(parent)?;
     if original.is_some() {
         staged
@@ -196,6 +198,24 @@ pub(super) fn sync_dependencies(root: &Path, home: &Path) -> Result<()> {
 #[cfg(test)]
 pub(super) mod testing {
     use super::*;
+    thread_local! { static WRITE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+    pub fn with_write_failure<R>(run: impl FnOnce(&std::cell::Cell<bool>) -> R) -> R {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                WRITE_FAILURE.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
+        WRITE_FAILURE.with(run)
+    }
+    pub fn check_write() -> Result<()> {
+        ensure!(
+            !WRITE_FAILURE.with(|v| v.get()),
+            "injected Codex metadata write failure"
+        );
+        Ok(())
+    }
     type Hook = dyn FnMut(&Path) -> Result<()>;
     thread_local! { static HOOK: std::cell::RefCell<Option<*mut Hook>> = std::cell::RefCell::new(None); }
     pub fn with_sync_hook<R>(

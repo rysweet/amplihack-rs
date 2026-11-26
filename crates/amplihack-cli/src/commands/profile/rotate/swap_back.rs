@@ -77,7 +77,8 @@ pub fn room(r: &Reading, s: &Settings) -> bool {
 /// The record step's update of `l.swapped_away`, after the cycle's swap,
 /// stay or ALERT. In order:
 /// 1. lift each entry whose login has a reading in `probes` taken strictly
-///    after the entry that shows room;
+///    after the entry that shows room and is not below the highest reading
+///    of that login in its window (`high_water`, #3181);
 /// 2. record `left`, the login a committed swap moved off, at `now` when
 ///    its reading at decision time was full;
 /// 3. prune by age and count.
@@ -101,7 +102,9 @@ pub fn update(
                 continue;
             };
             let later = fresh::read_at(p, measured_at).is_some_and(|r| r > at);
-            if later && room(&p.reading, s) {
+            // Issue #3181: a reading below the highest one in its window is stale.
+            let stale = l.high_water.below(name.as_str(), p, now);
+            if later && room(&p.reading, s) && !stale {
                 l.swapped_away.remove(name.as_str());
                 lines.push(fresh_msg::lifted(name));
             }

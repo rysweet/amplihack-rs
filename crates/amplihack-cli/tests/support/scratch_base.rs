@@ -2,25 +2,19 @@
 //!
 //! Recipe runs set `TMPDIR` inside `~/.amplihack`, which holds a real
 //! framework install (`amplifier-bundle/` and `.claude/`). A test that builds
-//! its fixture under such a `TMPDIR` is then exposed in one of four ways, each
+//! its fixture under such a `TMPDIR` is then exposed in one of three ways, each
 //! of which failed in the PR #1971 QA run (`cargo test --workspace --locked
 //! --no-fail-fast`, `TMPDIR=~/.amplihack/work/runs/<id>/runtime/tmp`):
 //!
-//! - `install::clone` `walk_up`: the walk-up itself stops at the repository
-//!   containing the start directory, or at the start directory when there is
-//!   none (`walk_up_scope`, issue #1275). The `OutsideStartingRepository`
-//!   note does not: it scans every ancestor above that boundary for
-//!   `amplifier-bundle/`, so it names `~/.amplihack`, and a test asserting
-//!   the exact notes fails.
 //! - `env_builder` `find_bundle_root`: an unbounded ancestor scan for
 //!   `amplifier-bundle/`, so `AMPLIHACK_HOME` resolves to `~/.amplihack`
 //!   instead of the value the test set up.
 //! - `amplihack_types::paths::framework_roots_from`: an unbounded ancestor
 //!   scan for `.claude/` and `src/amplihack/.claude/`, so the real framework
 //!   files are found ahead of the fixture's.
-//! - `issue_1743_autodrive_budget`: no lookup at all; it fails on any file
-//!   that names the real `~/.claude` or `~/.amplihack`, and every fixture path
-//!   appears in its stub logs.
+//! - `issue_1743_autodrive_budget` (removed in #3129): no lookup at all; it
+//!   failed on any file that named the real `~/.claude` or `~/.amplihack`,
+//!   and every fixture path appeared in its stub logs.
 //!
 //! [`scratch_base`] therefore rejects a base when any ancestor holds one of
 //! [`FRAMEWORK_MARKERS`], or when the base lies under `$HOME/.claude` or
@@ -28,9 +22,10 @@
 //! and panics, naming the reason for each, when none qualifies: a silent
 //! fallback would bring back the misleading failure it exists to prevent.
 //!
-//! A stray repository marker above the base (`/tmp/.git`, issue #1937) is a
-//! different fault with its own guard in `install::clone`'s tests, and is not
-//! checked here.
+//! `install::clone`'s walk-up is not a reason for this rule any more: its
+//! tests run the walk over a synthetic layout and read no real directory
+//! (issue #2196), so neither a framework install nor a stray repository
+//! marker above the base (`/tmp/.git`, issue #1937) can change them.
 //!
 //! This file uses only `std`. `amplihack-cli`'s `test_support`, the
 //! `cli_integration` target, `amplihack-hooks`' `user_prompt` tests and
@@ -44,13 +39,32 @@ use std::path::{Path, PathBuf};
 pub const FRAMEWORK_MARKERS: [&str; 3] = ["amplifier-bundle", ".claude", "src/amplihack/.claude"];
 
 /// Why `base` may not hold test fixtures, or `None` when it may.
+///
+/// The rule is applied to the path as written and to its canonical form
+/// (issue #2931): a base whose text looks clean but which is reached through
+/// a link into `$HOME/.claude`, or below a framework install, is as exposed
+/// as one written out in full.
 pub fn scratch_base_rejection(base: &Path, home: Option<&Path>) -> Option<String> {
     if !base.is_dir() {
         return Some("is not a directory".to_string());
     }
+    if let Some(reason) = form_rejection(base, home) {
+        return Some(reason);
+    }
+    match base.canonicalize() {
+        Ok(canonical) if canonical != base => form_rejection(&canonical, home)
+            .map(|reason| format!("resolves to {}, which {reason}", canonical.display())),
+        Ok(_) => None,
+        Err(e) => Some(format!("cannot be resolved: {e}")),
+    }
+}
+
+/// [`scratch_base_rejection`] for one spelling of the base.
+fn form_rejection(base: &Path, home: Option<&Path>) -> Option<String> {
     if let Some(home) = home {
         for real in [home.join(".claude"), home.join(".amplihack")] {
-            if base.starts_with(&real) {
+            let resolved = real.canonicalize().unwrap_or_else(|_| real.clone());
+            if base.starts_with(&real) || base.starts_with(&resolved) {
                 return Some(format!("lies under the real {}", real.display()));
             }
         }
@@ -67,8 +81,12 @@ pub fn scratch_base_rejection(base: &Path, home: Option<&Path>) -> Option<String
 }
 
 /// The first of `TMPDIR`, `/var/tmp` and `/tmp` that no framework lookup can
-/// see past (module documentation). Panics, naming each candidate's fault,
-/// when none qualifies.
+/// see past (module documentation), in canonical form. Panics, naming each
+/// candidate's fault, when none qualifies.
+///
+/// Canonical because the run directory opens every component of a work root
+/// without following links, and macOS reaches `/var/tmp`, `/tmp` and its
+/// per-user temporary folder through one (issue #2931).
 pub fn scratch_base() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let candidates = [
@@ -79,7 +97,10 @@ pub fn scratch_base() -> PathBuf {
     let mut faults = Vec::new();
     for base in candidates {
         match scratch_base_rejection(&base, home.as_deref()) {
-            None => return base,
+            None => match base.canonicalize() {
+                Ok(canonical) => return canonical,
+                Err(e) => faults.push(format!("{} cannot be resolved: {e}", base.display())),
+            },
             Some(reason) => faults.push(format!("{} {reason}", base.display())),
         }
     }

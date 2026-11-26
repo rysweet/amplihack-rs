@@ -3,7 +3,6 @@ name: visualization-architect
 version: 1.0.0
 description: Visual communication specialist. Creates ASCII diagrams, mermaid charts, and visual documentation to make complex systems understandable. Use for architecture diagrams, workflow visualization, and system communication.
 role: "Visual communication specialist and architecture visualization expert"
-model: inherit
 ---
 
 # Visualization-Architect Agent

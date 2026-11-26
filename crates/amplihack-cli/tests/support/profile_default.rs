@@ -137,6 +137,11 @@ impl LoginIdentities {
                     }
                     Err(e) => panic!("owned fake identity listener: {e}"),
                 };
+                // On macOS and the BSDs an accepted connection inherits the
+                // listener's non-blocking mode (Linux does not pass it on). A
+                // read that arrives before the request would then fail with
+                // `WouldBlock`, and the request would go unanswered.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();

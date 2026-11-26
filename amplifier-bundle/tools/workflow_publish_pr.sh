@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Fixed operation names only: never print BASH_COMMAND (may contain secrets).
+PUBLISH_OPERATION="publishing prerequisites"
+PUBLISH_DIAGNOSED=false
+CREATE_STDERR_FILE=""
+CREATE_STDOUT_FILE=""
+PUBLISH_CHILD=""
+publish_exit_diagnostic() {
+  local status=$?
+  if [ -n "$PUBLISH_CHILD" ]; then gh_cancel_owned "$PUBLISH_CHILD"; fi
+  [ -z "$CREATE_STDERR_FILE" ] || gh_remove_capture "$CREATE_STDERR_FILE"
+  [ -z "$CREATE_STDOUT_FILE" ] || gh_remove_capture "$CREATE_STDOUT_FILE"
+  if [ "$status" -ne 0 ] && [ "$PUBLISH_DIAGNOSED" != true ]; then
+    printf 'ERROR: workflow_publish_pr.sh: %s failed (exit %s)\n' "$PUBLISH_OPERATION" "$status" >&2
+  fi
+}
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  trap publish_exit_diagnostic EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+fi
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq is required by workflow_publish_pr.sh." >&2
   exit 2
@@ -43,7 +65,22 @@ BODY_FILE_HELPER="${WORKFLOW_BODY_FILE_HELPER:-${SCRIPT_DIR}/workflow_body_file.
 [ -f "$BODY_FILE_HELPER" ] || { echo "ERROR: workflow_publish_pr.sh requires the body-file helper at $BODY_FILE_HELPER" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$BODY_FILE_HELPER"
+# base_branch and strict_delivery checks (docs/reference/workflow-delivery-inputs.md).
+DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflow_delivery_inputs.sh}"
+[ -f "$DELIVERY_INPUTS_HELPER" ] || { echo "ERROR: workflow_publish_pr.sh requires the delivery-input helper at $DELIVERY_INPUTS_HELPER" >&2; exit 2; }
+# shellcheck source=workflow_delivery_inputs.sh
+. "$DELIVERY_INPUTS_HELPER"
 
+# base_branch in the publish result (#2520): the base of this run's pull
+# request, so finalize can find a pull request on a base other than
+# origin/HEAD. Set from the --base given to gh pr create, or from the base of
+# the pull request the scoped lookup matched. Every other exit, and a create
+# that let GitHub choose, records "". With base_branch empty, that matched
+# pull request can be the one open pull request from this branch into another
+# base (#2784), and its own base is recorded. Step-16 does not check that
+# base; finalize checks it with delivery_base_ref. Best-effort labeling retains
+# its existing behavior and does not validate the adopted base (#2784).
+BASE_BRANCH_RESULT=""
 emit_publish_result() {
   jq -nc \
     --arg state "$PUBLISH_STATE" \
@@ -53,7 +90,8 @@ emit_publish_result() {
     --arg pr_number "$PR_NUMBER_RESULT" \
     --arg branch_diff_status "$BRANCH_DIFF_STATUS" \
     --arg message "$MESSAGE" \
-    '{state:$state,legacy_state:$legacy_state,terminal_status:$terminal_status,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,message:$message}'
+    --arg base_branch "$BASE_BRANCH_RESULT" \
+    '{state:$state,legacy_state:$legacy_state,terminal_status:$terminal_status,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,message:$message,base_branch:$base_branch}'
 }
 
 # Best-effort: apply caller-configured labels to the GitHub PR that was just
@@ -103,6 +141,12 @@ finish_publish() {
   if [ "$terminal_status" = "success" ]; then
     apply_pr_labels_best_effort
   fi
+  if [ "$terminal_status" != "success" ]; then
+    BASE_BRANCH_RESULT=""
+    printf 'ERROR: %s (exit %s): %s\n' "$state" "$exit_code" "$message" >&2
+    PUBLISH_DIAGNOSED=true
+  fi
+  PUBLISH_OPERATION="emit_publish_result (jq structured result)"
   emit_publish_result
   exit "$exit_code"
 }
@@ -111,16 +155,30 @@ load_pr_fields() {
   local pr_json="$1" _ml
   # while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
   PR_FIELDS=(); while IFS= read -r _ml; do PR_FIELDS+=("$_ml"); done < <(
-    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // ""'
+    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .baseRefName // ""'
   )
   PR_URL_RESULT="${PR_FIELDS[0]:-}"
   PR_NUMBER_RESULT="${PR_FIELDS[1]:-}"
   PR_STATE="${PR_FIELDS[2]:-}"
   PR_MERGED_AT="${PR_FIELDS[3]:-}"
+  PR_BASE_REF="${PR_FIELDS[4]:-}"
+}
+
+# #2784: names an adopted pull request whose base differs from the resolved
+# one. A constant format; every value is a %s argument.
+kept_base_clause() {
+  printf 'existing open PR #%s targets %s; the resolved base was %s; kept %s' \
+    "$PR_NUMBER_RESULT" "$BASE_BRANCH_RESULT" "$BASE_BRANCH" "$BASE_BRANCH_RESULT"
 }
 
 resolve_pr_base_ref() {
   local candidate
+  # base_branch, when the caller sets it, is the base: no discovery and no
+  # fallback (delivery_base_ref in workflow_delivery_inputs.sh).
+  if [ -n "${RECIPE_VAR_base_branch:-}" ]; then
+    delivery_base_ref "$RECIPE_VAR_base_branch" "$CURRENT_BRANCH" "${RECIPE_VAR_forbidden_base_branches:-}"
+    return
+  fi
   candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "$candidate"; return 0; fi
   git remote set-head origin -a >/dev/null 2>&1 || true
@@ -170,21 +228,34 @@ gh_pr_view_with_retry() {
   return "$status"
 }
 
-gh_pr_create_with_retry() {
-  local status=0 body_file
-  body_file="$(umask 077; mktemp)" || return 1
-  if ! printf '%s' "$PR_BODY" | write_body_file "$body_file" "the workflow publish step log"; then
-    rm -f -- "$body_file"
-    echo "ERROR: could not write the PR body file" >&2
-    return 1
+gh_pr_create_with_retry() (
+  local status=0 body_file="" GH_OWNED_PID=""
+  trap 'gh_cancel_owned "$GH_OWNED_PID"; [ -z "$body_file" ] || gh_remove_capture "$body_file"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  if body_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-body.XXXXXX" 2>/dev/null)"; then :; else
+    status=$?
+    printf 'ERROR: gh pr create body temp creation failed (exit %s)\n' "$status" >&2
+    return "$status"
+  fi
+  gh_start_owned write_body_file "$body_file" "the workflow publish step log" < <(printf '%s' "$PR_BODY")
+  if wait "$GH_OWNED_PID"; then GH_OWNED_PID=""; else
+    status=$?
+    gh_remove_capture "$body_file"
+    body_file=""
+    printf 'ERROR: gh pr create body-file write failed (exit %s)\n' "$status" >&2
+    return "$status"
   fi
   # WRITE path: no REST fallback (never blind-create); rate limits wait for reset.
-  _gh_retry_core "pr create" pr create --draft ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file" || status=$?
-  rm -f -- "$body_file"
-  [ "$status" -eq 0 ] && return 0
-  echo "ERROR: gh pr create failed (exit $status) — PR may already exist for this branch or GitHub API is unavailable" >&2
+  gh_start_owned _gh_retry_core "pr create" pr create --draft ${RECIPE_VAR_base_branch:+--base="$BASE_BRANCH"} ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file"
+  wait "$GH_OWNED_PID" || status=$?
+  GH_OWNED_PID=""
+  gh_remove_capture "$body_file"
+  body_file=""
+  # Last on stderr must stay the helper's terminal rejection; the publisher reads it.
   return "$status"
-}
+)
 
 # stdin -> stdout: masks URL userinfo, GitHub tokens, Anthropic and OpenAI
 # keys (sk-, sk-ant-, sk-proj-) and AWS access key IDs. The one copy of these
@@ -194,12 +265,15 @@ gh_pr_create_with_retry() {
 # LC_ALL=C: every pattern is ASCII, and BSD sed in a UTF-8 locale aborts on
 # bytes that are not valid UTF-8, which pipefail would turn into a failed run.
 redact_credentials() {
+  # Re-scan AWS matches so a shared separator cannot hide an adjacent key.
   LC_ALL=C sed -E \
     -e 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' \
     -e 's#gh[pousr]_[A-Za-z0-9]{16,}#REDACTED_TOKEN#g' \
     -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g' \
     -e 's#(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}#\1REDACTED_TOKEN#g' \
-    -e 's#(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^0-9A-Za-z]|$)#\1REDACTED_TOKEN\3#g'
+    -e ':aws' \
+    -e 's#(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^0-9A-Za-z]|$)#\1REDACTED_TOKEN\3#g' \
+    -e 't aws'
 }
 
 sanitize_provider_stderr() {
@@ -229,6 +303,50 @@ strip_invisible_chars() {
     -e $'s/\357\273\277//g'
 }
 
+# describe_dirty_entries [repo]: one line naming the worktree's dirty entries
+# with their porcelain codes, for the FAILED_DIRTY_WORKTREE message (#2335).
+# Filenames are repository-controlled text that reaches the agent and the logs,
+# so they are data: read NUL-separated (no git quoting, one entry per path even
+# with a newline in the name), invisible characters stripped, control
+# characters removed, credentials redacted, then each entry cut to 200
+# characters with "..." (after redaction, so a token is never cut in half and
+# missed). Each entry is then double-quoted with `\` and `"` escaped (after the
+# cut, so an escape is never split), so a name containing "; " stays one
+# entry. At most 20 entries, joined with "; ", then "(+N more)".
+describe_dirty_entries() (
+  set -o pipefail
+  # The body is a subshell, so `raw` is not local: the EXIT trap still sees it.
+  local repo="${1:-.}" entry from shown="" count=0 total=0 code
+  raw="$(mktemp "${TMPDIR:-/tmp}/amplihack-dirty.XXXXXX")" || { printf 'unavailable'; return 0; }
+  trap 'rm -f -- "$raw"' EXIT
+  if ! git -C "$repo" status --porcelain -z >"$raw"; then
+    printf 'unavailable (git status --porcelain -z failed)'
+    return 0
+  fi
+  while IFS= read -r -d '' entry; do
+    code="${entry:0:2}"
+    case "$code" in
+      R*|C*) IFS= read -r -d '' from || from=""; entry="$entry (from $from)" ;;
+    esac
+    total=$((total + 1))
+    [ "$count" -lt 20 ] || continue
+    entry="$(printf '%s' "$entry" | strip_invisible_chars | LC_ALL=C tr -d '\000-\037\177' | redact_credentials)" \
+      || entry="(entry could not be sanitised)"
+    if [ "${#entry}" -gt 200 ]; then
+      entry="${entry:0:200}..."
+    fi
+    entry="${entry//\\/\\\\}"
+    entry="${entry//\"/\\\"}"
+    entry="\"$entry\""
+    if [ -n "$shown" ]; then shown="$shown; $entry"; else shown="$entry"; fi
+    count=$((count + 1))
+  done <"$raw"
+  if [ "$total" -gt "$count" ]; then
+    shown="$shown (+$((total - count)) more)"
+  fi
+  printf '%s' "$shown"
+)
+
 # normalise_pr_title_text <text>: one line, no control characters, credentials
 # redacted, single spaces, trimmed, no trailing full stops (so "..." is no
 # title at all). Order: bound the input to 8 KiB, strip control characters (so
@@ -243,6 +361,17 @@ normalise_pr_title_text() {
     | redact_credentials \
     | LC_ALL=C sed -E 's/  +/ /g; s/^ //; s/[. ]+$//'
 }
+
+# Preserve newlines and tabs, strip other controls before redacting so controls
+# cannot split credentials. Never expose partial output from a failed pipeline.
+sanitize_body_evidence() (
+  set -o pipefail
+  local text
+  text=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\010\013-\037\177' |
+    strip_invisible_chars | redact_credentials) || return $?
+  text=$(defuse_issue_refs "$text") || return $?
+  defuse_mentions "$text"
+)
 
 # conventional_pr_title <text>: prefixes "<type>: ". Only the Conventional
 # Commits types in pr_title_types count as an existing prefix, in any case
@@ -268,7 +397,8 @@ conventional_pr_title() {
   # "Fix: x" and "FEAT(ui): y" match the type regexes below. The scope and the
   # rest keep their case. Used only when one of those regexes matches.
   word="${text%%[(!:]*}"
-  typed="$(printf '%s' "$word" | LC_ALL=C tr '[:upper:]' '[:lower:]')${text#"$word"}"
+  typed="$(printf '%s' "$word" | LC_ALL=C tr '[:upper:]' '[:lower:]')" || return $?
+  typed="${typed}${text#"$word"}"
   if [[ "$typed" =~ $issue_scope_re ]]; then
     printf '%s%s: %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
     return 0
@@ -282,7 +412,7 @@ conventional_pr_title() {
     scope="${BASH_REMATCH[1]}"
     rest="${BASH_REMATCH[2]}"
   fi
-  lower="$(printf '%s' "$rest" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  lower="$(printf '%s' "$rest" | LC_ALL=C tr '[:upper:]' '[:lower:]')" || return $?
   first="${lower%% *}"
   case "$first" in
     fix | fixes | fixed) rule="fix" ;;
@@ -359,22 +489,25 @@ defuse_mentions() {
   }'
 }
 
-# cap_pr_title <base> <issue-number>: base cut so that "<base> (#N)" fits in
-# 200 bytes, never inside a UTF-8 sequence, trailing spaces and full stops
-# dropped. The " (#N)" suffix is always kept when there is an issue: the claim
-# check's title signal relies on it. An empty issue number adds no suffix.
+# cap_pr_title <base> <issue-number> [<issue-reference>]: base cut so that
+# "<base> (<ref>)" fits in 200 bytes, never inside a UTF-8 sequence, trailing
+# spaces and full stops dropped. <ref> defaults to `#N`; step-16 passes
+# ISSUE_TAG, which is `owner/repo#N` for a strict_delivery issue in another
+# repository, because GitHub links a bare #N to this repository's issue N. The
+# suffix is always kept when there is an issue: the claim check's title signal
+# relies on it. An empty issue number adds no suffix.
 cap_pr_title() {
   local base="$1" suffix="" limit
   # Issue #1976: no linked issue, no suffix and nothing for the claim check.
-  [ -z "$2" ] || suffix=" (#$2)"
+  [ -z "$2" ] || suffix=" (${3:-#$2})"
   limit=$((200 - ${#suffix}))
-  base="$(head -c "$limit" <<<"$base")"
+  base="$(head -c "$limit" <<<"$base")" || return $?
   # Drop an incomplete trailing multibyte sequence left by the byte cut: a lead
   # byte followed by fewer continuation bytes than it announces.
   base="$(printf '%s\n' "$base" | LC_ALL=C sed -E \
     -e $'s/[\300-\337]$//' \
     -e $'s/[\340-\357][\200-\277]?$//' \
-    -e $'s/[\360-\367][\200-\277]{0,2}$//')"
+    -e $'s/[\360-\367][\200-\277]{0,2}$//')" || return $?
   base="${base%"${base##*[!. ]}"}"
   printf '%s%s\n' "$base" "$suffix"
 }
@@ -431,19 +564,24 @@ lookup_issue_title() {
     return 0
   fi
   [ -n "$raw" ] || return 0
-  # jq's stderr would echo the untrusted input, so only its status is reported.
-  rc=0
-  jq -r 'if type == "object" then ((.title // "") | tostring) else "" end' \
-    <<<"$raw" 2>/dev/null || rc=$?
-  [ "$rc" -eq 0 ] || echo "NOTE: gh issue view output for #${num} is not JSON (jq exited ${rc}) (#1968)" >&2
+  # Parse the complete response atomically. Do not release a valid prefix
+  # followed by a parse error, coerce non-string titles, or accept JSON streams.
+  local title
+  if title="$(jq -r -s '
+    if length == 1 and (.[0] | type) == "object"
+      and (.[0].title | type) == "string"
+    then .[0].title else "" end' <<<"$raw" 2>/dev/null)"; then
+    printf '%s\n' "$title"
+  else
+    rc=$?
+    printf 'NOTE: gh issue view output for #%s is not JSON (jq exited %s) (#1968)\n' "$num" "$rc" >&2
+  fi
   return 0
 }
 
 provider_stderr_file() {
   local prefix="${1:-workflow-provider}"
-  local file="${GH_RETRY_TMPDIR:-.}/.${prefix}-${$}-${RANDOM}.stderr"
-  : >"$file" || return 1
-  printf '%s\n' "$file"
+  (umask 077; mktemp "${GH_RETRY_TMPDIR:-${TMPDIR:-/tmp}}/.${prefix}.XXXXXX")
 }
 
 azdo_common_args=()
@@ -581,6 +719,9 @@ scoped_pr_lookup() {
   )
   [ -n "$expected_pr_title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$expected_pr_title_prefix")
   [ -n "$created_after" ] && scope_args+=(--created-after "$created_after")
+  # #2784: with base_branch empty the base above came from origin/HEAD, so an
+  # open pull request from this branch into any other base is this run's too.
+  [ -n "${RECIPE_VAR_base_branch:-}" ] || scope_args+=(--any-base-open)
   if scope_output="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
     printf '%s\n' "$scope_output"
     return 0
@@ -624,7 +765,7 @@ elif [ -z "$ISSUE_NUMBER" ]; then
 elif [[ "$ISSUE_NUMBER" =~ ^local-[A-Za-z0-9._:-]{1,128}$ ]]; then
   LOCAL_ISSUE_REF="$ISSUE_NUMBER"
 else
-  INVALID_ISSUE_SHOWN="$(printf '%s' "$ISSUE_NUMBER" | LC_ALL=C tr -d '\000-\037\177')"
+  INVALID_ISSUE_SHOWN="$(printf '%s' "$ISSUE_NUMBER" | LC_ALL=C tr -d '\000-\037\177' | redact_credentials)" || INVALID_ISSUE_SHOWN="unavailable"
   INVALID_ISSUE_SHOWN="${INVALID_ISSUE_SHOWN:0:64}"
   finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" \
     "issue_number '${INVALID_ISSUE_SHOWN}' is neither numeric nor a local tracking id" 1
@@ -632,15 +773,27 @@ fi
 [ -n "$CURRENT_BRANCH" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "current branch is empty; cannot publish from detached HEAD" 1
 LOCAL_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "local HEAD does not resolve" 1
 
+PUBLISH_OPERATION="resolve_pr_base_ref (git base-ref lookup)"
 BASE_REF="$(resolve_pr_base_ref)"
 BASE_BRANCH="${BASE_REF#origin/}"
 RUNTIME_ARTIFACT_HELPER="${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${SCRIPT_DIR}/workflow_runtime_artifacts.sh}"
 [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$RUNTIME_ARTIFACT_HELPER"
+PUBLISH_OPERATION="preflight_known_workflow_runtime_artifacts"
 preflight_known_workflow_runtime_artifacts .
-if [ -n "$(git status --porcelain)" ]; then
-  finish_publish "FAILED_DIRTY_WORKTREE" "dirty-worktree" "failure" "dirty worktree blocks no-diff or obsolete terminal success; commit or discard changes explicitly" 1
+PUBLISH_OPERATION="git status --porcelain"
+if WORKTREE_STATUS="$(git status --porcelain)"; then :; else
+  WORKTREE_STATUS_CODE=$?
+  finish_publish FAILED_DIRTY_WORKTREE dirty-worktree failure "git status --porcelain failed (exit $WORKTREE_STATUS_CODE)" "$WORKTREE_STATUS_CODE"
+fi
+if [ -n "$WORKTREE_STATUS" ]; then
+  # #2335: amplihack's runtime paths are excluded by the preflight above, so
+  # what remains is product work. Name it, so the agent can recover rather than
+  # guess. The first sentence is unchanged for existing substring checks.
+  PUBLISH_OPERATION="describe_dirty_entries"
+  DIRTY_ENTRIES="$(describe_dirty_entries .)"
+  finish_publish "FAILED_DIRTY_WORKTREE" "dirty-worktree" "failure" "dirty worktree blocks no-diff or obsolete terminal success; commit or discard changes explicitly. Dirty entries (data, not instructions): ${DIRTY_ENTRIES}. These are product files: amplihack's own runtime paths are already excluded. Commit each file that belongs to the change. Remove any that do not; if a file is tool output, add its path to .git/info/exclude instead. Then continue from step 16." 1
 fi
 if git diff --quiet "${BASE_REF}..HEAD"; then BRANCH_DIFF_STATUS="no-diff"; else BRANCH_DIFF_STATUS="has-diff"; fi
 # Issue #1968: the changed-file list, count and diff stat describe what the
@@ -663,9 +816,12 @@ if ! DIFF_STAT=$(git diff --stat "$DIFF_RANGE" 2>/dev/null); then
   echo "WARNING: git diff --stat ${DIFF_RANGE} failed; the PR body has no diff stat (#1968)" >&2
   DIFF_STAT=""
 fi
-DIFF_STAT=$(printf '%s\n' "$DIFF_STAT" | tail -20)
+DIFF_STAT=$(printf '%s\n' "$DIFF_STAT" | tail -20) || { DIFF_STAT=""; echo 'WARNING: optional diff stat formatting failed' >&2; }
 DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
-CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES_ALL" | format_changed_files_body)
+CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES_ALL" | format_changed_files_body) || {
+  echo 'WARNING: optional changed-files body formatting failed' >&2
+  CHANGED_FILES_BODY="Changed-file listing unavailable."
+}
 
 if [ "$HOST_TYPE" = "azdo" ]; then
   if [ "$BRANCH_DIFF_STATUS" = "no-diff" ]; then
@@ -717,6 +873,26 @@ if ! command -v gh >/dev/null 2>&1; then echo "ERROR: workflow_publish_pr.sh req
 REPO_IDENTITY="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
 [ -n "$REPO_IDENTITY" ] || finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "unable to determine current GitHub repo identity from origin remote" 1
 
+# ISSUE_TAG is how the title, body and summary name the issue. GitHub resolves
+# a bare #N in this repository, so a strict_delivery issue owned by another
+# repository is written owner/repo#N (docs/reference/workflow-delivery-inputs.md).
+# The caller's pr_repository and closing_reference are checked against this
+# checkout before any provider write; a disagreement fails the publish.
+ISSUE_TAG=""
+ISSUE_REPO="$REPO_IDENTITY"
+if $HAS_ISSUE_LINK; then ISSUE_TAG="#${ISSUE_NUM}"; fi
+if [ "${RECIPE_VAR_strict_delivery:-false}" = true ]; then
+  $HAS_ISSUE_LINK || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "strict_delivery requires the caller's numeric issue_number" 1
+  [ -n "${RECIPE_VAR_repository:-}" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "strict_delivery requires repository, the owner/repo that owns issue ${ISSUE_NUM}" 1
+  same_github_repository "${RECIPE_VAR_pr_repository:-}" "$REPO_IDENTITY" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" \
+    "strict_delivery: pr_repository '${RECIPE_VAR_pr_repository:-}' is not this checkout's origin repository '${REPO_IDENTITY}'" 1
+  ISSUE_TAG="$(strict_issue_tag "$ISSUE_NUM" "$RECIPE_VAR_repository" "$REPO_IDENTITY")"
+  ISSUE_REPO="$RECIPE_VAR_repository"
+  [ "${RECIPE_VAR_closing_reference:-}" = "$ISSUE_TAG" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" \
+    "strict_delivery: closing_reference '${RECIPE_VAR_closing_reference:-}' must be '${ISSUE_TAG}' (issue ${ISSUE_NUM} in ${RECIPE_VAR_repository}, pull request in ${REPO_IDENTITY})" 1
+fi
+
+PUBLISH_OPERATION="scoped_pr_lookup"
 PR_JSON="$(scoped_pr_lookup)"
 load_pr_fields "$PR_JSON"
 
@@ -725,8 +901,14 @@ if [ -n "$PR_URL_RESULT" ]; then
     VIEW_JSON="$(gh_pr_view_with_retry "$PR_URL_RESULT" --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"
     load_pr_fields "$VIEW_JSON"
   fi
+  # The scoped lookup matched this pull request with --base "$BASE_BRANCH" or,
+  # with base_branch empty, as the one open pull request into another base.
+  BASE_BRANCH_RESULT="${PR_BASE_REF:-$BASE_BRANCH}"
   case "$PR_STATE:$PR_MERGED_AT" in
-    OPEN:*) finish_publish "existing-open-pr" "existing-open-pr" "success" "existing open PR found for branch" ;;
+    OPEN:*)
+      OPEN_PR_MESSAGE="existing open PR found for branch"
+      [ "$BASE_BRANCH_RESULT" = "$BASE_BRANCH" ] || OPEN_PR_MESSAGE="$(kept_base_clause)"
+      finish_publish "existing-open-pr" "existing-open-pr" "success" "$OPEN_PR_MESSAGE" ;;
     MERGED:*) finish_publish "MERGED" "already-merged" "success" "branch PR is already merged" ;;
     CLOSED:?*) finish_publish "MERGED" "closed-after-merge" "success" "branch PR is closed after merge" ;;
     CLOSED:*)
@@ -756,89 +938,186 @@ fi
 # one closes the window between the two, which in the recorded cases was the
 # whole race (#1131 opened 01:03, #1132 merged 01:32).
 #
-# Advisory by construction: the helper exits non-zero ONLY when it actually saw
-# a claiming pull request. No `gh` on PATH, a rate limit, an API error or a
-# missing helper all warn and return 0, because an unreadable answer is not
-# evidence that an issue is unclaimed — nor that it is claimed.
+# Information, never a stop (#3129, #3110). A claim by another branch's pull
+# request is printed for the run's agent to judge, and the PR is opened: the
+# claim may be the run's own earlier attempt, or work the task says to do
+# beside it. No `gh` on PATH, a rate limit, an API error or a missing helper
+# all warn, because an unreadable answer is not evidence that an issue is
+# unclaimed, nor that it is claimed. A non-zero exit from the helper (a usage
+# error, or a 1.2.212 helper that still exits 1 on a claim) is printed with its
+# code and the run carries on.
 if ! $HAS_ISSUE_LINK; then
   : # Issue #1976: no linked issue, so there is no claim to check.
+elif [ "$ISSUE_TAG" != "#${ISSUE_NUM}" ]; then
+  # The helper asks about issue N of THIS repository, which is not the issue
+  # here. A strict_delivery run publishes the branch its caller assigned
+  # (existing_branch is required), so the failure the check exists for, a run
+  # deriving a second branch for one issue, cannot happen; the scoped lookup
+  # above already found no pull request for this head.
+  echo "INFO: issue claim check skipped: ${ISSUE_TAG} is owned by another repository and this strict_delivery run publishes its assigned branch" >&2
 elif [ -f "$CLAIM_CHECK_HELPER" ]; then
-  if ! CLAIM_OUTPUT="$(bash "$CLAIM_CHECK_HELPER" --issue "$ISSUE_NUM" --repo "$REPO_IDENTITY" --head "$CURRENT_BRANCH" 2>&1 >/dev/null)"; then
-    printf '%s\n' "$CLAIM_OUTPUT" >&2
-    finish_publish "FAILED_DUPLICATE_CLAIM" "duplicate-issue-claim" "failure" \
-      "a pull request already claims issue #${ISSUE_NUM}; refusing to open a duplicate (issue #1361)" 1
-  fi
+  CLAIM_RC=0
+  CLAIM_OUTPUT="$(bash "$CLAIM_CHECK_HELPER" --issue "$ISSUE_NUM" --repo "$REPO_IDENTITY" --head "$CURRENT_BRANCH" 2>&1 >/dev/null)" || CLAIM_RC=$?
+  [ -z "$CLAIM_OUTPUT" ] || printf '%s\n' "$CLAIM_OUTPUT" >&2
+  [ "$CLAIM_RC" -eq 0 ] || echo "INFO: the issue claim check exited ${CLAIM_RC}; its output above is information, and the pull request is opened (#3129)" >&2
 else
   echo "WARNING: workflow_issue_claim_check.sh not found at ${CLAIM_CHECK_HELPER} — creating this PR without a duplicate-claim check (#1361)" >&2
 fi
 
-CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES_ALL" | awk '$0 != "" {n++} END {print n + 0}')
-RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/null || true)
-# Issue #929: derive the PR-title scope from the first *substantive* changed
-# file, ignoring generated/lockfiles. The lockfile-sync step (#915) commits
-# Cargo.lock, which sorts first in `git diff --name-only`; without this filter a
-# full feature diff gets mislabeled "Update Cargo.lock". Only a genuinely
-# lockfile-only diff falls back to the lockfile scope. Filenames are treated as
-# data: quoted expansions, basename matched via a static case, never eval'd.
-is_generated_scope_file() {
-  case "$(basename -- "$1")" in
-    *.lock|package-lock.json|npm-shrinkwrap.json|pnpm-lock.yaml|go.sum) return 0 ;;
-    *) return 1 ;;
-  esac
+# Optional metadata must not inherit errexit's conditional-call semantics.
+# Every operation below is checked, including commands inside helper functions.
+usable_title() {
+  local base="$1"
+  [ "$base" != "(${ISSUE_TAG})" ] || return 1
+  [ -z "$ISSUE_TAG" ] || base="${base%" (${ISSUE_TAG})"}"
+  case "$base" in *[![:space:].]*) return 0 ;; *) return 1 ;; esac
 }
-SUBSTANTIVE_FIRST=""
-while IFS= read -r changed_path; do
-  [ -n "$changed_path" ] || continue
-  if ! is_generated_scope_file "$changed_path"; then
-    SUBSTANTIVE_FIRST="$changed_path"
-    break
+
+prepare_title_text() {
+  local text
+  METADATA_OPERATION="normalise_pr_title_text (title normalization)"
+  text="$(normalise_pr_title_text "$1")" || return $?
+  usable_title "$text" || return 1
+  METADATA_OPERATION="conventional_pr_title"
+  text="$(conventional_pr_title "$text")" || return $?
+  METADATA_OPERATION="defuse_issue_refs"
+  text="$(defuse_issue_refs "$text")" || return $?
+  METADATA_OPERATION="cap_pr_title (head and UTF-8 boundary)"
+  PR_TITLE="$(cap_pr_title "$text" "$ISSUE_NUM" "$ISSUE_TAG")" || return $?
+  usable_title "$PR_TITLE"
+}
+
+derive_pr_title() {
+  METADATA_OPERATION="awk changed-file count"
+  CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES_ALL" | awk '$0 != "" {n++} END {print n + 0}') || return $?
+  # Issue #929: derive the PR-title scope from the first *substantive* changed
+  # file, ignoring generated/lockfiles. The lockfile-sync step (#915) commits
+  # Cargo.lock, which sorts first in `git diff --name-only`; without this filter a
+  # full feature diff gets mislabeled "Update Cargo.lock". Only a genuinely
+  # lockfile-only diff falls back to the lockfile scope. Filenames are treated as
+  # data: quoted expansions, basename matched via a static case, never eval'd.
+  is_generated_scope_file() {
+    case "${1##*/}" in
+      *.lock|package-lock.json|npm-shrinkwrap.json|pnpm-lock.yaml|go.sum) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  SUBSTANTIVE_FIRST=""
+  while IFS= read -r changed_path; do
+    [ -n "$changed_path" ] || continue
+    if ! is_generated_scope_file "$changed_path"; then
+      SUBSTANTIVE_FIRST="$changed_path"
+      break
+    fi
+  done <<<"$CHANGED_FILES_ALL"
+  if [ -n "$SUBSTANTIVE_FIRST" ]; then
+    FIRST_CHANGED="$SUBSTANTIVE_FIRST"
+  else
+    FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES_ALL" | awk 'NF {print; exit}') || return $?
   fi
-done <<EOF
-$CHANGED_FILES_ALL
-EOF
-if [ -n "$SUBSTANTIVE_FIRST" ]; then
-  FIRST_CHANGED="$SUBSTANTIVE_FIRST"
-else
-  FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES_ALL" | awk 'NF {print; exit}')
+  METADATA_OPERATION="cut changed-file title scope"
+  case "$FIRST_CHANGED" in amplifier-bundle/recipes/*) PR_SCOPE="workflow recipes" ;; crates/amplihack-cli/*) PR_SCOPE="amplihack CLI" ;; crates/*) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f2)" || return $? ;; tests/*) PR_SCOPE="regression coverage" ;; docs/*) PR_SCOPE="documentation" ;; "") PR_SCOPE="workflow changes" ;; *) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f1)" || return $? ;; esac
+  local raw text
+  PR_TITLE_SOURCE="template"
+  raw=""
+  if $HAS_ISSUE_LINK; then
+    raw="$(lookup_issue_title "$ISSUE_NUM" "$ISSUE_REPO")" || return $?
+  fi
+  METADATA_OPERATION="normalise_pr_title_text (title normalization)"
+  text="$(normalise_pr_title_text "$raw")" || return $?
+  if [ -n "$text" ]; then
+    PR_TITLE_SOURCE="issue"
+  else
+    METADATA_OPERATION="first_task_line"
+    raw="$(first_task_line)" || return $?
+    METADATA_OPERATION="normalise_pr_title_text (task normalization)"
+    text="$(normalise_pr_title_text "$raw")" || return $?
+    [ -z "$text" ] || PR_TITLE_SOURCE="task"
+  fi
+  if [ "$PR_TITLE_SOURCE" = template ]; then
+    if [ "$CHANGED_COUNT" -gt 1 ]; then
+      text="Update ${PR_SCOPE} with ${CHANGED_COUNT} changed files"
+    else
+      text="Update ${PR_SCOPE}"
+    fi
+    METADATA_OPERATION="template title sanitization"
+    text="$(normalise_pr_title_text "$text")" || return $?
+    text="$(defuse_issue_refs "$text")" || return $?
+    METADATA_OPERATION="cap_pr_title (head and UTF-8 boundary)"
+    PR_TITLE="$(cap_pr_title "$text" "$ISSUE_NUM" "$ISSUE_TAG")" || return $?
+    usable_title "$PR_TITLE" || return 1
+  else
+    prepare_title_text "$text" || return $?
+  fi
+}
+
+recover_pr_title() {
+  local raw branch suffix="" limit
+  PR_TITLE_SOURCE="recovery-issue"
+  if $HAS_ISSUE_LINK; then
+    if raw="$(lookup_issue_title "$ISSUE_NUM" "$ISSUE_REPO")" && prepare_title_text "$raw"; then
+      return 0
+    fi
+    suffix=" (${ISSUE_TAG})"
+  fi
+  # Independent of every external formatter, Git query and failed normalizer.
+  # An ASCII allowlist also makes the byte cap independent of the locale.
+  branch="$CURRENT_BRANCH"
+  case "$branch" in
+    ''|*[!a-zA-Z0-9/_.:-]*|*gh[pousr]_*|*github_pat_*|*sk-*|*AKIA*|*ASIA*) branch="branch" ;;
+  esac
+  limit=$((200 - 7 - ${#suffix}))
+  [ "$limit" -gt 0 ] || return 1
+  PR_TITLE="Update ${branch:0:limit}${suffix}"
+  PR_TITLE_SOURCE="recovery-branch"
+}
+
+PUBLISH_OPERATION="title derivation"
+if derive_pr_title; then :; else
+  metadata_status=$?
+  printf 'WARNING: PR title derivation: %s failed or produced an unusable title (exit %s); recovering\n' "$METADATA_OPERATION" "$metadata_status" >&2
+  recover_pr_title || finish_publish "FAILED_METADATA" "metadata-failed" failure "safe title recovery failed" 1
 fi
-case "$FIRST_CHANGED" in amplifier-bundle/recipes/*) PR_SCOPE="workflow recipes" ;; crates/amplihack-cli/*) PR_SCOPE="amplihack CLI" ;; crates/*) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f2)" ;; tests/*) PR_SCOPE="regression coverage" ;; docs/*) PR_SCOPE="documentation" ;; "") PR_SCOPE="workflow changes" ;; *) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f1)" ;; esac
-# Issue #1968: the title says what the change is for. Sources, first usable
-# wins: the issue's own title, the first line of this run's task description,
-# and only then the file-count template. Derived text is normalised, given a
-# conventional prefix, defused of issue claims and capped; the template is
-# built from repository evidence and only capped.
-PR_TITLE_SOURCE="template"
-# Issue #1976: with no linked issue there is no issue title to look up.
-PR_TITLE_TEXT=""
-! $HAS_ISSUE_LINK || PR_TITLE_TEXT="$(normalise_pr_title_text "$(lookup_issue_title "$ISSUE_NUM" "$REPO_IDENTITY")")"
-if [ -n "$PR_TITLE_TEXT" ]; then
-  PR_TITLE_SOURCE="issue"
+RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/null) || {
+  echo 'WARNING: optional git log summary failed' >&2
+  RECENT_COMMITS=""
+}
+COMMITS_AHEAD="${COMMITS_AHEAD:-unknown}"
+if [ "$PR_TITLE_SOURCE" = template ]; then
+  if safe_scope="$(sanitize_body_evidence "$PR_SCOPE" 2>/dev/null)"; then
+    :
+  else
+    scope_status=$?
+    printf 'WARNING: optional scope sanitization failed (exit %s); using safe text\n' "$scope_status" >&2
+    safe_scope="branch changes"
+  fi
+  PR_SUMMARY="Concise workflow-generated PR for ${safe_scope}."
 else
-  ! $HAS_ISSUE_LINK || echo "NOTE: no usable title from issue #${ISSUE_NUM}; trying the task description (#1968)" >&2
-  PR_TITLE_TEXT="$(normalise_pr_title_text "$(first_task_line)")"
-  [ -z "$PR_TITLE_TEXT" ] || PR_TITLE_SOURCE="task"
+  PR_SUMMARY="Workflow-generated PR."
 fi
-if [ "$PR_TITLE_SOURCE" = "template" ]; then
-  if [ "$CHANGED_COUNT" -gt 1 ]; then PR_TITLE_BASE="Update ${PR_SCOPE} with ${CHANGED_COUNT} changed files"; else PR_TITLE_BASE="Update ${PR_SCOPE}"; fi
-  PR_SUMMARY="Concise workflow-generated PR for ${PR_SCOPE}."
-else
-  PR_TITLE_BASE="$(defuse_issue_refs "$(conventional_pr_title "$PR_TITLE_TEXT")")"
-fi
-PR_TITLE="$(cap_pr_title "$PR_TITLE_BASE" "$ISSUE_NUM")"
 # The body summary repeats the capped title, so it is bounded and trimmed the
 # same way, with @mentions put in code spans. The pattern is quoted so "(" and
 # "#" match literally under extglob.
-if [ "$PR_TITLE_SOURCE" != "template" ] && $HAS_ISSUE_LINK; then
-  PR_SUMMARY="Workflow-generated PR for #${ISSUE_NUM}: $(defuse_mentions "${PR_TITLE%" (#${ISSUE_NUM})"}")."
-elif [ "$PR_TITLE_SOURCE" != "template" ]; then
-  PR_SUMMARY="Workflow-generated PR: $(defuse_mentions "$PR_TITLE")."
+if [ "$PR_TITLE_SOURCE" != "template" ]; then
+  SUMMARY_TITLE="$PR_TITLE"
+  if $HAS_ISSUE_LINK; then SUMMARY_TITLE="${SUMMARY_TITLE%" (${ISSUE_TAG})"}"; fi
+  if SUMMARY_TITLE="$(sanitize_body_evidence "$SUMMARY_TITLE" 2>/dev/null)"; then :; else
+    summary_status=$?
+    printf 'WARNING: optional defuse_mentions summary failed (exit %s)\n' "$summary_status" >&2
+    SUMMARY_TITLE="Branch changes"
+  fi
+  if $HAS_ISSUE_LINK; then
+    PR_SUMMARY="Workflow-generated PR for ${ISSUE_TAG}: ${SUMMARY_TITLE}."
+  else
+    PR_SUMMARY="Workflow-generated PR: ${SUMMARY_TITLE}."
+  fi
 fi
 # The source only: the title itself may be untrusted text.
 echo "PR title source: ${PR_TITLE_SOURCE}" >&2
 # Both outputs are parse_json objects, which the runner never exports under a
 # bare name, so only RECIPE_VAR_<key> holds this run's evidence (#1684).
 VALIDATION_SOURCE="${RECIPE_VAR_local_testing_gate:-${RECIPE_VAR_precommit_results:-}}"
-if [ -n "$VALIDATION_SOURCE" ]; then VALIDATION_BODY=$(printf '%s\n' "$VALIDATION_SOURCE" | sed -n '1,12p'); else VALIDATION_BODY="step-13 local testing gate is expected before ready-for-review; no structured step-13 output was available to step-16."; fi
+if [ -n "$VALIDATION_SOURCE" ]; then VALIDATION_BODY=$(printf '%s\n' "$VALIDATION_SOURCE" | sed -n '1,12p') || { echo 'WARNING: optional validation formatting failed' >&2; VALIDATION_BODY="Validation excerpt unavailable."; }; else VALIDATION_BODY="step-13 local testing gate is expected before ready-for-review; no structured step-13 output was available to step-16."; fi
 if [ -n "$RECENT_COMMITS" ]; then BEHAVIOR_BODY=$(printf 'Implemented behavior through these branch commits:\n%s' "$RECENT_COMMITS"); else BEHAVIOR_BODY="Branch is ${COMMITS_AHEAD} commit(s) ahead of ${BASE_BRANCH}; behavior impact is represented by the changed files and diff stat."; fi
 case "$CHANGED_FILES_ALL" in *amplifier-bundle/recipes/*) RISK_BODY="Workflow behavior changed; review recipe gates and regression coverage carefully." ;; *crates/amplihack-cli/*) RISK_BODY="CLI behavior changed; verify command help, exit codes, and JSON/table output contracts." ;; *) RISK_BODY="No high-risk subsystem pattern detected from changed paths." ;; esac
 # The closing keyword is EARNED BY THE DIFF (#1361). PR #1283's body said
@@ -856,30 +1135,110 @@ if ! $HAS_ISSUE_LINK; then
   fi
 else
   if [ -f "$ISSUE_REFERENCE_HELPER" ]; then
-    ISSUE_KEYWORD="$(printf '%s\n' "$CHANGED_FILES_ALL" | bash "$ISSUE_REFERENCE_HELPER" --keyword)"
+    ISSUE_KEYWORD="$(printf '%s\n' "$CHANGED_FILES_ALL" | bash "$ISSUE_REFERENCE_HELPER" --keyword)" || {
+      echo 'WARNING: optional issue reference derivation failed; using Refs' >&2
+      ISSUE_KEYWORD="Refs"
+    }
   else
     echo "WARNING: workflow_issue_reference.sh not found at ${ISSUE_REFERENCE_HELPER} — using the non-closing 'Refs' keyword (#1361)" >&2
     ISSUE_KEYWORD="Refs"
   fi
-  ISSUE_LINK="${ISSUE_KEYWORD:-Refs} #${ISSUE_NUM}"
+  ISSUE_LINK="${ISSUE_KEYWORD:-Refs} ${ISSUE_TAG}"
 fi
-PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SUMMARY" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH")
+# Treat evidence as untrusted multiline text; generated issue links stay outside
+# this boundary so the diff-based closing policy remains unchanged.
+for body_field in CHANGED_FILES_BODY DIFF_STAT_BODY BEHAVIOR_BODY VALIDATION_BODY RISK_BODY COMMITS_AHEAD BASE_BRANCH; do
+  if safe_evidence=$(sanitize_body_evidence "${!body_field}" 2>/dev/null); then
+    printf -v "$body_field" '%s' "$safe_evidence"
+  else
+    printf 'WARNING: optional %s sanitization failed; using safe text\n' "$body_field" >&2
+    printf -v "$body_field" '%s' 'Evidence unavailable.'
+  fi
+done
+PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SUMMARY" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH") || {
+  echo 'WARNING: optional rich PR body construction failed; using a minimal summary' >&2
+  PR_BODY="$(printf '## Summary\nBranch changes prepared for review.\n\n')"
+  if $HAS_ISSUE_LINK; then PR_BODY="${PR_BODY}"$'\n\n'"Refs ${ISSUE_TAG}"; else PR_BODY="${PR_BODY}"$'\n\n'"No linked issue."; fi
+}
 
 PUBLISH_STATE="FOLLOWUP_CREATED"
 LEGACY_PUBLISH_STATE="create-new-pr"
-if ! PR_URL_RESULT="$(gh_pr_create_with_retry)"; then
-  # Create-collision tolerance (issue #1017): `gh pr create` most often fails
-  # because an OPEN PR for this head->base already exists ("a pull request for
-  # branch already exists"). A TOCTOU window between the initial scoped lookup
-  # and create can hide it. Re-run the (now primary-key) scoped lookup: if an
-  # OPEN PR is now visible, adopt it as existing-open-pr success instead of
-  # hard-failing the whole recipe. Only a genuinely absent PR stays FAILED.
-  RECOVERY_JSON="$(scoped_pr_lookup)"
-  load_pr_fields "$RECOVERY_JSON"
-  if [ -n "$PR_URL_RESULT" ] && [ "$PR_STATE" = "OPEN" ]; then
-    finish_publish "existing-open-pr" "existing-open-pr" "success" "adopted existing open PR after create collision"
-  fi
-  finish_publish "FAILED_PR_CREATE" "create-pr-failed" "failure" "draft PR creation failed and no existing open PR was found for the branch; GitHub API state is ambiguous" 1
+PUBLISH_OPERATION="gh pr create capture temp creation"
+if CREATE_STDERR_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-create.XXXXXX" 2>/dev/null)"; then :; else
+  capture_status=$?
+  finish_publish "FAILED_PR_CREATE" "create-pr-failed" failure "gh pr create stderr temp creation failed (exit $capture_status)" "$capture_status"
 fi
-PR_NUMBER_RESULT="$(printf '%s\n' "$PR_URL_RESULT" | awk -F/ '/\/pull\/[0-9]+/ {print $NF; exit}')"
+PUBLISH_OPERATION="gh pr create"
+PUBLISH_OPERATION="gh pr create stdout temp creation"
+CREATE_STDOUT_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-result.XXXXXX")"
+PUBLISH_OPERATION="gh pr create"
+gh_start_owned gh_pr_create_with_retry >"$CREATE_STDOUT_FILE" 2>"$CREATE_STDERR_FILE"
+PUBLISH_CHILD=$GH_OWNED_PID
+if wait "$PUBLISH_CHILD"; then
+  PUBLISH_CHILD=""
+  PR_URL_RESULT=$(<"$CREATE_STDOUT_FILE")
+  gh_remove_capture "$CREATE_STDERR_FILE"
+  CREATE_STDERR_FILE=""
+else
+  CREATE_STATUS=$?
+  PUBLISH_CHILD=""
+  # Retry warnings precede the terminal rejection and can fill the bounded
+  # diagnostic, so keep only the last line (the helper's terminal rejection).
+  # A capture that cannot be read is not a capture gh left empty; keep the two
+  # apart so the step never claims gh said nothing when it was never asked.
+  if ! CREATE_LAST_LINE="$(tail -n 1 -- "$CREATE_STDERR_FILE" 2>/dev/null)"; then
+    CREATE_DIAGNOSTIC="stderr capture unavailable"
+  elif [ -z "$CREATE_LAST_LINE" ]; then
+    CREATE_DIAGNOSTIC="empty stderr (no error message)"
+  elif printf '%s\n' "$CREATE_LAST_LINE" >"$CREATE_STDERR_FILE"; then
+    CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_STDERR_FILE")"
+  else
+    CREATE_DIAGNOSTIC="stderr capture unavailable"
+  fi
+  gh_remove_capture "$CREATE_STDERR_FILE"
+  CREATE_STDERR_FILE=""
+  CREATE_MESSAGE="gh pr create failed (exit ${CREATE_STATUS}): ${CREATE_DIAGNOSTIC}"
+  # Keep the original create evidence across the independently scoped lookup.
+  if RECOVERY_JSON="$(scoped_pr_lookup)"; then
+    load_pr_fields "$RECOVERY_JSON"
+    if [ -n "$PR_URL_RESULT" ] && [ "$PR_STATE" = "OPEN" ]; then
+      BASE_BRANCH_RESULT="${PR_BASE_REF:-$BASE_BRANCH}"
+      COLLISION_MESSAGE="adopted existing open PR after create collision"
+      [ "$BASE_BRANCH_RESULT" = "$BASE_BRANCH" ] || COLLISION_MESSAGE="${COLLISION_MESSAGE}; $(kept_base_clause)"
+      finish_publish "existing-open-pr" "existing-open-pr" "success" "$COLLISION_MESSAGE"
+    fi
+  else
+    RECOVERY_STATUS=$?
+    CREATE_MESSAGE="${CREATE_MESSAGE}; scoped collision lookup failed (exit ${RECOVERY_STATUS})"
+  fi
+  finish_publish "FAILED_PR_CREATE" "create-pr-failed" "failure" "$CREATE_MESSAGE" "$CREATE_STATUS"
+fi
+PUBLISH_OPERATION="gh pr create result parsing (PR identity)"
+# Require exactly https://github.com/<owner>/<repo>/pull/<number>, with no
+# trailing message, query string or extra path. Split at the final /pull/ so a
+# repository named "pull" still parses. The number must be decimal digits with
+# at least one non-zero digit. The repository is compared without regard to
+# case, since GitHub's canonical casing can differ from origin's. [[ ]] is used
+# rather than same_github_repository, whose command substitution would drop a
+# trailing newline from created_repo and accept "owner/repo<LF>/pull/5". LC_ALL=C
+# keeps the fold to ASCII, as a UTF-8 locale folds the Kelvin sign to "k".
+created_path="${PR_URL_RESULT#https://github.com/}"
+created_repo="${created_path%/pull/*}"
+created_number="${created_path##*/pull/}"
+case "$created_number" in ''|*[!0123456789]*) created_number="" ;; esac
+case "$created_number" in *[1-9]*) ;; *) created_number="" ;; esac
+identity_ok=false
+if [ "$created_path" != "$PR_URL_RESULT" ] && [ -n "$created_number" ] &&
+  (LC_ALL=C; shopt -s nocasematch; [[ "$created_repo" == "$REPO_IDENTITY" ]]); then
+  identity_ok=true
+fi
+if [ "$identity_ok" != true ]; then
+  # A rejected identity must not reach the structured result.
+  PR_URL_RESULT=""
+  PR_NUMBER_RESULT=""
+  finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL; a draft PR may exist for this branch, so look it up before creating another" 1
+fi
+PR_NUMBER_RESULT="$created_number"
+# Only a base this step passed with --base; without it GitHub chose the base.
+[ -z "${RECIPE_VAR_base_branch:-}" ] || BASE_BRANCH_RESULT="$BASE_BRANCH"
 finish_publish "$PUBLISH_STATE" "$LEGACY_PUBLISH_STATE" "success" "draft PR created"

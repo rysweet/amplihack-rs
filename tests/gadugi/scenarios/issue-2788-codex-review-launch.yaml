@@ -1,0 +1,52 @@
+name: issue-2788-codex-review-launch
+description: >
+  Run the shipped Codex-agent Crusty round through the pinned recipe runner,
+  under a temporary HOME with an enforcing Codex executable fixture. The
+  context, review, assessor and decision execute in the actual PR worktree
+  without an automatic Git-check bypass. Require an accurately recorded CLEAN
+  reviewed head, zero commits, and production completion.
+  Install Smoke Test runs the same driver against its installed binary.
+  Execute only in CI; do not run Gadugi scenarios on a factory host.
+version: "1.0"
+environment:
+  requires: [amplihack, recipe-runner-rs, git, jq]
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, codex, auto-drive, crusty, regression]
+  priority: high
+  issues: ["2788", "2808"]
+steps:
+  - name: run-codex-crusty-round
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2788-codex-review-launch-scenario.sh
+  - name: scenario-succeeds
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: actual-codex-launches
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: codex_context_review_assessor_and_decision_in_pr_worktree"
+  - name: reviewed-verdict
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: clean_verdict_matches_reviewed_head"
+  - name: production-completion
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: real_completion_writer_and_dispatcher_complete"

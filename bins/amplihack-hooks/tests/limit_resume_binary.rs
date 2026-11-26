@@ -1,7 +1,8 @@
 //! Issue #1658 (D): `amplihack-hooks limit-resume` at the process boundary.
 //!
 //! Protocol: exit 2 with exactly `RESUME_MSG\n` on stderr to wake the
-//! session, otherwise exit 0 with nothing on stdout or stderr. Stdout is
+//! session, otherwise exit 0. On exit 0 stderr is empty, except that one fixed
+//! line records a log line that could not be written (#3172). Stdout is
 //! always empty. The subcommand is dispatched outside `run_hook`, which
 //! always prints JSON.
 //!
@@ -18,9 +19,14 @@
 
 #![cfg(unix)]
 
+#[path = "../../../tests/support/isolated_hook.rs"]
+mod isolated_hook;
+
+#[cfg(target_os = "linux")]
 use amplihack_hooks::limit_resume::RESUME_MSG;
 #[cfg(target_os = "linux")]
 use amplihack_utils::file_event::{Waiter, Watch, Woke};
+use isolated_hook::HookSandbox;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
@@ -33,8 +39,10 @@ use std::time::{Duration, Instant};
 /// means the hook polled when it should have decided at once.
 const CHILD_LIMIT: Duration = Duration::from_secs(60);
 
+/// The hook runs in a [`HookSandbox`] (#2361); `home` and `root` are its
+/// `HOME` and profile root, and a test may point `root` elsewhere.
 struct Env {
-    _home: tempfile::TempDir,
+    sandbox: HookSandbox,
     home: PathBuf,
     root: PathBuf,
 }
@@ -50,13 +58,13 @@ fn private_file(p: &Path, bytes: &[u8]) {
 }
 
 fn env() -> Env {
-    let home = tempfile::tempdir().unwrap();
-    let h = home.path().to_path_buf();
+    let sandbox = HookSandbox::new();
+    let h = sandbox.home();
     fs::set_permissions(&h, fs::Permissions::from_mode(0o700)).unwrap();
-    let root = h.join("profiles-root");
+    let root = sandbox.profiles();
     private_dir(&root);
     Env {
-        _home: home,
+        sandbox,
         home: h,
         root,
     }
@@ -159,17 +167,47 @@ fn limit_payload(session: &str) -> String {
 }
 
 fn spawn(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (std::process::Child, Instant) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"));
-    cmd.arg("limit-resume")
-        .current_dir(&e.home)
-        .env("HOME", &e.home)
-        .env("AMPLIHACK_HOME", e.home.join(".amplihack"))
+    spawn_via(e, toggle, stdin, false)
+}
+
+/// [`spawn`], optionally through `/bin/sh -c` the way Claude Code runs a
+/// hook command. Where `/bin/sh` is dash, the shell does not `exec` the
+/// command, so the hook's parent is the short-lived shell, not the session
+/// (crusty, PR #2295 round 3).
+///
+/// Both forms are built by the [`HookSandbox`] (#2361). Its cleared
+/// environment carries no AMPLIHACK_CLAUDE_AUTO_SWITCH, TMUX or TMUX_PANE
+/// from the test process, and the shell passes on the environment it was
+/// given, so the hook sees the same environment either way. With no pane in
+/// the environment and no `tmux` on `PATH`, no pane is found, so a resume
+/// takes the exit-2 path and never sends keys to the terminal the tests run
+/// in.
+fn spawn_via(
+    e: &Env,
+    toggle: Option<&str>,
+    stdin: &[u8],
+    shell: bool,
+) -> (std::process::Child, Instant) {
+    let bin = env!("CARGO_BIN_EXE_amplihack-hooks");
+    let mut cmd = if shell {
+        let mut c = e.sandbox.command("/bin/sh");
+        c.args(["-c", &format!("\"{bin}\" limit-resume")]);
+        c
+    } else {
+        let mut c = e.sandbox.command(bin);
+        c.arg("limit-resume");
+        c
+    };
+    // PATH is an empty private directory of the sandbox, so the hook can
+    // never reach a real tmux server: with no pane in its environment it
+    // looks one up with `tmux list-panes` (#3104), and a test run from a
+    // tmux pane must not have its own pane found. The hook and `/bin/sh`
+    // are started by absolute path.
+    let empty_path = e.sandbox.root().join("empty-path");
+    private_dir(&empty_path);
+    cmd.env("HOME", &e.home)
+        .env("PATH", &empty_path)
         .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &e.root)
-        .env_remove("AMPLIHACK_CLAUDE_AUTO_SWITCH")
-        // No pane: a resume takes the exit-2 path and never sends keys to
-        // the terminal the tests run in.
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -220,6 +258,19 @@ const IN_CLOSE_NOWRITE: u32 = 0x0000_0010;
 /// Linux the hook cannot wait for a swap at all.
 #[cfg(target_os = "linux")]
 fn run_with_swap(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Duration) {
+    run_with_swap_record(e, toggle, stdin, json!({}), false)
+}
+
+/// [`run_with_swap`], with `extra` merged into the record written, and the
+/// hook spawned through `/bin/sh -c` when `shell` is set.
+#[cfg(target_os = "linux")]
+fn run_with_swap_record(
+    e: &Env,
+    toggle: Option<&str>,
+    stdin: &[u8],
+    extra: Value,
+    shell: bool,
+) -> (Output, Duration) {
     let rotate = e.root.join(".auto-switch.d/rotate");
     private_dir(&e.root.join(".auto-switch.d"));
     private_dir(&rotate);
@@ -235,21 +286,35 @@ fn run_with_swap(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Durati
         std::process::id(),
     )
     .unwrap();
-    let (child, start) = spawn(e, toggle, stdin);
+    let (child, start) = spawn_via(e, toggle, stdin, shell);
     let woke = watch.wait(start + CHILD_LIMIT).unwrap();
     assert_eq!(woke, Woke::File(0), "the hook never read swap.json");
     let at = now() + 120;
-    let record = json!({
+    let mut record = json!({
         "seq": 1,
         "live_login": "spare",
         "from_login": "work",
         "swapped_at": at,
         "reading": {"session": 10, "week": 20, "measured_at": at}
     });
+    if let (Some(r), Some(x)) = (record.as_object_mut(), extra.as_object()) {
+        r.extend(x.clone());
+    }
     let tmp = rotate.join(".swap.json.tmp");
     private_file(&tmp, record.to_string().as_bytes());
     fs::rename(&tmp, rotate.join("swap.json")).unwrap();
     finish(child, start)
+}
+
+/// Exit 0, nothing on stdout, and exactly one line on stderr: the fixed record
+/// of a call whose line could not be written (#3172). It never carries
+/// payload text, and never changes the exit code.
+fn assert_zero_with_one_stderr_line(out: &Output) {
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty());
+    let text = String::from_utf8(out.stderr.clone()).expect("stderr is text");
+    assert_eq!(text.lines().count(), 1, "{text:?}");
+    assert!(text.ends_with('\n'), "{text:?}");
 }
 
 fn assert_silent_zero(out: &Output) {
@@ -283,28 +348,87 @@ fn resumes_when_a_fresh_cycle_has_capacity() {
     assert_eq!(out.stderr, format!("{RESUME_MSG}\n").into_bytes());
     assert!(took < Duration::from_secs(30), "took {took:?}");
 
+    // The test has no tmux pane, so the wake reached no session: nothing is
+    // recorded and the event stays armed (#3104).
     let resume = e.root.join(".auto-switch.d/resume");
-    assert_eq!(fs::read_dir(resume.join("events")).unwrap().count(), 1);
-    assert!(resume.join("resume.log").is_file());
+    let events = resume.join("events");
+    assert!(!events.exists() || fs::read_dir(&events).unwrap().count() == 0);
+    let log = resume_log(&e);
+    assert!(log.contains("outcome=not-resumed"), "{log}");
+    assert!(log.contains("detail=no-tmux-pane"), "{log}");
+    assert!(!log.contains("outcome=resumed "), "{log}");
+}
+
+/// Issue #2136, crusty PR #2295 round 3: the organisation warning goes out
+/// with the resume that follows the swap, read from that swap's record, and
+/// depends on no process identity. Run through `/bin/sh -c` as Claude Code
+/// runs it, twice: the crossing record's warning reaches the first wake,
+/// and the second wake, after a same-organisation swap, carries none. No
+/// state is kept between the two calls, so nothing depends on which process
+/// is the hook's parent.
+#[test]
+#[cfg(target_os = "linux")]
+fn shell_wrapped_hook_delivers_the_warning_from_the_swap_record_alone() {
+    let e = env();
+    let _rotator = StandInRotator::start(&e.root);
+    write_ledger(&e.root, "swapped", 120, false);
+    let crossing = json!({"from_org": "org-a", "to_org": "org-b", "affinity": "crossing"});
+    let (first, _) = run_with_swap_record(
+        &e,
+        Some("1"),
+        limit_payload("sess-1").as_bytes(),
+        crossing,
+        true,
+    );
+    assert_eq!(first.status.code(), Some(2));
+    assert!(first.stdout.is_empty());
+    let text = String::from_utf8(first.stderr).unwrap();
+    let warning = amplihack_utils::organisation_affinity::Affinity::Crossing
+        .warning()
+        .unwrap();
+    assert_eq!(text, format!("{warning}\n{RESUME_MSG}\n"));
+
+    let same = json!({"from_org": "org-a", "to_org": "org-a", "affinity": "same"});
+    let (second, _) = run_with_swap_record(
+        &e,
+        Some("1"),
+        limit_payload("sess-2").as_bytes(),
+        same,
+        true,
+    );
+    assert_eq!(second.status.code(), Some(2));
+    assert_eq!(second.stderr, format!("{RESUME_MSG}\n").into_bytes());
 }
 
 #[test]
 #[cfg(target_os = "linux")]
-fn second_run_on_the_same_event_is_a_silent_duplicate() {
+fn a_second_run_on_the_same_event_after_a_wake_wakes_again_and_records_nothing() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
     let (first, _) = run_with_swap(&e, Some("1"), limit_payload("sess-1").as_bytes());
     assert_eq!(first.status.code(), Some(2));
-    let (second, took) = run(&e, Some("1"), limit_payload("sess-1").as_bytes());
-    assert_silent_zero(&second);
-    assert!(
-        took < Duration::from_secs(10),
-        "duplicate must not wait: {took:?}"
+    let (second, _) = run_with_swap(&e, Some("1"), limit_payload("sess-1").as_bytes());
+    assert_eq!(
+        second.status.code(),
+        Some(2),
+        "woken again, not a duplicate"
     );
+    assert_eq!(second.stderr, format!("{RESUME_MSG}\n").into_bytes());
     let log = resume_log(&e);
-    assert!(log.contains("outcome=resumed"), "{log}");
-    assert!(log.contains("outcome=duplicate"), "{log}");
+    assert_eq!(log.matches("outcome=not-resumed").count(), 2, "{log}");
+    assert!(!log.contains("outcome=duplicate"), "{log}");
+    let events: Vec<&str> = log
+        .lines()
+        .filter_map(|l| l.split(' ').find(|w| w.starts_with("event=")))
+        .collect();
+    assert_eq!(events.len(), 2, "{log}");
+    assert_eq!(
+        events[0], events[1],
+        "the same room event both times: {log}"
+    );
+    let dir = e.root.join(".auto-switch.d/resume/events");
+    assert!(!dir.exists() || fs::read_dir(&dir).unwrap().count() == 0);
 }
 
 #[test]
@@ -319,7 +443,9 @@ fn toggle_file_turns_it_on_too() {
 }
 
 #[test]
-fn auto_switch_off_is_silent_and_creates_nothing() {
+fn auto_switch_off_with_no_resume_dir_writes_one_stderr_line_and_creates_nothing() {
+    // A6 (#3172): with no `resume/` folder the record of the call is one
+    // fixed stderr line, `outcome=disabled` with reason `dir_missing`.
     for toggle in [Some("0"), None] {
         let e = env();
         let _rotator = StandInRotator::start(&e.root);
@@ -328,7 +454,13 @@ fn auto_switch_off_is_silent_and_creates_nothing() {
             private_file(&e.root.join(".auto-switch"), b"enabled=off\n");
         }
         let (out, took) = run(&e, toggle, limit_payload("sess-1").as_bytes());
-        assert_silent_zero(&out);
+        assert_zero_with_one_stderr_line(&out);
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            text.contains("outcome=disabled") && text.contains("reason=dir_missing"),
+            "{text:?}"
+        );
+        assert!(!text.contains("sess-1"), "no payload text: {text:?}");
         assert!(took < Duration::from_secs(10));
         assert!(
             !e.root.join(".auto-switch.d/resume").exists(),
@@ -338,41 +470,34 @@ fn auto_switch_off_is_silent_and_creates_nothing() {
 }
 
 #[test]
-fn unresolvable_root_is_silent() {
+fn unresolvable_root_writes_one_fixed_stderr_line() {
     let e = env();
     let mut cmd_env = Env {
-        _home: tempfile::tempdir().unwrap(),
+        sandbox: HookSandbox::new(),
         home: e.home.clone(),
         root: PathBuf::from("relative/root"),
     };
     let (out, _) = run(&cmd_env, Some("1"), limit_payload("s").as_bytes());
-    assert_silent_zero(&out);
+    assert_zero_with_one_stderr_line(&out);
     cmd_env.root = PathBuf::from("/a/../b");
     let (out, _) = run(&cmd_env, Some("1"), limit_payload("s").as_bytes());
-    assert_silent_zero(&out);
+    assert_zero_with_one_stderr_line(&out);
 }
 
 #[test]
-fn garbage_and_malformed_stdin_are_silent() {
+fn garbage_and_malformed_stdin_leave_one_stderr_line_and_create_nothing() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
-    for stdin in [
-        b"".to_vec(),
-        b"not json".to_vec(),
-        b"\xff\xfe\x00".to_vec(),
-        json!({"hook_event_name": "StopFailure", "session_id": "s", "error": 429})
-            .to_string()
-            .into_bytes(),
-    ] {
+    for stdin in [b"".to_vec(), b"not json".to_vec(), b"\xff\xfe\x00".to_vec()] {
         let (out, _) = run(&e, Some("1"), &stdin);
-        assert_silent_zero(&out);
+        assert_zero_with_one_stderr_line(&out);
     }
     assert!(!e.root.join(".auto-switch.d/resume/events").exists());
 }
 
 #[test]
-fn more_than_one_mib_of_stdin_is_silent() {
+fn more_than_one_mib_of_stdin_leaves_one_stderr_line_and_creates_nothing() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
@@ -385,12 +510,12 @@ fn more_than_one_mib_of_stdin_is_silent() {
     })
     .to_string();
     let (out, _) = run(&e, Some("1"), payload.as_bytes());
-    assert_silent_zero(&out);
+    assert_zero_with_one_stderr_line(&out);
     assert!(!e.root.join(".auto-switch.d/resume").exists());
 }
 
 #[test]
-fn non_limit_errors_are_silent() {
+fn non_limit_errors_leave_one_stderr_line_each_and_create_nothing() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
@@ -402,10 +527,10 @@ fn non_limit_errors_are_silent() {
             "last_assistant_message": "You've hit your weekly limit"
         });
         let (out, _) = run(&e, Some("1"), payload.to_string().as_bytes());
-        assert_silent_zero(&out);
+        assert_zero_with_one_stderr_line(&out);
     }
-    // A stop that is not a usage limit is decided before anything is
-    // written or logged.
+    // The gate line has no resume folder to go to, and the hook never
+    // creates one for it: the stderr line is the record (#3172).
     assert!(!e.root.join(".auto-switch.d/resume").exists());
 }
 
@@ -465,7 +590,7 @@ fn no_rotator_running_is_a_silent_rotator_down() {
 }
 
 #[test]
-fn unsafe_resume_dir_is_silent_and_untouched() {
+fn unsafe_resume_dir_is_untouched_and_leaves_one_stderr_line() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
@@ -473,7 +598,7 @@ fn unsafe_resume_dir_is_silent_and_untouched() {
     fs::create_dir(&resume).unwrap();
     fs::set_permissions(&resume, fs::Permissions::from_mode(0o777)).unwrap();
     let (out, _) = run(&e, Some("1"), limit_payload("s").as_bytes());
-    assert_silent_zero(&out);
+    assert_zero_with_one_stderr_line(&out);
     assert_eq!(
         fs::metadata(&resume).unwrap().permissions().mode() & 0o777,
         0o777
@@ -483,7 +608,9 @@ fn unsafe_resume_dir_is_silent_and_untouched() {
 
 #[test]
 fn usage_text_lists_limit_resume() {
-    let out = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"))
+    let sandbox = HookSandbox::new();
+    let out = sandbox
+        .command(env!("CARGO_BIN_EXE_amplihack-hooks"))
         .arg("no-such-hook")
         .stdin(Stdio::null())
         .output()

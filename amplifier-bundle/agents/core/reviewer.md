@@ -3,7 +3,6 @@ name: reviewer
 version: 1.0.0
 description: Code review and debugging specialist. Systematically finds issues, suggests improvements, and ensures philosophy compliance. Use for bug hunting and quality assurance.
 role: "Code review and quality assurance specialist"
-model: inherit
 ---
 
 # Reviewer Agent
@@ -124,6 +123,12 @@ Fix: [Minimal solution]
 2. Modularity verification
 3. Regeneratability check
 4. Documentation quality
+5. Does this change validate its result, and does a failure report itself with evidence?
+6. When validation fails, does the workflow give an agent the evidence and room to diagnose and fix? Or does it end the run, or make the check pass by special-casing the new case?
+7. Does any path hide a failure or lower the bar: a skipped or weakened check, a silent retry, or a success that has not been shown? If so, that is a blocking concern.
+8. Is a judgement made by a script that pattern-matches, where an agent step with guidance should decide?
+
+Questions 5 to 8 ask what happens after a failure, not whether checking code grew. Added validation and the regression tests that pin it are not findings. A step that refuses in order to protect data (never delete unpushed work, never force-push) is correct; check only that its refusal is loud and reaches recovery.
 
 ## Bug Investigation Process
 

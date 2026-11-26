@@ -93,15 +93,12 @@ fn check_general(defender: &XpiaDefender, tool_name: &str, params: &Value) -> Op
 }
 
 fn block_response(summary: &str, risk: RiskLevel) -> Value {
-    serde_json::json!({
-        "block": true,
-        "message": format!(
-            "🛡️ XPIA Security Alert: Request blocked due to potential security risk.\n\
-             Risk Level: {risk}\n\
-             {summary}\n\n\
-             Please review and modify your request."
-        )
-    })
+    super::deny(&format!(
+        "🛡️ XPIA Security Alert: Request blocked due to potential security risk.\n\
+         Risk Level: {risk}\n\
+         {summary}\n\n\
+         Review the content, remove the instruction-like text and try again."
+    ))
 }
 
 #[cfg(test)]

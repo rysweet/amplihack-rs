@@ -1,5 +1,6 @@
 ---
 name: amplihack:customize
+disable-model-invocation: true
 version: 1.0.0
 description: Manage user-specific preferences and customizations
 argument-hint: <action> [preference] [value]

@@ -54,13 +54,16 @@ fn step_condition<'a>(recipe: &'a Value, id: &str) -> &'a str {
         .unwrap_or_else(|| panic!("workflow-finalize step `{id}` must declare a condition"))
 }
 
+/// The shell a step runs, following an `amplifier-bundle/tools/` call-out
+/// left by the brick-budget extraction of issue #1619.
 fn step_command(recipe: &Value, id: &str) -> String {
-    steps(recipe)
-        .iter()
-        .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
-        .and_then(|step| step.get("command").and_then(Value::as_str))
-        .unwrap_or_else(|| panic!("workflow-finalize step `{id}` must be a bash command step"))
-        .to_owned()
+    crate::recipe_step_body::resolved(
+        steps(recipe)
+            .iter()
+            .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|step| step.get("command").and_then(Value::as_str))
+            .unwrap_or_else(|| panic!("workflow-finalize step `{id}` must be a bash command step")),
+    )
 }
 
 fn step_by_id<'a>(recipe: &'a Value, id: &str) -> &'a Value {
@@ -141,12 +144,12 @@ fn finalize_preserves_loud_blockers_instead_of_converting_them_to_success() {
     let recipe = load_finalize_recipe();
     let text = recipe_text(&recipe);
 
-    for blocker in [
-        "FAILED_CLOSED_UNMERGED",
-        "FAILED_MEANINGFUL_DIFF",
-        "BLOCKED_CI",
-        "exit 1",
-    ] {
+    // #2966: a red check is repaired, not a blocker the probe ends the run on,
+    // so `BLOCKED_CI` and the probe's `exit 1` are no longer pinned here. What
+    // a red check does is shown by behaviour: the probe tests in
+    // `default_workflow_terminal_state` and the assessed-route cases in
+    // `issue_1714_finalization_handoff::assessed_ci`.
+    for blocker in ["FAILED_CLOSED_UNMERGED", "FAILED_MEANINGFUL_DIFF"] {
         assert!(
             text.contains(blocker),
             "workflow-finalize must preserve loud blocker `{blocker}`"
@@ -288,12 +291,36 @@ fn agentic_finalizer_prompt_requests_human_narrative_not_machine_json() {
     }
 }
 
+/// The validation step reports the terminal state `assess-finalization`
+/// decided (#2343, #2809). It runs after that step, consumes no agent prose,
+/// and does not mask a failure as a completion. That the typed completion
+/// booleans decide nothing, and that every published state is reported as the
+/// assessment named it, is run in workflow_finalize_resilience.rs.
 #[test]
-fn validation_step_classifies_from_typed_evidence_not_agent_prose() {
+fn validation_step_reports_the_assessment_and_reads_no_agent_prose() {
     let recipe = load_finalize_recipe();
     let command = step_command(&recipe, "validate-agentic-finalization");
+    // The live worktree probe was split out of the validator (#2966); it is the
+    // validator's code, sourced beside it, so both are read.
+    let validator = [
+        "workflow_finalization_validate.sh",
+        "workflow_finalization_worktree.sh",
+    ]
+    .map(crate::issue_1641_finalization_open_pr::fixture::tool_text)
+    .join("\n");
 
-    // The classifier must never touch agent narrative or the retired brittle state.
+    assert!(
+        step_index(&recipe, "assess-finalization")
+            < step_index(&recipe, "validate-agentic-finalization"),
+        "the decision must be made before the step that reports it"
+    );
+    assert!(
+        command.contains("workflow_agentic_finalization.sh") && command.contains("validate"),
+        "the step must run the finalization helper in validate mode"
+    );
+
+    // Neither the step nor the validator may touch agent narrative or the
+    // retired brittle state.
     for forbidden in [
         "AGENTIC_FINALIZER_OUTPUT",
         "agentic_finalizer_output",
@@ -301,36 +328,23 @@ fn validation_step_classifies_from_typed_evidence_not_agent_prose() {
         "single JSON object",
     ] {
         assert!(
-            !command.contains(forbidden),
-            "validation step must not consume agent prose via `{forbidden}`"
+            !command.contains(forbidden) && !validator.contains(forbidden),
+            "validation must not consume agent prose via `{forbidden}`"
         );
     }
 
-    // It must classify from typed deterministic evidence and typed markers.
+    // The state comes from the assessment's structured terminal_state. The
+    // validator itself ends a run only on a blocker in the local checkout or
+    // on there being no decision to report.
     for required in [
-        "finalization_evidence",
-        "finalizer_step_status",
-        "FAILED_INVALID_EVIDENCE",
-        "FAILED_REPORTING",
-        "FAILED_IMPLEMENTATION",
-        "exit 1",
-    ] {
-        assert!(
-            command.contains(required),
-            "validation step must classify from typed evidence; missing `{required}`"
-        );
-    }
-
-    // Preserved fail-closed invariants.
-    for invariant in [
+        "finalization_assessment terminal_state",
+        "FAILED_MISSING_TERMINAL_EVIDENCE",
         "FAILED_DIRTY_WORKTREE",
-        "FAILED_PR_METADATA_UNAVAILABLE",
-        "BLOCKED_CI",
-        "FAILED_MEANINGFUL_DIFF",
+        "FAILED_MISSING_TOOLING",
     ] {
         assert!(
-            command.contains(invariant),
-            "validation step must enforce terminal invariant `{invariant}`"
+            validator.contains(required),
+            "the validator must report the assessment's state; missing `{required}`"
         );
     }
 
@@ -379,5 +393,141 @@ fn workflow_complete_reports_canonical_agentic_workflow_result_fields_and_failur
     assert!(
         !command.contains("status: \"complete\"") && !command.contains("steps_completed: 23"),
         "workflow-complete must not report legacy unconditional completion once finalizer validation owns terminal status"
+    );
+}
+
+// #2966: a red CI sends the run back to repair it, and the repair is the CI
+// repair step's. Only the shape that makes that repair possible is checked here,
+// as fields of the recipe and not as prose: what the agent is told is the
+// agent's guidance, and what it does is shown by the QA scenario
+// (`tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh`).
+//
+// - It runs in the run's own worktree, where the fix is committed and pushed.
+//   Started anywhere else, a repair would be made in the wrong tree, or in the
+//   caller's checkout.
+// - It still runs on a failing check: the probe lets the run continue, and its
+//   gate is the same two flags every finalization step shares.
+// - It is not wrapped. A failure of the repair agent itself ends the run with
+//   its own failure, which is an agent failure and not a verdict on CI, and no
+//   JSON contract or error swallowing sits between its work and its result.
+#[test]
+fn the_ci_repair_step_works_in_the_runs_worktree_and_is_not_wrapped() {
+    let recipe = load_finalize_recipe();
+    let step = step_by_id(&recipe, "step-22-ensure-mergeable");
+
+    assert_eq!(
+        step.get("agent").and_then(Value::as_str),
+        Some("amplihack:ci-diagnostic-workflow"),
+        "the CI repair step is the ci-diagnostic-workflow agent"
+    );
+    assert_eq!(
+        step.get("working_dir").and_then(Value::as_str),
+        Some("{{worktree_setup.worktree_path}}"),
+        "the repair must be started in the run's linked worktree"
+    );
+    for key in ["parse_json", "continue_on_error"] {
+        assert!(
+            step.get(key).is_none(),
+            "the CI repair step must not declare `{key}`: its failure is its own"
+        );
+    }
+    let condition = step_condition(&recipe, "step-22-ensure-mergeable");
+    assert!(
+        condition.contains("terminal_state.terminal_success != 'true'")
+            && condition.contains("terminal_state.should_run_ci_wait == 'true'"),
+        "a failing check reaches the repair through the probe's continue gates; condition was `{condition}`"
+    );
+}
+
+// #2966, crusty rounds 1 and 3. The repair lives in one agent session, and a
+// session can end before its work does. The runner decides when that needs
+// another pass: `continue-ci-repair` runs when the answer names no
+// terminal_state or names CI_REPAIR_UNFINISHED, and starts one fresh pass of
+// this same recipe with `ci_repair_reentry` set. Since crusty round 5 it also
+// runs when `read-worktree-after-assessment`, which reads the recorded
+// worktree live after the session and decides nothing, did not find it clean.
+// In that nested pass it is skipped, and `reentered-pass-undecided`, under the
+// same condition with the note set, fails the run, so no pass nests another
+// and no script loop drives them. The steps live here and not in
+// workflow-finalize, which is at its brick budget. What the steps' commands
+// and the agent's prompt do is exercised by running them, in
+// issue_2343_finalization_outcome/wiring.rs: the pinned runner drives the
+// conditions, the worktree reading and the nested pass with its reentry
+// note, and the step-recovery wrapping of `continue-ci-repair` is read from
+// the call the shipped step makes.
+#[test]
+fn the_assessment_recipe_starts_its_agent_step_again_when_it_stops_short() {
+    let path = workspace_root()
+        .join("amplifier-bundle")
+        .join("recipes")
+        .join("workflow-finalization-assessment.yaml");
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let recipe: Value =
+        serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+
+    let steps = recipe
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .expect("the assessment recipe has steps");
+    let ids: Vec<&str> = steps
+        .iter()
+        .filter_map(|step| step.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "assess-finalization",
+            "read-worktree-after-assessment",
+            "continue-ci-repair",
+            "reentered-pass-undecided"
+        ]
+    );
+    assert_eq!(
+        recipe["recursion"]["max_total_steps"].as_u64(),
+        Some(5),
+        "one run of the recipe is four steps, within its budget"
+    );
+    for key in ["ci_repair_reentry", "worktree_after_assessment"] {
+        assert_eq!(
+            recipe["context"][key].as_str(),
+            Some(""),
+            "`{key}` is declared, empty on the first pass"
+        );
+    }
+
+    let agent = &steps[0];
+    assert_eq!(
+        agent["continue_on_error"].as_bool(),
+        Some(true),
+        "a crash reaches the re-entry"
+    );
+
+    // The worktree reading: it never fails the run, and its answer is data
+    // for the runner's conditions below.
+    let reading = &steps[1];
+    assert_eq!(reading["continue_on_error"].as_bool(), Some(true));
+    assert_eq!(reading["parse_json"].as_bool(), Some(true));
+    assert_eq!(
+        reading["output"].as_str(),
+        Some("worktree_after_assessment")
+    );
+
+    // One unfinished pass, read by the runner in both places: the outer run
+    // starts a pass on it, the nested run fails on it.
+    let undecided = "(not finalization_assessment.terminal_state or finalization_assessment.terminal_state == 'CI_REPAIR_UNFINISHED' or worktree_after_assessment.clean == 'false')";
+    let reentry = &steps[2];
+    assert_eq!(
+        reentry["condition"].as_str(),
+        Some(format!("not ci_repair_reentry and {undecided}").as_str())
+    );
+    assert_eq!(
+        steps[3]["condition"].as_str(),
+        Some(format!("ci_repair_reentry and {undecided}").as_str())
+    );
+    assert_eq!(reentry["output"].as_str(), Some("finalization_assessment"));
+    assert_eq!(reentry["parse_json"].as_bool(), Some(true));
+    assert!(
+        reentry.get("continue_on_error").is_none(),
+        "its failure is its own"
     );
 }

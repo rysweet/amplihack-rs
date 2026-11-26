@@ -39,6 +39,10 @@
 //! pre-fix code (6b32c7e69's parent) names every acceptance criterion that
 //! does not hold.
 
+// Every test here is Linux-only, and `proc_link` and its users read /proc, so the
+// helpers, and their one user `issue_1954_first_install_restager`, build on Linux only (#2286).
+#![cfg(target_os = "linux")]
+
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::events::{SCRIPT_PREAMBLE, await_line, mkfifo, open_ready, release};
 use crate::support::exec_stub::write_executable;
@@ -165,7 +169,7 @@ impl Host {
             &stubs.join("recipe-runner-rs"),
             format!(
                 "#!/bin/sh\nprintf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\
-                 \"capabilities\":[\"codex_exec\"]}}'\nexit 0\n# {padding}\n"
+                 \"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'\nexit 0\n# {padding}\n"
             ),
             0o755,
         );

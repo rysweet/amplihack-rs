@@ -1,5 +1,6 @@
 ---
 name: amplihack:fix
+disable-model-invocation: true
 version: 1.0.0
 description: Rapid diagnosis and fix for common issues
 triggers:

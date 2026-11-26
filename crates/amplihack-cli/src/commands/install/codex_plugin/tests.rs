@@ -39,12 +39,14 @@ fn derived_production_instructions_are_portable() {
         &source.join("amplifier-bundle/agents"),
         output.path(),
         "persona",
+        &ListSelection::new(ListSet::All, []),
     )
     .unwrap();
     instruction_skills(
         &source.join("docs/claude/commands/amplihack"),
         output.path(),
         "command",
+        &ListSelection::new(ListSet::All, []),
     )
     .unwrap();
     let mut count = 0;
@@ -117,7 +119,7 @@ fn codex_resource_and_config_symlink_escape_are_refused() {
     let outside = dir.path().join("outside");
     fs::write(&outside, "foreign").unwrap();
     std::os::unix::fs::symlink("../outside", source.join("resource")).unwrap();
-    assert!(copy_tree(&source, &staged, &source, 0).is_err());
+    assert!(copy_tree(&source, &staged, &source, 0, &ListSelection::default()).is_err());
     let home = dir.path().join("home");
     fs::create_dir(&home).unwrap();
     std::os::unix::fs::symlink(&outside, home.join("hooks.json")).unwrap();

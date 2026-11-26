@@ -202,7 +202,7 @@ setup_case() {
 printf '%s\n' "\$*" >> "$CASE/runner-log"
 case "\$1" in
   --version) echo "recipe-runner 0.5.0" ;;
-  --capabilities) echo '{"schema_version":1,"version":"0.5.0","capabilities":["codex_exec"]}' ;;
+  --capabilities) echo '{"schema_version":1,"version":"0.5.0","capabilities":["codex_exec","durable_recovery_v1"]}' ;;
 esac
 STUB
     chmod +x "$CASE/runner-temp/recipe-runner/bin/recipe-runner-rs"
@@ -487,7 +487,7 @@ rt_case() {
     receipt "$CASE/cargo/.crates2.json" "$1"
     cat >"$CASE/cargo/bin/recipe-runner-rs" <<'STUB'
 #!/bin/sh
-echo '{"schema_version":1,"version":"0.5.0","capabilities":["codex_exec"]}'
+echo '{"schema_version":1,"version":"0.5.0","capabilities":["codex_exec","durable_recovery_v1"]}'
 STUB
     chmod +x "$CASE/cargo/bin/recipe-runner-rs"
     cat >"$CASE/bin/cargo" <<STUB
@@ -508,7 +508,7 @@ STUB
 #!/bin/sh
 if [ "\$1" = --version ]; then echo "amplihack 9.9.9"; exit 0; fi
 if [ "\$1" = internal ]; then
-  case "\$*" in *--help*) exit 0 ;; esac
+  case "\$*" in *--help*) echo --require-capability; exit 0 ;; esac
   printf '%s\n' "\$*" >> "$CASE/validator-log"
   exit 0
 fi
@@ -561,7 +561,7 @@ cat >"$CASE/bin/amplihack" <<STUB
 #!/bin/sh
 if [ "\$1" = --version ]; then echo "amplihack 9.9.9"; exit 0; fi
 if [ "\$1" = internal ]; then
-  case "\$*" in *--help*) exit 0 ;; esac
+  case "\$*" in *--help*) echo --require-capability; exit 0 ;; esac
   exit 1
 fi
 exit 0

@@ -8,12 +8,27 @@ review_schedule: as-needed
 # How to Rotate Claude Logins Automatically
 
 `amplihack profile rotate` keeps the default Claude login in `~/.claude` on
-the account with the most capacity left. It measures every
+an eligible account with capacity, preferring the live login's organisation.
+It measures every
 [login profile](claude-profiles.md) with
 [`profile usage`](claude-profiles.md#check-usage-across-profiles), and when the
 account in `~/.claude` is close to its session or weekly limit it moves a
 better profile's login into `~/.claude` and puts the outgoing login back in the
 profile it came from.
+
+The rotator moves only to a login that has room now: a login that is full, has
+a recorded block before its reset, or is above 95% of its week is never
+chosen. See [When a swap happens](#when-a-swap-happens).
+
+[Organisation affinity](../reference/profile-organisation-affinity.md) restricts
+selection before ranking: the rotator crosses to another organisation only
+when the live login has no room, or is on credits, and nothing in its own
+organisation qualifies. Upgrade moves never make a confirmed crossing; an
+unknown organisation is not a crossing, so missing metadata never
+keeps a session on an overflow login. The rotate log and `rotate status`
+distinguish confirmed crossings from unresolved affinity. A session stopped
+at a limit receives the warning with the resume that follows the swap, read
+from the swap record; a stop that does not end in a resume gets none.
 
 Use it when you run plain `claude` (no `CLAUDE_CONFIG_DIR`) and have several
 profiles. [Auto-switch](claude-profiles.md#switch-accounts-automatically) is
@@ -44,8 +59,11 @@ The exact flags, files, exit codes and log lines are in the
 - [Which root the rotator uses](#which-root-the-rotator-uses)
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
+- [When live usage stops changing](#when-live-usage-stops-changing)
 - [When the live login cannot be measured](#when-the-live-login-cannot-be-measured)
+- [When probes fail](#when-probes-fail)
 - [When the host is heavily loaded](#when-the-host-is-heavily-loaded)
+- [Remove logs left by old usage probes](#remove-logs-left-by-old-usage-probes)
 - [Which profiles can take over](#which-profiles-can-take-over)
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
@@ -114,6 +132,41 @@ cause, and the target can differ from a real run's. It also does not finish an
 interrupted swap: if one is pending it prints
 `would recover an interrupted swap (phase <phase>)` and leaves it for the next
 real run. Run a dry run first, and again whenever you change a threshold.
+
+### Check the target rules with stand-in readings
+
+`tests/qa/claude-profile-rotate-room.sh` runs the candidate binary against
+a temporary `HOME`, a fake `claude` and a loopback stand-in for the usage
+service, with no real login and no `CLAUDE_CONFIG_DIR`. It needs `socat`. It
+replays a day on which the live login filled while several others had room, and
+checks eleven cases: a dry run that reports the swap to the login below
+`--session-at`; a one-shot cycle that moves `~/.claude` to it with
+`reason=plan-room`; the usage service answering HTTP 429 with a last good
+reading in the history, which gives a `reject:` line and no swap; HTTP 429
+with no history, which gives one `no capacity known` ALERT and leaves
+`~/.claude` unchanged; HTTP 429 with an identity read that fails, which moves
+nothing; readings on which the live login still has room and nothing it may
+move to qualifies, which says it would stay with the note; the stand-in's own
+guards, where a bad, missing or oversized request is refused and serves no
+fixture; a login carrying a recorded spend block, which is passed over for
+the next login the ranking gives until the block's reset and chosen again
+after it; the same day at `--session-at 95 --week-at 98`, where every
+login below 95% of its session is in the first tier, so the rotator moves to
+the one with the most room now with no ALERT, records room for a waiting step,
+and stays without a note while the live login is below both thresholds; and
+the 23 November replay, where a login with a spend block, failing live probes
+and an old, roomy reading in the history is never swapped to, at 95/98 or at
+85/90, while a rotator from another build is running, and with no block at all
+the old reading still leads to no swap; and a login with a session-limit or
+week-limit block, which is passed over as a spend-blocked login is, with a
+`reject: <name> blocked until <time> (<kind>)` line naming the limit:
+
+```bash
+AMPLIHACK_QA_BINARY=target/debug/amplihack bash tests/qa/claude-profile-rotate-room.sh
+```
+
+The scenario file is `tests/qa/scenarios/claude-profile-rotate-room.yaml`. It
+runs locally and is not part of CI.
 
 ## Rotate once
 
@@ -190,10 +243,10 @@ It also does three more things:
 - **Does not wake sessions stopped by a usage limit.** `switch` writes no
   [swap record](#the-swap-record), so the
   [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit) keeps
-  waiting. Continue those sessions yourself (Esc, Ctrl+U, `continue`,
-  Enter). A recipe step waiting in the
-  [usage-limit wait](../reference/profile-command.md#usage-limit-wait) still
-  counts the switch as capacity and reruns.
+  waiting. Each session's owner can
+  [continue it in their own terminal](#continue-a-session-yourself).
+  A waiting recipe step follows the
+  [recipe-step switch rule](#steps-that-wait-on-a-usage-limit).
 
 If no profile owned the login in `~/.claude`, `switch` first keeps it as
 `default-original` (or the next free name), as the rotator does, and the
@@ -223,9 +276,9 @@ swap, by the usual [rules](#when-a-swap-happens). Run
 
 - **Limit-stopped sessions wait.** The held cycles swap nothing, so they
   write no swap record and the limit-resume hook resumes nothing while the
-  hold is in force. After `switch --none`, the next rotator swap to a login
-  with room resumes them. To resume a session yourself, press Esc, clear the
-  input box with Ctrl+U, type `continue` and press Enter.
+  hold is in force. After `switch --none`, the next qualifying swap can
+  wake them. For manual recovery, follow
+  [Continue a session yourself](#continue-a-session-yourself).
 - **The hold beats every rule that picks a target.** The cycle checks the
   hold before it measures or chooses a profile. The hold is its own file, so
   `.default` can stay unset for features that ask for that; `switch --none`
@@ -286,7 +339,7 @@ then refuses. Without a pending recovery, a refusal changes nothing but
 | `no login in ~/.claude; no swap` | Log in with plain `claude` first. `switch` never fills an empty `~/.claude`. |
 | `the account in ~/.claude is not the one the ledger names (live=work); no swap` | Someone ran `/login` in `~/.claude`; follow the steps in [Swap refused](#swap-refused). |
 | ``profile spare has no stored login; run `amplihack profile login spare` first`` | The profile has no `.credentials.json` of its own. Log it in, then switch. Not checked when `spare` is already live. |
-| `profile spare is not a rotate candidate (session running): ...` | A running session uses `spare` (`CLAUDE_CONFIG_DIR` set to its directory). Moving its login would log that session out. End it, then switch; `spare` is already the default for new launches. If the message says running sessions cannot be seen, `/proc` cannot be scanned here (every system but Linux, including macOS), so no login can be moved; the rotator cannot swap there either. `switch` there only sets the default for new launches and exits 1. |
+| `profile spare is not a rotate candidate (session running): ...` | A running session uses `spare` (`CLAUDE_CONFIG_DIR` set to its directory). Moving its login would log that session out. End it, then switch; `spare` is already the default for new launches. A process the rotator cannot read blocks only a profile its arguments name or that holds Claude Code's `sessions/<pid>.json` for it, and only when it is a Claude or amplihack executable; the rotate log names it with an `unreadable process` line. One tied to no profile (`profile cannot be told`) blocks none, so the login it uses is not protected; see [Leases](../reference/profile-command.md#leases). If the message says running sessions cannot be seen, `/proc` cannot be scanned here (every system but Linux, including macOS), so no login can be moved; the rotator cannot swap there either. `switch` there only sets the default for new launches and exits 1. |
 | `profile spare is not a rotate candidate (leased): ...`, `(hosting)`, `(parked)` | Auto-switch has lent `spare`'s login to another session, or `spare`'s directory holds another account's login. Wait for that session to end; auto-switch then returns the logins. |
 | `profile spare is not a rotate candidate (excluded): ...` | `spare` is in the auto-switch exclude list, which keeps it out of rotation; a switch is a rotation done by hand. Set the list without it with `amplihack profile auto-switch exclude`, then switch. |
 | `profile spare is not a rotate candidate (no account): ...` | The login has no usable trusted account evidence. Resolve the identity-read failure; editing `oauthAccount` cannot authorize the switch. |
@@ -756,11 +809,12 @@ the exact rules.
 |------|----------|---------|---------|
 | `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `85` | Swap when the live session use reaches N%. |
 | `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `90` | Swap when the live weekly use reaches N%. |
-| `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | A threshold swap needs a target with at least N more points of headroom. |
+| `--target-week-max N` | `AMPLIHACK_ROTATE_TARGET_WEEK_MAX` | `95` | Never swap to a login whose weekly use is above N%. A login at exactly N% is allowed. It is separate from `--week-at`. |
+| `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | While the live login still has room, a swap needs a target with at least N more points of room (never less than 1). |
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
-| `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
+| `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap, and no swap onto a login at or above `--session-at` while the live login has room, for this long after the last swap, a rotator swap or a `profile switch`. `0` turns the hold off. |
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
-| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
+| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Longest wait between cycles, for `start` and `watch` only. A limit record or a recorded reset runs a cycle sooner; see [Rotate wake](../reference/profile-command.md#rotate-wake). |
 
 A flag beats the variable, and the variable beats the default. For example, to
 rotate earlier and check every five minutes:
@@ -777,31 +831,206 @@ effect on a running background process; run `stop` and then `start`.
 
 ## When a swap happens
 
-Each profile's *headroom* is `100 - max(session %, week %)`. A profile with no
-session window yet counts as 0% session use. A profile that is
-`session_exhausted` or `weekly_exhausted` has headroom 0, whatever its other
-window reads.
+Each profile's *room* is `100 - max(session %, week %)`, rounded down. A
+profile with no session window yet counts as 0% session use. A profile that is
+`session_exhausted` or `weekly_exhausted`, or at 100% on either window, has
+no room.
 
-On each cycle the rotator compares the live account with the candidate that
-has the most headroom (ties go to the name that sorts first):
+The rotator moves `~/.claude` only to a login that has room now. A login is a
+*target* only if all of these hold:
 
-1. **Threshold swap.** If the live session use is at or above `--session-at`,
-   or the weekly use is at or above `--week-at`, it swaps when the candidate
-   has at least `--margin` more headroom. A live account that could not be
-   measured counts as headroom 0, but is swapped only as described in
+- the rotator has a reading it can use: one taken in this cycle or, when a
+  probe was rate-limited or failed in transport, the login's last good reading
+  from the last 5 hours (see
+  [When probes fail](#when-probes-fail));
+- both windows are below 100%;
+- its weekly use is at or below `--target-week-max` (95% unless you change
+  it). A login at 98% of its week is never a target, in any kind of swap;
+- it has no recorded block that has not yet ended: a spend limit, a session
+  limit or a weekly limit. It becomes a target again from the reset time;
+- its token has not expired.
+
+On each cycle the rotator compares the live account with the targets:
+
+1. **The live login has no room.** A window is at 100%, or the login has a
+   recorded block. It swaps to the best target, whatever its room, and
+   `--margin` does not apply. A login below 100% on both windows is always
+   enough. The reason is `threshold`, or `plan-room` when the target is
+   itself at or above `--session-at` or `--week-at`.
+2. **The live login has room but has reached a threshold.** The session is at
+   or above `--session-at`, or the weekly use is at or above `--week-at`. It
+   swaps only to a target with at least `--margin` more room than the live
+   login has (and at least 1 more). In `watch`, a session projection that
+   reaches the threshold next cycle also triggers this decision now, with
+   `reason=projected`. A live account that could not be measured counts as
+   room 0, but is swapped only as described in
    [When the live login cannot be measured](#when-the-live-login-cannot-be-measured).
-2. **ALERT.** If a threshold swap is needed but no candidate has that margin,
-   it writes one `ALERT` line and leaves `~/.claude` alone.
-3. **Upgrade.** If no threshold is reached, it swaps when the candidate has at
-   least `--upgrade-margin` more headroom, unless the last swap was less than
-   `--hold` seconds ago.
+3. **No target.** If no login has room, it writes one `ALERT` line and leaves
+   `~/.claude` alone. If a login has room but none has enough more than the
+   live login, it writes one `stay:` line instead, because the live login
+   can still run work. See [When no account has capacity](#when-no-account-has-capacity).
+4. **Upgrade.** If no threshold is reached, it swaps when the best target has
+   at least `--upgrade-margin` more room, unless the last swap was less than
+   `--hold` seconds ago. An upgrade never moves to a login in another
+   organisation.
+
+When several targets qualify, the rotator picks the one with the most room it
+can use now, not the one with the lowest weekly use. It ranks them by:
+
+1. session use below `--session-at` first;
+2. most room;
+3. lowest weekly use;
+4. the name that sorts first.
+
+For example, with `--session-at 85`, `--week-at 90` and `--margin 3`, the live
+`rrowan` reaches 100% of its session. `llarame` reads `s=0%,w=95%` (room 5),
+`qquinn` `s=88%,w=20%` (room 12) and `jjansport` `s=90%,w=10%` (room 10).
+`llarame` is the only one below `--session-at`, so it ranks first, and the
+swap is made at once with `reason=plan-room`, because its week is past
+`--week-at`. Before the swap, `rrowan` at `s=86%,w=65%` had room 14, so it
+stayed: `llarame` did not have `14 + 3`.
 
 The hold stops flapping. Just after a swap, the account that was swapped out
 often has its session window reset and looks fresh; without the hold the next
-cycle would swap straight back. Threshold swaps on a measured reading are
-never held back.
+cycle would swap straight back. Two kinds of move are held for `--hold`
+seconds after the last swap: an upgrade, and a swap off a login that
+still has room onto a login at or above `--session-at`. In the example,
+`llarame` now has room 5, and `qquinn` has room 12, which would qualify, but
+`qquinn` is at 88% of its session, so the rotator stays on `llarame` and
+writes a `stay:` line until the hold ends. A swap off a login that has no
+room is never held, and nor is a swap to a login below `--session-at`.
+
+Before any swap based on usage, the target is confirmed by a fresh reading. A
+login read directly in this cycle is not read again. A stored or carried
+reading is read again once. If the fresh reading shows no room, the rotator
+writes `reject: <name> <reason>` and tries the next target. If the fresh
+reading cannot be taken (a 429, for instance), or is older than one already
+held, the rotator does not swap on it: it writes a `reject:` line and tries
+the next target. A full live login is not enough to change that. The one
+exception is a live login with a standing block (a spend, session, week or
+credit limit): no work can run on it until the block ends, so the rotator
+moves to the best target on that target's recent reading (at most 5 hours
+old, and taken after the rotator last left it), and the `swap` line ends
+`unconfirmed (<why>); live <from> has no room: <kind> until <time>`. The 23 November
+report on issue #2820 asked for this exception; the
+[reference](../reference/profile-command.md#rotate-confirmation) says how it
+differs from the rule #3105 withdrew. A login with a standing
+block is never a target, and the rotator writes
+`reject: <name> blocked until <time> (<kind>)`. If the targets are rejected only
+because their re-reads were unknown, they are still eligible, and the rotator
+stays and writes `stay: no candidate confirmed by a fresh reading`. If the
+fresh readings showed them full, they are no longer eligible, and the cycle
+writes the no-capacity ALERT when the live login is past a threshold. At most 3
+re-reads are made in a cycle, and there is no retry loop or waiting: the next
+cycle tries again.
+After a 100% to 90% swap, an older 0%/0% reading for the login just left
+cannot authorize a swap back. The rotator reads that target again and
+decides on the replacement evidence. A fresh exhausted result excludes it;
+a failed or still-stale result makes it unknown for the cycle. See the
+[freshness gate](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping)
+and [Rotate target choice](../reference/profile-command.md#rotate-target-choice).
+
+Target re-reads preserve supplied evidence timestamps. Finishing a re-read
+does not make an older observation fresh. Every usage-based swap repeats the
+freshness check under the lock, even when identity and eligibility are
+unchanged. A stale target becomes unknown without another usage read under
+the lock. See the
+[reading-time contract](../reference/profile-command.md#reading-time) and
+[locked revalidation contract](../reference/profile-command.md#rotate-revalidation).
+
+## When live usage stops changing
+
+Look for `stale live reading; re-read` in the rotate log. The third cached
+(status-line) reading with identical session and week figures and a nonzero
+session figure triggers a re-read, as does a reading older than one
+interval. A steady zero session reading alone does not, and neither do
+identical direct readings: when the status line is not being written, the
+cache ages out and the login is read directly each cycle, and the same
+figures then mean an idle login, not a frozen cache.
+
+Once a re-read establishes lag, older cached values remain untrusted even if
+their percentages change or match the accepted figures. The cache recovers
+only when its observation time is at least as recent as the accepted reading
+and its session figure has caught up. Session use only rises within one
+session window, so a lower session figure counts as a reset only when its
+session reset time is more than an hour later than the last reading's. A
+newer observation time is not enough: the status line rewrites old figures
+with new times, so a lower cached figure in the same window, or with no
+reset time to compare, is read again. See the
+[cache recovery contract](../reference/profile-command.md#stale-live-reading).
+
+The live re-read uses the configured probe method with passive readings
+off. A direct read uses the credentials in `~/.claude` (the rotator
+home's `.claude` directory), never the copy stored in
+`~/.claude-profiles/<name>`, which is stale or absent while the login is
+live. It never refreshes the token and writes no file. Probe modes `auto`
+and `text` keep their existing fallback behavior; dry runs use direct reads
+only and start no `claude` process.
+
+The live re-read has one probe deadline of its own. All target re-reads
+share a second deadline and are limited to three targets per cycle.
+Together they can add up to two probe deadlines after measurement: about
+240 seconds with the default settings. See the
+[re-read limits](../reference/profile-command.md#re-reads).
+
+A live re-read runs after the measurement, but it does not make the
+cycle's own candidate readings stale. A candidate read directly in the same
+measurement still counts as no older than the live login, so the re-read
+adds no target read. A candidate's stored reading from before the
+measurement is read again, as it is next to a direct live read. See the
+[reading-time contract](../reference/profile-command.md#reading-time).
+
+While the cache stays behind, the frozen count keeps rising on the cached
+figures and the rate history takes only the re-read figures, so the
+rotator reads the login again on every cycle and never treats the lower
+cached figure as a new session window. See the
+[frozen-count rules](../reference/profile-command.md#stale-live-reading).
+
+For example, cached 63% does not replace direct evidence of 65%, 68% and
+71% under the cache recovery rule. A failed re-read does not make
+the older cache current, and it does not make a frozen reading trusted
+again either: the frozen count is kept, so the next identical reading is
+read again. If accepted recent usage, over at least one interval, projects
+to `--session-at` by the next cycle, the rotator
+swaps now with `reason=projected`, provided a target qualifies. A projected
+or substituted swap never crosses organisations: it is decided with the
+need of the reading as measured, so a crossing waits for that reading to
+reach a threshold (see
+[outlook and organisation affinity](../reference/profile-command.md#outlook-and-organisation-affinity)). Near the
+threshold (within `--margin` of `--session-at`, or projected to reach it),
+a stale reading whose re-read fails is decided as if the login were at the
+threshold: a swap or the `no-capacity` ALERT, never a stay. With
+`--session-at 70 --margin 5`, a status line that keeps rewriting 66% gets a
+re-read on its third identical reading; if that read fails, the cycle
+swaps, or alerts when no target qualifies, and the next cycle reads again.
+A failed live probe near the threshold only changes timing: the
+failed-probe swap is made at once when its own target beats 70% by the
+margin and is not in another organisation, and otherwise after three
+failures as usual. The last reading counts only
+while its session window can still be open, and for five hours at most. See the
+[live freshness reference](../reference/profile-command.md#rotate-live-reading-freshness).
+A steady low rate stays below the threshold.
+
+Use the existing `--interval`, `--session-at` and `--margin` settings;
+there is no separate freshness toggle. Frozen-reading detection and rate
+history persist across cycles in `watch`, including background runs started
+with `start`. A one-shot command or dry run starts with empty history and
+can re-read an old observation, but cannot detect freezing across cycles
+or project a rate.
 
 ## When the live login cannot be measured
+
+If recent accepted evidence places the login near its threshold, and the
+swap target has at least `--margin` more headroom than the live login
+would have at its last known use or at `--session-at`, whichever is
+higher, the
+[live freshness rule](../reference/profile-command.md#failed-or-stale-reading-near-the-threshold)
+makes the failed-probe swap on the first failure, unless an API key in
+your home files would fail every login's probe (see the
+[API-key login check](../reference/profile-command.md#api-key-login-check)).
+Otherwise, the
+failed-probe damping below applies unchanged: a near-threshold reading
+never stops the failed-probe swap after three failures.
 
 If the probe of the live login fails, the rotator cannot tell whether the
 account is near its limit. A failure that follows whichever login is live
@@ -838,12 +1067,17 @@ one `ALERT` and stays, as before.
 A probe that timed out or could not run shows as `<name>:failed` in the
 cycle line, never as a percentage, and writes
 `warning: rotate: probe of <name> timed out` (or `failed: <reason>`) to
-`rotate.err`. Its usage is unknown: the rotator does not choose it, does not
-count or record it as exhausted, and probes it again on the next cycle.
-While a plan profile's usage is unknown this way, the rotator does not move
-onto
+`rotate.err`. A profile with no login to use is the one exception: it shows
+as `<name>:failed` but writes no warning line, to stderr or to `rotate.err`;
+see [Logins with no token](../reference/profile-command.md#logins-with-no-token).
+The rotator does not choose a failed profile, does not count or record it as
+exhausted, and probes it again on the next cycle.
+A probe that timed out or could not run leaves that plan login's usage
+unknown, so while it lasts the rotator does not move onto
 [usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
 [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
+A profile with no login is not unknown: it is read as `not_logged_in`, as
+when `claude` reported it, so it does not stop the move onto usage credits.
 A login that reached a limit shows the figures its probe read, with the
 window that ran out never below `100%`, so `work:s=100%,w=62%` is a login at
 its session limit with 38% of its week left. A login at its weekly limit
@@ -861,6 +1095,54 @@ To see why a probe fails, run `amplihack profile usage --raw`. If the state
 is `timeout`, see
 [When the host is heavily loaded](#when-the-host-is-heavily-loaded).
 
+## When probes fail
+
+A probe that gets no reading says nothing about a login's usage. When the
+usage service answers HTTP 429, the connection fails, the login's identity
+cannot be read, or a probe times out or is still running, the rotator counts
+that login as *unknown*. It never counts it as exhausted. The cycle line shows
+the probe's own error beside the login it was for:
+
+```
+2026-11-22T00:02:05Z cycle live=rrowan rrowan:s=100%,w=71% llarame:unknown, HTTP 429, last s=78%,w=92% 41m ago qquinn:unknown, HTTP 429 wwest:failed
+```
+
+| Shown as | Cause |
+|----------|-------|
+| `unknown, HTTP 429` | The usage service rate-limited the probe. |
+| `unknown, transport` | The connection failed or dropped. |
+| `unknown, timeout` | The probe timed out. |
+| `unknown, still running` | The read had not finished when the cycle stopped waiting. |
+| `unknown, probe error` | Any other failure of the probe itself. |
+| `failed` | The login itself has a problem: its token expired or was refused, or it has no login. It is not chosen. |
+
+For an unknown login, the rotator uses its last good reading and its recorded
+blocks, so a login that is known to have room stays a candidate. The last good
+reading is the newest line for that login in the
+[usage history](../reference/profile-command.md#usage-history), used only if it
+is at most 5 hours old and its weekly reset has not passed. It is shown as
+`last s=<n>%,w=<n>% <m>m ago`. The rotator adds no retry loop and no backoff
+timer: it asks again on the next cycle.
+
+A last good reading can rank a login but, on its own, never justifies a swap:
+the swap waits for a fresh reading. The exception is a live login with a
+standing block, which is left on the target's recent last good reading (see
+above); a waiting step stays parked until a later cycle reads the new login
+with room. When the live login has no room and no candidate is
+confirmed, the cycle writes `stay: no candidate confirmed by a fresh reading`
+and a hard ALERT, which pauses session resumes until a later cycle finds room.
+When the live login still has room, the ALERT is advisory and the cycle stays.
+
+When no login has a usable last good reading, the line says how many are
+unknown, and why, and does not claim that no login has capacity:
+
+```
+2026-11-22T00:02:05Z ALERT: no capacity known live=rrowan s=100% w=71% (candidates: 2 unknown (HTTP 429), 1 failed)
+```
+
+Use `amplihack profile usage --raw` to see the probe's answer for one login. The
+rotator's own warning for each failed probe goes to `rotate.err`.
+
 ## When the host is heavily loaded
 
 The rotator measures each login as
@@ -874,8 +1156,15 @@ The rotator measures each login as
 3. only if that fails does it start `claude`, first with a `get_usage`
    request and then with `claude -p /usage`.
 
-The last step is the slow one: `/usage` reads every transcript the profile
-can see, which can take a minute or more of CPU on a busy host. A profile
+The last step is the slow one. Without help, `/usage` reads every
+transcript the profile can see, which can take a minute or more of CPU on a
+busy host. On Linux with a usable `bwrap`, each probe runs with an empty
+folder over the shared `projects`, so it has no transcripts to read, and
+every probe passes `--no-session-persistence`, so it adds no log of its own.
+Without `bwrap`, the rotator writes one `note:` line to `rotate.err` and
+probes with the flag alone; installing `bubblewrap` brings the sandbox back
+after a rotator restart. See
+[Probe sandbox](../reference/profile-command.md#probe-sandbox). A profile
 marked as overflow is always probed with `/usage` alone, because only
 `/usage` shows a used-up spend limit. So each login's `claude` probe gets
 120 seconds, and only a few run at once: between 2 and 4, fewer as the load
@@ -958,18 +1247,29 @@ When the rotator stops, it waits a little over the deadline for any token
 refresh in progress, so that it does not leave Claude's refresh lock
 behind.
 
-Cycles do not overlap: the next one starts `--interval` seconds after the
-previous one ends.
+Cycles do not overlap: the next one starts after the previous one ends,
+when a new limit is recorded in the ledger, a recorded reset falls due or
+`--interval` seconds have passed, whichever comes first. A ledger write that
+leaves the recorded limits as they were does not start one. A cycle after a
+limit record or a reset reads the live login, takes the other logins' figures
+from their last reading while it can still stand, and reads the login it
+chooses before it swaps; a cycle after `--interval` reads every login. See
+[Rotate wake](../reference/profile-command.md#rotate-wake).
 
 Each cycle stores the readings it took, and later cycles use a stored
 reading while it is younger than `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
 (300 seconds by default). With `--interval 120`, a login is therefore asked
 afresh only about every third cycle. A stored reading can rank a login, but
 the rotator does not swap to it on that reading alone: a target read more
-than 300 seconds ago, earlier than the live login, or not since the rotator
-left it full, is read again first (the way `AMPLIHACK_PROFILE_USAGE_PROBE`
-says, so never directly under `auto` or `text`), and a login it left full is not
-chosen again until a later reading shows room. The `reread:` and `damp:` log
+than 300 seconds ago, earlier than the live login, or not strictly after
+its applicable recorded swap-away time, is read again first (the way
+`AMPLIHACK_PROFILE_USAGE_PROBE` says, so never directly under `auto` or
+`text`), and a login it left full is not
+chosen again until a later reading shows room under the existing rules.
+The recorded time includes the previous login's last swap and retained
+exhaustion-damping entries for other candidates. These records have the
+existing retention limits; they are not a complete login-use history.
+The `reread:` and `damp:` log
 lines show this; see
 [Rotate reading freshness and swap-back damping](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping).
 For the rotator to react sooner, lower the age in the shell that starts it:
@@ -983,6 +1283,46 @@ amplihack profile rotate start --interval 120 --session-at 70
 A value just under `--interval` makes every cycle ask each login again, at
 the cost of one direct read per login per cycle; `0` does the same and also
 ignores the status line's own readings.
+
+## Remove logs left by old usage probes
+
+Before the probe sandbox, every `claude` usage probe wrote a small session
+log into `~/.claude/projects/<encoded home>`, for example
+`~/.claude/projects/-home-ryan`. Thousands of them slow down any `/usage`
+run outside the sandbox. Remove them once, after upgrading:
+
+1. Check that no interactive `claude` session is open in your home
+   directory. A session that has so far run only `/usage` looks like a
+   probe log and would be removed.
+2. List what would be removed:
+
+   ```bash
+   amplihack profile prune-probe-logs --dry-run | wc -l
+   amplihack profile prune-probe-logs --dry-run | head
+   ```
+
+3. Remove them:
+
+   ```bash
+   amplihack profile prune-probe-logs
+   ```
+
+   ```
+   removed 2467, kept 312
+   ```
+
+Only logs that hold the `/usage` command and nothing else are removed;
+anything with a prompt, a reply, another command or a line that cannot be
+read is kept. Claude names the project folder after the directory the
+rotator was started in, so if you started it outside `$HOME`, the logs are
+in that directory's folder. To clean another folder, pass `--dir`:
+
+```bash
+amplihack profile prune-probe-logs --dir ~/.claude/projects/-home-ryan-src --dry-run
+```
+
+The rule is in the
+[reference](../reference/profile-command.md#prune-probe-logs).
 
 ## Which profiles can take over
 
@@ -1017,7 +1357,7 @@ the previous one.
 ```
 2026-10-18T13:00:05Z cycle live=spare spare:s=4%,w=13% personal:s=20%,w=35% work:s=88%,w=41%
 2026-10-18T17:10:05Z swap spare->personal live s=86% w=30% target s=0% w=36% reason=threshold
-2026-10-18T19:40:05Z ALERT: no profile has capacity live=personal s=97% w=52%
+2026-10-18T19:40:05Z ALERT: no profile has capacity live=personal s=97% w=52% (candidates: 2 exhausted)
 2026-10-18T19:50:05Z skip: state lock busy
 2026-10-20T09:00:05Z stay: live probe failed (1/3)
 ```
@@ -1043,6 +1383,22 @@ To see only swaps and alerts:
 ```bash
 grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
+
+To see why the rotator did not move, add the `stay:` lines it writes when a
+login has room but no other login has enough more, and the `reject:` lines
+for a target whose fresh reading showed no room:
+
+```bash
+grep -E ' (swap|ALERT:|stay:|reject:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+```
+2026-11-22T05:48:27Z stay: live room 14, best other login has room 12, a move needs 17
+2026-11-23T09:14:02Z reject: llarame no room on a fresh reading
+```
+
+The `cycle` line also says why each login was left out: `unknown, HTTP 429`,
+`above ceiling 95%`, or `blocked until 2026-11-26T00:00Z (week limit)`.
 
 `change:` lines record who changed the autostart setting or the auto-switch
 toggle; see [See who turned rotation off](#see-who-turned-rotation-off).
@@ -1107,13 +1463,33 @@ account ID or an e-mail address. The full rules are in
 
 ## Resume sessions stopped by a usage limit
 
-A swap only helps a session that sends another request. A session that has
-already stopped with `You've hit your session limit`, or sits in Claude
-Code's timed wait (`Usage limit reached · Continuing automatically at
-12:30am`), stays idle until someone types into it. amplihack's
-`limit-resume` hook restarts it: when a turn ends on a usage limit, the hook
-waits for the rotator to swap `~/.claude` to a login with room, then tells
-the session to continue on that login.
+A swap only helps a session that sends another request. When a turn ends
+on a usage limit, amplihack's `limit-resume` hook waits for the rotator to
+swap `~/.claude` to a login with room, then continues the session.
+
+For a session that runs in tmux, the hook answers the usage-limit menu
+itself. It runs inside the session's own process tree, and once the rotator
+reports a login with room it finds its pane and proves that the pane is the
+terminal of its own Claude Code. The pane is `$TMUX_PANE` when that is set.
+Otherwise the hook looks for the single pane on its session's terminal with
+one read-only `tmux list-panes -a`. A found pane gets the same proof as a
+named one. The hook then reads that pane
+once to check it is showing a screen the keys answer. It then types Esc,
+Ctrl+U, `continue` and Enter into that pane. Esc is the key that dismisses
+the usage-limit menu and the timed wait, which hold the input. The hook acts
+on its own session's pane only, and never targets any other pane.
+Its own run against a live usage limit is not yet confirmed; see
+[The keys it sends](#the-keys-it-sends).
+
+When the hook cannot prove the pane, cannot recognise what the pane is
+showing, or the session does not run in tmux, it sends nothing to the
+terminal and falls back to the exit `2` wake. In the
+standing sessions reported in
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695), that wake has
+not released the menu, so the owner
+[continues that session by hand](#continue-a-session-yourself). The hook
+logs which case applied, and [Verify a wake](#verify-a-wake) shows how to
+read it.
 
 You need:
 
@@ -1136,9 +1512,11 @@ You need:
   amplihack profile rotate stop
   amplihack profile rotate start
   ```
-- For sessions in Claude Code's timed wait: the session runs inside tmux.
-  The hook types into the session's own pane; without tmux it can only use
-  the wake described below, which is not known to end the timed wait.
+- For a session held on the usage-limit menu or in Claude Code's timed wait:
+  the session runs inside tmux, so that `$TMUX` and `$TMUX_PANE` are set in
+  the hook's environment. The hook types into the session's own pane. Without
+  tmux it can only use the wake described below, which has not released the
+  menu in the sessions reported in #2695.
 
 Check that the hook is registered:
 
@@ -1162,16 +1540,25 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
 ]
 ```
 
+If this prints `null`, something has stripped the hooks from the file. The
+rotator puts them back at the end of its next cycle, and sessions started with
+`amplihack claude` receive them through `--settings` in any case. Run
+`amplihack doctor` to see which settings files have drifted; see the
+[hooks block reference](../reference/hook-block.md).
+
 ### What happens on a limit
 
 1. The turn ends with a usage-limit error, and Claude Code runs the hook in
    the background.
 2. If no rotator is running, the hook exits at once (`rotator-down`).
-3. The hook notes the session's tmux pane, if it has one. It takes the pane
-   from `$TMUX_PANE`, and only if `$TMUX` is also set and the pane's
-   terminal is the one Claude Code reads from, with Claude Code in the
-   foreground. The pane id stays in the hook's memory; it is never written
-   to disk.
+3. The hook notes the session's tmux pane from `$TMUX_PANE`, when `$TMUX`
+   is also set and the pane id is `%` followed by digits. The pane id is a
+   claim made by inherited environment, not evidence, so the hook proves it
+   later (step 6). The pane id stays in the hook's memory. When there is no
+   such pane, the hook looks for one at step 6: it walks up its ancestry to
+   the terminal, runs one read-only `tmux list-panes -a`, and uses the single
+   pane on that terminal. It then proves that pane in the same way. A
+   named pane that is refused never falls back to this lookup.
 4. The hook notes the current swap record,
    `<root>/.auto-switch.d/rotate/swap.json`, or that there is none. It
    starts watching that directory, its own `resume/prompted/` directory and
@@ -1179,10 +1566,10 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
    made while it was setting up is not missed.
 5. It waits. Nothing is read on a timer: the hook sleeps until one of these
    happens:
-   - **The rotator writes a new swap record.** The hook reads it and
-     resumes the session if the record is newer than the stop and the new
-     login has room (see [The swap record](#the-swap-record)). Otherwise it
-     logs `swap-stale` or `swap-no-room` and keeps waiting.
+   - **The rotator writes a new swap record.** The hook checks whether the
+     [record qualifies for a wake](#the-swap-record). If the swap is too old
+     or the new login is at 100% on either usage window, the hook logs
+     `swap-stale` or `swap-no-room` and keeps waiting.
    - **You send a prompt in that session**, for example `continue`. The hook
      ends as `moved-on`. Background task reports and `/usage` are not
      prompts and do not wake it.
@@ -1192,22 +1579,49 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
    - **7 days pass**, the longest any usage limit lasts. The hook ends as
      `no-capacity-timeout` and the session stays stopped.
 6. Before it resumes, the hook checks again that auto-switch is on
-   (otherwise `disabled`), that you have not sent a prompt (`moved-on`), and
-   that the pane still belongs to the session. It records the resume on disk
-   under its lock. Then it takes exactly one of two paths:
-   - **The session has a pane:** it types into it, as a person would, and
-     exits `0`. Outcome `resumed-keys`.
-   - **No pane** (not in tmux, or the pane check failed): it exits `2`, and
-     the session gets this message and starts a new turn. Outcome `resumed`.
+   (otherwise `disabled`) and that you have not sent a prompt (`moved-on`).
+   Then it proves the pane, once. It walks up its own ancestry to the nearest
+   process whose standard input is a terminal, the holder, which can be
+   Claude Code or a launcher around it. The pane's `#{pane_tty}`, as tmux
+   reports it, must be that terminal, and the holder must hold the
+   terminal's foreground process group. A pane inherited from another
+   shell, or one that another session owns, is not the terminal of any
+   process in the hook's ancestry and fails. For a proved pane it then reads
+   the screen once, with `tmux capture-pane -p`, and types nothing unless
+   what it read holds one of the phrases in
+   [What it looks for on the screen](#what-it-looks-for-on-the-screen). The
+   hook then takes exactly one of two paths:
+   - **The pane is proved and its screen is one the keys answer.** The hook
+     records the resume on disk under its lock, sends Esc, Ctrl+U, `continue`
+     and Enter, then exits `0`. Outcome `resumed-keys` records key delivery.
+     If a key fails, the hook releases the record, so the next room event
+     tries again. Check the session for a reply in
+     the original conversation.
+   - **There is no keys path.** The hook sends nothing to any terminal,
+     records nothing, so the event stays armed for the next room event,
+     exits `2` and sends this continue message:
      ```
      amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
      ```
+     The outcome says why: `not-resumed` with `detail=no-tmux-pane` when no
+     pane was named or found, `pane-unverified` when a pane was named or
+     found but not proved to be this session's terminal,
+     and `screen-unrecognised` when the pane was proved but its screen was
+     not one the keys answer. The last of these adds a line of its own before
+     the continue message, so the refusal is not left to the log.
 
-The hook never does both. A session that got keys never also gets the exit
-`2` message, so it is never told to continue twice.
+The hook chooses one delivery path per wake. The proof shows that the keys
+go to this session's own terminal, and the screen check shows that the
+terminal is on a prompt they answer. Neither is a parser: the check is a
+substring match over the visible screen, so a screen that merely mentions a
+usage limit still gets the keys, and a session that had already recovered by
+itself can receive one extra `continue` turn, with Ctrl+U clearing any draft
+in its input box.
 
 The hook trusts the rotator's reading. It never applies the thresholds
-itself and never reads a login, a credentials file or the transcript.
+itself and never reads a login or a credentials file. From the transcript
+it reads only the time of the last entry, which tells it when the session
+stopped, and it logs nothing from it.
 
 ### The swap record
 
@@ -1233,93 +1647,147 @@ or whose session or weekly figure is not a finite number, writes nothing
 either, so a missing figure is never recorded as 0%. The rotator logs
 `swap record not written: …` and the swap itself stands.
 
-A waiting hook resumes on a record only when all of these hold:
+A swap record qualifies for a hook wake when all of these hold.
 
-- it differs from the record the hook noted when it started, or that noted
-  record is itself a swap made in those same two seconds;
-- `swapped_at` is after the stop, or in the hook's start second or the second
-  before it (times are whole seconds, and the hook starts a moment after the
-  stop);
+- `swapped_at` is at or after the stop. The hook uses the last transcript
+  entry's time for the stop, or one second before the hook started if that
+  is earlier or the transcript time is unavailable.
+- `swapped_at` is later than the session's last recorded key resume, if any.
+- The record differs from the one the hook first saw, or it qualifies by
+  time and `swapped_at` is no later than the hook's start. This allows a swap
+  that finished between the stop and the hook's start to wake the session.
 - `reading.session` and `reading.week` are both below 100.
 
 `reading.measured_at` may be before the stop. The rotator measures before it
 swaps, so a session that stops between the two stopped on the login being
-swapped away from, and the swap resumes it.
+swapped away from, and the swap can trigger a wake.
 
-A record written before the stop never resumes a session. So a session that
-stops on the login the rotator has just swapped to waits for the **next**
-swap: the login it stopped on is the one out of room.
+### What it looks for on the screen
+
+Proving the pane says where the keys would land, not whether they answer
+what is on it. Before it types anything, the hook reads the pane once with
+`tmux capture-pane -p`. Only the visible screen is read, never the
+scrollback.
+
+It types the keys when that screen holds any of six fixed phrases, matched
+without regard to case: `what do you want to do?`, `usage limit`,
+`continuing automatically`, `session limit`, `5-hour limit` or `weekly
+limit`. The first two are the screens the sessions in #2695 and #2085 were
+held on; the rest are the window names Claude Code prints when a usage
+limit stops a turn.
+
+For anything else the hook types nothing and takes the exit `2` wake with
+outcome `screen-unrecognised`: `detail=screen-unknown` when the screen was
+read and matched none of the phrases, `detail=screen-unreadable` when
+`tmux` printed nothing or could not be run. The wake message names the
+refusal. This is what keeps the keys off a permission prompt, a billing
+prompt or a shell that has taken the pane's place, where Ctrl+U would clear
+a draft and Enter would answer a question nobody asked.
+
+Nothing read from the pane is kept or logged. The match is a substring test,
+not a parser, so it can be wrong in both directions: a screen that merely
+mentions a usage limit matches, and a future wording that uses none of these
+phrases does not. A refused screen leaves the session exactly where the exit
+`2` wake leaves it.
 
 ### The keys it sends
 
-For a session in a tmux pane the hook runs four separate commands, each
-waited on before the next:
+For a session in a tmux pane proved to be its own terminal, and showing a
+screen the hook recognised, it sends four inputs in order.
 
-```bash
-tmux send-keys -t %17 Escape
-tmux send-keys -t %17 C-u
-tmux send-keys -t %17 -l continue
-tmux send-keys -t %17 Enter
-```
-
-- **Esc** leaves the timed wait or closes the limit menu. Claude Code
-  2.1.319's own text for the wait ends `· Esc to cancel`.
+- **Esc** requests dismissal of the limit menu or timed wait.
 - **Ctrl+U** clears the input box. Text shown dimmed there is Claude Code's
   predicted next prompt, and Enter would send it.
-- **`continue`** is typed as literal text, then **Enter** sends it.
+- **`continue`** is typed as literal text, then **Enter** sends it. If the
+  swap carries an organisation-affinity warning, the hook includes it in
+  the continuation text.
 
-Nothing else is ever sent. The hook never presses a digit, so it never picks
-a numbered menu option, and never types `/usage-credits` or
-`/rate-limit-options`, so it never buys extra usage or re-arms the wait.
-The keys go only to the pane the hook noted for this session, never to a
-pane found by name or pattern.
+The hook sends a fixed sequence to the pane it proved for the session. The
+sequence excludes digits, `/usage-credits` and `/rate-limit-options`, so no
+numbered menu option is ever chosen. The active prompt determines what the
+keys do. If a draft, permission prompt or billing prompt has replaced the
+usage-limit menu, Ctrl+U can clear a draft and Enter can act on the prompt
+that is present.
 
-Each key is a separate command so that tmux cannot read Esc and Ctrl+U as
-one Meta key. If a command fails, or the session exits part way through, the
-remaining keys are not sent and the hook logs `resume-keys-failed` with the
-number already sent. It does not fall back to the exit `2` wake. Finish by
-hand as in [Continue a session yourself](#continue-a-session-yourself).
+Each key is a separate `tmux` command, with the pane as its own argument
+after `-t`, and the hook waits for each to finish before it sends the next.
+Enter is never sent in the same call as the text. If a command fails, or the
+session exits part way through, the remaining keys are not sent and the hook
+logs `resume-keys-failed` with the number already sent. It does not fall back
+to the exit `2` wake. Finish by hand as in
+[Continue a session yourself](#continue-a-session-yourself).
 
 Typing `continue` is a prompt, so any other hook waiting for the same
 session ends as `moved-on`.
 
-### Why keys and not only the wake
+These are the keys a person used by hand. In
+[#2085](https://github.com/rysweet/amplihack-rs/issues/2085), five sessions
+held on "Usage limit reached · Continuing automatically at 12:30am" resumed
+only when a person pressed Esc and typed `continue`. In
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695), three standing
+sessions held on the `What do you want to do?` menu were cleared by hand.
+The hook's own run against a live usage limit is not confirmed. What is
+tested is the sending: driven against a stand-in `tmux`, a session with
+room, a proved pane and a pane showing the menu receives one
+`capture-pane` and then exactly these four inputs, for that pane and no
+other; a session with no room, no proved pane, or a pane showing anything
+else receives none.
 
-The exit `2` wake was verified on Claude Code 2.1.307 for the
-`What do you want to do?` limit menu: it closes the menu and starts a turn.
-It is not known to end the timed wait. The installed Claude Code 2.1.319
-binary shows the wait behind a feature flag, with these texts:
+The exit `2` wake cleared the `What do you want to do?` menu in a Claude
+Code 2.1.307 check. It has not released the menu in the standing sessions
+reported in #2695, which is why the keys path exists. A route that needs no
+terminal input depends on Claude Code, and the
+[upstream request](../investigations/2695-claude-code-upstream-request.md)
+describes it.
 
-```
-Usage limit reached · continuing automatically {when} · esc to cancel
-Continuing automatically {when} · Esc to cancel
-Usage limit reached again · …
-/usage-credits to continue now
-/rate-limit-options to re-arm
-```
+### Verify a wake
 
-Esc is the way out the wait itself offers. Nothing in the binary shows that
-`StopFailure` runs when the wait starts, or that an `asyncRewake` exit `2`
-ends it. On 8–9 November 2026 five sessions sat in that wait for about an
-hour after a swap until a person pressed Esc and typed `continue`
-([#2085](https://github.com/rysweet/amplihack-rs/issues/2085)). So the hook
-types the keys whenever it has a pane, and uses the exit `2` wake only when
-it does not.
+When your session hits a usage limit and the rotator swaps to a login with
+room, check the hook's outcome and the terminal together.
 
-### Check it on your host
+A session in Claude Code's timed wait ("Usage limit reached · Continuing
+automatically at …"), including one with a background agent running, gets the
+keys and logs `outcome=resumed-keys`. Logs written before the
+[#3156](https://github.com/rysweet/amplihack-rs/issues/3156) fix may show
+`outcome=pane-not-reading`, which the hook no longer writes. A hook that
+was already waiting when you installed a build with that fix is still the
+old binary, and may log `pane-not-reading` for that wake. Start a new
+session, or let the hook end, to get the new behaviour.
 
-After upgrading, confirm both paths once:
+- `outcome=resumed-keys keys_sent=4` records that tmux accepted all four
+  inputs for the proved pane. No further action is needed unless the reply
+  does not appear.
+- `outcome=not-resumed detail=no-tmux-pane` records a wake with the continue
+  message above, for a session whose pane was neither named by a usable
+  `$TMUX_PANE` nor found on its terminal (not in tmux, a malformed pane id,
+  or a terminal that matches no single pane). No key was typed and nothing
+  was recorded, so the next room event tries again. If the session runs in
+  tmux, check that the hook reaches the session's own tmux server.
+- `outcome=pane-unverified` records that a pane was named or found but not
+  proved to be this session's terminal. `detail=` is one of `bad-pane-id`,
+  `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or
+  `not-foreground`. `tty-mismatch` is also logged when `tmux` fails or
+  prints nothing. Nothing was typed, and a session held on the menu stays
+  there.
+- `outcome=screen-unrecognised` records that the pane is this session's
+  terminal but what it was showing is not a screen the keys answer
+  (`detail=screen-unknown`) or could not be read (`detail=screen-unreadable`).
+  Nothing was typed. Look at the terminal: if a usage-limit prompt is still
+  there, continue the session by hand.
+- `outcome=resume-keys-failed keys_sent=N` records that a key failed or the
+  session exited after `N` of the four keys. The record of the event is
+  released. A `guard-failed` line before it means the release failed and the
+  event stays used.
 
-1. In tmux, let a session hit its limit and reach the timed wait. After the
-   rotator's next swap to a login with room, the session continues and
-   `resume.log` shows `outcome=resumed-keys keys_sent=4`.
-2. Outside tmux, the same sequence shows `outcome=resumed`, and the session
-   starts a new turn with the message above.
+Every wake outcome leaves the event armed. A `guard-failed` line on its own
+before a wake line means the hook could not read the resume state and woke
+the session anyway.
 
-If the timed wait does not end in step 1, report it on
-[#1932](https://github.com/rysweet/amplihack-rs/issues/1932) with the
-`resume.log` line and your `claude --version`, and continue the session by
-hand.
+A new reply that picks up the prior task in the original conversation
+confirms recovery. For `pane-unverified`,
+`screen-unrecognised` and `resume-keys-failed`, or if the menu or timed wait
+remains, follow
+[Continue a session yourself](#continue-a-session-yourself).
 
 ### See what it did
 
@@ -1332,69 +1800,191 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 ```
 2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third
 2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4
-2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare
+2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=not-resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane
+2026-11-09T00:43:12Z resume session=c2d7f0a4e913 event=5e8b36d1f0a7 outcome=pane-unverified live=work cycle=stayed swap_seq=42 swap_live=spare detail=tty-mismatch
+2026-11-09T00:43:12Z resume session=4e1c8b07d26a event=b73ad9052f14 outcome=screen-unrecognised live=work cycle=stayed swap_seq=42 swap_live=spare detail=screen-unknown
 ```
 
 `rotator-down` means the rotator was not running when the limit hit; start
 it with `amplihack profile rotate start`. `no-capacity-timeout` means no
 swap to a login with room came within 7 days. `moved-on` means you sent a
 prompt in that session during the wait. `watch-lost` means the hook could
-not watch for swaps; the `detail` field names the reason. `pane` is a hash
-of the pane id, not the id. The other outcomes are listed in the
+not watch for swaps; the `detail` field names the reason. `pane-unverified`
+means the hook typed nothing; see
+[Verify a wake](#verify-a-wake). `pane` is a hash of the pane id, not the
+id. The other outcomes are listed in the
 [resume log reference](../reference/profile-command.md#resume-log).
 
-### Why it cannot loop
+### How the hook limits repeated wakes
 
 - **One record per swap.** Only a swap writes `swap.json`. Stays, ALERTs
-  and the passing of time never do, and the hook acts only when the file
-  changes.
-- **Newer than the stop.** The record must differ from the one the hook
-  noted at the stop and be measured after it, so an old record, or one
-  rewritten unchanged, resumes nothing.
+  and the passing of time leave it alone.
+- **Newer than the last key resume.** The hook compares `swapped_at` with
+  the session's last recorded key resume before acting on the swap record.
 - **Room by a fresh reading.** A swap onto a login at 100% on either window
   logs `swap-no-room` and resumes nothing.
-- **Recorded before acting.** The resume is on disk under the lock before
-  the first key or the exit `2`, so a resume cut short is never repeated.
-- **One resume per limit event.** A second hook run for the same session,
-  the same error text and the same live login logs `duplicate`. A limit
-  after the rotator swapped to another login is a new event.
-- **One wake per wait.** When two hooks wait for the same session, only the
-  first to act resumes it; the other logs `duplicate` or `moved-on`.
-- **At most 3 resumes per session in 24 hours.** After that it logs `cap`.
+- **Recorded before the keys, released if they fail.** The hook records the
+  key resume under the lock before sending the first key, and releases that
+  record if a key fails, so the next room event tries again. A wake (exit `2`)
+  records nothing, so a session that was not typed into stays armed.
+- **One key resume per limit event.** If a resume is already recorded
+  for the same session, error text and login, the hook logs `duplicate`.
+  The login is the one the session stopped on. If the rotator swapped away
+  from it just before the hook started, use the swap record's `from_login`.
+  A limit after a swap to another login is a new event.
+- **One key resume per wait.** If another hook records a resume for the
+  same session during the wait, the waiting hook logs `duplicate`. The hook
+  reads the same two rules again before it wakes the session, and logs
+  `duplicate` instead of waking when either applies. If it
+  sees a prompt was sent during the wait, it logs `moved-on`.
+- **No count of resumes.** A session is resumed every time a login with
+  room follows a limit, however many limits it met that day (issue #2912).
+  The two rules above are what prevent a second resume for one event. Each
+  log line carries `resumes=<n>`, the session's earlier delivered key
+  resumes in 24 hours, as evidence only. A session record that cannot be
+  parsed is rewritten and logged as `session-record-reset`; it never stops
+  a resume.
 
 If anything it needs cannot be read, watched or written safely, it does not
 resume.
 
 ### Limits during a wait and after a resume
 
-The hook acts only when Claude Code runs it, on a `StopFailure` event with
-`error: "rate_limit"`. Every run it gets writes at least one line to
-`resume.log`, including `duplicate`. A limit stop with no line in
-`resume.log` is one for which Claude Code did not run the hook.
+The hook acts only when Claude Code runs it, on a `StopFailure` event. The
+registered matcher is `rate_limit`, and every stop it delivers is treated as
+a usage limit, as is any `error` value that is not a known non-limit one.
+Every run it gets writes one line to `resume.log`, including `duplicate` and
+the early exits `disabled`, `not-limit`, `bad-session-id` and `bad-payload`.
+Each line ends with `error=`, the payload's `error` value reduced to
+lowercase letters and underscores, so a stop that was refused shows which
+value Claude Code sent. A limit stop with no line in `resume.log` is one for
+which Claude Code did not run the hook.
+
+Two exceptions, each recorded elsewhere. With auto-switch off, the
+`disabled` line is written only when `resume/` already exists, because the
+hook creates nothing for a host that never opted in. In that case the call
+is recorded by one fixed stderr line with reason `dir_missing`, and no
+failure marker is written. When a line cannot be written, one fixed line
+goes to stderr on exit `0`. The reason is also saved in
+`resume/log-write-failed`, but only when `resume/` exists and is private;
+for `dir_missing` and `dir_unprivate` the stderr line is the only record,
+and it does not mention the marker. To check a quiet day:
+
+```bash
+tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
+cat ~/.claude-profiles/.auto-switch.d/resume/log-write-failed
+```
 
 - **A limit while a hook for the same session is waiting.** Claude Code
   starts a second hook. Its event differs in the error text or the live
-  login, so it waits as well. The first to act resumes the session; the
+  login, so it waits as well. The first to type records a key resume. The
   other logs `duplicate` or `moved-on`.
-- **A limit just after a resume.** The same text on the same live login is
-  the same event: the hook logs `duplicate` and does not resume the session
-  again. A limit after the rotator swapped to another login is a new event,
-  and the hook waits for the next swap.
+- **A limit just after a key resume.** The same text on the same live
+  login is the same event, so the hook logs `duplicate`. A limit after the
+  rotator swapped to another login is a new event, and the hook waits for
+  the next swap.
 - **A stop on one login, then a swap to another.** The swap's record wakes
-  the session once, and the log line reads `swap_live=<second login>`.
+  the session once, and the log line reads `swap_live=<second login>`. This
+  holds when the swap finishes between the stop and the hook's start. If the
+  session then hits a limit on the second login, that is a new event and
+  the hook waits for the next swap.
+
+### Check automatic continuation at reset
+
+Claude Code's **Continue automatically at usage limit** setting
+(`autoContinueAtUsageLimit`) controls whether an open session automatically
+waits for its usage limit to reset and then continues. The documented
+default is `true`. A swap to another login can still leave the usage-limit
+menu open. Claude Code hides the setting in `/config` when managed
+settings or `--settings` supply a value. See the
+[Claude Code settings reference](https://code.claude.com/docs/en/settings-reference#autocontinueatusagelimit).
+
+Check the user settings file with `jq`. It must contain exactly one JSON
+object. If the session uses a custom `CLAUDE_CONFIG_DIR`, use that directory
+in the command.
+
+```bash
+jq -es '
+  if length != 1 then error("settings must contain exactly one JSON object")
+  else .[0]
+  end
+  | if type != "object" then error("settings must be a JSON object")
+  elif has("autoContinueAtUsageLimit") and (.autoContinueAtUsageLimit | type != "boolean")
+  then error("autoContinueAtUsageLimit must be a boolean")
+  else {present: has("autoContinueAtUsageLimit"), value: .autoContinueAtUsageLimit}
+  end
+' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+```
+
+For a file without the key, the output is:
+
+```json
+{
+  "present": false,
+  "value": null
+}
+```
+
+If the key is present with a value of `false`, that file disables the
+automatic wait when its value takes precedence. If `jq` reports a parse
+error, fix the JSON in the file you inspected. If it reports that the key
+must be a boolean, check for a JSON `true` or `false` value. The output
+describes that file alone.
+
+For the effective value, check managed settings first, then any JSON or
+file supplied with `--settings`, then the user settings file. You can run
+the same `jq` query against any settings file you need to check. When none
+of those sources sets the key, its presence in the project's
+`.claude/settings.json` or `.claude/settings.local.json` disables the
+automatic wait. amplihack leaves this key for Claude Code and the user to
+manage. See
+[Claude Code settings precedence](https://code.claude.com/docs/en/settings#settings-precedence).
+
+Inspection of the Claude Code 2.1.325 binary suggested that billing type
+and a server-side flag affect whether a session waits for reset or opens
+the menu. It also suggested that a reset continuation could request
+another turn after a hook wake. These inferences remain unverified in
+live sessions. See the
+[usage-limit investigation](https://github.com/rysweet/amplihack-rs/issues/2695#issuecomment-6887891038).
 
 ### Continue a session yourself
 
-If the hook did not resume a session (no rotator, no swap, `watch-lost`,
-`resume-keys-failed`), continue it by hand:
+This is the fallback for a session the hook could not continue itself. Use
+it when `resume.log` shows `pane-unverified` or
+`resume-keys-failed`, when the session does not run in tmux and still shows
+the usage-limit menu or timed wait, or when the keys were sent and the menu
+returned.
 
-1. Press Esc.
-2. Check that the input box is empty. Text drawn dimmed is Claude Code's
-   predicted next prompt, not yours; clear it with Ctrl+U.
-3. Type `continue` and press Enter.
+The hook types only into its own session's pane. Recovery input for any
+other session, including `tmux send-keys` to its pane, is entered by that
+session's owner, from that owner's own terminal. Once the active login has
+room:
 
-Never pick a numbered option in the limit menu unless you mean it: some of
-them buy usage credits.
+1. If the usage-limit menu or timed wait is still showing, press Esc.
+   Some numbered menu options buy usage credits, so do not press a digit.
+2. Confirm that Claude Code shows its ordinary input prompt. If you see
+   the menu, the timed wait or any other prompt, stop and read what Claude
+   Code is asking.
+3. Check that the input box is empty. Save any draft you want to keep,
+   then clear the input box with Ctrl+U if it contains text or a dimmed
+   suggestion.
+4. Type `continue` and press Enter.
+5. Check for a new reply below the earlier messages in the same conversation.
+   Confirm that Claude picks up the previous task. If the menu returns,
+   the session is still blocked.
+
+If you send the keys with `tmux send-keys` to your own session's pane
+`%5`, send each key in its own call, and send Enter after the text, not with
+it:
+
+```bash
+tmux send-keys -t %5 Escape
+tmux send-keys -t %5 C-u
+tmux send-keys -t %5 -l continue
+tmux send-keys -t %5 Enter
+```
+
+Find the pane id of the pane you are in with `echo "$TMUX_PANE"`.
 
 ### Stop using the tmux nudger
 
@@ -1404,7 +1994,7 @@ hook is registered, stop the nudger so a session is not told to continue
 twice. List the processes running the script:
 
 ```bash
-pgrep -af 'bash .*limit-nudger.sh'
+ps -eo pid=,args= | grep -F 'limit-nudger.sh' | grep -v grep
 ```
 
 Each line is a pid followed by its command line. Check that the command line
@@ -1414,10 +2004,6 @@ open, then stop that pid only:
 ```bash
 kill <pid>
 ```
-
-If you pick the limit menu's own "Wait here, then continue automatically"
-option, both it and this hook may continue the session: at most one extra
-short turn, bounded by the per-session cap.
 
 ### Turn it off
 
@@ -1486,30 +2072,51 @@ clear the history, delete `usage-history.jsonl` and `usage-history.lock`.
 
 ## When no account has capacity
 
-When the `ALERT: no profile has capacity` line is written, the rotator has
-nowhere to move the login, so it stays put. With an
+The rotator writes the `ALERT` line only when no login can be moved to: none
+has room now, within the rules in [When a swap happens](#when-a-swap-happens).
+It then has nowhere to move the login, so it stays put. With an
 [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted)
 marked, it moves there instead when the next plan reset is far enough away.
 
-If the live login still reads below 100% on both windows, the ALERT is
-advisory: the ledger keeps it in `advisory_alert`, `alert` stays `null`,
-and the cycle records `stayed`, so sessions stopped by a limit resume on
-that login. Once the live login reaches 100% or a spend limit, or its probe
-fails, is carried or is unknown in that cycle, the ALERT moves to `alert`
-and the cycle records `alerted`. See
+There are two wordings, and they differ in what the rotator knows:
+
+- `ALERT: no profile has capacity` says that every other plan login is known,
+  by a fresh reading or a last good one, to have a window at 100%, a spend limit or a
+  recorded block.
+- `ALERT: no capacity known` says that the rotator could not show that, because
+  some logins are unknown (a probe was rate-limited or failed), failed, above
+  the weekly ceiling, or were not tried this cycle.
+
+Both end with the counts of what it found:
+
+```
+2026-11-22T00:02:05Z ALERT: no capacity known live=rrowan s=100% w=71% (candidates: 6 unknown (HTTP 429), 3 failed)
+2026-11-26T08:00:05Z ALERT: no profile has capacity live=rrowan s=100% w=71% (candidates: 2 blocked until 2026-11-27T00:00Z, 5 exhausted)
+```
+
+The counts appear in this order, and a count of zero is left out: unknown
+(with the cause, one entry per cause), not read (a login the cycle skipped before
+probing it, with the reason of its `skip:` line), failed, blocked until the earliest
+reset, exhausted, above the week ceiling, and not tried (the three re-reads of
+the cycle were used). When there is nothing to count, it reads
+`candidates: none`. The line never names a login.
+
+If the live login still reads below 100% on both windows, the ledger keeps
+the advisory ALERT in `advisory_alert`, leaves `alert` as `null`, and records
+the cycle as `stayed`. A `stayed` cycle writes no swap record. The interactive
+hook keeps waiting for a [qualifying swap record](#the-swap-record). A waiting
+recipe step uses [`last_cycle.live_room`](#steps-that-wait-on-a-usage-limit).
+Once the live login reaches 100% or a spend limit, or its probe fails, is
+carried or is unknown in that cycle, the ALERT moves to `alert` and the cycle
+records `alerted`. See
 [Advisory alert](../reference/profile-command.md#rotate-advisory-alert).
 
-When some candidates could not be measured, the ALERT ends with a count,
-for example:
-
-```
-2026-10-29T20:36:58Z ALERT: no profile has capacity live=work s=100% w=100% (candidates: 2 failed, 0 exhausted)
-```
-
-A candidate whose probe failed is never chosen, but it does not stop a swap
-to another candidate that measured with enough headroom. If every candidate
-is counted as failed, the probes are at fault rather than the accounts: run
-`amplihack profile usage` to see each profile's state.
+A candidate whose probe failed because its login has a problem is never
+chosen, and a candidate whose probe was only unknown is chosen only on a last
+good reading. Neither stops a swap to another candidate that has room. If every
+candidate is counted as failed, the logins are at fault; if they are all
+unknown, the probes are: run `amplihack profile usage` to see each profile's
+state, or see [When probes fail](#when-probes-fail).
 
 The log is not the only place you hear about it. When a cycle gets as far
 as deciding to swap, stay or raise the ALERT, the rotator updates the shared
@@ -1544,6 +2151,88 @@ appears and how it is deduplicated is in
 [When no account has capacity](claude-profiles.md#when-no-account-has-capacity);
 the file and the exact rules are in the
 [capacity notice reference](../reference/profile-command.md#capacity-notice).
+
+### Logins with room that the rotator stays on
+
+Before the ALERT, the rotator looks for a login to move to under the
+[target rule](../reference/profile-command.md#rotate-target-choice). A login
+that has room is left only for one with at least `--margin` more room, and,
+when the new login is at or above `--session-at`, only once the
+[hold](../reference/profile-command.md#rotate-hold) has ended. A login at 98%
+of its session has room on paper and almost none in practice, and a swap
+onto it from a login with 20 points left would trade one nearly spent login
+for another, so it is ranked after every login below `--session-at` and
+needs the margin as well.
+
+When the live login has room and no other login has enough more, the rotator
+makes no swap and writes one `stay:` line, not an ALERT. Live `aanderson` at
+`s=90%,w=80%` has room 10, and `bbuck` at `s=95%,w=60%` has room 5, with the
+default `--margin 5`:
+
+```
+2026-11-19T20:31:07Z stay: live room 10, best other login has room 5, a move needs 15
+```
+
+The rotator stays on `aanderson` and records the cycle as `stayed`. The line
+is written once while the situation lasts. Later cycles with the same
+readings write nothing more.
+
+When the live login has no room, the margin does not apply. A login at 100%
+of its session moves to any login that has room, including one at or above
+`--session-at`. After such a move, the ledger's `live_room` is `false` if the
+new login is at or above `--session-at`, so a recipe step that is waiting on a
+usage limit is not woken by that swap, and wakes on a later cycle that
+records room. The wait can last until that login's session window resets,
+which may be hours. The rotator moves to such a login only when no login
+below `--session-at` qualifies in the organisation group it may move within,
+because the ranking puts logins below `--session-at` first. A step woken on a
+login at or above `--session-at` would meet its limit at once, as runs did on
+19 November 2026, so the rotator does not wake it there. A `profile switch`
+still wakes it. Recipe steps waiting on a usage limit read the same test from
+the ledger (see [Steps that wait on a usage limit](#steps-that-wait-on-a-usage-limit)).
+
+### Steps that wait on a usage limit
+
+A recipe step that hit a usage limit and is waiting
+(see [Waiting for a usage-limit reset](claude-profiles.md#waiting-for-a-usage-limit-reset))
+ends its wait when the rotator puts a login in `~/.claude` that has room, not
+when it merely changes the login. Each cycle records one extra field in
+`ledger.json`, `last_cycle.live_room`, which is `true` when the login now live
+has a reading from that cycle with session use below `--session-at` and week
+use below 100%. The test is the same for a plan login, a credit profile and the
+API-key profile:
+
+```bash
+grep -o '"live_room": *[a-z]*' ~/.claude-profiles/.auto-switch.d/rotate/ledger.json
+```
+
+```
+"live_room": true
+```
+
+Four things to know:
+
+- **Stopping the rotator does not wake waiting steps.** `amplihack profile
+  rotate stop` records no cycle, and a waiting step wakes only on a cycle that
+  has capacity and says room.
+- **An older rotator never writes the field.** After upgrading, restart the
+  rotator (`amplihack profile rotate stop`, then `amplihack profile rotate
+  start`). Until you do, waiting steps sleep to their reset, or end on a
+  `profile switch`, instead of waking early on the rotator's swaps.
+- **A missing or false `live_room` reads as no room, with one exception.** No
+  output from the `grep` means the last cycle recorded none: it measured
+  nothing, it was a `profile switch`, or the rotator is from before the field.
+  `false` means the login now live has too little session left, is at 100% on
+  its week, or has no usable reading. A move onto credits or the API key
+  records `true` when that login's reading passes the same test, so a waiting
+  step still wakes then.
+- **A `profile switch` still wakes a waiting step.** It records the outcome
+  `switched` and no `live_room`, which counts as room unless the record states
+  `false`. Switching the login by hand is still the way to unstick a step.
+
+The waits and hosts that this rule does not apply to are listed in
+[What is not gated](../reference/profile-command.md#what-is-not-gated).
+`amplihack profile rotate status` shows the last cycle.
 
 ## Use usage credits when every plan login is exhausted
 
@@ -1674,21 +2363,30 @@ unknown`.
 
 ### When a plan login cannot be measured
 
-If a plan profile's probe times out, its `claude` cannot be started or
-read, or its directory is refused just before the spawn, the rotator cannot
-tell whether that login has capacity, so it does not move onto credits in
-that cycle, however far away the known resets are. It writes the no-capacity
-ALERT (or makes the free swap onto a plan login at a threshold) as it would
-with no overflow profile, and probes again on the next cycle:
+If a plan profile's probe times out, is rate-limited, fails in transport, or
+its `claude` cannot be started or read, or its directory is refused just
+before the spawn, the rotator cannot tell whether that login has capacity,
+so it does not move onto credits in that cycle, however far away the known
+resets are. A last good reading does not change that: the login is still
+unknown, and it only adds a second reason when it shows room. The rotator
+writes the no-capacity ALERT (or makes the free swap onto a plan login that
+qualifies) as it would with no overflow profile, and probes again on the next
+cycle:
 
 ```
-2026-10-24T09:00:05Z cycle live=work work:s=97%,w=91% personal:failed ryan-mistt-org:s=100%,w=100%
-2026-10-24T09:00:05Z ALERT: no profile has capacity live=work s=97% w=91% (candidates: 1 failed, 1 exhausted)
+2026-10-24T09:00:05Z cycle live=work work:s=97%,w=91% personal:unknown, timeout team:s=100%,w=100%
+2026-10-24T09:00:05Z ALERT: no capacity known live=work s=97% w=91% (candidates: 1 unknown (timeout), 1 exhausted)
 ```
 
 A plan probe that timed out or could not run never moves work onto
 credits. If the probes keep timing out, see
 [When the host is heavily loaded](#when-the-host-is-heavily-loaded).
+
+A plan profile with no login to use (no token, no refresh token, or on
+Linux no credentials file) is not in this group. Its login is known to be
+absent, so it shows as `<name>:failed` but does not hold the move onto
+credits; see
+[Logins with no token](../reference/profile-command.md#logins-with-no-token).
 
 A plan profile whose directory fails the ownership and mode check (it is a
 symlink, is not yours, or is open to group or other users) is skipped
@@ -1736,26 +2434,37 @@ amplihack profile overflow list
 
 On each cycle:
 
-1. While the live login is a plan profile, the rotator decides as usual.
-   When it would write `ALERT: no profile has capacity`, it first tries the
+1. While the live login is a plan profile, the rotator decides as usual,
+   by the [target rule](../reference/profile-command.md#rotate-target-choice),
+   which includes the
    [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
-   a move to the plan login below 100% on both windows with the most room.
-   Only when no measured plan login, the live one included, has room does it look
+   a move to the plan login that has room, is not above `--target-week-max`
+   and qualifies against the live login, with the most room it can use now.
+   When there is no such login, and no measured plan login, the live one
+   included, has room, it looks
    at overflow: if the earliest plan reset is more than `--overflow-wait`
-   away, no plan profile's probe timed out or could not start in this cycle,
-   and an overflow profile can be used, it swaps to the first one by
-   tier with `reason=overflow-in`. A failed live probe never leads to
-   credits.
+   away, no plan profile's probe was unknown in this cycle (whatever its last
+   good reading shows), and an overflow profile can be used, it swaps
+   to the first one by tier with `reason=overflow-in`. A failed live probe
+   never leads to credits.
 2. While the live login is an overflow profile, it checks every plan
-   profile. As soon as one has capacity, or failing that has room, it swaps
-   back with `reason=overflow-out`, without waiting for `--hold` or needing
-   `--margin` or `--upgrade-margin`. Otherwise it stays.
+   profile. As soon as one is eligible, it swaps back with
+   `reason=overflow-out`, the one the target rule ranks first (a login below
+   `--session-at` before one at or above it, then the most room), without
+   waiting for `--hold` or needing `--margin` or `--upgrade-margin`.
+   Otherwise it stays.
 
 A plan profile *has capacity* when its probe succeeded and its session and
 week use are both below `--session-at` and `--week-at`. It *has room* when
-its probe succeeded and both are below 100%. Credits are billed, so the
-rotator never moves onto them while a measured plan profile has room, and it
-moves back as soon as one has. It does not bounce: from the plan login it
+its probe succeeded and both are below 100%. It is a *plan-room target* when
+it has room, its week is at or below `--target-week-max`, it has no recorded
+block, and it qualifies against the live login. Credits are billed,
+so the rotator never moves onto them while a measured plan profile has room,
+and it moves back as soon as one is a target. A plan profile
+with room that is not a target, because its week is above the ceiling or it
+has too little more room than the live login, keeps the rotator off
+credits without being moved onto: the rotator stays where it is, and writes
+the `stay:` line or the ALERT. It does not bounce: from the plan login it
 moves to, it returns to credits only once no plan login has room again.
 
 Not every plan login is measured. One with a session on it, or leased,
@@ -1769,7 +2478,8 @@ all of these: see [The order the rotator follows](#the-order-the-rotator-follows
 
 Earlier releases moved onto credits as soon as every plan login had reached
 a threshold. They now wait until no plan login is below 100%; until then
-the rotator spreads work over the plan logins with room.
+the rotator spreads work over the plan-room targets and stays put when there
+are none.
 
 An overflow profile's own session and weekly limits show as exhausted in
 `profile usage`. That does not stop it being used, by the rotator or by
@@ -1891,8 +2601,8 @@ cannot tell, and you have two ways out:
 ### Turn overflow off
 
 **Removing the mark does not stop spending.** If the overflow profile's
-login is in `~/.claude` and no plan profile has the margin, the rotator
-writes `ALERT: no profile has capacity` and leaves the login there, and
+login is in `~/.claude` and no plan profile qualifies, the rotator
+writes a `stay:` line or the no-capacity ALERT and leaves the login there, and
 Claude keeps billing work on it to the credits. Stopping the rotator leaves
 the login where it is too.
 
@@ -2042,6 +2752,7 @@ hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotatio
 | `~/.claude.json is not a JSON object` | The swap could not record the new account in `~/.claude.json`, so it refuses before anything moves. Repair the file so it holds a JSON object. |
 | `the login in ~/.claude is not the account recorded for profile <name>` | The live login would go back to `<name>`, but it is not the account recorded for `<name>`. Saving it there would leave `<name>` holding another account's login. See [The live login is not the profile's account](#the-live-login-is-not-the-profiles-account). |
 | `the recorded account could not be written to the .claude.json of profile <name>: <reason>` | The login in `~/.claude` is the account recorded for `<name>`, but `<root>/<name>/.claude.json` names another account and could not be updated. Moving the login there would leave the file naming the wrong account. Repair the file so it holds a JSON object, or check its ownership and mode; the next cycle writes it. |
+| `the incoming login is in a different organisation from the live login` | The rotator chose a login in another organisation, but the live login still has room or the move was an upgrade, and the rotator only crosses organisations when the live login has no room now, is on credits, or has failed its probe three times in a row. Nothing was moved. The next cycle decides again. If both organisations were unknown, the swap would have gone ahead with the unresolved-affinity warning. |
 
 Three situations write an ALERT instead of refusing:
 
@@ -2588,6 +3299,33 @@ is on:
    `~/.amplihack/claude-profiles/.auto-switch.d/rotate/ledger.json`.
 3. Start the older rotator: `amplihack profile rotate start`.
 
+While a block is held, the ledger written for an older rotator also carries
+`overflow_blocked` ([#3105](https://github.com/rysweet/amplihack-rs/issues/3105)).
+What the older rotator does with it depends on when it was built:
+
+- **Before #1659:** it refuses the whole ledger and logs a failed cycle every
+  interval, as described above.
+- **From #1695 to before #2890:** it refuses the ledger in the same way while
+  a block of any kind other than a spend limit is held.
+- **From #1659 to before #1695:** it reads the ledger, ignores
+  `overflow_blocked`, and drops it without any message the next time it
+  saves. The block is then lost, and that rotator can swap to the blocked
+  login. This version cannot prevent that.
+
+Step 2 clears the refusals. To keep blocks from being dropped, do not run a
+rotator from the #1659 to #1695 range beside a newer amplihack that records
+blocks.
+
+A running rotator keeps the rules of the binary it was started from. After you
+install a newer amplihack, restart it so the new rules apply:
+
+```bash
+amplihack profile rotate stop && amplihack profile rotate start
+```
+
+`amplihack install` and a one-shot `amplihack profile rotate` print a line
+asking for this while a rotator from another binary is running.
+
 The ledger holds only bookkeeping, and the next cycle rebuilds it. Deleting
 it also clears the swap hold, so the first cycle may make an upgrade swap
 sooner than it otherwise would. The same steps recover an older rotator that
@@ -2679,9 +3417,11 @@ API-key profile. See
 ### The order the rotator follows
 
 1. Plan (subscription) logins with capacity.
-2. Plan logins past a threshold but below 100% on both windows
-   (`reason=plan-room`): those with session use below `--session-at` first,
-   then the most weekly room, then the most session room.
+2. Plan logins that pass the target rule but are past a threshold, below
+   100% on both windows and with the week at or below `--target-week-max`
+   (`reason=plan-room`): a login below `--session-at` first, then the most
+   room, then the lowest weekly use. A login at or above `--session-at` is
+   a target too, but ranks after every login below it.
 3. Only when no measured plan login is below 100% on both windows: marked
    credit overflow profiles, tiers 1 to 9.
 4. The marked API-key profile, tier 10, only with every plan login measured.
@@ -2915,23 +3655,20 @@ full rule is in
   remains between the check and the signal.
 - **Sessions keep their login until they reread it.** A running `claude` may
   keep using the outgoing account until it next reads its credentials.
-- **Resume needs a swap.** Without a running rotator from this version, or
-  when no login has room, a session stopped by a limit is never resumed: only
-  a swap record wakes the hook. A stay on a login that has room again, for
-  example after its session window reset, does not resume a session. The
-  hook waits for at most 7 days; a shorter `--interval` swaps, and so
-  resumes, sooner. If you send a prompt in the session during the wait, the
-  hook stops without resuming it (`moved-on`). A rotator started after the
-  limit does not help that session: its hook already ended as
-  `rotator-down`. A session is treated as exited when the hook's parent
-  process exits; if Claude Code runs the hook under a shell that outlives
-  it, the hook waits out the 7 days.
-- **Keys need tmux; the wake may not end the timed wait.** The hook types
-  into a session's pane only inside tmux, and only when the pane's terminal
-  is the one Claude Code reads from with Claude Code in the foreground.
-  Without such a pane it falls back to the exit `2` wake, which is not known
-  to end Claude Code's timed wait. If the session exits in the instant
-  between two keys, at most one key reaches whatever then reads that pane.
+- **A hook wake needs a qualifying swap record.** The hook waits up to 7 days
+  for a [qualifying swap record](#the-swap-record). If you send a prompt
+  during the wait, the hook ends as `moved-on`. If the rotator was down when
+  the session hit the limit, the hook already ended as `rotator-down`.
+  A session is treated as exited when the hook's parent process exits. If
+  Claude Code runs the hook under a shell that outlives it, the hook can
+  wait out the 7 days. Claude Code can also
+  [continue at reset](#check-automatic-continuation-at-reset) without a swap.
+- **Key delivery requires a proved tmux pane.** The hook proves that the pane
+  is the terminal of its own Claude Code by
+  [walking its ancestry and checking the foreground process group](#what-happens-on-a-limit).
+  Without a proved pane it sends nothing and requests a wake by exiting `2`.
+  A wake can leave the session on the menu or in the timed wait, and the
+  owner then [continues it by hand](#continue-a-session-yourself).
 - **Resume is Linux only.** The hook watches for the swap record with
   inotify and for the session's exit with a pidfd (kernel 5.3 or later).
   Elsewhere, or when either cannot be set up, it ends as `watch-lost`.

@@ -39,7 +39,7 @@ pub enum AtomicJsonError {
 pub struct AtomicJsonFile {
     path: PathBuf,
     lock_path: PathBuf,
-    lock_timeout: Duration,
+    lock_timeout: Option<Duration>,
 }
 
 impl AtomicJsonFile {
@@ -53,15 +53,33 @@ impl AtomicJsonFile {
         Self {
             path,
             lock_path,
-            lock_timeout: Duration::from_secs(5),
+            lock_timeout: Some(Duration::from_secs(5)),
         }
     }
 
-    /// Set the lock timeout (default: 5 seconds).
+    /// Select timed acquisition (default: 5 seconds), replacing blocking mode.
     #[must_use]
     pub fn with_lock_timeout(mut self, timeout: Duration) -> Self {
-        self.lock_timeout = timeout;
+        self.lock_timeout = Some(timeout);
         self
+    }
+
+    /// Wait for the lock without a timeout or polling.
+    ///
+    /// On Unix, blocks until the current holder releases its lock. Other
+    /// platforms retain best-effort locking. The lock still covers the entire
+    /// read–modify–replace operation.
+    #[must_use]
+    pub fn with_blocking_lock(mut self) -> Self {
+        self.lock_timeout = None;
+        self
+    }
+
+    fn acquire_lock(&self) -> Result<FileLock, AtomicJsonError> {
+        Ok(match self.lock_timeout {
+            Some(timeout) => FileLock::exclusive(&self.lock_path, timeout)?,
+            None => FileLock::exclusive_blocking(&self.lock_path)?,
+        })
     }
 
     /// Read and deserialize the file. Returns `None` if file doesn't exist.
@@ -109,13 +127,15 @@ impl AtomicJsonFile {
         // fresh nested path (e.g. per-session Signal state/inbox dirs).
         self.ensure_parent_dir()?;
 
-        let _lock = FileLock::exclusive(&self.lock_path, self.lock_timeout)?;
+        let _lock = self.acquire_lock()?;
 
         let dir = self.path.parent().unwrap_or(Path::new("."));
         let temp = NamedTempFile::new_in(dir).map_err(|e| AtomicJsonError::Io {
             path: dir.to_path_buf(),
             source: e,
         })?;
+        #[cfg(all(test, unix))]
+        crate::stop_counter_tests::observe_temp_file(&self.path, temp.path());
         serde_json::to_writer_pretty(temp.as_file(), value).map_err(|e| {
             AtomicJsonError::Serialize {
                 path: self.path.clone(),
@@ -146,7 +166,7 @@ impl AtomicJsonFile {
         // file, otherwise the first write to a fresh nested path fails.
         self.ensure_parent_dir()?;
 
-        let _lock = FileLock::exclusive(&self.lock_path, self.lock_timeout)?;
+        let _lock = self.acquire_lock()?;
 
         let mut data: T = match fs::read_to_string(&self.path) {
             Ok(content) => serde_json::from_str(&content).map_err(|e| AtomicJsonError::Parse {
@@ -169,6 +189,8 @@ impl AtomicJsonFile {
             path: dir.to_path_buf(),
             source: e,
         })?;
+        #[cfg(all(test, unix))]
+        crate::stop_counter_tests::observe_temp_file(&self.path, temp.path());
         serde_json::to_writer_pretty(temp.as_file(), &data).map_err(|e| {
             AtomicJsonError::Serialize {
                 path: self.path.clone(),

@@ -11,9 +11,11 @@
 //! would be, throttle included, so the marker never adds a routing prompt. See
 //! `docs/reference/coordination-messages.md`.
 //!
-//! The marker rule is in `coordination`, the per-session state file in `state`.
+//! The marker rule is in `coordination`, the per-session state file in `state`,
+//! and the checks for prompts that are not a person's in `provenance`.
 
 mod coordination;
+mod provenance;
 mod state;
 
 pub use coordination::{COORDINATION_NOTE, COORDINATION_PREFIX};
@@ -43,6 +45,10 @@ mod rule {
     pub(super) const COORD_THROTTLED: &str = "coordination_throttled";
     pub(super) const CLASSIFICATION: &str = "classification";
     pub(super) const THROTTLED: &str = "throttled";
+    pub(super) const AGENT_STEP_ID: &str = "agent_step_id";
+    pub(super) const HARNESS_NOTICE: &str = "harness_notice";
+    pub(super) const PEER_MESSAGE: &str = "peer_message";
+    pub(super) const SCHEDULED_PROMPT: &str = "scheduled_prompt";
 }
 
 /// What the topic logic decided for an unmarked prompt, or for the body of a
@@ -58,6 +64,10 @@ enum TopicDecision {
 }
 
 impl Hook for WorkflowClassificationReminderHook {
+    fn model_text(&self) -> Option<crate::hook_text::ModelText> {
+        Some(crate::hook_text::ModelText::ClassificationReminder)
+    }
+
     fn name(&self) -> &'static str {
         "workflow_classification_reminder"
     }
@@ -121,6 +131,14 @@ impl Hook for WorkflowClassificationReminderHook {
         // routing prompt template.
         let dirs = ProjectDirs::from_cwd();
         if is_nested_recipe_session() || is_workflow_active(&dirs) {
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
+
+        // Issue #2533: an agent step, a harness notice, a peer session's
+        // message or a loop tick is not a person's prompt. The rule is
+        // recorded, but no throttle window opens.
+        if let Some(rule) = provenance::skip_rule(&prompt) {
+            record_outcome(session_dir, &session_id, turn_count, rule, false);
             return Ok(Value::Object(serde_json::Map::new()));
         }
 

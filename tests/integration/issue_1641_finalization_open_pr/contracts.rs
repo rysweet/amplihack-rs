@@ -1,25 +1,19 @@
-//! Static contracts: wiring, the typed-evidence-only rule (#969), the field
-//! allowlist (#1538) and the line budget.
+//! Static contracts: the typed-evidence-only rule (#969) and the field
+//! allowlist (#1538).
+//!
+//! #2819 R1: the three cases #2343 added here are gone -- the byte offsets of
+//! `source` lines inside the dispatcher, the grep of the facts reader for the
+//! helper names it reuses, and the read of `cycle2_module_budget.rs`'s own
+//! source for the files it lists. `docs/howto/keep-tests-passing-under-host-load.md`
+//! forbids asserting on how code is written: such a case fails when the
+//! wording moves and passes when the behaviour moves. What they stood for is
+//! run instead -- every case that calls `Fixture::validate` executes the real
+//! dispatcher, so a helper it fails to load, or loads too late to use, fails
+//! there; and the 300-line budget is enforced by `cycle2_module_budget.rs`
+//! measuring the files themselves, which needs no second test reading its
+//! list.
 
 use super::fixture::*;
-
-#[test]
-fn dispatcher_sources_gh_retry_and_pr_signal_before_the_validator() {
-    let dispatcher = tool_text("workflow_agentic_finalization.sh");
-    let retry = dispatcher
-        .find(". \"$here/workflow_gh_retry.sh\"")
-        .expect("dispatcher must source workflow_gh_retry.sh");
-    let signal = dispatcher
-        .find(". \"$here/workflow_finalization_pr_signal.sh\"")
-        .expect("dispatcher must source workflow_finalization_pr_signal.sh");
-    let validate = dispatcher
-        .find(". \"$here/workflow_finalization_validate.sh\"")
-        .expect("dispatcher sources the validator");
-    assert!(
-        retry < validate && signal < validate,
-        "helpers must load before the validator"
-    );
-}
 
 #[test]
 fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
@@ -60,32 +54,6 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
         "workflow_finalization_pr_signal.sh must stay within the 300-line budget"
     );
 
-    // The open-PR check lives in its own brick (#1714) and the validator
-    // calls it; neither reads prose or raw pre-commit reports.
-    let open_pr = tool_text("workflow_finalization_open_pr.sh");
-    assert!(
-        open_pr.contains("finalization_open_pr_signal"),
-        "the open-PR check must use the pr signal helper"
-    );
-    assert!(
-        !open_pr.contains("agentic_finalizer_narrative") && !open_pr.contains("precommit_results"),
-        "the open-PR check must not read prose or raw precommit reports"
-    );
-    let validate = tool_text("workflow_finalization_validate.sh");
-    assert!(
-        validate.contains("confirm_open_pr"),
-        "validator must use the open-PR check"
-    );
-    assert!(
-        validate.contains("EXISTING_OPEN_PR"),
-        "validator must classify EXISTING_OPEN_PR"
-    );
-    assert!(
-        !validate.contains("agentic_finalizer_narrative")
-            && !validate.contains("precommit_results"),
-        "validator must not read prose or raw precommit reports"
-    );
-
     let context = tool_text("workflow_finalization_context.sh");
     assert!(
         !context.contains("statusCheckRollup") && !context.contains("precommit_results"),
@@ -93,26 +61,18 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
     );
 }
 
-#[test]
-fn open_pr_path_runs_after_no_op_and_before_the_default_failure() {
-    let validate = tool_text("workflow_finalization_validate.sh");
-    let no_op = validate
-        .find("classify_success \"ALLOW_NO_OP\"")
-        .expect("ALLOW_NO_OP success path");
-    let open_pr = validate
-        .find("classify_success \"EXISTING_OPEN_PR\"")
-        .expect("EXISTING_OPEN_PR success path");
-    let default = validate
-        .rfind("finalization_fail_or_handoff_open_pr \"FAILED_IMPLEMENTATION\"")
-        .expect("default FAILED_IMPLEMENTATION (#1714 routes it through the hand-off brick)");
-    let hollow = validate
-        .find("\"HOLLOW_SUCCESS\"")
-        .expect("hollow-success blocker");
-    assert!(
-        hollow < no_op && no_op < open_pr && open_pr < default,
-        "EXISTING_OPEN_PR must sit after every blocker and ALLOW_NO_OP, before the default"
-    );
-}
+// The cases that sat here grepped the reader and the validator for forbidden
+// words, compared the byte offsets of `gather_outcome_facts` and
+// `finalization_assessment terminal_state` inside the validator, and asserted
+// that a deleted file was still absent (#2819 R1, R4). All are now run rather
+// than read: `issue_2343_finalization_outcome::facts` drives the reader over
+// every outcome a classifier would have split on and asserts it names none,
+// and `issue_2343_finalization_outcome::terminal_states` asserts that a
+// blocker beats a decision and that a decision is never applied to facts that
+// were not gathered -- which is what the ordering was for. A re-added
+// classifier would have to be sourced to matter, and the dispatcher runs under
+// `set -e`, so a `.` of a file that is not there ends every case that
+// validates; the absence itself needed no case of its own.
 
 #[test]
 fn complete_helper_lists_existing_open_pr_in_vocabulary() {
@@ -123,14 +83,12 @@ fn complete_helper_lists_existing_open_pr_in_vocabulary() {
     );
 }
 
-#[test]
-fn module_budget_guards_the_new_helper() {
-    let budget = std::fs::read_to_string(
-        workspace_root().join("crates/amplihack-cli/tests/cycle2_module_budget.rs"),
-    )
-    .expect("read cycle2 budget");
-    assert!(
-        budget.contains("../../amplifier-bundle/tools/workflow_finalization_pr_signal.sh"),
-        "the new helper must be under the cycle-2 300-line guard"
-    );
-}
+// The vocabulary the validator publishes and the one workflow-complete
+// reports must agree. That used to be asserted by parsing the predicate bodies
+// out of the shell source; it is asserted by running both steps over every
+// state in `issue_2343_finalization_outcome::wiring`.
+//
+// The 300-line budget for the finalization helpers was asserted here too, by
+// reading `cycle2_module_budget.rs`'s own source for the paths it lists. That
+// test measures the files; this one only read its text, so it could pass with
+// the budget unenforced and fail with it enforced under a different spelling.

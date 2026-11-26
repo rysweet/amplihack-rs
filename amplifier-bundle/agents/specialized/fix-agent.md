@@ -3,7 +3,6 @@ name: fix-agent
 version: 2.0.0
 description: Workflow orchestrator for fix operations. Executes all 22 steps of DEFAULT_WORKFLOW with pattern-specific context for robust error resolution.
 role: orchestrator
-model: inherit
 ---
 
 # Fix Agent

@@ -20,6 +20,10 @@ pub(crate) mod schema;
 pub(crate) mod schema_governor;
 
 #[cfg(test)]
+mod tests_home_check;
+#[cfg(test)]
+mod tests_lists;
+#[cfg(test)]
 mod tests_load;
 #[cfg(test)]
 mod tests_schema;
@@ -160,9 +164,12 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     match home_or_reason() {
         Ok(home) => Some(home),
         Err(reason) => {
-            if test_guard() {
-                // Said once per process, on stderr: a guarded run must never
-                // look like a missing HOME.
+            // Said once per process, on stderr, and only when the guard
+            // discarded a HOME that is set: that is the case a guarded run
+            // could otherwise mistake for a missing HOME. A HOME that is
+            // genuinely unset needs no notice, and the command that reports
+            // it must still print only its own line (issue #2783).
+            if test_guard() && std::env::var_os("HOME").is_some_and(|home| !home.is_empty()) {
                 static SAID: std::sync::Once = std::sync::Once::new();
                 SAID.call_once(|| eprintln!("amplihack: {reason}"));
             }
@@ -204,11 +211,78 @@ pub(crate) fn guard_forbids(path: &Path) -> bool {
     test_guard() && !under_temp_dir(path)
 }
 
+/// Whether `path` lies under a base the test home check accepts: the temp dir,
+/// read on each call because tests change `TMPDIR`.
+///
+/// The unit tests of this library also accept `/var/tmp` and `/tmp` (issue
+/// #2931): `scratch_base()` puts fixtures there when `TMPDIR` lies inside a
+/// framework install, and neither folder holds a user's configuration. The
+/// shipped binary keeps the temp dir alone, whatever its environment says.
 fn under_temp_dir(path: &Path) -> bool {
-    let temp = std::env::temp_dir();
-    let temp = temp.canonicalize().unwrap_or(temp);
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    path.starts_with(&temp)
+    #[cfg_attr(not(test), allow(unused_mut))]
+    let mut bases = vec![std::env::temp_dir()];
+    #[cfg(test)]
+    bases.extend(test_build_bases().iter().cloned());
+    under_any(path, &bases)
+}
+
+/// `/var/tmp` and `/tmp`, as written and resolved, for [`under_temp_dir`] in
+/// the library's own tests. Computed once: neither changes during a run, and
+/// neither is read from the environment.
+#[cfg(test)]
+fn test_build_bases() -> &'static [PathBuf] {
+    static BASES: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    BASES.get_or_init(|| {
+        let mut bases = Vec::new();
+        for literal in ["/var/tmp", "/tmp"] {
+            let literal = PathBuf::from(literal);
+            if let Ok(canonical) = literal.canonicalize()
+                && canonical != literal
+            {
+                bases.push(canonical);
+            }
+            bases.push(literal);
+        }
+        bases
+    })
+}
+
+/// Whether `path` lies under one of `bases`, compared by component after
+/// links are resolved.
+///
+/// A `..` component is refused before any comparison. The deepest ancestor
+/// that exists is resolved and the rest of the path appended, so a leaf that
+/// is not made yet is judged by where it would be made. An entry that exists
+/// and cannot be resolved (a dangling link, a loop) is refused: where it leads
+/// is unknown.
+pub(crate) fn under_any(path: &Path, bases: &[PathBuf]) -> bool {
+    use std::path::Component;
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return false;
+    }
+    let Some(resolved) = resolve_deepest_existing(path) else {
+        return false;
+    };
+    bases.iter().any(|base| {
+        let base = base.canonicalize().unwrap_or_else(|_| base.clone());
+        resolved.starts_with(&base)
+    })
+}
+
+/// `path` with its deepest existing ancestor resolved, or `None` when an
+/// ancestor exists and cannot be resolved, or none exists.
+fn resolve_deepest_existing(path: &Path) -> Option<PathBuf> {
+    let mut rest = Vec::new();
+    let mut current = path;
+    loop {
+        if current.symlink_metadata().is_ok() {
+            let mut resolved = current.canonicalize().ok()?;
+            resolved.extend(rest.iter().rev());
+            return Some(resolved);
+        }
+        rest.push(current.file_name()?);
+        current = current.parent()?;
+    }
 }
 
 /// Load the config the way this process sees it: `$HOME`, the process
@@ -233,6 +307,29 @@ pub(crate) fn load_user_only() -> Effective {
         env: &|name| std::env::var(name).ok(),
         migrate: true,
     })
+}
+
+/// Selection for assets a tool discovers. Framework staging stays complete.
+pub(crate) fn list_selection() -> amplihack_utils::list_selection::ListSelection {
+    use amplihack_utils::list_selection::{ListSelection, ListSet};
+
+    let config = load_user_only();
+    let set = config
+        .entry("lists.set")
+        .value
+        .as_ref()
+        .and_then(Value::as_text)
+        .and_then(|value| value.parse::<ListSet>().ok())
+        .unwrap_or_default();
+    let enabled = config
+        .entry("lists.enabled")
+        .value
+        .as_ref()
+        .and_then(Value::as_list)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|value| value.parse().ok());
+    ListSelection::new(set, enabled)
 }
 
 /// What the user config says about `agent.binary` for a run in `cwd`.
@@ -334,6 +431,34 @@ pub(crate) fn recipe_log_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The key an installation adds dangerous-command entries with (#2589).
+pub(crate) const POLICY_DENY_COMMANDS: &str = "policy.deny_commands";
+
+/// The dangerous-command entries this installation adds to amplihack's
+/// shipped list, from the user file only (issue #2589).
+///
+/// Never fails: a missing, unreadable, insecure or invalid user file
+/// contributes no entry, and the shipped defaults, which live in code, are
+/// written either way. The diagnostics `load` raises are printed once per
+/// process on stderr, so a rejected entry is not silent.
+pub(crate) fn policy_deny_commands() -> Vec<String> {
+    // Quietly: this runs on the launch path, where stderr is the channel the
+    // agent and the tests read, and a HOME the test guard discards is not a
+    // problem to report here. No HOME means no additions, and the shipped
+    // defaults, which live in code, are written either way.
+    load(&LoadCtx {
+        home: home_or_reason().ok(),
+        cwd: PathBuf::from("/"),
+        read_project: false,
+        env: &|name| std::env::var(name).ok(),
+        migrate: false,
+    })
+    .file_value(POLICY_DENY_COMMANDS)
+    .and_then(Value::as_list)
+    .map(<[String]>::to_vec)
+    .unwrap_or_default()
+}
+
 /// `orchestrator.max_depth` from the files. Consumers apply it only where the
 /// built-in default applied before, below `AMPLIHACK_MAX_DEPTH` and any
 /// sealed tree ceiling.
@@ -360,11 +485,28 @@ pub(crate) fn sessions_daily_archive(home: &Path) -> Result<bool, String> {
         .unwrap_or(true))
 }
 
-/// One `sessions.*` key from `<home>/.amplihack/config.toml`, or `None`
-/// when the file does not set it (issue #1746). The command and the
-/// rotator call this each time they need the key, so a running rotator
-/// follows `config set` without a restart, and both always use the same
-/// values.
+/// The key that marks a supervised session as standing (issue #2912).
+pub(crate) const AGENT_STANDING: &str = "agent.standing";
+
+/// `agent.standing` (default `false`), read by the `amplihack claude
+/// --supervise` wrapper to decide whether to relaunch its session with
+/// `claude --continue` after the process exits (issue #2912).
+///
+/// The caller reads an `Err` as `false` and warns, so a file it cannot make
+/// sense of never turns relaunching on.
+pub(crate) fn agent_standing(home: &Path) -> Result<bool, String> {
+    Ok(sessions_key(home, AGENT_STANDING)?
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false))
+}
+
+/// One user-file key from `<home>/.amplihack/config.toml`, or `None` when
+/// the file does not set it (issue #1746). Named for the `sessions.*` keys
+/// it was written for; `agent.standing` reads the same way (issue #2912).
+/// The project file is not read, so only a user-only key belongs here. The
+/// command and the rotator call this each time they need the key, so a
+/// running rotator follows `config set` without a restart, and both always
+/// use the same values.
 ///
 /// Fails closed, because the archive removes files and a wrong DEST splits
 /// the archive: `Err` with the reason when the user file cannot be read or
