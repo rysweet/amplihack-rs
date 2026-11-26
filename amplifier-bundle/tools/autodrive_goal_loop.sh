@@ -193,9 +193,8 @@ guidance_show() { # guidance_show <since> <out>: metadata only (never text)
 # (R1). The evidence goes into result.json (the next reading's `previous`).
 # Nothing here classifies the failure or reads the log's wording: class,
 # retryable and the step lists are the runner's own marker, copied as evidence.
-# What else runs, from facts read directly (--once, the operator's setting via
-# `amplihack config get`, the bundle's files, whether the marker shows that no
-# step ran), is in docs/
+# What else runs, from facts read directly (--once, `amplihack config get`, the
+# bundle's files, whether the marker shows no step ran), is in docs/
 # reference/autodrive-goal-loop.md#failures-inside-a-turn. Returns 0 for the next turn.
 bundle_whole() {
   local f
@@ -210,14 +209,8 @@ failed_turn() {
   summary="$(child_failure_summary "$rc" "$TD/turn.log")"
   sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -c '{completed:[.completed_steps // [] | .[] | strings], failed:[.failed_steps // [] | .[] | strings]}' >"$W/steps" 2>/dev/null
   goal_json_file "$W/steps" 65536 || echo '{"completed":[],"failed":[]}' >"$W/steps"
-  # #3286 review: "no agent started" needs positive evidence. Only a marker
-  # that parses and lists both step fields as empty arrays shows that no step
-  # ran; a missing or unreadable marker (an older runner, or a runner killed
-  # before it wrote one) is unknown and starts the count again below.
-  [ -s "$W/marker" ] && sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" \
-    | jq -e '.completed_steps == [] and .failed_steps == []' >/dev/null 2>&1 && nosteps=true
-  jq -e '.completed | index("decide") != null' "$W/steps" >/dev/null 2>&1 && judged=true
-  [ -f "$TD/decision.json" ] && [ ! -L "$TD/decision.json" ] && judged=true
+  sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -e '.completed_steps == [] and .failed_steps == []' >/dev/null 2>&1 && nosteps=true # only a marker shows no step ran; none is unknown
+  jq -e '.completed | index("decide") != null' "$W/steps" >/dev/null 2>&1 && judged=true; [ -f "$TD/decision.json" ] && [ ! -L "$TD/decision.json" ] && judged=true
   err="$(goal_last_line "$TD/turn.log")"; [ -n "$err" ] || err="$summary"
   if [ "$judged" = false ] && [ "$nosteps" = true ]; then # no agent started (#3286)
     pre=true; [ "$PRE_AGENT_RUN" -gt 0 ] && [ "$err" = "$PRE_AGENT_ERR" ] || { PRE_AGENT_RUN=0; PRE_AGENT_ERR="$err"; }
