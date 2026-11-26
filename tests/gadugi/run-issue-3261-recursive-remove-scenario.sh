@@ -53,7 +53,7 @@ fi
 HOOKS="$(cd "$(dirname "$HOOKS")" && pwd)/$(basename "$HOOKS")"
 echo "binary under test: $HOOKS"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/issue-3261-qa.XXXXXX")" || {
+WORK="$(mktemp -d -t issue-3261-qa.XXXXXX)" || {
   echo "FAIL: cannot create a temporary directory"; echo "SCENARIO_FAILED"; exit 1
 }
 trap 'rm -rf -- "$WORK"' EXIT
