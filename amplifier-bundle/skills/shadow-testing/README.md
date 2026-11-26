@@ -143,7 +143,7 @@ amplifier-shadow exec test "gadugi-agentic-test run test-scenario.yaml"
 amplifier-shadow extract test /evidence ./test-evidence
 ```
 
-See the `qa-team` skill Level 4 for complete integration examples.
+See `parity-and-shadow.md` in the `qa-team` skill (Level 4) for complete integration examples.
 
 ## Use Cases
 
