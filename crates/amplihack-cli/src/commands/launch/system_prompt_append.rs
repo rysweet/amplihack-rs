@@ -202,6 +202,43 @@ pub(crate) fn installed_fragment() -> Option<&'static str> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// Which part of the contract a launch receives (issue #3247).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContractPart {
+    /// The whole contract: the heading, the router lines and the rules on
+    /// waiting and on stopping processes.
+    Full,
+    /// `text.routing = off`: only the rules on waiting and on stopping
+    /// processes, with none of the lines about the router.
+    WithoutRouting,
+}
+
+/// The text of `part`, built on [`installed_fragment`] so the maintainers'
+/// comment is in neither part. No line is reworded.
+pub(crate) fn contract_text(part: ContractPart) -> Option<&'static str> {
+    let full = installed_fragment()?;
+    match part {
+        ContractPart::Full => Some(full),
+        ContractPart::WithoutRouting => without_routing(full),
+    }
+}
+
+/// The last two top-level `- ` items of `text`, to its end: the rules on
+/// waiting and on stopping processes. `None` when `text` has fewer than three
+/// top-level items, so a contract that has lost its shape injects nothing
+/// rather than router lines.
+fn without_routing(text: &str) -> Option<&str> {
+    let starts: Vec<usize> = text
+        .match_indices('\n')
+        .map(|(at, _)| at + 1)
+        .filter(|&at| text[at..].starts_with("- "))
+        .collect();
+    if starts.len() < 3 {
+        return None;
+    }
+    Some(&text[starts[starts.len() - 2]..])
+}
+
 /// `text` without a `<!-- ... -->` comment that starts at its first byte, and
 /// without the one line break after that comment. Text that does not start
 /// with `<!--`, or has no closing `-->`, is returned unchanged.
@@ -224,12 +261,12 @@ fn without_leading_comment(text: &str) -> &str {
 // are re-exported here so callers keep one import path; this module itself
 // still never reads anything from disk.
 pub(crate) use super::contract_file::{
-    CONTRACT_PATH_MISSING, contract_home, contract_injection_applies, ensure_contract_file,
+    CONTRACT_PATH_MISSING, contract_home, contract_injection_applies, ensure_contract_part_file,
     probe_claude_version, require_append_prompt_file_capability,
     require_prompt_file_flag_capability,
 };
 #[cfg(test)]
 pub(crate) use super::contract_file::{
-    CONTRACT_RELATIVE_PATH, MIN_APPEND_PROMPT_FILE_VERSION, ensure_contract_file_as,
-    parse_claude_version,
+    CONTRACT_RELATIVE_PATH, CONTRACT_WITHOUT_ROUTING_RELATIVE_PATH, MIN_APPEND_PROMPT_FILE_VERSION,
+    ensure_contract_file, ensure_contract_file_as, parse_claude_version,
 };

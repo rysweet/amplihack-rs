@@ -2,8 +2,8 @@
 //! `--append-system-prompt-file <0600 file>`, never as argv text.
 //!
 //! - [`ensure_contract_file`] writes the compiled-in contract, as returned by
-//!   [`installed_fragment`] (the source file without its maintainers'
-//!   comment), to
+//!   [`installed_fragment`](super::system_prompt_append::installed_fragment)
+//!   (the source file without its maintainers' comment), to
 //!   `<amplihack home>/private/system-prompt-append.md` (0600, in a 0700
 //!   directory owned by the current user) unless it is already exactly right.
 //!   The file is never read back as a source of content; only a bounded byte
@@ -15,7 +15,7 @@
 //! See the `# Security` section of `system_prompt_append` for the threat model.
 
 use super::system_prompt_append::{
-    OPT_OUT_ENV, installed_fragment, should_inject_system_prompt_append,
+    ContractPart, OPT_OUT_ENV, contract_text, should_inject_system_prompt_append,
 };
 
 use anyhow::{Context, Result, bail};
@@ -24,6 +24,12 @@ use std::path::{Path, PathBuf};
 
 /// Where the contract file lives, relative to the amplihack home.
 pub(crate) const CONTRACT_RELATIVE_PATH: &str = "private/system-prompt-append.md";
+
+/// Where the contract without its router lines lives (`text.routing = off`,
+/// issue #3247). A file of its own, so two launches with different settings
+/// never write over each other's file between the write and the read.
+pub(crate) const CONTRACT_WITHOUT_ROUTING_RELATIVE_PATH: &str =
+    "private/system-prompt-append-without-routing.md";
 
 /// First Claude Code release with `--append-system-prompt-file` and
 /// `--system-prompt-file` (both are listed by `claude --help` in 2.1.319).
@@ -281,28 +287,42 @@ fn kill_probe_group(pid: u32) {
     }
 }
 
-/// Write the compiled-in contract ([`installed_fragment`], without the source
-/// file's maintainers' comment) to `<home>/private/system-prompt-append.md`
+/// Write the compiled-in contract
+/// ([`installed_fragment`](super::system_prompt_append::installed_fragment),
+/// without the source file's maintainers' comment) to `<home>/private/system-prompt-append.md`
 /// with mode 0600 in a 0700 directory, unless it is already exactly right.
 ///
 /// Runs at every launch that injects the contract, never at install. See the
 /// module `# Security` section for the checks.
+#[cfg(test)]
 pub(crate) fn ensure_contract_file(home: &Path) -> Result<PathBuf> {
+    ensure_contract_part_file(home, ContractPart::Full)
+}
+
+/// [`ensure_contract_file`] for one part of the contract (issue #3247):
+/// [`ContractPart::WithoutRouting`] is written, with the same checks, to
+/// `<home>/private/system-prompt-append-without-routing.md`.
+pub(crate) fn ensure_contract_part_file(home: &Path, part: ContractPart) -> Result<PathBuf> {
     // SAFETY: geteuid has no preconditions and cannot fail.
     let euid = unsafe { libc::geteuid() };
-    ensure_contract_file_as(home, euid)
+    ensure_contract_part_file_as(home, part, euid)
 }
 
 /// [`ensure_contract_file`] for an explicit effective uid, so tests can
 /// exercise the foreign-owner refusal without a second account.
+#[cfg(test)]
 pub(crate) fn ensure_contract_file_as(home: &Path, euid: u32) -> Result<PathBuf> {
+    ensure_contract_part_file_as(home, ContractPart::Full, euid)
+}
+
+fn ensure_contract_part_file_as(home: &Path, part: ContractPart, euid: u32) -> Result<PathBuf> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     let home_text = home.as_os_str().as_encoded_bytes();
     if home_text.contains(&b'\n') || home_text.contains(&0) {
         bail!("the amplihack home path contains a newline or NUL");
     }
-    let fragment = installed_fragment().context("the compiled-in operating contract is empty")?;
+    let fragment = contract_text(part).context("the compiled-in operating contract is empty")?;
 
     let private = home.join("private");
     match std::fs::symlink_metadata(&private) {
@@ -339,7 +359,10 @@ pub(crate) fn ensure_contract_file_as(home: &Path, euid: u32) -> Result<PathBuf>
             .with_context(|| format!("cannot set mode 0700 on {}", private.display()))?;
     }
 
-    let target = home.join(CONTRACT_RELATIVE_PATH);
+    let target = home.join(match part {
+        ContractPart::Full => CONTRACT_RELATIVE_PATH,
+        ContractPart::WithoutRouting => CONTRACT_WITHOUT_ROUTING_RELATIVE_PATH,
+    });
     if contract_is_current(&target, fragment.as_bytes(), euid) {
         return Ok(target);
     }

@@ -401,6 +401,17 @@ pub(crate) fn recipe_step_timeout(cwd: &Path) -> Option<u64> {
         .and_then(Value::as_int)
 }
 
+/// The effective `text.routing` (issue #3247): `false` only for `off`. The
+/// value comes from the same code the hook program reads it with.
+pub(crate) fn routing_text_on(cwd: &Path) -> bool {
+    load_for(cwd)
+        .entry("text.routing")
+        .value
+        .as_ref()
+        .and_then(Value::as_text)
+        != Some("off")
+}
+
 /// `recipe.detach = "tmux"` from the files: whether `recipe run` detaches
 /// when neither `--detach` nor `--no-detach` is given.
 pub(crate) fn recipe_detach(cwd: &Path) -> bool {
