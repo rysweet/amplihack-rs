@@ -400,5 +400,5 @@ reconstruction phase applies defense-in-depth:
 
 ## See Also
 
-- **Remote work skill** — related skill that does **not** copy credentials.
+- `remote` command — related but does not copy credentials.
 - [azlin](https://github.com/rysweet/azlin) — destination provisioning and transport.

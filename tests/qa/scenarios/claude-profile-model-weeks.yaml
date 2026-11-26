@@ -1,0 +1,22 @@
+name: claude-profile-model-weeks
+description: >
+  Native CLI scenarios for model-week retention and target confirmation.
+  Request and text readings persist an exhausted model week. A later reading
+  without that model preserves its original observation time, and passive
+  reconstruction excludes it after its recorded reset. A swap decision reads
+  one fresh passive target directly, rejects a model week equal to or above
+  the weekly threshold, and leaves an alternative for another cycle.
+  Each scenario uses temporary profiles, fake probes and loopback endpoints.
+version: "1.0"
+agents:
+  - name: cli-agent
+    type: cli
+steps:
+  - name: exercise-model-week-cli-scenarios
+    agent: cli-agent
+    action: execute_command
+    target: 'cargo test --locked -p amplihack-cli --test cli_integration issue_3301_model_weeks::'
+assertions: []
+metadata:
+  tags: [cli, rotation, regression]
+  priority: high

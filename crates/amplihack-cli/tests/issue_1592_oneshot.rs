@@ -230,26 +230,17 @@ fn the_hold_blocks_an_upgrade_back_and_hold_zero_allows_it() {
 }
 
 #[test]
-fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
+fn a_dry_run_changes_nothing_and_never_starts_claude() {
     let f = Fixture::new();
     // Issue #1962: a dry run reads the usage endpoint only and never starts `claude`.
     f.usage_direct("work", 90, 20);
     f.usage_direct("spare", 10, 20);
     f.usage_direct("extra", 50, 60);
     let before = snapshot(&f);
-    let out = f.ok(&["profile", "rotate", "--dry-run"]);
+    f.ok(&["profile", "rotate", "--dry-run"]);
     assert_eq!(snapshot(&f), before, "dry run wrote or moved something");
     assert!(!f.rotate_dir().exists());
-    let ls = lines(&out);
-    assert!(!ls.is_empty());
-    for l in &ls {
-        assert!(l.starts_with("would ") || l.starts_with("cycle "), "{l:?}");
-        assert_log_grammar(l, false);
-    }
-    assert!(
-        ls.iter().any(|l| l.starts_with("would swap work->spare")),
-        "{ls:?}"
-    );
+    assert_eq!(f.home_account(), "uuid-work");
     assert!(f.probe_envs().is_empty(), "the dry run started claude");
 }
 

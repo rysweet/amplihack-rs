@@ -301,11 +301,7 @@ From research (PR #946):
 
 ## Usage
 
-This pattern is implemented as a workflow. Use the `/amplihack:cascade` command:
-
-```bash
-/amplihack:cascade "Generate API documentation from codebase"
-```
+This pattern is implemented as a workflow. Use the `cascade-workflow` skill.
 
 The `cascade-workflow` skill/recipe can be configured to adjust:
 

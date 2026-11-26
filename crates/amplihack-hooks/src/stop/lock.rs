@@ -1,6 +1,6 @@
 //! Lock mode: blocks session exit when `.lock_active` exists.
 //!
-//! - Reads continuation prompt from `.continuation_prompt`
+//! - Reads `.lock_message`, then `.continuation_prompt`, then the default
 //! - Increments lock invocation counter per session
 //! - Safety valve: auto-approves after N iterations
 
@@ -11,6 +11,7 @@ use crate::state_dir::create_private_dir_all;
 #[cfg(not(test))]
 use amplihack_state::AtomicCounter;
 use amplihack_state::env_config::env_u64;
+use amplihack_types::paths::MAX_LOCK_MESSAGE_BYTES;
 use amplihack_types::{ProjectDirs, session_state_dir};
 use serde_json::Value;
 use std::fs;
@@ -90,27 +91,24 @@ pub(super) fn handle_lock_mode_with_state(
     }))
 }
 
-/// Read the continuation prompt file.
+/// Read the first usable message, preferring the lock writer's file.
 fn read_continuation_prompt(dirs: &ProjectDirs) -> String {
-    let prompt_path = dirs.continuation_prompt_file();
-
-    match fs::read_to_string(&prompt_path) {
-        Ok(content) => {
+    for path in [dirs.lock_message_file(), dirs.continuation_prompt_file()] {
+        if let Ok(content) = fs::read_to_string(path) {
             let trimmed = content.trim();
-            if trimmed.is_empty() || trimmed.len() > 1000 {
-                super::DEFAULT_CONTINUATION_PROMPT.to_string()
-            } else {
-                if trimmed.len() > 500 {
-                    tracing::warn!(
-                        "Continuation prompt is long ({} chars), consider shortening",
-                        trimmed.len()
-                    );
-                }
-                trimmed.to_string()
+            if trimmed.is_empty() || trimmed.len() > MAX_LOCK_MESSAGE_BYTES {
+                continue;
             }
+            if trimmed.len() > 500 {
+                tracing::warn!(
+                    "Continuation prompt is long ({} bytes), consider shortening",
+                    trimmed.len()
+                );
+            }
+            return trimmed.to_string();
         }
-        Err(_) => super::DEFAULT_CONTINUATION_PROMPT.to_string(),
     }
+    super::DEFAULT_CONTINUATION_PROMPT.to_string()
 }
 
 /// Get the max lock iterations from env or default.

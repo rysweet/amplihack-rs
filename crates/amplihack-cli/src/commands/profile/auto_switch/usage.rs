@@ -26,6 +26,7 @@ pub struct Window {
 pub struct RateLimits {
     pub five_hour: Option<Window>,
     pub seven_day: Option<Window>,
+    pub week_models: Vec<ModelWeek>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +43,20 @@ pub struct Reading {
     pub five_hour: Option<Window>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seven_day: Option<Window>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub week_models: Vec<ModelWeek>,
     pub observed_at: i64,
     pub source: ReadingSource,
+}
+
+/// One model's last observed week. Its age is independent of other windows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelWeek {
+    pub label: String,
+    pub used_percentage: f64,
+    pub resets_at: Option<i64>,
+    pub observed_at: i64,
 }
 
 impl Reading {
@@ -91,8 +104,31 @@ pub fn parse_statusline_input(raw: &[u8], now: i64) -> Option<RateLimits> {
     let rl = RateLimits {
         five_hour: window("five_hour"),
         seven_day: window("seven_day"),
+        // Status-line windows use used_percentage, not the request probe's
+        // utilization. Keep the same window bounds as the other meters.
+        week_models: limits
+            .get("model_scoped")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let label = entry.get("display_name")?.as_str()?;
+                if !(1..=64).contains(&label.chars().count())
+                    || super::super::usage_cmd::sanitize_display(label, false) != label
+                {
+                    return None;
+                }
+                let w = parse_window(entry, now)?;
+                Some(ModelWeek {
+                    label: label.to_string(),
+                    used_percentage: w.used_percentage,
+                    resets_at: Some(w.resets_at),
+                    observed_at: now,
+                })
+            })
+            .collect(),
     };
-    (rl.five_hour.is_some() || rl.seven_day.is_some()).then_some(rl)
+    (rl.five_hour.is_some() || rl.seven_day.is_some() || !rl.week_models.is_empty()).then_some(rl)
 }
 
 fn parse_window(w: &serde_json::Value, now: i64) -> Option<Window> {
@@ -163,6 +199,7 @@ pub fn attribute(owner: &str, host: Option<&HostEntry>, rl: &RateLimits, now: i6
 
 pub fn reading_from(rl: &RateLimits, now: i64) -> Reading {
     Reading {
+        week_models: rl.week_models.clone(),
         five_hour: rl.five_hour,
         seven_day: rl.seven_day,
         observed_at: now,
@@ -171,12 +208,34 @@ pub fn reading_from(rl: &RateLimits, now: i64) -> Reading {
 }
 
 /// The newer reading wins; on a tie, the one with the higher usage.
-pub fn merge(old: Option<&Reading>, new: Reading) -> Reading {
-    match old {
-        Some(o) if o.observed_at > new.observed_at => o.clone(),
-        Some(o) if o.observed_at == new.observed_at && o.worst() > new.worst() => o.clone(),
-        _ => new,
+pub fn merge(old: Option<&Reading>, mut new: Reading) -> Reading {
+    let mut models = std::collections::BTreeMap::<String, ModelWeek>::new();
+    let now = old.map_or(new.observed_at, |o| o.observed_at.max(new.observed_at));
+    for m in old
+        .into_iter()
+        .flat_map(|o| &o.week_models)
+        .chain(&new.week_models)
+    {
+        let replace = models.get(&m.label).is_none_or(|previous| {
+            m.observed_at > previous.observed_at
+                || (m.observed_at == previous.observed_at
+                    && m.used_percentage >= previous.used_percentage)
+        });
+        if replace {
+            models.insert(m.label.clone(), m.clone());
+        }
     }
+    if let Some(o) = old
+        && (o.observed_at > new.observed_at
+            || (o.observed_at == new.observed_at && o.worst() > new.worst()))
+    {
+        new = o.clone();
+    }
+    new.week_models = models
+        .into_values()
+        .filter(|m| m.resets_at.is_some_and(|reset| reset > now))
+        .collect();
+    new
 }
 
 /// The reset time Claude's own usage-limit message states, or `None` when no

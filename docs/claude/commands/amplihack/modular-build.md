@@ -88,15 +88,12 @@ Each phase performs internal validation before proceeding.
 
 ## External Tools
 
-Auto-detects and runs available quality tools:
+Use the test and lint tools configured by the target project. Read its build
+configuration and contributor instructions to select the commands for testing,
+coverage, code quality, security scanning and dependency checks.
 
-- `pytest` - Testing (required)
-- `coverage` - Coverage measurement
-- `ruff` or `pylint` - Code quality
-- `bandit` - Security scanning
-- `safety` - Dependency vulnerabilities
-
-Graceful degradation if tools are missing.
+No particular tool is required by amplihack. Report missing project tools and
+follow the project's setup instructions before claiming validation is complete.
 
 ## Examples
 

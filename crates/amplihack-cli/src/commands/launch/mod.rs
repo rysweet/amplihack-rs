@@ -17,6 +17,8 @@ mod context;
 /// Issue #2030 — the 0600 contract file and the Claude Code version gate.
 mod contract_file;
 pub(crate) mod hook_settings;
+// Issue #3162: where a launch puts operator guidance, and drop records.
+mod guidance_route;
 /// Issue #1619 — a recipe step declares a model tier and amplihack turns it
 /// into whatever the harness it launches actually has.
 pub(crate) mod model_tiers;
@@ -50,6 +52,8 @@ mod tests_issue_2361;
 mod tests_issue_2535_guidance;
 #[cfg(test)]
 mod tests_issue_2589_copilot_deny;
+#[cfg(all(test, unix))]
+mod tests_issue_3162_route;
 #[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
@@ -84,6 +88,9 @@ use command::{
     isolate_routed_copilot_home,
 };
 use context::persist_launcher_context;
+use guidance_route::{
+    GuidanceRoute, agent_binary_for_tool, guidance_route, report_guidance_drop, step_label,
+};
 
 // Test-visible re-imports from submodules. These become available to
 // `#[cfg(test)] mod tests_*` children via `use super::*`.
@@ -425,17 +432,29 @@ fn run_launch_core(
         )?,
         _ => passthrough_rewrite::Rewritten::unchanged(extra_args.clone()),
     };
-    let guidance_route = guidance_route(tool, &guidance, &rewritten, &extra_args);
-    if guidance_route == GuidanceRoute::Undeliverable {
-        eprintln!(
-            "amplihack: operator guidance not added: this {tool} launch has no prompt it can follow (Codex takes it only with `exec … -`, Claude and Copilot only with -p)"
-        );
+    // Issue #3162: a prompt that is already on the caller's stdin (the
+    // runner's `claude -- … -p …` agent steps, Codex `exec … -`, Copilot
+    // with no prompt flag) takes the block after it. Stdin is looked at only
+    // when there is guidance to place. `fstat` says only that stdin may hold
+    // a prompt; the forwarder decides by reading it (see below).
+    let stdin_may_hold_prompt = guidance.block().is_some() && caller_stdin_may_hold_input();
+    let guidance_route = guidance_route(
+        tool,
+        &guidance,
+        &rewritten,
+        &extra_args,
+        stdin_may_hold_prompt,
+    );
+    // What a drop record names: never argv text (issue #3162).
+    let guidance_label = step_label(tool, &extra_args);
+    if let GuidanceRoute::Undeliverable(reason) = guidance_route {
+        report_guidance_drop(&guidance, &guidance_label, reason);
     }
-    let codex_trailer = guidance_route == GuidanceRoute::CodexTrailer;
+    let stdin_trailer = guidance_route == GuidanceRoute::StdinTrailer;
     // "\n\n" and the block, written after a prompt that arrives on stdin.
     let guidance_injected = matches!(
         guidance_route,
-        GuidanceRoute::Prompt | GuidanceRoute::CodexTrailer
+        GuidanceRoute::Prompt | GuidanceRoute::StdinTrailer
     );
     let guidance_tail = if guidance_injected {
         guidance.trailer().unwrap_or_default()
@@ -699,11 +718,12 @@ fn run_launch_core(
         // Issue #2030, step 6: a rewritten `-p <text>` reaches the child on a
         // piped stdin. Without a payload the child inherits amplihack's stdin.
         // Input piped to amplihack itself is passed on after the prompt.
-        // Issue #2535: Codex `exec … -` reads its prompt from the caller's
-        // stdin, so that is always forwarded, with the guidance after it.
+        // Issue #2535 and #3162: a prompt already on the caller's stdin
+        // (Codex `exec … -`, Claude print mode, Copilot with no prompt flag)
+        // is always forwarded when guidance follows it, with the block after.
         let forward_caller_stdin =
-            (rewritten.stdin_payload.is_some() && caller_stdin_has_input()) || codex_trailer;
-        if rewritten.stdin_payload.is_some() || codex_trailer {
+            (rewritten.stdin_payload.is_some() && caller_stdin_may_hold_input()) || stdin_trailer;
+        if rewritten.stdin_payload.is_some() || stdin_trailer {
             cmd.stdin(std::process::Stdio::piped());
         }
         let routed_copilot = proxy_config.is_some()
@@ -776,7 +796,7 @@ fn run_launch_core(
                     bytes.into_bytes(),
                 ))
             }
-            (None, Some(stdin)) if codex_trailer => Some(
+            (None, Some(stdin)) if stdin_trailer => Some(
                 amplihack_utils::payload_delivery::spawn_stdin_forwarder_with_trailer(
                     stdin,
                     Vec::new(),
@@ -788,23 +808,37 @@ fn run_launch_core(
         };
         // Issue #2535: the agent has started with the block in its prompt;
         // say so once (counts only) and record it in each guidance.log it
-        // came from. The Codex trailer goes after the caller's stdin, so it
+        // came from. The stdin trailer goes after the caller's stdin, so it
         // is only recorded below, once it is known to have been written.
-        if guidance_injected && !codex_trailer {
+        if guidance_injected && !stdin_trailer {
             report_guidance_injection(&guidance);
         }
 
         // Wait for child or signal
         let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
-        // PR #2567 M2: the writer sets its flag before it closes the child's
-        // stdin, and the child exits only after that EOF, so the flag is
-        // final here. It is read before the writer is joined or detached.
-        let trailer_delivered = codex_trailer
-            && stdin_writer
-                .as_ref()
-                .is_some_and(|writer| writer.delivered());
-        if trailer_delivered {
-            report_guidance_injection(&guidance);
+        // PR #2567 M2: the writer sets its flags before it closes the child's
+        // stdin, and the child exits only after that EOF, so they are final
+        // here. They are read before the writer is joined or detached.
+        if stdin_trailer {
+            match stdin_writer.as_ref() {
+                Some(writer) if writer.delivered() => report_guidance_injection(&guidance),
+                // PR #3190 review: the pipe gave no text, so there was no
+                // prompt to follow and the block was not written. Seen by
+                // reading the pipe, not guessed from its file type.
+                Some(writer) if !writer.saw_text() => report_guidance_drop(
+                    &guidance,
+                    &guidance_label,
+                    crate::run_guidance::DropReason::NoPromptOnStdin,
+                ),
+                // Issue #3162: the block was due after the caller's prompt
+                // and did not reach the child; the sender is told, not only
+                // this log.
+                _ => report_guidance_drop(
+                    &guidance,
+                    &guidance_label,
+                    crate::run_guidance::DropReason::TrailerNotWritten,
+                ),
+            }
         }
         let written = match stdin_writer {
             // The child has exited. A forwarder still blocked on a caller
@@ -1011,8 +1045,14 @@ pub(crate) fn prompt_then_piped_input_header(prompt: &str) -> Vec<u8> {
 
 /// amplihack's stdin is a pipe, a socket or a non-empty regular file, as
 /// opposed to a terminal, `/dev/null` or an empty file.
+///
+/// This says only that stdin *may* hold input: a pipe or socket is reported
+/// whether or not anything was or will be written to it, and a non-empty
+/// file may hold only white space. Where the answer matters for operator
+/// guidance, the forwarder settles it by reading
+/// ([`amplihack_utils::payload_delivery::StdinWriter::saw_text`]).
 #[cfg(unix)]
-fn caller_stdin_has_input() -> bool {
+fn caller_stdin_may_hold_input() -> bool {
     use std::os::unix::fs::FileTypeExt;
     // `/dev/stdin` names fd 0 on Linux and macOS; metadata follows it to the
     // pipe or file itself.
@@ -1026,7 +1066,7 @@ fn caller_stdin_has_input() -> bool {
 }
 
 #[cfg(not(unix))]
-fn caller_stdin_has_input() -> bool {
+fn caller_stdin_may_hold_input() -> bool {
     false
 }
 
@@ -1233,56 +1273,6 @@ fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {
 fn report_guidance_injection(guidance: &crate::run_guidance::GuidanceForLaunch) {
     eprintln!("{}", guidance.notice());
     guidance.record_injection(&std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default());
-}
-
-/// Issue #2535: where this launch puts the run's operator guidance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GuidanceRoute {
-    /// No guidance for this run.
-    None,
-    /// After the `-p` prompt: on stdin (Claude) or in the prompt file
-    /// (Copilot).
-    Prompt,
-    /// After the caller's stdin, for Codex `exec … -` (C4).
-    CodexTrailer,
-    /// There is guidance, but this launch form has no prompt to follow.
-    Undeliverable,
-}
-
-fn guidance_route(
-    tool: &str,
-    guidance: &crate::run_guidance::GuidanceForLaunch,
-    rewritten: &passthrough_rewrite::Rewritten,
-    original_args: &[String],
-) -> GuidanceRoute {
-    if guidance.block().is_none() {
-        return GuidanceRoute::None;
-    }
-    match agent_binary_for_tool(tool) {
-        Some(AgentBinary::Claude) if rewritten.stdin_payload.is_some() => GuidanceRoute::Prompt,
-        Some(AgentBinary::Copilot)
-            if codex_copilot_rewrite::copilot_has_prompt_text(original_args) =>
-        {
-            GuidanceRoute::Prompt
-        }
-        Some(AgentBinary::Codex)
-            if rewritten.stdin_payload.is_none()
-                && crate::run_guidance::codex_trailer_applies(original_args) =>
-        {
-            GuidanceRoute::CodexTrailer
-        }
-        _ => GuidanceRoute::Undeliverable,
-    }
-}
-
-fn agent_binary_for_tool(tool: &str) -> Option<AgentBinary> {
-    match tool {
-        "claude" | "rusty" | "rustyclawd" => Some(AgentBinary::Claude),
-        "copilot" => Some(AgentBinary::Copilot),
-        "codex" => Some(AgentBinary::Codex),
-        "amplifier" => Some(AgentBinary::Amplifier),
-        _ => None,
-    }
 }
 
 fn resolve_launch_node_options(_subprocess_safe: bool) -> Result<String> {

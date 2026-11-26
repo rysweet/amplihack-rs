@@ -79,17 +79,31 @@ Supported languages: Python, TypeScript, C#, Go, Java, Rust.
 
 ## Drift Detection
 
-Monitor awesome-copilot for new content:
+Monitor awesome-copilot for new content with `gh` and `jq`:
 
 ```bash
-python .claude/skills/awesome-copilot-sync/check_drift.py
+state_file="${AMPLIHACK_HOME:-$HOME/.amplihack}/awesome-copilot-sync-state.json"
+latest="$(gh api repos/github/awesome-copilot/commits --jq '.[0]')"
+latest_sha="$(printf '%s\n' "$latest" | jq -r '.sha')"
+latest_date="$(printf '%s\n' "$latest" | jq -r '.commit.author.date')"
+last_sha="$(jq -r '.latest_commit_sha // empty' "$state_file" 2>/dev/null || true)"
+
+if [ "$latest_sha" = "$last_sha" ]; then
+  echo "awesome-copilot sync status: CURRENT"
+else
+  echo "awesome-copilot sync status: DRIFT_DETECTED"
+fi
+echo "Latest upstream commit: $latest_date $latest_sha"
 ```
 
 Output states:
 
 - `CURRENT`: No new content since last check
 - `DRIFT_DETECTED`: New commits found upstream
-- `ERROR`: Could not reach GitHub API
+
+The check compares the latest upstream commit with the `latest_commit_sha`
+field of a state file that the maintainer keeps. The check does not write that
+file.
 
 State is stored at `~/.amplihack/awesome-copilot-sync-state.json`.
 

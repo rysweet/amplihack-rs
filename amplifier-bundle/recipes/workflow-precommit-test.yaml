@@ -94,7 +94,7 @@ steps:
 
   # ==========================================================================
   # STEP 13: MANDATORY OUTSIDE-IN TESTING
-  # Use the qa-team skill (outside-in-testing alias supported) to test this change
+  # Use the qa-team skill to test this change
   # as a user would. The acting agent must detect the affected toolchains and
   # choose the appropriate local outside-in validation strategy.
   # ==========================================================================
@@ -110,7 +110,7 @@ steps:
       **Repository:** {{repo_path}}
       **Branch:** Run `git branch --show-current` to get the current branch name.
 
-      You MUST perform outside-in testing using the `qa-team` skill (`outside-in-testing` remains an alias)
+      You MUST perform outside-in testing using the `qa-team` skill
       to verify this change as a real user or consumer would. Step 13 is
       agentic and toolchain-aware: detect the affected languages, manifests,
       lockfiles, package managers, entry points, changed files, and documented

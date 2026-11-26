@@ -11,9 +11,8 @@
 //!   candidate with another account in its `.claude.json` is
 //!   `target identity`. The cycle re-decides once under the lock, on the
 //!   probes it already has, limited to the fresh candidates whose account is
-//!   unchanged; a swap to such a candidate goes ahead after
-//!   `revalidate: target <old> no longer eligible (<reason>); reconsidered`,
-//!   where `<reason>` is the skip reason, `gone` or `account changed`.
+//!   unchanged. A replacement target waits for a later cycle's direct
+//!   confirmation, so no second target is probed under the lock.
 //! - When `~/.claude.json` held an account in step 3 and none in step 6, and
 //!   nothing but the live login and the target changed, the cycle logs
 //!   `revalidate: ~/.claude.json held no account; read again`, calls
@@ -42,10 +41,29 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::config::{self, ReadMode};
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use crate::commands::profile::overflow::OverflowEntry;
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+thread_local! {
+    static CONFIRMED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn tracking_ctx(e: &Env, measure: super::cycle::MeasureFn) -> Ctx {
+    CONFIRMED.with(|calls| calls.borrow_mut().clear());
+    let mut ctx = ctx_with(e, measure);
+    ctx.reread = Some(|ctx, who, left| {
+        CONFIRMED.with(|calls| calls.borrow_mut().push(who.to_string()));
+        super::tests_revalidate_cause::confirm_fixture(ctx, who, left)
+    });
+    ctx
+}
+
+fn assert_only_first_target_confirmed() {
+    CONFIRMED.with(|calls| assert_eq!(*calls.borrow(), ["spare"]));
+}
 
 /// The labels of the last `skip: state changed during measurement` line.
 fn changed_labels(log: &str) -> Vec<String> {
@@ -128,27 +146,20 @@ fn spare_busy_while_measuring_3(ctx: &Ctx, snap: &Snap) -> Result<Measurement, P
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_busy_target_is_reconsidered_once_and_the_next_candidate_gets_the_swap() {
+fn a_busy_target_leaves_the_unconfirmed_alternative_for_a_later_cycle() {
     let (e, s2, _) = env3();
-    let mut ctx = ctx_with(&e, spare_busy_while_measuring_3);
+    let mut ctx = tracking_ctx(&e, spare_busy_while_measuring_3);
     ctx.scan = |_| sessions(&SPARE_SESSION_3, &["spare"]);
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
-    assert_eq!(ino_at(&e.live()), Some(s2), "spare2's login is live");
+    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare2")), Some(s2));
     assert_eq!(ino_at(&e.slot("spare")), Some(e.t), "spare was not touched");
-    assert_eq!(ino_at(&e.slot("work")), Some(e.l), "work's login was moved");
-    let line = "revalidate: target spare no longer eligible (session running); reconsidered";
-    assert!(log.contains(line), "{log}");
-    assert!(log.contains("swap work->spare2 "), "{log}");
-    assert!(
-        log.find(line) < log.find("swap work->spare2 "),
-        "the reconsidered line comes before the swap line:\n{log}"
-    );
-    assert!(!log.contains(msg::CHANGED), "{log}");
-    assert_eq!(last_outcome(&e), "swapped");
+    assert_only_first_target_confirmed();
+    assert_eq!(last_outcome(&e), "skipped");
     let ledger = e.rs.load_ledger().unwrap().unwrap();
-    assert_eq!(ledger.live.as_deref(), Some("spare2"));
+    assert_eq!(ledger.live.as_deref(), Some("work"));
 }
 
 // --- Test 4: the target gets a session; no other candidate ------------------
@@ -500,22 +511,19 @@ fn a_skipped_retry_counts_the_failed_live_probe_once() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_retry_after_failed_live_probes_still_swaps() {
+fn a_failed_live_probe_is_counted_once_when_the_alternative_is_unconfirmed() {
     let (e, s2, _) = env3();
     take_key_from_home(&e);
-    let mut ctx = ctx_with(&e, |c, s| live_failed(&SPARE_SESSION_F2, c, s));
+    let mut ctx = tracking_ctx(&e, |c, s| live_failed(&SPARE_SESSION_F2, c, s));
     ctx.scan = |_| sessions(&SPARE_SESSION_F2, &["spare"]);
     ctx.failed_live = FAILED_PROBE_LIMIT - 1;
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(
-        outcome,
-        CycleOutcome::Swapped,
-        "the re-decision starts from the count before this cycle, so it \
-         reaches the limit again rather than damping to a stay:\n{log}"
-    );
-    assert_eq!(ino_at(&e.live()), Some(s2));
-    assert_eq!(ctx.failed_live, 0, "a swap resets the count");
+    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare2")), Some(s2));
+    assert_eq!(ctx.failed_live, FAILED_PROBE_LIMIT);
+    assert_only_first_target_confirmed();
 }
 
 // --- D8: a held cycle's spend-limit check ignores unrelated churn -----------
@@ -639,17 +647,16 @@ fn spare_relogged_spare2_kept(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Pro
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_relogged_target_is_reconsidered_to_a_candidate_whose_account_is_unchanged() {
+fn a_relogged_target_cannot_authorise_a_swap_to_an_unconfirmed_alternative() {
     let (e, s2, _) = env3();
-    let mut ctx = ctx_with(&e, spare_relogged_spare2_kept);
+    let mut ctx = tracking_ctx(&e, spare_relogged_spare2_kept);
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
-    let line = "revalidate: target spare no longer eligible (account changed); reconsidered";
-    assert!(log.contains(line), "{log}");
-    assert!(log.contains("swap work->spare2 "), "{log}");
-    assert_eq!(ino_at(&e.live()), Some(s2), "spare2's login is live");
+    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare2")), Some(s2));
     assert_eq!(ino_at(&e.slot("spare")), Some(e.t), "spare was not touched");
+    assert_only_first_target_confirmed();
 }
 
 /// `spare` and `spare2` are both logged in to other accounts; `third` is a
@@ -838,17 +845,16 @@ fn home_cut_short_and_spare_busy(ctx: &Ctx, snap: &Snap) -> Result<Measurement, 
 
 #[cfg(target_os = "linux")]
 #[test]
-fn after_a_reread_a_target_change_is_still_reconsidered_once() {
+fn a_home_reread_does_not_authorise_an_unconfirmed_replacement_target() {
     let (e, s2, _) = env3();
-    let mut ctx = ctx_with(&e, home_cut_short_and_spare_busy);
+    let mut ctx = tracking_ctx(&e, home_cut_short_and_spare_busy);
     ctx.scan = |_| sessions(&SPARE_SESSION_RR, &["spare"]);
     ctx.pause = |ctx| put_home_back(&ctx.home);
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
-    assert_eq!(log.matches(REREAD).count(), 1, "{log}");
-    let line = "revalidate: target spare no longer eligible (session running); reconsidered";
-    assert!(log.contains(line), "{log}");
-    assert!(log.find(REREAD) < log.find(line), "{log}");
-    assert_eq!(ino_at(&e.live()), Some(s2), "spare2's login is live");
+    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
+    assert_eq!(live_now(&ctx), LiveId::Known(n("work")));
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare2")), Some(s2));
+    assert_only_first_target_confirmed();
 }

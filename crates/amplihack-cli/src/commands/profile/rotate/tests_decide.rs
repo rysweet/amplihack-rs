@@ -62,6 +62,7 @@ fn swap(to: &str, reason: Reason) -> Decision {
 
 fn window(label: &str, used: f64) -> UsageWindow {
     UsageWindow {
+        observed_at: None,
         label: label.into(),
         used_percentage: used,
         resets_text: None,
@@ -626,4 +627,58 @@ fn a_live_exhausted_login_with_a_low_figure_still_swaps() {
         ),
         swap("spare", Reason::Threshold)
     );
+}
+
+// --- Issue #3284: the weekly figure of every model --------------------------
+
+fn with_model_week(session: u32, all: u32, fable: Option<u32>) -> String {
+    let mut text = format!(
+        "Current session: {session}% used {RESET}\nCurrent week (all models): {all}% used {RESET}\n"
+    );
+    if let Some(f) = fable {
+        text.push_str(&format!("Current week (Fable): {f}% used {RESET}\n"));
+    }
+    text
+}
+
+fn probed(name: &str, text: &str) -> Measured {
+    let rep = crate::commands::profile::usage_parse::parse_usage(text, "", NOW);
+    Measured {
+        name: ProfileName::parse(name).unwrap(),
+        reading: Reading::from_report(&rep),
+        windows: Windows::from_report(&rep),
+        spend_limit: false,
+        unknown: false,
+    }
+}
+
+#[test]
+fn a_used_up_model_week_leaves_no_room_and_is_never_chosen() {
+    let text = with_model_week(10, 87, Some(100));
+    assert_eq!(read(&text).headroom(), Some(0));
+    let full = probed("model-full", &text);
+    let live = r(95.0, 0.0);
+    let d = decide(&settings(), &live, std::slice::from_ref(&full), None, NOW);
+    assert_ne!(d, swap("model-full", Reason::Threshold));
+    assert_ne!(d, swap("model-full", Reason::Upgrade));
+    let spare = probed("spare", &with_model_week(80, 80, None));
+    assert_eq!(
+        decide(&settings(), &live, &[full, spare], None, NOW),
+        swap("spare", Reason::Threshold)
+    );
+}
+
+#[test]
+fn a_model_week_below_the_all_models_week_reads_as_before() {
+    assert_eq!(read(&with_model_week(10, 60, Some(40))), r(10.0, 60.0));
+}
+
+#[test]
+fn a_model_week_above_the_all_models_week_is_the_week_figure() {
+    assert_eq!(read(&with_model_week(10, 60, Some(92))), r(10.0, 92.0));
+}
+
+#[test]
+fn a_report_with_no_model_lines_reads_as_before() {
+    assert_eq!(read(&with_model_week(10, 60, None)), r(10.0, 60.0));
 }

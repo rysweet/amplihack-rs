@@ -52,6 +52,7 @@ fn probed(s: f64, w: f64) -> Probed {
                 used: w,
                 resets_at: Some(T + DAY),
             }),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,

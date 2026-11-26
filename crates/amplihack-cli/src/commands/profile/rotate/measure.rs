@@ -394,5 +394,6 @@ pub(super) fn reader(ctx: &Ctx, env: SourceEnv, claude_bound: usize, now: i64) -
         excluded: usage_cmd::exclude_list(ctx.store.root(), |_| {}).ok(),
         now,
         keep_raw: false,
+        record_usage: !ctx.read_only,
     }
 }

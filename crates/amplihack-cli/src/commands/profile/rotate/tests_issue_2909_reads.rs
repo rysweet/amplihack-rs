@@ -55,6 +55,7 @@ fn direct(session: f64, week: f64, resets: Option<i64>) -> Probed {
                 used: week,
                 resets_at: resets,
             }),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,

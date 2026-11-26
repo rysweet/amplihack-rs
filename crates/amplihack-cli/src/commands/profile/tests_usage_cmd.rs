@@ -20,6 +20,7 @@ const DAY: i64 = 86_400;
 
 fn win(label: &str, pct: f64, at: Option<i64>) -> UsageWindow {
     UsageWindow {
+        observed_at: None,
         label: label.to_string(),
         used_percentage: pct,
         resets_text: Some(format!("text-{label}-{pct}")),
@@ -426,6 +427,7 @@ fn table_rows() -> Vec<Row> {
     );
     rep.session.as_mut().unwrap().resets_text = Some("Oct 16, 7pm (America/Los_Angeles)".into());
     rep.week_models.push(UsageWindow {
+        observed_at: None,
         label: "Fable".into(),
         used_percentage: 0.0,
         resets_text: Some("Oct 22, 2am (America/Los_Angeles)".into()),
@@ -1267,6 +1269,7 @@ fn a_full_per_model_weekly_window_alone_is_not_overflow() {
     // windows only, so a full per-model window leaves plan capacity.
     let mut r = live_cred(UsageState::Ok, 10.0, 20.0);
     r.report.week_models.push(UsageWindow {
+        observed_at: None,
         label: "Opus".into(),
         used_percentage: 100.0,
         resets_text: None,

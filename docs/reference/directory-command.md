@@ -55,7 +55,6 @@ use the suffix search used by `find`.
 | `amplihack:code-visualizer` | The same entry with the tool prefix. |
 | `amplihack:core:guide` | A Claude-style qualified agent name; its full path is preserved. |
 
-Bare `guide` is ambiguous between `agent:guide` and `agent:core/guide`.
 Names shared by a skill and an agent, such as `tla-plus-expert`, need a type:
 `skill:tla-plus-expert` or `agent:specialized/tla-plus-expert`. Ambiguous
 diagnostics print the canonical alternatives. Unknown entries are rejected

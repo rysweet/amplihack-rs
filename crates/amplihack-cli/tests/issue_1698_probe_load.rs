@@ -124,9 +124,14 @@ fn the_live_probe_counts_against_the_bound() {
             running -= 1;
         }
     }
-    assert_eq!(starts, 5, "the live login and four candidates: {marks}");
+    assert_eq!(starts, 6, "five measurements and one confirmation: {marks}");
+    assert_eq!(f.usage_probes("spare"), 2);
+    for name in ["work", "extra", "fourth", "fifth"] {
+        assert_eq!(f.usage_probes(name), 1, "{name}: {marks}");
+    }
     assert_eq!(running, 0, "{marks}");
-    assert_eq!(peak, 2, "five probes at a bound of 2: {marks}");
+    assert_eq!(peak, 2, "probes at a bound of 2: {marks}");
+    assert_eq!(f.home_account(), "uuid-spare");
 }
 
 #[test]

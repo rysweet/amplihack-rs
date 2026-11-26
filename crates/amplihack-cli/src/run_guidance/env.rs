@@ -6,7 +6,7 @@
 //! never changes a prompt.
 
 use super::fs_safety::{DirState, dir_state, untrusted_reason};
-use super::pr_key::{canonical_repo_from_remote, parse_pr_url, pr_guidance_dir, pr_key};
+use super::pr_key::{PrRef, canonical_repo_from_remote, parse_pr_url, pr_guidance_dir, pr_key};
 use super::sanitize::sanitize_line;
 use super::{GUIDANCE_DIR, MAX_ENV_DIRS};
 use std::collections::BTreeMap;
@@ -175,9 +175,67 @@ fn warn_no_pr_dir(reason: &str) {
     eprintln!("amplihack: no pull request operator guidance for this run: {reason}");
 }
 
-/// The per-PR guidance folder named by the run's context: `pr_url`, or a
-/// numeric `pr_number` with the `origin` of `repo_path` (relative to
-/// `working_dir`; `working_dir` itself when unset).
+/// The pull request a run's context names: `pr_url`, or a numeric
+/// `pr_number` with the `origin` of `repo_path` (relative to `working_dir`;
+/// `working_dir` itself when unset). `None` when the context names none or
+/// it cannot be resolved; each cause is passed to `warn`, never the value.
+///
+/// One resolver for the two readers of a run's pull request: the folder
+/// list `recipe run` gives its runner ([`runner_env_value`]) and the
+/// live-run discovery of `recipe guide` and `recipe guidance show`, which
+/// reads the same fields back from a session pointer (issue #3161).
+fn pr_ref_with_warnings(
+    context: &BTreeMap<String, String>,
+    working_dir: &Path,
+    warn: &mut dyn FnMut(&str),
+) -> Option<PrRef> {
+    let field = |key: &str| context.get(key).map(|v| v.trim()).filter(|v| !v.is_empty());
+    if let Some(url) = field("pr_url") {
+        match parse_pr_url(url) {
+            Ok(pr) => return Some(pr),
+            // The error names the rule broken, not the URL.
+            Err(e) => warn(&format!("pr_url in the run context is {e}")),
+        }
+    }
+    let number = field("pr_number")?;
+    let Some(number) = number
+        .bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| number.parse::<u64>().ok())
+        .flatten()
+        .filter(|n| *n > 0)
+    else {
+        warn("pr_number in the run context is not a positive whole number");
+        return None;
+    };
+    let repo = match field("repo_path") {
+        Some(path) => working_dir.join(path),
+        None => working_dir.to_path_buf(),
+    };
+    match origin_repo(&repo) {
+        Ok((owner, repo)) => Some(PrRef {
+            owner,
+            repo,
+            number,
+        }),
+        Err(reason) => {
+            warn(&format!("cannot resolve pr_number: {reason}"));
+            None
+        }
+    }
+}
+
+/// [`pr_ref_with_warnings`] without the warnings: the pull request a run's
+/// context (or a session pointer's recorded fields) names, if it resolves.
+pub(crate) fn pr_ref_from_context(
+    context: &BTreeMap<String, String>,
+    working_dir: &Path,
+) -> Option<PrRef> {
+    pr_ref_with_warnings(context, working_dir, &mut |_| {})
+}
+
+/// The per-PR guidance folder named by the run's context
+/// ([`pr_ref_with_warnings`]).
 ///
 /// `None`, silently, when the context names no pull request. When it names
 /// one that cannot be resolved, `None` with one stderr line per cause: the
@@ -187,10 +245,8 @@ fn pr_dir_from_context(
     working_dir: &Path,
     state_root: Result<&Path, &str>,
 ) -> Option<PathBuf> {
-    let field = |key: &str| context.get(key).map(|v| v.trim()).filter(|v| !v.is_empty());
-    let url = field("pr_url");
-    let number = field("pr_number");
-    if url.is_none() && number.is_none() {
+    let named = |key: &str| context.get(key).is_some_and(|v| !v.trim().is_empty());
+    if !named("pr_url") && !named("pr_number") {
         return None;
     }
     let root = match state_root {
@@ -200,35 +256,8 @@ fn pr_dir_from_context(
             return None;
         }
     };
-    if let Some(url) = url {
-        match parse_pr_url(url) {
-            Ok(pr) => return Some(pr_dir_for(pr.number, &pr.owner, &pr.repo, root)),
-            // The error names the rule broken, not the URL.
-            Err(e) => warn_no_pr_dir(&format!("pr_url in the run context is {e}")),
-        }
-    }
-    let number = number?;
-    let Some(number) = number
-        .bytes()
-        .all(|b| b.is_ascii_digit())
-        .then(|| number.parse::<u64>().ok())
-        .flatten()
-        .filter(|n| *n > 0)
-    else {
-        warn_no_pr_dir("pr_number in the run context is not a positive whole number");
-        return None;
-    };
-    let repo = match field("repo_path") {
-        Some(path) => working_dir.join(path),
-        None => working_dir.to_path_buf(),
-    };
-    match origin_repo(&repo) {
-        Ok((owner, name)) => Some(pr_dir_for(number, &owner, &name, root)),
-        Err(reason) => {
-            warn_no_pr_dir(&format!("cannot resolve pr_number: {reason}"));
-            None
-        }
-    }
+    let pr = pr_ref_with_warnings(context, working_dir, &mut |cause| warn_no_pr_dir(cause))?;
+    Some(pr_dir_for(pr.number, &pr.owner, &pr.repo, root))
 }
 
 /// The value `recipe run` gives its runner: `<run_dir>/guidance`, then the

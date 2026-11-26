@@ -57,6 +57,26 @@ fn via_fake(p: &Path) -> Result<Account, &'static str> {
     EP.with(|e| read_with(e.borrow().as_ref().expect("endpoints set"), p))
 }
 
+fn confirm_via_fake(
+    ctx: &Ctx,
+    who: &ProfileName,
+    remaining: Duration,
+) -> (Probed, Option<super::measure::ProbeLabel>) {
+    let cancel = AtomicBool::new(false);
+    let dir = ctx.store.root().join(who.as_str());
+    let req = Request {
+        creds_dir: &dir,
+        journals: &[],
+        allow_refresh: false,
+        cancel: &cancel,
+        timeout: remaining,
+        now_ms: chrono::Utc::now().timestamp_millis(),
+    };
+    let ep = EP.with(|e| e.borrow().clone().expect("endpoints set"));
+    let reading = usage_direct::read(&ep, &req).expect("local usage response");
+    (Probed::from_report(&reading.report), None)
+}
+
 struct Fx {
     _tmp: tempfile::TempDir,
     home: PathBuf,
@@ -158,6 +178,7 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         Windows {
             session: win(100.0),
             week: win(40.0),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
     );
@@ -168,7 +189,11 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         },
         Windows::default(),
     );
-    decide_measured(ctx, snap, work, vec![(n("spare"), spare)], now())
+    if super::observe::live_name(&snap.live) == Some(&n("spare")) {
+        decide_measured(ctx, snap, spare, vec![(n("work"), work)], now())
+    } else {
+        decide_measured(ctx, snap, work, vec![(n("spare"), spare)], now())
+    }
 }
 
 impl Fx {
@@ -177,6 +202,7 @@ impl Fx {
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);
         ctx.scan = |_| Liveness::Known(BTreeSet::new());
         ctx.measure = Some(work_out_spare_free);
+        ctx.reread = Some(confirm_via_fake);
         let mut l = self.rs.load_ledger().unwrap().unwrap();
         let identity = via_fake(&self.home.join(".claude")).unwrap();
         l.account = Some(identity.key().to_string());
@@ -256,6 +282,7 @@ fn equal_reset_times_on_two_accounts_no_longer_stop_the_swap() {
         f.fake.count("GET", PROFILE_PATH) >= 2,
         "identity asked the profile endpoint"
     );
+    assert_eq!(f.fake.count("GET", "/api/oauth/usage"), 3);
 }
 
 /// The control: when the profile endpoint reports the same account for

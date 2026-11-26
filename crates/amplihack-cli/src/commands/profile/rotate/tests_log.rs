@@ -273,6 +273,7 @@ mod issue_1846 {
 
     fn report(state: UsageState, session: Option<f64>, week: Option<f64>) -> UsageReport {
         let w = |label: &str, used: f64| UsageWindow {
+            observed_at: None,
             label: label.into(),
             used_percentage: used,
             resets_text: None,
@@ -418,6 +419,7 @@ fn probed(reading: Reading, session: Option<f64>, week: Option<f64>) -> Probed {
         windows: Windows {
             session: session.map(win),
             week: week.map(win),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         ..Probed::failed()

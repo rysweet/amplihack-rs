@@ -1,5 +1,5 @@
 use super::types::LanguageStatus;
-use crate::cli_memory::source_files::project_source_files;
+use crate::cli_memory::source_files::{language_for_path, project_source_files};
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -10,19 +10,6 @@ pub(super) fn scan_languages(path: &Path, found: &mut BTreeMap<String, bool>) {
         if let Some(language) = language_for_path(&file) {
             found.insert(language.to_string(), true);
         }
-    }
-}
-
-pub(crate) fn language_for_path(path: &Path) -> Option<&'static str> {
-    match path.extension().and_then(|ext| ext.to_str())? {
-        "py" => Some("python"),
-        "ts" | "tsx" => Some("typescript"),
-        "js" | "jsx" => Some("javascript"),
-        "go" => Some("go"),
-        "rs" => Some("rust"),
-        "cs" => Some("csharp"),
-        "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" => Some("cpp"),
-        _ => None,
     }
 }
 

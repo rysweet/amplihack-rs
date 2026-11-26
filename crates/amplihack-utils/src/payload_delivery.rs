@@ -26,7 +26,17 @@ pub const TRUNCATION_MARKER: &str = "[... earlier output truncated ...]\n";
 #[derive(Debug)]
 pub struct StdinWriter {
     handle: JoinHandle<io::Result<()>>,
-    delivered: Arc<AtomicBool>,
+    flags: Arc<Flags>,
+}
+
+/// What the writer thread has seen and done, read by the launching thread
+/// after the child has exited.
+#[derive(Debug, Default)]
+struct Flags {
+    /// Every byte due was written and flushed (see [`StdinWriter::delivered`]).
+    delivered: AtomicBool,
+    /// The head or the copied input held text (see [`StdinWriter::saw_text`]).
+    saw_text: AtomicBool,
 }
 
 /// Starts a thread that writes `payload` to `stdin` and then closes it.
@@ -51,13 +61,22 @@ pub fn spawn_stdin_forwarder(
 }
 
 /// Starts a thread that writes `head`, copies `follow` until it reaches end
-/// of file, writes `tail`, and then closes `stdin`.
+/// of file, writes `tail` if text came before it, and then closes `stdin`.
 ///
 /// Used when the caller's own stdin is the prompt and text must follow it
-/// (issue #2535: operator guidance after a Codex `exec … -` prompt). Like
+/// (issue #2535: operator guidance after a Codex `exec … -` prompt; #3162:
+/// after a Claude or Copilot prompt on stdin). Like
 /// [`spawn_stdin_forwarder`], nothing of `follow` is buffered beyond the
 /// copy and nothing is timed; a `BrokenPipe` is not an error and errors
 /// never include payload bytes.
+///
+/// The tail follows something or nothing is written: when neither `head`
+/// nor anything copied from `follow` holds a byte other than ASCII white
+/// space, `tail` is not written and [`StdinWriter::delivered`] stays
+/// `false`. A pipe that was open and empty, or that held only blank lines,
+/// therefore never makes the tail the child's whole input; the caller asks
+/// [`StdinWriter::saw_text`] to tell that case from a child that went away
+/// (PR #3190 review).
 pub fn spawn_stdin_forwarder_with_trailer(
     stdin: ChildStdin,
     head: Vec<u8>,
@@ -73,8 +92,8 @@ fn spawn_writer(
     follow: Option<Box<dyn io::Read + Send>>,
     tail: Vec<u8>,
 ) -> StdinWriter {
-    let delivered = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&delivered);
+    let flags = Arc::new(Flags::default());
+    let seen = Arc::clone(&flags);
     let handle = std::thread::spawn(move || {
         let mut stdin = stdin;
         let mut follow = follow;
@@ -83,33 +102,76 @@ fn spawn_writer(
             &payload,
             follow.as_mut().map(|source| source as &mut dyn io::Read),
             &tail,
-            &flag,
+            &seen,
         );
-        // Dropping `stdin` closes the pipe, which gives the child EOF. The
-        // delivery flag, when set, was stored before this point.
+        // Dropping `stdin` closes the pipe, which gives the child EOF. Both
+        // flags, when set, were stored before this point.
         drop(stdin);
         map_result(result)
     });
-    StdinWriter { handle, delivered }
+    StdinWriter { handle, flags }
 }
 
-/// Writes `head`, copies `follow` to end of file, writes `tail` and flushes
-/// `out`. Only when every step returned `Ok` is `delivered` set (Release).
+/// Whether `bytes` holds a byte that is not ASCII white space.
+fn has_text(bytes: &[u8]) -> bool {
+    bytes.iter().any(|b| !b.is_ascii_whitespace())
+}
+
+/// Writes `head`, copies `follow` to end of file, writes `tail` when text
+/// came before it (or when it is empty), and flushes `out`.
+///
+/// `saw_text` is stored (Release) as soon as text is read, before it is
+/// written. `delivered` is stored only when every step returned `Ok` and
+/// the tail was written.
 fn write_all_parts<W: Write>(
     out: &mut W,
     head: &[u8],
     follow: Option<&mut dyn io::Read>,
     tail: &[u8],
-    delivered: &AtomicBool,
+    flags: &Flags,
 ) -> io::Result<()> {
+    let mut text = has_text(head);
+    if text {
+        flags.saw_text.store(true, Ordering::Release);
+    }
     out.write_all(head)?;
     if let Some(source) = follow {
-        io::copy(source, &mut *out)?;
+        text |= copy_noting_text(source, out, &flags.saw_text)?;
     }
-    out.write_all(tail)?;
+    // A tail with nothing before it would be the child's whole input.
+    let write_tail = text || tail.is_empty();
+    if write_tail {
+        out.write_all(tail)?;
+    }
     out.flush()?;
-    delivered.store(true, Ordering::Release);
+    if write_tail {
+        flags.delivered.store(true, Ordering::Release);
+    }
     Ok(())
+}
+
+/// `io::copy` that also says whether the bytes copied held text, storing
+/// `saw_text` (Release) before the first such chunk is written.
+fn copy_noting_text<W: Write>(
+    source: &mut dyn io::Read,
+    out: &mut W,
+    saw_text: &AtomicBool,
+) -> io::Result<bool> {
+    let mut buffer = [0_u8; 8192];
+    let mut text = false;
+    loop {
+        let read = match source.read(&mut buffer) {
+            Ok(0) => return Ok(text),
+            Ok(read) => read,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if !text && has_text(&buffer[..read]) {
+            text = true;
+            saw_text.store(true, Ordering::Release);
+        }
+        out.write_all(&buffer[..read])?;
+    }
 }
 
 /// Maps a reader that went away (`BrokenPipe`, `ConnectionReset`) to `Ok`:
@@ -140,9 +202,22 @@ impl StdinWriter {
     /// The flag is set before stdin is closed, so once the child has seen
     /// EOF and exited, the value read here is final. `true` means the pipe
     /// accepted the bytes, not that the child read them. A reader that went
-    /// away early (`BrokenPipe`) leaves it `false`.
+    /// away early (`BrokenPipe`) leaves it `false`, and so does a non-empty
+    /// tail that was withheld because no text came before it.
     pub fn delivered(&self) -> bool {
-        self.delivered.load(Ordering::Acquire)
+        self.flags.delivered.load(Ordering::Acquire)
+    }
+
+    /// Whether the head, or the input copied from `follow` so far, held a
+    /// byte that is not ASCII white space.
+    ///
+    /// Set before that text is written, so a child that read any of it
+    /// sees `true` here once it has exited. `false` after the child has
+    /// exited means the child was given no text before the tail was due:
+    /// the source was empty, held only white space, or had not yet
+    /// produced any when the child went.
+    pub fn saw_text(&self) -> bool {
+        self.flags.saw_text.load(Ordering::Acquire)
     }
 
     /// Joins the writer thread.
@@ -321,8 +396,11 @@ mod tests {
         assert_eq!(String::from_utf8(out.stdout).unwrap(), "HEAD|FOLLOW|TAIL");
     }
 
+    // PR #3190 review: an empty pipe on stdin used to give the child the
+    // trailer as its whole input, and the launcher then reported it read.
+    // The trailer now follows text or is not written.
     #[test]
-    fn issue_2535_empty_head_and_follow_give_the_trailer_only() {
+    fn pr3190_empty_head_and_follow_write_no_trailer_and_see_no_text() {
         let mut child = cat_child();
         let stdin = child.stdin.take().unwrap();
         let writer = spawn_stdin_forwarder_with_trailer(
@@ -331,9 +409,69 @@ mod tests {
             Box::new(io::empty()),
             b"TRAILER ONLY".to_vec(),
         );
-        writer.finish().expect("write succeeds");
         let out = child.wait_with_output().unwrap();
-        assert_eq!(String::from_utf8(out.stdout).unwrap(), "TRAILER ONLY");
+        assert_eq!(out.stdout, b"", "the trailer is not the whole input");
+        assert!(!writer.delivered());
+        assert!(!writer.saw_text());
+        writer
+            .finish()
+            .expect("withholding the trailer is not an error");
+    }
+
+    #[test]
+    fn pr3190_white_space_only_input_is_passed_on_without_the_trailer() {
+        let mut child = cat_child();
+        let stdin = child.stdin.take().unwrap();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            stdin,
+            Vec::new(),
+            Box::new(io::Cursor::new(b"\n \t\r\n".to_vec())),
+            b"TRAILER".to_vec(),
+        );
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.stdout, b"\n \t\r\n", "the caller's bytes, unchanged");
+        assert!(!writer.delivered());
+        assert!(!writer.saw_text());
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn pr3190_text_late_in_the_input_still_takes_the_trailer() {
+        // Text after a long blank run, across a read boundary.
+        let mut input = vec![b'\n'; 8192 + 7];
+        input.extend_from_slice(b"prompt\n");
+        let mut child = cat_child();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            child.stdin.take().unwrap(),
+            Vec::new(),
+            Box::new(io::Cursor::new(input.clone())),
+            b"TRAILER".to_vec(),
+        );
+        let out = child.wait_with_output().unwrap();
+        let mut want = input;
+        want.extend_from_slice(b"TRAILER");
+        assert_eq!(out.stdout, want);
+        assert!(writer.delivered());
+        assert!(writer.saw_text());
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn pr3190_a_head_with_text_takes_the_trailer_after_empty_input() {
+        // `-p <text>` rewritten to stdin, with an empty pipe piped to
+        // amplihack: the prompt is in the head, so the trailer follows it.
+        let mut child = cat_child();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            child.stdin.take().unwrap(),
+            b"prompt\n\n".to_vec(),
+            Box::new(io::empty()),
+            b"TRAILER".to_vec(),
+        );
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.stdout, b"prompt\n\nTRAILER");
+        assert!(writer.delivered());
+        assert!(writer.saw_text());
+        writer.finish().unwrap();
     }
 
     #[test]
@@ -361,8 +499,12 @@ mod tests {
         let stdin = child.stdin.take().unwrap();
         child.wait().unwrap();
         let big = vec![b'x'; 1 << 20];
-        let writer =
-            spawn_stdin_forwarder_with_trailer(stdin, Vec::new(), Box::new(io::empty()), big);
+        let writer = spawn_stdin_forwarder_with_trailer(
+            stdin,
+            Vec::new(),
+            Box::new(io::Cursor::new(b"prompt".to_vec())),
+            big,
+        );
         // BrokenPipe means the child stopped reading; its exit status decides.
         if let Err(e) = writer.finish() {
             assert!(!e.to_string().contains("xxxx"), "payload bytes in error");
@@ -412,7 +554,7 @@ mod tests {
 
     #[test]
     fn pr2567_m2_full_write_and_flush_set_the_flag_in_order() {
-        let delivered = AtomicBool::new(false);
+        let flags = Flags::default();
         let mut out: Vec<u8> = Vec::new();
         let mut follow = io::Cursor::new(b"FOLLOW|".to_vec());
         write_all_parts(
@@ -420,17 +562,18 @@ mod tests {
             b"HEAD|",
             Some(&mut follow as &mut dyn io::Read),
             b"TAIL",
-            &delivered,
+            &flags,
         )
         .expect("every part is written");
         assert_eq!(out, b"HEAD|FOLLOW|TAIL");
-        assert!(delivered.load(Ordering::Acquire));
+        assert!(flags.delivered.load(Ordering::Acquire));
+        assert!(flags.saw_text.load(Ordering::Acquire));
     }
 
     #[test]
     fn pr2567_m2_broken_pipe_on_the_tail_leaves_the_flag_clear_and_maps_to_ok() {
         for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::ConnectionReset] {
-            let delivered = AtomicBool::new(false);
+            let flags = Flags::default();
             // Head and follow fit; the reader goes away during the tail.
             let mut out = Limited::new(b"HEAD|FOLLOW|".len(), kind);
             let mut follow = io::Cursor::new(b"FOLLOW|".to_vec());
@@ -439,34 +582,35 @@ mod tests {
                 b"HEAD|",
                 Some(&mut follow as &mut dyn io::Read),
                 b"TAIL-SECRET-2567",
-                &delivered,
+                &flags,
             );
             let err = result.expect_err("the tail write fails");
             assert_eq!(err.kind(), kind);
-            assert!(!delivered.load(Ordering::Acquire), "{kind:?}");
+            assert!(!flags.delivered.load(Ordering::Acquire), "{kind:?}");
+            assert!(flags.saw_text.load(Ordering::Acquire), "{kind:?}");
             assert!(map_result(Err(err)).is_ok(), "{kind:?} is not an error");
         }
     }
 
     #[test]
     fn pr2567_m2_broken_pipe_on_the_head_leaves_the_flag_clear() {
-        let delivered = AtomicBool::new(false);
+        let flags = Flags::default();
         let mut out = Limited::new(0, io::ErrorKind::BrokenPipe);
-        let result = write_all_parts(&mut out, b"HEAD", None, b"TAIL", &delivered);
+        let result = write_all_parts(&mut out, b"HEAD", None, b"TAIL", &flags);
         assert!(result.is_err());
-        assert!(!delivered.load(Ordering::Acquire));
+        assert!(!flags.delivered.load(Ordering::Acquire));
     }
 
     #[test]
     fn pr2567_m2_a_failed_flush_leaves_the_flag_clear() {
-        let delivered = AtomicBool::new(false);
+        let flags = Flags::default();
         let mut out = Limited::new(usize::MAX, io::ErrorKind::BrokenPipe);
         out.flush_kind = Some(io::ErrorKind::BrokenPipe);
-        let result = write_all_parts(&mut out, b"HEAD", None, b"TAIL", &delivered);
+        let result = write_all_parts(&mut out, b"HEAD", None, b"TAIL", &flags);
         assert!(result.is_err());
         assert_eq!(out.got, b"HEADTAIL", "the bytes were accepted");
         assert!(
-            !delivered.load(Ordering::Acquire),
+            !flags.delivered.load(Ordering::Acquire),
             "accepted but not flushed is not delivered"
         );
     }

@@ -317,10 +317,10 @@ fn fresh_default_install_keeps_complete_framework_and_index() {
     }
     assert!(skills > 30);
     // Only bundle links whose target is in the bundle are staged as folders.
-    for resource in ["docx/ooxml", "pptx/ooxml", "outside-in-testing/examples"] {
+    for resource in ["docx/ooxml", "pptx/ooxml"] {
         assert!(staged.join("skills").join(resource).is_dir(), "{resource}");
     }
-    assert!(staged.join("skills/outside-in-testing/README.md").is_file());
+    assert!(staged.join("skills/docx/ooxml/scripts/pack.sh").is_file());
 }
 
 #[test]
@@ -598,4 +598,34 @@ fn automatic_launch_repair_narrows_lists_and_saves_the_notice() {
     assert!(!saved.is_empty());
     launch();
     assert_eq!(fs::read(notice).unwrap(), saved);
+}
+
+#[test]
+fn retired_names_in_the_enabled_list_change_nothing() {
+    let install = Installation::new();
+    fs::create_dir_all(install.path(".amplihack")).unwrap();
+    fs::write(
+        install.path(".amplihack/config.toml"),
+        "[lists]\nenabled = [\"skill:outside-in-testing\", \"skill:workflow-enforcement\"]\n",
+    )
+    .unwrap();
+    install.install();
+    install.defaults();
+    install.run(&["directory", "enable", "skill:code-visualizer"]);
+    assert!(
+        install
+            .path(".claude/skills/code-visualizer/SKILL.md")
+            .is_file()
+    );
+    let output = install
+        .command(&["claude", "--subprocess-safe", "--", "-p", "fixture"])
+        .env("AMPLIHACK_CLAUDE_BINARY_PATH", install.tools.join("claude"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "launch: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(install.path("client-launched").is_file());
 }

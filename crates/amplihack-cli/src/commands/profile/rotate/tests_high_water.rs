@@ -31,6 +31,7 @@ fn at(s: f64, w: f64, r: Option<i64>) -> Probed {
             used: w,
             resets_at: r.map(|x| x.saturating_add(86_400)),
         }),
+        week_models: Vec::new(),
         no_session_limit: false,
     };
     p

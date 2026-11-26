@@ -26,10 +26,16 @@ Use this command to exit continuous work mode after `/amplihack:lock` was enable
 
 ## Instructions
 
-Use the Bash tool to run the lock tool:
+Use the Bash tool to run the Rust CLI:
 
 ```bash
-python .claude/tools/amplihack/lock_tool.py unlock
+amplihack unlock
 ```
 
-This will remove the lock at `~/.amplihack/.claude/runtime/locks/.lock_active`
+This removes `<project>/.claude/runtime/locks/.lock_active` and `.lock_message`
+from the same folder, and preserves any handwritten `.continuation_prompt`.
+The project folder is `$CLAUDE_PROJECT_DIR`, or the current directory when that
+variable is unset.
+
+Run `amplihack lock-status` to check the lock. Enable it again with
+`amplihack lock [--message TEXT]`.

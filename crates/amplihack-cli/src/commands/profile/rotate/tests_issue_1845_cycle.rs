@@ -136,6 +136,7 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
                 used: 40.0,
                 resets_at: reset,
             }),
+            week_models: Vec::new(),
             no_session_limit: false,
         },
         spend_limit: false,
@@ -167,6 +168,12 @@ impl Fx {
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);
         ctx.scan = |_| Liveness::Known(BTreeSet::new());
         ctx.measure = Some(work_out_spare_free);
+        ctx.reread = Some(|ctx, who, _| {
+            assert_eq!(who, &n("spare"));
+            let mut p = super::tests_revalidate_cause::ok(10.0, 10.0);
+            p.observed_at = Some((ctx.now)());
+            (p, None)
+        });
         ctx
     }
 

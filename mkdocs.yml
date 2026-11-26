@@ -185,9 +185,6 @@ nav:
       - /analyze: claude/commands/amplihack/analyze.md
       - /improve: claude/commands/amplihack/improve.md
       - /fix: claude/commands/amplihack/fix.md
-      - /n-version: claude/commands/amplihack/n-version.md
-      - /debate: claude/commands/amplihack/debate.md
-      - /cascade: claude/commands/amplihack/cascade.md
       - /customize: claude/commands/amplihack/customize.md
   - Skills:
       - Catalog: skills/SKILL_CATALOG.md

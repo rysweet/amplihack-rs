@@ -152,6 +152,7 @@ impl Claude {
     fn run(&self, mode: ProbeMode) -> Probe {
         self.0.borrow_mut().push(mode);
         let w = |label: &str, p: f64| UsageWindow {
+            observed_at: None,
             label: label.into(),
             used_percentage: p,
             resets_text: None,

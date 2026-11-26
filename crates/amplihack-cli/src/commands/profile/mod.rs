@@ -37,6 +37,7 @@ mod pointer;
 mod probe_limits;
 mod probe_logs;
 mod probe_sandbox;
+mod probe_tmp;
 mod root_cmd;
 mod root_config;
 mod rotate;
@@ -102,6 +103,8 @@ mod tests_probe_limits;
 mod tests_probe_logs;
 #[cfg(all(test, unix))]
 mod tests_probe_sandbox;
+#[cfg(all(test, unix))]
+mod tests_probe_tmp;
 #[cfg(test)]
 mod tests_root_config;
 #[cfg(test)]

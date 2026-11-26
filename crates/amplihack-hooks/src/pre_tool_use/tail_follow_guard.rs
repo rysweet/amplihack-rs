@@ -165,7 +165,7 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> bool {
 /// shell runs when it reads `text`: those outside single quotes, `$'…'`,
 /// comments and heredoc bodies. A substitution inside another is found when
 /// its body is scanned.
-fn substitution_bodies(text: &str) -> Vec<String> {
+pub(super) fn substitution_bodies(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut bodies = Vec::new();
     let mut heredocs = Vec::new();

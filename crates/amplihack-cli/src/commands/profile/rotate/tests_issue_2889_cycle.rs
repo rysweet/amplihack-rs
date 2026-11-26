@@ -331,6 +331,8 @@ fn a_swap_line_annotates_the_live_figures_and_never_the_target() {
     set(&l8::LIVE, &[Live::Passive(80.0, 20.0, 5)]);
     set(&l8::OTHERS, &spare_room());
     let mut c = ctx(&e, l8::clock, l8::measure, Some(l8::reread));
+    // Target confirmation must not consume the live re-read script.
+    c.reread = Some(l8::confirm);
     assert_eq!(step(&mut c, &l8::CLOCK), CycleOutcome::Swapped);
     let log = log_of(&e);
     assert!(
@@ -350,6 +352,7 @@ fn a_swap_line_on_a_direct_reading_carries_no_age() {
     set(&l9::LIVE, &[Live::Direct(80.0, 20.0)]);
     set(&l9::OTHERS, &spare_room());
     let mut c = ctx(&e, l9::clock, l9::measure, Some(l9::reread));
+    c.reread = Some(l9::confirm);
     assert_eq!(step(&mut c, &l9::CLOCK), CycleOutcome::Swapped);
     let log = log_of(&e);
     assert!(
