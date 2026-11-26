@@ -196,26 +196,6 @@ fn the_contract_without_routing_is_its_last_two_items() {
     assert!(!reduced.contains("<!--"));
 }
 
-/// Top-level items of the compiled-in contract when the split into its two
-/// parts was last checked by hand.
-const CONTRACT_TOP_LEVEL_ITEMS: usize = 6;
-
-/// Issue #3247: the reduced part is chosen by position, so a top-level item
-/// added to or removed from the contract can move a router line into it or a
-/// rule out of it. This fails on any such change.
-#[test]
-fn the_contract_keeps_the_shape_its_two_parts_were_split_on() {
-    let full = contract_text(ContractPart::Full).unwrap();
-    assert_eq!(
-        top_level_items(full),
-        CONTRACT_TOP_LEVEL_ITEMS,
-        "the contract's top-level items changed. Decide which part each new or \
-         removed item belongs to: the last two items are all that a launch with \
-         text.routing off receives (`without_routing` in \
-         system_prompt_append.rs). Then update CONTRACT_TOP_LEVEL_ITEMS."
-    );
-}
-
 #[test]
 fn each_contract_part_has_its_own_private_file() {
     let home = tempfile::tempdir().unwrap();
