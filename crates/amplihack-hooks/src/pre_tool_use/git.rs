@@ -18,10 +18,7 @@ pub fn check_main_branch() -> anyhow::Result<Option<Value>> {
 
     if branch == "main" || branch == "master" {
         let message = super::MAIN_BRANCH_ERROR.replace("{branch}", &branch);
-        return Ok(Some(serde_json::json!({
-            "block": true,
-            "message": message
-        })));
+        return Ok(Some(super::deny(&message)));
     }
 
     Ok(None)

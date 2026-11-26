@@ -3,8 +3,9 @@
 **Issue:** [#1265](https://github.com/rysweet/amplihack-rs/issues/1265) (Option 3); delivery by file: [#2030](https://github.com/rysweet/amplihack-rs/issues/2030)
 **Status:** Implemented. The fragment's source of truth is
 `amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md`; it is `include_str!`d into
-the binary at compile time. At launch, amplihack writes those bytes to a 0600
-file and `build_command_for_dir` passes `--append-system-prompt-file <path>`.
+the binary at compile time. At launch, amplihack writes those bytes, less the
+maintainers' comment that opens the file, to a 0600 file and
+`build_command_for_dir` passes `--append-system-prompt-file <path>`.
 The text is never in argv, and the file is never read back as a source of
 content — see [Why it is compiled in](#why-it-is-compiled-in-and-not-read-from-disk)
 and [A file, not the text](#a-file-not-the-text).

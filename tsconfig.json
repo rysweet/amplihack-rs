@@ -7,5 +7,5 @@
     "skipLibCheck": true
   },
   "include": ["**/*.js", "**/*.jsx"],
-  "exclude": ["node_modules", "dist", "build", "coverage"]
+  "exclude": ["node_modules", "dist", "build", "coverage", "worktrees", "target", ".amplihack"]
 }

@@ -21,7 +21,7 @@
 use std::ffi::OsString;
 use std::sync::{Mutex, OnceLock};
 
-/// The five profile-redirecting variables and the guards that keep a test's
+/// The six profile-redirecting variables and the guards that keep a test's
 /// settings writes inside its own temporary home (issue #2922). One
 /// definition, shared with the other crates' `test_support`.
 #[path = "../../../tests/support/claude_profile_isolation.rs"]
@@ -107,7 +107,7 @@ pub(crate) fn blarify_not_disabled() -> EnvVarGuard {
 /// guards saving one variable restore it in the wrong order, which is why the
 /// separate `AMPLIHACK_HOME` guard this type used to carry is gone.
 ///
-/// Field order is drop order: `HOME` is restored first, then the five.
+/// Field order is drop order: `HOME` is restored first, then the six.
 #[allow(dead_code)]
 pub(crate) struct IsolatedStateHome {
     _home: EnvVarGuard,
@@ -151,6 +151,12 @@ impl Drop for CwdGuard {
 #[allow(dead_code)]
 pub(crate) mod scratch_base;
 
+/// A temporary fixture outside installed framework ancestors and real homes.
+/// Callers hold [`env_lock`] while selecting the scratch base.
+pub(crate) fn isolated_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(scratch_base::scratch_base()).expect("isolated hook fixture directory")
+}
+
 #[cfg(unix)]
 #[path = "../../amplihack-cli/tests/support/exec_stub.rs"]
 #[allow(dead_code)]
@@ -163,4 +169,12 @@ mod exec_stub;
 #[cfg(unix)]
 pub(crate) fn write_executable(path: &std::path::Path, body: &str) {
     exec_stub::write_executable(path, body, 0o755);
+}
+
+/// `value` as one word of POSIX shell text, through the shared `exec_stub`
+/// quoter, so a temporary path a test writes into a stub's script reaches
+/// the shell as data and never as code.
+#[cfg(unix)]
+pub(crate) fn sh_quote(value: &str) -> String {
+    exec_stub::sh_quote(value)
 }

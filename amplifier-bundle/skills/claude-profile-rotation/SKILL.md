@@ -260,7 +260,7 @@ Before marking a profile, tell the user:
   reject the new ledger fields.
 
 ```bash
-amplihack profile overflow add ryan-mistt-org
+amplihack profile overflow add <overflow-profile>
 amplihack profile overflow list
 amplihack profile rotate stop
 amplihack profile rotate start --overflow-wait 1800
@@ -432,9 +432,9 @@ room it answers its own session's pane and no other. The pane is
 hook walks up its own ancestry to the nearest process whose standard input
 is a terminal, runs one read-only `tmux list-panes -a`, and takes the single
 pane whose tty is that terminal. Either pane gets the same proof before it
-is used: tmux reports the holder's terminal as the pane's `#{pane_tty}`, the
-holder is in that terminal's foreground, and Claude Code is reading it. A
-pane named by `$TMUX_PANE` that fails the proof is refused and never
+is used: tmux reports the holder's terminal as the pane's `#{pane_tty}`, and
+the holder is in that terminal's foreground. A pane named by `$TMUX_PANE`
+that fails the proof is refused and never
 replaced by the lookup. The hook then reads that pane once, with `tmux
 capture-pane -p`, and types nothing unless the visible screen holds one of
 six fixed phrases: `what do you want to do?`, `usage limit`, `continuing
@@ -466,13 +466,12 @@ tries again. The outcome says why: `not-resumed` with
 `detail=no-tmux-pane` (no pane was named or found: the session is not in
 tmux, or its terminal matches no single pane), `pane-unverified` (a pane
 was named or found but not proved to be the session's terminal; `detail=`
-names the check),
-`pane-not-reading` (it is the terminal, but Claude Code is not reading it)
+names the check)
 or `screen-unrecognised` (the pane is the terminal, but its screen matched
 no phrase, `detail=screen-unknown`, or could not be read,
 `detail=screen-unreadable`). The wake cleared the menu in a Claude Code
 2.1.307 check, but standing sessions have stayed on the usage-limit menu
-after a wake and a swap, so these four outcomes can leave a session
+after a wake and a swap, so these three outcomes can leave a session
 stopped.
 
 For a session left stopped, and when the hook logs `resume-keys-failed`,
@@ -521,7 +520,6 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | `resumed-keys` | tmux accepted all four inputs to the session's own pane. Check for a reply in the original conversation. |
 | `not-resumed` | Logged with `detail=no-tmux-pane`. No pane was named or found, so nothing was typed or recorded, and the hook exited `2` with a continue message. A session held on the menu stays there until the next room event. If the session runs in tmux, check that the hook reaches the session's own tmux server (`$TMUX` set, or the default server). |
 | `pane-unverified` | A pane was named or found but not proved to be the terminal of the hook's own Claude Code (`detail=` is `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`; `tty-mismatch` also covers `tmux` failing or printing nothing). Nothing was typed or recorded and the hook exited `2`. If the session is still on the menu, its owner should follow [Continue a session yourself](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself). |
-| `pane-not-reading` | The pane is the session's terminal, but Claude Code is not the process reading it. Nothing was typed or recorded and the hook exited `2`. Same follow-up as `pane-unverified`. |
 | `screen-unrecognised` | The pane is the session's terminal, but what it was showing is not a screen the keys answer (`detail=screen-unknown`) or could not be read (`detail=screen-unreadable`). Nothing was typed or recorded and the hook exited `2`, naming the refusal in the wake message. Same follow-up as `pane-unverified`. |
 | `resume-keys-failed` | A key failed or the session exited part way (`keys_sent=` says how many went). The claim on the event is released, so the next room event tries again. If the session is still open, its owner should follow [Continue a session yourself](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself). |
 | `swap-no-room` / `swap-stale` | A swap record was at 100% or swapped before the stop; the hook kept waiting. |
@@ -530,7 +528,11 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | `rotator-down` | The rotator was not running (or its ledger was unreadable) when the limit hit; start it. |
 | `session-gone` | The session exited while the hook waited; nothing was done. |
 | `moved-on` | The user sent a prompt in that session during the wait (for example `continue`), so the hook did not wake it. |
-| `disabled` | Auto-switch was off when a swap would have resumed the session. |
+| `disabled` | Auto-switch was off. Written at the start of the call only when `resume/` already exists; otherwise a silent exit `0` with no line and no stderr. |
+| `not-limit` | The stop was not a usage limit: `error=` is a known non-limit value, or the input was not a `StopFailure`. Nothing to do unless `error=` names a value that is a usage limit. |
+| `bad-session-id` | `session_id` was missing, oversized or invalid (`session=-`). |
+| `bad-payload` | Standard input was malformed or over 1 MiB. |
+| `panicked` | The hook panicked. It exited `0`; report it. |
 | `duplicate` | A key resume was already recorded for that limit event (same session, text and login), or another hook resumed the session during the wait. |
 | `session-record-reset` | The session's record of earlier resumes could not be parsed. It was treated as no earlier resumes; the next resume with keys rewrites it, and until then each run logs this line. The run goes on, and its own line follows. Nothing for the user to do unless it repeats after a `resumed-keys` line. |
 | `stop-hook-active` | Claude Code reported a stop hook already running; nothing was done. |
@@ -546,7 +548,12 @@ day. Each `resume.log` line also has `cycle=`, the rotator's last cycle
 outcome, and, when they apply, `resumes=` (the session's delivered key resumes in 24
 hours, logged as evidence; nothing is refused on it), `swap_seq=`,
 `swap_live=`, `pane=` (a hash, not the pane id), `keys_sent=` and
-`detail=`.
+`detail=`. Every line ends with `error=`, the payload's `error` value
+reduced to `[a-z_]`. Every call leaves a line, so a limit stop with none
+means Claude Code did not run the hook. If a line could not be written, read
+`resume/log-write-failed` (the reason is one of `dir_missing`,
+`dir_unprivate`, `lock_failed`, `open_failed` or `write_failed`); on exit `0`
+the hook also prints one fixed line on stderr.
 
 Claude Code's `autoContinueAtUsageLimit` setting controls whether it starts
 a wait that can continue the conversation when the limit resets. The

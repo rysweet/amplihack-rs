@@ -374,8 +374,9 @@ fn stays_on_overflow_then_moves_off_when_a_plan_login_recovers() {
     assert_eq!(ledger["last_cycle"]["overflow"], "on");
 
     // spare is back, only just under the thresholds; the hold (default 1h)
-    // and upgrade margin do not apply to leaving credits.
-    f.usage("spare", 80, 80);
+    // and upgrade margin do not apply to leaving credits. Issue #3181: in a
+    // later window, since use never falls in the window it was read at 100% in.
+    f.usage_resetting("spare", 80, 80, 5);
     let out = f.ok(&["profile", "rotate"]);
     let s = stdout(&out);
     assert!(

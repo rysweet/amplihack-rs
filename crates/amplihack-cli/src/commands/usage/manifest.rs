@@ -22,6 +22,7 @@ pub fn validate(m: &Manifest) -> Result<()> {
     let mut ids = BTreeSet::new();
     for s in &m.sessions {
         if !safe_label(&s.id)
+            || !safe_label(s.provider.label())
             || !ids.insert(&s.id)
             || s.run_id.as_deref().is_some_and(|s| !safe_label(s))
             || s.parent.as_deref().is_some_and(|s| !safe_label(s))

@@ -46,6 +46,11 @@ pub(crate) struct Request<'a> {
     pub(crate) default_model: Option<&'a str>,
     /// Whether this launch is routed through the LiteLLM gateway.
     pub(crate) through_gateway: bool,
+    /// Whether this is a local-model Codex launch, whose profile sets the
+    /// model and the reasoning effort: a tier word is removed and nothing is
+    /// added in its place, and neither `model.force` nor the default model
+    /// applies. A concrete `--model <id>` passes through unchanged.
+    pub(crate) local_model: bool,
 }
 
 /// What the launch should do instead.
@@ -74,8 +79,13 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
     let occurrences = find_model_options(request.argv, column == "codex");
 
     // A gateway launch routes on the model name and has no default of its
-    // own, so a forced model cannot route past it either.
-    let force = if request.through_gateway {
+    // own, so a forced model cannot route past it either. A local-model
+    // launch takes its model from the profile, and says so.
+    let local_force_notice =
+        (request.local_model && request.force.is_some()).then(|| Notice::LocalModelForce {
+            harness: request.harness.to_string(),
+        });
+    let force = if request.through_gateway || request.local_model {
         None
     } else {
         request.force
@@ -102,7 +112,7 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
         .default_model
         .filter(|_| column == "claude")
         .filter(|raw| !raw.trim().is_empty())
-        .filter(|_| !request.through_gateway);
+        .filter(|_| !request.through_gateway && !request.local_model);
     let (default_model, default_notice) = match default_model {
         Some(raw) => match validate_model_id(raw) {
             Ok(()) => (Some(raw), None),
@@ -113,7 +123,7 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
 
     let mut out = Resolution {
         argv: Vec::new(),
-        notices: force_notice.into_iter().collect(),
+        notices: force_notice.into_iter().chain(local_force_notice).collect(),
         record: None,
         effort: None,
     };
@@ -288,6 +298,7 @@ impl Decision {
                 tier,
             }),
             Decision::Removed(Fallback::Gateway) => Some(Notice::Gateway { harness, tier }),
+            Decision::Removed(Fallback::LocalModel) => Some(Notice::LocalModel { harness, tier }),
             Decision::AsTyped | Decision::Model(_) => None,
         }
     }
@@ -309,6 +320,9 @@ fn decide(
             None => Decision::AsTyped,
         };
     };
+    if request.local_model {
+        return Decision::Removed(Fallback::LocalModel);
+    }
     if request.through_gateway {
         return Decision::Removed(Fallback::Gateway);
     }
@@ -358,6 +372,9 @@ fn effective_effort(
         // A concrete model id was typed, so no tier was asked for and there
         // is no effort to apply (issue #1527).
         Decision::AsTyped => None,
+        // The local-model profile sets the effort; a cloud tier's effort
+        // never reaches a local server.
+        Decision::Removed(Fallback::LocalModel) => None,
         _ if Effort::has_effort_control(column) => match (requested, ceiling) {
             (Some(effort), Some(cap)) => Some(effort.min(cap)),
             (effort, _) => effort,

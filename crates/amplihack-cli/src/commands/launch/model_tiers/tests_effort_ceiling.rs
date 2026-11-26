@@ -38,6 +38,7 @@ fn request<'a>(harness: &'a str, args: &'a [String], table: &'a Table) -> Reques
         force: None,
         default_model: None,
         through_gateway: false,
+        local_model: false,
     }
 }
 

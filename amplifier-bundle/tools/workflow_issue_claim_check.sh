@@ -24,6 +24,17 @@
 # PR for this head" and a duplicate is opened. The claim is on the ISSUE, not on
 # the branch, so the check has to be too.
 #
+# A CLAIM IS INFORMATION, NEVER A REFUSAL (#3129, #3110)
+#
+# Until #3129 a claim on another branch ended the run with exit 1. That ended
+# runs that were right to carry on: a retry against the PR its own first
+# attempt opened (#3110), and a continuation run whose task text quotes its own
+# issue (mistt-app-ui #480). The tool now reports every claim and exits 0. The
+# agent that runs the build compares the claim with its task text, continues
+# its own pull request, or works beside another one and says why in a PR
+# comment. The claim lines on stderr, the `claimed` key line on stdout and the
+# `--json` line carry what it needs to judge.
+#
 # WHAT COUNTS AS A CLAIM
 #
 # Four signals, each of which is a PR *claiming* the issue rather than merely
@@ -110,18 +121,20 @@
 # workflow_identity_preflight.sh (#1290) is the reference shape. Three outcomes,
 # kept strictly apart:
 #
-#   the check ran and found a claim  -> exit 1, naming the PR and the remedy
+#   the check ran and found a claim  -> INFO on stderr naming each PR, the
+#                                       `claimed` key line, exit 0
 #   the check could not be made      -> WARNING on stderr, exit 0
 #   there is nothing to check        -> INFO on stderr, exit 0
 #     (no git repo, no origin, a non-GitHub remote, no `gh`, no `jq`,
 #      a non-numeric issue reference from local tracking)
 #
-# Note what is absent from the refusal path: an API error of ANY kind, including
-# a 403. GitHub answers both "slow down" and "you may not" with 403, so this
-# helper classifies rate limiting FIRST and then declines to turn any remaining
-# failure into a verdict — an unreadable answer is not evidence that an issue is
-# unclaimed, and it is not evidence that it is claimed either. Only a PR we
-# actually saw stops a run.
+# The three outcomes differ in the key line, not in the exit code. An API error
+# of any kind, including a 403, is never reported as a claim. GitHub answers
+# both "slow down" and "you may not" with 403, so this helper classifies rate
+# limiting FIRST and then declines to turn any remaining failure into a verdict:
+# an unreadable answer is not evidence that an issue is unclaimed, and it is
+# not evidence that it is claimed either. Only a PR we actually saw is
+# reported as a claim.
 #
 # A MERGED PULL REQUEST CLAIMS THE ISSUE ONLY WHILE THE ISSUE IS NOT OPEN
 # (issue #2238)
@@ -174,14 +187,14 @@
 #
 # What this means in practice: an issue left open by a merged pull request is
 # free for follow-up work, with no `allow_existing_pr=true` and no
-# `AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK=1`. When a refusal does happen it says
+# `AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK=1`. When a claim is reported it says
 # which kind of claim it stands on in its first line — "open pull request #N
 # is already working on issue #M", or "recently-merged pull request #N ..." —
 # and whenever a merged claim was in the window the block also reports
 # the issue state that was read, on an `issue state:` line beside the
-# repository and branch. A refusal on a merged pull request is therefore
-# legible as one without reading the claim list, and reopening the issue is
-# the remedy when such a refusal is wrong. The verdict thus depends on
+# repository and branch. A claim by a merged pull request is therefore
+# legible as one without reading the claim list, and reopening the issue
+# drops it when it is wrong. The verdict thus depends on
 # open/closed state, which anyone with triage permission can change; the
 # influence runs one way only, since it can drop a claim and never create one,
 # and it is weaker than the two bypasses the helper already honours.
@@ -202,9 +215,10 @@
 # are. So:
 #
 #   claim head == the branch checked out in --repo-path, same repository
-#     -> this stream is continuing that pull request. Allow, and say so.
+#     -> this stream is continuing that pull request (`ok-own-pr`).
 #   any other claim
-#     -> a different branch is implementing this issue. Refuse, as before.
+#     -> a different branch is working on this issue (`claimed`). Since
+#        #3129 this is information for the run's agent, not a refusal.
 #
 # Cross-repository claims are excluded from that allowance: a fork's PR may have
 # `headRefName: main` while we sit on our own `main`, and equal names there are
@@ -214,8 +228,8 @@
 # prep time, where no PR is being created; workflow_publish_pr.sh passes an
 # explicit `--head` (the branch it is about to push), so at the moment a PR is
 # actually opened this default is not consulted at all. A run that is allowed
-# through prep on an existing branch and then derives a NEW branch anyway is
-# still refused at publish, by the same check.
+# through prep on an existing branch and then derives a NEW branch anyway has
+# the claim reported again at publish, by the same check.
 #
 # ALLOW_EXISTING_PR is the escape hatch for the case the comparison cannot
 # cover: the working directory is not on that branch (a fresh clone about to
@@ -234,11 +248,23 @@
 # Usage:
 #   workflow_issue_claim_check.sh --issue N [--repo-path DIR] [--head BRANCH]
 #                                 [--repo OWNER/NAME] [--allow-existing-pr]
+#                                 [--json]
 #
 #   --head BRANCH   a branch whose PR is OURS and therefore never a duplicate.
 #                   Passed by the publish helper so the run's own PR (already
 #                   handled by the head/base scoped lookup) is not mistaken for
-#                   a competitor.
+#                   a competitor. It must pass `git check-ref-format --branch`
+#                   and must not start with `-`.
+#   --repo SLUG     owner/name, checked by shape.
+#   --json          after the key line, one more stdout line (schema 1):
+#                   {"schema_version":1,"issue":"N","repo":"owner/name",
+#                    "result":"ok|ok-own-pr|claimed|skipped|unknown",
+#                    "reason":"...","claims":[{"number","url","state","head",
+#                    "via","source","own"}]}
+#                   With --json a claim on the --head branch is listed, with
+#                   own true, instead of being left out; `own` is also true for
+#                   a claim on the branch checked out in --repo-path. The key
+#                   line is the same with or without --json.
 #
 # Environment:
 #   ALLOW_EXISTING_PR                         true/1/yes/on -> skip entirely
@@ -250,11 +276,12 @@
 #   AMPLIHACK_CLAIM_CHECK_MERGED_LIMIT        merged PRs fetched (default 60)
 #
 # stdout is one machine-readable line (it becomes the recipe step's context
-# value). Everything human-facing goes to stderr.
+# value), plus the JSON line under --json. Everything human-facing goes to
+# stderr.
 #
 # Exit codes:
-#   0  no claim / skipped / could-not-check
-#   1  an existing pull request already claims this issue
+#   0  every result: no claim, a claim (information), skipped, could-not-check
+#   2  a usage error: an unknown argument, a missing value, or a malformed --head or --repo
 
 # No `set -e`: this helper must always reach a structured answer rather than
 # dying mid-probe and leaving the caller to guess what it meant.
@@ -267,20 +294,48 @@ OWN_HEAD=""
 REPO_SLUG=""
 ALLOW_EXISTING=""
 SLUG_FROM_ORIGIN=""
+JSON_OUT=""
+
+# usage <reason>: a malformed call, which is the caller's error and not a
+# verdict about the issue. Exit 2, nothing on stdout. Control characters are
+# removed from the echoed reason, and it is cut short.
+usage() {
+  printf 'ERROR: workflow_issue_claim_check.sh: %s\n' "$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177' | cut -c1-200)" >&2
+  echo "usage: workflow_issue_claim_check.sh --issue N [--repo-path DIR] [--head BRANCH] [--repo OWNER/NAME] [--allow-existing-pr] [--json]" >&2
+  exit 2
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --issue) ISSUE="${2:-}"; shift 2 ;;
-    --repo-path) REPO_ARG="${2:-}"; shift 2 ;;
-    --head) OWN_HEAD="${2:-}"; shift 2 ;;
-    --repo) REPO_SLUG="${2:-}"; shift 2 ;;
+    --issue|--repo-path|--head|--repo)
+      [ "$#" -ge 2 ] || usage "$1 needs a value"
+      case "$1" in
+        --issue) ISSUE="$2" ;;
+        --repo-path) REPO_ARG="$2" ;;
+        --head) OWN_HEAD="$2" ;;
+        --repo) REPO_SLUG="$2" ;;
+      esac
+      shift 2 ;;
     --allow-existing-pr) ALLOW_EXISTING="true"; shift ;;
-    -h|--help) sed -n '1,/^#   1  an existing pull request already claims this issue$/p' "$0" >&2; exit 0 ;;
-    *) shift ;;
+    --json) JSON_OUT="true"; shift ;;
+    -h|--help) sed -n '1,/^#   2  a usage error: an unknown argument, a missing value, or a malformed --head or --repo$/p' "$0" >&2; exit 0 ;;
+    *) usage "unknown argument '$1'" ;;
   esac
 done
 # No fallback to a bare ISSUE_NUMBER: an empty --issue means this run has no
 # issue, and an inherited name would be a parent run's issue (#1684).
+#
+# --head and --repo are checked by shape before anything uses them, so a value
+# such as `--upload-pack=x` never reaches git or gh as an option. An empty value
+# means "not given", which is what the publish helper passes on a detached HEAD
+# or a non-GitHub remote.
+if [ -n "$OWN_HEAD" ]; then
+  case "$OWN_HEAD" in -*) usage "--head must not start with '-'" ;; esac
+  git check-ref-format --branch "$OWN_HEAD" >/dev/null 2>&1 || usage "--head is not a valid branch name"
+fi
+if [ -n "$REPO_SLUG" ] && ! [[ "$REPO_SLUG" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  usage "--repo must be owner/name"
+fi
 
 TIMEOUT_S="${AMPLIHACK_CLAIM_CHECK_TIMEOUT:-45}"
 WINDOW_H="${AMPLIHACK_CLAIM_CHECK_MERGED_WINDOW_HOURS:-24}"
@@ -294,7 +349,8 @@ case "$MERGED_LIMIT" in ''|*[!0-9]*) MERGED_LIMIT=60 ;; esac
 # The issue's own state (#2238), read at most once and only when a merged claim
 # is in the window. Both are initialised here and expanded as ${VAR:-} at every
 # use: under `set -u` an unbound expansion would exit 1 before any verdict
-# reached stdout, and both callers read a bare exit 1 as FAILED_DUPLICATE_CLAIM.
+# reached stdout, and a 1.2.213 publish helper reads a bare exit 1 as
+# FAILED_DUPLICATE_CLAIM.
 ISSUE_STATE=""
 ISSUE_STATE_READ=""
 ISSUE_STATE_LC=""
@@ -321,10 +377,30 @@ redact() {
     -e 's#[Bb]earer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}#Bearer <redacted-token>#g'
 }
 
+# json_line <result> <reason> [claims JSON array]: the --json line. jq builds
+# it when it is installed. Without jq (the jq-not-installed path) the strings
+# are escaped by hand: control characters removed, backslash and double quote
+# escaped, and the claim list is empty, since there is nothing to list then.
+json_line() {
+  [ -n "$JSON_OUT" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -cn --arg issue "$ISSUE" --arg repo "$REPO_SLUG" --arg result "$1" --arg reason "$2" \
+      --argjson claims "${3:-[]}" \
+      '{schema_version:1, issue:$issue, repo:$repo, result:$result, reason:$reason, claims:$claims}'
+  else
+    local i r s
+    i="$(printf '%s' "$ISSUE" | LC_ALL=C tr -d '\000-\037\177' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    r="$(printf '%s' "$REPO_SLUG" | LC_ALL=C tr -d '\000-\037\177' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    s="$(printf '%s' "$2" | LC_ALL=C tr -d '\000-\037\177' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    printf '{"schema_version":1,"issue":"%s","repo":"%s","result":"%s","reason":"%s","claims":[]}\n' "$i" "$r" "$1" "$s"
+  fi
+}
+
 # skip <reason> — nothing to check here.
 skip() {
   note "INFO: issue claim check skipped: $1"
   printf 'issue_claim_check: skipped reason=%s\n' "$1"
+  json_line skipped "$1"
   exit 0
 }
 
@@ -332,6 +408,7 @@ skip() {
 unknown() {
   note "WARNING: issue claim check could not be completed ($1) — continuing without a claim check. This is advisory: an un-runnable check must not stop work (issue #1268)."
   printf 'issue_claim_check: unknown reason=%s\n' "$1"
+  json_line unknown "$1"
   exit 0
 }
 
@@ -517,7 +594,10 @@ CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # directory is standing on: same head branch, same repository. They are this
 # stream continuing that pull request — a review, a review-fix, a CI fix, a
 # resume — and are not competitors. `others` are on a different branch, which is
-# the shape of every incident in #1361, and they still refuse the run.
+# the shape of every incident in #1361; they are reported as a claim, for the
+# run's agent to judge (#3129). Claims on --head are left out of both, as
+# before. `all` keeps every claim, --head ones included, each with `own`, for
+# the --json line.
 
 CLAIMS="$(
   printf '%s\n%s\n' "$OPEN_JSON" "$MERGED_JSON" | jq -sc \
@@ -556,15 +636,20 @@ CLAIMS="$(
         ($cwd_head != "")
         and ((.headRefName // "") == $cwd_head)
         and (((.isCrossRepository // false) | not));
+      def is_own_head:
+        ($own_head != "")
+        and ((.headRefName // "") == $own_head)
+        and (((.isCrossRepository // false) | not));
       [ ($open | map(. + {claim_source: "open"}))
         + ($merged | map(select((.mergedAt // "") >= $cutoff)) | map(. + {claim_source: "recently-merged"}))
         | .[]
         | . + {claim_via: claim_via($issue)}
         | select(.claim_via | length > 0)
-        | select(($own_head == "") or ((.headRefName // "") != $own_head))
         | del(.body)
-      ]
-      | {ours: map(select(is_ours)), others: map(select(is_ours | not))}
+      ] as $all
+      | ($all | map(select(($own_head == "") or ((.headRefName // "") != $own_head)))) as $kept
+      | {ours: ($kept | map(select(is_ours))), others: ($kept | map(select(is_ours | not))),
+         all: ($all | map(. + {own: (is_ours or is_own_head)}))}
     ' 2>>"$ERRFILE"
 )" || CLAIMS=""
 
@@ -642,7 +727,8 @@ if [ "$MERGED_CLAIMS" -gt 0 ]; then
     FILTERED="$(printf '%s' "$CLAIMS" | jq -c '
       if (type == "object") and ((.ours | type) == "array") and ((.others | type) == "array")
       then {ours:   (.ours   | map(select(.claim_source != "recently-merged"))),
-            others: (.others | map(select(.claim_source != "recently-merged")))}
+            others: (.others | map(select(.claim_source != "recently-merged"))),
+            all:    ((.all // []) | map(select(.claim_source != "recently-merged")))}
       else empty end' 2>/dev/null)" || FILTERED=""
     if [[ "$FILTERED" =~ [^[:space:]] ]]; then
       # Numbers only. Titles and bodies are attacker-controlled free text and
@@ -664,42 +750,61 @@ case "$COUNT" in ''|*[!0-9]*) unknown "claim-filter-unreadable" ;; esac
 OWN_COUNT="$(printf '%s' "$CLAIMS" | jq '.ours | length' 2>/dev/null || echo "")"
 case "$OWN_COUNT" in ''|*[!0-9]*) unknown "claim-filter-unreadable" ;; esac
 
+# The --json claim list: every claim, --head ones included, with `own`. Built
+# only from fields section 3 kept; the body was already dropped there.
+CLAIM_LIST='[]'
+if [ -n "$JSON_OUT" ]; then
+  CLAIM_LIST="$(printf '%s' "$CLAIMS" | jq -c '[(.all // [])[] | {number, url, state,
+    head:(.headRefName // null), via:(.claim_via // []), source:.claim_source, own:(.own == true)}]' 2>/dev/null)" \
+    || CLAIM_LIST=""
+  [[ "$CLAIM_LIST" =~ ^\[ ]] || unknown "claim-filter-unreadable"
+fi
+
 if [ "$COUNT" -eq 0 ] && [ "$OWN_COUNT" -gt 0 ]; then
   OWN_URL="$(printf '%s' "$CLAIMS" | jq -r '.ours[0].url // ""')"
   OWN_NUM="$(printf '%s' "$CLAIMS" | jq -r '(.ours[0].number // "") | tostring')"
   note "INFO: issue claim check: pull request #${OWN_NUM} claims issue #${ISSUE}, and its head branch '${CWD_HEAD}' is the branch checked out here — this run is continuing that pull request, not racing it (issue #1448). ${OWN_URL}"
   printf 'issue_claim_check: ok-own-pr issue=%s repo=%s pr=%s head=%s\n' \
     "$ISSUE" "$REPO_SLUG" "${OWN_URL:-unknown}" "$CWD_HEAD"
+  json_line ok-own-pr "the claiming pull request is on the branch checked out here" "$CLAIM_LIST"
   exit 0
 fi
 
 if [ "$COUNT" -eq 0 ]; then
   note "INFO: issue claim check: no open or recently-merged pull request claims issue #${ISSUE} in ${REPO_SLUG}."
   printf 'issue_claim_check: ok issue=%s repo=%s\n' "$ISSUE" "$REPO_SLUG"
+  json_line ok "no open or recently merged pull request on another branch claims the issue" "$CLAIM_LIST"
   exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# 4. A claim exists. Stop, and say what to do instead.
+# 4. A claim exists. Report it as information and exit 0 (#3129).
 # ---------------------------------------------------------------------------
+#
+# The run's agent judges what the claim means for its task: it continues the
+# pull request when that is its own work (a retry, a continuation), or works
+# beside it and says why in a PR comment. The block below names the claims and
+# the facts it needs; it no longer tells the operator how to get past a stop.
 
 FIRST_URL="$(printf '%s' "$CLAIMS" | jq -r '.others[0].url // ""')"
-FIRST_HEAD="$(printf '%s' "$CLAIMS" | jq -r '.others[0].headRefName // ""')"
 FIRST_NUM="$(printf '%s' "$CLAIMS" | jq -r '(.others[0].number // "") | tostring')"
 # "open" or "recently-merged", generated in section 3 and never provider text.
 FIRST_SOURCE="$(printf '%s' "$CLAIMS" | jq -r '.others[0].claim_source // ""')"
 
-# Saying which kind of pull request the refusal stands on makes a merged claim
+# Saying which kind of pull request the claim stands on makes a merged claim
 # legible as one from the first line, which is what the reports in #2238 were
-# missing. Either part being unavailable falls back to the wording that was
-# here before; the `already working on issue #N` clause is unchanged in both.
-HEADLINE="ERROR: issue claim check failed — a pull request is already working on issue #${ISSUE}."
+# missing. Either part being unavailable falls back to the plain wording; the
+# `already working on issue #N` clause is the same in both.
+HEADLINE="INFO: issue claim check: a pull request is already working on issue #${ISSUE}."
 if [ -n "$FIRST_NUM" ] && [ -n "$FIRST_SOURCE" ]; then
-  HEADLINE="ERROR: issue claim check failed — ${FIRST_SOURCE} pull request #${FIRST_NUM} is already working on issue #${ISSUE}."
+  HEADLINE="INFO: issue claim check: ${FIRST_SOURCE} pull request #${FIRST_NUM} is already working on issue #${ISSUE}."
 fi
 
 {
   echo "$HEADLINE"
+  echo "  This is information for the run to judge, not a stop. Continue that pull"
+  echo "  request if it is this run's own work, or work beside it and say why in a"
+  echo "  PR comment (#3129, #3110)."
   echo ""
   echo "  repository : ${REPO_SLUG}"
   echo "  issue      : #${ISSUE}"
@@ -711,27 +816,8 @@ fi
   echo "  branch here: ${CWD_HEAD:-(detached HEAD)}"
   echo "  claimed by :"
   printf '%s' "$CLAIMS" | jq -r '.others[] | "    #\(.number)  \(.claim_source)  via=\(.claim_via | join(","))  head=\(.headRefName // "?")  \(.url)"'
-  echo ""
-  echo "  Opening a second pull request here is the failure recorded in issue #1361."
-  echo "  The second one merges, the first is never closed, and a month later it"
-  echo "  presents as conflicted work that is byte-identical to what already shipped."
-  echo ""
-  echo "  To continue the EXISTING pull request instead of racing it, re-run the"
-  echo "  workflow targeting it — the recipe accepts either:"
-  if [ -n "$FIRST_NUM" ]; then echo "    pr_number=${FIRST_NUM}"; fi
-  if [ -n "$FIRST_HEAD" ]; then echo "    existing_branch=${FIRST_HEAD}"; fi
-  echo "  Both make step-04 reuse that branch rather than deriving a new one, and"
-  echo "  this check steps aside when either is set."
-  echo ""
-  echo "  Reviewing, fixing review findings or CI, or resuming that pull request?"
-  echo "  Check out its head branch here and this check allows the run (#1448):"
-  if [ -n "$FIRST_HEAD" ]; then echo "    git checkout ${FIRST_HEAD}"; fi
-  echo "  If the working directory cannot be on that branch, state the intent:"
-  echo "    -c allow_existing_pr=true"
-  echo ""
-  echo "  If the existing pull request is genuinely abandoned, close it first."
-  echo "  If this check is wrong for your setup, set AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK=1."
 } >&2
 
 printf 'issue_claim_check: claimed issue=%s repo=%s pr=%s\n' "$ISSUE" "$REPO_SLUG" "${FIRST_URL:-unknown}"
-exit 1
+json_line claimed "a pull request on another branch claims the issue; this is information for the run to judge" "$CLAIM_LIST"
+exit 0

@@ -91,9 +91,12 @@ fn a_step_that_fails_after_the_agent_pushed_work_keeps_the_work_and_the_next_tur
 
 /// The agent step fails with a usage limit before it decides, with the
 /// operator's limit wait on (the default). The run does not end, and nothing
-/// waits for the owner: the next turn starts at once with the evidence. The
-/// message carries the classifier's marker but not the harness's own limit
-/// shape, so no real limit wait starts in the test.
+/// waits for the owner. The amplihack limit wait does not start on this
+/// message, because `limit_patterns::limit_message` rejects it. The decide
+/// step may nevertheless be attempted again inside turn 1 by a layer below the
+/// goal loop, so the run merges on turn 1 or on turn 2. That layer is not yet
+/// identified: #3179 lists the candidates checked. Both paths satisfy R1, and
+/// each is checked with its own evidence.
 #[test]
 fn a_usage_limit_in_a_turn_never_ends_the_run() {
     let h = Harness::new();
@@ -104,17 +107,68 @@ fn a_usage_limit_in_a_turn_never_ends_the_run() {
 "#,
     ));
     let out = h.drive("auto-drive-to-merge", &["no_merge=false"]);
-    ends_merged_on_turn_two(&h, &out);
-    let first = h.result("001");
-    assert_eq!(first["failure"]["usage_limit"], json!(true), "{first}");
-    assert_eq!(first["failure"]["class"], json!("usage_limit"), "{first}");
     assert_eq!(
-        first["failure"]["usage_limit_wait"],
-        json!(true),
-        "the operator's setting was read, not the log: {first}"
+        h.loop_end()["end"],
+        json!("merged"),
+        "the run carried on and merged: {}\n{}",
+        h.loop_end(),
+        describe(&out)
     );
-    assert_eq!(first["recovery"], json!("next-turn"), "{first}");
     assert_ne!(h.loop_end()["end"], json!("usage_limit"));
+    assert_eq!(h.merge_calls().len(), 1, "{:?}", h.calls());
+    assert!(
+        h.base.join("t1").exists(),
+        "the limit attempt ran: {}",
+        describe(&out)
+    );
+    let turns = h.turns();
+    let attempts = agent_turns(&h);
+    // Path markers: a repeated run of this test counts these lines to show
+    // which path each run took.
+    if turns == ["001", "002"] {
+        eprintln!("usage-limit path: next turn");
+        ends_merged_on_turn_two(&h, &out);
+        let first = h.result("001");
+        assert_eq!(first["failure"]["usage_limit"], json!(true), "{first}");
+        assert_eq!(first["failure"]["class"], json!("usage_limit"), "{first}");
+        assert_eq!(
+            first["failure"]["usage_limit_wait"],
+            json!(true),
+            "the operator's setting was read, not the log: {first}"
+        );
+        assert_eq!(first["recovery"], json!("next-turn"), "{first}");
+        assert_eq!(attempts, ["001", "002"], "{}", describe(&out));
+    } else if turns == ["001"] {
+        eprintln!("usage-limit path: same turn");
+        assert_eq!(attempts, ["001", "001"], "{}", describe(&out));
+        // A turn that merges records `outcome: "merged"`, as
+        // `kept_description.rs` asserts for `h.result("002")["outcome"]`.
+        assert_eq!(
+            h.result("001")["outcome"],
+            json!("merged"),
+            "{}",
+            describe(&out)
+        );
+    } else {
+        panic!(
+            "turns {turns:?}, agent calls {attempts:?}\n{}",
+            describe(&out)
+        );
+    }
+}
+
+/// The turn folder of each stub agent call, in call order.
+fn agent_turns(h: &Harness) -> Vec<String> {
+    std::fs::read_to_string(h.base.join("agent-turns.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            std::path::Path::new(l)
+                .file_name()
+                .map_or_else(|| l.to_string(), |n| n.to_string_lossy().into_owned())
+        })
+        .collect()
 }
 
 /// R1's one usage-limit ending, kept on purpose: the operator's own

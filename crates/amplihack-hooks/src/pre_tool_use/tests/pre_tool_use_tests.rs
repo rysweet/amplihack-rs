@@ -1271,9 +1271,9 @@ fn tmux_guard_allows_a_scoped_kill_server_for_the_powershell_tool_name() {
 }
 
 // ---------------------------------------------------------------------------
-// Crusty round 7, concern 1: XPIA answers with a bare `{"block": true}` that
-// Claude Code does not enforce (#1773), and its command-injection pattern
-// matches `; rm`, `\; kill…` and a line starting `kill…`. The guard runs
+// Crusty round 7, concern 1: XPIA once answered with a bare `{"block": true}`
+// that Claude Code did not enforce (fixed by #1773), and its command-injection
+// pattern matches `; rm`, `\; kill…` and a line starting `kill…`. The guard runs
 // first, so these commands get its enforceable deny when the user opts in to
 // XPIA (it is off by default, #1734). Every `XPIA_*` variable is cleared and
 // `XPIA_ENABLED=true` set explicitly, so a session's own exports cannot hide

@@ -942,7 +942,7 @@ guidance; this command reads it and never changes it. It is allowed inside
 recipe runs (`AMPLIHACK_RECIPE_RUN_ID` set), so agent and bash steps use it.
 
 ```bash
-amplihack recipe guidance show [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] [--since <ENTRY>] [--json]
+amplihack recipe guidance show [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] [--since <ENTRY>] [--operator-only] [--json]
 amplihack recipe guidance wait [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] --since <ENTRY> [-- <COMMAND>...]
 ```
 
@@ -952,6 +952,7 @@ amplihack recipe guidance wait [<TARGET>] [--pr <N> --pr-repo <OWNER/REPO>] --si
 | `--pr <N>` | The pull request number: digits only, not starting with `0`, at most 18446744073709551615. Needs `--pr-repo`. |
 | `--pr-repo <OWNER/REPO>` | The repository of `--pr`: a GitHub account name, `/`, a repository name. Needs `--pr`. |
 | `--since <ENTRY>` | An entry file name, such as `20261123T184002.123456789Z-4242-0.md`, or the empty string. An entry is new when its name sorts after this one. Empty, or absent for `show`, makes every entry new. Required for `wait`. |
+| `--operator-only` | `show` only: leave out entries that an agent step added with `recipe guide --from-step`. |
 | `--json` | `show` only: print one JSON line of metadata instead of the entries. |
 | `-- <COMMAND>...` | `wait` only: a command to run while waiting. |
 
@@ -979,6 +980,15 @@ newest kept.
 `show` never creates anything.
 
 ### show
+
+With `--operator-only`, the entries from agent steps are removed before either
+output form is built, so neither the plain block nor `--json` can include one.
+`folders[]` still lists every folder read, and `newest` is the newest operator
+entry, or `""`. The exit codes and the `--json` schema are unchanged. The flag
+guards against a run widening its own allowed text through ordinary use. It is
+not a trust boundary, since the `from_step` label is written by the CLI. `wait`
+does not take the flag. A binary that predates the flag exits 2 on it, and the
+caller treats that as guidance it could not read.
 
 Without `--json`, `show` prints the entries as the operator-instructions block
 an agent step receives, oldest first. Each entry's header line also carries the

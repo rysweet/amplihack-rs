@@ -60,6 +60,9 @@ nav:
       - Claude Code Plugin: howto/install-claude-code-plugin.md
       - PATH Conflict Tutorial: tutorials/repair-install-update-path-conflicts.md
       - Local Install: howto/local-install.md
+      - Find Installed Skills and Agents: howto/find-installed-skills-and-agents.md
+      - Choose Listed Skills and Agents: howto/choose-listed-skills-and-agents.md
+      - directory Command Reference: reference/directory-command.md
       - Repair PATH Conflicts: howto/repair-install-update-path-conflicts.md
       - Runtime Asset Resolution: howto/verify-runtime-asset-resolution.md
       - Uninstall: howto/uninstall.md
@@ -67,7 +70,9 @@ nav:
       - Claude Login Rotation: howto/claude-profile-rotation.md
       - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Sessions Running: howto/keep-sessions-running.md
+      - Omit Hook Context Text: howto/omit-hook-context-text.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
+      - How a Test's Rotator Ends with Its Test: concepts/test-rotator-lifetime.md
       - Keep Tests off the Host Process Table: howto/keep-tests-off-the-host-process-table.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
       - Give Test Logins a Fake Account Identity: howto/give-test-logins-a-fake-account-identity.md
@@ -126,6 +131,7 @@ nav:
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
       - Quick-Change Recipe: reference/quick-change-recipe.md
       - Auto-Drive-Light Recipe: reference/auto-drive-light.md
+      - Build Goal Loop: reference/build-goal-loop.md
       - Git Repository Environment Helper: reference/git-repo-env-helper.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Clean Up After Recipe Runs: howto/clean-up-after-recipe-runs.md
@@ -206,6 +212,9 @@ nav:
           - Configuration: howto/configure-copilot-parity-control-plane.md
           - Reference: reference/copilot-parity-control-plane.md
       - Codex Ownership Migration: CODEX_OWNERSHIP_MIGRATION.md
+      - Codex Local-Model Launches:
+          - How-To: howto/run-codex-with-a-local-model.md
+          - Reference: reference/codex-local-model-launch.md
       - External LiteLLM Gateway:
           - Tutorial: tutorials/external-litellm-gateway.md
           - Operations: howto/operate-external-litellm-route.md

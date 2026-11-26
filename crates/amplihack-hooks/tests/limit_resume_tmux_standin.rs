@@ -10,8 +10,9 @@
 //!   before it prints anything, and prints fixture files for `list-panes`,
 //!   `display-message` and `capture-pane`.
 //! - The process tree is injected: `StandInDeps::pane_check` calls the
-//!   production seam `keys::check_pane_owned_in` with [`session_tree`], in
-//!   every scenario. Nothing else about the pane check is scripted.
+//!   production seam `keys::check_pane_owned_in` with the scenario's tree
+//!   ([`session_tree`], or the host layout of #3156), in every scenario.
+//!   Nothing else about the pane check is scripted.
 //! - With a swap record on disk onto a login with room, `$TMUX` and
 //!   `$TMUX_PANE=%5`, and a pane showing the usage-limit menu, the stand-in
 //!   is run exactly six times for `%5` and no other target: one
@@ -55,11 +56,12 @@
 //!
 //! What is injected, and why. The ownership proof reads `/proc` ancestry,
 //! tty and foreground group, which `cargo test` cannot supply, so the tree
-//! is [`session_tree`]: the hook, Claude Code with a pipe on stdin, and a
-//! launcher holding [`SESSION_TTY`] in the foreground. tmux's answers are
-//! the stand-in's fixtures. Everything else is the production path: the
-//! swap record is read from disk, the judgement is `judge_at`, the guard is
-//! the real `FsGuard`, and the tmux runs go through `keys.rs`.
+//! is [`session_tree`]: the hook, the process it runs through with a pipe
+//! on stdin, and a launcher holding [`SESSION_TTY`] in the foreground.
+//! tmux's answers are the stand-in's fixtures. Everything else is the
+//! production path: the swap record is read from disk, the judgement is
+//! `judge_at`, the guard is the real `FsGuard`, and the tmux runs go through
+//! `keys.rs`.
 //!
 //! No test here talks to a tmux server, opens a real home or profile root,
 //! sleeps, retries or polls. A child is run to completion with `output()`,
@@ -71,7 +73,7 @@ use amplihack_hooks::limit_resume::guard::{FsGuard, GuardStore};
 use amplihack_hooks::limit_resume::keys::{
     self, Key, Pane, PaneCheck, ProcEntry, ProcView, ScreenCheck,
 };
-use amplihack_hooks::limit_resume::log::{LogEntry, append, format_line};
+use amplihack_hooks::limit_resume::log::{LogEntry, LogWriteFailure, append, format_line};
 use amplihack_hooks::limit_resume::{Deps, Event, RESUME_MSG, UNRECOGNISED_MSG, run_with_io};
 use amplihack_utils::rotator_status::CycleStatus;
 use amplihack_utils::rotator_status::swap_record::{
@@ -105,9 +107,10 @@ const FOUND_PANE: &str = "%7";
 const SESSION: &str = "s2695";
 const SOCKET_AND_SESSION: &str = "tmux.sock,4242,0";
 
-/// The injected process tree: the hook, Claude Code (its parent, stdin a
-/// pipe) and the launcher that holds the session's terminal in the
-/// foreground. The uid is the tree's own; the hook is told it is its euid.
+/// The injected process tree: the hook, the process it runs through (its
+/// parent, stdin a pipe; not Claude Code) and the launcher that holds the
+/// session's terminal in the foreground. The uid is the tree's own; the hook
+/// is told it is its euid.
 const HOOK_PID: u32 = 5000;
 const SESSION_PID: u32 = 4000;
 const HOLDER_PID: u32 = 3000;
@@ -150,6 +153,12 @@ const SWAP_AFTER: i64 = 61;
 /// The second run starts this long after the first run's swap (D8).
 const NEXT_ROOM_EVENT: i64 = 3600;
 
+/// The screen Claude Code shows in its own timed limit wait (#3156).
+const TIMED_WAIT_SCREEN: &str = "\
+Usage limit reached · Continuing automatically at 1:50am
+
+";
+
 /// Scenarios take turns: a stand-in is written, made executable and run by
 /// a child within one scenario, and no other scenario of this binary may
 /// fork while it is open for writing (`ETXTBSY`).
@@ -185,6 +194,15 @@ enum Scenario {
     UnrecognisedThenMenu,
     /// A listing past the hook's read bound, with the session's pane first.
     OversizedListing,
+    /// #3156: the layout found on a live host, in the timed wait: the hook
+    /// runs through a wrapper in its own group; Claude Code holds the
+    /// terminal in the foreground.
+    HostTimedWait,
+    /// As `HostTimedWait`, with a background agent under Claude Code.
+    HostTimedWaitWithAgent,
+    /// As `HostTimedWait`, but Claude Code leaves the foreground after the
+    /// second key.
+    HostTimedWaitHolderStopped,
 }
 
 impl Scenario {
@@ -202,6 +220,9 @@ impl Scenario {
             Self::NeverFound => "never-found",
             Self::UnrecognisedThenMenu => "unrecognised-then-menu",
             Self::OversizedListing => "oversized-listing",
+            Self::HostTimedWait => "host-timed-wait",
+            Self::HostTimedWaitWithAgent => "host-timed-wait-with-agent",
+            Self::HostTimedWaitHolderStopped => "host-timed-wait-holder-stopped",
         }
     }
 
@@ -217,6 +238,12 @@ impl Scenario {
     /// all.
     fn screen(self, run: u32) -> Option<&'static str> {
         match (self, run) {
+            (
+                Self::HostTimedWait
+                | Self::HostTimedWaitWithAgent
+                | Self::HostTimedWaitHolderStopped,
+                _,
+            ) => Some(TIMED_WAIT_SCREEN),
             (Self::UnknownScreen, _) | (Self::UnrecognisedThenMenu, 1) => Some(OTHER_SCREEN),
             (Self::BlankScreen, _) => None,
             _ => Some(MENU_SCREEN),
@@ -273,6 +300,15 @@ impl Scenario {
                 "an_unrecognised_screen_leaves_the_session_armed_for_the_next_room_event"
             }
             Self::OversizedListing => "an_oversized_pane_listing_gives_no_pane",
+            Self::HostTimedWait => {
+                "a_session_in_its_timed_wait_behind_the_hook_wrapper_gets_the_four_keys"
+            }
+            Self::HostTimedWaitWithAgent => {
+                "a_session_in_its_timed_wait_with_a_background_agent_running_gets_the_four_keys"
+            }
+            Self::HostTimedWaitHolderStopped => {
+                "a_holder_leaving_the_foreground_mid_keys_stops_the_rest"
+            }
         }
     }
 
@@ -297,6 +333,15 @@ impl Scenario {
             // a second target, `%9`.
             Self::MalformedPane => Some("%5 -t %9"),
             _ => Some(PANE),
+        }
+    }
+
+    /// The process tree the hook is judged against.
+    fn tree(self) -> Tree {
+        match self {
+            Self::HostTimedWait | Self::HostTimedWaitHolderStopped => host_tree(false),
+            Self::HostTimedWaitWithAgent => host_tree(true),
+            _ => session_tree(),
         }
     }
 
@@ -326,10 +371,10 @@ fn proc_entry(ppid: u32, pgrp: i32, tpgid: i32, stdin: Option<&str>) -> ProcEntr
     }
 }
 
-/// The shape measured on a standing session: the hook is started by Claude
-/// Code, whose stdin is a pipe; its parent, the launcher, holds
-/// [`SESSION_TTY`]. All share the launcher's process group, which is the
-/// terminal's foreground group.
+/// A standing session: the hook runs through a process ([`SESSION_PID`], stdin
+/// a pipe) whose parent, the launcher, holds [`SESSION_TTY`]. All share the
+/// launcher's process group, the terminal's foreground group. `SESSION_PID` is
+/// not Claude Code; the holder is [`HOLDER_PID`].
 fn session_tree() -> Tree {
     let group = HOLDER_PID as i32;
     let mut t = HashMap::new();
@@ -343,6 +388,40 @@ fn session_tree() -> Tree {
     );
     t.insert(HOLDER_PID, proc_entry(1, group, group, Some(SESSION_TTY)));
     t.insert(1, proc_entry(0, 1, -1, None));
+    Tree(t)
+}
+
+/// The layout found on a live host (#3156). Claude Code ([`HOST_CLAUDE`]) has
+/// the terminal on stdin and is in the launcher's group, which is the
+/// foreground group. The process the hook runs through ([`SESSION_PID`]) is in
+/// a group of its own with a pipe on stdin and no foreground. A background
+/// agent is a child of Claude Code in a session of its own.
+const HOST_CLAUDE: u32 = 3500;
+const HOST_AGENT: u32 = 3600;
+
+fn host_tree(with_agent: bool) -> Tree {
+    let group = HOLDER_PID as i32;
+    let mut t = HashMap::new();
+    t.insert(
+        HOOK_PID,
+        proc_entry(SESSION_PID, SESSION_PID as i32, -1, Some("pipe:[1]")),
+    );
+    t.insert(
+        SESSION_PID,
+        proc_entry(HOST_CLAUDE, SESSION_PID as i32, -1, Some("pipe:[2]")),
+    );
+    t.insert(
+        HOST_CLAUDE,
+        proc_entry(HOLDER_PID, group, group, Some(SESSION_TTY)),
+    );
+    t.insert(HOLDER_PID, proc_entry(1, group, group, Some(SESSION_TTY)));
+    t.insert(1, proc_entry(0, 1, -1, None));
+    if with_agent {
+        t.insert(
+            HOST_AGENT,
+            proc_entry(HOST_CLAUDE, HOST_AGENT as i32, -1, Some("/dev/null")),
+        );
+    }
     Tree(t)
 }
 
@@ -640,6 +719,9 @@ struct StandInDeps {
     env_pane: Option<Pane>,
     armed: bool,
     swapped: bool,
+    /// The tree the hook is judged against, owned so a scenario can change it.
+    tree: Tree,
+    scenario: Scenario,
     /// Keys the hook asked to send.
     attempts: u32,
 }
@@ -666,8 +748,11 @@ impl Deps for StandInDeps {
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
-    fn log(&mut self, now: i64, entry: &LogEntry) {
-        append(&resume_dir(&self.profile), &format_line(now, entry));
+    fn log(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        append(&resume_dir(&self.profile), &format_line(now, entry))
+    }
+    fn log_existing(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        append(&resume_dir(&self.profile), &format_line(now, entry))
     }
     fn rotator_down(&mut self, _now: i64) -> bool {
         false
@@ -699,13 +784,7 @@ impl Deps for StandInDeps {
     /// pane, or else the lookup by terminal, each proved through the
     /// stand-in's `display-message`.
     fn pane_check(&mut self) -> PaneCheck {
-        keys::check_pane_owned_in(
-            &session_tree(),
-            HOOK_PID,
-            SESSION_PID,
-            UID,
-            self.env_pane.clone(),
-        )
+        keys::check_pane_owned_in(&self.tree, HOOK_PID, UID, self.env_pane.clone())
     }
     /// The production screen check: `tmux capture-pane -p` against the
     /// stand-in, then the hook's own rule on what it printed.
@@ -714,10 +793,19 @@ impl Deps for StandInDeps {
     }
     fn send_keys(&mut self, pane: &Pane, key: Key) -> io::Result<()> {
         self.attempts += 1;
-        keys::tmux_send(pane, key)
+        let sent = keys::tmux_send(pane, key);
+        if self.scenario == Scenario::HostTimedWaitHolderStopped && self.attempts == 2 {
+            // Claude Code is suspended: another group has the terminal.
+            if let Some(e) = self.tree.0.get_mut(&HOST_CLAUDE) {
+                e.tpgid = 9999;
+            }
+        }
+        sent
     }
-    fn session_alive_now(&mut self) -> bool {
-        true
+    /// The production rule over the injected tree: the holder the pane check
+    /// proved is still the terminal's foreground group.
+    fn session_alive_now(&mut self, holder: u32) -> bool {
+        self.tree.entry(holder).is_some_and(|e| e.foreground())
     }
 }
 
@@ -799,6 +887,8 @@ fn child(scenario: Scenario) {
         env_pane: Pane::parse(var("TMUX").as_deref(), var("TMUX_PANE").as_deref()),
         armed: false,
         swapped: false,
+        tree: scenario.tree(),
+        scenario,
         attempts: 0,
     };
     let payload = json!({
@@ -1222,4 +1312,45 @@ fn a_swap_onto_a_full_login_runs_tmux_not_at_all() {
         ran.log
     );
     assert_nothing_recorded(&ran);
+}
+
+// ── #3156: the layout found on a live host ──────────────────────────────────
+
+#[test]
+fn a_session_in_its_timed_wait_behind_the_hook_wrapper_gets_the_four_keys() {
+    let Some(ran) = run(Scenario::HostTimedWait) else {
+        return;
+    };
+    let r = ran.only();
+    assert_eq!(r.record, proved_and_typed(PANE), "{:?}", r.record);
+    assert_resumed_with_keys(r, PANE);
+    assert_eq!((ran.events, ran.session_lines), (1, 1), "{}", ran.log);
+}
+
+#[test]
+fn a_session_in_its_timed_wait_with_a_background_agent_running_gets_the_four_keys() {
+    let Some(ran) = run(Scenario::HostTimedWaitWithAgent) else {
+        return;
+    };
+    let r = ran.only();
+    assert_eq!(r.record, proved_and_typed(PANE), "{:?}", r.record);
+    assert_resumed_with_keys(r, PANE);
+    assert_eq!((ran.events, ran.session_lines), (1, 1), "{}", ran.log);
+}
+
+#[test]
+fn a_holder_leaving_the_foreground_mid_keys_stops_the_rest() {
+    let Some(ran) = run(Scenario::HostTimedWaitHolderStopped) else {
+        return;
+    };
+    let r = ran.only();
+    let sends = r
+        .record
+        .iter()
+        .filter(|l| l.starts_with("[send-keys]"))
+        .count();
+    assert_eq!(sends, 2, "no third key once the holder is not foreground");
+    let line = r.line("resume-keys-failed");
+    assert!(line.contains("keys_sent=2"), "{line}");
+    assert!(line.contains("detail=session-gone"), "{line}");
 }

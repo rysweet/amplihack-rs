@@ -214,8 +214,16 @@ fn set(cwd: &Path, key: &str, raw: &str, project: bool) -> Result<(), ConfigErro
     let effective = load_for(cwd);
     let path = target_file(cwd, def, project, &effective)?;
     refuse_while_legacy_remains(def, &effective)?;
+    if def.name == "lists.set" {
+        super::install::lists::ensure_current_installation()
+            .map_err(|error| ConfigError::Runtime(format!("{error:#}")))?;
+    }
     set_value(&path, def, &value)?;
     tighten_user_dir(&path, &effective);
+    if def.name == "lists.set" {
+        super::install::lists::apply()
+            .map_err(|error| ConfigError::Runtime(format!("{error:#}")))?;
+    }
     println!("set {} = {value} in {}", def.name, display_path(&path));
     Ok(())
 }

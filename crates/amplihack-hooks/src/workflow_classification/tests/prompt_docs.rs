@@ -168,6 +168,10 @@ fn docs_list_every_last_rule_value() {
         "coordination_throttled",
         "classification",
         "throttled",
+        "agent_step_id",
+        "harness_notice",
+        "peer_message",
+        "scheduled_prompt",
     ] {
         assert!(docs.contains(&format!("`{rule}`")), "docs omit `{rule}`");
     }

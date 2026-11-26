@@ -1,5 +1,6 @@
 ---
 name: amplihack:ingest-code
+disable-model-invocation: true
 version: 1.0.0
 description: Ingest and analyze external codebases into Neo4j
 triggers:

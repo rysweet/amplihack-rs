@@ -18,6 +18,7 @@ pub(crate) mod hook_block;
 mod hooks;
 pub(crate) mod interactive;
 mod launch_repair;
+pub(crate) mod lists;
 mod manifest;
 mod mermaid_cli;
 pub(crate) mod paths;
@@ -38,7 +39,13 @@ mod codex_alias_fixture;
 mod tests;
 
 pub(crate) use binary::resolve_running_binary_source;
-use binary::{deploy_binaries_into, find_hooks_binary, stable_hooks_binary};
+/// The hooks binary a local-model Codex home's pre-tool-use entry runs:
+/// the deployed copy, as the ordinary install records it.
+pub(crate) use binary::stable_hooks_binary;
+use binary::{deploy_binaries_into, find_hooks_binary};
+/// The same choice, with whether it is the deployed copy, and the build
+/// directory test a local-model launch applies to a fallback.
+pub(crate) use binary::{looks_like_build_artifact, stable_hooks_binary_with_origin};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;
@@ -168,6 +175,7 @@ fn run_install_with_fetcher(
     binary: &framework_source::BinaryIdentity,
     fetcher: &dyn tag_fetch::TagFetcher,
 ) -> Result<()> {
+    let _notice = crate::list_notice::begin();
     let local = local
         .map(|local_path| -> Result<PathBuf> {
             // Validate and canonicalize the --local path
@@ -789,6 +797,19 @@ fn local_install_scoped(
     // (missing_framework_paths) know which mapping to consult.
     write_layout_marker(&claude_dir, layout)?;
 
+    // Issue #3220: the index `amplihack directory` searches. It is built
+    // from the trees just staged, so it lists amplihack's own skills and
+    // agents only. A failure costs a warning: `write_index` removes any index
+    // left by an earlier install, so the command reports the missing index
+    // and names `amplihack install` rather than serving stale paths.
+    if let Err(error) = crate::commands::directory::index::write_index(&claude_dir) {
+        eprintln!(
+            "amplihack: warning: cannot write the skills and agents index; \
+             `amplihack directory` will report it missing until the next install: {}",
+            paths::sanitize_text(&format!("{error:#}"))
+        );
+    }
+
     cleanup_unused_releases(&claude_dir, &switched);
 
     let preferred_amplihack =
@@ -1266,4 +1287,9 @@ fn local_install_scoped(
 
 pub(crate) fn with_codex_binary<T>(binary: &Path, action: impl FnOnce() -> T) -> T {
     codex_plugin::with_binary(binary, action)
+}
+
+/// Archive pending Codex metadata under the package lock before startup mutations.
+pub fn reset_codex_recovery() -> Result<()> {
+    codex_plugin::reset_recovery()
 }

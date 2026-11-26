@@ -9,6 +9,9 @@ mod checkout;
 mod codex_agent_step;
 mod codex_copilot_rewrite;
 mod codex_exec_args;
+/// Local-model launches of `amplihack codex`: a small Codex home of
+/// amplihack's own and no hook text for the model.
+pub(crate) mod codex_local_model;
 mod command;
 mod context;
 /// Issue #2030 — the 0600 contract file and the Claude Code version gate.
@@ -175,6 +178,10 @@ pub(super) fn root_sandbox_for_launch(
 }
 
 /// Launch a tool binary (claude, copilot, codex, amplifier).
+///
+/// Codex dispatch must call this inside [`codex_local_model::scoped`] with
+/// the result of [`codex_local_model::prepare_launch`]. The scope supplies
+/// the local selection to model resolution and bootstrap on this thread.
 #[allow(clippy::too_many_arguments)]
 pub fn run_launch(
     tool: &str,
@@ -384,6 +391,17 @@ fn run_launch_core(
         return child_status(exit_code);
     }
 
+    let local_model = codex_local_model::current(tool);
+    codex_local_model::check_in_scope(tool, local_model.is_some())?;
+    if local_model.is_none()
+        && matches!(
+            agent_binary_for_tool(tool),
+            Some(AgentBinary::Claude | AgentBinary::Copilot | AgentBinary::Codex)
+        )
+    {
+        codex_local_model::warn_inherited_hook_text(tool);
+    }
+
     // Issue #2030, launch order step 1: rewrite the passthrough arguments of a
     // Claude, Codex or Copilot launch so no prompt text reaches the agent's
     // argv. After the Docker hand-off: the amplihack inside the container
@@ -446,8 +464,12 @@ fn run_launch_core(
     } else {
         None
     };
+    // A local-model Codex launch runs the generic bootstrap only, so nothing
+    // is written to the user's Codex home.
     if !subprocess_safe {
-        if tool == "codex" {
+        if local_model.is_some() {
+            codex_local_model::bootstrap()?;
+        } else if tool == "codex" {
             let selected = prevalidated_binary
                 .as_ref()
                 .map(|p| &p.binary)
@@ -497,6 +519,24 @@ fn run_launch_core(
                 }
             },
         },
+    };
+
+    // An interactive local-model launch needs a Codex whose hook-trust format
+    // amplihack knows, or its command check would not run.
+    if let Some(local) = local_model.as_deref() {
+        local.check_codex_version(binary.version.as_deref(), &extra_args)?;
+    }
+
+    // A local-model launch builds, refreshes or verifies its Codex home now,
+    // the last step that can stop it before anything is spawned, and adds
+    // the local settings before the caller's Codex arguments.
+    let local_home = local_model
+        .as_deref()
+        .map(codex_local_model::Prepared::refresh)
+        .transpose()?;
+    let extra_args = match &local_home {
+        Some(home) => home.codex_args(extra_args),
+        None => extra_args,
     };
 
     // Issue #2916: a Claude effort the tier added is checked against the
@@ -594,6 +634,10 @@ fn run_launch_core(
         let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
             .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
             .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags
+        let env_builder = match &local_home {
+            Some(home) => home.with_env(env_builder),
+            None => env_builder,
+        };
         maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
 
         // Register before the final executable check so revalidation, command

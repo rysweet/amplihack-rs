@@ -58,6 +58,7 @@ use crate::commands::profile::auto_switch::kit::now;
 use amplihack_utils::file_event::{SWAP_MASK, Waiter, Watch, Woke};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -147,7 +148,11 @@ impl Waker {
     /// Call this *after* the stop flag is registered: signal-hook runs
     /// actions in registration order, so the flag is set before the pipe
     /// byte arrives and a wake always finds the flag already true.
-    pub fn arm(rs: &RotateState) -> Self {
+    ///
+    /// Issue #2095: a watcher a test started is armed here to end with that
+    /// test. The lifetime thread sets `stop` and then writes to the stop
+    /// pipe, in the same order as a signal, so this wait ends at once.
+    pub fn arm(rs: &RotateState, stop: &Arc<AtomicBool>) -> Self {
         let mut w = Self {
             waiter: None,
             interrupt: None,
@@ -156,12 +161,17 @@ impl Waker {
             cycle_from: now(),
             seen: Blocks::of(&current(rs)),
         };
-        match stop_pipe().and_then(|i| build(rs, &i).map(|waiter| (i, waiter))) {
-            Ok((i, waiter)) => {
+        match stop_pipe().and_then(|(i, tx)| build(rs, &i).map(|waiter| (i, tx, waiter))) {
+            Ok((i, tx, waiter)) => {
                 w.interrupt = Some(i);
                 w.waiter = Some(waiter);
+                super::super::lifetime::arm(stop, Some(tx));
             }
-            Err(e) => w.say(rs, "unavailable", &wake_msg::wake_unavailable(&e)),
+            Err(e) => {
+                // The interval wait checks `stop` itself.
+                super::super::lifetime::arm(stop, None::<UnixStream>);
+                w.say(rs, "unavailable", &wake_msg::wake_unavailable(&e));
+            }
         }
         w
     }
@@ -319,7 +329,10 @@ fn build(rs: &RotateState, interrupt: &UnixStream) -> std::io::Result<Waiter> {
 /// `Waiter::wait` retries on `EINTR`, so the signal alone would not end the
 /// wait; without this, `rotate stop` would fail its ten-second limit
 /// (`control.rs`) on every rotator with a long interval.
-fn stop_pipe() -> std::io::Result<UnixStream> {
+///
+/// Returns the read end, and a further write end for the lifetime thread of
+/// a watcher a test started (#2095).
+fn stop_pipe() -> std::io::Result<(UnixStream, UnixStream)> {
     let (tx, rx) = UnixStream::pair()?;
     rx.set_nonblocking(true)?;
     tx.set_nonblocking(true)?;
@@ -328,5 +341,5 @@ fn stop_pipe() -> std::io::Result<UnixStream> {
         // the life of the process.
         signal_hook::low_level::pipe::register(sig, tx.try_clone()?)?;
     }
-    Ok(rx)
+    Ok((rx, tx))
 }

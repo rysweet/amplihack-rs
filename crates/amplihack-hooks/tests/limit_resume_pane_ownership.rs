@@ -9,26 +9,28 @@
 //! - `tty_ancestor(view, hook_pid, euid)` walks up from the hook's parent
 //!   (at most `MAX_ANCESTRY` steps, stopping at pid 1, never visiting a pid
 //!   twice, same uid only) and returns the nearest process whose stdin is a
-//!   terminal. Claude Code's own stdin is a pipe, so it is not the holder.
-//! - `check_pane_with(view, hook_pid, parent, euid, pane, pane_tty)` is the
+//!   terminal. The process the hook command runs through has a pipe on its
+//!   stdin, so it is never the holder.
+//! - `check_pane_with(view, hook_pid, euid, pane, pane_tty)` is the
 //!   pure core of the pane check: `Ready` only when the pane's tty is the
-//!   holder's tty, the holder is that tty's foreground group, and Claude
-//!   Code (`parent`) is in that same foreground group. Every refusal is a
+//!   holder's tty and the holder is that tty's foreground group; it
+//!   carries the holder's pid. The hook's parent is not consulted: it is
+//!   the process Claude Code runs the hook command through, with a pipe on
+//!   stdin and a process group of its own (#3156). Every refusal is a
 //!   `PaneCheck::Unverified(reason)` with a reason from
-//!   `UNVERIFIED_REASONS`, or `NotReading`.
+//!   `UNVERIFIED_REASONS`.
 //! - `check_pane_owned` validates the pane id, walks the ancestry once, asks
 //!   tmux only after a holder is known, and hands the holder to
 //!   `check_pane_held`; nothing walks twice.
-//! - `find_pane_with(view, hook_pid, parent, euid, env_pane, list, tty)`
+//! - `find_pane_with(view, hook_pid, euid, env_pane, list, tty)`
 //!   (#3104): an environment pane takes exactly that path and a refusal
 //!   never falls back. With no environment pane, a walk that finds no
 //!   terminal is `None` and asks tmux nothing; otherwise one listing, the
 //!   single pane on the holder's terminal, then the same proof with the same
 //!   refusal words.
-//! - `Outcome::{PaneUnverified, PaneNotReading}` are `pane-unverified` and
-//!   `pane-not-reading`; `Outcome::wakes()` holds for `NotResumed`, those
-//!   two and `ScreenUnrecognised`, and `exit_code()` is 2 exactly when
-//!   `wakes()` holds. A wake records nothing.
+//! - `Outcome::PaneUnverified` is `pane-unverified`; `Outcome::wakes()` holds
+//!   for `NotResumed`, that and `ScreenUnrecognised`, and `exit_code()` is 2
+//!   exactly when `wakes()` holds. A wake records nothing.
 //!
 //! No test talks to a tmux server, reads the real `/proc` tree for a
 //! decision, or touches a real home.
@@ -38,7 +40,7 @@ use amplihack_hooks::limit_resume::keys::{
     Key, MAX_ANCESTRY, Pane, PaneCheck, ProcEntry, ProcView, RESUME_KEYS, ScreenCheck,
     UNVERIFIED_REASONS, check_pane_with, find_pane_with, parse_stat, tty_ancestor,
 };
-use amplihack_hooks::limit_resume::log::{LogEntry, append, format_line};
+use amplihack_hooks::limit_resume::log::{LogEntry, LogWriteFailure, append, format_line};
 use amplihack_hooks::limit_resume::{Deps, Event, Outcome, RESUME_MSG, run_with, run_with_io};
 use amplihack_types::HookInput;
 use amplihack_utils::rotator_status::CycleStatus;
@@ -80,10 +82,10 @@ fn proc_entry(ppid: u32, pgrp: i32, tpgid: i32, stdin: Option<&str>) -> ProcEntr
     }
 }
 
-/// The shape measured on a standing session: the hook (500) is started by
-/// Claude Code (400, stdin a pipe), whose parent is the amplihack launcher
-/// (300) holding the terminal. All share process group 300, which is the
-/// terminal's foreground group.
+/// A standing session: the hook (500) runs through a process (400, stdin a
+/// pipe) whose parent is the launcher (300) holding the terminal. All share
+/// process group 300, the terminal's foreground group. 400 is not Claude
+/// Code; the holder is 300.
 fn standing_session() -> Tree {
     let mut t = Tree::default();
     t.0.insert(500, proc_entry(400, 300, 300, Some("pipe:[1]")));
@@ -103,7 +105,15 @@ fn tty_line() -> Vec<u8> {
 }
 
 fn check(t: &Tree) -> PaneCheck {
-    check_pane_with(t, 500, 400, UID, Some(pane("%3")), &tty_line())
+    check_pane_with(t, 500, UID, Some(pane("%3")), &tty_line())
+}
+
+/// A proved pane in the standing layout: the holder is 300, the launcher.
+fn ready(id: &str) -> PaneCheck {
+    PaneCheck::Ready {
+        pane: pane(id),
+        holder: 300,
+    }
 }
 
 fn reason(c: PaneCheck) -> &'static str {
@@ -192,14 +202,14 @@ fn a_parent_pid_of_zero_ends_the_walk_as_unreadable() {
 #[test]
 fn a_standing_session_whose_claude_code_is_not_the_tty_holder_is_ready() {
     // The measured shape: this is the case the old gate refused.
-    assert_eq!(check(&standing_session()), PaneCheck::Ready(pane("%3")));
+    assert_eq!(check(&standing_session()), ready("%3"));
 }
 
 #[test]
 fn no_pane_is_none() {
     let t = standing_session();
     assert_eq!(
-        check_pane_with(&t, 500, 400, UID, None, &tty_line()),
+        check_pane_with(&t, 500, UID, None, &tty_line()),
         PaneCheck::None
     );
 }
@@ -207,7 +217,7 @@ fn no_pane_is_none() {
 #[test]
 fn a_pane_on_another_tty_is_refused_as_a_mismatch() {
     let t = standing_session();
-    let c = check_pane_with(&t, 500, 400, UID, Some(pane("%3")), b"/dev/pts/9\n");
+    let c = check_pane_with(&t, 500, UID, Some(pane("%3")), b"/dev/pts/9\n");
     assert_eq!(reason(c), "tty-mismatch");
 }
 
@@ -215,7 +225,7 @@ fn a_pane_on_another_tty_is_refused_as_a_mismatch() {
 fn a_tty_line_that_is_not_a_device_path_is_refused() {
     let t = standing_session();
     for bad in [&b"../../etc/passwd\n"[..], b"/dev/../etc/x\n", b"\n", b""] {
-        let c = check_pane_with(&t, 500, 400, UID, Some(pane("%3")), bad);
+        let c = check_pane_with(&t, 500, UID, Some(pane("%3")), bad);
         assert!(matches!(c, PaneCheck::Unverified(_)), "{bad:?}");
     }
 }
@@ -235,19 +245,20 @@ fn a_suspended_holder_is_refused() {
 }
 
 #[test]
-fn claude_code_in_a_background_group_behind_a_wrapper_is_not_reading() {
-    // The wrapper holds the terminal in the foreground; Claude Code is in a
-    // group of its own that is not the foreground group.
+fn a_hook_wrapper_in_a_group_of_its_own_still_gets_a_ready_pane() {
+    // 400 is the process the hook command runs through, not Claude Code.
+    // Its own process group is not the terminal's, and that is no reason to
+    // refuse a pane whose holder is the foreground reader (#3156).
     let mut t = standing_session();
     t.0.get_mut(&400).unwrap().pgrp = 400;
-    assert_eq!(check(&t), PaneCheck::NotReading);
+    assert_eq!(check(&t), ready("%3"));
 }
 
 #[test]
 fn an_unreadable_parent_is_never_ready() {
     let mut t = standing_session();
     t.0.remove(&400);
-    assert_ne!(check(&t), PaneCheck::Ready(pane("%3")));
+    assert_ne!(check(&t), ready("%3"));
 }
 
 #[test]
@@ -256,7 +267,6 @@ fn no_refusal_is_ever_ready_and_every_reason_is_from_the_closed_set() {
     cases.push(check_pane_with(
         &standing_session(),
         500,
-        400,
         UID,
         Some(pane("%3")),
         b"/dev/pts/9\n",
@@ -272,7 +282,7 @@ fn no_refusal_is_ever_ready_and_every_reason_is_from_the_closed_set() {
     for c in cases {
         match c {
             PaneCheck::Unverified(r) => assert!(UNVERIFIED_REASONS.contains(&r), "{r}"),
-            PaneCheck::Ready(_) => panic!("a refusal was Ready"),
+            PaneCheck::Ready { .. } => panic!("a refusal was Ready"),
             _ => {}
         }
     }
@@ -324,7 +334,6 @@ fn only_a_whole_percent_digits_id_is_a_pane() {
 #[test]
 fn the_new_outcomes_have_their_names() {
     assert_eq!(Outcome::PaneUnverified.as_str(), "pane-unverified");
-    assert_eq!(Outcome::PaneNotReading.as_str(), "pane-not-reading");
 }
 
 #[test]
@@ -334,7 +343,6 @@ fn exit_2_and_the_wake_message_follow_one_predicate() {
         Outcome::ResumedKeys,
         Outcome::ResumeKeysFailed,
         Outcome::PaneUnverified,
-        Outcome::PaneNotReading,
         Outcome::WatchLost,
         Outcome::SwapStale,
         Outcome::SwapNoRoom,
@@ -349,6 +357,9 @@ fn exit_2_and_the_wake_message_follow_one_predicate() {
         Outcome::Disabled,
         Outcome::NotLimit,
         Outcome::ScreenUnrecognised,
+        Outcome::BadSessionId,
+        Outcome::BadPayload,
+        Outcome::Panicked,
     ];
     for o in all {
         assert_eq!(o.exit_code() == 2, o.wakes(), "{o:?}");
@@ -359,7 +370,6 @@ fn exit_2_and_the_wake_message_follow_one_predicate() {
         [
             Outcome::NotResumed,
             Outcome::PaneUnverified,
-            Outcome::PaneNotReading,
             Outcome::ScreenUnrecognised
         ]
     );
@@ -426,11 +436,18 @@ impl Deps for PaneDeps {
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
-    fn log(&mut self, now: i64, entry: &LogEntry) {
+    fn log(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
         append(
             &self.root.join(".auto-switch.d").join("resume"),
             &format_line(now, entry),
-        );
+        )
+    }
+    fn log_existing(&mut self, now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        let dir = self.root.join(".auto-switch.d").join("resume");
+        if !dir.exists() {
+            return Err(LogWriteFailure::DirMissing);
+        }
+        append(&dir, &format_line(now, entry))
     }
     fn rotator_down(&mut self, _now: i64) -> bool {
         false
@@ -470,7 +487,7 @@ impl Deps for PaneDeps {
         }
         Ok(())
     }
-    fn session_alive_now(&mut self) -> bool {
+    fn session_alive_now(&mut self, _holder: u32) -> bool {
         true
     }
 }
@@ -514,7 +531,7 @@ fn log_of(r: &tempfile::TempDir) -> String {
 #[test]
 fn a_ready_pane_gets_escape_clear_continue_enter_in_order() {
     let r = root();
-    let mut d = deps(&r, PaneCheck::Ready(pane("%3")));
+    let mut d = deps(&r, ready("%3"));
     assert_eq!(run(&mut d), Outcome::ResumedKeys);
     assert_eq!(d.sent, RESUME_KEYS);
     assert_eq!(
@@ -541,15 +558,6 @@ fn an_unverified_pane_is_named_with_its_reason_and_sends_nothing() {
 }
 
 #[test]
-fn a_session_not_reading_the_terminal_is_named_and_sends_nothing() {
-    let r = root();
-    let mut d = deps(&r, PaneCheck::NotReading);
-    assert_eq!(run(&mut d), Outcome::PaneNotReading);
-    assert!(d.sent.is_empty());
-    assert!(log_of(&r).contains("outcome=pane-not-reading"));
-}
-
-#[test]
 fn no_tmux_pane_takes_the_wake_path_and_is_logged_as_not_resumed() {
     let r = root();
     let mut d = deps(&r, PaneCheck::None);
@@ -568,11 +576,7 @@ fn no_tmux_pane_takes_the_wake_path_and_is_logged_as_not_resumed() {
 #[test]
 fn a_refused_pane_records_nothing_so_the_next_room_event_can_resume() {
     // #3104: only a resume that reached the session is recorded.
-    for check in [
-        PaneCheck::None,
-        PaneCheck::Unverified("not-foreground"),
-        PaneCheck::NotReading,
-    ] {
+    for check in [PaneCheck::None, PaneCheck::Unverified("not-foreground")] {
         let r = root();
         let mut d = deps(&r, check.clone());
         run(&mut d);
@@ -586,7 +590,7 @@ fn a_refused_pane_records_nothing_so_the_next_room_event_can_resume() {
     }
     // A pane that was reached still writes exactly one marker.
     let r = root();
-    let mut d = deps(&r, PaneCheck::Ready(pane("%3")));
+    let mut d = deps(&r, ready("%3"));
     run(&mut d);
     let events = r
         .path()
@@ -599,7 +603,7 @@ fn a_refused_pane_records_nothing_so_the_next_room_event_can_resume() {
 #[test]
 fn a_failing_send_is_reported_not_swallowed() {
     let r = root();
-    let mut d = deps(&r, PaneCheck::Ready(pane("%3")));
+    let mut d = deps(&r, ready("%3"));
     d.fail_on = Some(2);
     assert_eq!(run(&mut d), Outcome::ResumeKeysFailed);
     assert_eq!(d.sent.len(), 2, "stops at the first failure");
@@ -611,8 +615,7 @@ fn every_wake_outcome_writes_the_message_and_exits_2_and_no_other_does() {
     for (check, wakes) in [
         (PaneCheck::None, true),
         (PaneCheck::Unverified("walk-limit"), true),
-        (PaneCheck::NotReading, true),
-        (PaneCheck::Ready(pane("%3")), false),
+        (ready("%3"), false),
     ] {
         let r = root();
         let mut d = deps(&r, check.clone());
@@ -653,7 +656,7 @@ fn assert_no_pane_in(log: &str) {
 #[test]
 fn a_log_line_carries_a_hash_not_the_pane_id() {
     let r = root();
-    let mut d = deps(&r, PaneCheck::Ready(pane("%3")));
+    let mut d = deps(&r, ready("%3"));
     run(&mut d);
     let log = log_of(&r);
     assert_no_pane_in(&log);
@@ -667,7 +670,6 @@ fn a_refused_pane_puts_nothing_of_the_pane_in_the_log() {
     for c in [
         PaneCheck::Unverified("tty-mismatch"),
         PaneCheck::Unverified("not-foreground"),
-        PaneCheck::NotReading,
     ] {
         let r = root();
         let mut d = deps(&r, c);
@@ -715,7 +717,7 @@ fn a_deleted_tty_link_is_refused_not_stripped_into_a_match() {
 fn a_valid_pane_id_on_another_terminal_never_gets_keys() {
     // $TMUX_PANE is a claim: a hostile value naming another pane fails on tty.
     let t = standing_session();
-    let c = check_pane_with(&t, 500, 400, UID, Some(pane("%99")), b"/dev/pts/12\n");
+    let c = check_pane_with(&t, 500, UID, Some(pane("%99")), b"/dev/pts/12\n");
     assert_eq!(reason(c), "tty-mismatch");
 }
 
@@ -741,7 +743,6 @@ fn discover(
     find_pane_with(
         t,
         500,
-        400,
         UID,
         env,
         || {
@@ -770,7 +771,10 @@ fn a_pane_found_by_terminal_is_proved_like_an_environment_pane() {
         &asked,
     );
     match got {
-        PaneCheck::Ready(p) => assert_eq!(p.id(), "%7"),
+        PaneCheck::Ready { pane: p, holder } => {
+            assert_eq!(p.id(), "%7");
+            assert_eq!(holder, 300);
+        }
         other => panic!("expected Ready, got {other:?}"),
     }
     assert_eq!(
@@ -803,12 +807,18 @@ fn a_found_pane_whose_holder_is_not_foreground_is_refused() {
 }
 
 #[test]
-fn a_found_pane_the_session_is_not_reading_is_not_reading() {
+fn a_found_pane_behind_a_hook_wrapper_in_its_own_group_is_ready() {
     let mut t = standing_session();
     t.0.insert(400, proc_entry(300, 400, 300, Some("pipe:[2]")));
     let asked = Asked::default();
     let got = discover(&t, None, listing_of("%7"), tty_line(), &asked);
-    assert!(matches!(got, PaneCheck::NotReading), "{got:?}");
+    assert_eq!(
+        got,
+        PaneCheck::Ready {
+            pane: pane("%7"),
+            holder: 300
+        }
+    );
 }
 
 #[test]
@@ -874,4 +884,131 @@ fn a_session_not_in_the_window_listing_is_never_typed_into_another_pane() {
         &asked,
     );
     assert!(matches!(got, PaneCheck::None), "{got:?}");
+}
+
+// ── The layout found on a live host (#3156) ─────────────────────────────────
+//
+// Claude Code has the pane's terminal on stdin and is in the launcher's
+// process group, which is the terminal's foreground group. The command it
+// starts for a hook runs through a process of its own: a pipe on stdin, a
+// process group of its own, no foreground. Background agents are children of
+// Claude Code in sessions of their own with no controlling terminal.
+
+const HOST_HOOK: u32 = 7005;
+const HOST_WRAPPER: u32 = 7004;
+const HOST_CLAUDE: u32 = 7003;
+const HOST_LAUNCHER: u32 = 7002;
+const HOST_TMUX: u32 = 7001;
+const HOST_AGENT: u32 = 7100;
+
+/// The launcher and Claude Code share group 7002, which owns the terminal.
+fn host_layout() -> Tree {
+    let mut t = Tree::default();
+    t.0.insert(
+        HOST_HOOK,
+        proc_entry(HOST_WRAPPER, 7004, -1, Some("pipe:[11]")),
+    );
+    t.0.insert(
+        HOST_WRAPPER,
+        proc_entry(HOST_CLAUDE, 7004, -1, Some("pipe:[12]")),
+    );
+    t.0.insert(
+        HOST_CLAUDE,
+        proc_entry(HOST_LAUNCHER, 7002, 7002, Some(TTY)),
+    );
+    t.0.insert(HOST_LAUNCHER, proc_entry(HOST_TMUX, 7002, 7002, Some(TTY)));
+    t.0.insert(HOST_TMUX, proc_entry(1, 7001, -1, None));
+    t.0.insert(1, proc_entry(0, 1, -1, None));
+    t
+}
+
+/// The same layout with a background agent running under Claude Code.
+fn host_layout_with_agent() -> Tree {
+    let mut t = host_layout();
+    t.0.insert(
+        HOST_AGENT,
+        proc_entry(HOST_CLAUDE, HOST_AGENT as i32, -1, Some("/dev/null")),
+    );
+    t
+}
+
+fn host_ready(id: &str) -> PaneCheck {
+    PaneCheck::Ready {
+        pane: pane(id),
+        holder: HOST_CLAUDE,
+    }
+}
+
+#[test]
+fn the_holder_in_the_host_layout_is_claude_code_not_the_hook_wrapper() {
+    // The walk goes up from the hook, so a background agent, a child of
+    // Claude Code on another branch, is never reached.
+    for t in [host_layout(), host_layout_with_agent()] {
+        assert_eq!(tty_ancestor(&t, HOST_HOOK, UID), Ok(HOST_CLAUDE));
+    }
+}
+
+#[test]
+fn a_session_in_its_timed_wait_behind_the_hook_wrapper_is_ready() {
+    let got = check_pane_with(
+        &host_layout(),
+        HOST_HOOK,
+        UID,
+        Some(pane("%3")),
+        &tty_line(),
+    );
+    assert_eq!(got, host_ready("%3"));
+}
+
+#[test]
+fn a_session_with_a_background_agent_running_is_ready() {
+    let got = check_pane_with(
+        &host_layout_with_agent(),
+        HOST_HOOK,
+        UID,
+        Some(pane("%3")),
+        &tty_line(),
+    );
+    assert_eq!(got, host_ready("%3"));
+}
+
+#[test]
+fn a_found_pane_in_the_host_layout_is_ready() {
+    let asked = Asked::default();
+    let got = find_pane_with(
+        &host_layout_with_agent(),
+        HOST_HOOK,
+        UID,
+        None,
+        || {
+            asked.0.borrow_mut().push("list".into());
+            listing_of("%7")
+        },
+        |p: &Pane| {
+            asked.0.borrow_mut().push(format!("tty({})", p.id()));
+            Ok(tty_line())
+        },
+    );
+    assert_eq!(got, host_ready("%7"));
+    assert_eq!(asked.log(), ["list", "tty(%7)"]);
+}
+
+#[test]
+fn a_host_layout_pane_on_another_tty_is_a_mismatch() {
+    let got = check_pane_with(
+        &host_layout_with_agent(),
+        HOST_HOOK,
+        UID,
+        Some(pane("%3")),
+        b"/dev/pts/9\n",
+    );
+    assert_eq!(reason(got), "tty-mismatch");
+}
+
+#[test]
+fn a_host_layout_holder_outside_the_foreground_is_refused() {
+    let mut t = host_layout_with_agent();
+    t.0.get_mut(&HOST_CLAUDE).unwrap().tpgid = 9999;
+    let got = check_pane_with(&t, HOST_HOOK, UID, Some(pane("%3")), &tty_line());
+    assert_eq!(reason(got), "not-foreground");
 }

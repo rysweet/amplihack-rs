@@ -132,9 +132,11 @@ A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` 
 | 5 | `quick-change-write-handover` | bash | On `handover`, writes the patch file and the hand-over note. |
 | 6 | `quick-change-handover` | recipe | On `handover`, runs `default-workflow`. |
 | 7 | `quick-change-run-checks` | bash | On `proceed`, runs `quick_change_checks.sh`. Output `quick_change_checks`. |
-| 8 | `quick-change-commit` | bash | On `proceed`, runs the artifact guard, stages, runs the guard again, sets the commit identity, commits with `git commit -F` and measures the committed change again. Output `quick_change_commit_repaired`: `yes` when hook repair ran, else `no`. |
-| 9 | `quick-change-push` | bash | On `proceed`, pushes the branch, measures the committed change again and verifies the remote ref. Output `quick_change_push_repaired`: `yes` when hook repair ran, else `no`. |
-| 10 | `quick-change-create-pr` | bash | On `proceed`, opens the PR, then removes the state directory. Always the last step. |
+| 8 | `quick-change-commit` | bash | On `proceed`, non-fatal, runs the artifact guard, stages, runs the guard again, sets the commit identity, commits with `git commit -F` and measures the committed change again. Output `quick_change_commit_repaired`: `yes` when hook repair ran, else `no`. |
+| 9 | `quick-change-push` | bash | On `proceed` after a commit, non-fatal, pushes the branch, measures the committed change again and verifies the remote ref. Output `quick_change_push_repaired`: `yes` when hook repair ran, else `no`. |
+| 10 | `quick-change-pr-text` | agent | On `proceed` after a push, non-fatal. A fast agent returns the PR title and body the task gives, as `quick_change_pr_text`, or an empty title. |
+| 11 | `quick-change-create-pr` | bash | On `proceed` after a push, non-fatal. Runs `quick_change_create_pr.sh`: opens the PR with the task's own text, or with the template text when the task gives no PR title, reads it back and restores it once, then removes the state directory. A refused PR text creates nothing and exits 1, so `quick-change-finish-in-loop` takes the work. Output `quick_change_pr_url`. |
+| 12 | `quick-change-finish-in-loop` | recipe | On `proceed` when no PR URL exists, runs `default-workflow` on the same branch, so the build loop finishes the change (#3129). Always the last step. |
 
 The agent works under the leaf-step constraints of #1333: it does not start an orchestrator, recipe or workflow. It is also told not to commit, and not to change git configuration, hooks, remotes or refs. These instructions are guidance; the controls that enforce them are the bash steps listed under [Security limits](#security-limits).
 
@@ -449,7 +451,7 @@ The body's first section is headed "Request" because it holds the task text as g
 
 When the checks failed, the body starts with "Checks failed"; when no check ran, it starts with "No checks ran"; when the status is `unverified`, it starts with "No build or test covered this change; the checks that passed do not read it". When hook repair ran, it also says "Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree." The create-PR step reads `quick_change_commit_repaired` and `quick_change_push_repaired` from the runner's outputs, never from the state directory, and fails when either is missing.
 
-The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, only after the snapshot (which holds a checksum of the push URL) still matches, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs through `workflow_gh_retry.sh` under an outer timeout.
+The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, only after the snapshot (which holds a checksum of the push URL) still matches, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs once, through `quick_change_create_pr.sh`, with no outer timeout and no retry (#3129).
 
 ### Hook repair
 
@@ -458,6 +460,30 @@ When a `pre-commit` or `pre-push` hook rejects the commit or push, the step uses
 - In the commit step, a change that now exceeds the limits fails the step (exit 5), and nothing is pushed.
 - In the push step, the loop commits the fix and pushes it itself, so the check runs after the push. A failure leaves the branch on `origin`, but the run stops before a PR is opened.
 - When the change is still within the limits, the PR is opened as a draft, because the checks table describes the tree before the repair.
+
+## Task pull request lines and finishing in the loop
+
+When the task gives its own pull request title and description lines, they are kept exactly, and the template body does not replace them. The steps below carry this (see [Build Goal Loop](./build-goal-loop.md#quick-change)):
+
+- `quick-change-pr-text` is a fast-tier agent step that runs after the push, when the verdict is `proceed` and `quick_change_push_repaired` is set. It returns the title and body the task gives, with its lines exactly, as `quick_change_pr_text`, or an empty title when the task gives none. It is non-fatal.
+- `quick_change_create_pr.sh` creates the pull request. It acts on `quick_change_pr_text` as the table below shows.
+
+| `quick_change_pr_text` | Result |
+| --- | --- |
+| An object with `title` `""` and a string `body` | The task gives no PR lines. The title comes from the first 72 characters of the task and the body from its first 4,000 bytes, as in [Pull request](#pull-request) |
+| A non-empty title that passes every check | The title and body are used byte for byte, and the template report (Request, Diff, Checks) is posted as one comment |
+| A non-empty title that fails a check | Nothing is created. Exit 1 |
+| Missing, unparseable, not an object, or a non-string `title` or `body` | Nothing is created. Exit 1 |
+
+A refusal prints `ERROR: quick-change-create-pr: check=<key>: <reason>; nothing was created and the work goes to the build loop`, leaves stdout empty and exits 1. The keys are `pr-text`, `title`, `body` (a title with an empty body), `secret-screen` (the shared secret screen) and `references` (a mention or closing keyword that no source allows), with the unread clause when operator guidance could not be read. `quick-change-finish-in-loop` then takes the work. A failed write of a context value is reported, and is not treated as an empty file.
+
+After creation, the tool reads the text back, corrects it with one `gh pr edit` if needed, and records any remaining difference as a warning and a short comment. It does not end the run. `gh pr create` runs without the former outer timeout.
+
+The steps after the tool behave as follows:
+
+- Commit, push and create-pr are non-fatal. `quick-change-finish-in-loop` runs `default-workflow` (now the goal loop) when the verdict is `proceed` and no pull request exists, with `existing_branch` set from the worktree's branch, the task, and a fixed hand-over note. A failed commit therefore continues in the loop with the worktree and the failure, and does not end the run.
+
+Step 04 of `workflow-worktree` links the launch checkout's git-ignored `.venv` and `.venv-*` folders into the quick-change worktree, so a hook that calls `.venv/bin/python` passes.
 
 ## Routing from smart-orchestrator
 
@@ -614,6 +640,8 @@ When `selected_workflow` is still `quick-change` after execution, these smart-or
 | `smart-validate-summarize` | `validate-outside-in-testing` |
 
 `summarize` and `complete-session` still run, including after a run that finished with verdict `empty`.
+
+The same steps also do not run when `build_loop_result` is non-empty, that is, after any build that ran the goal loop.
 
 Reflection rounds and outside-in validation exist to judge a full workflow run. Outside-in validation looks for Step 13 and qa-team evidence that `quick-change` never produces, so running it would start extra rounds and remove the saving the recipe is for. A run that hands over has run `default-workflow`, which does produce that evidence, so `handover-reselect-workflow` changes the selection and these steps run.
 

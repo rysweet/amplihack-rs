@@ -3,6 +3,16 @@ use super::*;
 use std::fs;
 use std::path::PathBuf;
 
+fn publish_full_claude_inventory(home: &std::path::Path) {
+    fs::create_dir_all(home.join(".amplihack")).unwrap();
+    fs::write(
+        home.join(".amplihack/config.toml"),
+        "[lists]\nset = 'all'\n",
+    )
+    .unwrap();
+    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+}
+
 // ─── TDD: Group 15 — run_uninstall removes binaries (Phase 3) ────────────
 
 #[test]
@@ -385,7 +395,7 @@ fn claude_plugin_install_uninstall_reinstall_lifecycle() {
         .unwrap();
     };
     create_staging();
-    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    publish_full_claude_inventory(temp.path());
     let direct_skill = temp.path().join(".claude/skills/lifecycle");
     let wrapper = temp.path().join(".claude/skills/amplihack");
     assert!(direct_skill.is_dir());
@@ -396,7 +406,7 @@ fn claude_plugin_install_uninstall_reinstall_lifecycle() {
     assert!(!wrapper.exists());
 
     create_staging();
-    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    publish_full_claude_inventory(temp.path());
     crate::test_support::restore_home(previous);
 
     assert!(direct_skill.join("SKILL.md").is_file());
@@ -419,7 +429,7 @@ fn uninstall_preserves_replaced_managed_claude_skill() {
         &InstallManifest::default(),
     )
     .unwrap();
-    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    publish_full_claude_inventory(temp.path());
     let installed = temp.path().join(".claude/skills/replaced/SKILL.md");
     fs::write(&installed, "user replacement").unwrap();
 
@@ -445,7 +455,7 @@ fn uninstall_preserves_replaced_claude_plugin_wrapper() {
         &InstallManifest::default(),
     )
     .unwrap();
-    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    publish_full_claude_inventory(temp.path());
     let replacement = temp.path().join(".claude/skills/amplihack/user.txt");
     fs::write(&replacement, "user replacement").unwrap();
 
@@ -474,7 +484,7 @@ fn uninstall_preserves_managed_skill_replaced_by_root_file_and_removes_rest() {
         &InstallManifest::default(),
     )
     .unwrap();
-    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    publish_full_claude_inventory(temp.path());
     let replacement = temp.path().join(".claude/skills/replaced");
     fs::remove_dir_all(&replacement).unwrap();
     fs::write(&replacement, "user root file").unwrap();
@@ -506,7 +516,7 @@ fn uninstall_preserves_plugin_wrapper_replaced_by_root_symlink_and_removes_rest(
         &InstallManifest::default(),
     )
     .unwrap();
-    crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
+    publish_full_claude_inventory(temp.path());
     let wrapper = temp.path().join(".claude/skills/amplihack");
     fs::remove_dir_all(&wrapper).unwrap();
     let user_target = temp.path().join("user-plugin-wrapper");

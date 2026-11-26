@@ -84,6 +84,7 @@ impl Fixture {
 
         let mut env = vec![
             EnvVarGuard::unset("AMPLIHACK_RECIPE_RUN_ID"),
+            EnvVarGuard::unset("AMPLIHACK_STEP_ID"),
             EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH"),
             EnvVarGuard::unset("AMPLIHACK_ROOT"),
             EnvVarGuard::unset("AMPLIHACK_GRAPH_DB_PATH"),

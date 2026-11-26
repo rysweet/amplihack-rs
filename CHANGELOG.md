@@ -5,6 +5,50 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [Unreleased] Skills and agents listed by default
+
+### Changed
+
+- New and existing managed installations list 30 skills and 12 agents by
+  default in Claude Code, Codex and Copilot. The complete framework, tools,
+  recipes and directory index remain installed. Claude Code updates preserve
+  edited and independent skills. Copilot resets and rewrites bundled skill
+  folders as before, using flattened Markdown under both settings.
+  The first narrowing install, update or launch publication saves one readable
+  notice. Only its writing command prints it, at a terminal outside a recipe
+  step. No later command displays it, and notice failures are warnings.
+  Use `amplihack directory find` to find an unlisted definition,
+  `amplihack directory enable NAME` to keep it listed, or
+  `amplihack directory disable NAME` to remove an extension.
+- The user-only settings `lists.set` and `lists.enabled` select and extend
+  those lists. `amplihack config set lists.set all` restores the full lists
+  immediately for installed tools, without a second command. Loading the
+  repository directly as a Claude Code plugin always exposes the default set
+  and does not read these settings.
+- From `config`, only `config set lists.set` applies the lists immediately.
+  `config unset` and `config edit` apply at the next install or update, or
+  through `config set lists.set` even when its value is unchanged. Change
+  extensions with `directory enable` and `directory disable`. Applying a
+  list change requires the installed framework to match the binary; run
+  `amplihack install` first when versions differ.
+- The 23 typed `amplihack:` commands remain available in Claude Code but leave
+  the model's invocation list under both settings. In Codex, generated command
+  skills leave with `default` and return with `amplihack config set lists.set all`.
+  They cannot be enabled individually through the directory. Codex's default
+  package provides agent personas and retains `bin/hook`. Copilot no longer generates
+  the combined agent section in `instructions.md`; updates remove only the
+  section amplihack wrote and preserve surrounding user text.
+- In a Copilot home, amplihack now also manages the top-level Markdown of the
+  skill folders named after the seven nested bundle skills, `analyzing-deeply`, `architecting-solutions`, `creating-pull-requests`, `researching-topics`, `reviewing-code`, `setting-up-projects` and `testing-code`,
+  under both settings, so a personal Copilot skill needs a folder name the
+  bundle does not use.
+
+See [Choose which skills and agents are listed](docs/howto/choose-listed-skills-and-agents.md),
+the [directory command](docs/reference/directory-command.md) and
+the [list settings](docs/reference/user-config.md#listsset-and-listsenabled).
+
+---
+
 ## [Unreleased] — Auto-drive as one goal-driven agent loop
 
 ### Changed

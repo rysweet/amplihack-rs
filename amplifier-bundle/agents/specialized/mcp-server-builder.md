@@ -7,7 +7,6 @@ description: |
   Generates tool definitions, resource handlers, and transport setup.
   Inspired by awesome-copilot's 10+ language-specific MCP development agents.
 role: "MCP server development specialist"
-model: inherit
 triggers:
   - "build mcp server"
   - "create mcp tool"

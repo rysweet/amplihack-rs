@@ -1,5 +1,6 @@
 ---
 name: amplihack:socratic
+disable-model-invocation: true
 version: 1.0.0
 description: Generate Socratic questions for requirements clarification
 triggers:

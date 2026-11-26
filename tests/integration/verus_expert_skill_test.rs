@@ -152,7 +152,6 @@ fn agent_frontmatter_matches_convention() {
         "description:",
         "role:",
         "priority:",
-        "model: inherit",
     ] {
         assert!(
             fm.contains(needle),

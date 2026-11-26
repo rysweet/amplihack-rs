@@ -145,13 +145,18 @@ fn allow_no_op_is_declared_forwarded_and_read_by_the_diff_limits_step() {
         .iter()
         .position(|id| id == "quick-change-diff-limits")
         .unwrap();
+    // A step may add conditions of its own (#3129), joined with `and`, so the
+    // verdict test it starts with still decides: under `empty` it is false.
     for id in &ids[at + 1..] {
         let c = step(&qc, id)["condition"]
             .as_str()
             .unwrap_or("")
             .to_string();
+        let first = c.split(" and ").next().unwrap_or("");
         assert!(
-            c == "quick_change_verdict == 'proceed'" || c == "quick_change_verdict == 'handover'",
+            (first == "quick_change_verdict == 'proceed'"
+                || first == "quick_change_verdict == 'handover'")
+                && !c.contains(" or "),
             "{id} must run only on proceed or handover, not on empty: {c:?}"
         );
     }
@@ -360,8 +365,10 @@ fn create_pr_repaired(summary: &str, table: &str, repaired: &str) -> (String, St
     let args_file = r.tmp.path().join("gh-args");
     let body_file = r.tmp.path().join("gh-body");
     let gh = bin.join("gh");
+    // Only `pr create` is recorded. The step then reads the PR text back
+    // (`pr view`, #3129); that call fails here and is reported as unread.
     let script = format!(
-        "#!/bin/bash\nprintf '%s\\n' \"$@\" > '{a}'\nwhile [ $# -gt 0 ]; do [ \"$1\" = --body-file ] && cp \"$2\" '{b}'; shift; done\necho https://github.com/o/r/pull/1\n",
+        "#!/bin/bash\n[ \"$1 $2\" = \"pr create\" ] || exit 1\nprintf '%s\\n' \"$@\" > '{a}'\nwhile [ $# -gt 0 ]; do [ \"$1\" = --body-file ] && cp \"$2\" '{b}'; shift; done\necho https://github.com/o/r/pull/1\n",
         a = args_file.display(),
         b = body_file.display()
     );
@@ -379,11 +386,19 @@ fn create_pr_repaired(summary: &str, table: &str, repaired: &str) -> (String, St
     std::fs::write(state.join("checks-table.md"), table).unwrap();
 
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    // Since #3129 the step reads quick_change_pr_text, which the runner holds
+    // from step 10 (quick-change-pr-text). "Fix the link" gives no PR text of
+    // its own, so step 10's value is an empty title and body, and the step
+    // writes its template.
     let o = run_step(
         &r,
         "quick-change-create-pr",
         &[
             ("PATH", &path),
+            (
+                "RECIPE_VAR_quick_change_pr_text",
+                r#"{"title":"","body":""}"#,
+            ),
             ("RECIPE_VAR_task_description", "Fix the link"),
             ("RECIPE_VAR_quick_change_base", &base),
             ("RECIPE_VAR_quick_change_checks", summary),

@@ -33,14 +33,22 @@ mod tests_issue_2211;
 #[macro_use]
 #[path = "tests_issue_2211_cycle.rs"]
 mod tests_issue_2211_cycle;
+#[path = "tests_high_water.rs"]
+mod tests_high_water;
 #[path = "tests_issue_2885.rs"]
 mod tests_issue_2885;
 #[path = "tests_issue_2889_cycle.rs"]
 mod tests_issue_2889_cycle;
+#[path = "tests_issue_3181_budget.rs"]
+mod tests_issue_3181_budget;
+#[path = "tests_issue_3181_cycle.rs"]
+mod tests_issue_3181_cycle;
 #[path = "tests_ledger.rs"]
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]
 mod tests_live_readers;
+#[path = "tests_log.rs"]
+mod tests_log;
 #[path = "tests_login_identity.rs"]
 mod tests_login_identity;
 #[path = "tests_overflow.rs"]

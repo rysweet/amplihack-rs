@@ -3,7 +3,6 @@ name: security
 version: 1.0.0
 description: Security specialist for authentication, authorization, encryption, and vulnerability assessment. Never compromises on security fundamentals.
 role: "Security specialist and vulnerability assessment expert"
-model: inherit
 ---
 
 # Security Agent

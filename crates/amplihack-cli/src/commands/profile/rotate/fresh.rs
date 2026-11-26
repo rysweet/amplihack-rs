@@ -2,12 +2,13 @@
 //! accepted only when that reading is fresh: taken no more than
 //! [`MAX_READING_AGE_SECS`] ago, not earlier than the live login's reading
 //! (taken as no later than when the cycle started measuring, [`live_time`]),
-//! and, for a login in the ledger's `swapped_away` or the ledger's
-//! `previous` (the login the last swap left, issue #2211), strictly after the
-//! swap away from it. A stale target is read again, by the user's probe method
-//! (`AMPLIHACK_PROFILE_USAGE_PROBE`) with passive readings off, and the
-//! decision is made again on the new figures. See "Rotate reading freshness and
-//! swap-back damping" in docs/reference/profile-command.md.
+//! not earlier than the last swap or the start of the previous cycle's
+//! measurement (issue #3181), and, for a login in the ledger's `swapped_away`
+//! or the ledger's `previous` (the login the last swap left, issue #2211),
+//! strictly after the swap away from it. A stale target is read again, by
+//! the user's probe method (`AMPLIHACK_PROFILE_USAGE_PROBE`) with passive
+//! readings off, and the decision is made again on the new figures. See
+//! "Rotate reading freshness and swap-back damping" in docs/reference/profile-command.md.
 //!
 //! The gate writes nothing; its lines go to [`Measurement::fresh_lines`].
 
@@ -207,11 +208,18 @@ pub(super) fn settle_timed(
         return Ok(m);
     };
     let ledger = ctx.rs.load_ledger()?;
-    // Issue #2211: the login the last swap left, and when. Its reading must
-    // be taken after it stopped being used, whether or not it was full.
-    let left = ledger
-        .as_ref()
-        .and_then(|l| Some((l.previous.clone()?, l.swapped_at?)));
+    // Issue #2211: the login the last swap left is read strictly after that
+    // swap. Issue #3181: no target reading is older than the last swap or the
+    // start of the previous cycle's measurement, so `bound` is a second less.
+    // This cycle's own readings are never older: a swap made while it measured
+    // is for the revalidation under the lock.
+    let (left, bound) = ledger.as_ref().map_or((None, None), |l| {
+        let last = l
+            .swapped_at
+            .max(l.last_cycle.as_ref().and_then(|c| c.measured_at));
+        let bound = last.map(|b| b.min(m.measured_at).saturating_sub(1));
+        (l.previous.clone().zip(l.swapped_at), bound)
+    });
     let damped = ledger.map(|l| l.swapped_away).unwrap_or_default();
     // Capped at `measured_at`: a live re-read made after the measurement
     // does not make this measurement's own target readings stale.
@@ -234,18 +242,11 @@ pub(super) fn settle_timed(
         let Some(i) = probes.iter().position(|(n, _)| n == &to) else {
             break;
         };
+        let left_at = left.as_ref().filter(|(f, _)| f == to.as_str()).map(|l| l.1);
         let damped_at = damped.get(to.as_str()).copied();
-        let left_at = left
-            .as_ref()
-            .filter(|(from, _)| from == to.as_str())
-            .map(|(_, at)| *at);
+        let after = damped_at.max(left_at).max(bound);
         let t = (ctx.now)();
-        if !stale(
-            read_at(&probes[i].1, m.measured_at),
-            live_at,
-            damped_at.max(left_at),
-            t,
-        ) {
+        if !stale(read_at(&probes[i].1, m.measured_at), live_at, after, t) {
             break;
         }
         if handled >= max_handled {
@@ -290,7 +291,7 @@ pub(super) fn settle_timed(
                 can_read: !remaining.is_zero(),
                 live_blocked: m.seen.live_blocked.is_some(),
                 label: known_label.or_else(|| extra.labels.get(&to).copied()),
-                recent: reread::recent(at, damped_at.max(left_at), t),
+                recent: reread::recent(at, after, t),
             };
             match next(&facts) {
                 // Issue #2820: no read, no line of its own, probe unchanged.

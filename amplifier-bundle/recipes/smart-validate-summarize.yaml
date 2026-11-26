@@ -19,6 +19,9 @@ recursion:
 
 context:
   # Issue #1740: set by select-workflow; quick-change runs skip these steps.
+  # #3129: set by default-workflow's build loop, which already reviewed the
+  # change at its pushed head; reflection and validation are not run again.
+  build_loop_result: ""
   selected_workflow: ""
 
 steps:
@@ -36,7 +39,7 @@ steps:
 
   - id: "validate-outside-in-testing"
     type: "agent"
-    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and 'Development' in task_type and round_1_result and selected_workflow != 'quick-change'"
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and 'Development' in task_type and round_1_result and selected_workflow != 'quick-change' and not build_loop_result"
     agent: "amplihack:core:reviewer"
     model: "standard"
     prompt: |
@@ -112,6 +115,8 @@ steps:
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: "summarize"
+    # #3129: bookkeeping after the work; a failure here never fails a finished run.
+    continue_on_error: true
     type: "agent"
     condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
     agent: "amplihack:core:architect"
@@ -147,6 +152,7 @@ steps:
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: "complete-session"
+    continue_on_error: true
     type: "bash"
     command: |
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.

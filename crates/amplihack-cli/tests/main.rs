@@ -29,6 +29,12 @@ mod isolated_amplihack;
 mod pinned_runner;
 mod support;
 
+#[path = "issue_3240_list_config.rs"]
+mod issue_3240_list_config;
+
+#[path = "issue_3240_list_scenarios.rs"]
+mod issue_3240_list_scenarios;
+
 #[path = "issue_2922_quiet_child_purge.rs"]
 mod issue_2922_quiet_child_purge;
 
@@ -56,6 +62,9 @@ mod issue_2575_agentic_merge_ready;
 // #3129: the goal loop, its shared module and its behaviour tests.
 #[path = "issue_3129_goal_loop/mod.rs"]
 mod issue_3129_goal_loop;
+// #3129 PR 2: the build goal loop and the old tools it keeps alive.
+#[path = "issue_3129_build_loop/mod.rs"]
+mod issue_3129_build_loop;
 // #1888: the merge method, through `amplihack recipe run` and the real runner.
 mod issue_1888_merge_method_recipe_run;
 #[path = "issue_2582_context_off_argv.rs"]
@@ -366,6 +375,10 @@ mod issue_1973_wait_helpers;
 mod issue_1979_crusty_minor_followups;
 #[path = "issue_1985_codex_agent_step_flags.rs"]
 mod issue_1985_codex_agent_step_flags;
+// Local-model launches of `amplihack codex`: the generated Codex home and
+// AMPLIHACK_HOOK_TEXT=none for the child.
+#[path = "codex_local_model_launch/mod.rs"]
+mod codex_local_model_launch;
 #[path = "issue_2001_codex_usage.rs"]
 mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
@@ -380,12 +393,18 @@ mod issue_2042_host_proc_strace;
 mod issue_2042_proc_root_guard;
 #[path = "issue_2042_seam_dry_run_and_refusal.rs"]
 mod issue_2042_seam_dry_run_and_refusal;
+#[path = "issue_2095_test_rotator_lifetime.rs"]
+mod issue_2095_test_rotator_lifetime;
 #[path = "issue_2190_recipe_steps_report_real_exit_status.rs"]
 mod issue_2190_recipe_steps_report_real_exit_status;
 #[path = "issue_2211_live_freshness.rs"]
 mod issue_2211_live_freshness;
 #[path = "issue_2218_excluded.rs"]
 mod issue_2218_excluded;
+#[path = "issue_2284_codex_recovery.rs"]
+mod issue_2284_codex_recovery;
+#[path = "issue_2284_codex_reset_recovery.rs"]
+mod issue_2284_codex_reset_recovery;
 #[path = "issue_2317_codex_step_commits_in_worktree.rs"]
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]
@@ -490,6 +509,8 @@ mod no_capacity_notice_statusline;
 mod pr_712_named_asset_canonicalization;
 #[path = "profile_issue_1804.rs"]
 mod profile_issue_1804;
+#[path = "profile_issue_3181.rs"]
+mod profile_issue_3181;
 #[path = "profile_overflow.rs"]
 mod profile_overflow;
 #[path = "profile_platform.rs"]
@@ -612,6 +633,11 @@ mod issue_2756_user_git_config;
 // gate: the behaviour needs no `/proc`.
 #[path = "issue_2886_build_output_cleanup.rs"]
 mod issue_2886_build_output_cleanup;
+
+// Issue #3263: a claimed Cargo output folder that stayed empty because the run
+// never built with Cargo is removed when the run ends.
+#[path = "issue_3263_empty_claimed_target.rs"]
+mod issue_3263_empty_claimed_target;
 
 // Issue #2769: the #2663 outcome rule is the top-level drive's, not every
 // `autodrive-*` sub-recipe's.

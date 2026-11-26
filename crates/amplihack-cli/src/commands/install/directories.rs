@@ -101,6 +101,8 @@ pub(super) fn copytree_manifest(
         copied.push((*dst_rel).to_string());
     }
 
+    crate::claude_plugin::complete_indexed_skill_resources(claude_dir)?;
+
     if layout == SourceLayout::Bundle {
         for (src_rel, dst_rel) in SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING {
             let source_dir = source_root.join(src_rel);
@@ -171,31 +173,39 @@ pub(super) fn copytree_manifest(
     //
     // Pre-fix: only `source_root.parent()/CLAUDE.md` was probed and a
     // missing source was silently skipped. With the bundle layout, the
-    // canonical CLAUDE.md ships at `<repo>/amplifier-bundle/CLAUDE.md`
+    // canonical CLAUDE.md shipped at `<repo>/amplifier-bundle/CLAUDE.md`
     // (i.e., inside `source_root`), not at the repo root, so installs from
     // a bundle-only checkout left `$AMPLIHACK_HOME/CLAUDE.md` absent and
     // the verifier reported ❌. Per the install-completeness invariant in
     // amplifier-bundle/context/PHILOSOPHY.md, we must (a) probe the bundle
     // path first, (b) fall back to the legacy repo-root path, and (c) bail
     // loudly when neither exists.
+    //
+    // Issue #3203: the bundle source is
+    // `amplifier-bundle/context/AMPLIHACK_HOME_CLAUDE.md`. Claude Code loads a
+    // file named CLAUDE.md as memory in any session that reads a file in its
+    // folder, so the source must not carry that name inside the bundle. It is
+    // still staged as `$AMPLIHACK_HOME/CLAUDE.md`. `source_root/CLAUDE.md`
+    // stays as a fallback for a bundle from an earlier release.
     let parent_dir = source_root
         .parent()
         .context("source root missing parent for CLAUDE.md lookup")?;
-    let bundle_candidate = source_root.join("CLAUDE.md");
-    let legacy_candidate = parent_dir.join("CLAUDE.md");
-    let chosen_source = if bundle_candidate.exists() {
-        bundle_candidate.clone()
-    } else if legacy_candidate.exists() {
-        legacy_candidate.clone()
-    } else {
+    let candidates = [
+        source_root.join("context/AMPLIHACK_HOME_CLAUDE.md"),
+        source_root.join("CLAUDE.md"),
+        parent_dir.join("CLAUDE.md"),
+    ];
+    let Some(chosen_source) = candidates.iter().find(|path| path.exists()).cloned() else {
         anyhow::bail!(
-            "CLAUDE.md not found in source repo. Searched: {} and {}. \
-             A valid amplihack-rs checkout must ship CLAUDE.md inside \
-             `amplifier-bundle/CLAUDE.md` (preferred, bundle layout) or at \
-             the repo root (legacy layout). Without CLAUDE.md the install \
-             verifier will report `$AMPLIHACK_HOME/CLAUDE.md` missing.",
-            bundle_candidate.display(),
-            legacy_candidate.display()
+            "CLAUDE.md not found in source repo. Searched: {}, {} and {}. \
+             A valid amplihack-rs checkout must ship the source of CLAUDE.md \
+             at `amplifier-bundle/context/AMPLIHACK_HOME_CLAUDE.md` (bundle \
+             layout), `amplifier-bundle/CLAUDE.md` (earlier bundle layout) or \
+             the repo root (legacy layout). Without it the install verifier \
+             will report `$AMPLIHACK_HOME/CLAUDE.md` missing.",
+            candidates[0].display(),
+            candidates[1].display(),
+            candidates[2].display()
         );
     };
     let target_claude_md = claude_dir

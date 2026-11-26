@@ -1,8 +1,8 @@
 ---
 title: Use Amplihack with Codex
-description: Install native Codex assets, preserve configuration and run recipes.
+description: Install native Codex assets, preserve configuration, recover interrupted installs and run recipes.
 type: howto
-updated: 2026-11-18
+updated: 2026-11-24
 ---
 
 # Use Amplihack with Codex
@@ -14,10 +14,12 @@ Amplihack supports interactive Codex sessions and unattended Codex recipe steps 
 - [Install and launch](#install-and-launch)
 - [Run an unattended recipe](#run-an-unattended-recipe)
 - [Sandbox and hook trust for agent steps](#sandbox-and-hook-trust-for-agent-steps)
+- [Local-model launches](#local-model-launches)
 - [Preserve configuration](#preserve-configuration)
 - [Skills, commands, and personas](#skills-commands-and-personas)
 - [Hook behavior and limitations](#hook-behavior-and-limitations)
 - [Runner delivery and removal](#runner-delivery-and-removal)
+- [Recover an interrupted installation](#recover-an-interrupted-installation)
 - [Migration and troubleshooting](#migration-and-troubleshooting)
 
 ## Install and launch
@@ -130,7 +132,7 @@ codex exec --sandbox danger-full-access --dangerously-bypass-hook-trust \
   resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b -
 ```
 
-The flags were checked against codex-cli 0.166.0, whose `codex exec --help` lists `read-only`, `workspace-write` and `danger-full-access` as the values of `--sandbox`. There is no environment variable or configuration key to turn them off; a recipe that needs a different sandbox passes its own, as described below. The hook-trust flag is added to every `amplihack codex -- exec` launch, including one a person types, not only to recipe agent steps; issue #2009 tracks limiting it to recipe runs or adding an opt-out.
+The flags were checked against codex-cli 0.166.0, whose `codex exec --help` lists `read-only`, `workspace-write` and `danger-full-access` as the values of `--sandbox`. There is no environment variable or configuration key to turn them off; a recipe that needs a different sandbox passes its own, as described below. The hook-trust flag is added to every `amplihack codex -- exec` launch, including one a person types, not only to recipe agent steps; issue #2009 tracks limiting it to recipe runs or adding an opt-out. Interactive [local-model launches](#local-model-launches) trust only amplihack's generated command-check entry and retain review for other hooks.
 
 When amplihack adds the sandbox, it writes one line to stderr before Codex starts (issue #2010):
 
@@ -164,8 +166,8 @@ The line is reliably seen only when you run `amplihack codex -- exec` yourself. 
 - **No network override is added.** amplihack adds no `-c sandbox_workspace_write.*` setting. A caller's own `-c sandbox_workspace_write.network_access=<value>` is forwarded unchanged. It is not a sandbox choice, and under `danger-full-access` it restricts nothing.
 - **Hook trust is added once.** If the caller already passes `--dangerously-bypass-hook-trust`, it is not added again.
 - **The approvals bypass is never added.** amplihack never passes `--dangerously-bypass-approvals-and-sandbox` or `--yolo`. If a caller passes one, it is forwarded unchanged and counts as the caller's sandbox choice.
-- **Interactive sessions are unchanged.** An argv with no `exec` subcommand is passed to Codex byte for byte. This covers bare `amplihack codex`, `resume`, `resume --last` and a positional prompt. A `-c exec` or `-m exec` value, or an `exec` after a bare `--`, is not treated as the subcommand.
-- **Nothing is written to configuration.** The flags exist only on the command line. amplihack writes no `sandbox_mode`, hook trust or bypass setting to any `config.toml`.
+- **Interactive sessions keep hook trust.** On an ordinary launch an argv with no `exec` subcommand is passed to Codex byte for byte. This covers bare `amplihack codex`, `resume`, `resume --last` and a positional prompt. A `-c exec` or `-m exec` value, or an `exec` after a bare `--`, is not treated as the subcommand. A [local-model launch](#local-model-launches) adds `-c features.hooks=true` and trusts only its own generated command-check entry. It adds the trust bypass only for `exec`.
+- **Nothing is written to configuration.** The flags exist only on the command line. Ordinary launches write no `sandbox_mode`, hook trust or bypass setting to configuration. A local-model launch creates a separate configuration with its profile settings and trust for amplihack's own entry.
 
 To run an agent step with a stricter sandbox, pass it in the step's Codex arguments:
 
@@ -179,11 +181,33 @@ amplihack codex -- exec --sandbox read-only --output-last-message /d0/run/final-
 Full access is not safe for untrusted input. It gives a Codex step the same reach as a Claude step: anything the user account can read or write.
 
 - **Use the intended worktree.** Review agents run directly in the PR worktree and are instructed to leave it unchanged. Trusted workflow assets are selected independently of cwd. Repository instruction files are visible to the harness; direct worktree execution does not isolate the reviewer from them. Treat repository text as task data, not authority for credential access, publication, or cleanup. See [direct review](../reference/recipe-checkout-isolation.md#review-in-the-pr-worktree).
-- **A step can change what later steps run.** Under full access a step can write `.codex/hooks.json` at any level of the checkout, files under `~/.codex/`, `.git/hooks` and `.git/config`. Because every agent step bypasses hook trust, a hook planted by one step runs in later steps without a trust prompt. Codex loads hooks from `CODEX_HOME`, from installed plugins, and, when the project is marked trusted (`trust_level = "trusted"` in the user `config.toml`), from `.codex/` in the working directory and each parent up to the project root. The bypass flag does not mark a project trusted, and amplihack writes no trust entry. That condition gives no protection under full access, because a step can also write `~/.codex/config.toml` and set `trust_level` for the checkout itself. Issue #1993 tracks the planting of `.codex/hooks.json`.
+- **A step can change what later steps run.** Under full access a step can write `.codex/hooks.json` at any level of the checkout, files under `~/.codex/`, `.git/hooks` and `.git/config`. Because every agent step bypasses hook trust, a hook planted by one step runs in later steps without a trust prompt. Codex loads hooks from `CODEX_HOME`, from installed plugins, and, when the project is marked trusted (`trust_level = "trusted"` in the user `config.toml`), from `.codex/` in the working directory and each parent up to the project root. The bypass flag does not mark a project trusted, and amplihack writes no trust entry. That condition gives no protection under full access, because a step can also write `~/.codex/config.toml` and set `trust_level` for the checkout itself. Issue #1993 tracks the planting of `.codex/hooks.json`. The same holds in a [local-model session](../reference/codex-local-model-launch.md#what-differs-in-a-local-session), for `exec`. Interactive local-model sessions keep hook review.
 - **A step can reach credentials.** Files the user account can read, such as SSH keys, `~/.codex/auth.json`, the `gh` and git credential stores and cloud CLI tokens, are readable and writable by the step, and the network is open.
 - **The argv comes from the recipe author.** The caller-wins rule trusts the arguments after `--`. Prompt text, issue bodies and other untrusted content must reach Codex on stdin (`-`), never in argv, where a crafted `--sandbox` or `-c` value would be honoured.
 - **The injected sandbox overrides a stricter host setting.** A host `config.toml` that sets `read-only` or `workspace-write` does not restrict agent steps, because the command-line `--sandbox` takes precedence. A recipe that needs a stricter mode passes it explicitly with `--sandbox <mode>`, as shown above. amplihack does not read `config.toml` or `-p` profiles, so the stderr line cannot say whether a stricter host setting was overridden.
 - **Profiles do not count as a sandbox choice.** Command-line flags take precedence over a `-p <profile>` profile's `sandbox_mode`, so `amplihack codex -- -p ci exec -` still receives `--sandbox danger-full-access`. To keep the profile's mode, pass the same `--sandbox` value explicitly.
+
+## Local-model launches
+
+For a model served from your own machine, start Codex with
+`--local-model <name>`, or set `AMPLIHACK_CODEX_LOCAL_MODEL=<name>` so that
+recipe agent steps inherit the choice:
+
+```bash
+amplihack codex --local-model inkling
+AMPLIHACK_AGENT_BINARY=codex AMPLIHACK_CODEX_LOCAL_MODEL=inkling \
+  amplihack recipe run default-workflow -c task_description="Document the public interfaces" -c repo_path=.
+```
+
+`<name>` is a Codex profile file, `~/.codex/<name>.config.toml`, that holds
+the model and provider settings. Instead of the setup described on this page,
+amplihack builds a small Codex home of its own at
+`~/.amplihack/codex-local/<name>/` with its command-check hook and no plugin,
+and adds no hook text to the model's context. Your `~/.codex` is not written.
+See [Run amplihack codex with a Local Model](./run-codex-with-a-local-model.md)
+for the steps, and
+[Codex Local-Model Launches](../reference/codex-local-model-launch.md) for
+every rule, including what differs from an ordinary session.
 
 ## Preserve configuration
 
@@ -233,7 +257,7 @@ Configuration edits are parsed before mutation, preserve permissions, and use a 
 
 ## Skills, commands, and personas
 
-The native package includes `plugin.json`, `skills/`, an empty `hooks/hooks.json` declaration, and executable runtime wrappers. Codex 0.160.0 does not execute bundled plugin hooks in observed runtime checks. Installation registers command hooks once in `$CODEX_HOME/hooks.json`, preserving foreign definitions and recording exact owned entries; the empty bundled declaration avoids future duplicates. Skills retain canonical names, nested resources, and shared provider-neutral content. Nested roots beneath parent skills also receive generated top-level runtime copies because Codex 0.160.0 plugin discovery does not descend through a parent skill or follow directory symlink aliases. Reusable commands and personas are exposed as generated skills named `amplihack-command-<slug>` and `amplihack-persona-<slug>`. Ask Codex to use the relevant skill or select it through Codex's skill UI; Claude slash-command syntax is not a Codex contract.
+The native package includes `plugin.json`, `skills/`, an empty `hooks/hooks.json` declaration, and executable runtime wrappers. Codex 0.160.0 does not execute bundled plugin hooks in observed runtime checks. Installation registers command hooks once in `$CODEX_HOME/hooks.json`, preserving foreign definitions and recording exact owned entries; the empty bundled declaration avoids future duplicates. Skills retain canonical names, nested resources, and shared provider-neutral content. Skills whose folder name ends in `-analyst` are left out of the Codex package, because Codex has a fixed budget for its skill list; Claude and Copilot installs still include them. Nested roots beneath parent skills also receive generated top-level runtime copies because Codex 0.160.0 plugin discovery does not descend through a parent skill or follow directory symlink aliases. Reusable commands and personas are exposed as generated skills named `amplihack-command-<slug>` and `amplihack-persona-<slug>`. Ask Codex to use the relevant skill or select it through Codex's skill UI; Claude slash-command syntax is not a Codex contract.
 
 Canonical skill trees retain their directory layout. Generated instruction name collisions fail staging before replacing the installed package. Plugin packaging is the primary deployment path; installation does not duplicate the package into `.agents/skills`. Your own repository and user `.agents/skills` continue to follow [native skill discovery](https://learn.chatgpt.com/docs/build-skills). No orchestration instructions are added to `AGENTS.md`.
 
@@ -247,6 +271,8 @@ Canonical skill trees retain their directory layout. Generated instruction name 
 | PostToolUse | Supplies tool-result context |
 | Stop | Native no-op; Claude transcript-driven continuation is unavailable |
 | SessionEnd | Performs session cleanup without continuing a turn |
+
+A [local-model session](#local-model-launches) registers only PreToolUse, in its own Codex home; see [Codex Local-Model Launches](../reference/codex-local-model-launch.md#hooksjson).
 
 Only command handlers are registered. Prompt and agent hook handlers, unsupported events, and input rewriting are outside this integration. Codex transcripts are not treated as Claude transcripts; transcript-dependent checks cannot be claimed when the required data is unavailable. Advisory hook errors retain existing fail-open behavior with diagnostics; explicit policy denials remain denials. Protocol responses go to stdout and diagnostics to stderr.
 
@@ -262,7 +288,7 @@ On the Codex path, payload parse errors and handler errors during PreToolUse fai
 
 > **Wrapper-only variable.** Do not `export AMPLIHACK_HOOK_PROTOCOL=codex` in your shell profile, CI environment, or launcher settings. A global export flips Claude Code and Copilot hooks to the Codex protocol and breaks them. If you run a hook by hand for testing, set it inline: `echo '{"hook_event_name":"PreToolUse","tool_name":"shell_command","tool_input":{"command":"ls"}}' | AMPLIHACK_HOOK_PROTOCOL=codex amplihack-hooks pre-tool-use`. Hand-running the installed `bin/hook` wrapper is equivalent, since it sets the variable itself.
 
-Trust is user-controlled for installation and interactive sessions. `amplihack install` and interactive `amplihack codex` launches never insert `--dangerously-bypass-hook-trust`; review and trust the command definitions through Codex's `/hooks` interface, and do not bypass hook trust to make an installation succeed. Recipe agent steps (`amplihack codex -- exec …`) are the exception: they receive `--dangerously-bypass-hook-trust` so that an untrusted or changed hook definition cannot silently turn off the command-check hook. See [Sandbox and hook trust for agent steps](#sandbox-and-hook-trust-for-agent-steps) for the rules and the trusted-checkout precondition. Hooks execute with user privileges, so the model sandbox does not isolate hook commands. [Official packaging documentation](https://developers.openai.com/plugins/build/plugins) describes the native manifest and portable plugin runtime variables.
+Trust is user-controlled for installation and ordinary interactive sessions. `amplihack install` and ordinary interactive `amplihack codex` launches never insert `--dangerously-bypass-hook-trust`; review and trust the command definitions through Codex's `/hooks` interface, and do not bypass hook trust to make an installation succeed. Exec sessions are the exception. Recipe agent steps (`amplihack codex -- exec …`) receive `--dangerously-bypass-hook-trust` so that an untrusted or changed hook definition cannot silently turn off the command-check hook. [Local-model launches](#local-model-launches) receive the bypass only for `exec`. Interactive local sessions automatically trust only amplihack's generated entry; user and project handlers still need review. See [Sandbox and hook trust for agent steps](#sandbox-and-hook-trust-for-agent-steps) for the rules and the trusted-checkout precondition. Hooks execute with user privileges, so the model sandbox does not isolate hook commands. [Official packaging documentation](https://developers.openai.com/plugins/build/plugins) describes the native manifest and portable plugin runtime variables.
 
 ## Runner delivery and removal
 
@@ -280,11 +306,91 @@ Managed delivery requires both semantic validation and exact Cargo provenance: p
 
 `amplihack uninstall` unregisters the owned Codex identity before removing owned package files. It retains user configuration, authentication, unrelated plugins, and shared marketplaces with other consumers. Unknown ownership-ledger versions or identity conflicts prevent destructive cleanup. Partial registration does not publish a new ownership ledger. Before ledger commit, the installer attempts rollback; recovery failures before journal deletion retain the pending journal and available prior state for another install or uninstall attempt. Modified owned package files are preserved and require manual reconciliation.
 
+## Recover an interrupted installation
+
+If launch repeatedly stops with:
+
+```text
+failed native Codex reconciliation: foreign Codex config changed; reconcile manually; recovery record retained
+```
+
+inspect the retained `$HOME/.amplihack/codex/pending.json` and the current
+configuration in the selected `CODEX_HOME`. The journal records an interrupted
+installation. Deleting `~/.codex` or `~/.codex-profiles` does not remove it.
+
+First retry normally with the same `HOME` and intended `CODEX_HOME`:
+
+```bash
+amplihack codex
+```
+
+Startup automatically archives a journal only when both recorded Codex targets
+(`config.toml` and `hooks.json`) have disappeared in a way no permitted transaction
+state explains, or when verified completion records prove a later reconciliation
+superseded it. Newer timestamps alone, foreign edits, partial disappearance and
+mixed old/new state keep recovery protection. See the
+[automatic recovery rules](../concepts/codex-installation-ownership.md#automatic-stale-journal-recovery)
+for the exact boundaries.
+
+If the journal still blocks launch and you have decided to abandon its recovery,
+archive it explicitly:
+
+```bash
+amplihack codex --reset-recovery
+```
+
+Reset runs before startup self-healing, client resolution or native
+reconciliation. It accepts a safely accessible regular journal even when its
+contents cannot be parsed. It preserves the original bytes and reports the
+archive path in one status line, then continues normal Codex launch. For example,
+with `HOME=/Users/ryan`, the recovery status line is:
+
+```text
+amplihack: preserved Codex recovery journal: /Users/ryan/.amplihack/codex/pending.json.stale-20261110T180000Z
+```
+
+The UTC timestamp varies. Existing destinations are preserved; collisions use a
+numeric suffix such as `.1`. Automatic archival uses the same preservation and
+reporting rules. If there is nothing to archive or resume, reset reports
+`amplihack: no pending Codex recovery journal` and continues normally.
+
+If another installer holds the package lock, reset does not wait: it declines at
+once and reports the affected lock path. Retry after the other installer
+finishes; the journal stays protected.
+
+Place `--reset-recovery` before the explicit `--` separator. Native Codex
+arguments follow the separator:
+
+```bash
+amplihack codex --reset-recovery -- exec "Summarize the public interfaces without changing files"
+```
+
+This archives any pending journal before starting the unattended task; the task's
+final response is the repository summary. Amplihack consumes the reset flag,
+including for auto-mode and Docker launches. A flag after the separator is passed
+to Codex and does not request recovery reset. See the
+[CLI option reference](../reference/cli.md#codex).
+
+Recovery metadata always lives under `$HOME/.amplihack/codex`. `CODEX_HOME`
+selects Codex configuration targets and does not relocate that metadata. Keep
+the same intended `CODEX_HOME` when retrying or resetting.
+
+Reset moves recovery metadata only. It does not remove configuration,
+authentication, packages, ownership records or profiles. Normal reconciliation
+afterward still checks package ownership, marketplace registration, hooks and
+leftover backups; it can refuse those conflicts independently. Preserve the
+archive and any `previous-package` directory when resolving such a refusal.
+
+If archival fails, launch stops with the affected path and corrective action.
+Resolve the reported access, path-safety or filesystem error and retry. Do not
+delete retained evidence: a failed rename or synchronization can leave a pending
+journal or an archive with a recovery intent that the next attempt must finish.
+
 ## Migration and troubleshooting
 
 Legacy `config.yaml` with `approval_mode: auto` and legacy JSON are not current Codex configuration. Only positively identified Amplihack-generated files are automatically migrated or removed. Ambiguous files remain for manual review: back them up, translate intended settings into TOML using the official configuration reference, and remove obsolete files yourself after verification. Never replace your TOML wholesale.
 
-If `amplihack codex` stops with `failed native Codex reconciliation`, or `amplihack install` or `amplihack update` stops with `failed native Codex installation`, the rest of the message names the cause: a probe timeout, a non-zero exit, output that is not JSON, or a Codex without plugin support. Only the last case asks you to update Codex. See the [native plugin probe reference](../reference/codex-native-plugin-probe.md) for each message and its fix.
+If `amplihack codex` stops with `failed native Codex reconciliation`, or `amplihack install` or `amplihack update` stops with `failed native Codex installation`, read the rest of the message for the cause. For a retained recovery record, use [Recover an interrupted installation](#recover-an-interrupted-installation). Probe failures include a timeout, a non-zero exit, output that is not JSON, or a Codex without plugin support. Only the last case asks you to update Codex. See the [native plugin probe reference](../reference/codex-native-plugin-probe.md) for those messages and their fixes.
 
 If hooks do not run, inspect plugin enablement, `/hooks` trust, and managed hook policy. If a recipe fails compatibility checks, inspect `RECIPE_RUNNER_RS_PATH` and the capability probe before reinstalling the managed runner. If configuration cannot be edited, repair its syntax or explicitly edit the resolved symlink target; Amplihack preserves the original. Unsupported fresh/resume option combinations fail rather than silently discarding requested settings. See the [mode-specific flag matrix](../reference/flag-matrix.md).
 
@@ -324,12 +430,15 @@ See [native installer ownership](../concepts/codex-installation-ownership.md) fo
 Interrupted installation recovery uses a versioned journal containing exact
 original and planned file bytes and package digests. Before rollback or cleanup,
 the installer checks every affected config, hook, marketplace, ownership record,
-package and backup against those states. Foreign edits, disallowed symlinks in
-managed resources, modified backups, and older journals without ownership proof
+package and backup against those states. Except for the
+[proven stale journals](#recover-an-interrupted-installation) archived at startup,
+foreign edits, disallowed symlinks in managed resources, modified backups, and
+older journals without ownership proof
 stop recovery and retain `~/.amplihack/codex/pending.json` and any
 `previous-package` directory. Preserve
-those files and reconcile the reported conflict manually before retrying; do not
-delete the journal to force replacement. Native-client configuration changes
+those files and reconcile the reported conflict manually before retrying. To
+abandon journal recovery explicitly, use `--reset-recovery` to preserve it rather
+than deleting it. Native-client configuration changes
 that cannot be proven transaction-owned also require manual reconciliation.
 
 Committed backup cleanup records a durable inventory before deleting entries.

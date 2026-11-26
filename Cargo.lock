@@ -177,6 +177,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "shell-words",
  "signal-hook",
  "syn",
  "tar",
@@ -309,6 +310,7 @@ dependencies = [
  "amplihack-types",
  "amplihack-utils",
  "anyhow",
+ "libc",
  "serde_json",
  "tempfile",
  "tracing",
@@ -340,6 +342,7 @@ dependencies = [
 name = "amplihack-memory"
 version = "1.2.0"
 dependencies = [
+ "amplihack-git",
  "anyhow",
  "chrono",
  "fs4",

@@ -23,19 +23,20 @@
 //! (b) a stale, unchanged or full record → no resume
 //! (c) repeated distinct limit events → each resumes, with no per-session cap
 //! (d) non-limit error → no action
-//! (e) auto-switch off → exit 0, no output, nothing read
+//! (e) auto-switch off → exit 0, nothing read; no output when the line is
+//!     written, one fixed stderr line when `resume/` is absent
 //! loop: 50 invocations on one event → at most 1 resume
 //! moved-on: the user sent a prompt while waiting → no resume
 //! one wake per session: concurrent waiters with distinct events → 1 resume
 
 use amplihack_hooks::limit_resume::decide::{
-    Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key,
+    Facts, Gate, NOT_LIMIT_ERRORS, event_key, gate, is_limit, session_id_ok, session_key,
 };
 use amplihack_hooks::limit_resume::guard::{CommitError, GuardStore, Resumes};
 use amplihack_hooks::limit_resume::keys::{
     Key, Pane, PaneCheck, RESUME_KEYS, ScreenCheck, UNRECOGNISED_REASONS,
 };
-use amplihack_hooks::limit_resume::log::LogEntry;
+use amplihack_hooks::limit_resume::log::{LogEntry, LogWriteFailure};
 use amplihack_hooks::limit_resume::{
     Deps, Event, Outcome, RESUME_MSG, UNRECOGNISED_MSG, run_with, run_with_io, send_resume,
 };
@@ -52,6 +53,9 @@ const DEADLINE: i64 = START + MAX_WAIT.as_secs() as i64;
 /// Seconds the fake clock moves for each scripted event.
 const STEP: i64 = 60;
 const TMUX: &str = "/tmp/tmux-1000/default,4242,0";
+/// The holder the fake pane check proves. The per-key check rejects every
+/// other pid, so passing the hook's parent instead of the holder fails.
+const FAKE_HOLDER: u32 = 31_337;
 
 // ── Test doubles ────────────────────────────────────────────────────────────
 
@@ -211,6 +215,10 @@ struct Fake {
     guard: MemGuard,
     reads: Vec<i64>,
     logs: Vec<LogEntry>,
+    /// How many of `logs` came through `log_existing` (the `disabled` line).
+    existing_logs: u32,
+    /// What `log` and `log_existing` return.
+    log_result: Result<(), LogWriteFailure>,
     panic_on_now: bool,
     rotator_down: bool,
     arm_err: bool,
@@ -253,6 +261,8 @@ impl Fake {
             guard: MemGuard::default(),
             reads: Vec::new(),
             logs: Vec::new(),
+            existing_logs: 0,
+            log_result: Ok(()),
             panic_on_now: false,
             rotator_down: false,
             arm_err: false,
@@ -317,7 +327,11 @@ impl Deps for Fake {
         self.on
     }
     fn now(&mut self) -> i64 {
-        assert!(!self.panic_on_now, "injected panic");
+        if self.panic_on_now {
+            // Panics once, so the `panicked` line can take its own time.
+            self.panic_on_now = false;
+            panic!("injected panic");
+        }
         self.clock
     }
     fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
@@ -327,8 +341,14 @@ impl Deps for Fake {
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
-    fn log(&mut self, _now: i64, entry: &LogEntry) {
+    fn log(&mut self, _now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
         self.logs.push(entry.clone());
+        self.log_result
+    }
+    fn log_existing(&mut self, _now: i64, entry: &LogEntry) -> Result<(), LogWriteFailure> {
+        self.existing_logs += 1;
+        self.logs.push(entry.clone());
+        self.log_result
     }
     fn rotator_down(&mut self, _now: i64) -> bool {
         self.rotator_down
@@ -423,7 +443,10 @@ impl Deps for Fake {
             .pane_id
             .and_then(|id| Pane::parse(Some(TMUX), Some(id)))
         {
-            Some(p) => PaneCheck::Ready(p),
+            Some(p) => PaneCheck::Ready {
+                pane: p,
+                holder: FAKE_HOLDER,
+            },
             None => PaneCheck::None,
         }
     }
@@ -436,8 +459,8 @@ impl Deps for Fake {
         self.keys.push(key);
         Ok(())
     }
-    fn session_alive_now(&mut self) -> bool {
-        self.gone_after_keys.is_none_or(|n| self.keys.len() < n)
+    fn session_alive_now(&mut self, holder: u32) -> bool {
+        holder == FAKE_HOLDER && self.gone_after_keys.is_none_or(|n| self.keys.len() < n)
     }
 }
 
@@ -544,6 +567,9 @@ fn outcome_strings_and_exit_codes() {
         (Outcome::RotatorDown, "rotator-down", 0),
         (Outcome::Disabled, "disabled", 0),
         (Outcome::NotLimit, "not-limit", 0),
+        (Outcome::BadSessionId, "bad-session-id", 0),
+        (Outcome::BadPayload, "bad-payload", 0),
+        (Outcome::Panicked, "panicked", 0),
     ];
     for (o, s, code) in table {
         assert_eq!(o.as_str(), s);
@@ -551,41 +577,113 @@ fn outcome_strings_and_exit_codes() {
     }
 }
 
-// ── is_limit (IV-3) ─────────────────────────────────────────────────────────
+// ── is_limit (IV-3, rewritten for #3172) ────────────────────────────────────
+//
+// The matcher `rate_limit` already decides which stops reach the hook, so the
+// gate is a deny-list of known non-limit errors. A renamed limit value must
+// not end the call silently again. The holder proof, the screen check and the
+// guard claim still decide whether keys are typed.
+
+/// The fixture is a Claude Code 2.1.329 StopFailure payload with placeholder
+/// text. The comment inside it names its source.
+const RECORDED_PAYLOAD: &str =
+    include_str!("fixtures/stopfailure-rate-limit-claude-code-2.1.329.json");
 
 #[test]
-fn is_limit_is_exactly_rate_limit() {
-    assert!(is_limit(Some("rate_limit")));
+fn every_known_non_limit_error_is_not_a_limit() {
+    assert_eq!(NOT_LIMIT_ERRORS.len(), 10);
     for e in [
-        None,
-        Some(""),
-        Some("unknown"),
-        Some("overloaded"),
-        Some("authentication_failed"),
-        Some("server_error"),
-        Some("RATE_LIMIT"),
-        Some("rate_limit "),
+        "authentication_failed",
+        "oauth_org_not_allowed",
+        "account_on_hold",
+        "verification_required",
+        "overloaded",
+        "invalid_request",
+        "model_not_found",
+        "server_error",
+        "max_output_tokens",
+        "cloud_credential_error",
     ] {
-        assert!(!is_limit(e), "{e:?}");
+        assert!(
+            NOT_LIMIT_ERRORS.contains(&e),
+            "{e} is missing from the list"
+        );
+        assert!(!is_limit(Some(e)), "{e}");
     }
 }
 
 #[test]
-fn limit_text_without_rate_limit_error_is_not_a_limit() {
-    for error in [json!(null), json!(""), json!("unknown")] {
+fn rate_limit_billing_absent_and_unseen_errors_are_limits() {
+    for e in [
+        Some("rate_limit"),
+        Some("billing_error"),
+        Some("unknown"),
+        Some("usage_limit_reached"),
+        Some("spend_limit"),
+        Some("credit_exhausted"),
+        Some(""),
+        None,
+    ] {
+        assert!(is_limit(e), "{e:?}");
+    }
+}
+
+#[test]
+fn the_deny_list_is_exact_and_case_sensitive() {
+    // A near miss of a known value is an unseen value, so it is a limit.
+    for e in ["OVERLOADED", "server_error ", " overloaded", "overloaded\n"] {
+        assert!(is_limit(Some(e)), "{e:?}");
+    }
+}
+
+#[test]
+fn recorded_2_1_329_payload_is_a_limit() {
+    let v: serde_json::Value = serde_json::from_str(RECORDED_PAYLOAD).unwrap();
+    assert_eq!(v["hook_event_name"], "StopFailure");
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    let out = run_with(&input(v), &mut d);
+    assert_ne!(out, Outcome::NotLimit);
+    assert!(is_limit(Some("rate_limit")));
+}
+
+#[test]
+fn an_unseen_error_value_reaches_the_wait_path() {
+    for error in [
+        json!("usage_limit_reached"),
+        json!("billing_error"),
+        json!("unknown"),
+        json!(null),
+        json!(42),
+        json!({"a": 1}),
+    ] {
         let mut d = Fake::new().then(Act::Swap(fresh(1)));
         let out = run_with(
             &input(json!({
                 "hook_event_name": "StopFailure",
                 "session_id": "s",
-                "error": error,
-                "error_details": "Stop and wait for limit to reset",
+                "error": error
+            })),
+            &mut d,
+        );
+        assert_eq!(out, Outcome::NotResumed, "{error}");
+    }
+}
+
+#[test]
+fn every_known_non_limit_error_ends_at_not_limit_with_one_line() {
+    for e in NOT_LIMIT_ERRORS {
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+        let out = run_with(
+            &input(json!({
+                "hook_event_name": "StopFailure",
+                "session_id": "s",
+                "error": e,
                 "last_assistant_message": "You've hit your weekly limit"
             })),
             &mut d,
         );
-        assert_eq!(out, Outcome::NotLimit, "{error}");
-        assert_untouched(&d);
+        assert_eq!(out, Outcome::NotLimit, "{e}");
+        assert_only_gate_line(&d, Outcome::NotLimit, e);
     }
 }
 
@@ -658,7 +756,7 @@ fn session_id_rules() {
 // ── gate: contract order ────────────────────────────────────────────────────
 
 #[test]
-fn gate_order_is_disabled_notlimit_stopactive_duplicate_proceed() {
+fn gate_order_is_disabled_notlimit_badsessionid_stopactive_duplicate_proceed() {
     let all_bad = Facts {
         enabled: false,
         limit: false,
@@ -673,7 +771,11 @@ fn gate_order_is_disabled_notlimit_stopactive_duplicate_proceed() {
     };
     assert_eq!(gate(&f), Gate::NotLimit);
     let f = Facts { limit: true, ..f };
-    assert_eq!(gate(&f), Gate::NotLimit, "a bad session id is NotLimit");
+    assert_eq!(
+        gate(&f),
+        Gate::BadSessionId,
+        "a bad session id is its own gate (#3172)"
+    );
     let f = Facts {
         session_ok: true,
         ..f
@@ -1084,7 +1186,7 @@ fn the_session_exiting_mid_keys_stops_the_rest() {
 fn send_resume_sends_the_four_keys_in_order() {
     let mut d = Fake::new();
     let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
-    assert!(send_resume(&mut d, &pane).is_ok());
+    assert!(send_resume(&mut d, &pane, FAKE_HOLDER).is_ok());
     assert_eq!(d.keys, RESUME_KEYS);
 }
 
@@ -1093,7 +1195,7 @@ fn send_resume_reports_how_many_keys_were_sent() {
     let mut d = Fake::new();
     d.fail_key = Some(3);
     let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
-    let err = send_resume(&mut d, &pane).unwrap_err();
+    let err = send_resume(&mut d, &pane, FAKE_HOLDER).unwrap_err();
     assert_eq!(err.sent, 2);
     assert_eq!(err.err.kind(), io::ErrorKind::Other);
     assert_eq!(d.key_attempts, 3);
@@ -1104,7 +1206,7 @@ fn send_resume_sends_nothing_to_a_session_that_is_gone() {
     let mut d = Fake::new();
     d.gone_after_keys = Some(0);
     let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
-    let err = send_resume(&mut d, &pane).unwrap_err();
+    let err = send_resume(&mut d, &pane, FAKE_HOLDER).unwrap_err();
     assert_eq!(err.sent, 0);
     assert_eq!(d.key_attempts, 0);
 }
@@ -1240,16 +1342,34 @@ fn c_other_sessions_are_not_affected_by_this_one() {
     );
 }
 
-// ── (d) non-limit → no action ───────────────────────────────────────────────
+// ── (d) non-limit → no action, but one line (#3172) ─────────────────────────
 
+/// Nothing was read, waited for, armed, claimed or typed. The call's only
+/// trace is its gate line, checked by [`assert_only_gate_line`].
 fn assert_untouched(d: &Fake) {
     assert!(d.reads.is_empty(), "ledger read");
     assert_eq!(d.swap_reads, 0, "swap record read");
     assert_eq!(d.arms, 0, "armed");
     assert!(d.waits.is_empty(), "waited");
     assert_eq!(d.guard.calls, 0, "guard touched");
-    assert!(d.logs.is_empty(), "logged");
     assert_eq!(d.key_attempts, 0, "keys sent");
+}
+
+/// Exactly one line was written, with `outcome` and the `error` value
+/// reduced to `[a-z_]`. Every gate exit leaves one (#3172).
+fn assert_only_gate_line(d: &Fake, outcome: Outcome, error: &str) {
+    assert_untouched(d);
+    assert_eq!(d.logs.len(), 1, "one gate line: {:?}", d.logs);
+    let line = d.last_log();
+    assert_eq!(line.outcome, outcome);
+    assert!(
+        line.error
+            .bytes()
+            .all(|b| b == b'_' || b.is_ascii_lowercase()),
+        "error field {:?} is not [a-z_]",
+        line.error
+    );
+    assert_eq!(line.error, error);
 }
 
 #[test]
@@ -1265,11 +1385,13 @@ fn d_non_limit_error_is_ignored_even_with_matching_text() {
         &mut d,
     );
     assert_eq!(out, Outcome::NotLimit);
-    assert_untouched(&d);
+    assert_only_gate_line(&d, Outcome::NotLimit, "overloaded");
 }
 
 #[test]
-fn d_prime_no_error_is_ignored() {
+fn d_prime_no_error_is_a_limit_and_takes_the_wait_path() {
+    // Rewritten for #3172: an absent error is no longer a gate. The matcher
+    // delivered the call, and the pane and screen checks still guard keys.
     let mut d = Fake::new().then(Act::Swap(fresh(1)));
     let out = run_with(
         &input(json!({
@@ -1279,12 +1401,12 @@ fn d_prime_no_error_is_ignored() {
         })),
         &mut d,
     );
-    assert_eq!(out, Outcome::NotLimit);
-    assert_untouched(&d);
+    assert_eq!(out, Outcome::NotResumed);
+    assert_eq!(d.key_attempts, 0);
 }
 
 #[test]
-fn d_missing_or_oversized_session_id_is_ignored() {
+fn d_missing_or_oversized_session_id_is_bad_session_id() {
     for session in [json!(null), json!(""), json!("x".repeat(257))] {
         let mut d = Fake::new().then(Act::Swap(fresh(1)));
         let out = run_with(
@@ -1295,13 +1417,56 @@ fn d_missing_or_oversized_session_id_is_ignored() {
             })),
             &mut d,
         );
-        assert_eq!(out, Outcome::NotLimit);
-        assert_untouched(&d);
+        assert_eq!(out, Outcome::BadSessionId);
+        assert_eq!(out.exit_code(), 0);
+        assert_only_gate_line(&d, Outcome::BadSessionId, "rate_limit");
+        let line = d.last_log();
+        assert_eq!(line.session, "-");
+        assert_eq!(line.event, "-");
     }
 }
 
 #[test]
-fn d_other_hook_events_are_ignored() {
+fn d_not_limit_line_names_the_session_when_it_is_valid() {
+    let mut d = Fake::new();
+    let out = run_with(
+        &input(json!({
+            "hook_event_name": "StopFailure",
+            "session_id": "s",
+            "error": "server_error"
+        })),
+        &mut d,
+    );
+    assert_eq!(out, Outcome::NotLimit);
+    let line = d.last_log();
+    assert_eq!(line.session, session_key("s")[..12]);
+    assert_eq!(line.event, "-");
+}
+
+#[test]
+fn d_error_text_is_reduced_before_it_reaches_the_line() {
+    for (raw, want) in [
+        ("Server-Error 500!", "server_error_____"),
+        ("overloaded\nmessage text", "overloaded_message_text"),
+        ("ÅÉ", "__"),
+    ] {
+        // Deny-list values are exact, so these are limits; the reduced form
+        // is checked on the line of a call that ends at a gate instead.
+        let mut d = Fake::off();
+        let _ = run_with(
+            &input(json!({
+                "hook_event_name": "StopFailure",
+                "session_id": "s",
+                "error": raw
+            })),
+            &mut d,
+        );
+        assert_eq!(d.last_log().error, want, "{raw:?}");
+    }
+}
+
+#[test]
+fn d_other_hook_events_are_not_limits() {
     for v in [
         json!({"hook_event_name": "Stop", "session_id": "s", "error": "rate_limit"}),
         json!({"hook_event_name": "Notification", "session_id": "s"}),
@@ -1309,18 +1474,27 @@ fn d_other_hook_events_are_ignored() {
         let mut d = Fake::new().then(Act::Swap(fresh(1)));
         assert_eq!(run_with(&input(v), &mut d), Outcome::NotLimit);
         assert_untouched(&d);
+        assert_eq!(d.logs.len(), 1);
+        assert_eq!(d.last_log().outcome, Outcome::NotLimit);
     }
 }
 
 // ── (e) auto-switch off ─────────────────────────────────────────────────────
 
 #[test]
-fn e_auto_switch_off_does_nothing() {
+fn e_auto_switch_off_writes_the_disabled_line_only_through_log_existing() {
+    // FS-5 (#3172, A6): off must never create the resume folder, so the line
+    // goes through `log_existing`, which appends only to a folder that is
+    // already there.
     let mut d = Fake::off().then(Act::Swap(fresh(1)));
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_eq!(out, Outcome::Disabled);
     assert_eq!(out.exit_code(), 0);
-    assert_untouched(&d);
+    assert_only_gate_line(&d, Outcome::Disabled, "rate_limit");
+    assert_eq!(
+        d.existing_logs, 1,
+        "the disabled line must use log_existing"
+    );
 }
 
 #[test]
@@ -1329,8 +1503,27 @@ fn e_auto_switch_off_prints_nothing() {
     let mut stderr = Vec::new();
     let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
     assert_eq!(code, 0);
-    assert!(stderr.is_empty());
-    assert_untouched(&d);
+    assert!(stderr.is_empty(), "the fake's write succeeded");
+    assert_only_gate_line(&d, Outcome::Disabled, "rate_limit");
+}
+
+#[test]
+fn e_auto_switch_off_with_no_resume_dir_prints_one_fixed_line() {
+    // A6: with no resume folder, nothing is created and the call is
+    // recorded by one fixed stderr line with reason `dir_missing`.
+    let mut d = Fake::off().then(Act::Swap(fresh(1)));
+    d.log_result = Err(LogWriteFailure::DirMissing);
+    let mut stderr = Vec::new();
+    let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+    assert_eq!(code, 0);
+    let text = String::from_utf8(stderr).unwrap();
+    assert_eq!(
+        text,
+        "amplihack limit-resume: the resume.log line for outcome=disabled was not written \
+         (reason=dir_missing)\n"
+    );
+    assert!(!text.contains("rate_limit"), "no payload text: {text:?}");
+    assert_eq!(d.existing_logs, 1, "disabled always uses log_existing");
 }
 
 #[test]
@@ -1341,6 +1534,105 @@ fn auto_switch_turned_off_while_waiting_stops_without_keys() {
     assert_eq!(out.exit_code(), 0);
     assert_no_resume(&d);
     assert_eq!(d.outcomes(), [Outcome::Disabled]);
+    assert_eq!(d.existing_logs, 1, "disabled always uses log_existing");
+}
+
+// ── Failed writes are recorded, never fatal (#3172, A7) ─────────────────────
+
+#[test]
+fn a_failed_write_never_changes_the_outcome_or_exit_code() {
+    // The fake `log` reports a failure; the call still sends the keys and
+    // exits 0. The stderr line records the failure on exit 0 only.
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    d.log_result = Err(LogWriteFailure::LockFailed);
+    let mut stderr = Vec::new();
+    let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+    assert_eq!(code, 0);
+    assert_eq!(d.keys, RESUME_KEYS);
+    let text = String::from_utf8(stderr).unwrap();
+    assert_eq!(text.lines().count(), 1, "{text:?}");
+    assert!(text.ends_with('\n'));
+    assert!(text.contains("lock_failed"), "{text:?}");
+}
+
+#[test]
+fn a_failed_write_on_exit_2_leaves_the_wake_message_alone() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    d.log_result = Err(LogWriteFailure::OpenFailed);
+    let mut stderr = Vec::new();
+    let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+    assert_eq!(code, 2);
+    assert_eq!(stderr, format!("{RESUME_MSG}\n").as_bytes());
+}
+
+#[test]
+fn the_stderr_line_points_to_the_marker_only_when_one_can_exist() {
+    // `mark_failure` writes nothing into a missing or unprivate folder, so
+    // the stderr line names `resume/log-write-failed` only for the others.
+    for (f, points) in [
+        (LogWriteFailure::DirMissing, false),
+        (LogWriteFailure::DirUnprivate, false),
+        (LogWriteFailure::LockFailed, true),
+        (LogWriteFailure::OpenFailed, true),
+        (LogWriteFailure::WriteFailed, true),
+    ] {
+        assert_eq!(f.marker_written(), points, "{f:?}");
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+        d.log_result = Err(f);
+        let mut stderr = Vec::new();
+        let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+        assert_eq!(code, 0);
+        let text = String::from_utf8(stderr).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text:?}");
+        assert!(
+            text.contains(&format!("(reason={})", f.as_str())),
+            "{text:?}"
+        );
+        assert_eq!(
+            text.contains("see resume/log-write-failed"),
+            points,
+            "{f:?}: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn every_write_failure_has_a_fixed_lowercase_token() {
+    for (f, token) in [
+        (LogWriteFailure::DirMissing, "dir_missing"),
+        (LogWriteFailure::DirUnprivate, "dir_unprivate"),
+        (LogWriteFailure::LockFailed, "lock_failed"),
+        (LogWriteFailure::OpenFailed, "open_failed"),
+        (LogWriteFailure::WriteFailed, "write_failed"),
+    ] {
+        assert_eq!(f.as_str(), token);
+    }
+}
+
+#[test]
+fn malformed_stdin_logs_bad_payload_and_exits_0() {
+    for bytes in [&b"not json"[..], b"", b"{\"hook_event_name\":"] {
+        let mut d = Fake::new();
+        let mut stderr = Vec::new();
+        let code = run_with_io(bytes, &mut stderr, &mut d);
+        assert_eq!(code, 0);
+        assert_eq!(d.outcomes(), [Outcome::BadPayload]);
+        assert_eq!(d.last_log().session, "-");
+        assert_eq!(d.last_log().event, "-");
+        assert_eq!(d.last_log().error, "");
+        assert_eq!(d.key_attempts, 0);
+    }
+}
+
+#[test]
+fn a_panic_is_logged_after_it_is_caught_and_exits_0() {
+    let mut d = Fake::new();
+    d.panic_on_now = true;
+    let mut stderr = Vec::new();
+    let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+    assert_eq!(code, 0);
+    assert_eq!(d.outcomes().last(), Some(&Outcome::Panicked));
+    assert_eq!(d.key_attempts, 0);
 }
 
 // ── stop_hook_active, duplicate, guard failures ─────────────────────────────
@@ -1573,12 +1865,7 @@ fn run_with_io_resume_writes_exactly_the_message_to_stderr() {
 
 #[test]
 fn run_with_io_garbage_and_bad_types_exit_zero_silently() {
-    for payload in [
-        "not json".to_string(),
-        String::new(),
-        "[]".to_string(),
-        json!({"hook_event_name": "StopFailure", "session_id": "s", "error": 429}).to_string(),
-    ] {
+    for payload in ["not json".to_string(), String::new(), "[]".to_string()] {
         let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
         let mut stderr = Vec::new();
         assert_eq!(run_with_io(payload.as_bytes(), &mut stderr, &mut d), 0);
@@ -1615,6 +1902,7 @@ fn run_with_io_turns_a_panic_into_a_silent_exit_zero() {
     );
     assert!(stderr.is_empty());
     assert_eq!(d.key_attempts, 0);
+    assert_eq!(d.outcomes().last(), Some(&Outcome::Panicked));
 }
 
 // ── Moved on: the user sent a prompt while waiting ──────────────────────────
@@ -2180,8 +2468,11 @@ fn every_wake_path_records_nothing_and_the_next_room_event_wakes_again() {
 }
 
 #[test]
-fn a_pane_refusal_and_a_session_not_reading_record_nothing() {
-    for check in [PaneCheck::Unverified("tty-mismatch"), PaneCheck::NotReading] {
+fn a_pane_refusal_records_nothing() {
+    for check in [
+        PaneCheck::Unverified("tty-mismatch"),
+        PaneCheck::Unverified("not-foreground"),
+    ] {
         let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
         d.pane_override = Some(check.clone());
         let out = run_with(&limit_input("s", "hit your limit"), &mut d);

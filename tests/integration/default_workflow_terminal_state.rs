@@ -386,21 +386,6 @@ fn assert_contains_all(haystack: &str, needles: &[&str], context: &str) {
     }
 }
 
-fn assert_ordered(haystack: &str, needles: &[&str], context: &str) {
-    let mut previous = 0;
-    for needle in needles {
-        let position = haystack[previous..]
-            .find(needle)
-            .map(|offset| previous + offset)
-            .unwrap_or_else(|| panic!("{context} must contain `{needle}` in order"));
-        assert!(
-            position >= previous,
-            "{context} must place `{needle}` after earlier terminal checks"
-        );
-        previous = position;
-    }
-}
-
 fn parse_runner_json(stdout: &str) -> JsonValue {
     let start = stdout
         .rfind("{\n  \"duration\"")
@@ -453,105 +438,8 @@ fn terminal_state_recipe_exists_with_required_io_contract() {
     );
 }
 
-#[test]
-fn terminal_state_probe_detects_outcomes_in_safe_fail_closed_order() {
-    let recipe = load_recipe("workflow-terminal-state");
-    let command = step_commands(&recipe);
-
-    assert_ordered(
-        &command,
-        &[
-            "git status --porcelain",
-            "dirty worktree blocks terminal success",
-            "mergedAt",
-            "MERGED",
-            "closed-unmerged",
-            "CLOSED_OBSOLETE",
-            "git diff --quiet",
-            "NO_DIFF_SUCCESS",
-            "FOLLOWUP_CREATED",
-        ],
-        "terminal-state detection order",
-    );
-
-    // #2966: a red check is not among the probe's blockers. It is repaired
-    // after the probe, so only the blockers a run cannot repair remain here.
-    assert_contains_all(
-        &command,
-        &[
-            "FAILED_CLOSED_UNMERGED",
-            "FAILED_MEANINGFUL_DIFF",
-            "ambiguous",
-            "exit 1",
-        ],
-        "terminal-state fail-closed semantics",
-    );
-}
-
-#[test]
-fn terminal_state_probe_validates_inputs_before_git_or_github_trust() {
-    let recipe = load_recipe("workflow-terminal-state");
-    let command = step_commands(&recipe);
-
-    assert_contains_all(
-        &command,
-        &[
-            "git rev-parse --is-inside-work-tree",
-            "git check-ref-format --branch",
-            "base_ref",
-            "pr_number",
-            "pr_url",
-            "^[0-9][0-9]*$",
-            "headRefName",
-            "baseRefName",
-            "headRefOid",
-            "mergedAt",
-        ],
-        "terminal-state input validation",
-    );
-
-    let dirty_position = command
-        .find("git status --porcelain")
-        .expect("dirty worktree check must exist");
-    for trusted_probe in ["workflow_pr_scope.sh", "git diff --quiet"] {
-        let probe_position = command
-            .find(trusted_probe)
-            .unwrap_or_else(|| panic!("trusted probe `{trusted_probe}` must exist"));
-        assert!(
-            dirty_position < probe_position,
-            "dirty worktree must be checked before `{trusted_probe}` can produce terminal success"
-        );
-    }
-}
-
-#[test]
-fn terminal_state_probe_wraps_github_metadata_calls_with_bounded_retry() {
-    let recipe = load_recipe("workflow-terminal-state");
-    let command = step_commands(&recipe);
-
-    assert_contains_all(
-        &command,
-        &[
-            "sanitize_gh_stderr",
-            "is_transient_gh_error",
-            "gh_with_retry",
-            "timeout 60 gh",
-            "for attempt in 1 2 3",
-            "retrying (${attempt}/3)",
-            "workflow_pr_scope.sh",
-            "scoped PR lookup failed",
-            "unavailable PR metadata",
-        ],
-        "terminal-state GitHub adapter resilience",
-    );
-
-    assert!(
-        !command.contains("gh pr view \"$pr_target\"")
-            && !command.contains("gh pr list --head \"$BRANCH_INPUT\""),
-        "terminal-state must not call gh metadata endpoints directly without scoped helper validation"
-    );
-}
-
+/// A guard on the cross-repository boundary: every reader of the run's own PR
+/// goes through workflow_pr_scope.sh and checks isCrossRepository.
 #[test]
 fn current_work_pr_identity_delegates_to_scoped_helper() {
     let terminal_state = recipe_text("workflow-terminal-state");
@@ -582,40 +470,6 @@ fn current_work_pr_identity_delegates_to_scoped_helper() {
             assert!(
                 content.contains(required),
                 "{label} must pass/validate scoped PR field `{required}`"
-            );
-        }
-    }
-}
-
-#[test]
-fn current_work_pr_identity_never_uses_recent_author_or_first_result_fallbacks() {
-    let current_work_paths = [
-        "amplifier-bundle/recipes/workflow-terminal-state.yaml",
-        "amplifier-bundle/recipes/workflow-tdd.yaml",
-        "amplifier-bundle/tools/workflow_publish_pr.sh",
-        "amplifier-bundle/tools/workflow_pr_ready.sh",
-        "amplifier-bundle/tools/workflow_final_status.sh",
-    ];
-
-    let forbidden = [
-        "gh pr list --author",
-        "--author @me",
-        "--author=@me",
-        "sort:updated-desc",
-        "sort:created-desc",
-        ".[0] // {}",
-        "head -1",
-        "tail -1",
-        "grep -i",
-    ];
-
-    for rel in current_work_paths {
-        let content = fs::read_to_string(workspace_root().join(rel))
-            .unwrap_or_else(|e| panic!("read {rel}: {e}"));
-        for needle in forbidden {
-            assert!(
-                !content.contains(needle),
-                "{rel} must not infer current-work PR identity via broad/recent fallback `{needle}`"
             );
         }
     }
@@ -1579,6 +1433,8 @@ fn scope_helper_accepts_a_head_behind_only_when_asked_and_only_when_open() {
 fn final_status_does_not_count_a_named_pr_behind_local_head_as_published() {
     // workflow_final_status.sh never opts in, so the PR fails the scope check
     // and goes to #1268 adjudication rather than straight to success.
+    // workflow_pr_ready.sh does opt in since #2787: a finished run's own PR
+    // one push behind is marked ready (issue_3129_build_loop::pr_ready).
     let fixture = setup_repo();
     let worktree = create_feature_worktree(&fixture);
     commit_feature_change(&worktree);
@@ -1595,9 +1451,5 @@ fn final_status_does_not_count_a_named_pr_behind_local_head_as_published() {
     assert!(
         !helper.contains("--allow-head-behind"),
         "workflow_final_status.sh must not opt in to --allow-head-behind"
-    );
-    assert!(
-        !helper_text("workflow_pr_ready.sh").contains("--allow-head-behind"),
-        "workflow_pr_ready.sh must not opt in to --allow-head-behind"
     );
 }

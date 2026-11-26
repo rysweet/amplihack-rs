@@ -18,6 +18,8 @@ use std::process::{Command, Output, Stdio};
 const SCHEMA_ORDER: &[&str] = &[
     "agent.binary",
     "paths.home",
+    "lists.set",
+    "lists.enabled",
     "node.heap_consent",
     "node.max_old_space_mb",
     "recipe.verbose",
@@ -347,6 +349,8 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
         vec![
             "agent.binary = (unset)",
             "paths.home = (unset)",
+            "lists.set = \"default\"",
+            "lists.enabled = []",
             "node.heap_consent = (unset)",
             "node.max_old_space_mb = (unset)",
             "recipe.verbose = false",

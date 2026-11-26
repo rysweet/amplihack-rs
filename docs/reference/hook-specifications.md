@@ -1,5 +1,33 @@
 # Hook Specifications Reference
 
+## Optional hook text suppression
+
+With `AMPLIHACK_HOOK_TEXT=none`, SessionStart, UserPromptSubmit and the workflow
+classification reminder run normally, then omit `additionalContext` and
+`hookSpecificOutput.additionalContext`. Empty context
+envelopes are removed. Other fields, including control decisions and indexing
+diagnostics, are preserved before conversion to the host's protocol. This also
+preserves `systemMessage`, which Claude Code shows to the person rather than
+adding to the model's context. Capacity notices remain visible while their model
+context is omitted. The Codex conversion already omits `systemMessage`.
+
+Stop approves without running lock mode, power steering or reflection, after
+normal input validation. Codex keeps its existing Stop no-op. Malformed input
+and hook failures retain the existing failure policy and response. PreToolUse,
+PostToolUse, PreCompact, SessionEnd, precommit-prefs and StopFailure limit-resume
+are outside the setting. Command enforcement remains active.
+
+Only exact `none` suppresses text. An unset variable preserves behaviour
+silently. Any other explicit value, including an empty or non-UTF-8 value,
+preserves behaviour with one bounded, escaped diagnostic on stderr from each
+participating hook invocation. The variable is read before stdin, so invalid
+input does not hide that diagnostic.
+
+The variable is inherited by child sessions. The shared Claude, Copilot and
+Codex launcher reports suppression and the skipped Stop functions on stderr.
+See [Omit hook context text](../howto/omit-hook-context-text.md) for use and
+restoring the default for a child session.
+
 amplihack registers 8 hooks in `~/.claude/settings.json` when you run `amplihack install`. This page documents each hook: its Claude Code event, the binary or script that runs, and its timeout.
 
 ## Canonical Hook Table
@@ -270,16 +298,16 @@ either one can deny, so a harmless `command` does not hide a `cmd` that kills
 the user's server.
 
 **Position.** The guard is the first check `PreToolUseHook::process` makes for
-a shell tool: it runs before the XPIA check, the Skill redirect, the merge
-guard and the non-Bash early return. The checks after it answer with a bare
-`{"block": true, "message": …}`, which Claude Code does not act on (#1773).
+a shell tool: it runs before the XPIA check, the Skill redirect and the non-Bash early
+return. Every check answers a refusal in the same deny shape, shown under
+**Response** below (#1773).
 XPIA is off by default (#1734). When a user opts in with `XPIA_ENABLED=true`,
 its command-injection pattern matches a separator or newline followed by `rm`,
 `kill` and similar words. If XPIA ran first, it would answer for `TMUX_TMPDIR=$SB/tmuxsock tmux
 kill-server; rm -rf "$SB"`, for a `tmux -C attach <<EOF` heredoc whose body is
-`kill-server`, and for `tmux new -d 'sleep 1' \; kill-server`, and on Claude
-Code the command would run. Running the guard first gives those commands the
-deny shown under **Response** below. The guard only ever denies, so running
+`kill-server`, and for `tmux new -d 'sleep 1' \; kill-server`, and its reason
+would replace the guard's own. Running the guard first gives those commands
+the guard's reason. The guard only ever denies, so running
 it first cannot let through a command that a later check refuses: a command
 the guard allows goes on to XPIA and the other checks unchanged.
 
@@ -649,6 +677,37 @@ flush:
 }
 ```
 
+**Checked on the installed Claude Code (#1773).** On 2026-11-25 this shape was
+shown to stop a command on Claude Code 2.1.329, the version installed on the
+factory host. The hook was the real `amplihack-hooks pre-tool-use` binary built
+from commit `b7e33c5e1`, registered through a throwaway settings file, with the
+user's own settings, hooks and MCP servers left out. The session used the
+existing login in place; nothing was copied. In a new git repository on `main`,
+the agent was asked to run `touch <dir>/marker && git commit --allow-empty -m live`:
+
+```sh
+claude -p --setting-sources "" --settings <settings.json> --strict-mcp-config \
+  --permission-mode bypassPermissions --model haiku --max-turns 3 "<prompt>"
+```
+
+where `<settings.json>` is
+`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"<path>/amplihack-hooks pre-tool-use"}]}]}}`.
+
+| Hook answer | Marker file | Commit | Agent's report |
+| --- | --- | --- | --- |
+| Control: a script printing the old bare `{"block": true, "message": "Blocked by test."}` | created | made | "The command ran once and created an empty commit" |
+| The deny shape above, from the real binary | absent | none | "a PreToolUse hook refused the direct commit to `main`, so neither the `touch` nor the empty commit was executed, and I did not retry it" |
+
+The control shows that the test can tell the two shapes apart. Even with
+`bypassPermissions`, Claude Code honours
+`hookSpecificOutput.permissionDecision: "deny"` and ignores the bare `block`
+field. Copilot CLI 1.0.115 was not checked in this run. Its result rests on the check recorded on
+#1773 on 2026-10-31 (Copilot CLI 1.0.105), in which Copilot stopped the call
+only on the top-level `permissionDecision: "deny"`. The deny carries that field
+too. Repeat the check above after each Claude Code upgrade, because a change to
+the hook protocol would not show in the binary tests, which assert only the
+JSON.
+
 `<M>` is this fixed message. The command itself is never echoed.
 
 > Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. A socket file named `default`, or `-L default`, also counts as the user's server, even under a sandbox directory: give a private server another name (`-S "$SB/tmux.sock"`), and end one already running on a `default` path with `tmux -S <path> kill-session -t <name>` for each of its sessions, since by default a server exits when its last session ends. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.
@@ -818,8 +877,8 @@ is allowed; this differs from the tmux guard, which joins the string
 elements and checks them.
 
 **Position.** The guard runs in `PreToolUseHook::process` directly after the
-tmux guard, and before the XPIA check, the Skill redirect, the merge guard and
-the non-Bash early return. When both guards match, the tmux guard's deny is
+tmux guard, and before the XPIA check, the Skill redirect and the non-Bash
+early return. When both guards match, the tmux guard's deny is
 returned.
 
 **What it denies.** A command in which, after tokenising with the shared
@@ -1060,7 +1119,8 @@ on:
   renamed into place;
 - an inotify watch on `resume/prompted/` for a prompt marker renamed into
   place (the session moved on; see hook 6);
-- a pidfd on the hook's parent, the Claude Code process (the session exited);
+- a pidfd on the hook's parent, the process Claude Code runs the hook
+  command through, not Claude Code itself (that process exited);
 - a timeout of the time left until 7 days after the start, which ends the
   wait and never resumes.
 
@@ -1078,8 +1138,8 @@ deadline cannot be represented as a clock time), `read_swap()` reads the
 record, `stop_time(transcript, start)` returns the stop time or nothing,
 `pane_check()` returns the pane verdict (a pane proved to be this session's
 terminal, no pane, or a refusal with its reason), `send_keys(pane, key)`
-sends one key, and `session_alive_now()` checks the pidfd and the
-foreground process group without blocking; with no pidfd it reports the
+sends one key, and `session_alive_now(holder)` checks the pidfd and the
+holder's foreground state without blocking; with no pidfd it reports the
 session as not running, so the check before each key fails and no key is
 sent. Tests replace `Deps` with a fake that scripts the events.
 
@@ -1094,16 +1154,21 @@ the resume, and a wake records nothing:
   just before the commit; a named pane that is refused never falls back to
   the lookup; see [Resume keys](profile-command.md#resume-keys): the hook
   walks up its own ancestry to the nearest process whose standard input is
-  a terminal, the pane's `#{pane_tty}` must be that terminal, that process
-  must be its foreground process group, and Claude Code must be reading it),
+  a terminal, the holder; the pane's `#{pane_tty}` must be that terminal,
+  and the holder must be its foreground process group),
   and that pane is showing a screen the keys answer (read once with
   `tmux capture-pane -p`, matched against a closed list of six fixed
   phrases; see [Resume screen](profile-command.md#resume-screen)), it
   records the resume under its lock, then runs
   `tmux send-keys -t %N Escape`, then `C-u`, then `-l continue`, then
   `Enter`, as four separate commands, each waited on for its exit status.
-  Before each key it checks that the session is still running and still in
-  the terminal's foreground, so a session that exits or is suspended
+  The hook's parent is not consulted for the proof, because Claude Code
+  runs the hook command through a process of its own
+  ([#3156](https://github.com/rysweet/amplihack-rs/issues/3156)).
+  Before each key it checks that the session is still running and that the
+  holder is still the terminal's foreground group. The holder is the
+  ancestor of the hook that the pane check found, not necessarily Claude
+  Code itself. A session that exits or is suspended
   (Ctrl-Z) gets no more keys. A failure stops the remaining keys, releases
   the record so the next room event tries again, and ends as
   `resume-keys-failed`, still exit `0`. If the release fails, a
@@ -1123,13 +1188,12 @@ the resume, and a wake records nothing:
   outcome names why there was no keys path: `not-resumed` with
   `detail=no-tmux-pane` when no pane was named or found (a fixed
   value, never a pane id or socket path), `pane-unverified` when a pane was
-  named or found but not proved to be this session's own terminal,
-  `pane-not-reading` when it was the terminal but Claude Code is not the
-  process reading it, and `screen-unrecognised` when the pane was proved
+  named or found but not proved to be this session's own terminal, and
+  `screen-unrecognised` when the pane was proved
   but its screen matched no phrase (`detail=screen-unknown`) or could not
   be read (`detail=screen-unreadable`). `screen-unrecognised` writes one
   further fixed line before the continue message, so the refusal reaches
-  the model and not only the log. Otherwise the four differ only in the log
+  the model and not only the log. Otherwise the three differ only in the log
   line. None is recorded, so the event stays armed and the next room event
   tries again. Before it wakes, the hook reads the duplicate rules once
   more, without the lock, and logs `duplicate` and exits `0` if the event
@@ -1162,13 +1226,36 @@ server named by `$TMUX`, or the default server when `$TMUX` is unset; both
 are trusted because they belong to the same user as the session.
 
 **Exit codes.** `2` for the outcomes that wake the session: `not-resumed`,
-`pane-unverified`, `pane-not-reading` and `screen-unrecognised`. The
-continue message is written for exactly those four, and none of them is
+`pane-unverified` and `screen-unrecognised`. The
+continue message is written for exactly those three, and none of them is
 recorded. Every other outcome, including
 `resumed-keys`, `resume-keys-failed`, `watch-lost`, `no-capacity-timeout`,
 `moved-on`, `session-gone`, `disabled`, `duplicate`,
-`session-record-reset`, `stop-hook-active`, `rotator-down` and
-`guard-failed`, exits `0` and prints nothing. stdout is always empty.
+`session-record-reset`, `stop-hook-active`, `rotator-down`,
+`guard-failed`, `not-limit`, `bad-session-id`, `bad-payload` and
+`panicked`, exits `0`. stdout is always empty. stderr is empty too, except
+for one fixed line when a log line cannot be written or the profile root
+cannot be resolved. A `disabled` call on a host with no `resume/` folder
+is neither: it exits `0` silently.
+
+**Every call leaves a line.** Each run writes one line to `resume.log`,
+including the early exits. `disabled` (auto-switch off) is written only
+when a private `resume/` folder already exists. The hook never creates
+one for it; with no folder the call writes no failure marker and is
+recorded by one fixed stderr line with reason `dir_missing`. `not-limit` records a stop whose `error` is a known non-limit
+value, or input that is not a `StopFailure`; `bad-session-id` a missing,
+oversized or invalid id; `bad-payload` malformed or oversized input;
+`panicked` a caught panic. Every line ends with `error=<value>`, the payload's
+`error` reduced to `[a-z_]`, at most 32 characters, never message text. The
+stop is a limit unless `error` is one of `authentication_failed`,
+`oauth_org_not_allowed`, `account_on_hold`, `verification_required`,
+`overloaded`, `invalid_request`, `model_not_found`, `server_error`,
+`max_output_tokens` or `cloud_credential_error`; the pane proof, the screen
+check and the event claim still decide whether keys are typed. A failed log
+write never changes the exit code: its reason is saved in
+`resume/log-write-failed` when that folder is private, and the log's lock is
+a blocking lock with no timeout. See the
+[resume log](profile-command.md#resume-log).
 
 It resumes with keys at most once per limit event and once per session per
 wait. There is no limit on how many times a session is resumed: each resume

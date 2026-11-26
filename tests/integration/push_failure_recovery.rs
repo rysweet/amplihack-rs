@@ -1254,16 +1254,20 @@ fn step15_stale_commit_result_in_the_environment_does_not_skip_recovery() {
 }
 
 /// A caller context with commit_result {"pushed":"true"} must not make
-/// recovery skip: the real default-workflow call step for workflow-publish
-/// resets the key. The call step is taken by id, pointed at the fixture's
-/// publish recipe.
+/// recovery skip: the composer call step for workflow-publish resets the key
+/// (#2471). default-workflow 4.0.0 (#3129) no longer calls workflow-publish,
+/// which stays for one release for runs that loaded v3, so the v3 call step
+/// is built here in its v3 shape and pointed at the fixture's publish recipe.
 #[test]
 fn step15_stale_commit_result_in_the_caller_context_does_not_skip_recovery() {
     let _ = runner_or_skip!();
     let f = Fixture::new(Upstream::Ahead);
     let before = Untouched::capture(&f);
     f.publish_recipe("fixture-publish-child");
-    let mut call = step_by_id(&recipe_yaml("default-workflow"), "workflow-publish");
+    let mut call: Yaml = serde_yaml::from_str(
+        "id: workflow-publish\ntype: recipe\nrecipe: workflow-publish\ncontext: { commit_result: \"\" }\n",
+    )
+    .unwrap();
     call.as_mapping_mut()
         .unwrap()
         .insert("recipe".into(), "fixture-publish-child".into());
