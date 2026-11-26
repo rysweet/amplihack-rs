@@ -47,7 +47,10 @@
 #   build_mentions_allowed <body> <allow>
 #                                 0 when every @mention and closing keyword in
 #                                 <body> also appears in <allow>; otherwise 1
-#                                 with the first refused token on stdout
+#                                 with the first refused token on stdout.
+#                                 <body> (the description or the title) is
+#                                 read with code spans and fenced blocks
+#                                 stripped; <allow> is read with them kept
 #   build_redact_tail             stdin -> one line of at most 200 bytes, URL
 #                                 user information and token-shaped strings
 #                                 removed
@@ -274,40 +277,53 @@ build_path_under() {
 }
 
 # _build_strip_code: fenced blocks and inline code spans removed, since GitHub
-# neither notifies nor closes from inside them.
+# neither notifies nor closes from inside them. Only the description and the
+# title are stripped.
 _build_strip_code() {
   LC_ALL=C awk 'BEGIN{f=0} /^[ ]{0,3}(```|~~~)/{f=!f; next} !f{print}' | LC_ALL=C sed -E 's/`[^`]*`//g'
 }
+# _build_keep_code: backticks turned into spaces, so that a reference the
+# allowed text gives inside code, such as `Fixes #12` or `@name`, is read as
+# given. The allowed text is read this way.
+_build_keep_code() {
+  tr '`' ' '
+}
 # _build_closing_keys <repo>: stdin -> one key per closing reference: N for
-# this repository, owner/repo#N (lower case) for another.
+# this repository, owner/repo#N (lower case) for another. The caller strips
+# or keeps code first.
 _build_closing_keys() {
   local repo
   repo="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
-  _build_strip_code | LC_ALL=C grep -oiE '(^|[^a-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*(([a-z0-9_.-]+/[a-z0-9_.-]+)?#[0-9]+|https?://[^[:space:]/]+/[a-z0-9_.-]+/[a-z0-9_.-]+/issues/[0-9]+)' \
+  LC_ALL=C grep -oiE '(^|[^a-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*(([a-z0-9_.-]+/[a-z0-9_.-]+)?#[0-9]+|https?://[^[:space:]/]+/[a-z0-9_.-]+/[a-z0-9_.-]+/issues/[0-9]+)' \
     | tr '[:upper:]' '[:lower:]' | LC_ALL=C sed -E \
       -e 's#^.*https?://[^/]+/([^/]+/[^/]+)/issues/([0-9]+)$#\1\#\2#' \
       -e 's#^[^#]*[^a-z0-9_./-]([a-z0-9_.-]+/[a-z0-9_.-]+)\#([0-9]+)$#\1\#\2#' \
       -e 's#^[^#]*\#([0-9]+)$#\1#' \
     | awk -v r="$repo" '{ if (index($0, "#") && substr($0, 1, index($0, "#") - 1) == r) print substr($0, index($0, "#") + 1); else print }'
 }
+# _build_mentions: stdin -> one lower-case @mention per line. The caller
+# strips or keeps code first.
 _build_mentions() {
-  _build_strip_code | LC_ALL=C grep -oE '(^|[^A-Za-z0-9_.@`/-])@[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9._-]+)?' \
+  LC_ALL=C grep -oE '(^|[^A-Za-z0-9_.@`/-])@[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9._-]+)?' \
     | LC_ALL=C sed -E 's/^[^@]*//' | tr '[:upper:]' '[:lower:]'
 }
 
+# The description and the title are stripped of code, because GitHub neither
+# closes nor notifies from inside code. The allowed text keeps its code, so a
+# closing line or @mention the task text gives in backticks counts as given.
 build_mentions_allowed() {
   local body="$1" allow="$2" tok keys
-  keys="$(_build_closing_keys "${BUILD_REPO_NAME:-}" < "$allow"; printf '%s\n' "${RECIPE_VAR_issue_number:-}" | grep -E '^[0-9]+$';
+  keys="$(_build_keep_code < "$allow" | _build_closing_keys "${BUILD_REPO_NAME:-}"; printf '%s\n' "${RECIPE_VAR_issue_number:-}" | grep -E '^[0-9]+$';
     printf '%s\n' "${RECIPE_VAR_closing_reference:-}" | LC_ALL=C grep -oE '#[0-9]+' | tr -d '#')"
   while IFS= read -r tok; do
     [ -n "$tok" ] || continue
     printf '%s\n' "$keys" | grep -qxF -- "$tok" || { printf 'closing reference %s\n' "$tok"; return 1; }
-  done < <(_build_closing_keys "${BUILD_REPO_NAME:-}" < "$body")
-  keys="$(_build_mentions < "$allow")"
+  done < <(_build_strip_code < "$body" | _build_closing_keys "${BUILD_REPO_NAME:-}")
+  keys="$(_build_keep_code < "$allow" | _build_mentions)"
   while IFS= read -r tok; do
     [ -n "$tok" ] || continue
     printf '%s\n' "$keys" | grep -qxF -- "$tok" || { printf 'mention %s\n' "$tok"; return 1; }
-  done < <(_build_mentions < "$body")
+  done < <(_build_strip_code < "$body" | _build_mentions)
   return 0
 }
 
