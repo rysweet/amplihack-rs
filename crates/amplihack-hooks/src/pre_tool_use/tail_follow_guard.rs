@@ -52,7 +52,7 @@
 //!
 //! The guard reads no environment, file or clock, and nothing turns it off.
 
-use super::shell::{self, SHELLS, SimpleCommand, basename, substitution_bodies};
+use super::shell::{self, SimpleCommand, basename};
 use serde_json::Value;
 use tracing::warn;
 
@@ -76,6 +76,9 @@ const DEVICES: &[&str] = &[
     "/dev/fd/0",
     "/proc/self/fd/0",
 ];
+
+/// Shells whose `-c` operand or heredoc body is parsed again.
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 
 /// `tail` long options that take a value as the next word or after `=`.
 const TAIL_LONG_VALUE_OPTS: &[&str] = &[
@@ -156,6 +159,71 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> bool {
         || substitution_bodies(text)
             .iter()
             .any(|body| reparse(body, depth, budget))
+}
+
+/// The bodies of the command substitutions (`$(…)` and backticks) that the
+/// shell runs when it reads `text`: those outside single quotes, `$'…'`,
+/// comments and heredoc bodies. A substitution inside another is found when
+/// its body is scanned.
+pub(super) fn substitution_bodies(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut bodies = Vec::new();
+    let mut heredocs = Vec::new();
+    let mut in_double = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let word_start = i == 0 || chars[i - 1].is_whitespace() || ";&|(".contains(chars[i - 1]);
+        match c {
+            '\\' => i += 1,
+            '"' => in_double = !in_double,
+            '$' if chars.get(i + 1) == Some(&'(') => {
+                let Some(end) = shell::subst_close(&chars, i) else {
+                    return bodies;
+                };
+                bodies.push(chars[i + 2..end].iter().collect());
+                i = end;
+            }
+            '`' => {
+                let mut end = i + 1;
+                while end < chars.len() && chars[end] != '`' {
+                    end += if chars[end] == '\\' { 2 } else { 1 };
+                }
+                if end >= chars.len() {
+                    return bodies;
+                }
+                bodies.push(chars[i + 1..end].iter().collect());
+                i = end;
+            }
+            _ if in_double => {}
+            '$' if chars.get(i + 1) == Some(&'\'') => {
+                let Some(end) = shell::ansi_c_close(&chars, i + 1) else {
+                    return bodies;
+                };
+                i = end;
+            }
+            '\'' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '\'' {
+                    i += 1;
+                }
+            }
+            '#' if word_start => {
+                while i + 1 < chars.len() && chars[i + 1] != '\n' {
+                    i += 1;
+                }
+            }
+            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) == Some(&'<') => i += 2,
+            '<' if chars.get(i + 1) == Some(&'<') => {
+                heredocs.push(shell::heredoc_delim(&chars, &mut i));
+                continue;
+            }
+            '\n' => shell::skip_heredoc_bodies(&chars, &mut i, std::mem::take(&mut heredocs)),
+            _ => {}
+        }
+        i += 1;
+    }
+    bodies
 }
 
 fn scan_command(command: &SimpleCommand, depth: usize, budget: &mut usize) -> bool {
@@ -324,9 +392,48 @@ fn skip_unbuffer_options(args: &[String]) -> &[String] {
 /// Scans the `-c` operand of a shell, or the heredoc bodies it reads as its
 /// script when there is no `-c`.
 fn scan_shell(args: &[String], heredocs: &[String], depth: usize, budget: &mut usize) -> bool {
-    shell::shell_scripts(args, heredocs)
-        .into_iter()
-        .any(|script| reparse(script, depth, budget))
+    let mut has_c = false;
+    let mut has_s = false;
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        i += 1;
+        if matches!(w.as_str(), "--rcfile" | "--init-file") {
+            // The next word is the file, not a script.
+            i += 1;
+            continue;
+        }
+        if w.starts_with("--") {
+            // `--norc`, `--login`, or `--` itself.
+            continue;
+        }
+        if (w.starts_with('-') || w.starts_with('+')) && w.chars().count() > 1 {
+            if w.starts_with('-') {
+                has_c |= w.chars().skip(1).any(|c| c == 'c');
+                has_s |= w.chars().skip(1).any(|c| c == 's');
+            }
+            if w.ends_with(['o', 'O']) {
+                // `-o NAME`, `-euo NAME`, `+O NAME`: the next word is the
+                // option name.
+                i += 1;
+            }
+            continue;
+        }
+        // A word that is not an option is the `-c` operand, a positional
+        // argument after `-s`, or a script file whose standard input is the
+        // heredoc. Options after it are its arguments.
+        if has_c {
+            return reparse(w, depth, budget);
+        }
+        if !has_s {
+            return false;
+        }
+        break;
+    }
+    if has_c {
+        // `-c` with no operand.
+        return false;
+    }
+    heredocs.iter().any(|body| reparse(body, depth, budget))
 }
 
 /// Scans `script` one level deeper, spending one unit of `budget`.

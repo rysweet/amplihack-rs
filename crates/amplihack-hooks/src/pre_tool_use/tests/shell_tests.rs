@@ -533,27 +533,3 @@ fn shell_tool_names_are_matched_exactly() {
         assert!(!is_shell_tool(name), "{name}");
     }
 }
-
-// Issue #3261: one scanner reads substitutions on a command line and in an
-// unquoted heredoc body; only the quoting rules differ.
-
-#[test]
-fn substitution_bodies_skip_single_quotes_and_comments() {
-    let text = "echo '$(a)' \"$(b)\" `c` # $(d)";
-    assert_eq!(substitution_bodies(text), vec!["b", "c"]);
-}
-
-#[test]
-fn heredoc_body_substitutions_ignore_quotes() {
-    let body = "say '$(a)' and \"$(b)\" then `c` and \\$(d)";
-    assert_eq!(
-        heredoc_substitution_bodies(body),
-        Some(vec!["a".to_string(), "b".to_string(), "c".to_string()])
-    );
-}
-
-#[test]
-fn heredoc_body_with_unclosed_substitution_is_unreadable() {
-    assert_eq!(heredoc_substitution_bodies("$(a"), None);
-    assert_eq!(heredoc_substitution_bodies("`a"), None);
-}

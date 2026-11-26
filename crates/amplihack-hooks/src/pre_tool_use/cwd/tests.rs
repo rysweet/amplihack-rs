@@ -310,14 +310,27 @@ fn removal_with_expansion_in_its_own_arguments_is_rejected() {
 fn nested_removals_of_cwd_are_rejected() {
     for command in [
         "echo $(rm -rf .)",
-        "bash -c 'rm -rf .'",
-        "eval \"rm -rf .\"",
+        "echo \"$(cd /tmp && rm -rf {cwd})\"",
         "find /nonexistent -exec rm -rf {cwd} \\;",
         "xargs -0 rm -rf . < list",
         "sudo ionice -c2 rm -rf .",
         "bash <<'EOF'\nrm -rf .\nEOF",
         "cat <<EOF\n$(rm -rf .)\nEOF",
+    ] {
+        assert!(decide_in_scratch(command).is_some(), "{command}");
+    }
+}
+
+#[test]
+fn script_run_by_a_shell_or_eval_is_decided_on_the_whole_text() {
+    // These are decided as they were before #3261: any expansion anywhere in
+    // the text is refused beside a recursive removal.
+    for command in [
         "bash -c 'rm -rf \"$X\"'",
+        "eval \"rm -rf $X\"",
+        "echo 'rm -rf $X' | bash",
+        "ls | xargs sh -c 'rm -rf \"$D/$1\"' _",
+        "bash -c 'echo hi'; cat <<'EOF'\nrm -rf old\nEOF\necho $HOME",
     ] {
         assert!(decide_in_scratch(command).is_some(), "{command}");
     }
@@ -341,18 +354,74 @@ fn unreadable_input_is_decided_on_the_whole_text() {
     assert!(decide_in_scratch("cat <<EOF\nrm -rf $X").is_some());
 }
 
+/// The deny response as text, for checks on its message.
+fn reason(decision: &Value) -> String {
+    decision.to_string()
+}
+
 #[test]
-fn removal_word_as_argument_of_another_program_is_not_a_removal() {
+fn removal_word_in_any_position_is_decided_as_a_removal() {
+    // The check does not try to tell which programs run their arguments, so
+    // an unquoted `rm` word with a recursive flag after it is a removal
+    // wherever it stands, as before #3261.
     for command in [
         "git rm -r \"$x\"",
         "git rm -r {cwd}",
         "echo rm -rf $X",
         "echo rmdir $D",
-        "printf '%s\\n' rm -rf $HOME",
-        "grep -r rm $DIR",
+        "xargs grep rm -r \"$X\"",
+        "find $D -name rm -exec echo rm -rf {} \\;",
     ] {
-        assert!(decide_in_scratch(command).is_none(), "{command}");
+        assert!(decide_in_scratch(command).is_some(), "{command}");
     }
+    // Without a recursive flag after it, `rm` is not a recursive removal.
+    assert!(decide_in_scratch("grep -r rm $DIR").is_none());
+    // A quoted string is one word, so it holds no `rm` word.
+    assert!(decide_in_scratch("printf '%s\\n' 'rm -rf' $HOME").is_none());
+}
+
+#[test]
+fn refusal_names_the_refused_command() {
+    let decision = decide_in_scratch("ls $HOME; rm -rf \"$X\"").unwrap();
+    assert!(reason(&decision).contains("Refused command: rm -rf '$X'"));
+    let decision = decide_in_scratch("echo $HOME && rm -r {cwd}").unwrap();
+    assert!(reason(&decision).contains("Refused command: rm -r "));
+}
+
+#[test]
+fn whole_text_refusal_says_it_read_the_whole_text_and_why() {
+    for (command, cause) in [
+        (
+            "echo \"unclosed; rm -rf $X",
+            "could not split the text into commands",
+        ),
+        ("bash -c 'rm -rf \"$X\"'", "runs `eval` or a shell"),
+        ("eval \"rm -rf $X\"", "runs `eval` or a shell"),
+        (
+            "cat <<EOF\nrm -rf $(pwd)\nEOF",
+            "heredoc with an unquoted delimiter",
+        ),
+    ] {
+        let text = reason(&decide_in_scratch(command).expect(command));
+        assert!(text.contains("read the whole command text"), "{command}");
+        assert!(text.contains(cause), "{command}: {text}");
+    }
+}
+
+#[test]
+fn long_heredoc_mentioning_removal_is_allowed() {
+    let body = "Run rm -rf . only in a scratch folder, see `ls`.\n".repeat(2_000);
+    assert!(body.len() > 64 * 1024);
+    let command = format!(
+        "cat > brief.md <<'EOF'\n{body}EOF\ngh issue create --body-file brief.md --repo \"$HOME\""
+    );
+    assert!(decide_in_scratch(&command).is_none());
+}
+
+#[test]
+fn commit_message_from_quoted_heredoc_in_substitution_is_allowed() {
+    let command = "git commit -m \"$(cat <<'EOF'\nRefuse `rm -rf $X` but not text.\nEOF\n)\"";
+    assert!(decide_in_scratch(command).is_none());
 }
 
 #[test]
@@ -369,9 +438,4 @@ fn removal_run_through_a_wrapper_or_launcher_is_decided() {
     ] {
         assert!(decide_in_scratch(command).is_some(), "{command}");
     }
-}
-
-#[test]
-fn find_exec_of_another_program_is_not_a_removal() {
-    assert!(decide_in_scratch("find $D -name rm -exec echo rm -rf {} \\;").is_none());
 }

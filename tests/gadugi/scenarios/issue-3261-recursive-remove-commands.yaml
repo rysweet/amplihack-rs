@@ -62,8 +62,13 @@ assertions:
     params:
       target: stdout
       expected: "PASS: literal-after-variable-cwd -> deny"
-  - name: rm-as-argument-allowed
+  - name: quoted-text-allowed
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: rm-as-argument -> allow"
+      expected: "PASS: quoted-text -> allow"
+  - name: shell-script-rejected
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: shell-script -> deny"

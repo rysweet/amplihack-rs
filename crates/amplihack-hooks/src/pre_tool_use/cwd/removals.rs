@@ -1,75 +1,43 @@
-//! Finds the removal commands a command line runs (#3261).
+//! Finds the removal commands in a command line (#3261).
 //!
 //! The line is split into simple commands with the shared tokeniser
 //! ([`shell::tokenise`]), which keeps quoted text inside its word and never
-//! reads a heredoc body as commands. A simple command is a removal when the
-//! program it runs is `rm` with a recursive flag (a short option cluster
-//! holding `r` or `R`, or `--recursive`, before `--`), or `rmdir`. The
-//! program is the word [`shell::program`] finds after reserved words,
-//! assignments and the [`shell::WRAPPERS`] (`sudo`, `env`, `command`,
-//! `timeout` and others), so `git rm -r "$f"` and `echo rm -rf $X` are not
-//! removals: `rm` is an argument there, not the program.
+//! reads a heredoc body as commands. A simple command is a removal when one
+//! of its words is `rm` followed by a recursive flag (a short option cluster
+//! holding `r` or `R`, or `--recursive`, before `--`), or is `rmdir`. The
+//! word may be in any position, because `sudo`, `xargs`, `find -exec` and
+//! many other programs run their arguments, and this module does not try to
+//! tell which programs do. `git rm -r "$f"` is therefore read as a removal,
+//! as it was before #3261. A quoted string is one word, so `echo 'rm -rf .'`
+//! has no `rm` word and is not a removal.
 //!
-//! Two kinds of program run another command from their arguments, and only
-//! those are looked into:
+//! The body of each `$(…)` or backtick substitution the shell runs (outside
+//! single quotes, comments and heredoc bodies) is decided in the same way.
+//! This keeps the common `--body "$(cat <<'EOF' … EOF)"` form readable: its
+//! heredoc body is text, not commands.
 //!
-//! - a [`LAUNCHERS`] program (`xargs`, `ionice` and others): the first `rm`,
-//!   `rmdir`, `eval` or shell word among its arguments is the command it
-//!   runs. These programs have options that take values, and the values
-//!   cannot be told apart from the command without a table for each one, so
-//!   the scan errs towards finding a removal;
-//! - `find`: the words after each `-exec`, `-execdir`, `-ok` or `-okdir`, up
-//!   to its `;` or `+`, are read as a command of their own.
+//! # Whole-text reading
 //!
-//! # Text the shell runs as a command
+//! Some text is run as commands in a way the tokeniser does not follow. For
+//! that text the caller keeps the decision the check made before #3261, on
+//! the whole string, and its message says so and why ([`Reading::WholeText`]):
 //!
-//! The check this module replaced matched the whole string with a regex, so
-//! it caught `bash -c 'rm -rf .'`, `eval "rm -rf ."`, `echo $(rm -rf .)` and
-//! `cat <<EOF` with `$(rm -rf .)` in the body. Deciding on simple commands
-//! alone would let all four through, because the removal is inside a quoted
-//! word or a heredoc body. To keep refusing them, the text the shell itself
-//! runs as a command is tokenised again, up to [`MAX_DEPTH`]:
-//!
-//! - the body of each `$(…)` or backtick substitution outside single quotes,
-//!   `$'…'`, comments and heredoc bodies ([`shell::substitution_bodies`]);
-//! - the `-c` operand of `sh`, `bash`, `zsh`, `dash` and `ksh`, or, with no
-//!   `-c`, the heredoc bodies such a shell reads as its script
-//!   ([`shell::shell_scripts`], shared with the tail-follow guard);
-//! - the arguments of `eval`, joined by spaces;
-//! - the substitutions inside a heredoc whose delimiter is unquoted
-//!   ([`shell::heredoc_substitution_bodies`], the same scanner as
-//!   [`shell::substitution_bodies`] under bash's heredoc quoting rules).
-//!
-//! No new parser is added for this: each piece of text is read again with
-//! the same tokeniser and the same scanners the other command guards use.
-//!
-//! When the text cannot be read with certainty (an incomplete parse, input
-//! over [`MAX_INPUT`], nesting at [`MAX_DEPTH`] or an exhausted
-//! [`MAX_REPARSES`] budget), [`removal_commands`] returns `None` and the
-//! caller decides on the whole text, as the check did before. The limits
-//! bound the work on hostile input; reaching one never allows a command the
-//! old check refused.
+//! - the tokeniser cannot read the line (an unclosed quote or substitution,
+//!   or an unterminated heredoc);
+//! - a word is `eval`, or a shell in [`SHELLS`], which may run a `-c`
+//!   argument, a heredoc or its standard input as a script;
+//! - a heredoc with an unquoted delimiter has `$(` or a backtick in its body,
+//!   which the shell runs before the program reads the body;
+//! - substitutions are nested more than [`MAX_DEPTH`] deep.
 
-use super::super::shell::{self, SHELLS, SimpleCommand, basename};
+use super::super::shell::{self, SimpleCommand, basename};
+use super::super::tail_follow_guard::substitution_bodies;
 
-/// Text at this depth or deeper is not read; the top level is depth 0.
-const MAX_DEPTH: usize = 4;
+/// Deepest substitution nesting read command by command.
+const MAX_DEPTH: usize = 8;
 
-/// Larger input is decided on the whole text.
-const MAX_INPUT: usize = 64 * 1024;
-
-/// Most re-parses of embedded scripts for one command line.
-const MAX_REPARSES: usize = 256;
-
-/// Programs that run a command given in their arguments, after options whose
-/// values this module does not tell apart from the command. [`shell::WRAPPERS`]
-/// covers the ones whose options are known, such as `sudo` and `env`.
-const LAUNCHERS: &[&str] = &[
-    "xargs", "ionice", "setsid", "stdbuf", "chrt", "taskset", "flock", "doas", "parallel",
-];
-
-/// `find` actions whose following words, up to `;` or `+`, are a command.
-const FIND_ACTIONS: &[&str] = &["-exec", "-execdir", "-ok", "-okdir"];
+/// Programs that read a script from an argument, a heredoc or standard input.
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 
 /// One removal command.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -82,144 +50,83 @@ pub(super) struct Removal {
     pub(super) argv: Vec<String>,
 }
 
-/// The removal commands `text` runs, or `None` when the text cannot be read
-/// with certainty.
-pub(super) fn removal_commands(text: &str) -> Option<Vec<Removal>> {
-    if text.len() > MAX_INPUT {
-        return None;
-    }
-    let mut budget = MAX_REPARSES;
-    let mut found = Vec::new();
-    collect(text, 0, &mut budget, &mut found).then_some(found)
+/// How the caller is to decide on a command line.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Reading {
+    /// Decide on each of these removals by its own words.
+    Commands(Vec<Removal>),
+    /// Decide on the whole text, for the reason given, which completes the
+    /// sentence "the hook read the whole command text because …".
+    WholeText(&'static str),
 }
 
-/// Adds the removals in `text` to `found`; false when the text cannot be
-/// read with certainty.
-fn collect(text: &str, depth: usize, budget: &mut usize, found: &mut Vec<Removal>) -> bool {
-    if depth >= MAX_DEPTH {
-        return false;
+const UNREADABLE: &str = "it could not split the text into commands (an unclosed quote or substitution, \
+     or a heredoc with no closing delimiter line)";
+const RUNS_SCRIPT: &str = "a command runs `eval` or a shell (`sh`, `bash`, `zsh`, `dash`, \
+     `ksh`), which can run quoted text or a heredoc as commands";
+const HEREDOC_SUBSTITUTION: &str = "a heredoc with an unquoted delimiter has `$(` or a backtick \
+     in its body, which the shell runs";
+const TOO_DEEP: &str = "command substitutions are nested too deeply to read";
+
+/// How to decide on `text`.
+pub(super) fn read(text: &str) -> Reading {
+    let mut found = Vec::new();
+    match collect(text, 0, &mut found) {
+        Ok(()) => Reading::Commands(found),
+        Err(reason) => Reading::WholeText(reason),
+    }
+}
+
+/// Adds the removals in `text` to `found`, or gives the reason the text has
+/// to be read whole.
+fn collect(text: &str, depth: usize, found: &mut Vec<Removal>) -> Result<(), &'static str> {
+    if depth > MAX_DEPTH {
+        return Err(TOO_DEEP);
     }
     let parsed = shell::tokenise(text);
     if !parsed.complete {
-        return false;
+        return Err(UNREADABLE);
     }
     for command in &parsed.commands {
-        if !collect_command(command, depth, budget, found) {
-            return false;
+        if command
+            .words
+            .iter()
+            .map(|w| basename(w))
+            .any(|name| name == "eval" || SHELLS.contains(&name))
+        {
+            return Err(RUNS_SCRIPT);
         }
-        let expanded = command
+        let substituted_heredoc = command
             .heredocs
             .iter()
             .zip(&command.heredoc_expands)
-            .filter(|(_, expands)| **expands);
-        for (body, _) in expanded {
-            let Some(bodies) = shell::heredoc_substitution_bodies(body) else {
-                return false;
-            };
-            if !bodies.iter().all(|b| reparse(b, depth, budget, found)) {
-                return false;
-            }
+            .any(|(body, expands)| *expands && (body.contains("$(") || body.contains('`')));
+        if substituted_heredoc {
+            return Err(HEREDOC_SUBSTITUTION);
+        }
+        if let Some(removal) = removal(command) {
+            found.push(removal);
         }
     }
-    shell::substitution_bodies(text)
-        .iter()
-        .all(|body| reparse(body, depth, budget, found))
+    for body in substitution_bodies(text) {
+        collect(&body, depth + 1, found)?;
+    }
+    Ok(())
 }
 
-/// Reads `script` one level deeper, spending one unit of `budget`.
-fn reparse(script: &str, depth: usize, budget: &mut usize, found: &mut Vec<Removal>) -> bool {
-    if *budget == 0 {
-        return false;
-    }
-    *budget -= 1;
-    collect(script, depth + 1, budget, found)
-}
-
-fn collect_command(
-    command: &SimpleCommand,
-    depth: usize,
-    budget: &mut usize,
-    found: &mut Vec<Removal>,
-) -> bool {
-    for run in commands_run(&command.words) {
-        let name = basename(&run[0]);
-        let rest = &run[1..];
-        let read = match name {
-            "eval" => reparse(&rest.join(" "), depth, budget, found),
-            "rm" | "rmdir" => {
-                if name == "rmdir" || has_recursive_flag(rest) {
-                    found.push(Removal {
-                        words: command
-                            .words
-                            .iter()
-                            .chain(&command.redirects)
-                            .cloned()
-                            .collect(),
-                        argv: run.to_vec(),
-                    });
-                }
-                true
-            }
-            _ => shell::shell_scripts(rest, &command.heredocs)
-                .into_iter()
-                .all(|script| reparse(script, depth, budget, found)),
-        };
-        if !read {
-            return false;
-        }
-    }
-    true
-}
-
-/// Whether a program named `name` is one this module looks at: a removal,
-/// `eval` or a shell whose script it reads.
-fn is_target(name: &str) -> bool {
-    matches!(name, "rm" | "rmdir" | "eval") || SHELLS.contains(&name)
-}
-
-/// The commands `words` runs whose program [`is_target`], each from its
-/// program word onward: the command's own program, the command a
-/// [`LAUNCHERS`] program runs, and the commands of `find`'s
-/// [`FIND_ACTIONS`]. An argument named `rm` of any other program, as in
-/// `git rm -r` or `echo rm -rf`, is not a command.
-fn commands_run(words: &[String]) -> Vec<&[String]> {
-    let Some(run) = shell::program(words) else {
-        return Vec::new();
-    };
-    let Some(first) = run.first() else {
-        return Vec::new();
-    };
-    let name = basename(first);
-    if is_target(name) {
-        return vec![run];
-    }
-    if LAUNCHERS.contains(&name) {
-        return run
-            .iter()
-            .skip(1)
-            .position(|w| is_target(basename(w)))
-            .map(|at| vec![&run[at + 1..]])
-            .unwrap_or_default();
-    }
-    if name != "find" {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut i = 1;
-    while i < run.len() {
-        if !FIND_ACTIONS.contains(&run[i].as_str()) {
-            i += 1;
-            continue;
-        }
-        let tail = &run[i + 1..];
-        let end = tail
-            .iter()
-            .position(|w| w == ";" || w == "+")
-            .unwrap_or(tail.len());
-        out.extend(commands_run(&tail[..end]));
-        i += 1 + end;
-    }
-    out
+/// The removal in `command`: from the first `rm` word with a recursive flag
+/// after it, or the first `rmdir` word.
+fn removal(command: &SimpleCommand) -> Option<Removal> {
+    let words = &command.words;
+    let at = (0..words.len()).find(|&i| match basename(&words[i]) {
+        "rmdir" => true,
+        "rm" => has_recursive_flag(&words[i + 1..]),
+        _ => false,
+    })?;
+    Some(Removal {
+        words: words.iter().chain(&command.redirects).cloned().collect(),
+        argv: words[at..].to_vec(),
+    })
 }
 
 /// Whether `rm`'s arguments ask for a recursive removal. Options are read

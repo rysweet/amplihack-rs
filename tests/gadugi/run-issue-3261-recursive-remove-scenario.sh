@@ -21,8 +21,11 @@
 #     variable. Allowed.
 #   - literal-after-variable-cwd: the same call removing the working directory
 #     itself. Rejected, on its own path.
-#   - rm-as-argument: `rm` as an argument of another program (`git rm -r`,
-#     `echo rm -rf`) with a variable beside it. Allowed: neither runs `rm`.
+#   - quoted-text: a quoted string and a commit message from a quoted
+#     heredoc in a substitution, both mentioning a recursive remove, beside
+#     a variable. Allowed: neither is a command.
+#   - shell-script: a recursive remove with a variable inside a `bash -c`
+#     script. Rejected: text a shell runs is decided on the whole string.
 #
 # Where it runs: CI's cross-compile job runs this script against the release
 # `amplihack-hooks` binary it builds for x86_64 Linux. CI does not run
@@ -112,7 +115,12 @@ check literal-after-variable-outside allow 'cd "$DIR" && git status; rm -r /none
 
 check literal-after-variable-cwd deny "cd \"\$DIR\" && git status; rm -r $CWD"
 
-check rm-as-argument allow 'git rm -r "$FILE"; echo rm -rf $X'
+check quoted-text allow "echo 'rm -rf .' \"\$HOME\"; git commit -m \"\$(cat <<'EOF'
+Refuse rm -rf \`pwd\` but not text.
+EOF
+)\""
+
+check shell-script deny "bash -c 'rm -rf \"\$TARGET\"'"
 
 echo "cases passed: $passed"
 if [ "$fail" -eq 0 ]; then
