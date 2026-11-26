@@ -50,6 +50,7 @@ fn settings(overflow_wait: u64, unknown_reset: bool) -> Settings {
         interval: 600,
         overflow_wait,
         overflow_unknown_reset: unknown_reset,
+        target_week_max: 95,
     }
 }
 
@@ -564,8 +565,20 @@ fn auto_switch_returns(threshold: u8, g: Gate, session: f64, week: f64) -> bool 
 /// thresholds. The move back off overflow is the rotator's: a plan profile
 /// with room (issue #1804: both windows below 100%) brings both back,
 /// whatever the auto-switch threshold.
+///
+/// Issue #2857 changed this test's expectation, and issue #2910 changed it
+/// again (ruling D2 and F1): the rotator's move back off an overflow profile
+/// takes any eligible plan login, one below 100% on both windows with its
+/// week at or below `--target-week-max` (95 here), whatever its session. Auto-switch's rule is the
+/// unchanged 100% rule (`plan_room::room`, which it calls), so the two no
+/// longer agree on a login between the rotator's threshold and 100%. What must
+/// still hold is that the rotator never moves back where auto-switch would
+/// refuse, and that where the rotator moves back, auto-switch does too: the
+/// rotator's rule is the narrower one. The residual (auto-switch may move onto
+/// a login at 85-99% session) is the one named for `other_capacity`, not
+/// changed here.
 #[test]
-fn the_rotator_and_auto_switch_agree_on_the_move_back_for_any_auto_switch_threshold() {
+fn the_rotator_moves_back_only_where_auto_switch_does_for_any_auto_switch_threshold() {
     let s = settings(1800, false);
     let g = gate(&s);
     for threshold in [70u8, 80, 90] {
@@ -581,18 +594,30 @@ fn the_rotator_and_auto_switch_agree_on_the_move_back_for_any_auto_switch_thresh
             (84.9, 10.0),
             (85.0, 10.0),
             (87.0, 95.0),
+            // Either side of the week ceiling (95, inclusive): auto-switch
+            // still takes these, the rotator takes only the first.
+            (0.0, 95.0),
+            (0.0, 95.5),
+            (0.0, 97.0),
+            (50.0, 99.9),
             (100.0, 100.0),
         ] {
             let r = rotator_returns(&s, session, week);
             let a = auto_switch_returns(threshold, g, session, week);
+            assert!(
+                !r || a,
+                "threshold {threshold}, plan {session}% session {week}% week: \
+                 the rotator moves back and auto-switch refuses"
+            );
             assert_eq!(
-                r, a,
-                "threshold {threshold}, plan {session}% session {week}% week: rotator {r}, auto-switch {a}"
+                a,
+                session < 100.0 && week < 100.0,
+                "threshold {threshold}, plan {session}/{week}: auto-switch's rule is unchanged"
             );
             assert_eq!(
                 r,
-                session < 100.0 && week < 100.0,
-                "threshold {threshold}, plan {session}/{week}"
+                session < 100.0 && week <= f64::from(s.target_week_max),
+                "threshold {threshold}, plan {session}/{week}: the rotator needs the week ceiling too"
             );
         }
     }

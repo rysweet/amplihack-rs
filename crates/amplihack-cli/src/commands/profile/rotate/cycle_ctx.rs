@@ -5,10 +5,13 @@ use super::super::fresh::{RereadFn, live};
 use super::super::identify::Skip;
 use super::super::key_check::{self, KeyCheckFn};
 use super::super::ledger::RotateState;
+use super::super::log::Sink;
 use super::super::revalidate;
 use super::super::settings::Settings;
 use super::MeasureFn;
-use crate::commands::profile::auto_switch::kit::{Liveness, scan_system};
+use crate::commands::profile::auto_switch::kit::{
+    Liveness, LoginExchange, host_exchange, scan_system,
+};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::ProbeMode;
 use crate::commands::profile::store::ProfileStore;
@@ -29,8 +32,13 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) last_proto: Option<&'static str>,
     pub(super) last_gate: Option<String>,
     pub(in crate::commands::profile::rotate) failed_live: u32,
-    /// Finds running sessions; tests inject synthetic liveness.
+    /// The view of running sessions (a `SessionView`): the host's process
+    /// table by default. A test sets a function that returns a table it
+    /// wrote in memory.
     pub(in crate::commands::profile::rotate) scan: fn(&Path) -> Liveness,
+    /// The atomic exchange of two logins: the host's by default, which
+    /// only Linux has. A test sets a fake it holds (issue #2935).
+    pub(in crate::commands::profile::rotate) exchange: Arc<dyn LoginExchange>,
     /// Tests inject measurement while the lock is released.
     pub(in crate::commands::profile::rotate) measure: Option<MeasureFn>,
     /// Freshness re-read by the configured method; None reads nothing.
@@ -57,10 +65,23 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) read_only: bool,
     /// The seed note this process last logged; a repeat is not logged.
     pub(in crate::commands::profile::rotate) last_seed_note: Option<String>,
+    /// Issue #2885: the unreadable-Keychain lines the last cycle's capacity
+    /// write gave ([`Ctx::note_keychain`]).
+    pub(in crate::commands::profile::rotate) keychain_notes: Vec<String>,
+    /// Issue #2820: the `unreadable process` lines the last cycle's first
+    /// snapshot gave ([`Ctx::note_unreadable`]). Lines as logged, already
+    /// masked; never the raw arguments.
+    pub(in crate::commands::profile::rotate) unreadable_notes: Vec<String>,
     /// Issue #2211: the live login's recent readings, kept across cycles.
     pub(in crate::commands::profile::rotate) live_series: live::Series,
     /// Issue #2211: this cycle's projected or substituted live figures.
     pub(in crate::commands::profile::rotate) live_outlook: Option<live::Outlook>,
+    /// Issue #2909: the next cycle follows a limit record or a recorded
+    /// reset, so it reads the live login and takes the other logins' figures
+    /// from `stored` where it can (`event_read`). Only the watch loop sets it.
+    pub(in crate::commands::profile::rotate) event: bool,
+    /// Issue #2909: the last reading this process took of each login.
+    pub(in crate::commands::profile::rotate) stored: super::event_read::Stored,
     /// The clock of the decision; tests set a synthetic one.
     pub(in crate::commands::profile::rotate) now: fn() -> i64,
 }
@@ -79,6 +100,7 @@ impl Ctx {
             last_gate: None,
             failed_live: 0,
             scan: scan_system,
+            exchange: host_exchange(),
             measure: None,
             reread: None,
             reread_live: None,
@@ -91,8 +113,12 @@ impl Ctx {
             identity_budget: super::super::login_identity::Budget::new(),
             read_only: false,
             last_seed_note: None,
+            keychain_notes: Vec::new(),
+            unreadable_notes: Vec::new(),
             live_series: live::Series::default(),
             live_outlook: None,
+            event: false,
+            stored: super::event_read::Stored::default(),
             now: crate::commands::profile::auto_switch::kit::now,
         }
     }
@@ -127,9 +153,48 @@ impl Ctx {
         no_refresh_dirs(&self.store)
     }
 
+    /// Issue #2885: logs the lines a cycle's capacity write handed back
+    /// (`overflow_record::refresh_capacity`), one for each overflow profile
+    /// it left out because its macOS Keychain could not be read, so the log
+    /// does not leave such a profile looking like one with no login. A line
+    /// the previous cycle gave is not logged again: a Keychain that stays
+    /// locked is logged once, and one locked again after a cycle in which it
+    /// answered is logged again.
+    pub(in crate::commands::profile::rotate) fn note_keychain(
+        &mut self,
+        out: &mut Sink,
+        t: i64,
+        notes: Vec<String>,
+    ) {
+        emit_new(out, t, &mut self.keychain_notes, notes);
+    }
+
+    /// Issue #2820: logs the `unreadable process` lines of a cycle's first
+    /// snapshot (`msg::unreadable_lines`). A line the previous cycle gave is
+    /// not logged again, so a long-lived process is named once; one that
+    /// went away and came back is named again, as is every one after a
+    /// restart of the rotator.
+    pub(in crate::commands::profile::rotate) fn note_unreadable(
+        &mut self,
+        out: &mut Sink,
+        t: i64,
+        lines: Vec<String>,
+    ) {
+        emit_new(out, t, &mut self.unreadable_notes, lines);
+    }
+
     pub(in crate::commands::profile::rotate) fn stopping(&self) -> bool {
         self.stop
             .as_ref()
             .is_some_and(|s| s.load(Ordering::Relaxed))
     }
+}
+
+/// Emits each of `lines` that is not in `prev`, then makes `lines` the new
+/// `prev`: the log-once rule of the notes a cycle repeats.
+fn emit_new(out: &mut Sink, t: i64, prev: &mut Vec<String>, lines: Vec<String>) {
+    for line in lines.iter().filter(|l| !prev.contains(l)) {
+        out.emit(t, line);
+    }
+    *prev = lines;
 }

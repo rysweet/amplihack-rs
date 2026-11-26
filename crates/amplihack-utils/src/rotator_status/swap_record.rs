@@ -57,6 +57,15 @@ pub struct SwapRecord {
     pub reading: SwapReading,
 }
 
+impl SwapRecord {
+    /// Whether the login this record made live has room: both windows
+    /// under 100%. The one rule [`judge_at`] and a standing session's
+    /// relaunch (issue #2912) both use.
+    pub fn has_room(&self) -> bool {
+        self.reading.session < 100 && self.reading.week < 100
+    }
+}
+
 /// What a record means for a session stopped at `start`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Judgement {
@@ -352,7 +361,7 @@ pub fn judge_at(
         Judgement::Same
     } else if !after {
         Judgement::Stale
-    } else if record.reading.session >= 100 || record.reading.week >= 100 {
+    } else if !record.has_room() {
         Judgement::NoRoom
     } else {
         Judgement::Resume

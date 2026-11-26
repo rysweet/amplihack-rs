@@ -11,7 +11,7 @@
 //! every Claude session until some later interactive `amplihack claude` launch
 //! happened to run the sync, while `install` reported success and exited 0.
 //!
-//! The assertion below is deliberately an **invariant**, not an action: the set
+//! In all mode the set
 //! of skill names published under `~/.claude/skills` must equal the set staged
 //! under `~/.amplihack/.claude/skills`. Asserting that install printed a
 //! success line would not have caught this, and would not catch the next
@@ -96,6 +96,12 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
     }
 
     create_source_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".amplihack")).unwrap();
+    fs::write(
+        temp.path().join(".amplihack/config.toml"),
+        "[lists]\nset = 'all'\n",
+    )
+    .unwrap();
     let bundle_skills = temp.path().join("amplifier-bundle/skills");
     for name in NEW_BUNDLE_SKILLS {
         write_skill(&bundle_skills, name);
@@ -146,11 +152,16 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
 fn fixture_environment() -> crate::test_support::EnvGuard {
     let saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_SKIP_MMDC",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
         "HOME",
         "PATH",
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    unsafe {
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");
+        // Optional Mermaid delivery has dedicated fake-command tests.
+        std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
+    };
     saved
 }

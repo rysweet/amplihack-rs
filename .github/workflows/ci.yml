@@ -220,9 +220,24 @@ jobs:
       - name: Install docs — every documented path installs a real binary (issue #1412)
         shell: bash
         run: bash tests/issue_1412_install_docs_name_a_real_package.sh
+      - name: Auto-drive — the refusal helpers read only exit 79 and the runner's marker (issue #1437)
+        shell: bash
+        run: bash tests/issue_1437_autodrive_refusal.sh
+      - name: Auto-drive — an agent/API failure is not a policy refusal (issue #1437)
+        shell: bash
+        run: bash tests/issue_1437_autodrive_loop.sh
+      - name: Auto-drive, the goal loop ends on a repeated failure before any agent starts (issue #3286)
+        shell: bash
+        run: bash tests/issue_3286_goal_loop_pre_agent_failures.sh
+      - name: Test stubs — only a blob mode reads stdin (issue #2582)
+        shell: bash
+        run: bash tests/issue_2582_stub_stdin_contract.sh
       - name: Recipes — every committing recipe prepares its identity (issue #1394)
         shell: bash
         run: bash tests/recipe_commit_identity_static_test.sh
+      - name: Git identity helper, resolution order and repo-local stop (issue #3267)
+        shell: bash
+        run: bash tests/git_identity_test.sh
       - name: Invisible-char scan — stays dependency-free (issue #1397)
         shell: bash
         run: bash tests/issue_1397_invisible_scan_stays_dependency_free.sh
@@ -357,6 +372,16 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh
+      - name: "Recipes: a round pushes its own fix before review (issue #2923)"
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-2923-round-push-before-review.sh
+      - name: "Recipes: publishing steps merge a moved remote instead of rebasing (issue #2994)"
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-2994-publish-merges-moved-remote.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh
@@ -372,9 +397,12 @@ jobs:
       - name: Recipes — auto-drive QA clears inherited GIT_* and run identity (issue #2033)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
-      - name: Recipes — #1551 no merge outside gate
+      - name: Recipes — #2329 agentic finalization and authorization
         shell: bash
-        run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
+        run: bash amplifier-bundle/recipes/tests/test-issue-2329-agentic-finalization.sh
+      - name: Auto-drive finalize — squash message is the PR description, not the commits (issue #2056)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2056-squash-message.sh
       - name: Recipes — #2186 every expected check exists and passed at the head
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2186-expected-checks.sh
@@ -387,12 +415,9 @@ jobs:
       - name: Recipes — criterion 6 when no review is required (issue #2219)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh
-      - name: Recipes — documentation-only pull requests need no gadugi scenario (issue #2219)
+      - name: Recipes, documentation-only measurement is recorded for the criterion-1 judgement (issues #2219, #2569)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh
-      - name: Recipes — the stop names what held the pull request (issue #2219)
-        shell: bash
-        run: bash amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
@@ -736,6 +761,113 @@ jobs:
       - name: Outside-in — agent binary resolution and hand-off (issues #1481, #1525)
         shell: bash
         run: AMPLIHACK_1481_QA_REQUIRE_ALL=1 AMPLIHACK_1481_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
+      # Issue #2788: run the shipped round through the installed launcher and
+      # pinned runner. Missing prerequisites fail; no live agent or GitHub writes.
+      - name: "Outside-in - Codex Crusty review launch (issue #2788)"
+        shell: bash
+        run: AMPLIHACK_2788_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2788-codex-review-launch-scenario.sh
+      # Issue #2784: step-16 with base_branch empty, an open pull request from the
+      # branch into dev and origin/HEAD main, through the pinned runner installed above.
+      - name: "Outside-in - Existing pull request on another base (issue #2784)"
+        shell: bash
+        run: AMPLIHACK_2784_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh
+      # Issue #2783: `recipe guide` finding a run started under a non-default
+      # work root, from a shell with no work-root variable, through the pinned
+      # runner installed above. No live agent and no GitHub writes.
+      - name: "Outside-in - recipe guide without a work root (issue #2783)"
+        shell: bash
+        run: AMPLIHACK_2783_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2783-guide-without-work-root-scenario.sh
+      # Issue #2815: a usage limit in a step whose prompt arrived on stdin, which
+      # is how every recipe agent step is launched, against the binary installed
+      # above. The limit states a past reset, so the real wait ends at once.
+      # The recipe case drives the pinned runner installed above, as the
+      # issue #1619 scenario below does; REQUIRE_ALL turns a case that could
+      # not run into a failure rather than a SKIP.
+      - name: "Outside-in - Usage limit on a piped prompt (issue #2815)"
+        shell: bash
+        run: AMPLIHACK_2815_QA_REQUIRE_ALL=1 AMPLIHACK_2815_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2815-piped-prompt-wait-scenario.sh
+      # Issue #2857: a limit on the retry a wait earned is waited for again and
+      # reported once, and a wait wakes on a login change only when the rotator's
+      # last cycle records room on the login now live. Runs against the binary
+      # installed above, with a stub agent and a stub rotator ledger; no real
+      # account, rotator or network.
+      - name: "Outside-in - Limit wait wakes only on room (issue #2857)"
+        shell: bash
+        run: AMPLIHACK_2857_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh
+      # Issue #2957: `amplihack update` looks releases up and downloads them
+      # through a logged-in gh, keeps the checksum check, and reports a 403
+      # with GitHub's message and the reset time. Stand-in gh; no network.
+      - name: "Outside-in - Update uses gh's login (issue #2957)"
+        shell: bash
+        run: AMPLIHACK_2957_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2957-update-with-gh-login-scenario.sh
+      # Issue #2343: finalization reports the run's real outcome. A pull request
+      # open at the pushed head with checks still pending is a success that
+      # hands the pull request on, not an implementation failure; one at an
+      # unrelated commit fails with both commit ids named.
+      - name: "Outside-in - Finalization reads the run's real outcome (issue #2343)"
+        shell: bash
+        run: AMPLIHACK_2343_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2343-finalization-outcome-scenario.sh
+      # Issue #1619: outside-in check of the model and reasoning effort each
+      # harness receives when a recipe agent step declares a tier, through the
+      # pinned runner installed above. REQUIRE_ALL turns a case that could not
+      # run into a failure.
+      - name: "Outside-in: model tiers per harness (issue #1619)"
+        shell: bash
+        run: AMPLIHACK_1619_QA_REQUIRE_ALL=1 AMPLIHACK_1619_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1619-tier-scenario.sh
+      # Issue #1582: two launches that start together on one home with missing
+      # framework assets re-stage once, against the binary installed above.
+      - name: "Outside-in: concurrent launches re-stage once (issue #1582)"
+        shell: bash
+        run: AMPLIHACK_1582_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1582-concurrent-launch-scenario.sh
+      # Issue #2785: when a run ends, cleanup keeps a temporary folder that holds
+      # unsaved Git work (a commit never pushed, a file never committed) and
+      # removes a clean one, against the binary installed above and the pinned
+      # runner. The "remote" is a folder; no live agent and no network.
+      - name: "Outside-in: cleanup keeps unsaved Git work (issue #2785)"
+        shell: bash
+        run: AMPLIHACK_2785_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2785-cleanup-keeps-unsaved-work-scenario.sh
+      # Issue #2806: one whole build and one whole drive, end to end, against the
+      # binary installed above and the pinned runner. `gh`, `claude` and `codex`
+      # are stand-ins on a private PATH; the origin is a folder. Missing
+      # prerequisites fail; nothing reaches GitHub or a live agent.
+      - name: "Outside-in: whole build and whole drive (issue #2806)"
+        shell: bash
+        run: AMPLIHACK_2806_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh
+      # Issue #3129: default-workflow builds a change and opens its pull
+      # request as one goal-driven agent loop, against the binary installed
+      # above and the pinned runner. `gh` and `claude` are stand-ins on a
+      # private PATH and the origin is a folder. The pull request opens with
+      # the task's own text, is marked ready and is never merged; the run's
+      # worktree survives; the #2787 pr-ready cases run at tool level.
+      - name: "Outside-in: the build goal loop (issue #3129)"
+        shell: bash
+        run: AMPLIHACK_3129_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-3129-build-loop-scenario.sh
+      # Issue #3129: the other kinds of start, each through smart-orchestrator
+      # against the binary installed above and the pinned runner: a
+      # continuation of an existing branch and pull request, a quick-change and
+      # an investigation. `gh` and `claude` are stand-ins on a private PATH and
+      # each origin is a folder.
+      - name: "Outside-in: continuation, quick-change and investigation starts (issue #3129)"
+        shell: bash
+        run: AMPLIHACK_3129_START_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-3129-start-kinds-scenario.sh
+      # Issue #3220: install into a fresh HOME writes the skills and agents
+      # index; `amplihack directory find` prints a matching entry whose path is
+      # an existing file, an unmatched word prints nothing, and neither
+      # subcommand writes anything.
+      - name: "Outside-in: the directory of installed skills and agents (issue #3220)"
+        shell: bash
+        run: AMPLIHACK_3220_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-3220-directory-scenario.sh
+      # Issue #2966: a red CI at finalisation sends the run back to repair it and
+      # never ends it. The shipped workflow-finalize recipe runs against the
+      # binary installed above and the pinned runner, with `gh` and `claude` as
+      # stand-ins on a private PATH and the remote a folder. A failing check is
+      # fixed and pushed, by the repair step or by the assessment, and the run
+      # ends a success; a check still in progress is waited on with
+      # `gh pr checks --watch`; a check that fails on a missing secret ends it
+      # with its owner's step on record. Nothing reaches GitHub or a live agent.
+      - name: "Outside-in: red CI at finalisation is repaired (issue #2966)"
+        shell: bash
+        run: AMPLIHACK_2966_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing
@@ -853,6 +985,18 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }}
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
+
+      # The release build compiles neither cfg(test) nor debug_assertions
+      # code. Check the Unix tests of the crates with injected clocks and FIFO
+      # fixtures, and amplihack-utils' debug-only probe capture path
+      # (binary_finder::to_exit: poll, fcntl, FIONREAD), on macOS too, where
+      # Linux-only pidfds are unavailable. The dev profile, not --release,
+      # keeps debug_assertions on.
+      - name: Check test compilation (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          cargo check --locked --tests --target ${{ matrix.target }}
+          -p amplihack-cli -p amplihack-utils -p amplihack-hooks
 
       # Outside-in: drive the real hooks binary through session-stop and
       # user-prompt-submit, as Claude Code does (issue #1483).

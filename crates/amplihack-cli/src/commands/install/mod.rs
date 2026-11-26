@@ -18,6 +18,7 @@ pub(crate) mod hook_block;
 mod hooks;
 pub(crate) mod interactive;
 mod launch_repair;
+pub(crate) mod lists;
 mod manifest;
 mod mermaid_cli;
 pub(crate) mod paths;
@@ -38,13 +39,26 @@ mod codex_alias_fixture;
 mod tests;
 
 pub(crate) use binary::resolve_running_binary_source;
-use binary::{deploy_binaries_into, find_hooks_binary, stable_hooks_binary};
+/// The hooks binary a local-model Codex home's pre-tool-use entry runs:
+/// the deployed copy, as the ordinary install records it.
+pub(crate) use binary::stable_hooks_binary;
+use binary::{deploy_binaries_into, find_hooks_binary};
+/// The same choice, with whether it is the deployed copy, and the build
+/// directory test a local-model launch applies to a fallback.
+pub(crate) use binary::{looks_like_build_artifact, stable_hooks_binary_with_origin};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;
 use filesystem::{all_rel_dirs, get_all_files_and_dirs};
 use manifest::{manifest_path, write_manifest};
 use paths::*;
+/// Issue #2589: the dangerous-command deny entries, for every writer of a
+/// Claude `settings.json` outside this module (the profile seeding).
+///
+/// The function holds no install-specific logic and belongs in
+/// `policy::claude`; this re-export is what makes profile management depend
+/// on the install module. Moved in issue #2751.
+pub(crate) use settings::apply_deny_policy;
 use settings::*;
 #[cfg(test)]
 pub(in crate::commands) use types::SourceLayout as SourceLayoutForTest;
@@ -161,6 +175,7 @@ fn run_install_with_fetcher(
     binary: &framework_source::BinaryIdentity,
     fetcher: &dyn tag_fetch::TagFetcher,
 ) -> Result<()> {
+    let _notice = crate::list_notice::begin();
     let local = local
         .map(|local_path| -> Result<PathBuf> {
             // Validate and canonicalize the --local path
@@ -394,6 +409,56 @@ pub(crate) fn binary_is_current() -> bool {
     matches!(newer_install_stamp(), Ok(None))
 }
 
+/// What [`apply_dangerous_command_policy`] did: the lines an explicit
+/// install prints, and one warning per harness whose rules could not be
+/// written.
+pub(super) struct PolicyReport {
+    /// What this run wrote, one line per harness. A harness whose files were
+    /// all refused has no line here: the warnings carry it.
+    pub(crate) lines: Vec<crate::policy::ReportLine>,
+    pub(crate) warnings: Vec<String>,
+}
+
+/// Issue #2589: applies amplihack's dangerous-command policy to the harness
+/// mechanisms that are written as files of their own.
+///
+/// Claude Code's `permissions.deny` is written by the settings writer, the
+/// profile refresh and the profile seeding, because those already own the
+/// files it lives in; Copilot CLI has no such file and takes the policy as
+/// session arguments at launch. What is left here is the Codex rules file.
+///
+/// Never fatal. A harness that could not be written yields a warning and the
+/// install carries on, because the rest of the install is worth having; but
+/// the warning is loud and unsuppressed, since a security control that is not
+/// installed must not be silent (SEC-C3).
+pub(super) fn apply_dangerous_command_policy() -> PolicyReport {
+    use crate::policy::HarnessWrite;
+    let mut codex_warnings = Vec::new();
+    let codex = match codex_plugin::install_deny_rules() {
+        codex_plugin::DenyRulesWrite::Written | codex_plugin::DenyRulesWrite::AlreadyCurrent => {
+            HarnessWrite::Written
+        }
+        codex_plugin::DenyRulesWrite::Absent => {
+            tracing::debug!("no Codex home to write the dangerous-command rules into");
+            HarnessWrite::NothingToWriteInto
+        }
+        codex_plugin::DenyRulesWrite::Refused(reason) => {
+            codex_warnings.push(crate::policy::write_failure_warning("Codex", &reason));
+            // Codex has one rules file, so a refusal is the whole harness.
+            HarnessWrite::AllRefused
+        }
+    };
+    // The Claude settings files were written earlier in this run, by the
+    // settings writer, the profile refresh and profile seeding; each left a
+    // record of the file it met, and this is where it is read and reported.
+    let (claude, mut warnings) = crate::policy::claude::take_record();
+    warnings.extend(codex_warnings);
+    PolicyReport {
+        lines: crate::policy::install_report_lines(claude, codex),
+        warnings,
+    }
+}
+
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     ensure_framework_installed_with(&mut std::io::stderr())
 }
@@ -401,6 +466,68 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
 /// [`ensure_framework_installed`], writing the #1526 refusal warning to
 /// `notice` (stderr in the binary).
 pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
+    ensure_framework_installed_using(
+        notice,
+        framework_restage_needed_now,
+        repair_framework_assets,
+    )
+}
+
+/// Whether the staged framework assets need a re-stage, read from disk on
+/// every call (issue #1582): the answer before the install lock and the
+/// answer under it can differ, so neither is ever reused for the other.
+fn framework_restage_needed_now() -> Result<bool> {
+    let staging_dir = staging_claude_dir()?;
+    let staging_exists = staging_dir.exists();
+    let missing = if staging_exists {
+        missing_framework_paths(&staging_dir)?
+    } else {
+        Vec::new()
+    };
+    Ok(framework_restage_needed(staging_exists, &missing))
+}
+
+/// The launch bootstrap's re-stage (issue #1582).
+///
+/// `needed` is asked first without the install lock, so a launch whose assets
+/// are complete neither waits behind another install nor creates the lock
+/// file. A "yes" there only leads to the lock: under it, the shared helper
+/// re-reads the stamp, runs Guard #2 and asks `needed` again, so a launch that
+/// waited for another launch's re-stage finds nothing to do. `install` runs
+/// only on that second "yes", with the lock held.
+fn restage_framework_if_needed<W, N, I>(
+    notice: &mut W,
+    mut needed: N,
+    install: I,
+) -> Result<crate::self_heal::LockedRestage>
+where
+    W: std::io::Write,
+    N: FnMut() -> Result<bool>,
+    I: FnOnce() -> Result<()>,
+{
+    if !needed()? {
+        return Ok(crate::self_heal::LockedRestage::NotNeeded);
+    }
+    crate::self_heal::restage_under_install_lock(
+        notice,
+        move |_stamp: Option<&str>| needed(),
+        |_notice: &mut W| {
+            println!("🔧 Bootstrapping amplihack framework assets...");
+            install()
+        },
+    )
+}
+
+/// The launch bootstrap, with the re-stage check and the installer injected so
+/// tests can drive it without a real install.
+fn ensure_framework_installed_using<W, N, I>(notice: &mut W, needed: N, install: I) -> Result<()>
+where
+    W: std::io::Write,
+    N: FnMut() -> Result<bool>,
+    I: FnOnce() -> Result<()>,
+{
+    use crate::self_heal::LockedRestage;
+
     // Issue #1526: this bootstrap is an implicit installer too. A binary older
     // than the installed stamp must not stage, top up commands or repair
     // settings.json over the newer install.
@@ -418,20 +545,17 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
         return Ok(());
     }
 
-    let staging_dir = staging_claude_dir()?;
-    let staging_exists = staging_dir.exists();
-    let missing = if staging_exists {
-        missing_framework_paths(&staging_dir)?
-    } else {
-        Vec::new()
-    };
     // Issue #254: framework assets are now bundled in the amplihack-rs source
     // tree.  The legacy upstream freshness check is removed;
     // framework updates are delivered via amplihack-rs binary updates instead.
-    if framework_restage_needed(staging_exists, &missing) {
-        println!("🔧 Bootstrapping amplihack framework assets...");
-        repair_framework_assets()?;
+
+    // Issue #1582: a newer install that finished while this launch waited for
+    // the install lock stops the bootstrap here, as Guard #1 does above.
+    match restage_framework_if_needed(notice, needed, install)? {
+        LockedRestage::NewerInstalled => return Ok(()),
+        LockedRestage::NotNeeded | LockedRestage::Installed => {}
     }
+    let staging_dir = staging_claude_dir()?;
 
     // Issue #1344: `~/.claude/commands/amplihack/` lives outside `claude_dir`,
     // so `missing_framework_paths` never sees it — and must not, per the
@@ -472,7 +596,31 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
             );
         }
     }
-    launch_repair::repair_settings_hooks(notice, &staging_dir, &hooks_bin)
+    // Issue #2589: a Codex launch keeps its deny rules current too, so a
+    // machine that never runs `amplihack install` again is still covered.
+    // Gated on the selected client for the same reason as the reconcile
+    // above: an explicit `claude` or `copilot` launch leaves a Codex home
+    // byte-identical (issue #1538), and the rules file lives in that home.
+    // The Claude entries are kept current by `refresh_deny_entries` below,
+    // on every launch: `repair_settings_hooks` cannot carry them, because it
+    // returns when amplihack's hooks block is clean and so never reaches
+    // `ensure_permissions`.
+    if crate::freshness::codex_selected() {
+        // The policy section below reads the thread-local record the Claude
+        // writers leave. Nothing in this bootstrap has written a Claude
+        // settings file yet -- `repair_settings_hooks` runs after this --
+        // so anything in the record came from an earlier phase in the same
+        // process and is not this run's work to report (SEC-C3).
+        crate::policy::claude::clear_record();
+        for warning in apply_dangerous_command_policy().warnings {
+            let _ = writeln!(notice, "amplihack: warning: {warning}");
+        }
+    }
+    launch_repair::repair_settings_hooks(notice, &staging_dir, &hooks_bin)?;
+    // Issue #2589: after the hook repair, so a launch that did rewrite the
+    // file has already written the entries and this pass adds nothing.
+    launch_repair::refresh_deny_entries(notice);
+    Ok(())
 }
 
 /// Issue #1526: an implicit re-stage does not write `settings_path`, so an
@@ -649,6 +797,19 @@ fn local_install_scoped(
     // (missing_framework_paths) know which mapping to consult.
     write_layout_marker(&claude_dir, layout)?;
 
+    // Issue #3220: the index `amplihack directory` searches. It is built
+    // from the trees just staged, so it lists amplihack's own skills and
+    // agents only. A failure costs a warning: `write_index` removes any index
+    // left by an earlier install, so the command reports the missing index
+    // and names `amplihack install` rather than serving stale paths.
+    if let Err(error) = crate::commands::directory::index::write_index(&claude_dir) {
+        eprintln!(
+            "amplihack: warning: cannot write the skills and agents index; \
+             `amplihack directory` will report it missing until the next install: {}",
+            paths::sanitize_text(&format!("{error:#}"))
+        );
+    }
+
     cleanup_unused_releases(&claude_dir, &switched);
 
     let preferred_amplihack =
@@ -748,6 +909,13 @@ fn local_install_scoped(
         .first()
         .cloned()
         .unwrap_or_else(|| hooks_bin.clone());
+    // Issue #2589: the Claude deny entries are written by the three calls
+    // below -- `ensure_settings_json`, the profile refresh and profile
+    // seeding -- and each records the file it met for the policy section
+    // further down. The write phase starts here, so the record starts empty:
+    // an outcome left by an earlier phase in this process would otherwise be
+    // printed as a file this run wrote (SEC-C3).
+    crate::policy::claude::clear_record();
     // Issue #1526: an implicit re-stage never writes (or backs up) the
     // user's settings.json; only `amplihack install` does. Its one output is
     // a stderr warning when settings.json lacks hooks this build registers,
@@ -882,6 +1050,25 @@ fn local_install_scoped(
         // `amplihack install`. Issue #1526's downgrade refusal runs earlier.
         codex_plugin::install(repo_root, &durable_hooks_bin)
             .context("failed native Codex installation")?;
+    }
+
+    // Issue #2589: an explicit `amplihack install` (and `amplihack update`,
+    // which reaches this through the post-update install) writes the deny
+    // rules for every harness home it manages, whether or not Codex is the
+    // selected client. An implicit re-stage does not: it runs on the launch
+    // path, where an explicit `claude` or `copilot` launch must leave a
+    // Codex home byte-identical (issue #1538). A Codex launch refreshes its
+    // own rules from `ensure_framework_installed_with` instead.
+    if mode == InstallMode::Explicit {
+        println!();
+        println!("🛡️  Configuring dangerous-command deny rules:");
+        let policy = apply_dangerous_command_policy();
+        for line in &policy.lines {
+            println!("  {}  {}", line.marker, line.text);
+        }
+        for warning in &policy.warnings {
+            eprintln!("  ⚠️  {warning}");
+        }
     }
 
     println!("📝 Generating uninstall manifest:");
@@ -1100,4 +1287,9 @@ fn local_install_scoped(
 
 pub(crate) fn with_codex_binary<T>(binary: &Path, action: impl FnOnce() -> T) -> T {
     codex_plugin::with_binary(binary, action)
+}
+
+/// Archive pending Codex metadata under the package lock before startup mutations.
+pub fn reset_codex_recovery() -> Result<()> {
+    codex_plugin::reset_recovery()
 }

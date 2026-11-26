@@ -83,7 +83,7 @@ pub fn run(
         ("loop_repo_path", state.repo.to_string_lossy().into_owned()),
         (
             "loop_agent_working_dir",
-            state.review_dir.to_string_lossy().into_owned(),
+            state.repo.to_string_lossy().into_owned(),
         ),
         ("loop_child_exit_code", child_rc.to_string()),
         (
@@ -96,6 +96,7 @@ pub fn run(
         (
             "loop_findings_current",
             String::from_utf8(secure_fs::read(
+                secure_fs::Scope::of(&state.state_dir),
                 &state.record.with_extension("json.findings"),
                 evidence::LIMIT,
             )?)?,
@@ -137,8 +138,8 @@ pub fn run(
                 .join("../recipes/loop-health-evaluator.yaml"),
         )
         .arg("--working-dir")
-        .arg(&state.review_dir)
-        .current_dir(&state.review_dir);
+        .arg(&state.repo)
+        .current_dir(&state.repo);
     // Preserve the launcher's policy ceilings and sibling depth, never values
     // from agent output or context. No shell evaluates any of these arguments.
     for (key, value) in [
@@ -161,20 +162,21 @@ pub fn run(
             cmd.arg("-c").arg(format!("{key}={value}"));
         } else {
             let path = context_dir.path().join(&key);
-            secure_fs::output(&path)?.write_all(value.as_bytes())?;
+            secure_fs::output(secure_fs::Scope::of(&state.state_dir), &path)?
+                .write_all(value.as_bytes())?;
             cmd.arg("--context-from-file")
                 .arg(format!("{key}={}", path.display()));
         }
     }
-    let file = secure_fs::output(&health_log)?;
+    let file = secure_fs::output(secure_fs::Scope::of(&state.state_dir), &health_log)?;
     let status = cmd.stdout(file.try_clone()?).stderr(file).status()?;
-    let log = secure_fs::read(&health_log, evidence::LIMIT)?;
+    let log = secure_fs::read(
+        secure_fs::Scope::of(&state.state_dir),
+        &health_log,
+        evidence::LIMIT,
+    )?;
     let log = String::from_utf8_lossy(&log);
     eprint!("{log}");
-    ensure!(
-        evidence::review_stamp(&state.launch_tools, &state.review_dir)? == state.review_stamp,
-        "loop-health evaluator changed the trusted review directory"
-    );
     let rc = status.code().unwrap_or(1);
     let (result, code) = classify_exit(rc, &log);
     let evaluator_verdict = result;
@@ -188,11 +190,7 @@ pub fn run(
 
 fn classify_exit(rc: i32, log: &str) -> (&'static str, i32) {
     let filtered = log_body(log);
-    if rc == 79
-        || filtered
-            .iter()
-            .any(|l| l.contains("BLOCKED_TERMINAL orchestration_unavailable"))
-    {
+    if rc == 79 || (rc != 0 && final_marker_is_structural_refusal(log)) {
         ("TERMINAL_POLICY_REFUSAL", 79)
     } else if rc == 75 {
         ("ORPHANED", 75)
@@ -210,6 +208,22 @@ fn classify_exit(rc: i32, log: &str) -> (&'static str, i32) {
         let v = verdict(log);
         (v, i32::from(v == "STUCK"))
     }
+}
+
+/// Issue #1437: did the runner's LAST failure_class marker say a structural
+/// guard refused the run? The rule `terminal_refusal` in
+/// `autodrive_refusal.sh` applies to every other child of the loop: the last
+/// line that begins with the marker prefix, and its top-level
+/// `structural_refusal` a JSON `true`. The runner writes that line after its
+/// result table, so it is read from the whole log and not from `log_body`,
+/// which ends at the table. Text in the log, the guard's own phrase included,
+/// never decides: an evaluator that read the docs about the guard quotes it.
+fn final_marker_is_structural_refusal(log: &str) -> bool {
+    log.lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("amplihack.recipe.failure_class "))
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .is_some_and(|v| v["structural_refusal"] == serde_json::Value::Bool(true))
 }
 
 fn log_body(log: &str) -> Vec<&str> {
@@ -248,7 +262,6 @@ mod tests {
             assert_eq!(classify_exit(1, &log), ("STUCK", 1));
         }
         let marker = "BLOCKED_TERMINAL orchestration_unavailable";
-        assert_eq!(classify_exit(0, marker), ("TERMINAL_POLICY_REFUSAL", 79));
         assert_eq!(
             classify_exit(1, &format!("[12:34:56] [amplihack:reviewer] {marker}")),
             ("STUCK", 1)
@@ -257,5 +270,38 @@ mod tests {
             classify_exit(1, &format!("Recipe: review\nRun ID: xyz\n{marker}")),
             ("STUCK", 1)
         );
+    }
+
+    /// Issue #1437: exit 79 and the runner's final marker decide a refusal;
+    /// the guard's phrase in the evaluator's log does not, wherever it is.
+    #[test]
+    fn only_exit_79_or_the_final_marker_is_a_refusal() {
+        let phrase = "BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3";
+        let refused =
+            r#"amplihack.recipe.failure_class {"class":"work","structural_refusal":true}"#;
+        let ordinary =
+            r#"amplihack.recipe.failure_class {"class":"agent_api","structural_refusal":false}"#;
+        assert_eq!(classify_exit(79, ""), ("TERMINAL_POLICY_REFUSAL", 79));
+        assert_eq!(classify_exit(1, refused), ("TERMINAL_POLICY_REFUSAL", 79));
+        assert_eq!(
+            classify_exit(
+                1,
+                &format!("{phrase}\nRecipe: e\nStatus: failed\n{refused}")
+            ),
+            ("TERMINAL_POLICY_REFUSAL", 79),
+            "the final marker follows the result table"
+        );
+        for (rc, log) in [
+            (1, phrase.to_string()),
+            (1, format!("{phrase}\n{ordinary}")),
+            (1, format!("{refused}\n{ordinary}")),
+            (1, format!("  {refused}")),
+            (1, refused.replace("true", "\"true\"")),
+            (1, format!("{{\"evidence\":{refused:?}}}")),
+        ] {
+            assert_eq!(classify_exit(rc, &log), ("STUCK", 1), "{log}");
+        }
+        assert_ne!(classify_exit(0, phrase).0, "TERMINAL_POLICY_REFUSAL");
+        assert_ne!(classify_exit(0, refused).0, "TERMINAL_POLICY_REFUSAL");
     }
 }

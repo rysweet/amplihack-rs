@@ -45,13 +45,14 @@ Use this structure for handoffs:
 
 ## Native Helper
 
-Use the bundled helper for repeatable context status and snapshots:
+Resolve the following paths from the folder of this SKILL.md. Use the bundled
+helper for repeatable context status and snapshots:
 
 ```bash
-amplifier-bundle/skills/context-management/scripts/context-management.sh status
-amplifier-bundle/skills/context-management/scripts/context-management.sh snapshot "handoff before compaction"
-amplifier-bundle/skills/context-management/scripts/context-management.sh list
-amplifier-bundle/skills/context-management/scripts/context-management.sh show latest
+./scripts/context-management.sh status
+./scripts/context-management.sh snapshot "handoff before compaction"
+./scripts/context-management.sh list
+./scripts/context-management.sh show latest
 ```
 
 Snapshots are written to `${AMPLIHACK_CONTEXT_DIR:-$HOME/.amplihack/context-management}`.

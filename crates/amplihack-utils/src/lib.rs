@@ -42,6 +42,8 @@ pub mod claude_md;
 /// `@anthropic-ai/claude-code`. See issue #1266.
 pub mod claude_native;
 pub mod cleanup;
+/// Injectable clock for timed waits (issue #2019).
+pub mod clock;
 /// Live Codex rate-limit readings through `codex app-server` (issue #2001).
 pub mod codex_capacity;
 /// Local Codex executable, npm layout, and required-helper validation.
@@ -61,6 +63,8 @@ pub mod knowledge_builder;
 /// and issue #1266.
 pub mod launch_target;
 pub mod launcher_context;
+/// Shared defaults and selection policy for model-visible skills and agents.
+pub mod list_selection;
 #[deprecated(
     since = "0.18.0",
     note = "use trace_logger directly; this compatibility module will be removed in 0.19.0"

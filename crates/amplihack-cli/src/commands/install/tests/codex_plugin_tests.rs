@@ -49,6 +49,12 @@ fn codex_plugin_install_update_uninstall_preserves_user_configuration_and_resour
     )
     .unwrap();
     let home = temp.path().join("home");
+    fs::create_dir_all(home.join(".amplihack")).unwrap();
+    fs::write(
+        home.join(".amplihack/config.toml"),
+        "[lists]\nset = \"all\"\n",
+    )
+    .unwrap();
     let codex_home = home.join("custom-codex");
     fs::create_dir_all(&codex_home).unwrap();
     let original =

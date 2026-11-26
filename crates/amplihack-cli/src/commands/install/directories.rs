@@ -101,6 +101,8 @@ pub(super) fn copytree_manifest(
         copied.push((*dst_rel).to_string());
     }
 
+    crate::claude_plugin::complete_indexed_skill_resources(claude_dir)?;
+
     if layout == SourceLayout::Bundle {
         for (src_rel, dst_rel) in SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING {
             let source_dir = source_root.join(src_rel);
@@ -171,31 +173,39 @@ pub(super) fn copytree_manifest(
     //
     // Pre-fix: only `source_root.parent()/CLAUDE.md` was probed and a
     // missing source was silently skipped. With the bundle layout, the
-    // canonical CLAUDE.md ships at `<repo>/amplifier-bundle/CLAUDE.md`
+    // canonical CLAUDE.md shipped at `<repo>/amplifier-bundle/CLAUDE.md`
     // (i.e., inside `source_root`), not at the repo root, so installs from
     // a bundle-only checkout left `$AMPLIHACK_HOME/CLAUDE.md` absent and
     // the verifier reported ❌. Per the install-completeness invariant in
     // amplifier-bundle/context/PHILOSOPHY.md, we must (a) probe the bundle
     // path first, (b) fall back to the legacy repo-root path, and (c) bail
     // loudly when neither exists.
+    //
+    // Issue #3203: the bundle source is
+    // `amplifier-bundle/context/AMPLIHACK_HOME_CLAUDE.md`. Claude Code loads a
+    // file named CLAUDE.md as memory in any session that reads a file in its
+    // folder, so the source must not carry that name inside the bundle. It is
+    // still staged as `$AMPLIHACK_HOME/CLAUDE.md`. `source_root/CLAUDE.md`
+    // stays as a fallback for a bundle from an earlier release.
     let parent_dir = source_root
         .parent()
         .context("source root missing parent for CLAUDE.md lookup")?;
-    let bundle_candidate = source_root.join("CLAUDE.md");
-    let legacy_candidate = parent_dir.join("CLAUDE.md");
-    let chosen_source = if bundle_candidate.exists() {
-        bundle_candidate.clone()
-    } else if legacy_candidate.exists() {
-        legacy_candidate.clone()
-    } else {
+    let candidates = [
+        source_root.join("context/AMPLIHACK_HOME_CLAUDE.md"),
+        source_root.join("CLAUDE.md"),
+        parent_dir.join("CLAUDE.md"),
+    ];
+    let Some(chosen_source) = candidates.iter().find(|path| path.exists()).cloned() else {
         anyhow::bail!(
-            "CLAUDE.md not found in source repo. Searched: {} and {}. \
-             A valid amplihack-rs checkout must ship CLAUDE.md inside \
-             `amplifier-bundle/CLAUDE.md` (preferred, bundle layout) or at \
-             the repo root (legacy layout). Without CLAUDE.md the install \
-             verifier will report `$AMPLIHACK_HOME/CLAUDE.md` missing.",
-            bundle_candidate.display(),
-            legacy_candidate.display()
+            "CLAUDE.md not found in source repo. Searched: {}, {} and {}. \
+             A valid amplihack-rs checkout must ship the source of CLAUDE.md \
+             at `amplifier-bundle/context/AMPLIHACK_HOME_CLAUDE.md` (bundle \
+             layout), `amplifier-bundle/CLAUDE.md` (earlier bundle layout) or \
+             the repo root (legacy layout). Without it the install verifier \
+             will report `$AMPLIHACK_HOME/CLAUDE.md` missing.",
+            candidates[0].display(),
+            candidates[1].display(),
+            candidates[2].display()
         );
     };
     let target_claude_md = claude_dir
@@ -581,8 +591,7 @@ fn create_private_staging_dir(staging: &Path) -> Result<()> {
     created.with_context(|| format!("failed to create staging dir {}", staging.display()))
 }
 
-/// Issue #1955 D11: copy, compare with the source, set modes, secure the merge
-/// guard and check compatibility, all inside `staging_temp`. Issue #1954: the
+/// Issue #1955 D11: copy, compare with the source, set modes and check compatibility, all inside `staging_temp`. Issue #1954: the
 /// caller renames the result into its release; no published path is touched.
 fn stage_bundle(repo_root: &Path, source_bundle: &Path, staging_temp: &Path) -> Result<()> {
     create_private_staging_dir(staging_temp)?;
@@ -604,8 +613,6 @@ fn stage_bundle(repo_root: &Path, source_bundle: &Path, staging_temp: &Path) -> 
     }
 
     normalize_bundle_modes(staging_temp)?;
-    // After the mode rule, so the guard's exact modes are the ones kept.
-    secure_merge_guard(staging_temp)?;
     validate_staged_framework_bundle(staging_temp).with_context(|| {
         format!(
             "copied amplifier-bundle staging dir {} is incompatible",
@@ -703,60 +710,6 @@ pub(super) fn create_runtime_dirs(claude_dir: &Path) -> Result<()> {
                 .with_context(|| format!("failed to set permissions on {}", full.display()))?;
         }
         println!("  ✅ Runtime directory {dir} ready");
-    }
-    Ok(())
-}
-
-/// Issue #1551: `amplihack recipe run` refuses a gh merge guard that group or
-/// others can write, so the staged shim and its directory get exactly 0755
-/// whatever mode the checkout and its umask gave them. The `tools/` directory
-/// and the gate files it trusts lose their group and other write bits for the
-/// same reason. A bundle without the guard is left alone.
-fn secure_merge_guard(bundle: &Path) -> Result<()> {
-    let tools = bundle.join("tools");
-    let dir = tools.join("gh-merge-guard");
-    let shim = dir.join("gh");
-    if !shim.is_file() {
-        return Ok(());
-    }
-    #[cfg(unix)]
-    {
-        use crate::commands::recipe::run::merge_guard::GATE_FILES;
-        use std::os::unix::fs::PermissionsExt;
-        let failed = |path: &Path| {
-            format!(
-                "failed to remove group and other write access from {} (#1551)",
-                path.display()
-            )
-        };
-        let bash_env = dir.join(crate::commands::recipe::run::merge_guard::BASH_ENV_FILE);
-        if bash_env.is_file() {
-            fs::set_permissions(&bash_env, fs::Permissions::from_mode(0o644)).with_context(
-                || {
-                    format!(
-                        "failed to set mode 0644 on the merge guard {} (#1551)",
-                        bash_env.display()
-                    )
-                },
-            )?;
-        }
-        for path in [&shim, &dir] {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).with_context(|| {
-                format!(
-                    "failed to set mode 0755 on the merge guard {} (#1551)",
-                    path.display()
-                )
-            })?;
-        }
-        let gate_files = GATE_FILES.iter().map(|name| tools.join(name));
-        for path in std::iter::once(tools.clone()).chain(gate_files.filter(|p| p.is_file())) {
-            let mode = fs::metadata(&path)
-                .with_context(|| failed(&path))?
-                .permissions()
-                .mode();
-            fs::set_permissions(&path, fs::Permissions::from_mode(mode & 0o7755))
-                .with_context(|| failed(&path))?;
-        }
     }
     Ok(())
 }

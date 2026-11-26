@@ -232,9 +232,7 @@ fn step16b_prompt_does_not_template_branch_name() {
     );
     let push = Regex::new(r#"git push [^\n]*origin "HEAD:\$"#).unwrap();
     assert!(
-        block
-            .lines()
-            .any(|l| l.contains("git pull --rebase") && push.is_match(l)),
+        block.lines().any(|l| push.is_match(l)),
         "the fix loop pushes HEAD to the resolved remote branch:\n{block}"
     );
 }

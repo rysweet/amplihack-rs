@@ -12,9 +12,10 @@ use super::ancestor::commit_run_work;
 use super::fixture::*;
 use super::probe::{answer, assert_stale, merged_on_remote_before_finalize, probe, validate_after};
 
-/// Assert that the validator, even in auto-drive, fails closed on `json`.
+/// Assert that the validator, even in auto-drive and even when the assessment
+/// claims the run succeeded, fails closed on `json`.
 fn assert_invalid_input_not_handed_off(fx: &Fixture, json: &Value, why: &str) {
-    let outcome = validate_after(fx, json, true);
+    let outcome = validate_after(fx, json, true, "EXISTING_OPEN_PR");
     assert!(!outcome.success(), "{why}\n{}", outcome.describe());
     assert_eq!(
         outcome.field("terminal_state"),

@@ -76,6 +76,7 @@ fn settings() -> Settings {
         interval: 600,
         overflow_wait: WAIT,
         overflow_unknown_reset: false,
+        target_week_max: 95,
     }
 }
 
@@ -461,17 +462,18 @@ fn never_upgrades_onto_overflow_below_the_thresholds() {
 }
 
 #[test]
-fn a_plan_login_below_the_thresholds_but_short_of_the_margin_gets_plan_room_not_overflow() {
-    // work at the session threshold (headroom 15); spare below both
-    // thresholds (headroom 16) but only 1 point better: no threshold swap,
-    // so plan room takes it (issue #1804). No credits are spent.
+fn a_plan_login_short_of_the_margin_is_neither_a_target_nor_a_reason_for_overflow() {
+    // work at the session threshold (room 15); spare below both thresholds
+    // (room 16) but only 1 point better. Issue #2910 changed this expectation
+    // (ruling D1): a live login with room moves only for --margin more, so
+    // the rotator stays. Spare has room, so no credits are spent.
     let far = Some(NOW + 5 * HOUR);
     let v = Case::new("work", measured(85.0, 0.0, far, far))
         .cand("spare", measured(84.0, 0.0, far, far))
         .cand("cred", exhausted(far, far))
         .overflow(&["cred"])
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom));
+    assert_eq!(v.decision, Decision::Alert);
     assert_eq!(v.tag, None);
 }
 
@@ -652,18 +654,23 @@ fn one_unknown_plan_probe_among_exhausted_ones_blocks_overflow() {
     assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
 }
 
+/// Issue #2910 changed this test's expectation and kept it (ruling D1,
+/// reversing #2857 behind the margin): spare (86/10, room 14) has --margin
+/// more room than work (95/40, room 5), so `decide`'s swap onto it stands,
+/// and with `extra` unknown nothing is spent either.
 #[test]
 fn an_unknown_plan_probe_keeps_a_threshold_swap_off_overflow() {
-    // decide swaps onto spare, itself at a threshold; with extra unknown that
-    // swap stands instead of overflow.
     let v = Case::new("work", measured(95.0, 40.0, FAR, FAR))
         .cand("spare", measured(86.0, 10.0, FAR, FAR))
         .cand("extra", timed_out())
         .cand("cred", exhausted(None, None))
         .overflow(&["cred"])
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::Threshold));
-    assert_eq!(v.tag, None);
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
+    assert_eq!(
+        v.tag, None,
+        "no overflow while a plan login is unknown or has room"
+    );
 }
 
 #[test]
@@ -686,6 +693,54 @@ fn a_lasting_plan_failure_does_not_block_overflow() {
         assert_eq!(v.decision, swap("cred", Reason::OverflowIn), "{state:?}");
         assert_eq!(v.tag, Some(Tag::In));
     }
+}
+
+/// Issue #2271: a plan profile with no login is read without starting
+/// `claude`. It is a known `not_logged_in`, as the `claude` fallback read
+/// it before, so it does not hold the move onto credits; a timed-out plan
+/// probe still does.
+#[test]
+fn a_not_signed_in_plan_profile_does_not_hold_overflow() {
+    use crate::commands::profile::usage_direct::reason;
+    let case = |spare: Probed| {
+        Case::new("work", exhausted(FAR, FAR))
+            .cand("spare", spare)
+            .cand("extra", exhausted(FAR, FAR))
+            .cand("cred", exhausted(None, None))
+            .overflow(&["cred"])
+            .run()
+    };
+    for why in [reason::NO_TOKEN, reason::NO_REFRESH_TOKEN, reason::NO_FILE] {
+        let spare = reading("spare", &Probe::not_signed_in(why));
+        assert!(!spare.unknown, "{why}");
+        let v = case(spare);
+        assert_eq!(v.decision, swap("cred", Reason::OverflowIn), "{why}");
+        assert_eq!(v.tag, Some(Tag::In), "{why}");
+    }
+    let v = case(timed_out());
+    assert_eq!(v.decision, Decision::Alert, "a timed-out probe still holds");
+    assert_eq!(v.tag, None);
+}
+
+/// A plan profile whose credentials file could not be read (not JSON, a
+/// format change, a rejected token) is not "not signed in": under the
+/// `direct` probe it is a failed probe, so it is unknown and holds the move
+/// onto credits. Its `rotate.err` warning is checked in
+/// `measure::tests_issue_2271_measure`. In the default order it falls back
+/// to `claude`, which reads it as before #2271.
+#[test]
+fn an_unreadable_credentials_file_holds_overflow() {
+    use crate::commands::profile::usage_direct::reason;
+    let spare = reading("spare", &Probe::direct_error(reason::UNREADABLE_CREDS));
+    assert!(spare.unknown);
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("spare", spare)
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.tag, None);
+    assert!(v.new_blocks.is_empty());
 }
 
 #[test]
@@ -1072,15 +1127,32 @@ fn an_expired_block_is_ignored() {
     );
 }
 
+/// Issue #2890 supersedes the earlier row, which read "a block for an
+/// unmarked profile changes nothing". A step now writes a block for the plan
+/// login it met a spend limit on, and the `/usage` probe cannot see that
+/// limit, so a blocked plan login reads as healthy and must still be left
+/// alone. An expired block changes nothing, as it always did.
 #[test]
-fn a_block_for_an_unmarked_profile_changes_nothing() {
+fn a_block_on_an_unmarked_plan_login_takes_its_room_away() {
     let far = Some(NOW + 50 * HOUR);
-    let mut c = Case::new("work", measured(90.0, 40.0, far, far))
-        .cand("spare", measured(10.0, 20.0, far, far));
+    let case = || {
+        Case::new("work", measured(90.0, 40.0, far, far))
+            .cand("spare", measured(10.0, 20.0, far, far))
+    };
+    assert_eq!(case().run().decision, swap("spare", Reason::Threshold));
+
+    let mut c = case();
     c.blocks
         .insert("spare".into(), block(NOW - HOUR, NOW + 24 * HOUR));
-    let v = c.run();
-    assert_eq!(v.decision, swap("spare", Reason::Threshold));
+    assert_eq!(
+        c.run().decision,
+        Decision::Alert,
+        "the only candidate cannot be used"
+    );
+
+    let mut c = case();
+    c.blocks.insert("spare".into(), block(NOW - HOUR, NOW));
+    assert_eq!(c.run().decision, swap("spare", Reason::Threshold));
 }
 
 // --- Fail-closed and fallback cases (issue #1606, step 6) ------------------
@@ -1101,18 +1173,44 @@ fn either_plan_limit_takes_away_capacity() {
     assert_eq!(v.tag, Some(Tag::In));
 }
 
+/// Issue #2910 changed this test's expectation and kept it (ruling D2,
+/// reversing #2857 for this case): the live login is exhausted, so spare at
+/// 86% session, which has room, is the target, and no credit is spent.
 #[test]
 fn a_plan_login_over_a_threshold_comes_before_overflow() {
-    // `spare` at 86% session is at `--session-at` (85), so it is not plan
-    // capacity, but it has room: `decide`'s free swap stands wherever the
-    // plan reset is, and no credit is spent (issue #1804).
     for reset in [Some(NOW + 5 * HOUR), Some(NOW + 600)] {
         let v = Case::new("work", exhausted(reset, reset))
             .cand("spare", measured(86.0, 10.0, reset, reset))
             .cand("cred", exhausted(reset, reset))
             .overflow(&["cred"])
             .run();
-        assert_eq!(v.decision, swap("spare", Reason::Threshold));
+        assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
+        assert_eq!(v.tag, None, "no credit spend while a plan login has room");
+    }
+}
+
+/// The same cycle with the plan login under `--session-at` and its week past
+/// `--week-at`: the free swap still happens (the cycle labels it plan-room,
+/// D15). Issue #2910: the fixture's week moved from 97 to 94, under the week
+/// ceiling (F1).
+#[test]
+fn a_plan_login_under_the_session_threshold_without_capacity_comes_before_overflow() {
+    for reset in [Some(NOW + 5 * HOUR), Some(NOW + 600)] {
+        let v = Case::new("work", exhausted(reset, reset))
+            .cand("spare", measured(50.0, 94.0, reset, reset))
+            .cand("cred", exhausted(reset, reset))
+            .overflow(&["cred"])
+            .run();
+        assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
+        assert_eq!(v.tag, None);
+        // The fixture's old week, 97, is above the ceiling: no target, and
+        // the exhausted credit profile is no way off either.
+        let v = Case::new("work", exhausted(reset, reset))
+            .cand("spare", measured(50.0, 97.0, reset, reset))
+            .cand("cred", exhausted(reset, reset))
+            .overflow(&["cred"])
+            .run();
+        assert_eq!(v.decision, Decision::Alert, "{v:?}");
         assert_eq!(v.tag, None);
     }
 }
@@ -1212,10 +1310,8 @@ fn moving_back_off_overflow_ignores_a_recent_swap() {
 // `.default` and compares verdicts with and without it is
 // `tests/profile_overflow.rs::the_default_pointer_does_not_change_the_rotators_verdict`.
 
-/// The overflow exit's room fallback ranks only the plan-room pool it is
-/// given. Which logins that pool holds (a crossing is in it when leaving
-/// overflow and no same-organisation plan login has room) is decided by
-/// `organisation_affinity::pools`; see its tests.
+/// The overflow exit ranks only the pool it is given (issue #2910: one pool,
+/// `affinity_pool::pool`, which says which logins it holds; see its tests).
 #[test]
 fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
     for same_org in [false, true] {
@@ -1224,8 +1320,7 @@ fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
             .cand("plan", measured(95.0, 95.0, FAR, FAR));
         let live = n("credits");
         let overflow = vec![OverflowEntry::new(live.clone(), 1)];
-        let allowed = vec![n("plan")];
-        let same = if same_org { allowed.clone() } else { vec![] };
+        let permitted = if same_org { vec![n("plan")] } else { vec![] };
         let result = super::overflow::decide_restricted(
             &OverflowInput {
                 settings: &case.s,
@@ -1240,7 +1335,7 @@ fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
                 swapped_at: None,
                 now: NOW,
             },
-            Some((&allowed, &same)),
+            Some(&permitted),
         );
         if same_org {
             assert_eq!(result.decision, swap("plan", Reason::OverflowOut));

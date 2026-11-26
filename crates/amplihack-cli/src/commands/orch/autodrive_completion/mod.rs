@@ -5,7 +5,7 @@ mod dispatch;
 mod evaluator;
 mod evidence;
 mod private_state;
-mod secure_fs;
+pub(super) mod secure_fs;
 
 use anyhow::Result;
 use clap::Args;
@@ -21,8 +21,6 @@ pub struct Prepare {
     record: PathBuf,
     #[arg(long)]
     repo: PathBuf,
-    #[arg(long)]
-    review_dir: PathBuf,
     #[arg(long)]
     launch_tools: PathBuf,
     #[arg(long)]

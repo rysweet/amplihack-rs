@@ -2,9 +2,9 @@
 
 Copy these sections into the PR/pull request description and replace every placeholder with actual evidence. Use platform-neutral wording for shared evidence, then include the GitHub or Azure DevOps/AzDO details that apply.
 
-Put them **below** the change's own description, starting with the marker line, and keep the marker line exactly as written. Auto-drive's merge gate cuts the squash commit body at that line, or at `## Merge readiness` when the marker is missing, so the description above it becomes the commit message on the base branch and this report does not (#2056). Above the marker, keep only what stays true after the merge: what changed and why. A head SHA, a verdict, the pull request's open state or a round-by-round log is true only before the merge, so it goes below the marker.
+Put them **below** the change's own description, starting with the marker line, and keep the marker line exactly as written. Auto-drive's finalize step cuts the squash or merge commit body at that line, or at `## Merge readiness` when the marker is missing, so the description above it becomes the commit message on the base branch and this report does not (#2056). Above the marker, keep only what stays true after the merge: what changed and why. A head SHA, a verdict, the pull request's open state or a round-by-round log is true only before the merge, so it goes below the marker.
 
-<!-- merge-ready-report: everything from this line down is the pre-merge readiness report and is left out of the squash commit -->
+<!-- merge-ready-report: everything from this line down is the pre-merge readiness report and is left out of the squash or merge commit -->
 ## Merge readiness
 
 - Platform: `<GitHub / Azure DevOps/AzDO>`
@@ -12,14 +12,16 @@ Put them **below** the change's own description, starting with the marker line, 
 - Source -> target: `<source branch> -> <target branch>`
 - Current head revision: `<commit SHA>`
 
-### QA-team evidence
+### QA judgement (criterion 1)
 
-- Scenario files: `<path/to/scenario.yaml>`
-- Validation command: `gadugi-test validate <scenario>`
-- Validation result: `<passed / failed>`
-- Run command: `gadugi-test run <scenario>`
-- Run target: `<local env / deployed env>`
-- Run result: `<passed / failed>`
+- Status: `<PASS / FAIL / HANDOFF>`
+- Judgement: `<user_facing / not_user_facing>`, because `<reason>`
+- Cited files (not user-facing): `<paths from the diff>`
+- Scenario files: `<path/to/scenario.yaml>` (`<written in this PR / existing>`, `<pass / fail>`)
+- Run command and target: `<command>` on `<CI / isolated env / deployed env>`
+- Attempts: `<attempt, cause, fix commit, result>`
+- Declared QA command: `<command>` exited `<status>`
+- Hand-off (if any): `<reason>`, owner `<owner>`, needs `<needs>`
 - Evidence location: `<artifact path or log link>` (must include pass/fail counts and command output, not just a claim)
 
 ### Documentation

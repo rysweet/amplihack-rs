@@ -31,6 +31,7 @@ fn settings() -> Settings {
         interval: 600,
         overflow_wait: 1800,
         overflow_unknown_reset: false,
+        target_week_max: 95,
     }
 }
 
@@ -239,14 +240,21 @@ fn failed_and_exhausted_candidates_are_never_chosen() {
 #[test]
 fn the_best_candidate_wins_and_ties_go_to_the_first_name() {
     let cands = [
-        c("zed", r(10.0, 10.0)),
+        c("zed", r(10.0, 0.0)),
         c("mid", r(40.0, 0.0)),
         c("alpha", r(10.0, 0.0)),
     ];
     assert_eq!(
         decide(&settings(), &r(90.0, 0.0), &cands, None, NOW),
         swap("alpha", Reason::Threshold),
-        "alpha and zed both have 90; alpha sorts first"
+        "alpha and zed both have room 90 and week 0; alpha sorts first"
+    );
+    // Issue #2910 (F3): with equal room the lower week comes before the name.
+    let cands = [c("alpha", r(10.0, 10.0)), c("zed", r(10.0, 0.0))];
+    assert_eq!(
+        decide(&settings(), &r(90.0, 0.0), &cands, None, NOW),
+        swap("zed", Reason::Threshold),
+        "both have room 90; zed's week is lower"
     );
 }
 
@@ -343,10 +351,18 @@ fn custom_thresholds_and_margins_apply() {
         margin: 0,
         ..settings()
     };
+    // Issue #2910 changed this expectation (ruling D1): a move from a live
+    // login with room needs `max(--margin, 1)` more room, so with margin 0
+    // equal room is not enough and one more point is.
     assert_eq!(
         decide(&s, &r(50.0, 0.0), &[c("spare", r(50.0, 0.0))], None, NOW),
+        Decision::Alert,
+        "margin 0: equal room is not enough"
+    );
+    assert_eq!(
+        decide(&s, &r(50.0, 0.0), &[c("spare", r(49.0, 0.0))], None, NOW),
         swap("spare", Reason::Threshold),
-        "margin 0: equal headroom is enough"
+        "margin 0: one more point is"
     );
 }
 
@@ -467,16 +483,16 @@ fn a_live_profile_with_no_session_limit_swaps_at_the_week_threshold() {
     }
 }
 
-/// Crusty round 2 on #1829: main's plan-room swap (#1804) ranks on
-/// `Reading::Measured` through `plan_room::choose`, not through `decide`.
-/// A weekly-only login reads as `Measured { session: 0, week }`, so it is in
-/// pass 1 and wins over a login with a lower week that is past
-/// `--session-at`; exhausted logins are never chosen.
+/// Crusty round 2 on #1829, ported to the one target rule (issue #2910): a
+/// weekly-only login reads as `Measured { session: 0, week }`, so it is in
+/// the first tier and wins over a login past `--session-at` with a lower
+/// week; exhausted logins are never chosen. Live on a no-session-limit login
+/// at week 95 (room 5), nothing has the 10 it needs (D1): the ALERT, which
+/// `no_move` turns into a stay note.
 #[test]
-fn plan_room_picks_the_no_session_limit_login_in_pass_1() {
-    use super::plan_room::choose;
+fn plan_room_picks_the_no_session_limit_login_in_the_first_tier() {
     let s = settings();
-    let live = c("live", read(&exhausted_session(20)));
+    let live = read(&exhausted_session(20));
     let past =
         format!("Current session: 92% used {RESET}\nCurrent week (all models): 10% used {RESET}\n");
     for text in [weekly_only(40), no_reset_session(0, 40)] {
@@ -487,18 +503,17 @@ fn plan_room_picks_the_no_session_limit_login_in_pass_1() {
             c("c-past", read(&past)),
         ];
         assert_eq!(
-            choose(&s, Some(&live), &plan),
-            Some(ProfileName::parse("b-free").unwrap()),
-            "pass 1 holds only the no-session-limit login: {text}"
+            decide(&s, &live, &plan, None, NOW),
+            swap("b-free", Reason::Threshold),
+            "the first tier holds only the no-session-limit login: {text}"
         );
     }
-    // Live on the no-session-limit login, it ranks first and stays.
-    let live = c("b-free", read(&weekly_only(40)));
+    let live = read(&weekly_only(95));
     let plan = [
         c("a-spent", read(&exhausted_session(10))),
         c("c-past", read(&past)),
     ];
-    assert_eq!(choose(&s, Some(&live), &plan), None);
+    assert_eq!(decide(&s, &live, &plan, None, NOW), Decision::Alert);
 }
 
 // --- Issue #1846: an exhausted reading keeps the measured figures -----------
@@ -611,4 +626,58 @@ fn a_live_exhausted_login_with_a_low_figure_still_swaps() {
         ),
         swap("spare", Reason::Threshold)
     );
+}
+
+// --- Issue #3284: the weekly figure of every model --------------------------
+
+fn with_model_week(session: u32, all: u32, fable: Option<u32>) -> String {
+    let mut text = format!(
+        "Current session: {session}% used {RESET}\nCurrent week (all models): {all}% used {RESET}\n"
+    );
+    if let Some(f) = fable {
+        text.push_str(&format!("Current week (Fable): {f}% used {RESET}\n"));
+    }
+    text
+}
+
+fn probed(name: &str, text: &str) -> Measured {
+    let rep = crate::commands::profile::usage_parse::parse_usage(text, "", NOW);
+    Measured {
+        name: ProfileName::parse(name).unwrap(),
+        reading: Reading::from_report(&rep),
+        windows: Windows::from_report(&rep),
+        spend_limit: false,
+        unknown: false,
+    }
+}
+
+#[test]
+fn a_used_up_model_week_leaves_no_room_and_is_never_chosen() {
+    let text = with_model_week(10, 87, Some(100));
+    assert_eq!(read(&text).headroom(), Some(0));
+    let full = probed("model-full", &text);
+    let live = r(95.0, 0.0);
+    let d = decide(&settings(), &live, std::slice::from_ref(&full), None, NOW);
+    assert_ne!(d, swap("model-full", Reason::Threshold));
+    assert_ne!(d, swap("model-full", Reason::Upgrade));
+    let spare = probed("spare", &with_model_week(80, 80, None));
+    assert_eq!(
+        decide(&settings(), &live, &[full, spare], None, NOW),
+        swap("spare", Reason::Threshold)
+    );
+}
+
+#[test]
+fn a_model_week_below_the_all_models_week_reads_as_before() {
+    assert_eq!(read(&with_model_week(10, 60, Some(40))), r(10.0, 60.0));
+}
+
+#[test]
+fn a_model_week_above_the_all_models_week_is_the_week_figure() {
+    assert_eq!(read(&with_model_week(10, 60, Some(92))), r(10.0, 92.0));
+}
+
+#[test]
+fn a_report_with_no_model_lines_reads_as_before() {
+    assert_eq!(read(&with_model_week(10, 60, None)), r(10.0, 60.0));
 }

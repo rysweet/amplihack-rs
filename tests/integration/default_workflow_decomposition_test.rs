@@ -1,23 +1,18 @@
-//! Default-workflow decomposition parity tests.
+//! Checks on the v3 phase sub-recipes of `default-workflow`.
 //!
-//! `default-workflow.yaml` was decomposed (v3.0.0) from a 3098-line monolith
-//! into a thin composer that calls 9 phase sub-recipes:
+//! Since #3129, `default-workflow` 4.0.0 no longer calls the nine phase
+//! recipes (workflow-prep, workflow-worktree, workflow-design, workflow-tdd,
+//! workflow-refactor-review, workflow-precommit-test, workflow-publish,
+//! workflow-pr-review, workflow-finalize); it runs the build goal loop
+//! (docs/reference/build-goal-loop.md). They stay for one release for runs
+//! that loaded v3.
 //!
-//!   workflow-prep, workflow-worktree, workflow-design, workflow-tdd,
-//!   workflow-refactor-review, workflow-precommit-test, workflow-publish,
-//!   workflow-pr-review, workflow-finalize
-//!
-//! Every original step prompt is preserved verbatim — the user's stated
-//! design constraint is that the LLM converges on correct behaviour through
-//! many recursive review layers, so no layer may be silently dropped.
-//!
-//! These tests lock the contract: if a future edit drops a step or reorders
-//! the inventory or breaks the brick budget (≤400 LOC per sub-recipe), CI
-//! fails before the regression ships.
-//!
-//! The tests deliberately do NOT exercise the recipe runner end-to-end (that
-//! is `recipe_e2e_test.rs`'s job). They are pure structural assertions on
-//! YAML content, fast, and have no external dependencies.
+//! What stays here: every phase recipe parses and has unique step ids,
+//! step-03b is run against stub inputs, step-18c's pre-commit bypass stays
+//! scoped to its one commit, and the zero-BS transport runs. The tests that
+//! read prompt or step text, pinned step order, or enforced the line budget,
+//! timeouts or sleeps by reading text were removed under Ryan's direction of
+//! 23 Nov 2026: tests check values and behaviour, never wording.
 
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -25,16 +20,12 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use tempfile::TempDir;
 
 const BRICK_LIMIT: usize = 400;
 
-const EXTRA_RECIPE_NAMES: &[&str] = &[
-    "default-workflow",
-    "smart-validate-summarize",
-    "smart-reflect-loop",
-];
+const EXTRA_RECIPE_NAMES: &[&str] = &["default-workflow"];
 
 static RECIPE_TEXTS: LazyLock<HashMap<&'static str, String>> = LazyLock::new(|| {
     PHASE_RECIPES
@@ -52,7 +43,6 @@ static RECIPE_TEXTS: LazyLock<HashMap<&'static str, String>> = LazyLock::new(|| 
 static RECIPES: LazyLock<HashMap<&'static str, Recipe>> = LazyLock::new(|| {
     RECIPE_TEXTS
         .iter()
-        .filter(|&(name, _)| *name != "smart-validate-summarize")
         .map(|(&name, text)| {
             let path = recipe_path(name);
             let recipe = serde_yaml::from_str(text)
@@ -79,14 +69,8 @@ struct Recipe {
 #[derive(Debug, Deserialize)]
 struct Step {
     id: String,
-    #[serde(rename = "type", default)]
-    step_type: Option<String>,
-    #[serde(default)]
-    recipe: Option<String>,
     #[serde(default)]
     command: Option<String>,
-    #[serde(default)]
-    prompt: Option<String>,
 }
 
 fn recipes_dir() -> PathBuf {
@@ -120,15 +104,56 @@ fn load_yaml(name: &str) -> &'static serde_yaml::Value {
     }
 }
 
+/// The shell a bash step runs.
+///
+/// Issue #1619: a step whose body was extracted into
+/// `amplifier-bundle/tools/` for the brick budget runs that file, so the body
+/// every assertion below reads is the file's. The call-out is recognised by
+/// the one line that names the script, and the script must exist: a step that
+/// calls a file that is not there would otherwise read as a step with no
+/// requirements at all.
 fn step_command(recipe: &str, step_id: &str) -> &'static str {
-    load(recipe)
+    let inline = load(recipe)
         .steps
         .iter()
         .find(|step| step.id == step_id)
         .unwrap_or_else(|| panic!("{recipe}.yaml missing step {step_id}"))
         .command
         .as_deref()
-        .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"))
+        .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"));
+    match extracted_body(inline) {
+        Some(body) => body,
+        None => inline,
+    }
+}
+
+/// The text of the `amplifier-bundle/tools/` script a call-out names, or
+/// `None` when the body is inline.
+fn extracted_body(inline: &str) -> Option<&'static str> {
+    static BODIES: LazyLock<Mutex<HashMap<String, &'static str>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let marker = "# The body of this step lives in amplifier-bundle/tools/";
+    let line = inline
+        .lines()
+        .find(|line| line.trim_start().starts_with(marker))?;
+    let name = line
+        .trim_end()
+        .trim_end_matches(',')
+        .rsplit('/')
+        .next()
+        .expect("a call-out names its script");
+    let mut bodies = BODIES.lock().expect("extracted body cache");
+    if let Some(body) = bodies.get(name) {
+        return Some(body);
+    }
+    let path = recipes_dir().join("..").join("tools").join(name);
+    let text: &'static str = Box::leak(
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+            .into_boxed_str(),
+    );
+    bodies.insert(name.to_string(), text);
+    Some(text)
 }
 
 struct StepRun {
@@ -189,123 +214,6 @@ impl Step03bRunner {
     }
 }
 
-fn step_prompt(recipe: &str, step_id: &str) -> &'static str {
-    load(recipe)
-        .steps
-        .iter()
-        .find(|step| step.id == step_id)
-        .unwrap_or_else(|| panic!("{recipe}.yaml missing step {step_id}"))
-        .prompt
-        .as_deref()
-        .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must have a prompt"))
-}
-
-/// The expected step inventory of `default-workflow`, in execution order, as
-/// of the v2 -> v3 decomposition. This is the contract every PR must preserve.
-///
-/// If you intentionally add or remove a step, update this list AND adjust the
-/// owning sub-recipe; the test then verifies you didn't accidentally lose any
-/// other step in the same change.
-const EXPECTED_STEP_INVENTORY: &[&str] = &[
-    // Phase 1a: workflow-prep (steps 00-03b)
-    "step-00-workflow-preparation",
-    // Issue #1290: the acting identity is verified before any step does real
-    // work, so an account that cannot write here is caught in one API call
-    // instead of six steps later, at `step-03-create-issue`.
-    "step-00a-identity-preflight",
-    "step-01-prepare-workspace",
-    "step-02-clarify-requirements",
-    "step-02b-analyze-codebase",
-    "step-02c-resolve-ambiguity",
-    "step-02d-detect-host-type",
-    "step-03-create-issue",
-    "step-03b-extract-issue-number",
-    // Issue #1361: before this run does any work on the issue, ask whether a
-    // pull request is already working on it. The workflow's only prior
-    // de-duplication keyed on head+base, which a second run defeats simply by
-    // deriving a new branch.
-    "step-03c-issue-claim-check",
-    // Phase 1b: workflow-worktree (step 04)
-    "step-04-setup-worktree",
-    // Phase 2: workflow-design (steps 05-06d)
-    "step-05-architecture",
-    "step-05b-api-design",
-    "step-05c-database-design",
-    "step-05d-security-review",
-    "step-05e-design-consolidation",
-    "step-06-documentation",
-    "step-06b-documentation-review",
-    "step-06c-documentation-refinement",
-    "step-06b-checkpoint-doc-review",
-    "step-06d-goal-already-met-probe",
-    // Phase 3: workflow-tdd (steps 07-08c)
-    "step-07-write-tests",
-    "step-08-implement",
-    "step-08c-work-verifier",
-    "step-08c-enforce-verdict",
-    "step-08b-integration",
-    "checkpoint-after-implementation",
-    "implementation-terminal-evidence",
-    // Phase 4: workflow-refactor-review (steps 09-11b)
-    "step-09-refactor",
-    "step-09b-optimize",
-    "step-10-pre-commit-review",
-    "step-10b-security-review",
-    "step-10c-philosophy-check",
-    "step-11-incorporate-feedback",
-    "step-11b-implement-feedback",
-    "checkpoint-after-review-feedback",
-    // Phase 5: workflow-precommit-test (steps 12-13)
-    "step-12-run-precommit",
-    "step-13-local-testing",
-    "verification-terminal-evidence",
-    // Phase 6: workflow-publish (terminal gate + steps 14-16b)
-    "publish-terminal-state",
-    "step-14-bump-version",
-    "step-14b-sync-lockfile",
-    "step-14c-sync-package-json",
-    "step-14g-artifact-guard",
-    "step-15-commit-push",
-    "step-16-create-draft-pr",
-    "step-16b-outside-in-fix-loop",
-    // Phase 7: workflow-pr-review (steps 17a-19d)
-    "step-17a-testing-evidence-gate",
-    "step-17b-reviewer-agent",
-    "step-17c-security-review",
-    "step-17d-philosophy-guardian",
-    "step-17e-address-blocking-issues",
-    "step-17f-verification-gate",
-    "step-18a-analyze-feedback",
-    "step-18b-implement-feedback",
-    "step-18c-push-feedback-changes",
-    "step-18d-respond-to-comments",
-    "step-18e-verification-gate",
-    "step-19a-philosophy-check",
-    "step-19b-patterns-check",
-    "step-19c-zero-bs-verification",
-    "step-19d-verification-gate",
-    // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
-    "finalize-terminal-state",
-    // Issue #1714: fast-forward to an accepted PR head before any agent edits.
-    "step-20-sync-pr-head",
-    "step-20-final-cleanup",
-    // Issue #1467: the audit runs before the guard and push, so its fixes are pushed.
-    "step-20c-quality-audit",
-    "step-20a-artifact-guard",
-    "step-20b-push-cleanup",
-    "step-21-pr-ready",
-    "step-22-ensure-mergeable",
-    // Issue #1268: evidence + judgement between the scoped-PR signal and the
-    // terminal verdict, immediately before the final-status gate.
-    "terminal-adjudication-gate",
-    "step-22b-final-status",
-    "collect-finalization-evidence",
-    "agentic-finalizer",
-    "finalizer-step-status",
-    "validate-agentic-finalization",
-    "workflow-complete",
-];
-
 const PHASE_RECIPES: &[&str] = &[
     "workflow-prep",
     "workflow-worktree",
@@ -318,56 +226,6 @@ const PHASE_RECIPES: &[&str] = &[
     "workflow-finalize",
 ];
 
-const PR_REVIEW_STEP_INVENTORY: &[&str] = &[
-    "step-17a-testing-evidence-gate",
-    "step-17b-reviewer-agent",
-    "step-17c-security-review",
-    "step-17d-philosophy-guardian",
-    "step-17e-address-blocking-issues",
-    "step-17f-verification-gate",
-    "step-18a-analyze-feedback",
-    "step-18b-implement-feedback",
-    "step-18c-push-feedback-changes",
-    "step-18d-respond-to-comments",
-    "step-18e-verification-gate",
-    "step-19a-philosophy-check",
-    "step-19b-patterns-check",
-    "step-19c-zero-bs-verification",
-    "step-19d-verification-gate",
-];
-
-/// The composer must call exactly the 9 phase sub-recipes, in order, and
-/// declare nothing else.
-#[test]
-fn composer_calls_nine_phase_subrecipes_in_order() {
-    let composer = load("default-workflow");
-    assert_eq!(composer.name, "default-workflow");
-    assert_eq!(
-        composer.steps.len(),
-        PHASE_RECIPES.len(),
-        "composer must have exactly {} sub-recipe calls; found {}",
-        PHASE_RECIPES.len(),
-        composer.steps.len()
-    );
-    for (i, (step, expected)) in composer.steps.iter().zip(PHASE_RECIPES).enumerate() {
-        assert_eq!(
-            step.step_type.as_deref(),
-            Some("recipe"),
-            "composer step {i} must be type=recipe"
-        );
-        assert_eq!(
-            step.recipe.as_deref(),
-            Some(*expected),
-            "composer step {i} must call recipe '{expected}'; got {:?}",
-            step.recipe
-        );
-        assert_eq!(
-            step.id, *expected,
-            "composer step id should match recipe name for traceability"
-        );
-    }
-}
-
 /// Every phase sub-recipe must parse and have a non-empty step list.
 #[test]
 fn every_phase_subrecipe_loads_and_has_steps() {
@@ -375,28 +233,6 @@ fn every_phase_subrecipe_loads_and_has_steps() {
         let r = load(name);
         assert_eq!(&r.name, name, "recipe.name must match filename");
         assert!(!r.steps.is_empty(), "{name} must declare at least one step");
-    }
-}
-
-/// Concatenating the steps of all 9 phase sub-recipes (in composer order) must
-/// reproduce the original 58-step inventory in the original order.
-#[test]
-fn composed_step_inventory_matches_expected_in_order() {
-    let mut composed: Vec<String> = Vec::new();
-    for name in PHASE_RECIPES {
-        let r = load(name);
-        composed.extend(r.steps.iter().map(|s| s.id.clone()));
-    }
-    let expected: Vec<&str> = EXPECTED_STEP_INVENTORY.to_vec();
-    assert_eq!(
-        composed.len(),
-        expected.len(),
-        "composed inventory has {} steps, expected {}",
-        composed.len(),
-        expected.len()
-    );
-    for (i, (c, e)) in composed.iter().zip(&expected).enumerate() {
-        assert_eq!(c, e, "step #{i}: composed has '{c}', expected '{e}'");
     }
 }
 
@@ -414,140 +250,6 @@ fn no_duplicate_step_ids_across_subrecipes() {
         }
     }
     assert!(dups.is_empty(), "duplicate step IDs found: {dups:?}");
-}
-
-/// Issue #1794: agents waited with `tail -f /dev/null`, which outlives the
-/// tool call. The orphans came from step 18b, and the reflect steps poll CI,
-/// so those prompts, step 13 and the Claude system-prompt fragment all name
-/// the supported ways to wait and the forms the hook denies. Copilot and
-/// Codex agents do not read the system-prompt fragment, so the recipe
-/// prompts are their only advance notice.
-#[test]
-fn recipe_prompts_and_system_prompt_name_the_supported_ways_to_wait() {
-    let fragment_path = recipes_dir()
-        .join("..")
-        .join("context")
-        .join("SYSTEM_PROMPT_APPEND.md");
-    let fragment = std::fs::read_to_string(&fragment_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", fragment_path.display()));
-    let mut prompts: Vec<(String, &str)> = vec![("SYSTEM_PROMPT_APPEND.md".into(), &fragment)];
-    for (recipe, step) in [
-        ("workflow-precommit-test", "step-13-local-testing"),
-        ("workflow-pr-review", "step-18b-implement-feedback"),
-        ("smart-reflect-loop", "reflect-round-1"),
-        ("smart-reflect-loop", "reflect-round-2"),
-        ("smart-reflect-loop", "reflect-final"),
-    ] {
-        prompts.push((format!("{recipe}/{step}"), step_prompt(recipe, step)));
-    }
-    for (name, text) in &prompts {
-        for needle in ["amplihack wait --seconds", "tail -f /dev/null", "wait $pid"] {
-            assert!(text.contains(needle), "{name} lacks {needle:?}");
-        }
-        if name != "SYSTEM_PROMPT_APPEND.md" {
-            assert!(
-                text.contains("timeout N tail"),
-                "{name} must name `timeout N tail` as a form not to use"
-            );
-        }
-    }
-}
-
-#[test]
-fn step_13_does_not_mandate_uvx_or_remote_git_install_flow() {
-    let prompt = step_prompt("workflow-precommit-test", "step-13-local-testing");
-    let forbidden_phrases = [
-        "Get the remote URL (for uvx testing)",
-        "git remote get-url origin",
-        "Pass the PR branch name and repository URL so tests run against the actual branch",
-        "uvx --from git+<remote-url>@<branch-name>",
-        "uvx --from git+...@<branch>",
-        "via `uvx --from git+...`",
-    ];
-
-    for phrase in forbidden_phrases {
-        assert!(
-            !prompt.contains(phrase),
-            "Step 13 must not present `{phrase}` as the universal outside-in validation path"
-        );
-    }
-}
-
-#[test]
-fn step_13_requires_agentic_toolchain_detection_before_validation_selection() {
-    let prompt = step_prompt("workflow-precommit-test", "step-13-local-testing");
-    let lower = prompt.to_ascii_lowercase();
-
-    for required in ["outside-in", "detect", "toolchain", "validation strategy"] {
-        assert!(
-            lower.contains(required),
-            "Step 13 must preserve outside-in validation while requiring agents to detect project languages/toolchains and select a validation strategy; missing `{required}`"
-        );
-    }
-
-    assert!(
-        lower.contains("choose") || lower.contains("select"),
-        "Step 13 must delegate validation pattern selection to the acting agent"
-    );
-    assert!(
-        lower.contains("record") && lower.contains("chosen"),
-        "Step 13 must require evidence of the chosen validation strategy, not just raw command output"
-    );
-}
-
-#[test]
-fn step_13_covers_major_toolchain_examples_without_making_uvx_global() {
-    let prompt = step_prompt("workflow-precommit-test", "step-13-local-testing");
-    let lower = prompt.to_ascii_lowercase();
-    let toolchain_examples = [
-        ("Rust/Cargo", lower.contains("cargo")),
-        ("Node/npm", lower.contains("npm")),
-        (
-            "Python/uv/uvx",
-            lower.contains("python") && lower.contains("uv") && lower.contains("uvx"),
-        ),
-        (
-            "Go",
-            lower.contains("go test")
-                || lower.contains("go run")
-                || lower.contains("golang")
-                || prompt.contains("Go/"),
-        ),
-        (".NET", lower.contains("dotnet") || prompt.contains(".NET")),
-    ];
-
-    for (toolchain, present) in toolchain_examples {
-        assert!(
-            present,
-            "Step 13 must include a generalized outside-in validation example for {toolchain}"
-        );
-    }
-
-    assert!(
-        lower.contains("python") && lower.find("python") < lower.rfind("uvx"),
-        "Step 13 may mention uvx only as a Python/uv-specific validation option"
-    );
-}
-
-#[test]
-fn outside_in_validation_gates_require_strategy_evidence_without_uvx_specific_commands() {
-    for recipe in [
-        "smart-validate-summarize",
-        "workflow-pr-review",
-        "workflow-publish",
-    ] {
-        let text = recipe_text(recipe);
-        let lower = text.to_ascii_lowercase();
-
-        assert!(
-            !lower.contains("uvx --from git+"),
-            "{recipe}.yaml must not validate Step 13 by requiring uvx remote Git execution"
-        );
-        assert!(
-            lower.contains("chosen") && lower.contains("strategy"),
-            "{recipe}.yaml must ask for the chosen outside-in validation strategy so reviewers can verify toolchain-aware selection"
-        );
-    }
 }
 
 /// Brick rule: every phase sub-recipe must be ≤ 400 lines. The composer is
@@ -570,176 +272,9 @@ fn every_phase_subrecipe_under_400_lines() {
     );
 }
 
-#[test]
-fn workflow_pr_review_phase_contract_is_strict_and_ordered() {
-    let line_count = recipe_text("workflow-pr-review").lines().count();
-    assert!(
-        line_count < BRICK_LIMIT,
-        "workflow-pr-review.yaml is {line_count} lines; PR review phase bricks must be <{BRICK_LIMIT} physical lines"
-    );
-
-    let step_ids: Vec<String> = load("workflow-pr-review")
-        .steps
-        .iter()
-        .map(|step| step.id.clone())
-        .collect();
-    assert_eq!(
-        step_ids, PR_REVIEW_STEP_INVENTORY,
-        "workflow-pr-review must preserve every PR review step from 17a through 19d in order"
-    );
-}
-
-#[test]
-fn workflow_pr_review_has_no_recipe_level_timeouts_or_foreground_long_sleep() {
-    let raw = recipe_text("workflow-pr-review");
-    let parsed = load_yaml("workflow-pr-review");
-    let top_level = parsed
-        .as_mapping()
-        .expect("workflow-pr-review.yaml must parse as a YAML mapping");
-
-    for forbidden in ["timeout", "timeout_seconds", "default_step_timeout"] {
-        assert!(
-            !top_level.contains_key(serde_yaml::Value::String(forbidden.to_string())),
-            "workflow-pr-review.yaml must not define recipe-level `{forbidden}`"
-        );
-    }
-
-    let foreground_sleeps: Vec<&str> = raw
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim_start();
-            trimmed.starts_with("sleep ")
-                || trimmed.contains("&& sleep ")
-                || trimmed.contains("; sleep ")
-                || trimmed.contains(" sleep $")
-        })
-        .collect();
-    assert!(
-        foreground_sleeps.is_empty(),
-        "workflow-pr-review.yaml must not use foreground sleeps: {foreground_sleeps:?}"
-    );
-}
-
-#[test]
-fn workflow_pr_review_fails_loud_for_required_worktree_context() {
-    let push_command = step_command("workflow-pr-review", "step-18c-push-feedback-changes");
-    let zero_bs_command = step_command("workflow-pr-review", "step-19c-zero-bs-verification");
-
-    // step-18c: early-stage — MUST keep hard-fail on missing worktree
-    assert!(
-        push_command.contains("set -euo pipefail"),
-        "step-18c must fail loudly on shell errors"
-    );
-    assert!(
-        push_command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
-        "step-18c must require worktree_setup.worktree_path instead of inventing a default"
-    );
-
-    // step-19c: late-stage — MUST be resilient (issue #647)
-    // It can function from repo_path or cwd; hard-fail is wrong here.
-    assert!(
-        zero_bs_command.contains("set -euo pipefail"),
-        "step-19c must still fail loudly on shell errors (only cd target selection is resilient)"
-    );
-    assert!(
-        zero_bs_command.contains("WARNING"),
-        "step-19c must emit WARNING on stderr when falling back from missing worktree"
-    );
-    assert!(
-        zero_bs_command.contains("REPO_PATH"),
-        "step-19c must fall back to REPO_PATH when worktree is unavailable"
-    );
-    assert!(
-        !zero_bs_command.contains("cd \"${WORKTREE_SETUP_WORKTREE_PATH:?"),
-        "step-19c must NOT hard-fail on cd into missing worktree (issue #647)"
-    );
-
-    // step-18c specific assertions preserved from original
-    let hidden_git_failures: Vec<&str> = push_command
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            trimmed.starts_with("git ") && trimmed.contains("|| true")
-        })
-        .collect();
-    assert!(
-        hidden_git_failures.is_empty(),
-        "step-18c must not hide git failures with `|| true`: {hidden_git_failures:?}"
-    );
-    assert!(
-        push_command.contains("git commit failed") && push_command.contains("exit \"$commit_rc\""),
-        "step-18c must surface git commit failures and exit with the original status"
-    );
-    assert!(
-        push_command.contains("git push failed") && push_command.contains("exit \"$push_rc\""),
-        "step-18c must surface git push failures and exit with the original status"
-    );
-}
-
-#[test]
-fn workflow_finalize_late_steps_are_resilient_to_missing_worktree() {
-    // Issue #647: steps 20b and 21 are late-stage — the worktree may have
-    // been cleaned up by the agent or a prior step. They must fall back to
-    // REPO_PATH or cwd instead of aborting the recipe.
-    let push_cleanup = step_command("workflow-finalize", "step-20b-push-cleanup");
-    let pr_ready = step_command("workflow-finalize", "step-21-pr-ready");
-
-    for (step, command) in [
-        ("step-20b-push-cleanup", push_cleanup),
-        ("step-21-pr-ready", pr_ready),
-    ] {
-        assert!(
-            command.contains("set -euo pipefail"),
-            "{step} must still fail loudly on shell errors (only cd target is resilient)"
-        );
-        assert!(
-            command.contains("WARNING"),
-            "{step} must emit WARNING on stderr when falling back from missing worktree"
-        );
-        assert!(
-            command.contains("REPO_PATH"),
-            "{step} must fall back to REPO_PATH when worktree is unavailable"
-        );
-        assert!(
-            !command.contains("cd \"${WORKTREE_SETUP_WORKTREE_PATH:?"),
-            "{step} must NOT hard-fail on cd into missing worktree (issue #647)"
-        );
-    }
-}
-
-#[test]
-fn workflow_pr_review_input_description_reflects_resilient_step_19c() {
-    // Issue #647: step-19c is now resilient, so the input description should
-    // only list step-18c as requiring the worktree path.
-    let text = recipe_text("workflow-pr-review");
-    assert!(
-        text.contains("Required by") && text.contains("step-18c"),
-        "worktree_setup.worktree_path input description must mention step-18c"
-    );
-    assert!(
-        !text.contains("step-19c-zero-bs-verification that cd into the worktree"),
-        "worktree_setup.worktree_path input description must not claim step-19c requires cd into worktree (issue #647)"
-    );
-}
-
-#[test]
-fn workflow_pr_review_retries_remote_push_operations_without_silencing_failures() {
-    let command = step_command("workflow-pr-review", "step-18c-push-feedback-changes");
-    assert!(
-        command.contains("git_remote_with_retry()") && command.contains("for attempt in 1 2 3"),
-        "step-18c must retry transient git remote operations"
-    );
-    assert!(
-        command.contains("git_remote_with_retry git pull --rebase")
-            && command.contains("git_remote_with_retry git push"),
-        "step-18c must wrap pull/rebase and push with retry handling"
-    );
-    assert!(
-        command.contains("retrying ($attempt/3)") && command.contains("return \"$rc\""),
-        "step-18c retry handling must be bounded and preserve the failing status"
-    );
-}
-
+/// A guard on the hook boundary: step-18c may skip a missing pre-commit
+/// configuration only for its one commit, and only when a stale hook file is
+/// present.
 #[test]
 fn workflow_pr_review_scopes_pre_commit_allow_no_config_to_stale_hook_case() {
     let command = step_command("workflow-pr-review", "step-18c-push-feedback-changes");
@@ -766,368 +301,11 @@ fn workflow_pr_review_scopes_pre_commit_allow_no_config_to_stale_hook_case() {
             && command.contains("commit_with_pre_commit_guard -m \"address review feedback\""),
         "PRE_COMMIT_ALLOW_NO_CONFIG must be scoped to the single git commit invocation"
     );
-    assert!(
-        command.contains("address review feedback")
-            && command.contains("Implemented reviewer suggestions")
-            && command.contains("fixed identified issues")
-            && command.contains("updated per security review")
-            && command.contains("addressed philosophy compliance items"),
-        "step-18c must preserve the review-feedback commit subject and body"
-    );
-}
-
-#[test]
-fn workflow_pr_review_zero_bs_scan_covers_tracked_and_untracked_without_recursive_walks() {
-    let command = step_command("workflow-pr-review", "step-19c-zero-bs-verification");
-    assert!(
-        command.contains("git grep -n -E") && command.contains("record_scan 'git grep'"),
-        "step-19c must use fail-loud git grep scans for repository verification"
-    );
-    assert!(
-        command.contains("git ls-files --others --exclude-standard -z")
-            && command.contains("while IFS= read -r -d '' file")
-            && command.contains("grep -n -E -H -a --null -- \"$pattern\" \"${files[@]}\"")
-            && command.contains("record_scan 'untracked grep'"),
-        "step-19c must restore fail-loud untracked-file scanning"
-    );
-    assert!(
-        command.contains("'*.rs'")
-            && command.contains("'*.md'")
-            && command.contains("'*.yaml'")
-            && command.contains("'*.yml'"),
-        "step-19c TODO/FIXME scanning must include source, config, and docs globs"
-    );
-    assert!(
-        !command.contains("grep -r"),
-        "step-19c must avoid repeated recursive filesystem grep scans"
-    );
-}
-
-#[test]
-fn base_branch_detection_remains_explicit_and_fail_loud() {
-    for (recipe, step, resolver) in [
-        (
-            "workflow-worktree",
-            "step-04-setup-worktree",
-            "resolve_base_ref",
-        ),
-        (
-            "workflow-publish",
-            "step-16-create-draft-pr",
-            "resolve_pr_base_ref",
-        ),
-    ] {
-        let command = step_command(recipe, step);
-        assert!(
-            command.contains(resolver),
-            "{recipe}/{step} must use explicit base-ref detection"
-        );
-        assert!(
-            command.contains("refs/remotes/origin/HEAD")
-                && command.contains("git remote set-head origin -a"),
-            "{recipe}/{step} must detect the remote default branch instead of assuming main"
-        );
-        assert!(
-            command.contains("origin/master origin/develop"),
-            "{recipe}/{step} must preserve the tested non-main fallback order"
-        );
-        assert!(
-            command.contains("ERROR: no supported remote base ref found"),
-            "{recipe}/{step} must fail loudly when base-branch detection fails"
-        );
-        for forbidden in [
-            "origin/main..HEAD",
-            "reset --hard origin/main",
-            "-b \"${BRANCH_NAME}\" origin/main",
-        ] {
-            assert!(
-                !command.contains(forbidden),
-                "{recipe}/{step} must not reintroduce hard-coded main fallback `{forbidden}`"
-            );
-        }
-    }
-}
-
-/// Issue #1290: the identity preflight must run before any step that does real
-/// work, must reach its logic through the helper (the brick has no room for it),
-/// and must not become a gate on its own ability to run.
-#[test]
-fn identity_preflight_runs_first_and_is_advisory_when_it_cannot_run() {
-    let ids: Vec<String> = load("workflow-prep")
-        .steps
-        .iter()
-        .map(|s| s.id.clone())
-        .collect();
-    let preflight = ids
-        .iter()
-        .position(|id| id == "step-00a-identity-preflight")
-        .expect("workflow-prep must carry the identity preflight (issue #1290)");
-    let first_real_work = ids
-        .iter()
-        .position(|id| id == "step-02-clarify-requirements")
-        .expect("workflow-prep must still clarify requirements");
-    assert!(
-        preflight < first_real_work,
-        "the identity preflight must run before any step does real work; \
-         a preflight that runs after requirements or analysis saves nothing"
-    );
-
-    let command = step_command("workflow-prep", "step-00a-identity-preflight");
-    assert!(
-        command.contains("workflow_identity_preflight.sh"),
-        "step-00a must reach its logic through amplifier-bundle/tools/workflow_identity_preflight.sh"
-    );
-    assert!(
-        command.contains("AMPLIHACK_HOME")
-            && command.contains(".copilot")
-            && command.contains(".amplihack"),
-        "step-00a must resolve the helper through the AMPLIHACK_HOME / REPO_PATH / cwd / \
-         ~/.copilot / ~/.amplihack cascade so a bundled install finds it"
-    );
-    assert!(
-        command.contains("WARNING") && command.contains("exit 0"),
-        "a missing helper must warn and continue, not fail the run (issue #1268)"
-    );
-    assert!(
-        !command.contains("Enterprise Managed") && !command.contains("policy settings"),
-        "the preflight asks whether the active identity can write here; it must not \
-         special-case one vendor phrasing of that condition (issue #1290)"
-    );
-}
-
-/// MANDATORY steps from the v2 contract (0, 14, 17, 18) must remain present.
-/// Listed explicitly so a regression that drops a mandatory gate is loud.
-#[test]
-fn mandatory_steps_still_present() {
-    let composed: HashSet<String> = PHASE_RECIPES
-        .iter()
-        .flat_map(|name| load(name).steps.iter().map(|s| s.id.clone()))
-        .collect();
-    for required in [
-        "step-00-workflow-preparation",
-        "step-14-bump-version",
-        "step-17a-testing-evidence-gate",
-        "step-18a-analyze-feedback",
-    ] {
-        assert!(
-            composed.contains(required),
-            "MANDATORY step '{required}' missing from decomposed workflow"
-        );
-    }
 }
 
 // ==========================================================================
-// Issue #684: step-03 must detect remote host type and branch accordingly.
-// TDD — these tests define the required contract BEFORE implementation.
+// Step-03b, run: the issue reference it extracts from step-03's output.
 // ==========================================================================
-
-#[test]
-fn workflow_prep_step_02d_detects_remote_host_type() {
-    let command = step_command("workflow-prep", "step-02d-detect-host-type");
-
-    // Must check for GitHub
-    assert!(
-        command.contains("github.com"),
-        "step-02d must detect github.com in the remote URL"
-    );
-
-    // Must check for Azure DevOps (both modern and legacy domains)
-    assert!(
-        command.contains("dev.azure.com"),
-        "step-02d must detect dev.azure.com in the remote URL"
-    );
-    assert!(
-        command.contains("visualstudio.com"),
-        "step-02d must detect visualstudio.com in the remote URL"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03_consumes_remote_host_type() {
-    let command = step_command("workflow-prep", "step-03-create-issue");
-
-    // Step-03 must consume remote_host_type from step-02d (not re-detect)
-    assert!(
-        command.contains("RECIPE_VAR_remote_host_type"),
-        "step-03 must consume REMOTE_HOST_TYPE from step-02d"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03_accepts_azure_devops_host_alias() {
-    let command = step_command("workflow-prep", "step-03-create-issue");
-
-    assert!(
-        command.contains("azdo"),
-        "step-03 must continue to support the existing 'azdo' Azure DevOps host value"
-    );
-    assert!(
-        command.contains("azure-devops"),
-        "step-03 must also support the explicit 'azure-devops' host value from recipe context"
-    );
-
-    let alias_dispatch = command.contains("azdo|azure-devops")
-        || command.contains("azure-devops|azdo")
-        || (command.contains("\"azdo\"") && command.contains("\"azure-devops\""))
-        || (command.contains("'azdo'") && command.contains("'azure-devops'"));
-    assert!(
-        alias_dispatch,
-        "step-03 must dispatch 'azdo' and 'azure-devops' through the same Azure DevOps branch"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03_reuses_existing_issue_number_before_provider_commands() {
-    let command = step_command("workflow-prep", "step-03-create-issue");
-
-    let issue_number_pos = command
-        .find("RECIPE_VAR_issue_number")
-        .expect("step-03 must read existing ISSUE_NUMBER context before creating/searching issues");
-    // #1881: GitHub issue logic lives in sourced helpers; the first GitHub
-    // provider call in the step is the selection helper.
-    let first_gh_issue_pos = command
-        .find("select_github_tracking_issue")
-        .expect("step-03 must retain GitHub issue logic for GitHub hosts");
-    let first_az_boards_pos = command
-        .find("az boards")
-        .expect("step-03 must retain Azure Boards create/lookup logic for Azure DevOps hosts");
-
-    assert!(
-        issue_number_pos < first_gh_issue_pos,
-        "step-03 must check existing ISSUE_NUMBER before entering GitHub issue logic"
-    );
-    assert!(
-        issue_number_pos < first_az_boards_pos,
-        "step-03 must check existing ISSUE_NUMBER before Azure CLI work-item logic"
-    );
-    assert!(
-        command.contains("AB#"),
-        "step-03 must emit an Azure Boards reference such as AB#N when reusing existing work items"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03_has_github_path_inside_host_conditional() {
-    let command = step_command("workflow-prep", "step-03-create-issue");
-
-    // #1881: the GitHub create moved into workflow_issue_create.sh, which
-    // step-03 calls through create_github_issue_bounded.
-    let helper_path = recipes_dir()
-        .parent()
-        .expect("amplifier-bundle dir")
-        .join("tools")
-        .join("workflow_issue_create.sh");
-    let helper = fs::read_to_string(&helper_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", helper_path.display()));
-    assert!(
-        helper.contains("gh issue create"),
-        "workflow_issue_create.sh must retain 'gh issue create' for GitHub remotes"
-    );
-
-    // The create must NOT appear before HOST_TYPE is set from REMOTE_HOST_TYPE
-    let host_type_pos = command
-        .find("HOST_TYPE")
-        .expect("HOST_TYPE must exist in step-03");
-    let create_pos = command
-        .rfind("create_github_issue_bounded")
-        .expect("step-03 must call create_github_issue_bounded");
-    assert!(
-        create_pos > host_type_pos,
-        "step-03 must not create a GitHub issue before consuming the remote host type"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03_has_azdo_work_item_path() {
-    let command = step_command("workflow-prep", "step-03-create-issue");
-
-    // Must have Azure DevOps work item creation path
-    assert!(
-        command.contains("az boards"),
-        "step-03 must use 'az boards' for Azure DevOps work item creation"
-    );
-
-    // Must support explicit work item ID (AB#NNN pattern)
-    assert!(
-        command.contains("AB#"),
-        "step-03 must support explicit Azure Boards work item references (AB#NNN)"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03_has_local_tracking_fallback() {
-    let command = step_command("workflow-prep", "step-03-create-issue");
-
-    // Must have a fallback for unknown remote types (not GitHub, not AzDO)
-    assert!(
-        command.contains("local-tracking")
-            || command.contains("LOCAL_ISSUE")
-            || command.contains("local_issue")
-            || command.contains("local tracking"),
-        "step-03 must have a local tracking fallback for unknown remote types"
-    );
-
-    // Must NOT hard-fail for unknown remotes
-    assert!(
-        !command.contains("gh auth login"),
-        "step-03 must not suggest 'gh auth login' for non-GitHub remotes"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03_no_host_specific_error_messages_for_wrong_host() {
-    let command = step_command("workflow-prep", "step-03-create-issue");
-
-    // The old error "none of the git remotes configured for this repository
-    // point to a known GitHub host" must not appear as a possible output
-    // for non-GitHub remotes.
-    assert!(
-        !command.contains("none of the git remotes"),
-        "step-03 must not contain GitHub-specific error messages that leak to non-GitHub remotes"
-    );
-}
-
-#[test]
-fn workflow_prep_step_03b_handles_azdo_work_item_urls() {
-    let command = step_command("workflow-prep", "step-03b-extract-issue-number");
-
-    // Must handle Azure DevOps work item URLs (_workitems/edit/NNN)
-    assert!(
-        command.contains("_workitems/edit/"),
-        "step-03b must extract issue numbers from AzDO work item URLs (_workitems/edit/NNN)"
-    );
-
-    // Must handle AB#NNN references
-    assert!(
-        command.contains("AB#"),
-        "step-03b must extract issue numbers from Azure Boards references (AB#NNN)"
-    );
-
-    // Must still handle GitHub issue URLs (regression check)
-    assert!(
-        command.contains("issues/"),
-        "step-03b must still handle GitHub issue URLs (issues/NNN)"
-    );
-
-    // Must still handle GitHub PR URLs (regression check)
-    assert!(
-        command.contains("pull/"),
-        "step-03b must still handle GitHub PR URLs (pull/NNN)"
-    );
-
-    // local-tracking extraction must come before task-desc AB# fallback
-    let local_pos = command
-        .find("local-tracking:")
-        .expect("step-03b must handle local-tracking:NNN");
-    let task_ab_pos = command
-        .find("$TASK_DESC_RAW\" =~ AB#")
-        .or_else(|| command.find("TASK_DESC_RAW =~ AB#"))
-        .expect("step-03b must fall back to task_description AB#");
-    assert!(
-        local_pos < task_ab_pos,
-        "step-03b must check ISSUE_CREATION local-tracking before falling back to TASK_DESC_RAW"
-    );
-}
 
 #[test]
 fn workflow_prep_step_03b_local_tracking_propagates_reference_without_coercing_to_number() {
@@ -1241,163 +419,6 @@ fn workflow_prep_step_03b_remote_references_keep_numeric_extraction_behavior() {
             "{name} must preserve existing numeric extraction behavior"
         );
     }
-}
-
-// ==========================================================================
-// Issue #684: mid-stage steps that stage nothing may fall back to REPO_PATH
-// when the worktree variable is not propagated from sub-recipe context
-// (step-04). Steps that stage and commit may not (issue #1528).
-// ==========================================================================
-
-#[test]
-fn mid_stage_read_only_steps_fall_back_to_repo_path() {
-    // step-16 creates the PR from already-pushed work and stages nothing, so a
-    // REPO_PATH fallback cannot commit in the launch checkout. It still
-    // hard-fails (via :?) when REPO_PATH is also empty.
-    let command = step_command("workflow-publish", "step-16-create-draft-pr");
-    // #1561: the fallback is the recipe's own repo_path, never an inherited
-    // bare REPO_PATH, and only when worktree_setup is unset (exit 3); a
-    // present but rejected path stops the step.
-    assert!(
-        command.contains(
-            r#"|| { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }"#
-        ),
-        "workflow-publish/step-16-create-draft-pr must fall back to repo_path when worktree_setup is unset"
-    );
-    assert!(
-        command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
-        "workflow-publish/step-16-create-draft-pr must hard-fail when worktree AND REPO_PATH are both empty"
-    );
-}
-
-#[test]
-fn mid_stage_committing_steps_never_fall_back_to_repo_path() {
-    // Issue #1528: REPO_PATH is the launch checkout, where the run worktrees
-    // sit under the ignored `worktrees/`. A step that stages and commits must
-    // run only at the top of the linked task worktree, and must hard-fail
-    // rather than skip, because a skipped commit loses work silently.
-    let cases = [
-        ("workflow-publish", "step-15-commit-push"),
-        ("workflow-tdd", "checkpoint-after-implementation"),
-        (
-            "workflow-refactor-review",
-            "checkpoint-after-review-feedback",
-        ),
-    ];
-    for (recipe, step_id) in cases {
-        let command = step_command(recipe, step_id);
-        assert!(
-            !command.contains("worktree_path:-${REPO_PATH"),
-            "{recipe}/{step_id} must not fall back to $REPO_PATH (#1528)"
-        );
-        assert!(
-            command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
-            "{recipe}/{step_id} must hard-fail when the worktree path is empty"
-        );
-    }
-}
-
-#[test]
-fn step_18c_does_not_fall_back_to_repo_path() {
-    // step-18c is early-stage and must keep hard-fail (per test
-    // workflow_pr_review_fails_loud_for_required_worktree_context).
-    // It must NOT have a REPO_PATH fallback in the default chain.
-    let command = step_command("workflow-pr-review", "step-18c-push-feedback-changes");
-    assert!(
-        !command.contains(":-${REPO_PATH"),
-        "step-18c must NOT fall back to REPO_PATH — it requires the worktree"
-    );
-}
-
-// ==========================================================================
-// Issue #684: step-16 must handle non-GitHub remotes gracefully.
-// ==========================================================================
-
-#[test]
-fn workflow_publish_step_16_guards_non_github_remotes() {
-    // step-16 hands PR creation to workflow_publish_pr.sh, and the host-type
-    // decision is made there (#1684). Check the tool's code lines, not the
-    // step body: the step only mentions REMOTE_HOST_TYPE in a comment. The
-    // final exec hands cancellation to the helper after removing the step trap.
-    let command = step_command("workflow-publish", "step-16-create-draft-pr");
-    assert!(
-        command.split(';').any(|statement| {
-            statement
-                .trim_start()
-                .starts_with("exec bash \"$PUBLISH_HELPER\"")
-        }),
-        "step-16 must create the PR by running workflow_publish_pr.sh"
-    );
-    assert!(
-        command.contains("amplifier-bundle/tools/workflow_publish_pr.sh"),
-        "step-16 must resolve PUBLISH_HELPER to workflow_publish_pr.sh"
-    );
-
-    let tool = std::fs::read_to_string(recipes_dir().join("../tools/workflow_publish_pr.sh"))
-        .expect("read workflow_publish_pr.sh");
-    // Byte offset of the first non-comment line that starts with `needle`.
-    let code_line_pos = |needle: &str| -> Option<usize> {
-        let mut offset = 0;
-        for line in tool.split_inclusive('\n') {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with(needle) {
-                return Some(offset + (line.len() - trimmed.len()));
-            }
-            offset += line.len();
-        }
-        None
-    };
-
-    let read_pos = code_line_pos("HOST_TYPE=\"${REMOTE_HOST_TYPE").expect(
-        "workflow_publish_pr.sh must set HOST_TYPE from REMOTE_HOST_TYPE in code, not a comment",
-    );
-    let guard_pos = code_line_pos("if [ \"$HOST_TYPE\" != \"github\" ]")
-        .expect("workflow_publish_pr.sh must skip GitHub PR creation for every non-GitHub host");
-    let lookup_pos = code_line_pos("PR_JSON=\"$(scoped_pr_lookup)\"")
-        .expect("workflow_publish_pr.sh must look up the branch's PR through scoped_pr_lookup");
-    assert!(
-        read_pos < guard_pos,
-        "workflow_publish_pr.sh must read REMOTE_HOST_TYPE before the non-GitHub guard"
-    );
-    assert!(
-        guard_pos < lookup_pos,
-        "the non-GitHub guard must run before any gh PR lookup or creation"
-    );
-    let guard_line = tool[guard_pos..].lines().nth(1).unwrap_or_default();
-    assert!(
-        guard_line.contains("finish_publish \"non-github\""),
-        "the non-GitHub guard must finish publishing as non-github, got: {guard_line}"
-    );
-}
-
-// ==========================================================================
-// Issue #684 + #682: step-21 must guard PR_URL before gh commands.
-// ==========================================================================
-
-#[test]
-fn workflow_finalize_step_21_guards_pr_url_before_gh_commands() {
-    // step-21 delegates to workflow_pr_ready.sh, which reads PR_URL itself
-    // from the recipe's own values (#1561) and checks it before any gh call.
-    let command = step_command("workflow-finalize", "step-21-pr-ready");
-    assert!(
-        command.contains("workflow_pr_ready.sh"),
-        "step-21 must run workflow_pr_ready.sh"
-    );
-    let helper = std::fs::read_to_string(recipes_dir().join("../tools/workflow_pr_ready.sh"))
-        .expect("read workflow_pr_ready.sh");
-    let read_pos = helper
-        .find("PR_URL=\"${RECIPE_VAR_pr_url:-")
-        .expect("workflow_pr_ready.sh must read PR_URL from RECIPE_VAR_pr_url");
-    let check_pos = helper
-        .find("[[ \"$PR_URL\" =~ [^[:space:]] ]]")
-        .expect("workflow_pr_ready.sh must check PR_URL is non-empty");
-    let gh_pr_ready_pos = helper
-        .find("pr ready \"$pr_url\"")
-        .expect("'gh pr ready' must still exist for GitHub PRs");
-    assert!(
-        read_pos < check_pos && check_pos < gh_pr_ready_pos,
-        "workflow_pr_ready.sh must read and check PR_URL before invoking 'gh pr ready'"
-    );
 }
 
 #[path = "zero_bs_transport/mod.rs"]

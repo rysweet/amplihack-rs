@@ -17,7 +17,7 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false" }  # caller delivery inputs: docs/reference/workflow-delivery-inputs.md
+context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false", step_recovery_dir: "" }  # caller delivery inputs: docs/reference/workflow-delivery-inputs.md
 
 steps:
   - id: "step-04-setup-worktree"
@@ -62,7 +62,7 @@ steps:
       # work root, else <main>/worktrees (#1134), so `base` (absent from older helpers) is only asked then.
       WT_BASE="${MAIN_REPO_PATH}/worktrees"
       if [ -f "$ROOT_HELPER" ] && [ "${AMPLIHACK_WORK_ROOT_EXPLICIT:-0}" = 1 ] && [ -n "${AMPLIHACK_WORK_ROOT:-}" ]; then
-        WT_BASE="$(bash "$ROOT_HELPER" base "$MAIN_REPO_PATH")" || exit 1
+        WT_BASE="$(bash "$ROOT_HELPER" base "$REPO_PATH")" || exit 1
       fi
       [ "$MAIN_REPO_PATH" = "$REPO_PATH" ] || echo "INFO: caller checkout '$REPO_PATH' is a linked worktree — anchoring new worktrees at main repository '$MAIN_REPO_PATH' (issue #1134)." >&2
       # Self-healing orphan sweep (#840): best-effort prune of worktrees/branches
@@ -374,16 +374,16 @@ steps:
         AMPLIHACK_RUNTIME_ROOT="${AMPLIHACK_RUNTIME_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/amplihack-runtime/$BRANCH_NAME}"
         mkdir -p "$AMPLIHACK_RUNTIME_ROOT"/{locks,reflection,logs,metrics,provenance}
       fi
-      export AMPLIHACK_RUNTIME_ROOT
+      export AMPLIHACK_RUNTIME_ROOT; HOST_INPUTS="$TOOLS_DIR/workflow_worktree_host_inputs.sh"; [ ! -f "$HOST_INPUTS" ] || bash "$HOST_INPUTS" link "$REPO_PATH" "$WORKTREE_PATH" >&2 || true  # #3102: link the launch checkout's git-ignored .venv folders
 
       echo "" >&2
       echo "=== Worktree Setup Complete ===" >&2
 
       # Output structured JSON for subsequent steps.
       # created=false signals that an existing worktree was reused (diagnostic for re-runs).
-      # Consumers accept worktree_setup.worktree_path only as an already-resolved
-      # worktree root (#1561 V4), so emit the physical path.
+      # worktree_setup.worktree_path must be an already-resolved root (#1561 V4): emit the physical path.
       WORKTREE_PATH="$(cd -P -- "$WORKTREE_PATH" && pwd -P)" || { echo "ERROR: cannot resolve the worktree path to a physical directory (#1561)" >&2; exit 1; }
+      [ ! -d "${RECIPE_VAR_step_recovery_dir:-/nonexistent}" ] || (umask 077 && printf '%s\n' "$BRANCH_NAME" > "$RECIPE_VAR_step_recovery_dir/build-branch.txt") || echo "WARNING: could not record the branch for a retried build (#2539)" >&2  # autodrive-build step-02r reuses it
       printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "%s", "base_branch": "%s", "runtime_root": "%s", "created": %s}\n' \
         "$(json_escape "$WORKTREE_PATH")" \
         "$(json_escape "$BRANCH_NAME")" \

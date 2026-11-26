@@ -19,22 +19,24 @@
 # must hold in BOTH directions or the fix has either not worked or has undone
 # #1361:
 #
-#   1. on the claiming pull request's head branch, the run PROCEEDS;
-#   2. on any other branch, the claim still REFUSES the run — including a
-#      same-named head in a FORK, where equal branch names are not one branch;
+#   1. on the claiming pull request's head branch, the run PROCEEDS (ok-own-pr);
+#   2. on any other branch, the claim is still REPORTED (the `claimed` key
+#      line), including a same-named head in a FORK, where equal branch names
+#      are not one branch. Since #3129 a claim is information for the run's
+#      agent and exits 0; it no longer ends the run;
 #   3. the allowance is per-claim, not a blanket bypass: a second competitor on
-#      a different branch still refuses even while we stand on our own PR;
+#      a different branch is still reported even while we stand on our own PR;
 #   4. `-c allow_existing_pr=true` states the intent when the working directory
 #      cannot be on that branch — and `=false` does not silently enable it;
-#   5. the refusal now says how to proceed legitimately;
+#   5. the claim report gives the facts the agent judges from;
 #   6. none of this touches the three-way split: a check that cannot be made
 #      still warns and continues, and prints no token value (#1268).
 #
 # Every token in this file is an obvious fake.
 
-# `+e` is explicit, not inherited-by-accident: almost every assertion below runs
-# a helper that is EXPECTED to exit 1, so errexit would end the run at the first
-# refusal it proved. CI invokes this as `bash tests/...` inside an `-eo pipefail`
+# `+e` is explicit, not inherited-by-accident: assertions below run helpers
+# whose exit status is the thing under test, so errexit must not end the run at
+# the first non-zero exit it sees. CI invokes this as `bash tests/...` inside an `-eo pipefail`
 # wrapper, which already gives it a fresh shell; saying `+e` here means the file
 # also behaves when it is run under `bash -e` directly.
 set +e -uo pipefail
@@ -131,13 +133,16 @@ else
   fail "the claiming PR's own branch was refused: rc=$RC out=${OUT:0:500}"
 fi
 
-echo "== 2. a second implementation attempt is still refused (#1361 must hold) =="
+echo "== 2. a second implementation attempt still sees the claim (#1361 must hold) =="
+# Since #3129 a claim is information for the run's agent: exit 0, with the
+# `claimed` key line and the claiming PR named, never the `ok` lines.
 refused() { # refused <label> <expected-pr-number>
   local label="$1" num="$2" missing=""
   grep -q "#${num}" <<<"$OUT" || missing="$missing pr-number"
   grep -q "already working on issue #${ISSUE}" <<<"$OUT" || missing="$missing headline"
-  if [ "$RC" -eq 1 ] && [ -z "$missing" ]; then
-    pass "$label refuses (exit 1) naming PR #${num}"
+  grep -q "^issue_claim_check: claimed issue=${ISSUE} " <<<"$OUT" || missing="$missing claimed-key-line"
+  if [ "$RC" -eq 0 ] && [ -z "$missing" ]; then
+    pass "$label is reported as a claim (exit 0) naming PR #${num}"
   else
     fail "$label: rc=$RC missing:${missing:-none} out=${OUT:0:500}"
   fi
@@ -150,19 +155,20 @@ run "$WORK/on-main"  FAKE_GH=other_only; refused "a competitor on a branch we ar
 # like ours. Equal names across repositories are not one branch.
 run "$WORK/on-pr-branch" FAKE_GH=fork_claim; refused "a same-named head in a FORK is not our branch" 173
 
-# Detached HEAD has no branch to compare, so the pre-#1448 answer stands and the
-# escape hatch is what the operator needs. The refusal has to say so.
+# Detached HEAD has no branch to compare, so the claim is reported, and the
+# report says the working directory is on a detached HEAD.
 run "$WORK/detached" FAKE_GH=claim
-if [ "$RC" -eq 1 ] && grep -q 'allow_existing_pr=true' <<<"$OUT" \
+if [ "$RC" -eq 0 ] && grep -q "^issue_claim_check: claimed issue=${ISSUE} " <<<"$OUT" \
    && grep -q 'detached HEAD' <<<"$OUT"; then
-  pass "a detached HEAD cannot make the comparison, refuses, and names the escape hatch"
+  pass "a detached HEAD cannot make the comparison, reports the claim, and says it is detached"
 else
   fail "detached HEAD mishandled: rc=$RC out=${OUT:0:500}"
 fi
 
 echo "== 3. the allowance is per-claim, not a blanket bypass =="
 run "$WORK/on-pr-branch" FAKE_GH=two_claims
-if [ "$RC" -eq 1 ] && grep -q '#200' <<<"$OUT"; then
+if [ "$RC" -eq 0 ] && grep -q "^issue_claim_check: claimed issue=${ISSUE} " <<<"$OUT" \
+   && grep -q '#200' <<<"$OUT"; then
   pass "standing on PR #173 does not excuse a second competitor (#200) on another branch"
 else
   fail "a second competitor was let through while on our own PR: rc=$RC out=${OUT:0:500}"
@@ -183,22 +189,23 @@ run "$WORK/on-main" FAKE_GH=claim -- --allow-existing-pr
   || fail "--allow-existing-pr ignored: rc=$RC out=${OUT:0:300}"
 # `false` must not read as "set" — a bare -n test would have made the flag
 # impossible to turn off once a caller had learned to pass it.
+bypassed=""
 for v in false 0 no off ""; do
   run "$WORK/on-main" FAKE_GH=claim ALLOW_EXISTING_PR="$v"
-  [ "$RC" -eq 1 ] || fail "ALLOW_EXISTING_PR='$v' wrongly bypassed the check: rc=$RC"
+  grep -q "^issue_claim_check: claimed issue=${ISSUE} " <<<"$OUT" \
+    || { bypassed="$bypassed '$v'"; fail "ALLOW_EXISTING_PR='$v' wrongly bypassed the check: rc=$RC out=${OUT:0:300}"; }
 done
-[ "$RC" -eq 1 ] && pass "ALLOW_EXISTING_PR=false/0/no/off/empty does NOT bypass the check"
+[ -z "$bypassed" ] && pass "ALLOW_EXISTING_PR=false/0/no/off/empty does NOT bypass the check"
 
-echo "== 5. the refusal says how to proceed legitimately =="
+echo "== 5. the claim report gives the facts the run's agent judges from =="
 run "$WORK/on-main" FAKE_GH=claim
 missing=""
-grep -q "git checkout ${PR_HEAD}" <<<"$OUT" || missing="$missing checkout-hint"
-grep -q 'allow_existing_pr=true' <<<"$OUT" || missing="$missing flag-hint"
-grep -q 'existing_branch=' <<<"$OUT" || missing="$missing existing-branch-hint"
+grep -q "head=${PR_HEAD}" <<<"$OUT" || missing="$missing claim-head"
 grep -q 'branch here: main' <<<"$OUT" || missing="$missing branch-here"
+grep -q 'https://github.com/o/r/pull/173' <<<"$OUT" || missing="$missing claim-url"
 [ -z "$missing" ] \
-  && pass "the refusal names the branch we are on, the branch to check out, and the flag" \
-  || fail "the refusal omits:$missing out=${OUT:0:600}"
+  && pass "the claim report names the branch we are on, the claim's head branch and its URL" \
+  || fail "the claim report omits:$missing out=${OUT:0:600}"
 
 echo "== 6. the three-way split is untouched =="
 run "$WORK/on-pr-branch" FAKE_GH=ratelimit
@@ -242,9 +249,10 @@ if [ -s "$STEP" ]; then
     || fail "the recipe step blocked a review of the issue's own PR: rc=$RC out=${OUT:0:400}"
 
   step "$WORK/on-main" FAKE_GH=claim
-  [ "$RC" -eq 1 ] && grep -q "already working on issue #${ISSUE}" <<<"$OUT" \
-    && pass "the recipe step still refuses a second implementation attempt" \
-    || fail "the recipe step let a duplicate through: rc=$RC out=${OUT:0:400}"
+  [ "$RC" -eq 0 ] && grep -q "already working on issue #${ISSUE}" <<<"$OUT" \
+    && grep -q "^issue_claim_check: claimed issue=${ISSUE} " <<<"$OUT" \
+    && pass "the recipe step reports the claim to a second implementation attempt" \
+    || fail "the recipe step hid the claim from a second attempt: rc=$RC out=${OUT:0:400}"
 
   # The flag reaches the helper only by OS environment inheritance through the
   # step, which is exactly how `-c allow_existing_pr=true` is delivered.

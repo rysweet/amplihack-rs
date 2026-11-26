@@ -1,6 +1,5 @@
-use super::scip_indexing::{
-    LANGUAGE_ORDER, language_for_path, normalize_languages, should_ignore_dir,
-};
+use super::scip_indexing::{LANGUAGE_ORDER, language_for_path, normalize_languages};
+use super::source_files::project_source_files;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -48,34 +47,15 @@ fn count_files_by_language(project_path: &Path, languages: &[String]) -> BTreeMa
         .cloned()
         .map(|language| (language, 0usize))
         .collect::<BTreeMap<_, _>>();
-    scan_language_counts(project_path, &mut counts);
-    counts
-}
-
-fn scan_language_counts(path: &Path, counts: &mut BTreeMap<String, usize>) {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let entry_path = entry.path();
-        let file_name = entry.file_name().to_string_lossy().to_string();
-        if entry_path.is_dir() {
-            if should_ignore_dir(&file_name) {
-                continue;
-            }
-            scan_language_counts(&entry_path, counts);
-            continue;
-        }
-        if !entry_path.is_file() {
-            continue;
-        }
-        let Some(language) = language_for_path(&entry_path) else {
+    for file in project_source_files(project_path) {
+        let Some(language) = language_for_path(&file) else {
             continue;
         };
         if let Some(count) = counts.get_mut(language) {
             *count += 1;
         }
     }
+    counts
 }
 
 fn indexing_rate(language: &str) -> f64 {

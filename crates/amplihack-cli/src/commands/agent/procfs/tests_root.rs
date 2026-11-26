@@ -270,6 +270,30 @@ fn every_outcome_but_an_accepted_variable_gives_the_shared_default() {
     }
 }
 
+/// Issue #2935: what a reader gets that works on any system when it is given
+/// a table. A system without `/proc` has no table of its own, so only a
+/// synthetic one that passed the checks is read there; with `/proc`, an
+/// unset or refused variable falls back to it as before.
+#[test]
+fn a_system_without_proc_has_a_table_only_when_a_test_supplied_one() {
+    let tree = private_tree();
+    let accepted = tree.path().canonicalize().unwrap();
+    let proc = Some(PathBuf::from("/proc"));
+    for has_proc in [true, false] {
+        assert_eq!(
+            table_on(has_proc, Ok(Some(accepted.clone()))),
+            Some(accepted.clone()),
+            "an accepted synthetic table is read on every system"
+        );
+    }
+    assert_eq!(table_on(true, Ok(None)), proc);
+    assert_eq!(table_on(false, Ok(None)), None);
+    for why in [Refusal::NoGuard, Refusal::Missing, Refusal::OutsideTemp] {
+        assert_eq!(table_on(true, Err(why)), proc, "{why}");
+        assert_eq!(table_on(false, Err(why)), None, "{why}");
+    }
+}
+
 #[test]
 fn a_refused_variable_is_still_refused_by_resolve() {
     // `proc_root` changes under `cfg(test)`; `resolve` does not.

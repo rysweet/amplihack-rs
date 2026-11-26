@@ -72,9 +72,9 @@ fn verify_skill_count(
     if !source_skills.exists() {
         return Ok(());
     }
-    let source_count = immediate_real_child_dir_count(&source_skills)?;
+    let source_count = immediate_child_dir_count(&source_skills)?;
     let staged_skills = claude_dir.join("skills");
-    let staged_count = immediate_real_child_dir_count(&staged_skills).unwrap_or(0);
+    let staged_count = immediate_child_dir_count(&staged_skills).unwrap_or(0);
     if staged_count < source_count {
         missing.push(format!(
             "staged skills are incomplete: expected at least {source_count} skill directories, found {staged_count} at {}",
@@ -157,16 +157,53 @@ fn real_relative_dirs(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-fn immediate_real_child_dir_count(path: &Path) -> Result<usize> {
+fn immediate_child_dir_count(path: &Path) -> Result<usize> {
     let mut count = 0;
     for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
         let entry = entry?;
-        let file_type = entry
-            .file_type()
+        // A checkout's root skills directory contains links to bundled skills.
+        // Count their targets so a missing staged skill cannot pass as zero.
+        let metadata = fs::metadata(entry.path())
             .with_context(|| format!("failed to stat {}", entry.path().display()))?;
-        if file_type.is_dir() {
+        if metadata.is_dir() {
             count += 1;
         }
     }
     Ok(count)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkout_with_linked_skills_requires_every_staged_skill() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let source = temp.path().join("checkout");
+        let staged = temp.path().join("staged");
+        for (src, dst) in dir_mapping(SourceLayout::LegacyClaude) {
+            fs::create_dir_all(source.join(src)).unwrap();
+            fs::create_dir_all(staged.join(dst)).unwrap();
+        }
+        for name in ["first", "second"] {
+            let skill = source.join("amplifier-bundle/skills").join(name);
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(skill.join("SKILL.md"), "skill definition\n").unwrap();
+            std::os::unix::fs::symlink(
+                Path::new("../amplifier-bundle/skills").join(name),
+                source.join("skills").join(name),
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(staged.join("skills/first")).unwrap();
+        fs::write(staged.join("skills/first/SKILL.md"), "skill definition\n").unwrap();
+
+        let error = verify_install_completeness(&source, SourceLayout::LegacyClaude, &staged)
+            .expect_err("a checkout with a missing staged skill must fail verification");
+        assert!(error.to_string().contains("staged skills are incomplete"));
+
+        fs::create_dir_all(staged.join("skills/second")).unwrap();
+        fs::write(staged.join("skills/second/SKILL.md"), "skill definition\n").unwrap();
+        verify_install_completeness(&source, SourceLayout::LegacyClaude, &staged).unwrap();
+    }
 }

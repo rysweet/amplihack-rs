@@ -3,8 +3,9 @@
 **Issue:** [#1265](https://github.com/rysweet/amplihack-rs/issues/1265) (Option 3); delivery by file: [#2030](https://github.com/rysweet/amplihack-rs/issues/2030)
 **Status:** Implemented. The fragment's source of truth is
 `amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md`; it is `include_str!`d into
-the binary at compile time. At launch, amplihack writes those bytes to a 0600
-file and `build_command_for_dir` passes `--append-system-prompt-file <path>`.
+the binary at compile time. At launch, amplihack writes those bytes, less the
+maintainers' comment that opens the file, to a 0600 file and
+`build_command_for_dir` passes `--append-system-prompt-file <path>`.
 The text is never in argv, and the file is never read back as a source of
 content — see [Why it is compiled in](#why-it-is-compiled-in-and-not-read-from-disk)
 and [A file, not the text](#a-file-not-the-text).
@@ -438,7 +439,11 @@ privilege go through code review.
 ## The fragment
 
 The shipped fragment is capped at 25 lines, asserted by test. It is injected
-into every session, so every line costs context on every launch.
+into every session, so every line costs context on every launch. That cap is
+why the closing rule about stopping a background job spends two lines and no
+more: one for what to do, one for what never to do and why. The worked
+examples, the other patterns that match the runner, and the hook that denies
+them live in [Stop Background Jobs by PID](howto/stop-background-jobs-by-pid.md).
 
 ```markdown
 <!-- Compiled into the binary and written at launch to a 0600 file passed with
@@ -446,11 +451,9 @@ into every session, so every line costs context on every launch.
      so edit this file in the repo and rebuild. Every session on every install
      gets these bytes. Never place credentials, tokens, paths to secrets, or
      private context in this file. -->
-
 # Amplihack operating contract
 
 This session was launched by amplihack. Amplihack's routing contract is authoritative.
-
 - The `UserPromptSubmit` hook output and `CLAUDE.md` in this session define how work
   is delegated. Follow them.
 - Launching through amplihack **is the user's request** to use amplihack's router,
@@ -466,6 +469,8 @@ This session was launched by amplihack. Amplihack's routing contract is authorit
 - To wait, run `amplihack wait --seconds N`, or start the work with `cmd & pid=$!` and
   run `wait $pid`. Never use `tail -f /dev/null` or `timeout N tail -f /dev/null` as a
   sleep: it is left running as an orphan, and the PreToolUse hook denies it.
+- Stop only a job you started: its `$!` PID, or a group you made (`set -m`, `setsid`).
+  Never select by name or pattern (`pkill -f`, `killall`): it may match the runner.
 ```
 
 Four properties make it work, and each is there for a reason:
@@ -575,8 +580,9 @@ keeps the remaining assertion, at build time.
 
 ## Related documentation
 
-- [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) — the contract file, the version gate and every launch path's channel
+- [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) — the contract file, the Claude Code version requirement and every launch path's channel
 - [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md) — the incident behind delivery by file
+- [Stop Background Jobs by PID](howto/stop-background-jobs-by-pid.md) — the worked examples behind the fragment's two-line stop-a-job rule
 
 - [Launch Target Resolution](LAUNCH_TARGET_RESOLUTION.md) — the other half of the launch path: which binary gets executed and why
 - [`amplihack copilot` — Subprocess-Safe Defaults](COPILOT_SUBPROCESS_SAFE.md) — the flag-injection pattern this feature follows

@@ -81,9 +81,14 @@ fn read_recipe(name: &str) -> String {
 }
 
 /// Return the raw `command:` block string of a step by id, from `<recipe>.yaml`.
+/// The shell a step runs. Issue #1619: a body extracted into
+/// `amplifier-bundle/tools/` for the brick budget is followed, so these
+/// assertions read the step's real shell rather than its lookup block.
 fn step_command(recipe: &str, step_id: &str) -> String {
-    step_field(recipe, step_id, "command")
-        .unwrap_or_else(|| panic!("{recipe}: step `{step_id}` has no `command:` block"))
+    crate::recipe_step_body::resolved(
+        &step_field(recipe, step_id, "command")
+            .unwrap_or_else(|| panic!("{recipe}: step `{step_id}` has no `command:` block")),
+    )
 }
 
 /// Return the raw string value of a scalar/block field of a step by id.
@@ -153,6 +158,8 @@ fn run_cli(args: &[&str], stdin: &str, extra_env: &[(&str, &str)]) -> Run {
         command
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env("TMPDIR", std::env::temp_dir())
             .env("PATH", path_with_bin())
             .env("CARGO_HOME", private.path().join(".cargo"))

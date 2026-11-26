@@ -360,7 +360,9 @@ fn copy_dir_recursive_skips_symlinks_without_following() {
 }
 
 #[test]
-fn bundle_install_keeps_support_links_out_of_shared_staging() {
+fn bundle_install_completes_every_indexed_support_resource() {
+    use crate::commands::directory::index::{EntryKind, collect_entries, read_index, write_index};
+
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -372,12 +374,44 @@ fn bundle_install_keeps_support_links_out_of_shared_staging() {
 
     directories::copytree_manifest(&bundle, SourceLayout::Bundle, &staged).unwrap();
 
-    assert!(!staged.join("skills/docx/ooxml").exists());
-    assert!(!staged.join("skills/pptx/ooxml").exists());
-    assert!(!staged.join("skills/outside-in-testing/README.md").exists());
-    assert!(!staged.join("skills/outside-in-testing/examples").exists());
-    assert!(!staged.join("skills/outside-in-testing/scripts").exists());
-    assert!(!staged.join("skills/outside-in-testing/tests").exists());
+    let entries = collect_entries(&staged).unwrap();
+    let index = write_index(&staged).unwrap();
+    assert_eq!(read_index(&index).unwrap().unwrap(), entries);
+    for (skill, resource) in [
+        ("docx", "ooxml/scripts/pack.sh"),
+        ("pptx", "ooxml/scripts/pack.sh"),
+        ("outside-in-testing", "README.md"),
+        ("outside-in-testing", "examples/cli/calculator-basic.yaml"),
+    ] {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.kind == EntryKind::Skill && entry.name == skill)
+            .unwrap();
+        let indexed = entry.path.parent().unwrap().join(resource);
+        let original = bundle.join("skills").join(skill).join(resource);
+        let expected = fs::read(original).unwrap();
+        assert!(!expected.is_empty());
+        assert_eq!(fs::read(&indexed).unwrap(), expected, "{skill}/{resource}");
+        assert!(!indexed.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    let skills = bundle.join("skills");
+    for directory in filesystem::walk_dirs(&skills).unwrap() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let source = entry.path();
+            if !entry.file_type().unwrap().is_symlink() || !source.exists() {
+                continue;
+            }
+            let relative = source.strip_prefix(&skills).unwrap();
+            let published = staged.join("skills").join(relative);
+            assert!(published.exists(), "{}", relative.display());
+            assert!(!published.is_symlink(), "{}", relative.display());
+        }
+    }
+
+    crate::claude_plugin::complete_indexed_skill_resources(&staged).unwrap();
+    assert_eq!(collect_entries(&staged).unwrap(), entries);
 }
 
 #[test]
@@ -397,6 +431,11 @@ fn bundle_install_then_claude_sync_materializes_known_support_links() {
     let staged = temp.path().join(".amplihack/.claude");
 
     directories::copytree_manifest(&bundle, SourceLayout::Bundle, &staged).unwrap();
+    fs::write(
+        temp.path().join(".amplihack/config.toml"),
+        "[lists]\nset = 'all'\n",
+    )
+    .unwrap();
     crate::claude_plugin::ensure_claude_plugin_installed().unwrap();
 
     let claude_skills = temp.path().join(".claude/skills");
@@ -404,8 +443,6 @@ fn bundle_install_then_claude_sync_materializes_known_support_links() {
     assert!(claude_skills.join("pptx/ooxml/scripts/pack.sh").is_file());
     assert!(claude_skills.join("outside-in-testing/README.md").is_file());
     assert!(claude_skills.join("outside-in-testing/examples").is_dir());
-    assert!(!claude_skills.join("outside-in-testing/scripts").exists());
-    assert!(!claude_skills.join("outside-in-testing/tests").exists());
 
     crate::test_support::restore_home(previous);
 }
@@ -883,92 +920,10 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
     );
 }
 
-/// Issue #1551: the `gh` merge guard is staged with the bundle and stays
-/// executable, since `amplihack recipe run` puts its directory on PATH and
-/// refuses to run auto-drive without it.
+/// Staging normalizes ordinary tool permissions without gate-specific rules.
 #[cfg(unix)]
 #[test]
-fn copy_amplifier_bundle_stages_the_merge_guard_executable() {
-    use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir().unwrap();
-    let repo_root = temp.path().join("repo");
-    let claude_dir = temp.path().join(".amplihack/.claude");
-    fs::create_dir_all(&claude_dir).unwrap();
-    issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
-    let guard = repo_root.join("amplifier-bundle/tools/gh-merge-guard");
-    fs::create_dir_all(&guard).unwrap();
-    fs::write(
-        guard.join("gh"),
-        "#!/usr/bin/env bash\n# amplihack-gh-merge-guard\n",
-    )
-    .unwrap();
-    fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
-
-    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
-
-    let staged = temp
-        .path()
-        .join(".amplihack/amplifier-bundle/tools/gh-merge-guard/gh");
-    let meta = fs::metadata(&staged)
-        .unwrap_or_else(|e| panic!("{} must be staged: {e}", staged.display()));
-    assert!(meta.is_file());
-    assert!(
-        meta.permissions().mode() & 0o111 != 0,
-        "the staged merge guard must stay executable (mode {:o})",
-        meta.permissions().mode()
-    );
-}
-
-/// Issue #1551 G11: the install sets the shim to exactly 0755 rather than
-/// keeping whatever mode the checkout (and its umask) gave it, because
-/// `amplihack recipe run` refuses a guard that group or others can write.
-#[cfg(unix)]
-#[test]
-fn copy_amplifier_bundle_stages_the_merge_guard_at_exactly_0755() {
-    use std::os::unix::fs::PermissionsExt;
-    for source_mode in [0o775, 0o777, 0o700, 0o644] {
-        let temp = tempfile::tempdir().unwrap();
-        let repo_root = temp.path().join("repo");
-        let claude_dir = temp.path().join(".amplihack/.claude");
-        fs::create_dir_all(&claude_dir).unwrap();
-        issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
-        let guard = repo_root.join("amplifier-bundle/tools/gh-merge-guard");
-        fs::create_dir_all(&guard).unwrap();
-        fs::write(
-            guard.join("gh"),
-            "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
-        )
-        .unwrap();
-        fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(source_mode)).unwrap();
-
-        directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
-
-        let staged_dir = temp
-            .path()
-            .join(".amplihack/amplifier-bundle/tools/gh-merge-guard");
-        let mode = fs::metadata(staged_dir.join("gh"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o7777;
-        assert_eq!(
-            mode, 0o755,
-            "a {source_mode:o} source shim must be staged as 0755, got {mode:o}"
-        );
-        let dir_mode = fs::metadata(&staged_dir).unwrap().permissions().mode();
-        assert_eq!(
-            dir_mode & 0o022,
-            0,
-            "the staged guard dir must not be group- or other-writable (mode {dir_mode:o})"
-        );
-    }
-}
-
-/// Issue #1551 G11: the guard also trusts tools/ and the gate files in it, so
-/// the install removes their group and other write bits, keeping the rest.
-#[cfg(unix)]
-#[test]
-fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
+fn copy_amplifier_bundle_removes_group_write_from_tools() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
     let repo_root = temp.path().join("repo");
@@ -976,17 +931,17 @@ fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
     fs::create_dir_all(&claude_dir).unwrap();
     issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
     let tools = repo_root.join("amplifier-bundle/tools");
-    let guard = tools.join("gh-merge-guard");
+    let guard = tools.join("ordinary-tool-dir");
     fs::create_dir_all(&guard).unwrap();
     fs::write(
         guard.join("gh"),
-        "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
+        "#!/bin/bash -p\n# amplihack-ordinary-tool-dir\n",
     )
     .unwrap();
     fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
-    fs::write(tools.join("autodrive_merge_gate.sh"), "#!/bin/bash\n").unwrap();
+    fs::write(tools.join("ordinary-tool.sh"), "#!/bin/bash\n").unwrap();
     fs::set_permissions(
-        tools.join("autodrive_merge_gate.sh"),
+        tools.join("ordinary-tool.sh"),
         fs::Permissions::from_mode(0o777),
     )
     .unwrap();
@@ -1003,7 +958,7 @@ fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
     let staged = temp.path().join(".amplihack/amplifier-bundle/tools");
     let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
     assert_eq!(mode(&staged) & 0o022, 0, "tools/ mode {:o}", mode(&staged));
-    assert_eq!(mode(&staged.join("autodrive_merge_gate.sh")), 0o755);
+    assert_eq!(mode(&staged.join("ordinary-tool.sh")), 0o755);
     assert_eq!(mode(&staged.join("autodrive_state.sh")), 0o644);
 }
 
@@ -1771,13 +1726,18 @@ fn run_install_force_refresh_true_skips_bundled_root() {
 fn fixture_environment() -> crate::test_support::EnvGuard {
     let saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_SKIP_MMDC",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
         "AMPLIHACK_HOME",
         "HOME",
         "PATH",
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    unsafe {
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");
+        // Optional Mermaid delivery has dedicated fake-command tests.
+        std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
+    };
     // A session's own AMPLIHACK_HOME is a source install would now refuse (#1955).
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };
     saved

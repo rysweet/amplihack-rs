@@ -1,0 +1,653 @@
+//! Codex arguments, environment and generated home for local-model launches,
+//! compared with ordinary launches.
+
+use super::harness::*;
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
+
+/// Selection by the flag.
+#[test]
+fn the_flag_starts_codex_on_the_generated_home() {
+    let f = Fixture::new();
+    let launch = f.local(NAME, &[]);
+    launch.assert_started();
+    assert_child_env(&launch, &f, NAME);
+}
+
+/// Selection by the variable, as a recipe agent step selects it.
+#[test]
+fn the_variable_starts_codex_on_the_generated_home() {
+    let f = Fixture::new();
+    let launch = f.launch(
+        f.command(&["codex", "--", "exec", "-"])
+            .env(LOCAL_MODEL_ENV, NAME),
+    );
+    launch.assert_started();
+    assert_child_env(&launch, &f, NAME);
+}
+
+fn assert_child_env(launch: &Launched, f: &Fixture, name: &str) {
+    let home = f.generated(name);
+    assert_eq!(
+        launch.env("CODEX_HOME").map(Path::new),
+        Some(home.as_path()),
+        "CODEX_HOME"
+    );
+    assert_eq!(launch.env(HOOK_TEXT_ENV), Some("none"));
+    assert_eq!(launch.env(LOCAL_MODEL_ENV), Some(name));
+    assert_eq!(
+        launch.env("AMPLIHACK_HOOK_PROTOCOL"),
+        None,
+        "the hook command sets the protocol, never the launch"
+    );
+    assert!(
+        !launch
+            .argv()
+            .iter()
+            .any(|a| a == "--profile" || a == "-p" || a.starts_with("--profile=")),
+        "no --profile is passed: {:?}",
+        launch.argv()
+    );
+}
+
+/// the settings in `config.toml`. Settings are compared, not layout.
+#[test]
+fn config_toml_holds_the_profile_and_amplihack_settings() {
+    let f = Fixture::new();
+    f.local(NAME, &[]).assert_started();
+    let home = f.generated(NAME);
+    let config = read_toml(&home.join("config.toml"));
+
+    // The profile's model and provider.
+    assert_eq!(config["model"].as_str(), Some("inkling-2-mini"));
+    assert_eq!(config["model_provider"].as_str(), Some("llamacpp-local"));
+    assert_eq!(config["model_context_window"].as_integer(), Some(65536));
+    let provider = &config["model_providers"]["llamacpp-local"];
+    assert_eq!(
+        provider["base_url"].as_str(),
+        Some("http://127.0.0.1:8080/v1")
+    );
+    assert_eq!(provider["stream_max_retries"].as_integer(), Some(2));
+
+    // amplihack's settings override the profile's.
+    assert_eq!(config["project_doc_max_bytes"].as_integer(), Some(0));
+    assert_eq!(config["web_search"].as_str(), Some("disabled"));
+    let instructions = config["model_instructions_file"]
+        .as_str()
+        .expect("model_instructions_file is a string");
+    let instructions = Path::new(instructions);
+    assert!(instructions.is_absolute(), "{instructions:?}");
+    assert_eq!(instructions, home.join("instructions.md"));
+    let text = fs::read(instructions).unwrap();
+    assert!(
+        !text.is_empty() && text.len() <= 1024,
+        "{} bytes",
+        text.len()
+    );
+    assert!(std::str::from_utf8(&text).is_ok(), "UTF-8");
+
+    let features = config["features"].as_table().expect("[features]");
+    for off in ["multi_agent", "goals", "view_image", "plugins", "apps"] {
+        assert_eq!(features[off].as_bool(), Some(false), "features.{off}");
+    }
+    assert_eq!(features["hooks"].as_bool(), Some(true), "features.hooks");
+    assert_eq!(
+        features["some_future_feature"].as_bool(),
+        Some(true),
+        "other profile features are kept"
+    );
+    let bundled = config["skills"]["bundled"]
+        .as_table()
+        .expect("[skills.bundled]");
+    assert_eq!(bundled["enabled"].as_bool(), Some(false));
+    assert_eq!(bundled["extra"].as_str(), Some("kept"));
+
+    // The profile has no approval_policy, so the user's own one applies: a
+    // local session is never looser than the user's setting.
+    assert_eq!(config["approval_policy"].as_str(), Some("on-request"));
+
+    // Dropped from the profile.
+    for dropped in ["marketplaces", "plugins", "projects", "profile", "profiles"] {
+        assert!(
+            config.get(dropped).is_none(),
+            "{dropped} must not reach the generated config: {config:#?}"
+        );
+    }
+    let state = config["hooks"]["state"].as_table().unwrap();
+    let key = format!("{}:pre_tool_use:0:0", home.join("hooks.json").display());
+    assert_eq!(
+        state.len(),
+        1,
+        "only the generated command check is trusted"
+    );
+    assert_eq!(state[&key]["enabled"].as_bool(), Some(true));
+    assert!(config["hooks"].get("PreToolUse").is_none());
+    // Nothing else from the user's config.toml either.
+    assert!(config.get("sandbox_mode").is_none());
+}
+
+#[test]
+fn the_profile_approval_policy_is_kept() {
+    let f = Fixture::new();
+    f.write_profile(
+        "strict",
+        &format!("approval_policy = \"on-request\"\n{}", base_profile()),
+    );
+    f.local("strict", &[]).assert_started();
+    let config = read_toml(&f.generated("strict").join("config.toml"));
+    assert_eq!(config["approval_policy"].as_str(), Some("on-request"));
+}
+
+pub(crate) fn base_profile() -> &'static str {
+    "model = \"m\"\nmodel_provider = \"p\"\n\n[model_providers.p]\nbase_url = \"http://127.0.0.1:1/v1\"\n"
+}
+
+/// hooks.json holds PreToolUse only, amplihack's entry once and first,
+/// the plugin wrapper gone and the user's guards kept as they were.
+#[test]
+fn hooks_json_keeps_the_user_guards_and_one_amplihack_entry() {
+    let f = Fixture::new();
+    f.local(NAME, &[]).assert_started();
+    let hooks = read_json(&f.generated(NAME).join("hooks.json"));
+    let events: BTreeSet<&str> = hooks["hooks"]
+        .as_object()
+        .expect("hooks object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(events, BTreeSet::from(["PreToolUse"]));
+    assert_eq!(
+        hooks.as_object().unwrap().len(),
+        1,
+        "only the hooks key: {hooks:#}"
+    );
+
+    let groups = hooks["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(
+        groups.len(),
+        4,
+        "amplihack's group, the XPIA wrapper and the two guards: {hooks:#}"
+    );
+
+    let first = &groups[0];
+    assert!(first.get("matcher").is_none(), "no matcher: {first}");
+    let first_commands = commands(first);
+    assert_eq!(first_commands.len(), 1, "{first}");
+    let words = shell_words(&first_commands[0]);
+    assert_eq!(
+        words,
+        [
+            "env".to_string(),
+            "AMPLIHACK_HOOK_PROTOCOL=codex".to_string(),
+            f.hooks_bin().display().to_string(),
+            "pre-tool-use".to_string(),
+        ],
+        "{}",
+        first_commands[0]
+    );
+    assert_eq!(first["hooks"][0]["type"], "command");
+
+    assert_eq!(&groups[1..], kept_user_groups(f.home()).as_slice());
+
+    let all: Vec<String> = groups.iter().flat_map(commands).collect();
+    let bare_wrappers = all
+        .iter()
+        .filter(|c| c.contains("/bin/hook") && !c.contains("XPIA_ENABLED"))
+        .count();
+    assert_eq!(
+        bare_wrappers, 0,
+        "the bare plugin wrapper is dropped: {all:#?}"
+    );
+    assert_eq!(
+        all.iter().filter(|c| c.contains("XPIA_ENABLED")).count(),
+        1,
+        "the wrapper that sets XPIA_ENABLED is kept: {all:#?}"
+    );
+}
+
+/// The few shell-quoting forms the generated command uses: single quotes,
+/// and `'\''` for a quote inside them.
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_word = true;
+                for q in chars.by_ref() {
+                    if q == '\'' {
+                        break;
+                    }
+                    word.push(q);
+                }
+            }
+            '\\' => {
+                in_word = true;
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+            }
+            ' ' => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            other => {
+                in_word = true;
+                word.push(other);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    words
+}
+
+/// the files, their modes, and nothing amplihack did not
+/// put there (no plugin, no skills, no marketplace).
+#[test]
+fn the_generated_home_holds_only_the_owned_files_privately() {
+    let f = Fixture::new();
+    f.local(NAME, &[]).assert_started();
+    let home = f.generated(NAME);
+    let listing: BTreeSet<String> = snapshot(&home)
+        .keys()
+        .map(|p| p.display().to_string())
+        .collect();
+    let expected: BTreeSet<String> = [
+        "config.toml",
+        "hooks.json",
+        "instructions.md",
+        "rules",
+        RULES_FILE,
+        // the copy of the user's own rules/default.rules
+        "rules/amplihack-user-default.rules",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(listing, expected);
+
+    for dir in [f.codex_local(), home.clone(), home.join("rules")] {
+        assert_eq!(mode(&dir), 0o700, "{}", dir.display());
+    }
+    for file in OWNED {
+        assert_eq!(mode(&home.join(file)), 0o600, "{file}");
+    }
+    let rules = fs::read(home.join(RULES_FILE)).unwrap();
+    assert!(!rules.is_empty(), "the rules file has content");
+}
+
+/// The rules file is the one `amplihack install` writes for an ordinary
+/// Codex home: compare with what the same binary renders there.
+#[test]
+fn the_rules_file_carries_the_configured_deny_commands() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let config = f.home().join(".amplihack/config.toml");
+    fs::write(
+        &config,
+        "[policy]\ndeny_commands = [\"local-model-forbidden-tool\"]\n",
+    )
+    .unwrap();
+    // A group- or other-writable user config is ignored (#2589).
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    f.local(NAME, &[]).assert_started();
+    let rules = fs::read_to_string(f.generated(NAME).join(RULES_FILE)).unwrap();
+    assert!(
+        rules.contains("local-model-forbidden-tool"),
+        "policy.deny_commands reaches the rules file:\n{rules}"
+    );
+}
+
+/// an ordinary launch hands both variables through as it got them and
+/// builds nothing.
+#[test]
+fn an_ordinary_launch_passes_codex_home_and_hook_text_through() {
+    let f = Fixture::new();
+    for hook_text in [None, Some("full"), Some("none")] {
+        for codex_home in [Some(f.user_codex()), None] {
+            let mut command = f.command(&["codex", "--", "exec", "-"]);
+            match &codex_home {
+                Some(home) => command.env("CODEX_HOME", home),
+                None => command.env_remove("CODEX_HOME"),
+            };
+            if let Some(value) = hook_text {
+                command.env(HOOK_TEXT_ENV, value);
+            }
+            let launch = f.launch(&mut command);
+            launch.assert_started();
+            assert_eq!(
+                launch.env("CODEX_HOME").map(Path::new),
+                codex_home.as_deref(),
+                "{hook_text:?}"
+            );
+            assert_eq!(launch.env(HOOK_TEXT_ENV), hook_text, "{codex_home:?}");
+            assert_eq!(launch.env(LOCAL_MODEL_ENV), None);
+            assert!(
+                !f.codex_local().exists(),
+                "an ordinary launch builds nothing"
+            );
+            // An inherited `none` is said on stderr, once; `full` and an
+            // unset variable say nothing.
+            let named = launch
+                .stderr()
+                .lines()
+                .filter(|l| l.contains(HOOK_TEXT_ENV))
+                .count();
+            let expected = usize::from(hook_text == Some("none"));
+            assert_eq!(named, expected, "{hook_text:?}:\n{}", launch.stderr());
+        }
+    }
+}
+
+/// Every local launch says on stderr that hook text is off, whether or not
+/// amplihack added the hook-trust flag, so that the loss of lock mode, power
+/// steering and reflection is never silent.
+#[test]
+fn a_local_launch_says_that_hook_text_is_off() {
+    let f = Fixture::new();
+    for tail in [&[][..], &["exec", "-"][..], &[HOOK_TRUST, "exec", "-"][..]] {
+        let launch = f.local(NAME, tail);
+        launch.assert_started();
+        let stderr = launch.stderr();
+        let lines = stderr
+            .lines()
+            .filter(|l| l.contains(HOOK_TEXT_ENV) && l.contains(NAME))
+            .count();
+        assert_eq!(lines, 1, "{tail:?}:\n{stderr}");
+        assert_eq!(launch.env(HOOK_TEXT_ENV), Some("none"));
+        assert_eq!(launch.env(LOCAL_MODEL_ENV), Some(NAME));
+    }
+}
+
+/// A sandbox the profile chooses is kept on an `exec` launch: amplihack
+/// passes it on as the caller's choice, so the agent-step injection adds no
+/// `--sandbox danger-full-access`, which would outrank the config file. A
+/// caller's own `--sandbox` still reaches Codex, after amplihack's override.
+#[test]
+fn a_profile_sandbox_is_kept_on_an_exec_launch() {
+    let f = Fixture::new();
+    f.write_profile(
+        NAME,
+        &format!("sandbox_mode = \"workspace-write\"\n{PROFILE}"),
+    );
+    let launch = f.local(NAME, &["exec", "-"]);
+    launch.assert_started();
+    let argv = launch.argv();
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["-c", "sandbox_mode=\"workspace-write\""]),
+        "{argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|a| a == "danger-full-access"),
+        "no wider sandbox is added: {argv:?}"
+    );
+    assert_eq!(launch.count(HOOK_TRUST), 1, "{argv:?}");
+
+    let launch = f.local(NAME, &["exec", "--sandbox", "read-only", "-"]);
+    launch.assert_started();
+    let argv = launch.argv();
+    let ours = argv
+        .iter()
+        .position(|a| a == "sandbox_mode=\"workspace-write\"")
+        .unwrap();
+    let theirs = argv.iter().position(|a| a == "read-only").unwrap();
+    assert!(ours < theirs, "{argv:?}");
+}
+
+/// the flag wins over the variable.
+#[test]
+fn the_flag_wins_over_the_variable() {
+    let f = Fixture::new();
+    f.write_profile("alpha", base_profile());
+    f.write_profile("beta", base_profile());
+    let launch = f.launch(
+        f.command(&["codex", "--local-model", "alpha"])
+            .env(LOCAL_MODEL_ENV, "beta"),
+    );
+    launch.assert_started();
+    assert_child_env(&launch, &f, "alpha");
+    assert!(!f.generated("beta").exists());
+}
+
+/// an empty variable counts as unset.
+#[test]
+fn an_empty_variable_gives_an_ordinary_launch() {
+    let f = Fixture::new();
+    let launch = f.launch(
+        f.command(&["codex", "--", "exec", "-"])
+            .env(LOCAL_MODEL_ENV, ""),
+    );
+    launch.assert_started();
+    assert_eq!(
+        launch.env("CODEX_HOME").map(Path::new),
+        Some(f.user_codex().as_path())
+    );
+    assert_eq!(launch.env(HOOK_TEXT_ENV), None);
+    assert!(!f.codex_local().exists());
+}
+
+/// the hook-trust flag appears exactly once, first, whatever the
+/// caller passed on `exec`; interactive sessions keep trust review. `-c features.hooks=true`
+/// appears once, before the caller's arguments.
+#[test]
+fn hook_trust_appears_exactly_once() {
+    let f = Fixture::new();
+    let cases: &[(&[&str], &[&str])] = &[
+        (&[], &["-c", HOOKS_ON]),
+        (&["resume", "--last"], &["-c", HOOKS_ON, "resume", "--last"]),
+        (&[HOOK_TRUST], &["-c", HOOKS_ON, HOOK_TRUST]),
+        (&[HOOK_TRUST, "exec", "-"], &[]),
+        (&["exec", "-"], &[]),
+        (&["exec", HOOK_TRUST, "-"], &[]),
+        (&["-c", "model_reasoning_effort=\"low\"", "exec", "-"], &[]),
+    ];
+    for (tail, exact) in cases {
+        let launch = f.local(NAME, tail);
+        launch.assert_started();
+        let bypass = tail.contains(&HOOK_TRUST) || tail.contains(&"exec");
+        assert_eq!(
+            launch.count(HOOK_TRUST),
+            usize::from(bypass),
+            "{tail:?}: {:?}",
+            launch.argv()
+        );
+        assert_eq!(launch.count(HOOKS_ON), 1, "{tail:?}: {:?}", launch.argv());
+        let on = launch.argv().iter().position(|a| a == HOOKS_ON).unwrap();
+        assert_eq!(launch.argv()[on - 1], "-c", "{tail:?}: {:?}", launch.argv());
+        if let Some(first) = tail.iter().find(|a| **a != HOOK_TRUST && **a != "-c") {
+            let caller = launch.argv().iter().position(|a| a == first).unwrap();
+            assert!(on < caller, "{tail:?}: ours first: {:?}", launch.argv());
+        }
+        if !exact.is_empty() {
+            assert_eq!(launch.argv(), *exact, "{tail:?}");
+        }
+        if tail.contains(&"exec") && !tail.contains(&HOOK_TRUST) {
+            assert_eq!(launch.argv()[0], HOOK_TRUST, "{tail:?}: put first");
+        }
+        for arg in tail.iter().filter(|a| **a != HOOK_TRUST) {
+            assert!(
+                launch.argv().iter().any(|a| a == arg),
+                "{tail:?}: the caller's {arg:?} passes through"
+            );
+        }
+        assert!(
+            !launch
+                .argv()
+                .iter()
+                .any(|a| a == "--dangerously-bypass-approvals-and-sandbox" || a == "--yolo"),
+            "{tail:?}"
+        );
+    }
+}
+
+/// a caller who turns hooks off still can. Their own `-c` or
+/// `--disable hooks` reaches Codex unchanged, after amplihack's
+/// `-c features.hooks=true`, so Codex applies theirs last.
+#[test]
+fn a_caller_can_still_turn_hooks_off() {
+    let f = Fixture::new();
+    for tail in [
+        &["-c", "features.hooks=false", "exec", "-"][..],
+        &["--disable", "hooks", "exec", "-"][..],
+    ] {
+        let launch = f.local(NAME, tail);
+        launch.assert_started();
+        let argv = launch.argv();
+        let ours = argv.iter().position(|a| a == HOOKS_ON).unwrap();
+        let theirs = argv
+            .windows(2)
+            .position(|pair| pair[0] == tail[0] && pair[1] == tail[1])
+            .unwrap_or_else(|| panic!("{tail:?} passes through: {argv:?}"));
+        assert!(ours < theirs, "{tail:?}: {argv:?}");
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair == ["--sandbox", "danger-full-access"]),
+            "{tail:?}: the exec injection still finds exec: {argv:?}"
+        );
+    }
+}
+
+/// A recipe agent step's model tier on a local launch: the tier word is
+/// removed and nothing takes its place, neither a model nor a reasoning
+/// effort, because the profile sets both. The ordinary launch of the same
+/// tail is the control: there the tier does add an effort.
+#[test]
+fn a_tier_on_a_local_launch_adds_no_model_and_no_effort() {
+    let f = Fixture::new();
+    let effort = |argv: &[String]| argv.iter().any(|a| a.contains("model_reasoning_effort"));
+
+    let ordinary = f.launch(&mut f.command(&["codex", "--", "--model", "strong", "exec", "-"]));
+    ordinary.assert_started();
+    assert!(effort(ordinary.argv()), "control: {:?}", ordinary.argv());
+
+    for tier in ["fast", "standard", "strong"] {
+        let launch = f.local(NAME, &["--model", tier, "exec", "-"]);
+        launch.assert_started();
+        let argv = launch.argv();
+        assert!(
+            !argv.iter().any(|a| a == tier || a.starts_with("--model")),
+            "{tier}: no tier word and no model: {argv:?}"
+        );
+        assert!(!effort(argv), "{tier}: no effort: {argv:?}");
+    }
+}
+
+/// `model.force` is not applied to a local launch: the profile sets the model.
+#[test]
+fn a_forced_model_is_not_applied_to_a_local_launch() {
+    let f = Fixture::new();
+    for tail in [&["exec", "-"][..], &["--model", "strong", "exec", "-"][..]] {
+        let mut args = vec!["codex", "--local-model", NAME, "--"];
+        args.extend_from_slice(tail);
+        let launch = f.launch(
+            f.command(&args)
+                .env("AMPLIHACK_FORCE_MODEL", "forced-model"),
+        );
+        launch.assert_started();
+        let argv = launch.argv();
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a.contains("forced-model") || a.starts_with("--model")),
+            "{tail:?}: {argv:?}"
+        );
+    }
+}
+
+/// a concrete `--model` on a local launch reaches Codex unchanged.
+#[test]
+fn a_concrete_model_reaches_a_local_launch_unchanged() {
+    let f = Fixture::new();
+    let launch = f.local(NAME, &["--model", "qwen3", "exec", "-"]);
+    launch.assert_started();
+    let argv = launch.argv();
+    assert_eq!(launch.count("--model"), 1, "{argv:?}");
+    assert!(
+        argv.windows(2).any(|pair| pair == ["--model", "qwen3"]),
+        "{argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|a| a.contains("model_reasoning_effort")),
+        "{argv:?}"
+    );
+}
+
+/// A `--` among the Codex arguments ends Codex's options: a hook-trust flag
+/// after it is prompt text. Interactive launches add no automatic bypass;
+/// exec launches still add the agent-step bypass.
+///
+/// Interactive, because under `exec` the prompt after `--` is moved to
+/// stdin by the #2030 rewrite and never reaches argv; interactive Codex's
+/// positional text is passed through as it is.
+#[test]
+fn hook_trust_after_codex_end_of_options_does_not_count() {
+    let f = Fixture::new();
+    let launch = f.local(NAME, &["--", HOOK_TRUST]);
+    launch.assert_started();
+    assert_eq!(launch.argv(), ["-c", HOOKS_ON, "--", HOOK_TRUST]);
+    assert_eq!(launch.count(HOOK_TRUST), 1, "{:?}", launch.argv());
+
+    // Under `exec` the same text is the prompt and goes to stdin; the flag
+    // amplihack adds is still there, once and first.
+    let launch = f.local(NAME, &["exec", "--", HOOK_TRUST]);
+    launch.assert_started();
+    assert_eq!(launch.argv()[0], HOOK_TRUST, "{:?}", launch.argv());
+    assert_eq!(launch.count(HOOK_TRUST), 1, "{:?}", launch.argv());
+}
+
+/// one stderr line names the flag, the profile and the home when
+/// amplihack added the flag, and never quotes a user hook command.
+#[test]
+fn the_hook_trust_notice_names_what_amplihack_added() {
+    let f = Fixture::new();
+    let home = f.generated(NAME).display().to_string();
+    let launch = f.local(NAME, &["exec", "-"]);
+    launch.assert_started();
+    let stderr = launch.stderr();
+    let lines: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains(HOOK_TRUST) && l.contains(NAME) && l.contains(&home))
+        .collect();
+    assert_eq!(lines.len(), 1, "one notice line:\n{stderr}");
+    let rest = lines[0].replace(&home, "").replace(HOOK_TRUST, "");
+    assert!(
+        rest.split(|c: char| !c.is_ascii_digit()).any(|t| t == "3"),
+        "the notice gives the three user handlers carried over: {}",
+        lines[0]
+    );
+    assert!(
+        !stderr.contains("my-guard") && !stderr.contains("tmux-check"),
+        "no command text on stderr:\n{stderr}"
+    );
+
+    let launch = f.local(NAME, &[HOOK_TRUST]);
+    launch.assert_started();
+    assert!(
+        !launch
+            .stderr()
+            .lines()
+            .any(|l| l.contains(HOOK_TRUST) && l.contains(&home)),
+        "no notice when the caller passed the flag:\n{}",
+        launch.stderr()
+    );
+}
+
+/// The launch neither installs nor queries the Codex plugin.
+#[test]
+fn a_local_launch_does_no_plugin_work() {
+    let f = Fixture::new();
+    f.local(NAME, &["exec", "-"]).assert_started();
+    let calls = fs::read_to_string(f.home().join("calls.log")).unwrap_or_default();
+    assert!(
+        !calls.lines().any(|l| l.starts_with("plugin")),
+        "no plugin calls: {calls}"
+    );
+}

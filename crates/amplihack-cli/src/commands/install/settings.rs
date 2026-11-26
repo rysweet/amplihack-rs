@@ -116,6 +116,16 @@ pub(super) fn ensure_settings_json_for(
                 "  ⚠️  {shown} was not changed ({reason}); hooks were not registered there. \
                  Replace it with a regular file you own, then run `amplihack install` again"
             );
+            // Issue #2589 (SEC-C3): the merge refused this file before
+            // `update` ran, so `ensure_permissions` never reached
+            // `apply_deny_policy` and the file is absent from the record.
+            // Without this the policy section reads an empty record and
+            // reports that there is no Claude settings file on this machine,
+            // while one exists and took no entries.
+            crate::policy::claude::record(
+                HOME_SETTINGS_LABEL,
+                &crate::policy::claude::DenyOutcome::Unparseable(reason),
+            );
             return Ok((false, Vec::new()));
         }
     }
@@ -294,6 +304,20 @@ pub(super) fn register_hooks(settings: &mut Value, hooks_bin: &Path, limit_resum
 /// Unit tests set this to let `refresh_profile_hooks` run.
 pub(super) const PROFILE_REFRESH_TEST_OPT_IN: &str = "AMPLIHACK_TEST_PROFILE_REFRESH";
 
+/// Issue #2589 (R6): how the managed profile root itself is named in a
+/// policy warning, when the run could not reach the profiles and so has no
+/// profile to name.
+///
+/// A literal with no interpolation, which is what keeps it apart from the
+/// per-profile labels. The record is keyed by label and a later entry
+/// replaces an earlier one, so a label that collided with a profile's would
+/// silently drop one of the two outcomes. `ProfileName::parse` admits only
+/// ASCII alphanumerics and `. _ -`, so no profile can be called
+/// `managed profiles` and no per-profile label can equal this one. That
+/// argument is recorded here because relaxing the name charset later would
+/// break it with no signal at this site.
+pub(super) const PROFILE_ROOT_LABEL: &str = "managed profiles";
+
 /// Issue #1661: gives every profile's existing `settings.json` the same hook
 /// registrations as `~/.claude/settings.json`. Never fails the install: a
 /// profile that cannot be refreshed is reported and skipped. Issue #1699: a
@@ -310,9 +334,14 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
         return;
     }
     let limit_resume = claude_too_old_for_limit_resume().is_none();
-    let results = refresh_profile_settings(hooks_bin, &|settings| {
-        register_hooks(settings, hooks_bin, limit_resume)
+    let refresh = refresh_profile_settings(hooks_bin, &|name, settings| {
+        register_hooks(settings, hooks_bin, limit_resume);
+        // Issue #2589: every managed profile gets the same deny entries as
+        // the user's own settings file. The profile is named, because a
+        // warning that does not say which profile cannot be acted on.
+        apply_deny_policy(settings, &format!("profile {name}"));
     });
+    let results = refresh.results;
     let updated = results
         .iter()
         .filter(|(_, r)| *r == Refresh::Updated)
@@ -323,7 +352,32 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     for (name, result) in &results {
         if let Refresh::Skipped(reason) = result {
             println!("  ⚠️  Profile {name}: settings.json not refreshed ({reason})");
+            // Issue #2589 (SEC-C3): `update_file` refused this profile before
+            // the closure above ran, so `apply_deny_policy` never met it and
+            // it left no record. The label must be byte-identical to the one
+            // the closure uses, because the record is keyed by label.
+            //
+            // `Refresh::Missing` stays unrecorded on purpose: a profile with
+            // no settings.json is nothing to write into, not a refusal, which
+            // matches `FileMerge::Absent => None` in `ProfileStore`.
+            crate::policy::claude::record(
+                &format!("profile {name}"),
+                &crate::policy::claude::DenyOutcome::Unparseable(reason.clone()),
+            );
         }
+    }
+    // Issue #2589 (R6): the root itself could not be read, so no profile was
+    // visited and none can be named. Without this the pass looks exactly
+    // like a root that holds no profiles, and the policy section goes on to
+    // claim the entries were written "in every managed profile that has
+    // one" after a run that read none of them (SEC-C3). The plural names
+    // the root, beside the `Profile <name>:` lines it is shaped after.
+    if let Some(reason) = refresh.root_failure {
+        println!("  ⚠️  Profiles: settings.json not refreshed ({reason})");
+        crate::policy::claude::record(
+            PROFILE_ROOT_LABEL,
+            &crate::policy::claude::DenyOutcome::Unparseable(reason),
+        );
     }
 }
 
@@ -507,28 +561,69 @@ pub(super) fn read_settings_json(settings_path: &Path) -> Result<Value> {
 
 pub(super) fn ensure_permissions(settings: &mut Value) {
     let root = ensure_object(settings);
-    let permissions = root
-        .entry("permissions")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let permissions = ensure_object(permissions);
+    // SEC-C2: a `permissions` value amplihack cannot merge is left exactly as
+    // the user wrote it. Replacing it with these defaults would discard what
+    // they set and hide the fact that the file took no deny entries; the
+    // policy writer below reports it instead of overwriting it.
+    if matches!(root.get("permissions"), None | Some(Value::Object(_))) {
+        let permissions = root
+            .entry("permissions")
+            .or_insert_with(|| Value::Object(Map::new()));
+        let permissions = ensure_object(permissions);
 
-    permissions
-        .entry("allow")
-        .or_insert_with(|| json!(["Bash", "TodoWrite", "WebSearch", "WebFetch"]));
-    permissions
-        .entry("deny")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    permissions
-        .entry("defaultMode")
-        .or_insert_with(|| Value::String("bypassPermissions".to_string()));
+        permissions
+            .entry("allow")
+            .or_insert_with(|| json!(["Bash", "TodoWrite", "WebSearch", "WebFetch"]));
+        permissions
+            .entry("deny")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        permissions
+            .entry("defaultMode")
+            .or_insert_with(|| Value::String("bypassPermissions".to_string()));
 
-    let additional = permissions
-        .entry("additionalDirectories")
-        .or_insert_with(|| json!([".claude", "Specs"]));
-    let additional = ensure_array(additional);
-    for dir in [".claude", "Specs"] {
-        if !additional.iter().any(|value| value.as_str() == Some(dir)) {
-            additional.push(Value::String(dir.to_string()));
+        let additional = permissions
+            .entry("additionalDirectories")
+            .or_insert_with(|| json!([".claude", "Specs"]));
+        let additional = ensure_array(additional);
+        for dir in [".claude", "Specs"] {
+            if !additional.iter().any(|value| value.as_str() == Some(dir)) {
+                additional.push(Value::String(dir.to_string()));
+            }
+        }
+    }
+
+    // Issue #2589: the dangerous-command deny entries, from amplihack's one
+    // policy list plus this installation's own additions. The entries
+    // already in the file, including the user's own, are kept. Reached
+    // whichever way the branch above went, so an unmergeable `permissions`
+    // value is still met and reported.
+    apply_deny_policy(settings, HOME_SETTINGS_LABEL);
+}
+
+/// How the user's own `settings.json` is named in a policy warning. The
+/// labels are the ones `docs/reference/dangerous-command-policy.md` prints.
+const HOME_SETTINGS_LABEL: &str = "home settings";
+
+/// Issue #2589: adds the dangerous-command deny entries to `settings`,
+/// reporting rather than replacing a `permissions` value that cannot take
+/// them (SEC-C2). `label` names the file and never holds file content.
+///
+/// Returns the reason the file took no entries, and records the same thing
+/// for the install's policy section, which prints it on its own channel: a
+/// safety control that is not installed must not be silent (SEC-C3).
+pub(crate) fn apply_deny_policy(settings: &mut Value, label: &str) -> Option<String> {
+    use crate::policy::claude::{DenyOutcome, ensure_deny, record};
+    let instance = crate::user_config::policy_deny_commands();
+    let outcome = ensure_deny(settings, &instance);
+    record(label, &outcome);
+    match outcome {
+        DenyOutcome::Written | DenyOutcome::AlreadyCurrent => None,
+        DenyOutcome::Unparseable(reason) => {
+            tracing::warn!(
+                "{label}: the dangerous-command deny entries were not written ({reason}); the \
+                 existing permissions value was left as it is"
+            );
+            Some(reason)
         }
     }
 }
@@ -680,6 +775,81 @@ mod tests {
         let strs: Vec<&str> = dirs.iter().filter_map(Value::as_str).collect();
         assert!(strs.contains(&".claude"));
         assert!(strs.contains(&"Specs"));
+    }
+
+    // -----------------------------------------------------------------------
+    // issue #2589: apply_deny_policy reports what it met
+    // -----------------------------------------------------------------------
+
+    /// A temp HOME and the shared env lock, restored on drop.
+    ///
+    /// `apply_deny_policy` reads `$HOME/.amplihack/config.toml` through
+    /// `user_config::policy_deny_commands()`. Without this the three tests
+    /// below read the developer's real config and race every other
+    /// HOME-mutating test in the binary.
+    ///
+    /// The fields drop in declaration order, so `HOME` is restored before the
+    /// temp directory goes and the lock is released last.
+    struct TempHome {
+        _home: crate::test_support::HomeGuard,
+        _dir: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TempHome {
+        fn set() -> Self {
+            let lock = crate::test_support::env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let dir = crate::test_support::tempdir_outside_framework_roots();
+            Self {
+                _home: crate::test_support::HomeGuard::set(dir.path()),
+                _dir: dir,
+                _lock: lock,
+            }
+        }
+    }
+
+    /// The reason reaches the caller. Returning `()` and logging through
+    /// `tracing::warn!` left an ordinary install with no sign that a
+    /// settings file had taken no deny entries at all.
+    #[test]
+    fn apply_deny_policy_returns_the_reason_a_file_could_not_take_the_entries() {
+        let _home = TempHome::set();
+        let mut settings = json!({"permissions": {"deny": "Bash(curl:*)"}});
+        let reason = apply_deny_policy(&mut settings, "home settings")
+            .expect("a deny value that is not an array is reported");
+        assert!(reason.contains("deny"), "{reason}");
+        assert_eq!(
+            settings["permissions"]["deny"], "Bash(curl:*)",
+            "and the value is left as it was found"
+        );
+        // This test records an `Unparseable` for `home settings`; leaving it
+        // behind would be read by whatever runs next on this thread.
+        crate::policy::claude::clear_record();
+    }
+
+    #[test]
+    fn apply_deny_policy_returns_nothing_when_the_entries_were_written() {
+        let _home = TempHome::set();
+        let mut settings = json!({"permissions": {"deny": []}});
+        assert!(apply_deny_policy(&mut settings, "home settings").is_none());
+        let deny = settings["permissions"]["deny"].as_array().unwrap().clone();
+        assert!(deny.iter().any(|v| v == "Bash(pkill:*)"), "{deny:?}");
+        crate::policy::claude::clear_record();
+    }
+
+    /// SEC-C2: `ensure_permissions` must not replace a `permissions` value it
+    /// cannot merge. Replacing it discards whatever the user set there and
+    /// hides the fact that the file took no deny entries.
+    #[test]
+    fn ensure_permissions_leaves_a_permissions_value_it_cannot_merge_alone() {
+        let _home = TempHome::set();
+        let mut settings = json!({"language": "en", "permissions": "bypassPermissions"});
+        ensure_permissions(&mut settings);
+        assert_eq!(settings["permissions"], "bypassPermissions");
+        assert_eq!(settings["language"], "en");
+        crate::policy::claude::clear_record();
     }
 
     // -----------------------------------------------------------------------

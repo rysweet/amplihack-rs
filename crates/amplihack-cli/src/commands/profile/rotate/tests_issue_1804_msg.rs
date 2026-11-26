@@ -217,6 +217,7 @@ fn snap_on_unmarked_key() -> Snap {
         candidates: vec![n("work"), n("spare")],
         skips: Vec::new(),
         sees_sessions: true,
+        unreadable: Vec::new(),
         overflow: Vec::new(),
         pin: PinState::None,
         ignored: Vec::new(),
@@ -258,6 +259,7 @@ fn settings() -> Settings {
         interval: 120,
         overflow_wait: 1800,
         overflow_unknown_reset: false,
+        target_week_max: 95,
     }
 }
 
@@ -333,11 +335,29 @@ fn decide_on_unmarked(
     })
 }
 
+/// Issue #2910 changed this test's expectation and kept it (ruling D2,
+/// reversing #2857 for an overflow live login): 92/40 has room, so the
+/// rotator leaves the per-token key for it.
+#[test]
+fn the_rotator_leaves_an_unmarked_live_api_key_for_a_plan_login_past_session_at() {
+    let v = decide_on_unmarked(&[("work", measured(92.0, 40.0)), ("spare", exhausted())]);
+    assert_eq!(
+        v.decision,
+        Decision::Swap {
+            to: n("work"),
+            reason: crate::commands::profile::rotate::decide::Reason::OverflowOut
+        },
+        "{v:?}"
+    );
+    assert_eq!(v.tag, Some(Tag::Out));
+}
+
 #[test]
 fn the_rotator_leaves_an_unmarked_live_api_key_for_a_plan_login_with_room() {
-    // 92/40 at --session-at 85: no capacity, but room. D6 says the rotator
-    // leaves the unmarked key as soon as a plan login has room.
-    let v = decide_on_unmarked(&[("work", measured(92.0, 40.0)), ("spare", exhausted())]);
+    // 60/95 at --session-at 85: no capacity (the week is past --week-at), but
+    // room under the session threshold. D6 says the rotator leaves the
+    // unmarked key as soon as a plan login has room.
+    let v = decide_on_unmarked(&[("work", measured(60.0, 95.0)), ("spare", exhausted())]);
     assert_eq!(
         v.decision,
         Decision::Swap {

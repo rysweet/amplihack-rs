@@ -6,9 +6,123 @@ use serde::{
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fmt, path::Path};
-
 fn error(code: &str) -> anyhow::Error {
     anyhow!("{code}")
+}
+
+/// The most characters a probe cause may hold.
+const CAUSE_LIMIT: usize = 512;
+
+/// `RUNNER_PROBE_FAILED` with the reason beside it (issue #2931).
+///
+/// The display text is exactly the code and there is no source, so every
+/// caller that compares or prints the error sees what it saw before. The
+/// cause is read with [`probe_cause`]. It is built from step names written in
+/// this source, an exit status, and an operating-system error (number and
+/// standard text): never a path, an argument, an environment value or a byte
+/// the runner wrote.
+pub(crate) struct ProbeFailure {
+    cause: String,
+}
+
+impl ProbeFailure {
+    /// The one constructor: the cause is cut to [`CAUSE_LIMIT`] characters.
+    pub(crate) fn new(cause: impl Into<String>) -> Self {
+        let cause: String = cause.into();
+        let cause = match cause.char_indices().nth(CAUSE_LIMIT) {
+            Some((end, _)) => cause[..end].to_string(),
+            None => cause,
+        };
+        Self { cause }
+    }
+}
+
+impl fmt::Display for ProbeFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RUNNER_PROBE_FAILED")
+    }
+}
+
+// Written by hand so that the debug form obeys the same rule as the cause:
+// control characters escaped, nothing beyond the capped text.
+impl fmt::Debug for ProbeFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RUNNER_PROBE_FAILED ({})", printable(&self.cause))
+    }
+}
+
+impl std::error::Error for ProbeFailure {}
+
+fn probe_failed(cause: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(ProbeFailure::new(cause))
+}
+
+/// `text` with every control character written as an escape, so that a cause
+/// cannot move the cursor or start a new line on a terminal or in a log.
+fn printable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The cause of a probe failure anywhere in `error`'s chain, however many
+/// context layers wrap it. `None` for any other error.
+pub(crate) fn probe_cause(error: &anyhow::Error) -> Option<String> {
+    error
+        .chain()
+        .find_map(|e| e.downcast_ref::<ProbeFailure>())
+        .map(|failure| failure.cause.clone())
+}
+
+/// What a human-readable line prints after the code: `: <cause>` with control
+/// characters escaped, or nothing when `error` is not a probe failure.
+pub(crate) fn cause_suffix(error: &anyhow::Error) -> String {
+    probe_cause(error)
+        .map(|cause| format!(": {}", printable(&cause)))
+        .unwrap_or_default()
+}
+
+/// `error` under `context`, as `.context(..)` would give, with the probe's
+/// cause added to the sentence when there is one: `<context>
+/// (RUNNER_PROBE_FAILED: <cause>)`. A caller that prints only the outermost
+/// message then still shows why the probe failed.
+pub(crate) fn context_with_cause(error: anyhow::Error, context: &str) -> anyhow::Error {
+    let suffix = cause_suffix(&error);
+    if suffix.is_empty() {
+        error.context(context.to_string())
+    } else {
+        error.context(format!("{context} (RUNNER_PROBE_FAILED{suffix})"))
+    }
+}
+
+/// An I/O error as its operating-system number and standard text. An error
+/// with no number gives its kind, never a message that could hold a path.
+fn os_error_text(error: &std::io::Error) -> String {
+    match error.raw_os_error() {
+        Some(code) => std::io::Error::from_raw_os_error(code).to_string(),
+        None => format!("{:?}", error.kind()),
+    }
+}
+
+/// How the runner ended, in words this source wrote.
+fn exit_cause(status: std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("runner exited with status {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("runner ended by signal {signal}");
+        }
+    }
+    "runner ended without an exit status".to_string()
 }
 
 // Reject ambiguous top-level properties rather than accepting last-value wins.
@@ -39,9 +153,12 @@ impl<'de> Deserialize<'de> for Report {
 }
 
 pub(crate) fn probe(binary: &Path, provider: &str) -> Result<Value> {
-    let output = crate::runner_probe::capture(binary).map_err(|_| error("RUNNER_PROBE_FAILED"))?;
+    // The capture chain is static step text and operating-system errors
+    // (`runner_probe.rs`), so it may be kept as the cause.
+    let output =
+        crate::runner_probe::capture(binary).map_err(|e| probe_failed(format!("{e:#}")))?;
     if !output.status.success() {
-        return Err(error("RUNNER_PROBE_FAILED"));
+        return Err(probe_failed(exit_cause(output.status)));
     }
     let Report(fields) =
         serde_json::from_slice(&output.stdout).map_err(|_| error("RUNNER_REPORT_INVALID"))?;
@@ -232,7 +349,7 @@ pub(crate) fn run(command: InternalCommands) -> Result<()> {
         };
         Ok(
             json!({"schema_version":1,"provider":args.provider,"runner":runner,
-            "binary":args.binary.canonicalize().map_err(|_| error("RUNNER_PROBE_FAILED"))?, "provenance":provenance}),
+            "binary":args.binary.canonicalize().map_err(|e| probe_failed(format!("canonicalize binary: {}", os_error_text(&e))))?, "provenance":provenance}),
         )
     })();
     match result {
@@ -266,9 +383,13 @@ pub(crate) fn run(command: InternalCommands) -> Result<()> {
                     "provide an absolute binary and all or none of cargo-home, repository and revision"
                 }
             };
+            let mut details = json!({"provider":args.provider});
+            if let Some(cause) = probe_cause(&error) {
+                details["cause"] = Value::String(printable(&cause));
+            }
             eprintln!(
                 "{}",
-                json!({"error":{"code":code,"message":message,"details":{"provider":args.provider}}})
+                json!({"error":{"code":code,"message":message,"details":details}})
             );
             std::process::exit(1)
         }
@@ -425,5 +546,71 @@ mod installed_revision_tests {
             )]),
         );
         assert!(super::provenance(&binary, home.path(), URL, SHA).is_err());
+    }
+}
+
+/// Issue #2931 (PROBE): the probe failure keeps its code as its whole display
+/// text and carries a cause beside it.
+///
+/// Contract: `ProbeFailure::new(cause)` holds at most 512 characters;
+/// `Display` is exactly `RUNNER_PROBE_FAILED` and `source()` is `None`, so the
+/// code that callers compare is unchanged; `probe_cause` finds the cause in an
+/// `anyhow` chain however many context layers wrap it; `cause_suffix` is the
+/// text printed after the code on a human-readable line, empty when the error
+/// is not a probe failure.
+#[cfg(test)]
+mod probe_cause_tests {
+    use super::{ProbeFailure, cause_suffix, probe_cause};
+    use anyhow::anyhow;
+    use std::error::Error as _;
+
+    #[test]
+    fn the_display_text_is_exactly_the_code_and_there_is_no_source() {
+        let failure = ProbeFailure::new("runner exited with status 17");
+        assert_eq!(failure.to_string(), "RUNNER_PROBE_FAILED");
+        assert!(failure.source().is_none());
+    }
+
+    #[test]
+    fn the_cause_is_found_through_two_layers_of_context() {
+        let error = anyhow::Error::new(ProbeFailure::new("runner exited with status 17"))
+            .context("first layer")
+            .context("second layer");
+        assert_eq!(
+            probe_cause(&error).as_deref(),
+            Some("runner exited with status 17")
+        );
+    }
+
+    #[test]
+    fn an_unrelated_error_has_no_cause_and_no_suffix() {
+        let error = anyhow!("RUNNER_REPORT_INVALID");
+        assert_eq!(probe_cause(&error), None);
+        assert_eq!(cause_suffix(&error), "");
+    }
+
+    #[test]
+    fn the_suffix_follows_the_code_after_a_colon() {
+        let error = anyhow::Error::new(ProbeFailure::new("runner exited with status 17"));
+        assert_eq!(cause_suffix(&error), ": runner exited with status 17");
+    }
+
+    #[test]
+    fn a_cause_is_capped_at_512_characters() {
+        let long = "x".repeat(600);
+        let error = anyhow::Error::new(ProbeFailure::new(long));
+        let cause = probe_cause(&error).expect("a cause");
+        assert_eq!(cause.chars().count(), 512);
+    }
+
+    #[test]
+    fn control_characters_are_escaped_in_the_human_readable_suffix() {
+        let error = anyhow::Error::new(ProbeFailure::new("line one\nline two\u{1b}[31m\ttab"));
+        let suffix = cause_suffix(&error);
+        assert!(
+            suffix.chars().all(|c| !c.is_control()),
+            "no raw control character in {suffix:?}"
+        );
+        assert!(suffix.contains("line one\\nline two"), "{suffix:?}");
     }
 }

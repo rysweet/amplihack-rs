@@ -20,6 +20,9 @@ mod issue_1449_partial_registration;
 mod issue_1526_implicit_downgrade;
 mod issue_1526_implicit_mode;
 mod issue_1526_launch_bootstrap;
+// Issue #1582: the launch bootstrap re-checks under the install lock.
+#[cfg(unix)]
+mod issue_1582_bootstrap_lock;
 #[cfg(unix)]
 mod issue_1745_launch_repair_statusline;
 // Issue #1699: the real-profile-root guard also runs in this binary, where
@@ -43,7 +46,23 @@ mod issue_1955_support;
 mod issue_1955_tag_fetch;
 #[cfg(unix)]
 mod issue_2279_launch_repair;
+#[cfg(unix)]
+mod issue_2589_claude_deny;
+#[cfg(unix)]
+mod issue_2589_codex_rules;
+#[cfg(unix)]
+mod issue_2589_update_coverage;
+// Issue #2922: an inherited CLAUDE_CONFIG_DIR is never written by tests.
+#[cfg(unix)]
+mod issue_2922_helper_contract;
+#[cfg(unix)]
+mod issue_2922_inherited_config_dir;
+#[cfg(unix)]
+mod issue_2940_inherited_codex_home;
+mod issue_3220_directory_index;
 mod issue_527_tests;
+// Issue #3203: no file loaded as memory sits under amplifier-bundle/.
+mod issue_3203_bundle_memory_files;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]
 mod limit_resume_install;

@@ -11,7 +11,14 @@ render() {
     local name=$1 source="$repo/amplifier-bundle/recipes/$1.yaml" cap child
     [[ "$name" =~ ^[a-z0-9-]+$ ]]
     test ! -f "$fixture/recipes/$name.yaml" || return 0
-    cap=$(awk '$1 == "max_total_steps:" { print $2; exit }' "$source")
+    # The cap is written as a block key in most recipes and inline, as
+    # `recursion: { max_depth: 6, max_total_steps: 80 }`, in workflow-publish and
+    # workflow-pr-review, so it is matched wherever it sits on a line. A comment
+    # that mentions the key is not the cap.
+    cap=$(awk '/^[[:space:]]*#/ { next }
+        match($0, /max_total_steps:[[:space:]]*[0-9]+/) {
+            cap = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", cap); print cap; exit
+        }' "$source")
     [[ "$cap" =~ ^[0-9]+$ ]]
     awk -v name="$name" -v cap="$cap" '
         function flush() {

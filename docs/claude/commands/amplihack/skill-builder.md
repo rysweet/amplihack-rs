@@ -1,5 +1,6 @@
 ---
 name: amplihack:skill-builder
+disable-model-invocation: true
 version: 1.0.0
 description: Build new Claude Code skills with guided workflow and agent orchestration
 argument-hint: <skill-name> <skill-type> <description>

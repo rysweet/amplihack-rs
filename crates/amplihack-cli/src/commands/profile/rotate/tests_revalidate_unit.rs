@@ -12,9 +12,12 @@
 //!   `Account::same`. `candidates`, `skips`, `sees_sessions` and
 //!   `candidate_accounts` of any other profile are not compared.
 //! - `msg::changed(&[Changed])`, `msg::reconsidered(&ProfileName, &str)` and
-//!   `msg::alert_no_capacity_for(live, reading, others)`.
+//!   `target_msg::alert_line(...)` (the no-target line and the stay notes).
 //! - `Measurement::probed` holds the probes `decide_measured` decided on.
 
+use super::decide::target::Unfit;
+use super::decide::target_msg::summary;
+use super::decide::target_seen::{Basis, Seen, Standing};
 use super::decide::{Decision, Reading, Reason};
 use super::identify::{Account, LiveId, Skip};
 use super::log::msg;
@@ -38,6 +41,7 @@ fn base() -> Snap {
         candidates: vec![n("spare"), n("spare2"), n("third")],
         skips: vec![(n("work"), Skip::Live)],
         sees_sessions: true,
+        unreadable: Vec::new(),
         overflow: Vec::new(),
         pin: PinState::None,
         ignored: Vec::new(),
@@ -388,81 +392,115 @@ fn the_reconsidered_line_is_exact() {
 
 // --- Test 11: the ALERT's candidate counts ----------------------------------
 
+// Issue #2910 (D9): the counts moved to `target_msg::summary`, built from
+// what the cycle saw of each login (`Seen::logins`) rather than from the
+// readings alone. Each ruling is noted where the expectation changed.
+
+fn standing(basis: Basis, fit: Result<u8, Unfit>) -> Standing {
+    Standing {
+        basis,
+        fit,
+        block: None,
+    }
+}
+
+fn seen_of(logins: Vec<(&str, Standing)>) -> Seen {
+    Seen {
+        logins: logins.into_iter().map(|(who, st)| (n(who), st)).collect(),
+        week_max: 95,
+        ..Seen::default()
+    }
+}
+
 #[test]
 fn the_no_capacity_alert_counts_failed_and_exhausted_candidates() {
     let live = Reading::Measured {
         session: 99.0,
         week: 50.0,
     };
-    let old = "ALERT: no profile has capacity live=work s=99% w=50%";
-    assert_eq!(msg::alert_no_capacity_for("work", &live, &[]), old);
-    assert_eq!(msg::alert_no_capacity(&n("work"), &live), old);
-    let others = [
-        (n("a"), Reading::Failed),
-        (n("b"), Reading::Failed),
-        (n("c"), Reading::EXHAUSTED),
-    ];
+    let (_, empty) = summary("work", &live, &Seen::default());
     assert_eq!(
-        msg::alert_no_capacity_for("work", &live, &others),
-        format!("{old} (candidates: 2 failed, 1 exhausted)")
+        empty,
+        "ALERT: no profile has capacity live=work s=99% w=50% (candidates: none)"
+    );
+    let seen = seen_of(vec![
+        ("a", standing(Basis::Failed, Err(Unfit::NoReading))),
+        ("b", standing(Basis::Failed, Err(Unfit::NoReading))),
+        ("c", standing(Basis::Probe, Err(Unfit::Full))),
+    ]);
+    // A failed login was not seen full, so the wording is `no capacity known`.
+    let (kind, line) = summary("work", &live, &seen);
+    assert_eq!(kind, "no-capacity/known");
+    assert_eq!(
+        line,
+        "ALERT: no capacity known live=work s=99% w=50% (candidates: 2 failed, 1 exhausted)"
     );
 }
 
+/// Ruling (D9): a login with room is not counted, and the counts still end
+/// the line, as `none`; the wording says capacity is not known to be gone.
 #[test]
-fn the_alert_has_no_suffix_when_every_candidate_measured() {
-    let live = Reading::EXHAUSTED;
-    let others = [(
-        n("a"),
-        Reading::Measured {
-            session: 95.0,
-            week: 10.0,
-        },
-    )];
-    let line = msg::alert_no_capacity_for("work", &live, &others);
-    assert_eq!(line, msg::alert_no_capacity_for("work", &live, &[]));
-    assert!(!line.contains("candidates:"), "{line}");
+fn a_login_with_room_is_not_counted() {
+    let seen = seen_of(vec![("a", standing(Basis::Probe, Ok(5)))]);
+    let (kind, line) = summary("work", &Reading::EXHAUSTED, &seen);
+    assert_eq!(kind, "no-capacity/known");
+    assert_eq!(
+        line,
+        "ALERT: no capacity known live=work s=100% w=100% (candidates: none)"
+    );
 }
 
 #[test]
 fn the_alert_suffix_names_no_profile() {
-    let others = [(n("secretname"), Reading::Failed)];
-    let line = msg::alert_no_capacity_for("-", &Reading::EXHAUSTED, &others);
-    assert!(
-        line.ends_with(" (candidates: 1 failed, 0 exhausted)"),
-        "{line}"
-    );
+    let seen = seen_of(vec![(
+        "secretname",
+        standing(Basis::Failed, Err(Unfit::NoReading)),
+    )]);
+    let (_, line) = summary("-", &Reading::EXHAUSTED, &seen);
+    assert!(line.ends_with(" (candidates: 1 failed)"), "{line}");
     assert!(!line.contains("secretname"), "{line}");
 }
 
 /// #1846: exhausted candidates with different figures all count, including
-/// one whose figures are NaN, which `==` would never match.
+/// one whose figures are NaN, which `==` would never match: what counts is
+/// the eligibility test on the reading used.
 #[test]
 fn the_alert_counts_exhausted_candidates_whatever_their_figures() {
-    let others = [
-        (n("a"), Reading::Failed),
+    let full = |r: Reading| {
+        let m = super::decide::Measured {
+            name: n("x"),
+            reading: r,
+            windows: Default::default(),
+            spend_limit: false,
+            unknown: false,
+        };
+        standing(Basis::Probe, super::decide::target::fit(&m, 95))
+    };
+    let seen = seen_of(vec![
+        ("a", standing(Basis::Failed, Err(Unfit::NoReading))),
         (
-            n("b"),
-            Reading::Exhausted {
+            "b",
+            full(Reading::Exhausted {
                 session: Some(100.0),
                 week: Some(62.0),
-            },
+            }),
         ),
         (
-            n("c"),
-            Reading::Exhausted {
+            "c",
+            full(Reading::Exhausted {
                 session: Some(30.0),
                 week: Some(100.0),
-            },
+            }),
         ),
         (
-            n("d"),
-            Reading::Exhausted {
+            "d",
+            full(Reading::Exhausted {
                 session: None,
                 week: Some(f64::NAN),
-            },
+            }),
         ),
-    ];
-    let line = msg::alert_no_capacity_for("work", &Reading::EXHAUSTED, &others);
+    ]);
+    let (_, line) = summary("work", &Reading::EXHAUSTED, &seen);
     assert!(
         line.ends_with(" (candidates: 1 failed, 3 exhausted)"),
         "{line}"

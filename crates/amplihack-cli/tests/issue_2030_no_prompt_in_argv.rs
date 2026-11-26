@@ -3,11 +3,15 @@
 //!
 //! Each test runs the real `amplihack` binary, isolated, with stub agent CLIs
 //! first on `PATH`. A stub records, per run `n`:
-//! - `argv.<n>`: its argv, NUL-separated (what `/proc/<pid>/cmdline` shows);
-//! - `cmdline.<n>`: a copy of the stub's own `/proc/$$/cmdline`;
+//! - `argv.<n>`: its argv, NUL-separated. This is the stub's own record of
+//!   what it was started with, and the tests read nothing else for the
+//!   command line: no test reads the host's `/proc` (issue #2931);
 //! - `stdin.<n>`: everything on its stdin;
 //! - `files.<n>`: for each argument after a `--*-file` or `--add-dir` flag,
-//!   one tab-separated line `flag  path  <type>:<mode>:<uid>  <parent mode>`;
+//!   one tab-separated line `flag  path  <ls -ldn of the file>  <ls -ldn of
+//!   its parent>`, or `missing` where `ls` found nothing. `ls -ldn` has one
+//!   format on Linux and macOS, where `stat -c` and `stat -f` differ; the
+//!   line is parsed in Rust by `support::ls_mode`;
 //! - `content.<n>.<flag>`: a copy of that file (it is removed after the run);
 //! - `calls`: one line per invocation, `version` or `run`.
 //!
@@ -16,6 +20,7 @@
 #![cfg(unix)]
 
 use crate::support::amplihack_bin::amplihack_bin;
+use crate::support::ls_mode::{LsKind, parse_ls_line};
 use amplihack_utils::prompt_delivery::FILE_REFERENCE_PREFIX;
 
 use std::fs;
@@ -40,7 +45,6 @@ if [ "$1" = "--version" ]; then
 fi
 echo run >> "$RECORD_DIR/calls"
 n=$(grep -c '^run$' "$RECORD_DIR/calls")
-cp /proc/$$/cmdline "$RECORD_DIR/cmdline.$n" 2>/dev/null
 : > "$RECORD_DIR/files.$n.tmp"
 : > "$RECORD_DIR/argv.$n.tmp"
 prev=
@@ -48,8 +52,8 @@ for a in "$@"; do
   printf '%s\0' "$a" >> "$RECORD_DIR/argv.$n.tmp"
   case "$prev" in
     --*-file|--add-dir)
-      t=$(stat -c '%F:%a:%u' -- "$a" 2>/dev/null || echo missing)
-      d=$(stat -c '%a' -- "$(dirname -- "$a")" 2>/dev/null || echo missing)
+      t=$(ls -ldn -- "$a" 2>/dev/null || echo missing)
+      d=$(ls -ldn -- "$(dirname -- "$a")" 2>/dev/null || echo missing)
       printf '%s\t%s\t%s\t%s\n' "$prev" "$a" "$t" "$d" >> "$RECORD_DIR/files.$n.tmp"
       [ -f "$a" ] && cp -- "$a" "$RECORD_DIR/content.$n.${prev#--}" ;;
   esac
@@ -57,8 +61,8 @@ for a in "$@"; do
     "$FILE_REFERENCE_PREFIX"*)
       rest=${a#"$FILE_REFERENCE_PREFIX"}
       path=${rest%%". Its contents are the task prompt."}
-      t=$(stat -c '%F:%a:%u' -- "$path" 2>/dev/null || echo missing)
-      d=$(stat -c '%a' -- "$(dirname -- "$path")" 2>/dev/null || echo missing)
+      t=$(ls -ldn -- "$path" 2>/dev/null || echo missing)
+      d=$(ls -ldn -- "$(dirname -- "$path")" 2>/dev/null || echo missing)
       printf '%s\t%s\t%s\t%s\n' pointer "$path" "$t" "$d" >> "$RECORD_DIR/files.$n.tmp"
       cp -- "$path" "$RECORD_DIR/content.$n.pointer" 2>/dev/null ;;
   esac
@@ -203,14 +207,17 @@ impl Fixture {
             .lines()
             .map(|l| {
                 let f: Vec<&str> = l.split('\t').collect();
-                let t: Vec<&str> = f[2].split(':').collect();
+                // A line `ls` did not print, or one of another shape, gives
+                // values no assertion accepts: never "no extra bits".
+                let entry = parse_ls_line(f[2]);
                 FileRec {
                     flag: f[0].to_string(),
                     path: PathBuf::from(f[1]),
-                    kind: t.first().copied().unwrap_or("").to_string(),
-                    mode: t.get(1).copied().unwrap_or("").to_string(),
-                    uid: t.get(2).and_then(|u| u.parse().ok()).unwrap_or(u32::MAX),
-                    parent_mode: f[3].to_string(),
+                    kind: entry.map_or("missing", |e| kind_name(e.kind)).to_string(),
+                    mode: entry.map_or_else(String::new, |e| format!("{:o}", e.mode)),
+                    uid: entry.map_or(u32::MAX, |e| e.uid),
+                    parent_mode: parse_ls_line(f[3])
+                        .map_or_else(|| "missing".to_string(), |e| format!("{:o}", e.mode)),
                 }
             })
             .collect()
@@ -230,6 +237,17 @@ impl Fixture {
 
     fn contract_path(&self) -> PathBuf {
         self.home.join(".amplihack/private/system-prompt-append.md")
+    }
+}
+
+/// The file kind in the words the assertions use.
+fn kind_name(kind: LsKind) -> &'static str {
+    match kind {
+        LsKind::Regular => "regular file",
+        LsKind::Directory => "directory",
+        LsKind::Symlink => "symbolic link",
+        LsKind::Fifo => "fifo",
+        LsKind::Other => "other",
     }
 }
 
@@ -300,7 +318,26 @@ fn claude_launch_uses_contract_file() {
     assert_eq!(rec.path, f.contract_path());
     assert_private(&rec, false);
     assert_eq!(rec.parent_mode, "700", "private/ is 0700: {rec:?}");
-    assert_eq!(f.content(1, "--append-system-prompt-file"), contract_text());
+    // Issue #3202: the model reads the contract without the maintainers'
+    // comment that opens the source file, and nothing else is left out.
+    let delivered = f.content(1, "--append-system-prompt-file");
+    assert!(
+        delivered.starts_with("# Amplihack operating contract"),
+        "the delivered file must open with the contract heading: {delivered:?}"
+    );
+    assert!(
+        !delivered.contains("<!--"),
+        "the delivered file must hold no HTML comment: {delivered:?}"
+    );
+    let source = contract_text();
+    let removed = source
+        .strip_suffix(delivered.as_str())
+        .expect("the delivered file must hold the rest of the source unchanged")
+        .trim();
+    assert!(
+        removed.starts_with("<!--") && removed.ends_with("-->"),
+        "only the leading comment is left out: {removed:?}"
+    );
 }
 
 #[test]
@@ -570,6 +607,11 @@ fn opt_out_skips_the_gate_and_the_contract() {
         !argv.iter().any(|a| a.starts_with("--append-system-prompt")),
         "{argv:?}"
     );
+    let contract = f.contract_path().to_string_lossy().into_owned();
+    assert!(
+        !argv.iter().any(|a| a.contains(&contract)),
+        "no contract file is passed: {argv:?}"
+    );
     assert_argv_clean(&argv, &[]);
 }
 
@@ -744,23 +786,30 @@ fn auto_mode_codex_turn_reads_stdin() {
 // ---------------------------------------------------------------------------
 
 impl Fixture {
-    /// The stub's own `/proc/$$/cmdline`, the bytes `pkill -f` matches.
-    fn proc_cmdline(&self, n: usize) -> String {
-        let raw = fs::read(self.records.join(format!("cmdline.{n}")))
-            .unwrap_or_else(|e| panic!("cmdline.{n}: {e}"));
-        String::from_utf8_lossy(&raw).replace('\0', " ")
+    /// The stub's recorded argv as one line, arguments joined by a space:
+    /// the form `pkill -f` matches against. It comes from the stub's own
+    /// `argv.<n>` record, which must exist, so a run that recorded nothing
+    /// cannot pass for a clean one.
+    fn cmdline_from_argv(&self, n: usize) -> String {
+        let raw = fs::read(self.records.join(format!("argv.{n}")))
+            .unwrap_or_else(|e| panic!("argv.{n}: {e}"));
+        String::from_utf8_lossy(&raw)
+            .trim_end_matches('\0')
+            .replace('\0', " ")
     }
 }
 
-fn assert_proc_cmdline_clean(f: &Fixture, n: usize) {
-    let cmdline = f.proc_cmdline(n);
+/// No phrase appears in the whole command line, including one that would
+/// only form across two neighbouring arguments.
+fn assert_cmdline_clean(f: &Fixture, n: usize) {
+    let cmdline = f.cmdline_from_argv(n);
     for needle in CONTRACT_PHRASES
         .iter()
         .chain([SENTINEL, SYS_SENTINEL].iter())
     {
         assert!(
             !cmdline.contains(needle),
-            "/proc cmdline has {needle:?}: {cmdline:?}"
+            "the command line has {needle:?}: {cmdline:?}"
         );
     }
 }
@@ -786,7 +835,7 @@ fn codex_passthrough_exec_moves_the_task_to_stdin() {
         assert!(out.status.success(), "{form:?}\n{}", describe(&out));
         let argv = f.argv(1);
         assert_argv_clean(&argv, &[]);
-        assert_proc_cmdline_clean(&f, 1);
+        assert_cmdline_clean(&f, 1);
         assert_eq!(argv.first().map(String::as_str), Some("exec"), "{argv:?}");
         assert_eq!(
             argv.last().map(String::as_str),
@@ -841,7 +890,7 @@ fn copilot_passthrough_prompt_uses_pointer() {
         assert!(out.status.success(), "{form:?}\n{}", describe(&out));
         let argv = f.argv(1);
         assert_argv_clean(&argv, &[]);
-        assert_proc_cmdline_clean(&f, 1);
+        assert_cmdline_clean(&f, 1);
         let pointer = f.file(1, "pointer");
         assert_private(&pointer, true);
         let add_dir = f.file(1, "--add-dir");
@@ -887,7 +936,7 @@ fn codex_passthrough_review_and_fork_options() {
         assert!(out.status.success(), "{form:?}\n{}", describe(&out));
         let argv = f.argv(1);
         assert_argv_clean(&argv, &[]);
-        assert_proc_cmdline_clean(&f, 1);
+        assert_cmdline_clean(&f, 1);
         assert!(
             argv.ends_with(&want_tail.iter().map(|a| a.to_string()).collect::<Vec<_>>()),
             "{form:?}: {argv:?}"

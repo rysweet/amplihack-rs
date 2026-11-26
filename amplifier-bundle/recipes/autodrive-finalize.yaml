@@ -1,0 +1,43 @@
+name: "autodrive-finalize"
+description: |
+  One-release alias (#3049, #3129). In the old drive this recipe ran finalisation.
+  The shared goal loop replaces it: this recipe runs one turn of
+  autodrive-goal-loop with the pull request goal (goal_once) and returns.
+  Every old context key is still declared. It brings back no gate, no stop and
+  no automatic base merge. docs/reference/autodrive-goal-loop.md.
+version: "1.0.0"
+author: "Amplihack Team"
+tags:
+  - "auto-drive"
+  - "alias"
+  - "issue-3129"
+recursion:
+  max_depth: 6
+  max_total_steps: 8
+context:
+  repo_path: "."
+  pr_number: ""
+  autodrive_state_dir: ""
+  merge_loop_result: ""
+  no_merge: "true"
+  autodrive_dry_run: "false"
+  autodrive_invocation_file: ""
+  autodrive_authorization: ""
+  autodrive_parent_run_id: ""
+  build_result: ""
+  merge_method: ""
+  finalization_entry: ""
+  finalize_merge: ""
+  autodrive_finalization: ""
+steps:
+  - id: "goal-loop"
+    type: "recipe"
+    recipe: "autodrive-goal-loop"
+    context:
+      goal_tool: "autodrive_pr_goal.sh"
+      goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
+      goal_once: "true"
+output:
+  format: "markdown"
+  template: |
+    Goal loop (the autodrive-finalize alias, #3129): {{autodrive_finalization}}

@@ -303,8 +303,8 @@ fn recovery_preserves_no_linked_issue_and_invalid_identity_gates() {
 }
 
 #[test]
-fn metadata_failure_does_not_weaken_auth_identity_or_duplicate_claim_gates() {
-    for gate in ["auth", "identity", "duplicate-claim"] {
+fn metadata_failure_does_not_weaken_auth_or_identity_gates() {
+    for gate in ["auth", "identity"] {
         let f = PublishFixture::new();
         f.inject_scope_failure();
         let mut command = f.publish_command();
@@ -312,20 +312,12 @@ fn metadata_failure_does_not_weaken_auth_identity_or_duplicate_claim_gates() {
             "auth" => {
                 command.env("LOOKUP_STATUS", "24");
             }
-            "identity" => f.git(&[
+            _ => f.git(&[
                 "remote",
                 "set-url",
                 "origin",
                 "https://example.invalid/owner/repo",
             ]),
-            _ => {
-                let helper = f.tmp.path().join("claim-check.sh");
-                super::fixture::executable(
-                    &helper,
-                    "#!/bin/bash\necho 'duplicate issue claim' >&2\nexit 81\n",
-                );
-                command.env("WORKFLOW_ISSUE_CLAIM_CHECK_HELPER", helper);
-            }
         }
         let output = command.output().unwrap();
         assert!(
@@ -342,6 +334,34 @@ fn metadata_failure_does_not_weaken_auth_identity_or_duplicate_claim_gates() {
             "{gate} allowed metadata recovery before gate rejection"
         );
     }
+}
+
+/// #3129, #3110: a claim on the issue is information for the run, not a
+/// gate. A claim check that reports a claim, here by exiting non-zero as a
+/// 1.2.212 helper did, has its output printed and the PR is still opened;
+/// the result is never FAILED_DUPLICATE_CLAIM.
+#[test]
+fn a_claim_reported_during_metadata_recovery_is_information_and_the_pr_is_opened() {
+    let f = PublishFixture::new();
+    f.inject_scope_failure();
+    let helper = f.tmp.path().join("claim-check.sh");
+    super::fixture::executable(
+        &helper,
+        "#!/bin/bash\necho 'duplicate issue claim' >&2\nexit 81\n",
+    );
+    let output = f
+        .publish_command()
+        .env("WORKFLOW_ISSUE_CLAIM_CHECK_HELPER", helper)
+        .output()
+        .unwrap();
+    let result = f.assert_created(&output);
+    assert_ne!(result["state"], "FAILED_DUPLICATE_CLAIM", "{result}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("duplicate issue claim") && stderr.contains("exited 81"),
+        "the claim check's output and exit code are printed as information: {}",
+        describe(&output)
+    );
 }
 
 #[test]
@@ -605,6 +625,69 @@ fn base_branch_is_never_replaced_when_it_is_absent_forbidden_or_the_head() {
             .unwrap();
         refused_without_create(&f, &output, reason);
     }
+}
+
+// #2520: the publish result records the base step-16 gave the pull request,
+// so finalize can find a pull request into a branch other than origin/HEAD.
+// Only a base already checked is recorded; every other exit records "".
+
+#[test]
+fn publish_result_records_the_base_given_to_gh_pr_create() {
+    let f = PublishFixture::new();
+    f.git(&[
+        "update-ref",
+        "refs/remotes/origin/dev",
+        "refs/remotes/origin/main",
+    ]);
+    let output = f
+        .publish_command()
+        .env("RECIPE_VAR_base_branch", "dev")
+        .output()
+        .unwrap();
+    let result = f.assert_created(&output);
+    assert!(create_args(&f).contains(&b"--base=dev".to_vec()));
+    assert_eq!(result["base_branch"], "dev", "{result}");
+}
+
+#[test]
+fn publish_result_records_no_base_when_github_chose_it() {
+    // Without base_branch, gh pr create names no base and GitHub uses the
+    // repository's default branch, which the local origin/HEAD may not
+    // match. Nothing unchecked is recorded; finalize reads the pull
+    // request's own base instead.
+    let f = PublishFixture::new();
+    let result = f.assert_created(&f.publish());
+    assert_eq!(result["base_branch"], "", "{result}");
+}
+
+#[test]
+fn publish_result_records_the_base_of_a_matched_open_pull_request() {
+    let f = PublishFixture::new();
+    f.write(
+        "prs.json",
+        &serde_json::json!([f.pr("OPEN", BRANCH)]).to_string(),
+    );
+    let output = f.publish();
+    assert!(output.status.success(), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "existing-open-pr", "{result}");
+    assert_eq!(result["base_branch"], "main", "{result}");
+    assert!(!f.read("gh.log").contains("pr create"));
+}
+
+#[test]
+fn publish_result_records_no_base_without_a_pull_request() {
+    let f = PublishFixture::new();
+    f.git(&["reset", "--hard", "origin/main"]);
+    let output = f.publish();
+    assert!(output.status.success(), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "NO_DIFF_SUCCESS", "{result}");
+    assert_eq!(
+        result.get("base_branch").and_then(|v| v.as_str()),
+        Some(""),
+        "the field is always present: {result}"
+    );
 }
 
 #[test]

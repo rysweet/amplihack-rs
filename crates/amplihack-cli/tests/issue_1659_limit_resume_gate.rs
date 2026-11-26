@@ -50,35 +50,36 @@ fn link_host_tools(tools: &Path) {
 /// `tools`.
 fn install(home: &Path, tools: &Path) -> std::process::Output {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    crate::isolated_amplihack::isolated(amplihack_bin())
-        .args(["install", "--local", source.to_str().unwrap()])
-        .env("HOME", home)
-        .env("PATH", tools)
-        .env("AMPLIHACK_AGENT_BINARY", "claude")
-        .env("AMPLIHACK_SOURCE_ROOT", &source)
-        .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
-        .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
-        .env("AMPLIHACK_NONINTERACTIVE", "1")
-        .env(
-            "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
-            tools.join("amplihack-hooks"),
-        )
-        .env("RECIPE_RUNNER_RS_PATH", tools.join("recipe-runner-rs"))
-        .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
-        .env_remove("AMPLIHACK_DEFAULT_MODEL")
-        .env_remove("AMPLIHACK_HOME")
-        .env_remove("AMPLIHACK_ASSET_RESOLVER")
-        .env_remove("AMPLIHACK_SESSION_ID")
-        .env_remove("AMPLIHACK_SESSION_DEPTH")
-        .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
-        .env_remove("AMPLIHACK_CLAUDE_BINARY_PATH")
-        .env_remove("CLAUDE_CONFIG_DIR")
-        .env_remove("CODEX_HOME")
-        // `install` resolves hook scope from its cwd; keep it off the process
-        // cwd, which this binary shares with every other test module.
-        .current_dir(home)
-        .output()
-        .unwrap()
+    crate::support::wait::output_within(
+        "amplihack install",
+        crate::isolated_amplihack::isolated(amplihack_bin())
+            .args(["install", "--local", source.to_str().unwrap()])
+            .env("HOME", home)
+            .env("PATH", tools)
+            .env("AMPLIHACK_AGENT_BINARY", "claude")
+            .env("AMPLIHACK_SOURCE_ROOT", &source)
+            .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
+            .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+            .env("AMPLIHACK_NONINTERACTIVE", "1")
+            .env(
+                "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+                tools.join("amplihack-hooks"),
+            )
+            .env("RECIPE_RUNNER_RS_PATH", tools.join("recipe-runner-rs"))
+            .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
+            .env_remove("AMPLIHACK_DEFAULT_MODEL")
+            .env_remove("AMPLIHACK_HOME")
+            .env_remove("AMPLIHACK_ASSET_RESOLVER")
+            .env_remove("AMPLIHACK_SESSION_ID")
+            .env_remove("AMPLIHACK_SESSION_DEPTH")
+            .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
+            .env_remove("AMPLIHACK_CLAUDE_BINARY_PATH")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
+            // `install` resolves hook scope from its cwd; keep it off the process
+            // cwd, which this binary shares with every other test module.
+            .current_dir(home),
+    )
 }
 
 fn stop_failure_wrapper(hooks_bin: &Path) -> Value {

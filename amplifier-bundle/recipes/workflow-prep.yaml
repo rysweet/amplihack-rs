@@ -13,7 +13,7 @@ context: { issue_number: "", create_issue: "false", strict_delivery: "false", re
 recovery:
   version: 1
   persist:
-    context: ["base_branch", "closing_reference", "forbidden_base_branches", "pr_repository", "repository", "strict_delivery", "adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
+    context: ["base_branch", "closing_reference", "forbidden_base_branches", "pr_repository", "repository", "strict_delivery", "adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "build_goal_setup", "build_loop_result", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "step_recovery_dir", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workflow_result", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
     outputs: ["step-00-workflow-preparation", "step-00a-identity-preflight", "step-01-prepare-workspace", "step-02-clarify-requirements", "step-02b-analyze-codebase", "step-02c-resolve-ambiguity", "step-02d-detect-host-type", "step-03-create-issue", "step-03b-extract-issue-number", "step-03c-issue-claim-check"]
 steps:
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
@@ -23,15 +23,12 @@ steps:
     recovery: {"replay": "rebind"}
     type: "bash"
     command: |
-      # The 23-step plan banner lives in amplifier-bundle/tools/workflow_plan_banner.sh.
-      # It was extracted, not trimmed: this brick is at its 400-line budget and the rule's
-      # remedy for a full brick is extraction, never compression (scripts/check-brick-budget.sh).
-      B=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_plan_banner.sh" ] && { B="$c/amplifier-bundle/tools/workflow_plan_banner.sh"; break; }; done
-      if [ -n "$B" ]; then bash "$B"; else echo "WARNING: workflow plan banner helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — continuing without the plan listing" >&2; fi
-      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
-      TASK_DESC="$TASK_DESCRIPTION"
-      printf 'Task: %s\n' "$TASK_DESC"
-      printf 'Repository: %s\n' "$REPO_PATH"
+      # The body of this step lives in amplifier-bundle/tools/workflow_prep_banner_step.sh,
+      # extracted for the brick budget (issue #1619). It is unchanged and
+      # reads the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_prep_banner_step.sh" ] && { H="$c/amplifier-bundle/tools/workflow_prep_banner_step.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: workflow_prep_banner_step.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
     output: "workflow_init"
   # STEP 00a: IDENTITY PREFLIGHT (issue #1290)
   # Resolve the acting `gh` login once and verify it can write to the repository this
@@ -122,6 +119,7 @@ steps:
   - id: "step-02-clarify-requirements"
     recovery: {"replay": "reuse"}
     agent: "amplihack:prompt-writer"
+    model: "strong"
     prompt: |
       # Step 2: Rewrite and Clarify Requirements
       **Task Description:** {{task_description}}
@@ -152,6 +150,7 @@ steps:
   - id: "step-02b-analyze-codebase"
     recovery: {"replay": "reuse"}
     agent: "amplihack:architect"
+    model: "strong"
     prompt: |
       # Step 2b: Analyze Existing Codebase Context
       **Task:** {{task_description}}
@@ -194,6 +193,7 @@ steps:
   - id: "step-02c-resolve-ambiguity"
     recovery: {"replay": "reuse"}
     agent: "amplihack:ambiguity"
+    model: "strong"
     prompt: |
       # Step 2c: Resolve Any Remaining Ambiguity
       **Task:** {{task_description}}
@@ -223,7 +223,7 @@ steps:
         echo "[skip] not a git repo — defaulting to 'other'" >&2
         printf 'other'; exit 0
       fi
-      REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+      REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || git remote get-url origin 2>/dev/null || echo "")
       # nocasematch (bash 3.1) folds case inside `case` itself. Not bash 4's
       # lowercase expansion, which macOS /bin/bash 3.2 rejects (issue #1423), and
       # not a lowercasing pipe, which would put a possibly-PAT-bearing URL on a
@@ -328,10 +328,10 @@ steps:
           WI_URL=$(timeout 60 az boards work-item create --title "$ISSUE_TITLE" --type "$AZDO_WI_TYPE" --assigned-to "$AZDO_WI_ASSIGNEE" --org "$AZDO_ORG_URL" --project "$AZDO_PROJECT" --query "url" -o tsv 2>"$AZ_ERR") || WI_CREATE_RC=$?
           if [ "$WI_CREATE_RC" -eq 0 ]; then
             [ -n "$WI_URL" ] && { rm -f "$AZ_ERR"; printf '%s\n' "$WI_URL"; exit 0; }
-            echo "ERROR: az boards work-item create reported success but no work item URL could be parsed from its output." >&2; sanitize_cli_output "$(cat "$AZ_ERR")" >&2; rm -f "$AZ_ERR"; exit 1
+            echo "WARNING: az boards work-item create reported success but no work item URL could be parsed from its output; this run carries on with local tracking (#3129)." >&2; sanitize_cli_output "$(cat "$AZ_ERR")" >&2; rm -f "$AZ_ERR"; emit_local_metadata; exit 0
           fi
-          # A genuine AzDO API failure (auth, permissions, invalid type) must surface loudly, not silently degrade to local tracking — the silent fallback is what produced orphaned/unassigned work items (#983).
-          echo "ERROR: az boards work-item create failed (type='$AZDO_WI_TYPE', assigned-to='$AZDO_WI_ASSIGNEE'). Resolve the AzDO failure (check az login, project permissions, or set AZDO_WORK_ITEM_TYPE if the type is invalid); not falling back to local tracking." >&2; sanitize_cli_output "$(cat "$AZ_ERR")" >&2; rm -f "$AZ_ERR"; exit 1
+          # An AzDO API failure (auth, permissions, invalid type) is named loudly with the provider's error, never swallowed (#983); the run then carries on with local tracking rather than ending, and no unassigned item is created (#3129).
+          echo "WARNING: az boards work-item create failed (type='$AZDO_WI_TYPE', assigned-to='$AZDO_WI_ASSIGNEE'). Check az login, project permissions, or set AZDO_WORK_ITEM_TYPE if the type is invalid; this run carries on with local tracking (#3129)." >&2; sanitize_cli_output "$(cat "$AZ_ERR")" >&2; rm -f "$AZ_ERR"; emit_local_metadata; exit 0
         else
           echo "WARN: 'az' CLI not found or org/project empty — using local tracking for AzDO remote" >&2
         fi

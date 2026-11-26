@@ -355,22 +355,35 @@ Recipes live in `~/.amplihack/.claude/recipes/`. Run `amplihack recipe list` to 
 
 Three recipes take a task to a pull request with less supervision than `default-workflow` run by hand. They differ in how far they go and how much design work they do.
 
+**[PLANNED - Implementation Pending]** The auto-drive columns below describe
+the target authorization and finalization contracts. The current full composer
+defaults `no_merge` to `true` for the build without propagating it to final
+merging; passing it does not guarantee an open PR. Gate retirement is planned.
+See [current behavior and authority](../reference/auto-drive-to-merge.md#current-behavior-and-authority).
+
 | | `quick-change` | `auto-drive-light` | `auto-drive-to-merge` |
 | --- | --- | --- | --- |
 | Build | One agent session | One agent session | `default-workflow`, including design and architect steps |
-| Ends at | An open PR | A merged PR | A merged PR |
+| Ends at | An open PR | Verified open PR when merging disabled; confirmed merge when authorized | Verified open PR when merging disabled; confirmed merge when authorized |
 | Size check | Diff limits (3 files, 150 lines by default), hands over to `default-workflow` | Eligibility rules (300 lines, no new modules, public API, schema or recipe contract changes by default), escalates to `auto-drive-to-merge` | None |
 | Crusty review loop | No | Yes. A round whose findings are all minor ends the loop, and each finding is filed as its own follow-up issue linked to the task before merge | Yes, the same per-finding model |
-| Merge gate | No | The same gate as `auto-drive-to-merge` | Yes |
+| Readiness and finalization | No | Shared agent steps and accepted evidence | Agent steps; all 13 criteria, captured authorization, expected-head protection, and platform confirmation |
 | Selected by smart-orchestrator | Yes, for small single-workstream tasks | No, run by name | No, run by name or skill |
 | Existing PR | Not supported | `pr_number` or `existing_branch` | `pr_number` or `existing_branch` |
+
+After implementation and validation, `no_merge=true` will keep a driven PR
+open. The planned defaults are `false` for full and `true` for light, with
+restrictions preserved through escalation. See the
+[planned verify-only guide](../howto/verify-pr-with-auto-drive.md).
 
 Use `quick-change` when you will review and merge the PR yourself. Use `auto-drive-light` for a small change that should be driven to merge without supervision. Use `auto-drive-to-merge` for a feature, a public interface change or anything that needs design.
 
 ```bash
+# [PLANNED] Requires implemented and tested invocation-wide authorization.
 amplihack recipe run auto-drive-light \
-  -c task_description="Return an error instead of panicking when the round record is empty in autodrive_last_round.sh" \
-  -c repo_path=.
+  -c task_description="Clarify auto-drive readiness and merge outcomes in docs/reference/auto-drive-to-merge.md" \
+  -c repo_path=. \
+  -c no_merge=true
 ```
 
 See [Quick-Change Recipe](../reference/quick-change-recipe.md), [Auto-Drive-Light Recipe](../reference/auto-drive-light.md) and [Auto Drive To Merge Reference](../reference/auto-drive-to-merge.md).

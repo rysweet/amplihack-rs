@@ -7,6 +7,7 @@
 //! - Telemetry (stderr JSON line per invocation)
 
 mod codex;
+use crate::hook_text::{self, Action, ModelText};
 use codex::{codex_output, normalize_codex_input};
 
 use amplihack_types::HookInput;
@@ -38,6 +39,12 @@ pub trait Hook {
     /// The failure policy for this hook.
     fn failure_policy(&self) -> FailurePolicy {
         FailurePolicy::Open
+    }
+
+    /// The context category controlled by the hook-text setting.
+    /// Hooks without a declaration keep their existing behaviour.
+    fn model_text(&self) -> Option<ModelText> {
+        None
     }
 
     /// Canonical `hook_event_name` this hook handles (e.g. `"SessionStart"`).
@@ -74,6 +81,14 @@ pub fn run_hook<H: Hook>(hook: H) {
     // must not select the hook protocol.
     let codex = codex_hook_protocol_selected();
     let security = codex && hook_name == "pre_tool_use";
+    let text_action = hook.model_text().map(|category| {
+        let parsed = hook_text::from_env();
+        if let Some(record) = parsed.record {
+            // A diagnostic must not change a hook's output or failure policy.
+            let _ = writeln!(io::stderr(), "{record}");
+        }
+        hook_text::action(parsed.setting, category)
+    });
 
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<()> {
         let input_json = read_stdin(codex)?;
@@ -118,7 +133,17 @@ pub fn run_hook<H: Hook>(hook: H) {
             return Ok(());
         }
 
+        if text_action == Some(Action::Approve) {
+            write_stdout(hook_text::APPROVE.as_bytes())?;
+            return Ok(());
+        }
+
         let output = hook.process(input)?;
+        let output = if text_action == Some(Action::StripContext) {
+            hook_text::strip_model_text(output)
+        } else {
+            output
+        };
         let output = if codex {
             codex_output(event, output)
         } else {
@@ -465,6 +490,18 @@ mod codex_payload_contract_tests {
             other => panic!("wrong normalized event: {other:?}"),
         }
     }
+    /// PreCompact has no event name of its own here, so Codex gets `{}` for
+    /// both its success output and its `systemMessage` error output.
+    #[test]
+    fn codex_pre_compact_output_is_empty() {
+        for output in [
+            serde_json::json!({}),
+            serde_json::json!({"systemMessage": "export failed"}),
+        ] {
+            assert_eq!(codex_output("PreCompact", output), serde_json::json!({}));
+        }
+    }
+
     #[test]
     fn codex_null_transcript_stop_and_session_end_remain_distinct() {
         let stop = deserialize_hook_input(

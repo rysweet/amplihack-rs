@@ -65,6 +65,8 @@ pub(super) mod key_check;
 #[cfg(unix)]
 pub(super) mod ledger;
 #[cfg(unix)]
+mod lifetime;
+#[cfg(unix)]
 mod log;
 #[cfg(unix)]
 mod login_identity;
@@ -107,6 +109,8 @@ mod settings;
 #[cfg(unix)]
 mod spend_blocks;
 #[cfg(unix)]
+pub(super) mod step_block;
+#[cfg(unix)]
 mod swap;
 #[cfg(unix)]
 mod swap_authorize;
@@ -126,9 +130,8 @@ mod switch;
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
 pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
-pub use candidates::login_unusable;
 pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per_token_reason};
-pub use overflow_record::append_to_log;
+pub use {candidates::login_unusable, overflow_record::append_to_log};
 
 #[cfg(all(test, unix))]
 mod tests;
@@ -166,8 +169,6 @@ mod tests_issue_1886;
 mod tests_issue_1886_cycle;
 #[cfg(all(test, unix))]
 mod tests_key_check;
-#[cfg(all(test, unix))]
-mod tests_log;
 #[cfg(all(test, unix))]
 mod tests_measure;
 #[cfg(all(test, unix))]

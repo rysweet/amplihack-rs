@@ -12,8 +12,15 @@ cargo install --upgrade amplihack
 
 # Or force kill if already hung
 Ctrl+C (may need to press multiple times)
-pkill -9 amplihack
+
+# Read the list first, then stop only the hung PID
+ps -eo pid=,lstart=,args= | grep -E '[a]mplihack'
+kill -9 <pid>
 ```
+
+Pattern kills are denied by the
+[dangerous command policy](../reference/dangerous-command-policy.md); read the
+process list and name the PID.
 
 ## Symptoms
 

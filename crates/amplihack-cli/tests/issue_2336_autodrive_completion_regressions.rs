@@ -72,8 +72,6 @@ fn completion_preparation_and_evaluation_are_private_under_caller_umasks() {
             .arg(record)
             .arg("--repo")
             .arg(&d.repo)
-            .arg("--review-dir")
-            .arg(&d.review)
             .arg("--launch-tools")
             .arg(tools_dir())
             .output()

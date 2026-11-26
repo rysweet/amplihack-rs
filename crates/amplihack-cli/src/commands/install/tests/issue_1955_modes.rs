@@ -7,7 +7,6 @@ use super::super::directories::{
 };
 use super::super::tag_fetch::{TARBALL_LIMITS, extract_tag_tarball};
 use super::helpers::*;
-use crate::commands::recipe::run::merge_guard::{BASH_ENV_FILE, GATE_FILES, locate_guard_dir};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -83,26 +82,10 @@ fn loose_fixture() -> Fixture {
     let repo = temp.path().join("repo");
     create_source_repo(&repo);
     let tools = repo.join("amplifier-bundle/tools");
-    fs::create_dir_all(tools.join("gh-merge-guard")).unwrap();
-    fs::write(
-        tools.join("gh-merge-guard/gh"),
-        "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
-    )
-    .unwrap();
-    fs::write(tools.join("gh-merge-guard").join(BASH_ENV_FILE), "# env\n").unwrap();
-    for gate in GATE_FILES {
-        fs::write(tools.join(gate), "#!/bin/bash\n").unwrap();
-    }
+    fs::create_dir_all(&tools).unwrap();
     fs::write(tools.join("run-me.sh"), "#!/bin/sh\n").unwrap();
     fs::write(tools.join("read-me.md"), "text\n").unwrap();
-    set_loose_modes(
-        &repo.join("amplifier-bundle"),
-        &[
-            "tools/run-me.sh",
-            "tools/autodrive_merge_gate.sh",
-            "tools/gh-merge-guard/gh",
-        ],
-    );
+    set_loose_modes(&repo.join("amplifier-bundle"), &["tools/run-me.sh"]);
     let claude_dir = temp.path().join(".amplihack/.claude");
     fs::create_dir_all(&claude_dir).unwrap();
     let target = temp.path().join(".amplihack/amplifier-bundle");
@@ -243,41 +226,6 @@ fn the_source_tree_is_not_changed_by_staging() {
     copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
 
     assert_eq!(mode_of(&script), 0o775, "only the copy gets the mode rule");
-}
-
-#[test]
-fn the_merge_guard_accepts_the_tree_with_no_further_chmod() {
-    // #1551's own check, run on what staging produced.
-    let fixture = loose_fixture();
-
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
-
-    let amplihack_home = fixture.claude_dir.parent().unwrap();
-    locate_guard_dir(amplihack_home).unwrap_or_else(|e| panic!("{e:#}"));
-    let guard = fixture.target.join("tools/gh-merge-guard");
-    assert_eq!(mode_of(&guard.join("gh")), 0o755);
-    assert_eq!(mode_of(&guard), 0o755);
-    assert_eq!(mode_of(&guard.join(BASH_ENV_FILE)), 0o644);
-    assert_no_group_or_other_write(&fixture.target);
-}
-
-#[test]
-fn a_non_executable_merge_guard_shim_still_ends_up_executable() {
-    // secure_merge_guard runs after the mode rule (D11), so its exact modes win.
-    let fixture = loose_fixture();
-    chmod(
-        &fixture
-            .repo
-            .join("amplifier-bundle/tools/gh-merge-guard/gh"),
-        0o664,
-    );
-
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
-
-    assert_eq!(
-        mode_of(&fixture.target.join("tools/gh-merge-guard/gh")),
-        0o755
-    );
 }
 
 #[test]

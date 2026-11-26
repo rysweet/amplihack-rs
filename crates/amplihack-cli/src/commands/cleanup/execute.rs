@@ -131,8 +131,14 @@ pub(super) fn execute(
             run_still_inactive(run_dir)?;
             // A child of a killed runner (an agent, cargo) may outlive it and
             // still use its TMPDIR.
-            if procs.in_use(target) {
-                refuse!("in use by a running process");
+            if let Some(reason) = procs.keep_reason(target) {
+                refuse!("{reason}");
+            }
+            // Issue #2785, last of the free checks and so closest to the
+            // delete: work that appeared since this was planned is still
+            // seen. A refusal is reported as skipped, never as a failure.
+            if let Some(keep) = keep_and_report_unsaved_work(target) {
+                refuse!("{keep}");
             }
             remove_real_dir(target)
         }
@@ -147,8 +153,15 @@ pub(super) fn execute(
             if item.category == Category::TmpLeftover && has_live_pid_marker(target) {
                 refuse!("in use: a pid marker names a running process");
             }
-            if procs.in_use(target) {
-                refuse!("in use by a running process");
+            if let Some(reason) = procs.keep_reason(target) {
+                refuse!("{reason}");
+            }
+            // Issue #2785, before the Cargo lock so nothing slow sits
+            // between the judgement and the delete. This one arm covers the
+            // run-owned folder, `untagged-target` and `tmp-leftover`, and is
+            // the only judgement the last two get.
+            if let Some(keep) = keep_and_report_unsaved_work(target) {
+                refuse!("{keep}");
             }
             // Issue #2039: a Cargo target is locked exclusively from the
             // check through the delete, so a build cannot start in between.
@@ -187,8 +200,8 @@ pub(super) fn execute(
             if let Some(reason) = unpushed_reason(target) {
                 refuse!("{reason}");
             }
-            if procs.in_use(target) {
-                refuse!("in use by a running process");
+            if let Some(reason) = procs.keep_reason(target) {
+                refuse!("{reason}");
             }
             let mut command = hardened_git();
             command
@@ -281,8 +294,8 @@ fn remove_run_target(
         Shape::DanglingLink => None,
         _ => Some(item.canonical.as_path()),
     };
-    if in_use_at.is_some_and(|p| procs.in_use(p)) {
-        refuse!("in use by a running process");
+    if let Some(reason) = in_use_at.and_then(|p| procs.keep_reason(p)) {
+        refuse!("{reason}");
     }
     match target_remove::remove(&item.path, shape, roots, links, true) {
         Ok(()) => {

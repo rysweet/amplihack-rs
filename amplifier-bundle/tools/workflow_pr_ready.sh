@@ -5,13 +5,36 @@ export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Usage: workflow_pr_ready.sh [--base BRANCH]
-#   --base BRANCH  The base the pull request was opened against: the run's
-#                  base_branch, which step-16 passed to `gh pr create --base`.
-#                  Empty or absent keeps the discovery below (origin/HEAD, then
-#                  origin/main, origin/master, origin/develop), which matches a
-#                  pull request step-16 opened without --base. A set value is
-#                  never replaced by a discovered one
+#   --base BRANCH  The run's base_branch, which step-16 passed to
+#                  `gh pr create --base`. A set value is never replaced.
+#                  Empty or absent: the base of the pull request this run
+#                  recorded, from step-16's publish result or the pull
+#                  request's own baseRefName (delivery_run_base in
+#                  workflow_delivery_inputs.sh). origin/HEAD, then origin/main,
+#                  origin/master, origin/develop, is used only when the run
+#                  recorded no pull request at all
 #                  (docs/reference/workflow-delivery-inputs.md).
+#
+# Issue #2787: a finished run's own PR is marked ready, or the tool says why
+# not and leaves it alone. It never ends a run whose work is done.
+#   - The branch and head are read from the PR's own worktree: the
+#     `git worktree list --porcelain` entry on worktree_setup.branch_name, then
+#     on the PR's headRefName (or a <B>--wt-<n> alias of either), found from
+#     the caller's folder or REPO_PATH. A checkout on the base branch is never
+#     taken for the PR's branch. existing_branch is not read: workflow-finalize,
+#     the one recipe that calls this tool, does not declare it (#1561), and
+#     step-04 records a given existing_branch as worktree_setup.branch_name.
+#   - A PR head one or more commits behind the local head (GitHub not yet
+#     reporting the push this run just made) is accepted: the scope lookup gets
+#     --allow-head-behind and the identity check accepts an ancestor. The
+#     repository, cross-repository, base and state checks are unchanged, and a
+#     cross-repository PR is never marked ready.
+#   - When the run's PR is known (pr_url or pr_number) but the scoped lookup or
+#     the identity check rejects it, the tool prints a WARNING with the reason,
+#     leaves the draft flag alone, and exits 0. The PR stays as it is for the
+#     next step or agent to judge.
+# Unchanged exits: 2 usage, 127 no gh or jq, 1 for gh auth failure, a closed
+# unmerged PR, a failed ready call, or a scope failure when no PR is known.
 EXPECTED_BASE_INPUT=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -66,6 +89,14 @@ fi
 # Defines parse_github_repo_identity (issue #1642).
 # shellcheck source=workflow_github_repo.sh disable=SC1090
 . "$GITHUB_REPO_HELPER"
+# Defines delivery_run_base, the one rule for the base of this run's PR (#2520).
+DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflow_delivery_inputs.sh}"
+if [ ! -f "$DELIVERY_INPUTS_HELPER" ] || [ ! -r "$DELIVERY_INPUTS_HELPER" ]; then
+  echo "ERROR: workflow_pr_ready.sh requires the delivery-input helper at $DELIVERY_INPUTS_HELPER" >&2
+  exit 2
+fi
+# shellcheck source=workflow_delivery_inputs.sh disable=SC1090
+. "$DELIVERY_INPUTS_HELPER"
 
 # Rate-limit-aware retry. This helper both reads (pr view) and MUTATES (pr ready,
 # pr comment); per the workflow contract mutation paths must never fall back to
@@ -77,46 +108,44 @@ gh_with_retry() {
   _gh_retry_core "$label" "$@"
 }
 
+# The base is worked out once, after the repository and branch are known, and
+# that one value is used by both the scoped lookup and the identity check.
+EXPECTED_BASE=""
 resolve_expected_base_branch() {
-  local candidate
-  if [ -n "$EXPECTED_BASE_INPUT" ]; then printf '%s\n' "$EXPECTED_BASE_INPUT"; return 0; fi
-  candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
-  for candidate in origin/main origin/master origin/develop; do
-    if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
-  done
-  return 1
+  local repo="$1" branch="$2"
+  delivery_run_base "$EXPECTED_BASE_INPUT" "$(rv_field pr_publish_result base_branch)" \
+    "${PR_URL:-$PR_NUMBER}" "$repo" "$branch" "${RECIPE_VAR_forbidden_base_branches:-}"
 }
 
 validate_pr_identity_before_mutation() {
-  local pr_json="$1" pr_url="$2" current_branch local_head repo_identity pr_base_identity expected_base
+  local pr_json="$1" pr_url="$2" current_branch local_head repo_identity pr_base_identity expected_base="$EXPECTED_BASE"
   local pr_head_ref pr_base_ref pr_head_oid pr_head_owner pr_head_repo pr_cross_repo
 
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-    echo "ERROR: refusing to mutate PR '$pr_url'; workflow_pr_ready.sh is not running inside a git worktree" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; workflow_pr_ready.sh is not running inside a git worktree" >&2
     return 1
   }
   # #1762: an alias worktree (<B>--wt-<n> tracking origin/<B>) is on <B>.
   current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || {
-    echo "ERROR: refusing to mutate PR '$pr_url'; workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR" >&2
     return 1
   }
   [ -n "$current_branch" ] || {
-    echo "ERROR: refusing to mutate PR '$pr_url'; current branch is empty" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; current branch is empty" >&2
     return 1
   }
   local_head="$(git rev-parse --verify HEAD 2>/dev/null)" || {
-    echo "ERROR: refusing to mutate PR '$pr_url'; local HEAD does not resolve" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; local HEAD does not resolve" >&2
     return 1
   }
   repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
   [ -n "$repo_identity" ] || {
-    echo "ERROR: refusing to mutate PR '$pr_url'; unable to determine current GitHub repo identity from origin remote" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; unable to determine current GitHub repo identity from origin remote" >&2
     return 1
   }
   pr_base_identity="$(parse_github_repo_identity "$pr_url" || true)"
   if [ "$pr_base_identity" != "$repo_identity" ]; then
-    echo "ERROR: refusing to mutate PR '$pr_url'; PR URL repo '${pr_base_identity:-unknown}' does not match current repo '$repo_identity'" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; PR URL repo '${pr_base_identity:-unknown}' does not match current repo '$repo_identity'" >&2
     return 1
   fi
 
@@ -128,27 +157,35 @@ validate_pr_identity_before_mutation() {
   pr_cross_repo=$(printf '%s' "$pr_json" | jq -r '.isCrossRepository // false')
 
   if [ -z "$pr_head_ref" ] || [ -z "$pr_base_ref" ] || [ -z "$pr_head_oid" ] || [ -z "$pr_head_owner" ] || [ -z "$pr_head_repo" ]; then
-    echo "ERROR: refusing to mutate PR '$pr_url'; PR metadata is incomplete" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; PR metadata is incomplete" >&2
     return 1
   fi
   if [ "$pr_head_ref" != "$current_branch" ]; then
-    echo "ERROR: refusing to mutate PR '$pr_url'; headRefName '$pr_head_ref' does not match current branch '$current_branch'" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; headRefName '$pr_head_ref' does not match current branch '$current_branch'" >&2
     return 1
   fi
+  # #2787: only the head SHA check is relaxed. A PR head that is the local head
+  # or an ancestor of it is this run's PR, with GitHub not yet showing a push
+  # made moments ago. A head that is neither (rewritten, diverged, unknown
+  # here) is still refused.
   if [ "$pr_head_oid" != "$local_head" ]; then
-    echo "ERROR: refusing to mutate PR '$pr_url'; headRefOid '$pr_head_oid' does not match local HEAD '$local_head'" >&2
-    return 1
+    if [[ "$pr_head_oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] && git merge-base --is-ancestor "$pr_head_oid" "$local_head" 2>/dev/null; then
+      echo "INFO: PR '$pr_url' head $pr_head_oid is an ancestor of local HEAD $local_head; GitHub has not caught up with the push yet, so it is accepted (#2787)" >&2
+    else
+      echo "WARNING: not marking PR '$pr_url' ready; headRefOid '$pr_head_oid' is neither local HEAD '$local_head' nor an ancestor of it" >&2
+      return 1
+    fi
   fi
   if [ "$pr_cross_repo" = "true" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_identity" ]; then
-    echo "ERROR: refusing to mutate PR '$pr_url'; PR head repo '$pr_head_owner/$pr_head_repo' does not match current repo '$repo_identity'" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; PR head repo '$pr_head_owner/$pr_head_repo' does not match current repo '$repo_identity'" >&2
     return 1
   fi
-  if ! expected_base="$(resolve_expected_base_branch)"; then
-    echo "ERROR: refusing to mutate PR '$pr_url'; unable to resolve expected base branch for baseRefName validation" >&2
+  if [ -z "$expected_base" ]; then
+    echo "WARNING: not marking PR '$pr_url' ready; unable to resolve expected base branch for baseRefName validation" >&2
     return 1
   fi
   if [ "$pr_base_ref" != "$expected_base" ]; then
-    echo "ERROR: refusing to mutate PR '$pr_url'; baseRefName '$pr_base_ref' does not match expected base '$expected_base'" >&2
+    echo "WARNING: not marking PR '$pr_url' ready; baseRefName '$pr_base_ref' does not match expected base '$expected_base'" >&2
     return 1
   fi
 }
@@ -161,6 +198,70 @@ add_pr_target() {
   pr_targets+=("$target")
 }
 
+# --- #2787: read the branch and head from the PR's own worktree --------------
+# A 1.2.213 step-21 that cannot resolve worktree_setup falls back to REPO_PATH,
+# the launch checkout, which is usually on the base branch; the scope lookup
+# then looked for <base> -> <base> and missed the run's open PR. The worktree
+# on the PR's branch is found from git's own list instead.
+#
+# pr_worktree_for <branch> <list-from>: the path of the linked worktree on
+# <branch>, or on its <branch>--wt-<n> alias (#1762), listed from <list-from>.
+pr_worktree_for() {
+  local want="$1" from="$2" line path="" br
+  [ -n "$want" ] && [ -d "$from" ] || return 1
+  case "$want" in -*) return 1 ;; esac
+  git check-ref-format --branch "$want" >/dev/null 2>&1 || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      "branch refs/heads/"*)
+        br="${line#branch refs/heads/}"
+        if { [ "$br" = "$want" ] || [[ "$br" =~ ^"$want"--wt-[1-9][0-9]*$ ]]; } && [ -d "$path" ]; then
+          printf '%s\n' "$path"; return 0
+        fi ;;
+    esac
+  done < <(git -C "$from" worktree list --porcelain 2>/dev/null)
+  return 1
+}
+WT_LIST_FROM="."
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || WT_LIST_FROM="${REPO_PATH:-}"
+if [ -n "$WT_LIST_FROM" ] && [ -d "$WT_LIST_FROM" ]; then
+  pr_wt=""; pr_wt_from=""
+  for src in worktree_setup pr_head; do
+    case "$src" in
+      worktree_setup) want="$(rv_field worktree_setup branch_name)" ;;
+      pr_head)
+        want=""
+        if [[ "${PR_URL:-}" =~ ^https://github\.com/[^[:space:]]+/pull/[1-9][0-9]*$ ]] || [[ "${PR_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
+          want="$(cd "$WT_LIST_FROM" && gh pr view "${PR_URL:-$PR_NUMBER}" --json headRefName --jq '.headRefName // ""' 2>/dev/null)" || want=""
+        fi ;;
+    esac
+    want="${want%%$'\n'*}"
+    if pr_wt="$(pr_worktree_for "$want" "$WT_LIST_FROM")"; then pr_wt_from="$src"; break; fi
+  done
+  if [ -n "$pr_wt" ]; then
+    if [ "$(cd "$pr_wt" && pwd -P)" != "$(pwd -P)" ]; then
+      echo "INFO: reading the branch and head from the PR worktree $pr_wt, found from ${pr_wt_from}, not from $(pwd -P) (#2787)" >&2
+    else
+      echo "INFO: this folder is the PR worktree, found from ${pr_wt_from} (#2787)" >&2
+    fi
+    cd "$pr_wt"
+  fi
+fi
+
+# cannot_validate <reason>: the facts the scoped lookup needs are missing. With
+# the run's PR known (pr_url or pr_number) that is a reason not to mark it
+# ready, never a reason to end a run whose work is done (#2787): WARNING, the
+# PR left as it is, exit 0. With no PR known it stays an error, as before.
+cannot_validate() {
+  if [[ "$PR_URL" =~ [^[:space:]] ]] || [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+    echo "WARNING: the run's PR ${PR_URL:-#$PR_NUMBER} was not marked ready: $1. It is left as it is for the next step or agent to judge (#2787)." >&2
+    exit 0
+  fi
+  echo "ERROR: $1; refusing ambiguous PR readiness mutation" >&2
+  exit 1
+}
+
 scoped_pr_json=""
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "INFO: [skip] not a git repo — skipping gh pr ready" >&2
@@ -169,15 +270,16 @@ fi
 current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || { echo "ERROR: workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR; refusing PR readiness mutation" >&2; exit 1; }
 local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
 repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
-expected_base="$(resolve_expected_base_branch || true)"
-[ -n "$repo_identity" ] || { echo "ERROR: unable to determine current GitHub repo identity from origin remote" >&2; exit 1; }
-[ -n "$current_branch" ] || { echo "ERROR: current branch is empty; refusing ambiguous PR readiness mutation" >&2; exit 1; }
-[ -n "$local_head" ] || { echo "ERROR: local HEAD does not resolve; refusing ambiguous PR readiness mutation" >&2; exit 1; }
-[ -n "$expected_base" ] || { echo "ERROR: unable to resolve expected base branch for scoped PR validation" >&2; exit 1; }
 [ -x "$PR_SCOPE_HELPER" ] || { echo "ERROR: workflow_pr_scope.sh missing or not executable at $PR_SCOPE_HELPER" >&2; exit 1; }
 if [[ "$PR_NUMBER" =~ [^[:space:]] ]] && ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: invalid PR_NUMBER '$PR_NUMBER' for workflow_pr_ready.sh" >&2
   exit 1
+fi
+[ -n "$repo_identity" ] || cannot_validate "unable to determine current GitHub repo identity from origin remote"
+[ -n "$current_branch" ] || cannot_validate "current branch is empty"
+[ -n "$local_head" ] || cannot_validate "local HEAD does not resolve"
+if ! EXPECTED_BASE="$(resolve_expected_base_branch "$repo_identity" "$current_branch")" || [ -z "$EXPECTED_BASE" ]; then
+  cannot_validate "unable to resolve expected base branch for scoped PR validation"
 fi
 
 scoped_issue_id="${RECIPE_VAR_issue_number:-}"
@@ -189,10 +291,11 @@ case "$scoped_issue_id" in ''|*[!0-9]*) scoped_issue_id="" ;; esac
 scope_args=(
   --repo "$repo_identity"
   --head "$current_branch"
-  --base "$expected_base"
+  --base "$EXPECTED_BASE"
   --issue "$scoped_issue_id"
   --work-item "$scoped_issue_id"
   --head-sha "$local_head"
+  --allow-head-behind
 )
 title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
 [ -n "$title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$title_prefix")
@@ -205,6 +308,12 @@ if ! scoped_pr_json="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
   reason="$(printf '%s' "$scoped_pr_json" | jq -r '.reason // ""' 2>/dev/null || true)"
   if [ "$reason" = "no_scoped_pr" ] && [ -z "$PR_URL" ] && [ -z "$PR_NUMBER" ]; then
     echo "INFO: [skip] no scoped PR matched current workflow identity — skipping gh pr ready" >&2
+    exit 0
+  fi
+  if [[ "$PR_URL" =~ [^[:space:]] ]] || [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+    # #2787: the run's own PR is known, so a failed lookup is not a reason to
+    # end a run whose work is done. The PR is left as it is.
+    echo "WARNING: the run's PR ${PR_URL:-#$PR_NUMBER} was not marked ready: the scoped lookup rejected it (${reason:-unknown}; the lines above name each check that removed it). It is left as it is for the next step or agent to judge (#2787)." >&2
     exit 0
   fi
   echo "ERROR: scoped PR validation failed before ready mutation: ${reason:-unknown}" >&2
@@ -241,7 +350,11 @@ if [ "$closed_unmerged_seen" = "true" ]; then
   exit 1
 fi
 
-validate_pr_identity_before_mutation "$pr_json" "$pr_url" || exit 1
+if ! validate_pr_identity_before_mutation "$pr_json" "$pr_url"; then
+  # #2787: the reason is the WARNING line above. Nothing is changed on the PR.
+  echo "WARNING: the run's PR '$pr_url' was not marked ready; it is left as it is for the next step or agent to judge (#2787)." >&2
+  exit 0
+fi
 
 if [ "$pr_is_draft" = "true" ]; then
   if ready_output="$(gh_with_retry "pr ready" pr ready "$pr_url")"; then

@@ -6,7 +6,7 @@
 use super::candidate::{self, Pool};
 use super::config::Config;
 use super::fsx;
-use super::liveness::{self, Liveness};
+use super::liveness::{self, Liveness, SessionView};
 use super::mv::{self, MoveError, abort_point};
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
@@ -262,6 +262,16 @@ pub fn recover(state: &State) -> Result<Option<Liveness>, ProfileError> {
 
 /// `recover`, plus one line for each thing it did, for `repair`.
 pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
+    recover_seeing(&liveness::HostSessions, state)
+}
+
+/// [`recover_reporting`] with the view of running sessions given (issue
+/// #2935): recovery returns a hosted login only once `sessions` shows no
+/// session on its directory.
+pub(super) fn recover_seeing(
+    sessions: &dyn SessionView,
+    state: &State,
+) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
     let mut done = Vec::new();
     let mut ledger = state.load_ledger()?;
     if let Some(j) = state.load_journal()? {
@@ -276,7 +286,7 @@ pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>
         cleanup_rerun(state);
         return Ok((None, done));
     }
-    let live = liveness::scan_system(&state.root);
+    let live = sessions.liveness(&state.root);
     let hosted: Vec<(String, HostEntry)> = ledger
         .hosts
         .iter()
@@ -395,8 +405,10 @@ fn cleanup_rerun(state: &State) {
     sweep_rerun(&state.dir.join("rerun"));
 }
 
-/// Removes regular `<pid>-<n>.out` files in `dir` (no recursion) whose
-/// supervisor is gone or that are over 24 h old. Other names are left.
+/// Removes the regular files in `dir` (no recursion) that [`rerun_owner`]
+/// names — an attempt's output buffer and a step's captured prompt —
+/// whose supervisor is gone or that are over 24 h old. Other names, and
+/// anything that is not a regular file, are left.
 pub(crate) fn sweep_rerun(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -418,11 +430,24 @@ pub(crate) fn sweep_rerun(dir: &Path) {
     }
 }
 
-/// The supervisor pid in a rerun buffer name `<pid>-<n>.out`.
+/// The supervisor pid in a name the rerun scratch directory owns: an
+/// attempt's output buffer `<pid>-<n>.out`, or the captured prompt of a
+/// step whose prompt came on a pipe, `<pid>-0.in` (issue #2815). The
+/// captured prompt is now kept in memory, so only
+/// an earlier version writes `<pid>-0.in`; the name is still swept so that
+/// such a file is not left behind. Every other name belongs to someone else
+/// and is left alone.
 pub fn rerun_owner(name: &std::ffi::OsStr) -> Option<u32> {
-    let name = name.to_str()?.strip_suffix(".out")?;
-    let (pid, n) = name.split_once('-')?;
-    n.parse::<u32>().ok()?;
+    let name = name.to_str()?;
+    let pid = match name.strip_suffix(".out") {
+        Some(stem) => {
+            let (pid, n) = stem.split_once('-')?;
+            n.parse::<u32>().ok()?;
+            pid
+        }
+        // Only `-0`: a step keeps one capture, named for its supervisor.
+        None => name.strip_suffix(".in")?.strip_suffix("-0")?,
+    };
     pid.parse().ok().filter(|&p| p > 0)
 }
 
@@ -472,6 +497,19 @@ pub fn swap_check(
     rl: &RateLimits,
     cfg: &Config,
 ) -> Result<(), ProfileError> {
+    swap_check_seeing(&liveness::HostSessions, state, profiles, owner, rl, cfg)
+}
+
+/// [`swap_check`] with the view of running sessions given (issue #2935). A
+/// view that cannot see sessions allows no swap.
+pub(super) fn swap_check_seeing(
+    sessions: &dyn SessionView,
+    state: &State,
+    profiles: &[ProfileName],
+    owner: &ProfileName,
+    rl: &RateLimits,
+    cfg: &Config,
+) -> Result<(), ProfileError> {
     let now = fsx::now();
     // Most updates need no move: decide that cheaply, before recovery and
     // the `/proc` scan. The status-line wrapper ran recovery moments ago in
@@ -485,9 +523,9 @@ pub fn swap_check(
     if !worth_checking {
         return Ok(());
     }
-    let live = match recover(state)? {
+    let live = match recover_seeing(sessions, state)?.0 {
         Some(live) => live,
-        None => liveness::scan_system(&state.root),
+        None => sessions.liveness(&state.root),
     };
     if !swap_allowed(state, &live, owner) {
         return Ok(());

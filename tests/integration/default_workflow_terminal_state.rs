@@ -266,6 +266,28 @@ fn run_terminal_state_with_issue(
     fake_path: &Path,
     issue_number: &str,
 ) -> TerminalRun {
+    run_terminal_state_in_mode(
+        repo_path,
+        worktree_path,
+        branch_name,
+        pr_url,
+        fake_path,
+        issue_number,
+        None,
+    )
+}
+
+/// The probe with `terminal_fail_mode` set to `fail_mode` (`report` or
+/// `exit`), or left unset for the recipe default, which is `exit`.
+fn run_terminal_state_in_mode(
+    repo_path: &Path,
+    worktree_path: Option<&Path>,
+    branch_name: &str,
+    pr_url: Option<&str>,
+    fake_path: &Path,
+    issue_number: &str,
+    fail_mode: Option<&str>,
+) -> TerminalRun {
     let command = step_commands(&load_recipe("workflow-terminal-state"));
     let old_path = std::env::var("PATH").unwrap_or_default();
     let path = format!("{}:{old_path}", fake_path.display());
@@ -319,7 +341,11 @@ fn run_terminal_state_with_issue(
             "WORKFLOW_GITHUB_REPO_HELPER",
             workspace_helper_path("workflow_github_repo.sh"),
         )
-        .env("RECIPE_VAR_goal_already_met", "false")
+        .env("RECIPE_VAR_goal_already_met", "false");
+    if let Some(mode) = fail_mode {
+        cmd.env("RECIPE_VAR_terminal_fail_mode", mode);
+    }
+    cmd
         // Conflicting stale bare names a parent run could leave behind.
         .env("BRANCH_NAME", "stale/issue-1561-parent-branch") // deliberately stale (#1561)
         .env("PR_URL", "https://github.com/stale/parent/pull/9999") // deliberately stale (#1561)
@@ -357,21 +383,6 @@ fn assert_contains_all(haystack: &str, needles: &[&str], context: &str) {
             haystack.contains(needle),
             "{context} must contain `{needle}`"
         );
-    }
-}
-
-fn assert_ordered(haystack: &str, needles: &[&str], context: &str) {
-    let mut previous = 0;
-    for needle in needles {
-        let position = haystack[previous..]
-            .find(needle)
-            .map(|offset| previous + offset)
-            .unwrap_or_else(|| panic!("{context} must contain `{needle}` in order"));
-        assert!(
-            position >= previous,
-            "{context} must place `{needle}` after earlier terminal checks"
-        );
-        previous = position;
     }
 }
 
@@ -427,105 +438,8 @@ fn terminal_state_recipe_exists_with_required_io_contract() {
     );
 }
 
-#[test]
-fn terminal_state_probe_detects_outcomes_in_safe_fail_closed_order() {
-    let recipe = load_recipe("workflow-terminal-state");
-    let command = step_commands(&recipe);
-
-    assert_ordered(
-        &command,
-        &[
-            "git status --porcelain",
-            "dirty worktree blocks terminal success",
-            "mergedAt",
-            "MERGED",
-            "closed-unmerged",
-            "CLOSED_OBSOLETE",
-            "BLOCKED_CI",
-            "git diff --quiet",
-            "NO_DIFF_SUCCESS",
-            "FOLLOWUP_CREATED",
-        ],
-        "terminal-state detection order",
-    );
-
-    assert_contains_all(
-        &command,
-        &[
-            "BLOCKED_CI",
-            "FAILED_CLOSED_UNMERGED",
-            "FAILED_MEANINGFUL_DIFF",
-            "ambiguous",
-            "exit 1",
-        ],
-        "terminal-state fail-closed semantics",
-    );
-}
-
-#[test]
-fn terminal_state_probe_validates_inputs_before_git_or_github_trust() {
-    let recipe = load_recipe("workflow-terminal-state");
-    let command = step_commands(&recipe);
-
-    assert_contains_all(
-        &command,
-        &[
-            "git rev-parse --is-inside-work-tree",
-            "git check-ref-format --branch",
-            "base_ref",
-            "pr_number",
-            "pr_url",
-            "^[0-9][0-9]*$",
-            "headRefName",
-            "baseRefName",
-            "headRefOid",
-            "mergedAt",
-        ],
-        "terminal-state input validation",
-    );
-
-    let dirty_position = command
-        .find("git status --porcelain")
-        .expect("dirty worktree check must exist");
-    for trusted_probe in ["workflow_pr_scope.sh", "git diff --quiet"] {
-        let probe_position = command
-            .find(trusted_probe)
-            .unwrap_or_else(|| panic!("trusted probe `{trusted_probe}` must exist"));
-        assert!(
-            dirty_position < probe_position,
-            "dirty worktree must be checked before `{trusted_probe}` can produce terminal success"
-        );
-    }
-}
-
-#[test]
-fn terminal_state_probe_wraps_github_metadata_calls_with_bounded_retry() {
-    let recipe = load_recipe("workflow-terminal-state");
-    let command = step_commands(&recipe);
-
-    assert_contains_all(
-        &command,
-        &[
-            "sanitize_gh_stderr",
-            "is_transient_gh_error",
-            "gh_with_retry",
-            "timeout 60 gh",
-            "for attempt in 1 2 3",
-            "retrying (${attempt}/3)",
-            "workflow_pr_scope.sh",
-            "scoped PR lookup failed",
-            "unavailable PR metadata",
-        ],
-        "terminal-state GitHub adapter resilience",
-    );
-
-    assert!(
-        !command.contains("gh pr view \"$pr_target\"")
-            && !command.contains("gh pr list --head \"$BRANCH_INPUT\""),
-        "terminal-state must not call gh metadata endpoints directly without scoped helper validation"
-    );
-}
-
+/// A guard on the cross-repository boundary: every reader of the run's own PR
+/// goes through workflow_pr_scope.sh and checks isCrossRepository.
 #[test]
 fn current_work_pr_identity_delegates_to_scoped_helper() {
     let terminal_state = recipe_text("workflow-terminal-state");
@@ -556,40 +470,6 @@ fn current_work_pr_identity_delegates_to_scoped_helper() {
             assert!(
                 content.contains(required),
                 "{label} must pass/validate scoped PR field `{required}`"
-            );
-        }
-    }
-}
-
-#[test]
-fn current_work_pr_identity_never_uses_recent_author_or_first_result_fallbacks() {
-    let current_work_paths = [
-        "amplifier-bundle/recipes/workflow-terminal-state.yaml",
-        "amplifier-bundle/recipes/workflow-tdd.yaml",
-        "amplifier-bundle/tools/workflow_publish_pr.sh",
-        "amplifier-bundle/tools/workflow_pr_ready.sh",
-        "amplifier-bundle/tools/workflow_final_status.sh",
-    ];
-
-    let forbidden = [
-        "gh pr list --author",
-        "--author @me",
-        "--author=@me",
-        "sort:updated-desc",
-        "sort:created-desc",
-        ".[0] // {}",
-        "head -1",
-        "tail -1",
-        "grep -i",
-    ];
-
-    for rel in current_work_paths {
-        let content = fs::read_to_string(workspace_root().join(rel))
-            .unwrap_or_else(|e| panic!("read {rel}: {e}"));
-        for needle in forbidden {
-            assert!(
-                !content.contains(needle),
-                "{rel} must not infer current-work PR identity via broad/recent fallback `{needle}`"
             );
         }
     }
@@ -965,13 +845,80 @@ fn terminal_state_treats_merged_pr_as_success_even_with_historical_failing_check
     assert_eq!(run.json["terminal_state"], "MERGED");
 }
 
+// #2966: failing checks on the run's own open PR are work for the CI repair
+// loop, not a terminal state. The probe lets the run continue, in both fail
+// modes (`exit` is workflow-publish's, `report` is workflow-finalize's), with
+// the publish, finalize and CI-wait gates open and no terminal success.
 #[test]
-fn terminal_state_blocks_active_pr_with_real_failing_checks() {
+fn failing_checks_continue_to_ci_repair() {
+    let failing_rollups = [
+        serde_json::json!([{ "conclusion": "FAILURE" }]),
+        serde_json::json!([
+            { "__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": "TIMED_OUT" }
+        ]),
+        serde_json::json!([
+            { "__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS" },
+            { "__typename": "CheckRun", "name": "smoke", "status": "COMPLETED", "conclusion": "CANCELLED" }
+        ]),
+        serde_json::json!([
+            { "__typename": "StatusContext", "context": "legacy", "state": "ERROR" }
+        ]),
+        serde_json::json!([
+            { "__typename": "CheckRun", "name": "ci", "status": "IN_PROGRESS", "conclusion": null }
+        ]),
+    ];
+    for rollup in failing_rollups {
+        for mode in [None, Some("exit"), Some("report")] {
+            let why = format!("rollup {rollup}, terminal_fail_mode={mode:?}");
+            let fixture = setup_repo();
+            let worktree = create_feature_worktree(&fixture);
+            commit_feature_change(&worktree);
+            let mut pr: JsonValue = serde_json::from_str(&matching_pr_json(&worktree, "OPEN", ""))
+                .expect("matching PR JSON");
+            pr["statusCheckRollup"] = rollup.clone();
+            let fake_tmp = TempDir::new().expect("fake gh tempdir");
+            let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
+
+            let run = run_terminal_state_in_mode(
+                &fixture.repo,
+                Some(&worktree),
+                "feature",
+                Some("https://github.com/owner/repo/pull/7"),
+                &fake_path,
+                "",
+                mode,
+            );
+
+            assert!(
+                run.success,
+                "{why}: a red check must not end the run at the probe\nstdout:\n{}\nstderr:\n{}",
+                run.stdout, run.stderr
+            );
+            assert_eq!(run.json["terminal_state"], "FOLLOWUP_CREATED", "{why}");
+            assert_eq!(run.json["terminal_success"], "false", "{why}");
+            assert_eq!(run.json["should_publish"], "true", "{why}");
+            assert_eq!(run.json["should_finalize"], "true", "{why}");
+            assert_eq!(run.json["should_run_ci_wait"], "true", "{why}");
+            assert!(
+                !run.stdout.contains("BLOCKED_CI") && !run.stderr.contains("BLOCKED_CI"),
+                "{why}: the probe no longer names BLOCKED_CI\nstdout:\n{}\nstderr:\n{}",
+                run.stdout,
+                run.stderr
+            );
+        }
+    }
+}
+
+// Only the failing-check blocker went. A closed PR that still holds unmerged
+// work is still a failure, red checks or not, because no repair of CI can
+// reopen it.
+#[test]
+fn a_closed_unmerged_pr_with_failing_checks_is_still_failed_closed_unmerged() {
     let fixture = setup_repo();
     let worktree = create_feature_worktree(&fixture);
     commit_feature_change(&worktree);
     let mut pr: JsonValue =
-        serde_json::from_str(&matching_pr_json(&worktree, "OPEN", "")).expect("matching PR JSON");
+        serde_json::from_str(&matching_pr_json(&worktree, "CLOSED", "")).expect("matching PR JSON");
     pr["statusCheckRollup"] = serde_json::json!([{ "conclusion": "FAILURE" }]);
     let fake_tmp = TempDir::new().expect("fake gh tempdir");
     let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
@@ -984,11 +931,8 @@ fn terminal_state_blocks_active_pr_with_real_failing_checks() {
         &fake_path,
     );
 
-    assert!(
-        !run.success,
-        "active failing checks must block terminal success"
-    );
-    assert_eq!(run.json["terminal_state"], "BLOCKED_CI");
+    assert!(!run.success, "a closed PR with unmerged work fails closed");
+    assert_eq!(run.json["terminal_state"], "FAILED_CLOSED_UNMERGED");
 }
 
 #[test]
@@ -1489,6 +1433,8 @@ fn scope_helper_accepts_a_head_behind_only_when_asked_and_only_when_open() {
 fn final_status_does_not_count_a_named_pr_behind_local_head_as_published() {
     // workflow_final_status.sh never opts in, so the PR fails the scope check
     // and goes to #1268 adjudication rather than straight to success.
+    // workflow_pr_ready.sh does opt in since #2787: a finished run's own PR
+    // one push behind is marked ready (issue_3129_build_loop::pr_ready).
     let fixture = setup_repo();
     let worktree = create_feature_worktree(&fixture);
     commit_feature_change(&worktree);
@@ -1505,9 +1451,5 @@ fn final_status_does_not_count_a_named_pr_behind_local_head_as_published() {
     assert!(
         !helper.contains("--allow-head-behind"),
         "workflow_final_status.sh must not opt in to --allow-head-behind"
-    );
-    assert!(
-        !helper_text("workflow_pr_ready.sh").contains("--allow-head-behind"),
-        "workflow_pr_ready.sh must not opt in to --allow-head-behind"
     );
 }

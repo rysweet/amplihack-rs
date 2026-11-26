@@ -28,7 +28,7 @@ signal = ["dep:amplihack-signal", "dep:qrcode"]
 test-support = ["amplihack-memory/test-support"]
 
 [dependencies]
-recipe-runner-rs = { git = "https://github.com/rysweet/amplihack-recipe-runner", rev = "90286bc50b84ded773795d2c8301b689f680db0b" }
+recipe-runner-rs = { git = "https://github.com/rysweet/amplihack-recipe-runner", rev = "2833a0b8bafb937f1cea19bdc4219e23ced76aef" }
 fs2 = "0.4"
 amplihack-git = { workspace = true }
 amplihack-hive = { path = "../amplihack-hive" }
@@ -59,6 +59,9 @@ semver = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+# Local-model Codex launches split hooks.json commands into shell words to
+# recognise amplihack's own pre-tool-use handlers.
+shell-words = { workspace = true }
 signal-hook = { workspace = true }
 time = { version = "0.3", default-features = false, features = ["std"] }
 tar = "0.4"
@@ -67,6 +70,10 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }
 sha2 = { workspace = true }
+# Issue #2885: Claude Code NFC-normalises its config directory before it
+# hashes it into the Keychain service name (`profile::keychain`). Already in
+# the lock file through `idna`, so it adds no crate to the build.
+icu_normalizer = { version = "2.2", default-features = false, features = ["compiled_data"] }
 toml = "0.8"
 # Issue #1453 — Codex's config.toml is a file users hand-edit, so amplihack
 # merges its one key into the existing document rather than reserializing it,

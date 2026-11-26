@@ -97,9 +97,8 @@ fn publish_slash_commands(repo_root: &Path) -> Result<Publication> {
 
 /// Mirror the staged skills into `~/.claude/skills/` (#1438).
 ///
-/// The check afterwards is the invariant, not the action: every skill name
-/// staged under `~/.amplihack/.claude/skills` must be discoverable under
-/// `~/.claude/skills` when this returns. Containment rather than equality,
+/// The check afterwards verifies each selected skill at the destination.
+/// Containment rather than equality,
 /// because `~/.claude/skills` is the user's own directory and may hold skills
 /// amplihack neither staged nor may remove. A shortfall is reported as a
 /// warning naming the missing skills — the whole cost of #1438 was that this
@@ -108,6 +107,11 @@ fn publish_skills(_repo_root: &Path) -> Result<Publication> {
     let staged_root = super::paths::staging_claude_dir()?.join("skills");
     let target = super::paths::global_claude_dir()?.join("skills");
     let staged = crate::claude_plugin::discoverable_skill_names(&staged_root)?;
+    let selection = crate::user_config::list_selection();
+    let staged = staged
+        .into_iter()
+        .filter(|name| selection.includes_skill(name))
+        .collect::<BTreeSet<_>>();
 
     if staged.is_empty() {
         return Ok(Publication {

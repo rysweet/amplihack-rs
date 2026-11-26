@@ -93,6 +93,10 @@ const EDITED_RECIPES: &[&str] = &[
     "consensus-requirements-debate",
     "consensus-publish",
     "consensus-merge-finalize",
+    // #2190 edits these two; listing them keeps a merge from main that
+    // changes either file from leaving its manifest hash stale unnoticed.
+    "consensus-test-fix",
+    "autodrive-merge-evidence",
 ];
 
 /// D7: conditional remediation steps a valid fixture run does not trigger.
@@ -101,15 +105,23 @@ const EDITED_RECIPES: &[&str] = &[
 const ALLOWED_SKIPS: &[(&str, &str)] = &[
     (
         "step7-fix-issues",
-        "runs only when test_results.tests_run is 'true'; the stubbed test run reports none",
+        "runs only when test_results.all_passing is not 'true'; the stubbed test run reports all passing",
     ),
     (
         "step12-implement-feedback",
         "runs only on a needs_work PR verdict; the stubbed review gives none",
     ),
     (
+        "step9-push-recovery",
+        "runs only when commit_result.push_reason is 'push_failed'; the stubbed step9-commit reports none",
+    ),
+    (
         "step12-push-updates",
         "runs only on a needs_work PR verdict; the stubbed review gives none",
+    ),
+    (
+        "step12-push-recovery",
+        "runs only on a needs_work PR verdict with a failed push; the stubbed review gives none",
     ),
     (
         "step14-diagnose-ci",
@@ -572,6 +584,12 @@ fn run_composed(sets: &[&str], composer_context: &[(&'static str, Yaml)]) -> Run
         stub.output.insert(
             "step1-requirements-analysis",
             r#"{"requires_debate":"true"}"#.to_string(),
+        );
+        // Issue #2190: step7-fix-issues runs unless the test step reports
+        // all_passing "true", so the stubbed test run reports a clean pass.
+        stub.output.insert(
+            "step7-run-tests",
+            r#"{"tests_run":"true","all_passing":"true"}"#.to_string(),
         );
         sb.write_recipe(phase, &stub_recipe(phase, &stub));
     }

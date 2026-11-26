@@ -163,6 +163,7 @@ dependencies = [
  "fs2",
  "fs4",
  "iana-time-zone",
+ "icu_normalizer",
  "lbug",
  "libc",
  "lru",
@@ -176,6 +177,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "shell-words",
  "signal-hook",
  "syn",
  "tar",
@@ -308,6 +310,7 @@ dependencies = [
  "amplihack-types",
  "amplihack-utils",
  "anyhow",
+ "libc",
  "serde_json",
  "tempfile",
  "tracing",
@@ -339,6 +342,7 @@ dependencies = [
 name = "amplihack-memory"
 version = "1.2.0"
 dependencies = [
+ "amplihack-git",
  "anyhow",
  "chrono",
  "fs4",
@@ -2092,8 +2096,8 @@ dependencies = [
 
 [[package]]
 name = "recipe-runner-rs"
-version = "0.6.0"
-source = "git+https://github.com/rysweet/amplihack-recipe-runner?rev=90286bc50b84ded773795d2c8301b689f680db0b#90286bc50b84ded773795d2c8301b689f680db0b"
+version = "0.7.0"
+source = "git+https://github.com/rysweet/amplihack-recipe-runner?rev=2833a0b8bafb937f1cea19bdc4219e23ced76aef#2833a0b8bafb937f1cea19bdc4219e23ced76aef"
 dependencies = [
  "anyhow",
  "clap",

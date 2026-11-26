@@ -20,9 +20,16 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+/// The ledger-derived `status` fields, split out for the line budget.
+#[path = "status_fields.rs"]
+mod status_fields;
+pub(super) use status_fields::blocked_logins_line;
+use status_fields::{api_key_line, overflow_line};
+
 const STOP_WAIT: Duration = Duration::from_secs(10);
-/// How long `profile overflow clear` waits for the rotate state lock.
-const CLEAR_LOCK_WAIT: Duration = Duration::from_secs(10);
+/// How long `profile overflow clear` waits for the rotate state lock, and
+/// how long a step's spend block (issue #2890) waits before giving it up.
+pub(super) const CLEAR_LOCK_WAIT: Duration = Duration::from_secs(10);
 
 /// The store whose rotator `status` and `stop` act on, and whether it was
 /// found through `~/.amplihack/rotate-root`. The record is followed only when
@@ -63,7 +70,13 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     let ledger = rs.load_ledger();
     // One read, so the `overflow:`, `on credits:` and `default:` lines agree.
     let names = overflow_names(store.root());
-    let overflow = overflow_line(&names, ledger.as_ref().map(Option::as_ref), now());
+    // One clock too: both fields expire the same blocks, so reading it
+    // twice would let one list a block the other had just dropped.
+    let at = now();
+    let overflow = overflow_line(&names, ledger.as_ref().map(Option::as_ref), at);
+    // Issue #2890: blocks on logins the `overflow:` field does not list,
+    // from the same ledger read.
+    let blocked_logins = blocked_logins_line(&names, ledger.as_ref().map(Option::as_ref), at);
     let last_tag = ledger
         .as_ref()
         .ok()
@@ -107,7 +120,9 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         eprintln!("{w}");
     }
     println!("{capacity}");
-    println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
+    println!(
+        "overflow: {overflow}\napi key: {api_key}\nblocked logins: {blocked_logins}\non overflow: {on_overflow}"
+    );
     if let Some(line) = super::platform_live_line(store.root()) {
         println!("{line}");
     }
@@ -257,36 +272,6 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
     }
 }
 
-/// The `overflow:` value: the marked profiles `names` in list order, each
-/// with its active spend block, or `-`. An unreadable ledger (`Err`) adds
-/// `(blocks unknown)` rather than showing no blocks.
-fn overflow_line(
-    names: &[ProfileName],
-    ledger: Result<Option<&RotateLedger>, &ProfileError>,
-    now: i64,
-) -> String {
-    if names.is_empty() {
-        return "-".into();
-    }
-    let (blocks, unknown) = match ledger {
-        Ok(l) => (l.map(|l| active_blocks(l, now)).unwrap_or_default(), false),
-        Err(_) => (BTreeMap::new(), true),
-    };
-    let line = names
-        .iter()
-        .map(|n| match blocks.get(n.as_str()) {
-            Some(b) => format!("{n} (blocked until {})", timestamp(b.until)),
-            None => n.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    if unknown {
-        format!("{line} (blocks unknown)")
-    } else {
-        line
-    }
-}
-
 /// The `on overflow:` value: `yes (<name>, held by switch)` when the pin
 /// names the live overflow profile; `yes (<name>)` when the login identified in
 /// `~/.claude` is an overflow profile and the rotator's last cycle recorded
@@ -294,37 +279,6 @@ fn overflow_line(
 /// overflow; plan capacity remains)` when it is an overflow profile without
 /// that tag, `no` for a plan profile, `-` when the live profile cannot be
 /// identified. Runs no probe.
-/// The `api key:` line (issue #1700): the API-key profile the tier uses,
-/// `(marked)` or `(not marked)` (issue #1804), with the active API-key
-/// block, or `-`.
-fn api_key_line(
-    store: &ProfileStore,
-    home: Option<&Path>,
-    ledger: Option<&RotateLedger>,
-) -> String {
-    use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
-    // Issue #1804: the marked one, else the first by name, labelled.
-    let marked = tiers_detail(store, home)
-        .0
-        .into_iter()
-        .find(|e| e.tier == PLATFORM_TIER)
-        .map(|e| e.name);
-    let platforms = crate::commands::profile::kind::Ctx::load(store, home).platform_profiles(store);
-    let (first, label) = match (marked, platforms.into_iter().next()) {
-        (Some(m), _) => (m, "marked"),
-        (None, Some(p)) => (p, "not marked"),
-        (None, None) => return "-".into(),
-    };
-    match ledger.and_then(|l| super::platform_block::active(l, now())) {
-        Some(b) => format!(
-            "{first} ({label}) (blocked until {}, {})",
-            timestamp(b.until),
-            sanitize_display(&b.reason, false)
-        ),
-        None => format!("{first} ({label})"),
-    }
-}
-
 pub(super) fn on_overflow_line(
     store: &ProfileStore,
     rs: &RotateState,
