@@ -7,6 +7,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+/// Test-build staging links executables larger than this instead of copying
+/// them, so a fake home never receives its own copy of a large binary.
+pub const LINK_THRESHOLD: u64 = 1024 * 1024;
+
 pub trait LinkOps {
     fn hard_link(&self, src: &Path, dst: &Path) -> io::Result<()>;
     fn symlink(&self, src: &Path, dst: &Path) -> io::Result<()>;
@@ -92,12 +96,9 @@ impl ArtifactRegistry {
         self.sources.push((path, identity(&m)?));
         Ok(())
     }
-    pub(super) fn matches(&self, target: &Path, forbidden: Option<&Path>) -> Result<bool> {
+    fn matches(&self, target: &Path) -> Result<bool> {
         let target_meta = fs::metadata(target)?;
         for (path, registered) in &self.sources {
-            if forbidden.is_some_and(|root| path.starts_with(root)) {
-                continue;
-            }
             let m = fs::metadata(path)
                 .with_context(|| format!("registered artifact disappeared: {}", path.display()))?;
             if identity(&m)? != *registered {
@@ -118,7 +119,7 @@ impl ArtifactRegistry {
     }
     pub fn link_with(&self, src: &Path, dst: &Path, root: &Path, ops: &impl LinkOps) -> Result<()> {
         let src = src.canonicalize()?;
-        if !self.matches(&src, None)? {
+        if !self.matches(&src)? {
             bail!("unregistered artifact: {}", src.display());
         }
         if dst.components().any(|c| matches!(c, Component::ParentDir)) {
@@ -151,7 +152,7 @@ impl ArtifactRegistry {
                 )
             })?;
         }
-        if !self.matches(dst, None)? {
+        if !self.matches(dst)? {
             bail!("staged artifact identity mismatch: {}", dst.display());
         }
         Ok(())

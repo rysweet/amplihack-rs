@@ -216,7 +216,7 @@ pub(super) fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Resu
         .with_context(|| format!("failed to create {}", bin_dir.display()))?;
     let staged = bin_dir.join(name);
     #[cfg(any(test, feature = "test-support"))]
-    if src.metadata()?.len() > super::test_support::footprint::INDEPENDENT_LIMIT {
+    if src.metadata()?.len() > super::test_support::artifacts::LINK_THRESHOLD {
         use super::test_support::artifacts::{ArtifactRegistry, FilesystemLinks};
         let mut artifacts = ArtifactRegistry::new();
         artifacts.register(src)?;

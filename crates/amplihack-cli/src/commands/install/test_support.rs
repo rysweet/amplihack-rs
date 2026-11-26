@@ -1,6 +1,5 @@
 //! Binary staging safeguards compiled only into test builds.
 pub mod artifacts;
-pub mod footprint;
 
 /// An inert private resolver for tests which do not exercise asset resolution.
 /// This compiled seam takes precedence over both sibling and PATH discovery.
