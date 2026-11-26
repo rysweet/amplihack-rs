@@ -5,7 +5,7 @@
 
 use super::super::cycle::Ctx;
 use super::super::decide::last_good::{LAST_GOOD_MAX_AGE_SECS, LastGood};
-use super::super::decide::target_confirm::Unconfirmed;
+use super::super::decide::target_confirm::{self, Facts, Step, Unconfirmed};
 use super::super::decide::target_seen::Extra;
 use super::super::decide::{Probed, Reading};
 use super::super::fresh_msg;
@@ -175,22 +175,83 @@ pub(super) fn accept(
     (to, why)
 }
 
-/// A retained model limit cannot be bypassed by #2820 recovery. A failed
-/// measurement loses its windows, so also consult the account's usage store.
-/// Model observations retain their own reset and age independently of session reads.
-pub(super) fn model_full(ctx: &Ctx, to: &ProfileName, p: &Probed, now: i64) -> bool {
+/// What the per-model weeks known for a target say about issue #2820's
+/// recovery: whether one is known for its current week, and whether one
+/// reaches `--week-at`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ModelWeeks {
+    /// At least one per-model week of the target's current week is known
+    /// (issue #3347): one in its stored reading, or one in its probe that has
+    /// a reset still to come and was not observed after `now`.
+    pub known: bool,
+    /// A per-model week in its probe or stored reading reaches `--week-at`.
+    pub full: bool,
+}
+
+impl ModelWeeks {
+    /// Whether these weeks let the target be taken without a fresh reading:
+    /// they are known and none reaches `--week-at`.
+    pub fn allow_unread(&self) -> bool {
+        self.known && !self.full
+    }
+}
+
+/// A probe's per-model week reaches `--week-at`.
+pub(super) fn probe_full(ctx: &Ctx, p: &Probed) -> bool {
     let threshold = f64::from(ctx.settings.week_at);
     p.windows
         .week_models
         .iter()
         .any(|w| w.used_percentage >= threshold)
-        || crate::commands::profile::auto_switch::fresh_reading(
-            ctx.store.root(),
-            to.as_str(),
-            i64::MAX,
-            now,
-        )
-        .is_some_and(|r| r.week_models.iter().any(|m| m.used_percentage >= threshold))
+}
+
+/// The per-model weeks of `to`, from its probe `p` and its stored reading
+/// (`auto_switch::fresh_reading`), read once. A retained model limit cannot
+/// be bypassed by #2820 recovery, and a failed measurement loses its
+/// windows, so the account's usage store is consulted as well. Model
+/// observations keep their own reset and age, apart from session reads. The
+/// stored reading keeps only model weeks whose reset is still to come, so any
+/// it returns is of the current week. A reading stored before per-model weeks
+/// were recorded has none, and the target's model weeks are then unknown.
+pub(super) fn model_weeks(ctx: &Ctx, to: &ProfileName, p: &Probed, now: i64) -> ModelWeeks {
+    let threshold = f64::from(ctx.settings.week_at);
+    let stored = crate::commands::profile::auto_switch::fresh_reading(
+        ctx.store.root(),
+        to.as_str(),
+        i64::MAX,
+        now,
+    )
+    .map(|r| r.week_models)
+    .unwrap_or_default();
+    let probe_current =
+        p.windows.week_models.iter().any(|w| {
+            w.resets_at.is_some_and(|r| r > now) && w.observed_at.is_none_or(|at| at <= now)
+        });
+    ModelWeeks {
+        known: probe_current || !stored.is_empty(),
+        full: probe_full(ctx, p) || stored.iter().any(|m| m.used_percentage >= threshold),
+    }
+}
+
+/// [`target_confirm::after_unknown`] for a confirming read of `to` that came
+/// back unknown with `label`: `facts` with its model weeks taken from that
+/// read, `p`, and the stored reading. A failed or unknown read has no
+/// windows, so the stored reading decides.
+pub(super) fn after_unknown(
+    ctx: &Ctx,
+    to: &ProfileName,
+    p: &Probed,
+    label: ProbeLabel,
+    facts: Facts,
+) -> Step {
+    let known = model_weeks(ctx, to, p, (ctx.now)()).known;
+    target_confirm::after_unknown(
+        label,
+        &Facts {
+            model_known: known,
+            ..facts
+        },
+    )
 }
 
 /// A target without confirmation leaves the existing stay explanation visible.

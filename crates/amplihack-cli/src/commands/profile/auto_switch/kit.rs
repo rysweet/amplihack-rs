@@ -25,3 +25,5 @@ pub use super::state::{
 };
 pub use super::swap::{account, guard_held, read_claude_json, recover as recover_auto_switch};
 pub use super::usage::ReadingSource;
+#[cfg(test)]
+pub use super::usage::{ModelWeek, Reading};

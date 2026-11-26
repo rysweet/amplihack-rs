@@ -15,7 +15,7 @@
 use super::cycle::Ctx;
 use super::decide::target::{NoMove, Unfit, fit};
 use super::decide::target_confirm::{
-    Facts, Limit, Step, Unconfirmed, Why, after_unknown, confirmation_spent, next,
+    Facts, Limit, Step, Unconfirmed, Why, confirmation_spent, next,
 };
 use super::decide::target_msg::{blocked, reject};
 use super::decide::target_seen::Extra;
@@ -130,7 +130,8 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 /// Confirms the chosen target once, including a fresh passive target, using
 /// the configured direct reader. Issue #2820 permits a recent reading when
 /// the live login has a standing block and confirmation is unavailable.
-/// A stored model week at or above `week_at` excludes that exception.
+/// A stored model week at or above `week_at`, or no known per-model week
+/// (issue #3347), excludes that exception.
 /// Locked revalidation reuses confirmation or the blocked-login acceptance;
 /// it never reads another target.
 ///
@@ -232,9 +233,9 @@ pub(super) fn settle_timed(
         }
         handled += 1;
         // Reuse #2820 acceptance only while recovery is still eligible.
-        let model_full = reread::model_full(ctx, &to, &probes[i].1, t);
+        let weeks = reread::model_weeks(ctx, &to, &probes[i].1, t);
         if (attempts > 0 || mode == Reread::Never || ctx.reread.is_none())
-            && (m.seen.live_blocked.is_none() || model_full || done.contains(&to))
+            && (m.seen.live_blocked.is_none() || !weeks.allow_unread() || done.contains(&to))
         {
             reread::stay_unconfirmed(ctx, &mut m);
             break;
@@ -242,7 +243,7 @@ pub(super) fn settle_timed(
         let known = extra.unconfirmed.get(&to).copied();
         if let Some(why) = known
             && m.seen.live_blocked.is_some()
-            && !model_full
+            && weeks.allow_unread()
         {
             unconfirmed = Some((to, why));
             break;
@@ -269,7 +270,8 @@ pub(super) fn settle_timed(
                 attempts,
                 can_read: !remaining.is_zero(),
                 live_blocked: m.seen.live_blocked.is_some(),
-                model_full,
+                model_full: weeks.full,
+                model_known: weeks.known,
                 label: known_label.or_else(|| extra.labels.get(&to).copied()),
                 recent: reread::recent(at, after, t),
             };
@@ -333,11 +335,7 @@ pub(super) fn settle_timed(
                     // one held, is never swapped on; one with no label failed
                     // for a reason about the login (S2). #2820: see `after_unknown`.
                     let older = p.observed_at.and_then(|at| extra.older_by(&to, at));
-                    let model_full = p
-                        .windows
-                        .week_models
-                        .iter()
-                        .any(|w| w.used_percentage >= f64::from(ctx.settings.week_at));
+                    let model_full = reread::probe_full(ctx, &p);
                     let fresh = !stale(read_at(&p, m.measured_at), live_at, after, (ctx.now)());
                     if model_full {
                         lines.push(reject(&to, &Why::ModelWeek(ctx.settings.week_at), week_max));
@@ -346,7 +344,8 @@ pub(super) fn settle_timed(
                         let why = match (older, label) {
                             (Some(n), _) => Why::Older(n),
                             (None, Some(l)) => {
-                                if let Step::AcceptUnconfirmed(l) = after_unknown(l, &facts) {
+                                let step = reread::after_unknown(ctx, &to, &p, l, facts);
+                                if let Step::AcceptUnconfirmed(l) = step {
                                     unconfirmed = Some(reread::accept(&mut extra, to, l.into()));
                                     break;
                                 }

@@ -3,8 +3,10 @@
 
 use super::cycle::{Ctx, CycleOutcome, Mode};
 use super::decide::Probed;
+use super::decide::target_confirm::Why;
+use super::decide::target_msg::reject;
 use super::decide::target_seen::tests_issue_2910_fixture::{
-    clock, fleet, name, reporter, run_full, set_clock,
+    Fleet, clock, fleet, name, reporter, run_full, set_clock,
 };
 use super::measure::{self, ProbeLabel};
 use super::observe::{Measurement, Snap, decide_measured};
@@ -22,13 +24,18 @@ use std::time::Duration;
 struct Scene {
     mode: ProbeMode,
     model: Option<f64>,
-    stored_model: bool,
+    /// The per-model week in the target's stored reading, by percentage
+    /// used; `None` for a reading with no per-model week.
+    stored_model: Option<f64>,
     calls: Vec<ProfileName>,
+    /// The label of each confirming read.
+    labels: Vec<Option<ProbeLabel>>,
 }
 
 thread_local! {
     static SCENE: RefCell<Scene> = const { RefCell::new(Scene {
-        mode: ProbeMode::Text, model: Some(100.0), stored_model: false, calls: Vec::new(),
+        mode: ProbeMode::Text, model: Some(100.0), stored_model: None, calls: Vec::new(),
+        labels: Vec::new(),
     }) };
 }
 
@@ -40,7 +47,10 @@ fn measure_passive(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> 
             let stored_model = SCENE.with(|s| s.borrow().stored_model);
             let reader = measure::reader(ctx, env(ProbeMode::Text), 1, clock());
             reader.profile_with(who, false, |mode| {
-                let mut r = report(mode, clock(), stored_model);
+                let mut r = report(mode, clock(), stored_model.is_some());
+                if let Some(used) = stored_model {
+                    r.week_models[0].used_percentage = used;
+                }
                 r.session.as_mut().unwrap().used_percentage =
                     if who.as_str() == "top" { 10.0 } else { 99.0 };
                 Probe::read(r, Source::Fallback)
@@ -54,7 +64,10 @@ fn measure_passive(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> 
             let reader = measure::reader(ctx, env(ProbeMode::Ordered), 1, clock());
             let p = reader.profile_with(who, false, |_| panic!("expected passive reconstruction"));
             assert_eq!(p.source, Some(Source::Passive));
-            assert_eq!(p.report.week_models.len(), usize::from(stored_model));
+            assert_eq!(
+                p.report.week_models.len(),
+                usize::from(stored_model.is_some())
+            );
             (who.clone(), measure::reading(who.as_str(), &p))
         })
         .collect();
@@ -76,7 +89,9 @@ fn confirm(ctx: &Ctx, who: &ProfileName, _: Duration) -> (Probed, Option<ProbeLa
         r.week_models[0].used_percentage = used;
         Probe::read(r, Source::Fallback)
     });
-    (measure::reading(who.as_str(), &p), measure::label_of(&p))
+    let label = measure::label_of(&p);
+    SCENE.with(|s| s.borrow_mut().labels.push(label));
+    (measure::reading(who.as_str(), &p), label)
 }
 
 #[test]
@@ -88,8 +103,9 @@ fn issue_3301_every_swap_confirms_its_fresh_passive_target_and_rejects_model_equ
                 *s.borrow_mut() = Scene {
                     mode,
                     model: Some(used),
-                    stored_model: false,
+                    stored_model: None,
                     calls: Vec::new(),
+                    labels: Vec::new(),
                 }
             });
             let mut settings = reporter();
@@ -125,8 +141,9 @@ fn issue_3301_reconsideration_waits_for_another_cycle_to_confirm_an_alternative(
         *s.borrow_mut() = Scene {
             mode: ProbeMode::Text,
             model: Some(100.0),
-            stored_model: false,
+            stored_model: None,
             calls: Vec::new(),
+            labels: Vec::new(),
         }
     });
     let out = run_full(
@@ -144,43 +161,98 @@ fn issue_3301_reconsideration_waits_for_another_cycle_to_confirm_an_alternative(
     SCENE.with(|s| assert_eq!(s.borrow().calls, [name("top")]));
 }
 
+/// Runs one cycle with the live login `work` week-blocked, the target `top`
+/// read passively from a recent stored reading whose all-models week is
+/// below `--week-at`, with the stored per-model week `stored_model`, and a
+/// confirming read that fails with a label.
+fn blocked_live_unread_target(stored_model: Option<f64>) -> (Fleet, CycleOutcome) {
+    let f = fleet(&["top"], &[]);
+    f.block("work", "week", clock() + 3600);
+    SCENE.with(|s| {
+        *s.borrow_mut() = Scene {
+            mode: ProbeMode::Text,
+            model: None,
+            stored_model,
+            calls: Vec::new(),
+            labels: Vec::new(),
+        }
+    });
+    let out = run_full(
+        &f,
+        reporter(),
+        exh(100.0, 20.0),
+        &[],
+        &[],
+        Mode::Watch,
+        Some(confirm),
+        measure_passive,
+    );
+    (f, out)
+}
+
 #[test]
 fn issue_3301_blocked_login_recovery_requires_no_exhausted_stored_model_week() {
-    for stored_model in [true, false] {
-        let f = fleet(&["top"], &[]);
-        f.block("work", "week", clock() + 3600);
+    for (stored_model, accepted) in [(100.0, false), (10.0, true)] {
+        let (f, out) = blocked_live_unread_target(Some(stored_model));
+        assert_eq!(out == CycleOutcome::Swapped, accepted, "{}", f.log());
+        assert_eq!(f.live_is("top"), accepted);
+        assert_eq!(f.live_is("work"), !accepted);
         SCENE.with(|s| {
-            *s.borrow_mut() = Scene {
-                mode: ProbeMode::Text,
-                model: None,
-                stored_model,
-                calls: Vec::new(),
-            }
-        });
-        let out = run_full(
-            &f,
-            reporter(),
-            exh(100.0, 20.0),
-            &[],
-            &[],
-            Mode::Watch,
-            Some(confirm),
-            measure_passive,
-        );
-        assert_eq!(out == CycleOutcome::Swapped, !stored_model, "{}", f.log());
-        assert_eq!(f.live_is("top"), !stored_model);
-        assert_eq!(f.live_is("work"), stored_model);
-        SCENE.with(|s| {
-            let expected = if stored_model {
-                vec![]
-            } else {
-                vec![name("top")]
-            };
+            let expected = if accepted { vec![name("top")] } else { vec![] };
             assert_eq!(s.borrow().calls, expected);
         });
-        if !stored_model {
+        if accepted {
             assert!(f.log().contains("unconfirmed (probe error)"), "{}", f.log());
         }
+    }
+}
+
+/// Issue #3347, test 1: the target's stored reading has no per-model week,
+/// so a used-up model week may be unseen. Its confirming read is unknown, and
+/// it is rejected as unknown: no swap.
+#[test]
+fn issue_3347_a_target_with_no_known_model_week_is_unknown_and_not_swapped_to() {
+    let (f, out) = blocked_live_unread_target(None);
+    assert_ne!(out, CycleOutcome::Swapped, "{}", f.log());
+    assert!(f.live_is("work"), "{}", f.log());
+    assert!(!f.live_is("top"), "{}", f.log());
+    let label = SCENE.with(|s| {
+        let s = s.borrow();
+        assert_eq!(s.calls, [name("top")]);
+        s.labels[0].expect("the confirming read is unknown")
+    });
+    let rejected = reject(
+        &name("top"),
+        &Why::Unknown(label),
+        reporter().target_week_max,
+    );
+    assert!(
+        f.log().lines().any(|l| l.ends_with(&rejected)),
+        "{}",
+        f.log()
+    );
+}
+
+/// Issue #3347, test 2: a stored per-model week below `--week-at` makes the
+/// model weeks known, so the target is accepted unread, as under #2820.
+#[test]
+fn issue_3347_a_known_model_week_below_the_threshold_is_accepted_unread() {
+    let below = f64::from(reporter().week_at) - 1.0;
+    let (f, out) = blocked_live_unread_target(Some(below));
+    assert_eq!(out, CycleOutcome::Swapped, "{}", f.log());
+    assert!(f.live_is("top"), "{}", f.log());
+    SCENE.with(|s| assert_eq!(s.borrow().calls, [name("top")]));
+}
+
+/// Issue #3347, test 3: a stored per-model week at or above `--week-at` is
+/// rejected, as today.
+#[test]
+fn issue_3347_a_known_model_week_at_the_threshold_is_rejected() {
+    let week_at = f64::from(reporter().week_at);
+    for used in [week_at, 100.0] {
+        let (f, out) = blocked_live_unread_target(Some(used));
+        assert_ne!(out, CycleOutcome::Swapped, "{used}: {}", f.log());
+        assert!(f.live_is("work"), "{used}: {}", f.log());
     }
 }
 
@@ -191,8 +263,9 @@ fn issue_3301_stored_exhausted_model_is_never_selected_from_passive_usage() {
         *s.borrow_mut() = Scene {
             mode: ProbeMode::Text,
             model: Some(10.0),
-            stored_model: true,
+            stored_model: Some(100.0),
             calls: Vec::new(),
+            labels: Vec::new(),
         }
     });
     let out = run_full(
@@ -230,8 +303,9 @@ fn issue_3301_failed_confirmation_respects_a_model_limit_recorded_after_selectio
         *s.borrow_mut() = Scene {
             mode: ProbeMode::Text,
             model: None,
-            stored_model: false,
+            stored_model: None,
             calls: Vec::new(),
+            labels: Vec::new(),
         }
     });
     let out = run_full(

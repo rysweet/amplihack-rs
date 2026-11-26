@@ -151,6 +151,15 @@ fn block(f: &Fleet, who: &str, until: i64) {
     f.block(who, SPEND_LIMIT, until);
 }
 
+/// Issue #3347: a stored per-model week below `--week-at` for each of
+/// `who`, so their model weeks are known and #2820's recovery may take them
+/// unread.
+fn known_weeks(f: &Fleet, who: &[&str]) {
+    for w in who {
+        f.model_week(w, 10.0);
+    }
+}
+
 /// The live login's spend block on 23 November: until four hours from now.
 fn block_live(f: &Fleet) -> i64 {
     let until = clock() + BLOCK;
@@ -342,6 +351,7 @@ fn ac5_i_a_blocked_live_login_moves_on_the_last_good_readings_of_unread_candidat
     for (label, s) in BOTH {
         let f = fleet(&["aa", "bb"], &[]);
         let until = block_live(&f);
+        known_weeks(&f, &["aa", "bb"]);
         f.history("aa", 1800, 30, 40);
         f.history("bb", 1800, 50, 50);
         let out = run(
@@ -415,6 +425,7 @@ fn route3(f: &Fleet, s: SettingsFn, live: Probed) -> CycleOutcome {
 
 fn route3_on(f: &Fleet, s: SettingsFn, live: Probed, table: &[(&str, Probed)]) -> CycleOutcome {
     TARGET_READS.with(|reads| reads.set(0));
+    known_weeks(f, &table.iter().map(|(n, _)| *n).collect::<Vec<_>>());
     run_full(
         f,
         s(),
@@ -462,6 +473,7 @@ fn ac6_a_blocked_candidate_is_never_chosen_on_its_last_good_reading() {
         let f = fleet(&["aa", "bb"], &[]);
         block_live(&f);
         block(&f, "aa", clock() + BLOCK);
+        known_weeks(&f, &["aa", "bb"]);
         f.history("aa", 1800, 5, 5);
         f.history("bb", 1800, 50, 50);
         let out = run(
@@ -674,6 +686,7 @@ fn facts() -> Facts {
         can_read: true,
         live_blocked: false,
         model_full: false,
+        model_known: true,
         label: None,
         recent: false,
     }
@@ -884,6 +897,7 @@ fn swap_to(m: &crate::commands::profile::rotate::observe::Measurement) -> Option
 fn at_the_time_limit_a_blocked_live_login_moves_on_a_recent_reading() {
     let f = fleet(&["aa"], &[]);
     block_live(&f);
+    known_weeks(&f, &["aa"]);
     let m = gate_out_of_time(
         &f,
         rd(94.0, 75.0, None),
@@ -919,6 +933,7 @@ fn at_the_time_limit_a_blocked_live_login_moves_on_a_recent_reading() {
 fn a_reading_from_before_the_target_was_left_never_moves_back_onto_it() {
     let f = fleet(&["aa"], &[]);
     block_live(&f);
+    known_weeks(&f, &["aa"]);
     let mut l = f.e.rs.load_ledger().unwrap().unwrap();
     l.previous = Some("aa".into());
     l.swapped_at = Some(clock() - 600);

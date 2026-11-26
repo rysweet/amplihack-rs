@@ -13,7 +13,11 @@
 //! week or credit limit, or the API key's block), staying on it is never
 //! better than moving, so a target with a recent reading
 //! ([`Facts::recent`]) is accepted on that reading without a fresh one,
-//! provided no stored model week reaches `--week-at` ([`Facts::model_full`]). A
+//! provided a per-model week of its current week is known
+//! ([`Facts::model_known`], issue #3347) and none reaches `--week-at`
+//! ([`Facts::model_full`]). A target with no known per-model week is
+//! unknown, as any other unknown read is, so a used-up model week the
+//! rotator never saw cannot be swapped onto. A
 //! live login that is merely full, with no block, gets no such move: #3105
 //! pins that stay, and issue #3130 holds the decision on widening it.
 //!
@@ -67,9 +71,15 @@ pub struct Facts {
     /// (`target::standing_block`, or the API key's block). Never true for an
     /// overflow live login (E5b), and never for one that is only full.
     pub live_blocked: bool,
-    /// A model week in the target's stored reading reaches `--week-at`.
-    /// Such a target cannot use the blocked-login recovery exception.
+    /// A model week in the target's probe or stored reading reaches
+    /// `--week-at`. Such a target cannot use the blocked-login recovery
+    /// exception.
     pub model_full: bool,
+    /// Issue #3347: a per-model week of the target's current week is known,
+    /// from its probe or its stored reading (`fresh_reread::model_weeks`).
+    /// Without one, a used-up model week may be unseen, so the target cannot
+    /// use the blocked-login recovery exception either.
+    pub model_known: bool,
     /// The label of the target's probe, when it was unknown.
     pub label: Option<ProbeLabel>,
     /// Issue #2820: the reading the decision used for the target has a time
@@ -81,10 +91,11 @@ pub struct Facts {
 
 impl Facts {
     /// Issue #2820: the target may be taken on the reading the decision
-    /// used, without a fresh one: the live login is blocked and that reading
-    /// is recent.
+    /// used, without a fresh one: the live login is blocked, that reading is
+    /// recent, and a per-model week is known with none at `--week-at`
+    /// (issue #3347).
     fn may_take_unread(&self) -> bool {
-        self.live_blocked && self.recent && !self.model_full
+        self.live_blocked && self.recent && self.model_known && !self.model_full
     }
 }
 
