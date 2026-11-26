@@ -520,22 +520,9 @@ _gh_header() {
     }' "$1"
 }
 
-# The reading can supply gh_rate_limit_guidance to wait for a new entry.
-# A CI wait is already under guidance wait. With no deadline, block until
-# the enclosing guidance wake or a cancellation interrupts the shell.
-_gh_goal_wait_for_guidance() {
-  local rc=0
-  if declare -F gh_rate_limit_guidance >/dev/null; then
-    gh_rate_limit_guidance || rc=$?
-    case "$rc" in 0|75|79) return "$rc" ;; esac
-  fi
-  mkfifo "$GH_READ_DIR/rate-limit.wait" || return 1
-  read -r <> "$GH_READ_DIR/rate-limit.wait"
-}
-
 _gh_goal_wait_for_reset() {
   local resource="$1" headers="$2" reported_at="$3"
-  local retry remaining reset deadline=0 rc=0 now
+  local retry remaining reset deadline=0 rc=0 now delay
   retry="$(_gh_header "$headers" retry-after)"
   remaining="$(_gh_header "$headers" x-ratelimit-remaining)"
   reset="$(_gh_header "$headers" x-ratelimit-reset)"
@@ -560,8 +547,17 @@ _gh_goal_wait_for_reset() {
     deadline=$((reported_at + 10#$retry))
   fi
   if [ "$deadline" -le "$reported_at" ]; then
-    printf 'GitHub declined a %s read and supplied no future retry deadline. The read is pending.\n' "$resource" >&2
-    _gh_goal_wait_for_guidance
+    GH_READ_INTERVAL="${GH_READ_INTERVAL:-$(goal_checks_watch_interval)}"
+    delay="$GH_READ_INTERVAL"
+    # GitHub asks clients to wait at least one minute with no Retry-After.
+    if [ "$delay" -lt 60 ]; then delay=60; fi
+    printf 'GitHub declined a %s read without a future retry deadline. Retrying after %ss.\n' "$resource" "$delay" >&2
+    if declare -F gh_rate_limit_guidance >/dev/null; then
+      rc=0
+      gh_rate_limit_guidance "$delay" || rc=$?
+      case "$rc" in 0|75|79) return "$rc" ;; esac
+    fi
+    gh_goal_command sleep "$delay"
     return $?
   fi
   now="$(date +%s)" || return 1
@@ -664,12 +660,12 @@ gh_rest_get() {
 # Each page has its own cache entry, including its Link header. Use only
 # the next page number from that header and keep the request on the same
 # endpoint and host. No request is made for a page GitHub did not report.
-_gh_check_pages() {
-  local endpoint="$1" cache="$2" validate="$3" select_checks="$4" page=1
+gh_rest_pages() {
+  local endpoint="$1" cache="$2" validate="$3" select_items="$4" page=1
   local next_link='<[^>]*[?&]page=([0-9]+)(&[^>]*)?>;[[:space:]]*rel="next"'
   while :; do
     gh_rest_get "${endpoint}?per_page=100&page=$page" "$cache" "$validate" || return $?
-    jq -c "$select_checks" "$GH_READ_BODY" || return 1
+    jq -c "$select_items" "$GH_READ_BODY" || return 1
     if [[ "$GH_REST_LINK" != *'rel="next"'* ]]; then return 0; fi
     page=$((page + 1))
     if ! [[ "$GH_REST_LINK" =~ $next_link && "${BASH_REMATCH[1]}" = "$page" ]]; then
@@ -679,19 +675,20 @@ _gh_check_pages() {
   done
 }
 
-# gh_head_checks <owner/repo> <sha> <cache_dir> <required_names_json>
-# Pass [] to consider all checks. A missing required name is pending, as is
+# gh_head_checks <owner/repo> <sha> <cache_dir> <required_checks_json>
+# Requirements are {name, app_id}, with null allowing any source.
+# Pass [] to consider all checks. A missing required check is pending, as is
 # a head with no reported checks. The per-turn display is capped separately
 # from the counts and completion state.
 gh_head_checks() {
   local commit="repos/$1/commits/$2" cache="$3" required="$4"
   local rows="$GH_READ_DIR/checks.jsonl"
-  _gh_check_pages "$commit/check-runs" "$cache" '
+  gh_rest_pages "$commit/check-runs" "$cache" '
     (.check_runs | type == "array") and all(.check_runs[];
       (.name | type == "string" and length > 0) and (.status | type == "string") and
       (.conclusion | . == null or type == "string"))
   ' '
-    .check_runs[] | {name, link:(.html_url // .details_url // ""), state:(
+    .check_runs[] | {name, app_id:.app.id, link:(.html_url // .details_url // ""), state:(
       if .status != "completed" or .conclusion == null then "pending"
       elif .conclusion == "success" then "pass"
       elif .conclusion == "skipped" or .conclusion == "neutral" then "skipping"
@@ -699,20 +696,22 @@ gh_head_checks() {
       else "fail" end
     )}
   ' > "$rows" || return $?
-  _gh_check_pages "$commit/status" "$cache" '
+  gh_rest_pages "$commit/status" "$cache" '
     (.statuses | type == "array") and all(.statuses[];
       (.context | type == "string" and length > 0) and
       (.state | . == "success" or . == "pending" or . == "failure" or . == "error"))
   ' '
-    .statuses[] | {name:.context, link:(.target_url // ""), state:(
+    .statuses[] | {name:.context, app_id:null, link:(.target_url // ""), state:(
       if .state == "success" then "pass" elif .state == "pending" then "pending" else "fail" end
     )}
   ' >> "$rows" || return $?
   jq -c -s --argjson required "$required" '
-    . as $all | ($all | map(.name) | unique) as $reported
+    def matches($check): .name == $check.name and (.app_id == null or .app_id == $check.app_id);
+    . as $all
     | (if ($required | length) == 0 then $all else
-        [$all[] | select(.name as $name | $required | index($name))]
-        + [($required - $reported)[] | {name:., state:"pending", link:""}]
+        [$all[] | . as $check | select(any($required[]; matches($check)))]
+        + [$required[] | select(. as $need | all($all[]; . as $check | $need | matches($check) | not))
+           | . + {state:"pending", link:""}]
        end | map(. + {elapsed:""})) as $checks
     | ($checks | group_by(.state) | map({key:.[0].state, value:length}) | from_entries) as $n
     | {checks:$checks[:200], counts:{total:($checks | length), passed:($n.pass // 0),

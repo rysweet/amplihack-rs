@@ -185,6 +185,109 @@ printf '%s\n' '{"check_runs":[{"name":"integration","status":"completed","conclu
 }
 
 #[test]
+fn required_checks_wait_for_the_configured_apps_in_classic_protection_and_rules() {
+    let h = Harness::new();
+    h.classic_protection(&json!({"strict":false,"contexts":["build"],
+        "checks":[{"context":"build","app_id":23}]}));
+    fs::write(h.gh.join("rules.json"), "[]").unwrap();
+    fs::write(
+        h.gh.join("rules-page-2.json"),
+        r#"[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"integration","integration_id":42}]}}]"#,
+    )
+    .unwrap();
+    h.set_checks("build\tpass\t0\t\t99\nintegration\tpass\t0\t\t99\n");
+    fs::write(
+        h.gh.join("statuses.json"),
+        r#"{"statuses":[{"context":"build","state":"success"}]}"#,
+    )
+    .unwrap();
+    let reading = read_and_decide(&h, true);
+    assert_eq!(reading["checks"]["required_known"], true, "{reading}");
+    assert_eq!(
+        reading["checks"]["required_checks"],
+        json!([{"name":"build","app_id":23}, {"name":"integration","app_id":42}])
+    );
+    assert_eq!(reading["checks"]["counts"]["pending"], 2);
+    assert_eq!(reading["checks"]["counts"]["passed"], 0);
+    fake_sleep(
+        &h,
+        r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
+printf 'build\tpass\t0\t\t23\nbuild\tfail\t0\t\t99\nintegration\tpass\t0\t\t42\n' > "$GH_STATE/checks""#,
+    );
+    let result = wait(&h, "");
+    assert_eq!(result["outcome"], "checks-complete", "{result}");
+    assert_eq!(result["checks_state"], "passed", "{result}");
+    assert_eq!(sleeps(&h), [120]);
+}
+
+#[test]
+fn rules_alone_cannot_establish_required_check_completion() {
+    for classic_error in ["classic403", "classic404"] {
+        let h = Harness::new();
+        fs::write(h.gh.join(classic_error), "").unwrap();
+        fs::write(
+            h.gh.join("rules.json"),
+            r#"[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"build"}]}}]"#,
+        )
+        .unwrap();
+        h.set_checks("build\tpass\t0\nclassic\tpending\t0\n");
+        let reading = read_and_decide(&h, true);
+        assert_eq!(reading["checks"]["required"], json!(["build"]));
+        assert_eq!(reading["checks"]["required_known"], false, "{reading}");
+        assert!(reading["checks"]["required_error"].is_string());
+        assert_eq!(reading["checks"]["counts"]["pending"], 1);
+        fake_sleep(
+            &h,
+            r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
+printf 'build\tpass\t0\nclassic\tpass\t0\n' > "$GH_STATE/checks""#,
+        );
+        let result = wait(&h, "");
+        assert_eq!(result["outcome"], "wait-error", "{result}");
+        assert_eq!(sleeps(&h), [120]);
+    }
+}
+
+#[test]
+fn completed_checks_are_discarded_if_the_head_moves_during_a_rate_limit_sleep() {
+    let h = Harness::new();
+    read_and_decide(&h, false);
+    fs::write(h.gh.join("decline-core-check-runs"), "1\n").unwrap();
+    fake_sleep(
+        &h,
+        r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
+printf '%040d\n' 7 > "$GH_STATE/moved-head""#,
+    );
+    let result = wait(&h, "");
+    assert_eq!(result["outcome"], "head-changed", "{result}");
+    let sleeps = sleeps(&h);
+    assert_eq!(sleeps.len(), 1);
+    assert!((21..=25).contains(&sleeps[0]), "{sleeps:?}");
+}
+
+#[test]
+fn a_secondary_decline_without_retry_after_can_recover_with_no_guidance_wake() {
+    let h = Harness::new();
+    read_and_decide(&h, false);
+    fs::write(h.gh.join("no-retry-after"), "").unwrap();
+    fs::write(h.gh.join("decline-core-check-runs"), "2\n").unwrap();
+    let unarmed = h.bin.join("unarmed-guidance");
+    write_executable(&unarmed, "#!/bin/bash\nexit 3\n", 0o755);
+    // Keep the regression test finite if the wait tries to block on a private FIFO.
+    write_executable(&h.bin.join("mkfifo"), "#!/bin/bash\nexit 1\n", 0o755);
+    fake_sleep(&h, r#"test "$(wc -l < "$GH_STATE/sleeps")" -le 2"#);
+    let out = goal(&h, &["act", "wait"])
+        .env("AMPLIHACK_BIN", &unarmed)
+        .env("RECIPE_VAR_checks_watch_interval", "90")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    let result = h.result("001");
+    assert_eq!(result["outcome"], "checks-complete", "{result}");
+    assert_eq!(result["checks_state"], "passed", "{result}");
+    assert_eq!(sleeps(&h), [90, 90]);
+}
+
+#[test]
 fn legacy_commit_statuses_can_complete_the_wait_with_success() {
     let h = Harness::new();
     h.set_checks("");
@@ -234,7 +337,8 @@ fi"#,
     let calls = h.calls();
     let reading =
         |call: &str| call.starts_with("pr view") && call.contains("mergeStateStatus,isDraft");
-    let head = |call: &str| call == "api --include repos/o/r/pulls/7";
+    let head =
+        |call: &str| call.starts_with("api --include ") && call.ends_with("repos/o/r/pulls/7");
     let keys: Vec<&str> = calls
         .iter()
         .filter_map(|call| {
@@ -259,6 +363,7 @@ fi"#,
             "rate_limit",
             "head",
             "rate_limit",
+            "head",
             "head",
             "reading"
         ]

@@ -56,6 +56,7 @@ if [ -z "$LAUNCH" ]; then LAUNCH="."; fi
 LAUNCH="$(cd "$LAUNCH" 2>/dev/null && pwd -P)" || LAUNCH="$PWD"
 S="$(mktemp -d "$TD/.reading.XXXXXX")" || exit 1
 GH_READ_DIR="$S"
+GH_READ_INTERVAL=""
 trap 'gh_goal_cancel; rm -rf -- "$S"' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 passup() { case "$1" in 75|79) exit "$1" ;; esac; }
@@ -63,7 +64,7 @@ GUIDANCE_SINCE="${AUTODRIVE_GUIDANCE_MARK:-}"
 goal_is_entry "$GUIDANCE_SINCE" || GUIDANCE_SINCE=""
 GUIDANCE_TARGET="${AUTODRIVE_GUIDANCE_TARGET:-}"
 goal_github_pr_repo "$GUIDANCE_TARGET" "${GUIDANCE_TARGET##*/}" >/dev/null || GUIDANCE_TARGET=""
-gh_rate_limit_guidance() { goal_read_guidance; }
+gh_rate_limit_guidance() { goal_read_guidance "$1"; }
 err() { build_redact_tail < "$1" 2>/dev/null; }
 put() { # put <section> <json object or empty> <error>
   if [ -n "$2" ] && printf '%s' "$2" | jq -e 'type == "object"' >/dev/null 2>&1; then

@@ -501,11 +501,12 @@ if [ "$GOAL_READING" = true ]; then
   # shellcheck source=workflow_gh_retry.sh
   . "$tools/workflow_gh_retry.sh" || unknown "github-read-helper-unavailable"
   GH_READ_DIR="$(mktemp -d "${ERRFILE}.reading.XXXXXX")" || unknown "cannot-create-tempdir"
+  GH_READ_INTERVAL=""
   GUIDANCE_SINCE="${AUTODRIVE_GUIDANCE_MARK:-}"
   goal_is_entry "$GUIDANCE_SINCE" || GUIDANCE_SINCE=""
   GUIDANCE_TARGET="${AUTODRIVE_GUIDANCE_TARGET:-}"
   goal_github_pr_repo "$GUIDANCE_TARGET" "${GUIDANCE_TARGET##*/}" >/dev/null || GUIDANCE_TARGET=""
-  gh_rate_limit_guidance() { goal_read_guidance; }
+  gh_rate_limit_guidance() { goal_read_guidance "$1"; }
   trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 fi
 

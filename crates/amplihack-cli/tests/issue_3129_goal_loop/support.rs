@@ -110,14 +110,16 @@ http() {
   fi
 }
 decline() {
-  local resource="$1" count
-  [ -f "$G/decline-$resource" ] || return 0
-  count="$(cat "$G/decline-$resource")"
+  local resource="$1" counter="$G/decline-$1${2:+-$2}" count
+  [ -f "$counter" ] || return 0
+  count="$(cat "$counter")"
   [ "$count" -gt 0 ] || return 0
-  printf '%s\n' "$((count - 1))" > "$G/decline-$resource"
+  printf '%s\n' "$((count - 1))" > "$counter"
   printf '%s\n' "$resource" > "$G/declined"
   if [ "$resource" = core ]; then
-    printf 'HTTP/2.0 429\r\nRetry-After: 25\r\nX-RateLimit-Remaining: 10\r\n\r\n'
+    printf 'HTTP/2.0 429\r\n'
+    [ -e "$G/no-retry-after" ] || printf 'Retry-After: 25\r\n'
+    printf 'X-RateLimit-Remaining: 10\r\n\r\n'
     echo 'gh: secondary rate limit (HTTP 429)' >&2
   else
     echo 'GraphQL: API rate limit already exceeded' >&2
@@ -205,6 +207,7 @@ case "${1:-} ${2:-}" in
         http 200 "$(jq -cn --arg head "$api_head" --arg branch "$BR" \
           '{state:"open",head:{sha:$head,ref:$branch,repo:{full_name:"o/r"}}}')" ;;
       repos/o/r/commits/*/check-runs\?*)
+        decline core check-runs
         conditional=true
         if [[ "$endpoint" == *'&page=2' ]]; then
           http 200 "$(cat "$G/checks-page-2.json")"
@@ -213,7 +216,7 @@ case "${1:-} ${2:-}" in
         if [ -f "$G/checks-page-2.json" ]; then
           link="<https://api.github.com/${endpoint%&page=1}&page=2>; rel=\"next\""
         fi
-        http 200 "$(jq -Rn '[inputs | split("\t") | {name:.[0], html_url:.[3],
+        http 200 "$(jq -Rn '[inputs | split("\t") | {name:.[0], html_url:.[3], app:{id:((.[4] | tonumber?) // null)},
           status:(if .[1] == "pending" then "in_progress" else "completed" end),
           conclusion:(if .[1] == "pending" then null elif .[1] == "pass" then "success"
             elif .[1] == "skipping" then "skipped" else "failure" end)}] | {check_runs:.}' < "$G/checks")" ;;
@@ -221,10 +224,17 @@ case "${1:-} ${2:-}" in
         conditional=true
         http 200 "$(cat "$G/statuses.json" 2>/dev/null || echo '{"statuses":[]}')" ;;
       *rules/branches*) if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
+        elif [[ "$endpoint" == *'&page=2' ]]; then http 200 "$(cat "$G/rules-page-2.json")" "${args[@]}"
+        elif [ -f "$G/rules.json" ]; then
+          if [ -f "$G/rules-page-2.json" ]; then
+            link="<https://api.github.com/${endpoint%&page=1}&page=2>; rel=\"next\""
+          fi
+          http 200 "$(cat "$G/rules.json")" "${args[@]}"
         elif [ -e "$G/strict" ]; then
-          http 200 '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]' "${args[@]}"
+          http 200 '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[]}}]' "${args[@]}"
         else http 200 '[]' "${args[@]}"; fi ;;
-      *protection*) if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
+      *protection*) if [ -e "$G/policy403" ] || [ -e "$G/classic403" ]; then http 403 "Resource not accessible by integration"
+        elif [ -e "$G/classic404" ]; then http 404 "Not Found"
         elif [ -e "$G/protection.json" ]; then http 200 "$(cat "$G/protection.json")" "${args[@]}"
         else http 404 "Branch not protected"; fi ;;
       repos/*) http 200 "$(settings)" "${args[@]}" ;;

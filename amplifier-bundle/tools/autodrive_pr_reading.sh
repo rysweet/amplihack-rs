@@ -14,7 +14,8 @@
 #   pr               head, base, state, mergeable, mergeStateStatus, draft,
 #                    cross_repository, url
 #   checks           each check at the head with its state, counts, and
-#                    required_known (false when the policy could not be read)
+#                    required names and App IDs, and whether both sources of
+#                    required-check policy could be read
 #   reviews          GitHub reviews and Crusty round records, each with the
 #                    head it was given at; a round that could not be read is
 #                    listed with its own error. Each minor finding carries
@@ -50,6 +51,7 @@ goal_check_turn_dir "$TD" || exit 2
 PR="${RECIPE_VAR_pr_number:-}"; STATE="${AUTODRIVE_STATE_DIR:-}"; REPO="${AUTODRIVE_REPO:-$PWD}"
 S="$(mktemp -d "$TD/.reading.XXXXXX")" || exit 1
 GH_READ_DIR="$S"
+GH_READ_INTERVAL=""
 trap 'gh_goal_cancel; rm -rf -- "$GH_READ_DIR"' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 g() { git -c core.fsmonitor=false -C "$WORK" "$@"; }
@@ -67,7 +69,7 @@ GUIDANCE_SINCE="${AUTODRIVE_GUIDANCE_MARK:-}"
 goal_is_entry "$GUIDANCE_SINCE" || GUIDANCE_SINCE=""
 GUIDANCE_TARGET="${AUTODRIVE_GUIDANCE_TARGET:-}"
 goal_github_pr_repo "$GUIDANCE_TARGET" "$PR" >/dev/null || GUIDANCE_TARGET=""
-gh_rate_limit_guidance() { goal_read_guidance; }
+gh_rate_limit_guidance() { goal_read_guidance "$1"; }
 
 # --- merge authority: the captured invocation only --------------------------
 AUTH=""; AUTH_ERR=""
@@ -202,31 +204,56 @@ put base "$BJ" "$BE"
 
 # --- the repository's settings ----------------------------------------------
 RE=""; RJ='{}'
-KNOWN=false; REQUIRED='[]'
+REQUIRED='[]'; WHY=""
+cache="$(goal_ci_cache_dir "${STATE:-${TD%/turns/*}}")" || cache=""
 if [ -z "$SLUG" ]; then RE="the repository could not be identified from the PR URL"
 else
   gh_goal_read core true api --include "repos/$SLUG"; rc=$?; passup "$rc"
   M=null
   if [ "$rc" -eq 0 ] && methods="$(jq -ce 'objects | {merge:.allow_merge_commit, squash:.allow_squash_merge, rebase:.allow_rebase_merge}' "$GH_READ_BODY" 2>/dev/null)"; then M="$methods"
   else RE="the allowed merge methods could not be read: ${GH_READ_ERROR:-unreadable response}"; fi
-  STRICT=null; SRC=""; WHY=""; RULES_READ=false
+  STRICT=null; SRC=""; RULES_READ=false
+  check_fields='
+    def context: type == "string" and length > 0;
+    def app_id: . == null or . == -1 or (type == "number" and . > 0 and floor == .);
+    def source: if . == -1 then null else . end;
+  '
   if ref_ok "$BASE"; then
     base_path="$(jq -nr --arg base "$BASE" '$base | @uri')"
-    gh_goal_read core true api --include "repos/$SLUG/rules/branches/$base_path"; rc=$?; passup "$rc"
-    if [ "$rc" -eq 0 ] && rules="$(jq -ce 'arrays | map(objects | select(.type == "required_status_checks"))' "$GH_READ_BODY" 2>/dev/null)"; then
-      RULES_READ=true; KNOWN=true
-      REQUIRED="$(jq -c '[.[].parameters.required_status_checks[]? | .context | strings | select(length > 0)] | unique' <<< "$rules")"
-      if jq -e 'any(.[]; .parameters.strict_required_status_checks_policy == true)' <<< "$rules" >/dev/null; then STRICT=true; SRC=rules; fi
+    if [ -n "$cache" ]; then
+      gh_rest_pages "repos/$SLUG/rules/branches/$base_path" "$cache" \
+        'type == "array" and all(.[]; (.type | type == "string"))' \
+        '.[] | select(.type == "required_status_checks")' > "$S/rules.jsonl"; rc=$?; passup "$rc"
+    else rc=1; GH_READ_ERROR="the conditional CI cache directory is unavailable"; fi
+    if [ "$rc" -eq 0 ] && rules="$(jq -sce "$check_fields"'
+      select(all(.[]; .parameters.required_status_checks
+        | type == "array" and all(.[]; (.context | context) and (.integration_id | app_id))))
+      | {strict:any(.[]; .parameters.strict_required_status_checks_policy == true),
+         required:[.[].parameters.required_status_checks[] | {name:.context, app_id:(.integration_id | source)}]}
+    ' "$S/rules.jsonl" 2>/dev/null)"; then
+      RULES_READ=true
+      REQUIRED="$(jq -c '.required' <<< "$rules")"
+      if jq -e '.strict' <<< "$rules" >/dev/null; then STRICT=true; SRC=rules; fi
     else WHY="rules endpoint: ${GH_READ_ERROR:-unreadable response}"; fi
     gh_goal_read core true api --include "repos/$SLUG/branches/$base_path/protection/required_status_checks"; rc=$?; passup "$rc"
-    if [ "$rc" -eq 0 ] && protection="$(jq -ce 'objects | select(.strict | type == "boolean")' "$GH_READ_BODY" 2>/dev/null)"; then
-      KNOWN=true
+    if [ "$rc" -eq 0 ] && protection="$(jq -sce "$check_fields"'
+      select(length == 1) | .[0] | objects | select(.strict | type == "boolean")
+      | select((.contexts | type == "array") or (.checks | type == "array"))
+      | select((.contexts | . == null or (type == "array" and all(.[]; context)))
+           and (.checks | . == null or (type == "array" and all(.[]; (.context | context) and (.app_id | app_id)))))
+      | [(.checks // [])[] | {name:.context, app_id:(.app_id | source)}] as $checks
+      | {strict, required:($checks + [(.contexts // [])[] as $name
+          | select(all($checks[]; .name != $name)) | {name:$name, app_id:null}])}
+    ' "$GH_READ_BODY" 2>/dev/null)"; then
       if [ "$STRICT" != true ]; then STRICT="$(jq -r '.strict' <<< "$protection")"; SRC=protection; fi
-      REQUIRED="$(jq -c --argjson required "$REQUIRED" '
-        [$required[], .contexts[]?, .checks[]?.context] | map(strings | select(length > 0)) | unique
-      ' <<< "$protection")"
+      REQUIRED="$(jq -c --argjson rules "$REQUIRED" '$rules + .required' <<< "$protection")"
     else
-      WHY="${WHY:+$WHY; }classic protection: ${GH_READ_ERROR:-unreadable response}"
+      # A generic 404 can hide missing permissions. Require GitHub's
+      # explicit response that classic required checks are absent.
+      case "$GH_READ_STATUS:${GH_READ_ERROR% }" in
+        '404:gh: Branch not protected (HTTP 404)'|'404:gh: Required status checks not enabled (HTTP 404)') ;;
+        *) WHY="${WHY:+$WHY; }classic protection: ${GH_READ_ERROR:-unreadable response}" ;;
+      esac
     fi
     if [ "$STRICT" = null ] && [ "$RULES_READ" = true ]; then STRICT=false; SRC="rules (no strict status check rule)"; fi
   else WHY="the base name was refused"; fi
@@ -245,15 +272,21 @@ put repository "$RJ" "$RE"
 # --- checks at the head -----------------------------------------------------
 if ! goal_is_pr "$PR"; then put checks "" "no pull request number"
 elif [ -z "$SLUG" ] || [ -z "$HEAD" ]; then put checks "" "the pull request repository or head could not be read"
-elif ! cache="$(goal_ci_cache_dir "${STATE:-${TD%/turns/*}}")"; then put checks "" "the conditional CI cache directory is unavailable"
+elif [ -z "$cache" ]; then put checks "" "the conditional CI cache directory is unavailable"
 else
-  gh_head_checks "$SLUG" "$HEAD" "$cache" "$REQUIRED" > "$S/ci.json"; rc=$?; passup "$rc"
-  if [ "$rc" -eq 0 ]; then
-    put checks "$(jq -c --argjson known "$KNOWN" --argjson required "$REQUIRED" \
-      '. + {required_known:$known, required:$required, gh_exit:0}' "$S/ci.json")" ""
-  else
-    put checks "$(jq -cn --argjson rc "$rc" '{gh_exit:$rc}')" "the checks could not be read: ${GH_READ_ERROR:-unreadable response}"
+  REQUIRED="$(jq -c 'unique' <<< "$REQUIRED")"
+  check_filter="$REQUIRED"
+  [ -z "$WHY" ] || check_filter='[]'
+  gh_head_checks "$SLUG" "$HEAD" "$cache" "$check_filter" > "$S/ci.json"; rc=$?; passup "$rc"
+  checks_error=""
+  if [ "$rc" -ne 0 ]; then
+    checks_error="the checks could not be read: ${GH_READ_ERROR:-unreadable response}"
+    printf '{}\n' > "$S/ci.json"
   fi
+  put checks "$(jq -c --arg why "$WHY" --argjson required "$REQUIRED" --argjson rc "$rc" '
+    . + {required_known:($why == ""), required_error:(if $why == "" then null else $why end),
+         required:($required | map(.name) | unique), required_checks:$required, gh_exit:$rc}
+  ' "$S/ci.json")" "$checks_error"
 fi
 
 # --- the worktree's own state -------------------------------------------------

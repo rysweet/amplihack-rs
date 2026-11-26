@@ -106,22 +106,12 @@ do_act_review() {
   case "$rc" in 79|75) exit "$rc" ;; 0) result reviewed "$s" ;; *) result review-failed "$s; the log is review.log in the turn folder" ;; esac
 }
 
-checks_watch_interval() {
-  local LC_ALL=C n="${RECIPE_VAR_checks_watch_interval:-}"
-  [ -n "$n" ] || return 0
-  if [[ "$n" =~ ^[1-9][0-9]{0,9}$ ]]; then
-    printf '%s' "$n"
-  else
-    printf '%s\n' 'WARNING: invalid checks_watch_interval. Using 120 seconds.' >&2
-  fi
-}
-
 # Run in its own shell so the guidance wake can interrupt an API call, a
 # rate-limit wait or an ordinary interval sleep. Exit 10 signals a new head.
 do_ci_wait() {
   # shellcheck source=workflow_gh_retry.sh
   . "$HERE/workflow_gh_retry.sh" || return 2
-  local build_branch="${1:-}" head slug required interval cache rc state
+  local build_branch="${1:-}" head slug required required_only policy_error="" cache rc state=pending
   local reading="$TD/reading.json"
   head="$(jq -r '.goal.pr.head // empty | strings' "$reading")"
   slug="$(goal_github_pr_repo "$(jq -r '.goal.pr.url // empty | strings' "$reading")" "$PR")"
@@ -129,13 +119,16 @@ do_ci_wait() {
     echo 'the reading has no usable pull request repository or head' >&2
     return 2
   fi
-  required="$(jq -c --slurpfile reading "$reading" '
-    if .args.required == true and $reading[0].goal.checks.required_known == true then
-      $reading[0].goal.checks.required | if type == "array" then map(strings) else [] end
-    else [] end
-  ' "$TD/decision.json")" || return 2
-  interval="$(checks_watch_interval)"
-  interval="${interval:-120}"
+  required='[]'
+  required_only="$(jq -r '.args.required == true' "$TD/decision.json")" || return 2
+  if [ "$required_only" = true ]; then
+    if ! required="$(jq -ce '.goal.checks | select(.required_known == true) | .required_checks | arrays' "$reading")"; then
+      required='[]'
+      policy_error="$(jq -r '.goal.checks.required_error // empty | strings' "$reading")"
+      policy_error="${policy_error:-the reading has no complete required-check policy}"
+    fi
+  fi
+  GH_READ_INTERVAL="$(goal_checks_watch_interval)"
   GH_READ_DIR="$(mktemp -d "$TD/.ci-wait.XXXXXX")" || return 2
   trap 'gh_goal_cancel; rm -rf -- "$GH_READ_DIR"' EXIT
   trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
@@ -145,18 +138,31 @@ do_ci_wait() {
     gh_rest_get "repos/$slug/pulls/$PR" "$cache" \
       '(.head.sha | type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$"))' "$head"
     rc=$?
-    if [ "$rc" -eq 0 ]; then
-      if [ -n "$build_branch" ] && ! jq -e --arg branch "$build_branch" --arg repo "${slug,,}" '
-        .state == "open" and .head.ref == $branch and
-        (.head.repo.full_name | strings | ascii_downcase) == $repo
-      ' "$GH_READ_BODY" >/dev/null; then
-        echo "the pull request is no longer open on the build's branch and repository" >&2
+    case "$rc" in
+      75|79) return "$rc" ;;
+      0) ;;
+      *) printf 'the PR head read failed (exit %s): %s\n' "$rc" "${GH_READ_ERROR:-unreadable response}" >&2; return 2 ;;
+    esac
+    if [ -n "$build_branch" ] && ! jq -e --arg branch "$build_branch" --arg repo "${slug,,}" '
+      .state == "open" and .head.ref == $branch and
+      (.head.repo.full_name | strings | ascii_downcase) == $repo
+    ' "$GH_READ_BODY" >/dev/null; then
+      echo "the pull request is no longer open on the build's branch and repository" >&2
+      return 2
+    fi
+    [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
+
+    # A terminal check read may have waited out a rate limit on the old head.
+    if [ "$state" != pending ]; then
+      if [ -n "$policy_error" ]; then
+        printf 'the required-check policy is incomplete: %s\n' "$policy_error" >&2
         return 2
       fi
-      [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
-      gh_head_checks "$slug" "$head" "$cache" "$required" > "$GH_READ_DIR/ci.json"
-      rc=$?
+      [ "$state" = passed ]
+      return $?
     fi
+    gh_head_checks "$slug" "$head" "$cache" "$required" > "$GH_READ_DIR/ci.json"
+    rc=$?
     case "$rc" in
       75|79) return "$rc" ;;
       0) ;;
@@ -164,9 +170,8 @@ do_ci_wait() {
     esac
     state="$(jq -r '.state' "$GH_READ_DIR/ci.json")"
     case "$state" in
-      passed) return 0 ;;
-      failed) return 1 ;;
-      pending) gh_goal_command sleep "$interval" || return 2 ;;
+      passed|failed) ;; # Revalidate the head before using the result.
+      pending) gh_goal_command sleep "$GH_READ_INTERVAL" || return 2 ;;
       *) echo 'the CI read returned an unknown state' >&2; return 2 ;;
     esac
   done

@@ -96,7 +96,7 @@ which is why waiting is an action and not part of the agent step.
 | `repo` | Repository, worktree path, current branch, whether the worktree is clean, commits not yet pushed |
 | `merge_authority` | `no_merge`, dry run, and the effective authority |
 | `pr` | Head, base, `mergeable`, `mergeStateStatus`, draft, state |
-| `checks` | Check runs and commit statuses read over REST at the head, with counts and an overall `state`. `required` lists known required names, and `required_known` says whether the base policy could be read. A required check that has yet to report is pending. A head with no reported checks is also pending. |
+| `checks` | Check runs and commit statuses at the head, with counts and an overall `state`. `required` lists known required names. `required_checks` pairs each name with its expected GitHub App ID, or `null` for any source. `required_known` is true when both the rulesets and classic required-check policy are accounted for. `required_error` explains incomplete policy, in which case the reading counts all observed checks. A required check is pending until it reports from an allowed source. A head with no reported checks is also pending. |
 | `reviews` | GitHub review verdicts and Crusty round verdicts, each with the head it was given at and the round's minor findings. Each minor finding is `{id, summary, outcome, evidence?, reason?}`, where `outcome` is `fixed`, `filed` or `open` (see [Minor review findings](#minor-review-findings)); a round whose record or minor findings could not be read is listed with its `error` |
 | `base` | Merge base, how far behind the PR is, conflicting files from `git merge-tree --write-tree`, and the files the base changed since the merge base that the PR also touches |
 | `repository` | Allowed merge methods; whether strict status checks are required (`strict_status_checks`, `strict_source`, `strict_unreadable`); `merge_state_behind` as evidence only |
@@ -430,9 +430,13 @@ Under `judge` and `file_all` the agent files each issue with
 - Checks completing or the head changing. The wait reads the pull request head
   immediately, then reads the check runs and commit statuses if the head is
   unchanged. While checks are pending, it sleeps for the configured interval
-  before reading again. With `args.required: true` and known required names,
-  it waits for those checks. The wait uses all reported checks when the policy
-  has no required names or could not be read.
+  before reading again. It rechecks the head before returning a completed
+  result. With `args.required: true` and a complete policy, it waits for the
+  required checks by name and expected App. A commit status without an App ID
+  can satisfy a requirement that allows any source. The wait uses all reported
+  checks when the policy has no required names or is incomplete. If a
+  required-only wait reaches completion with incomplete policy, it returns
+  `wait-error` with the reason.
 - A login with room. The runner's usage-limit wait (#2992) handles this, and
   limit-resume (#3112) restarts the run. The loop adds nothing.
 - The owner's answer. The waiting step arms a FIFO in the run's
@@ -450,8 +454,8 @@ including any links to later pages, without using the primary rate allowance.
 When GitHub declines a call because of a rate limit, the reading or wait looks
 up the limit with `gh api rate_limit`. It uses the applicable reset time and
 any `Retry-After` delay before retrying that call in the same turn. If GitHub
-provides no usable deadline, the read stays pending. Guidance can resume a
-turn's reading or end a CI wait when the guidance wake is available.
+provides no usable deadline, the retry uses the configured check interval with
+a minimum of 60 seconds. Guidance can end a CI wait during either delay.
 
 ### CI check interval
 
