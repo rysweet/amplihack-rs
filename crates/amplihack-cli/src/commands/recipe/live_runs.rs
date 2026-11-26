@@ -140,6 +140,62 @@ pub(crate) fn runs_for_pr_by_state(pr: &PrRef) -> (Vec<LiveRun>, Vec<PathBuf>) {
 
 /// Every run that records `pr`, each once, with whether it is live.
 fn runs_for_pr(pr: &PrRef) -> Vec<(LiveRun, bool)> {
+    scan_runs("recipe guide", |record, recorded, roots| {
+        let records_pr = [&record.pr_url, &record.pr_number]
+            .iter()
+            .any(|v| v.as_deref().is_some_and(|v| !v.trim().is_empty()));
+        if records_pr {
+            if !pointer_pr(record, pr.number).is_some_and(|found| same_repo_ref(&found, pr)) {
+                return None;
+            }
+            Some(accept_recorded(recorded, record.run_id.as_deref(), roots).map(|(dir, _)| dir))
+        } else {
+            // No pull request in the pointer: only a run folder that passes
+            // the checks is read for a goal record.
+            let (dir, _) = accept_recorded(recorded, record.run_id.as_deref(), roots).ok()?;
+            goal_pr(&dir)
+                .is_some_and(|found| same_repo_ref(&found, pr))
+                .then_some(Ok(dir))
+        }
+    })
+    .into_iter()
+    .map(|found| {
+        let run = LiveRun {
+            session: found
+                .record
+                .session
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            reachable: found.accepted.and_then(|dir| guidance_folder(&dir)),
+            run_dir: found.run_dir,
+        };
+        (run, found.live)
+    })
+    .collect()
+}
+
+/// One run named by a session pointer, found by [`scan_runs`].
+pub(super) struct FoundRun {
+    /// The pointer that names it.
+    pub(super) record: Pointer,
+    /// The run folder, as recorded.
+    pub(super) run_dir: PathBuf,
+    /// The run folder once it has passed `accept_recorded`, or why not.
+    pub(super) accepted: Result<PathBuf, String>,
+    /// Whether the run is running now ([`is_live`]).
+    pub(super) live: bool,
+}
+
+/// Every run the session pointers in the log folder name, each once, in
+/// the order the logs were last written (newest first). `select` sees each
+/// pointer with an absolute run folder not seen before, and returns `None`
+/// to leave it out, or the result of the folder checks to keep it. Nothing
+/// is written. `who` names the command in the warning printed when the log
+/// folder exists but cannot be read.
+pub(super) fn scan_runs(
+    who: &str,
+    mut select: impl FnMut(&Pointer, &str, &mut RootChecks) -> Option<Result<PathBuf, String>>,
+) -> Vec<FoundRun> {
     let Ok(log_dir) = super::detach::log_dir() else {
         return Vec::new();
     };
@@ -155,7 +211,7 @@ fn runs_for_pr(pr: &PrRef) -> Vec<(LiveRun, bool)> {
         && let Some(note) = scan.note.as_deref().filter(|n| *n != "it does not exist")
     {
         eprintln!(
-            "recipe guide: warning: live runs could not be looked up, so none was found: {}",
+            "{who}: warning: live runs could not be looked up, so none was found: {}",
             crate::run_guidance::sanitize::sanitize_line(note)
         );
     }
@@ -167,38 +223,17 @@ fn runs_for_pr(pr: &PrRef) -> Vec<(LiveRun, bool)> {
         if !run_dir.is_absolute() || seen.contains(&recorded) {
             continue;
         }
-        let records_pr = [&record.pr_url, &record.pr_number]
-            .iter()
-            .any(|v| v.as_deref().is_some_and(|v| !v.trim().is_empty()));
-        let accepted = if records_pr {
-            if !pointer_pr(&record, pr.number).is_some_and(|found| same_repo_ref(&found, pr)) {
-                continue;
-            }
-            accept_recorded(&recorded, record.run_id.as_deref(), &mut roots).map(|(dir, _)| dir)
-        } else {
-            // No pull request in the pointer: only a run folder that passes
-            // the checks is read for a goal record.
-            let Ok((dir, _)) = accept_recorded(&recorded, record.run_id.as_deref(), &mut roots)
-            else {
-                continue;
-            };
-            if !goal_pr(&dir).is_some_and(|found| same_repo_ref(&found, pr)) {
-                continue;
-            }
-            Ok(dir)
+        let Some(accepted) = select(&record, &recorded, &mut roots) else {
+            continue;
         };
-        seen.insert(recorded.clone());
+        seen.insert(recorded);
         let live = is_live(&run_dir, record.run_id.as_deref());
-        let reachable = accepted.and_then(|dir| guidance_folder(&dir));
-        let run = LiveRun {
-            session: record
-                .session
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
+        runs.push(FoundRun {
+            record,
             run_dir,
-            reachable,
-        };
-        runs.push((run, live));
+            accepted,
+            live,
+        });
     }
     runs
 }
@@ -255,6 +290,13 @@ pub(super) fn goal_pr(run_dir: &Path) -> Option<PrRef> {
 /// following a link and checked by its own metadata. `None` when it is
 /// missing, untrusted, too large or not JSON.
 fn read_goal(path: &Path) -> Option<serde_json::Value> {
+    read_json_capped(path, MAX_GOAL_BYTES)
+}
+
+/// One JSON file of this user, at most `cap` bytes, parsed, read as
+/// [`read_goal`] reads `goal.json`. `None` when it is missing, untrusted,
+/// too large or not JSON.
+pub(super) fn read_json_capped(path: &Path, cap: u64) -> Option<serde_json::Value> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
@@ -265,11 +307,11 @@ fn read_goal(path: &Path) -> Option<serde_json::Value> {
         .open(path)
         .ok()?;
     let meta = file.metadata().ok()?;
-    if untrusted_reason(&meta, false).is_some() || meta.len() > MAX_GOAL_BYTES {
+    if untrusted_reason(&meta, false).is_some() || meta.len() > cap {
         return None;
     }
     let mut bytes = Vec::new();
-    file.take(MAX_GOAL_BYTES).read_to_end(&mut bytes).ok()?;
+    file.take(cap).read_to_end(&mut bytes).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 

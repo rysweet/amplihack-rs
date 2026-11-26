@@ -64,6 +64,9 @@ mod issue_2575_agentic_merge_ready;
 mod issue_3129_goal_loop;
 #[path = "issue_3161_pr_url_live_run.rs"]
 mod issue_3161_pr_url_live_run;
+// #3364: the waiting record and `recipe waiting`.
+#[path = "issue_3364_waiting_listing.rs"]
+mod issue_3364_waiting_listing;
 // PR #3190 review: the #3161 drive cases and a run that ends unread, real runner.
 #[path = "issue_3161_pinned_runner_drive.rs"]
 mod issue_3161_pinned_runner_drive;
