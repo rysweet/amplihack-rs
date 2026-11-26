@@ -27,7 +27,7 @@ unset GH_REPO
 if ! . "$TOOLS/git-repo-env.sh"; then die "cannot load git-repo-env.sh from $TOOLS $WHERE"; fi
 amplihack_clear_git_repo_env
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "requires a git repo at repo_path $RP $WHERE"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "requires a git repo at repo_path $RP; git init or clone it and rerun from a checkout $WHERE"
 bash "$TOOLS/autodrive_worktree_guard.sh" commit-dir "$PR" \
   || die "repo_path $RP is not PR #${PR}'s linked worktree on its head branch $WHERE"
 HEAD_IN="$(printf '%s' "${RECIPE_VAR_crusty_round_context:-}" \
