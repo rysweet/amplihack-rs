@@ -128,8 +128,9 @@ full lowercase commit id arrived as `reviewed_head_sha`; it must then be a hex
 commit id, never a git expression such as `HEAD~1`. Either way the base must
 resolve to a commit in that worktree. The step reports `base_sha`, `head_sha`
 (the worktree's `HEAD`), `commits`, `dirty_worktree`, `git_observed` and
-`head_descends_from_base`. The last is `"false"` when `HEAD` was rewound or
-replaced so that it no longer descends from the base; `commits` is then 0.
+`head_descends_from_base`. The last is `"false"` when `HEAD` no longer
+descends from the base. `commits` counts the commits in `HEAD` that are not
+reachable from the base, which is 0 after a plain rewind.
 
 When it cannot measure, it exits 1 and prints nothing on stdout, rather than an
 unmeasured `commits: 0`. On stderr it writes a `step05_refusal=<reason>` line
@@ -153,7 +154,9 @@ reworded.
 | `step05_refusal=ancestry-unreadable` | `git merge-base --is-ancestor` failed |
 | `step05_refusal=worktree-state-unreadable` | `git diff --quiet` failed |
 | `step05_warning=no-commit` | `commits` is 0 |
-| `step05_warning=head-not-descendant` | `head_descends_from_base` is `"false"` | The failed step fails the round, and a failed
+| `step05_warning=head-not-descendant` | `head_descends_from_base` is `"false"` |
+
+The failed step fails the round, and a failed
 round does not end the run. The goal loop's `review` action
 (`do_act_review` in `autodrive_pr_goal.sh`) records the turn as
 `review-failed`, with the round's whole output, the `STOP` line included, in
