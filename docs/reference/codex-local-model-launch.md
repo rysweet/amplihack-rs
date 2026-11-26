@@ -871,10 +871,12 @@ establish a token saving. Fixture tests and native trust inspection do not
 establish live command blocking or token savings.
 
 Earlier the same day, at 14:49 UTC, the checks could not run on the host that
-reviewed #3262: neither documented `/v1/models` endpoint returned a model list,
-and no local-model profile was set up.
+reviewed #3262: neither `/v1/models` endpoint it tried, on port 8080 or port
+8000, returned a model list, and no local-model profile was set up.
 
-The validation handoff asks for the following evidence:
+The validation handoff asks for the following evidence. For the two command
+checks, the records cited above do not give the model identifier, the prompt
+or a confirmation that the refused command's side effect did not occur:
 
 | Check | Required inputs | Evidence to record |
 | --- | --- | --- |
