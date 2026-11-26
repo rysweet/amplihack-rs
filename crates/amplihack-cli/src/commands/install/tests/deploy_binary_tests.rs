@@ -214,6 +214,11 @@ mod stage_binary {
         let (_tmp, amp, bin) = dirs();
         let built = bin.join("built");
         fs::write(&built, b"self bytes").unwrap();
+        {
+            // A test build stages only an executable source (issue #2182).
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&built, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let dst = bin.join("amplihack");
 
         let mut first = ReleaseTxn::allocate(&amp, "1.0.0").unwrap();
