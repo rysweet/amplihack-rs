@@ -36,6 +36,8 @@ steps:
     prompt: |
       You are one turn of a goal-driven loop. Read the goal, the task text, this turn's reading of the live state and any guidance. Do the work this turn needs, then name one next action. A later turn reads the state again, so do one coherent piece of work and stop.
 
+      For a pull request goal, this reading is the round's one shared CI observation. This policy overrides inherited instructions to follow CI to completion. Do not watch CI, poll it, make extra status queries or add timed waits. Do not choose the legacy `wait` action, which starts a CI watcher. Pending CI stays unresolved: finish other actionable work and all required outputs, then choose `continue` for the next turn's reading. Missing, unreadable, unavailable or stale CI is unverified; never query replacement status. A commit, base merge or rerun cannot inherit readiness from the earlier head or execution. Known failing logs may be read for diagnosis without fresh status discovery.
+
       The goal:
       {{goal_text}}
 

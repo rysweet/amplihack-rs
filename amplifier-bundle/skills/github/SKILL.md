@@ -147,9 +147,13 @@ gh repo list owner                # Organization repos
 
 #### Auto-drive round CI evidence
 
-The [merge-ready round](../../recipes/autodrive-merge-round.yaml) and
+The merge-ready round is now one turn of the
+[goal loop](../../recipes/autodrive-goal-loop.yaml); the
+[old recipe name](../../recipes/autodrive-merge-round.yaml) is an alias,
+with no prompts of its own. The goal loop and
 [Crusty round](../../recipes/autodrive-crusty-round.yaml) assess CI once from
-shared round evidence. Agents use the supplied `ci_evidence` snapshot where
+shared round evidence. Goal agents use the checks in their turn's reading.
+Other agents use the supplied `ci_evidence` snapshot where
 present, otherwise the available round evidence. This applies to assessment,
 review, remediation and next-action selection; each agent has no separate
 status-query allowance. No additional configuration or evidence field is needed.
@@ -161,6 +165,10 @@ Agent steps must not run `gh pr checks --watch` or `gh run watch`, make
 additional CI status queries, poll `gh api` or `gh pr checks` in loops, or use
 timed waits. Existing evidence collection and round scheduling supply the next
 observation.
+
+Goal agents report pending CI and choose `continue` for the next turn's
+reading. They must not choose the legacy `wait` action, which starts a CI
+watcher. Waiting for an owner's answer still uses `wait-owner`.
 
 | Evidence | Agent behaviour |
 | -------- | --------------- |

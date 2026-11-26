@@ -126,7 +126,7 @@ The agent picks one. The word is used only to dispatch the mechanical step.
 | Action | What runs |
 |--------|-----------|
 | `review` | One Crusty round (`autodrive-crusty-round`). Its verdict is evidence in the next reading. Nothing requires the reviewed head to equal the current head. |
-| `wait` | Waits for an event: the checks at the head to complete (`gh pr checks <pr> --watch`, with `--required` when asked), or the owner's answer. |
+| `wait` | Legacy CI watcher. Do not select it for the pull request goal: use the shared reading and `continue` as described under [Waiting](#waiting). |
 | `merge` | Merges with an allowed merge method and `--match-head-commit`. Authority comes only from the captured authorisation. Before it merges, guidance must have been read again after the decision, and every [required outcome](#required-outcomes) is checked by name. |
 | `continue` | Nothing mechanical; the next turn reads the live state again. The agent chooses it after it pushed, installed something or did a task step. |
 | `wait-owner` | Waits for the owner's answer: `amplihack recipe guidance wait` with no command. args: `owner`, `question`. |
@@ -415,20 +415,28 @@ Under `judge` and `file_all` the agent files each issue with
 
 ## Waiting
 
-Nothing times a wait out. The loop has no timer, no `sleep`, no `--interval` and
-no poll of its own, and never sets `AMPLIHACK_STEP_TIMEOUT`.
+The pull request goal follows issue #2452: read CI once per round from the
+shared reading. Agents do not watch CI, poll it, make additional status
+queries or add timed waits. Pending CI stays unresolved. Finish other
+actionable work and required outputs, then choose `continue`; the next
+turn supplies the next observation. Known failing logs may be read for
+diagnosis without fresh status discovery. Missing, unreadable, unavailable
+or stale CI is unverified. Commits, base merges and reruns need a later
+reading for their head and execution before readiness can be established.
 
-- Checks completing. `gh pr checks <pr> --watch` blocks until the checks
-  complete. A required check that is still running makes the run wait, and the
-  run merges once it completes. If `gh` rejects `--required`, the reading lists
-  every check with `required_known: false` and the wait watches without it.
+Nothing times a wait out. The loop has no timer, no `sleep`, no `--interval` and
+never sets `AMPLIHACK_STEP_TIMEOUT`.
+
+- The legacy `wait` action still invokes a CI watcher. The pull request
+  goal's prompts prohibit selecting it because that watcher polls GitHub
+  outside the round's shared observation. Pending CI uses `continue`.
 - A login with room. The runner's usage-limit wait (#2992) handles this, and
   limit-resume (#3112) restarts the run. The loop adds nothing.
 - The owner's answer. The waiting step arms a FIFO in the run's
   `guidance-wake/` folder. `amplihack recipe guide` writes one byte to every
   armed FIFO after it stores an entry. The waiter reads guidance again after
   arming, so an entry that arrived just before the wait is not missed. The same
-  mechanism ends a check wait when new guidance arrives. If the FIFO cannot be
+  mechanism also serves the legacy check wait. If the FIFO cannot be
   armed (exit 3 from `guidance wait`), the question for the owner ends in a
   hand-off that names the owner and the question.
 
@@ -852,8 +860,9 @@ Rust:
 - A pull request someone else merges ends the loop as `completed`; the report
   says the merge was not by this run's merge action.
 - The merge action does not tell a pending required check from a failing one:
-  both are `checks-not-green`. The goal text tells the agent to `wait` on
-  pending checks before it chooses `merge`.
+  both are `checks-not-green`. The goal text tells the agent to leave pending
+  checks unresolved and choose `continue` for the next shared reading before
+  it chooses `merge`.
 
 ## Known limits
 
@@ -866,16 +875,16 @@ Rust:
   action merges, but that is a directive and not a mechanical block.
   `--match-head-commit` and GitHub's branch protection remain the real boundary.
   #3144 tracks restoring enforcement.
-- There is no code stop. An agent that keeps choosing to continue, or that waits
-  on a PR with no checks (where `gh pr checks --watch` returns at once), costs
+- There is no code stop. An agent that keeps choosing to continue costs
   one agent call per turn. The agent is told to hand off when a failure keeps
   repeating. The operator can use `amplihack recipe stop`.
 - A turn run that fails the same way every turn starts the next turn at once,
   with no changed input, while an agent runs in it
   ([A failure that repeats](#a-failure-that-repeats)). Where no agent starts,
   three such turns in a row with the same error end the run.
-- `gh pr checks --watch` polls GitHub inside `gh`. The loop adds no poll of its
-  own.
+- The legacy `wait` action polls GitHub inside `gh`. The pull request goal's
+  prompts prohibit it; the implementation remains for compatibility. Each
+  `continue` starts another turn and another shared CI observation.
 - An operator who passes `--step-timeout` times out the whole loop step.
 - A pending required check is reported by the merge action as `checks-not-green`.
 - Guidance newness is by entry name order. An entry stamped before the mark but

@@ -24,7 +24,7 @@ check, the review verdicts, whether the base conflicts or changed the PR's
 files, the repository's settings, the task text and guidance. You do any
 work the turn needs yourself (fix and push, bring the base in, install a host
 input, carry out a later task step), then pick one action: the goal's
-`review`, `wait` or `merge`, or a shared `continue`, `wait-owner`, `handoff`,
+`review` or `merge`, or a shared `continue`, `wait-owner`, `handoff`,
 `ready` or `stop`. End your reply with one JSON line:
 `{"action": "<word>", "args": {...}, "why": "..."}`.
 
@@ -36,7 +36,12 @@ input, carry out a later task step), then pick one action: the goal's
 - Bring the base in only when the PR conflicts, the task text asks, or the
   repository requires an up-to-date branch. Use a merge commit. Never rebase,
   amend, squash or force-push. Push with plain `git push`, through the hooks.
-- A running required check is a wait. Merge when it completes.
+- Use the round's one shared CI observation from the reading. Agents make no
+  extra status queries, watches, polling loops or timed waits. Pending CI
+  stays unresolved: finish actionable work and required outputs, then choose
+  `continue` for the next reading. Do not choose the legacy `wait` action,
+  which starts a CI watcher. Missing or stale CI is unverified. New commits,
+  base merges and reruns need evidence for their head and execution.
 - Install a missing host input by the repository's own instructions, from
   `origin/<base>`. No sudo, no system package manager, never touch `~/.claude`
   or `~/.amplihack`.
