@@ -12,9 +12,11 @@
 //! - Next session reset: session-limited logins with weekly capacity and a
 //!   known reset, grouped within 60 s of the earliest.
 //! - Rate: the oldest entry no more than 6 h old, at least 4.5 h old; each
-//!   login's net rise in `w` within each week (issue #1970). A reset is
-//!   `w_reset` passing or a fall of more than 10 points; a smaller fall is a
-//!   stale reading and adds nothing. Never negative; weighted.
+//!   login's rises in `w` within each week (issues #1970 and #3258). A
+//!   reset is `w_reset` passing or moving later by more than an hour; a
+//!   fall alone is never a reset. A fall a later reading reverses is stale
+//!   and skipped; a fall that stays lowers the level. Never negative;
+//!   weighted.
 //! - Rounding half away from zero, only when printed; non-finite is `null`.
 
 use super::capacity_summary::{
@@ -175,9 +177,12 @@ fn the_issue_fixture_json_has_every_documented_key() {
     assert_eq!(
         keys,
         [
+            "lowest_room_login_weeks",
             "next_session_reset",
             "rate_login_weeks_per_hour",
+            "runway_beyond_24h",
             "runway_hours",
+            "runway_with_renewals_hours",
             "unknown",
             "usable_now",
             "valid_readings",
@@ -295,6 +300,9 @@ fn the_reference_example_json_matches_the_documented_object() {
             "next_session_reset": {"at": "2026-10-30T18:00:00Z", "profiles": ["night", "team"]},
             "rate_login_weeks_per_hour": 0.23,
             "runway_hours": 9.0,
+            "runway_with_renewals_hours": 9.0,
+            "runway_beyond_24h": false,
+            "lowest_room_login_weeks": 0.0,
             "weekly_resets_next_24h": [
                 {"at": "2026-10-31T02:00:00Z", "profile": "night", "restores": 0.85},
                 {"at": "2026-10-31T09:00:00Z", "profile": "work", "restores": 0.3}
@@ -625,13 +633,18 @@ fn a_reset_found_by_w_reset_passing_adds_the_earlier_week_back() {
 }
 
 #[test]
-fn a_reset_found_by_a_fall_in_the_week_adds_the_earlier_week_back() {
-    // No reset times known; the week fell from 60 to 10. 30 - 60 + 60 = 30
+fn a_reset_found_by_w_reset_moving_later_adds_the_earlier_week_back() {
+    // Issue #3258: the week reset early, so its reset time moved later by
+    // about a week while the figure fell from 60 to 10. 30 - 60 + 60 = 30
     // points over 6 h.
-    let cur = snap(T, &[("a", pt(Some(0), 30))], &[]);
+    let new = T + 6 * DAY;
+    let cur = snap(T, &[("a", pt_r(Some(0), 30, Some(new), None))], &[]);
     let h = [
-        entry(T - 6 * HOUR, &[("a", pt(Some(0), 60))]),
-        entry(T - 3 * HOUR, &[("a", pt(Some(0), 10))]),
+        entry(
+            T - 6 * HOUR,
+            &[("a", pt_r(Some(0), 60, Some(T + 2 * HOUR), None))],
+        ),
+        entry(T - 3 * HOUR, &[("a", pt_r(Some(0), 10, Some(new), None))]),
     ];
     assert_eq!(rate_of(&cur, &h), json!(0.05));
 }
@@ -772,26 +785,33 @@ fn a_usage_start_leaves_out_only_the_logins_it_failed_to_read() {
 
 #[test]
 fn rotator_lines_between_the_ends_still_find_resets() {
-    // The rotator lines skipped b but saw a's week reset (90, then 5): a
-    // used 10 + 5 + 20 = 35 points and b 30, so 65 points over 6 h.
-    let cur = snap(T, &[("a", pt(Some(0), 25)), ("b", pt(Some(0), 40))], &[]);
+    // The rotator lines skipped b but saw a's week reset (90, then 5, with
+    // the reset time of T-3h30m passed): a used 10 + 5 + 20 = 35 points and
+    // b 30, so 65 points over 6 h.
+    let old = Some(T - 3 * HOUR - 30 * MIN);
+    let new = Some(T + 6 * DAY);
+    let cur = snap(
+        T,
+        &[("a", pt_r(Some(0), 25, new, None)), ("b", pt(Some(0), 40))],
+        &[],
+    );
     let h = [
         written_by(
             Writer::Usage,
             T - 6 * HOUR,
-            &[("a", pt(Some(0), 80)), ("b", pt(Some(0), 10))],
+            &[("a", pt_r(Some(0), 80, old, None)), ("b", pt(Some(0), 10))],
             &[],
         ),
         written_by(
             Writer::Rotate,
             T - 4 * HOUR,
-            &[("a", pt(Some(0), 90))],
+            &[("a", pt_r(Some(0), 90, old, None))],
             &["b"],
         ),
         written_by(
             Writer::Rotate,
             T - 3 * HOUR,
-            &[("a", pt(Some(0), 5))],
+            &[("a", pt_r(Some(0), 5, new, None))],
             &["b"],
         ),
     ];
@@ -1335,15 +1355,16 @@ fn a_fall_of_exactly_ten_is_not_a_reset() {
 }
 
 #[test]
-fn a_fall_of_eleven_is_a_reset() {
-    // 50, 60, then 49: a new week; 10 points before it and 55 since.
+fn a_fall_of_eleven_is_not_a_reset() {
+    // Issue #3258: 50, 60, then 49 and 55 with no new reset time. The 49 is
+    // stale, since 55 comes back to within 10 of 60: one week, 10 points.
     let cur = snap(T, &[("a", pt(Some(0), 55))], &[]);
     let h = [
         entry(T - 6 * HOUR, &[("a", pt(Some(0), 50))]),
         entry(T - 4 * HOUR, &[("a", pt(Some(0), 60))]),
         entry(T - 3 * HOUR, &[("a", pt(Some(0), 49))]),
     ];
-    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 10 + 55);
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 10);
 }
 
 #[test]
@@ -1399,15 +1420,17 @@ fn a_reset_then_stale_dips_add_nothing() {
 
 #[test]
 fn a_stale_last_reading_before_a_reset_does_not_hide_the_peak() {
-    // 20, 60, a stale 55, then a real reset to 4: the week's use before the
-    // reset is its peak, 40, not 55 - 20.
+    // 20, 60, a stale 55, then a real reset (the reset time moves later by
+    // about a week) to 2 and 4: the week's use before the reset is its
+    // peak, 40, not 55 - 20.
     let r = T + 2 * DAY;
-    let cur = snap(T, &[("a", wr(4, r))], &[]);
+    let new = T + 6 * DAY;
+    let cur = snap(T, &[("a", wr(4, new))], &[]);
     let h = [
         entry(T - 6 * HOUR, &[("a", wr(20, r))]),
         entry(T - 4 * HOUR, &[("a", wr(60, r))]),
         entry(T - 3 * HOUR, &[("a", wr(55, r))]),
-        entry(T - 2 * HOUR, &[("a", wr(2, r))]),
+        entry(T - 2 * HOUR, &[("a", wr(2, new))]),
     ];
     assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 40 + 4);
 }
@@ -1455,9 +1478,10 @@ fn a_stale_passive_current_reading_is_not_counted() {
     let fresh_now = snap(T, &[("a", passive_pt(52, Some(r)))], &[]);
     assert_eq!(used(&parts(&fresh_now, &h).unwrap(), "a"), 12);
 
-    // A direct reading of 38 is believed: a fall of 12 is a reset.
+    // Issue #3258: a direct reading of 38 with the same reset time is a fall
+    // that stays. It lowers the level and adds no use.
     let direct_now = snap(T, &[("a", wr(38, r))], &[]);
-    assert_eq!(used(&parts(&direct_now, &h).unwrap(), "a"), 10 + 38);
+    assert_eq!(used(&parts(&direct_now, &h).unwrap(), "a"), 10);
 }
 
 #[test]
@@ -1478,9 +1502,10 @@ fn the_rate_is_never_negative() {
 
 #[test]
 fn the_existing_reset_figures_are_unchanged() {
-    // The three #1841 cases keep their figures under the new rule: a reset
-    // by `w_reset` passing (50 points), a fall of 50 (30 points) and a
-    // reset between the last entry and now (15 points), each over 6 h.
+    // The three #1841 cases: a reset by `w_reset` passing (50 points), a
+    // fall of 50 (issue #3258: with no reset time it is a fall that stays,
+    // so only the rise after it, 20 points) and a reset between the last
+    // entry and now (15 points), each over 6 h.
     let a = snap(T, &[("a", wr(50, T + 6 * DAY))], &[]);
     let ha = [
         entry(T - 6 * HOUR, &[("a", wr(20, T - 5 * HOUR))]),
@@ -1492,8 +1517,194 @@ fn the_existing_reset_figures_are_unchanged() {
         entry(T - 6 * HOUR, &[("a", pt(Some(0), 60))]),
         entry(T - 3 * HOUR, &[("a", pt(Some(0), 10))]),
     ];
-    assert_eq!(used(&parts(&b, &hb).unwrap(), "a"), 30);
+    assert_eq!(used(&parts(&b, &hb).unwrap(), "a"), 20);
     let c = snap(T, &[("a", pt(Some(0), 15))], &[]);
     let hc = [entry(T - 6 * HOUR, &[("a", wr(90, T - HOUR))])];
     assert_eq!(used(&parts(&c, &hc).unwrap(), "a"), 15);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #3258: a week is known by its reset time, a fall that stays is not
+// use, and the runway allows for the renewals of the next 24 h.
+// ---------------------------------------------------------------------------
+
+/// Points login `a` used over readings of `figures`, an hour apart and
+/// ending now, all with the reset time `reset`.
+fn used_by_figures(figures: &[(u8, i64)]) -> i64 {
+    let (last, earlier) = figures.split_last().expect("figures");
+    let n = i64::try_from(earlier.len()).unwrap();
+    let cur = snap(T, &[("a", wr(last.0, last.1))], &[]);
+    let h: Vec<Entry> = earlier
+        .iter()
+        .zip(0..)
+        .map(|((w, r), k)| entry(T - (n - k) * HOUR, &[("a", wr(*w, *r))]))
+        .collect();
+    used(&parts(&cur, &h).unwrap(), "a")
+}
+
+#[test]
+fn readings_that_alternate_in_one_week_add_no_use() {
+    let r = T + 3 * DAY;
+    let figures: Vec<(u8, i64)> = [43, 29, 43, 29, 43].iter().map(|w| (*w, r)).collect();
+    assert_eq!(used_by_figures(&figures), 0);
+}
+
+#[test]
+fn a_stale_reading_between_two_rises_adds_only_the_rises() {
+    let r = T + 3 * DAY;
+    let figures: Vec<(u8, i64)> = [60, 74, 61, 75].iter().map(|w| (*w, r)).collect();
+    assert_eq!(used_by_figures(&figures), 15);
+}
+
+#[test]
+fn a_fall_that_stays_is_not_use_and_use_after_it_counts() {
+    let r = T + 3 * DAY;
+    let figures: Vec<(u8, i64)> = [60, 74, 30, 30, 34].iter().map(|w| (*w, r)).collect();
+    assert_eq!(used_by_figures(&figures), 14 + 4);
+}
+
+#[test]
+fn a_reset_time_that_passes_starts_a_new_week_from_zero() {
+    // 70, then 90; the reset at T-90m passes before the reading of 5.
+    let old = T - 90 * MIN;
+    let new = T + 7 * DAY - 90 * MIN;
+    assert_eq!(
+        used_by_figures(&[(70, old), (90, old), (5, new), (9, new)]),
+        20 + 9
+    );
+}
+
+#[test]
+fn a_reset_time_that_moves_a_week_later_starts_a_new_week_from_zero() {
+    let r = T + 2 * DAY;
+    let later = r + 7 * DAY;
+    assert_eq!(used_by_figures(&[(70, r), (80, r), (3, later)]), 10 + 3);
+}
+
+/// Headroom of 4.5 login-weeks and a rate of 0.35 an hour: three logins
+/// each use 70 points over 6 h, five full logins renew `renew_at` hours
+/// ahead (each `None` beyond 24 h), and two idle logins hold the rest.
+fn renewal_case(renew_at: [f64; 5]) -> Summary {
+    let far = T + 5 * DAY;
+    let mut now = vec![
+        ("u1", wr(80, far)),
+        ("u2", wr(80, far)),
+        ("u3", wr(80, far)),
+        ("i1", wr(0, far)),
+        ("i2", wr(10, far)),
+        ("i3", wr(0, far)),
+        ("i4", wr(0, far)),
+    ];
+    let names = ["r1", "r2", "r3", "r4", "r5"];
+    for (n, h) in names.iter().zip(renew_at) {
+        now.push((n, wr(100, T + (h * 3600.0) as i64)));
+    }
+    let then: Vec<(&str, Point)> = now
+        .iter()
+        .map(|(n, p)| {
+            let w = if n.starts_with('u') { 10 } else { p.w };
+            (*n, Point { w, ..p.clone() })
+        })
+        .collect();
+    let cur = snap(T, &now, &[]);
+    let h = [entry(T - 6 * HOUR, &then)];
+    summary(&cur, &Weights::default(), 95, &h)
+}
+
+fn num(v: &Value) -> f64 {
+    v.as_f64().unwrap_or_else(|| panic!("not a number: {v}"))
+}
+
+#[test]
+fn renewals_inside_the_window_keep_the_room_beyond_24_hours() {
+    let v = js(&renewal_case([4.5, 6.5, 9.5, 16.5, 16.5]));
+    assert_eq!(v["weighted_headroom_login_weeks"], json!(4.5));
+    assert_eq!(v["rate_login_weeks_per_hour"], json!(0.35));
+    // The plain figure keeps its meaning.
+    assert!((num(&v["runway_hours"]) - 12.9).abs() < 0.05);
+    // Stepping through: the room is lowest at 24 h, 4.5 + 5 - 0.35 · 24.
+    assert_eq!(v["runway_beyond_24h"], json!(true));
+    assert_eq!(v["runway_with_renewals_hours"], Value::Null);
+    assert!((num(&v["lowest_room_login_weeks"]) - 1.1).abs() < 0.01);
+}
+
+#[test]
+fn with_no_renewal_inside_the_window_the_runway_is_the_plain_one() {
+    let beyond = 30.0;
+    let v = js(&renewal_case([beyond; 5]));
+    assert_eq!(v["runway_beyond_24h"], json!(false));
+    assert!((num(&v["runway_hours"]) - 12.9).abs() < 0.05);
+    assert_eq!(v["runway_with_renewals_hours"], v["runway_hours"]);
+}
+
+#[test]
+fn renewals_too_late_to_help_give_the_time_the_room_runs_out() {
+    // Renewals at +20 h and later: the room of 4.5 runs out at about
+    // 12.9 h, before the first of them.
+    let v = js(&renewal_case([20.0, 21.0, 22.0, 23.0, 23.5]));
+    assert_eq!(v["runway_beyond_24h"], json!(false));
+    assert!((num(&v["runway_with_renewals_hours"]) - 12.9).abs() < 0.05);
+    assert_eq!(v["lowest_room_login_weeks"], json!(0.0));
+}
+
+#[test]
+fn a_renewal_that_comes_in_time_moves_the_time_the_room_runs_out() {
+    // One renewal of 1.0 at +4.5 h; the others beyond 24 h. The room runs
+    // out 1.0 / 0.35 h later than without it.
+    let v = js(&renewal_case([4.5, 30.0, 30.0, 30.0, 30.0]));
+    assert_eq!(v["runway_beyond_24h"], json!(false));
+    let expected = 5.5 / 0.35;
+    assert!((num(&v["runway_with_renewals_hours"]) - expected).abs() < 0.05);
+}
+
+/// `testdata/issue_3258_26nov.jsonl`: `profile usage` lines every 20 min
+/// from 20:28Z on 25 Nov 2026 to 02:28Z on 26 Nov, with the night's
+/// patterns under generic names. `testdata/README.md` says how it was made.
+const NOV26: &str = include_str!("testdata/issue_3258_26nov.jsonl");
+
+fn nov26() -> (Snapshot, Vec<Entry>) {
+    let mut all: Vec<Entry> = NOV26
+        .lines()
+        .map(|l| parse_line(l, T + 60 * DAY).unwrap_or_else(|| panic!("unreadable: {l}")))
+        .collect();
+    let last = all.pop().expect("a line");
+    let now = Snapshot {
+        at: last.at,
+        points: last.profiles,
+        unknown: last.unknown,
+    };
+    (now, all)
+}
+
+#[test]
+fn the_26_nov_replay_counts_the_use_counted_by_hand() {
+    let (now, h) = nov26();
+    let p = parts(&now, &h).expect("a start");
+    assert_eq!(p.span, 6 * HOUR);
+    // Counted by hand from the fixture: each rise above the level of the
+    // week; stale low readings and falls that stay add nothing.
+    let by_hand: [(&str, i64); 8] = [
+        ("login-a", 46 - 43),               // 29 three times, each reversed
+        ("login-b", 87 - 78),               // one stale 72
+        ("login-c", (74 - 70) + (34 - 30)), // 74 to 30 stays
+        ("login-d", 27 - 24),               // 74 to 24 stays
+        ("login-e", (87 - 85) + (39 - 37)), // 87 to 37 stays
+        ("login-f", 74 - 20),
+        ("login-g", 82 - 10),
+        ("login-h", 76 - 40),
+    ];
+    for (n, u) in by_hand {
+        assert_eq!(used(&p, n), u, "{n}");
+    }
+    let total: i64 = by_hand.iter().map(|(_, u)| u).sum();
+    assert_eq!(p.used.values().map(|(u, _)| u).sum::<i64>(), total);
+
+    let v = js(&summary(&now, &Weights::default(), 95, &h));
+    let rate = num(&v["rate_login_weeks_per_hour"]);
+    assert!((rate - total as f64 / 100.0 / 6.0).abs() < 0.01, "{rate}");
+    assert!(rate < 0.5, "{rate}");
+    // Five full logins renew within 24 h: the room lasts beyond it.
+    assert_eq!(v["weekly_resets_next_24h"].as_array().unwrap().len(), 5);
+    assert_eq!(v["runway_beyond_24h"], json!(true));
+    assert!(num(&v["lowest_room_login_weeks"]) > 1.0);
 }

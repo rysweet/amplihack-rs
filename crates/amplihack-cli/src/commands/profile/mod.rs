@@ -504,10 +504,12 @@ pub enum ProfileCommands {
     /// rate), or written by the rotator and holding every login read now.
     /// That start entry must itself be at least 4.5 h old, or the rate and
     /// runway are unknown. Only logins read at both ends count. Each login
-    /// counts its net rise within each week, and a week resets when its
-    /// reset time passes or its figure falls by more than 10 points, so a
-    /// smaller fall adds nothing and the rate is never negative. Each
-    /// login's use is weighted by its capacity weight.
+    /// counts its net rise within each week. A week resets when its reset
+    /// time passes or moves later by more than an hour, never on a fall
+    /// alone. A fall that a later reading reverses adds nothing, and a fall
+    /// that stays adds no use, so the rate is never negative. Each login's
+    /// use is weighted by its capacity weight. The runway adds back the
+    /// weekly resets due in the next 24 h.
     ///
     /// Passive: a stored reading younger than 300 s
     /// (AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS, at most 3600) is used

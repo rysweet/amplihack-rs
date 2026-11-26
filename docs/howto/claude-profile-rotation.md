@@ -2040,8 +2040,13 @@ The runway needs about six hours of history. Each rotator cycle and each
 `unknown`. The rate is per hour and uses between four and a half and six
 hours of history. It is each login's net rise in weekly use, weighted by
 its [capacity weight](../reference/profile-command.md#capacity-weights).
-A dip of 10 points or less, such as a stale status-line figure, adds
-nothing. It starts from a `profile usage` line, or from a rotator line
+A week is told apart from the next by its reset time, not by a fall in
+the figure. A low reading that the next readings reverse, such as a stale
+status-line figure, adds nothing. A fall that stays, with the same reset
+time, is not use either: later use counts from the lower figure. The runway
+also adds back the weekly resets due in the next 24 hours, so when they
+make up for the use it reads `beyond 24 h` with the lowest headroom on the
+way. It starts from a `profile usage` line, or from a rotator line
 from a cycle that skipped none of the logins read now. A
 rotator cycle does not probe logins that are running a session, so while
 some are busy, run `amplihack profile usage` now and then (every few hours)
