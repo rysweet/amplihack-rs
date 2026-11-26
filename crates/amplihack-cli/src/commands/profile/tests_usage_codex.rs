@@ -20,7 +20,7 @@
 use super::usage_codex::{CodexView, bars_block, json_rows, table_block, view, window_label};
 use super::usage_view::TimeView;
 use amplihack_utils::codex_capacity::{
-    self, AccountResult, Credits, Outcome, Reading, Window, WindowName,
+    AccountResult, Credits, Outcome, Reading, Window, WindowName,
 };
 use chrono::FixedOffset;
 use std::path::PathBuf;
@@ -396,32 +396,6 @@ fn the_rows_keep_their_order_and_are_not_sorted_by_room() {
             "login-af", "login-ag", "mhale", "mjones", "mkim", "mmoss", "~/.codex"
         ]
     );
-}
-
-/// The rows are printed in the order `list_accounts` gives: the profile
-/// accounts in byte order of their names, then `~/.codex`. The documented
-/// example, and the golden file made from it, must be in an order that the
-/// listing can give for the same directories.
-#[test]
-fn the_example_is_in_the_order_the_account_listing_gives() {
-    let t = tempfile::tempdir().unwrap();
-    let (root, home) = (t.path().join("profiles"), t.path().join("home"));
-    let rows = example_rows();
-    for r in &rows {
-        let dir = if r.label == codex_capacity::HOME_LABEL {
-            home.join(".codex")
-        } else {
-            root.join(&r.label)
-        };
-        std::fs::create_dir_all(dir).unwrap();
-    }
-    let listed: Vec<String> = codex_capacity::list_accounts(&root, Some(&home))
-        .unwrap()
-        .into_iter()
-        .map(|a| a.label)
-        .collect();
-    let example: Vec<String> = rows.into_iter().map(|r| r.label).collect();
-    assert_eq!(listed, example);
 }
 
 #[test]

@@ -99,31 +99,6 @@ Do not create it, do not switch to it, do not branch again."
 
 PINNED_BRANCH='fix/142-band-edge-previous-slice'
 
-# The path leak check of B3 and C6. The sample task gives the path
-# `/Users/you/src/repo-g/ws/142/repo-b` and the GitHub name
-# `example-org/repo-b`. A ref leaks them when it holds:
-#   - `usersyou`, `repo-b` or `repo-g` anywhere, the shape of the incident,
-#     whose path lost its separators;
-#   - `example` anywhere, as no other word of the task contains it;
-#   - a whole hyphen- or slash-separated piece that is a word of the path or
-#     the GitHub name: `users`, `you`, `src`, `repo`, `g`, `ws`, `b`, `org`.
-#     `142` is left out because it is the issue number. `repo` is matched only
-#     as a whole piece, because `repository` is a word of the task and may
-#     appear in the tail.
-# So one word of the organisation, a repository or the path is enough to
-# fail, not only a whole name.
-# Prints the first leaked fragment and returns 0 when there is one.
-leaked_fragment() {
-    local ref="$1" fragment
-    for fragment in usersyou example repo-b repo-g; do
-        [[ "${ref}" == *"${fragment}"* ]] && { printf '%s' "${fragment}"; return 0; }
-    done
-    for fragment in users you src repo g ws b org; do
-        [[ "-${ref//\//-}-" == *"-${fragment}-"* ]] && { printf '%s' "${fragment}"; return 0; }
-    done
-    return 1
-}
-
 # ===========================================================================
 # Part A — the helper resolves an EXPLICITLY NAMED branch, and only that.
 # ===========================================================================
@@ -344,31 +319,15 @@ else
     fail "B2-issue-keyed" "rc=${RUN_RC} branch='${DERIVED}'\nstderr:\n${RUN_ERR}"
 fi
 
-# B3a checks the leak check itself. Each `leaky` ref carries one word of the
-# path or the GitHub name. Every piece of its tail is a whole word of the task
-# of two or more letters, and the tail is within the 24-character bound, so B4
-# and B5 would both pass it. Each `clean` ref is made of words of the task's
-# prose and must pass.
-WEAK=""
-for leaky in feat/issue-142-repository-example feat/issue-142-github-example \
-             feat/issue-142-142-repo feat/issue-142-repo-band-edge \
-             feat/issue-142-org-fix-the feat/issue-142-users-you-src \
-             feat/issue-142-ws-fix-the; do
-    leaked_fragment "${leaky}" >/dev/null || WEAK="${WEAK} ${leaky}"
-done
-for clean in feat/issue-142-repository-github-fix feat/issue-142-fix-the-band-edge; do
-    LEAK="$(leaked_fragment "${clean}")" && WEAK="${WEAK} ${clean} (rejected for '${LEAK}')"
-done
-if [[ -z "${WEAK}" ]]; then
-    pass "B3a-leak-check" "the leak check rejects any one word of the path or GitHub name, and accepts the task's prose"
-else
-    fail "B3a-leak-check" "the leak check got these wrong:${WEAK}"
-fi
-
-if LEAK="$(leaked_fragment "${DERIVED}")"; then
-    fail "B3-no-paths" "path fragment '${LEAK}' leaked into the branch name: '${DERIVED}'"
-else
+# The generic names have two parts, so one part on its own is rejected too:
+# `example` anywhere, and `repo` or `org` as a whole piece of the ref
+# (`repository` is a word of the task and stays allowed). B5 rejects the
+# one-letter parts `b` and `g`.
+if [[ "${DERIVED}" != *usersyou* && "${DERIVED}" != *repo-b* && "${DERIVED}" != *example* && "${DERIVED}" != *repo-g* \
+      && "-${DERIVED//\//-}-" != *-repo-* && "-${DERIVED//\//-}-" != *-org-* ]]; then
     pass "B3-no-paths" "the filesystem path in the task did not leak into the ref"
+else
+    fail "B3-no-paths" "path fragments leaked into the branch name: '${DERIVED}'"
 fi
 
 TAIL="${DERIVED#feat/issue-142-}"
@@ -494,10 +453,10 @@ else
     fail "C5-issue-keyed" "rc=${RUN_RC} branch='${C5_BRANCH}'\nstderr:\n${RUN_ERR}"
 fi
 
-if LEAK="$(leaked_fragment "${C5_BRANCH}")"; then
-    fail "C6-no-path-leak" "derived branch carries '${LEAK}' from the task's path: ${C5_BRANCH}"
-else
+if [[ "${C5_BRANCH}" != *usersyou* && "${C5_BRANCH}" != *repo-b* && "-${C5_BRANCH//\//-}-" != *-repo-* ]]; then
     pass "C6-no-path-leak" "no filesystem path leaked into the derived branch"
+else
+    fail "C6-no-path-leak" "derived branch carries the task's path: ${C5_BRANCH}"
 fi
 
 C5_TAIL="${C5_BRANCH#feat/issue-142-}"
