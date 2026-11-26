@@ -10,10 +10,14 @@ The same setting works with `amplihack claude` and `amplihack copilot`.
 The launcher prints a notice on stderr. It adds no notice to model context.
 
 SessionStart, UserPromptSubmit and the workflow classification reminder still
-run their normal bookkeeping. Their context fields and capacity notices are
-removed from the response. Stop approves without running lock mode, power
-steering or reflection. Use this setting only when those Stop functions are
-unnecessary for the session.
+run their normal bookkeeping. Their `additionalContext` fields, top-level and
+under `hookSpecificOutput`, are removed from the response. A top-level
+`systemMessage` is kept: Claude Code shows it to the person and does not add
+it to the model's context, so in Claude Code capacity notices stay visible
+while their model context is left out. Under Codex no capacity notice is
+shown, with or without the setting. Stop approves without running lock
+mode, power steering or reflection. Use this setting only when those Stop
+functions are unnecessary for the session.
 
 PreToolUse command enforcement and the StopFailure limit-resume hook behave
 as usual. Other hooks, control decisions, diagnostics and failure responses
