@@ -225,8 +225,9 @@ pub(crate) fn contract_text(part: ContractPart) -> Option<&'static str> {
 
 /// The last two top-level `- ` items of `text`, to its end: the rules on
 /// waiting and on stopping processes. `None` when `text` has fewer than three
-/// top-level items, so a contract that has lost its shape injects nothing
-/// rather than router lines.
+/// top-level items, so a contract that has lost its shape never sends router
+/// lines: a launch with routing off then ends in an error when it writes the
+/// contract file (`contract_file.rs`), and the agent is not started.
 fn without_routing(text: &str) -> Option<&str> {
     let starts: Vec<usize> = text
         .match_indices('\n')
