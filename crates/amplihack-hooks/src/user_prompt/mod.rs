@@ -93,15 +93,20 @@ impl Hook for UserPromptSubmitHook {
         let mut context_parts: Vec<String> = Vec::new();
 
         // Load user preferences (including learned patterns detection).
-        let (prefs_context, has_learned_patterns) =
-            preferences::load_user_preferences_with_patterns(&dirs);
-        if let Some(ctx) = prefs_context
-            && !ctx.is_empty()
-        {
-            context_parts.push(ctx);
-        }
-        if has_learned_patterns {
-            context_parts.push("Has Learned Patterns: Yes".to_string());
+        // A recipe step already received the whole preferences file at
+        // session start, so it gets neither line here, whatever the setting
+        // says (#3199). Otherwise `text.prompt_preferences` decides (#3247).
+        if !crate::recipe_step::is_recipe_step() && crate::text_switches::prompt_preferences_on() {
+            let (prefs_context, has_learned_patterns) =
+                preferences::load_user_preferences_with_patterns(&dirs);
+            if let Some(ctx) = prefs_context
+                && !ctx.is_empty()
+            {
+                context_parts.push(ctx);
+            }
+            if has_learned_patterns {
+                context_parts.push("Has Learned Patterns: Yes".to_string());
+            }
         }
 
         // Inject memory context for referenced agents.

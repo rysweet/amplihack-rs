@@ -46,14 +46,23 @@ pub(super) fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
     None
 }
 
-pub(super) fn load_workflow_context(dirs: &ProjectDirs) -> String {
+/// The workflow text for session start. A nested recipe session or a session
+/// with an active workflow gets the text that tells it not to start another
+/// one, whatever `text.routing` says. Otherwise the Default Workflow section,
+/// which sends work to the orchestrator, is inserted only while
+/// `text.routing` is on (issue #3247).
+pub(super) fn load_workflow_context(dirs: &ProjectDirs) -> Option<String> {
     // Nested recipe sessions should not get top-level /dev rules to prevent
     // recursive workflow invocation (ported from Python PR #4142).
     if is_nested_recipe_session() || is_workflow_active(dirs) {
-        return build_suppressed_workflow_rules();
+        return Some(build_suppressed_workflow_rules());
     }
 
-    workflow::DEFAULT_WORKFLOW_SESSION_CONTEXT.to_string()
+    if !crate::text_switches::routing_on() {
+        return None;
+    }
+
+    Some(workflow::DEFAULT_WORKFLOW_SESSION_CONTEXT.to_string())
 }
 
 pub(super) fn check_version(dirs: &ProjectDirs) -> Option<String> {
@@ -246,7 +255,7 @@ mod tests {
         let previous = std::env::var_os("AMPLIHACK_ROOT");
         unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
 
-        let context = load_workflow_context(&ProjectDirs::new(project.path()));
+        let context = load_workflow_context(&ProjectDirs::new(project.path())).unwrap();
 
         match previous {
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
@@ -279,7 +288,7 @@ mod tests {
         let previous = std::env::var_os("AMPLIHACK_ROOT");
         unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
 
-        let context = load_workflow_context(&ProjectDirs::new(project.path()));
+        let context = load_workflow_context(&ProjectDirs::new(project.path())).unwrap();
 
         match previous {
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },

@@ -49,6 +49,7 @@ mod rule {
     pub(super) const HARNESS_NOTICE: &str = "harness_notice";
     pub(super) const PEER_MESSAGE: &str = "peer_message";
     pub(super) const SCHEDULED_PROMPT: &str = "scheduled_prompt";
+    pub(super) const ROUTING_TEXT_OFF: &str = "routing_text_off";
 }
 
 /// What the topic logic decided for an unmarked prompt, or for the body of a
@@ -112,6 +113,20 @@ impl Hook for WorkflowClassificationReminderHook {
             Some(reported) => reported,
             None => next_observed_turn(session_dir, &session_id),
         };
+
+        // Issue #3247: with `text.routing` off no prompt is routed. The
+        // setting decides before every other check, and is recorded as the
+        // rule, so the state file shows why nothing was inserted.
+        if !crate::text_switches::routing_on() {
+            record_outcome(
+                session_dir,
+                &session_id,
+                turn_count,
+                rule::ROUTING_TEXT_OFF,
+                false,
+            );
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
 
         // Issue #1328: a prompt written by amplihack for one of its own recipe
         // steps is never a human changing topic, and must never be routed.
@@ -259,9 +274,6 @@ fn context_output(text: &str) -> Value {
     })
 }
 
-/// Environment marker set by `recipe::run::execute` on every agent it spawns.
-pub(crate) const RECIPE_RUN_ID_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
-
 /// Was this prompt authored by amplihack for one of its own recipe steps?
 ///
 /// Issue #1328. The router used to be injected into machine-authored step prompts,
@@ -277,7 +289,7 @@ pub(crate) const RECIPE_RUN_ID_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
 /// 10,972 had zero turns and 11,986 had exactly one, so it was `true` in precisely the
 /// case that mattered.
 fn is_agent_authored_prompt() -> bool {
-    std::env::var_os(RECIPE_RUN_ID_ENV).is_some_and(|v| !v.is_empty())
+    crate::recipe_step::run_id_set()
 }
 
 fn extract_turn_count(extra: &Value) -> Option<u64> {
