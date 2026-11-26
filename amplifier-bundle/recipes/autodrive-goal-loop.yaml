@@ -8,9 +8,6 @@ description: |
   run is going. A goal supplies a goal tool and a goal text under goal
   contract v1. auto-drive-to-merge and auto-drive-light run it with the
   pull request goal. Specification: docs/reference/autodrive-goal-loop.md.
-  For the pull request goal, each turn shares its one CI observation with
-  every agent. Pending CI stays unresolved for the next turn, with no
-  watching, polling or extra status queries by agents or the wait action.
 version: "1.0.0"
 author: "Amplihack Team"
 tags:

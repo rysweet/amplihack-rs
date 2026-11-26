@@ -21,19 +21,7 @@ Guidance can narrow what you do. It never widens merge authority.
    policy could not be read and `strict_unreadable` says why: read it another
    way, or let GitHub's answer to a merge show it.
 4. A red check is a fix: read the failure, fix it, push.
-5. Use this turn's one shared CI observation in the reading. It is the CI
-   status allowance for the whole round, including review and remediation.
-   This policy overrides inherited instructions to follow CI to completion.
-   Do not run `gh pr checks --watch` or `gh run watch`, query CI status again,
-   poll `gh api` or `gh pr checks`, or add timed waits. Known failing logs may
-   be read for diagnosis without discovering fresh status. Pending CI stays
-   unresolved: finish other actionable work and the required outputs, then
-   choose `continue` so the next turn supplies the next observation. Do not
-   choose `wait`: that legacy action starts a CI watcher. Do not hand off for
-   pending CI or make an empty commit or push for it. Missing, unreadable,
-   unavailable or stale CI is unverified; never fetch replacement status.
-   Passing evidence covers only its head and execution. A commit, base merge
-   or rerun needs a later reading before readiness can be established.
+5. A pending check is a wait: choose `wait`. Do not hand off for it.
 6. Choose `review` for a head that has no review or has changed substantially.
    When a review left minor findings (the reading lists them under
    `reviews.crusty[].minor_findings`), treat them as

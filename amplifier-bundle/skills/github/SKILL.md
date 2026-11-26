@@ -145,68 +145,6 @@ gh repo list owner                # Organization repos
 
 ### 4. Workflow (GitHub Actions)
 
-#### Auto-drive round CI evidence
-
-The merge-ready round is now one turn of the
-[goal loop](../../recipes/autodrive-goal-loop.yaml); the
-[old recipe name](../../recipes/autodrive-merge-round.yaml) is an alias,
-with no prompts of its own. The goal loop and
-[Crusty round](../../recipes/autodrive-crusty-round.yaml) assess CI once from
-shared round evidence. Goal agents use the checks in their turn's reading.
-Other agents use the supplied `ci_evidence` snapshot where
-present, otherwise the available round evidence. This applies to assessment,
-review, remediation and next-action selection; each agent has no separate
-status-query allowance. No additional configuration or evidence field is needed.
-This policy overrides conflicting inherited skill guidance, including instructions
-to clear every blocker, address every concern or follow CI to completion.
-Agents may reread the shared observation without making another GitHub request.
-
-Agent steps must not run `gh pr checks --watch` or `gh run watch`, make
-additional CI status queries, poll `gh api` or `gh pr checks` in loops, or use
-timed waits. Existing evidence collection and round scheduling supply the next
-observation.
-
-Goal agents report pending CI and choose `continue` for the next turn's
-reading. They must not choose the legacy `wait` action, which starts a CI
-watcher. Waiting for an owner's answer still uses `wait-owner`.
-
-| Evidence | Agent behaviour |
-| -------- | --------------- |
-| Pending CI | Keep it unresolved, finish other actionable work and all required outputs, then end the step. The next existing round assesses it again. |
-| Established failure | Diagnose known failing logs and fix the cause using the existing evidence. Reading those logs does not permit fresh status discovery. |
-| Missing, unreadable, unavailable or stale CI | Report it as unverified; it cannot establish merge readiness. Never query GitHub for replacement status. |
-| Passing CI | Use it only for the head and execution it covers, alongside every other merge gate. A commit, base merge or rerun needs evidence for the resulting head or execution. |
-
-Instructions to clear every blocker or address every concern defer pending CI
-to the next existing round. Finish other actionable fixes and their required
-commits and pushes before completing remediation. Reporting pending CI alone
-requires neither a commit nor a push. Required verdicts, remediation reports and
-decision output still apply. Next-action selection writes only its designated decision through
-the existing Rust writer; agents do not alter round records or evidence.
-
-Crusty's `CLEAN` still means no outstanding review concerns. `MINOR_ONLY`
-still requires its existing follow-up recording. Both retain their review
-completion rules; neither certifies green CI or establishes merge readiness.
-Pending or failed CI never counts as passing CI.
-
-[Workflow closure](../../recipes/workflow-design.yaml) includes
-`pre-commit run --all-files`, targeted tests, PR creation and concrete
-merge-readiness evidence. Pending or unavailable CI remains unresolved;
-closure never requires watching CI. See the
-[auto-drive reference](../../../docs/reference/auto-drive-to-merge.md) for
-the review and merge gates.
-
-For example, when the shared snapshot reports `PENDING`, the agent reports
-that CI is pending, retains the unresolved merge-readiness condition, emits
-the required step output and ends the step. It makes no status query and
-creates no empty commit to keep the round moving.
-
-#### Workflow commands
-
-These generic discovery examples grant auto-drive round agents no additional
-CI status queries, even when shared evidence is missing, unreadable, unavailable
-or stale. Known failing-run logs may be read for diagnosis without status polling.
-
 ```bash
 # List workflows
 gh workflow list
@@ -234,6 +172,12 @@ gh run cancel 123456
 gh run rerun 123456
 gh run rerun 123456 --failed      # Rerun only failed jobs
 ```
+
+#### Auto-drive round CI evidence
+
+Auto-drive round agents read CI from the round's evidence. They do not watch
+or poll CI and make no extra status query. When CI is pending they report it
+and end the step.
 
 ### 5. Search
 
@@ -341,10 +285,6 @@ gh pr review 456 --approve --body "LGTM!"
 ```
 
 ### CI Failure Investigation
-
-Auto-drive agents diagnose failures already identified in round evidence.
-The discovery and rerun commands below do not grant them another CI status
-query; the round CI policy above still applies after a fix or rerun.
 
 ```bash
 # List failed runs
