@@ -21,7 +21,8 @@ pub(super) mod target_seen;
 /// What one probe showed, reduced to what the rule needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Reading {
-    /// Percent used in the session and weekly (all models) windows.
+    /// Percent used in the session window, and the largest percent used of
+    /// the weekly windows (all models and each model, issue #3284).
     Measured { session: f64, week: f64 },
     /// The session or weekly limit is reached. The fields keep the percent
     /// used as read: the window that ran out is never below 100, the other
@@ -39,28 +40,34 @@ impl Reading {
     /// D1: a missing session window is 0% used; a missing week window, or
     /// any state other than ok or exhausted, is a failed probe. An exhausted
     /// report keeps both figures, with the window that ran out raised to 100.
+    ///
+    /// Issue #3284: the week figure is the largest of the all-models week and
+    /// every per-model week, and a model week at 100 or more is an exhausted
+    /// week, so a login whose week for one model is used up has no room.
     pub fn from_report(r: &UsageReport) -> Self {
         let used = |w: &Option<UsageWindow>| w.as_ref().map(|w| w.used_percentage);
-        let full = |w: &Option<UsageWindow>| {
-            Some(
-                used(w)
-                    .filter(|u| u.is_finite())
-                    .map_or(100.0, |u| u.max(100.0)),
-            )
-        };
+        let models = r.week_models.iter().map(|w| w.used_percentage);
+        let week = used(&r.week_all).map(|w| models.clone().fold(w, f64::max));
+        let model_full = models.clone().any(|u| u >= 100.0);
+        let full =
+            |w: Option<f64>| Some(w.filter(|u| u.is_finite()).map_or(100.0, |u| u.max(100.0)));
         match r.state {
             UsageState::SessionExhausted => Self::Exhausted {
-                session: full(&r.session),
-                week: used(&r.week_all),
+                session: full(used(&r.session)),
+                week,
             },
             UsageState::WeeklyExhausted => Self::Exhausted {
                 session: used(&r.session),
-                week: full(&r.week_all),
+                week: full(week),
             },
-            UsageState::Ok => match &r.week_all {
+            UsageState::Ok => match week {
+                Some(week) if model_full => Self::Exhausted {
+                    session: used(&r.session),
+                    week: full(Some(week)),
+                },
                 Some(week) => Self::Measured {
                     session: r.session.as_ref().map_or(0.0, |w| w.used_percentage),
-                    week: week.used_percentage,
+                    week,
                 },
                 None => Self::Failed,
             },
