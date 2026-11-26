@@ -19,175 +19,155 @@ triggers:
 ## Usage
 
 ```bash
-/amplihack:reflect                     # Run reflection on last session
-/amplihack:reflect <session_id>        # Run reflection on specific session
-/amplihack:reflect enable              # Enable automatic reflection
-/amplihack:reflect disable             # Disable automatic reflection
-/amplihack:reflect config              # Show current configuration
-/amplihack:reflect config <key> <value> # Update configuration
+/amplihack:reflect analyze --session session-id --messages messages.json
+/amplihack:reflect state --session session-id
+/amplihack:reflect clear --session session-id
 ```
 
-Legacy aliases (deprecated - use /amplihack:reflect):
-
-- `/reflect [session|last|force|status]`
+Run the corresponding `amplihack reflect` subcommand with the supplied arguments.
 
 ## Purpose
 
-AI-powered session analysis for continuous improvement. Identifies patterns in user interactions and automatically creates GitHub issues for improvements.
+Identify patterns in recent assistant responses and inspect the saved analysis
+state for a session. Automatic Stop-hook reflection provides separate,
+AI-generated session feedback.
 
 ## How It Works
 
-1. **Session Analysis**: AI analyzes conversation patterns
-2. **Pattern Detection**: Identifies improvement opportunities
-3. **Issue Creation**: Automatically creates GitHub issues
-4. **Workflow Delegation**: Triggers UltraThink for fixes
+1. **Session Analysis**: Manual analysis reads a supplied messages JSON file
+2. **Pattern Detection**: Keyword heuristics inspect the two most recent assistant responses
+3. **State Storage**: Analysis saves the session state and returns a report
 
 ## Environment Control
 
-- **REFLECTION_ENABLED** (default: false)
-  - Set to `false` to disable automatic reflection
-  - Use `/reflect force` to override
+The Stop hook reads these variables for automatic reflection:
 
-## Integration with /improve
+- **AMPLIHACK_SKIP_REFLECTION**: Any non-empty value disables automatic reflection,
+  including `0` or `false`.
+- **AMPLIHACK_ENABLE_REFLECTION**: `1`, `true` or `yes` (case-insensitive) enables
+  reflection unless the skip variable is non-empty or the reflection lock exists.
+  Other values fall back to the configuration file, so `false` does not override
+  an enabled configuration.
 
-The reflect command complements `/improve`:
+These variables do not control manual `amplihack reflect` commands.
 
-- **`/reflect`** - Analyzes sessions for improvement opportunities
-- **`/improve`** - Implements specific improvements
+## What Gets Analysed
 
-When reflection detects high-priority patterns, it automatically:
+### Manual Analysis
 
-1. Creates GitHub issues with detailed context
-2. Delegates to improvement-workflow agent
-3. Links to resulting PRs when created
+- Error indicators: `error` or `failed`
+- Timeout indicators: `timeout` or `timed out`
+- Repeated retries: two or more occurrences of `tried`
+- Optional error content supplied with `--error` for contextual error analysis
 
-## What Gets Analyzed
+### Stop-Hook Analysis
 
-### User Patterns
-
-- Frustration indicators (repeated attempts, confusion)
-- Error patterns (recurring failures, bugs)
-- Workflow inefficiencies (repetitive tasks)
-- Success patterns (what's working well)
-
-### System Patterns
-
-- Tool usage frequency
-- Error rates and types
-- Performance bottlenecks
-- Missing capabilities
+- Session conversation from the transcript
+- Power-steering redirect history, when available
+- Task feedback, workflow adherence and learning opportunities
 
 ## Output Format
 
-```
-============================================================
-🤖 AI REFLECTION ANALYSIS
-============================================================
-📊 Session stats: X messages, Y tool uses, Z errors
-✅ Found N improvement opportunities:
-   1. [high] error_handling: Improve error feedback
-   2. [medium] workflow: Streamline repetitive actions
+Manual commands accept `--format text` (the default) or `--format json`.
+`text` prints compact JSON; `json` prints indented JSON.
 
-📎 Created Issue: #123 (link)
-🔄 UltraThink will create PR for automated fix
-============================================================
-```
+- `analyze` returns `session_id`, `state`, `lightweight`, `error_analysis` and `locked`.
+- `state` returns `session_id`, `state_file` and `data`.
+- `clear` returns `session_id`, `cleared` and `state_file`.
+
+An analysis with detected patterns or contextual error analysis saves the state
+as `awaiting_approval`; otherwise it saves `completed`. If another manual
+reflection is in progress, the report has `locked: true` and analysis is skipped.
 
 ## Manual Invocation
 
-```markdown
-# Analyze current session
+```bash
+amplihack reflect analyze --session session-id --messages messages.json
+amplihack reflect state --session session-id --format json
+amplihack reflect clear --session session-id
+```
 
-/reflect
+- `analyze` requires `--session` and `--messages`. It also accepts `--error`,
+  `--runtime-dir` and `--format`.
+- `state` and `clear` require `--session`. They also accept `--runtime-dir` and
+  `--format`.
+- `--runtime-dir` defaults to `~/.amplihack/runtime` for all three commands.
+  If the home directory is unavailable, the default is `.amplihack/runtime`
+  relative to the working directory.
+- `clear` resets the selected session's analysis state to `idle`.
 
-# Analyze last completed session
+The messages file must contain a JSON array. Each object requires a `role`
+(`user`, `assistant`, `system` or `tool`) and a string `content`:
 
-/reflect last
-
-# Force analysis (ignore REFLECTION_ENABLED)
-
-/reflect force
-
-# Check status
-
-/reflect status
+```json
+[
+  {"role": "user", "content": "Check the build."},
+  {"role": "assistant", "content": "The build failed with an error."}
+]
 ```
 
 ## Automatic Invocation
 
-Reflection runs automatically at session end if:
+The Stop hook considers reflection after lock mode and power steering. Its
+reflection settings are checked in this order:
 
-- Reflection is explicitly enabled (disabled by default - opt-in)
-- Session has meaningful content (>10 messages)
-- Patterns meet automation threshold
+1. A non-empty `AMPLIHACK_SKIP_REFLECTION` disables reflection.
+2. An existing `.claude/runtime/reflection/.reflection_lock` disables reflection.
+3. `AMPLIHACK_ENABLE_REFLECTION` set to `1`, `true` or `yes` enables reflection.
+4. Otherwise, `.claude/tools/amplihack/.reflection_config` must contain
+   `"enabled": true`. Missing, invalid or disabled configuration leaves reflection
+   disabled by default.
 
-**Note**: Reflection is now disabled by default. To enable automatic reflection, use `/amplihack:reflect enable` or edit the config file.
+When enabled, the hook invokes the agent CLI for session feedback. It saves
+`FEEDBACK_SUMMARY.md` in the session's logs directory, and timestamped feedback
+and `current_findings.md` in the session's reflection directory. The hook presents
+feedback before allowing the session to end. A presentation marker prevents it
+from presenting the same feedback again on the next Stop call.
 
-## Customization
+## Customisation
 
 ### Disable Automatic Reflection
 
 ```bash
-export REFLECTION_ENABLED=false
+export AMPLIHACK_SKIP_REFLECTION=1
 ```
 
-### Adjust Thresholds
+### Enable Automatic Reflection
 
-Patterns trigger automation when:
+Ensure the skip variable is empty or unset and the reflection lock is absent, then:
 
-- 1+ high priority issues
-- 2+ medium priority issues
-- Manual force flag
+```bash
+export AMPLIHACK_ENABLE_REFLECTION=true
+```
 
 ## Examples
 
 ### Session Analysis
 
-```
-/reflect
-> 🔍 Analyzing 150 session messages...
-> ✅ Found 2 high priority improvements
-> 📎 Created Issue #123: Improve error handling
-> 🔄 UltraThink creating PR...
+```bash
+amplihack reflect analyze --session session-id --messages messages.json \
+  --error "File not found: config.json" --format json
 ```
 
 ### Check Status
 
-```
-/reflect status
-> Reflection: ENABLED
-> Last run: 10 minutes ago
-> Issues created today: 3
-> Pending PRs: 1
+```bash
+amplihack reflect state --session session-id --runtime-dir .reflection-runtime
 ```
 
-### Force Analysis
+### Reset Analysis State
 
-```
-/reflect force
-> ⚠️ Overriding REFLECTION_ENABLED=false
-> 🔍 Analyzing session...
+```bash
+amplihack reflect clear --session session-id --runtime-dir .reflection-runtime
 ```
 
 ## Integration Points
 
 ### With Stop Hook
 
-- Automatically runs on session end
-- Saves analysis to `~/.amplihack/.claude/runtime/analysis/`
-- Respects environment settings
-
-### With UltraThink
-
-- Delegates implementation to workflow
-- Follows the `default-workflow` skill/recipe process
-- Creates PRs automatically
-
-### With GitHub
-
-- Creates detailed issues
-- Adds appropriate labels
-- Links to session context
+- Runs when automatic reflection is enabled and earlier Stop checks allow it
+- Saves feedback in the session's state directories
+- Respects the environment settings and configuration above
 
 ## Implementation Instructions
 
@@ -195,114 +175,34 @@ When the user invokes `/amplihack:reflect`, follow these steps:
 
 ### 1. Parse Command Arguments
 
-Extract the command arguments to determine which operation to perform:
-
-- No args or session ID → Run reflection analysis
-- `enable` → Enable automatic reflection
-- `disable` → Disable automatic reflection
-- `config` → Show or update configuration
+Select `analyze`, `state` or `clear`. Obtain the required session ID and, for
+analysis, the path to a messages JSON file. Do not infer a last session or messages
+file when none was supplied.
 
 ### 2. For Reflection Analysis
 
-Use the `session_reflection.py` orchestrator:
+Run `amplihack reflect analyze` with `--session`, `--messages` and any supplied
+optional inputs. Present the returned report and saved analysis state.
 
-```rust
-from .claude.tools.amplihack.hooks.session_reflection import ReflectionOrchestrator
+### 3. For State Inspection or Reset
 
-orchestrator = ReflectionOrchestrator()
-
-# Find last session or use provided session_id
-session_id = args[0] if args else find_last_session()
-
-# Run complete reflection workflow
-results = orchestrator.run_reflection(session_id, auto_create_issues=False)
-```
-
-The orchestrator will:
-
-1. Analyze the session using SessionReflector
-2. Present findings to the user
-3. Get approval for issue creation
-4. Create approved GitHub issues
-5. Save reflection summary
-
-### 3. For Enable/Disable
-
-Update the `.reflection_config` file:
-
-```rust
-from pathlib import Path
-import json
-
-config_path = Path(".claude/tools/amplihack/.reflection_config")
-with open(config_path) as f:
-    config = json.load(f)
-
-config["enabled"] = True  # or False for disable
-
-with open(config_path, "w") as f:
-    json.dump(config, f, indent=2)
-
-print(f"✓ Reflection {'enabled' if config['enabled'] else 'disabled'}")
-```
-
-### 4. For Config Show
-
-Read and display the current configuration:
-
-```rust
-config_path = Path(".claude/tools/amplihack/.reflection_config")
-with open(config_path) as f:
-    config = json.load(f)
-
-print("Current Reflection Configuration:")
-print(json.dumps(config, indent=2))
-```
-
-### 5. For Config Update
-
-Update a specific configuration key:
-
-```rust
-key = args[1]  # e.g., "depth"
-value = args[2]  # e.g., "comprehensive"
-
-config_path = Path(".claude/tools/amplihack/.reflection_config")
-with open(config_path) as f:
-    config = json.load(f)
-
-# Parse value based on type
-if value.lower() in ["true", "false"]:
-    value = value.lower() == "true"
-elif value.isdigit():
-    value = int(value)
-
-config[key] = value
-
-with open(config_path, "w") as f:
-    json.dump(config, f, indent=2)
-
-print(f"✓ Updated {key} = {value}")
-```
+Run `amplihack reflect state` to inspect the selected session's saved state, or
+`amplihack reflect clear` to reset it. Pass the same `--runtime-dir` used for
+analysis when one was supplied.
 
 ## Configuration File
 
-Location: `~/.amplihack/.claude/tools/amplihack/.reflection_config`
+Automatic Stop-hook reflection reads the project file
+`.claude/tools/amplihack/.reflection_config`:
 
 ```json
 {
-  "enabled": false,
-  "depth": "quick",
-  "auto_file_issues": false,
-  "min_patterns_for_notification": 1,
-  "issue_labels": ["reflection", "improvement"]
+  "enabled": false
 }
 ```
 
 ## Remember
 
-- Reflection identifies, /improve implements
-- High visibility - no silent failures
-- Links to issues and PRs provided
-- Opt-in by user choice (disabled by default)
-- Non-blocking - never slows down session end
+- Manual analysis and automatic Stop-hook feedback are separate operations
+- Use the returned report to decide what improvements to make
+- Automatic reflection is opt-in and disabled by default
