@@ -3005,7 +3005,7 @@ unknown              2 profiles (no valid reading; excluded from all figures)
 | `weekly headroom` | The weekly capacity left across all logins with a [valid reading](#valid-and-unknown-readings), in login-weeks: one login-week is one login's whole weekly allowance. `X login-weeks of N (P%)`, where `N` is the number of valid readings, `X` is the sum of `(100 − week%) / 100` over them, and `P` is `X / N` as a percentage. Followed by `   [weighted: X' of T]` only when some login with a valid reading has a [weight](#capacity-weights) other than `1.0`; a weight for a profile that is not among them, such as a deleted one, does not count. With no valid reading: `unknown (no valid readings)`. |
 | `usable now` | `U of N logins (session < S% and weekly < 100%)`: how many logins with a valid reading can take work now, and the session threshold `S` in force. See [Usable now](#usable-now). |
 | `next session reset` | The earliest session reset among logins stopped only by their session limit, and every such login whose reset falls within 60 seconds of it: `<time>  (<names>: +K usable)`, where `K` is the number of names. `none` when there is no such login. See [Next session reset](#next-session-reset). |
-| `runway` | How long the weekly headroom lasts at the rate it was used over the last six hours: `~H h at the last 6 h rate (R login-weeks/h)`, or `unknown`. The `6 h` is fixed text; the rate is per hour whatever the length of history used, needs at least 4.5 h of history, and is weighted. See [Rate and runway](#rate-and-runway). |
+| `runway` | How long the weekly headroom lasts at the rate it was used over the last six hours, with the weekly resets of the next 24 hours added back: `~H h at the last 6 h rate (R login-weeks/h)`, `beyond 24 h at the last 6 h rate (R login-weeks/h; lowest L login-weeks, with the resets below)` when the headroom does not reach zero within 24 hours, or `unknown`. The `6 h` is fixed text; the rate is per hour whatever the length of history used, needs at least 4.5 h of history, and is weighted. See [Rate and runway](#rate-and-runway). |
 | `resets in next 24 h` | Weekly resets due in the next 24 hours, each `<time> <name> +<login-weeks restored>`, soonest first, separated by `; `. `none` when there are none. |
 | `unknown` | `M profiles (no valid reading; excluded from all figures)`: the number of subscription profiles without a valid reading, `1 profile (…)` for one and `0 profiles (…)` for none. Their names are in the table and in [`summary.unknown`](#summary-json). They are left out of every other line. |
 
@@ -3113,20 +3113,23 @@ It is read from the [usage history](#usage-history):
    usage` could not read at the start, or one that is unknown now, is left
    out. Rotator entries between the two ends are used for the logins they
    read; a login missing from one of them only skips that step.
-4. For each login, the use is its net rise in week percentage over the
-   window. Its readings are taken in time order: the start, each later
+4. For each login, the use is the sum of its rises in week percentage over
+   the window. Its readings are taken in time order: the start, each later
    entry that read it, and this run. They are split into weeks at each
    weekly reset. A reset lies between two consecutive readings when the
    earlier reading's `w_reset` is at or before the later reading's time, or
-   when the week percentage fell by more than 10 points. A fall of 10 points
-   or less is not a reset: within a week the figure only rises, so such a
-   fall comes from a [stale reading](#stale-readings) and adds nothing. A
-   fall of more than 10 points is a reset even while `w_reset` is still in
-   the future, because a week can reset early. In each week the use is the
-   highest percentage read in that week minus the percentage the week
-   started at, or zero if that is negative. The first week starts at the
-   login's percentage at the start and each later week starts at `0`. The
-   login's use is the sum over its weeks. A reading whose own `w_reset` is
+   when the later reading's `w_reset` is more than one hour after the
+   earlier one's, which is how a week that reset early shows. A fall in the
+   week percentage is never a reset on its own, and when either reading
+   has no `w_reset` nothing is inferred from a fall. Each week keeps a
+   level: the login's percentage at the start for the first week, and `0`
+   for each later week. A reading above the level is use and raises the
+   level. A reading below the level is a [stale reading](#stale-readings)
+   when a later reading in the same week comes back to within 10 points of
+   the level; it is skipped and adds nothing. Otherwise it is a fall that
+   stays: the level drops to the new figure and nothing is added, and later
+   rises count from there. A low last reading has nothing after it, so it
+   lowers the level and adds nothing. A reading whose own `w_reset` is
    at or before the time it was taken belongs to a week that has ended and
    is not used, and neither is this run's reading of a login when it is a
    stale passive reading by the rule under [Stale readings](#stale-readings).
@@ -3138,8 +3141,12 @@ It is read from the [usage history](#usage-history):
 For example, on 5 November 2026 one login read 34% at 16:52 and 50% at
 18:55. In between, a stale status-line figure of 38% reappeared five times
 between rising ones (40, 38, 40, 41, 38, 42, and so on), and once 46
-appeared between 48 and 49. Each fall is 5 points or less, so none is a
-reset, and the login's use over those two hours is 50 − 34 = 16 points.
+appeared between 48 and 49. Each low figure is reversed by the next
+reading, so none is a reset or use, and the login's use over those two
+hours is 50 − 34 = 16 points. A login that reads 43, 29, 43, 29 and 43 with
+the same `w_reset` uses nothing. One that reads 60, 74, 30, 30 and 34 with
+the same `w_reset` uses 14 + 4 = 18 points: the fall to 30 stays, so it is
+not use, and the rise after it is.
 Release 1.2.97 counted every fall as a reset and each fall's whole lower
 figure as use: 269 points. Had the login read 90% at the start, reached
 100%, reset to 0% and then read 12% now, its use would be
@@ -3152,17 +3159,29 @@ points over those 5.99 hours, a rate of `0.099` and a runway of `36.5`
 hours. Release 1.2.97 counted 289 points; most came from falls of 1 to 3
 points counted as resets.
 
-The runway is the weighted headroom of this run divided by the rate. When the
-rate is zero, nothing was used over the window and the runway is `unknown`;
-JSON still gives the rate. Weights are `1.0` unless set, in which case the
-weighted and unweighted figures are the same.
+The plain runway (`runway_hours` in JSON) is the weighted headroom of this
+run divided by the rate. When the rate is zero, nothing was used over the
+window and the runway is `unknown`; JSON still gives the rate. Weights are
+`1.0` unless set, in which case the weighted and unweighted figures are the
+same.
+
+The printed runway also allows for the weekly resets listed on the `resets
+in next 24 h` line. With none listed it is the plain runway. Otherwise the
+weighted headroom is taken down at the rate from now to each reset in turn
+and checked before that reset's login-weeks are added back; after the last
+one it runs on to 24 hours. If the headroom reaches zero on the way, the
+runway is the time it does, `~H h`. If it does not, the line says `beyond
+24 h` with the lowest weighted headroom on the way, because resets after 24
+hours are not known. For example, a weighted headroom of 4.5 login-weeks at
+0.35 an hour lasts about 13 hours on its own, but with resets of 1.0 at +4.5
+h, +6.5 h and +9.5 h and 2.0 at +16.5 h it lasts beyond 24 hours, at its
+lowest 1.1 login-weeks at the 24-hour mark.
 
 History written before stale readings were filtered (see
 [Stale readings](#stale-readings)) may still hold them, and they affect the
-rate until they are more than six hours old. A fall of 10 points or less
-has no effect. A stale reading at the start shifts that login's use by the
-difference between the stale and the true figure, and a stale fall of more
-than 10 points counts as a reset.
+rate until they are more than six hours old. A low reading that a later
+one reverses has no effect. A stale reading at the start shifts that
+login's use by the difference between the stale and the true figure.
 
 `amplihack profile usage --help` states the six-hour window, the
 four-and-a-half-hour minimum and the weighting.
@@ -3254,6 +3273,9 @@ shown and no Codex accounts:
     "next_session_reset": { "at": "2026-10-30T18:00:00Z", "profiles": ["night", "team"] },
     "rate_login_weeks_per_hour": 0.23,
     "runway_hours": 9.0,
+    "runway_with_renewals_hours": 9.0,
+    "runway_beyond_24h": false,
+    "lowest_room_login_weeks": 0.0,
     "weekly_resets_next_24h": [
       { "at": "2026-10-31T02:00:00Z", "profile": "night", "restores": 0.85 },
       { "at": "2026-10-31T09:00:00Z", "profile": "work", "restores": 0.3 }
@@ -3275,8 +3297,11 @@ shown and no Codex accounts:
 | `summary.valid_readings` | integer | `N`, the logins with a [valid reading](#valid-and-unknown-readings). |
 | `summary.unknown` | array of strings | Subscription profiles without a valid reading, by name. |
 | `summary.next_session_reset` | object or `null` | `{"at": <time>, "profiles": [<names>]}`, as on the [text line](#next-session-reset); `null` for `none`. |
-| `summary.rate_login_weeks_per_hour` | number or `null` | Weighted [rate](#rate-and-runway), three decimal places: the net rise of each login's week percentage over the last 6 h, counted from the oldest entry in that window that covers every login valid now (step 1), times its weight, divided by 100 and by the hours covered. `null` when that entry is less than 4.5 h old, when there is none, or when no login has a valid reading at both ends. `0.0` or above. Unweighted when every weight is `1.0`. |
-| `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place; `null` when the rate is `null` or zero. |
+| `summary.rate_login_weeks_per_hour` | number or `null` | Weighted [rate](#rate-and-runway), three decimal places: the rises of each login's week percentage within each week over the last 6 h, counted from the oldest entry in that window that covers every login valid now (step 1), times its weight, divided by 100 and by the hours covered. `null` when that entry is less than 4.5 h old, when there is none, or when no login has a valid reading at both ends. `0.0` or above. Unweighted when every weight is `1.0`. |
+| `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place, with no weekly reset added back; `null` when the rate is `null` or zero. |
+| `summary.runway_with_renewals_hours` | number or `null` | Hours until the weighted headroom reaches zero with the resets of `weekly_resets_next_24h` added back at their times (see [Rate and runway](#rate-and-runway)), one decimal place. Equal to `runway_hours` when no reset is listed. `null` when the rate is `null` or zero, or when the headroom lasts beyond 24 hours. |
+| `summary.runway_beyond_24h` | boolean | `true` when some reset is listed and the weighted headroom does not reach zero within 24 hours at the rate. `false` otherwise, and when the rate is `null` or zero. |
+| `summary.lowest_room_login_weeks` | number or `null` | The lowest weighted headroom in login-weeks over the next 24 hours at the rate, with the listed resets added back, two decimal places; `0.0` when it reaches zero. `null` when the rate is `null` or zero. |
 | `summary.weekly_resets_next_24h` | array | Valid logins whose weekly reset is after now and no more than 24 hours away, and whose weighted `restores` (`weight × week% / 100`, two decimal places) is above `0`, soonest first, then by name. Each is `{"at", "profile", "restores"}`. |
 | `codex` | array | The [Codex JSON rows](#codex-json-rows), unchanged; `[]` with profile names given. Codex rows never count towards `summary`. |
 
@@ -11035,9 +11060,14 @@ follows `last cycle:`:
 capacity: headroom X login-weeks of N (P%), usable U of N logins[, M unknown], runway ~H h (as of <time>, <age> ago[, <writer>])
 ```
 
-When the newest entry is a rotator entry that left logins out, the runway
-reads `runway ~H h from the <time> entry (this cycle left out M logins)` or
-`runway unknown (this cycle left out M logins)` instead.
+The runway allows for the weekly resets of the next 24 hours, as on the
+summary's `runway` line (see [Rate and runway](#rate-and-runway)). When the
+headroom lasts the 24 hours it reads `runway beyond 24 h (lowest L
+login-weeks)` in place of `~H h`. When the newest entry is a rotator entry
+that left logins out, the runway reads `runway ~H h from the <time> entry
+(this cycle left out M logins)` or `runway unknown (this cycle left out M
+logins)` instead; that entry's runway uses the resets listed in it,
+counted from its own time.
 
 The newest valid entry stands in for this run's readings, and its `at` for
 now: `N` is the number of profiles in that entry, the headroom and usable
