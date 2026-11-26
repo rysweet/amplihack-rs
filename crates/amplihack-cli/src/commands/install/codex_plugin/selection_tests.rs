@@ -132,7 +132,7 @@ fn full_package_retains_commands_personas_and_analyst_exclusions() {
             .iter()
             .filter(|name| name.starts_with("amplihack-persona-"))
             .count(),
-        41
+        38
     );
     assert!(entries.len() > 100);
     assert!(!root.join("skills/economist-analyst").exists());

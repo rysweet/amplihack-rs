@@ -265,12 +265,13 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     // #3291 removes five skills, five commands and two agent files, and the
     // floor is the count measured after that. #3343 folds two near-duplicate
     // skills into the skills they duplicate, and the floor is the count
-    // measured after that.
+    // measured after that. #3345 removes three agent files, which lowers it
+    // by three.
     let names = fs::read_dir(skills)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    assert!(names.len() >= 169, "{} packaged skills", names.len());
+    assert!(names.len() >= 166, "{} packaged skills", names.len());
     assert!(
         names
             .iter()
