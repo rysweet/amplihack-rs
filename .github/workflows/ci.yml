@@ -357,6 +357,11 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
+      - name: Recipes — worktree setup never pushes or runs pre-push hooks (issue #1930)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-1930-setup-does-not-push.sh
       - name: Recipes — re-run never destroys an existing worktree's work (issue #1565)
         shell: bash
         env:
