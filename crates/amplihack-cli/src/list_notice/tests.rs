@@ -194,3 +194,34 @@ fn nested_installation_collects_all_tools_before_writing() {
     drop(outer);
     assert!(staged.join("install").join(NOTICE).is_file());
 }
+
+#[test]
+fn existing_regular_notice_is_kept_as_another_writers_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(NOTICE);
+    fs::write(&path, "first writer").unwrap();
+    assert!(!save_notice(dir.path(), &path, "second writer").unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "first writer");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn folder_at_notice_destination_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(NOTICE);
+    fs::create_dir(&path).unwrap();
+    assert!(save_notice(dir.path(), &path, "text").is_err());
+    assert!(path.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_at_notice_destination_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target");
+    fs::write(&target, "target").unwrap();
+    let path = dir.path().join(NOTICE);
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    assert!(save_notice(dir.path(), &path, "text").is_err());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "target");
+}
