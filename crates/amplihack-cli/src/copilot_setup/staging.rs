@@ -541,20 +541,7 @@ mod tests {
     fn legacy_cli_skill_cleanup_rejects_unsupported_file_type() {
         use std::os::unix::net::UnixListener;
 
-        // A Unix socket path must fit in `sun_path` (108 bytes on Linux), and
-        // the socket below sits about 45 bytes under the temporary folder. A
-        // long TMPDIR (a run's own scratch folder) would push it past that,
-        // so the folder is made under /tmp when TMPDIR is too long.
-        let base = std::env::temp_dir();
-        let base = if base.as_os_str().len() > 50 {
-            std::path::PathBuf::from("/tmp")
-        } else {
-            base
-        };
-        let temp = tempfile::Builder::new()
-            .prefix("ah-")
-            .tempdir_in(&base)
-            .unwrap();
+        let temp = tempfile::Builder::new().prefix("ah-").tempdir().unwrap();
         let copilot_home = temp.path().join(".copilot");
         let legacy_parent = copilot_home.join("skills");
         fs::create_dir_all(&legacy_parent).unwrap();
