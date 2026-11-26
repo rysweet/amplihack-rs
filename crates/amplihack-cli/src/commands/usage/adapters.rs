@@ -20,7 +20,7 @@ pub(super) enum Event {
     /// be counted. It adds no response, attempt or tokens, but its owner's
     /// context input is unknown for `reason`, never a partial sum that looks
     /// exact. Every parsed record that is diagnosed and then not counted emits
-    /// this (checked in `parse`), so its native owner is marked without a list
+    /// this (checked by the tests), so its native owner is marked without a list
     /// of diagnostic codes. Lines that cannot be read or parsed as JSON never
     /// reach an adapter and have no native owner; the aggregator marks the
     /// session that lists them.
@@ -90,16 +90,6 @@ pub(super) fn parse(provider: &Provider, v: &Value) -> Parsed {
     {
         p.diagnostics.push("missing_timestamp");
     }
-    // A diagnosed record that reaches the aggregator as no event at all would
-    // drop out of context validity unseen; it must be an `UnknownInput`.
-    debug_assert!(
-        matches!(provider, Provider::Unsupported(_))
-            || p.diagnostics.is_empty()
-            || p.event.is_some()
-            || p.snapshot.is_some(),
-        "a diagnosed record produced no event: {:?}",
-        p.diagnostics
-    );
     p
 }
 

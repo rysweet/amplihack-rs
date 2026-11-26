@@ -4,6 +4,414 @@ use crate::commands::pr::{GhOutput, GhRunner};
 use serde_json::{Value, json};
 use std::{cell::RefCell, path::PathBuf};
 
+mod parser_invariants {
+    use super::*;
+
+    fn diagnosed(provider: &Provider, record: &Value, code: &str) {
+        let parsed = adapters::parse(provider, record);
+        assert_eq!(parsed.diagnostics, vec![code]);
+        assert!(
+            parsed.event.is_some() || parsed.snapshot.is_some(),
+            "{code}: diagnosed record has no event or snapshot"
+        );
+    }
+
+    fn assistant(usage: Value, id: Value, timestamp: Value, client_generated: bool) -> Value {
+        let mut record = json!({
+            "type": "assistant",
+            "sessionId": "s",
+            "message": {"model": "model", "usage": usage},
+        });
+        record["message"]["id"] = id;
+        if !timestamp.is_null() {
+            record["timestamp"] = timestamp;
+        }
+        if client_generated {
+            record["message"]["model"] = json!("<synthetic>");
+            record["isApiErrorMessage"] = json!(true);
+        }
+        record
+    }
+
+    fn valid_usage() -> Value {
+        json!({
+            "input_tokens": 10,
+            "cache_read_input_tokens": 2,
+            "cache_creation_input_tokens": 3,
+            "output_tokens": 4,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 1,
+                "ephemeral_1h_input_tokens": 2,
+            },
+        })
+    }
+
+    #[test]
+    fn diagnosed_claude_records_always_produce_an_event_or_snapshot() {
+        let usage = valid_usage();
+        let mut client_generated = assistant(
+            usage.clone(),
+            json!("msg"),
+            json!("2026-01-01T00:00:00Z"),
+            true,
+        );
+        client_generated["message"]["usage"]["input_tokens"] = json!(1);
+        diagnosed(
+            &Provider::Claude,
+            &client_generated,
+            "usage_on_client_generated_record",
+        );
+
+        diagnosed(
+            &Provider::Claude,
+            &assistant(
+                Value::Null,
+                json!("msg"),
+                json!("2026-01-01T00:00:00Z"),
+                false,
+            ),
+            "missing_usage",
+        );
+
+        diagnosed(
+            &Provider::Claude,
+            &assistant(
+                usage.clone(),
+                Value::Null,
+                json!("2026-01-01T00:00:00Z"),
+                false,
+            ),
+            "missing_message_identity",
+        );
+
+        let mut invalid_tokens = assistant(
+            usage.clone(),
+            json!("msg"),
+            json!("2026-01-01T00:00:00Z"),
+            false,
+        );
+        invalid_tokens["message"]["usage"]["input_tokens"] = json!("10");
+        diagnosed(
+            &Provider::Claude,
+            &invalid_tokens,
+            "missing_or_invalid_token_field",
+        );
+
+        let unknown_cache_write = assistant(
+            json!({
+                "input_tokens": 10,
+                "cache_read_input_tokens": 2,
+                "cache_creation_input_tokens": 5,
+                "output_tokens": 4,
+            }),
+            json!("msg"),
+            json!("2026-01-01T00:00:00Z"),
+            false,
+        );
+        diagnosed(
+            &Provider::Claude,
+            &unknown_cache_write,
+            "unknown_cache_write_duration",
+        );
+
+        let inconsistent_cache = assistant(
+            json!({
+                "input_tokens": 10,
+                "cache_read_input_tokens": 2,
+                "cache_creation_input_tokens": 0,
+                "output_tokens": 4,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 5,
+                    "ephemeral_1h_input_tokens": 6,
+                },
+            }),
+            json!("msg"),
+            json!("2026-01-01T00:00:00Z"),
+            false,
+        );
+        diagnosed(
+            &Provider::Claude,
+            &inconsistent_cache,
+            "inconsistent_cache_partitions",
+        );
+
+        diagnosed(
+            &Provider::Claude,
+            &assistant(usage, json!("msg"), Value::Null, false),
+            "missing_timestamp",
+        );
+    }
+
+    #[test]
+    fn diagnosed_codex_records_always_produce_an_event_or_snapshot() {
+        diagnosed(
+            &Provider::Codex,
+            &json!({
+                "type": "session_meta",
+                "payload": {"id": Value::Null},
+            }),
+            "missing_or_invalid_session_identity",
+        );
+
+        diagnosed(
+            &Provider::Codex,
+            &json!({"type": "turn_context", "payload": {"model": Value::Null}}),
+            "missing_or_invalid_model",
+        );
+
+        diagnosed(
+            &Provider::Codex,
+            &json!({
+                "type": "token_usage_record",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "payload": {"response_id": "resp", "model": "model"},
+            }),
+            "missing_usage",
+        );
+
+        let invalid_tokens = json!({
+            "type": "token_usage_record",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "response_id": "resp",
+                "model": "model",
+                "usage": {
+                    "input_tokens": "10",
+                    "cached_input_tokens": 0,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": 5,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        });
+        diagnosed(
+            &Provider::Codex,
+            &invalid_tokens,
+            "missing_or_invalid_token_field",
+        );
+
+        let thread_snapshot = json!({
+            "type": "token_usage_record",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "thread_id": "s",
+                "model": "model",
+                "thread_token_usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 0,
+                    "cache_write_input_tokens": 5,
+                    "output_tokens": 5,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        });
+        let parsed_snapshot = adapters::parse(&Provider::Codex, &thread_snapshot);
+        assert_eq!(
+            parsed_snapshot.diagnostics,
+            vec!["unknown_cache_write_duration"]
+        );
+        assert!(parsed_snapshot.event.is_none());
+        assert!(parsed_snapshot.snapshot.is_some());
+
+        let inconsistent_tokens = json!({
+            "type": "token_usage_record",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "response_id": "resp",
+                "model": "model",
+                "usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 20,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": 5,
+                    "reasoning_output_tokens": 6,
+                },
+            },
+        });
+        diagnosed(
+            &Provider::Codex,
+            &inconsistent_tokens,
+            "inconsistent_token_subsets",
+        );
+
+        let unreported_cache_write = json!({
+            "type": "token_usage_record",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "response_id": "resp",
+                "model": "model",
+                "usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 5,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        });
+        diagnosed(
+            &Provider::Codex,
+            &unreported_cache_write,
+            "cache_write_counter_unreported",
+        );
+
+        let unknown_cache_write = json!({
+            "type": "token_usage_record",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "response_id": "resp",
+                "model": "model",
+                "usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 0,
+                    "cache_write_input_tokens": 5,
+                    "output_tokens": 5,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        });
+        diagnosed(
+            &Provider::Codex,
+            &unknown_cache_write,
+            "unknown_cache_write_duration",
+        );
+
+        let missing_timestamp = json!({
+            "type": "token_usage_record",
+            "payload": {
+                "response_id": "resp",
+                "model": "model",
+                "usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 0,
+                    "cache_write_input_tokens": 0,
+                    "output_tokens": 5,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        });
+        diagnosed(&Provider::Codex, &missing_timestamp, "missing_timestamp");
+
+        let invalid_last_usage = json!({
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 0,
+                    },
+                    "last_token_usage": [],
+                },
+            },
+        });
+        diagnosed(
+            &Provider::Codex,
+            &invalid_last_usage,
+            "missing_or_invalid_token_field",
+        );
+
+        let invalid_total_usage = json!({
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": "10",
+                        "cached_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 0,
+                    },
+                    "last_token_usage": null,
+                },
+            },
+        });
+        diagnosed(
+            &Provider::Codex,
+            &invalid_total_usage,
+            "missing_or_invalid_token_field",
+        );
+
+        let invalid_last_only_usage = json!({
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": null,
+                    "last_token_usage": {
+                        "input_tokens": "10",
+                        "cached_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 0,
+                    },
+                },
+            },
+        });
+        let parsed_last_only = adapters::parse(&Provider::Codex, &invalid_last_only_usage);
+        assert!(
+            parsed_last_only
+                .diagnostics
+                .iter()
+                .all(|code| *code == "missing_or_invalid_token_field")
+        );
+        assert!(parsed_last_only.event.is_some());
+
+        let invalid_last_usage_beside_total = json!({
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 0,
+                    },
+                    "last_token_usage": {
+                        "input_tokens": "10",
+                        "cached_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": "5",
+                        "reasoning_output_tokens": 0,
+                    },
+                },
+            },
+        });
+        let parsed_last_usage_beside_total =
+            adapters::parse(&Provider::Codex, &invalid_last_usage_beside_total);
+        assert!(
+            parsed_last_usage_beside_total
+                .diagnostics
+                .iter()
+                .all(|code| *code == "missing_or_invalid_token_field")
+        );
+        assert!(parsed_last_usage_beside_total.event.is_some());
+
+        let token_count_missing_usage = json!({
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "type": "token_count",
+                "info": {"total_token_usage": Value::Null, "last_token_usage": Value::Null},
+            },
+        });
+        diagnosed(
+            &Provider::Codex,
+            &token_count_missing_usage,
+            "missing_usage",
+        );
+    }
+}
+
 // Response counts and context per request. The tests read report fields
 // through JSON, so a renamed or missing field fails an assertion that names
 // it, rather than failing the build.
