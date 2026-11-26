@@ -611,11 +611,11 @@ fn the_rate_window_and_weighting_are_in_help_and_docs() {
 
 #[test]
 fn the_documented_rate_constants_match_the_code() {
-    use super::capacity_summary::{RATE_WINDOW, RESET_FALL};
+    use super::capacity_summary::{RATE_WINDOW, STALE_MARGIN};
     use super::usage_history::SAME_WEEK_SLACK;
     assert_eq!(RATE_WINDOW, 6 * 3600);
     let reference = flat(REFERENCE);
-    assert!(reference.contains(&format!("within {RESET_FALL} points of")));
+    assert!(reference.contains(&format!("within {STALE_MARGIN} points of")));
     assert!(reference.contains("more than one hour after"));
     assert_eq!(SAME_WEEK_SLACK, 3600);
     assert!(reference.contains("within one hour of each other"));

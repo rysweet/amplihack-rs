@@ -45,7 +45,7 @@ const RATE_MIN_SPAN: i64 = 4 * 3600 + 30 * 60;
 /// Issue #3258: a reading below a login's level is a stale one when a later
 /// reading in the same week comes back to within this many points of the
 /// level. A fall is never a reset on its own.
-pub(super) const RESET_FALL: u8 = 10;
+pub(super) const STALE_MARGIN: u8 = 10;
 /// Session resets this close to the earliest are one reset.
 const RESET_GROUP: i64 = 60;
 /// Weekly resets up to this far ahead are listed.
@@ -198,7 +198,7 @@ fn week_ended(p: &Point, at: i64) -> bool {
 /// Issue #3258: each week keeps a level, the start's figure for the first
 /// week and 0 for each later one. A reading above the level is use, and
 /// raises the level. A reading below it is stale when a later reading in
-/// the same week comes back to within [`RESET_FALL`] points of the level,
+/// the same week comes back to within [`STALE_MARGIN`] points of the level,
 /// and is skipped. Otherwise the fall stays: it lowers the level to the new
 /// figure and adds no use. Never negative.
 fn used_over(readings: &[(i64, &Point)]) -> i64 {
@@ -226,7 +226,7 @@ fn used_in_week(figures: &[i64]) -> i64 {
     let Some((&first, rest)) = figures.split_first() else {
         return 0;
     };
-    let margin = i64::from(RESET_FALL);
+    let margin = i64::from(STALE_MARGIN);
     let mut level = first;
     let mut used = 0i64;
     for (i, &w) in rest.iter().enumerate() {

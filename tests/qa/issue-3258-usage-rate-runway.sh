@@ -147,7 +147,11 @@ while IFS= read -r t; do
 done < <(grep -oE '"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"' "$FIXTURE" | tr -d '"' | sort -u)
 sed -f "$WORK/shift.sed" "$FIXTURE" > "$WORK/history.jsonl"
 LAST="$(tail -n 1 "$WORK/history.jsonl")"
-mapfile -t NAMES < <(jq -r '.profiles | keys[]' <<< "$LAST")
+# while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
+NAMES=()
+while IFS= read -r who; do
+  NAMES+=("$who")
+done < <(jq -r '.profiles | keys[]' <<< "$LAST")
 [[ ${#NAMES[@]} -eq 15 ]] || fail "expected 15 logins in the fixture, found ${#NAMES[@]}"
 
 # The current readings: the last history line's figures, as the endpoint gives

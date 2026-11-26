@@ -20,7 +20,7 @@
 //! - Rounding half away from zero, only when printed; non-finite is `null`.
 
 use super::capacity_summary::{
-    Inputs, RESET_FALL, RateParts, Summary, compute, rate_parts, rounded,
+    Inputs, RateParts, STALE_MARGIN, Summary, compute, rate_parts, rounded,
 };
 use super::capacity_weight::Weights;
 use super::usage_history::{Entry, Point, Snapshot, Writer, parse_line};
@@ -1006,8 +1006,9 @@ fn the_status_line_adds_the_weighted_figure_after_the_percentage() {
 // the week look as if it fell and rose again. Every fall was counted as a
 // reset (issue #1841), so each flicker added the whole stale figure back.
 // The rate now splits each login's readings into weeks at each real reset
-// (`w_reset` passed, or a fall of more than `RESET_FALL` points) and counts
-// the highest figure of each week minus the figure the week started at.
+// (`w_reset` passed). Issue #3258: a fall is never a reset; a low reading is
+// skipped as stale when a later one returns to within `STALE_MARGIN` points
+// of the week's level.
 
 /// 2026-11-05T00:00:00Z, the day of the issue's flicker.
 const N5: i64 = 1_793_836_800;
@@ -1274,7 +1275,7 @@ fn the_5_nov_flicker_counts_its_net_rise_of_16_points() {
         falls,
         [(39, 38), (40, 38), (41, 38), (42, 38), (43, 38), (48, 46)]
     );
-    assert!(falls.iter().all(|(a, b)| a - b <= RESET_FALL));
+    assert!(falls.iter().all(|(a, b)| a - b <= STALE_MARGIN));
 
     let p = parts(&now, &h).expect("the parts are given below 4.5 h too");
     assert_eq!(p.start, n5(16, 52, 30), "the profile usage line");
@@ -1336,9 +1337,9 @@ fn rate_parts_are_none_without_a_start() {
 }
 
 #[test]
-fn the_reset_threshold_is_ten_points() {
-    // Pinned: the reference says "more than 10 points".
-    assert_eq!(RESET_FALL, 10);
+fn the_stale_margin_is_ten_points() {
+    // Pinned: the reference says "within 10 points of".
+    assert_eq!(STALE_MARGIN, 10);
 }
 
 #[test]
