@@ -650,6 +650,8 @@ mod issue_2886_build_output_cleanup;
 // never built with Cargo is removed when the run ends.
 #[path = "issue_3263_empty_claimed_target.rs"]
 mod issue_3263_empty_claimed_target;
+#[path = "issue_3286_untrusted_bundle_marker.rs"]
+mod issue_3286_untrusted_bundle_marker;
 
 // Issue #2769: the #2663 outcome rule is the top-level drive's, not every
 // `autodrive-*` sub-recipe's.
