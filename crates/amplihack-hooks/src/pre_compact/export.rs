@@ -7,17 +7,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// Output for a failed export or metadata write: only the common
+/// `systemMessage` field, which Claude Code accepts for PreCompact and shows to
+/// the person. The failure is also logged.
 pub(crate) fn error_response(context: &str, error: &anyhow::Error) -> Value {
     let message = format!("{context}: {error}");
     tracing::warn!("{}", message);
-    serde_json::json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreCompact",
-            "status": "error",
-            "message": message,
-            "error": error.to_string(),
-        }
-    })
+    serde_json::json!({ "systemMessage": message })
 }
 
 /// Copy the transcript to `<session_dir>/logs/transcript_pre_compact.jsonl`.
@@ -97,11 +93,10 @@ mod tests {
     fn error_response_format() {
         let err = anyhow::anyhow!("disk full");
         let resp = error_response("writing log", &err);
-        let output = &resp["hookSpecificOutput"];
-        assert_eq!(output["hookEventName"], "PreCompact");
-        assert_eq!(output["status"], "error");
-        assert!(output["message"].as_str().unwrap().contains("writing log"));
-        assert!(output["error"].as_str().unwrap().contains("disk full"));
+        let object = resp.as_object().expect("an object");
+        assert!(object.get("hookSpecificOutput").is_none(), "{resp}");
+        assert_eq!(object.len(), 1, "{resp}");
+        assert!(object["systemMessage"].is_string(), "{resp}");
     }
 
     #[test]

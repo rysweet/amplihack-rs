@@ -490,6 +490,18 @@ mod codex_payload_contract_tests {
             other => panic!("wrong normalized event: {other:?}"),
         }
     }
+    /// PreCompact has no event name of its own here, so Codex gets `{}` for
+    /// both its success output and its `systemMessage` error output.
+    #[test]
+    fn codex_pre_compact_output_is_empty() {
+        for output in [
+            serde_json::json!({}),
+            serde_json::json!({"systemMessage": "export failed"}),
+        ] {
+            assert_eq!(codex_output("PreCompact", output), serde_json::json!({}));
+        }
+    }
+
     #[test]
     fn codex_null_transcript_stop_and_session_end_remain_distinct() {
         let stop = deserialize_hook_input(
