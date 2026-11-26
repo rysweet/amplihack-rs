@@ -174,6 +174,7 @@ steps:
       - [ ] Address EVERY blocking issue
       - [ ] Address suggestions where appropriate
       - [ ] For disagreements, document reasoning
+      - [ ] Open decisions (issue #3364): when a disagreement or design question stays open after your comments are posted and `AMPLIHACK_RUN_DIR` is set, record it in the run folder so `amplihack recipe waiting` lists it until guidance answers it or the PR is merged or closed. One command, with each open question and the URL of the comment that holds it: `jq -n --arg r "$AMPLIHACK_RUN_ID" --arg t "<PR URL>" --argjson q '["<question>"]' --argjson w '["<comment URL>"]' --arg c "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{kind:"open-decisions",run_id:$r,target:$t,questions:$q,where:$w,created_at:$c}' > "$AMPLIHACK_RUN_DIR/.open-decisions.tmp" && mv -f "$AMPLIHACK_RUN_DIR/.open-decisions.tmp" "$AMPLIHACK_RUN_DIR/open-decisions.json"`
       - [ ] Ensure changes don't introduce new issues
       - [ ] Waiting (issue #1794): use `amplihack wait --seconds N`, or `cmd & pid=$!; wait $pid`; never `tail -f /dev/null` or `timeout N tail -f /dev/null`, whose `tail` outlives the tool call as an orphan and which the PreToolUse hook denies
       **Output:** Summary of changes for each feedback item.
@@ -282,6 +283,7 @@ steps:
       echo "Post responses to each review comment on the PR explaining:" && \
       echo "  - What was done to address the feedback" && \
       echo "  - Any disagreements with reasoning" && \
+      echo "A disagreement or design question left open goes in \$AMPLIHACK_RUN_DIR/open-decisions.json (step 18b), which amplihack recipe waiting lists" && \
       echo "" && \
       echo "Use: gh pr comment <pr_number> --body 'Response text'" && \
       echo "" && \

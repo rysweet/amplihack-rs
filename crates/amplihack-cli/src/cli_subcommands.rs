@@ -654,6 +654,18 @@ pub enum RecipeCommands {
         /// tmux session name or run id
         target: String,
     },
+    /// List the runs on this host that wait for their owner, and the runs
+    /// that ended with open decisions. Read-only.
+    ///
+    /// One line per run: kind, age, owner, question and run id, separated by
+    /// tabs. A waiting run is listed while it is live and its turn tool waits
+    /// for guidance; a run with open decisions until guidance answers it or
+    /// its pull request is merged or closed.
+    Waiting {
+        /// Print a JSON array instead of lines
+        #[arg(long)]
+        json: bool,
+    },
     /// Internal: the process `recipe run --detach` starts in its tmux pane.
     #[command(name = "detached-child", hide = true)]
     DetachedChild {
