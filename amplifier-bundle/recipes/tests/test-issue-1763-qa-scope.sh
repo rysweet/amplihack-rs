@@ -206,10 +206,10 @@ B=AUTODRIVE_QA_BASE=main
 hermetic_qa_tests() {
     echo "== #1923 evidence: hermetic children, owned scratch and caller preservation =="
     local bin="$WORK/hermetic-bin" fake="$WORK/recipe-home" frame="$WORK/recipe-home/.amplihack"
-    local obs="$WORK/qa-observations" evidence="$WORK/qa-evidence" before rc mode marker
+    local obs="$WORK/qa-observations" evidence="$WORK/qa-evidence" before rc mode marker p
     local scratch_history="$WORK/qa-scratch-history" allocation_log="$WORK/qa-allocations"
     QA_TEST_ALLOCATIONS="$WORK/qa-owned-allocations"
-    : > "$QA_TEST_ALLOCATIONS"
+    : > "$QA_TEST_ALLOCATIONS"; : > "$scratch_history"
     mkdir -p "$bin" "$frame/.claude" "$frame/amplifier-bundle" "$frame/work/runs/abc/runtime/tmp" \
         "$frame/host-target" "$frame/work/targets" "$fake/.cache" "$WORK/inherited-stage"
     chmod 700 "$frame/work"
@@ -222,26 +222,45 @@ hermetic_qa_tests() {
 # The wrapper must read its controls; subsequent shells must not read this file.
 case "$0" in *autodrive_qa_evidence.sh) ;; *) : > "$QA_STARTUP_LEAK" ;; esac
 STARTUP
+    # The suite child: a POSIX shell script standing in for cargo. It records
+    # one "key=value" line per fact and a "--" line per run. It lists only the
+    # names of selector variables, never their values or the whole environment.
     cat > "$bin/qa-probe" <<'PROBE'
-#!/usr/bin/python3 -I
-import json, os, pathlib, sys
-p = pathlib.Path(os.environ['TMPDIR']).resolve()
-markers = ('.claude', 'src/amplihack/.claude', 'amplifier-bundle')
-contaminated = sorted(k for k in os.environ if
-    k.startswith(('AMPLIHACK_', 'AUTODRIVE_', 'RECIPE_', 'BASH_FUNC_')) or
-    k in ('BASH_ENV', 'ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GLOBIGNORE'))
-target = os.environ.get('CARGO_TARGET_DIR', '')
-record = dict(argv=sys.argv[1:], cwd=os.getcwd(), scratch=str(p), exists=p.is_dir(),
-    markers=any((a / m).exists() for a in (p, *p.parents) for m in markers),
-    contamination=contaminated, target=target, temps=[os.environ.get(k) for k in ('TMP', 'TEMP')],
-    home=os.environ.get('HOME'), path=os.environ.get('PATH'),
-    build=[os.environ.get(k) for k in ('CARGO_BUILD_JOBS', 'MAKEFLAGS', 'RUSTUP_TOOLCHAIN', 'RUSTFLAGS')],
-    artifact=pathlib.Path(os.environ['QA_ARTIFACT']).read_text())
-with open(os.environ['QA_OBSERVATIONS'], 'a') as f:
-    f.write(json.dumps(record) + '\n')
-if p.is_dir():
-    (p / 'child-payload').write_text('must be reclaimed with owned scratch')
-sys.exit(int(os.environ.get('QA_PROBE_RC', '0')))
+#!/bin/sh
+p="$(cd -- "${TMPDIR:-/nonexistent}" 2>/dev/null && pwd -P)" || p="${TMPDIR-}"
+marked=no; d="$p"
+while [ -n "$d" ]; do
+    for m in .claude src/amplihack/.claude amplifier-bundle; do
+        if [ -e "$d/$m" ] || [ -L "$d/$m" ]; then marked=yes; fi
+    done
+    [ "$d" != / ] || break; d="${d%/*}"; [ -n "$d" ] || d=/
+done
+warm=no
+if [ -n "${CARGO_TARGET_DIR-}" ] && [ -f "$CARGO_TARGET_DIR/warm" ]; then warm=yes; fi
+artifact=no
+if printf 'explicit artifact\n' | cmp -s - "$QA_ARTIFACT"; then artifact=yes; fi
+{
+    printf 'argv='; for a in "$@"; do printf '[%s]' "$a"; done; printf '\n'
+    printf 'cwd=%s\n' "$(pwd -P)"
+    printf 'scratch=%s\n' "$p"
+    if [ -d "$p" ]; then echo exists=yes; else echo exists=no; fi
+    printf 'markers=%s\n' "$marked"
+    printf 'contamination=%s\n' "$(awk 'BEGIN { for (k in ENVIRON)
+        if (k ~ /^(AMPLIHACK_|AUTODRIVE_|RECIPE_|BASH_FUNC_)/ || k ~ /^(BASH_ENV|ENV|ZDOTDIR|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE)$/)
+            print k }' | LC_ALL=C sort | tr '\n' ' ')"
+    printf 'target=%s\n' "${CARGO_TARGET_DIR-<unset>}"
+    printf 'build_target=%s\n' "${CARGO_BUILD_TARGET_DIR-<unset>}"
+    printf 'warm=%s\n' "$warm"
+    printf 'tmp=%s\n' "${TMP-<unset>}"
+    printf 'temp=%s\n' "${TEMP-<unset>}"
+    printf 'home=%s\n' "${HOME-}"
+    printf 'path=%s\n' "${PATH-}"
+    printf 'build=%s|%s|%s|%s\n' "${CARGO_BUILD_JOBS-}" "${MAKEFLAGS-}" "${RUSTUP_TOOLCHAIN-}" "${RUSTFLAGS-}"
+    printf 'artifact=%s\n' "$artifact"
+    echo --
+} >> "$QA_OBSERVATIONS"
+if [ -d "$p" ]; then printf 'must be reclaimed with owned scratch' > "$p/child-payload"; fi
+exit "${QA_PROBE_RC:-0}"
 PROBE
     chmod +x "$bin/qa-probe"
     ln -s qa-probe "$bin/cargo"
@@ -273,13 +292,16 @@ printf '%s\n' "$p"
 SHIM
     chmod +x "$bin/mktemp"
     # Observe whether evidence was already published when owned scratch is
-    # reclaimed. /bin/sh keeps the fault shims out of Bash startup coverage.
+    # reclaimed. With QA_RM_MODE=fail the owned scratch is refused, as a
+    # read-only file left in it would be. /bin/sh keeps the fault shims out of
+    # Bash startup coverage.
     cat > "$bin/rm" <<'REMOVE'
 #!/bin/sh
 while IFS= read -r allocation; do
     for arg in "$@"; do
-        if [ -d "$allocation" ] && [ "$arg" -ef "$allocation" ] && [ -e "$QA_EVIDENCE_FILE" ]; then
-            : > "$QA_CLEANUP_ORDER_LEAK"
+        if [ -d "$allocation" ] && [ "$arg" -ef "$allocation" ]; then
+            if [ -e "$QA_EVIDENCE_FILE" ]; then : > "$QA_CLEANUP_ORDER_LEAK"; fi
+            if [ "${QA_RM_MODE:-}" = fail ]; then echo "rm: cannot remove '$arg': Permission denied" >&2; exit 1; fi
         fi
     done
 done < "$QA_ALLOCATIONS"
@@ -289,13 +311,12 @@ REMOVE
     # Known directories and bytes, including empty folders and symlinks: additions
     # to fake HOME/framework/work/target roots count as caller-state mutations.
     qa_snapshot() {
-        python3 -I - "$fake" "$WORK/inherited-stage" <<'SNAPSHOT'
-import hashlib, pathlib, sys
-for root in map(pathlib.Path, sys.argv[1:]):
-    for p in sorted((root, *root.rglob('*'))):
-        kind = 'link:' + str(p.readlink()) if p.is_symlink() else 'dir' if p.is_dir() else hashlib.sha256(p.read_bytes()).hexdigest()
-        print(str(p), kind)
-SNAPSHOT
+        local q
+        find "$fake" "$WORK/inherited-stage" | LC_ALL=C sort | while IFS= read -r q; do
+            if [ -L "$q" ]; then printf '%s link:%s\n' "$q" "$(readlink -- "$q")"
+            elif [ -d "$q" ]; then printf '%s dir\n' "$q"
+            else printf '%s %s\n' "$q" "$(sha256sum < "$q" | cut -d' ' -f1)"; fi
+        done
     }
     qa_polluted_run() {
         : > "$obs"; : > "$allocation_log"; rm -f "$evidence" "$WORK/startup-leak" "$WORK/function-leak" "$WORK/cleanup-order-leak"
@@ -307,8 +328,8 @@ SNAPSHOT
             AMPLIHACK_WORK_ROOT="$frame/work" AMPLIHACK_RUN_DIR="$frame/work/runs/abc" AMPLIHACK_RUN_ID=abc \
             AMPLIHACK_RECIPE_RUN_ID=polluted AUTODRIVE_INHERITED_SENTINEL=polluted \
             RECIPE_VAR_merge_sync=polluted RECIPE_RUNNER_RS_PATH="$frame/runner" \
-            CARGO_TARGET_DIR="$frame/host-target" CARGO_BUILD_JOBS=2 MAKEFLAGS=-j2 \
-            RUSTUP_TOOLCHAIN=1.97.0 RUSTFLAGS=-Cdebuginfo=1 \
+            CARGO_TARGET_DIR="$frame/host-target" CARGO_BUILD_TARGET_DIR="$frame/work/targets" \
+            CARGO_BUILD_JOBS=2 MAKEFLAGS=-j2 RUSTUP_TOOLCHAIN=1.97.0 RUSTFLAGS=-Cdebuginfo=1 \
             BASH_ENV="$WORK/qa-startup" ENV="$WORK/qa-startup" ZDOTDIR="$frame" \
             SHELLOPTS=allexport:braceexpand:errexit:hashall:interactive-comments:noclobber BASHOPTS=checkwinsize \
             'BASH_FUNC_qa_recipe_function%%=() { :; }' \
@@ -320,38 +341,45 @@ SNAPSHOT
             AUTODRIVE_QA_EVIDENCE="$evidence" AUTODRIVE_ROUND_LABEL=hermetic-round "$@"
         rc="$TOOL_RC"
     }
-    qa_observed() { # qa_observed <id> <expected argv/cwd JSON>
+    # qa_check_records <expected "argv<TAB>cwd" lines> <expected target> <expected build target>
+    # Prints the first broken expectation and returns 1, or returns 0.
+    qa_check_records() {
+        local want="$1" want_target="$2" want_btarget="$3" line k v n=0 shared="" exp_argv exp_cwd
+        local -A r=()
+        local -a expected=()
+        while IFS= read -r line; do [ -z "$line" ] || expected+=("$line"); done <<< "$want"
+        while IFS= read -r line; do
+            if [ "$line" != -- ]; then k="${line%%=*}"; v="${line#*=}"; r[$k]="$v"; continue; fi
+            [ "$n" -lt "${#expected[@]}" ] || { echo "child count exceeds ${#expected[@]}"; return 1; }
+            exp_argv="${expected[$n]%%$'\t'*}"; exp_cwd="${expected[$n]#*$'\t'}"; n=$((n + 1))
+            [ "${r[argv]}" = "$exp_argv" ] || { echo "argv ${r[argv]}, want $exp_argv"; return 1; }
+            if [ "$exp_cwd" = . ]; then exp_cwd="$REPO"; else exp_cwd="$REPO/$exp_cwd"; fi
+            [ "${r[cwd]}" = "$exp_cwd" ] || { echo "cwd ${r[cwd]}, want $exp_cwd"; return 1; }
+            [ -z "${r[contamination]// /}" ] || { echo "inherited selector names: ${r[contamination]}"; return 1; }
+            [ "${r[exists]}" = yes ] && [ "${r[markers]}" = no ] || { echo "scratch absent or framework ancestor found"; return 1; }
+            case "${r[scratch]}/" in "$WORK/"*) echo "caller scratch reused"; return 1 ;; esac
+            case "${r[scratch]}/" in "$REPO/"*) echo "scratch inside checkout"; return 1 ;; esac
+            [ ! -e "${r[scratch]}" ] && [ ! -L "${r[scratch]}" ] || { echo "owned scratch survived wrapper exit"; return 1; }
+            for k in tmp temp; do
+                [ "${r[$k]}" = "<unset>" ] || [ "${r[$k]}" = "${r[scratch]}" ] || { echo "$k escaped scratch: ${r[$k]}"; return 1; }
+            done
+            [ "${r[target]}" = "$want_target" ] || { echo "CARGO_TARGET_DIR ${r[target]}, want $want_target"; return 1; }
+            [ "${r[build_target]}" = "$want_btarget" ] || { echo "CARGO_BUILD_TARGET_DIR ${r[build_target]}, want $want_btarget"; return 1; }
+            if [ "$want_target" != "<unset>" ] && [ "${r[warm]}" != yes ]; then echo "the caller's warm target was not visible"; return 1; fi
+            [ "${r[home]}" = "$fake" ] && [ "${r[path]}" = "$bin:$SYSPATH" ] || { echo "HOME or PATH changed"; return 1; }
+            [ "${r[build]}" = "2|-j2|1.97.0|-Cdebuginfo=1" ] || { echo "build configuration changed: ${r[build]}"; return 1; }
+            [ "${r[artifact]}" = yes ] || { echo "explicit owned artifact inaccessible"; return 1; }
+            [ -z "$shared" ] || [ "$shared" = "${r[scratch]}" ] || { echo "commands did not share their invocation scratch"; return 1; }
+            shared="${r[scratch]}"; r=()
+        done < "$obs"
+        [ "$n" -eq "${#expected[@]}" ] || { echo "child count: $n, want ${#expected[@]}"; return 1; }
+        if grep -qxF -- "$shared" "$scratch_history"; then echo "scratch reused across invocations"; return 1; fi
+        printf '%s\n' "$shared" >> "$scratch_history"
+    }
+    qa_observed() { # qa_observed <id> <expected "argv<TAB>cwd" lines> [target] [build target]
         local id="$1" msg
-        if msg="$(python3 -I - "$obs" "$2" "$REPO" "$fake" "$bin:$SYSPATH" "$scratch_history" <<'CHECK'
-import json, pathlib, sys
-obs, expected, repo, home, path, history = sys.argv[1:]
-records = [json.loads(s) for s in pathlib.Path(obs).read_text().splitlines()]
-expected = json.loads(expected)
-assert len(records) == len(expected), 'child count: ' + str(len(records))
-scratch = set()
-for r, (argv, cwd) in zip(records, expected):
-    assert r['argv'] == argv and pathlib.Path(r['cwd']) == pathlib.Path(repo) / cwd, 'argv or cwd changed'
-    if r['contamination']: print('inherited selector names: ' + ','.join(r['contamination']))
-    assert r['exists'] and not r['markers'], 'scratch absent or framework ancestor found'
-    p = pathlib.Path(r['scratch']); scratch.add(p)
-    assert not p.is_relative_to(pathlib.Path(home).parent), 'caller scratch reused'
-    assert not p.is_relative_to(pathlib.Path(repo)), 'scratch inside checkout'
-    assert not p.exists() and not p.is_symlink(), 'owned scratch survived wrapper exit'
-    assert all(v is None or pathlib.Path(v) == p for v in r['temps']), 'alternate temp paths escaped scratch'
-    assert not r['contamination'], 'inherited selectors: ' + ','.join(r['contamination'])
-    target = pathlib.Path(r['target'])
-    assert r['target'] and target.is_absolute() and target.is_relative_to(p), 'ambient Cargo target escaped scratch'
-    assert r['home'] == home and r['path'] == path, 'HOME or PATH changed'
-    assert r['build'] == ['2', '-j2', '1.97.0', '-Cdebuginfo=1'], 'build configuration changed'
-    assert r['artifact'] == 'explicit artifact\n', 'explicit owned artifact inaccessible'
-assert len(scratch) == 1, 'commands did not share their invocation scratch'
-h = pathlib.Path(history)
-old = h.read_text().splitlines() if h.exists() else []
-p = str(next(iter(scratch)))
-assert p not in old, 'scratch reused across invocations'
-with h.open('a') as f: f.write(p + '\n')
-CHECK
-        )"; then pass "$id" "child argv/cwd, isolation, scratch lifetime, cleanup and explicit artifacts"
+        if msg="$(qa_check_records "$2" "${3:-<unset>}" "${4:-<unset>}")"; then
+            pass "$id" "child argv/cwd, isolation, scratch lifetime, cleanup and explicit artifacts"
         else fail "$id" "$msg"; fi
         if [ ! -e "$WORK/startup-leak" ] && [ ! -e "$WORK/function-leak" ]; then
             pass "$id-shell" "startup inputs and inherited functions do not reach child shells"
@@ -366,25 +394,61 @@ CHECK
         if [ "$(qa_snapshot)" = "$before" ]; then pass "$1" "fake HOME/framework/work/target and inherited scratch/stage are unchanged"
         else fail "$1" "caller-owned state changed"; fi
     }
+    # The record a run without a usable scratch publishes: no child, BLOCKED, the cause named.
+    qa_scratch_refused() { # qa_scratch_refused <id> <summary needle>
+        if [ "$rc" -eq 0 ] && [ ! -s "$obs" ] && [ -f "$evidence" ] && [ "$(cat "$evidence")" = "$OUT" ]; then
+            pass "$1" "no child ran, and the record was still published (exit 0)"
+        else fail "$1" "a child ran, or no record was published (exit=$rc)"; fi
+        expect "$1-record" "a scratch that cannot be had is a named BLOCKED fact" qa_status=BLOCKED \
+            qa_reason=qa-command-missing qa_suite_commands_count=0 qa_command="qa-probe must-not-run"
+        expect_summary_has "$1-cause" "$2"
+    }
     repo Cargo.toml engine/ src/lib.rs; base; change src/lib.rs
     before="$(qa_snapshot)"
     qa_polluted_run AUTODRIVE_QA_COMMANDS=$'if declare -F qa_recipe_function >/dev/null; then : > "$QA_FUNCTION_LEAK"; fi; cd engine; qa-probe first "two words"\nqa-probe second'
     expect hermetic-entries "independent configured entries retain evidence semantics" qa_status=PASS qa_exit_code=0 \
         qa_suite_commands_count=2 qa_command_source=env qa_round=hermetic-round head_sha="$(git -C "$REPO" rev-parse HEAD)"
-    qa_observed hermetic-entries-runtime '[[["first","two words"],"engine"],[["second"],"."]]'
+    qa_observed hermetic-entries-runtime $'[first][two words]\tengine\n[second]\t.'
     qa_caller_preserved hermetic-entries-caller
     qa_polluted_run AUTODRIVE_QA_COMMAND='qa-probe word *' AUTODRIVE_QA_DIR=engine
     expect hermetic-word "word parsing keeps literal glob and configured cwd" qa_status=PASS qa_suite_commands_count=1 qa_dir=engine
-    qa_observed hermetic-word-runtime '[[["word","*"],"engine"]]'
+    qa_observed hermetic-word-runtime $'[word][*]\tengine'
     qa_polluted_run
     expect hermetic-detected "detected command retains full Cargo argv (recording stub)" qa_status=PASS qa_command_source=detected \
         qa_command="cargo $CARGO_ARGS" qa_suite_commands_count=1
-    qa_observed hermetic-detected-runtime '[[["test","--workspace","--locked","--no-fail-fast"],"."]]'
+    qa_observed hermetic-detected-runtime $'[test][--workspace][--locked][--no-fail-fast]\t.'
     qa_polluted_run QA_PROBE_RC=23 AUTODRIVE_QA_COMMANDS=$'qa-probe fail\nQA_PROBE_RC=0 qa-probe after-failure'
     expect hermetic-failure "all entries run and first failure survives" qa_status=FAIL qa_reason=qa-command-failed \
         qa_exit_code=23 qa_suite_commands_count=2
-    qa_observed hermetic-failure-runtime '[[["fail"],"."],[["after-failure"],"."]]'
+    qa_observed hermetic-failure-runtime $'[fail]\t.\n[after-failure]\t.'
     qa_caller_preserved hermetic-failure-caller
+    # The build cache stays the caller's: a target directory in the checkout,
+    # or outside it with no framework ancestor, reaches cargo unchanged and
+    # keeps what it held. A relative one cannot be placed and is dropped.
+    mkdir -p "$REPO/target"; printf 'warm\n' > "$REPO/target/warm"
+    qa_polluted_run CARGO_TARGET_DIR="$REPO/target" CARGO_BUILD_TARGET_DIR="$REPO/target"
+    expect hermetic-warm-checkout "a target in the checkout keeps the result" qa_status=PASS qa_suite_commands_count=1
+    qa_observed hermetic-warm-checkout-runtime $'[test][--workspace][--locked][--no-fail-fast]\t.' "$REPO/target" "$REPO/target"
+    if [ -f "$REPO/target/warm" ]; then pass hermetic-warm-checkout-kept "the caller's target and its cache survive the run"
+    else fail hermetic-warm-checkout-kept "the caller's target cache was removed"; fi
+    p="$WORK"; marker=""
+    while [ -n "$p" ]; do
+        for mode in .claude src/amplihack/.claude amplifier-bundle; do
+            if [ -e "$p/$mode" ] || [ -L "$p/$mode" ]; then marker="$p/$mode"; fi
+        done
+        [ "$p" != / ] || break; p="${p%/*}"; [ -n "$p" ] || p=/
+    done
+    if [ -z "$marker" ]; then
+        mkdir -p "$WORK/clean-target"; printf 'warm\n' > "$WORK/clean-target/warm"
+        qa_polluted_run CARGO_TARGET_DIR="$WORK/clean-target/" CARGO_BUILD_TARGET_DIR=relative/target
+        expect hermetic-warm-outside "a framework-free target outside the checkout keeps the result" qa_status=PASS
+        qa_observed hermetic-warm-outside-runtime $'[test][--workspace][--locked][--no-fail-fast]\t.' "$WORK/clean-target/" "<unset>"
+        if [ -f "$WORK/clean-target/warm" ]; then pass hermetic-warm-outside-kept "the caller's target and its cache survive the run"
+        else fail hermetic-warm-outside-kept "the caller's target cache was removed"; fi
+    else
+        echo "  SKIP[hermetic-warm-outside]: this test's own directory has a framework ancestor ($marker)"
+    fi
+    rm -rf -- "$REPO/target" "$WORK/clean-target"
     qa_polluted_run AUTODRIVE_QA_COMMAND= AUTODRIVE_QA_COMMANDS=
     expect hermetic-empty "set-but-empty controls still suppress detection" qa_status=BLOCKED qa_reason=qa-command-missing \
         qa_command_source=env qa_suite_commands_count=0
@@ -396,13 +460,23 @@ CHECK
         qa_status=BLOCKED qa_reason=qa-command-not-installed qa_suite_commands_count=0
     if [ ! -e "$WORK/function-leak" ]; then pass hermetic-availability-noexec "the inherited function never executed"
     else fail hermetic-availability-noexec "availability probe accepted an inherited shell function"; fi
+    # A completed suite whose scratch cannot be removed is still published,
+    # with the leftover named; the exit status stays 0.
+    qa_polluted_run QA_RM_MODE=fail AUTODRIVE_QA_COMMAND='qa-probe completes'
+    expect hermetic-cleanup-refused "a refused cleanup keeps the measured result" qa_status=PASS qa_exit_code=0 \
+        qa_suite_commands_count=1
+    expect_summary_has hermetic-cleanup-refused-cause "QA scratch not removed: "
+    if [ "$rc" -eq 0 ] && [ -f "$evidence" ] && [ "$(cat "$evidence")" = "$OUT" ] && [ -s "$obs" ]; then
+        pass hermetic-cleanup-refused-evidence "the record is published after the refused cleanup (exit 0)"
+    else fail hermetic-cleanup-refused-evidence "exit=$rc, or the record was not published"; fi
+    if grep -q 'WARNING: QA scratch not removed: ' "$ERR"; then pass hermetic-cleanup-refused-warning "the leftover is named on stderr"
+    else fail hermetic-cleanup-refused-warning "no warning names the leftover scratch"; fi
     # Allocation and later temporary-file failures must never fall back to the
     # polluted TMPDIR. The latter also tests an owned directory's early cleanup.
     for mode in fail fail-file; do
         qa_polluted_run QA_ALLOC_MODE="$mode" AUTODRIVE_QA_COMMAND='qa-probe must-not-run'
-        if [ "$rc" -ne 0 ] && [ ! -s "$obs" ] && [ ! -e "$evidence" ] && [ -z "$OUT" ]; then
-            pass "hermetic-$mode" "setup failure prevents child execution and fresh evidence"
-        else fail "hermetic-$mode" "setup failure executed a child or produced evidence (exit=$rc)"; fi
+        if [ "$mode" = fail ]; then qa_scratch_refused "hermetic-$mode" "cannot allocate QA scratch"
+        else qa_scratch_refused "hermetic-$mode" "cannot create a QA log in the scratch"; fi
         if [ "$mode" = fail-file ] && [ ! -s "$allocation_log" ]; then
             fail hermetic-early-allocation "file failure did not exercise cleanup after directory allocation"
         fi
@@ -414,9 +488,7 @@ CHECK
         mkdir -p "$WORK/marked/$marker" "$WORK/marked/deep/parent"
         ln -s "$WORK/marked/deep/parent" "$WORK/marked-link"
         qa_polluted_run QA_ALLOC_MODE=marked QA_BAD_PARENT="$WORK/marked-link" AUTODRIVE_QA_COMMAND='qa-probe must-not-run'
-        if [ "$rc" -ne 0 ] && [ ! -s "$obs" ] && [ ! -e "$evidence" ]; then
-            pass "hermetic-ancestry:$marker" "canonical marked allocation rejected without fallback or PASS"
-        else fail "hermetic-ancestry:$marker" "marked scratch was accepted (exit=$rc)"; fi
+        qa_scratch_refused "hermetic-ancestry:$marker" "QA scratch has framework ancestry"
         while IFS= read -r p; do
             [ ! -e "$p" ] && [ ! -L "$p" ] || fail "hermetic-ancestry-cleanup:$marker" "rejected allocation leaked"
         done < "$allocation_log"
