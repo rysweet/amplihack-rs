@@ -6806,7 +6806,7 @@ does not start another candidate's probe.
 | Fresh usable figures, no model week at or above `--week-at`, and the same target still qualifies | The swap goes ahead. |
 | A model week is at or above `--week-at`, including equality | Reject the target and reconsider selection using the updated readings. |
 | Session or all-models limits make the target ineligible, or its standing block prevents a move | Reject the target under the existing eligibility rules and reconsider selection. |
-| Failed or unknown confirmation, with a standing block on the live login and a recent usable target reading containing no model week at or above `--week-at` | Accept the target on that recent reading under issue #2820's recovery rule. |
+| Failed or unknown confirmation, with a standing block on the live login and a recent usable target reading, with at least one per-model week of the target's current week known and none at or above `--week-at` | Accept the target on that recent reading under issue #2820's recovery rule. With no current per-model week known, the target is unknown and rejected. |
 | Superseded or still-stale confirmation | Reject the target. |
 | Selection proposes another target after the confirmation | Stay unless the blocked-login recovery rule permits accepting the alternative on its recent reading. |
 
@@ -6815,7 +6815,10 @@ staying on it is never better than moving to any measured login". It applies
 to a standing recorded spend, session, week, credit or API-key block, never
 merely a full measured login. The target must remain eligible, its reading
 must be at most five hours old and strictly after its last departure or damping,
-and no stored model week may reach `--week-at`. A labelled measurement failure
+at least one per-model week of its current week must be known from its stored
+reading or its probe, and no stored model week may reach `--week-at`. A reading
+with no per-model week, such as one stored before model weeks were recorded,
+leaves the target unknown (issue #3347). A labelled measurement failure
 can use its last good reading without a retry. A labelled confirming-read failure
 can use the reading selected before that read. A target's own block, an old
 reading or a superseded confirming read never qualifies.
@@ -6824,7 +6827,7 @@ The existing time budget can also leave a recent target unread. After the one
 confirmation probe is used, the next eligible recent target may be accepted
 under the same recovery rule, without a second probe. Locked revalidation reuses
 that acceptance only while the live login is still blocked and the target's
-stored model weeks remain below `--week-at`.
+stored model weeks are known and remain below `--week-at`.
 
 The swap line reports ` unconfirmed (HTTP 429)`, the corresponding probe label,
 ` unconfirmed (confirmation limit 1)` or ` unconfirmed (time limit)`, followed by

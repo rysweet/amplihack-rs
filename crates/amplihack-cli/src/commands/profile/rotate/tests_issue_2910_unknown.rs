@@ -28,8 +28,8 @@
 //!
 //! ```text
 //! struct Facts { failed_now: bool, attempts: usize, can_read: bool,
-//!                live_blocked: bool, model_full: bool, label: Option<ProbeLabel>,
-//!                recent: bool }
+//!                live_blocked: bool, model_full: bool, model_known: bool,
+//!                label: Option<ProbeLabel>, recent: bool }
 //! enum Limit { Confirmation, Count, Time }
 //! enum Why { Unknown(ProbeLabel), Unfit(Unfit), Older(u64) }
 //! enum Step { AcceptUnconfirmed(ProbeLabel), AcceptStale(Limit),
@@ -69,6 +69,7 @@ fn facts() -> Facts {
         can_read: true,
         live_blocked: false,
         model_full: false,
+        model_known: true,
         label: None,
         recent: false,
     }
@@ -172,6 +173,7 @@ fn at_the_cap_a_failed_target_is_not_tried_and_never_accepted() {
                     can_read,
                     live_blocked: false,
                     model_full: false,
+                    model_known: true,
                     label,
                     recent: false,
                 };
@@ -921,5 +923,60 @@ fn issue_3301_stored_full_model_excludes_every_blocked_login_recovery_path() {
     assert_eq!(
         confirmation_spent(&usable),
         Step::AcceptStale(Limit::Confirmation)
+    );
+}
+
+/// Issue #3347: with no per-model week known for its current week, a target
+/// is unknown on every blocked-login recovery path, as for any other unknown
+/// read: rejected, or not tried at a limit, and never accepted unread.
+#[test]
+fn issue_3347_no_known_model_week_excludes_every_blocked_login_recovery_path() {
+    use super::confirmation_spent;
+    let f = Facts {
+        failed_now: true,
+        live_blocked: true,
+        model_known: false,
+        recent: true,
+        label: Some(Http429),
+        ..facts()
+    };
+    assert_eq!(next(&f), Step::Reject(Why::Unknown(Http429)));
+    assert_eq!(
+        after_unknown(Transport, &f),
+        Step::Reject(Why::Unknown(Transport))
+    );
+    assert_eq!(
+        next(&Facts { label: None, ..f }),
+        Step::Reject(Why::Unfit(Unfit::NoReading))
+    );
+    assert_eq!(confirmation_spent(&f), Step::NotTried(Limit::Confirmation));
+    let unread = Facts {
+        failed_now: false,
+        ..f
+    };
+    assert_eq!(
+        next(&Facts {
+            can_read: false,
+            ..unread
+        }),
+        Step::NotTried(Limit::Time)
+    );
+    assert_eq!(
+        next(&Facts {
+            attempts: MAX_REREADS_PER_CYCLE,
+            ..unread
+        }),
+        Step::NotTried(Limit::Count)
+    );
+    // The rule of #2820 is otherwise unchanged: a known week below the
+    // threshold is still taken unread.
+    let known = Facts {
+        model_known: true,
+        ..f
+    };
+    assert_eq!(next(&known), Step::AcceptUnconfirmed(Http429));
+    assert_eq!(
+        after_unknown(Transport, &known),
+        Step::AcceptUnconfirmed(Transport)
     );
 }

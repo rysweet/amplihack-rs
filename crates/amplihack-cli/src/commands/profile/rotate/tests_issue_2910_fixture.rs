@@ -247,6 +247,37 @@ impl Fleet {
         usage_history::append_with(&self.e.root, &entry, clock(), None).unwrap();
     }
 
+    /// Issue #3347: a per-model week for `who` in the stored readings
+    /// (`usage.json`), `used` percent, observed 30 minutes before the decision
+    /// clock and resetting in three days, so `who`'s model weeks are known.
+    pub(in crate::commands::profile::rotate) fn model_week(&self, who: &str, used: f64) {
+        use crate::commands::profile::auto_switch::kit::{
+            ModelWeek, Reading, ReadingSource, State,
+        };
+        let dir = self.e.root.join(".auto-switch.d");
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let state = State::new(&self.e.root).unwrap();
+        let mut file = state.try_load_usage().unwrap();
+        let at = clock() - 1800;
+        file.accounts.insert(
+            who.to_string(),
+            Reading {
+                five_hour: None,
+                seven_day: None,
+                week_models: vec![ModelWeek {
+                    label: "Fable".into(),
+                    used_percentage: used,
+                    resets_at: Some(clock() + 3 * 86_400),
+                    observed_at: at,
+                }],
+                observed_at: at,
+                source: ReadingSource::Statusline,
+            },
+        );
+        state.save_usage(&file).unwrap();
+    }
+
     /// Marks `who` as an overflow (credit) profile of tier 1.
     pub(in crate::commands::profile::rotate) fn mark_overflow(&self, who: &str) {
         use crate::commands::profile::auto_switch::config::{self, ReadMode};
