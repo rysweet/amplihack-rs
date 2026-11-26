@@ -39,6 +39,8 @@ context:
   # reading carries it to the agent each turn; an unknown value is reported
   # there and fix_all applies, from every entry point.
   autodrive_minor_findings: ""
+  # Seconds between CI reads. Empty uses the REST wait's 120-second default.
+  checks_watch_interval: ""
   # Retired (#3129): accepted for one release and ignored. Nothing reads them.
   autodrive_budget_loop_rounds: ""
   autodrive_budget_total_rounds: ""

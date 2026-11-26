@@ -42,6 +42,36 @@ goal_is_entry() {
 }
 goal_is_sha() { [[ "${1:-}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; }
 
+# The CI endpoints and guidance target must belong to the numbered PR.
+goal_github_pr_repo() {
+  [[ "$1" =~ ^https://github\.com/([A-Za-z0-9_-]+)/([A-Za-z0-9._-]+)/pull/([0-9]+)$ ]] &&
+    [ "${BASH_REMATCH[3]}" = "$2" ] || return 1
+  case "${BASH_REMATCH[2]}" in .|..) return 1 ;; esac
+  printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+}
+
+# Advance only the retry's cursor. The driver still delivers the guidance to
+# the agent from its own mark once the reading finishes.
+goal_read_guidance() {
+  local rc=0 entry response="$GH_READ_DIR/rate-limit-guidance.json"
+  gh_goal_command "${AMPLIHACK_BIN:-amplihack}" recipe guidance wait "--since=$GUIDANCE_SINCE" \
+    ${GUIDANCE_TARGET:+"$GUIDANCE_TARGET"} >"$response" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  entry="$(jq -r 'select(.event == "guidance") | .entry // empty | strings' "$response")"
+  [ -n "$entry" ] && goal_is_entry "$entry" || return 1
+  GUIDANCE_SINCE="$entry"
+}
+
+goal_ci_cache_dir() {
+  local cache="$1/ci-rest"
+  if [ ! -L "$cache" ] && mkdir -p -- "$cache" && goal_private_dir_ok "$cache"; then
+    printf '%s\n' "$cache"
+  else
+    echo 'the conditional CI cache directory is unavailable' >&2
+    return 1
+  fi
+}
+
 # goal_private_dir_ok <dir>: a real folder of this user with mode exactly 0700.
 goal_private_dir_ok() {
   [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] \

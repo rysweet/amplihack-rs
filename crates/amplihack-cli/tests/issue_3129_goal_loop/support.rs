@@ -25,8 +25,9 @@
 //! it was piped as `merge-subject` and `merge-body` ([`Harness::merge_message`]).
 //! `mss` overrides the merge state GitHub reports, `protection.json` is
 //! what classic branch protection's required status checks return, and
-//! `policy403` makes both policy endpoints refuse with a 403. `pr checks --watch` blocks reading
-//! `$GH_STATE/release.fifo`; a test releases it (`fifo_release`), and if the
+//! `policy403` makes both policy endpoints refuse with a 403. Tests that
+//! pause a CI wait block the stand-in sleep on `$GH_STATE/release.fifo`.
+//! A test releases it (`fifo_release`), and if the
 //! run exits early the harness's watcher opens the FIFO itself, so nothing
 //! sleeps and nothing times out.
 //!
@@ -88,8 +89,44 @@ mss() {
 settings() { if [ -e "$G/repo.json" ]; then cat "$G/repo.json"; else echo '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":false,"default_branch":"main"}'; fi; }
 filter() { local f=""; while [ $# -gt 0 ]; do case "$1" in --jq|-q) f="$2"; shift 2 ;; *) shift ;; esac; done
   if [ -n "$f" ]; then jq -r "$f"; else cat; fi; }
+http() {
+  local code="$1" body="$2" etag=""
+  shift 2
+  if [ "${include:-false}" = true ]; then
+    if [ "$code" = 200 ] && [ "${conditional:-false}" = true ]; then
+      etag="\"$(printf '%s\n%s' "$body" "${link:-}" | git hash-object --stdin)\""
+      [ "$etag" != "$validator" ] || code=304
+      printf '%s %s\n' "$code" "$endpoint" >> "$G/responses.log"
+    fi
+    printf 'HTTP/2.0 %s\r\n' "$code"
+    [ -z "$etag" ] || printf 'ETag: %s\r\n' "$etag"
+    if [ "$code" = 200 ] && [ -n "${link:-}" ]; then printf 'Link: %s\r\n' "$link"; fi
+    printf '\r\n'
+  fi
+  if [ "$code" = 304 ]; then exit 1; fi
+  if [ "$code" = 200 ]; then printf '%s\n' "$body" | filter "$@"; else
+    printf 'gh: %s (HTTP %s)\n' "$body" "$code" >&2
+    exit 1
+  fi
+}
+decline() {
+  local resource="$1" count
+  [ -f "$G/decline-$resource" ] || return 0
+  count="$(cat "$G/decline-$resource")"
+  [ "$count" -gt 0 ] || return 0
+  printf '%s\n' "$((count - 1))" > "$G/decline-$resource"
+  printf '%s\n' "$resource" > "$G/declined"
+  if [ "$resource" = core ]; then
+    printf 'HTTP/2.0 429\r\nRetry-After: 25\r\nX-RateLimit-Remaining: 10\r\n\r\n'
+    echo 'gh: secondary rate limit (HTTP 429)' >&2
+  else
+    echo 'GraphQL: API rate limit already exceeded' >&2
+  fi
+  exit 1
+}
 case "${1:-} ${2:-}" in
   "pr view")
+    case "$*" in *mergeStateStatus,isDraft*) decline graphql ;; esac
     jq -cn --arg h "$(head)" --arg s "$(state)" --arg m "$(mergeable)" --arg ms "$(mss)" --arg b "$BR" --arg x "$([ -e "$G/cross" ] && echo true || echo false)" \
       --arg bn "$(cat "$G/basename" 2>/dev/null || echo main)" \
       '{number:7,state:$s,headRefOid:$h,headRefName:$b,baseRefName:$bn,mergeable:$m,mergeStateStatus:$ms,
@@ -97,9 +134,6 @@ case "${1:-} ${2:-}" in
         reviews:[],reviewDecision:"",headRepository:{name:"r"},headRepositoryOwner:{login:"o"},
         author:{login:"alice"},files:[{path:"widget.txt"}]}' | filter "$@" ;;
   "pr checks")
-    watch=0; for a in "$@"; do [ "$a" = --watch ] && watch=1; done
-    [ -e "$G/watch79" ] && exit 79
-    if [ "$watch" = 1 ]; then read -r _ < "$G/release.fifo"; fi
     cat "$G/checks" 2>/dev/null
     if pending; then exit 8; elif failing; then exit 1; fi; exit 0 ;;
   "pr merge")
@@ -146,16 +180,55 @@ case "${1:-} ${2:-}" in
   "repo view") echo '{"nameWithOwner":"o/r","defaultBranchRef":{"name":"main"}}' | filter "$@" ;;
   "auth status") exit 0 ;;
   api*)
-    case "$*" in
-      *rules/branches*) if [ -e "$G/policy403" ]; then echo "HTTP 403: Resource not accessible by integration" >&2; exit 1
+    shift
+    include=false; validator=""; endpoint=""; link=""
+    args=("$@")
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --include|-i) include=true; shift ;;
+        -H) validator="${2#If-None-Match: }"; shift 2 ;;
+        --jq|-q|-X|--method|--raw-field|-f|--field|-F) shift 2 ;;
+        -*) shift ;;
+        *) endpoint="$1"; shift ;;
+      esac
+    done
+    case "$endpoint" in
+      rate_limit)
+        resource="$(cat "$G/declined")"
+        jq -cn --arg resource "$resource" --argjson reset "$(( $(date +%s) + 30 ))" \
+          '{resources:{($resource):{remaining:(if $resource == "graphql" then 0 else 10 end), reset:$reset}}}' ;;
+      repos/o/r/pulls/7)
+        [ ! -e "$G/wait79" ] || exit 79
+        decline core
+        conditional=true
+        api_head="$(cat "$G/moved-head" 2>/dev/null || head)"
+        http 200 "$(jq -cn --arg head "$api_head" --arg branch "$BR" \
+          '{state:"open",head:{sha:$head,ref:$branch,repo:{full_name:"o/r"}}}')" ;;
+      repos/o/r/commits/*/check-runs\?*)
+        conditional=true
+        if [[ "$endpoint" == *'&page=2' ]]; then
+          http 200 "$(cat "$G/checks-page-2.json")"
+          exit $?
+        fi
+        if [ -f "$G/checks-page-2.json" ]; then
+          link="<https://api.github.com/${endpoint%&page=1}&page=2>; rel=\"next\""
+        fi
+        http 200 "$(jq -Rn '[inputs | split("\t") | {name:.[0], html_url:.[3],
+          status:(if .[1] == "pending" then "in_progress" else "completed" end),
+          conclusion:(if .[1] == "pending" then null elif .[1] == "pass" then "success"
+            elif .[1] == "skipping" then "skipped" else "failure" end)}] | {check_runs:.}' < "$G/checks")" ;;
+      repos/o/r/commits/*/status\?*)
+        conditional=true
+        http 200 "$(cat "$G/statuses.json" 2>/dev/null || echo '{"statuses":[]}')" ;;
+      *rules/branches*) if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
         elif [ -e "$G/strict" ]; then
-          echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]'
-        else echo '[]'; fi ;;
-      *protection*) if [ -e "$G/policy403" ]; then echo "HTTP 403: Resource not accessible by integration" >&2; exit 1
-        elif [ -e "$G/protection.json" ]; then filter "$@" < "$G/protection.json"
-        else echo "HTTP 404: Branch not protected" >&2; exit 1; fi ;;
-      *repos/*) settings | filter "$@" ;;
-      *) echo "stand-in gh: unexpected api call: $*" >&2; exit 1 ;;
+          http 200 '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]' "${args[@]}"
+        else http 200 '[]' "${args[@]}"; fi ;;
+      *protection*) if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
+        elif [ -e "$G/protection.json" ]; then http 200 "$(cat "$G/protection.json")" "${args[@]}"
+        else http 404 "Branch not protected"; fi ;;
+      repos/*) http 200 "$(settings)" "${args[@]}" ;;
+      *) echo "stand-in gh: unexpected api call: ${args[*]}" >&2; exit 1 ;;
     esac ;;
   *) echo "stand-in gh: unexpected call: $*" >&2; exit 1 ;;
 esac
@@ -401,9 +474,9 @@ impl Harness {
         fs::write(self.gh.join("basename"), name).unwrap();
     }
 
-    /// Makes `gh pr checks` exit 79, as `gh` does when the login is gone.
-    pub fn checks_exit_79(&self) {
-        fs::write(self.gh.join("watch79"), "").unwrap();
+    /// Makes the wait's pull request REST call exit 79.
+    pub fn ci_wait_exit_79(&self) {
+        fs::write(self.gh.join("wait79"), "").unwrap();
     }
 
     pub fn result(&self, turn: &str) -> serde_json::Value {
@@ -481,10 +554,6 @@ impl Harness {
             .env("AMPLIHACK_HOME", &self.bundle_root)
             .env("AMPLIHACK_STATE_DIR", &self.state_root)
             .env("AMPLIHACK_WORK_ROOT", &self.work)
-            .env(
-                "RECIPE_RUNNER_RS_PATH",
-                crate::issue_2539_step_recovery_fixture::real_runner(),
-            )
             .env("AMPLIHACK_AGENT_BINARY", "claude")
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.bin.join("claude"))
             .env("GH_STATE", &self.gh)
@@ -506,6 +575,12 @@ impl Harness {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if args.starts_with(&["recipe", "run"]) {
+            c.env(
+                "RECIPE_RUNNER_RS_PATH",
+                crate::issue_2539_step_recovery_fixture::real_runner(),
+            );
+        }
         c
     }
 

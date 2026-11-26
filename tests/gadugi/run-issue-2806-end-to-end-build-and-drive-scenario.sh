@@ -11,7 +11,8 @@
 # What is stood in for, and nothing else:
 #   gh      answers auth status, repo view, issue view, issue list, issue
 #           create, issue comment, label create, pr list, pr create, pr view,
-#           pr checks, pr merge, pr ready/edit/comment, the two read-only
+#           pr checks, conditional REST reads of the PR and its checks,
+#           pr merge, pr ready/edit/comment, the two read-only
 #           account calls `api user` and `api rate_limit`, and the read of the
 #           repository's allowed merge methods, `api repos/{owner}/{repo}`
 #           (#1888). It reads the body from standard input exactly where real
@@ -20,10 +21,8 @@
 #           `pr edit` and `pr ready` change what `pr view` reads back, and
 #           records every call in $WORK/gh-calls,
 #           and exits 96 on anything else, GraphQL included (recorded in
-#           $WORK/gh-unexpected). The pull request's checks are PENDING for the
-#           build and SUCCESS for the drive; the state lives in
-#           $WORK/gh-state/checks and is written below, in this file, once
-#           before each run.
+#           $WORK/gh-unexpected). The pull request's checks start pending.
+#           They settle after the drive's first wait reads them again.
 #   claude  answers the prompt. In part 1 it writes one fixed answer whatever
 #           step asked: one line holding one JSON object, the union of the keys
 #           the steps on that path parse, with values that steer one legitimate
@@ -48,8 +47,9 @@
 #           stand-in carries a dispatch table, one entry per agent step of the
 #           drive, keyed on a substring of the prompt that occurs in exactly
 #           one shipped prompt (or on the first line where that alone is
-#           unambiguous). The turn's answer asks for the merge at the head it
-#           read; a second turn hands off, so a fault ends the drive. Each
+#           unambiguous). The first turn waits for pending checks. The second
+#           asks for the merge once the wait and reading report completion.
+#           An unexpected result ends the drive with a hand-off. Each
 #           entry says which step it answers and why that answer is what a
 #           competent agent would report of this fixture, and the facts it
 #           rests on are read rather than asserted: the head, branch and base
@@ -83,8 +83,9 @@
 #         stand-in cannot write), asked for no merge, and the run exited 0.
 #         Pending checks do not hold the build up (issue 2343): the build
 #         ends with the pull request open whatever the checks say.
-# Part 2  the whole drive. Checks are SUCCESS, so the merge step's precondition
-#         (no pending required check) holds. The stub recorded a `pr merge` for
+# Part 2  the whole drive. The first conditional check read in the wait is
+#         unchanged. The drive stays in the wait until checks pass, then
+#         takes one more turn. The stub recorded a `pr merge` for
 #         that pull request and the drive printed its own terminal report, the
 #         one object carrying `stop_reason`, which is its verdict however it
 #         ended. The sentence beside it is the product's and is not read.
@@ -338,16 +339,36 @@ root="${QA_SCENARIO_ROOT:?}"
 state="$root/gh-state"
 printf '%s\n' "$*" >> "$root/gh-calls"
 branch_file="$state/branch"
+include=false
+validator=""
+if [ "${1-} ${2-}" = 'api --include' ]; then
+  include=true
+  shift 2
+  if [ "${1-}" = -H ]; then
+    validator="${2#If-None-Match: }"
+    shift 2
+  fi
+  set -- api "$@"
+fi
 
 # Apply a --jq/-q program (data for jq, never for a shell) to a JSON document.
 emit() {
   local json="$1" prog="" prev=""
   shift
+  if [ "$include" = true ]; then printf 'HTTP/2 200\r\n\r\n'; fi
   for a in "$@"; do
     case "$prev" in --jq|-q) prog="$a" ;; esac
     prev="$a"
   done
   if [ -n "$prog" ]; then printf '%s' "$json" | jq -r "$prog"; else printf '%s\n' "$json"; fi
+}
+conditional() {
+  local etag="$1" body="$2"
+  if [ "$validator" = "$etag" ]; then
+    printf 'HTTP/2 304\r\nETag: %s\r\n\r\n' "$etag"
+    return 1
+  fi
+  printf 'HTTP/2 200\r\nETag: %s\r\n\r\n%s\n' "$etag" "$body"
 }
 want_json() { for a in "$@"; do [ "$a" = "--json" ] && return 0; done; return 1; }
 
@@ -440,7 +461,30 @@ case "${1-} ${2-}" in
   # classic protection (GitHub's own 404 for an unprotected branch).
   "api repos/qa-owner/qa-repo/rules/branches/main") emit '[]' "$@"; exit 0 ;;
   "api repos/qa-owner/qa-repo/branches/main/protection/required_status_checks")
+    if [ "$include" = true ]; then printf 'HTTP/2 404\r\n\r\n'; fi
     echo "gh: Branch not protected (HTTP 404)" >&2; exit 1 ;;
+  "api repos/qa-owner/qa-repo/pulls/42")
+    [ "$include" = true ] || exit 96
+    pr="$(pr_json)"
+    head="$(jq -r '.headRefOid' <<< "$pr")"
+    : > "$state/wait-read-head"
+    conditional "\"$head\"" "$(jq -c '{head:{sha:.headRefOid}}' <<< "$pr")"
+    exit $? ;;
+  "api repos/qa-owner/qa-repo/commits/"*"/check-runs?"*)
+    if [ "$(cat "$state/checks")" = SUCCESS ]; then
+      conditional '"passed"' '{"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}]}'
+      exit $?
+    fi
+    conditional '"pending"' '{"check_runs":[{"name":"ci","status":"in_progress","conclusion":null}]}'
+    rc=$?
+    if [ -e "$state/wait-read-head" ]; then
+      if [ "$rc" -eq 1 ]; then : > "$state/wait-reused-pending"; fi
+      printf 'SUCCESS\n' > "$state/checks"
+    fi
+    exit "$rc" ;;
+  "api repos/qa-owner/qa-repo/commits/"*"/status?"*)
+    conditional '"no-statuses"' '{"statuses":[]}'
+    exit $? ;;
   "pr list")
     if [ -e "$state/pr-created" ]; then emit "[$(pr_json)]" "$@"; else emit '[]' "$@"; fi
     exit 0 ;;
@@ -653,21 +697,14 @@ if [ "${QA_RUN_LABEL:-}" = drive ]; then
   # previous record back at the agent: a later entry's discriminator could
   # appear inside a quotation.
   if has 'You are one turn of a goal-driven loop'; then
-    # autodrive-goal-turn/decide (#3129): the loop's one agent step per turn.
-    # Every check passed at this head and merging is allowed, so a competent
-    # agent asks for the merge at the head it read. The task text and guidance
-    # require no outcome, so it lists `outcomes` as an empty list, as the turn
-    # prompt asks: a merge decision that lists none is refused (#3129 R2). A
-    # second turn means the merge did not end the goal; the stand-in then
-    # hands off rather than asking again, so a fault ends the drive instead of
-    # looping.
     step=autodrive-goal-turn/decide
-    turns="$root/drive-turns"
-    printf 'x\n' >> "$turns"
-    if [ "$(wc -l < "$turns")" -eq 1 ]; then
+    reading="$(printf '%s\n' "$input" | awk '$0 == "<<<UNTRUSTED-READING" { f = 1; next } $0 == "UNTRUSTED-READING>>>" { f = 0 } f')"
+    if jq -e '.turn == 1 and .goal.checks.state == "pending"' <<< "$reading" >/dev/null; then
+      response="$(j '{action:"wait",args:{},outcomes:[],why:"The checks are pending at the head."}')"
+    elif jq -e '.turn == 2 and .previous.outcome == "checks-complete" and .goal.checks.state == "passed"' <<< "$reading" >/dev/null; then
       response="$(j '{action:"merge",args:{head:$h},outcomes:[],why:"Every check passed at this head and merging is allowed, and the task names no required outcome, so I ask for the merge at the head I read."}')"
     else
-      response="$(j '{action:"handoff",args:{owner:"operator",decision:"why the merge did not end the drive",text:"The merge requested on the first turn did not end the drive. The operator decides what happens next."},why:"The goal did not end after the merge."}')"
+      response="$(j '{action:"handoff",args:{owner:"operator",decision:"how to recover the drive",text:"The drive did not report the expected CI or merge result."},why:"The previous action did not finish as expected."}')"
     fi
   elif has 'step-02 decides from your facts'; then
     # autodrive-build/step-01-build-preflight. The stub reports PR 42 OPEN at
@@ -837,7 +874,6 @@ fi
 # launched on a bare number cannot review the pull request at all. That is
 # issue #2874, and passing the task here sidesteps it rather than covering it:
 # the bare-number path stays untested until #2874 is fixed.
-printf 'SUCCESS\n' > "$WORK/gh-state/checks"
 drive_started=0
 if [ -n "$BRANCH" ] && make_clone "$WORK/pr-clone" \
     && gitq -C "$WORK/pr-clone" fetch -q origin "$BRANCH" \
@@ -846,7 +882,7 @@ if [ -n "$BRANCH" ] && make_clone "$WORK/pr-clone" \
   scenario_env drive "$BINDIR/amplihack" recipe run auto-drive-to-merge \
     -w "$DRIVE_REPO" --no-detach -f json \
     -c pr_number=42 -c "repo_path=$DRIVE_REPO" -c base_branch=main \
-    -c autodrive_dry_run=false -c no_merge=false \
+    -c autodrive_dry_run=false -c no_merge=false -c checks_watch_interval=1 \
     -c "task_description=$TASK" \
     -c "autodrive_state_dir=$AUTODRIVE_STATE" \
     </dev/null >"$WORK/drive.out" 2>"$WORK/drive.err"
@@ -888,6 +924,12 @@ elif [ -z "$drive_verdict" ]; then
   flunk "part2_drive_ends_at_verdict_and_merges: the merge reached the stub but the drive printed no terminal report naming how it ended"
 else
   pass "part2_drive_ends_at_verdict_and_merges - $drive_verdict"
+fi
+
+if [ ! -e "$WORK/gh-state/wait-reused-pending" ] || [ "$merge_recorded" -ne 1 ]; then
+  flunk "part2_drive_waits_for_ci: expected an unchanged pending response and a merge after checks passed"
+else
+  pass "part2_drive_waits_for_ci"
 fi
 
 # Every agent step of the drive reached an entry of the stand-in's dispatch.

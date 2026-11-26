@@ -56,6 +56,7 @@ context:
   # judge or file_all. An unknown value runs as fix_all and the reading
   # reports it.
   autodrive_minor_findings: ""
+  checks_watch_interval: ""
   light_prereqs: ""
   autodrive_pr_input: ""
   light_task_id: ""
@@ -470,6 +471,7 @@ steps:
       no_merge: "{{no_merge}}"
       merge_method: "{{merge_method}}"
       autodrive_minor_findings: "{{autodrive_minor_findings}}"
+      checks_watch_interval: "{{checks_watch_interval}}"
       plan_task_id: "{{light_task_id}}"
   - id: "light-report"
     type: "bash"

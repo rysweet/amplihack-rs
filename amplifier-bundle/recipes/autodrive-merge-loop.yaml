@@ -16,6 +16,7 @@ recursion:
   max_depth: 6
   max_total_steps: 8
 context:
+  checks_watch_interval: ""
   step_recovery_dir: ""
   repo_path: "."
   pr_number: ""
@@ -48,6 +49,7 @@ steps:
     recipe: "autodrive-goal-loop"
     context:
       goal_tool: "autodrive_pr_goal.sh"
+      checks_watch_interval: "{{checks_watch_interval}}"
       goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
       goal_once: "false"
 output:

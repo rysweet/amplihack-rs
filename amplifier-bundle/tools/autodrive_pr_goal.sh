@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # autodrive_pr_goal.sh: the auto-drive goal tool, goal contract v1 (#3129).
 # The goal: get this pull request merged under the owner's conditions.
 #
@@ -8,9 +9,8 @@
 #   read <turn_dir>            goal.json (autodrive_pr_reading.sh)
 #   act review <turn_dir>      one Crusty round (autodrive-crusty-round); its
 #                              verdict is evidence in the next reading
-#   act wait <turn_dir>        `gh pr checks <pr> --watch [--required]` under
-#                              `amplihack recipe guidance wait`, so new
-#                              guidance ends the wait too; no timer or poll
+#   act wait <turn_dir>        conditional REST reads of the PR head and its
+#                              checks under `amplihack recipe guidance wait`
 #   act merge <turn_dir>       autodrive_merge.sh under the captured
 #                              authorisation, with --match-head-commit at the
 #                              head this turn read; writes merge-result.json.
@@ -26,8 +26,8 @@
 # AUTODRIVE_STATE_DIR, AUTODRIVE_REPO, AUTODRIVE_WORKTREE, AUTODRIVE_LOOP_HOME,
 # AUTODRIVE_INVOCATION_FILE, AUTODRIVE_TASK_FILE; from the run's context:
 # RECIPE_VAR_pr_number, merge_method, no_merge, autodrive_dry_run,
-# step_recovery_dir, plan_task_id. Only RECIPE_VAR_* names are read, so an
-# inherited bare variable never fills one in (#1561).
+# step_recovery_dir, plan_task_id, checks_watch_interval. Only RECIPE_VAR_*
+# names are read, so an inherited bare variable never fills one in (#1561).
 # `act` writes <turn_dir>/result.json ({outcome, summary}). Exit 79 and 75
 # pass up unchanged; any other failure is an outcome, never an exit.
 # docs/reference/autodrive-goal-loop.md#goal-contract-v1.
@@ -47,6 +47,10 @@ CALLER_UMASK="$(umask)"; umask 077
 
 TD=""
 result() { jq -cn --arg o "$1" --arg s "$2" '{outcome:$o, summary:$s}' | goal_atomic_write "$TD/result.json"; }
+ci_result() {
+  jq -cn --arg state "$1" --arg summary "$2" '{outcome:"checks-complete", checks_state:$state, summary:$summary}' \
+    | goal_atomic_write "$TD/result.json"
+}
 need_pr() { goal_is_pr "$PR" || { result no-pr "no pull request number reached the goal tool (pr_number)"; exit 0; }; }
 
 do_final() {
@@ -102,32 +106,85 @@ do_act_review() {
   case "$rc" in 79|75) exit "$rc" ;; 0) result reviewed "$s" ;; *) result review-failed "$s; the log is review.log in the turn folder" ;; esac
 }
 
+# Run in its own shell so the guidance wake can interrupt an API call, a
+# rate-limit wait or an ordinary interval sleep. Exit 10 signals a new head.
+do_ci_wait() {
+  # shellcheck source=workflow_gh_retry.sh
+  . "$HERE/workflow_gh_retry.sh" || return 2
+  local build_branch="${1:-}" head slug required interval cache rc state
+  local reading="$TD/reading.json"
+  head="$(jq -r '.goal.pr.head // empty | strings' "$reading")"
+  slug="$(goal_github_pr_repo "$(jq -r '.goal.pr.url // empty | strings' "$reading")" "$PR")"
+  if ! goal_is_sha "$head" || [ -z "$slug" ]; then
+    echo 'the reading has no usable pull request repository or head' >&2
+    return 2
+  fi
+  required="$(jq -c --slurpfile reading "$reading" '
+    if .args.required == true and $reading[0].goal.checks.required_known == true then
+      $reading[0].goal.checks.required | if type == "array" then map(strings) else [] end
+    else [] end
+  ' "$TD/decision.json")" || return 2
+  interval="$(gh_poll_interval_secs)"
+  GH_READ_DIR="$(mktemp -d "$TD/.ci-wait.XXXXXX")" || return 2
+  trap 'gh_goal_cancel; rm -rf -- "$GH_READ_DIR"' EXIT
+  trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+  cache="$(goal_ci_cache_dir "${STATE:-${TD%/turns/*}}")" || return 2
+
+  while :; do
+    gh_rest_get "repos/$slug/pulls/$PR" "$cache" \
+      '(.head.sha | type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$"))' "$head"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      if [ -n "$build_branch" ] && ! jq -e --arg branch "$build_branch" --arg repo "${slug,,}" '
+        .state == "open" and .head.ref == $branch and
+        (.head.repo.full_name | strings | ascii_downcase) == $repo
+      ' "$GH_READ_BODY" >/dev/null; then
+        echo "the pull request is no longer open on the build's branch and repository" >&2
+        return 2
+      fi
+      [ "$(jq -r '.head.sha' "$GH_READ_BODY")" = "$head" ] || return 10
+      gh_head_checks "$slug" "$head" "$cache" "$required" > "$GH_READ_DIR/ci.json"
+      rc=$?
+    fi
+    case "$rc" in
+      75|79) return "$rc" ;;
+      0) ;;
+      *) printf 'the CI read failed (exit %s): %s\n' "$rc" "${GH_READ_ERROR:-unreadable response}" >&2; return 2 ;;
+    esac
+    state="$(jq -r '.state' "$GH_READ_DIR/ci.json")"
+    case "$state" in
+      passed) return 0 ;;
+      failed) return 1 ;;
+      pending) gh_goal_command sleep "$interval" || return 2 ;;
+      *) echo 'the CI read returned an unknown state' >&2; return 2 ;;
+    esac
+  done
+}
+
 do_act_wait() {
-  local req known target since out rc ev code cmd
+  local target since out rc ev code
+  local -a cmd
   need_pr
-  req="$(jq -r '.args.required // false | tostring' "$TD/decision.json" 2>/dev/null)"
-  known="$(jq -r '.goal.checks.required_known // false | tostring' "$TD/reading.json" 2>/dev/null)"
   target="$(jq -r '.goal.guidance_target // empty | strings' "$TD/reading.json" 2>/dev/null)"
   case "$target" in https://*) ;; *) target="" ;; esac
   since="$(jq -r '.guidance_newest // empty | strings' "$TD/reading.json" 2>/dev/null)"; goal_is_entry "$since" || since=""
-  cmd=(gh pr checks "$PR" --watch)
-  [ "$req" = true ] && [ "$known" = true ] && cmd+=(--required)
+  cmd=(bash "$HERE/autodrive_pr_goal.sh" ci-wait "$TD" "$@")
   out="$(cd "$WORK" && "$AMPLIHACK_BIN" recipe guidance wait "--since=$since" ${target:+"$target"} -- "${cmd[@]}" 2>"$TD/wait.err")"; rc=$?
-  if [ "$rc" -eq 0 ] && ev="$(printf '%s' "$out" | jq -r '.event // empty' 2>/dev/null)" && [ -n "$ev" ]; then
-    if [ "$ev" = guidance ]; then result guidance-arrived "new guidance arrived during the wait; the next turn reads it"; return 0; fi
-    code="$(printf '%s' "$out" | jq -r '.exit // empty')"
-  else
-    # No wake could be armed, or the guidance command failed: watch the checks
-    # alone. Guidance is read just before and just after every check wait.
-    echo "the guidance wake was not available (exit ${rc}: $(goal_clean_line 200 < "$TD/wait.err")); watching the checks alone" >&2
-    ( cd "$WORK" && "${cmd[@]}" ) >&2; code=$?
-  fi
+  case "$rc" in 79|75) exit "$rc" ;; esac
+  ev="$(jq -r '.event // empty' 2>/dev/null <<< "$out")"
+  case "$rc:$ev" in
+    0:guidance) result guidance-arrived "new guidance arrived during the wait. The next turn reads it"; return 0 ;;
+    0:command) code="$(jq -r '.exit // empty' <<< "$out")" ;;
+    *)
+      echo "the guidance wake was not available (exit ${rc}). Waiting for checks directly" >&2
+      ( cd "$WORK" && exec "${cmd[@]}" ) >>"$TD/wait.err" 2>&1; code=$? ;;
+  esac
   case "$code" in
     79|75) exit "$code" ;;
-    0) result checks-complete "the checks at the head completed and passed (gh exit 0)" ;;
-    1) result checks-complete "the checks at the head completed and at least one failed (gh exit 1)" ;;
-    8) result checks-pending "gh returned while checks were still pending (exit 8)" ;;
-    *) result wait-error "gh pr checks --watch exited ${code:-unknown}" ;;
+    0) ci_result passed "the checks at the head completed and passed" ;;
+    1) ci_result failed "the checks at the head completed and at least one failed" ;;
+    10) result head-changed "the pull request head changed during the wait" ;;
+    *) result wait-error "the CI wait exited ${code:-unknown}. $(tail -n 1 "$TD/wait.err" | goal_clean_line 300)" ;;
   esac
 }
 
@@ -225,12 +282,17 @@ case "${1:-}" in
   final) do_final ;;
   read)
     TD="${2:-}"; goal_check_turn_dir "$TD" || exit 2
-    bash "$HERE/autodrive_pr_reading.sh" "$TD" ;;
+    # Use the launch checkout's repository, as the worktree resolver does.
+    unset GH_REPO
+    exec bash "$HERE/autodrive_pr_reading.sh" "$TD" ;;
+  ci-wait)
+    TD="${2:-}"; goal_check_turn_dir "$TD" || exit 2
+    do_ci_wait "${3:-}" ;;
   act)
     TD="${3:-}"; goal_check_turn_dir "$TD" || exit 2
     case "${2:-}" in
       review) do_act_review ;;
-      wait) do_act_wait ;;
+      wait) do_act_wait "${4:-}" ;;
       merge) do_act_merge ;;
       *) echo "ERROR: act takes review, wait or merge" >&2; exit 2 ;;
     esac ;;

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # autodrive_pr_reading.sh <turn_dir>: the auto-drive goal's fresh reading of
 # a pull request (#3129). Called by autodrive_pr_goal.sh `read`.
 #
@@ -13,7 +14,7 @@
 #   pr               head, base, state, mergeable, mergeStateStatus, draft,
 #                    cross_repository, url
 #   checks           each check at the head with its state, counts, and
-#                    required_known (false when gh rejects --required)
+#                    required_known (false when the policy could not be read)
 #   reviews          GitHub reviews and Crusty round records, each with the
 #                    head it was given at; a round that could not be read is
 #                    listed with its own error. Each minor finding carries
@@ -32,14 +33,15 @@
 #   autodrive_minor_findings_error  null, or why an unknown value became fix_all
 #
 # Fetching the base and head refs is allowed (refspec fetches only); nothing
-# here changes the worktree. A read that fails records its error and never
-# ends the turn. Exit 79 from gh passes up unchanged; any other failure exits
-# 0 with the error in its section. docs/reference/autodrive-goal-loop.md.
+# here changes the worktree. A read that fails records its error. Exit 75
+# and 79 pass up unchanged. See docs/reference/autodrive-goal-loop.md.
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || exit 2
 # shellcheck source=autodrive_goal_lib.sh
 . "$HERE/autodrive_goal_lib.sh" || exit 2
+# shellcheck source=workflow_gh_retry.sh
+. "$HERE/workflow_gh_retry.sh" || exit 2
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat GIT_TERMINAL_PROMPT=0
 umask 077
@@ -47,7 +49,9 @@ TD="${1:-}"
 goal_check_turn_dir "$TD" || exit 2
 PR="${RECIPE_VAR_pr_number:-}"; STATE="${AUTODRIVE_STATE_DIR:-}"; REPO="${AUTODRIVE_REPO:-$PWD}"
 S="$(mktemp -d "$TD/.reading.XXXXXX")" || exit 1
-trap 'rm -rf -- "$S"' EXIT
+GH_READ_DIR="$S"
+trap 'gh_goal_cancel; rm -rf -- "$GH_READ_DIR"' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 g() { git -c core.fsmonitor=false -C "$WORK" "$@"; }
 err() { goal_clean_line 300 < "$1" 2>/dev/null; }
 put() { # put <section> <json object or empty> <error>
@@ -57,14 +61,13 @@ put() { # put <section> <json object or empty> <error>
     jq -cn --arg e "${3:-the read gave no usable answer}" '{error:$e}' > "$S/$1.json"
   fi
 }
-gh79() { [ "$1" -ne 79 ] || exit 79; }
+passup() { case "$1" in 75|79) exit "$1" ;; esac; }
 
-# --- repo: the PR's own worktree, else the run's checkout --------------------
-WORK="$REPO"; WT_ERR=""
-if goal_is_pr "$PR"; then
-  wt="$(bash "$HERE/autodrive_pr_worktree.sh" resolve --repo "$REPO" --pr "$PR" 2>"$S/wt.err")"; rc=$?; gh79 "$rc"
-  if [ "$rc" -eq 0 ] && [[ "$wt" == /* ]] && [ -d "$wt" ]; then WORK="$wt"; else WT_ERR="the PR's linked worktree was not resolved, so the run's checkout is used: $(err "$S/wt.err")"; fi
-fi
+GUIDANCE_SINCE="${AUTODRIVE_GUIDANCE_MARK:-}"
+goal_is_entry "$GUIDANCE_SINCE" || GUIDANCE_SINCE=""
+GUIDANCE_TARGET="${AUTODRIVE_GUIDANCE_TARGET:-}"
+goal_github_pr_repo "$GUIDANCE_TARGET" "$PR" >/dev/null || GUIDANCE_TARGET=""
+gh_rate_limit_guidance() { goal_read_guidance; }
 
 # --- merge authority: the captured invocation only --------------------------
 AUTH=""; AUTH_ERR=""
@@ -87,9 +90,9 @@ fi
 # --- the pull request -------------------------------------------------------
 HEAD=""; BASE=""; BRANCH=""; URL=""; MSS=""; PR_READ=false
 if goal_is_pr "$PR"; then
-  gh pr view "$PR" --json number,state,headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus,isDraft,isCrossRepository,url,reviews \
-    > "$S/pr.raw" 2>"$S/pr.err"; rc=$?; gh79 "$rc"
-  if [ "$rc" -eq 0 ] && jq -e 'type == "object"' "$S/pr.raw" >/dev/null 2>&1; then
+  gh_goal_read graphql false pr view "$PR" --json number,state,headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus,isDraft,isCrossRepository,url,reviews
+  rc=$?; passup "$rc"
+  if [ "$rc" -eq 0 ] && jq -e 'type == "object"' "$GH_READ_BODY" >/dev/null 2>&1 && cp -- "$GH_READ_BODY" "$S/pr.raw"; then
     PR_READ=true
     put pr "$(jq -c '{number, state, head:.headRefOid, head_branch:.headRefName, base:.baseRefName, mergeable,
       merge_state:.mergeStateStatus, draft:.isDraft, cross_repository:.isCrossRepository, url}' "$S/pr.raw")" ""
@@ -97,32 +100,23 @@ if goal_is_pr "$PR"; then
     BRANCH="$(jq -r '.headRefName // empty | strings' "$S/pr.raw")"; URL="$(jq -r '.url // empty | strings' "$S/pr.raw")"
     MSS="$(jq -r '.mergeStateStatus // empty | strings' "$S/pr.raw")"
   else
-    put pr "" "gh pr view failed (exit ${rc}): $(err "$S/pr.err")"
+    put pr "" "the pull request could not be read (exit ${rc}): ${GH_READ_ERROR:-unreadable response}"
   fi
 else
   put pr "" "no pull request number was given (pr_number)"
 fi
 goal_is_sha "$HEAD" || HEAD=""
+if SLUG="$(goal_github_pr_repo "$URL" "$PR")"; then GUIDANCE_TARGET="$URL"; fi
 
-# --- checks at the head -----------------------------------------------------
-parse_checks() { jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | {name:.[0], state:(.[1] // ""), elapsed:(.[2] // ""), link:(.[3] // "")}) | .[:200]'; }
+# --- repo: the PR's own worktree, else the run's checkout --------------------
+WORK="$REPO"; WT_ERR=""
 if goal_is_pr "$PR"; then
-  KNOWN=true
-  gh pr checks "$PR" --required > "$S/checks.raw" 2>"$S/checks.err"; rc=$?; gh79 "$rc"
-  if [ "$rc" -ne 0 ] && [ "$rc" -ne 8 ] && [ ! -s "$S/checks.raw" ] && grep -qiE 'required|unknown flag' "$S/checks.err"; then
-    KNOWN=false
-    gh pr checks "$PR" > "$S/checks.raw" 2>"$S/checks.err"; rc=$?; gh79 "$rc"
-  fi
-  if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 8 ]; then
-    CE=""; [ -s "$S/checks.raw" ] || CE="$(err "$S/checks.err")"
-    put checks "$(parse_checks < "$S/checks.raw" | jq -c --argjson k "$KNOWN" --argjson rc "$rc" '{required_known:$k, gh_exit:$rc, checks:.,
-      counts:{total:length, passed:(map(select(.state == "pass")) | length), failing:(map(select(.state == "fail" or .state == "cancel")) | length),
-        pending:(map(select(.state == "pending")) | length), skipped:(map(select(.state == "skipping")) | length)}}')" "$CE"
+  if [ "$PR_READ" = true ] && jq -e '.isCrossRepository == false' "$S/pr.raw" >/dev/null && [ -n "$BRANCH" ]; then
+    wt="$(bash "$HERE/autodrive_pr_worktree.sh" resolve --repo "$REPO" --head "$BRANCH" 2>"$S/wt.err")"; rc=$?; passup "$rc"
+    if [ "$rc" -eq 0 ] && [[ "$wt" == /* ]] && [ -d "$wt" ]; then WORK="$wt"; else WT_ERR="the PR's linked worktree was not resolved, so the run's checkout is used: $(err "$S/wt.err")"; fi
   else
-    put checks "" "gh pr checks failed (exit ${rc}): $(err "$S/checks.err")"
+    WT_ERR="no same-repository head branch could be read, so the run's checkout is used"
   fi
-else
-  put checks "" "no pull request number"
 fi
 
 # --- reviews: GitHub's and the Crusty rounds' --------------------------------
@@ -207,29 +201,34 @@ fi
 put base "$BJ" "$BE"
 
 # --- the repository's settings ----------------------------------------------
-OWNER=""; NAME=""
-if [[ "$URL" =~ ^https://github\.com/([A-Za-z0-9_-]+)/([A-Za-z0-9._-]+)/pull/[0-9]+$ ]]; then OWNER="${BASH_REMATCH[1]}"; NAME="${BASH_REMATCH[2]}"; fi
 RE=""; RJ='{}'
-if [ -z "$OWNER" ]; then RE="the repository could not be named from the PR URL"
+KNOWN=false; REQUIRED='[]'
+if [ -z "$SLUG" ]; then RE="the repository could not be identified from the PR URL"
 else
-  gh api "repos/$OWNER/$NAME" --jq '{merge:.allow_merge_commit, squash:.allow_squash_merge, rebase:.allow_rebase_merge}' > "$S/methods" 2>"$S/methods.err"; rc=$?; gh79 "$rc"
-  M="$(jq -c 'select(type == "object")' "$S/methods" 2>/dev/null)"; [ -n "$M" ] || { M=null; RE="the allowed merge methods could not be read: $(err "$S/methods.err")"; }
+  gh_goal_read core true api --include "repos/$SLUG"; rc=$?; passup "$rc"
+  M=null
+  if [ "$rc" -eq 0 ] && methods="$(jq -ce 'objects | {merge:.allow_merge_commit, squash:.allow_squash_merge, rebase:.allow_rebase_merge}' "$GH_READ_BODY" 2>/dev/null)"; then M="$methods"
+  else RE="the allowed merge methods could not be read: ${GH_READ_ERROR:-unreadable response}"; fi
   STRICT=null; SRC=""; WHY=""; RULES_READ=false
   if ref_ok "$BASE"; then
-    gh api "repos/$OWNER/$NAME/rules/branches/$BASE" > "$S/rules" 2>"$S/rules.err"; rc=$?; gh79 "$rc"
-    if [ "$rc" -eq 0 ] && jq -e 'type == "array"' "$S/rules" >/dev/null 2>&1; then
-      RULES_READ=true
-      if jq -e 'any(.[]; .type == "required_status_checks" and .parameters.strict_required_status_checks_policy == true)' "$S/rules" >/dev/null; then STRICT=true; SRC=rules; fi
-    else WHY="rules endpoint: $(err "$S/rules.err")"; fi
-    if [ "$STRICT" != true ]; then
-      gh api "repos/$OWNER/$NAME/branches/$BASE/protection/required_status_checks" --jq .strict > "$S/prot" 2>"$S/prot.err"; rc=$?; gh79 "$rc"
-      case "$rc:$(tr -d '[:space:]' < "$S/prot")" in
-        0:true) STRICT=true; SRC=protection ;;
-        0:false) STRICT=false; SRC=protection ;;
-        *) WHY="${WHY:+$WHY; }classic protection: $(err "$S/prot.err")" ;;
-      esac
-      if [ "$STRICT" = null ] && [ "$RULES_READ" = true ]; then STRICT=false; SRC="rules (no strict status check rule)"; fi
+    base_path="$(jq -nr --arg base "$BASE" '$base | @uri')"
+    gh_goal_read core true api --include "repos/$SLUG/rules/branches/$base_path"; rc=$?; passup "$rc"
+    if [ "$rc" -eq 0 ] && rules="$(jq -ce 'arrays | map(objects | select(.type == "required_status_checks"))' "$GH_READ_BODY" 2>/dev/null)"; then
+      RULES_READ=true; KNOWN=true
+      REQUIRED="$(jq -c '[.[].parameters.required_status_checks[]? | .context | strings | select(length > 0)] | unique' <<< "$rules")"
+      if jq -e 'any(.[]; .parameters.strict_required_status_checks_policy == true)' <<< "$rules" >/dev/null; then STRICT=true; SRC=rules; fi
+    else WHY="rules endpoint: ${GH_READ_ERROR:-unreadable response}"; fi
+    gh_goal_read core true api --include "repos/$SLUG/branches/$base_path/protection/required_status_checks"; rc=$?; passup "$rc"
+    if [ "$rc" -eq 0 ] && protection="$(jq -ce 'objects | select(.strict | type == "boolean")' "$GH_READ_BODY" 2>/dev/null)"; then
+      KNOWN=true
+      if [ "$STRICT" != true ]; then STRICT="$(jq -r '.strict' <<< "$protection")"; SRC=protection; fi
+      REQUIRED="$(jq -c --argjson required "$REQUIRED" '
+        [$required[], .contexts[]?, .checks[]?.context] | map(strings | select(length > 0)) | unique
+      ' <<< "$protection")"
+    else
+      WHY="${WHY:+$WHY; }classic protection: ${GH_READ_ERROR:-unreadable response}"
     fi
+    if [ "$STRICT" = null ] && [ "$RULES_READ" = true ]; then STRICT=false; SRC="rules (no strict status check rule)"; fi
   else WHY="the base name was refused"; fi
   # #3141: BEHIND is evidence beside the policy, never the policy. GitHub can
   # report BEHIND under a policy that does not require an up-to-date branch,
@@ -242,6 +241,20 @@ else
       merge_state_behind:$behind}')"
 fi
 put repository "$RJ" "$RE"
+
+# --- checks at the head -----------------------------------------------------
+if ! goal_is_pr "$PR"; then put checks "" "no pull request number"
+elif [ -z "$SLUG" ] || [ -z "$HEAD" ]; then put checks "" "the pull request repository or head could not be read"
+elif ! cache="$(goal_ci_cache_dir "${STATE:-${TD%/turns/*}}")"; then put checks "" "the conditional CI cache directory is unavailable"
+else
+  gh_head_checks "$SLUG" "$HEAD" "$cache" "$REQUIRED" > "$S/ci.json"; rc=$?; passup "$rc"
+  if [ "$rc" -eq 0 ]; then
+    put checks "$(jq -c --argjson known "$KNOWN" --argjson required "$REQUIRED" \
+      '. + {required_known:$known, required:$required, gh_exit:0}' "$S/ci.json")" ""
+  else
+    put checks "$(jq -cn --argjson rc "$rc" '{gh_exit:$rc}')" "the checks could not be read: ${GH_READ_ERROR:-unreadable response}"
+  fi
+fi
 
 # --- the worktree's own state -------------------------------------------------
 LB="$(g symbolic-ref --short -q HEAD 2>/dev/null)"; LH="$(g rev-parse --verify -q HEAD 2>/dev/null)"
@@ -275,6 +288,7 @@ jq -n --slurpfile repo "$S/repo.json" --slurpfile ma "$S/merge_authority.json" -
    autodrive_minor_findings:$mf, autodrive_minor_findings_error:(if $mferr == "" then null else $mferr end),
    summary:((if $p.error then "PR #" + $prn + ": the pull request could not be read (" + $p.error + ")" else
      "PR #" + $prn + " " + ($p.state // "?") + " at " + (($p.head // "?")[0:12]) + " (" + ($p.head_branch // "?") + " into " + ($p.base // "?") + "), mergeStateStatus " + ($p.merge_state // "?")
-     + "; checks: " + (if $checks[0].error then "unreadable" else "\($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending" end)
+     + "; checks: " + (if $checks[0].error then "unreadable" elif $c.total == 0 then "pending (no checks reported)"
+        else "\($c.passed // 0) passed, \($c.failing // 0) failing, \($c.pending // 0) pending" end)
      + "; base: " + (if $b.error then "unreadable" else "\($b.behind_by // "?") behind, \($b.conflict_files | length) conflicting files" end)
      + "; merging " + (if $ma[0].effective then "allowed" else "off" end) end) + "; minor findings: " + $mf)}' | goal_atomic_write "$TD/goal.json"

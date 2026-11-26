@@ -37,6 +37,7 @@ context:
   # when empty), judge or file_all. An unknown value runs as fix_all and the
   # reading reports it in goal.autodrive_minor_findings_error.
   autodrive_minor_findings: ""
+  checks_watch_interval: ""
   autodrive_pr_input: ""
   # Retired (#3129): accepted for one release and ignored; the loop has no
   # round or time budget.
@@ -72,6 +73,7 @@ steps:
     recipe: "autodrive-build"
     context:
       base_branch: "{{base_branch}}"
+      checks_watch_interval: "{{checks_watch_interval}}"
       task_description: "{{task_description}}"
       requirements: "{{requirements}}"
       repo_path: "{{repo_path}}"
@@ -113,6 +115,7 @@ steps:
       no_merge: "{{no_merge}}"
       merge_method: "{{merge_method}}"
       autodrive_minor_findings: "{{autodrive_minor_findings}}"
+      checks_watch_interval: "{{checks_watch_interval}}"
       step_recovery_dir: "{{step_recovery_dir}}"
   # The run's outcome is the runner's report (report.rs), built from the
   # driver's loop-end.json and the merge action's merge-result.json; this step

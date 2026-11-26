@@ -24,9 +24,9 @@
 # Exit codes: 0 done (an act always writes result.json), 1 publish failed,
 # 2 misuse of the contract, 75 and 79 passed up unchanged.
 #
-# `act` checks, in order: the turn folder, decision.json, the arguments, the
-# secret screen, the run's identity and a live read of the pull request,
-# guidance (mark-ready only), the effect, then a read-back.
+# `act` checks the turn folder and decision before running the action.
+# Writes check the run's identity and pull request again. The CI wait
+# verifies the pull request in its first REST read under the guidance wake.
 # docs/reference/build-goal-loop.md#actions.
 
 set -uo pipefail
@@ -217,9 +217,25 @@ act_mark_ready() {
 
 # --- review and wait: PR 1's goal tool, at the run's own pull request -----------
 delegate() { # delegate <review|wait>
-  local wt rc
-  identity_for_write || return 0
-  own_verified true || return 0
+  local wt rc slug
+  local -a wait_branch=()
+  if [ "$1" = wait ]; then
+    # Use the turn's candidate. The CI wait verifies it live on its first
+    # conditional REST read, where a decline can be waited out.
+    OWN_PR="$(jq -r '.goal.prs.own // empty | tostring' "$TD/reading.json" 2>/dev/null)"
+    if ! goal_is_pr "$OWN_PR"; then result no-pr "the reading has no pull request to wait for"; return 0; fi
+    if ! build_repo_slug "$LAUNCH"; then result failed "the repository is unknown: ${BUILD_REPO_ERR}"; return 0; fi
+    if ! build_run_branch; then result failed "the run branch is unknown"; return 0; fi
+    slug="$(goal_github_pr_repo "$(jq -r '.goal.pr.url // empty | strings' "$TD/reading.json")" "$OWN_PR")"
+    if [ "$BUILD_REPO_MISMATCH" = true ] || [ "${slug,,}" != "${BUILD_REPO,,}" ]; then
+      result wait-error "the reading has no pull request URL for the run's repository"
+      return 0
+    fi
+    wait_branch=("$BUILD_BRANCH")
+  else
+    identity_for_write || return 0
+    own_verified true || return 0
+  fi
   build_identity_load || :
   wt="${ID_WORKTREE:-$(build_ws_field worktree_path)}"
   if ! build_worktree_check "$wt" "$BUILD_BRANCH" "$LAUNCH"; then
@@ -227,7 +243,7 @@ delegate() { # delegate <review|wait>
     wt="$LAUNCH"
   fi
   RECIPE_VAR_pr_number="$OWN_PR" AUTODRIVE_WORKTREE="$wt" AUTODRIVE_REPO="$LAUNCH" AUTODRIVE_GOAL_CONTRACT=1 \
-    bash "$HERE/autodrive_pr_goal.sh" act "$1" "$TD" >"$S/delegate.log" 2>&1; rc=$?
+    bash "$HERE/autodrive_pr_goal.sh" act "$1" "$TD" "${wait_branch[@]}" >"$S/delegate.log" 2>&1; rc=$?
   passup "$rc"
   if [ "$rc" -ne 0 ] || ! goal_json_file "$TD/result.json" 65536; then
     result failed "the ${1} step of autodrive_pr_goal.sh exited ${rc}: $(build_redact_tail < "$S/delegate.log")" "$(jq -cn --argjson n "$OWN_PR" '{pr:$n}')"
@@ -360,8 +376,8 @@ do_final() {
 }
 
 do_publish() {
-  local f="${1:-}" rc
-  [ -f "$f" ] || { echo "ERROR: publish needs a body file" >&2; exit 2; }
+  local body_file="${1:-}" rc
+  [ -f "$body_file" ] || { echo "ERROR: publish needs a body file" >&2; exit 2; }
   build_repo_slug "$LAUNCH" || { echo "ERROR: the repository is unknown: ${BUILD_REPO_ERR}" >&2; exit 1; }
   [ "$BUILD_REPO_MISMATCH" = false ] || { echo "ERROR: pr_repository names another repository than origin; nothing was posted" >&2; exit 1; }
   build_run_branch || { echo "ERROR: the run branch is not known, so there is no pull request of this run to post to" >&2; exit 1; }
@@ -369,8 +385,8 @@ do_publish() {
   goal_is_pr "$OWN_PR" || { echo "ERROR: this run has no pull request yet; nothing was posted (the text stays in the turn folder)" >&2; exit 1; }
   build_verify_pr "$OWN_PR" "$BUILD_BRANCH" false; rc=$?; passup "$rc"
   [ "$VERIFY_CLASS" = ok ] || { echo "ERROR: ${VERIFY_WHY}; nothing was posted" >&2; exit 1; }
-  goal_secret_screen "$f" || { echo "ERROR: the comment matched the secret screen (${GOAL_SECRET_CLASS}); nothing was posted" >&2; exit 1; }
-  (cd "$LAUNCH" && exec gh pr comment "$OWN_PR" --body-file "$f"); rc=$?
+  goal_secret_screen "$body_file" || { echo "ERROR: the comment matched the secret screen (${GOAL_SECRET_CLASS}); nothing was posted" >&2; exit 1; }
+  (cd "$LAUNCH" && exec gh pr comment "$OWN_PR" --body-file "$body_file"); rc=$?
   passup "$rc"
   [ "$rc" -eq 0 ] || exit 1
 }
@@ -381,7 +397,7 @@ case "${1:-}" in
   read)
     [ "$#" -eq 2 ] || { echo "usage: autodrive_build_goal.sh read <turn_dir>" >&2; exit 2; }
     build_turn_dir "$2" || exit 2
-    bash "$HERE/autodrive_build_reading.sh" "$2" ;;
+    exec bash "$HERE/autodrive_build_reading.sh" "$2" ;;
   act)
     [ "$#" -eq 3 ] || { echo "usage: autodrive_build_goal.sh act <word> <turn_dir>" >&2; exit 2; }
     WORD="$2"; TD="$3"

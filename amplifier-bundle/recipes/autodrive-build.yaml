@@ -14,6 +14,7 @@ recursion:
 context:
   step_recovery_dir: ""
   build_recovery: ""
+  checks_watch_interval: ""
   base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
   requirements: ""
@@ -70,6 +71,7 @@ steps:
     continue_on_error: true
     context:
       base_branch: "{{base_branch}}"
+      checks_watch_interval: "{{checks_watch_interval}}"
       task_description: "{{no_merge_directive.task_description}}"
       requirements: "{{no_merge_directive.requirements}}"
       repo_path: "{{repo_path}}"
@@ -105,6 +107,7 @@ steps:
       d() { printf '%s' "${RECIPE_VAR_no_merge_directive:-}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default "$2"; }
       exec amplihack recipe run default-workflow \
+        -c "checks_watch_interval=${RECIPE_VAR_checks_watch_interval:-}" \
         -c "task_description=$(d task_description "${RECIPE_VAR_task_description:-}")" \
         -c "requirements=$(d requirements "${RECIPE_VAR_requirements:-}")" \
         -c "repo_path=${RECIPE_VAR_repo_path:-.}" -c "branch_prefix=${RECIPE_VAR_branch_prefix:-feat}" \

@@ -369,6 +369,19 @@ pr_json() {
 }
 
 case "${1-} ${2-}" in
+  "api --include")
+    case "${!#}" in
+      repos/qa-owner/qa-repo/rules/branches/main) body='[]' ;;
+      repos/qa-owner/qa-repo/branches/main/protection/required_status_checks)
+        printf 'HTTP/2 404\r\n\r\n'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
+      repos/qa-owner/qa-repo)
+        body='{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}' ;;
+      repos/qa-owner/qa-repo/commits/*/check-runs\?*)
+        body='{"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}]}' ;;
+      repos/qa-owner/qa-repo/commits/*/status\?*) body='{"statuses":[]}' ;;
+      *) body='' ;;
+    esac
+    if [ -n "$body" ]; then printf 'HTTP/2 200\r\n\r\n%s\n' "$body"; exit 0; fi ;;
   "auth status") echo "Logged in to github.com as qa-owner"; exit 0 ;;
   "repo view")
     emit '{"nameWithOwner":"qa-owner/qa-repo","name":"qa-repo","owner":{"login":"qa-owner"},"url":"https://github.com/qa-owner/qa-repo","isFork":false,"defaultBranchRef":{"name":"main"},"viewerPermission":"ADMIN"}' "$@"
