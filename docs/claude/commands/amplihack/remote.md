@@ -242,7 +242,7 @@ Action required:
 
 ```
 ERROR: Azlin not found. Please install:
-  cargo install azlin
+  azlin, installed as its documentation describes and available on PATH
 ```
 
 **Solution**: Install azlin and configure Azure access as its documentation describes.
@@ -321,7 +321,7 @@ azlin cp amplihack-user-20251120-143022:~/logs.tar.gz logs.tar.gz
 
 ### Local Machine
 
-- **azlin**: Installed (`cargo install azlin`) with Azure access configured
+- **azlin**: Installed as its documentation describes and available on `PATH`, with Azure access configured
 - **Git** and **tar**: Available on the local machine
 - **Azure CLI**: Available as required by azlin
 - **ANTHROPIC_API_KEY**: Set in environment
