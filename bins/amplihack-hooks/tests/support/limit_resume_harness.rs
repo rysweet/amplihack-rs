@@ -235,7 +235,7 @@ impl Rig {
         // Only built-ins: the script's `PATH` is its own directory.
         let script = format!(
             "#!/bin/sh\n\
-             {{ for a in \"$@\"; do printf '[%s]' \"$a\"; done; printf '\\n'; }} >> '{record}'\n\
+             line=''; for a in \"$@\"; do line=\"$line[$a]\"; done; printf '%s\\n' \"$line\" >> '{record}'\n\
              case \"$1\" in\n\
              display-message)\n{barrier_code}    printf '%s\\n' \"$AMPLIHACK_TEST_PANE_TTY\" ;;\n\
              capture-pane)\n    while IFS= read -r l; do printf '%s\\n' \"$l\"; done < '{screen}' ;;\n\
