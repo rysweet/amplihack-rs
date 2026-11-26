@@ -14,8 +14,8 @@
 //! `spare` is made stale by a `swapped_away` entry 200 s ahead of now, the
 //! furthest a loaded ledger keeps is 300 s. Its re-read is therefore read
 //! (and logged) but still not strictly later than the damping time, so it
-//! is then logged as failed (issue #2211), made unknown, and the swap goes
-//! to `extra`.
+//! is rejected. The active login stays unchanged, and `extra` waits for a
+//! later cycle to confirm its own reading.
 
 #![cfg(target_os = "linux")]
 
@@ -76,35 +76,23 @@ fn rotate(f: &Fixture, probe: Option<&str>) -> String {
 fn assert_reread_through_claude(probe: Option<&str>) {
     let f = damped_spare();
     let probes_before = f.usage_probes("spare");
+    let extra_before = f.usage_probes("extra");
     let log = rotate(&f, probe);
     assert_eq!(
         f.usage_probes("spare") - probes_before,
         2,
         "{probe:?}: spare is read by the cycle and again by the gate, both through claude:\n{log}"
     );
-    // The re-read gave a reading, which is still stale, so the failure line
-    // follows it directly. A re-read that failed for want of a direct read
-    // would log the failure with no reading before it.
-    let lines: Vec<&str> = log.lines().collect();
-    let read_at = lines
-        .iter()
-        .position(|l| l.ends_with("reread: spare reading stale s=10% w=20%; fresh s=10% w=20%"));
-    assert!(
-        read_at.is_some_and(|i| lines
-            .get(i + 1)
-            .is_some_and(|l| l.ends_with("reread: spare failed; treated as unknown"))),
-        "{probe:?}: the re-read gave a reading, still stale, so it failed:\n{log}"
-    );
+    // Only the selected target gets confirmation. The alternative is
+    // measured once and cannot be swapped to in this decision.
     assert_eq!(
-        log.matches("reread: spare failed").count(),
+        f.usage_probes("extra") - extra_before,
         1,
-        "{probe:?}: expected exactly one failure line for the stale re-read:\n{log}"
+        "{probe:?}: the alternative needs confirmation in a later cycle:\n{log}"
     );
-    assert!(
-        log.contains("swap work->extra"),
-        "{probe:?}: still damped, so the swap goes to the next candidate:\n{log}"
-    );
-    assert_eq!(f.home_account(), "uuid-extra");
+    assert_eq!(f.home_account(), "uuid-work");
+    assert_eq!(f.ledger().unwrap()["live"], "work");
+    f.assert_each_login_once();
 }
 
 #[test]

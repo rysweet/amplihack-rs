@@ -570,7 +570,8 @@ fn usage_record_is_refreshed_under_the_live_account() {
                 "five_hour",
                 "seven_day",
                 "observed_at",
-                "source"
+                "source",
+                "week_models"
             ])),
             "{name}: {fields:?}"
         );
@@ -582,6 +583,10 @@ fn usage_record_is_refreshed_under_the_live_account() {
     assert_eq!(d["five_hour"]["resets_at"], f.base + 2 * 3600);
     assert_eq!(d["seven_day"]["used_percentage"], 30.0);
     assert_eq!(d["seven_day"]["resets_at"], f.base + 3 * 86_400);
+    assert_eq!(d["week_models"][0]["label"], "Fable");
+    assert_eq!(d["week_models"][0]["used_percentage"], 0.0);
+    assert_eq!(d["week_models"][0]["resets_at"], f.base + 3 * 86_400);
+    assert!(d["week_models"][0]["observed_at"].as_i64().unwrap() >= t0);
     assert_eq!(accounts["b"]["five_hour"]["used_percentage"], 100.0);
     assert_eq!(accounts["c"]["five_hour"]["used_percentage"], 5.0);
     assert_eq!(accounts["c"]["seven_day"]["used_percentage"], 10.0);

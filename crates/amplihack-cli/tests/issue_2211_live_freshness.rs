@@ -11,7 +11,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
 struct Fixture {
@@ -25,6 +25,8 @@ struct Fixture {
     unknown_token: Arc<AtomicBool>,
     /// A request reached the OAuth token endpoint, i.e. something refreshed.
     token_hit: Arc<AtomicBool>,
+    work_usage: Arc<AtomicUsize>,
+    spare_usage: Arc<AtomicUsize>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -40,6 +42,9 @@ impl Fixture {
         let usage = Arc::clone(&high_usage);
         let unknown_token = Arc::new(AtomicBool::new(false));
         let token_hit = Arc::new(AtomicBool::new(false));
+        let work_usage = Arc::new(AtomicUsize::new(0));
+        let spare_usage = Arc::new(AtomicUsize::new(0));
+        let (work_reads, spare_reads) = (Arc::clone(&work_usage), Arc::clone(&spare_usage));
         let (unknown, refreshed) = (Arc::clone(&unknown_token), Arc::clone(&token_hit));
         let worker = std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -90,6 +95,12 @@ impl Fixture {
                     (_, false) => 45,
                     (_, true) => 10,
                 };
+                if !profile {
+                    match name {
+                        "work" => work_reads.fetch_add(1, Ordering::SeqCst),
+                        _ => spare_reads.fetch_add(1, Ordering::SeqCst),
+                    };
+                }
                 let body = if profile {
                     json!({"account":{"uuid":format!("uuid-{name}"),
                         "email":format!("{name}@example.com")}, "organization":{"uuid":null}})
@@ -111,6 +122,8 @@ impl Fixture {
             high_usage,
             unknown_token,
             token_hit,
+            work_usage,
+            spare_usage,
             worker: Some(worker),
         };
         for name in ["work", "spare"] {
@@ -319,13 +332,10 @@ fn one_shot_old_passive_live_reading_is_reread_from_home() {
         !out.contains("reread: work failed"),
         "the live re-read failed:\n{out}"
     );
-    // The live re-read is dated after the measurement started, where spare's
-    // direct reading is dated. It must not make that reading stale: no
-    // target re-read, however long the measurement took.
-    assert!(
-        !out.contains("reread: spare"),
-        "the live re-read made spare's reading from the same measurement stale:\n{out}"
-    );
+    // The old passive live observation is read directly once. The target
+    // is measured and then confirmed once, even with a fresh measurement.
+    assert_eq!(f.work_usage.load(Ordering::SeqCst), 1);
+    assert_eq!(f.spare_usage.load(Ordering::SeqCst), 2);
     for line in out.lines() {
         assert_log_grammar(line, false);
     }
