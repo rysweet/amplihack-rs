@@ -92,7 +92,7 @@ gh pr list --search "review:required"
 gh pr view 123                    # By number
 gh pr view                        # Current branch PR
 gh pr diff 123                    # View diff
-gh pr checks 123                  # View CI status
+gh pr checks 123                  # View CI status; auto-drive agents use round evidence below
 
 # Review PRs
 gh pr review 123 --approve
@@ -163,15 +163,21 @@ gh run view 123456 --log-failed   # Only failed logs
 gh workflow run ci.yml
 gh workflow run ci.yml -f param=value
 
-# Watch run
-gh run watch                      # Watch current branch run
-gh run watch 123456               # Watch specific run
+# Watch run: interactive people only; forbidden in agent steps
+gh run watch                      # Interactive person only; forbidden in agent steps
+gh run watch 123456               # Interactive person only; forbidden in agent steps
 
 # Cancel/rerun
 gh run cancel 123456
 gh run rerun 123456
 gh run rerun 123456 --failed      # Rerun only failed jobs
 ```
+
+#### Auto-drive round CI evidence
+
+Auto-drive round agents read CI from the round's evidence. They do not watch
+or poll CI and make no extra status query. When CI is pending they report it
+and end the step.
 
 ### 5. Search
 
