@@ -3,7 +3,8 @@
 //! Selection: [`decide`] restricts the overflow-aware decision with one
 //! organisation pool (issue #2910, [`affinity_pool::pool`]), worked out once
 //! per decision. Only a confirmed crossing is restricted, and only while the
-//! live login has room; an unknown organisation is not one. The issue #2211 outlook, a projected or
+//! live login has room and its week use is below `--week-at`; an unknown
+//! organisation is not one. The issue #2211 outlook, a projected or
 //! substituted live figure, is decided here too ([`with_outlook`]): it never
 //! makes a confirmed crossing, nor makes one sooner.
 //!
@@ -51,8 +52,9 @@ impl Snap {
 /// login eligible. A candidate is usable for the pool when the selector,
 /// offered only that target, picks it: it qualifies and is not held.
 /// `may_cross` says whether the decision may make a confirmed crossing: the
-/// live login is an overflow profile, has no room now, or its probe failed
-/// (then only by the failed-probe swap that `damp` holds).
+/// live login is an overflow profile, has no room now, has its week use at or
+/// above `--week-at` (issue #3368), or its probe failed (then only by the
+/// failed-probe swap that `damp` holds).
 pub(in super::super) fn decide(
     snap: &Snap,
     input: &OverflowInput<'_>,

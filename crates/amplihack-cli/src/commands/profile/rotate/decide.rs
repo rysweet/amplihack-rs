@@ -330,8 +330,8 @@ pub enum Decision {
 pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
     match live {
         Reading::Failed | Reading::Exhausted { .. } => true,
-        Reading::Measured { session, week } => {
-            *session >= f64::from(s.session_at) || *week >= f64::from(s.week_at)
+        Reading::Measured { session, .. } => {
+            *session >= f64::from(s.session_at) || target::week_reached(s, live)
         }
     }
 }

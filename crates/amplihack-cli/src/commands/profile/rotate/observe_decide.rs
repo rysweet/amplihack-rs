@@ -108,12 +108,21 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     };
     let need = Need::of(on_overflow, !on_overflow && needs_swap(s, &live_reading));
     let room = target::live_room(&decided.reading, live_blocked);
-    // A live login whose probe failed may cross as before #2910, and only by
-    // the failed-probe swap, which `damp` holds until three failures in a
-    // row and the outlook never makes sooner (`outlook_failed`).
+    // The crossing test. A relief move may cross organisations when the live
+    // login has no room now, or when its week use is at or above `--week-at`
+    // (issue #3368): the crossing test then counts it as having no room,
+    // because its week does not reset within hours. A live login past
+    // `--session-at` alone, with room, does not cross. A live login whose
+    // probe failed may cross as before #2910, and only by the failed-probe
+    // swap, which `damp` holds until three failures in a row and the outlook
+    // never makes sooner (`outlook_failed`). An upgrade never crosses.
     let may_cross = match need {
         Need::LeaveOverflow => true,
-        Need::Relief => room == LiveRoom::NoRoom || probe.reading == Reading::Failed,
+        Need::Relief => {
+            room == LiveRoom::NoRoom
+                || probe.reading == Reading::Failed
+                || target::week_reached(s, &live_reading)
+        }
         Need::Upgrade => false,
     };
     let eligible: Vec<bool> = measured
