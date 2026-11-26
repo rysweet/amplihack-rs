@@ -4509,6 +4509,11 @@ profile in this order:
 3. `<root>/.default`
 4. none — `CLAUDE_CONFIG_DIR` is left exactly as inherited.
 
+Recipe launches marked by `AMPLIHACK_RECIPE_RUN_ID` skip step 3. With no
+explicit profile they use the inherited `CLAUDE_CONFIG_DIR`, or the live
+host login in `$HOME/.claude` when the variable is unset. This also applies
+when usage-limit waiting is disabled.
+
 When a profile resolves, three variables are set on the child `Command` only
 (never `set_var`), and only for Claude-compatible binaries. This applies to
 every command that starts Claude with a profile: `amplihack claude`,
@@ -12512,9 +12517,10 @@ login in `~/.claude`, and its retry runs on whichever login is live there.
 See [Retry login](#retry-login).
 Otherwise the same supervisor runs with no profile substitution: the retry
 runs under the inherited profile, or with no override when none was
-inherited. With no inherited profile the launch may still apply the
-`.default` pointer's profile; the wait then watches that profile's login,
-unless it is the rotator's live profile, whose login is in `~/.claude`.
+inherited. With no inherited profile, recipe launches watch the login in
+`CLAUDE_CONFIG_DIR` when set, or the live host login in `~/.claude`. Other
+launches may apply the `.default` pointer's profile. The wait then watches
+that profile's login, unless it is the rotator's live profile in `~/.claude`.
 
 The supervisor keeps the held-back stdout in `<root>/.auto-switch.d/rerun/`
 when auto-switch is on, otherwise in `$HOME/.amplihack/rerun/`.
