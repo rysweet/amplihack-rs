@@ -487,3 +487,180 @@ _gh_retry_attempts() {
     esac
   done
 }
+
+# --- the goal loop's REST read of a head's checks (#1918) -------------------
+# One setting, one conditional REST read and one wait for a declined call,
+# shared by the auto-drive reading (autodrive_pr_reading.sh) and its check
+# wait (autodrive_pr_goal.sh ci-wait). docs/reference/autodrive-goal-loop.md.
+
+# gh_poll_interval_secs: the seconds between two reads of a check wait, from
+# RECIPE_VAR_autodrive_github_poll_secs (#3378). Empty means 120. A positive
+# whole number of at most 9 digits is used as given. Anything else means 120,
+# with one line on stderr.
+gh_poll_interval_secs() {
+  local v="${RECIPE_VAR_autodrive_github_poll_secs:-}"
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  if [ -z "$v" ]; then printf '120\n'; return 0; fi
+  if [[ "$v" =~ ^[0-9]{1,9}$ ]] && [ "$((10#$v))" -gt 0 ]; then printf '%s\n' "$((10#$v))"; return 0; fi
+  printf "WARNING: autodrive_github_poll_secs must be a positive whole number of seconds (got '%s'); 120 applies\n" \
+    "$(printf '%s' "$v" | LC_ALL=C tr -cd '[:print:]' | head -c 40)" >&2
+  printf '120\n'
+}
+
+# gh_sleep_owned <seconds>: sleeps in a child whose PID is GH_SLEEP_PID while
+# it runs, so a caller's TERM trap can stop that one process.
+gh_sleep_owned() {
+  sleep "$1" &
+  GH_SLEEP_PID=$!
+  wait "$GH_SLEEP_PID"
+  GH_SLEEP_PID=""
+}
+
+# _gh_header <headers_file> <name>: the value of the first header <name>
+# (case-insensitive, at the start of a line), without a carriage return.
+_gh_header() {
+  [ -f "$1" ] || return 1
+  LC_ALL=C awk -v n="$2" 'BEGIN { n = tolower(n) ":" }
+    { l = $0; sub(/\r$/, "", l) }
+    index(tolower(l), n) == 1 { v = substr(l, length(n) + 1); sub(/^[ \t]+/, "", v); print v; exit }' "$1"
+}
+
+# gh_rest_get <endpoint> <cache_dir> <body_out>: one conditional GET.
+# The ETag and body of the last 200 for <endpoint> are kept in <cache_dir>,
+# and the next GET sends If-None-Match, so an unchanged answer is a 304 that
+# GitHub does not count against the limit; the kept body is then used. A 304
+# is read from the status line whatever gh's exit code is.
+# Sets GH_REST_STATUS (the HTTP status, or empty), GH_REST_HEADERS (a file of
+# the response headers) and GH_REST_ERR (one cleaned line on failure).
+# Returns 0 with the body in <body_out>; 2 when GitHub declined the call for a
+# rate limit (primary or secondary); 79 or 75 from gh unchanged; 1 otherwise.
+gh_rest_get() {
+  local ep="$1" cache="$2" out="$3" key etag raw err rc st
+  GH_REST_STATUS=""; GH_REST_ERR=""
+  key="$(printf '%s' "$ep" | cksum | tr -c '0-9\n' _ | head -n 1)"
+  key="${key%_}"
+  raw="$cache/$key.raw"; err="$cache/$key.err"; GH_REST_HEADERS="$cache/$key.headers"
+  etag=""
+  if [ -s "$cache/$key.etag" ] && [ -s "$cache/$key.body" ]; then etag="$(head -n 1 "$cache/$key.etag")"; fi
+  if [ -n "$etag" ]; then
+    gh api -i -H "If-None-Match: $etag" "$ep" > "$raw" 2> "$err"; rc=$?
+  else
+    gh api -i "$ep" > "$raw" 2> "$err"; rc=$?
+  fi
+  case "$rc" in 79|75) return "$rc" ;; esac
+  # Headers end at the first empty line; the body follows.
+  LC_ALL=C awk '{ l = $0; sub(/\r$/, "", l) } l == "" { exit } { print l }' "$raw" > "$GH_REST_HEADERS"
+  st="$(head -n 1 "$GH_REST_HEADERS" | LC_ALL=C awk '$1 ~ /^HTTP\// { print $2 }')"
+  GH_REST_STATUS="$st"
+  if [ "$st" = 304 ] && [ -n "$etag" ]; then
+    cp -- "$cache/$key.body" "$out"; return 0
+  fi
+  if [ "$rc" -eq 0 ] && [ "$st" = 200 ]; then
+    LC_ALL=C awk 'b { print; next } { l = $0; sub(/\r$/, "", l) } l == "" { b = 1 }' "$raw" > "$out"
+    etag="$(_gh_header "$GH_REST_HEADERS" etag)"
+    if [ -n "$etag" ]; then
+      cp -- "$out" "$cache/$key.body.tmp" && mv -f -- "$cache/$key.body.tmp" "$cache/$key.body"
+      printf '%s\n' "$etag" > "$cache/$key.etag.tmp" && mv -f -- "$cache/$key.etag.tmp" "$cache/$key.etag"
+    fi
+    return 0
+  fi
+  GH_REST_ERR="$(gh_safe_stderr "$err")"
+  if [ "$st" = 429 ] || [ -n "$(_gh_header "$GH_REST_HEADERS" retry-after)" ] \
+    || { [ "$st" = 403 ] && [ "$(_gh_header "$GH_REST_HEADERS" x-ratelimit-remaining)" = 0 ]; } \
+    || [ "$(classify_gh_error "$err")" = rate_limit ]; then
+    return 2
+  fi
+  return 1
+}
+
+# gh_decline_reset_epoch <resource> <headers_file>: when a declined call may
+# be made again, in epoch seconds. Retry-After (a secondary limit) first; then
+# `gh api rate_limit`, which GitHub does not count, when <resource> is spent;
+# then the response's own X-RateLimit-Reset when its remaining count is 0.
+# Returns 1 when none of them says.
+gh_decline_reset_epoch() {
+  local resource="$1" hdrs="${2:-}" ra json reset now
+  now="$(date +%s)"
+  ra="$(_gh_header "$hdrs" retry-after 2>/dev/null)"
+  if [[ "$ra" =~ ^[0-9]{1,9}$ ]]; then printf '%s\n' "$((now + 10#$ra))"; return 0; fi
+  if json="$(gh api rate_limit 2>/dev/null)"; then
+    reset="$(printf '%s' "$json" | jq -r --arg r "$resource" \
+      '.resources[$r] | select(.remaining == 0) | .reset // empty' 2>/dev/null)"
+    if [[ "$reset" =~ ^[0-9]{1,12}$ ]]; then printf '%s\n' "$reset"; return 0; fi
+  fi
+  if [ "$(_gh_header "$hdrs" x-ratelimit-remaining 2>/dev/null)" = 0 ]; then
+    reset="$(_gh_header "$hdrs" x-ratelimit-reset 2>/dev/null)"
+    if [[ "$reset" =~ ^[0-9]{1,12}$ ]]; then printf '%s\n' "$reset"; return 0; fi
+  fi
+  return 1
+}
+
+# gh_wait_out_decline <resource> <headers_file> <fallback_secs>: waits once
+# until GitHub's reset for a declined call (gh_decline_reset_epoch), plus one
+# second. When the reset is unknown or already past, it waits <fallback_secs>,
+# the check wait's own interval. Prints one line on stderr. The caller makes
+# the call again once; nothing here counts or retries.
+gh_wait_out_decline() {
+  local resource="$1" hdrs="${2:-}" fallback="${3:-120}" epoch now w
+  now="$(date +%s)"
+  if epoch="$(gh_decline_reset_epoch "$resource" "$hdrs")" && [ "$epoch" -gt "$now" ]; then
+    w=$((epoch - now + 1))
+    echo "GitHub declined a ${resource} call for a rate limit; waiting ${w}s, until the reset GitHub gives" >&2
+  else
+    w="$fallback"
+    echo "GitHub declined a ${resource} call for a rate limit and gave no reset still ahead; waiting ${w}s, the check wait's interval" >&2
+  fi
+  gh_sleep_owned "$w"
+}
+
+# gh_head_checks <owner/repo> <sha> <cache_dir> <required_names_json> <required_only>
+# The checks at <sha>, from REST: commits/<sha>/check-runs and
+# commits/<sha>/status, each read with gh_rest_get. Prints one JSON object:
+#   {checks:[{name, state, link}], counts:{total, passed, failing, pending,
+#    skipped}, state}
+# state words: pass, fail, cancel, pending, skipping. A check run that has not
+# completed is pending. With <required_only> true and a non-empty name list,
+# only those checks are listed, and a required name with no run or status yet
+# is pending. `state` is passed, failed or pending; no checks at all is
+# pending. Returns as gh_rest_get does; on 2 the declined read's headers are in
+# GH_REST_HEADERS.
+gh_head_checks() {
+  local repo="$1" sha="$2" cache="$3" req="${4:-[]}" only="${5:-false}" page=1 rc total
+  local runs="$cache/check-runs.$$" st="$cache/status.$$"
+  : > "$runs"
+  while :; do
+    gh_rest_get "repos/$repo/commits/$sha/check-runs?per_page=100&page=$page" "$cache" "$cache/page.$$"; rc=$?
+    [ "$rc" -eq 0 ] || { rm -f -- "$runs" "$cache/page.$$"; return "$rc"; }
+    jq -c '.check_runs[]? | {name, status, conclusion, link:(.html_url // .details_url // "")}' "$cache/page.$$" >> "$runs" 2>/dev/null \
+      || { GH_REST_ERR="the check-runs answer is not JSON"; rm -f -- "$runs" "$cache/page.$$"; return 1; }
+    total="$(jq -r '.total_count // 0' "$cache/page.$$" 2>/dev/null)"
+    [[ "$total" =~ ^[0-9]+$ ]] && [ "$total" -gt $((page * 100)) ] && [ "$page" -lt 10 ] || break
+    page=$((page + 1))
+  done
+  rm -f -- "$cache/page.$$"
+  gh_rest_get "repos/$repo/commits/$sha/status" "$cache" "$st"; rc=$?
+  [ "$rc" -eq 0 ] || { rm -f -- "$runs" "$st"; return "$rc"; }
+  jq -n -c --slurpfile runs "$runs" --slurpfile st "$st" --argjson req "$req" --argjson only "$only" '
+    def run_state: if .status != "completed" then "pending"
+      elif .conclusion == "success" then "pass"
+      elif .conclusion == "skipped" or .conclusion == "neutral" then "skipping"
+      elif .conclusion == "cancelled" then "cancel"
+      else "fail" end;
+    def ctx_state: if .state == "success" then "pass" elif .state == "pending" then "pending" else "fail" end;
+    ([$runs[] | {name, state:run_state, link}]
+      + [($st[0].statuses // [])[] | {name:.context, state:ctx_state, link:(.target_url // "")}]) as $all
+    | (if $only and ($req | length) > 0
+        then [$all[] | select(.name as $n | $req | index($n))]
+          + [$req[] | select(. as $n | [$all[].name] | index($n) | not) | {name:., state:"pending", link:""}]
+        else $all end) as $c
+    | {checks:($c | .[:200]),
+       counts:{total:($c | length), passed:([$c[] | select(.state == "pass")] | length),
+         failing:([$c[] | select(.state == "fail" or .state == "cancel")] | length),
+         pending:([$c[] | select(.state == "pending")] | length),
+         skipped:([$c[] | select(.state == "skipping")] | length)}}
+    | .state = (if .counts.total == 0 or .counts.pending > 0 then "pending"
+        elif .counts.failing > 0 then "failed" else "passed" end)'
+  rc=$?
+  rm -f -- "$runs" "$st"
+  [ "$rc" -eq 0 ] || { GH_REST_ERR="the checks answer could not be read"; return 1; }
+}
