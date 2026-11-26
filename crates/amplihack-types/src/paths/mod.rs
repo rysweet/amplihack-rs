@@ -7,6 +7,9 @@ use std::env;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
+/// Maximum UTF-8 bytes after trimming for a lock continuation message.
+pub const MAX_LOCK_MESSAGE_BYTES: usize = 1000;
+
 /// Session key used when a hook payload carries no usable session id.
 ///
 /// An id that is absent, empty or only whitespace maps to this key, so the
