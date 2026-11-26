@@ -9,8 +9,6 @@ auto_activates:
   - "major refactoring"
   - "controversial change"
   - "multiple valid approaches"
-explicit_triggers:
-  - /amplihack:debate
 confirmation_required: true
 token_budget: 3500
 ---

@@ -9,8 +9,6 @@ auto_activates:
   - "complex algorithm"
   - "high-risk refactoring"
   - "multiple valid approaches"
-explicit_triggers:
-  - /amplihack:n-version
 confirmation_required: true
 token_budget: 3500
 ---

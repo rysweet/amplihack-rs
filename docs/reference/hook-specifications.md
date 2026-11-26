@@ -843,7 +843,7 @@ env -u TMUX tmux -S "$SB/tmux.sock" kill-server
 ```
 
 The guard allows all four commands, and the user's own server is never
-touched. The qa-team, outside-in-testing, e2e-outside-in-test-generator and
+touched. The qa-team, e2e-outside-in-test-generator and
 other tmux-using skills give the same rule.
 
 **Source.** `crates/amplihack-hooks/src/pre_tool_use/tmux_guard.rs`, with unit

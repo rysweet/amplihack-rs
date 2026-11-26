@@ -133,7 +133,7 @@ Each example is marked with its level. Start at Level 1 and progress as needed.
 
 ## Side-by-Side Parity and A/B Validation [LEVEL 2]
 
-QA Team is the renamed primary skill for what used to be `outside-in-testing`. Use it for standard outside-in scenarios **and** for parity loops where you must compare a legacy implementation to a replacement, or compare approach A to approach B, as an external user would observe them.
+Use QA Team for standard outside-in scenarios **and** for parity loops where you must compare a legacy implementation to a replacement, or compare approach A to approach B, as an external user would observe them.
 
 ### Use QA Team for parity work when
 

@@ -40,7 +40,7 @@ amplihack/
 ### Agent System (29 Agents)
 
 **Core (6)**: architect, builder, reviewer, tester, api-designer, optimizer
-**Specialized (23)**: analyzer, security, database, patterns, cleanup, fix-agent, pre-commit-diagnostic, ci-diagnostic-workflow, knowledge-archaeologist, multi-agent-debate, n-version-validator, and more
+**Specialized (10)**: analyzer, security, database, patterns, cleanup, fix-agent, pre-commit-diagnostic, ci-diagnostic-workflow, knowledge-archaeologist, n-version-validator
 
 Characteristics: Single responsibility, clear delegation triggers, parallel execution by default
 

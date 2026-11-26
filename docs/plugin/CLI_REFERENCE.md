@@ -50,7 +50,7 @@ Output:
 ```
 Installing amplihack plugin to ~/.amplihack/.claude/
 ✓ Created plugin directory structure
-✓ Installed agents (42 agents)
+✓ Installed agents (41 agents)
 ✓ Installed commands (18 commands)
 ✓ Installed skills (12 skills)
 ✓ Installed workflows (5 workflows)
@@ -264,7 +264,7 @@ Verifying amplihack plugin installation...
 
 ✓ Plugin directory exists: ~/.amplihack/.claude/
 ✓ Plugin manifest valid: .claude-plugin/plugin.json
-✓ Agents directory: 42 agents found
+✓ Agents directory: 41 agents found
 ✓ Commands directory: 18 commands found
 ✓ Skills directory: 12 skills found
 ✓ Workflows directory: 5 workflows found
@@ -869,11 +869,6 @@ Core Commands:
 Development Workflow:
   /fix                     - Intelligent fix workflow
   /amplihack:ddd:*         - Document-driven development phases
-
-Fault Tolerance:
-  /amplihack:n-version     - N-version programming
-  /amplihack:debate        - Multi-agent debate
-  /amplihack:cascade       - Fallback cascade
 
 Customization:
   /amplihack:customize     - Manage user preferences

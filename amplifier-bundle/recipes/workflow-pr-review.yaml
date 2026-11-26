@@ -35,7 +35,7 @@ steps:
       if [ -z "$GATE_OUTPUT" ] || [ "$GATE_OUTPUT" = "''" ]; then
         echo "WARNING: Step 13 testing-evidence gate is empty / not applicable — no local-testing evidence was recorded for this change." >&2
         echo "WARNING: This is a bookkeeping/evidence gate, not a code-verification gate; degrading VISIBLY and continuing so validated, committed work is NOT discarded (no-discard invariant, issue #962)." >&2
-        echo "WARNING: If this change SHOULD carry local-testing evidence, invoke the qa-team skill (outside-in-testing alias also works) and record detected toolchains, chosen strategy, and >=2 scenarios under 'Step 13: Local Testing Results'." >&2
+        echo "WARNING: If this change SHOULD carry local-testing evidence, invoke the qa-team skill and record detected toolchains, chosen strategy, and >=2 scenarios under 'Step 13: Local Testing Results'." >&2
         echo "=== Testing-Evidence Gate DEGRADED (non-fatal; validated work preserved) ==="
         exit 0
       fi

@@ -143,7 +143,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | aspire | Pass | No |
 | authenticated-web-scraper | Pass | No |
 | auto-drive-to-merge | Pass | Yes |
-| awesome-copilot-sync | Pass | No |
 | azure-admin | Pass | Yes |
 | azure-devops | Pass | No |
 | backlog-curator | Pass | Yes |
@@ -216,7 +215,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | n-version-workflow | Pass | Yes |
 | novelist-analyst | Pass | Yes |
 | npe-hunting-workflow | Pass | No |
-| outside-in-testing | Pass | Yes |
 | oxidizer-workflow | Pass | No |
 | pdf | Pass | Yes |
 | philosopher-analyst | Pass | Yes |
@@ -235,7 +233,6 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | quality/reviewing-code | Pass | Yes |
 | quality/testing-code | Pass | Yes |
 | quality-audit | Pass | Yes |
-| remote-work | Pass | Yes |
 | repository-oom-audit | Pass | No |
 | research/researching-topics | Pass | Yes |
 | roadmap-strategist | Pass | Yes |
@@ -258,12 +255,10 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | test-gap-analyzer | Pass | Yes |
 | tla-plus-expert | Pass | Yes |
 | transcript-viewer | Pass | Yes |
-| ultrathink-orchestrator | Pass | Yes |
 | urban-planner-analyst | Pass | Yes |
 | verus-expert | Pass | Yes |
 | work-delegator | Pass | Yes |
 | work-iq | Pass | No |
-| workflow-enforcement | Pass | No |
 | workiq-wsl | Pass | No |
 | workstream-coordinator | Pass | Yes |
 | xlsx | Pass | Yes |
