@@ -3,7 +3,6 @@ name: documentation-writer
 version: 1.0.0
 description: Documentation specialist agent. Creates discoverable, well-structured documentation following the Eight Rules and Diataxis framework. Use for README files, API docs, tutorials, how-to guides, and any technical documentation. Ensures docs go in docs/ directory and are always linked.
 role: "Documentation writing specialist with expertise in Diataxis framework"
-model: inherit
 invokes_skill: documentation-writing
 ---
 

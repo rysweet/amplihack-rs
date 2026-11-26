@@ -192,3 +192,168 @@ fn the_held_key_alert_is_written_once_per_held_set() {
         "{lines:?}"
     );
 }
+
+/// Issue #2694: the two halves of the held-key alert, and which of them is
+/// silent.
+///
+/// The wait's probe asks for a candidate on every login check, for the whole
+/// of a wait that may run for hours, and now does so on a reset wait as well
+/// as a capacity wait. It therefore passes `KeyAlert::Silent` and writes
+/// nothing: no held-key ALERT to the step's stderr, no line in the rotate
+/// log and no key-held marker. Repeating that alert after every write the
+/// wait sees, for hours, would bury the step's own output.
+///
+/// The retry's login selection is not silent. It runs once, when the wait
+/// has ended and the step is about to move, so it passes `KeyAlert::Write`
+/// and writes the ALERT, the rotate-log line and the key-held marker, just
+/// as the step received them before #2694. That record is the only trace
+/// that work was held off a login whose key another holder was using, so it
+/// is kept deliberately rather than by omission. The rerun path, asserted
+/// last, writes it for the same reason.
+#[test]
+fn the_wait_probe_writes_no_held_key_alert_and_the_retrys_selection_does() {
+    use crate::commands::profile::auto_switch::rerun::KeyAlert;
+    use crate::commands::profile::auto_switch::takeover::capacity_candidate;
+    use crate::commands::profile::store::ProfileStore;
+
+    // The auto-switch setting is resolved for real here, so the rotator
+    // check needs the synthetic process table (issue #2196).
+    let _proc = crate::test_support::proc::fake_proc_scope();
+    let _l = lock();
+    let f = fx("enabled=on\noverflow=console\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _toggle = EnvGuard::unset([config::TOGGLE_ENV]);
+    let _gate = default_gate();
+    let now = fsx::now();
+    // The key passes its own login check, so the only thing keeping work
+    // off it is the unread plan login (issue #1804).
+    private(
+        &f.root.join("console").join("settings.json"),
+        r#"{"env":{"ANTHROPIC_API_KEY":"sk-test"}}"#,
+    );
+
+    // Every plan login used up and `spare` unread, so the unread login is
+    // the only thing holding work off the API key: the ALERT case. The key
+    // has a reading of its own, so the probe does not skip it as stale.
+    let mut readings = used_up(now);
+    readings.remove("spare");
+    readings.insert("console".to_string(), reading(0.0, 4 * 3600, now));
+    f.state
+        .save_usage(&UsageFile {
+            version: 1,
+            accounts: readings.clone(),
+        })
+        .unwrap();
+
+    let store = ProfileStore::new(f.root.clone());
+    let got = capacity_candidate(
+        &store,
+        &f.state,
+        &n("work"),
+        now - 60,
+        now,
+        KeyAlert::Silent,
+    );
+    assert_eq!(got, None, "the unread login holds the key back");
+    assert!(alert_lines(&f).is_empty(), "the probe writes no ALERT");
+    assert_eq!(f.state.load_key_held(), None, "and no marker");
+
+    // The retry's own selection, the same call with the alert asked for,
+    // does write it: the silence belongs to the 30 s probe and to nothing
+    // else, so the one-shot selection the step moves on keeps the line
+    // it had before #2694.
+    let got = capacity_candidate(&store, &f.state, &n("work"), now - 60, now, KeyAlert::Write);
+    assert_eq!(got, None, "same choice either way");
+    assert_eq!(alert_lines(&f).len(), 1, "the retry's selection writes it");
+    assert_eq!(f.state.load_key_held().as_deref(), Some("spare"));
+    // Back to a clean slate, so the rerun half below counts only its own.
+    fs::remove_file(RotateState::new(&f.root).log).unwrap();
+    f.state.clear_key_held().unwrap();
+
+    // The rerun path, with the same readings and the same stale login
+    // skipped, does write it: the probe's silence is the only difference.
+    let got = nested_candidate(
+        &f.state,
+        &Ledger::default(),
+        &f.profiles,
+        &readings,
+        &cfg(&["console"]),
+        "work",
+        &["spare".to_string()],
+    );
+    assert_eq!(got, None);
+    assert_eq!(alert_lines(&f).len(), 1, "the rerun check writes it");
+    assert_eq!(f.state.load_key_held().as_deref(), Some("spare"));
+}
+
+/// Issue #2694: the room that ends a wait can be gone by the time the retry
+/// moves. The probe and the retry each choose a candidate of their own, so
+/// an in-session swap on this host may lease the login in between, and then
+/// the retry gets no candidate and runs on the limited profile it inherited.
+/// The swap is what the fixture below performs, by writing a ledger entry;
+/// a waiting step writes none and takes no lease, so a second waiting step
+/// could not produce this outcome (#2733). The lease is the only difference
+/// between the two halves here, so a `None` from any other cause would fail
+/// the first half.
+#[test]
+fn a_login_leased_away_between_the_probe_and_the_retry_gives_no_candidate() {
+    use crate::commands::profile::auto_switch::rerun::KeyAlert;
+    use crate::commands::profile::auto_switch::state::HostEntry;
+    use crate::commands::profile::auto_switch::takeover::capacity_candidate;
+    use crate::commands::profile::store::ProfileStore;
+
+    let _proc = crate::test_support::proc::fake_proc_scope();
+    let _l = lock();
+    let f = fx("enabled=on\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _toggle = EnvGuard::unset([config::TOGGLE_ENV]);
+    let now = fsx::now();
+
+    // Every login used up but `spare`, which is the room the wait saw.
+    let mut readings = used_up(now);
+    readings.insert("spare".to_string(), reading(0.0, 4 * 3600, now));
+    f.state
+        .save_usage(&UsageFile {
+            version: 1,
+            accounts: readings,
+        })
+        .unwrap();
+    let store = ProfileStore::new(f.root.clone());
+
+    let got = capacity_candidate(
+        &store,
+        &f.state,
+        &n("work"),
+        now - 60,
+        now,
+        KeyAlert::Silent,
+    );
+    assert_eq!(
+        got.map(|p| p.profile),
+        Some(n("spare")),
+        "the probe's reading is what ended the wait"
+    );
+
+    // An in-session swap in another directory on this host takes `spare`.
+    f.state
+        .save_ledger(&Ledger {
+            version: 1,
+            hosts: [(
+                "other".to_string(),
+                HostEntry {
+                    live: "spare".to_string(),
+                    swapped_at: now,
+                    pre_swap_fingerprint: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        capacity_candidate(&store, &f.state, &n("work"), now - 60, now, KeyAlert::Write),
+        None,
+        "the retry gets no candidate and stays on the limited profile"
+    );
+}

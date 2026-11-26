@@ -152,6 +152,12 @@ impl Fixture {
             .current_dir(&self.work)
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("HOME", &self.home)
+            // Issue #2001: `profile usage` never reads a Codex account here.
+            .env(
+                "CODEX_PROFILES_ROOT",
+                self.home.with_file_name("no-codex-profiles"),
+            )
+            .env("CODEX_BIN", self.home.join("no-codex"))
             .env("TZ", "UTC")
             .env("AMPLIHACK_NONINTERACTIVE", "1")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")

@@ -66,14 +66,22 @@ pub(super) enum Outcome {
 /// child's stdout/stderr are discarded via `Stdio::null()` — this both keeps
 /// the install console quiet and avoids allocating/reading capture pipes.
 /// `configure` runs last, just before the spawn; production passes a no-op.
-fn version_probe_succeeds(bin: &str, configure: &dyn Fn(&mut Command)) -> bool {
+///
+/// The time limit is a parameter, so a test whose subject is not the limit
+/// can allow a loaded host more time. Production passes
+/// [`VERSION_PROBE_TIMEOUT`] (see [`ensure_mermaid_cli`]).
+fn version_probe_succeeds_within(
+    bin: &str,
+    configure: &dyn Fn(&mut Command),
+    timeout: Duration,
+) -> bool {
     let mut cmd = Command::new(bin);
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut cmd);
     cmd.arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     configure(&mut cmd);
-    run_with_timeout(cmd, VERSION_PROBE_TIMEOUT)
+    run_with_timeout(cmd, timeout)
         .map(|status| status.success())
         .unwrap_or(false)
 }
@@ -82,13 +90,26 @@ fn version_probe_succeeds(bin: &str, configure: &dyn Fn(&mut Command)) -> bool {
 /// `Ok` — a missing/broken mmdc must never block `amplihack install`. See the
 /// module docs for the full decision flow.
 pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
-    ensure_mermaid_cli_with(&|_| {})
+    ensure_mermaid_cli_with(&|_| {}, VERSION_PROBE_TIMEOUT)
 }
 
 /// [`ensure_mermaid_cli`] with `configure` applied to every child (both
-/// probes, the install and the re-probe) just before it is spawned. Tests use
-/// it to give each child its own PATH and HOME (issue #1765).
-pub(super) fn ensure_mermaid_cli_with(configure: &dyn Fn(&mut Command)) -> Result<Outcome> {
+/// probes, the install and the re-probe) just before it is spawned, and with
+/// the limit on each version probe as `probe_limit`. Tests use `configure` to
+/// give each child its own PATH and HOME (issue #1765).
+///
+/// The limit is a parameter for the reason [`version_probe_succeeds_within`]
+/// has one (issues #1973, #2931): a test of the decision flow starts stub
+/// executables it has just written, and the first start of a new executable
+/// can take longer than the 500 ms the product allows (measured on macOS at
+/// 0.5 to 6.4 s while the suite runs, issue #2970). Such a test passes a
+/// limit no loaded host reaches, so its result depends on what the stubs
+/// answer and not on how soon. [`ensure_mermaid_cli`] is the only caller
+/// outside tests and always passes [`VERSION_PROBE_TIMEOUT`].
+pub(super) fn ensure_mermaid_cli_with(
+    configure: &dyn Fn(&mut Command),
+    probe_limit: Duration,
+) -> Result<Outcome> {
     // (1) Opt-out: any non-empty value disables the attempt entirely, taking
     // precedence over every probe (for minimal/offline environments).
     let skip = std::env::var_os("AMPLIHACK_SKIP_MMDC")
@@ -99,12 +120,12 @@ pub(super) fn ensure_mermaid_cli_with(configure: &dyn Fn(&mut Command)) -> Resul
     }
 
     // (2) Preflight: already installed? Skip without touching npm.
-    if version_probe_succeeds("mmdc", configure) {
+    if version_probe_succeeds_within("mmdc", configure, probe_limit) {
         return Ok(Outcome::AlreadyPresent);
     }
 
     // (3) Preflight: npm available? If not, skip (not an error).
-    if !version_probe_succeeds("npm", configure) {
+    if !version_probe_succeeds_within("npm", configure, probe_limit) {
         return Ok(Outcome::SkippedNoNpm);
     }
 
@@ -121,7 +142,7 @@ pub(super) fn ensure_mermaid_cli_with(configure: &dyn Fn(&mut Command)) -> Resul
         Ok(status) if status.success() => {
             // (5) Re-probe: npm may have succeeded but placed mmdc in a prefix
             // that isn't on PATH. Don't claim success unless mmdc is reachable.
-            if version_probe_succeeds("mmdc", configure) {
+            if version_probe_succeeds_within("mmdc", configure, probe_limit) {
                 Ok(Outcome::Installed)
             } else {
                 tracing::warn!(
@@ -157,10 +178,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn write_fake(dir: &Path, name: &str, script: &str) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, script).unwrap();
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&path, perms).unwrap();
+        crate::test_support::write_executable(&path, script);
         path
     }
 
@@ -185,9 +203,13 @@ mod tests {
         let fake_bin = write_fake(temp.path(), "mmdc", "#!/bin/sh\nexec /bin/sleep 60\n");
 
         let started = std::time::Instant::now();
-        let result = version_probe_succeeds(fake_bin.to_str().unwrap(), &|cmd: &mut Command| {
-            cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
-        });
+        let result = version_probe_succeeds_within(
+            fake_bin.to_str().unwrap(),
+            &|cmd: &mut Command| {
+                cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+            VERSION_PROBE_TIMEOUT,
+        );
         let elapsed = started.elapsed();
 
         assert!(
@@ -195,6 +217,52 @@ mod tests {
             "version probes must not hang on a stuck binary, elapsed {elapsed:?}"
         );
         assert!(!result, "timed-out version probes must fail closed");
+    }
+
+    /// Issue #1973: the timeout is a parameter of the probe, so a test whose
+    /// subject is not the timeout can give a slow but finite binary all the
+    /// time a loaded host needs. The fake runs longer than the production
+    /// bound of 500 ms and must still pass.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn version_probe_within_a_long_timeout_waits_for_a_slow_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_bin = write_fake(temp.path(), "mmdc", "#!/bin/sh\n/bin/sleep 1\nexit 0\n");
+
+        let result = version_probe_succeeds_within(
+            fake_bin.to_str().unwrap(),
+            &|cmd: &mut Command| {
+                cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+            Duration::from_secs(600),
+        );
+
+        assert!(result, "a slow fake that exits 0 must pass a 600 s probe");
+    }
+
+    /// Issue #1973: the parameterised probe still fails closed on a
+    /// non-zero exit.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn version_probe_within_fails_closed_on_a_failing_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_bin = write_fake(temp.path(), "mmdc", "#!/bin/sh\nexit 1\n");
+
+        let result = version_probe_succeeds_within(
+            fake_bin.to_str().unwrap(),
+            &|cmd: &mut Command| {
+                cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+            Duration::from_secs(600),
+        );
+
+        assert!(!result, "a fake that exits 1 must fail the probe");
+    }
+
+    /// Issue #1973: production keeps the 500 ms bound.
+    #[test]
+    fn the_production_version_probe_bound_is_unchanged() {
+        assert_eq!(VERSION_PROBE_TIMEOUT, Duration::from_millis(500));
     }
 
     /// Issue #1765 (A2): the hook's environment reaches the probe's child.
@@ -217,9 +285,15 @@ mod tests {
             ),
         );
 
-        let result = version_probe_succeeds(fake_bin.to_str().unwrap(), &|cmd: &mut Command| {
-            cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
-        });
+        // Issue #1973: the subject here is the child's environment, not the
+        // time limit, so a loaded host gets the wait ceiling.
+        let result = version_probe_succeeds_within(
+            fake_bin.to_str().unwrap(),
+            &|cmd: &mut Command| {
+                cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+            Duration::from_secs(600),
+        );
 
         assert!(result, "a fake that exits 0 must pass the version probe");
         let captured = std::fs::read_to_string(&capture).expect("the fake records its environment");

@@ -172,6 +172,8 @@ Use this workflow for:
 
 **CONSENSUS TRIGGER**: Implementation involves critical code paths (security, safety, financial, data integrity)
 
+**Route selection**: the caller must pass `is_critical_code` as exactly `true` or `false` (for example `-c is_critical_code=true`). The workflow does not classify the work and has no default. `consensus-workflow` rejects a missing or invalid value before any phase starts, `consensus-tdd-impl` checks it again before either route, and the phase succeeds only when exactly one route produced all of its outputs. See the [Consensus Criticality Contract](../../reference/consensus-criticality-contract.md) for accepted values, error messages and direct-run usage.
+
 **Standard Implementation:**
 
 - [ ] **Always use** builder agent to implement from specifications

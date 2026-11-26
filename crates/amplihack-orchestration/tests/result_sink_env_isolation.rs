@@ -20,7 +20,9 @@ use amplihack_utils::prompt_delivery::{DeliveryCaps, PromptDelivery};
 
 /// Prints whatever `AMPLIHACK_RESULT_SINK` the child actually sees, or the
 /// literal `UNSET` when it is absent/empty.
-const REPORT_ENV_SCRIPT: &str = r#"printf '%s' "${AMPLIHACK_RESULT_SINK:-UNSET}""#;
+/// It drains the prompt from stdin first (issue #2030: prompts never go in
+/// argv), so the prompt write always completes.
+const REPORT_ENV_SCRIPT: &str = r#"cat >/dev/null; printf '%s' "${AMPLIHACK_RESULT_SINK:-UNSET}""#;
 
 #[tokio::test]
 async fn no_opt_in_run_strips_inherited_result_sink_from_child() {
@@ -39,8 +41,8 @@ async fn no_opt_in_run_strips_inherited_result_sink_from_child() {
     let result = runner
         .run_with_prompt_delivery_for_test(
             opts,
-            PromptDelivery::Argv,
-            DeliveryCaps::argv_only(),
+            PromptDelivery::Auto,
+            DeliveryCaps::default().with_stdin(),
             "sh",
             ["-c", REPORT_ENV_SCRIPT, "sh"],
         )

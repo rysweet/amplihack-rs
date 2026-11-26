@@ -155,7 +155,7 @@ fn docs_say_overflow_profiles_are_probed_with_usage_only() {
 
 #[test]
 fn reference_quotes_the_rotators_probe_warnings() {
-    let src = include_str!("rotate/measure.rs");
+    let src = include_str!("rotate/probe_reading.rs");
     for (code, doc) in [
         (
             "warning: rotate: probe of {who} timed out",
@@ -166,7 +166,10 @@ fn reference_quotes_the_rotators_probe_warnings() {
             "warning: rotate: probe of <name> failed: <reason>",
         ),
     ] {
-        assert!(src.contains(code), "measure.rs no longer prints {code:?}");
+        assert!(
+            src.contains(code),
+            "probe_reading.rs no longer prints {code:?}"
+        );
         assert!(
             REFERENCE.contains(doc),
             "the reference does not quote {doc:?}"
@@ -266,6 +269,8 @@ fn reference_lists_every_direct_failure_reason() {
         reason::REFRESH_REFUSED,
         reason::REFRESH_FAILED,
         reason::REFRESH_NOT_SAVED,
+        reason::NO_REFRESH_TOKEN,
+        reason::UNREADABLE_CREDS,
     ] {
         assert!(
             REFERENCE.contains(&format!("`{r}`")),
@@ -285,6 +290,10 @@ fn reference_quotes_the_fixed_row_texts() {
         "unknown, still running".to_string(),
         "note: profile \"spare\": direct read gave http 5xx; using claude".to_string(),
         super::usage_cmd::not_saved_warning("spare"),
+        // Issue #2271: the row text of a login with no token. These rows
+        // print no stderr warning (D7) and have `"error": null` (D6).
+        ErrorReason::NotSignedIn("no oauth token").to_string(),
+        "no refresh token".to_string(),
     ] {
         assert!(
             REFERENCE.contains(&text),
@@ -521,4 +530,118 @@ fn spend_values_and_the_spend_flag_are_documented() {
     assert!(ENV_VARS.contains("only with `--spend`"));
     assert!(HOWTO.contains("amplihack profile usage --spend"));
     assert!(HOWTO.contains("| `not_probed` |"));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1970: the rate's window and weighting are stated in the help and
+// the reference.
+// ---------------------------------------------------------------------------
+
+/// The long help of `profile usage`, rendered in this process.
+fn usage_help() -> String {
+    use clap::CommandFactory;
+    let mut cmd = crate::Cli::command();
+    let usage = cmd
+        .find_subcommand_mut("profile")
+        .and_then(|p| p.find_subcommand_mut("usage"))
+        .expect("profile usage");
+    let mut out = Vec::new();
+    usage.write_long_help(&mut out).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+/// `s` with each run of whitespace made one space, so wrapped help reads
+/// as one line.
+fn flat(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn the_rate_window_and_weighting_are_in_help_and_docs() {
+    let help = flat(&usage_help());
+    for want in ["6 h", "4.5 h", "weighted"] {
+        assert!(help.contains(want), "help lacks {want:?}: {help}");
+    }
+    // The option's own entry: `--json`'s help names `--summary-json` too
+    // (issue #2001: the Codex rows are only there), so the first mention
+    // is not this option.
+    let summary_json = help
+        .split("--summary-json Print")
+        .nth(1)
+        .expect("the --summary-json entry in the help");
+    assert!(
+        summary_json.contains("6 h") && summary_json.contains("4.5 h"),
+        "--summary-json does not state the window: {summary_json}"
+    );
+    // The start rule as `capacity_summary::can_start` applies it: any
+    // `profile usage` entry, or a rotator entry holding every login read
+    // now, which must itself be at least 4.5 h old.
+    assert!(
+        !help.contains("first entry that read every login")
+            && !help.contains("entry in that window that read every login"),
+        "the help describes a stricter start than the code: {help}"
+    );
+    assert!(help.contains("must itself be at least 4.5 h old"), "{help}");
+    assert!(
+        summary_json.contains("entry to be at least 4.5 h old"),
+        "{summary_json}"
+    );
+
+    let reference = flat(REFERENCE);
+    for want in [
+        "6 h",
+        "4.5 h",
+        "weighted",
+        "more than 10 points",
+        "`0.0` or above",
+    ] {
+        assert!(reference.contains(want), "reference lacks {want:?}");
+    }
+    assert!(
+        !reference.contains("Can be `0.0` or below"),
+        "the rate is never negative now"
+    );
+    assert!(
+        !reference.contains(
+            "the week percentage fell. The earlier entry's percentage is then added back"
+        ),
+        "the old reset rule is gone"
+    );
+}
+
+#[test]
+fn the_documented_rate_constants_match_the_code() {
+    use super::capacity_summary::{RATE_WINDOW, RESET_FALL};
+    use super::usage_history::SAME_WEEK_SLACK;
+    assert_eq!(RATE_WINDOW, 6 * 3600);
+    let reference = flat(REFERENCE);
+    assert!(reference.contains(&format!("more than {RESET_FALL} points")));
+    assert!(reference.contains(&format!("fall of {RESET_FALL} points or less")));
+    assert_eq!(SAME_WEEK_SLACK, 3600);
+    assert!(reference.contains("within one hour of each other"));
+    #[cfg(unix)]
+    {
+        use super::usage_history::STALE_LOOKBACK;
+        assert_eq!(STALE_LOOKBACK, 256 * 1024);
+        assert!(reference.contains("last 256 KiB"));
+    }
+}
+
+#[test]
+fn the_rotation_howto_says_small_dips_add_nothing() {
+    let howto = flat(ROTATE_HOWTO);
+    assert!(howto.contains("net rise"), "rotation how-to");
+    assert!(howto.contains("10 points or less"), "rotation how-to");
+}
+
+/// Issue #2271 (D7): the reference no longer shows a stderr warning for a
+/// not-signed-in row.
+#[test]
+fn reference_shows_no_warning_for_a_not_signed_in_row() {
+    use super::usage_cmd::ErrorReason;
+    let gone = format!(
+        "warning: profile \"scratch\": {}",
+        ErrorReason::NotSignedIn("no credentials file")
+    );
+    assert!(!REFERENCE.contains(&gone), "{gone}");
 }

@@ -158,26 +158,27 @@ fn project_cannot_raise_above_the_default_either() {
     assert_eq!(e.entry("orchestrator.max_depth").origin, Origin::Default);
 }
 
-/// Issue #1801: 21600 is a default a project cannot raise, not a ceiling.
+/// Issue #2911: a usage-limit wait has no timed bound, so the key that set
+/// one is not in the schema. A file that still carries it loads, and the key
+/// is reported as unknown rather than obeyed.
 #[test]
-fn a_project_cannot_raise_the_usage_limit_wait_above_its_default() {
+fn the_removed_usage_limit_wait_length_is_reported_as_an_unknown_key() {
     let fx = Fx::new();
-    fx.project("[recipe]\nusage_limit_max_wait_secs = 86400\n");
+    fx.project("[recipe]\nusage_limit_max_wait_secs = 600\nusage_limit_wait = true\n");
     let e = fx.load(&[]);
-    assert_eq!(
-        e.entry("recipe.usage_limit_max_wait_secs").value,
-        Some(Value::Int(21_600))
+    assert!(super::schema::key("recipe.usage_limit_max_wait_secs").is_none());
+    assert!(
+        e.diagnostics.iter().any(|d| {
+            d.key.as_deref() == Some("recipe.usage_limit_max_wait_secs")
+                && d.reason == "unknown key"
+        }),
+        "{:?}",
+        e.diagnostics
     );
-}
-
-#[test]
-fn a_project_can_lower_the_usage_limit_wait() {
-    let fx = Fx::new();
-    fx.project("[recipe]\nusage_limit_max_wait_secs = 600\n");
-    let e = fx.load(&[]);
     assert_eq!(
-        e.entry("recipe.usage_limit_max_wait_secs").value,
-        Some(Value::Int(600))
+        e.entry("recipe.usage_limit_wait").value,
+        Some(Value::Bool(true)),
+        "the rest of the file still loads"
     );
 }
 
@@ -281,4 +282,156 @@ fn the_legacy_consent_is_a_layer_until_migrated() {
         Origin::User(user_file(&fx.home))
     );
     assert!(e.legacy.is_none());
+}
+
+// --- issue #2589: policy.deny_commands through the layers ------------------
+
+#[test]
+fn the_user_file_supplies_the_instance_deny_entries() {
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = [\"shutdown\", \"tmux kill-server\"]\n");
+    let e = fx.load(&[]);
+    assert_eq!(
+        e.file_value("policy.deny_commands"),
+        Some(&Value::List(vec![
+            "shutdown".into(),
+            "tmux kill-server".into()
+        ]))
+    );
+    assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+}
+
+#[test]
+fn an_unset_key_is_no_entries_and_no_diagnostic() {
+    let fx = Fx::new();
+    let e = fx.load(&[]);
+    assert_eq!(e.file_value("policy.deny_commands"), None);
+    assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+}
+
+/// SEC-A1: the key is user-only, so a repository someone else wrote cannot
+/// add — or appear to add — an entry to any harness's deny list.
+#[test]
+fn a_project_file_entry_is_reported_and_ignored() {
+    let fx = Fx::new();
+    fx.project("[policy]\ndeny_commands = [\"git-commit\"]\n");
+    let e = fx.load(&[]);
+    assert_eq!(e.file_value("policy.deny_commands"), None);
+    assert!(
+        e.diagnostics
+            .iter()
+            .any(|d| d.key.as_deref() == Some("policy.deny_commands")),
+        "{:?}",
+        e.diagnostics
+    );
+}
+
+/// A user file the group or another user can write is not trusted for a
+/// user-only key. The built-in defaults are unaffected: they live in code.
+#[cfg(unix)]
+#[test]
+fn an_insecure_user_file_contributes_no_entries() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = [\"shutdown\"]\n");
+    let path = user_file(&fx.home);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+    let e = fx.load(&[]);
+    assert_eq!(e.file_value("policy.deny_commands"), None);
+    assert!(
+        e.diagnostics
+            .iter()
+            .any(|d| d.key.as_deref() == Some("policy.deny_commands")),
+        "{:?}",
+        e.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_entry_is_reported_once_and_the_key_stays_unset() {
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = [\"pkill\", \"shell(x)\"]\n");
+    let e = fx.load(&[]);
+    assert_eq!(
+        e.file_value("policy.deny_commands"),
+        None,
+        "one bad entry rejects the value; it is not silently filtered"
+    );
+    assert_eq!(
+        e.diagnostics
+            .iter()
+            .filter(|d| d.key.as_deref() == Some("policy.deny_commands"))
+            .count(),
+        1,
+        "{:?}",
+        e.diagnostics
+    );
+}
+
+/// SEC-V4: the rejected value is attacker-chosen, so the diagnostic that
+/// quotes it carries no raw escape or bidi character.
+#[test]
+fn a_rejected_entry_is_escaped_in_the_diagnostic() {
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = [\"a\\u001bb\"]\n");
+    let e = fx.load(&[]);
+    for d in &e.diagnostics {
+        let text = format!("{d:?}");
+        assert!(!text.contains('\u{1b}'), "unescaped control: {text}");
+    }
+}
+
+#[test]
+fn a_value_that_is_not_an_array_is_reported_and_ignored() {
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = \"pkill\"\n");
+    let e = fx.load(&[]);
+    assert_eq!(e.file_value("policy.deny_commands"), None);
+    assert!(
+        e.diagnostics
+            .iter()
+            .any(|d| d.key.as_deref() == Some("policy.deny_commands")),
+        "{:?}",
+        e.diagnostics
+    );
+}
+
+// ── Issue #2912: agent.standing ─────────────────────────────────────────────
+
+#[test]
+fn agent_standing_is_off_with_no_file() {
+    let fx = Fx::new();
+    assert_eq!(super::agent_standing(&fx.home), Ok(false));
+}
+
+#[test]
+fn agent_standing_follows_the_user_file() {
+    let fx = Fx::new();
+    fx.user("[agent]\nstanding = true\n");
+    assert_eq!(super::agent_standing(&fx.home), Ok(true));
+    fx.user("[agent]\nstanding = false\n");
+    assert_eq!(super::agent_standing(&fx.home), Ok(false));
+}
+
+/// A value the key cannot hold is an error naming the cause; the caller reads
+/// it as `false` and warns, so a bad value never turns relaunching on.
+#[test]
+fn agent_standing_with_an_invalid_value_is_an_error_not_true() {
+    let fx = Fx::new();
+    fx.user("[agent]\nstanding = \"yes please\"\n");
+    assert!(super::agent_standing(&fx.home).is_err());
+}
+
+/// A cloned repository cannot mark a session standing.
+#[test]
+fn a_project_scoped_agent_standing_has_no_effect() {
+    let fx = Fx::new();
+    fx.project("[agent]\nstanding = true\n");
+    let e = fx.load(&[]);
+    assert_eq!(e.entry("agent.standing").value, Some(Value::Bool(false)));
+    assert!(
+        !e.diagnostics.is_empty(),
+        "the ignored project value is reported"
+    );
+    assert_eq!(super::agent_standing(&fx.home), Ok(false));
 }

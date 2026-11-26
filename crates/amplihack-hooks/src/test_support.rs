@@ -21,6 +21,12 @@
 use std::ffi::OsString;
 use std::sync::{Mutex, OnceLock};
 
+/// The six profile-redirecting variables and the guards that keep a test's
+/// settings writes inside its own temporary home (issue #2922). One
+/// definition, shared with the other crates' `test_support`.
+#[path = "../../../tests/support/claude_profile_isolation.rs"]
+pub(crate) mod claude_profile_isolation;
+
 /// Returns a reference to the process-wide environment lock.
 ///
 /// All tests in this binary that mutate process environment variables
@@ -28,9 +34,17 @@ use std::sync::{Mutex, OnceLock};
 /// lock for the duration of the mutation. Tests that assert behavior derived
 /// from `current_dir()` should also take this lock so they cannot race those
 /// mutations during parallel execution.
+///
+/// Creating the lock also fires [`claude_profile_isolation::purge_inherited`]
+/// (issue #2922), so a `CLAUDE_CONFIG_DIR` or login profile inherited from the
+/// session that started `cargo test` is gone before the first test that holds
+/// this lock mutates anything. It runs exactly once per process.
 pub(crate) fn env_lock() -> &'static Mutex<()> {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ENV_LOCK.get_or_init(|| Mutex::new(()))
+    ENV_LOCK.get_or_init(|| {
+        claude_profile_isolation::purge_inherited();
+        Mutex::new(())
+    })
 }
 
 /// Restores a process environment variable when dropped.
@@ -66,6 +80,52 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Clears `AMPLIHACK_DISABLE_BLARIFY` for the guard's lifetime.
+///
+/// `setup_blarify_indexing` short-circuits when that variable is `1`, before it
+/// ever consults `AMPLIHACK_BLARIFY_MODE`. An ambient value in the shell that
+/// launched the test run (a developer shell, or the environment a pre-push hook
+/// inherits) therefore silences every mode-specific assertion. Tests that
+/// exercise the blarify setup own the variable instead of inheriting it. The
+/// guard takes no lock of its own: the caller must already hold [`env_lock`]
+/// and keep it for the guard's lifetime.
+pub(crate) fn blarify_not_disabled() -> EnvVarGuard {
+    EnvVarGuard::unset("AMPLIHACK_DISABLE_BLARIFY")
+}
+
+/// Points the hook state root (issue #1963) at a throwaway home directory.
+///
+/// Sets `HOME` to `home` and clears every
+/// [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`] entry, so the state
+/// root resolves to `<home>/.amplihack`, no test can reach the real
+/// `~/.amplihack`, and no settings write can follow an inherited
+/// `CLAUDE_CONFIG_DIR` out of `home` (issue #2922). Every variable is restored
+/// on drop. The guard takes no lock of its own: the caller must already hold
+/// [`env_lock`] and keep it for the guard's lifetime.
+///
+/// `AMPLIHACK_HOME` has exactly one owner here, the `_profile` field. Two
+/// guards saving one variable restore it in the wrong order, which is why the
+/// separate `AMPLIHACK_HOME` guard this type used to carry is gone.
+///
+/// Field order is drop order: `HOME` is restored first, then the six.
+#[allow(dead_code)]
+pub(crate) struct IsolatedStateHome {
+    _home: EnvVarGuard,
+    _profile: claude_profile_isolation::ClaudeProfileIsolation,
+}
+
+/// See [`IsolatedStateHome`]. The caller must already hold [`env_lock`].
+#[allow(dead_code)]
+pub(crate) fn isolate_state_home(home: &std::path::Path) -> IsolatedStateHome {
+    // Taken before `HOME` moves, so a settings writer never sees the new
+    // `HOME` alongside an inherited profile.
+    let profile = claude_profile_isolation::ClaudeProfileIsolation::new();
+    IsolatedStateHome {
+        _home: EnvVarGuard::set("HOME", home),
+        _profile: profile,
+    }
+}
+
 /// CWD restoration must finish while the caller still owns `env_lock()`.
 pub(crate) struct CwdGuard {
     previous: std::path::PathBuf,
@@ -83,4 +143,38 @@ impl Drop for CwdGuard {
             eprintln!("test CWD restoration failed: {error}");
         }
     }
+}
+
+/// The scratch base no framework lookup can see past; the rule is shared
+/// with `amplihack-cli` and `amplihack-types` (see the file's documentation).
+#[path = "../../amplihack-cli/tests/support/scratch_base.rs"]
+#[allow(dead_code)]
+pub(crate) mod scratch_base;
+
+/// A temporary fixture outside installed framework ancestors and real homes.
+/// Callers hold [`env_lock`] while selecting the scratch base.
+pub(crate) fn isolated_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(scratch_base::scratch_base()).expect("isolated hook fixture directory")
+}
+
+#[cfg(unix)]
+#[path = "../../amplihack-cli/tests/support/exec_stub.rs"]
+#[allow(dead_code)]
+mod exec_stub;
+
+/// Writes an executable stub at `path` (mode 0755) through the shared
+/// `exec_stub` writer, so no fork of this process can inherit a write
+/// descriptor to it and make a concurrent exec fail with `ETXTBSY` (issue
+/// #1973).
+#[cfg(unix)]
+pub(crate) fn write_executable(path: &std::path::Path, body: &str) {
+    exec_stub::write_executable(path, body, 0o755);
+}
+
+/// `value` as one word of POSIX shell text, through the shared `exec_stub`
+/// quoter, so a temporary path a test writes into a stub's script reaches
+/// the shell as data and never as code.
+#[cfg(unix)]
+pub(crate) fn sh_quote(value: &str) -> String {
+    exec_stub::sh_quote(value)
 }

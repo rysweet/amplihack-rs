@@ -2,6 +2,12 @@
 
 use std::sync::{Mutex, OnceLock};
 
+/// The six profile-redirecting variables and the guards that keep a test's
+/// settings writes inside its own temporary home (issue #2922). One
+/// definition, shared with the other crates' `test_support`.
+#[path = "../../../tests/support/claude_profile_isolation.rs"]
+pub(crate) mod claude_profile_isolation;
+
 /// The one lock that serialises process-environment mutation in this crate.
 ///
 /// Issue #1380: `cargo test` runs a crate's unit tests as threads in a single
@@ -14,7 +20,21 @@ use std::sync::{Mutex, OnceLock};
 /// Acquire it *before* the first mutation and hold it until after the last one,
 /// cleanup included. Releasing early leaves the environment mutated with no
 /// lock held, which is the original race wearing a disguise.
+///
+/// Creating the lock also fires [`claude_profile_isolation::purge_inherited`]
+/// (issue #2922), so a `CLAUDE_CONFIG_DIR` or login profile inherited from the
+/// session that started `cargo test` is gone before the first test that holds
+/// this lock mutates anything. It runs exactly once per process.
 pub(crate) fn env_lock() -> &'static Mutex<()> {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ENV_LOCK.get_or_init(|| Mutex::new(()))
+    ENV_LOCK.get_or_init(|| {
+        claude_profile_isolation::purge_inherited();
+        Mutex::new(())
+    })
 }
+
+/// The scratch base no framework lookup can see past; the rule is shared
+/// with `amplihack-cli` and `amplihack-hooks` (see the file's documentation).
+#[path = "../../amplihack-cli/tests/support/scratch_base.rs"]
+#[allow(dead_code)]
+pub(crate) mod scratch_base;

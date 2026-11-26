@@ -60,18 +60,31 @@ nav:
       - Claude Code Plugin: howto/install-claude-code-plugin.md
       - PATH Conflict Tutorial: tutorials/repair-install-update-path-conflicts.md
       - Local Install: howto/local-install.md
+      - Find Installed Skills and Agents: howto/find-installed-skills-and-agents.md
+      - Choose Listed Skills and Agents: howto/choose-listed-skills-and-agents.md
+      - directory Command Reference: reference/directory-command.md
       - Repair PATH Conflicts: howto/repair-install-update-path-conflicts.md
       - Runtime Asset Resolution: howto/verify-runtime-asset-resolution.md
       - Uninstall: howto/uninstall.md
       - Claude Login Profiles: howto/claude-profiles.md
       - Claude Login Rotation: howto/claude-profile-rotation.md
       - Supervise Agent Sessions: howto/supervise-agent-sessions.md
+      - Keep Sessions Running: howto/keep-sessions-running.md
+      - Omit Hook Context Text: howto/omit-hook-context-text.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
+      - How a Test's Rotator Ends with Its Test: concepts/test-rotator-lifetime.md
+      - Keep Tests off the Host Process Table: howto/keep-tests-off-the-host-process-table.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
+      - Give Test Logins a Fake Account Identity: howto/give-test-logins-a-fake-account-identity.md
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
+      - Run Tests Against the Pinned Recipe Runner: howto/run-tests-against-the-pinned-recipe-runner.md
       - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
+      - Keep Shell Test Stubs from Blocking on stdin: howto/keep-test-stubs-from-blocking-on-stdin.md
+      - Run recipe::run Tests Inside a Recipe Session: howto/run-recipe-tests-inside-a-recipe-session.md
+      - Keep Recipe Shell Tests out of the Shared Work Root: howto/keep-recipe-shell-tests-out-of-the-shared-work-root.md
       - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
       - Profile Command Reference: reference/profile-command.md
+      - Usage-Limit Waits and Limit Records: reference/usage-limit-waits.md
       - Capacity Governor: reference/capacity-governor.md
       - Sessions Command Reference: reference/sessions-command.md
       - Agent Command Reference: reference/agent-command.md
@@ -83,6 +96,7 @@ nav:
       - Trust & Anti-Sycophancy: claude/context/TRUST.md
       - Rust Runner Execution Architecture: concepts/rust-runner-execution-architecture.md
       - Agent Binary Routing: concepts/agent-binary-routing.md
+      - Versioned Install Layout: concepts/versioned-install-layout.md
       - Launch Target Resolution: LAUNCH_TARGET_RESOLUTION.md
       - System Prompt Append: SYSTEM_PROMPT_APPEND.md
       - Memory Architecture: concepts/memory-backend-architecture.md
@@ -117,13 +131,21 @@ nav:
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
       - Quick-Change Recipe: reference/quick-change-recipe.md
       - Auto-Drive-Light Recipe: reference/auto-drive-light.md
+      - Build Goal Loop: reference/build-goal-loop.md
+      - Git Repository Environment Helper: reference/git-repo-env-helper.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Clean Up After Recipe Runs: howto/clean-up-after-recipe-runs.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md
+      - Model Tiers:
+          - How-To: howto/set-model-tiers.md
+          - Reference: reference/model-tiers.md
       - Large Payload Delivery:
           - Explanation: concepts/large-payload-delivery.md
           - How-To: howto/pass-large-recipe-context.md
           - Reference: reference/large-payload-delivery.md
+      - Recipe Context Transport: reference/recipe-context-transport.md
+      - Prompt Text Out of Argv: concepts/prompt-text-out-of-argv.md
+      - Stop Background Jobs by PID: howto/stop-background-jobs-by-pid.md
       - Clean Result Channel: reference/clean-result-channel.md
       - PR Recovery Readiness:
           - Overview: features/pr-recovery-readiness.md
@@ -135,9 +157,14 @@ nav:
       - Evidence & Bookkeeping Gate Hardening: reference/workflow-implementation-evidence.md
       - Publish Lockfile Sync: reference/workflow-publish-lockfile-sync.md
       - Commit Hook Repair: reference/recipe-commit-hook-repair.md
+      - Push Failure Recovery: reference/recipe-push-failure-recovery.md
+      - Step Failure Recovery: reference/step-failure-recovery.md
+      - Check Exit Status: reference/recipe-check-exit-status.md
       - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
       - Caller Branch Worktree Alias: recipes/issue-1762-caller-branch-worktree-alias.md
       - Tracking Issue Selection: reference/workflow-tracking-issue-selection.md
+      - Workflow Delivery Inputs: reference/workflow-delivery-inputs.md
+      - Consensus Criticality Contract: reference/consensus-criticality-contract.md
   - Agents:
       - Overview: claude/agents/README.md
       - Core Agents:
@@ -185,6 +212,9 @@ nav:
           - Configuration: howto/configure-copilot-parity-control-plane.md
           - Reference: reference/copilot-parity-control-plane.md
       - Codex Ownership Migration: CODEX_OWNERSHIP_MIGRATION.md
+      - Codex Local-Model Launches:
+          - How-To: howto/run-codex-with-a-local-model.md
+          - Reference: reference/codex-local-model-launch.md
       - External LiteLLM Gateway:
           - Tutorial: tutorials/external-litellm-gateway.md
           - Operations: howto/operate-external-litellm-route.md
@@ -251,6 +281,7 @@ nav:
       - Rust Code Quality: reference/rust-code-quality.md
       - CLI Reference: reference/cli.md
       - install Command: reference/install-command.md
+      - Framework Source Selection: reference/framework-source-selection.md
       - Install/Update PATH Conflicts: reference/install-update-path-conflicts.md
       - recipe Command: reference/recipe-command.md
       - RustyClawd Command: reference/rustyclawd-command.md
@@ -262,6 +293,11 @@ nav:
       - multitask Command: reference/multitask-command.md
       - doctor Command: reference/doctor-command.md
       - User Configuration: reference/user-config.md
+      - Model Tiers: reference/model-tiers.md
+      - Dangerous Command Policy:
+          - Reference: reference/dangerous-command-policy.md
+          - Explanation: concepts/dangerous-command-policy.md
+          - How-To: howto/add-dangerous-command-deny-rules.md
       - AMPLIHACK_* Environment Variable Audit: reference/amplihack-env-vars.md
       - Rust Runner Execution: reference/rust-runner-execution.md
       - Transient Failure Retry: reference/transient-failure-retry.md

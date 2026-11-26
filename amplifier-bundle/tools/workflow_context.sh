@@ -2,16 +2,59 @@
 # Private model-neutral context transport. Presence selects a whole cohort;
 # invalid authoritative data never falls back to a stale secondary source.
 # Source once in the caller before command substitutions to freeze the file.
+#
+# Absence and corruption are separate answers (#2343). A context file that is
+# missing, unreadable, a symlink, a directory or not one JSON object carries no
+# data at all, so every read of it reports absence (status 2); the run's real
+# outcome, not this file, then decides the result. A value that IS present but
+# unparseable, of the wrong type, or carrying a NUL byte is corrupt data and
+# keeps status 3 with its diagnostic, so a typo in a key name can never read as
+# absence. The file's state is decided once, here, and every reader follows
+# that one decision without re-checking the file.
+#
+# Deciding it once is also the one place that can say WHY the file carried
+# nothing (#2819 R2), so this prints exactly one line naming the path and the reason when
+# a file was selected and could not be read. The status stays 2: a reader that
+# got no data still reads the run's real outcome instead of ending the run.
+# Without the line, a consumer such as workflow_enforce_verdict.sh reports that
+# its producer "produced no output" and nothing anywhere names the file that
+# actually went missing. Absence that no one selected -- AMPLIHACK_CONTEXT_FILE
+# unset -- is not a diagnostic and says nothing.
 _workflow_context_has_file=${AMPLIHACK_CONTEXT_FILE+x}
+# 0 = one readable JSON object; 2 = nothing readable at that path.
 _workflow_context_file_status=2
 _workflow_context_file_snapshot=''
 if [[ ${AMPLIHACK_CONTEXT_FILE+x} ]]; then
-  _workflow_context_file_status=3
-  if [[ -n $AMPLIHACK_CONTEXT_FILE && -f $AMPLIHACK_CONTEXT_FILE && ! -L $AMPLIHACK_CONTEXT_FILE ]] && command -v jq >/dev/null 2>&1; then
-    if _workflow_context_file_snapshot=$(jq -cs 'if length == 1 and (.[0]|type) == "object" then .[0] else error("context") end' 2>/dev/null < "$AMPLIHACK_CONTEXT_FILE"); then
-      _workflow_context_file_status=0
-    fi
+  _workflow_context_file_reason=''
+  # A symlink's target is never opened, and a directory is never read (#1538).
+  if [[ -z $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the variable is set to an empty path'
+  elif [[ -L $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the path is a symbolic link, whose target is never opened'
+  elif [[ -d $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the path is a directory'
+  elif [[ ! -e $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='no file exists at that path'
+  elif [[ ! -f $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the path is not a regular file'
+  elif [[ ! -r $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the file is not readable'
+  elif ! command -v jq >/dev/null 2>&1; then
+    _workflow_context_file_reason='jq is unavailable, so no JSON could be parsed'
+  elif _workflow_context_file_snapshot=$(jq -cs 'if length == 1 and (.[0]|type) == "object" then .[0] else error("context") end' 2>/dev/null < "$AMPLIHACK_CONTEXT_FILE"); then
+    _workflow_context_file_status=0
+  else
+    _workflow_context_file_snapshot=''
+    _workflow_context_file_reason='the file does not hold exactly one JSON object'
   fi
+  if [[ -n $_workflow_context_file_reason ]]; then
+    # The path is printed as data: control characters out, length capped, so a
+    # hostile value cannot forge further log lines.
+    printf 'WARN: AMPLIHACK_CONTEXT_FILE carried no workflow context: %s: %s; every context read reports absence and the run'"'"'s own outcome is read instead\n' \
+      "$(LC_ALL=C printf '%s' "$AMPLIHACK_CONTEXT_FILE" | LC_ALL=C tr -d '\001-\037\177' | LC_ALL=C cut -c1-400)" \
+      "$_workflow_context_file_reason" >&2
+  fi
+  unset _workflow_context_file_reason
 fi
 
 # Snapshot only this private contract's names, never unrelated environment data.
@@ -36,7 +79,7 @@ _workflow_context_get() {
   done
   return 2
 }
-_workflow_context_roots='verdict_json implementation allow_no_op doc_review_feedback precommit_results local_testing_gate agentic_finalizer_narrative implementation_terminal_evidence verification_terminal_evidence finalizer_step_status finalization_evidence workflow_result repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence'
+_workflow_context_roots='verdict_json implementation allow_no_op doc_review_feedback precommit_results local_testing_gate agentic_finalizer_narrative implementation_terminal_evidence verification_terminal_evidence finalizer_step_status finalization_evidence finalization_assessment worktree_after_assessment workflow_result repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence'
 for _wc_key in $_workflow_context_roots; do
   _wc_name="$(_workflow_context_upper "$_wc_key")"
   if [[ ${!_wc_name+x} ]]; then _workflow_context_store "$_wc_name" "${!_wc_name}"; fi
@@ -71,8 +114,10 @@ _workflow_context_contract() {
     publish_state_reached) _wc_cohort=metadata; _wc_type=bool; _wc_legacy=PUBLISH_STATE_REACHED ;;
     worktree_setup|terminal_state|pr_publish_result|publish_terminal_evidence)
       _wc_cohort=metadata; _wc_type=object; _wc_legacy=$(_workflow_context_upper "$1") ;;
-    implementation_terminal_evidence|verification_terminal_evidence|finalizer_step_status|finalization_evidence|workflow_result)
+    implementation_terminal_evidence|verification_terminal_evidence|finalizer_step_status|finalization_evidence|finalization_assessment|workflow_result)
       _wc_cohort=finalization; _wc_type=object; _wc_legacy=$(_workflow_context_upper "$1") ;;
+    # #2966: read-worktree-after-assessment's reading. It selects no tier.
+    worktree_after_assessment) _wc_cohort=finalization; _wc_type=object; _wc_legacy=WORKTREE_AFTER_ASSESSMENT ;;
     *) return 3 ;;
   esac
 }
@@ -87,7 +132,7 @@ _workflow_context_tier() {
     verification) keys='precommit_results local_testing_gate allow_no_op' ;;
     reporting) keys='agentic_finalizer_narrative' ;;
     metadata) keys='repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence' ;;
-    finalization) keys='implementation_terminal_evidence verification_terminal_evidence allow_no_op finalization_evidence finalizer_step_status workflow_result' ;;
+    finalization) keys='implementation_terminal_evidence verification_terminal_evidence allow_no_op finalization_evidence finalization_assessment finalizer_step_status workflow_result' ;;
     *) return 3 ;;
   esac
   for key in $keys; do
@@ -116,11 +161,20 @@ workflow_context_read() {
     return 0
   fi
   if [[ $tier == file ]]; then
-    [[ $_workflow_context_file_status == 0 ]] || { _workflow_context_invalid; return 3; }
+    # No readable file means no data, not bad data: report absence (#2343).
+    [[ $_workflow_context_file_status == 0 ]] || return 2
     if ! raw=$(printf '%s' "$_workflow_context_file_snapshot" | jq -c --arg key "$1" 'if has($key) then .[$key] else empty end'); then
       _workflow_context_invalid; return 3
     fi
     [[ -n $raw ]] || return 2
+    # #1726, as in the environment tier below. The file carries every value the
+    # runner was given as a string, so an object-typed key the recipe declares
+    # with an empty default and no step has set arrives here as the empty
+    # string. It holds no object, which makes it an unset key, not a corrupt
+    # one; the same key read through RECIPE_VAR_<key> already reports absence,
+    # and the two sources must not disagree. Any other unparseable value stays
+    # corrupt, so a typo still cannot read as absence.
+    [[ $_wc_type != object || $raw != '""' ]] || return 2
   else
     name="RECIPE_VAR_$1"
     raw=$(_workflow_context_get "$name" && printf '.') || return 2
@@ -129,6 +183,11 @@ workflow_context_read() {
     if [[ $_wc_type == string || $_wc_type == bool || $_wc_type == number || $_wc_type == report ]]; then
       printf '%s' "$raw"; return 0
     fi
+    # #1726: an object-typed key the recipe declares with an empty default and
+    # no step has set yet holds no object. That is an unset key, not a corrupt
+    # one. The name is still present, so the cohort stays canonical and the
+    # stale legacy scalar remains suppressed exactly as #1538 requires.
+    [[ -n $raw ]] || return 2
   fi
   case "$_wc_type" in
     object)

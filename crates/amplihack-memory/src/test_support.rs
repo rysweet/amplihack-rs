@@ -2,13 +2,27 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+/// The six profile-redirecting variables and the guards that keep a test's
+/// settings writes inside its own temporary home (issue #2922). One
+/// definition, shared with the other crates' `test_support`.
+#[path = "../../../tests/support/claude_profile_isolation.rs"]
+pub(crate) mod claude_profile_isolation;
+
 /// Single global lock for all environment-mutating tests.
 ///
 /// Both HOME and CWD mutations must serialize through one lock to prevent
 /// races. Tests that need both HOME and CWD should acquire `env_lock()` once.
+///
+/// Creating the lock also fires [`claude_profile_isolation::purge_inherited`]
+/// (issue #2922), so a `CLAUDE_CONFIG_DIR` or login profile inherited from the
+/// session that started `cargo test` is gone before the first test that holds
+/// this lock mutates anything. It runs exactly once per process.
 pub(crate) fn env_lock() -> &'static Mutex<()> {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ENV_LOCK.get_or_init(|| Mutex::new(()))
+    ENV_LOCK.get_or_init(|| {
+        claude_profile_isolation::purge_inherited();
+        Mutex::new(())
+    })
 }
 
 /// Alias for `env_lock()` — all env locks use the same underlying mutex.
@@ -21,7 +35,16 @@ pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+/// Point `HOME` at `path`, returning the prior value for [`restore_home`].
+///
+/// This also fires [`claude_profile_isolation::purge_inherited`] (issue
+/// #2922), so an inherited `CLAUDE_CONFIG_DIR` cannot send a settings write
+/// out of `path`. The purge has no restore; a fixture that needs the six
+/// profile variables put back afterwards takes a [`HomeGuard`] instead.
+///
+/// The caller must hold `env_lock()`.
 pub(crate) fn set_home(path: &Path) -> Option<std::ffi::OsString> {
+    claude_profile_isolation::purge_inherited();
     let previous = std::env::var_os("HOME");
     unsafe {
         std::env::set_var("HOME", path);
@@ -82,18 +105,30 @@ impl Drop for CwdGuard {
 /// this guard so concurrent tests don't observe the mutated HOME.
 pub(crate) struct HomeGuard {
     previous: Option<std::ffi::OsString>,
+    // Issue #2922. Field order is drop order, and `Drop::drop` below runs
+    // before either field, so `HOME` is restored first and the six profile
+    // variables after it.
+    _profile: claude_profile_isolation::ClaudeProfileIsolation,
 }
 
 impl HomeGuard {
     /// Set `HOME` to `path`, returning a guard that restores (or unsets) the
     /// prior value on drop.
+    ///
+    /// The guard also clears the six variables that would redirect a settings
+    /// write out of `path` ([`claude_profile_isolation`], issue #2922) and
+    /// restores them with `HOME`.
     pub(crate) fn set(path: &Path) -> Self {
+        let profile = claude_profile_isolation::ClaudeProfileIsolation::new();
         let previous = std::env::var_os("HOME");
         // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
         unsafe {
             std::env::set_var("HOME", path);
         }
-        Self { previous }
+        Self {
+            previous,
+            _profile: profile,
+        }
     }
 }
 

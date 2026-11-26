@@ -54,11 +54,12 @@ add new ones.
 
 ## Architecture
 
+Paths below are relative to the folder of this SKILL.md.
+
 ```
-amplifier-bundle/skills/code-visualizer/
+./
 ├── SKILL.md
-├── README.md
-└── SKILL.md
+└── README.md
 ```
 
 The legacy helper executable is not shipped in `amplihack-rs`. Perform the
@@ -306,7 +307,7 @@ data contract.
 
 ## Testing
 
-Tests live under `amplifier-bundle/skills/code-visualizer/tests/` and run via
+Tests live under `./tests/` and run via
 `pytest`. The skill registers its `tests/` directory in the repo's
 `pytest.ini` `testpaths` so CI picks them up automatically.
 
@@ -325,7 +326,7 @@ Test files:
 Run only the skill's tests:
 
 ```bash
-pytest amplifier-bundle/skills/code-visualizer/tests -q
+pytest ./tests -q
 ```
 
 ## Security Considerations

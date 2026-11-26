@@ -169,7 +169,11 @@ fn step_08c_work_verifier_prompt_documents_investigation_surfaces() {
         ("merge-base", "in-step merged PR detection"),
         ("gh pr", "GitHub PR cross-reference"),
         ("gh issue", "linked issue closure cross-reference"),
-        ("origin/main", "branch-point comparison"),
+        (
+            "{{worktree_setup.base_ref}}",
+            "branch-point comparison against the run's own base",
+        ),
+        ("<base>..HEAD", "commits since the branch point"),
     ];
     for (needle, why) in required_surfaces {
         assert!(

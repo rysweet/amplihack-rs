@@ -61,6 +61,8 @@ mod tests_status;
 #[cfg(all(test, unix))]
 mod tests_status_hold;
 #[cfg(all(test, unix))]
+mod tests_status_manifest;
+#[cfg(all(test, unix))]
 mod tests_store;
 
 pub use guard::{Denied, SlotGuard};

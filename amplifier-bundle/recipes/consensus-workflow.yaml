@@ -11,17 +11,21 @@ tags: ["consensus", "quality", "multi-agent", "critical", "validation", "debate"
 # gate is preserved verbatim — the LLM converges on correct behaviour through
 # many recursive review layers, so every layer must stay intact.
 #
-# Phases (each is a sub-recipe in amplifier-bundle/recipes/):
-#   1.  consensus-prep             — preflight + 3-round requirements debate
-#   2.  consensus-issue-worktree   — create issue + worktree
-#   3.  consensus-design           — 3-round design debate (5 perspectives)
-#   4.  consensus-tdd-impl         — tests + standard impl + N-version vote
-#   5.  consensus-panel-cleanup    — 4-perspective refactor panel
-#   6.  consensus-test-fix         — tests + fix + local validate
-#   7.  consensus-publish          — commit + create PR
-#   8.  consensus-pr-review        — 5-perspective PR review panel
-#   9.  consensus-pr-feedback      — feedback + 4-perspective philosophy panel
-#   10. consensus-merge-finalize   — CI + mergeable + final-quality panel
+# Step 0, validate-criticality-input, has no condition and fails before any
+# phase unless is_critical_code is exactly 'true' or 'false' (issue #1966).
+#
+# Phases (each is a sub-recipe in amplifier-bundle/recipes/), steps 1 to 11:
+#   1.  consensus-preflight            — preflight checks
+#   2.  consensus-requirements-debate  — 3-round requirements debate
+#   3.  consensus-issue-worktree       — create issue + worktree
+#   4.  consensus-design               — 3-round design debate (5 perspectives)
+#   5.  consensus-tdd-impl             — tests + one implementation route + route gate
+#   6.  consensus-panel-cleanup        — 4-perspective refactor panel
+#   7.  consensus-test-fix             — tests + fix + local validate
+#   8.  consensus-publish              — commit + create PR
+#   9.  consensus-pr-review            — 5-perspective PR review panel
+#   10. consensus-pr-feedback          — feedback + 4-perspective philosophy panel
+#   11. consensus-merge-finalize       — CI + mergeable + final-quality panel
 
 recursion:
   max_depth: 6
@@ -39,12 +43,28 @@ context:
   requirements_debate: ""
   n_version_implementations: ""
   refined_implementation: ""
+  # Issue #1966: required caller input, exactly true or false; nothing in this
+  # workflow sets it. criticality is optional descriptive text and never
+  # selects a route. See docs/reference/consensus-criticality-contract.md.
+  is_critical_code: ""
+  criticality: ""
   # Optional: when set, skip new-branch creation and reuse this branch.
   existing_branch: ""
   # Optional: when set, attach to this existing PR rather than opening a new one.
   pr_number: ""
 
 steps:
+  - id: "validate-criticality-input"
+    type: "bash"
+    command: |
+      set -u
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      [ -r "$H/consensus_criticality.sh" ] || { echo "ERROR: amplifier-bundle/tools/consensus_criticality.sh not found or not readable" >&2; exit 2; }
+      . "$H/consensus_criticality.sh" || exit 2
+      cc_validate_input || exit $?
+
   - id: "consensus-preflight"
     type: "recipe"
     recipe: "consensus-preflight"

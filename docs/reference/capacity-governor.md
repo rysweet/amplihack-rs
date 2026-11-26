@@ -515,16 +515,18 @@ exhaustion either. The usage-limit supervisor owns that wait
 #1801), and the governor leaves it to the supervisor rather than running a
 second, shorter wait of its own. The agent step starts, the provider prints
 its own limit message with the reset, and the supervisor waits for that
-reset (up to five hours) or for any login with capacity (up to
-`recipe.usage_limit_max_wait_secs`), then runs the step again. If the
+reset or for any login with capacity, then runs the step again. A limit that
+states no usable reset gives that wait no deadline: it ends when a login has
+room or the login changes. If the
 governor held the step instead, it would wait only `governor.wait_secs`
 (10 minutes by default) and then exit 80. The supervisor does not read the
 governor's exit 80 line as a usage limit, so the run would fail where the
 supervisor would have waited and carried on.
 
 The supervisor's own rules apply unchanged: with every login at its weekly
-limit and the reset more than five hours away, it does not wait, and the
-step fails with the provider's exit code. A start of its own, or one under
+limit and the reset more than five hours away, it starts a capacity wait that
+ends at that reset or when a login has room, and a limit never fails the step
+([usage-limit waits](usage-limit-waits.md)). A start of its own, or one under
 an interactive session's slot, is still held by steps 2 and 3, because no
 supervisor stands behind it.
 
@@ -855,7 +857,7 @@ are cut to 64 characters.
 | `reserve` | Reserve points, the best usable weekly remainder, and whether a top-level ordinary start would be held now. `best_weekly_remaining` is taken over the profiles step 4 reads: eligible, with neither window exhausted. A profile kept only for a stale exhausted window is not among them, so its other window never counts as room; the value is `null` when no profile qualifies. `ordinary_held` and `held_reason` come from the decision function itself, run for a top-level ordinary start with no slots and no queue, so they cover steps 2 to 4: `held_reason` is `weekly-exhausted` (step 2), `session-exhausted` (step 3) or `reserve` (step 4) when `ordinary_held` is `true`, and `null` otherwise. With every eligible profile session- or weekly-exhausted the step 4 pool is empty and `best_weekly_remaining` is `null`, but `ordinary_held` is `true`. Only step 1 (`no-readings`, no usable reading at all) reports `false` with no remainder, because that start is admitted. Holds at steps 5 and 6 (slots and queue) are not included; see `limit`, `slots[]` and `queue[]` |
 | `slots[]`, `queue[]` | As in the state files, without start times or tree ids, plus `stale` |
 | `workstreams[].admissions` | Admissions in the 24-hour fairness window |
-| `workstreams[].token_share` | For the workstream the manifest named by `AMPLIHACK_GOVERNOR_MANIFEST` describes: its attributed tokens divided by every observed token in the manifest's sessions, so unattributed tokens lower the share. `null` for other workstreams, without a manifest, or when the manifest is not an absolute path to a regular file of the current user of at most 4096 bytes. The manifest path is never printed. |
+| `workstreams[].token_share` | For the workstream the manifest named by `AMPLIHACK_GOVERNOR_MANIFEST` describes: its attributed tokens divided by every observed token in the manifest's sessions, so unattributed tokens lower the share. `null` for other workstreams, without a manifest, when the manifest is not an absolute path to a regular file of the current user of at most 4096 bytes, or when any manifest session names a provider other than `claude` or `codex` (the usage report keeps such a session as unknown usage, so a share would leave its tokens out of both sides). The manifest path is never printed. |
 | `fail_open_reason` | `null`, or `{ "code": "...", "message": "..." }` for the last fail-open |
 
 Status never prints account keys, emails, task text or `claude` arguments.

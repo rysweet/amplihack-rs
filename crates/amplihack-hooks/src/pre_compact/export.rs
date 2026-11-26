@@ -1,32 +1,30 @@
 //! Transcript export, compaction metadata, and utility functions.
 
-use amplihack_types::ProjectDirs;
+use crate::state_dir::create_private_dir_all;
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// Output for a failed export or metadata write: only the common
+/// `systemMessage` field, which Claude Code accepts for PreCompact and shows to
+/// the person. The failure is also logged.
 pub(crate) fn error_response(context: &str, error: &anyhow::Error) -> Value {
     let message = format!("{context}: {error}");
     tracing::warn!("{}", message);
-    serde_json::json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreCompact",
-            "status": "error",
-            "message": message,
-            "error": error.to_string(),
-        }
-    })
+    serde_json::json!({ "systemMessage": message })
 }
 
+/// Copy the transcript to `<session_dir>/logs/transcript_pre_compact.jsonl`.
+///
+/// Returns `Ok(None)` when the source transcript does not exist.
 pub(crate) fn export_transcript(
+    session_dir: &Path,
     transcript_path: &Path,
-    session_id: &str,
 ) -> anyhow::Result<Option<PathBuf>> {
-    let dirs = ProjectDirs::from_cwd();
-    let export_dir = dirs.session_logs(session_id);
-    fs::create_dir_all(&export_dir)?;
+    let export_dir = session_dir.join("logs");
+    create_private_dir_all(&export_dir)?;
 
     if !transcript_path.exists() {
         return Ok(None);
@@ -38,15 +36,16 @@ pub(crate) fn export_transcript(
     Ok(Some(export_path))
 }
 
+/// Append one compaction record to `<session_dir>/logs/compaction_metadata.jsonl`.
 pub(crate) fn save_compaction_metadata(
+    session_dir: &Path,
     session_id: &str,
     transcript_path: Option<&Path>,
     extra: &Value,
     original_request_preserved: bool,
 ) -> anyhow::Result<Value> {
-    let dirs = ProjectDirs::from_cwd();
-    let session_dir = dirs.session_logs(session_id);
-    fs::create_dir_all(&session_dir)?;
+    let session_dir = session_dir.join("logs");
+    create_private_dir_all(&session_dir)?;
 
     let mut metadata = serde_json::json!({
         "event": "pre_compact",
@@ -87,30 +86,17 @@ fn now_epoch_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::env_lock;
     use serde_json::json;
     use std::path::Path;
-
-    fn with_temp_cwd<T>(f: impl FnOnce(&Path) -> T) -> T {
-        let _guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let tmp = tempfile::tempdir().unwrap();
-        let cwd = crate::test_support::CwdGuard::set(tmp.path()).unwrap();
-        let result = f(tmp.path());
-        drop(cwd);
-        result
-    }
 
     #[test]
     fn error_response_format() {
         let err = anyhow::anyhow!("disk full");
         let resp = error_response("writing log", &err);
-        let output = &resp["hookSpecificOutput"];
-        assert_eq!(output["hookEventName"], "PreCompact");
-        assert_eq!(output["status"], "error");
-        assert!(output["message"].as_str().unwrap().contains("writing log"));
-        assert!(output["error"].as_str().unwrap().contains("disk full"));
+        let object = resp.as_object().expect("an object");
+        assert!(object.get("hookSpecificOutput").is_none(), "{resp}");
+        assert_eq!(object.len(), 1, "{resp}");
+        assert!(object["systemMessage"].is_string(), "{resp}");
     }
 
     #[test]
@@ -124,52 +110,60 @@ mod tests {
 
     #[test]
     fn export_transcript_missing_file() {
-        with_temp_cwd(|_| {
-            let result =
-                export_transcript(Path::new("/nonexistent/transcript.jsonl"), "test-session");
-            // Should return Ok(None) when file doesn't exist
-            assert!(result.unwrap().is_none());
-        });
+        let tmp = tempfile::tempdir().unwrap();
+        let session_dir = tmp.path().join("sessions").join("test-session");
+        let result = export_transcript(&session_dir, Path::new("/nonexistent/transcript.jsonl"));
+        // Should return Ok(None) when file doesn't exist
+        assert!(result.unwrap().is_none());
     }
 
     #[test]
     fn export_transcript_with_file() {
-        with_temp_cwd(|tmp| {
-            let src = tmp.join("transcript.jsonl");
-            fs::write(&src, r#"{"role":"user","content":"hello"}"#).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("transcript.jsonl");
+        fs::write(&src, r#"{"role":"user","content":"hello"}"#).unwrap();
+        let session_dir = tmp.path().join("sessions").join("export-test");
 
-            let result = export_transcript(&src, "export-test");
-            let exported = result.unwrap().unwrap();
-            assert!(exported.exists());
-            assert!(
-                exported
-                    .to_string_lossy()
-                    .contains("transcript_pre_compact.jsonl")
-            );
-        });
+        let exported = export_transcript(&session_dir, &src).unwrap().unwrap();
+        assert_eq!(
+            exported,
+            session_dir
+                .join("logs")
+                .join("transcript_pre_compact.jsonl")
+        );
+        assert_eq!(
+            fs::read_to_string(&exported).unwrap(),
+            r#"{"role":"user","content":"hello"}"#
+        );
     }
 
     #[test]
     fn save_compaction_metadata_basic() {
-        with_temp_cwd(|_| {
-            let extra = json!({"trigger": "auto"});
-            let result = save_compaction_metadata("meta-test", None, &extra, true);
-            let metadata = result.unwrap();
-            assert_eq!(metadata["session_id"], "meta-test");
-            assert_eq!(metadata["original_request_preserved"], true);
-            assert_eq!(metadata["compaction_trigger"], "auto");
-            assert!(metadata["timestamp"].as_u64().unwrap() > 0);
-        });
+        let tmp = tempfile::tempdir().unwrap();
+        let session_dir = tmp.path().join("meta-test");
+        let extra = json!({"trigger": "auto"});
+        let metadata =
+            save_compaction_metadata(&session_dir, "meta-test", None, &extra, true).unwrap();
+        assert_eq!(metadata["session_id"], "meta-test");
+        assert_eq!(metadata["original_request_preserved"], true);
+        assert_eq!(metadata["compaction_trigger"], "auto");
+        assert!(metadata["timestamp"].as_u64().unwrap() > 0);
+        assert!(
+            session_dir
+                .join("logs")
+                .join("compaction_metadata.jsonl")
+                .exists()
+        );
     }
 
     #[test]
     fn save_compaction_metadata_no_trigger() {
-        with_temp_cwd(|_| {
-            let extra = json!({});
-            let result = save_compaction_metadata("no-trigger", None, &extra, false);
-            let metadata = result.unwrap();
-            assert_eq!(metadata["original_request_preserved"], false);
-            assert!(metadata.get("compaction_trigger").is_none());
-        });
+        let tmp = tempfile::tempdir().unwrap();
+        let session_dir = tmp.path().join("no-trigger");
+        let extra = json!({});
+        let metadata =
+            save_compaction_metadata(&session_dir, "no-trigger", None, &extra, false).unwrap();
+        assert_eq!(metadata["original_request_preserved"], false);
+        assert!(metadata.get("compaction_trigger").is_none());
     }
 }

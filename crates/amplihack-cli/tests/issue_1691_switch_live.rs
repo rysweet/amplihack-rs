@@ -8,6 +8,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_rotate::*;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -421,16 +422,17 @@ fn a_profile_open_in_a_session_still_becomes_the_default() {
     // The usual way a profile is used: a session runs with CLAUDE_CONFIG_DIR
     // set to it. Its login cannot be moved, but new launches can default to
     // it, as before #1691. An earlier hold on work stays and is named.
+    // The session is a static entry in the fixture's fake process table
+    // (issue #2042), so the scan never reads the host's processes.
     let f = Fixture::new();
     f.ok(&["profile", "switch", "work"]);
-    let mut session = std::process::Command::new("sleep")
-        .arg("600")
-        .env("CLAUDE_CONFIG_DIR", f.root.join("spare"))
-        .spawn()
-        .expect("spawn sleep");
+    let fake = FakeProc::new();
+    fake.process(FAKE_PID_BASE)
+        .cmdline(&["sleep", "600"])
+        .status('S')
+        .environ(&[("CLAUDE_CONFIG_DIR", f.root.join("spare").to_str().unwrap())]);
+    f.with_proc(&fake);
     assert_refused_default_only(&f, "spare", Some("work"), "(session running)");
-    let _ = session.kill();
-    let _ = session.wait();
     assert_eq!(fs::read_to_string(pin_path(&f)).unwrap(), "work\n");
 }
 

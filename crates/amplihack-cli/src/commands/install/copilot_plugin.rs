@@ -62,8 +62,10 @@ pub(super) fn register_copilot_plugin(
     hooks_bin: &Path,
     user_config: UserConfig,
 ) -> Result<CopilotRegistration> {
+    let home = home_dir()?;
     register_copilot_plugin_scoped_in(
-        &home_dir()?.join(".copilot"),
+        &home.join(".copilot"),
+        &home.join(".amplihack"),
         repo_root,
         hooks_bin,
         user_config,
@@ -92,13 +94,25 @@ pub(super) fn register_copilot_plugin_in(
     repo_root: &Path,
     hooks_bin: &Path,
 ) -> Result<bool> {
-    register_copilot_plugin_scoped_in(copilot_home, repo_root, hooks_bin, UserConfig::Merge)
-        .map(|outcome| outcome != CopilotRegistration::NotDetected)
+    // Tests keep the retired commands beside their temporary `copilot_home`.
+    let amplihack_home = copilot_home
+        .parent()
+        .unwrap_or(copilot_home)
+        .join(".amplihack");
+    register_copilot_plugin_scoped_in(
+        copilot_home,
+        &amplihack_home,
+        repo_root,
+        hooks_bin,
+        UserConfig::Merge,
+    )
+    .map(|outcome| outcome != CopilotRegistration::NotDetected)
 }
 
 /// [`register_copilot_plugin`] against an explicit `copilot_home`.
 pub(super) fn register_copilot_plugin_scoped_in(
     copilot_home: &Path,
+    amplihack_home: &Path,
     repo_root: &Path,
     hooks_bin: &Path,
     user_config: UserConfig,
@@ -117,7 +131,7 @@ pub(super) fn register_copilot_plugin_scoped_in(
         .with_context(|| format!("failed to create {}", plugin_dir.display()))?;
 
     // Stage commands first (if present) so plugin.json can advertise them.
-    let commands_staged = stage_commands(repo_root, &plugin_dir)?;
+    let commands_staged = stage_commands(repo_root, &plugin_dir, amplihack_home)?;
 
     write_plugin_manifest(&plugin_dir, commands_staged)?;
     write_hooks_json(&plugin_dir, hooks_bin)?;
@@ -305,7 +319,7 @@ fn copilot_hook_command(bin: &str, subcmd: &str) -> Result<String> {
 ///
 /// Returns `Ok(true)` if at least one `*.md` was copied — used by
 /// [`write_plugin_manifest`] to decide whether to advertise `commands`.
-fn stage_commands(repo_root: &Path, plugin_dir: &Path) -> Result<bool> {
+fn stage_commands(repo_root: &Path, plugin_dir: &Path, amplihack_home: &Path) -> Result<bool> {
     let Some(source) = command_staging::command_source_dir(repo_root) else {
         return Ok(false);
     };
@@ -320,6 +334,7 @@ fn stage_commands(repo_root: &Path, plugin_dir: &Path) -> Result<bool> {
             source: &source,
             target: &target,
             scratch_root: plugin_dir,
+            retire_root: amplihack_home,
             target_is_owned: true,
         },
         normalize_command_frontmatter_name,
@@ -812,6 +827,54 @@ mod tests {
                 "{} must not keep invalid namespaced command name",
                 path.display()
             );
+        }
+    }
+
+    #[test]
+    fn shipped_commands_keep_manual_invocation_metadata_on_both_tools() {
+        let td = TempDir::new().unwrap();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let copilot_home = fake_copilot_home(&td);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        run_with_copilot_home(&copilot_home, &repo, &hooks_bin);
+        let claude = super::super::claude_commands::stage_claude_commands_in(
+            &td.path().join(".claude"),
+            &td.path().join(".amplihack/.claude"),
+            &repo,
+        )
+        .unwrap();
+        assert_eq!(claude.copied, 23);
+
+        let copilot_commands = copilot_home.join("installed-plugins/amplihack@local/commands");
+        assert_eq!(fs::read_dir(&copilot_commands).unwrap().count(), 23);
+        for entry in fs::read_dir(&claude.target).unwrap() {
+            let entry = entry.unwrap();
+            let source = fs::read_to_string(
+                repo.join("docs/claude/commands/amplihack")
+                    .join(entry.file_name()),
+            )
+            .unwrap();
+            let claude_raw = fs::read_to_string(entry.path()).unwrap();
+            assert_eq!(claude_raw, source);
+            let copilot_raw = fs::read_to_string(copilot_commands.join(entry.file_name())).unwrap();
+            let command = entry.path();
+            let command = command.file_stem().unwrap().to_str().unwrap();
+            for (raw, expected_name) in [
+                (&claude_raw, format!("amplihack:{command}")),
+                (&copilot_raw, command.to_string()),
+            ] {
+                let (metadata, body) = raw
+                    .strip_prefix("---\n")
+                    .unwrap()
+                    .split_once("\n---\n")
+                    .unwrap();
+                let metadata: serde_yaml::Value = serde_yaml::from_str(metadata).unwrap();
+                assert_eq!(metadata["name"].as_str(), Some(expected_name.as_str()));
+                assert_eq!(metadata["disable-model-invocation"].as_bool(), Some(true));
+                assert_eq!(body, source.split_once("\n---\n").unwrap().1);
+            }
+            validate_copilot_command_name(command).unwrap();
         }
     }
 

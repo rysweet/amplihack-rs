@@ -7,6 +7,7 @@
 #
 # Sections:
 #   A. stage_workflow_changes (workflow_stage_changes.sh)
+#   A2. private root run/reports stays out of the index (#2839)
 #   B. hook_repair_run usage errors
 #   C. classification of commit and push failures, hook ids
 #   D. the repair loop: verdicts, evaluator inputs, agent inputs, terminal 79
@@ -39,8 +40,25 @@
 
 set -euo pipefail
 
+# An enclosing hook's repository selectors override even an absolute `git
+# init <fixture>` target. A failed init can then leave an empty external .git
+# despite an owned TMPDIR (#1937). Isolate before the first fixture Git call.
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR \
+    GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION \
+    GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE \
+    GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+while IFS= read -r git_variable; do
+    case "${git_variable}" in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset "${git_variable}" ;; esac
+done < <(compgen -e)
+unset git_variable
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 TOOLS="${REPO_ROOT}/amplifier-bundle/tools"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 # The overrides exist for checking this harness against a scratch driver; the
@@ -52,19 +70,30 @@ CHECKPOINT_COMMIT="${TOOLS}/workflow_checkpoint_commit.sh"
 TDD_RECIPE="${RECIPES}/workflow-tdd.yaml"
 REFACTOR_RECIPE="${RECIPES}/workflow-refactor-review.yaml"
 PUBLISH_RECIPE="${RECIPES}/workflow-publish.yaml"
+PR_REVIEW_RECIPE="${RECIPES}/workflow-pr-review.yaml"
 
 for tool in git python3 jq; do
     command -v "${tool}" >/dev/null 2>&1 || { echo "HARNESS-ERROR: ${tool} is required" >&2; exit 2; }
 done
-for path in "${GIT_IDENTITY}" "${CHECKPOINT_COMMIT}" "${TDD_RECIPE}" "${REFACTOR_RECIPE}" "${PUBLISH_RECIPE}"; do
+for path in "${GIT_IDENTITY}" "${CHECKPOINT_COMMIT}" "${TDD_RECIPE}" "${REFACTOR_RECIPE}" "${PUBLISH_RECIPE}" "${PR_REVIEW_RECIPE}"; do
     [[ -f "${path}" ]] || { echo "HARNESS-ERROR: ${path} not found" >&2; exit 2; }
 done
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/issue-1671-hook-repair-XXXXXX")"
-[[ -n "${ISSUE_1671_KEEP_WORK:-}" ]] || trap 'rm -rf "${WORK}"' EXIT
-WORK="$(cd "${WORK}" && pwd -P)"
+SCRATCH_PARENT="${TMPDIR:-/tmp}"
+[[ "${SCRATCH_PARENT}" == /* && -d "${SCRATCH_PARENT}" ]] || { echo "HARNESS-ERROR: invalid scratch parent" >&2; exit 2; }
+SCRATCH_PARENT="$(cd -- "${SCRATCH_PARENT:?}" && pwd -P)" || exit 2
+[[ "${SCRATCH_PARENT}" == /* && "${SCRATCH_PARENT}" != / && -d "${SCRATCH_PARENT}" ]] || { echo "HARNESS-ERROR: invalid canonical scratch parent" >&2; exit 2; }
+WORK="$(mktemp -d "${SCRATCH_PARENT:?}/issue-1671-hook-repair-XXXXXX")" || exit 2
+: "${WORK:?mktemp returned an empty scratch path}"
+case "${WORK}" in "${SCRATCH_PARENT:?}/issue-1671-hook-repair-"*) ;; *) echo "HARNESS-ERROR: invalid scratch allocation" >&2; exit 2 ;; esac
+[[ -d "${WORK}" && ! -L "${WORK}" && -O "${WORK}" ]] || { echo "HARNESS-ERROR: scratch is not an owned directory" >&2; exit 2; }
+WORK_PHYSICAL="$(cd -- "${WORK:?}" && pwd -P)" || exit 2
+[[ -n "${WORK_PHYSICAL}" && "${WORK_PHYSICAL}" == "${WORK}" && "${WORK%/*}" == "${SCRATCH_PARENT}" ]] || { echo "HARNESS-ERROR: scratch escaped its parent" >&2; exit 2; }
+[[ -n "${ISSUE_1671_KEEP_WORK:-}" ]] || trap 'rm -rf -- "${WORK:?}"' EXIT
+export HOME="${WORK:?}/home" XDG_CONFIG_HOME="${WORK:?}/home/.config"
+export GIT_CONFIG_GLOBAL="${WORK:?}/home/.gitconfig" GIT_CONFIG_NOSYSTEM=1
 STUB_BIN="${WORK}/bin"
-mkdir -p "${STUB_BIN}" "${WORK}/tmp"
+mkdir -p "${STUB_BIN:?}" "${WORK:?}/tmp" "${HOME:?}"
 FAILURES=0
 PASSES=0
 
@@ -264,7 +293,7 @@ configure_identity() {
 # new_repo <case-dir>: a bare origin, a main checkout and a linked task worktree
 # on a feature branch with an upstream, as commit steps require (#1528).
 new_repo() {
-    local dir="$1"
+    local dir="${1:?repository fixture path must be nonempty}"
     mkdir -p "${dir}"
     git init -q --bare -b main "${dir}/origin.git"
     git init -q -b main "${dir}/main"
@@ -280,9 +309,11 @@ new_repo() {
 
 hooks_dir() {
     local d
-    d="$(git -C "$1" rev-parse --git-path hooks)"
+    : "${1:?repository fixture path must be nonempty}"
+    d="$(git -C "$1" rev-parse --git-path hooks)" || return $?
+    : "${d:?Git returned an empty hooks path}"
     case "${d}" in /*) ;; *) d="$1/${d}" ;; esac
-    mkdir -p "${d}"
+    mkdir -p "${d:?}" || return $?
     printf '%s' "${d}"
 }
 
@@ -517,6 +548,260 @@ section_a() {
         fail "A: stage_workflow_changes must succeed with nothing tracked"; sed 's/^/    | /' "${empty}/err" >&2
     fi
     expect_eq "A: first file staged in an empty repository" "$(git -C "${empty}/repo" diff --cached --name-only)" "first.txt"
+}
+
+# =============================================================================
+# A2. private root run/reports (#2839)
+# =============================================================================
+# stage_in <repo> <case-dir>: run the helper under `set -euo pipefail`, as every
+# call site does, keeping stdout and stderr apart.
+stage_in() {
+    ( cd "$1" && bash -c 'set -euo pipefail; . "$1"; stage_workflow_changes' _ "${STAGE_HELPER}" ) \
+        >"$2/stage.out" 2>"$2/stage.err"
+}
+# report_entries <repo>: staged non-deletion entries under root run/reports.
+report_entries() {
+    git -C "$1" diff --cached --name-status --no-renames 2>/dev/null \
+        | awk -F'\t' '$1 != "D" && $2 ~ /^run\/reports\// { print }'
+}
+# reports_repo <case-dir>: a fixture with synthetic reports and a source file.
+reports_repo() {
+    new_repo "$1"
+    mkdir -p "$1/repo/src"
+    printf 'fn main() {}\n' > "$1/repo/src/lib.rs"
+    git -C "$1/repo" add src/lib.rs
+    git -C "$1/repo" commit -qm "source"
+}
+write_reports() {
+    mkdir -p "$1/run/reports/20260101-000000-sample" "$1/run/reports/step17e-fixture"
+    printf '{"synthetic": true}\n' > "$1/run/reports/20260101-000000-sample/report.json"
+    printf '{"synthetic": true, "ci": "stale"}\n' > "$1/run/reports/step17e-fixture/results.json"
+}
+expect_reports_intact() {
+    local label="$1" repo="$2"
+    expect_eq "${label}: report bytes kept on disk" \
+        "$(cat "${repo}/run/reports/step17e-fixture/results.json" 2>/dev/null)" '{"synthetic": true, "ci": "stale"}'
+}
+
+section_a2() {
+    need "${STAGE_HELPER}" A2 || return 0
+    local dir repo
+
+    # (a) one source edit beside untracked reports: product-only commit.
+    dir="${WORK}/a2-untracked"; reports_repo "${dir}"; repo="${dir}/repo"
+    printf 'fn main() { println!("x"); }\n' > "${repo}/src/lib.rs"
+    write_reports "${repo}"
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(a): helper failed"; fi
+    expect_empty_file "A2(a): nothing on stdout" "${dir}/stage.out"
+    expect_file_contains "A2(a): reports reported as skipped" "${dir}/stage.err" \
+        "stage_workflow_changes: skipped run/reports/step17e-fixture/results.json"
+    git -C "${repo}" commit -qm "product only"
+    expect_eq "A2(a): commit holds only the source change" \
+        "$(git -C "${repo}" show --name-only --format= HEAD)" "src/lib.rs"
+    expect_eq "A2(a): reports remain untracked" \
+        "$(git -C "${repo}" ls-files --others --exclude-standard -- run/reports | wc -l | tr -d ' ')" "2"
+    expect_reports_intact "A2(a)" "${repo}"
+
+    # (b) reports staged by an earlier agent beside unrelated staged source.
+    dir="${WORK}/a2-prestaged"; reports_repo "${dir}"; repo="${dir}/repo"
+    printf 'pub fn extra() {}\n' > "${repo}/src/extra.rs"
+    write_reports "${repo}"
+    git -C "${repo}" add src/extra.rs run/reports
+    expect_ne "A2(b): fixture really staged reports" "$(report_entries "${repo}")" ""
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(b): helper failed"; fi
+    expect_empty_file "A2(b): nothing on stdout" "${dir}/stage.out"
+    expect_eq "A2(b): no report entry left in the index" "$(report_entries "${repo}")" ""
+    expect_eq "A2(b): unrelated staged source survives" \
+        "$(git -C "${repo}" diff --cached --name-only --no-renames)" "src/extra.rs"
+    expect_file_contains "A2(b): unstaged path reported" "${dir}/stage.err" \
+        "stage_workflow_changes: unstaged run/reports/step17e-fixture/results.json"
+    expect_reports_intact "A2(b)" "${repo}"
+    local before after
+    before="$(git -C "${repo}" write-tree)"
+    stage_in "${repo}" "${dir}" || fail "A2(b): second run failed"
+    after="$(git -C "${repo}" write-tree)"
+    expect_eq "A2(b): idempotent from the pre-staged state" "${after}" "${before}"
+
+    # (c) an ordinary deletion of previously committed reports still commits.
+    dir="${WORK}/a2-cleanup"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports
+    git -C "${repo}" commit -qm "published by mistake"
+    rm -rf "${repo}/run/reports"
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(c): helper failed"; fi
+    git -C "${repo}" commit -qm "remove reports"
+    expect_eq "A2(c): cleanup deletion is recorded" \
+        "$(git -C "${repo}" show --name-status --no-renames --format= HEAD | cut -f1 | sort -u)" "D"
+    expect_eq "A2(c): reports gone from HEAD" \
+        "$(git -C "${repo}" ls-tree -r --name-only HEAD -- run/reports | wc -l | tr -d ' ')" "0"
+
+    # (d) feedback path: reports alone never produce a staged change.
+    dir="${WORK}/a2-feedback"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    stage_in "${repo}" "${dir}" || fail "A2(d): helper failed"
+    expect_eq "A2(d): reports only leaves nothing staged" "$(git -C "${repo}" diff --cached --name-only)" ""
+    printf 'pub fn fixed() {}\n' >> "${repo}/src/lib.rs"
+    stage_in "${repo}" "${dir}" || fail "A2(d): helper failed with a source edit"
+    expect_eq "A2(d): feedback commit is product only" \
+        "$(git -C "${repo}" diff --cached --name-only)" "src/lib.rs"
+
+    # (e) an updated, already tracked report beside a source edit.
+    dir="${WORK}/a2-tracked-update"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports
+    git -C "${repo}" commit -qm "tracked pollution"
+    local head_blob
+    head_blob="$(git -C "${repo}" rev-parse HEAD:run/reports/step17e-fixture/results.json)"
+    printf '{"synthetic": true, "ci": "fresh"}\n' > "${repo}/run/reports/step17e-fixture/results.json"
+    printf 'pub fn more() {}\n' >> "${repo}/src/lib.rs"
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(e): helper failed"; fi
+    expect_eq "A2(e): only the source edit is staged" "$(git -C "${repo}" diff --cached --name-only)" "src/lib.rs"
+    expect_eq "A2(e): HEAD blob of the report is unchanged in the index" \
+        "$(git -C "${repo}" rev-parse :run/reports/step17e-fixture/results.json)" "${head_blob}"
+    expect_eq "A2(e): updated report bytes kept on disk" \
+        "$(cat "${repo}/run/reports/step17e-fixture/results.json")" '{"synthetic": true, "ci": "fresh"}'
+    before="$(git -C "${repo}" write-tree)"
+    stage_in "${repo}" "${dir}" || fail "A2(e): second run failed"
+    expect_eq "A2(e): idempotent over a tracked report" "$(git -C "${repo}" write-tree)" "${before}"
+
+    # (f) only the root directory is excluded.
+    dir="${WORK}/a2-anchoring"; reports_repo "${dir}"; repo="${dir}/repo"
+    mkdir -p "${repo}/crates/foo/run/reports" "${repo}/run/logs"
+    printf 'x\n' > "${repo}/crates/foo/run/reports/keep.json"
+    printf 'x\n' > "${repo}/src/run_reports.rs"
+    printf 'x\n' > "${repo}/run/reports.rs"
+    printf 'x\n' > "${repo}/run/logs/x"
+    write_reports "${repo}"
+    stage_in "${repo}" "${dir}" || fail "A2(f): helper failed"
+    git -C "${repo}" diff --cached --name-only > "${dir}/staged"
+    for p in crates/foo/run/reports/keep.json src/run_reports.rs run/reports.rs run/logs/x; do
+        expect_file_contains "A2(f): ${p} is staged" "${dir}/staged" "${p}"
+    done
+    expect_eq "A2(f): root reports excluded" "$(grep -c '^run/reports/' "${dir}/staged" || true)" "0"
+
+    # (g) renames into and within the report directory.
+    dir="${WORK}/a2-rename"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports
+    git -C "${repo}" commit -qm "tracked pollution"
+    git -C "${repo}" mv run/reports/step17e-fixture/results.json run/reports/step17e-fixture/renamed.json
+    git -C "${repo}" mv src/lib.rs run/reports/moved-source.rs
+    stage_in "${repo}" "${dir}" || fail "A2(g): helper failed"
+    expect_eq "A2(g): no added or modified report in the index" "$(report_entries "${repo}")" ""
+
+    # (h) unborn HEAD with a pre-staged report.
+    dir="${WORK}/a2-unborn"; mkdir -p "${dir}"
+    git init -q "${dir}/repo"; repo="${dir}/repo"
+    printf 'first\n' > "${repo}/first.txt"
+    write_reports "${repo}"
+    git -C "${repo}" add first.txt run/reports
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(h): helper failed on an unborn HEAD"; sed 's/^/    | /' "${dir}/stage.err" >&2; fi
+    expect_eq "A2(h): only the source file is staged" "$(git -C "${repo}" ls-files --cached)" "first.txt"
+    expect_reports_intact "A2(h)" "${repo}"
+
+    # (i) unstage_root_run_reports_here: the same correction on its own, for a
+    # caller that has already staged by other means and has no scratch to lend
+    # (#2839). This is what the TDD checkpoint calls after the scoped add of
+    # #1672, whose filter never sees an already staged or already tracked
+    # report. One tracked-and-rewritten report and one brand-new report are
+    # staged together with a source edit; only the source edit may survive.
+    dir="${WORK}/a2-here"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports/step17e-fixture
+    git -C "${repo}" commit -qm "tracked pollution"
+    head_blob="$(git -C "${repo}" rev-parse HEAD:run/reports/step17e-fixture/results.json)"
+    printf '{"synthetic": true, "ci": "fresh"}\n' > "${repo}/run/reports/step17e-fixture/results.json"
+    printf 'pub fn more() {}\n' >> "${repo}/src/lib.rs"
+    git -C "${repo}" add -A
+    expect_ne "A2(i): fixture really staged reports" "$(report_entries "${repo}")" ""
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; unstage_root_run_reports_here' _ "${STAGE_HELPER}" ) \
+        >"${dir}/here.out" 2>"${dir}/here.err"; then pass; else fail "A2(i): helper failed"; sed 's/^/    | /' "${dir}/here.err" >&2; fi
+    expect_empty_file "A2(i): nothing on stdout" "${dir}/here.out"
+    expect_eq "A2(i): no report entry left in the index" "$(report_entries "${repo}")" ""
+    expect_eq "A2(i): the staged source edit survives" \
+        "$(git -C "${repo}" diff --cached --name-only --no-renames)" "src/lib.rs"
+    expect_eq "A2(i): HEAD blob of the rewritten report is restored in the index" \
+        "$(git -C "${repo}" rev-parse :run/reports/step17e-fixture/results.json)" "${head_blob}"
+    expect_eq "A2(i): rewritten report bytes kept on disk" \
+        "$(cat "${repo}/run/reports/step17e-fixture/results.json")" '{"synthetic": true, "ci": "fresh"}'
+    expect_eq "A2(i): the new report is untracked again" \
+        "$(git -C "${repo}" ls-files --cached -- run/reports/20260101-000000-sample | wc -l | tr -d " ")" "0"
+    expect_eq "A2(i): its own scratch is removed" \
+        "$(find "$(git -C "${repo}" rev-parse --absolute-git-dir)" -maxdepth 1 -name 'stage-workflow-changes.*' | wc -l | tr -d " ")" "0"
+    # Nothing to correct is success, not an error, and leaves the index alone.
+    before="$(git -C "${repo}" write-tree)"
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; unstage_root_run_reports_here' _ "${STAGE_HELPER}" ) \
+        >/dev/null 2>&1; then pass; else fail "A2(i): second run failed"; fi
+    expect_eq "A2(i): idempotent" "$(git -C "${repo}" write-tree)" "${before}"
+
+    # (j) workflow_pull_merge: what a publishing step calls after its commit
+    # (#2839, #2994). The corrections above leave a rewritten, tracked report
+    # on disk as an unstaged modification. A plain `git pull --rebase` refuses
+    # to run with one, and a rebase is never wanted on a published branch
+    # anyway (#2994): the function merges instead and must keep the report.
+    # The plain rebasing pull is run first as a control, so a fixture that had
+    # stopped reproducing the refusing state could not let this pass
+    # vacuously. H1e runs the whole of step 18c; this covers the function for
+    # the call sites that have no step-level behaviour test in this file.
+    local pull_branch upstream_head local_head rebase_dirs d
+    dir="${WORK}/a2-pull"; reports_repo "${dir}"; repo="${dir}/repo"
+    pull_branch="feat/issue-1671-${dir##*/}"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports/step17e-fixture
+    git -C "${repo}" commit -qm "tracked pollution"
+    git -C "${repo}" push -q origin "HEAD:${pull_branch}" 2>/dev/null
+    # Origin moves ahead, and the branch has a commit of its own, so the pull
+    # must really merge: neither "up to date" nor a fast-forward.
+    git clone -q "${dir}/origin.git" "${dir}/other" 2>/dev/null
+    configure_identity "${dir}/other"
+    git -C "${dir}/other" checkout -q "${pull_branch}"
+    printf 'upstream\n' > "${dir}/other/upstream.txt"
+    git -C "${dir}/other" add upstream.txt
+    git -C "${dir}/other" commit -qm "a commit only origin has"
+    git -C "${dir}/other" push -q 2>/dev/null
+    upstream_head="$(git -C "${dir}/other" rev-parse HEAD)"
+    printf 'pub fn local() {}\n' >> "${repo}/src/lib.rs"
+    git -C "${repo}" commit -qam "a commit only this branch has"
+    local_head="$(git -C "${repo}" rev-parse HEAD)"
+    # The state stage_workflow_changes leaves: report rewritten on disk, index at HEAD.
+    printf '{"synthetic": true, "ci": "fresh"}\n' > "${repo}/run/reports/step17e-fixture/results.json"
+    expect_eq "A2(j): the fixture leaves exactly one unstaged tracked change" \
+        "$(git -C "${repo}" status --porcelain --untracked-files=no)" \
+        " M run/reports/step17e-fixture/results.json"
+    if ( cd "${repo}" && git pull --rebase ) >/dev/null 2>&1; then
+        fail "A2(j): control: a plain git pull --rebase must refuse this state"
+    else pass; fi
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; workflow_pull_merge' _ "${STAGE_HELPER}" ) \
+        >"${dir}/pull.out" 2>"${dir}/pull.err"; then pass; else
+        fail "A2(j): workflow_pull_merge must survive it"; sed 's/^/    | /' "${dir}/pull.err" >&2
+    fi
+    expect_eq "A2(j): HEAD is a merge commit with two parents" \
+        "$(git -C "${repo}" rev-list --parents -n1 HEAD | wc -w | tr -d " ")" "3"
+    expect_eq "A2(j): the first parent is the branch's own commit" \
+        "$(git -C "${repo}" rev-parse HEAD^1)" "${local_head}"
+    expect_eq "A2(j): the second parent is the commit only origin had" \
+        "$(git -C "${repo}" rev-parse HEAD^2)" "${upstream_head}"
+    expect_eq "A2(j): the report keeps its rewritten bytes" \
+        "$(cat "${repo}/run/reports/step17e-fixture/results.json")" '{"synthetic": true, "ci": "fresh"}'
+    expect_eq "A2(j): the report is still the only unstaged tracked change" \
+        "$(git -C "${repo}" status --porcelain --untracked-files=no)" \
+        " M run/reports/step17e-fixture/results.json"
+    expect_eq "A2(j): nothing is staged by the pull" \
+        "$(git -C "${repo}" diff --cached --name-only)" ""
+    # refs/stash is shared with every other worktree of the repository, so a
+    # clean autostash must leave no entry on it.
+    expect_eq "A2(j): a clean autostash leaves the stash stack empty" \
+        "$(git -C "${repo}" stash list)" ""
+    rebase_dirs=0
+    for d in rebase-merge rebase-apply; do
+        [ ! -e "$(git -C "${repo}" rev-parse --path-format=absolute --git-path "${d}")" ] || rebase_dirs=$((rebase_dirs + 1))
+    done
+    expect_eq "A2(j): no rebase is in progress" "${rebase_dirs}" "0"
+    # Step 20b passes --no-pager; it must reach git as a git option, before `pull`.
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; workflow_pull_merge --no-pager' _ "${STAGE_HELPER}" ) \
+        >/dev/null 2>"${dir}/pull2.err"; then pass; else
+        fail "A2(j): workflow_pull_merge --no-pager must work"; sed 's/^/    | /' "${dir}/pull2.err" >&2
+    fi
 }
 
 # =============================================================================
@@ -1518,9 +1803,11 @@ extract_step_command() {
 STEP_TDD="${WORK}/checkpoint-after-implementation.sh"
 STEP_REFACTOR="${WORK}/checkpoint-after-review-feedback.sh"
 STEP_15="${WORK}/step-15-commit-push.sh"
+STEP_18C="${WORK}/step-18c-push-feedback-changes.sh"
 extract_step_command "${TDD_RECIPE}" "checkpoint-after-implementation" "${STEP_TDD}"
 extract_step_command "${REFACTOR_RECIPE}" "checkpoint-after-review-feedback" "${STEP_REFACTOR}"
 extract_step_command "${PUBLISH_RECIPE}" "step-15-commit-push" "${STEP_15}"
+extract_step_command "${PR_REVIEW_RECIPE}" "step-18c-push-feedback-changes" "${STEP_18C}"
 
 section_h_static() {
     local label file id
@@ -1642,6 +1929,179 @@ section_h_dynamic() {
         "$(grep '^artifact-guard' "${dir}/stub/log" 2>/dev/null | sed -n 3p)" "artifact-guard staged=src.txt,"
     expect_eq "H1: the checkpoint commit sets PRE_COMMIT_ALLOW_NO_CONFIG without a config" \
         "$(grep -c 'ALLOW_NO_CONFIG=1$' "${dir}/hook.log" || true)" "2"
+
+    # H1c TDD checkpoint: private root run/reports stays out of the wip: commit
+    # (#2839), including the two shapes the untracked filter cannot see -- a
+    # report an earlier agent pre-staged, and one already tracked and since
+    # rewritten. The checkpoint's add list is `git diff --name-only` plus the
+    # filtered untracked paths, so only unstage_root_run_reports after the
+    # scoped add keeps these out.
+    #
+    # The hook must NOT reject here: a repair round restages through
+    # stage_workflow_changes, which unstages reports itself and would hide a
+    # checkpoint that never does it. So src.txt is clean and the first commit
+    # attempt succeeds, leaving the recipe's own staging as the only path
+    # under test.
+    dir="${WORK}/h1c-tdd-reports"
+    checkpoint_case "${dir}"
+    printf 'clean\n' > "${dir}/repo/src.txt"
+    mkdir -p "${dir}/repo/run/reports/tracked" "${dir}/repo/run/reports/new"
+    printf '{"ci":"stale"}\n' > "${dir}/repo/run/reports/tracked/results.json"
+    git -C "${dir}/repo" add -f run/reports/tracked/results.json
+    git -C "${dir}/repo" commit -qm "report published by mistake"
+    local head_blob
+    head_blob="$(git -C "${dir}/repo" rev-parse HEAD:run/reports/tracked/results.json)"
+    printf '{"ci":"fresh"}\n' > "${dir}/repo/run/reports/tracked/results.json"
+    printf '{"new":true}\n' > "${dir}/repo/run/reports/new/report.json"
+    git -C "${dir}/repo" add -f run/reports/new/report.json
+    expect_ne "H1c: fixture really pre-staged a report" \
+        "$(git -C "${dir}/repo" diff --cached --name-only -- run/reports)" ""
+    seed="$(git -C "${dir}/repo" rev-parse HEAD)"
+    run_step "${dir}" "${STEP_TDD}"
+    expect_eq "H1c: exit 0" "$(rc_of "${dir}")" "0"
+    expect_eq "H1c: one checkpoint commit" "$(git -C "${dir}/repo" rev-parse HEAD~1 2>/dev/null)" "${seed}"
+    expect_eq "H1c: the source edit is committed" "$(git -C "${dir}/repo" show HEAD:src.txt 2>/dev/null)" "clean"
+    expect_eq "H1c: no report in the checkpoint commit" \
+        "$(git -C "${dir}/repo" show --name-only --no-renames --format= HEAD | grep -c '^run/reports/' || true)" "0"
+    expect_eq "H1c: the tracked report keeps its committed bytes" \
+        "$(git -C "${dir}/repo" rev-parse HEAD:run/reports/tracked/results.json)" "${head_blob}"
+    expect_eq "H1c: the pre-staged report is still untracked" \
+        "$(git -C "${dir}/repo" ls-tree -r --name-only HEAD -- run/reports/new | wc -l | tr -d " ")" "0"
+    expect_eq "H1c: nothing is left staged after the commit" \
+        "$(git -C "${dir}/repo" diff --cached --name-only)" ""
+    expect_eq "H1c: rewritten report bytes kept on disk" \
+        "$(cat "${dir}/repo/run/reports/tracked/results.json")" '{"ci":"fresh"}'
+    expect_eq "H1c: pre-staged report bytes kept on disk" \
+        "$(cat "${dir}/repo/run/reports/new/report.json")" '{"new":true}'
+    expect_file_contains "H1c: each unstaged report is reported" "${dir}/step.err" \
+        "stage_workflow_changes: unstaged run/reports/new/report.json"
+    expect_file_contains "H1c: the rewritten tracked report is reported" "${dir}/step.err" \
+        "stage_workflow_changes: unstaged run/reports/tracked/results.json"
+
+    # H1d step-18c (workflow-pr-review): the review-feedback commit stages
+    # through stage_workflow_changes, so the private root run/reports never
+    # reaches it (#2839), whether the report is untracked or an earlier agent
+    # had already staged it. The step is run whole, so the commit and the push
+    # to the fixture's origin are the real ones.
+    #
+    # A report that is already tracked and has since been rewritten is left as
+    # an unstaged modification; that shape reaches the pull, and H1e below runs
+    # it through this same step with origin ahead.
+    dir="${WORK}/h1d-pr-review-reports"
+    new_repo "${dir}"
+    mkdir -p "${dir}/repo/run/reports/new" "${dir}/repo/run/reports/loose"
+    printf '{"new":true}\n' > "${dir}/repo/run/reports/new/report.json"
+    printf '{"loose":true}\n' > "${dir}/repo/run/reports/loose/report.json"
+    git -C "${dir}/repo" add -f run/reports/new/report.json
+    printf 'reviewed\n' > "${dir}/repo/src.txt"
+    expect_ne "H1d: fixture really pre-staged a report" \
+        "$(git -C "${dir}/repo" diff --cached --name-only -- run/reports)" ""
+    seed="$(git -C "${dir}/repo" rev-parse HEAD)"
+    run_step "${dir}" "${STEP_18C}"
+    expect_eq "H1d: exit 0" "$(rc_of "${dir}")" "0"
+    expect_eq "H1d: one review-feedback commit" "$(git -C "${dir}/repo" rev-parse HEAD~1 2>/dev/null)" "${seed}"
+    expect_eq "H1d: the reviewed file is committed" "$(git -C "${dir}/repo" show HEAD:src.txt 2>/dev/null)" "reviewed"
+    expect_eq "H1d: no report in the review-feedback commit" \
+        "$(git -C "${dir}/repo" show --name-only --no-renames --format= HEAD | grep -c '^run/reports/' || true)" "0"
+    expect_eq "H1d: the pre-staged report is still untracked" \
+        "$(git -C "${dir}/repo" ls-tree -r --name-only HEAD -- run/reports | wc -l | tr -d " ")" "0"
+    expect_eq "H1d: nothing is left staged after the commit" \
+        "$(git -C "${dir}/repo" diff --cached --name-only)" ""
+    expect_eq "H1d: pre-staged report bytes kept on disk" \
+        "$(cat "${dir}/repo/run/reports/new/report.json")" '{"new":true}'
+    expect_eq "H1d: untracked report bytes kept on disk" \
+        "$(cat "${dir}/repo/run/reports/loose/report.json")" '{"loose":true}'
+    # Step 18c calls the guard exactly twice: once before staging, once after.
+    # The second call sees the index the commit is built from; the first still
+    # sees what the fixture pre-staged. Both lines are pinned to their exact
+    # text, as H1 and H7 do, and the call count is pinned with them. A count of
+    # `run/reports/` matches instead would have read 0 — and passed — when no
+    # guard ran at all, when the helper was never reached, or when the stub's
+    # log format changed; pinning the text makes each of those a failure.
+    expect_eq "H1d: artifact-guard ran before staging and after it" \
+        "$(grep -c '^artifact-guard' "${dir}/stub/log" 2>/dev/null || true)" "2"
+    expect_eq "H1d: the pre-staging guard saw the report the fixture staged" \
+        "$(grep '^artifact-guard' "${dir}/stub/log" 2>/dev/null | sed -n 1p)" \
+        "artifact-guard staged=run/reports/new/report.json,"
+    expect_eq "H1d: the post-staging guard saw only the source file staged" \
+        "$(grep '^artifact-guard' "${dir}/stub/log" 2>/dev/null | sed -n 2p)" \
+        "artifact-guard staged=src.txt,"
+    expect_file_contains "H1d: the pre-staged report is reported as unstaged" "${dir}/step.err" \
+        "stage_workflow_changes: unstaged run/reports/new/report.json"
+    expect_file_contains "H1d: the untracked report is reported as skipped" "${dir}/step.err" \
+        "stage_workflow_changes: skipped run/reports/loose/report.json"
+    # The step pushes what it committed, so origin must hold that commit.
+    expect_eq "H1d: the push landed" \
+        "$(git -C "${dir}/origin.git" rev-parse "refs/heads/feat/issue-1671-${dir##*/}")" \
+        "$(git -C "${dir}/repo" rev-parse HEAD)"
+
+    # H1e step-18c on a branch that already tracks a run/reports file -- the
+    # shape a repository polluted before #2839 is in. The helper resets the
+    # rewritten report in the index and leaves the new bytes on disk, so the
+    # step reaches its pull with an unstaged tracked change. A plain rebasing
+    # pull refuses that ("cannot pull with rebase: You have unstaged changes")
+    # and the step dead-ends: step 18c continues on error into
+    # push-failure-recovery, which is forbidden to stage, commit or reset and
+    # whose gate fails on a dirty tracked file, so nothing downstream can clear
+    # it. The step pulls through workflow_pull_merge instead, which stashes the
+    # report, merges (never rebases, #2994) and puts it back. Origin is moved
+    # ahead first, so the pull must really merge rather than report the branch
+    # up to date.
+    local branch upstream_commit tracked_blob
+    dir="${WORK}/h1e-pr-review-tracked-report"
+    new_repo "${dir}"
+    branch="feat/issue-1671-${dir##*/}"
+    mkdir -p "${dir}/repo/run/reports"
+    printf '{"round":1}\n' > "${dir}/repo/run/reports/results.json"
+    git -C "${dir}/repo" add -f run/reports/results.json
+    git -C "${dir}/repo" commit -qm "report published before #2839"
+    git -C "${dir}/repo" push -q origin "HEAD:${branch}" 2>/dev/null
+    tracked_blob="$(git -C "${dir}/repo" rev-parse "HEAD:run/reports/results.json")"
+    git clone -q "${dir}/origin.git" "${dir}/other" 2>/dev/null
+    configure_identity "${dir}/other"
+    git -C "${dir}/other" checkout -q "${branch}"
+    printf 'upstream\n' > "${dir}/other/upstream.txt"
+    git -C "${dir}/other" add upstream.txt
+    git -C "${dir}/other" commit -qm "a commit only origin has"
+    git -C "${dir}/other" push -q 2>/dev/null
+    upstream_commit="$(git -C "${dir}/other" rev-parse HEAD)"
+    # This round rewrites the tracked report and edits the file under review.
+    printf '{"round":2}\n' > "${dir}/repo/run/reports/results.json"
+    printf 'reviewed\n' > "${dir}/repo/src.txt"
+    run_step "${dir}" "${STEP_18C}"
+    expect_eq "H1e: exit 0" "$(rc_of "${dir}")" "0"
+    expect_file_contains "H1e: the step reports the push" "${dir}/step.out" "=== Changes Pushed ==="
+    expect_eq "H1e: HEAD is a merge commit with two parents" \
+        "$(git -C "${dir}/repo" rev-list --parents -n1 HEAD | wc -w | tr -d " ")" "3"
+    expect_eq "H1e: the second parent is the commit only origin had" \
+        "$(git -C "${dir}/repo" rev-parse HEAD^2)" "${upstream_commit}"
+    expect_eq "H1e: no rebase is in progress" \
+        "$(find "$(git -C "${dir}/repo" rev-parse --absolute-git-dir)" -maxdepth 1 -name 'rebase-*' | wc -l | tr -d " ")" "0"
+    expect_eq "H1e: the reviewed file is committed" "$(git -C "${dir}/repo" show HEAD^1:src.txt 2>/dev/null)" "reviewed"
+    expect_eq "H1e: no report in the review-feedback commit" \
+        "$(git -C "${dir}/repo" show --name-only --no-renames --format= HEAD^1 | grep -c '^run/reports/' || true)" "0"
+    expect_eq "H1e: the tracked report keeps its committed bytes" \
+        "$(git -C "${dir}/repo" rev-parse "HEAD:run/reports/results.json")" "${tracked_blob}"
+    expect_eq "H1e: the rewritten report bytes survive the autostash" \
+        "$(cat "${dir}/repo/run/reports/results.json")" '{"round":2}'
+    expect_eq "H1e: the merge integrated the commit only origin had" \
+        "$(git -C "${dir}/repo" merge-base --is-ancestor "${upstream_commit}" HEAD && echo yes || echo no)" "yes"
+    expect_eq "H1e: the push landed" \
+        "$(git -C "${dir}/origin.git" rev-parse "refs/heads/${branch}")" \
+        "$(git -C "${dir}/repo" rev-parse HEAD)"
+    # The report stays modified on disk: that is the documented residue, and it
+    # is exactly the predicate push-failure-recovery's gate reads as
+    # tracked_dirty. Nothing else tracked may be left dirty.
+    expect_eq "H1e: the report is the only tracked file left dirty" \
+        "$(git -C "${dir}/repo" status --porcelain --untracked-files=no)" " M run/reports/results.json"
+    expect_eq "H1e: nothing is left staged after the commit" \
+        "$(git -C "${dir}/repo" diff --cached --name-only)" ""
+    # The stash stack is shared with every other worktree of the repository, so
+    # a clean autostash must leave no entry behind on it.
+    expect_eq "H1e: the autostash left no entry on the stash stack" \
+        "$(git -C "${dir}/repo" stash list)" ""
+    expect_file_contains "H1e: the rewritten tracked report is reported as unstaged" "${dir}/step.err" \
+        "stage_workflow_changes: unstaged run/reports/results.json"
 
     # H1b TDD checkpoint: the guard refuses what the round staged; not retried.
     dir="${WORK}/h1b-tdd-guard-after-round"
@@ -2041,6 +2501,230 @@ assert Path(sys.argv[1]).read_bytes() == b"formatted FORMAT_ME\n"
 PY
 }
 
+# =============================================================================
+# K. Invalid path results must fail before a consuming mutation (#1937).
+# These unit cases deliberately replace discovery/allocation boundaries. The
+# mutation stubs are independent guards, not implementations of the checks.
+# =============================================================================
+section_k() {
+    local root mode dir rc
+    root="$(mktemp -d "${WORK:?}/k-path-results.XXXXXX")" || return 2
+    : "${root:?empty path-result fixture}"
+
+    dir="$(mktemp -d "${root:?}/relative-filter.XXXXXX")" || return 2
+    : "${dir:?empty relative-filter fixture}"
+    mkdir -p -- "${dir:?}/nested/target"
+    printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > "${dir:?}/nested/target/CACHEDIR.TAG"
+    (
+        cd "${dir:?}" || exit 2
+        . "${STAGE_HELPER:?}"
+        printf '%s\0' tracked.txt nested/target/out nested/source.rs | workflow_stage_filter .
+    ) >"${dir:?}/stdout" 2>"${dir:?}/stderr" && rc=0 || rc=$?
+    expect_eq "K relative filter: checkpoint root accepted" "${rc}" 0
+    printf '%s\0' tracked.txt nested/source.rs > "${dir:?}/expected"
+    cmp -s "${dir:?}/expected" "${dir:?}/stdout" \
+        && pass || fail "K relative filter: source retained and tagged build output excluded"
+    (
+        . "${STAGE_HELPER:?}"
+        workflow_stage_filter '' </dev/null
+    ) >"${dir:?}/empty-stdout" 2>"${dir:?}/empty-stderr" && rc=0 || rc=$?
+    expect_eq "K relative filter: empty root refused" "${rc}" 2
+
+    for mode in empty-top empty-git-dir; do
+        dir="$(mktemp -d "${root:?}/${mode}.XXXXXX")" || return 2
+        : "${dir:?empty discovery fixture}"
+        mkdir -- "${dir:?}/repo" "${dir:?}/metadata"
+        (
+            cd "${dir:?}/repo" || exit 2
+            . "${STAGE_HELPER:?}"
+            git() {
+                case "$*" in
+                    'rev-parse --show-toplevel')
+                        [[ "${mode}" == empty-top ]] || printf '%s\n' "${dir:?}/repo" ;;
+                    'rev-parse --absolute-git-dir')
+                        [[ "${mode}" == empty-git-dir ]] || printf '%s\n' "${dir:?}/metadata" ;;
+                    *) printf 'git %s\n' "$*" >> "${dir:?}/consumer-calls"; return 91 ;;
+                esac
+                return 0
+            }
+            mktemp() { printf 'mktemp %s\n' "$*" >> "${dir:?}/consumer-calls"; return 92; }
+            if stage_workflow_changes; then exit 0; else exit "$?"; fi
+        ) >"${dir:?}/stdout" 2>"${dir:?}/stderr" && rc=0 || rc=$?
+        expect_ne "K ${mode}: reject empty successful Git discovery" "${rc}" 0
+        expect_empty_file "K ${mode}: reject before git add or allocation" "${dir:?}/consumer-calls"
+        expect_empty_file "K ${mode}: no stdout" "${dir:?}/stdout"
+    done
+
+    for mode in empty-allocation failed-allocation relative-allocation empty-canonical failed-canonical symlink-escape; do
+        dir="$(mktemp -d "${root:?}/${mode}.XXXXXX")" || return 2
+        : "${dir:?empty evidence fixture}"
+        mkdir -- "${dir:?}/repo" "${dir:?}/metadata" "${dir:?}/tmp" "${dir:?}/victim"
+        printf 'preserve\n' > "${dir:?}/victim/sentinel"
+        ln -s -- "${dir:?}/victim" "${dir:?}/tmp/escape"
+        (
+            cd "${dir:?}/repo" || exit 2
+            . "${DRIVER:?}"
+            export TMPDIR="${dir:?}/tmp" HOME="${dir:?}" AMPLIHACK_BIN=/bin/false
+            git() {
+                case "$*" in
+                    'rev-parse --show-toplevel') printf '%s\n' "${dir:?}/repo" ;;
+                    'rev-parse --absolute-git-dir') printf '%s\n' "${dir:?}/metadata" ;;
+                    'rev-parse --git-path hooks') printf '%s\n' "${dir:?}/metadata/hooks" ;;
+                    *) printf 'git %s\n' "$*" >> "${dir:?}/consumer-calls"; return 91 ;;
+                esac
+            }
+            # Reach the evidence boundary after an identified rejection; no
+            # command, real hook, agent or evaluator can write in these cases.
+            hook_repair_attempt() { printf 'rejected\n' > "${1:?}"; return 1; }
+            hook_repair_is_rejection() { return 0; }
+            mktemp() {
+                case "$*" in
+                    *hook-repair-attempt.*) command mktemp "$@"; return ;;
+                esac
+                case "${mode}" in
+                    empty-allocation) return 0 ;;
+                    failed-allocation) printf '%s\n' "${dir:?}/victim"; return 9 ;;
+                    relative-allocation) printf 'relative-evidence\n' ;;
+                    empty-canonical|failed-canonical) command mktemp "$@" ;;
+                    symlink-escape) printf '%s\n' "${dir:?}/tmp/escape" ;;
+                esac
+            }
+            pwd() {
+                case "${PWD:?}" in
+                    "${dir:?}/tmp/"*)
+                        case "${mode}" in
+                            empty-canonical) return 0 ;;
+                            failed-canonical) printf '%s\n' "${dir:?}/victim"; return 9 ;;
+                        esac ;;
+                esac
+                builtin pwd "$@"
+            }
+            cd() {
+                case "${1-}" in
+                    ''|relative-evidence)
+                        printf 'invalid cd %s\n' "${1-}" >> "${dir:?}/consumer-calls"; return 93 ;;
+                esac
+                builtin cd "$@"
+            }
+            # Record, then deny, every consuming mutation after allocation.
+            # Never allow a bad result to turn into /attempt.out or cleanup
+            # of an unvalidated directory, even on the unfixed implementation.
+            mv() { printf 'mv %s\n' "$*" >> "${dir:?}/consumer-calls"; return 94; }
+            rm() {
+                local arg
+                for arg in "$@"; do
+                    case "${arg}" in
+                        -*) ;;
+                        "${dir:?}/metadata/hook-repair-attempt."*) ;;
+                        "${dir:?}/tmp/hook-repair."*) ;;
+                        *) printf 'invalid rm %s\n' "${arg}" >> "${dir:?}/consumer-calls" ;;
+                    esac
+                done
+                return 0
+            }
+            if hook_repair_run commit checkpoint-after-implementation -- false; then exit 0; else exit "$?"; fi
+        ) >"${dir:?}/stdout" 2>"${dir:?}/stderr" && rc=0 || rc=$?
+        expect_eq "K ${mode}: usage error" "${rc}" 2
+        expect_empty_file "K ${mode}: no consumer receives an invalid path" "${dir:?}/consumer-calls"
+        expect_empty_file "K ${mode}: no stdout" "${dir:?}/stdout"
+        expect_eq "K ${mode}: unrelated fixture preserved" "$(cat "${dir:?}/victim/sentinel")" preserve
+        [[ ! -e "${dir:?}/victim/attempt.out" && ! -e "${dir:?}/repo/.all" ]] \
+            && pass || fail "K ${mode}: invalid scratch output was consumed"
+    done
+}
+
+# =============================================================================
+# L. Every allocation boundary rejects a malformed successful result (#1937).
+# Consumers below record and deny writes; mutants cannot touch external paths.
+# =============================================================================
+section_l() {
+    local root boundary mode dir rc
+    root="$(mktemp -d "${WORK:?}/l-allocation-boundaries.XXXXXX")" || return 2
+    : "${root:?empty allocation-boundary fixture}"
+    for boundary in stage attempt evidence; do
+        for mode in empty relative wrong-parent sibling-parent nested symlink empty-canonical forged-canonical; do
+            dir="$(mktemp -d "${root:?}/${boundary}-${mode}.XXXXXX")" || return 2
+            : "${dir:?empty allocation fixture}"
+            mkdir -- "${dir:?}/repo" "${dir:?}/metadata" "${dir:?}/tmp" "${dir:?}/victim" \
+                "${dir:?}/metadata-sibling" "${dir:?}/tmp-sibling"
+            printf 'preserve\n' > "${dir:?}/victim/sentinel"
+            (
+                cd "${dir:?}/repo" || exit 2
+                . "${STAGE_HELPER:?}"
+                . "${DRIVER:?}"
+                export TMPDIR="${dir:?}/tmp" HOME="${dir:?}" AMPLIHACK_BIN=/bin/false
+                local parent prefix allocated
+                case "${boundary}" in
+                    stage) parent="${dir:?}/metadata"; prefix=stage-workflow-changes ;;
+                    attempt) parent="${dir:?}/metadata"; prefix=hook-repair-attempt ;;
+                    evidence) parent="${dir:?}/tmp"; prefix=hook-repair ;;
+                esac
+                git() {
+                    case "$*" in
+                        'rev-parse --show-toplevel') printf '%s\n' "${dir:?}/repo" ;;
+                        'rev-parse --absolute-git-dir') printf '%s\n' "${dir:?}/metadata" ;;
+                        'rev-parse --git-path hooks') printf '%s\n' "${dir:?}/metadata/hooks" ;;
+                        *) printf 'git %s\n' "$*" >> "${dir:?}/consumer-calls"; return 91 ;;
+                    esac
+                }
+                mktemp() {
+                    # Evidence tests permit the earlier, valid allocation.
+                    if [[ "${boundary}" == evidence && "$*" == *hook-repair-attempt.* ]]; then
+                        command mktemp "$@"; return
+                    fi
+                    case "${mode}" in
+                        empty) return 0 ;;
+                        relative) printf 'relative-allocation\n' ;;
+                        wrong-parent) printf '%s\n' "${dir:?}/victim" ;;
+                        sibling-parent) command mktemp -d "${parent:?}-sibling/${prefix:?}.XXXXXX" ;;
+                        nested)
+                            allocated="$(command mktemp -d "${parent:?}/${prefix:?}.XXXXXX")" || return
+                            command mktemp -d "${allocated:?}/child.XXXXXX" ;;
+                        symlink)
+                            ln -s -- "${dir:?}/victim" "${parent:?}/${prefix:?}.link"
+                            printf '%s\n' "${parent:?}/${prefix:?}.link" ;;
+                        empty-canonical|forged-canonical) command mktemp "$@" ;;
+                    esac
+                }
+                pwd() {
+                    if [[ "${PWD:?}" == "${parent:?}/${prefix:?}."* ]]; then
+                        case "${mode}" in
+                            empty-canonical) return 0 ;;
+                            forged-canonical) printf '%s\n' "${dir:?}/victim"; return 0 ;;
+                        esac
+                    fi
+                    builtin pwd "$@"
+                }
+                hook_repair_attempt() {
+                    if [[ "${boundary}" == evidence ]]; then
+                        printf 'rejected\n' > "${1:?}"; return 1
+                    fi
+                    printf 'attempt %s\n' "$*" >> "${dir:?}/consumer-calls"; return 94
+                }
+                hook_repair_is_rejection() { return 0; }
+                mv() { printf 'mv %s\n' "$*" >> "${dir:?}/consumer-calls"; return 95; }
+                rm() {
+                    # Only the earlier validated attempt may be cleaned up.
+                    if [[ "${boundary}" == evidence && "${2-}" == -- \
+                        && "${3-}" == "${dir:?}/metadata/hook-repair-attempt."* && "$#" == 3 ]]; then
+                        return 0
+                    fi
+                    printf 'rm %s\n' "$*" >> "${dir:?}/consumer-calls"; return 96
+                }
+                if [[ "${boundary}" == stage ]]; then
+                    if stage_workflow_changes; then exit 0; else exit "$?"; fi
+                else
+                    if hook_repair_run commit checkpoint-after-implementation -- false; then exit 0; else exit "$?"; fi
+                fi
+            ) >"${dir:?}/stdout" 2>"${dir:?}/stderr" && rc=0 || rc=$?
+            expect_eq "L ${boundary}/${mode}: refuse malformed allocation" "${rc}" 2
+            expect_empty_file "L ${boundary}/${mode}: reject before consuming mutation" "${dir:?}/consumer-calls"
+            expect_empty_file "L ${boundary}/${mode}: no stdout" "${dir:?}/stdout"
+            expect_eq "L ${boundary}/${mode}: preserve unrelated fixture" "$(cat "${dir:?}/victim/sentinel")" preserve
+        done
+    done
+}
+
 # Keep errexit active inside the canary: an intermediate assertion failure
 # must stop before later commands can mask it.
 (
@@ -2050,6 +2734,7 @@ PY
 )
 
 section_a
+section_a2
 section_b
 section_c
 section_d
@@ -2060,6 +2745,8 @@ section_h_static
 section_h_dynamic
 section_i
 section_j
+section_k
+section_l
 
 echo "issue #1671 hook-rejection repair: ${PASSES} passed, ${FAILURES} failed" >&2
 if (( FAILURES > 0 )); then

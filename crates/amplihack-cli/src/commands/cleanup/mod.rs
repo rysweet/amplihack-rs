@@ -3,7 +3,9 @@
 //! `docs/howto/clean-up-after-recipe-runs.md`.
 
 pub(crate) mod archive;
+mod build_output;
 pub(crate) mod eligibility;
+pub(crate) mod procs;
 pub(crate) mod run_dir;
 pub(crate) mod sweep;
 pub(crate) mod targets;
@@ -18,6 +20,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use sweep::{Entry, Settings};
 
+/// The only code that may delete a pre-commit target, reached from the
+/// end-of-run build output removal too (issue #2886).
+use sweep::target_remove;
+
 pub(crate) const DEFAULT_KEEP_HOURS: u64 = 24;
 const MAX_KEEP_HOURS: u64 = 87_600;
 const DEFAULT_LOG_DAYS: u64 = 30;
@@ -26,6 +32,9 @@ const KEEP_HOURS_ENV: &str = "AMPLIHACK_CLEANUP_KEEP_HOURS";
 const LOG_DAYS_ENV: &str = "AMPLIHACK_LOG_ARCHIVE_DAYS";
 const ARCHIVE_DIR_ENV: &str = "AMPLIHACK_LOG_ARCHIVE_DIR";
 pub(crate) const CLEANUP_ON_EXIT_ENV: &str = "AMPLIHACK_CLEANUP_ON_EXIT";
+/// How a launcher says that the `CARGO_TARGET_DIR` it set is this run's own,
+/// so the run removes it when it ends (issue #2886).
+pub(crate) const PRIVATE_TARGET_DIR_ENV: &str = "AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR";
 const LOCK_WAIT: Duration = Duration::from_secs(10);
 
 /// A cleanup category.
@@ -104,6 +113,16 @@ pub struct CleanupArgs {
     /// Leave recipe-log and session-log alone.
     #[arg(long)]
     pub skip_logs: bool,
+    /// For the bundled helpers: remove the pre-commit target of a worktree
+    /// that was just removed (issue #2039). The checkout must be absolute and
+    /// no longer exist.
+    #[arg(
+        long,
+        value_name = "CHECKOUT",
+        hide = true,
+        conflicts_with_all = ["only", "skip_logs", "keep_hours", "log_days"]
+    )]
+    pub worktree_target: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -122,7 +141,10 @@ pub enum CleanupCommand {
 pub fn run(args: CleanupArgs) -> Result<()> {
     let outcome = match args.command {
         Some(CleanupCommand::Restore { path, dest }) => run_restore(&path, dest.as_deref()),
-        None => run_cleanup(&args),
+        None => match &args.worktree_target {
+            Some(checkout) => run_worktree_target(&args, checkout),
+            None => run_cleanup(&args),
+        },
     };
     match outcome {
         Ok(true) => Ok(()),
@@ -301,6 +323,58 @@ fn run_cleanup(args: &CleanupArgs) -> Result<bool> {
     Ok(!entries.iter().any(|e| e.action == sweep::Action::Failed))
 }
 
+/// `amplihack cleanup --worktree-target <checkout>` (issue #2039, D6). The
+/// checkout must be absolute and already gone; the target of that checkout
+/// under each managed root is removed under the usual checks, or reported
+/// without `--apply`. Does not take the work-root lock.
+fn run_worktree_target(args: &CleanupArgs, checkout: &Path) -> Result<bool> {
+    if !checkout.is_absolute() {
+        bail!(
+            "--worktree-target needs an absolute path: {}",
+            checkout.display()
+        );
+    }
+    // Only "not found" means gone; any other error leaves the state unknown.
+    match std::fs::symlink_metadata(checkout) {
+        Ok(_) => bail!(
+            "--worktree-target: checkout still exists: {}",
+            checkout.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => bail!(
+            "--worktree-target: cannot examine checkout {}: {e}",
+            checkout.display()
+        ),
+    }
+    if targets::target_name(checkout).is_none() {
+        bail!(
+            "--worktree-target: cannot resolve the parent of {}",
+            checkout.display()
+        );
+    }
+    let work_root = work_root::resolve_from_env()?;
+    let settings = Settings {
+        archive_dir: work_root.path.join("archive"),
+        work_root,
+        keep: Duration::ZERO,
+        log_age: Duration::MAX,
+        categories: [Category::RunTarget].into_iter().collect(),
+        apply: args.apply,
+        report_unrecorded: false,
+        deadline: None,
+        recipe_log_dir: None,
+        codex_sessions_dir: None,
+        claude_projects_dir: None,
+        hook_cache_base: hook_cache_base(),
+    };
+    let entries = sweep::worktree_target_sweep(&settings, checkout);
+    match args.format {
+        OutputFormat::Json => print_json(&entries, &settings)?,
+        OutputFormat::Text => print_text(&entries),
+    }
+    Ok(!entries.iter().any(|e| e.action == sweep::Action::Failed))
+}
+
 fn print_json(entries: &[Entry], settings: &Settings) -> Result<()> {
     let list: Vec<_> = entries
         .iter()
@@ -377,6 +451,17 @@ fn run_restore(path: &Path, dest: Option<&Path>) -> Result<bool> {
 /// Whether the end-of-run sweep is enabled (`AMPLIHACK_CLEANUP_ON_EXIT`).
 pub(crate) fn cleanup_on_exit_enabled() -> bool {
     std::env::var(CLEANUP_ON_EXIT_ENV).map_or(true, |v| v.trim() != "0")
+}
+
+/// Whether the launch claims this run's `CARGO_TARGET_DIR` as its own
+/// (issue #2886).
+///
+/// Exactly `1` after trimming claims it. Unset, empty, `0`, `true` and `yes`
+/// all mean "leave that folder alone": the polarity is the opposite of
+/// [`cleanup_on_exit_enabled`] on purpose, because this one names a folder to
+/// delete and must be asked for, never assumed.
+pub(crate) fn private_target_dir_claimed() -> bool {
+    std::env::var(PRIVATE_TARGET_DIR_ENV).is_ok_and(|value| value.trim() == "1")
 }
 
 #[cfg(test)]

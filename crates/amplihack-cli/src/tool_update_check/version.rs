@@ -195,9 +195,14 @@ mod tests {
             std::env::set_var(names[5], "operator-secret");
         }
 
+        // The subject is the child's environment, not the time limit (issue
+        // #2931). The fake is a newly written script, and its first start
+        // took 2.6 to 3.2 s on macOS in the full suite (issue #2970), which
+        // straddles the product's 3 s. Ten minutes is a limit no loaded host
+        // reaches; the fake answers at once, so nothing waits for it.
         let result = run_npm_with_timeout(
             &["show", "pkg", "version"],
-            NPM_TIMEOUT,
+            Duration::from_secs(600),
             &hermetic_npm(temp.path()),
         );
 
@@ -215,6 +220,13 @@ mod tests {
             Some("7.8.9\n"),
             "the fake pre-launch npm fails if any gateway variable survives"
         );
+    }
+
+    /// The registry query keeps its three seconds. The tests above and below
+    /// pass their own limits, so this is where the product's is pinned.
+    #[test]
+    fn the_production_npm_limit_is_unchanged() {
+        assert_eq!(NPM_TIMEOUT, Duration::from_secs(3));
     }
 
     #[cfg(target_os = "linux")]

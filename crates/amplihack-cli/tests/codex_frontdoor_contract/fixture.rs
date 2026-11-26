@@ -5,21 +5,12 @@ pub(super) fn cold_client_install_registers_hooks_and_launches_with_fresh_or_sta
     use std::io::Write;
     use std::process::Stdio;
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let cli = std::env::var_os("AMPLIHACK_TEST_BINARY")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("amplihack")
-        });
+    let cli = crate::support::amplihack_bin::amplihack_bin();
     for staged in [false, true] {
         let home = tempfile::tempdir().unwrap();
         let tools = home.path().join("tools");
         fs::create_dir(&tools).unwrap();
+        executable(&tools.join("codex-code-mode-host"), "#!/bin/sh\nexit 0\n");
         for tool in [
             "sh",
             "mkdir",
@@ -52,14 +43,15 @@ pub(super) fn cold_client_install_registers_hooks_and_launches_with_fresh_or_sta
         executable(&tools.join("amplihack-hooks"), "#!/bin/sh\necho '{}'\n");
         executable(
             &tools.join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n",
         );
         // npm installs into the fixture PATH, which production resolves again.
         executable(
             &tools.join("npm"),
             r#"#!/bin/sh
 case "$*" in
- *install*@openai/codex*) echo install >> "$HOME/events"; cp "$HOME/client-template" "$HOME/tools/codex"; chmod +x "$HOME/tools/codex";;
+ *install*@openai/codex-*) echo platform-install >> "$HOME/events";;
+ *install*@openai/codex*) echo install >> "$HOME/events"; cp "$HOME/client-template" "$HOME/tools/codex"; chmod +x "$HOME/tools/codex"; mkdir -p "$HOME/.npm-global/lib/node_modules/@openai/codex"; printf '%s\n' '{"name":"@openai/codex","version":"0.160.0"}' > "$HOME/.npm-global/lib/node_modules/@openai/codex/package.json";;
  *install*) echo other-install >> "$HOME/events";;
  *view*) echo 1.0.0;;
  *--version*) echo 10.9.0;;
@@ -96,34 +88,35 @@ esac
         );
         // Framework is staged by a different provider, before Codex is present.
         if staged {
-            let out = crate::isolated_amplihack::isolated(&cli)
-                .args(["install", "--local", source.to_str().unwrap()])
-                .env("HOME", home.path())
-                .env("PATH", &tools)
-                .env("AMPLIHACK_AGENT_BINARY", "claude")
-                .env("AMPLIHACK_SOURCE_ROOT", &source)
-                .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
-                .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
-                .env(
-                    "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
-                    tools.join("amplihack-hooks"),
-                )
-                .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
-                .env_remove("AMPLIHACK_DEFAULT_MODEL")
-                .env_remove("AMPLIHACK_HOME")
-                .env_remove("AMPLIHACK_ASSET_RESOLVER")
-                .env_remove("AMPLIHACK_SESSION_ID")
-                .env_remove("AMPLIHACK_SESSION_DEPTH")
-                .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
-                .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
-                .env_remove("CODEX_BINARY_PATH")
-                .env_remove("CODEX_HOME")
-                .env("RECIPE_RUNNER_RS_PATH", tools.join("recipe-runner-rs"))
-                // `install` resolves hook scope from its cwd; keep it off the
-                // process cwd, which this binary shares with every other test module.
-                .current_dir(home.path())
-                .output()
-                .unwrap();
+            let out = crate::support::wait::output_within(
+                "amplihack install (staging)",
+                crate::isolated_amplihack::isolated(&cli)
+                    .args(["install", "--local", source.to_str().unwrap()])
+                    .env("HOME", home.path())
+                    .env("PATH", &tools)
+                    .env("AMPLIHACK_AGENT_BINARY", "claude")
+                    .env("AMPLIHACK_SOURCE_ROOT", &source)
+                    .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
+                    .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+                    .env(
+                        "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+                        tools.join("amplihack-hooks"),
+                    )
+                    .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
+                    .env_remove("AMPLIHACK_DEFAULT_MODEL")
+                    .env_remove("AMPLIHACK_HOME")
+                    .env_remove("AMPLIHACK_ASSET_RESOLVER")
+                    .env_remove("AMPLIHACK_SESSION_ID")
+                    .env_remove("AMPLIHACK_SESSION_DEPTH")
+                    .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
+                    .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
+                    .env_remove("CODEX_BINARY_PATH")
+                    .env_remove("CODEX_HOME")
+                    .env("RECIPE_RUNNER_RS_PATH", tools.join("recipe-runner-rs"))
+                    // `install` resolves hook scope from its cwd; keep it off the
+                    // process cwd, which this binary shares with every other test module.
+                    .current_dir(home.path()),
+            );
             assert!(
                 out.status.success(),
                 "staging failed: {} {}",
@@ -145,12 +138,16 @@ esac
         let (mut master, mut slave) = (-1, -1);
         assert_eq!(
             unsafe {
+                // `termp` and `winp` are `*const` on Linux and `*mut` on
+                // macOS. A typed null `*mut` is the one spelling that
+                // compiles on both, because `*mut T` coerces to `*const T`
+                // (#2210).
                 libc::openpty(
                     &mut master,
                     &mut slave,
                     std::ptr::null_mut(),
-                    std::ptr::null(),
-                    std::ptr::null(),
+                    std::ptr::null_mut::<libc::termios>(),
+                    std::ptr::null_mut::<libc::winsize>(),
                 )
             },
             0
@@ -229,7 +226,19 @@ esac
             String::from_utf8_lossy(&out.stderr)
         );
         let argv = fs::read_to_string(home.path().join("launch-argv")).unwrap();
-        assert!(argv.contains("exec\n--model\nfixture-model\n-\n"), "{argv}");
+        // Issues #1985 and #2317: an agent step gets full access and hook-trust
+        // flags right after `exec`, ahead of the caller's own arguments.
+        assert!(
+            argv.contains(
+                "exec\n--sandbox\ndanger-full-access\n--dangerously-bypass-hook-trust\n--model\nfixture-model\n-\n"
+            ),
+            "{argv}"
+        );
+        assert!(
+            !argv.contains("--dangerously-bypass-approvals-and-sandbox"),
+            "{argv}"
+        );
+        assert!(!argv.contains("workspace-write"), "{argv}");
         assert!(
             home.path()
                 .join(".amplihack/codex/ownership.json")

@@ -31,13 +31,17 @@
 use super::*;
 
 mod execute {
-    pub(super) use super::super::execute::{new_tree_id, resolve_claimed_depth};
+    pub(super) use super::super::execute::{
+        RunnerClock, new_tree_id, resolve_claimed_depth, sweep_runner_tree,
+        terminate_recipe_runner_with,
+    };
     pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
 }
+use crate::test_support::EnvGuard;
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, Instant};
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
 /// Environment-variable name the deterministic-teardown feature must honour to
 /// configure the SIGTERM -> SIGKILL grace window (in whole seconds).
@@ -48,51 +52,225 @@ const RUNNER_PATH_ENV: &str = "RECIPE_RUNNER_RS_PATH";
 /// must redirect it or they write into the developer's real home directory.
 const SESSION_TREE_DIR_ENV: &str = "AMPLIHACK_SESSION_TREE_DIR";
 
-/// Minimal RAII guard that snapshots an env var and restores it on drop so a
-/// two-phase test cannot leak state into sibling tests. Env is process-global;
-/// callers must additionally hold `home_env_lock()` for serialization.
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<std::ffi::OsString>,
+/// Write an executable `/bin/sh` stub at `path` (mode 0755) through
+/// `write_executable`, which never holds a write descriptor on it in this
+/// process, so a sibling test's fork cannot make its exec fail with ETXTBSY.
+fn write_stub(path: &Path, body: &str) {
+    crate::test_support::write_executable(path, body);
 }
 
-impl EnvVarGuard {
-    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
+/// Makes a FIFO at `path`.
+fn mkfifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("failed to run mkfifo");
+    assert!(status.success(), "mkfifo {} failed", path.display());
+}
 
-    fn unset(key: &'static str) -> Self {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::remove_var(key) };
-        Self { key, previous }
-    }
+/// Owns both FIFO participants and joins the executor before the caller's
+/// environment guards or temporary directory can drop. Constructed before
+/// readiness checks, including pidfd setup, can fail.
+#[cfg(target_os = "linux")]
+struct OrphanExecution {
+    // Drop joins the worker while the `go` descriptors below are still open.
+    worker: crate::test_support::unix_process::FifoWorker<bool>,
+    go_writer: std::fs::File,
+    _go_reader: std::fs::File,
+}
 
-    fn apply(&self, value: impl AsRef<std::ffi::OsStr>) {
-        unsafe { std::env::set_var(self.key, value) };
+#[cfg(target_os = "linux")]
+impl OrphanExecution {
+    fn release_runner(&mut self) {
+        use std::io::Write;
+        self.go_writer.write_all(b"run\n").expect("release runner");
     }
 }
 
-impl Drop for EnvVarGuard {
+#[cfg(target_os = "linux")]
+impl Drop for OrphanExecution {
     fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            None => unsafe { std::env::remove_var(self.key) },
+        use std::io::Write;
+        // A blank release takes the shell's cleanup path. The worker guard
+        // then releases `hold` and joins; the shell waits for its child first.
+        // These writes also work if neither shell has reached its read yet.
+        if let Err(e) = self.go_writer.write_all(b"\n") {
+            eprintln!("releasing the orphan probe runner failed: {e}");
         }
     }
 }
 
-/// Write an executable `/bin/sh` stub at `path` and chmod it 0755.
-fn write_stub(path: &Path, body: &str) {
-    std::fs::write(path, body).expect("failed to write runner stub");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner stub");
+/// A runner that starts an orphan in its own process group and then exits 1
+/// once the test writes `run` to `go`. The orphan writes its pid to `pid`
+/// and blocks in a shell builtin read on `hold` (no external reader process).
+/// Until the execution guard drops, no release is written to `hold`, so the
+/// orphan ends only by a signal; it writes `marker` only during cleanup.
+/// Its lifetime is observed through a Linux pidfd; portable signal and grace
+/// coverage lives in the tests below without this probe.
+#[cfg(target_os = "linux")]
+struct OrphanProbe {
+    runner: PathBuf,
+    recipe: PathBuf,
+    pid: PathBuf,
+    hold: PathBuf,
+    go: PathBuf,
+    marker: PathBuf,
 }
 
-/// True if a process with `pid` still exists (signal 0 probe).
-fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+#[cfg(target_os = "linux")]
+impl OrphanProbe {
+    fn new(dir: &Path) -> Self {
+        let probe = Self {
+            runner: dir.join("recipe-runner-rs"),
+            recipe: dir.join("recipe.yaml"),
+            pid: dir.join("orphan.pid"),
+            hold: dir.join("hold"),
+            go: dir.join("go"),
+            marker: dir.join("orphan-marker"),
+        };
+        mkfifo(&probe.hold);
+        mkfifo(&probe.go);
+        write_stub(
+            &probe.runner,
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n
+                 echo $$ > '{}'
+                 /bin/sh -c 'echo $$ > \"$1\"; read _hold < \"$2\"; echo leaked > \"$3\"'                  orphan '{}' '{}' '{}' &
+                 read _go < '{}'
+                 if [ \"$_go\" != run ]; then wait; fi
+                 exit 1
+",
+                dir.join("runner.pid").display(),
+                probe.pid.display(),
+                probe.hold.display(),
+                probe.marker.display(),
+                probe.go.display(),
+            ),
+        );
+        std::fs::write(&probe.recipe, "name: orphan-probe\nsteps: []\n")
+            .expect("failed to write recipe");
+        probe
+    }
+
+    fn execute(&self, working_dir: &Path) -> OrphanExecution {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+        // Establish both ends before starting the executor: its runner may
+        // not have spawned yet when a failed readiness check unwinds.
+        let go_reader = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.go)
+            .expect("open go reader");
+        let go_writer = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.go)
+            .expect("open go writer");
+        let (recipe, working_dir) = (self.recipe.clone(), working_dir.to_path_buf());
+        let worker =
+            crate::test_support::unix_process::FifoWorker::spawn(&self.hold, 1, move || {
+                execute::execute_recipe_via_rust(
+                    &recipe,
+                    &BTreeMap::new(),
+                    false,
+                    true,
+                    &working_dir,
+                    &[],
+                    None,
+                )
+                .is_err()
+            });
+        OrphanExecution {
+            worker,
+            go_writer,
+            _go_reader: go_reader,
+        }
+    }
+
+    /// Opens a pidfd for the orphan while it is known to be alive: the
+    /// runner is still blocked on `go`, so no teardown has run yet.
+    fn orphan(&self) -> crate::test_support::pidfd_wait::PidFd {
+        self.orphan_with_ceiling(crate::test_support::wait::CEILING)
+    }
+
+    fn orphan_with_ceiling(
+        &self,
+        ceiling: std::time::Duration,
+    ) -> crate::test_support::pidfd_wait::PidFd {
+        use crate::test_support::pidfd_wait::{PidFd, parse_pid};
+        crate::test_support::wait::wait_until_with_ceiling(
+            "the orphan to write its pid",
+            ceiling,
+            || {
+                std::fs::read_to_string(&self.pid)
+                    .ok()
+                    .is_some_and(|raw| parse_pid(&raw).is_ok())
+            },
+        );
+        let raw = std::fs::read_to_string(&self.pid).expect("orphan pid file");
+        let pid = parse_pid(&raw).expect("orphan pid");
+        PidFd::open(pid).expect("pidfd of the live orphan")
+    }
+}
+
+/// Exercise a real readiness timeout before release_runner(), and also drop
+/// immediately after spawning (before either participant need be ready).
+/// Cleanup must release both shells without help from product termination.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_orphan_probe_readiness_failure_cleans_up_runner_and_worker() {
+    use crate::test_support::pidfd_wait::{PidFd, parse_pid, wait_pid_gone};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::time::Duration;
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+    for wait_for_readiness in [true, false] {
+        let temp = tempfile::tempdir().expect("create probe directory");
+        let mut probe = OrphanProbe::new(temp.path());
+        let mut env = EnvGuard::capture(&[]);
+        env.assign(RUNNER_PATH_ENV, &probe.runner);
+        env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+        env.clear(RUNNER_TIMEOUT_ENV);
+        let mut observed = None;
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            let _execution = probe.execute(temp.path());
+            if wait_for_readiness {
+                // Retain observations only; cleanup must work without a
+                // KillOnDrop and before readiness gives the caller a pidfd.
+                let orphan = probe.orphan();
+                let raw = std::fs::read_to_string(temp.path().join("runner.pid")).unwrap();
+                let runner = PidFd::open(parse_pid(&raw).unwrap()).unwrap();
+                observed = Some((runner, orphan));
+            }
+            // This nonexistent path forces the actual readiness wait to fail
+            // deterministically, even if the shells have already started.
+            probe.pid = temp.path().join("missing.pid");
+            probe.orphan_with_ceiling(Duration::ZERO);
+        }));
+        let message = failure.expect_err("readiness must fail");
+        let message = message.downcast_ref::<String>().expect("timeout message");
+        assert!(
+            message.contains("the orphan to write its pid: timed out"),
+            "{message}"
+        );
+        assert!(
+            probe.marker.exists(),
+            "unwinding must release the orphan and join the executor before returning"
+        );
+        if let Some((runner, orphan)) = observed {
+            wait_pid_gone(&runner, "readiness cleanup to reap the runner");
+            wait_pid_gone(&orphan, "readiness cleanup to release the orphan");
+        }
+        // Environment guards and tempdir remain alive until after cleanup.
+        assert_eq!(
+            std::env::var_os(RUNNER_PATH_ENV).as_deref(),
+            Some(probe.runner.as_os_str())
+        );
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -101,56 +279,42 @@ fn process_alive(pid: u32) -> bool {
 // A runner that spawns a detached descendant and then exits NON-ZERO must have
 // that descendant reaped. The descendant writes a marker after a short delay;
 // if teardown works the marker never appears.
-//
-// RED today: the failure path never reaps the tree, so the marker appears.
 // -------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
 #[test]
 fn test_failure_path_reaps_orphaned_descendants() {
+    use crate::test_support::pidfd_wait::{KillOnDrop, wait_pid_gone};
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
-    let runner = temp.path().join("recipe-runner-rs");
-    let marker = temp.path().join("orphan-marker");
+    // The runner starts an orphan and then FAILS (exit 1), not a timeout.
+    let probe = OrphanProbe::new(temp.path());
 
-    // Spawn a descendant that writes the marker after 2s, then FAIL (exit 1).
-    // This is a failure, NOT a timeout.
-    write_stub(
-        &runner,
-        &format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
-            marker.display()
-        ),
-    );
-
-    let recipe = temp.path().join("recipe.yaml");
-    std::fs::write(&recipe, "name: fail-leak-probe\nsteps: []\n").expect("failed to write recipe");
-
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &probe.runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     // Ensure a fast failure is not misread as a timeout.
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    env.clear(RUNNER_TIMEOUT_ENV);
 
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
+    let mut execution = probe.execute(temp.path());
+    let orphan = KillOnDrop(probe.orphan());
+    execution.release_runner();
+    let failed = execution.worker.wait();
+    assert!(failed, "non-zero runner exit must surface as an error");
+
+    // The orphan blocks until signalled, so it ends only if the teardown
+    // reaped it (issue #964); a surviving orphan fails here as hung.
+    wait_pid_gone(
+        &orphan.0,
+        "failure-path teardown to reap the orphaned recipe-runner descendant",
     );
-
-    result.expect_err("non-zero runner exit must surface as an error");
-
-    // Give the descendant time to write its marker if it was NOT reaped.
-    std::thread::sleep(Duration::from_millis(2_300));
     assert!(
-        !marker.exists(),
+        !probe.marker.exists(),
         "failure-path teardown must reap orphaned recipe-runner descendants \
          (issue #964): descendant survived and wrote {}",
-        marker.display()
+        probe.marker.display()
     );
 }
 
@@ -158,16 +322,17 @@ fn test_failure_path_reaps_orphaned_descendants() {
 // Test 2 — teardown is GRACEFUL: SIGTERM is delivered before SIGKILL.
 //
 // The runner traps SIGTERM, records that it received it, and exits cleanly.
-// With a graceful three-phase reaper the trap runs (marker written). With the
-// current immediate-SIGKILL teardown the trap never runs.
+// The reaper sends SIGTERM first, so the trap runs and writes the marker. A
+// teardown that sent SIGKILL first would leave no marker.
 //
-// Uses the timeout path (which is the only path that reaps today) so the ONLY
-// thing under test is SIGTERM-before-SIGKILL, isolating it from Test 1.
-//
-// RED today: immediate SIGKILL means the SIGTERM trap never runs -> no marker.
+// Uses the timeout path so the ONLY thing under test is SIGTERM-before-SIGKILL,
+// isolating it from Test 1.
 // -------------------------------------------------------------------------
 #[test]
 fn test_timeout_teardown_sends_sigterm_before_sigkill() {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -175,38 +340,68 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("graceful-marker");
+    let ready = temp.path().join("trap-ready");
+    let completed = temp.path().join("trap-completed");
+    mkfifo(&completed);
+    let mut completion = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&completed)
+        .expect("open TERM completion event reader");
 
+    // The runner blocks on a builtin FIFO read. The supervisor releases it
+    // only during drop, so passing still requires the timeout teardown.
+    let hold = temp.path().join("hold");
+    mkfifo(&hold);
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
-            marker.display()
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ntrap 'echo graceful > \"{}\"; printf x > \"{}\"; exit 0' TERM\necho ready > \"{}\"\nread _hold < \"{}\"\n",
+            marker.display(),
+            completed.display(),
+            ready.display(),
+            hold.display()
         ),
     );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: graceful-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
-    // Explicit, generous grace so the trapped child can finish cleanly.
-    let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "5");
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.assign(RUNNER_TIMEOUT_ENV, "1");
+    // Grace stays frozen in virtual time until the child exits. Scheduling
+    // delays cannot exhaust it; grace expiration is covered by the policy
+    // test below, while CEILING only fails a missing completion event.
+    env.assign(TEARDOWN_GRACE_ENV, "1");
 
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
-    );
+    let dir = temp.path().to_path_buf();
+    let mut worker = super::test_runner::RunnerWorker::spawn(Some((&hold, 1)), true, move || {
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
+            .is_err()
+    });
+    worker.time_out_after_ready("the runner to install its TERM trap", || ready.exists());
+    crate::test_support::wait::wait_until("the TERM handler completion event", || {
+        let event = completion.read(&mut [0; 1]);
+        match event {
+            Ok(1) => true,
+            Ok(0) => false,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                false
+            }
+            other => panic!("read TERM handler completion event: {other:?}"),
+        }
+    });
+    assert!(worker.wait(), "hung recipe-runner must time out");
 
-    result.expect_err("hung recipe-runner must time out");
-
-    // Allow the SIGTERM trap to run and write the marker within the grace window.
-    std::thread::sleep(Duration::from_millis(2_000));
+    // The teardown reaps the runner before it returns, and the runner writes
+    // the marker in its SIGTERM trap before it exits: no wait is needed.
     assert!(
         marker.exists(),
         "graceful teardown must deliver SIGTERM before SIGKILL so the runner \
@@ -220,71 +415,213 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
 }
 
 // -------------------------------------------------------------------------
-// Test 3 — the grace window is CONFIGURABLE via AMPLIHACK_TEARDOWN_GRACE_SECS.
+// Test 3 — configurable grace, with identical cleanup under both settings.
 //
-// The trapped runner needs ~1s of work to shut down cleanly.
-//   * grace = 0  -> escalate to SIGKILL immediately -> clean-exit marker ABSENT.
-//   * grace = 4  -> allow the ~1s cleanup to finish -> clean-exit marker PRESENT.
-//
-// RED today: no grace env var is honoured and SIGKILL is immediate, so the
-// grace = 4 phase never produces the marker.
+// The first two cases use identical one-second cleanup after TERM; only the
+// configured grace changes. The last case checks escalation when cleanup takes
+// longer than the grace. This runs on every Unix target; only the pidfd-based
+// orphan probes require Linux.
 // -------------------------------------------------------------------------
 #[test]
 fn test_teardown_grace_window_is_configurable() {
+    use crate::test_support::virtual_clock::VirtualClock;
+    use std::time::Duration;
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
-
-    let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
-    let grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "0");
-
-    // Runs one timeout->teardown cycle against a runner whose SIGTERM handler
-    // needs ~1s to finish; returns whether the clean-exit marker was written.
-    let run_once = |grace: &str| -> bool {
-        grace_env.apply(grace);
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
-        let runner = temp.path().join("recipe-runner-rs");
-        let marker = temp.path().join("clean-exit-marker");
-        write_stub(
-            &runner,
-            &format!(
-                "#!/bin/sh\ntrap '/bin/sleep 1; echo done > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
-                marker.display()
-            ),
+    let mut env = EnvGuard::capture(&[]);
+    for (setting, cleanup_duration, expected_elapsed, cleaned) in [
+        ("0", 1, 0, false),
+        ("4", 1, 1, true),
+        // An uncooperative process must receive KILL at the configured limit.
+        ("4", 10, 4, false),
+    ] {
+        env.assign(TEARDOWN_GRACE_ENV, setting);
+        let clock = VirtualClock::new();
+        let events = std::cell::RefCell::new(Vec::new());
+        let terminated = std::cell::Cell::new(false);
+        let cleanup_done = std::cell::Cell::new(false);
+        execute::terminate_recipe_runner_with(
+            &clock,
+            || {
+                assert!(terminated.get(), "TERM must precede the grace wait");
+                if clock.elapsed() >= Duration::from_secs(cleanup_duration) {
+                    cleanup_done.set(true);
+                    events.borrow_mut().push("cleanup");
+                    false
+                } else {
+                    true
+                }
+            },
+            |signal| match signal {
+                libc::SIGTERM => {
+                    terminated.set(true);
+                    events.borrow_mut().push("TERM");
+                }
+                libc::SIGKILL => events.borrow_mut().push("KILL"),
+                other => panic!("unexpected signal {other}"),
+            },
         );
-        let recipe = temp.path().join("recipe.yaml");
-        std::fs::write(&recipe, "name: grace-probe\nsteps: []\n").expect("failed to write recipe");
-
-        let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-        let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-        let result = execute::execute_recipe_via_rust(
-            &recipe,
-            &BTreeMap::new(),
-            false,
-            true,
-            temp.path(),
-            &[],
-            None,
+        assert_eq!(cleanup_done.get(), cleaned, "configured grace {setting}");
+        assert_eq!(
+            clock.elapsed(),
+            Duration::from_secs(expected_elapsed),
+            "virtual elapsed time for configured grace {setting}"
         );
-        result.expect_err("hung recipe-runner must time out");
-        // Wait comfortably past the 1s cleanup for either outcome to settle.
-        std::thread::sleep(Duration::from_millis(1_800));
-        marker.exists()
-    };
+        assert_eq!(
+            *events.borrow(),
+            if cleaned {
+                vec!["TERM", "cleanup", "KILL"]
+            } else {
+                vec!["TERM", "KILL"]
+            }
+        );
+    }
+}
 
-    let wrote_with_zero_grace = run_once("0");
-    let wrote_with_ample_grace = run_once("4");
+// -------------------------------------------------------------------------
+// Test 3b — `stop::sweep_on` measures its grace on the clock it is given.
+//
+// This calls `sweep_on` directly with a `VirtualClock`; whether the executor
+// passes it the runner's clock is Test 3c. The child ignores TERM and blocks
+// on a stdin pipe this test holds, so only the SIGKILL that ends the grace
+// can end it. On a virtual clock the grace is exactly the configured window
+// however slowly the host runs; `give_up` (a cancelled test) ends it at once.
+// A `sweep_on` that read the real clock would leave the virtual clock at zero
+// in the first case.
+// -------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+#[test]
+fn sweep_on_measures_grace_on_the_given_clock_and_honours_give_up() {
+    use crate::commands::recipe::{process_tree, stop};
+    use crate::test_support::virtual_clock::VirtualClock;
+    use std::io::BufRead;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
 
-    assert!(
-        !wrote_with_zero_grace,
-        "grace = 0 must escalate to SIGKILL immediately; the ~1s cleanup must \
-         NOT complete (issue #964)"
+    let grace = Duration::from_secs(4);
+    for (give_up, expected_elapsed) in [(false, grace), (true, Duration::ZERO)] {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "trap '' TERM; echo ready; read _hold"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn a TERM-ignoring child");
+        // The trap is installed once `ready` is written. If an assertion
+        // below fails, dropping `child` closes its stdin and `read` returns.
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("piped stdout"))
+            .read_line(&mut ready)
+            .expect("read the child's ready line");
+        assert_eq!(ready, "ready\n", "the child must install its trap");
+        let pid = child.id() as i32;
+        let start = process_tree::start_time(pid).expect("start time of the live child");
+        let tree = stop::Tree::from([(pid, start)]);
+
+        let clock = VirtualClock::new();
+        stop::terminate(&tree);
+        let killed = stop::sweep_on(&tree, grace, &clock, &|| give_up);
+
+        assert_eq!(killed, 1, "give_up={give_up}: the child ignores TERM");
+        assert_eq!(
+            clock.elapsed(),
+            expected_elapsed,
+            "give_up={give_up}: virtual time spent in the grace"
+        );
+        let status = child.wait().expect("reap the child");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "give_up={give_up}: only the SIGKILL after the grace ends the child: {status:?}"
+        );
+    }
+}
+
+// -------------------------------------------------------------------------
+// Test 3c — the executor's tree sweep waits its grace on the runner's clock.
+//
+// The timeout teardown, the stop teardown and the sweep after a runner that
+// exited with a stop signal pending all wait the grace in
+// `execute::sweep_runner_tree`, which takes the attempt's `RunnerClock`. This
+// runs that helper on a `RunnerWorker` with virtual time, the way the recipe
+// tests run the executor, against a child that ignores TERM.
+//
+// The test first waits for the helper to read the worker's clock. A helper
+// that measured the grace on the system clock never reads it, and returns by
+// itself once the real grace (2 s here) has passed; the test then fails with
+// a message naming the cause rather than passing. Once the clock has been
+// read the grace is frozen, and only the test's advance of virtual time by
+// the grace ends it, with SIGKILL to the child.
+//
+// Not covered here: the cancellation wiring, whose failure would hold the
+// frozen grace until the test's ceiling instead of failing.
+// -------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+#[test]
+fn test_sweep_runner_tree_measures_the_grace_on_the_runner_clock() {
+    use super::test_runner::RunnerWorker;
+    use crate::commands::recipe::{process_tree, stop};
+    use std::io::BufRead;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut env = EnvGuard::capture(&[]);
+    let grace = Duration::from_secs(2);
+    env.assign(TEARDOWN_GRACE_ENV, grace.as_secs().to_string());
+
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "trap '' TERM; echo ready; read _hold"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn a TERM-ignoring child");
+    let mut ready = String::new();
+    std::io::BufReader::new(child.stdout.take().expect("piped stdout"))
+        .read_line(&mut ready)
+        .expect("read the child's ready line");
+    assert_eq!(ready, "ready\n", "the child must install its trap");
+    let pid = child.id() as i32;
+    let start = process_tree::start_time(pid).expect("start time of the live child");
+    let tree = stop::Tree::from([(pid, start)]);
+
+    let finished = Arc::new(AtomicBool::new(false));
+    let worker_finished = Arc::clone(&finished);
+    let mut worker = RunnerWorker::spawn(None, true, move || {
+        let killed = execute::sweep_runner_tree(&tree, &execute::RunnerClock::current());
+        worker_finished.store(true, Ordering::SeqCst);
+        killed
+    });
+    crate::test_support::wait::wait_until("the tree sweep to read the runner clock", || {
+        if worker.clock_read() {
+            return true;
+        }
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "sweep_runner_tree ended its grace without reading the runner clock, \
+             so it measured the grace on another clock"
+        );
+        false
+    });
+    worker.advance(grace);
+    let killed = worker.wait();
+
+    assert_eq!(
+        killed, 1,
+        "the child ignores TERM, so the grace must end in SIGKILL"
     );
-    assert!(
-        wrote_with_ample_grace,
-        "grace = 4 must give the runner its ~1s cleanup window before SIGKILL \
-         via AMPLIHACK_TEARDOWN_GRACE_SECS (issue #964)"
+    let status = child.wait().expect("reap the child");
+    assert_eq!(
+        status.signal(),
+        Some(libc::SIGKILL),
+        "only the SIGKILL after the grace ends the child: {status:?}"
     );
 }
 
@@ -294,14 +631,14 @@ fn test_teardown_grace_window_is_configurable() {
 // The reaper signals the runner's process group (the runner is a session
 // leader via setsid). It must NEVER broadcast to unrelated / parent processes.
 // A sibling process spawned directly by the test lives in the TEST's process
-// group, so it must survive while the runner's own orphan is reaped.
-//
-// RED today: the failure-path orphan is not reaped (marker appears). The
-// sibling-survives half already holds; this test also guards against a future
-// over-broad kill.
+// group, so it must survive while the runner's own orphan is reaped. The
+// test also guards against a future over-broad kill.
 // -------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
 #[test]
 fn test_teardown_is_scoped_to_runner_process_group() {
+    use crate::test_support::pidfd_wait::{KillOnDrop, wait_pid_gone};
+    use std::os::unix::process::ExitStatusExt;
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -309,62 +646,56 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
-    let mut sibling = std::process::Command::new("/bin/sleep")
-        .arg("8")
+    // It blocks on its stdin, so it exits only when the test closes it or a
+    // signal reaches it; its exit status tells the two apart.
+    let mut sibling = std::process::Command::new("/bin/cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
         .spawn()
         .expect("failed to spawn sibling process");
-    let sibling_pid = sibling.id();
+    struct Reap<'a>(&'a mut std::process::Child);
+    impl Drop for Reap<'_> {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let sibling = Reap(&mut sibling);
 
-    let runner = temp.path().join("recipe-runner-rs");
-    let marker = temp.path().join("orphan-marker");
-    write_stub(
-        &runner,
-        &format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
-            marker.display()
-        ),
-    );
-    let recipe = temp.path().join("recipe.yaml");
-    std::fs::write(&recipe, "name: scope-probe\nsteps: []\n").expect("failed to write recipe");
+    let probe = OrphanProbe::new(temp.path());
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &probe.runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
-
-    let started = Instant::now();
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
-    );
-    result.expect_err("non-zero runner exit must surface as an error");
+    let mut execution = probe.execute(temp.path());
+    let orphan = KillOnDrop(probe.orphan());
+    execution.release_runner();
+    let failed = execution.worker.wait();
+    assert!(failed, "non-zero runner exit must surface as an error");
 
     // Runner's own orphan must be reaped.
-    std::thread::sleep(Duration::from_millis(2_300));
+    wait_pid_gone(
+        &orphan.0,
+        "teardown to reap the runner's orphaned descendant (issue #964)",
+    );
     assert!(
-        !marker.exists(),
+        !probe.marker.exists(),
         "teardown must reap the runner's orphaned descendant (issue #964)"
     );
 
-    // The unrelated sibling (outside the runner's process group) must survive
-    // the teardown, proving the reaper is pgid-scoped and not a broadcast.
+    // The unrelated sibling (outside the runner's process group) must
+    // survive the teardown, proving the reaper is pgid-scoped and not a
+    // broadcast: closing its stdin ends it with status 0, where any signal
+    // the teardown sent would show as a signal death.
+    drop(sibling.0.stdin.take());
+    let status = crate::test_support::wait::wait_child("the sibling cat", sibling.0);
     assert!(
-        started.elapsed() < Duration::from_secs(8),
-        "test setup ran too long to validate sibling survival"
-    );
-    assert!(
-        process_alive(sibling_pid),
+        status.success() && status.signal().is_none(),
         "teardown must be scoped to the runner's process group and must NOT \
-         signal unrelated processes (issue #964)"
+         signal unrelated processes (issue #964): sibling ended with {status:?}"
     );
-
-    // Clean up the sibling deterministically.
-    unsafe { libc::kill(sibling_pid as libc::pid_t, libc::SIGKILL) };
-    let _ = sibling.wait();
 }
 
 // =========================================================================
@@ -384,11 +715,12 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 //          ceiling (MAX_DEPTH_CEILING = 32) before the comparison,
 //        * below the limit the runner still spawns normally (no over-blocking).
 //
-//   B. Best-effort restoration of the CALLER checkout's git configuration on
-//      any terminal failure: if the runner corrupts the caller's checkout
-//      (e.g. flips `core.bare=true`, reproducing the observed `git status`
-//      breakage), the pre-run value is snapshotted before spawn and restored
-//      after teardown, while durable child worktrees are preserved.
+//   B. Restoration of the NAMED checkout's `core.bare`: the run reads it
+//      before spawn and again after teardown, and when a run has flipped it
+//      (reproducing the observed `git status` breakage) it says so and puts
+//      the pre-run value back, while durable child worktrees are preserved.
+//      Since #2808 that checkout is the one the operator named, usually a PR
+//      worktree, so the flip lands where they work. #1903, the cause, is open.
 //
 // All tests drive the PUBLIC entry point `execute::execute_recipe_via_rust`
 // with a stub runner installed via `RECIPE_RUNNER_RS_PATH`, so they COMPILE
@@ -408,7 +740,7 @@ fn write_marker_stub(path: &Path, marker: &Path, exit_code: u8) {
     write_stub(
         path,
         &format!(
-            "#!/bin/sh\necho spawned > '{}'\nexit {}\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho spawned > '{}'\nexit {}\n",
             marker.display(),
             exit_code
         ),
@@ -429,24 +761,25 @@ fn depth_guard_spawned(session_depth: &str, max_depth: Option<&str>) -> bool {
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: depth-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
     // Issue #1326: a genuine nested run names a tree that has sealed a ceiling.
     // Pin both so the probe does not depend on the ambient process ancestry of
     // whoever runs the suite (a developer inside an `amplihack` session has an
     // orchestrator ancestor; CI does not).
-    let _tree_id_env = EnvVarGuard::set("AMPLIHACK_TREE_ID", "probe");
+    env.assign("AMPLIHACK_TREE_ID", "probe");
     crate::commands::session_tree::state::ensure_sealed(
         "probe",
         max_depth.and_then(|v| v.parse().ok()).unwrap_or(3),
     )
     .expect("seal probe tree");
-    let _depth_env = EnvVarGuard::set(SESSION_DEPTH_ENV, session_depth);
-    let _max_env = match max_depth {
-        Some(v) => EnvVarGuard::set(MAX_DEPTH_ENV, v),
-        None => EnvVarGuard::unset(MAX_DEPTH_ENV),
-    };
+    env.assign(SESSION_DEPTH_ENV, session_depth);
+    match max_depth {
+        Some(v) => env.assign(MAX_DEPTH_ENV, v),
+        None => env.clear(MAX_DEPTH_ENV),
+    }
 
     let _ = execute::execute_recipe_via_rust(
         &recipe,
@@ -465,8 +798,6 @@ fn depth_guard_spawned(session_depth: &str, max_depth: Option<&str>) -> bool {
 // Test 5 — depth AT the limit BAILS BEFORE SPAWN.
 //
 // SESSION_DEPTH == MAX_DEPTH must be refused: no descendant runner is spawned.
-//
-// RED today: no guard exists, so the runner spawns and writes the marker.
 // -------------------------------------------------------------------------
 #[test]
 fn test_depth_guard_bails_at_limit_before_spawn() {
@@ -488,8 +819,6 @@ fn test_depth_guard_bails_at_limit_before_spawn() {
 //
 // A non-numeric AMPLIHACK_SESSION_DEPTH must be treated as "at the limit" and
 // BAIL — never silently parsed as depth 0 (which would defeat the guard).
-//
-// RED today: no guard exists, so the runner spawns regardless.
 // -------------------------------------------------------------------------
 #[test]
 fn test_depth_guard_fails_closed_on_malformed_session_depth() {
@@ -512,8 +841,6 @@ fn test_depth_guard_fails_closed_on_malformed_session_depth() {
 // AMPLIHACK_MAX_DEPTH is attacker-influenceable; a huge value must be clamped
 // to MAX_DEPTH_CEILING (32) before comparison. At depth == ceiling the guard
 // must still bail even though the raw MAX_DEPTH is astronomically larger.
-//
-// RED today: no guard exists (and no clamping is applied on the spawn path).
 // -------------------------------------------------------------------------
 #[test]
 fn test_depth_guard_clamps_forged_max_depth_to_ceiling() {
@@ -556,7 +883,7 @@ fn test_depth_guard_allows_spawn_below_limit() {
 }
 
 // -------------------------------------------------------------------------
-// Git-state restore helpers.
+// Named-checkout git-state helpers.
 // -------------------------------------------------------------------------
 
 /// Run `git <args...>` inside `repo` and return trimmed stdout, or `None` if
@@ -591,6 +918,23 @@ fn init_git_repo(repo: &Path) -> bool {
     // Deterministic identity so any future commit-based assertions are stable.
     let _ = git_in(repo, &["config", "user.email", "t@example.com"]);
     let _ = git_in(repo, &["config", "user.name", "Teardown Test"]);
+    // A born HEAD: the fixtures below commit against it.
+    assert!(
+        git_in(
+            repo,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "init",
+            ],
+        )
+        .is_some(),
+        "git init worked but the initial commit failed in {}",
+        repo.display()
+    );
     // Confirm we start from the healthy, non-bare state.
     matches!(
         git_in(repo, &["config", "--get", "core.bare"]).as_deref(),
@@ -599,85 +943,150 @@ fn init_git_repo(repo: &Path) -> bool {
 }
 
 // -------------------------------------------------------------------------
-// Test 9 — caller git state is RESTORED after a terminal failure.
+// Test 9 — the named checkout's git state is RESTORED after a terminal failure.
 //
-// Reproduces the observed #964 corruption: the runner flips the caller
-// checkout's `core.bare` to `true` (which makes `git status` fail with "this
-// operation must be run in a work tree") and then exits non-zero. After the
-// failed run the caller's checkout must be usable again: `core.bare` restored
-// and `git status` succeeds.
+// Reproduces the observed #964 corruption against the checkout the operator
+// named: the runner flips that checkout's `core.bare` to `true` (which makes
+// `git status` fail with "this operation must be run in a work tree") and then
+// exits non-zero. After the failed run the checkout must be usable again.
 //
-// RED today: no snapshot/restore logic exists, so `core.bare` stays `true` and
-// `git status` remains broken after the run.
+// Before #2808 this passed because the runner was handed a private copy, so
+// the stub never touched the caller's checkout. It now exercises the restore
+// itself.
 // -------------------------------------------------------------------------
 #[test]
-fn test_caller_git_state_restored_after_terminal_failure() {
+fn test_named_checkout_git_state_restored_after_terminal_failure() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _fixture_environment = fixture_environment();
 
     let temp = tempfile::tempdir().expect("failed to create temp dir");
-    let repo = temp.path().join("caller-checkout");
-    std::fs::create_dir_all(&repo).expect("failed to create caller checkout dir");
+    let repo = temp.path().join("named-checkout");
+    std::fs::create_dir_all(&repo).expect("failed to create named checkout dir");
     if !init_git_repo(&repo) {
-        eprintln!("skipping: git unavailable for caller-git-state restore test");
+        eprintln!("skipping: git unavailable for named-checkout restore test");
         return;
     }
     // `git status` must work before the run.
     assert!(
         git_in(&repo, &["status", "--porcelain"]).is_some(),
-        "precondition: caller checkout must be a healthy work tree before the run"
+        "precondition: the named checkout must be a healthy work tree before the run"
     );
 
     let runner = temp.path().join("recipe-runner-rs");
-    // The runner corrupts the CALLER checkout (passed as `-C` == working dir)
+    // The runner corrupts the NAMED checkout (passed as `-C` == working dir)
     // exactly like the observed leak, then fails. `$5` is the `-C` value in the
     // fixed argv layout: <recipe> --output-format json -C <working_dir> ...
     write_stub(
         &runner,
-        "#!/bin/sh\ngit -C \"$5\" config core.bare true\nexit 1\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ngit -C \"$5\" config core.bare true\nexit 1\n",
     );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: git-corrupt-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
     result.expect_err("non-zero runner exit must surface as an error");
 
-    // The caller checkout must be restored to a usable state.
+    // The named checkout must be restored to a usable state.
     let bare_after = git_in(&repo, &["config", "--get", "core.bare"]);
     assert!(
         matches!(bare_after.as_deref(), Some("false") | None),
-        "terminal-failure cleanup must restore the caller checkout's core.bare \
-         (issue #964): core.bare is still {bare_after:?} after the failed run"
+        "the run must restore the named checkout's core.bare \
+         (issues #964, #2814): core.bare is still {bare_after:?} after the failed run"
     );
     assert!(
         git_in(&repo, &["status", "--porcelain"]).is_some(),
-        "terminal-failure cleanup must leave the caller checkout usable \
-         (`git status` must succeed) after the failed run (issue #964)"
+        "the run must leave the named checkout usable \
+         (`git status` must succeed) after the failed run (issues #964, #2814)"
     );
 }
 
 // -------------------------------------------------------------------------
-// Test 10 — restore preserves DURABLE CHILD WORKTREES.
+// Test 10 — the named checkout's git state is RESTORED on a STRUCTURED failure.
 //
-// The restore must be scoped to the caller checkout's own config and must never
-// delete or unregister durable child worktrees produced by the run. A child
-// worktree directory created under the run must still exist after the failed
-// run, even as the caller's `core.bare` is restored.
-//
-// Passes today AND after the fix (restore never deletes) — a guard against an
-// over-broad restore that clobbers child artifacts.
+// The more realistic corruption path: the runner does real work, corrupts
+// `core.bare`, then reports failure by emitting a structured JSON result with
+// `"success": false` rather than crashing. That surfaces as
+// `Ok(RecipeRunResult { success: false, .. })`, not `Err`, and is still a
+// terminal failure per #964.
 // -------------------------------------------------------------------------
 #[test]
-fn test_restore_preserves_durable_child_worktree() {
+fn test_named_checkout_git_state_restored_after_structured_failure_result() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = temp.path().join("named-checkout");
+    std::fs::create_dir_all(&repo).expect("failed to create named checkout dir");
+    if !init_git_repo(&repo) {
+        eprintln!("skipping: git unavailable for structured-failure restore test");
+        return;
+    }
+    assert!(
+        git_in(&repo, &["status", "--porcelain"]).is_some(),
+        "precondition: the named checkout must be a healthy work tree before the run"
+    );
+
+    let runner = temp.path().join("recipe-runner-rs");
+    write_stub(
+        &runner,
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ngit -C \"$5\" config core.bare true\n\
+         printf '{\"recipe_name\":\"structured-fail\",\"success\":false}\\n'\nexit 0\n",
+    );
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: structured-fail-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
+    // The restore reports through the result, so a run that could not put the
+    // value back is an error rather than a quiet success. Either way the
+    // checkout itself must be usable.
+    if let Ok(run) = &result {
+        assert!(
+            !run.success,
+            "precondition: runner reported a structured failure (success == false)"
+        );
+    }
+
+    let bare_after = git_in(&repo, &["config", "--get", "core.bare"]);
+    assert!(
+        matches!(bare_after.as_deref(), Some("false") | None),
+        "the run must restore the named checkout's core.bare \
+         (issues #964, #2814): core.bare is still {bare_after:?} after the failed run"
+    );
+    assert!(
+        git_in(&repo, &["status", "--porcelain"]).is_some(),
+        "the run must leave the named checkout usable \
+         (`git status` must succeed) after the failed run (issues #964, #2814)"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Test 11 — the restore PRESERVES durable child artifacts.
+//
+// It is scoped to the named checkout's own `core.bare` and never deletes or
+// unregisters durable child worktrees produced by the run.
+// -------------------------------------------------------------------------
+#[test]
+fn test_failure_preserves_durable_child_artifact() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -697,7 +1106,7 @@ fn test_restore_preserves_durable_child_worktree() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\nmkdir -p '{}'\necho durable > '{}'\ngit -C \"$5\" config core.bare true\nexit 1\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nmkdir -p '{}'\necho durable > '{}'\ngit -C \"$5\" config core.bare true\nexit 1\n",
             child_marker.parent().unwrap().display(),
             child_marker.display()
         ),
@@ -707,9 +1116,10 @@ fn test_restore_preserves_durable_child_worktree() {
     std::fs::write(&recipe, "name: child-worktree-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
@@ -720,79 +1130,6 @@ fn test_restore_preserves_durable_child_worktree() {
         "cleanup must PRESERVE durable child worktrees and never delete run \
          artifacts (issue #964): {} was removed",
         child_marker.display()
-    );
-}
-
-// -------------------------------------------------------------------------
-// Test 11 — caller git state is RESTORED on a STRUCTURED failure result.
-//
-// The more realistic corruption path: the runner does real work, corrupts the
-// caller checkout's `core.bare`, then reports failure by emitting a structured
-// JSON result with `"success": false` (rather than crashing with empty stdout).
-// That surfaces as `Ok(RecipeRunResult { success: false, .. })`, NOT `Err`, yet
-// it is still a terminal failure per issue #964 and must trigger the same
-// caller-checkout restore.
-//
-// RED before the fix: restore fired only on `result.is_err()`, so an
-// `Ok(success:false)` failure left `core.bare=true` and `git status` broken.
-// -------------------------------------------------------------------------
-#[test]
-fn test_caller_git_state_restored_after_structured_failure_result() {
-    let _guard = crate::test_support::home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
-
-    let temp = tempfile::tempdir().expect("failed to create temp dir");
-    let repo = temp.path().join("caller-checkout");
-    std::fs::create_dir_all(&repo).expect("failed to create caller checkout dir");
-    if !init_git_repo(&repo) {
-        eprintln!("skipping: git unavailable for structured-failure restore test");
-        return;
-    }
-    assert!(
-        git_in(&repo, &["status", "--porcelain"]).is_some(),
-        "precondition: caller checkout must be a healthy work tree before the run"
-    );
-
-    let runner = temp.path().join("recipe-runner-rs");
-    // Corrupt the caller checkout, then report failure via STRUCTURED JSON on
-    // stdout and exit 0. Valid JSON stdout makes this parse to
-    // `Ok(RecipeRunResult { success: false })` — the non-`Err` terminal-failure
-    // path. `$5` is the `-C` value in the fixed argv layout.
-    write_stub(
-        &runner,
-        "#!/bin/sh\ngit -C \"$5\" config core.bare true\n\
-         printf '{\"recipe_name\":\"structured-fail\",\"success\":false}\\n'\nexit 0\n",
-    );
-
-    let recipe = temp.path().join("recipe.yaml");
-    std::fs::write(&recipe, "name: structured-fail-probe\nsteps: []\n")
-        .expect("failed to write recipe");
-
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
-
-    let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
-    let run = result.expect("structured failure must surface as Ok(RecipeRunResult)");
-    assert!(
-        !run.success,
-        "precondition: runner reported a structured failure (success == false)"
-    );
-
-    // Same restore guarantee as the `Err` path: caller checkout left usable.
-    let bare_after = git_in(&repo, &["config", "--get", "core.bare"]);
-    assert!(
-        matches!(bare_after.as_deref(), Some("false") | None),
-        "structured-failure cleanup must restore the caller checkout's core.bare \
-         (issue #964): core.bare is still {bare_after:?} after the failed run"
-    );
-    assert!(
-        git_in(&repo, &["status", "--porcelain"]).is_some(),
-        "structured-failure cleanup must leave the caller checkout usable \
-         (`git status` must succeed) after the failed run (issue #964)"
     );
 }
 
@@ -842,10 +1179,38 @@ fn generated_tree_ids_are_valid_and_distinct() {
     assert_ne!(a, b, "two ids from one process must differ");
 }
 
-/// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
+/// The environment a recipe fixture runs in: a temp `HOME` owned by this
+/// fixture, a private work root with no end-of-run sweep (issue #2067; see
+/// `test_support::IsolatedWorkRoot`), and the variables it changed. Field
+/// order is drop order: the variables are restored first, then the work root
+/// guard restores its variables and removes its folder, then the temp `HOME`
+/// is removed, so no `amplihack-recipe-home-*` directory outlives the test.
+struct FixtureEnvironment {
+    _env: EnvGuard,
+    _work_root: crate::test_support::IsolatedWorkRoot,
+    _home: tempfile::TempDir,
+}
+
+/// The caller holds the shared environment lock until the fixture drops.
+fn fixture_environment() -> FixtureEnvironment {
+    // Issue #2019: the runner and anything it stages see a temp HOME, never
+    // the developer's real ~/.amplihack.
+    let home = tempfile::Builder::new()
+        .prefix("amplihack-recipe-home-")
+        .tempdir()
+        .expect("create the recipe fixture HOME");
+    let work_root = crate::test_support::IsolatedWorkRoot::new();
+    let mut env = EnvGuard::capture(&[]);
+    env.assign("HOME", home.path());
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
-    saved
+    env.assign("AMPLIHACK_AGENT_BINARY", "claude");
+    // A fixture starts its own run even inside an active recipe session (#1984).
+    for key in crate::test_support::OUTER_RUN_IDENTITY_VARS {
+        env.clear(key);
+    }
+    FixtureEnvironment {
+        _env: env,
+        _work_root: work_root,
+        _home: home,
+    }
 }

@@ -5,23 +5,57 @@
 
 mod blarify;
 mod checkout;
+/// Issue #1985 — sandbox and hook-trust flags for Codex agent steps.
+mod codex_agent_step;
+mod codex_copilot_rewrite;
+mod codex_exec_args;
+/// Local-model launches of `amplihack codex`: a small Codex home of
+/// amplihack's own and no hook text for the model.
+pub(crate) mod codex_local_model;
 mod command;
 mod context;
+/// Issue #2030 — the 0600 contract file and the Claude Code version gate.
+mod contract_file;
+pub(crate) mod hook_settings;
+/// Issue #1619 — a recipe step declares a model tier and amplihack turns it
+/// into whatever the harness it launches actually has.
+pub(crate) mod model_tiers;
+/// Issue #2030 — `amplihack claude` passthrough arguments never carry prompt
+/// text to the agent's argv.
+mod passthrough_rewrite;
 mod power_steering;
-/// Issue #1265 Option 3 — `--append-system-prompt` delivery of amplihack's
-/// routing contract.
+/// Issue #1265 Option 3 — delivery of amplihack's routing contract through
+/// `--append-system-prompt-file` (issue #2030: a file, never argv text).
 mod system_prompt_append;
 
 #[cfg(test)]
 mod tests_blarify;
 #[cfg(test)]
+mod tests_codex_agent_step;
+#[cfg(test)]
+mod tests_codex_copilot_rewrite;
+#[cfg(test)]
+mod tests_codex_exec_args;
+#[cfg(test)]
 mod tests_command;
 #[cfg(test)]
 mod tests_env;
 #[cfg(test)]
+mod tests_issue_2030_contract;
+#[cfg(all(test, unix))]
+mod tests_issue_2279_launch_settings;
+#[cfg(test)]
+mod tests_issue_2361;
+#[cfg(all(test, unix))]
+mod tests_issue_2535_guidance;
+#[cfg(test)]
+mod tests_issue_2589_copilot_deny;
+#[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
 mod tests_model;
+#[cfg(test)]
+mod tests_passthrough_rewrite;
 #[cfg(test)]
 mod tests_profile;
 #[cfg(test)]
@@ -33,6 +67,10 @@ mod tests_system_prompt_append;
 
 // Re-exports — public API of the launch module.
 pub(crate) use checkout::resolve_checkout_repo;
+/// Issue #1619: the shipped `strong` tier reuses this id rather than naming a
+/// second one that can drift away from it, which `model_tiers` pins.
+#[cfg(test)]
+pub(crate) use command::DEFAULT_MODEL;
 pub(crate) use command::{
     pin_profile_for_descendants, resolve_no_reflection, resolve_subprocess_safe,
     validate_routed_copilot_workspace,
@@ -104,6 +142,7 @@ fn apply_launch_environment(
     root_sandbox: Option<&amplihack_utils::root_sandbox::SkipPermissionsEnv>,
 ) -> Result<()> {
     env_builder.apply_to_command(command);
+    crate::commands::orch::autodrive::trusted::clean_retired_environment(command)?;
     if let Some((config, target)) = proxy {
         config.apply_to_command(command, target);
     }
@@ -139,6 +178,10 @@ pub(super) fn root_sandbox_for_launch(
 }
 
 /// Launch a tool binary (claude, copilot, codex, amplifier).
+///
+/// Codex dispatch must call this inside [`codex_local_model::scoped`] with
+/// the result of [`codex_local_model::prepare_launch`]. The scope supplies
+/// the local selection to model resolution and bootstrap on this thread.
 #[allow(clippy::too_many_arguments)]
 pub fn run_launch(
     tool: &str,
@@ -269,6 +312,20 @@ fn run_launch_core(
     root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
+    // Issue #1619, launch order step 0: a recipe agent step declares a model
+    // tier (`fast`, `standard`, `strong`), which the recipe runner puts on
+    // this passthrough tail as `--model <word>`. Turn it into a model this
+    // harness actually has — or remove it, so amplihack's existing chain
+    // decides — before anything else reads the tail. The LiteLLM routing
+    // check below refuses a launch whose explicit `--model` is not
+    // AMPLIHACK_LITELLM_MODEL, so a tier word left in place would stop every
+    // gateway launch before it started.
+    //
+    // `proxy_target` names which harnesses the gateway routes, and is handed
+    // down rather than re-derived: Copilot CLI is a gateway target that
+    // `is_claude_compatible_tool` excludes.
+    let (extra_args, tier_launch) =
+        model_tiers::resolve_passthrough(tool, &extra_args, proxy_target.is_some());
     let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
         .context("invalid external LiteLLM proxy configuration")?;
     let proxy_enabled = proxy_config.is_some();
@@ -317,7 +374,7 @@ fn run_launch_core(
         .ok()
         .unwrap_or_else(|| PathBuf::from("."));
     if let Some(activation) = DockerDetector.activation_source(docker) {
-        println!("{}", activation.message());
+        eprintln!("{}", activation.message());
         let docker_args = build_docker_launcher_args(
             launcher_command,
             resume,
@@ -333,6 +390,60 @@ fn run_launch_core(
         // governor slot guard is dropped and releases its slot first.
         return child_status(exit_code);
     }
+
+    let local_model = codex_local_model::current(tool);
+    codex_local_model::check_in_scope(tool, local_model.is_some())?;
+    if local_model.is_none()
+        && matches!(
+            agent_binary_for_tool(tool),
+            Some(AgentBinary::Claude | AgentBinary::Copilot | AgentBinary::Codex)
+        )
+    {
+        codex_local_model::warn_inherited_hook_text(tool);
+    }
+
+    // Issue #2030, launch order step 1: rewrite the passthrough arguments of a
+    // Claude, Codex or Copilot launch so no prompt text reaches the agent's
+    // argv. After the Docker hand-off: the amplihack inside the container
+    // rewrites its own. `rewritten` owns the per-session files; it lives
+    // until this function returns, after the child has been waited on.
+    //
+    // Issue #2535: the run's operator guidance is read once, here, as the
+    // step starts; nothing waits for or watches it. The block goes after
+    // the step's own prompt, in full or not at all.
+    let guidance = crate::run_guidance::GuidanceForLaunch::load();
+    let rewritten = match agent_binary_for_tool(tool) {
+        Some(AgentBinary::Claude) => passthrough_rewrite::rewrite_claude_passthrough(&extra_args)?,
+        Some(AgentBinary::Codex) => codex_copilot_rewrite::rewrite_codex_passthrough(&extra_args)?,
+        // The external LiteLLM gateway refuses `--add-dir` for Copilot, so
+        // there the pointer file is readable only with path access.
+        Some(AgentBinary::Copilot) => codex_copilot_rewrite::rewrite_copilot_passthrough(
+            &extra_args,
+            !proxy_enabled,
+            copilot_has_path_access(&extra_args, subprocess_safe),
+            guidance.block(),
+        )?,
+        _ => passthrough_rewrite::Rewritten::unchanged(extra_args.clone()),
+    };
+    let guidance_route = guidance_route(tool, &guidance, &rewritten, &extra_args);
+    if guidance_route == GuidanceRoute::Undeliverable {
+        eprintln!(
+            "amplihack: operator guidance not added: this {tool} launch has no prompt it can follow (Codex takes it only with `exec … -`, Claude and Copilot only with -p)"
+        );
+    }
+    let codex_trailer = guidance_route == GuidanceRoute::CodexTrailer;
+    // "\n\n" and the block, written after a prompt that arrives on stdin.
+    let guidance_injected = matches!(
+        guidance_route,
+        GuidanceRoute::Prompt | GuidanceRoute::CodexTrailer
+    );
+    let guidance_tail = if guidance_injected {
+        guidance.trailer().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let extra_args = rewritten.args.clone();
+    let opt_out = std::env::var(system_prompt_append::OPT_OUT_ENV).ok();
 
     // Issue #1482: decide now, after the Docker hand-off (the container launch
     // decides for itself), so a root host outside a sandbox fails here with a
@@ -353,8 +464,12 @@ fn run_launch_core(
     } else {
         None
     };
+    // A local-model Codex launch runs the generic bootstrap only, so nothing
+    // is written to the user's Codex home.
     if !subprocess_safe {
-        if tool == "codex" {
+        if local_model.is_some() {
+            codex_local_model::bootstrap()?;
+        } else if tool == "codex" {
             let selected = prevalidated_binary
                 .as_ref()
                 .map(|p| &p.binary)
@@ -387,15 +502,50 @@ fn run_launch_core(
     // Find binary
     let (binary, preflight_identity) = match prevalidated_binary {
         Some(preflight) => (preflight.binary, Some(preflight.identity)),
-        None => (
-            match codex_binary {
-                Some(binary) => Ok(binary),
-                None => bootstrap::ensure_tool_available(tool, override_origin),
-            }
-            .with_context(|| missing_binary_context(tool))?,
-            None,
-        ),
+        None => match codex_binary {
+            Some(binary) => (binary, None),
+            None => match bootstrap::ensure_tool_available(tool, override_origin) {
+                Ok(binary) => (binary, None),
+                Err(error) => {
+                    if let Some(gate) = version_gate_error_for_unresolved(
+                        tool,
+                        override_origin,
+                        &rewritten,
+                        opt_out.as_deref(),
+                    ) {
+                        return Err(gate);
+                    }
+                    return Err(error.context(missing_binary_context(tool)));
+                }
+            },
+        },
     };
+
+    // An interactive local-model launch needs a Codex whose hook-trust format
+    // amplihack knows, or its command check would not run.
+    if let Some(local) = local_model.as_deref() {
+        local.check_codex_version(binary.version.as_deref(), &extra_args)?;
+    }
+
+    // A local-model launch builds, refreshes or verifies its Codex home now,
+    // the last step that can stop it before anything is spawned, and adds
+    // the local settings before the caller's Codex arguments.
+    let local_home = local_model
+        .as_deref()
+        .map(codex_local_model::Prepared::refresh)
+        .transpose()?;
+    let extra_args = match &local_home {
+        Some(home) => home.codex_args(extra_args),
+        None => extra_args,
+    };
+
+    // Issue #2916: a Claude effort the tier added is checked against the
+    // version already read for the binary that will run, and taken back off
+    // when that version is older than the first to accept `--effort` or could
+    // not be read. Nothing is spawned for it. The record and the applied line
+    // are written here, so they say what reached the harness; a launch that
+    // returned earlier wrote them when `tier_launch` was dropped.
+    let extra_args = tier_launch.finish(extra_args, binary.version.as_deref());
 
     if let Some(proxy_target) = proxy_target {
         validate_proxy_launch_args(proxy_target, resume, continue_session, &extra_args)?;
@@ -403,6 +553,40 @@ fn run_launch_core(
             validate_proxy_binary_capability(proxy_target, &binary)?;
         }
     }
+
+    // Issue #2030, launch order steps 2-4: decide injection on the rewritten
+    // arguments, run the version gate, then write the contract file. All of
+    // it happens before anything is spawned.
+    let inject_contract = system_prompt_append::contract_injection_applies(
+        &binary.name,
+        &binary.path,
+        &extra_args,
+        opt_out.as_deref(),
+    );
+    if inject_contract || rewritten.used_file_flags {
+        let version = binary
+            .version
+            .clone()
+            .or_else(|| system_prompt_append::probe_claude_version(&binary.path));
+        if inject_contract {
+            system_prompt_append::require_append_prompt_file_capability(
+                &binary.path,
+                version.as_deref(),
+            )?;
+        } else {
+            system_prompt_append::require_prompt_file_flag_capability(
+                &binary.path,
+                version.as_deref(),
+            )?;
+        }
+    }
+    let contract_file = if inject_contract {
+        Some(system_prompt_append::ensure_contract_file(
+            &system_prompt_append::contract_home()?,
+        )?)
+    } else {
+        None
+    };
 
     tracing::info!(
         binary = %binary.path.display(),
@@ -450,15 +634,10 @@ fn run_launch_core(
         let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
             .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
             .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags
-        // Issue #1551: inside an auto-drive run the gh merge guard stays first
-        // on PATH, ahead of the agent binary's directory prepended above.
-        let env_builder = crate::commands::recipe::run::merge_guard::keep_guard_first(
-            env_builder,
-            std::env::var(crate::commands::recipe::run::merge_guard::MERGE_GUARD_ENV)
-                .ok()
-                .as_deref(),
-        )?;
-
+        let env_builder = match &local_home {
+            Some(home) => home.with_env(env_builder),
+            None => env_builder,
+        };
         maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
 
         // Register before the final executable check so revalidation, command
@@ -472,6 +651,26 @@ fn run_launch_core(
         // This final check catches ordinary package and symlink replacement
         // after preflight and narrows same-user races without claiming the
         // stronger guarantees of descriptor-based execution.
+        let hook_settings = match hook_settings::prepare(&binary.name, &extra_args) {
+            hook_settings::Inject::Path(path) => Some(path),
+            hook_settings::Inject::NotPrivate => {
+                // SR-15: the one skip the user can fix, so say it once.
+                let dir = hook_settings::launch_file_path()
+                    .and_then(|file| file.parent().map(std::path::Path::to_path_buf));
+                eprintln!(
+                    "amplihack: warning: hooks settings file not passed (runtime dir not \
+                     private): {} and its parent must be owned by you and must not be group- \
+                     or other-writable.",
+                    dir.as_deref()
+                        .map_or_else(|| "the amplihack home".into(), |d| d.display().to_string())
+                );
+                None
+            }
+            hook_settings::Inject::Skip(reason) => {
+                tracing::debug!("no hooks --settings file: {reason}");
+                None
+            }
+        };
         let mut cmd = build_command_for_dir(
             &binary,
             resume,
@@ -481,8 +680,20 @@ fn run_launch_core(
             Some(&execution_dir),
             subprocess_safe,
             claude_config_dir.as_deref(),
-        );
+            contract_file.as_deref(),
+            hook_settings.as_deref(),
+        )?;
         cmd.current_dir(&execution_dir);
+        // Issue #2030, step 6: a rewritten `-p <text>` reaches the child on a
+        // piped stdin. Without a payload the child inherits amplihack's stdin.
+        // Input piped to amplihack itself is passed on after the prompt.
+        // Issue #2535: Codex `exec … -` reads its prompt from the caller's
+        // stdin, so that is always forwarded, with the guidance after it.
+        let forward_caller_stdin =
+            (rewritten.stdin_payload.is_some() && caller_stdin_has_input()) || codex_trailer;
+        if rewritten.stdin_payload.is_some() || codex_trailer {
+            cmd.stdin(std::process::Stdio::piped());
+        }
         let routed_copilot = proxy_config.is_some()
             && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli);
         validate_routed_copilot_workspace(&execution_dir, routed_copilot)?;
@@ -534,8 +745,65 @@ fn run_launch_core(
             }
         };
 
+        let stdin_writer = match (rewritten.stdin_payload.as_ref(), child.take_stdin()) {
+            (Some(payload), Some(stdin)) if forward_caller_stdin => Some(
+                amplihack_utils::payload_delivery::spawn_stdin_forwarder_with_trailer(
+                    stdin,
+                    prompt_then_piped_input_header(payload),
+                    Box::new(std::io::stdin()),
+                    guidance_tail,
+                ),
+            ),
+            (Some(payload), Some(stdin)) => {
+                let bytes = match guidance_route {
+                    GuidanceRoute::Prompt => guidance.append_to(payload),
+                    _ => payload.clone(),
+                };
+                Some(amplihack_utils::payload_delivery::spawn_stdin_writer(
+                    stdin,
+                    bytes.into_bytes(),
+                ))
+            }
+            (None, Some(stdin)) if codex_trailer => Some(
+                amplihack_utils::payload_delivery::spawn_stdin_forwarder_with_trailer(
+                    stdin,
+                    Vec::new(),
+                    Box::new(std::io::stdin()),
+                    guidance_tail,
+                ),
+            ),
+            _ => None,
+        };
+        // Issue #2535: the agent has started with the block in its prompt;
+        // say so once (counts only) and record it in each guidance.log it
+        // came from. The Codex trailer goes after the caller's stdin, so it
+        // is only recorded below, once it is known to have been written.
+        if guidance_injected && !codex_trailer {
+            report_guidance_injection(&guidance);
+        }
+
         // Wait for child or signal
         let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
+        // PR #2567 M2: the writer sets its flag before it closes the child's
+        // stdin, and the child exits only after that EOF, so the flag is
+        // final here. It is read before the writer is joined or detached.
+        let trailer_delivered = codex_trailer
+            && stdin_writer
+                .as_ref()
+                .is_some_and(|writer| writer.delivered());
+        if trailer_delivered {
+            report_guidance_injection(&guidance);
+        }
+        let written = match stdin_writer {
+            // The child has exited. A forwarder still blocked on a caller
+            // pipe that never closes has no reader left; it is detached.
+            Some(writer) if forward_caller_stdin => writer.finish_if_done(),
+            Some(writer) => Some(writer.finish()),
+            None => None,
+        };
+        if let Some(Err(error)) = written {
+            tracing::warn!(%error, "writing the prompt to the agent's stdin failed");
+        }
         // Issue #1569: hand back logins the session borrowed, on success and
         // on error, before this process exits.
         if let Some(dir) = claude_config_dir.as_deref() {
@@ -550,6 +818,39 @@ fn run_launch_core(
         let _ = tracker.crash_session(&session_id);
     }
     child_status(result?)
+}
+
+/// Issue #2030: when the binary resolver refused every `claude` candidate
+/// because `--version` printed no usable version, and the launch would need
+/// the version gate, report the gate's error (naming 2.1.319 and the opt-out)
+/// instead of a bare "not found".
+fn version_gate_error_for_unresolved(
+    tool: &str,
+    override_origin: OverrideOrigin,
+    rewritten: &passthrough_rewrite::Rewritten,
+    opt_out: Option<&str>,
+) -> Option<anyhow::Error> {
+    if agent_binary_for_tool(tool) != Some(AgentBinary::Claude) {
+        return None;
+    }
+    let inject =
+        system_prompt_append::should_inject_system_prompt_append(tool, &rewritten.args, opt_out);
+    if !inject && !rewritten.used_file_flags {
+        return None;
+    }
+    let resolution = amplihack_utils::launch_target::resolve(tool, override_origin);
+    let (path, _) = resolution.rejected.iter().find(|(_, rejection)| {
+        matches!(
+            rejection,
+            amplihack_utils::launch_target::Rejection::UnparseableVersion
+        )
+    })?;
+    let result = if inject {
+        system_prompt_append::require_append_prompt_file_capability(path, None)
+    } else {
+        system_prompt_append::require_prompt_file_flag_capability(path, None)
+    };
+    result.err()
 }
 
 /// A child's non-zero exit status as a [`crate::command_error::CliExitError`],
@@ -680,6 +981,53 @@ fn capture_executable_identity(path: &Path) -> Result<ExecutableIdentity> {
         metadata,
         digest: hasher.finalize().into(),
     })
+}
+
+/// The first bytes the agent reads when a rewritten prompt takes its stdin
+/// and input was also piped to amplihack: the prompt, then a blank line. The
+/// piped input follows unchanged, copied as it arrives, so
+/// `git diff | amplihack claude -p "review this"` still gives the agent both.
+/// amplihack does not wait for the piped input to end before starting the
+/// agent; like `claude -p` reading the pipe itself, the agent sees end of
+/// input when the caller's writer closes it.
+pub(crate) fn prompt_then_piped_input_header(prompt: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(prompt.len() + 2);
+    bytes.extend_from_slice(prompt.as_bytes());
+    bytes.extend_from_slice(b"\n\n");
+    bytes
+}
+
+/// amplihack's stdin is a pipe, a socket or a non-empty regular file, as
+/// opposed to a terminal, `/dev/null` or an empty file.
+#[cfg(unix)]
+fn caller_stdin_has_input() -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    // `/dev/stdin` names fd 0 on Linux and macOS; metadata follows it to the
+    // pipe or file itself.
+    match std::fs::metadata("/dev/stdin") {
+        Ok(meta) => {
+            let kind = meta.file_type();
+            kind.is_fifo() || kind.is_socket() || (kind.is_file() && meta.len() > 0)
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn caller_stdin_has_input() -> bool {
+    false
+}
+
+/// Copilot will run with access to every path: the caller passed
+/// `--allow-all`, `--allow-all-paths` or `--yolo`, or [`build_command`] adds
+/// `--allow-all` or the subprocess-safe `--allow-all-paths`.
+fn copilot_has_path_access(extra_args: &[String], subprocess_safe: bool) -> bool {
+    extra_args
+        .iter()
+        .take_while(|a| a.as_str() != "--")
+        .any(|a| matches!(a.as_str(), "--allow-all" | "--allow-all-paths" | "--yolo"))
+        || command::should_inject_copilot_allow_all(extra_args)
+        || (subprocess_safe && command::should_inject_subprocess_safe_flags(extra_args).1)
 }
 
 fn preflight_proxy_binary(
@@ -866,6 +1214,53 @@ fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+/// Issue #2535: prints the counts-only notice that guidance reached the
+/// agent and records `guidance_injected` in each guidance.log it came from.
+fn report_guidance_injection(guidance: &crate::run_guidance::GuidanceForLaunch) {
+    eprintln!("{}", guidance.notice());
+    guidance.record_injection(&std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default());
+}
+
+/// Issue #2535: where this launch puts the run's operator guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuidanceRoute {
+    /// No guidance for this run.
+    None,
+    /// After the `-p` prompt: on stdin (Claude) or in the prompt file
+    /// (Copilot).
+    Prompt,
+    /// After the caller's stdin, for Codex `exec … -` (C4).
+    CodexTrailer,
+    /// There is guidance, but this launch form has no prompt to follow.
+    Undeliverable,
+}
+
+fn guidance_route(
+    tool: &str,
+    guidance: &crate::run_guidance::GuidanceForLaunch,
+    rewritten: &passthrough_rewrite::Rewritten,
+    original_args: &[String],
+) -> GuidanceRoute {
+    if guidance.block().is_none() {
+        return GuidanceRoute::None;
+    }
+    match agent_binary_for_tool(tool) {
+        Some(AgentBinary::Claude) if rewritten.stdin_payload.is_some() => GuidanceRoute::Prompt,
+        Some(AgentBinary::Copilot)
+            if codex_copilot_rewrite::copilot_has_prompt_text(original_args) =>
+        {
+            GuidanceRoute::Prompt
+        }
+        Some(AgentBinary::Codex)
+            if rewritten.stdin_payload.is_none()
+                && crate::run_guidance::codex_trailer_applies(original_args) =>
+        {
+            GuidanceRoute::CodexTrailer
+        }
+        _ => GuidanceRoute::Undeliverable,
+    }
 }
 
 fn agent_binary_for_tool(tool: &str) -> Option<AgentBinary> {

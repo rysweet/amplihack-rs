@@ -15,10 +15,11 @@
 //!   one included, and a slot the live probe frees goes to the next
 //!   candidate (fake `claude` scripts only; never a real one).
 
-use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
+use super::decide::target::{Unfit, fit, ranked};
+use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, decide};
 use super::log::{Shown, msg};
 use super::measure::reading;
-use super::overflow::{plan_usable, regains};
+use super::overflow::regains;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_cmd::{ErrorReason, Probe};
@@ -36,6 +37,7 @@ fn settings() -> Settings {
         interval: 600,
         overflow_wait: 1800,
         overflow_unknown_reset: false,
+        target_week_max: 95,
     }
 }
 
@@ -184,7 +186,8 @@ fn a_timed_out_live_login_shows_failed_in_the_cycle_line() {
 fn a_timed_out_candidate_is_never_the_target() {
     let slow = reading("slow", &timed_out());
     let cands = [measured("a-slow", &slow)];
-    assert_eq!(best(&cands), None);
+    // Issue #2910: the ranking (`target::ranked`) replaced `best`.
+    assert!(ranked(&settings(), &cands, 0).is_empty());
     // At a threshold with only an unknown candidate there is no swap.
     assert_eq!(
         decide(
@@ -215,11 +218,14 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     // "a-slow" sorts first, so a tie-break bug would pick it.
     let cands = [measured("a-slow", &slow), measured("b-spare", &spare)];
     assert_eq!(
-        best(&cands).map(|(n, h)| (n.as_str(), h)),
+        ranked(&settings(), &cands, 0)
+            .first()
+            .map(|(n, h)| (n.as_str(), *h)),
         Some(("b-spare", 90))
     );
     assert_eq!(
@@ -244,8 +250,11 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
 fn a_timed_out_probe_is_not_treated_as_exhausted() {
     let slow = reading("slow", &timed_out());
     assert!(!matches!(slow.reading, Reading::Exhausted { .. }));
-    // The overflow rule: no known reset, no plan capacity, no regain time.
-    assert!(!plan_usable(&settings(), &slow.reading));
+    // The overflow rule: no known reset, never a target, no regain time.
+    assert_eq!(
+        fit(&Measured::new(name("slow"), &slow), 100),
+        Err(Unfit::NoReading)
+    );
     assert_eq!(regains(&settings(), &slow.reading, &slow.windows), None);
 }
 
@@ -466,15 +475,21 @@ mod bound {
 // - `measure::cycle_deadline(start, interval)` is `start + interval - 2 s`,
 //   and at least `start + 1 s`.
 // - `measure::gather(&mut InFlight<K, Probe>, keys, make_job, Wait) ->
-//   Vec<(K, Probed)>`, in the order of `keys`: collect, start jobs for the
-//   keys with no result and nothing in flight, wait (`Wait::Until` or
-//   `Wait::Full`), then read each key. A key still in flight reads
-//   `Probed::failed()` with `still_running` set; its result is used by a
-//   later call, and no second job is started for it meanwhile.
+//   Vec<(K, Probed, Option<ProbeLabel>)>`, in the order of `keys`: collect,
+//   start jobs for the keys with no result and nothing in flight, wait
+//   (`Wait::Until` or `Wait::Full`), then read each key. A key still in
+//   flight reads `Probed::failed()` with `still_running` set and the label
+//   `still running`; its result is used by a later call, and no second job
+//   is started for it meanwhile.
+// - Issue #2910 (S2): a key left with no result and nothing in flight gets
+//   no label, so it is never chosen on a last good reading. A read that
+//   panicked and one a stop cancelled are the two causes; a read dropped
+//   after its limit is started again by the same call, so it ends with its
+//   new read's label.
 // ---------------------------------------------------------------------------
 
 use super::inflight::{self, InFlight, Job};
-use super::measure::{Wait, cycle_deadline, gather};
+use super::measure::{ProbeLabel, Wait, cycle_deadline, gather};
 use crate::commands::profile::usage_parse::UsageWindow;
 use crate::commands::profile::usage_source::Source;
 use std::collections::HashMap;
@@ -504,6 +519,48 @@ fn direct_probe(session: f64, week: f64) -> Probe {
         direct_failure: None,
         spend: crate::commands::profile::usage_source::Spend::NotApplicable,
         extra_shape: None,
+    }
+}
+
+#[test]
+fn identity_trust_changes_join_the_original_read_without_reclassifying_it() {
+    use super::measure::{Key, Reads, join_pending};
+    for (started, next) in [
+        (
+            Key::UnboundCandidate(name("spare")),
+            Key::Candidate(name("spare")),
+        ),
+        (
+            Key::Candidate(name("spare")),
+            Key::UnboundCandidate(name("spare")),
+        ),
+    ] {
+        let mut reads = Reads::with_cancel(
+            Duration::from_secs(30),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let (send, recv) = std::sync::mpsc::channel();
+        reads.start_all(
+            vec![(
+                started.clone(),
+                Box::new(move || {
+                    recv.recv().unwrap();
+                    direct_probe(10.0, 20.0)
+                }),
+            )],
+            1,
+        );
+        let mut keys = [next];
+        join_pending(&reads, &mut keys);
+        assert_eq!(keys[0], started);
+        send.send(()).unwrap();
+        let results = gather(
+            &mut reads,
+            &keys,
+            |_| panic!("no duplicate read"),
+            Wait::Full,
+        );
+        assert_eq!(results[0].0, started);
     }
 }
 
@@ -560,8 +617,8 @@ impl Jobs {
     }
 }
 
-fn by_key(v: Vec<(&'static str, Probed)>) -> HashMap<&'static str, Probed> {
-    v.into_iter().collect()
+fn by_key(v: Vec<(&'static str, Probed, Option<ProbeLabel>)>) -> HashMap<&'static str, Probed> {
+    v.into_iter().map(|(k, p, _)| (k, p)).collect()
 }
 
 #[test]
@@ -719,6 +776,43 @@ fn a_read_in_flight_too_long_is_dropped_and_started_again() {
         Wait::Until(Instant::now() + Duration::from_millis(50)),
     );
     assert_eq!(jobs.started("spare"), 2);
+}
+
+/// Issue #2910 (S2): a read that panicked produced no result and said
+/// nothing about its login, so it carries no label and the rotator may not
+/// move to it on a last good reading. It used to be labelled `probe error`,
+/// which made it eligible for one.
+#[test]
+fn a_panicked_read_carries_no_label() {
+    let mut fl: InFlight<&'static str, Probe> = InFlight::new(Duration::from_secs(60));
+    let got = gather(
+        &mut fl,
+        &["spare"],
+        |_| Box::new(|| -> Probe { panic!("test panic in a read") }) as Job<Probe>,
+        Wait::Full,
+    );
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].2, None, "a panicked read says nothing about a login");
+    assert_eq!(got[0].1.reading, Reading::Failed);
+    assert!(!got[0].1.still_running);
+}
+
+/// Issue #2910 (S2): `rotate stop` leaves a queued read unrun, with no
+/// result and no warning. That read says nothing about its login either, so
+/// it carries no label.
+#[test]
+fn a_read_a_stop_cancelled_carries_no_label() {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut fl: InFlight<&'static str, Probe> =
+        InFlight::with_cancel(Duration::from_secs(60), stop);
+    let jobs = Jobs::default();
+    let got = gather(&mut fl, &["spare"], jobs.make(), Wait::Full);
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        got[0].2, None,
+        "a cancelled read says nothing about a login"
+    );
+    assert_eq!(got[0].1.reading, Reading::Failed);
 }
 
 #[test]

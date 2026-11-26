@@ -6,14 +6,23 @@ fn native_failure_diagnostics_do_not_expose_child_output() {
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let binary = dir.path().join("native");
-    fs::write(&binary, "#!/bin/sh\nprintf '\\033[31mAuthorization: Bearer secret-canary' >&2\nprintf 'prompt-canary'\nexit 7\n").unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-    let error = native(&binary, &["plugin", "list", "--json"], dir.path())
-        .unwrap_err()
-        .to_string();
+    // Issue #1973: written without this process holding a write descriptor,
+    // and given the wait ceiling: the subject is the redaction of a failure,
+    // not the time limit.
+    crate::test_support::write_executable(
+        &binary,
+        "#!/bin/sh\nprintf '\\033[31mAuthorization: Bearer secret-canary' >&2\nprintf 'prompt-canary'\nexit 7\n",
+    );
+    let error = native_with_timeout(
+        &binary,
+        &["plugin", "list", "--json"],
+        dir.path(),
+        std::time::Duration::from_secs(600),
+    )
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("native plugin command failed"));
     assert!(!error.contains("canary"));
     assert!(!error.contains('\u{1b}'));
@@ -30,12 +39,14 @@ fn derived_production_instructions_are_portable() {
         &source.join("amplifier-bundle/agents"),
         output.path(),
         "persona",
+        &ListSelection::new(ListSet::All, []),
     )
     .unwrap();
     instruction_skills(
         &source.join("docs/claude/commands/amplihack"),
         output.path(),
         "command",
+        &ListSelection::new(ListSet::All, []),
     )
     .unwrap();
     let mut count = 0;
@@ -108,7 +119,7 @@ fn codex_resource_and_config_symlink_escape_are_refused() {
     let outside = dir.path().join("outside");
     fs::write(&outside, "foreign").unwrap();
     std::os::unix::fs::symlink("../outside", source.join("resource")).unwrap();
-    assert!(copy_tree(&source, &staged, &source, 0).is_err());
+    assert!(copy_tree(&source, &staged, &source, 0, &ListSelection::default()).is_err());
     let home = dir.path().join("home");
     fs::create_dir(&home).unwrap();
     std::os::unix::fs::symlink(&outside, home.join("hooks.json")).unwrap();

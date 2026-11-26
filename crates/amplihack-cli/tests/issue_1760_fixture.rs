@@ -6,7 +6,7 @@
 //! `TMUX_TMPDIR` and a synthetic `/proc` (`AMPLIHACK_TEST_PROC_ROOT`, honoured
 //! only with the home guard that `isolated` sets) all lie under one temp
 //! directory. The one exception is `TMUX_TMPDIR` when the temp directory is
-//! too long for a socket path: it then moves under `XDG_RUNTIME_DIR`, by the
+//! too long for a socket path: it then moves under `XDG_RUNTIME_DIR` or a private `/tmp` directory, by the
 //! rule in `support::socket_dir`. No real `~/.claude`, `~/.amplihack`, profile root, tmux server
 //! or `/proc` entry of another process is read or written.
 //!
@@ -23,6 +23,7 @@
 
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::socket_dir;
+pub use crate::support::wait::CEILING;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,8 @@ pub const CONV_C: &str = "3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57";
 pub const CONV_D: &str = "e7b1d4c9-2a6f-4e3b-8d5c-9f1a7e2b6d48";
 /// A `launch_id` for entries the tests write themselves.
 pub const LAUNCH_ID: &str = "6f1c0d8e2a4b4f0e9c7d3b5a1e2f4c6d";
+/// Raises the binary's 10 s limit on each child process (debug builds only).
+pub const AGENT_CHILD_TIMEOUT_ENV: &str = "AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS";
 /// The pid of the synthetic `/proc/self` (the `amplihack` under test).
 pub const SELF_PID: u32 = 999_999;
 
@@ -55,7 +58,7 @@ pub struct Fx {
     pub records: PathBuf,
     /// State and call log of the fake `tmux`.
     pub tmux_state: PathBuf,
-    /// `TMUX_TMPDIR`: `root/tt`, or a directory under `XDG_RUNTIME_DIR` when
+    /// `TMUX_TMPDIR`: `root/tt`, or a private short socket directory when
     /// the socket path under `root` would not fit in `sun_path`. Tests that
     /// bind their own sockets put them here too.
     pub tmux_tmpdir: PathBuf,
@@ -139,6 +142,10 @@ impl Fx {
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
+            // Issue #1973: every tmux, systemd-run and git call of the
+            // binary may take up to the shared ceiling, so a slow fake on a
+            // loaded host never records a different result.
+            .env(AGENT_CHILD_TIMEOUT_ENV, CEILING.as_secs().to_string())
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .stdin(Stdio::null());
@@ -246,9 +253,10 @@ pub fn expect_code(o: &Output, code: i32) {
     );
 }
 
-/// Polls `f` every 50 ms until it holds or `secs` pass.
-pub fn wait_until(secs: u64, mut f: impl FnMut() -> bool) -> bool {
-    let end = Instant::now() + Duration::from_secs(secs);
+/// Polls `f` every 50 ms until it holds or the shared [`CEILING`] passes
+/// (issue #1973); `false` only when it never held.
+pub fn wait_until(mut f: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + CEILING;
     while Instant::now() < end {
         if f() {
             return true;

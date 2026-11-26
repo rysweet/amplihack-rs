@@ -67,6 +67,7 @@ pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
         measured_at: now(),
         probed: None,
         fresh_lines: Vec::new(),
+        seen: Default::default(),
     })
 }
 
@@ -92,6 +93,7 @@ fn stay(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
         measured_at: now(),
         probed: None,
         fresh_lines: Vec::new(),
+        seen: Default::default(),
     })
 }
 
@@ -137,7 +139,7 @@ fn one_rotate_cycle_recovers_the_hand_change_and_swaps_to_capacity() {
     f.assert_each_login_once();
     let l = f.ledger();
     assert_eq!(l.live.as_deref(), Some(C));
-    assert_eq!(l.account.as_deref(), Some("u-src"));
+    assert_eq!(l.account.as_deref(), Some("u-charlie"));
     assert_eq!(l.last_cycle.unwrap().outcome, "swapped");
     assert_eq!(l.guidance, None);
     assert!(l.lost_login.is_empty());
@@ -168,7 +170,9 @@ fn an_unreadable_home_account_retries_and_the_next_cycle_recovers() {
     let alerts: Vec<String> = f
         .logged()
         .into_iter()
-        .filter(|l| !l.starts_with("skip: "))
+        // Issue #1962: this ledger has no login identity and `L` no record, so the
+        // cycle also notes why it cannot seed. That line is not a fix line.
+        .filter(|l| !l.starts_with("skip: ") && !l.starts_with("note: no record for live"))
         .collect();
     assert_eq!(alerts, vec![msg::home_unreadable(&n(L))], "no fix lines");
 
@@ -194,11 +198,15 @@ fn an_unreadable_home_account_retries_and_the_next_cycle_recovers() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_profile_switch_is_never_taken_for_a_hand_change() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let f = fx(false, true);
     // A correct ledger: ~/.claude holds M's login.
     let mut l = f.ledger();
     l.live = Some(M.into());
-    l.account = Some("u-mistt".into());
+    l.account = Some("u-mike".into());
+    l.login_identity = Some(super::login_identity::Identity::new(
+        &super::tests_handfix::a_m(),
+    ));
     f.rs.save_ledger(&l).unwrap();
 
     assert_eq!(

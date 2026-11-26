@@ -8,9 +8,10 @@
 //!
 //! Contract (docs/reference/profile-command.md, "Rotate plan-room swap",
 //! "API-key login check", "Log lines for a move onto the API key"):
-//! - With every threshold swap short of `--margin`, the rotator swaps to
-//!   the plan login with the most weekly room among those with session
-//!   room, logged `reason=plan-room`; an API-key profile is never chosen.
+//! - Issue #2910: a live login with no room moves to the eligible plan login
+//!   ranked first (session below `--session-at` first, then the most room
+//!   now), logged `reason=plan-room` when that login is past a threshold; an
+//!   API-key profile is never chosen.
 //! - An API-key profile that is not marked is never used, and the rotator
 //!   writes a `skip:` line naming `overflow add`.
 //! - A marked API-key profile whose login check fails is never swapped in:
@@ -87,12 +88,22 @@ fn all_plan_logins_out(f: &Fixture) {
     f.usage_resetting("extra", 100, 100, 3);
 }
 
-/// The issue's cycle in miniature: live past `--session-at`, spare with
-/// session room and the most weekly room among those, extra with the lowest
-/// week but its session nearly spent. No candidate beats the live login by
-/// `--margin`.
+/// Issue #1962: a dry run reads the usage endpoint only, so its decision needs the
+/// same figures there.
+fn all_plan_logins_out_direct(f: &Fixture) {
+    f.usage_direct("work", 100, 40);
+    f.usage_direct("spare", 100, 100);
+    f.usage_direct("extra", 100, 100);
+}
+
+/// The issue's cycle in miniature: spare with session room and its week past
+/// `--week-at`, extra with the lowest week but its session nearly spent.
+/// Issue #2910 changed the live reading from 87/61 to 100/61 (ruling D1): a
+/// live login with room 13 no longer moves to one with room 9, so the live
+/// login here has no room, and spare (the first tier, the most room now) is
+/// the plan-room target.
 fn near_limits(f: &Fixture) {
-    f.usage_resetting("work", 87, 61, 3);
+    f.usage_resetting("work", 100, 61, 3);
     f.usage_resetting("spare", 0, 91, 3);
     f.usage_resetting("extra", 98, 17, 3);
 }
@@ -213,9 +224,11 @@ fn the_plan_room_swap_does_not_flap_back_on_the_next_cycle() {
     near_limits(&f);
     f.ok(&["profile", "rotate"]);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{}", f.log());
-    // spare is now live at 0/91 (week past --week-at), short of work's
-    // headroom by less than --margin. spare wins pass 1 itself (work at 87%
-    // is past --session-at), so it stays.
+    // spare is now live at 0/91 (week past --week-at, room 9), so a move
+    // needs room 14 (--margin 5). work has recovered to 50/87: room 13,
+    // more than spare's and below both thresholds, so no hold applies, but
+    // short of the margin; extra (98/17, room 2) is further short. It stays.
+    f.usage_resetting("work", 50, 87, 3);
     f.ok(&["profile", "rotate"]);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{}", f.log());
     assert_eq!(
@@ -334,6 +347,7 @@ fn a_dry_run_reports_that_it_would_refuse_a_failed_login_check() {
     add_console(&f);
     f.ok(&["profile", "overflow", "add", "console"]);
     all_plan_logins_out(&f);
+    all_plan_logins_out_direct(&f);
     let s = stdout(&f.ok(&["profile", "rotate", "--dry-run"]));
     assert!(
         s.contains(&format!("would_refuse console: {NO_KEY}")),
@@ -402,6 +416,7 @@ fn a_key_only_in_the_profile_is_refused_because_the_swap_never_delivers_it() {
     );
     f.ok(&["profile", "overflow", "add", "console"]);
     all_plan_logins_out(&f);
+    all_plan_logins_out_direct(&f);
     let dry = stdout(&f.ok(&["profile", "rotate", "--dry-run"]));
     assert!(
         dry.contains(&format!("would_refuse console: {NO_KEY}")),
@@ -425,6 +440,7 @@ fn a_dry_run_with_a_key_in_settings_never_prints_the_value() {
     );
     f.ok(&["profile", "overflow", "add", "console"]);
     all_plan_logins_out(&f);
+    all_plan_logins_out_direct(&f);
     let out = f.ok(&["profile", "rotate", "--dry-run"]);
     let s = stdout(&out);
     assert!(s.contains("would swap work->console"), "{s}");

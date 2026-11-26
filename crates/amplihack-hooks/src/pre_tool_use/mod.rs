@@ -5,7 +5,6 @@
 //! - CWD rename/move (mv targeting CWD or parent)
 //! - Direct commits to main/master branch
 //! - Use of --no-verify flag on git commands
-//! - In an auto-drive run, merges outside the merge gate (#1551)
 //! - tmux `kill-server` / `kill-session -a` without `-S` or `-L`, which act
 //!   on the user's own server when `$TMUX` is set (#1733; all shell tools)
 //! - `tail` with a follow option on a device that never ends, such as
@@ -15,12 +14,19 @@
 //!
 //! XPIA is off by default. The other blocks above do not depend on it and
 //! run whether or not XPIA is enabled.
+//!
+//! Merges are not blocked. The auto-drive merge guard (#1551) and its `gh`
+//! shim were removed in #2340, so no mechanical guard stops an agent step
+//! from running `gh pr merge` or calling the merge API. The auto-drive launch
+//! stamp tells every agent step that only the loop's merge action merges, but
+//! that is a directive, not a block. `--match-head-commit` and the
+//! repository's branch protection are the real boundary
+//! (docs/reference/autodrive-goal-loop.md#known-limits).
 
 mod command;
 mod cwd;
 mod git;
 pub mod launcher;
-mod merge_guard;
 mod shell;
 mod tail_follow_guard;
 mod tmux_guard;
@@ -40,8 +46,9 @@ You attempted to delete a directory that contains your current working directory
   Target: {target}\n\
   CWD:    {cwd}\n\
 \n\
-Deleting the CWD would break the current session. If you need to clean up\n\
-this directory, first change to a different working directory.\n\
+Deleting the CWD would break the current session.\n\
+\n\
+Instead, change to a folder outside the target first, or work in your own folder or worktree.\n\
 \n\
 🔒 This protection cannot be disabled programmatically.";
 
@@ -52,20 +59,16 @@ You attempted to move/rename a directory that contains your current working dire
   Source: {source}\n\
   CWD:    {cwd}\n\
 \n\
-Moving or renaming the CWD would break the current session. To rename this directory:\n\
-  1. First change to a different working directory (e.g., cd ..)\n\
-  2. Then perform the rename operation\n\
-  3. Change back into the renamed directory if needed\n\
+Moving or renaming the CWD would break the current session.\n\
+\n\
+Instead, change to a folder outside the source first, or work in your own folder or worktree.\n\
 \n\
 🔒 This protection cannot be disabled programmatically.";
 
 const MAIN_BRANCH_ERROR: &str = "\
 ⛔ Direct commits to '{branch}' branch are not allowed.\n\
 \n\
-Please use the feature branch workflow:\n\
-  1. Create a feature branch: git checkout -b feature/your-feature-name\n\
-  2. Make your commits on the feature branch\n\
-  3. Create a Pull Request to merge into {branch}\n\
+Commit on a new branch (`git switch -c <name>`) and open a pull request.\n\
 \n\
 This protection cannot be bypassed with --no-verify.";
 
@@ -80,12 +83,7 @@ You attempted to use --no-verify which bypasses critical quality checks:\n\
 \n\
 This defeats the purpose of our quality gates.\n\
 \n\
-✅ Instead, fix the underlying issues:\n\
-1. Run: pre-commit run --all-files\n\
-2. Fix the violations\n\
-3. Commit without --no-verify\n\
-\n\
-For true emergencies, ask a human to override this protection.\n\
+✅ Drop --no-verify and fix what the hook reports.\n\
 \n\
 🔒 This protection cannot be disabled programmatically.";
 
@@ -101,10 +99,34 @@ You invoked the Skill tool with name '{name}', but '{name}' is provided as an\n\
 agent, not a skill. Invoking it as a skill fails with \"Skill not found\" and\n\
 silently skips this step.\n\
 \n\
-✅ Instead, run '{name}' through the agent interface (the Task/agent tool),\n\
-e.g. reference it as an agent such as \"amplihack:{name}\".\n\
+✅ Instead, call the Agent tool with the agent '{name}', for example as \"amplihack:{name}\".\n\
 \n\
 This redirect prevents the requirements-clarification phase from being skipped.";
+
+/// The refusal every PreToolUse check returns (#1773).
+///
+/// Each host reads a different field, so the answer carries all of them with
+/// the same reason: Claude Code reads `hookSpecificOutput.permissionDecision`
+/// (or `decision`), Copilot reads the top-level `permissionDecision`, and the
+/// Codex path translates `block` and `message` in `codex_output`. Neither
+/// Claude Code nor Copilot acts on a bare `{"block": true, "message": …}`.
+/// The hook still exits 0: the refusal is information for the agent's next
+/// action, and the reason says what to do instead.
+pub(super) fn deny(reason: &str) -> Value {
+    serde_json::json!({
+        "block": true,
+        "message": reason,
+        "decision": "block",
+        "reason": reason,
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    })
+}
 
 /// Detect a `Skill` invocation that names an agent rather than a skill and, if
 /// so, return a non-fatal block instructing the model to use the agent
@@ -141,10 +163,7 @@ fn check_skill_redirect(tool_name: &str, tool_input: &Value) -> Option<Value> {
         return None;
     }
 
-    Some(serde_json::json!({
-        "block": true,
-        "message": SKILL_IS_AGENT_REDIRECT.replace("{name}", name)
-    }))
+    Some(deny(&SKILL_IS_AGENT_REDIRECT.replace("{name}", name)))
 }
 
 /// Maximum directory depth walked when scanning for bundled `SKILL.md` files.
@@ -349,12 +368,10 @@ impl Hook for PreToolUseHook {
         // server (or every session on it) because no -S or -L was given. Not
         // gated by any environment variable.
         //
-        // This runs first, above XPIA and the merge guard. Those checks
-        // answer with a bare `{"block": true, "message": …}`, which Claude
-        // Code does not enforce (#1773), and XPIA, when opted in, matches
+        // This runs first, above XPIA. XPIA, when opted in, matches
         // `; rm`, `\; kill…` and a `kill…` line, so it would answer first for
         // `tmux kill-server; rm -rf "$SB"` or a `tmux -C attach <<EOF` heredoc
-        // and the command would run. The guard only ever denies, so running
+        // and its reason would replace the guard's own. The guard only ever denies, so running
         // it first cannot let through anything the later checks refuse. It
         // must also stay above the `tool_name != "Bash"` return below:
         // Copilot's `bash` and Codex's un-normalised shell tool names would
@@ -385,22 +402,6 @@ impl Hook for PreToolUseHook {
         // the runtime hard-fail with "Skill not found", which silently skips
         // the step (e.g. the requirements-clarification phase).
         if let Some(block) = check_skill_redirect(&tool_name, &tool_input) {
-            return Ok(block);
-        }
-
-        // Issue #1551: inside an auto-drive run, refuse a merge typed into the
-        // agent's shell tool. Unlike the `gh` shim this does not depend on
-        // PATH order, which the agent's profile can change. Copilot names the
-        // tool `bash`, Claude Code `Bash`.
-        if tool_name.eq_ignore_ascii_case("bash")
-            && merge_guard::guard_active(
-                std::env::var(merge_guard::MERGE_GUARD_ENV).ok().as_deref(),
-            )
-            && let Some(block) = tool_input
-                .get("command")
-                .and_then(Value::as_str)
-                .and_then(merge_guard::check)
-        {
             return Ok(block);
         }
 
@@ -454,10 +455,7 @@ impl Hook for PreToolUseHook {
 
         // Check --no-verify flag.
         if has_no_verify && is_git_command {
-            return Ok(serde_json::json!({
-                "block": true,
-                "message": NO_VERIFY_ERROR
-            }));
+            return Ok(deny(NO_VERIFY_ERROR));
         }
 
         Ok(Value::Object(serde_json::Map::new()))

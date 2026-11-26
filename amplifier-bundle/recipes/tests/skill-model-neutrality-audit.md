@@ -1,6 +1,6 @@
 # Skill model-neutrality completion audit
 
-Audit date: 2026-10-04. Scope: all 130 canonical skills (123 top-level and
+Audit date: 2026-10-04. Scope: all 131 canonical skills (124 top-level and
 seven nested), all 537 existing canonical file paths, and all 323 existing
 documentation mirror file paths (81 mirrored SKILL.md files). The scanner reads
 860 text paths, including a shared README symlink; linked directories resolve
@@ -247,6 +247,7 @@ whether a corresponding SKILL.md exists, not byte parity of unrelated content.
 | signal | Pass | No |
 | signal-setup | Pass | No |
 | silent-degradation-audit | Pass | No |
+| skill-and-agents-directory | Pass | No |
 | skill-builder | Pass | Yes |
 | smart-test | Pass | No |
 | sociologist-analyst | Pass | Yes |

@@ -16,7 +16,6 @@ use crate::commands::profile::auto_switch::kit::{check_root_private, read_bounde
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::sanitize_display;
 use amplihack_utils::rotator_status::is_rotator;
-use amplihack_utils::secure_files::owned_by_euid;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
@@ -128,8 +127,18 @@ pub fn clear(root: &Path) -> io::Result<Option<OwnerState>> {
 /// Whether the marker's pid is a verified rotator of this user running the
 /// binary named `exe_name`, per `proc_root`.
 pub fn alive(m: &Marker, proc_root: &Path, exe_name: &OsStr) -> bool {
+    alive_for_uid(
+        m,
+        proc_root,
+        exe_name,
+        crate::commands::profile::auto_switch::kit::euid(),
+    )
+}
+
+/// The same liveness check with an explicit expected UID for synthetic tests.
+pub(super) fn alive_for_uid(m: &Marker, proc_root: &Path, exe_name: &OsStr, uid: u32) -> bool {
     let dir = proc_root.join(m.pid.to_string());
-    std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir() && owned_by_euid(&meta))
+    std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir() && meta.uid() == uid)
         && matches!(read_bounded_nofollow(&dir.join("cmdline"), MAX_CMDLINE),
             Ok(Some((raw, _))) if is_rotator(&raw, Some(exe_name)))
 }
@@ -325,7 +334,7 @@ pub fn cli(store: &ProfileStore, clear_it: bool) -> Result<(), ProfileError> {
     let root = store.root();
     if !clear_it {
         let exe = daemon::exe_name();
-        println!("{}", describe(root, Path::new("/proc"), exe.as_deref()));
+        println!("{}", describe(root, &daemon::proc_root(), exe.as_deref()));
         return Ok(());
     }
     match clear_checked(root)? {

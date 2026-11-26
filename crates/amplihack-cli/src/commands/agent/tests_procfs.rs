@@ -1,7 +1,8 @@
 //! Unit tests for `procfs.rs`: parsers on hostile input (nothing panics, a
 //! malformed entry gives `None`), what counts as a `claude` process (A5,
-//! R4.3), the snapshot filter (S2), tree walks, and the test-seam guard
-//! (S27). Every tree is synthetic, built in a temp dir and passed as `root`.
+//! R4.3), the snapshot filter (S2) and tree walks. Every tree is
+//! synthetic, built in a temp dir and passed as `root`. The test seam (S27)
+//! is tested in `procfs/tests_root.rs`.
 //!
 //! API under test:
 //! - `parse_stat(&[u8]) -> Option<Stat>`, `Stat { comm: String, state: char,
@@ -19,15 +20,9 @@
 //!   Vec<u32>, descendants(pid) -> Vec<u32>}` (both exclude `pid`)
 //! - `read_environ(root: &Path, pid: u32) -> Result<Vec<(String, String)>,
 //!   String>`, `cwd(root: &Path, pid: u32) -> Option<PathBuf>`
-//! - `proc_root_from(var: Option<&OsStr>, guard: Option<&OsStr>, temp_dir:
-//!   &Path) -> PathBuf`: the pure part of `proc_root()`, which passes
-//!   `AMPLIHACK_TEST_PROC_ROOT`, `AMPLIHACK_TEST_HOME_GUARD` and
-//!   `std::env::temp_dir()`
 
 use super::procfs::*;
-use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 const REST: &str = "S 4001 5000 5000 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 777 1000000 100";
@@ -257,43 +252,4 @@ fn environ_and_cwd() {
     assert!(read_environ(&root, 4242).is_err());
     assert_eq!(cwd(&root, 80), Some(PathBuf::from("/srv/project")));
     assert_eq!(cwd(&root, 4242), None);
-}
-
-#[test]
-fn the_proc_root_seam_needs_the_guard_a_temp_path_and_a_private_root() {
-    let tmp = tempfile::tempdir().unwrap();
-    let temp = tmp.path().canonicalize().unwrap();
-    let inside = temp.join("proc");
-    fs::create_dir(&inside).unwrap();
-    fs::set_permissions(&inside, fs::Permissions::from_mode(0o700)).unwrap();
-    let real = PathBuf::from("/proc");
-    let g = Some(OsStr::new("1"));
-    let seam = |var: &Path, guard, temp: &Path| proc_root_from(Some(var.as_os_str()), guard, temp);
-    assert_eq!(seam(&inside, g, &temp), inside);
-    assert_eq!(seam(&inside, None, &temp), real, "no guard");
-    assert_eq!(
-        seam(&inside, Some(OsStr::new("")), &temp),
-        real,
-        "empty guard"
-    );
-    assert_eq!(
-        seam(&inside, g, &temp.join("elsewhere")),
-        real,
-        "outside temp_dir"
-    );
-    assert_eq!(seam(&temp.join("missing"), g, &temp), real);
-    assert_eq!(proc_root_from(None, g, &temp), real);
-    let escape = temp.join("link");
-    std::os::unix::fs::symlink("/", &escape).unwrap();
-    assert_eq!(
-        seam(&escape, g, &temp),
-        real,
-        "the canonical path is checked"
-    );
-    fs::set_permissions(&inside, fs::Permissions::from_mode(0o777)).unwrap();
-    assert_eq!(
-        seam(&inside, g, &temp),
-        real,
-        "S27: a root others can write"
-    );
 }

@@ -2,6 +2,14 @@
 
 > [Home](../index.md) > Reference > Branch Protection Guard
 
+> **Superseded in part, 9 Nov 2026:** the "require branches to be up to date
+> before merging" setting (strict) on `main` is now **off**, on purpose. The
+> current policy is in [Branch protection on main](../contributing/branch-protection.md).
+> This guard was written for the earlier policy and still treats strict being
+> off as drift. Do not turn strict back on to satisfy it; if it fails for that
+> reason, the guard is wrong. Retiring or inverting it is tracked in
+> [#2203](https://github.com/rysweet/amplihack-rs/issues/2203).
+
 The branch protection guard is an in-repo check that notices when the strict
 up-to-date merge policy on `main` gets turned off, and fails a check so the team
 finds out and turns it back on. It is the automated follow-up to the prose-only

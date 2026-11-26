@@ -3,7 +3,6 @@ name: socratic-reviewer
 version: 1.0.0
 description: Socratic code review specialist. Uses probing questions instead of direct critique to help developers articulate reasoning, reveal hidden assumptions, and deepen understanding. Based on the Feynman principle that teaching reveals gaps in understanding.
 role: "Socratic questioning specialist for code review and knowledge elicitation"
-model: inherit
 interaction_mode: dialogue
 contract:
   inputs: ["code_to_review", "context", "depth_level"]

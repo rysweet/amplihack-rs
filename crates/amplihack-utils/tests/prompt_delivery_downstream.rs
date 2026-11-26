@@ -8,7 +8,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use amplihack_utils::prompt_delivery::{
-    DeliveryCaps, DeliveryMode, PromptDelivery, deliver, sanitize_prompt_nul, select_mode,
+    DeliveryCaps, DeliveryMode, PromptDelivery, deliver, sanitize_prompt_nul, try_select_mode,
 };
 
 fn rabbithole_prompt() -> String {
@@ -45,24 +45,46 @@ fn argv(command: &Command) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn argv_delivery_preserves_nested_shell_sensitive_prompt_as_one_argument() {
-    let prompt = rabbithole_prompt();
+/// Issue #2030 R1.2: an explicit `Argv` request is treated as `Auto`, so on
+/// a binary with argv and a `--prompt-file` flag the prompt goes to the
+/// tempfile. Returns the handle, the file bytes and the argv.
+fn deliver_argv_request(
+    prompt: &str,
+) -> (
+    amplihack_utils::prompt_delivery::DeliveryHandle,
+    Vec<u8>,
+    Vec<String>,
+) {
     let mut command = Command::new("/bin/true");
     let handle = deliver(
         &mut command,
-        &prompt,
+        prompt,
         PromptDelivery::Argv,
-        &DeliveryCaps::argv_only(),
+        &DeliveryCaps::argv_and_tempfile("--prompt-file"),
     )
-    .expect("argv delivery should accept shell-sensitive prompt text as data");
+    .expect("an Argv request degrades to the tempfile, never argv");
+    assert_eq!(handle.mode(), DeliveryMode::Tempfile);
+    let bytes = std::fs::read(handle.tempfile_path().expect("tempfile path"))
+        .expect("read live prompt tempfile");
+    let args = argv(&command);
+    (handle, bytes, args)
+}
 
-    assert_eq!(handle.mode(), DeliveryMode::Argv);
+#[test]
+fn argv_request_keeps_nested_shell_sensitive_prompt_out_of_argv() {
+    let prompt = rabbithole_prompt();
+    let (_handle, bytes, args) = deliver_argv_request(&prompt);
     assert_eq!(
-        argv(&command).iter().filter(|arg| *arg == &prompt).count(),
-        1,
-        "the full nested prompt must be passed exactly once as one argv element"
+        bytes,
+        prompt.as_bytes(),
+        "the prompt file holds the exact bytes"
     );
+    assert!(
+        args.iter().all(|a| !a.contains("RabbitHole workflow")),
+        "no part of the prompt may reach argv: {args:?}"
+    );
+    assert_eq!(args.len(), 2, "only `--prompt-file <path>`: {args:?}");
+    assert_eq!(args[0], "--prompt-file");
 }
 
 #[test]
@@ -161,68 +183,41 @@ fn stdin_delivery_does_not_abort_on_nul_and_payload_is_spawn_safe() {
 
 #[test]
 fn auto_promotes_long_downstream_prompt_to_tempfile_when_supported() {
-    let prompt = long_simard_prompt();
+    // The selector takes no prompt size: a long prompt gets the same answer.
     let caps = DeliveryCaps::argv_and_tempfile("--prompt-file");
 
     assert_eq!(
-        select_mode(PromptDelivery::Auto, prompt.len(), &caps),
+        try_select_mode(PromptDelivery::Auto, &caps).unwrap(),
         DeliveryMode::Tempfile,
         "long downstream prompts must leave argv when a verified tempfile contract exists"
     );
 }
 
 #[test]
-fn argv_delivery_strips_nul_bytes_and_continues() {
+fn argv_request_strips_nul_bytes_and_continues() {
     // Issue #898: a single NUL byte in agent/bash step output must NOT abort the
-    // whole run. `deliver` must strip NUL bytes and continue (strip-and-continue),
-    // never returning an error that kills downstream workflow steps.
+    // whole run. `deliver` strips NUL bytes and continues. Since #2030 the
+    // prompt goes to a file even when argv is requested.
     let prompt = "RabbitHole prompt with embedded NUL: \0 must be stripped, not fatal";
     let expected = "RabbitHole prompt with embedded NUL:  must be stripped, not fatal";
-    let mut command = Command::new("/bin/true");
-
-    let handle = deliver(
-        &mut command,
-        prompt,
-        PromptDelivery::Argv,
-        &DeliveryCaps::argv_only(),
-    )
-    .expect("argv delivery must strip NUL bytes and succeed, not abort the run");
-
-    assert_eq!(handle.mode(), DeliveryMode::Argv);
-
-    let args = argv(&command);
-    assert_eq!(
-        args.len(),
-        1,
-        "the sanitized prompt must be passed as exactly one argv element"
-    );
+    let (_handle, bytes, args) = deliver_argv_request(prompt);
     assert!(
-        !args[0].as_bytes().contains(&0),
-        "the delivered argv element must be free of NUL bytes (spawn-safe)"
+        !bytes.contains(&0),
+        "the delivered file must be free of NUL bytes"
     );
     assert_eq!(
-        args[0], expected,
+        bytes,
+        expected.as_bytes(),
         "only NUL bytes may be removed; every other byte must be preserved in order"
     );
+    assert!(args.iter().all(|a| !a.contains("RabbitHole")), "{args:?}");
 }
 
 #[test]
-fn argv_delivery_strips_multiple_nul_bytes_preserving_order() {
-    // Multiple embedded NULs collapse out while all other bytes stay in order.
-    let prompt = "a\0b\0c";
-    let mut command = Command::new("/bin/true");
-
-    let handle = deliver(
-        &mut command,
-        prompt,
-        PromptDelivery::Argv,
-        &DeliveryCaps::argv_only(),
-    )
-    .expect("argv delivery must strip multiple NUL bytes and succeed");
-
-    assert_eq!(handle.mode(), DeliveryMode::Argv);
-    let args = argv(&command);
-    assert_eq!(args, vec!["abc".to_string()]);
+fn argv_request_strips_multiple_nul_bytes_preserving_order() {
+    let (_handle, bytes, args) = deliver_argv_request("a\0b\0c");
+    assert_eq!(bytes, b"abc");
+    assert!(args.iter().all(|a| a != "abc"), "{args:?}");
 }
 
 #[test]
@@ -256,20 +251,10 @@ fn tempfile_delivery_strips_nul_bytes_from_written_prompt() {
 fn deliver_is_lossless_for_prompts_without_nul() {
     // Prompts with no NUL must be delivered byte-for-byte unchanged.
     let prompt = rabbithole_prompt();
-    let mut command = Command::new("/bin/true");
-
-    let handle = deliver(
-        &mut command,
-        &prompt,
-        PromptDelivery::Argv,
-        &DeliveryCaps::argv_only(),
-    )
-    .expect("argv delivery of a NUL-free prompt must succeed unchanged");
-
-    assert_eq!(handle.mode(), DeliveryMode::Argv);
+    let (_handle, bytes, _args) = deliver_argv_request(&prompt);
     assert_eq!(
-        argv(&command),
-        vec![prompt],
+        bytes,
+        prompt.as_bytes(),
         "a NUL-free prompt must be delivered byte-for-byte unchanged"
     );
 }

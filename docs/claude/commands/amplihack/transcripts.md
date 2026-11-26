@@ -1,5 +1,6 @@
 ---
 name: amplihack:transcripts
+disable-model-invocation: true
 version: 1.0.0
 description: Manage and analyze conversation transcripts
 triggers:

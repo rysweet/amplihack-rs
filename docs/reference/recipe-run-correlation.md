@@ -37,16 +37,34 @@ run.
 ## stderr log pointer lines
 
 `amplihack recipe run` emits exactly two wrapper-owned pointer lines to
-`stderr`:
+`stderr` per attempt:
 
-1. An `early` pointer before spawning `recipe-runner-rs`.
+1. An `early` pointer as the attempt starts. On the ordinary path
+   `recipe-runner-rs` has been probed and spawned by then; the line is
+   written once `spawn()` has returned a child, so nothing the runner prints
+   can precede it (its `stderr` is piped and relayed afterwards). On the
+   paths where the runner is not spawned at all the pointer is still
+   emitted for a failed capability check, a failed spawn, and an orphan
+   stop -- a parent that exited, which leaves `orphaned.json` beside the
+   final record.
 2. A `final` pointer when the wrapper reaches a terminal status.
+
+An attempt abandoned on `SIGINT`, `SIGTERM` or `SIGHUP` before the runner is
+spawned is the one case that emits no pointer pair at all: the wrapper
+returns the stop signal without building a correlation. A reader must
+therefore treat a missing pair as possible, not as evidence that no attempt
+was started.
+
+A run that retries after a transient failure starts a new correlation ID for
+each attempt, so it emits one such pair per attempt. The `run_dir` is the
+same in all of them: the folder is what the attempts share, and its
+`run.json` lists every attempt's correlation ID under `attempts[]`.
 
 Each line starts with the stable prefix `amplihack.recipe.log_pointer ` followed
 by one JSON object:
 
 ```text
-amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","task_description":"Fix flaky retry tests","issue_number":"753","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T03:55:11Z"}
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","run_dir":"/home/user/.amplihack/work/runs/5b60657b-76ef-4f49-8a22-8b89ed75f43e","branch":"main","task_description":"Fix flaky retry tests","issue_number":"753","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T03:55:11Z"}
 ```
 
 The final pointer uses the same `run_id`:
@@ -71,6 +89,7 @@ additive; consumers must ignore fields they do not understand.
 | `recipe_name` | string | early, final | yes | Resolved recipe identity used to launch the runner: the YAML `name` when available, otherwise the CLI recipe argument. |
 | `cwd` | string | early, final | yes | Effective execution directory after resolving `--working-dir`; this is not necessarily the parent process directory. |
 | `worktree` | string | early, final | no | Git worktree root discovered from `cwd`; outside Git, this equals `cwd`. |
+| `run_dir` | string | early, final | no | Absolute path of the run's folder (`<work root>/runs/<id>`). Written where the run has a workspace; omitted for capability probes and dry runs, and omitted rather than truncated if it exceeds 4096 bytes. `recipe guide` reads it to find the run. Additive: `schema_version` stays `1`. |
 | `branch` | string | early, final | no | Current Git branch when available. Omitted outside Git or detached HEAD. |
 | `task_description` | string | early, final | no | Explicit `task_description` context value, capped for log safety. |
 | `issue_number` | string | early, final | no | Explicit issue number context value when supplied. |
@@ -86,6 +105,9 @@ additive; consumers must ignore fields they do not understand.
 | `child_pid` | integer | final | no | Child `recipe-runner-rs` process ID when the child spawned. |
 | `exit_code` | integer | final | no | Child exit code when available. |
 | `status` | string | final | yes | Lowercase terminal wrapper status. See [Final statuses](#final-statuses). |
+| `parent_pid` | integer | final | no | PID of the parent `amplihack recipe run` that exited. Present only when `status` is `orphaned`. |
+| `tree_id` | string | final | no | Value of `AMPLIHACK_TREE_ID` when set. Present only when `status` is `orphaned`. |
+| `reason` | string | final | no | Fixed text `parent recipe run exited`. Present only when `status` is `orphaned`. |
 | `log_paths` | object | final | no | Known child log locations, such as `jsonl`. Omitted when no path is known. |
 | `timestamp` | string | early, final | yes | RFC 3339 timestamp for the pointer event. |
 
@@ -97,6 +119,22 @@ additive; consumers must ignore fields they do not understand.
 | `failure` | The child spawned and exited nonzero. |
 | `spawn_failure` | The wrapper could not spawn `recipe-runner-rs`. |
 | `parse_failure` | The child exited but stdout could not be parsed as the expected recipe result. |
+| `orphaned` | A nested run stopped because its parent `amplihack recipe run` exited. The runner's process group was torn down and the wrapper exited `75`. See [Nested runs and orphan stops](./recipe-cli-reference.md#nested-runs-and-orphan-stops). |
+
+A stop by signal is recorded as `failure`. The status is `orphaned` only when
+the orphan stop was the first stop reason; a signal received before it keeps
+`failure` and exit `128+n`.
+
+An orphaned final pointer has no `exit_code` field. That field holds the
+runner child's own exit code, and the child was torn down, so it has none. The
+`75` is the exit code of the `amplihack recipe run` wrapper process, not a
+pointer field.
+
+An orphaned final pointer looks like this:
+
+```text
+amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"0c1f8e2a-6b7d-4a52-9e0f-3d4c5b6a7e81","recipe_name":"autodrive-crusty-round","status":"orphaned","cwd":"/home/user/src/myapp/worktrees/feat/retry-tests","child_pid":41907,"parent_pid":41822,"tree_id":"t-41790","reason":"parent recipe run exited","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T04:25:02Z"}
+```
 
 Pointer statuses are lowercase wrapper statuses. Top-level result statuses keep
 the existing result-schema casing, commonly uppercase values such as `SUCCESS`,

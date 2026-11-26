@@ -64,7 +64,10 @@ fn a_token_refresh_in_home_after_the_exchange_still_rolls_forward() {
     let e = env();
     e.rs.save_journal(&e.journal(Phase::S1)).unwrap();
     e.exchanged();
-    let refreshed = login(&e.live());
+    let bytes = fs::read(e.live()).unwrap();
+    fs::remove_file(e.live()).unwrap();
+    super::tests_swap::private(&e.live(), std::str::from_utf8(&bytes).unwrap());
+    let refreshed = ino_at(&e.live()).unwrap();
     assert!(matches!(
         e.recover().unwrap(),
         RecoverOutcome::RolledForward { .. }

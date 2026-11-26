@@ -11,13 +11,17 @@
 //! - Usable now: session below the threshold and week below 100%.
 //! - Next session reset: session-limited logins with weekly capacity and a
 //!   known reset, grouped within 60 s of the earliest.
-//! - Rate: the oldest entry no more than 6 h old, at least 4.5 h old; resets
-//!   found by `w_reset` passing or by a fall in `w` add the earlier `w` back.
+//! - Rate: the oldest entry no more than 6 h old, at least 4.5 h old; each
+//!   login's net rise in `w` within each week (issue #1970). A reset is
+//!   `w_reset` passing or a fall of more than 10 points; a smaller fall is a
+//!   stale reading and adds nothing. Never negative; weighted.
 //! - Rounding half away from zero, only when printed; non-finite is `null`.
 
-use super::capacity_summary::{Inputs, Summary, compute, rounded};
+use super::capacity_summary::{
+    Inputs, RESET_FALL, RateParts, Summary, compute, rate_parts, rounded,
+};
 use super::capacity_weight::Weights;
-use super::usage_history::{Entry, Point, Snapshot, Writer};
+use super::usage_history::{Entry, Point, Snapshot, Writer, parse_line};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -34,6 +38,7 @@ fn pt(s: Option<u8>, w: u8) -> Point {
         w_reset: None,
         s_reset: None,
         no_session_limit: false,
+        passive: false,
     }
 }
 
@@ -44,6 +49,7 @@ fn pt_r(s: Option<u8>, w: u8, w_reset: Option<i64>, s_reset: Option<i64>) -> Poi
         w_reset,
         s_reset,
         no_session_limit: false,
+        passive: false,
     }
 }
 
@@ -970,4 +976,524 @@ fn the_status_line_adds_the_weighted_figure_after_the_percentage() {
         ),
         "{l}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1970: the rate is each login's net rise within each week
+// ---------------------------------------------------------------------------
+//
+// A stale status-line figure that reappears between rising readings made
+// the week look as if it fell and rose again. Every fall was counted as a
+// reset (issue #1841), so each flicker added the whole stale figure back.
+// The rate now splits each login's readings into weeks at each real reset
+// (`w_reset` passed, or a fall of more than `RESET_FALL` points) and counts
+// the highest figure of each week minus the figure the week started at.
+
+/// 2026-11-05T00:00:00Z, the day of the issue's flicker.
+const N5: i64 = 1_793_836_800;
+
+/// `N5` plus `h:m:s`.
+fn n5(h: i64, m: i64, s: i64) -> i64 {
+    N5 + h * HOUR + m * MIN + s
+}
+
+#[test]
+fn n5_is_the_fifth_of_november_2026() {
+    let t = chrono::DateTime::from_timestamp(N5, 0).unwrap();
+    assert_eq!(t.to_rfc3339(), "2026-11-05T00:00:00+00:00");
+}
+
+fn wr(w: u8, w_reset: i64) -> Point {
+    pt_r(Some(0), w, Some(w_reset), None)
+}
+
+fn passive_pt(w: u8, w_reset: Option<i64>) -> Point {
+    Point {
+        passive: true,
+        ..pt_r(Some(0), w, w_reset, None)
+    }
+}
+
+/// The parts of the rate for `current` at `current.at`, with weights 1.0.
+fn parts(current: &Snapshot, history: &[Entry]) -> Option<RateParts> {
+    parts_with(current, history, &Weights::default())
+}
+
+fn parts_with(current: &Snapshot, history: &[Entry], weights: &Weights) -> Option<RateParts> {
+    rate_parts(&Inputs {
+        current,
+        weights,
+        threshold: 95,
+        history,
+        now: current.at,
+    })
+}
+
+/// Points `name` used over the window.
+fn used(p: &RateParts, name: &str) -> i64 {
+    p.used
+        .get(name)
+        .unwrap_or_else(|| panic!("{name} is not in the rate: {:?}", p.used))
+        .0
+}
+
+/// The rate before rounding: Σ used · weight / 100 / hours.
+fn raw_rate(p: &RateParts) -> f64 {
+    let total: f64 = p.used.values().map(|(u, w)| *u as f64 * w).sum();
+    total / 100.0 / (p.span as f64 / 3600.0)
+}
+
+// The 5 November history, replayed. `usage-history.jsonl` no longer holds
+// that day, so the fixture is rebuilt from the rotator log's cycle lines;
+// `testdata/README.md` says how, and what in it is inferred.
+
+/// `testdata/issue_1970_5nov.jsonl`: 10:52Z to 19:00Z on 5 Nov 2026.
+const NOV5: &str = include_str!("testdata/issue_1970_5nov.jsonl");
+/// The two logins the issue names keep their names in the fixture.
+const REC: &str = "recovery-ryansweet";
+const RMP: &str = "ryan-mistt-personal";
+/// ryanc2-mistt-org in the rotator log.
+const L19: &str = "login-19";
+
+/// Every fixture line, oldest first.
+fn nov5() -> Vec<Entry> {
+    NOV5.lines()
+        .map(|l| parse_line(l, N5 + DAY).unwrap_or_else(|| panic!("unreadable: {l}")))
+        .collect()
+}
+
+/// The fixture line at `at` as the current snapshot, and every line before
+/// it as the history.
+fn nov5_at(at: i64) -> (Snapshot, Vec<Entry>) {
+    let all = nov5();
+    let e = all
+        .iter()
+        .find(|e| e.at == at)
+        .unwrap_or_else(|| panic!("no fixture line at {at}"))
+        .clone();
+    let earlier = all.into_iter().filter(|x| x.at < at).collect();
+    let now = Snapshot {
+        at: e.at,
+        points: e.profiles,
+        unknown: e.unknown,
+    };
+    (now, earlier)
+}
+
+/// The rate rule of release 1.2.97 (`rate_of`, `can_start`,
+/// `reset_between` and `used_between` in `capacity_summary.rs` at tag
+/// v1.2.97), copied here so the replay shows the figure that release
+/// printed. Every fall in `w` was a reset, and after a reset the whole
+/// later figure was counted as use. Gives the start and each login's
+/// points; weights are 1.0 in the fixture.
+fn rate_1_2_97(current: &Snapshot, history: &[Entry]) -> Option<(i64, BTreeMap<String, i64>)> {
+    let reset_between =
+        |a: &Point, b: &Point, b_at: i64| a.w_reset.is_some_and(|r| r <= b_at) || b.w < a.w;
+    let used_between = |a: &Point, b: &Point, b_at: i64| {
+        if reset_between(a, b, b_at) {
+            i64::from(b.w)
+        } else {
+            i64::from(b.w) - i64::from(a.w)
+        }
+    };
+    let can_start = |e: &Entry| match e.by {
+        Some(Writer::Rotate) => current.points.keys().all(|n| e.profiles.contains_key(n)),
+        Some(Writer::Usage) | None => true,
+    };
+    let from = current.at - 6 * HOUR;
+    let mut window: Vec<&Entry> = history
+        .iter()
+        .filter(|e| e.at >= from && e.at < current.at)
+        .collect();
+    window.sort_by_key(|e| e.at);
+    let first = window.iter().position(|e| can_start(e))?;
+    let (start, rest) = window[first..].split_first()?;
+    let mut used = BTreeMap::new();
+    for (name, now_point) in &current.points {
+        let Some(mut prev) = start.profiles.get(name) else {
+            continue;
+        };
+        let mut u = 0i64;
+        for e in rest {
+            if let Some(p) = e.profiles.get(name) {
+                u += used_between(prev, p, e.at);
+                prev = p;
+            }
+        }
+        u += used_between(prev, now_point, current.at);
+        used.insert(name.clone(), u);
+    }
+    Some((start.at, used))
+}
+
+/// The `profile usage` reading the issue reports, at 16:52Z. The log does
+/// not give the second; any time from 16:52:11Z to 16:52:43Z prints the
+/// same two figures.
+fn nov5_report() -> (Snapshot, Vec<Entry>) {
+    nov5_at(n5(16, 52, 30))
+}
+
+/// Logins with a non-zero figure in `used`.
+fn nonzero(used: impl IntoIterator<Item = (String, i64)>) -> Vec<(String, i64)> {
+    used.into_iter().filter(|(_, u)| *u != 0).collect()
+}
+
+#[test]
+fn the_5_nov_fixture_is_the_day_the_issue_describes() {
+    let all = nov5();
+    assert_eq!(all.len(), 303);
+    assert_eq!(all.first().unwrap().at, n5(10, 52, 12));
+    assert_eq!(all.last().unwrap().at, n5(18, 59, 8));
+    // recovery-ryansweet's week was full and reset at 12:00Z, as the
+    // deputy found: 100 at 11:59:41Z, 0 at 12:00:57Z.
+    let rec: Vec<(i64, u8)> = all
+        .iter()
+        .filter_map(|e| e.profiles.get(REC).map(|p| (e.at, p.w)))
+        .collect();
+    let fall = rec
+        .windows(2)
+        .find(|w| w[0].1 == 100 && w[1].1 == 0)
+        .expect("the 100 -> 0 reset");
+    assert_eq!(fall[1].0, n5(12, 0, 57));
+    // It read 34% from 15:45Z to 17:17Z, as Crusty's 16:48Z reading did,
+    // and 50% from 18:48Z.
+    let at = |t: i64| rec.iter().rev().find(|(a, _)| *a <= t).unwrap().1;
+    assert_eq!(at(n5(16, 48, 51)), 34);
+    assert_eq!(at(n5(18, 54, 55)), 50);
+}
+
+#[test]
+fn the_5_nov_history_gives_0_483_and_7_5_h_under_the_1_2_97_rule() {
+    let (now, h) = nov5_report();
+    // The two logins `profile usage` could not read are left out: the
+    // headroom of the other 20 is the issue's 360 points.
+    assert_eq!(now.points.len(), 20);
+    assert_eq!(now.unknown, ["login-01", "login-06"]);
+
+    let (start, old) = rate_1_2_97(&now, &h).expect("a start");
+    // Not the 13:23:37Z `profile usage` line the deputy took: that is only
+    // 3.48 h old, under the 4.5 h minimum, and 1.2.97 would have printed
+    // no rate from it. The start is the oldest line in the window holding
+    // every login read now, the rotator cycle at 10:53:20Z.
+    assert_eq!(start, n5(10, 53, 20));
+    let span = now.at - start;
+    assert_eq!(span, 5 * HOUR + 59 * MIN + 10);
+
+    // Each login's contribution. Most of it comes from falls counted as
+    // resets (issue #1841): ryan-mistt-personal's five falls from 27-29 to
+    // 26 between 11:30Z and 11:57Z add 26 points each, and the seven falls
+    // of 1 to 3 points in recovery-ryansweet's new week add their whole
+    // lower figures, 67 in all.
+    assert_eq!(
+        nonzero(old),
+        [
+            ("login-19".to_string(), 22),
+            (REC.to_string(), 111),
+            (RMP.to_string(), 156),
+        ]
+    );
+    let rate = 289.0 / 100.0 / (span as f64 / 3600.0);
+    assert_eq!(rounded(rate, 3), Some(0.483));
+
+    // The runway the issue saw: 3.6 weighted login-weeks over that rate.
+    let v = js(&summary(&now, &Weights::default(), 95, &h));
+    assert_eq!(v["weighted_headroom_login_weeks"], json!(3.6));
+    assert_eq!(rounded(3.6 / rate, 1), Some(7.5));
+}
+
+#[test]
+fn the_5_nov_history_gives_0_099_under_the_net_rise_rule() {
+    let (now, h) = nov5_report();
+    let p = parts(&now, &h).expect("a start");
+    assert_eq!(p.start, n5(10, 53, 20), "the same start as 1.2.97");
+    assert_eq!(p.span, 5 * HOUR + 59 * MIN + 10);
+    let used: Vec<(String, i64)> = p.used.iter().map(|(n, (u, _))| (n.clone(), *u)).collect();
+    assert_eq!(
+        nonzero(used),
+        [
+            // 0 -> 9, through a fall from 5 to 1 at 12:12:30Z.
+            ("login-19".to_string(), 9),
+            // 100 at the start, its week full: nothing. Then a reset to 0
+            // and a new week up to 34.
+            (REC.to_string(), 34),
+            // 24 -> 40.
+            (RMP.to_string(), 16),
+        ]
+    );
+    assert!(p.used.values().all(|(_, w)| *w == 1.0));
+
+    let v = js(&summary(&now, &Weights::default(), 95, &h));
+    assert_eq!(v["rate_login_weeks_per_hour"], json!(0.099));
+    assert_eq!(v["runway_hours"], json!(36.5));
+}
+
+/// The rotator line at 18:54:55Z, and the lines from the 16:52:30Z
+/// `profile usage` line to it: the span of the issue comment's flicker.
+fn nov5_flicker() -> (Snapshot, Vec<Entry>) {
+    let (now, h) = nov5_at(n5(18, 54, 55));
+    let from_report = h.into_iter().filter(|e| e.at >= n5(16, 52, 30)).collect();
+    (now, from_report)
+}
+
+#[test]
+fn the_5_nov_flicker_counts_its_net_rise_of_16_points() {
+    let (now, h) = nov5_flicker();
+    let rec: Vec<u8> = h
+        .iter()
+        .filter_map(|e| e.profiles.get(REC).map(|p| p.w))
+        .chain([now.points[REC].w])
+        .collect();
+    // The cached 38% (and one 46%) reappear between rising readings, as
+    // the comment on the issue shows. Every fall is within the threshold.
+    let falls: Vec<(u8, u8)> = rec
+        .windows(2)
+        .filter(|w| w[1] < w[0])
+        .map(|w| (w[0], w[1]))
+        .collect();
+    assert_eq!(
+        falls,
+        [(39, 38), (40, 38), (41, 38), (42, 38), (43, 38), (48, 46)]
+    );
+    assert!(falls.iter().all(|(a, b)| a - b <= RESET_FALL));
+
+    let p = parts(&now, &h).expect("the parts are given below 4.5 h too");
+    assert_eq!(p.start, n5(16, 52, 30), "the profile usage line");
+    assert_eq!(used(&p, REC), 50 - 34, "whatever the flicker");
+
+    // The 1.2.97 rule counted each fall as a reset: every rise (the net 16
+    // plus the 17 points the falls took back) and each fall's whole lower
+    // figure.
+    let (_, old) = rate_1_2_97(&now, &h).unwrap();
+    assert_eq!(old[REC], 16 + 17 + 5 * 38 + 46);
+}
+
+#[test]
+fn a_flicker_of_stale_readings_adds_the_same_as_none() {
+    // The same lines with every recovery-ryansweet reading below its
+    // running highest taken out: the use must not change.
+    let (now, h) = nov5_flicker();
+    let mut highest = 0;
+    let mut removed = 0;
+    let clean: Vec<Entry> = h
+        .iter()
+        .cloned()
+        .map(|mut e| {
+            if let Some(w) = e.profiles.get(REC).map(|p| p.w) {
+                if w < highest {
+                    e.profiles.remove(REC);
+                    removed += 1;
+                }
+                highest = highest.max(w);
+            }
+            e
+        })
+        .collect();
+    assert_eq!(removed, 6);
+    assert_eq!(
+        used(&parts(&now, &h).unwrap(), REC),
+        used(&parts(&now, &clean).unwrap(), REC)
+    );
+}
+
+#[test]
+fn rate_parts_carry_each_logins_weight() {
+    let (now, h) = nov5_report();
+    let w = Weights::from_pairs(&[(RMP, 2.0), (L19, 0.5)]);
+    let p = parts_with(&now, &h, &w).unwrap();
+    assert_eq!(p.used[RMP], (16, 2.0));
+    assert_eq!(p.used[REC], (34, 1.0));
+    assert_eq!(p.used[L19], (9, 0.5));
+    // (16 · 2 + 34 + 9 · 0.5) / 100 over 5.986 h.
+    assert_eq!(rounded(raw_rate(&p), 4), Some(0.1178));
+}
+
+#[test]
+fn rate_parts_are_none_without_a_start() {
+    let now = snap(T, &[("a", pt(Some(0), 50))], &[]);
+    assert!(parts(&now, &[]).is_none());
+    let too_old = [entry(T - 7 * HOUR, &[("a", pt(Some(0), 10))])];
+    assert!(parts(&now, &too_old).is_none());
+}
+
+#[test]
+fn the_reset_threshold_is_ten_points() {
+    // Pinned: the reference says "more than 10 points".
+    assert_eq!(RESET_FALL, 10);
+}
+
+#[test]
+fn a_fall_of_exactly_ten_is_not_a_reset() {
+    // 50, then a stale 40, then 55: one week, 5 points used.
+    let cur = snap(T, &[("a", pt(Some(0), 55))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", pt(Some(0), 50))]),
+        entry(T - 3 * HOUR, &[("a", pt(Some(0), 40))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 5);
+    // 5 points over 6 h.
+    assert_eq!(rate_of(&cur, &h), json!(0.008));
+}
+
+#[test]
+fn a_fall_of_eleven_is_a_reset() {
+    // 50, 60, then 49: a new week; 10 points before it and 55 since.
+    let cur = snap(T, &[("a", pt(Some(0), 55))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", pt(Some(0), 50))]),
+        entry(T - 4 * HOUR, &[("a", pt(Some(0), 60))]),
+        entry(T - 3 * HOUR, &[("a", pt(Some(0), 49))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 10 + 55);
+}
+
+#[test]
+fn w_reset_passing_without_a_fall_is_a_reset() {
+    // The week reset at T-4h; 3 -> 5 before it and 7 after it, so no fall
+    // shows the reset. 2 points before and 7 since.
+    let old = T - 4 * HOUR;
+    let new = T + 6 * DAY;
+    let cur = snap(T, &[("a", wr(7, new))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", wr(3, old))]),
+        entry(T - 5 * HOUR, &[("a", wr(5, old))]),
+        entry(T - 3 * HOUR, &[("a", wr(7, new))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 2 + 7);
+}
+
+#[test]
+fn a_large_fall_with_w_reset_in_future_is_a_reset() {
+    // The week can reset early: 90, 100, then 0 and 12 while `w_reset` is
+    // still in the future. (100 - 90) + 12 = 22 points.
+    let r = T + 3 * DAY;
+    let cur = snap(T, &[("a", wr(12, r))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", wr(90, r))]),
+        entry(T - 4 * HOUR, &[("a", wr(100, r))]),
+        entry(T - 3 * HOUR, &[("a", wr(0, r))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 22);
+}
+
+#[test]
+fn a_reset_then_stale_dips_add_nothing() {
+    // 90 -> 100, reset at T-4h30m, then 0, 8, a stale 5, 12, a stale 10,
+    // and 12 now: (100 - 90) + 12 = 22. Counting each dip as a reset gave
+    // 42.
+    let old = T - 4 * HOUR - 30 * MIN;
+    let new = T + 6 * DAY + 19 * HOUR;
+    let cur = snap(T, &[("a", wr(12, new))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", wr(90, old))]),
+        entry(T - 5 * HOUR, &[("a", wr(100, old))]),
+        entry(T - 4 * HOUR, &[("a", wr(0, new))]),
+        entry(T - 3 * HOUR, &[("a", wr(8, new))]),
+        entry(T - 150 * MIN, &[("a", wr(5, new))]),
+        entry(T - 2 * HOUR, &[("a", wr(12, new))]),
+        entry(T - HOUR, &[("a", wr(10, new))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 22);
+    // 22 points over 6 h.
+    assert_eq!(rate_of(&cur, &h), json!(0.037));
+}
+
+#[test]
+fn a_stale_last_reading_before_a_reset_does_not_hide_the_peak() {
+    // 20, 60, a stale 55, then a real reset to 4: the week's use before the
+    // reset is its peak, 40, not 55 - 20.
+    let r = T + 2 * DAY;
+    let cur = snap(T, &[("a", wr(4, r))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", wr(20, r))]),
+        entry(T - 4 * HOUR, &[("a", wr(60, r))]),
+        entry(T - 3 * HOUR, &[("a", wr(55, r))]),
+        entry(T - 2 * HOUR, &[("a", wr(2, r))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 40 + 4);
+}
+
+#[test]
+fn a_stale_dip_just_before_now_adds_nothing() {
+    // The last reading in the window is 50, and this run's figure a stale
+    // 45: the week's peak, 50, still counts and the dip is no reset.
+    let cur = snap(T, &[("a", pt(Some(0), 45))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", pt(Some(0), 30))]),
+        entry(T - HOUR, &[("a", pt(Some(0), 50))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 20);
+}
+
+#[test]
+fn a_reading_from_an_ended_week_is_skipped() {
+    // At T-3h a reading of 95% says its week reset at T-4h: a figure from
+    // a week already over, so it is not used. 40 -> 50 is 10 points; using
+    // it gave (95 - 40) + 50 = 105.
+    let r = T + 2 * DAY;
+    let cur = snap(T, &[("a", wr(50, r))], &[]);
+    let h = [
+        entry(T - 6 * HOUR, &[("a", wr(40, r))]),
+        entry(T - 3 * HOUR, &[("a", wr(95, T - 4 * HOUR))]),
+    ];
+    assert_eq!(used(&parts(&cur, &h).unwrap(), "a"), 10);
+}
+
+#[test]
+fn a_stale_passive_current_reading_is_not_counted() {
+    // The history holds 50% for this week; this run's passive reading is a
+    // cached 38% with the same reset. A 12-point fall would be a reset and
+    // add 38; the reading is stale, so only 40 -> 50 counts.
+    let r = T + 2 * DAY;
+    let h = [
+        entry(T - 6 * HOUR, &[("a", wr(40, r))]),
+        entry(T - HOUR, &[("a", wr(50, r))]),
+    ];
+    let stale_now = snap(T, &[("a", passive_pt(38, Some(r)))], &[]);
+    assert_eq!(used(&parts(&stale_now, &h).unwrap(), "a"), 10);
+
+    // A passive reading at or above the recorded one is counted.
+    let fresh_now = snap(T, &[("a", passive_pt(52, Some(r)))], &[]);
+    assert_eq!(used(&parts(&fresh_now, &h).unwrap(), "a"), 12);
+
+    // A direct reading of 38 is believed: a fall of 12 is a reset.
+    let direct_now = snap(T, &[("a", wr(38, r))], &[]);
+    assert_eq!(used(&parts(&direct_now, &h).unwrap(), "a"), 10 + 38);
+}
+
+#[test]
+fn the_rate_is_never_negative() {
+    // 50 at the start and a stale 45 now: nothing used, never -5.
+    let cur = snap(T, &[("a", pt(Some(0), 45)), ("b", pt(Some(0), 20))], &[]);
+    let h = [entry(
+        T - 6 * HOUR,
+        &[("a", pt(Some(0), 50)), ("b", pt(Some(0), 20))],
+    )];
+    let p = parts(&cur, &h).unwrap();
+    assert!(p.used.values().all(|(u, _)| *u >= 0), "{:?}", p.used);
+    assert_eq!(used(&p, "a"), 0);
+    let s = summary(&cur, &Weights::default(), 95, &h);
+    assert_eq!(js(&s)["rate_login_weeks_per_hour"], json!(0.0));
+    assert_eq!(js(&s)["runway_hours"], Value::Null);
+}
+
+#[test]
+fn the_existing_reset_figures_are_unchanged() {
+    // The three #1841 cases keep their figures under the new rule: a reset
+    // by `w_reset` passing (50 points), a fall of 50 (30 points) and a
+    // reset between the last entry and now (15 points), each over 6 h.
+    let a = snap(T, &[("a", wr(50, T + 6 * DAY))], &[]);
+    let ha = [
+        entry(T - 6 * HOUR, &[("a", wr(20, T - 5 * HOUR))]),
+        entry(T - 3 * HOUR, &[("a", wr(40, T + 6 * DAY))]),
+    ];
+    assert_eq!(used(&parts(&a, &ha).unwrap(), "a"), 50);
+    let b = snap(T, &[("a", pt(Some(0), 30))], &[]);
+    let hb = [
+        entry(T - 6 * HOUR, &[("a", pt(Some(0), 60))]),
+        entry(T - 3 * HOUR, &[("a", pt(Some(0), 10))]),
+    ];
+    assert_eq!(used(&parts(&b, &hb).unwrap(), "a"), 30);
+    let c = snap(T, &[("a", pt(Some(0), 15))], &[]);
+    let hc = [entry(T - 6 * HOUR, &[("a", wr(90, T - HOUR))])];
+    assert_eq!(used(&parts(&c, &hc).unwrap(), "a"), 15);
 }

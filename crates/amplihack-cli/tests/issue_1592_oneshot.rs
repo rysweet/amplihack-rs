@@ -5,6 +5,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_rotate::*;
 use std::collections::BTreeMap;
 use std::fs;
@@ -99,6 +100,31 @@ fn a_threshold_swap_moves_both_logins_and_only_the_account() {
     for l in &ls {
         assert!(log.contains(l.as_str()), "stdout line not in the log: {l}");
     }
+}
+
+/// Issue #2935: every other rotation test asks the binary for the stand-in
+/// exchange, so that it runs the same on every system. This one does not ask.
+/// On Linux the host's own atomic exchange (`renameat2`) must still move both
+/// logins, end to end.
+#[test]
+fn the_hosts_own_exchange_moves_both_logins() {
+    let f = Fixture::new();
+    let mut rotate = f.cmd(&["profile", "rotate"]);
+    rotate.env_remove(crate::isolated_amplihack::LOGIN_EXCHANGE_ENV);
+    let out = crate::support::wait::output_within(
+        "`amplihack profile rotate` with the host's exchange",
+        &mut rotate,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    assert_eq!(ino(&f.home_login()), Some(f.spare_ino));
+    assert_eq!(ino(&f.slot("work")), Some(f.live_ino));
+    assert_eq!(ino(&f.slot("spare")), None);
+    f.assert_each_login_once();
 }
 
 /// Issue #1698: the rotator warns about a bad probe variable, the deadline as
@@ -206,6 +232,10 @@ fn the_hold_blocks_an_upgrade_back_and_hold_zero_allows_it() {
 #[test]
 fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
     let f = Fixture::new();
+    // Issue #1962: a dry run reads the usage endpoint only and never starts `claude`.
+    f.usage_direct("work", 90, 20);
+    f.usage_direct("spare", 10, 20);
+    f.usage_direct("extra", 50, 60);
     let before = snapshot(&f);
     let out = f.ok(&["profile", "rotate", "--dry-run"]);
     assert_eq!(snapshot(&f), before, "dry run wrote or moved something");
@@ -220,6 +250,7 @@ fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
         ls.iter().any(|l| l.starts_with("would swap work->spare")),
         "{ls:?}"
     );
+    assert!(f.probe_envs().is_empty(), "the dry run started claude");
 }
 
 #[test]
@@ -273,6 +304,8 @@ fn an_unknown_login_is_adopted_as_default_original() {
         "primaryApiKey": "SECRET-KEY-HOME"
     });
     private_file(&f.home.join(".claude.json"), &home_json.to_string());
+    // Issue #1753: identity comes from the login, so it names the stranger too.
+    assert_eq!(login(&f.home_login()), f.live_ino);
     f.usage("stranger", 95, 10);
     let out = f.ok(&["profile", "rotate"]);
     assert!(
@@ -297,6 +330,12 @@ fn an_unknown_login_is_adopted_as_default_original() {
     f.assert_each_login_once();
 }
 
+/// Issue #2910: both plan logins sit above the week ceiling at 99%, which is
+/// not a window at 100% and not a recorded block, so the rotator has not seen
+/// that no login has room. The line is therefore the `no capacity known`
+/// wording, with the count that says why, and never `no profile has capacity`.
+/// What this test is about is unchanged: one line per run of the same reason,
+/// and the key clears once a cycle stays without alerting.
 #[test]
 fn a_no_capacity_alert_is_written_once_across_runs() {
     let f = Fixture::new();
@@ -306,12 +345,16 @@ fn a_no_capacity_alert_is_written_once_across_runs() {
         let out = f.ok(&["profile", "rotate"]);
         assert!(!text(&out.stdout).contains("swap "));
     }
-    let alerts = f
-        .log()
-        .lines()
-        .filter(|l| l.contains("ALERT: no profile has capacity live=work s=90% w=40%"))
-        .count();
-    assert_eq!(alerts, 1, "{}", f.log());
+    let known = |l: &&str| {
+        l.contains("ALERT: no capacity known live=work s=90% w=40%")
+            && l.contains("(candidates: 2 above week ceiling 95%)")
+    };
+    assert_eq!(f.log().lines().filter(known).count(), 1, "{}", f.log());
+    assert!(
+        !f.log().contains("no profile has capacity"),
+        "a login above the ceiling is not a login known to have no room: {}",
+        f.log()
+    );
     assert_eq!(ino(&f.home_login()), Some(f.live_ino));
 
     // Once a cycle stays without alerting the key clears and it can recur.
@@ -319,12 +362,14 @@ fn a_no_capacity_alert_is_written_once_across_runs() {
     f.ok(&["profile", "rotate"]);
     f.usage("work", 90, 40);
     f.ok(&["profile", "rotate"]);
-    let alerts = f
-        .log()
-        .lines()
-        .filter(|l| l.contains("ALERT: no profile"))
-        .count();
-    assert_eq!(alerts, 2);
+    let log = f.log();
+    assert_eq!(log.lines().filter(known).count(), 2, "{log}");
+    // Over all four runs, those two are the only no-capacity lines of
+    // either wording: the stay cycle in between wrote none.
+    let no_capacity = |l: &&str| {
+        l.contains("ALERT: no capacity known") || l.contains("ALERT: no profile has capacity")
+    };
+    assert_eq!(log.lines().filter(no_capacity).count(), 2, "{log}");
 }
 
 #[test]
@@ -451,45 +496,24 @@ fn probes_get_no_rotate_settings_and_the_live_probe_has_no_config_dir() {
 }
 
 /// A stand-in for a rotator started from an older amplihack binary: a
-/// process whose command line names `profile rotate watch` but whose
-/// executable is not this build's. Killed on drop.
-struct OldRotator(std::process::Child);
-
-impl OldRotator {
-    fn start(f: &Fixture) -> Self {
-        // A loop keeps `sh` itself running (it never exec's into `sleep`,
-        // which would replace the command line the rotator check reads), and
-        // the short sleep means no orphan outlives the kill by more than a
-        // second. No inherited pipes, so nextest sees no leak.
-        let child = std::process::Command::new("sh")
-            .args([
-                "-c",
-                "while :; do sleep 1; done",
-                "amplihack",
-                "profile",
-                "rotate",
-                "watch",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let dir = f.rotate_dir();
-        fs::create_dir_all(&dir).unwrap();
-        for d in [dir.parent().unwrap(), dir.as_path()] {
-            fs::set_permissions(d, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-        }
-        fs::write(dir.join("rotate.pid"), format!("{}\n", child.id())).unwrap();
-        Self(child)
+/// static entry in a fake process table (issue #2042) whose command line
+/// names `profile rotate watch` and which has no `exe` link to this build.
+/// No process is started; the pid lies above `pid_max`, so nothing can
+/// signal it. Every later fixture command reads the returned tree; keep it
+/// alive while they run.
+fn old_rotator(f: &Fixture) -> FakeProc {
+    let fake = FakeProc::new();
+    fake.process(FAKE_PID_BASE)
+        .cmdline(&["amplihack", "profile", "rotate", "watch"])
+        .status('S');
+    f.with_proc(&fake);
+    let dir = f.rotate_dir();
+    fs::create_dir_all(&dir).unwrap();
+    for d in [dir.parent().unwrap(), dir.as_path()] {
+        fs::set_permissions(d, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     }
-}
-
-impl Drop for OldRotator {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+    fs::write(dir.join("rotate.pid"), format!("{FAKE_PID_BASE}\n")).unwrap();
+    fake
 }
 
 /// Issue #1659: beside a rotator from another binary, a one-shot cycle says
@@ -499,7 +523,7 @@ impl Drop for OldRotator {
 fn a_one_shot_beside_an_older_rotator_keeps_the_ledger_readable_to_it() {
     let f = Fixture::new();
     f.usage("work", 20, 20);
-    let _old = OldRotator::start(&f);
+    let _old = old_rotator(&f);
     let out = f.ok(&["profile", "rotate"]);
     let stderr = text(&out.stderr);
     assert!(

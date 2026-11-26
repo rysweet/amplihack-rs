@@ -349,8 +349,12 @@ pub(crate) fn probe_recipe_runner() -> Result<()> {
         }
     }
     let path = crate::rust_toolchain::find_recipe_runner().context("recipe-runner-rs not found")?;
-    crate::runner_validation::probe(&path, "codex")
-        .context("recipe-runner-rs requires a valid capability report with codex_exec; fix the override or install the pinned runner")?;
+    crate::runner_validation::probe(&path, "codex").map_err(|e| {
+        crate::runner_validation::context_with_cause(
+            e,
+            "recipe-runner-rs requires a valid capability report with codex_exec; fix the override or install the pinned runner",
+        )
+    })?;
     Ok(())
 }
 
@@ -380,7 +384,12 @@ fn verify_managed_runner_at(url: &str, rev: &str) -> Result<()> {
         "managed runner receipt or selected executable does not establish requested revision",
     )?;
     crate::runner_validation::probe(&selected, if codex_selected() { "codex" } else { "claude" })
-        .context("managed runner capability contract invalid")?;
+        .map_err(|e| {
+        crate::runner_validation::context_with_cause(
+            e,
+            "managed runner capability contract invalid",
+        )
+    })?;
     Ok(())
 }
 
@@ -508,17 +517,7 @@ fn keep_installed(
 //
 // Framework assets are now bundled in the amplihack-rs source tree and
 // delivered via binary updates.  The upstream freshness check against
-// `rysweet/amplihack` is no longer performed.  The public functions below
-// are kept as no-ops so that callers in `commands::install` continue to
-// compile without changes during the transition period.
-
-/// No-op.  Upstream SHA tracking is no longer used (issue #254).
-pub fn record_framework_installed_sha(_sha: &str) {}
-
-/// Always returns `None`.  Upstream SHA fetching is no longer used (#254).
-pub fn current_framework_remote_sha() -> Option<String> {
-    None
-}
+// `rysweet/amplihack` is no longer performed.
 
 /// Always returns `false`.  Framework freshness is now tied to the
 /// amplihack-rs binary version, not legacy upstream commits.
@@ -657,7 +656,13 @@ mod codex_delivery_contract_tests {
         assert!(!args.contains(&"--branch"));
     }
     fn run_worker(test: &str, home: &Path, bin: &Path) {
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        // The worker runs the install and freshness writers without taking
+        // `env_lock()`, so the one-shot purge never fires in it; an inherited
+        // `CLAUDE_CONFIG_DIR` would send its settings write outside the
+        // temporary `HOME` below (issue #2922).
+        crate::test_support::claude_profile_isolation::remove_from_command(&mut command);
+        let result = command
             .args([
                 "--exact",
                 &format!("freshness::codex_delivery_contract_tests::{test}"),
@@ -716,7 +721,7 @@ mod codex_delivery_contract_tests {
         fs::create_dir(&bin).unwrap();
         executable(
             &bin.join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"durable_recovery_v1\"]}'\n",
         );
         run_worker(test, dir.path(), &bin);
     }
@@ -741,7 +746,7 @@ mod codex_delivery_contract_tests {
         cargo_fixture(dir.path(), dir.path());
         executable(
             &dir.path().join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"custom\",\"capabilities\":[\"codex_exec\"]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"custom\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n",
         );
         run_worker(test, dir.path(), dir.path());
     }
@@ -1052,8 +1057,8 @@ mod downgrade_guard_tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    const COMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n";
-    const INCOMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n";
+    const COMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n";
+    const INCOMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"durable_recovery_v1\"]}'\n";
 
     /// Runs `test` in a child process. `runner` is the stub installed in
     /// `$CARGO_HOME/bin`; `extra` adds environment variables.
@@ -1085,6 +1090,10 @@ mod downgrade_guard_tests {
         executable(&bin.join("cc"), "#!/bin/sh\nexit 0\n");
         let path = format!("{}:/usr/bin:/bin", bin.display());
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        // As in `codex_delivery_contract_tests::run_worker`: the worker takes
+        // no `env_lock()`, so it needs the five profile variables removed here
+        // (issue #2922).
+        crate::test_support::claude_profile_isolation::remove_from_command(&mut command);
         command
             .args([
                 "--exact",

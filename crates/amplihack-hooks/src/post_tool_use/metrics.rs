@@ -1,12 +1,14 @@
 //! Tool invocation metrics recording.
 //!
-//! Writes one JSONL line per tool invocation to `post_tool_use_metrics.jsonl`
-//! under the project metrics directory.
+//! Writes one JSONL line per tool invocation to
+//! `<session state dir>/metrics/post_tool_use_metrics.jsonl` under the
+//! amplihack state root (#1963), never the working directory.
 
-use amplihack_types::ProjectDirs;
+use crate::state_dir::create_private_dir_all;
 use serde::Serialize;
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::Path;
 use std::time::SystemTime;
 
 // ---------------------------------------------------------------------------
@@ -43,15 +45,17 @@ struct ToolMetric {
 // Persistence
 // ---------------------------------------------------------------------------
 
+/// Append one metric line to `<session_dir>/metrics/post_tool_use_metrics.jsonl`.
 pub(super) fn save_tool_metric(
+    session_dir: &Path,
     tool_name: &str,
     session_id: Option<&str>,
     warning: Option<&str>,
 ) -> anyhow::Result<()> {
-    let dirs = ProjectDirs::from_cwd();
-    fs::create_dir_all(&dirs.metrics)?;
+    let metrics_dir = session_dir.join("metrics");
+    create_private_dir_all(&metrics_dir)?;
 
-    let metrics_file = dirs.metrics.join("post_tool_use_metrics.jsonl");
+    let metrics_file = metrics_dir.join("post_tool_use_metrics.jsonl");
 
     let metric = ToolMetric {
         timestamp: now_iso8601(),

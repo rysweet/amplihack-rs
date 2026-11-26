@@ -79,8 +79,17 @@ fn stat_entry(path: &Path) -> String {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return "absent".to_string();
     };
+    // Issue #1954: the installed bundle is a link into a release, and the
+    // release it names is an input too, so it is part of the fingerprint.
+    let link_target;
     let kind = if metadata.file_type().is_symlink() {
-        "symlink"
+        link_target = format!(
+            "symlink->{}",
+            fs::read_link(path)
+                .map(|t| t.display().to_string())
+                .unwrap_or_default()
+        );
+        link_target.as_str()
     } else if metadata.is_dir() {
         "dir"
     } else if metadata.is_file() {

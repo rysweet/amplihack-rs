@@ -6,7 +6,6 @@ role: "Azure Kubernetes Service (AKS) expert"
 knowledge_base: .claude/data/azure_aks_expert/
 priority: high
 tags: [azure, kubernetes, aks, cloud, devops, containers]
-model: inherit
 ---
 
 # Azure Kubernetes Service (AKS) Expert Agent

@@ -12,7 +12,7 @@ use super::ledger::{
     active_blocks, prune_blocks,
 };
 use super::log::{RotateLog, Sink, msg};
-use super::observe::{Snap, live_name};
+use super::observe::Snap;
 use super::overflow::Tag;
 use super::overflow_msg::CheckNote;
 use crate::commands::profile::ProfileError;
@@ -216,6 +216,12 @@ pub fn stay_note(
 /// (issue #1700) is left out: it is never plan capacity. The API key counts
 /// as somewhere to go only when the rotator's login check passes, and a live
 /// API-key profile that fails it is no reason to say `ok` (issue #1804).
+///
+/// `t` is the time the file is written and the time spend blocks are judged
+/// expired by; it is not a capacity timestamp. The limit-resume hook never
+/// reads this file: it resumes only on the ledger's `last_cycle.measured_at`,
+/// which a `stayed` cycle records at the time the live reading was taken
+/// ([`super::capacity::recorded_at`], issue #1907).
 pub fn refresh_capacity(
     ctx: &Ctx,
     live: Option<&ProfileName>,
@@ -224,7 +230,7 @@ pub fn refresh_capacity(
     t: i64,
     tag: Option<Tag>,
     platform: Option<&ProfileName>,
-) {
+) -> Vec<String> {
     let key_usable = platform.is_none() || key_check::reachable(&ctx.home).is_ok();
     let readings: Vec<(ProfileName, Rotated)> = rotated(live, reading, others)
         .into_iter()
@@ -232,12 +238,36 @@ pub fn refresh_capacity(
         .collect();
     let on_overflow = Tag::on_overflow(tag) && (key_usable || live != platform);
     let root = ctx.store.root();
-    capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home));
+    capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home))
+}
+
+/// The reading of the login that is live *after* this cycle (issue #2857):
+/// the swap target's when the cycle swapped, else the live login's own.
+///
+/// The target is found by name, never by position: the readings arrive in
+/// whatever order they were probed in, and a swap from a full login to one
+/// with room would otherwise record the wrong one. `None` when the cycle
+/// swapped to a login none of the readings names, which is a cycle that
+/// measured nothing about the login now in place.
+pub fn live_reading<'a>(
+    swapped_to: Option<&ProfileName>,
+    live: &'a Reading,
+    others: &'a [(ProfileName, Reading)],
+) -> Option<&'a Reading> {
+    match swapped_to {
+        Some(to) => others.iter().find(|(n, _)| n == to).map(|(_, r)| r),
+        None => Some(live),
+    }
 }
 
 /// Records the cycle as ended at `t` with `outcome`, after measuring from
-/// `measured_at`, with its overflow tag, drops expired spend blocks, and
-/// saves the ledger.
+/// `measured_at`, with its overflow tag and `live_room`, drops expired
+/// spend blocks, and saves the ledger.
+///
+/// `live_room` is the rotator's own reading of whether the login live after
+/// this cycle has plan room (issue #2857), for the usage-limit wait. `None`
+/// leaves the field out of the file, which every reader takes as no room:
+/// that is what a cycle which measured nothing about that login records.
 pub fn record(
     rs: &RotateState,
     l: &mut RotateLedger,
@@ -245,12 +275,14 @@ pub fn record(
     t: i64,
     measured_at: Option<i64>,
     tag: Option<Tag>,
+    live_room: Option<bool>,
 ) -> Result<(), ProfileError> {
     l.last_cycle = Some(LastCycle {
         at: t,
         measured_at,
         outcome: outcome.into(),
         overflow: tag.map(|t| t.as_str().to_string()),
+        live_room,
     });
     prune_blocks(l, t);
     rs.save_ledger(l)
@@ -283,6 +315,7 @@ pub fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
     // never used to decide whose login `~/.claude` holds.
     if !same || l.account.is_none() || account.is_none() {
         l.account = account;
+        l.login_identity = None;
     }
     l.live_kind = snap.platform_live().then(|| LIVE_KIND_PLATFORM.to_string());
 }
@@ -305,38 +338,6 @@ pub fn log_ignored(out: &mut Sink, snap: &Snap, t: i64) {
         if !seen.contains(&line) {
             out.emit(t, &line);
             seen.push(line);
-        }
-    }
-}
-
-/// The ALERT key kind and line for an alerted cycle: plan logins of unknown
-/// state in `key_held` keeping work off the API key (issue #1804), the
-/// blocked API key with nowhere to go (issue #1700; it stays, with no swap),
-/// else no capacity, which counts the failed and exhausted readings in
-/// `others`.
-/// `reason` gives the block's reason, read only when needed.
-pub fn alert_line(
-    snap: &Snap,
-    tag: Option<Tag>,
-    live: &Reading,
-    others: &[(ProfileName, Reading)],
-    key_held: &[ProfileName],
-    reason: impl FnOnce() -> String,
-) -> (&'static str, String) {
-    if !key_held.is_empty() {
-        let name = live_name(&snap.live).map_or("-", ProfileName::as_str);
-        return ("key-held", msg::alert_key_held(name, key_held));
-    }
-    match &snap.live {
-        LiveId::Known(n) if tag == Some(Tag::On) && snap.platform_live() => {
-            ("platform-blocked", msg::alert_platform_stuck(&reason(), n))
-        }
-        id => {
-            let name = live_name(id).map_or("-", ProfileName::as_str);
-            (
-                "no-capacity",
-                msg::alert_no_capacity_for(name, live, others),
-            )
         }
     }
 }

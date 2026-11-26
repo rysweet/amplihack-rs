@@ -12,7 +12,7 @@ use crate::commands::profile::auto_switch::kit::{CREDS, exists};
 use crate::commands::profile::default_live::{self, Prototype};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// A profile directory without anything at `.credentials.json` (a dangling
 /// symlink counts as something) that passes the spawn-time check.
@@ -44,23 +44,35 @@ fn from_prototype(
     if exists(&dir.join(CREDS)) {
         return Err("profile has a login");
     }
-    match (Account::of_dir(&dir), home) {
-        (Some(a), Some(h)) if !a.same(h) => Err("account does not match"),
-        (Some(_), None) => Err("account does not match"),
-        _ => Ok(Some(name)),
+    let state = crate::commands::profile::auto_switch::kit::State::new(store.root())
+        .map_err(|_| "untrusted")?;
+    match (super::identity_claims::record(&state, &name), home) {
+        (Ok(Some(r)), Some(h)) if r.names(h) => Ok(Some(name)),
+        _ => Err("account does not match"),
     }
 }
 
 /// The one login-less profile whose account is `account`: `Known`, or
-/// `Ambiguous` for several, or `Adopt` for none.
+/// `Ambiguous` for several, or `Adopt` for none. A login-less profile whose
+/// identity record cannot be read refuses the swap: it may be the one that
+/// holds `account`, and adopting a second profile for it is not safe.
 fn match_login_less(store: &ProfileStore, account: &Account) -> Result<LiveId, ProfileError> {
-    let mut matched = store.list()?.into_iter().filter_map(|n| {
-        let name = ProfileName::parse(&n).ok()?;
-        let dir = login_less(store, &name)?;
-        Account::of_dir(&dir)
-            .is_some_and(|a| a.same(account))
-            .then_some(name)
-    });
+    let state = crate::commands::profile::auto_switch::kit::State::new(store.root())?;
+    let mut matched = Vec::new();
+    for n in store.list()? {
+        let Ok(name) = ProfileName::parse(&n) else {
+            continue;
+        };
+        if login_less(store, &name).is_none() {
+            continue;
+        }
+        let record = super::identity_claims::record(&state, &name)
+            .map_err(super::swap_authorize::refused)?;
+        if record.is_some_and(|r| r.names(account)) {
+            matched.push(name);
+        }
+    }
+    let mut matched = matched.into_iter();
     Ok(match (matched.next(), matched.next()) {
         (Some(name), None) => LiveId::Known(name),
         (Some(_), Some(_)) => LiveId::Ambiguous,
@@ -68,20 +80,17 @@ fn match_login_less(store: &ProfileStore, account: &Account) -> Result<LiveId, P
     })
 }
 
-/// The live profile with no rotate ledger naming one, and the reason the
-/// prototype ledger was ignored, if it was.
-pub fn find(
+pub(super) fn find_with(
     store: &ProfileStore,
-    home: &Path,
+    account: Option<&Account>,
 ) -> Result<(LiveId, Option<&'static str>), ProfileError> {
-    let account = Account::of_dir(home);
-    let ignored = match from_prototype(store, account.as_ref()) {
+    let ignored = match from_prototype(store, account) {
         Ok(Some(name)) => return Ok((LiveId::Known(name), None)),
         Ok(None) => None,
         Err(reason) => Some(reason),
     };
     let Some(account) = account else {
-        return Ok((LiveId::Adopt, ignored));
+        return Ok((LiveId::NoLogin, ignored));
     };
-    Ok((match_login_less(store, &account)?, ignored))
+    Ok((match_login_less(store, account)?, ignored))
 }

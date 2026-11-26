@@ -3,8 +3,12 @@
 //! skips the reserve: under the run's slot, or under a session's slot with
 //! the run's recipe marker. A start of its own under an interactive
 //! session's slot waits at it. See "Nesting" in docs/reference/capacity-governor.md.
+//!
+//! Every test here reads the governor's state through `/proc`, so the whole
+//! module is Linux-only (#2210); off Linux it would otherwise leave its
+//! imports and `DENIED` without a caller.
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use crate::issue_1811_fixture::{Fixture, describe, text};
 use std::fs;
@@ -15,7 +19,6 @@ const DENIED: i32 = 80;
 /// reserve must not keep starting ordinary `recipe run`s once the weekly
 /// remainder is below it. The run is nested (it takes no slot and skips the
 /// concurrency limit), but it is new work, so it waits at the reserve.
-#[cfg(target_os = "linux")]
 #[test]
 fn recipe_run_under_a_session_below_the_reserve_waits_at_the_reserve() {
     let f = Fixture::new();
@@ -45,7 +48,6 @@ fn recipe_run_under_a_session_below_the_reserve_waits_at_the_reserve() {
 
 /// The other side of the same rule: agent steps (and sub-recipes) under a
 /// running recipe's slot finish below the reserve.
-#[cfg(target_os = "linux")]
 #[test]
 fn recipe_run_under_a_running_recipe_below_the_reserve_finishes() {
     let f = Fixture::new();
@@ -71,7 +73,6 @@ fn recipe_run_under_a_running_recipe_below_the_reserve_finishes() {
 /// name only the session's slot as their parent, but the recipe marker the
 /// run sets on them says they are inside it, so both run and the recipe
 /// finishes.
-#[cfg(target_os = "linux")]
 #[test]
 fn agent_steps_of_a_recipe_nested_under_a_session_finish_below_the_reserve() {
     let f = Fixture::new();
@@ -113,7 +114,6 @@ fn agent_steps_of_a_recipe_nested_under_a_session_finish_below_the_reserve() {
 /// The marker is checked against the process tree: one naming a process
 /// that is not an ancestor (a leak into a tmux server, say) does not exempt
 /// a start under the session from the reserve.
-#[cfg(target_os = "linux")]
 #[test]
 fn a_leaked_recipe_marker_does_not_exempt_a_session_start_from_the_reserve() {
     let f = Fixture::new();

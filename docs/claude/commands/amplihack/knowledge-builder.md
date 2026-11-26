@@ -1,5 +1,6 @@
 ---
 name: amplihack:knowledge-builder
+disable-model-invocation: true
 version: 1.0.0
 description: Build comprehensive knowledge base using Socratic method and web search
 triggers:
