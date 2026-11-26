@@ -93,6 +93,19 @@ pub(crate) fn blarify_not_disabled() -> EnvVarGuard {
     EnvVarGuard::unset("AMPLIHACK_DISABLE_BLARIFY")
 }
 
+/// Unsets `AMPLIHACK_ROUTING_TEXT` and `AMPLIHACK_PROMPT_PREFERENCES` (issue
+/// #3247) for the guards' lifetime, so a test launched from a session with a
+/// text switch off still sees the default. The settings files are the
+/// caller's part: point `HOME` and the working directory at throwaway
+/// directories outside any git repository. The caller holds [`env_lock`].
+#[allow(dead_code)]
+pub(crate) fn text_switch_vars_unset() -> [EnvVarGuard; 2] {
+    [
+        EnvVarGuard::unset(amplihack_utils::user_config::text_switch::ROUTING.env),
+        EnvVarGuard::unset(amplihack_utils::user_config::text_switch::PROMPT_PREFERENCES.env),
+    ]
+}
+
 /// Points the hook state root (issue #1963) at a throwaway home directory.
 ///
 /// Sets `HOME` to `home` and clears every

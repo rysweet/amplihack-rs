@@ -54,7 +54,7 @@ impl Capacity {
         for p in ["alpha", "beta"] {
             private_dir(&root.join(p));
         }
-        let env = vec![
+        let mut env = vec![
             EnvVarGuard::set("HOME", &home),
             EnvVarGuard::set("AMPLIHACK_CLAUDE_PROFILE_ROOT", &root),
             EnvVarGuard::set("AMPLIHACK_CLAUDE_AUTO_SWITCH", if on { "1" } else { "0" }),
@@ -65,6 +65,7 @@ impl Capacity {
             EnvVarGuard::unset("AMPLIHACK_HOME"),
             EnvVarGuard::unset("CLAUDE_CONFIG_DIR"),
         ];
+        env.extend(crate::test_support::text_switch_vars_unset());
         let cwd = CwdGuard::set(&work).unwrap();
         Self {
             _env: env,

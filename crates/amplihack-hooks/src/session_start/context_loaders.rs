@@ -195,7 +195,9 @@ fn build_suppressed_workflow_rules() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{EnvVarGuard, env_lock};
+    use crate::test_support::{
+        CwdGuard, EnvVarGuard, env_lock, isolate_state_home, text_switch_vars_unset,
+    };
     use amplihack_memory::cli_memory::code_graph::import_blarify_json;
     use amplihack_memory::cli_memory::resolve_code_graph_db_path_for_project;
     use std::fs;
@@ -244,6 +246,9 @@ mod tests {
         let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
         let project = tempfile::tempdir().unwrap();
         let framework = tempfile::tempdir().unwrap();
+        let _switches = text_switch_vars_unset();
+        let _home = isolate_state_home(project.path());
+        let _cwd = CwdGuard::set(project.path()).unwrap();
         fs::create_dir_all(framework.path().join(".claude/workflow")).unwrap();
         fs::write(
             framework
@@ -277,6 +282,9 @@ mod tests {
         let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
         let project = tempfile::tempdir().unwrap();
         let framework = tempfile::tempdir().unwrap();
+        let _switches = text_switch_vars_unset();
+        let _home = isolate_state_home(project.path());
+        let _cwd = CwdGuard::set(project.path()).unwrap();
         fs::create_dir_all(framework.path().join(".claude/workflow")).unwrap();
         fs::write(
             framework

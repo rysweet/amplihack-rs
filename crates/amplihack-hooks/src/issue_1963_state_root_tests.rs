@@ -93,6 +93,7 @@ impl Fixture {
             EnvVarGuard::set("AMPLIHACK_DISABLE_BLARIFY", "1"),
             EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude"),
         ];
+        env.extend(crate::test_support::text_switch_vars_unset());
         let state = match root {
             Root::Home => Some(isolate_state_home(home.path())),
             Root::HomeAndAmplihackHome(value) => {
