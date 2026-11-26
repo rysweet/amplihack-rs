@@ -148,7 +148,7 @@ impl Fx {
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
             // `env_clear` dropped the probe knob `isolated` set (issue #2019).
             .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
-            .env("TMPDIR", std::env::temp_dir())
+            .env("TMPDIR", self._tmp.path())
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
@@ -270,6 +270,7 @@ fn is_root() -> bool {
 #[test]
 fn the_guard_keeps_a_non_temp_home_untouched() {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("issue-1606-guard");
+    let tmp = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir_in({
         fs::create_dir_all(&base).unwrap();
         &base
@@ -285,7 +286,7 @@ fn the_guard_keeps_a_non_temp_home_untouched() {
             .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("HOME", home.path())
-            .env("TMPDIR", std::env::temp_dir())
+            .env("TMPDIR", tmp.path())
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .stdin(Stdio::null());
         if let Some(value) = guard {
