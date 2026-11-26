@@ -67,7 +67,7 @@ project3/.claude/settings.json (< 1 KB)
          │  ├── .claude-plugin/               │
          │  │   └── plugin.json  ◄───────────┼─── Plugin Manifest
          │  │                                 │
-         │  ├── agents/           ◄───────────┼─── 41 Specialized Agents
+         │  ├── agents/           ◄───────────┼─── 38 Specialized Agents
          │  ├── commands/         ◄───────────┼─── 18 Slash Commands
          │  ├── skills/           ◄───────────┼─── 12 Claude Code Skills
          │  ├── workflow/         ◄───────────┼─── 5 Workflow Definitions

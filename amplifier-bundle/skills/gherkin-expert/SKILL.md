@@ -37,6 +37,9 @@ files, BDD scenarios, or acceptance criteria.
 
 ## Style Guide
 
+Structure features with Feature, Background, Scenario and Scenario Outline,
+and steps with Given, When, Then, And and But.
+
 ### Preferred: Declarative
 
 ```gherkin
@@ -65,6 +68,33 @@ Scenario: Login
 4. **Giant Background** — keep shared setup minimal
 5. **Scenario Outline abuse** — use only when examples vary by data
 6. **Inconsistent domain language** — align with ubiquitous language
+7. **Test scripts** — feature files used as test scripts rather than specifications
+
+## Behavioural Rules
+
+- Move steps shared by every scenario into Background.
+- Keep Given, When and Then in strict order: no When before Given.
+
+## Step Definition Design
+
+- Make step definitions reusable, with parameters where steps differ only by value.
+- Use Cucumber expressions, or regular expressions where they are needed.
+- Keep step definitions loosely coupled to each other.
+- Use data tables and doc strings for structured or long inputs.
+
+## Organisation and Structure
+
+- Name feature files consistently and lay out directories by domain.
+- Tag suites, for example `@smoke`, `@regression` and `@wip`.
+- Choose between feature-level and scenario-level Background with care.
+- Manage the state that steps share explicitly.
+
+## Living Documentation
+
+- Write features that non-technical stakeholders can read.
+- Balance precision with readability.
+- Use the domain's ubiquitous language consistently.
+- Structure features around user stories and acceptance criteria.
 
 ## Related Skills
 

@@ -313,7 +313,7 @@ mod discoveries_doc;
 
 // Issue #434: Gherkin v2 experiment disposition investigation.
 // Verifies investigation doc structure, index.md linkage, and regression guards
-// ensuring gherkin-expert skill/agent/allowlist entry remain present.
+// ensuring the gherkin-expert skill and allowlist entry remain present.
 #[path = "gherkin_investigation_doc_test.rs"]
 mod gherkin_investigation_doc;
 

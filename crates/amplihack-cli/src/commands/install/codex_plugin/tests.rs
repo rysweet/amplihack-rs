@@ -60,7 +60,7 @@ fn derived_production_instructions_are_portable() {
         assert!(!body.contains("Use GPT-4 to analyze code + comments"));
         count += 1;
     }
-    assert_eq!(count, 59);
+    assert_eq!(count, 56);
 }
 
 #[test]

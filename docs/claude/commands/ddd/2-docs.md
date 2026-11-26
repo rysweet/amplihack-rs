@@ -258,13 +258,6 @@ Track doc update tasks:
 
 ## Agent Suggestions
 
-**concept-extractor** - For extracting knowledge from complex docs:
-
-```
-Task concept-extractor: "Extract key concepts from [source] to include
-in [target doc]"
-```
-
 **ambiguity** (amplihack/specialized) - If docs have tensions/contradictions:
 
 ```
