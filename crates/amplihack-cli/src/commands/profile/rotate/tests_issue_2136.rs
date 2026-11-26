@@ -71,7 +71,9 @@ fn plan_room(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
         snap,
         &[("spare", ok(84.0, 89.0)), ("third", ok(84.0, 89.0))],
     );
-    decide_measured(ctx, snap, ok(85.0, 90.0), probes, at())
+    // Past `--session-at` with room 10 and the week below `--week-at`: a
+    // week at `--week-at` lets the live login cross (issue #3368).
+    decide_measured(ctx, snap, ok(90.0, 80.0), probes, at())
 }
 /// Issue #2910: the plan-room cycle with the live login at 100% of its
 /// session, so it has no room and every eligible login qualifies (D2).
@@ -89,13 +91,14 @@ fn threshold_full(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 }
 /// Issue #2910 (S1): both other logins have room 50, well past the margin
 /// over the live login's room 10, so only the organisation rule can keep
-/// the live login (85/90) where it is.
+/// the live login (90/80, past `--session-at` with its week below
+/// `--week-at`) where it is.
 fn roomy_others(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let probes = probes_for(
         snap,
         &[("spare", ok(50.0, 40.0)), ("third", ok(50.0, 40.0))],
     );
-    decide_measured(ctx, snap, ok(85.0, 90.0), probes, at())
+    decide_measured(ctx, snap, ok(90.0, 80.0), probes, at())
 }
 /// [`roomy_others`] with the live login at 100%: it has no room.
 fn roomy_others_full(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {

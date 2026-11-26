@@ -6576,11 +6576,15 @@ first group that has a qualifying login:
 1. logins in the live login's organisation, whatever their tier;
 2. logins whose organisation is unresolved;
 3. logins in another organisation, a confirmed crossing, only when the live
-   login has no room now, is an overflow profile, or its probe failed.
+   login has no room now, has its week use at or above `--week-at`, is an
+   overflow profile, or its probe failed.
 
-An upgrade never crosses, and a live login that still has room never crosses,
-so a projected or threshold move that only another organisation can satisfy
-is a stay. A live login whose probe failed may cross only by the
+The crossing test counts a live login whose week use is at or above
+`--week-at` as having no room, because its week does not reset within hours.
+An upgrade never crosses, and a live login that still has room and whose week
+use is below `--week-at` never crosses, even past `--session-at`, so a
+projected or threshold move that only another organisation can satisfy is a
+stay. A live login whose probe failed may cross only by the
 [failed-probe swap](#rotate-failed-live-probes), after three failures in a
 row, as before this rule. Every crossing writes the
 existing [`affinity:` warning](profile-organisation-affinity.md#warnings) in
