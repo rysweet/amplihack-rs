@@ -400,3 +400,171 @@ fn step05_stops_on_a_hex_head_sha_that_is_not_a_commit_here() {
     let o = f.run(&f.root, &s(&f.worktree), missing, &s(&f.root));
     assert_stopped(&o);
 }
+
+// --- the base is the loop's measurement, not the agent-written head_sha ---
+
+/// The loop measures `reviewed_head_sha` with `git rev-parse` before the
+/// round. When it reaches step-05, it is the base, and the round context's
+/// agent-written `head_sha` is not read at all, so a bad value there cannot
+/// stop the step.
+#[test]
+fn step05_measures_from_the_loop_measured_reviewed_head_sha() {
+    if skip() {
+        return;
+    }
+    let f = Fixture::new();
+    let h1 = f.commit_in_worktree();
+    for given in ["HEAD~1", "", "not-a-commit"] {
+        let o = f.run_with(
+            &f.root,
+            &s(&f.worktree),
+            given,
+            &s(&f.root),
+            &[("RECIPE_VAR_reviewed_head_sha", OsStr::new(&f.h0))],
+        );
+        assert!(
+            o.status.success(),
+            "context head_sha {given:?}: {}",
+            show(&o)
+        );
+        let v = evidence(&o);
+        assert_eq!(v["base_sha"], json!(f.h0), "{}", show(&o));
+        assert_eq!(v["head_sha"], json!(h1), "{}", show(&o));
+        assert_eq!(v["commits"], json!(1), "{}", show(&o));
+    }
+}
+
+/// A `reviewed_head_sha` that is not a full lowercase commit id is not a
+/// measurement, so the step falls back to the round context's `head_sha`.
+#[test]
+fn step05_falls_back_to_the_context_head_sha_without_a_measurement() {
+    if skip() {
+        return;
+    }
+    let f = Fixture::new();
+    f.commit_in_worktree();
+    let upper = f.h0.to_uppercase();
+    for measured in ["HEAD", upper.as_str(), &f.h0[..12]] {
+        let o = f.run_with(
+            &f.root,
+            &s(&f.worktree),
+            &f.h0,
+            &s(&f.root),
+            &[("RECIPE_VAR_reviewed_head_sha", OsStr::new(measured))],
+        );
+        assert!(o.status.success(), "measured {measured:?}: {}", show(&o));
+        assert_eq!(evidence(&o)["base_sha"], json!(f.h0), "{}", show(&o));
+    }
+    // With neither a measurement nor a usable context head, it stops and
+    // says both were missing.
+    let o = f.run_with(
+        &f.root,
+        &s(&f.worktree),
+        "HEAD~1",
+        &s(&f.root),
+        &[("RECIPE_VAR_reviewed_head_sha", OsStr::new(""))],
+    );
+    let line = assert_stopped(&o);
+    assert!(
+        line.contains("no loop-measured reviewed_head_sha"),
+        "{line}"
+    );
+}
+
+// --- a STOP reaches the next turn's agent; it does not end the run ---
+
+/// Plays the Crusty round recipe for `autodrive_pr_goal.sh act review`: it
+/// runs this checkout's real step-05 script with the `repo_path`,
+/// `pr_number` and `reviewed_head_sha` the goal tool passed, and returns its
+/// exit status as the round's, as the recipe runner does for a failed step.
+const ROUND_STUB: &str = r#"#!/usr/bin/env bash
+set -u
+[ "${1:-} ${2:-}" = "recipe run" ] || { echo "unexpected amplihack call: $*" >&2; exit 3; }
+rp=""; pr=""; head=""; prev=""
+for a in "$@"; do
+  if [ "$prev" = "-c" ]; then
+    case "$a" in
+      repo_path=*) rp="${a#repo_path=}" ;;
+      pr_number=*) pr="${a#pr_number=}" ;;
+      reviewed_head_sha=*) head="${a#reviewed_head_sha=}" ;;
+    esac
+  fi
+  prev=$a
+done
+echo "step-05-verify-concerns-addressed: running"
+RECIPE_VAR_repo_path="$rp" RECIPE_VAR_pr_number="$pr" RECIPE_VAR_reviewed_head_sha="$head" \
+  RECIPE_VAR_crusty_round_context='{}' bash "$STEP05_SCRIPT"
+"#;
+
+/// #2519 with #3129: step-05 refuses to measure in a checkout that is not the
+/// PR's linked worktree. The refusal fails the round, the goal tool records
+/// the turn as `review-failed` and exits 0, so the loop goes on, and the
+/// `STOP: step-05` line is in the turn's review.log for the next turn's agent
+/// to read as `previous`.
+#[test]
+fn step05_stop_reaches_the_next_turn_as_a_failed_review() {
+    use crate::support::step_recovery::{private_dir, repo_root};
+    if skip() {
+        return;
+    }
+    let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
+    let root = canon(tmp.path());
+    let p = |n: &str| root.join(n);
+    for d in [p("bin"), p("repo"), p("home")] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    private_dir(&p("state"));
+    private_dir(&p("state").join("turns"));
+    let td = p("state").join("turns").join("001");
+    private_dir(&td);
+    std::fs::write(p("task"), "issue 2519 fixture\n").unwrap();
+    // A plain checkout, not a linked worktree: the guard refuses it.
+    git(&p("repo"), &["init", "-q"]);
+    git(&p("repo"), &["commit", "-q", "--allow-empty", "-m", "init"]);
+    crate::support::exec_stub::write_executable(&p("bin").join("amplihack"), ROUND_STUB, 0o755);
+    crate::support::exec_stub::write_executable(
+        &p("bin").join("gh"),
+        "#!/bin/sh\necho \"gh is not reachable in this test\" >&2\nexit 1\n",
+        0o755,
+    );
+    let path = format!("{}:/usr/local/bin:/usr/bin:/bin", p("bin").display());
+    let o = crate::isolated_amplihack::isolated("bash")
+        .arg(repo_root().join("amplifier-bundle/tools/autodrive_pr_goal.sh"))
+        .args(["act", "review"])
+        .arg(&td)
+        .env("PATH", path)
+        .env("HOME", p("home"))
+        .env("TMPDIR", p("home"))
+        .env("AUTODRIVE_GOAL_CONTRACT", "1")
+        .env("AUTODRIVE_STATE_DIR", p("state"))
+        .env("AUTODRIVE_REPO", p("repo"))
+        .env("AUTODRIVE_WORKTREE", p("repo"))
+        .env("AUTODRIVE_TASK_FILE", p("task"))
+        .env("RECIPE_VAR_pr_number", PR)
+        .env("AMPLIHACK_BIN", p("bin").join("amplihack"))
+        .env(
+            "STEP05_SCRIPT",
+            tools_dir().join("autodrive_crusty_concerns_evidence.sh"),
+        )
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .current_dir(p("repo"))
+        .output()
+        .expect("spawn autodrive_pr_goal.sh");
+    assert_eq!(o.status.code(), Some(0), "the loop goes on\n{}", show(&o));
+    let result: Value = serde_json::from_str(
+        &std::fs::read_to_string(td.join("result.json"))
+            .unwrap_or_else(|e| panic!("no result.json ({e})\n{}", show(&o))),
+    )
+    .unwrap();
+    assert_eq!(result["outcome"], json!("review-failed"), "{result}");
+    assert!(
+        result.to_string().contains("review.log"),
+        "the result points the next turn at the log: {result}"
+    );
+    let log = std::fs::read_to_string(td.join("review.log")).unwrap();
+    assert!(
+        log.lines()
+            .any(|l| l.contains("STOP: step-05") && l.contains("(#2519, #1528)")),
+        "the STOP line is in the turn's review.log\n{log}"
+    );
+}

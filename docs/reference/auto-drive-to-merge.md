@@ -119,12 +119,28 @@ In a round that ended with concerns, `step-05-verify-concerns-addressed` runs
 repository-selecting `GIT_*` variables through
 [`git-repo-env.sh`](git-repo-env-helper.md) and runs
 `autodrive_worktree_guard.sh commit-dir <pr>`. It never reads `REPO_PATH` and
-never measures in the folder it started in. The round context's `head_sha` must
-be a hex commit id that resolves to a commit in that worktree. It reports
-`base_sha`, `head_sha` (the worktree's `HEAD`), `commits`, `dirty_worktree` and
-`git_observed`. When it cannot measure, it exits 1 with a `STOP: step-05` line
-on stderr that gives `repo_path` and the start folder, and prints nothing on
-stdout, so the round's recovery reads the cause rather than `commits: 0`.
+never measures in the folder it started in.
+
+The base is `reviewed_head_sha`, the commit the loop measured with
+`git rev-parse` before the round started, as the round record uses it (#2814).
+The round context's `head_sha`, which an agent writes, is read only when no
+full lowercase commit id arrived as `reviewed_head_sha`; it must then be a hex
+commit id, never a git expression such as `HEAD~1`. Either way the base must
+resolve to a commit in that worktree. The step reports `base_sha`, `head_sha`
+(the worktree's `HEAD`), `commits`, `dirty_worktree` and `git_observed`.
+
+When it cannot measure, it exits 1 with a `STOP: step-05` line on stderr that
+gives `repo_path` and the start folder, and prints nothing on stdout, rather
+than an unmeasured `commits: 0`. The failed step fails the round, and a failed
+round does not end the run. The goal loop's `review` action
+(`do_act_review` in `autodrive_pr_goal.sh`) records the turn as
+`review-failed`, with the round's whole output, the `STOP` line included, in
+the turn folder's `review.log`. The next turn's agent reads that result as
+`previous` and judges the cause (see
+[Failures inside a turn](autodrive-goal-loop.md#failures-inside-a-turn)). The
+test `step05_stop_reaches_the_next_turn_as_a_failed_review` in
+`crates/amplihack-cli/tests/issue_2519_crusty_step05_worktree.rs` runs that
+path with the real script.
 
 ## Retired inputs
 
