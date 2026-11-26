@@ -67,6 +67,31 @@ Only `on` and `off` are values. An empty variable counts as unset. Any other
 value, in the variable or in a file, leaves `on` in force. The hook writes
 one escaped line about it on stderr and adds nothing to the model's context.
 
+The launcher itself does not report an unknown value. A launch with
+`AMPLIHACK_ROUTING_TEXT=OFF`, for example, appends the full launch contract
+and prints nothing about the variable. `amplihack config get text.routing`
+reports a value in the variable as invalid, so run it when a setting seems
+to have no effect.
+
+## Seeing why text was left out
+
+The hooks log two further lines, at levels that the default log filter
+drops:
+
+- `text switch off`, at `info`, naming the key and where its value came
+  from, each time a hook leaves text out;
+- `amplihack config file skipped`, at `warn`, when a configuration file
+  cannot be read or parsed and its settings are not used.
+
+The hook program writes its log to standard error and filters it with
+`RUST_LOG`. With `RUST_LOG` unset, only errors are written, so neither
+line appears in a normal session. To see them, set the variable for the
+launch; the session's hooks inherit it:
+
+```sh
+RUST_LOG=amplihack_hooks=info amplihack claude
+```
+
 ## Related
 
 - [Hook reference: optional hook text suppression](../reference/hook-specifications.md#optional-hook-text-suppression)

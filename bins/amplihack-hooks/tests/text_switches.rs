@@ -2,8 +2,8 @@
 //! boundary (issue #3247, and #3199 for recipe steps).
 //!
 //! Every run starts the real `amplihack-hooks` in a fresh [`HookSandbox`]
-//! whose environment is cleared, so no setting of the test process reaches a
-//! hook. The settings come from a user file under the sandbox's `HOME`, a
+//! whose environment is cleared, so no setting of the test process is passed
+//! to a hook. The settings come from a user file under the sandbox's `HOME`, a
 //! project file under the sandbox's project, or the variables the test sets.
 //!
 //! Outputs are compared with the same hook run with nothing set, in the same

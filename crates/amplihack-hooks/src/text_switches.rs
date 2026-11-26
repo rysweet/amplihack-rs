@@ -14,7 +14,7 @@
 //! - a switch that is off: one `info` line in the hook's log naming the key and
 //!   where its value came from.
 //!
-//! None of these reaches the model's context, and none fails the hook.
+//! None of these is added to the model's context, and none fails the hook.
 
 use std::collections::HashSet;
 use std::io::Write as _;
