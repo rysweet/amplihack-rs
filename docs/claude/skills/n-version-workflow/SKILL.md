@@ -193,7 +193,6 @@ Selection Criteria Applied:
 - Document all N implementations generated
 - Explain selection rationale in detail
 - Capture insights from rejected versions
-- Store patterns learned in memory using `store_discovery()` from `amplihack.memory.discoveries`
 - Include comparison matrix for future reference
 
 ## Trade-Offs
