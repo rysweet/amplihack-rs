@@ -22,8 +22,7 @@ use std::path::{Path, PathBuf};
 const NOT_PRIVATE: &str = "socket directory is not private";
 
 /// The `sun_path` rule shared with the `cli_integration` tests.
-#[path = "../../../tests/support/socket_dir.rs"]
-mod socket_dir;
+use crate::test_support::socket_dir;
 
 /// The longest socket path these tests bind under a temp root.
 const BOUND_TAIL: &str = "tmux-1000/default";
