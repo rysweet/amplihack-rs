@@ -1,23 +1,22 @@
 # Writing the Tests
 
-How to write a test that `SKILL.md` suggests. The examples are in Python; the same shape holds in any language and test runner.
+Use these patterns to write the tests suggested in `SKILL.md`. The Python examples apply to other languages and test runners too.
 
 ## Arrange, Act, Assert
 
 Give each test three parts:
 
 ```python
-def test_function_name_condition_expected():
-    """Test that function_name handles condition and returns expected result."""
-    # Arrange: set up test data and conditions
-    input_data = ...
-    expected_output = ...
+def test_strip_removes_surrounding_whitespace():
+    # Arrange: set up the input and expected result
+    text = "  hello  "
+    expected = "hello"
 
     # Act: run the code under test
-    result = function_name(input_data)
+    result = text.strip()
 
     # Assert: check the result
-    assert result == expected_output
+    assert result == expected
 ```
 
 ## Test Patterns
@@ -27,20 +26,11 @@ def test_function_name_condition_expected():
 Test one function in isolation.
 
 ```python
-import pytest
 from mymodule import calculate_total
 
 def test_calculate_total_with_valid_items():
     items = [{"price": 10.00, "quantity": 2}, {"price": 5.00, "quantity": 3}]
     assert calculate_total(items) == 35.00
-
-def test_calculate_total_with_empty_list():
-    assert calculate_total([]) == 0.00
-
-def test_calculate_total_raises_on_negative_price():
-    items = [{"price": -10.00, "quantity": 1}]
-    with pytest.raises(ValueError, match="Price cannot be negative"):
-        calculate_total(items)
 ```
 
 ### Integration Tests
@@ -85,6 +75,8 @@ def test_send_notification_calls_email_service():
 Test many inputs with one test.
 
 ```python
+import pytest
+
 @pytest.mark.parametrize("value,expected", [
     (0, "zero"),
     (1, "one"),

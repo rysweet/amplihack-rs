@@ -6,7 +6,7 @@ Read this when the code under review is a pull request, and when you post the fi
 
 ### 1. Understand the Changes
 
-1. Read the pull request description to understand its intent.
+1. Read the pull request description and diff to understand its intent.
 2. Identify the affected modules and their scope.
 3. Note the dependencies changed or added.
 4. Understand the problem being solved.
@@ -63,6 +63,7 @@ For new modules or changed modules:
 ### 5. Check Test Coverage
 
 - Tests check the behaviour of the public interface.
+- Tests check accepted inputs, return values and errors against the documented contract.
 - Edge cases are covered: null, empty and boundary values.
 - Error paths are tested: exceptions are raised when expected.
 - Module connections are tested.
@@ -81,6 +82,7 @@ For a breaking change:
 - It is marked as breaking.
 - A deprecation path or a migration guide is given.
 - The affected modules are named.
+- The version change follows the repository's versioning policy.
 
 ### 7. Give Constructive Feedback
 
@@ -110,7 +112,9 @@ Use this form for each comment:
 **REFERENCE**: [Link to the principle or example]
 ```
 
-## Posting with `gh`
+## Reading and Posting with `gh`
+
+Post feedback on GitHub when the review request calls for it.
 
 ```bash
 # Read the pull request and its diff

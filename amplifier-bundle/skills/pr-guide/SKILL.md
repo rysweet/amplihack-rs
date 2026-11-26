@@ -221,5 +221,4 @@ hash algorithm, exemplar/constant heuristics, the Playwright flow, temp-file
 handling, and a complete worked example — lives in
 [`reference.md`](./reference.md).
 
-Titles and size of a pull request, and when to split one: `reference.md` →
-§14.
+See [titles, size and when to split a pull request](./reference.md#14-titles-and-size-of-a-pull-request).

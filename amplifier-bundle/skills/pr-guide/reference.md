@@ -747,13 +747,14 @@ characters; start with a verb; give enough context to understand it.
 `fix: Resolve race condition in cache invalidation` are good titles.
 `Update stuff`, `WIP` and `Fix bug` are not.
 
-**Size.** Under 200 changed lines is small and quick to review; 200 to 500 is
-manageable; 500 to 1,000 needs extra effort; over 1,000 should be split. Split
-a pull request when it holds unrelated changes, parts that can be deployed on
+**Size.** Under 200 changed lines is quick to review. A change of 200 to 500
+lines is manageable. Above 500 lines, allow extra time for review. Above
+1,000 lines, consider splitting the change. Split a pull request when it
+includes unrelated changes, parts that can be deployed on
 their own, a large refactoring together with a feature, or parts that need
 different reviewers. For example, "Rewrite authentication and add OAuth"
 becomes one pull request that makes the existing authentication modular, and a
 second that adds OAuth on top of it.
 
-The description of a pull request that is ready to merge follows the template
-in the merge-ready skill, `merge-ready/pr-description-template.md`.
+The description of a pull request that is ready to merge follows the
+[merge-ready template](../merge-ready/pr-description-template.md).
