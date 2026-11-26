@@ -11,8 +11,8 @@ to extend the lists or restore the full lists through a managed installation.
 
 ## Summary
 
-- **Unique bundled skill names:** 129
-- **Skill definition files:** 129
+- **Unique bundled skill names:** 127
+- **Skill definition files:** 127
 
 ## Bundled Skills
 
@@ -73,7 +73,6 @@ to extend the lists or restore the full lists through a managed installation.
 | `gherkin-expert` | `gherkin-expert/SKILL.md` |
 | `github` | `github/SKILL.md` |
 | `github-copilot-cli` | `github-copilot-cli/SKILL.md` |
-| `github-copilot-cli-expert` | `github-copilot-cli-expert/SKILL.md` |
 | `github-copilot-sdk` | `github-copilot-sdk/SKILL.md` |
 | `goal-seeking-agent-pattern` | `goal-seeking-agent-pattern/SKILL.md` |
 | `historian-analyst` | `historian-analyst/SKILL.md` |
@@ -144,6 +143,5 @@ to extend the lists or restore the full lists through a managed installation.
 | `verus-expert` | `verus-expert/SKILL.md` |
 | `work-delegator` | `work-delegator/SKILL.md` |
 | `work-iq` | `work-iq/SKILL.md` |
-| `workiq-wsl` | `workiq-wsl/SKILL.md` |
 | `workstream-coordinator` | `workstream-coordinator/SKILL.md` |
 | `xlsx` | `xlsx/SKILL.md` |

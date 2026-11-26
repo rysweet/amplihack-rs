@@ -307,6 +307,30 @@ Then: "What attachments were in that email?"
 
 ---
 
+## From WSL through the Windows Bridge
+
+Each query runs the Windows Copilot CLI through `powershell.exe` (see [reference.md](./reference.md#using-workiq-from-wsl-through-windows)).
+
+### Today's Meetings
+
+```bash
+powershell.exe -NoProfile -Command "copilot -p 'Use the workiq ask_work_iq tool to answer: What meetings do I have today?' --allow-all-tools --silent --no-auto-update 2>&1"
+```
+
+### Recent Emails from One Person
+
+```bash
+powershell.exe -NoProfile -Command "copilot -p 'Use the workiq ask_work_iq tool to find all emails from Sarah. Show the 5 most recent with subject, date sent and a short summary of each.' --allow-all-tools --silent --no-auto-update 2>&1"
+```
+
+### Unread Email Summary
+
+```bash
+powershell.exe -NoProfile -Command "copilot -p 'Use the workiq ask_work_iq tool to answer: Summarize the most important unread emails in my inbox from the last 24 hours.' --allow-all-tools --silent --no-auto-update 2>&1"
+```
+
+---
+
 **Related Documentation:**
 
 - [SKILL.md](./SKILL.md) - Overview and quick start

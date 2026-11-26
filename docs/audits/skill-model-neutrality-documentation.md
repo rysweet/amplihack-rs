@@ -130,7 +130,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | gherkin-expert | Enumerated | Yes |
 | github | Enumerated | No |
 | github-copilot-cli | Enumerated | No |
-| github-copilot-cli-expert | Enumerated | No |
 | github-copilot-sdk | Enumerated | No |
 | goal-seeking-agent-pattern | Enumerated | Yes |
 | historian-analyst | Enumerated | Yes |
@@ -199,7 +198,6 @@ CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py
 | verus-expert | Enumerated | Yes |
 | work-delegator | Enumerated | Yes |
 | work-iq | Enumerated | No |
-| workiq-wsl | Enumerated | No |
 | workstream-coordinator | Enumerated | Yes |
 | xlsx | Enumerated | Yes |
 
