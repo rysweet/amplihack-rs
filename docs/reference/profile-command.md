@@ -13057,7 +13057,8 @@ one, its deadline comes, and stops at the first of the reasons below that
 applies to it. No timer ends a wait: the only deadline is a stated reset. Signals and the
 session check come first, then the deadline, then, after a write, the file
 checks: `rotator capacity`, the login fingerprint, `login capacity`, then the
-login key. A check reads files (the rotate ledger, the swap record, the
+login key. A wait that reads capacity checks `rotator capacity` again before it
+ends `login changed`. A check reads files (the rotate ledger, the swap record, the
 readings, `.claude.json` and the credentials file) and never runs a `/usage`
 probe or an agent; nothing is read on an interval. See
 [How a wait wakes](./usage-limit-waits.md#how-a-wait-wakes).
@@ -13093,8 +13094,10 @@ capacity checks are therefore not run at all for that plan, rather than run
 and ignored.
 
 `rotator capacity` uses the [rotator room rule](#rotator-room-rule), checked
-at each write before the fingerprint, so a cycle that swaps the login and
-records room ends a wait as `rotator capacity`. The limit-resume hook does not use it; it acts
+at each write before the fingerprint, and again before a write ends a wait
+`login changed`, so a cycle that swaps the login and records room ends a wait
+as `rotator capacity`, wherever the rotator's write lands among the wait's
+reads. The limit-resume hook does not use it; it acts
 only on a [swap record](#swap-record).
 
 A cycle that moved onto a [credit-backed overflow profile](#rotate-overflow)

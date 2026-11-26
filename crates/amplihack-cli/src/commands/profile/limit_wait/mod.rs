@@ -127,6 +127,8 @@ mod tests_wait;
 #[cfg(test)]
 mod tests_wait_ends;
 #[cfg(test)]
+mod tests_wait_mid_pass;
+#[cfg(test)]
 mod tests_wait_room;
 
 use super::attempt::Signals;

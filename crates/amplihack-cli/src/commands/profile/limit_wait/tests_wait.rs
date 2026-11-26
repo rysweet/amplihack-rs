@@ -38,6 +38,11 @@ pub(super) struct Fake {
     pub(super) capacity_from: Option<i64>,
     /// The virtual second of each reading of the rotator's cycle.
     pub(super) capacity_probes: Vec<i64>,
+    /// The reading of the rotator's cycle, counted from 0, from which it
+    /// reports fresh capacity whatever the clock says. It stands in for a
+    /// rotator write that lands between two readings made at one virtual
+    /// second (issue #3124). It is not a write, so it wakes nothing.
+    pub(super) capacity_from_read: Option<usize>,
     /// Virtual second from which another stored login reports capacity.
     pub(super) other_from: Option<i64>,
     /// Virtual second from which the named login key differs from the one
@@ -74,6 +79,7 @@ impl Fake {
             parent_gone_from: None,
             capacity_from: None,
             capacity_probes: Vec::new(),
+            capacity_from_read: None,
             other_from: None,
             other_probes: Vec::new(),
             login_changed_from: None,
@@ -168,8 +174,10 @@ impl WaitDeps for Fake {
 
     fn rotator_capacity(&mut self, start: i64) -> bool {
         assert_eq!(start, T0, "capacity is judged from the wait's start");
+        let read = self.capacity_probes.len();
         self.capacity_probes.push(self.elapsed());
         self.capacity_from.is_some_and(|t| self.elapsed() >= t)
+            || self.capacity_from_read.is_some_and(|n| read >= n)
     }
 
     fn change_may_end(&mut self) -> bool {
