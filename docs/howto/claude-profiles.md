@@ -1230,15 +1230,15 @@ new login with every other profile and with the login in `~/.claude`. If it
 matches one, the login is refused:
 
 ```bash
-amplihack profile login rssourcelabs
+amplihack profile login login-au
 ```
 
 ```
-note: holding the previous login of profile 'rssourcelabs' in /home/ryan/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-20261020T171502Z while you log in
+note: holding the previous login of profile 'login-au' in /home/you/.amplihack/claude-profiles/.rejected-logins/.pending-login-au-20261020T171502Z while you log in
 ...interactive claude session...
-note: moving the new login of profile 'rssourcelabs' to /home/ryan/.amplihack/claude-profiles/.rejected-logins/rssourcelabs-20261020T171502Z
-error: profile 'rssourcelabs' was signed in to the same account and organization as profile 'ryan-ryansweet'. The new login was moved to /home/ryan/.amplihack/claude-profiles/.rejected-logins/rssourcelabs-20261020T171502Z; 'rssourcelabs' is back to its previous login.
-hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login rssourcelabs' again.
+note: moving the new login of profile 'login-au' to /home/you/.amplihack/claude-profiles/.rejected-logins/login-au-20261020T171502Z
+error: profile 'login-au' was signed in to the same account and organization as profile 'login-ay'. The new login was moved to /home/you/.amplihack/claude-profiles/.rejected-logins/login-au-20261020T171502Z; 'login-au' is back to its previous login.
+hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login login-au' again.
 ```
 
 The command exits with status 1. The profile has the login it had before
@@ -1247,7 +1247,7 @@ Other `.claude.json` keys Claude changed during the login stay as Claude
 left them. The refused login is moved, not deleted.
 
 To fix it, sign out of claude.ai in the browser, or open a private window,
-and run `amplihack profile login rssourcelabs` again. Sign in to the account
+and run `amplihack profile login login-au` again. Sign in to the account
 this profile is meant for.
 
 If the account is the one in `~/.claude`, the holder is named
@@ -1307,8 +1307,8 @@ no account until its next login. This example uses the default root; if you chos
 profile root` prints it), use that path instead:
 
 ```bash
-mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-20261020T171502Z/.credentials.json \
-      ~/.amplihack/claude-profiles/rssourcelabs/
+mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-login-au-20261020T171502Z/.credentials.json \
+      ~/.amplihack/claude-profiles/login-au/
 ```
 
 #### When the check cannot move the login
@@ -1365,21 +1365,21 @@ Running `/login` inside a Claude session is not checked when it happens.
 duplicate afterwards:
 
 ```
-note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login rssourcelabs' with the browser signed out of claude.ai or in a private window.
+note: profiles 'login-au' and 'login-ay' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login login-au' with the browser signed out of claude.ai or in a private window.
 ```
 
 Profile names are listed in sorted order. The fix names the profile whose
 login is not the account recorded for it. amplihack records a profile's
 account when `profile login` accepts a login, and in some rotator swaps; see
 [Recorded account](../reference/profile-command.md#recorded-account). Here
-`rssourcelabs` was recorded with another account, so it is the one to log in
+`login-au` was recorded with another account, so it is the one to log in
 again.
 
 When neither profile has a record, both match their records, or both
 differ, amplihack cannot tell which login is wrong and says so:
 
 ```
-note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login <name>' for the one that should hold a different account, with the browser signed out of claude.ai or in a private window.
+note: profiles 'login-au' and 'login-ay' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login <name>' for the one that should hold a different account, with the browser signed out of claude.ai or in a private window.
 ```
 
 Decide which profile should hold another account, and log that one in

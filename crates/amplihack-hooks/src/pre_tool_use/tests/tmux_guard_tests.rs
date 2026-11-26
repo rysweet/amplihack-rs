@@ -165,7 +165,7 @@ const DENIED: &[&str] = &[
     "ssh host tmux kill-server",
     "setsid tmux kill-server",
     "watch tmux kill-server",
-    "sudo -u ryan tmux kill-server",
+    "sudo -u you tmux kill-server",
     "find . -maxdepth 0 -exec tmux kill-server \\;",
     "parallel tmux kill-server ::: 1",
     // L3: tmux inside an embedded script.

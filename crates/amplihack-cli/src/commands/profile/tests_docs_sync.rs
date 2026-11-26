@@ -324,7 +324,7 @@ fn rotate_log_grammar_is_documented() {
         "damp: <name> swapped away exhausted; no later reading shows room",
         "damp: <name> later reading shows room; swap-back allowed",
         "#### Rotate reading freshness and swap-back damping",
-        "\"swapped_away\": { \"ggrant\": 1793634010 }",
+        "\"swapped_away\": { \"login-ag\": 1793634010 }",
         // Issue #2211: live reading freshness and the projected swap.
         "reason=projected",
         "stale live reading; re-read",
@@ -560,12 +560,12 @@ fn reference_quotes_the_login_refusal() {
             "reference is missing {line:?}"
         );
     }
-    let howto_hint = format!("hint: {}", refusal_hint("rssourcelabs"));
+    let howto_hint = format!("hint: {}", refusal_hint("login-au"));
     assert!(
         HOWTO.contains(&howto_hint),
         "howto is missing {howto_hint:?}"
     );
-    let howto_msg = refusal_message("rssourcelabs", "profile 'ryan-ryansweet'", "");
+    let howto_msg = refusal_message("login-au", "profile 'login-ay'", "");
     let head = howto_msg.split(" The new login").next().unwrap();
     assert!(
         HOWTO.contains(&format!("error: {head}")),
@@ -606,8 +606,8 @@ fn docs_quote_the_duplicate_login_warning() {
             "reference is missing {form:?}"
         );
     }
-    // The how-to's example: `rssourcelabs` holds the wrong login.
-    let (a, b) = (p("rssourcelabs"), p("ryan-ryansweet"));
+    // The how-to's example: `login-au` holds the wrong login.
+    let (a, b) = (p("login-au"), p("login-ay"));
     for (doc_name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
         let example = warning(&a, &b, Some(&a));
         assert!(doc.contains(&example), "{doc_name} is missing {example:?}");

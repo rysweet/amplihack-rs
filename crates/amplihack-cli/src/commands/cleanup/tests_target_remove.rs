@@ -709,7 +709,7 @@ fn target_remove_has_no_timers_retries_or_blocking_locks() {
 
 // ----- host cargo wrapper links (issue #2039, fix item 1) -------------------------
 
-/// The layout candide's cargo wrapper makes is followed with no
+/// The layout host-a's cargo wrapper makes is followed with no
 /// `AMPLIHACK_TARGET_LINK_ROOTS`, from either managed root, and removal takes
 /// the destination and the link.
 #[test]
@@ -811,8 +811,8 @@ fn wrapper_link_into_an_unsafe_folder_is_not_followed() {
     assert!(dest.join("debug/blob").exists());
     fs::remove_file(&link).unwrap();
 
-    // Group-writable is accepted, as for a listed entry (`/d0/ryan/cargo-targets`
-    // is 0775 on candide).
+    // Group-writable is accepted, as for a listed entry (`/data/you/cargo-targets`
+    // is 0775 on host-a).
     let group = fx.root.join("group");
     fs::create_dir_all(&group).unwrap();
     fs::set_permissions(&group, fs::Permissions::from_mode(0o775)).unwrap();

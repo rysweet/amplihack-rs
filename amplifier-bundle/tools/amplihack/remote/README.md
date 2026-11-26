@@ -196,7 +196,7 @@ amplihack remote --max-turns 20 --vm-size Standard_D4s_v3 auto "refactor API"
 amplihack remote --keep-vm ultrathink "analyze performance"
 
 # Use specific VM
-amplihack remote --vm-name amplihack-ryan-123 auto "continue work"
+amplihack remote --vm-name amplihack-you-123 auto "continue work"
 ```
 
 ### VM Size Options
