@@ -1190,7 +1190,7 @@ fn overflow_rows_are_marked_with_any_block() {
 
 #[test]
 fn a_blocked_plan_login_carries_the_blocked_until_mark() {
-    let mut r = ok("wwest", Some((10.0, None)), Some((20.0, None)));
+    let mut r = ok("login-bf", Some((10.0, None)), Some((20.0, None)));
     assert!(!r.overflow);
     r.overflow_blocked_until = Some(1_793_491_200);
     assert_eq!(marks(&r), "blocked until 2026-11-01T00:00:00Z");
@@ -1208,7 +1208,7 @@ fn a_blocked_overflow_login_keeps_its_existing_wording() {
 
 #[test]
 fn an_unblocked_plan_login_has_no_blocked_mark() {
-    let r = ok("wwest", Some((10.0, None)), Some((20.0, None)));
+    let r = ok("login-bf", Some((10.0, None)), Some((20.0, None)));
     assert_eq!(marks(&r), "-");
 }
 
@@ -2866,14 +2866,14 @@ fn notes_for_a_credits_on_row_name_how_the_spend_was_read() {
         (Spend::Unknown, "spend probe failed"),
         (Spend::NotProbed, "spend not probed"),
     ] {
-        let notes = source_notes(&[credits_on_row("mistt", spend)]);
+        let notes = source_notes(&[credits_on_row("example-org", spend)]);
         assert_eq!(
             notes,
             [
                 format!(
-                    "note: profile \"mistt\": direct read gave usage credits on; windows direct, {ending}"
+                    "note: profile \"example-org\": direct read gave usage credits on; windows direct, {ending}"
                 ),
-                format!("note: profile \"mistt\": {SHAPE_LINE}"),
+                format!("note: profile \"example-org\": {SHAPE_LINE}"),
             ],
             "{spend:?}"
         );

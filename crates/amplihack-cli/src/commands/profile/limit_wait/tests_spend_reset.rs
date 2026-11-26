@@ -19,8 +19,8 @@ const NOW: i64 = 1_792_335_600;
 const SPEND_WEEKLY: &str = "You've hit your individual spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 24, 2pm (America/Los_Angeles)";
 const SPEND_SESSION: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your session limit resets 1pm (America/Los_Angeles)";
 const SPEND_NO_RESET: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
-/// The line that ended run `amp-auto-drive-to-merge-mistt-infra-20261121-213610`
-/// on hypatia at 21:45Z on 21 November 2026, quoted in #2911 by the owner's
+/// The line that ended run `amp-auto-drive-to-merge-repo-e-20261121-213610`
+/// on host-c at 21:45Z on 21 November 2026, quoted in #2911 by the owner's
 /// deputy: Claude Code 2.1.33x's per-member spend cap, which names the
 /// session window by its newer name. Kept here byte for byte, because both
 /// halves of it have to be read correctly for the step to wait: the spend

@@ -207,7 +207,7 @@ fn account_org(uuid: &str, org: &str, email: &str) -> String {
 
 #[test]
 fn one_user_in_two_orgs_marks_the_matching_org_live_without_a_warning() {
-    // D22: ryan-mistt-org and ryan-mistt-personal.
+    // D22: login-aw and login-ax.
     let e = env();
     private(
         &e.home.join(".claude.json"),

@@ -106,9 +106,9 @@ fn lines(s: &Summary) -> Vec<String> {
 
 /// Weekly used % from the issue. Sessions are not given there, so `ok` rows
 /// read 50%, session-exhausted rows 100% and weekly-exhausted rows 30%.
-/// eelsworth and hharkness reset their sessions 30 s apart at 17:50Z;
-/// ddrumpf and ggrant at 19:30Z. ryanc2-mistt-personal's week resets at
-/// 2026-10-31T08:00Z (inside 24 h) and ryan-mistt-org's at 22:59Z (outside).
+/// login-ae and login-ah reset their sessions 30 s apart at 17:50Z;
+/// login-ad and login-ag at 19:30Z. login-ba's week resets at
+/// 2026-10-31T08:00Z (inside 24 h) and login-aw's at 22:59Z (outside).
 fn fixture() -> Snapshot {
     let far = Some(T + 5 * DAY);
     let ok = |w| pt_r(Some(50), w, far, None);
@@ -117,22 +117,22 @@ fn fixture() -> Snapshot {
     snap(
         T,
         &[
-            ("jjansport", ok(43)),
-            ("ryanc2-mistt-org", ok(80)),
-            ("ccapstone", ok(89)),
-            ("bbuck", ok(90)),
-            ("aanderson", ok(91)),
-            ("iivanovich", ok(48)),
-            ("recovery-ryansweet", ok(94)),
-            ("ryan-mistt-personal", ok(96)),
-            ("eelsworth", sess(4, T + 95 * MIN)),
-            ("hharkness", sess(4, T + 95 * MIN + 30)),
-            ("ddrumpf", sess(92, T + 195 * MIN)),
-            ("ggrant", sess(97, T + 195 * MIN)),
-            ("ryanc2-mistt-personal", full(T + 15 * HOUR + 45 * MIN)),
-            ("ryan-mistt-org", full(T + 30 * HOUR + 44 * MIN)),
-            ("ryan-ryansweet", full(T + 3 * DAY)),
-            ("rssourcelabs", full(T + 4 * DAY)),
+            ("login-aj", ok(43)),
+            ("login-az", ok(80)),
+            ("login-ac", ok(89)),
+            ("login-ab", ok(90)),
+            ("login-aa", ok(91)),
+            ("login-ai", ok(48)),
+            ("login-as", ok(94)),
+            ("login-ax", ok(96)),
+            ("login-ae", sess(4, T + 95 * MIN)),
+            ("login-ah", sess(4, T + 95 * MIN + 30)),
+            ("login-ad", sess(92, T + 195 * MIN)),
+            ("login-ag", sess(97, T + 195 * MIN)),
+            ("login-ba", full(T + 15 * HOUR + 45 * MIN)),
+            ("login-aw", full(T + 30 * HOUR + 44 * MIN)),
+            ("login-ay", full(T + 3 * DAY)),
+            ("login-au", full(T + 4 * DAY)),
         ],
         &[],
     )
@@ -161,9 +161,9 @@ fn the_issue_fixture_prints_the_six_documented_lines() {
         [
             "weekly headroom      3.72 login-weeks of 16 (23%)",
             "usable now           8 of 16 logins (session < 95% and weekly < 100%)",
-            "next session reset   2026-10-30T17:50:00Z  (eelsworth, hharkness: +2 usable)",
+            "next session reset   2026-10-30T17:50:00Z  (login-ae, login-ah: +2 usable)",
             "runway               unknown",
-            "resets in next 24 h  2026-10-31T08:00:00Z ryanc2-mistt-personal +1.00",
+            "resets in next 24 h  2026-10-31T08:00:00Z login-ba +1.00",
             "unknown              0 profiles (no valid reading; excluded from all figures)",
         ]
     );
@@ -195,13 +195,13 @@ fn the_issue_fixture_json_has_every_documented_key() {
     assert_eq!(v["usable_now"], json!(8));
     assert_eq!(
         v["next_session_reset"],
-        json!({"at": "2026-10-30T17:50:00Z", "profiles": ["eelsworth", "hharkness"]})
+        json!({"at": "2026-10-30T17:50:00Z", "profiles": ["login-ae", "login-ah"]})
     );
     assert_eq!(v["rate_login_weeks_per_hour"], Value::Null);
     assert_eq!(v["runway_hours"], Value::Null);
     assert_eq!(
         v["weekly_resets_next_24h"],
-        json!([{"at": "2026-10-31T08:00:00Z", "profile": "ryanc2-mistt-personal", "restores": 1.0}])
+        json!([{"at": "2026-10-31T08:00:00Z", "profile": "login-ba", "restores": 1.0}])
     );
 }
 
@@ -1070,10 +1070,11 @@ fn raw_rate(p: &RateParts) -> f64 {
 
 /// `testdata/issue_1970_5nov.jsonl`: 10:52Z to 19:00Z on 5 Nov 2026.
 const NOV5: &str = include_str!("testdata/issue_1970_5nov.jsonl");
-/// The two logins the issue names keep their names in the fixture.
-const REC: &str = "recovery-ryansweet";
-const RMP: &str = "ryan-mistt-personal";
-/// ryanc2-mistt-org in the rotator log.
+/// The two logins the issue discusses keep a name, not a number, in the
+/// fixture.
+const REC: &str = "login-as";
+const RMP: &str = "login-ax";
+/// login-az in the rotator log.
 const L19: &str = "login-19";
 
 /// Every fixture line, oldest first.
@@ -1165,7 +1166,7 @@ fn the_5_nov_fixture_is_the_day_the_issue_describes() {
     assert_eq!(all.len(), 303);
     assert_eq!(all.first().unwrap().at, n5(10, 52, 12));
     assert_eq!(all.last().unwrap().at, n5(18, 59, 8));
-    // recovery-ryansweet's week was full and reset at 12:00Z, as the
+    // login-as's week was full and reset at 12:00Z, as the
     // deputy found: 100 at 11:59:41Z, 0 at 12:00:57Z.
     let rec: Vec<(i64, u8)> = all
         .iter()
@@ -1201,9 +1202,9 @@ fn the_5_nov_history_gives_0_483_and_7_5_h_under_the_1_2_97_rule() {
     assert_eq!(span, 5 * HOUR + 59 * MIN + 10);
 
     // Each login's contribution. Most of it comes from falls counted as
-    // resets (issue #1841): ryan-mistt-personal's five falls from 27-29 to
+    // resets (issue #1841): login-ax's five falls from 27-29 to
     // 26 between 11:30Z and 11:57Z add 26 points each, and the seven falls
-    // of 1 to 3 points in recovery-ryansweet's new week add their whole
+    // of 1 to 3 points in login-as's new week add their whole
     // lower figures, 67 in all.
     assert_eq!(
         nonzero(old),
@@ -1290,7 +1291,7 @@ fn the_5_nov_flicker_counts_its_net_rise_of_16_points() {
 
 #[test]
 fn a_flicker_of_stale_readings_adds_the_same_as_none() {
-    // The same lines with every recovery-ryansweet reading below its
+    // The same lines with every login-as reading below its
     // running highest taken out: the use must not change.
     let (now, h) = nov5_flicker();
     let mut highest = 0;

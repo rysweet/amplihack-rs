@@ -1,4 +1,4 @@
-//! C3b (#3110, mistt-app-ui #480): a claim on the issue is information.
+//! C3b (#3110, repo-c #480): a claim on the issue is information.
 //! `workflow_issue_claim_check.sh` exits 0 for every claim result, keeps its
 //! stdout key lines (1.2.213 callers read them) and lists the claims.
 

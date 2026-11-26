@@ -265,16 +265,16 @@ fn output_entries_must_be_one_whole_element() {
 
 #[test]
 fn home_is_encoded_as_claude_names_its_project_folder() {
-    assert_eq!(encode(Path::new("/home/ryan")), "-home-ryan");
+    assert_eq!(encode(Path::new("/home/you")), "-home-you");
     assert_eq!(encode(Path::new("/home/a.b_c d")), "-home-a-b-c-d");
-    assert_eq!(encode(Path::new("/Users/Ryan-2")), "-Users-Ryan-2");
+    assert_eq!(encode(Path::new("/Users/You-2")), "-Users-You-2");
 }
 
 #[test]
 fn the_default_dir_is_under_home_dot_claude_projects() {
     assert_eq!(
-        default_dir(Path::new("/home/ryan")),
-        PathBuf::from("/home/ryan/.claude/projects/-home-ryan")
+        default_dir(Path::new("/home/you")),
+        PathBuf::from("/home/you/.claude/projects/-home-you")
     );
 }
 

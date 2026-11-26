@@ -101,7 +101,7 @@ fn root() -> Root {
     let rs = RotateState::new(&path);
     rs.ensure().unwrap();
     rs.save_ledger(&RotateLedger {
-        live: Some("wwest".into()),
+        live: Some("login-bf".into()),
         ..RotateLedger::default()
     })
     .unwrap();
@@ -148,17 +148,17 @@ fn the_overflow_constructor_keeps_the_monthly_assumption() {
 #[test]
 fn a_stated_reset_is_stored_for_the_login_with_one_alert() {
     let r = root();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + WEEK);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + WEEK);
     let l = loaded(&r);
     assert_eq!(l.overflow_blocked.len(), 1);
-    assert_eq!(l.overflow_blocked["wwest"], spend(NOW, NOW + WEEK));
-    assert_eq!(l.live.as_deref(), Some("wwest"), "other fields kept");
+    assert_eq!(l.overflow_blocked["login-bf"], spend(NOW, NOW + WEEK));
+    assert_eq!(l.live.as_deref(), Some("login-bf"), "other fields kept");
     let log = log_text(&r);
-    let expected = spend_alert(&n("wwest"), NOW + WEEK);
+    let expected = spend_alert(&n("login-bf"), NOW + WEEK);
     assert_eq!(
         expected,
         format!(
-            "ALERT: login wwest hit its spend limit; blocked until {}",
+            "ALERT: login login-bf hit its spend limit; blocked until {}",
             timestamp(NOW + WEEK)
         )
     );
@@ -168,10 +168,10 @@ fn a_stated_reset_is_stored_for_the_login_with_one_alert() {
 #[test]
 fn the_stored_block_is_active_until_the_reset_and_expires_with_it() {
     let r = root();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + WEEK);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + WEEK);
     let l = loaded(&r);
-    assert!(active_blocks(&l, NOW + WEEK - 1).contains_key("wwest"));
-    assert!(!active_blocks(&l, NOW + WEEK).contains_key("wwest"));
+    assert!(active_blocks(&l, NOW + WEEK - 1).contains_key("login-bf"));
+    assert!(!active_blocks(&l, NOW + WEEK).contains_key("login-bf"));
     let mut l = l;
     prune_blocks(&mut l, NOW + WEEK);
     assert!(l.overflow_blocked.is_empty(), "no new lifecycle");
@@ -180,7 +180,7 @@ fn the_stored_block_is_active_until_the_reset_and_expires_with_it() {
 #[test]
 fn a_step_written_ledger_still_loads_through_the_validator() {
     let r = root();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + MAX_BLOCK_SECS);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + MAX_BLOCK_SECS);
     assert!(r.rs.load_ledger().is_ok());
     assert_eq!(loaded(&r).overflow_blocked.len(), 1);
 }
@@ -188,11 +188,11 @@ fn a_step_written_ledger_still_loads_through_the_validator() {
 #[test]
 fn an_active_block_is_neither_extended_nor_alerted_twice() {
     let r = root();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + WEEK);
-    note_spend_block(&r.path, &n("wwest"), NOW + 60, NOW + 2 * WEEK);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + WEEK);
+    note_spend_block(&r.path, &n("login-bf"), NOW + 60, NOW + 2 * WEEK);
     let l = loaded(&r);
-    assert_eq!(l.overflow_blocked["wwest"], spend(NOW, NOW + WEEK));
-    let first = spend_alert(&n("wwest"), NOW + WEEK);
+    assert_eq!(l.overflow_blocked["login-bf"], spend(NOW, NOW + WEEK));
+    let first = spend_alert(&n("login-bf"), NOW + WEEK);
     assert_eq!(log_text(&r).matches(&first).count(), 1);
     assert!(!log_text(&r).contains("not blocked"), "{}", log_text(&r));
 }
@@ -202,16 +202,19 @@ fn an_expired_block_is_replaced() {
     let r = root();
     let mut l = loaded(&r);
     l.overflow_blocked
-        .insert("wwest".into(), spend(NOW - 3 * DAY, NOW - DAY));
+        .insert("login-bf".into(), spend(NOW - 3 * DAY, NOW - DAY));
     r.rs.save_ledger(&l).unwrap();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + WEEK);
-    assert_eq!(loaded(&r).overflow_blocked["wwest"], spend(NOW, NOW + WEEK));
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + WEEK);
+    assert_eq!(
+        loaded(&r).overflow_blocked["login-bf"],
+        spend(NOW, NOW + WEEK)
+    );
 }
 
 #[test]
 fn a_second_login_gets_its_own_block() {
     let r = root();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + WEEK);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + WEEK);
     note_spend_block(&r.path, &n("other"), NOW, NOW + 2 * DAY);
     let l = loaded(&r);
     assert_eq!(l.overflow_blocked.len(), 2);
@@ -222,7 +225,7 @@ fn a_second_login_gets_its_own_block() {
 fn a_missing_ledger_is_not_created() {
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    note_spend_block(tmp.path(), &n("wwest"), NOW, NOW + WEEK);
+    note_spend_block(tmp.path(), &n("login-bf"), NOW, NOW + WEEK);
     let rs = RotateState::new(tmp.path());
     assert!(!rs.ledger.exists(), "the writer must not create a ledger");
 }
@@ -244,13 +247,13 @@ fn a_reset_in_the_past_or_out_of_range_is_reported_and_not_stored() {
         ("maximum integer", i64::MAX, "stated reset out of range"),
     ] {
         let r = root();
-        note_spend_block(&r.path, &n("wwest"), NOW, until);
+        note_spend_block(&r.path, &n("login-bf"), NOW, until);
         let l = loaded(&r);
         assert!(l.overflow_blocked.is_empty(), "{label}: stored");
-        let line = spend_not_blocked(&n("wwest"), why);
+        let line = spend_not_blocked(&n("login-bf"), why);
         assert_eq!(
             line,
-            format!("ALERT: login wwest spend limit not blocked ({why})")
+            format!("ALERT: login login-bf spend limit not blocked ({why})")
         );
         assert!(log_text(&r).contains(&line), "{label}: {}", log_text(&r));
     }
@@ -259,7 +262,7 @@ fn a_reset_in_the_past_or_out_of_range_is_reported_and_not_stored() {
 #[test]
 fn a_reset_exactly_at_the_cap_is_accepted() {
     let r = root();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + MAX_BLOCK_SECS);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + MAX_BLOCK_SECS);
     assert_eq!(loaded(&r).overflow_blocked.len(), 1);
 }
 
@@ -267,7 +270,7 @@ fn a_reset_exactly_at_the_cap_is_accepted() {
 fn a_non_positive_clock_is_reported_and_not_stored() {
     for at in [0, -5, i64::MIN] {
         let r = root();
-        note_spend_block(&r.path, &n("wwest"), at, NOW + WEEK);
+        note_spend_block(&r.path, &n("login-bf"), at, NOW + WEEK);
         assert!(loaded(&r).overflow_blocked.is_empty(), "at={at}");
     }
 }
@@ -281,12 +284,12 @@ fn a_full_ledger_stores_nothing_and_still_loads() {
             .insert(format!("p{i}"), spend(NOW, NOW + WEEK));
     }
     r.rs.save_ledger(&l).unwrap();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + WEEK);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + WEEK);
     let l = loaded(&r);
     assert_eq!(l.overflow_blocked.len(), MAX_BLOCKS);
-    assert!(!l.overflow_blocked.contains_key("wwest"));
+    assert!(!l.overflow_blocked.contains_key("login-bf"));
     assert!(
-        log_text(&r).contains("ALERT: login wwest spend limit not blocked (too many blocks)"),
+        log_text(&r).contains("ALERT: login login-bf spend limit not blocked (too many blocks)"),
         "{}",
         log_text(&r)
     );
@@ -304,7 +307,7 @@ fn the_largest_permitted_ledger_with_long_names_still_loads() {
             .insert(format!("{long}{i:03}"), spend(NOW, NOW + MAX_BLOCK_SECS));
     }
     r.rs.save_ledger(&l).unwrap();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + MAX_BLOCK_SECS);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + MAX_BLOCK_SECS);
     let l = loaded(&r);
     assert_eq!(l.overflow_blocked.len(), MAX_BLOCKS);
 }
@@ -318,7 +321,7 @@ fn a_busy_rotator_loses_the_block_and_never_stalls_the_step() {
         .unwrap()
         .expect("the test takes the lock first");
     let started = std::time::Instant::now();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + WEEK);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + WEEK);
     assert!(
         started.elapsed() < Duration::from_secs(60),
         "the writer waits a bounded time"
@@ -332,7 +335,7 @@ fn an_unreadable_ledger_is_left_alone() {
     let r = root();
     fs::write(&r.rs.ledger, b"{ not json").unwrap();
     fs::set_permissions(&r.rs.ledger, fs::Permissions::from_mode(0o600)).unwrap();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + WEEK);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + WEEK);
     assert_eq!(fs::read(&r.rs.ledger).unwrap(), b"{ not json");
 }
 
@@ -343,7 +346,7 @@ fn a_symlinked_ledger_is_not_followed() {
     fs::write(&target, b"original").unwrap();
     fs::remove_file(&r.rs.ledger).unwrap();
     std::os::unix::fs::symlink(&target, &r.rs.ledger).unwrap();
-    note_spend_block(&r.path, &n("wwest"), NOW, NOW + WEEK);
+    note_spend_block(&r.path, &n("login-bf"), NOW, NOW + WEEK);
     assert_eq!(fs::read(&target).unwrap(), b"original");
 }
 
@@ -351,7 +354,7 @@ fn a_symlinked_ledger_is_not_followed() {
 fn the_alert_lines_carry_only_a_name_a_time_and_a_closed_reason() {
     // The message the step read never reaches the log: the writer takes no
     // text, so an escape sequence or newline in agent output cannot appear.
-    let line = spend_alert(&n("wwest"), NOW + WEEK);
+    let line = spend_alert(&n("login-bf"), NOW + WEEK);
     assert!(!line.contains('\n') && !line.contains('\u{1b}'));
     for why in [
         "stated reset already passed",
@@ -361,10 +364,10 @@ fn the_alert_lines_carry_only_a_name_a_time_and_a_closed_reason() {
         "ledger not written",
         "too many blocks",
     ] {
-        let l = spend_not_blocked(&n("wwest"), why);
+        let l = spend_not_blocked(&n("login-bf"), why);
         assert_eq!(
             l,
-            format!("ALERT: login wwest spend limit not blocked ({why})")
+            format!("ALERT: login login-bf spend limit not blocked ({why})")
         );
     }
 }
@@ -567,10 +570,10 @@ fn no_active_block_prints_a_dash() {
 
 #[test]
 fn an_active_block_is_listed_with_its_reset() {
-    let l = ledger_with(&[("wwest", NOW + WEEK)]);
+    let l = ledger_with(&[("login-bf", NOW + WEEK)]);
     assert_eq!(
         blocked_logins_line(&[], Ok(Some(&l)), NOW),
-        format!("wwest (blocked until {})", timestamp(NOW + WEEK))
+        format!("login-bf (blocked until {})", timestamp(NOW + WEEK))
     );
 }
 
@@ -589,11 +592,11 @@ fn blocks_are_listed_in_name_order_and_expired_ones_are_left_out() {
 
 #[test]
 fn a_login_the_overflow_field_already_shows_is_not_repeated() {
-    let l = ledger_with(&[("cred", NOW + DAY), ("wwest", NOW + WEEK)]);
+    let l = ledger_with(&[("cred", NOW + DAY), ("login-bf", NOW + WEEK)]);
     let shown = [n("cred")];
     assert_eq!(
         blocked_logins_line(&shown, Ok(Some(&l)), NOW),
-        format!("wwest (blocked until {})", timestamp(NOW + WEEK))
+        format!("login-bf (blocked until {})", timestamp(NOW + WEEK))
     );
     let only = ledger_with(&[("cred", NOW + DAY)]);
     assert_eq!(blocked_logins_line(&shown, Ok(Some(&only)), NOW), "-");

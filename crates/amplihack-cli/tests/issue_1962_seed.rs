@@ -84,7 +84,7 @@ fn older_ledger_does_not_seed_or_move_and_names_the_command() {
     assert_eq!(w.logins_stamp(), logins);
 }
 
-/// D3, the candide acceptance wording: the dry run names the live login and the
+/// D3, the host-a acceptance wording: the dry run names the live login and the
 /// extra line, with neither of the old refusals.
 #[test]
 fn older_ledger_dry_run_names_the_login_and_the_extra_line() {

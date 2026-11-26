@@ -29,7 +29,7 @@
 # Until #3129 a claim on another branch ended the run with exit 1. That ended
 # runs that were right to carry on: a retry against the PR its own first
 # attempt opened (#3110), and a continuation run whose task text quotes its own
-# issue (mistt-app-ui #480). The tool now reports every claim and exits 0. The
+# issue (repo-c #480). The tool now reports every claim and exits 0. The
 # agent that runs the build compares the claim with its task text, continues
 # its own pull request, or works beside another one and says why in a PR
 # comment. The claim lines on stderr, the `claimed` key line on stdout and the

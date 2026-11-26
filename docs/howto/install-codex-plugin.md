@@ -343,10 +343,10 @@ Reset runs before startup self-healing, client resolution or native
 reconciliation. It accepts a safely accessible regular journal even when its
 contents cannot be parsed. It preserves the original bytes and reports the
 archive path in one status line, then continues normal Codex launch. For example,
-with `HOME=/Users/ryan`, the recovery status line is:
+with `HOME=/Users/you`, the recovery status line is:
 
 ```text
-amplihack: preserved Codex recovery journal: /Users/ryan/.amplihack/codex/pending.json.stale-20261110T180000Z
+amplihack: preserved Codex recovery journal: /Users/you/.amplihack/codex/pending.json.stale-20261110T180000Z
 ```
 
 The UTC timestamp varies. Existing destinations are preserved; collisions use a

@@ -1,7 +1,7 @@
 [
   {
-    "account": "ffarmer",
-    "path": "/home/ryan/.codex-profiles/ffarmer",
+    "account": "login-af",
+    "path": "/home/you/.codex-profiles/login-af",
     "state": "ok",
     "error": null,
     "windows": [
@@ -28,8 +28,8 @@
     "next_choice": false
   },
   {
-    "account": "ggrant",
-    "path": "/home/ryan/.codex-profiles/ggrant",
+    "account": "login-ag",
+    "path": "/home/you/.codex-profiles/login-ag",
     "state": "ok",
     "error": null,
     "windows": [
@@ -49,8 +49,8 @@
     "next_choice": true
   },
   {
-    "account": "hhale",
-    "path": "/home/ryan/.codex-profiles/hhale",
+    "account": "mhale",
+    "path": "/home/you/.codex-profiles/mhale",
     "state": "ok",
     "error": null,
     "windows": [],
@@ -65,8 +65,8 @@
     "next_choice": false
   },
   {
-    "account": "jjones",
-    "path": "/home/ryan/.codex-profiles/jjones",
+    "account": "mjones",
+    "path": "/home/you/.codex-profiles/mjones",
     "state": "not_signed_in",
     "error": null,
     "windows": [],
@@ -78,8 +78,8 @@
     "next_choice": false
   },
   {
-    "account": "kkim",
-    "path": "/home/ryan/.codex-profiles/kkim",
+    "account": "mkim",
+    "path": "/home/you/.codex-profiles/mkim",
     "state": "timeout",
     "error": "timed out after 20s",
     "windows": [],
@@ -92,7 +92,7 @@
   },
   {
     "account": "mmoss",
-    "path": "/home/ryan/.codex-profiles/mmoss",
+    "path": "/home/you/.codex-profiles/mmoss",
     "state": "error",
     "error": "codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'",
     "windows": [],
@@ -105,7 +105,7 @@
   },
   {
     "account": "~/.codex",
-    "path": "/home/ryan/.codex",
+    "path": "/home/you/.codex",
     "state": "ok",
     "error": null,
     "windows": [

@@ -35,15 +35,15 @@ use std::fs;
 use std::path::Path;
 
 /// The login each setting moves to from the 05:56Z readings, and the tail of
-/// its swap line. At 85/90 llarame (session 0%) is the only login in the
+/// its swap line. At 85/90 login-al (session 0%) is the only login in the
 /// first tier. At 95/98 every login with a session below 95% is in the first
-/// tier, and qquinn has the most room now (12, as yyandis, with the lower
+/// tier, and login-ar has the most room now (12, as login-bh, with the lower
 /// week); both of its windows are below the deployed thresholds, so the swap
 /// is a threshold swap.
 fn target_0556(label: &str) -> (&'static str, &'static str) {
     match label {
-        "85/90" => ("llarame", "target s=0% w=95% reason=plan-room"),
-        _ => ("qquinn", "target s=88% w=20% reason=threshold"),
+        "85/90" => ("login-al", "target s=0% w=95% reason=plan-room"),
+        _ => ("login-ar", "target s=88% w=20% reason=threshold"),
     }
 }
 
@@ -91,7 +91,7 @@ fn a_dry_run_on_the_0556_readings_names_the_same_login_at_both_settings() {
     }
 }
 
-/// yyandis (88/71) is the only login in the live login's organisation: tier
+/// login-bh (88/71) is the only login in the live login's organisation: tier
 /// 2 at 85/90 and tier 1 at 95/98, room 12 at both. Every login that ranks
 /// above it is in another organisation, and the live login has no room, so a
 /// crossing is open; the same-organisation login still comes first.
@@ -99,13 +99,13 @@ fn a_dry_run_on_the_0556_readings_names_the_same_login_at_both_settings() {
 fn a_same_organisation_login_comes_before_a_better_one_in_another_at_both_settings() {
     for (_, s) in BOTH {
         let mut orgs: Vec<(&str, &str)> = NAMES.iter().map(|who| (*who, "org-b")).collect();
-        orgs.retain(|(who, _)| *who != "yyandis");
-        orgs.extend([("work", "org-a"), ("yyandis", "org-a")]);
+        orgs.retain(|(who, _)| *who != "login-bh");
+        orgs.extend([("work", "org-a"), ("login-bh", "org-a")]);
         let f = fleet(NAMES, &orgs);
         let out = run(&f, s(), exh(100.0, 67.0), &nov22_table(), STILL_RUNNING);
         let log = f.log();
         assert_eq!(out, CycleOutcome::Swapped, "{log}");
-        assert!(f.live_is("yyandis"), "{log}");
+        assert!(f.live_is("login-bh"), "{log}");
         assert!(!log.contains("affinity: crossing"), "{log}");
     }
 }
@@ -162,11 +162,11 @@ fn the_0548_cycle_stays_with_no_alert_at_both_settings() {
 }
 
 /// At 95/98, as the live session rises through the morning: below 95% it
-/// stays; at 95% (room 5) and above, it moves to qquinn, the login with the
-/// most room now, at once. qquinn's session is below `--session-at`, so the
+/// stays; at 95% (room 5) and above, it moves to login-ar, the login with the
+/// most room now, at once. login-ar's session is below `--session-at`, so the
 /// hold after the last swap does not apply, and no step raises an ALERT.
 #[test]
-fn at_the_deployed_settings_the_rising_live_session_moves_to_qquinn_without_an_alert() {
+fn at_the_deployed_settings_the_rising_live_session_moves_to_login_ar_without_an_alert() {
     let steps = [
         (rd(91.0, 66.0, None), None),
         (
@@ -200,26 +200,29 @@ fn at_the_deployed_settings_the_rising_live_session_moves_to_qquinn_without_an_a
             }
             Some(tail) => {
                 assert_eq!(out, CycleOutcome::Swapped, "{live:?}: {log}");
-                assert!(f.live_is("qquinn"), "{log}");
-                assert!(log.contains(&format!("swap work->qquinn {tail}")), "{log}");
+                assert!(f.live_is("login-ar"), "{log}");
+                assert!(
+                    log.contains(&format!("swap work->login-ar {tail}")),
+                    "{log}"
+                );
             }
         }
         assert_no_alert("95/98", &log);
     }
 }
 
-/// One cycle after the swap to qquinn at 95/98: qquinn (88/20, room 12) is
-/// below both thresholds, so nothing needs to move and llarame (room 5) is no
+/// One cycle after the swap to login-ar at 95/98: login-ar (88/20, room 12) is
+/// below both thresholds, so nothing needs to move and login-al (room 5) is no
 /// upgrade. The rotator stays, with no note and no hold note.
 #[test]
-fn at_the_deployed_settings_the_cycle_after_the_swap_stays_on_qquinn() {
+fn at_the_deployed_settings_the_cycle_after_the_swap_stays_on_login_ar() {
     let mut names = NAMES.to_vec();
     names.push("rrowan");
     let f = fleet(&names, &[]);
     f.set_swapped_at(clock() - 60);
     let table: Vec<(&str, Probed)> = nov22_table()
         .into_iter()
-        .filter(|(who, _)| *who != "qquinn")
+        .filter(|(who, _)| *who != "login-ar")
         .chain([("rrowan", exh(100.0, 67.0))])
         .collect();
     let out = run(
@@ -324,8 +327,8 @@ fn the_first_cycle_after_a_restart_moves_to_a_login_with_room_and_wakes_the_wait
 
 /// The restart finds the live login past `--session-at` with room 4 (96/40),
 /// after a stay that recorded no room, so the waits are held. The first cycle
-/// moves to qquinn (room 12) at both settings, because 12 is at least 4 + 3.
-/// At 95/98 qquinn's session is below `--session-at`, so the cycle records
+/// moves to login-ar (room 12) at both settings, because 12 is at least 4 + 3.
+/// At 95/98 login-ar's session is below `--session-at`, so the cycle records
 /// room and every wait wakes. At 85/90 it is not (88% against 85%), so the
 /// cycle records no room and the waits stay held: flag 8 of the PR, #3067.
 #[test]
@@ -344,7 +347,7 @@ fn a_restart_past_session_at_moves_and_wakes_the_waits_only_onto_a_login_below_i
         let out = run(&f, s(), rd(96.0, 40.0, None), &nov22_table(), STILL_RUNNING);
         let log = f.log();
         assert_eq!(out, CycleOutcome::Swapped, "{label}: {log}");
-        assert!(f.live_is("qquinn"), "{label}: {log}");
+        assert!(f.live_is("login-ar"), "{label}: {log}");
         let v = wait_view(&f.e);
         if label == "95/98" {
             assert_eq!(v.live_room, Some(true), "{v:?}");
@@ -365,27 +368,27 @@ fn a_restart_past_session_at_moves_and_wakes_the_waits_only_onto_a_login_below_i
 #[test]
 fn after_a_move_onto_a_login_past_session_at_the_waits_wake_on_the_first_cycle_with_room() {
     for (label, s) in BOTH {
-        let f = fleet(&["eelsworth", "ppatton"], &[]);
+        let f = fleet(&["login-ae", "login-aq"], &[]);
         // The move is two hours ago, so the ledger's times stay in the past
         // when the session reset comes; the wait reads no time in the future.
         set_clock(clock() - 7200);
         let hits = limit_hits();
         previous_release_ledger(&f.e, "alerted");
         let table = [
-            ("eelsworth", rd(96.0, 82.0, None)),
-            ("ppatton", exh(100.0, 99.0)),
+            ("login-ae", rd(96.0, 82.0, None)),
+            ("login-aq", exh(100.0, 99.0)),
         ];
         let out = run(&f, s(), exh(100.0, 67.0), &table, &[]);
         let log = f.log();
         assert_eq!(out, CycleOutcome::Swapped, "{label}: {log}");
-        assert!(f.live_is("eelsworth"), "{label}: {log}");
+        assert!(f.live_is("login-ae"), "{label}: {log}");
         let v = wait_view(&f.e);
         assert_eq!(v.live_room, Some(false), "{label}: {v:?}");
         assert_waits_held(&format!("{label}, after the move"), &v, hits);
 
-        // Two hours later, now, eelsworth's session window has reset.
+        // Two hours later, now, login-ae's session window has reset.
         set_clock(now());
-        let table = [("work", exh(100.0, 67.0)), ("ppatton", exh(100.0, 99.0))];
+        let table = [("work", exh(100.0, 67.0)), ("login-aq", exh(100.0, 99.0))];
         let out = run(&f, s(), rd(4.0, 82.0, None), &table, &[]);
         let log = f.log();
         assert_eq!(out, CycleOutcome::Stayed, "{label}: {log}");

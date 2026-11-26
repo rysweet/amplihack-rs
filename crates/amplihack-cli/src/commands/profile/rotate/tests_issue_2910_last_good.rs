@@ -101,9 +101,9 @@ fn measured(s: f64, w: f64) -> Reading {
 fn the_last_good_reading_is_a_measured_reading_in_whole_numbers_with_its_time() {
     let e = env();
     state_dir(&e);
-    put(&e, NOW - 1800, "llarame", good(86_400));
-    let got = read(&e, &["llarame"], NOW);
-    let lg = got.get(&n("llarame")).expect("a last good reading");
+    put(&e, NOW - 1800, "login-al", good(86_400));
+    let got = read(&e, &["login-al"], NOW);
+    let lg = got.get(&n("login-al")).expect("a last good reading");
     assert_eq!(lg.reading, measured(78.0, 92.0));
     assert_eq!(lg.at, NOW - 1800);
     assert_eq!(got.len(), 1);

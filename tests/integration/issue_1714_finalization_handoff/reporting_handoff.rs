@@ -17,7 +17,7 @@ use super::ancestor::{
 };
 use super::fixture::*;
 
-/// A resumed run on the mistt #138 history whose reporting step failed, with
+/// A resumed run on the example-org #138 history whose reporting step failed, with
 /// the state `assess-finalization` decided on it.
 fn reporting_failed_env(
     fx: &Fixture,

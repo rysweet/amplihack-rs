@@ -293,7 +293,7 @@ Use Edit tool on .claude/context/USER_PREFERENCES.md:
 
 1. Use the Bash tool to list workflow files:
    ```bash
-   ls -1 /Users/ryan/src/tempsaturday/worktree-issue-968/.claude/workflow/*.md | grep -v README.md | grep -v templates
+   ls -1 /Users/you/src/tempsaturday/worktree-issue-968/.claude/workflow/*.md | grep -v README.md | grep -v templates
    ```
 2. For each workflow file found, use the Read tool to extract:
    - Workflow name (from filename)

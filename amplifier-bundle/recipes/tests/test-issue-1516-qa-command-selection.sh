@@ -14,7 +14,7 @@
 #      one hit, or a first sorted hit that is an ancestor of every other hit,
 #      runs cargo test in that directory; anything else is BLOCKED.
 # A root Python or Node project always wins over a nested crate (the
-# mistt-repo/jamestown shape: root pytest suite + grid-encode-decode/Cargo.toml).
+# example-org/repo-b shape: root pytest suite + grid-encode-decode/Cargo.toml).
 #
 # Issue #1763 changed step 5. Detection is now scoped to the pull request's
 # changed paths (test-issue-1763-qa-scope.sh covers that); with an empty
@@ -310,7 +310,7 @@ expect h "node root" qa_repo_type=node qa_dir=. qa_command="npm test" gadugi_req
 expect_calls h-calls "npm runs at the root" npm "npm|.|test"
 expect_type_req h-type node true
 
-echo "== #1516 (i): the jamestown shape runs the root pytest suite =="
+echo "== #1516 (i): the repo-b shape runs the root pytest suite =="
 new_repo pyproject.toml tests/test_x.py grid-encode-decode/Cargo.toml grid-encode-decode/src/lib.rs
 run_tool
 expect i "root Python wins over a nested crate" qa_status=PASS qa_repo_type=python qa_dir=. \

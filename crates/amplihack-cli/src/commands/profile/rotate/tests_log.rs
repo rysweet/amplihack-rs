@@ -258,8 +258,8 @@ mod handfix_text {
     #[test]
     fn the_lost_login_line_names_the_profile_and_the_command() {
         assert_eq!(
-            msg::lost_login(&name("ryan-ryansweet")),
-            "ALERT: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet"
+            msg::lost_login(&name("login-ay")),
+            "ALERT: profile login-ay has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login login-ay"
         );
     }
 }

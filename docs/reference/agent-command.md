@@ -234,7 +234,7 @@ Only these variables are ever recorded, matched by exact name:
 One line on stdout:
 
 ```text
-registered coordinator: session coordinator, window main, conversation 0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c, directory /home/alex/src/mistt
+registered coordinator: session coordinator, window main, conversation 0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c, directory /home/alex/src/example-org
 ```
 
 Warnings go to stderr; see [Warnings](#warnings).
@@ -304,11 +304,11 @@ After the rows comes one `ALERT NAME: ALERT` line for each agent with an
 alert.
 
 ```text
-NAME         STATE                                 CONVERSATION                          DIRECTORY              LAST RECOVERY
-area-search  active                                e7b1d4c9-2a6f-4e3b-8d5c-9f1a7e2b6d48  /home/alex/src/search  2026-10-29T23:27:43Z resumed
-coordinator  active                                0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c  /home/alex/src/mistt   2026-10-29T23:27:41Z resumed
-custodian    stopped                               3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57  /home/alex/src/mistt   2026-10-30T00:41:40Z stopped: restart limit
-writer       ended 2026-10-30T08:02:15Z (wrapper)  b4e9a2d7-6c1f-4d8b-a3e5-7f2c9d6b1a84  /home/alex/src/mistt   2026-10-29T23:28:44Z resumed
+NAME         STATE                                 CONVERSATION                          DIRECTORY                   LAST RECOVERY
+area-search  active                                e7b1d4c9-2a6f-4e3b-8d5c-9f1a7e2b6d48  /home/alex/src/search       2026-10-29T23:27:43Z resumed
+coordinator  active                                0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c  /home/alex/src/example-org  2026-10-29T23:27:41Z resumed
+custodian    stopped                               3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57  /home/alex/src/example-org  2026-10-30T00:41:40Z stopped: restart limit
+writer       ended 2026-10-30T08:02:15Z (wrapper)  b4e9a2d7-6c1f-4d8b-a3e5-7f2c9d6b1a84  /home/alex/src/example-org  2026-10-29T23:28:44Z resumed
 ALERT custodian: stopped: restart limit (3 restarts in the last hour)
 ```
 
@@ -360,7 +360,7 @@ prints it:
     "result": "stopped: restart limit",
     "resumed": null
   },
-  "launch_dir": "/home/alex/src/mistt",
+  "launch_dir": "/home/alex/src/example-org",
   "name": "custodian",
   "restarts_last_hour": 3,
   "state": "stopped",
@@ -678,7 +678,7 @@ PANE_ARGV is, in order:
 Example, wrapped for reading, with MESSAGE standing for the message:
 
 ```text
-tmux -S /tmp/tmux-1000/default new-session -d -s coordinator -n main -c /home/alex/src/mistt -- \
+tmux -S /tmp/tmux-1000/default new-session -d -s coordinator -n main -c /home/alex/src/example-org -- \
   env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR \
   -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT \
   -u COPILOT_AGENT -u AMPLIHACK_SESSION_ID -u AMPLIHACK_DEPTH -u AMPLIHACK_SESSION_DEPTH \
@@ -686,7 +686,7 @@ tmux -S /tmp/tmux-1000/default new-session -d -s coordinator -n main -c /home/al
   CLAUDE_CODE_EFFORT_LEVEL=high \
   /home/alex/.local/bin/amplihack claude --no-reflection --profile work --supervise coordinator \
   -- --resume 0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c MESSAGE \
-  --model opus --effort high --add-dir /home/alex/src/mistt-docs --dangerously-skip-permissions
+  --model opus --effort high --add-dir /home/alex/src/repo-d --dangerously-skip-permissions
 ```
 
 Every element is a constant, a validated registry field, the `amplihack`
@@ -1019,14 +1019,14 @@ files.
       "tmux_session": "coordinator",
       "tmux_window": "main",
       "tmux_socket": "/tmp/tmux-1000/default",
-      "launch_dir": "/home/alex/src/mistt",
+      "launch_dir": "/home/alex/src/example-org",
       "conversation_id": "0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c",
       "claude_pid": 41237,
       "proc_start": 88123456,
       "model": "opus",
       "effort": "high",
       "add_dirs": [
-        "/home/alex/src/mistt-docs"
+        "/home/alex/src/repo-d"
       ],
       "skip_permissions": true,
       "amplihack_flags": {

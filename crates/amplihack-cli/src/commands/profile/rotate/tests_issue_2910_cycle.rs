@@ -34,7 +34,7 @@ fn assert_no_stale_alert(log: &str) {
 }
 
 #[test]
-fn ac2_the_0556_cycle_swaps_to_llarame_in_one_organisation() {
+fn ac2_the_0556_cycle_swaps_to_login_al_in_one_organisation() {
     let f = fleet(NAMES, &[]);
     let out = run(
         &f,
@@ -45,16 +45,16 @@ fn ac2_the_0556_cycle_swaps_to_llarame_in_one_organisation() {
     );
     let log = f.log();
     assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("llarame"), "{log}");
+    assert!(f.live_is("login-al"), "{log}");
     assert!(
-        log.contains("swap work->llarame live s=100% w=67% target s=0% w=95% reason=plan-room"),
+        log.contains("swap work->login-al live s=100% w=67% target s=0% w=95% reason=plan-room"),
         "{log}"
     );
     assert_no_stale_alert(&log);
 }
 
 #[test]
-fn ac2_with_every_login_in_the_live_organisation_it_swaps_to_llarame() {
+fn ac2_with_every_login_in_the_live_organisation_it_swaps_to_login_al() {
     let mut orgs: Vec<(&str, &str)> = NAMES.iter().map(|who| (*who, "org-a")).collect();
     orgs.push(("work", "org-a"));
     let f = fleet(NAMES, &orgs);
@@ -67,7 +67,7 @@ fn ac2_with_every_login_in_the_live_organisation_it_swaps_to_llarame() {
     );
     let log = f.log();
     assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("llarame"), "{log}");
+    assert!(f.live_is("login-al"), "{log}");
     assert!(!log.contains("affinity: crossing"), "{log}");
     assert_no_stale_alert(&log);
 }
@@ -76,7 +76,7 @@ fn ac2_with_every_login_in_the_live_organisation_it_swaps_to_llarame() {
 /// its organisation or unresolved qualifies: a confirmed crossing, with its
 /// warning, and never a stay with a login at 100%.
 #[test]
-fn ac2_a_live_login_alone_in_its_organisation_crosses_to_llarame_with_the_warning() {
+fn ac2_a_live_login_alone_in_its_organisation_crosses_to_login_al_with_the_warning() {
     let mut orgs: Vec<(&str, &str)> = NAMES.iter().map(|who| (*who, "org-b")).collect();
     orgs.push(("work", "org-a"));
     let f = fleet(NAMES, &orgs);
@@ -89,22 +89,26 @@ fn ac2_a_live_login_alone_in_its_organisation_crosses_to_llarame_with_the_warnin
     );
     let log = f.log();
     assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("llarame"), "{log}");
-    assert!(log.contains("affinity: crossing work->llarame"), "{log}");
+    assert!(f.live_is("login-al"), "{log}");
+    assert!(log.contains("affinity: crossing work->login-al"), "{log}");
     assert_no_stale_alert(&log);
     // No identifier of an account or an organisation reaches the log.
-    for secret in ["org-a", "org-b", "@example.com", "u-llarame", "u-work"] {
+    for secret in ["org-a", "org-b", "@example.com", "u-login-al", "u-work"] {
         assert!(!log.contains(secret), "{secret} in the log:\n{log}");
     }
 }
 
-/// With qquinn in the live login's organisation and llarame in another,
+/// With login-ar in the live login's organisation and login-al in another,
 /// the same-organisation login comes first, whatever its tier.
 #[test]
 fn ac2_a_same_organisation_login_comes_before_a_better_one_in_another() {
     let f = fleet(
         NAMES,
-        &[("work", "org-a"), ("qquinn", "org-a"), ("llarame", "org-b")],
+        &[
+            ("work", "org-a"),
+            ("login-ar", "org-a"),
+            ("login-al", "org-b"),
+        ],
     );
     let out = run(
         &f,
@@ -115,7 +119,7 @@ fn ac2_a_same_organisation_login_comes_before_a_better_one_in_another() {
     );
     let log = f.log();
     assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("qquinn"), "{log}");
+    assert!(f.live_is("login-ar"), "{log}");
     assert!(!log.contains("affinity: crossing"), "{log}");
     assert_no_stale_alert(&log);
 }
@@ -171,13 +175,13 @@ fn ac9_the_stay_note_is_written_once_per_key() {
     );
 }
 
-/// One cycle after the swap: the live login is llarame (0/95, room 5). qquinn
+/// One cycle after the swap: the live login is login-al (0/95, room 5). login-ar
 /// has room 12 and is past `--session-at`, so inside `--hold` the rotator stays
 /// and says why; once the hold has run out it moves.
 fn after_the_swap_table() -> Vec<(&'static str, Probed)> {
     nov22_table()
         .into_iter()
-        .filter(|(who, _)| *who != "llarame")
+        .filter(|(who, _)| *who != "login-al")
         .chain([("rrowan", exh(100.0, 67.0))])
         .collect()
 }
@@ -189,7 +193,7 @@ fn after_the_swap_fleet() -> Fleet {
 }
 
 #[test]
-fn ac9_after_the_swap_the_hold_keeps_the_rotator_on_llarame() {
+fn ac9_after_the_swap_the_hold_keeps_the_rotator_on_login_al() {
     let f = after_the_swap_fleet();
     f.set_swapped_at(clock() - 600);
     let out = run(
@@ -204,7 +208,7 @@ fn ac9_after_the_swap_the_hold_keeps_the_rotator_on_llarame() {
     assert!(f.live_is("work"), "{log}");
     assert!(
         log.contains(
-            "stay: held after last swap (600s of 3600s): qquinn is at s=88%, at or above --session-at"
+            "stay: held after last swap (600s of 3600s): login-ar is at s=88%, at or above --session-at"
         ),
         "{log}"
     );
@@ -226,7 +230,7 @@ fn ac9_once_the_hold_has_run_out_the_rotator_moves_on() {
     );
     let log = f.log();
     assert_eq!(out, CycleOutcome::Swapped, "{log}");
-    assert!(f.live_is("qquinn"), "{log}");
+    assert!(f.live_is("login-ar"), "{log}");
     assert!(log.contains("reason=plan-room"), "{log}");
 }
 
@@ -243,7 +247,7 @@ fn ac9_a_ledger_with_no_swap_time_holds_nothing() {
         STILL_RUNNING,
     );
     assert_eq!(out, CycleOutcome::Swapped, "{}", f.log());
-    assert!(f.live_is("qquinn"));
+    assert!(f.live_is("login-ar"));
 }
 
 #[test]
@@ -395,73 +399,73 @@ const KINDS: &[&str] = &["spend_limit", "session_limit", "week_limit"];
 
 fn block_table() -> Vec<(&'static str, Probed)> {
     vec![
-        ("llarame", rd(0.0, 40.0, None)),
-        ("qquinn", rd(10.0, 50.0, None)),
+        ("login-al", rd(0.0, 40.0, None)),
+        ("login-ar", rd(10.0, 50.0, None)),
     ]
 }
 
 #[test]
 fn ac4_a_login_with_a_block_is_never_chosen_before_its_reset() {
     for kind in KINDS {
-        let f = fleet(&["llarame", "qquinn"], &[]);
-        f.block("llarame", kind, clock() + 3600);
+        let f = fleet(&["login-al", "login-ar"], &[]);
+        f.block("login-al", kind, clock() + 3600);
         let out = run(&f, reporter(), exh(100.0, 40.0), &block_table(), &[]);
         let log = f.log();
         assert_eq!(out, CycleOutcome::Swapped, "{kind}: {log}");
-        assert!(f.live_is("qquinn"), "{kind}: llarame is blocked:\n{log}");
-        assert!(log.contains("swap work->qquinn"), "{kind}: {log}");
+        assert!(f.live_is("login-ar"), "{kind}: login-al is blocked:\n{log}");
+        assert!(log.contains("swap work->login-ar"), "{kind}: {log}");
     }
 }
 
 #[test]
 fn ac4_a_login_with_a_block_is_chosen_once_its_reset_has_come() {
     for kind in KINDS {
-        let f = fleet(&["llarame", "qquinn"], &[]);
+        let f = fleet(&["login-al", "login-ar"], &[]);
         let until = clock() + 3600;
-        f.block("llarame", kind, until);
+        f.block("login-al", kind, until);
         // The decision clock reaches the reset exactly: `now >= until`.
         set_clock(until);
         let out = run(&f, reporter(), exh(100.0, 40.0), &block_table(), &[]);
         let log = f.log();
         assert_eq!(out, CycleOutcome::Swapped, "{kind}: {log}");
-        assert!(f.live_is("llarame"), "{kind}: the block has ended:\n{log}");
+        assert!(f.live_is("login-al"), "{kind}: the block has ended:\n{log}");
     }
 }
 
 #[test]
 fn ac4_one_second_before_the_reset_the_block_still_holds() {
-    let f = fleet(&["llarame", "qquinn"], &[]);
+    let f = fleet(&["login-al", "login-ar"], &[]);
     let until = clock() + 3600;
-    f.block("llarame", "week_limit", until);
+    f.block("login-al", "week_limit", until);
     set_clock(until - 1);
     run(&f, reporter(), exh(100.0, 40.0), &block_table(), &[]);
-    assert!(f.live_is("qquinn"), "{}", f.log());
+    assert!(f.live_is("login-ar"), "{}", f.log());
 }
 
 #[test]
 fn ac4_a_blocked_live_login_has_no_room_whatever_its_probe_shows() {
     // `work` reads 40% and 40%, but a session limit is recorded for it until
     // later: it cannot run work, so the move needs no margin.
-    let f = fleet(&["llarame"], &[]);
+    let f = fleet(&["login-al"], &[]);
     f.block("work", "session_limit", clock() + 3600);
     let out = run(
         &f,
         reporter(),
         rd(40.0, 40.0, None),
-        &[("llarame", rd(30.0, 40.0, None))],
+        &[("login-al", rd(30.0, 40.0, None))],
         &[],
     );
     // Not an upgrade (the gain is under 30), and not held for margin.
     assert_eq!(out, CycleOutcome::Swapped, "{}", f.log());
-    assert!(f.live_is("llarame"), "{}", f.log());
+    assert!(f.live_is("login-al"), "{}", f.log());
 }
 
 #[test]
 fn ac4_the_summary_counts_blocked_logins_with_the_earliest_reset() {
-    let f = fleet(&["llarame", "qquinn"], &[]);
+    let f = fleet(&["login-al", "login-ar"], &[]);
     let t = clock();
-    f.block("llarame", "session_limit", t + 7200);
-    f.block("qquinn", "week_limit", t + 3600);
+    f.block("login-al", "session_limit", t + 7200);
+    f.block("login-ar", "week_limit", t + 3600);
     let out = run(&f, reporter(), exh(100.0, 40.0), &block_table(), &[]);
     let log = f.log();
     assert_eq!(out, CycleOutcome::Alerted, "{log}");
@@ -480,15 +484,15 @@ fn ac4_the_summary_counts_blocked_logins_with_the_earliest_reset() {
 
 fn all_full() -> Vec<(&'static str, Probed)> {
     vec![
-        ("aanderson", exh(0.0, 100.0)),
-        ("bbuck", exh(100.0, 10.0)),
-        ("ccapstone", exh(100.0, 100.0)),
+        ("login-aa", exh(0.0, 100.0)),
+        ("login-ab", exh(100.0, 10.0)),
+        ("login-ac", exh(100.0, 100.0)),
     ]
 }
 
 #[test]
 fn ac6_with_no_eligible_login_nothing_moves_and_one_summary_line_is_written() {
-    let f = fleet(&["aanderson", "bbuck", "ccapstone"], &[]);
+    let f = fleet(&["login-aa", "login-ab", "login-ac"], &[]);
     let out = run(&f, reporter(), exh(100.0, 67.0), &all_full(), &[]);
     let log = f.log();
     assert_eq!(out, CycleOutcome::Alerted, "{log}");
@@ -506,7 +510,7 @@ fn ac6_with_no_eligible_login_nothing_moves_and_one_summary_line_is_written() {
 
 #[test]
 fn ac6_a_second_identical_cycle_writes_no_second_line() {
-    let f = fleet(&["aanderson", "bbuck", "ccapstone"], &[]);
+    let f = fleet(&["login-aa", "login-ab", "login-ac"], &[]);
     run(&f, reporter(), exh(100.0, 67.0), &all_full(), &[]);
     let out = run(&f, reporter(), exh(100.0, 67.0), &all_full(), &[]);
     assert_eq!(out, CycleOutcome::Alerted);
@@ -515,15 +519,15 @@ fn ac6_a_second_identical_cycle_writes_no_second_line() {
 
 #[test]
 fn ac6_a_change_of_wording_writes_a_new_line_and_a_change_of_counts_does_not() {
-    let f = fleet(&["aanderson", "bbuck", "ccapstone"], &[]);
+    let f = fleet(&["login-aa", "login-ab", "login-ac"], &[]);
     run(&f, reporter(), exh(100.0, 67.0), &all_full(), &[]);
     // One login is now unknown: "no profile has capacity" can no longer be said.
     let one_unknown = vec![
-        ("aanderson", exh(0.0, 100.0)),
-        ("bbuck", exh(100.0, 10.0)),
-        ("ccapstone", unread()),
+        ("login-aa", exh(0.0, 100.0)),
+        ("login-ab", exh(100.0, 10.0)),
+        ("login-ac", unread()),
     ];
-    let labels = [("ccapstone", ProbeLabel::Http429)];
+    let labels = [("login-ac", ProbeLabel::Http429)];
     run(&f, reporter(), exh(100.0, 67.0), &one_unknown, &labels);
     let log = f.log();
     assert_eq!(alerts(&log).len(), 2, "{log}");
@@ -535,13 +539,13 @@ fn ac6_a_change_of_wording_writes_a_new_line_and_a_change_of_counts_does_not() {
     );
     // The counts change within the same wording: no new line.
     let two_unknown = vec![
-        ("aanderson", exh(0.0, 100.0)),
-        ("bbuck", unread()),
-        ("ccapstone", unread()),
+        ("login-aa", exh(0.0, 100.0)),
+        ("login-ab", unread()),
+        ("login-ac", unread()),
     ];
     let labels = [
-        ("bbuck", ProbeLabel::Http429),
-        ("ccapstone", ProbeLabel::Http429),
+        ("login-ab", ProbeLabel::Http429),
+        ("login-ac", ProbeLabel::Http429),
     ];
     run(&f, reporter(), exh(100.0, 67.0), &two_unknown, &labels);
     assert_eq!(alerts(&f.log()).len(), 2, "{}", f.log());
@@ -550,7 +554,7 @@ fn ac6_a_change_of_wording_writes_a_new_line_and_a_change_of_counts_does_not() {
 #[test]
 fn ac6_the_cycle_does_not_end_in_an_error_when_no_login_has_room() {
     // `run` expects an `Ok`; a one-shot cycle (the command) does too.
-    let f = fleet(&["aanderson", "bbuck", "ccapstone"], &[]);
+    let f = fleet(&["login-aa", "login-ab", "login-ac"], &[]);
     let out = run_mode(
         &f,
         reporter(),
@@ -571,16 +575,16 @@ fn ac6_the_cycle_does_not_end_in_an_error_when_no_login_has_room() {
 /// ALERT that pauses session resumes until a later cycle finds room.
 #[test]
 fn ac7_a_login_that_answered_429_is_rejected_at_confirmation_when_the_live_login_is_full() {
-    let f = fleet(&["llarame", "qquinn"], &[]);
-    f.history("llarame", 1800, 78, 92);
+    let f = fleet(&["login-al", "login-ar"], &[]);
+    f.history("login-al", 1800, 78, 92);
     let out = run(
         &f,
         reporter(),
         exh(100.0, 40.0),
-        &[("llarame", unread()), ("qquinn", unread())],
+        &[("login-al", unread()), ("login-ar", unread())],
         &[
-            ("llarame", ProbeLabel::Http429),
-            ("qquinn", ProbeLabel::Http429),
+            ("login-al", ProbeLabel::Http429),
+            ("login-ar", ProbeLabel::Http429),
         ],
     );
     let log = f.log();
@@ -588,12 +592,12 @@ fn ac7_a_login_that_answered_429_is_rejected_at_confirmation_when_the_live_login
     assert!(f.live_is("work"), "{log}");
     // The probe's own error is in the log, beside the login it was for.
     assert!(
-        log.contains("llarame:unknown, HTTP 429, last s=78%,w=92% 30m ago"),
+        log.contains("login-al:unknown, HTTP 429, last s=78%,w=92% 30m ago"),
         "{log}"
     );
-    assert!(log.contains("qquinn:unknown, HTTP 429"), "{log}");
+    assert!(log.contains("login-ar:unknown, HTTP 429"), "{log}");
     assert!(
-        log.contains("reject: llarame reading unknown (HTTP 429)"),
+        log.contains("reject: login-al reading unknown (HTTP 429)"),
         "{log}"
     );
     assert!(
@@ -607,15 +611,15 @@ fn ac7_a_login_that_answered_429_is_rejected_at_confirmation_when_the_live_login
 
 #[test]
 fn ac7_with_room_on_the_live_login_a_429_login_is_not_a_reason_to_leave_it() {
-    let f = fleet(&["llarame"], &[]);
-    f.history("llarame", 1800, 78, 92);
-    // `work` has room 8 and `llarame` has room 8: a move needs 11.
+    let f = fleet(&["login-al"], &[]);
+    f.history("login-al", 1800, 78, 92);
+    // `work` has room 8 and `login-al` has room 8: a move needs 11.
     let out = run(
         &f,
         reporter(),
         rd(83.0, 92.0, None),
-        &[("llarame", unread())],
-        &[("llarame", ProbeLabel::Http429)],
+        &[("login-al", unread())],
+        &[("login-al", ProbeLabel::Http429)],
     );
     let log = f.log();
     assert_eq!(out, CycleOutcome::Stayed, "{log}");
@@ -720,34 +724,34 @@ fn d11_the_cycle_line_says_why_a_login_is_not_a_target() {
 
 #[test]
 fn t7_a_last_good_reading_changes_the_decision_only() {
-    let f = fleet(&["llarame"], &[]);
-    f.history("llarame", 1800, 78, 92);
+    let f = fleet(&["login-al"], &[]);
+    f.history("login-al", 1800, 78, 92);
     run(
         &f,
         reporter(),
         exh(100.0, 40.0),
-        &[("llarame", unread())],
-        &[("llarame", ProbeLabel::Http429)],
+        &[("login-al", unread())],
+        &[("login-al", ProbeLabel::Http429)],
     );
-    // The cycle wrote no new point for llarame: the probe read nothing, and
+    // The cycle wrote no new point for login-al: the probe read nothing, and
     // the substituted figure is not a reading. The one point is the seeded one.
     let (entries, _) = usage_history::read_all(&f.e.root, now() + 3600);
-    let with_llarame = entries
+    let with_login_al = entries
         .iter()
-        .filter(|e| e.profiles.contains_key("llarame"))
+        .filter(|e| e.profiles.contains_key("login-al"))
         .count();
-    assert_eq!(with_llarame, 1, "{entries:?}");
+    assert_eq!(with_login_al, 1, "{entries:?}");
     // The no-room record is not written for it either.
     let l = f.e.rs.load_ledger().unwrap().unwrap();
     let recorded = serde_json::to_string(&l.no_room).unwrap();
-    assert!(!recorded.contains("llarame"), "{recorded}");
+    assert!(!recorded.contains("login-al"), "{recorded}");
 }
 
 // --- AC10: the dry run takes the same path --------------------------------------------------------------------
 
 #[test]
 fn ac10_a_dry_run_on_the_22_nov_readings_would_swap_and_moves_nothing() {
-    // The target, llarame, is named on the printed `would swap` line, which QA
+    // The target, login-al, is named on the printed `would swap` line, which QA
     // case 1 checks on the real command; the cycle test above names it for
     // the same decision. Here: the same path decides a swap and writes nothing.
     let f = fleet(NAMES, &[]);
@@ -969,19 +973,22 @@ fn d9_no_profile_has_capacity_is_never_written_while_a_login_is_unknown_or_faile
 /// reason. The summary must not claim every login is known to have no room.
 #[test]
 fn ac6_a_plan_login_that_was_never_read_is_not_a_login_known_to_have_no_room() {
-    let f = fleet(&["aanderson", "bbuck", "ccapstone"], &[]);
-    // `ccapstone`'s directory is group- and world-writable: the scan refuses
+    let f = fleet(&["login-aa", "login-ab", "login-ac"], &[]);
+    // `login-ac`'s directory is group- and world-writable: the scan refuses
     // it and it is skipped, so it carries no reading at all.
     use std::os::unix::fs::PermissionsExt;
-    let dir = f.e.root.join("ccapstone");
+    let dir = f.e.root.join("login-ac");
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
-    let readings = vec![("aanderson", exh(0.0, 100.0)), ("bbuck", exh(100.0, 10.0))];
+    let readings = vec![
+        ("login-aa", exh(0.0, 100.0)),
+        ("login-ab", exh(100.0, 10.0)),
+    ];
     let out = run(&f, reporter(), exh(100.0, 67.0), &readings, &[]);
     let log = f.log();
     assert_eq!(out, CycleOutcome::Alerted, "{log}");
     assert!(
         !log.contains("no profile has capacity"),
-        "ccapstone's room was never read, so no login is known to have no room: {log}"
+        "login-ac's room was never read, so no login is known to have no room: {log}"
     );
     assert!(
         log.contains(
@@ -991,5 +998,5 @@ fn ac6_a_plan_login_that_was_never_read_is_not_a_login_known_to_have_no_room() {
         "the count says how many were not read and why: {log}"
     );
     // The cycle says the same thing twice: the skip line and the count agree.
-    assert!(log.contains("skip: ccapstone (directory refused)"), "{log}");
+    assert!(log.contains("skip: login-ac (directory refused)"), "{log}");
 }

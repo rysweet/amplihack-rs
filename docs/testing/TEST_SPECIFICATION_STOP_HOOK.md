@@ -634,7 +634,7 @@ mkdir -p tests/{unit,integration,e2e}
 #### Run All Tests
 
 ```bash
-cd /Users/ryan/src/tempsaturday/worktree-issue-962
+cd /Users/you/src/tempsaturday/worktree-issue-962
 pytest tests/
 ```
 

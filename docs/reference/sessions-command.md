@@ -165,7 +165,7 @@ before anything is archived. The dry run stops and exits 1 in the same
 way:
 
 ```
-cannot read live sessions in /home/ryan/.claude-profiles/work/sessions (permission denied); nothing archived
+cannot read live sessions in /home/you/.claude-profiles/work/sessions (permission denied); nothing archived
 ```
 
 The live set is built once at the start. With `--apply`, just before a
@@ -305,7 +305,7 @@ amplihack sessions restore 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10
 On success:
 
 ```
-restored 5 files to /home/ryan/.claude/projects/-home-ryan-src-amplihack-rs
+restored 5 files to /home/you/.claude/projects/-home-you-src-amplihack-rs
 ```
 
 `N` in `restored N files` counts regular files written, not directories.
@@ -316,8 +316,8 @@ is kept. It is reported on stderr as a conflict and the rest of the session
 is still restored:
 
 ```
-conflict: /home/ryan/.claude/projects/-home-ryan-src-amplihack-rs/4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10.jsonl already exists; kept
-restored 4 files to /home/ryan/.claude/projects/-home-ryan-src-amplihack-rs; 1 conflict kept
+conflict: /home/you/.claude/projects/-home-you-src-amplihack-rs/4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10.jsonl already exists; kept
+restored 4 files to /home/you/.claude/projects/-home-you-src-amplihack-rs; 1 conflict kept
 ```
 
 The summary ends `; 1 conflict kept` for one conflict and
@@ -344,18 +344,18 @@ Restore the session first, then resume it from the directory it ran in:
 
 ```
 amplihack sessions restore 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10
-cd /home/ryan/src/amplihack-rs
+cd /home/you/src/amplihack-rs
 claude --resume 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10
 ```
 
 Claude Code names the project directory after that working directory, for
-example `-home-ryan-src-amplihack-rs` for `/home/ryan/src/amplihack-rs`, and
+example `-home-you-src-amplihack-rs` for `/home/you/src/amplihack-rs`, and
 the `restored N files to <dir>` line prints it. To find the id of an
 archived session, search the [manifest](#manifest) in DEST, for example by
 project:
 
 ```
-grep -- '-home-ryan-src-amplihack-rs' ~/.amplihack/session-archive/MANIFEST.jsonl
+grep -- '-home-you-src-amplihack-rs' ~/.amplihack/session-archive/MANIFEST.jsonl
 ```
 
 A restored session counts as new, so the daily run keeps it for another
@@ -372,7 +372,7 @@ amplihack config set sessions.daily_archive false
 ~/.amplihack/session-archive/                      0700
 ├── .archive.lock                                   0600
 ├── MANIFEST.jsonl                                  0600
-└── -home-ryan-src-amplihack-rs/                    0700
+└── -home-you-src-amplihack-rs/                     0700
     ├── 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10.tar.gz 0600
     └── 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10.20261102T031500Z.tar.gz
 ```
@@ -455,7 +455,7 @@ both use them.
 after the archive is in place and before the originals are removed:
 
 ```json
-{"time":"2026-10-29T12:00:00Z","session_id":"4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10","project":"-home-ryan-src-amplihack-rs","bytes":184213,"archive":"-home-ryan-src-amplihack-rs/4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10.tar.gz","parts":5}
+{"time":"2026-10-29T12:00:00Z","session_id":"4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10","project":"-home-you-src-amplihack-rs","bytes":184213,"archive":"-home-you-src-amplihack-rs/4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10.tar.gz","parts":5}
 ```
 
 | Field | Type | Meaning |
@@ -484,7 +484,7 @@ file stays on disk. The dry run takes no lock.
 When another run holds the lock:
 
 ```
-another sessions archive run is in progress (lock: /home/ryan/.amplihack/session-archive/.archive.lock)
+another sessions archive run is in progress (lock: /home/you/.amplihack/session-archive/.archive.lock)
 ```
 
 The command then exits 1 and changes nothing.
@@ -529,7 +529,7 @@ the default. It prints one line naming the key, the file and the problem,
 never the value, and exits 1:
 
 ```
-cannot read sessions.archive_days (/home/ryan/.amplihack/config.toml: sessions.archive_days: must be an integer from 1 to 4294967295)
+cannot read sessions.archive_days (/home/you/.amplihack/config.toml: sessions.archive_days: must be an integer from 1 to 4294967295)
 ```
 
 `HOME` must be set; otherwise the command prints `HOME is not set` and

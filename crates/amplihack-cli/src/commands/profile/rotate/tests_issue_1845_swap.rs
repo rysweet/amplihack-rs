@@ -634,11 +634,11 @@ fn a_record_in_the_same_organization_lets_the_swap_through() {
 #[test]
 fn no_backfill_when_another_profile_holds_the_outgoing_account() {
     // The #1845 incident: a folder already holds another account's login.
-    // `bbuck` holds `u-work` too, so which of them owns it is not known.
+    // `login-ab` holds `u-work` too, so which of them owns it is not known.
     let e = env();
     add_profile(
         &e,
-        "bbuck",
+        "login-ab",
         serde_json::json!({"accountUuid": "u-work", "emailAddress": "work@example.com"}),
     );
     ledger_says(&e.rs, "work", "u-work");
