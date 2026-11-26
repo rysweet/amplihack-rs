@@ -331,6 +331,9 @@ steps:
       # The body of this step lives in amplifier-bundle/tools/autodrive_crusty_concerns_evidence.sh,
       # extracted for the brick budget (issue #1619). It reads the RECIPE_VAR_*
       # variables the runner exports and measures in repo_path only (#2519).
+      # A STOP: step-05 exit fails the round, not the run: the goal loop's
+      # do_act_review records review-failed with the STOP line in review.log
+      # and the next turn's agent judges it (test: issue_2519_crusty_step05_worktree.rs).
       H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/autodrive_crusty_concerns_evidence.sh" ] && { H="$c/amplifier-bundle/tools/autodrive_crusty_concerns_evidence.sh"; break; }; done
       [ -n "$H" ] || { echo "ERROR: autodrive_crusty_concerns_evidence.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
       bash "$H"
