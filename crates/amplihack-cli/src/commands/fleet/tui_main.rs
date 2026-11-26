@@ -359,6 +359,9 @@ pub(super) fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
                     }
                     _ => {}
                 }
+                // Filters can change within this input batch. Reconcile the
+                // selection before drawing or handling the next action.
+                ui_state.sync_to_state(&state);
                 let frame = render_tui_frame(&state, interval, &ui_state)?;
                 write!(stdout, "{CLEAR_SCREEN}{frame}")?;
                 stdout.flush().context("failed to flush dashboard frame")?;
