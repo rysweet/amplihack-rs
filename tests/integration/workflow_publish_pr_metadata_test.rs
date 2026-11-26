@@ -4,6 +4,23 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+// #2306: exercise executable behavior as well as the recipe's static contract.
+#[path = "issue_2306_publish/cancellation.rs"]
+mod cancellation;
+// #2784: an open PR from the branch into another base is adopted, not duplicated.
+#[path = "issue_2306_publish/existing_pr_other_base.rs"]
+mod existing_pr_other_base;
+#[path = "issue_2306_publish/fixture.rs"]
+mod fixture;
+#[path = "issue_2306_publish/followup.rs"]
+mod followup;
+#[path = "issue_2306_publish/recovery.rs"]
+mod recovery;
+#[path = "issue_2306_publish/retry.rs"]
+mod retry;
+#[path = "issue_2306_publish/runner.rs"]
+mod runner;
+
 #[derive(Debug, Deserialize)]
 struct Recipe {
     #[serde(default)]

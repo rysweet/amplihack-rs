@@ -1,7 +1,7 @@
 ---
 title: Framework bundle compatibility reference
 description: Compatibility contract for staged amplifier-bundle activation, smart-orchestrator recipes, and active orch_helper.py rejection.
-last_updated: 2026-07-10
+last_updated: 2026-11-05
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: reference
@@ -10,8 +10,8 @@ doc_type: reference
 # Framework bundle compatibility reference
 
 `amplihack install` and the post-update repair path refresh
-`~/.amplihack/amplifier-bundle` from the current Rust distribution and validate
-the result before reporting success.
+`~/.amplihack/amplifier-bundle` from a source with the binary's version and
+validate the result before reporting success.
 
 The validator prevents mixed-version installs where the Rust binary is current
 but installed recipes are stale. In particular, active smart-orchestrator paths
@@ -91,16 +91,21 @@ existing directory.
 
 Refresh order:
 
-1. Resolve the current Rust distribution's authoritative `amplifier-bundle`.
+1. [Select the source](framework-source-selection.md#sources-each-command-consults)
+   for this binary's version.
 2. Validate the source bundle.
 3. Copy the source bundle into a temporary staging directory under the install
    root.
-4. Validate the staged bundle, including smart-orchestrator compatibility.
-5. Activate the staged bundle with a same-install-root swap/rename strategy so
+4. Compare the staged copy with its source
+   ([manifest check](framework-source-selection.md#manifest-check)).
+5. Set the staged tree's [file modes](framework-source-selection.md#file-modes)
+   and the merge guard's modes.
+6. Validate the staged bundle, including smart-orchestrator compatibility.
+7. Activate the staged bundle with a same-install-root swap/rename strategy so
    the selected installed bundle changes as one final activation step.
-6. Re-run post-activation compatibility checks against
+8. Re-run post-activation compatibility checks against
    `~/.amplihack/amplifier-bundle`.
-7. Verify install completeness and write install metadata only after the
+9. Verify install completeness and write install metadata only after the
    replacement is valid.
 
 The atomic guarantee is scoped to the final activation step after staging and
@@ -118,17 +123,18 @@ installed bundle cannot survive a successful refresh.
 
 ## Source selection
 
-`amplihack install` uses compatible assets from the current Rust distribution.
-For a development checkout, that is the checkout's `amplifier-bundle/`. For a
-packaged release, that is the bundle shipped with the release distribution.
+Compatibility and version are separate checks. A source must pass this
+compatibility contract, and its version must equal the binary's unless you pass
+`--local`. The version rules are in the
+[framework source selection reference](framework-source-selection.md).
 
 Source behavior:
 
 | Invocation | Bundle source behavior |
 | --- | --- |
-| `amplihack install` | Uses compatible current-distribution assets and validates before staging. |
-| `amplihack install --local <PATH>` | Uses the explicit local source only if it passes compatibility validation. |
-| `amplihack install --force-refresh` | Bypasses the installed bundle as a source and refreshes from the current Rust distribution. |
+| `amplihack install` | Uses a compatible local source with the binary's version, or fetches the release tag. Refuses a compatible `AMPLIHACK_HOME` or current checkout with another version. |
+| `amplihack install --local <PATH>` | Uses the explicit local source only if it passes compatibility validation. Its version may differ, with a warning. |
+| `amplihack install --force-refresh` | Bypasses the installed bundle and the current directory as sources. Uses a same-version `AMPLIHACK_HOME` or fetches the release tag. |
 | `amplihack update` | Installs the new Rust binary, then runs that binary's `install --force-refresh` repair path. |
 
 The installed `~/.amplihack/amplifier-bundle` is never trusted as an
@@ -155,7 +161,7 @@ install failed: framework bundle is incompatible:
 When an installed stale bundle is replaced:
 
 ```text
-Refreshed amplifier-bundle from current distribution
+Refreshed amplifier-bundle
 Verified smart-orchestrator compatibility
 Verified no active orch_helper.py dependency
 ```
@@ -169,8 +175,8 @@ No new user configuration is required.
 
 | Input | Effect |
 | --- | --- |
-| `AMPLIHACK_HOME` | Selects the install root. Defaults to `~/.amplihack`. |
-| `--local <PATH>` | Uses a caller-provided source path after compatibility validation. |
+| `AMPLIHACK_HOME` | The first framework source tried. It doesn't change where install stages, which is always `$HOME/.amplihack`. |
+| `--local <PATH>` | Uses a caller-provided source path after compatibility validation, whatever its version. |
 | `--force-refresh` | Hidden install flag used by update repair and direct stale-bundle repair; bypasses the installed bundle as a source. |
 | `AMPLIHACK_SKIP_AUTO_INSTALL` | Suppresses startup self-heal. It does not disable explicit install/update compatibility validation. |
 
@@ -268,6 +274,7 @@ cargo test -p amplihack-cli install_flow
 
 ## See also
 
+- [Framework source selection](framework-source-selection.md)
 - [Repair a stale framework bundle](../howto/repair-stale-framework-bundle.md)
 - [Install/update PATH conflict reference](install-update-path-conflicts.md)
 - [Install completeness verification](install-completeness.md)

@@ -34,7 +34,8 @@ workflow_finalization_metadata() {
   # A supplied complete root cannot borrow even a missing member from aliases.
   name="RECIPE_VAR_$root"
   if [[ $tier == file ]]; then
-    [[ $_workflow_context_file_status == 0 ]] || return 3
+    # An unreadable context file is absence for a metadata key too (#2343).
+    [[ $_workflow_context_file_status == 0 ]] || return 2
     if printf '%s' "$_workflow_context_file_snapshot" | jq -e --arg key "$root" 'has($key)' >/dev/null; then return 2; fi
   elif _workflow_context_has "$name"; then return 2;
   fi

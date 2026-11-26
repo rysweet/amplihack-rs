@@ -14,28 +14,37 @@
 //! that pin the shipped default.
 //!
 //! The stub `claude` answers `--version`, appends `S <ns>` and `E <ns>`
-//! around an optional `$STUB_SLEEP` to `$RECORD_DIR/marks`, writes its argv
-//! to `$RECORD_DIR/args.<pid>`, prints `STUB-OUT` and exits 0.
+//! to `$RECORD_DIR/marks` around an optional hold: with `$STUB_HOLD` set it
+//! makes the FIFO `hold.<pid>`, touches `ready.<pid>` and blocks until the
+//! test opens that FIFO ([`Fixture::held`], [`Fixture::release`]). It writes
+//! its argv to `$RECORD_DIR/args.<pid>`, prints `STUB-OUT` and exits 0. The
+//! readers of those records are in `issue_1811_fixture/records.rs`.
 
 #![cfg(unix)]
 #![allow(dead_code)]
-
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::exec_stub::write_executable;
 use crate::support::profile_default::{give_logins, set_default};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+#[path = "issue_1811_fixture/records.rs"]
+mod records;
 use std::process::{Command, Output};
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 echo "S $(date +%s%N)" >> "$RECORD_DIR/marks"
 printf '%s\n' "$@" > "$RECORD_DIR/args.$$"
 env | grep -E '^AMPLIHACK_(TREE_ID|SESSION_DEPTH)=' > "$RECORD_DIR/env.$$" || true
-[ -n "$STUB_SLEEP" ] && sleep "$STUB_SLEEP"
+if [ -n "$STUB_HOLD" ]; then
+  mkfifo "$RECORD_DIR/hold.$$"
+  : > "$RECORD_DIR/ready.$$"
+  cat "$RECORD_DIR/hold.$$" > /dev/null
+fi
 echo "E $(date +%s%N)" >> "$RECORD_DIR/marks"
 echo STUB-OUT
 exit 0
@@ -46,6 +55,7 @@ exit 0
 /// after admission and before the first step, so a test can move the
 /// readings part-way through a run.
 pub const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 case "$1" in
   --version) echo 'recipe-runner-rs 0.0.0 (stub)'; exit 0 ;;
 esac
@@ -88,6 +98,7 @@ pub fn now() -> i64 {
 }
 
 pub struct Fixture {
+    identity: Option<crate::support::profile_default::LoginIdentities>,
     pub tmp: tempfile::TempDir,
     pub home: PathBuf,
     pub root: PathBuf,
@@ -110,7 +121,8 @@ impl Fixture {
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
         write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
         write_executable(&tools.join("recipe-runner-rs"), STUB_RUNNER, 0o755);
-        let f = Self {
+        let mut f = Self {
+            identity: None,
             root: home.join("profiles"),
             tmp,
             home,
@@ -122,7 +134,7 @@ impl Fixture {
             let out = f.cmd(&["profile", "add", p]).output().unwrap();
             assert!(out.status.success(), "profile add {p}: {}", describe(&out));
         }
-        give_logins(&f.home, &f.root, "alpha", &["beta"]);
+        f.identity = Some(give_logins(&f.home, &f.root, "alpha", &["beta"]));
         set_default(&f.root, "alpha");
         f.governor_config("");
         f
@@ -210,6 +222,8 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
@@ -230,6 +244,8 @@ impl Fixture {
             .env("AMPLIHACK_USAGE_LIMIT_WAIT", "0")
             .env("AMPLIHACK_GOVERNOR_WAIT", "0")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        crate::isolated_amplihack::reapply_proc_root(&mut c);
+        self.identity.iter().for_each(|i| i.configure(&mut c));
         c
     }
 
@@ -241,36 +257,6 @@ impl Fixture {
         let p = self.work.join("gov.yaml");
         fs::write(&p, RECIPE).unwrap();
         p
-    }
-
-    /// How many times the stub `claude` started.
-    pub fn claude_runs(&self) -> usize {
-        fs::read_to_string(self.records.join("marks"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.starts_with("S "))
-            .count()
-    }
-
-    /// The largest number of stub `claude` processes running at once.
-    pub fn max_overlap(&self) -> usize {
-        let marks = fs::read_to_string(self.records.join("marks")).unwrap_or_default();
-        let mut events: Vec<(u128, i32)> = marks
-            .lines()
-            .filter_map(|l| {
-                let (k, t) = l.split_once(' ')?;
-                let t: u128 = t.trim().parse().ok()?;
-                Some((t, if k == "S" { 1 } else { -1 }))
-            })
-            .collect();
-        // At equal times, count an end before a start.
-        events.sort();
-        let (mut cur, mut max) = (0i32, 0i32);
-        for (_, d) in events {
-            cur += d;
-            max = max.max(cur);
-        }
-        max as usize
     }
 
     /// Every file under the temporary directory, with its bytes.

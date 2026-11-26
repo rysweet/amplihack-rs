@@ -6,7 +6,7 @@
 use super::candidate::{self, Pool};
 use super::config::Config;
 use super::fsx;
-use super::liveness::{self, Liveness};
+use super::liveness::{self, Liveness, SessionView};
 use super::mv::{self, MoveError, abort_point};
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
@@ -262,6 +262,16 @@ pub fn recover(state: &State) -> Result<Option<Liveness>, ProfileError> {
 
 /// `recover`, plus one line for each thing it did, for `repair`.
 pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
+    recover_seeing(&liveness::HostSessions, state)
+}
+
+/// [`recover_reporting`] with the view of running sessions given (issue
+/// #2935): recovery returns a hosted login only once `sessions` shows no
+/// session on its directory.
+pub(super) fn recover_seeing(
+    sessions: &dyn SessionView,
+    state: &State,
+) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
     let mut done = Vec::new();
     let mut ledger = state.load_ledger()?;
     if let Some(j) = state.load_journal()? {
@@ -276,7 +286,7 @@ pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>
         cleanup_rerun(state);
         return Ok((None, done));
     }
-    let live = liveness::scan_system(&state.root);
+    let live = sessions.liveness(&state.root);
     let hosted: Vec<(String, HostEntry)> = ledger
         .hosts
         .iter()
@@ -395,8 +405,10 @@ fn cleanup_rerun(state: &State) {
     sweep_rerun(&state.dir.join("rerun"));
 }
 
-/// Removes regular `<pid>-<n>.out` files in `dir` (no recursion) whose
-/// supervisor is gone or that are over 24 h old. Other names are left.
+/// Removes the regular files in `dir` (no recursion) that [`rerun_owner`]
+/// names — an attempt's output buffer and a step's captured prompt —
+/// whose supervisor is gone or that are over 24 h old. Other names, and
+/// anything that is not a regular file, are left.
 pub(crate) fn sweep_rerun(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -418,11 +430,24 @@ pub(crate) fn sweep_rerun(dir: &Path) {
     }
 }
 
-/// The supervisor pid in a rerun buffer name `<pid>-<n>.out`.
+/// The supervisor pid in a name the rerun scratch directory owns: an
+/// attempt's output buffer `<pid>-<n>.out`, or the captured prompt of a
+/// step whose prompt came on a pipe, `<pid>-0.in` (issue #2815). The
+/// captured prompt is now kept in memory, so only
+/// an earlier version writes `<pid>-0.in`; the name is still swept so that
+/// such a file is not left behind. Every other name belongs to someone else
+/// and is left alone.
 pub fn rerun_owner(name: &std::ffi::OsStr) -> Option<u32> {
-    let name = name.to_str()?.strip_suffix(".out")?;
-    let (pid, n) = name.split_once('-')?;
-    n.parse::<u32>().ok()?;
+    let name = name.to_str()?;
+    let pid = match name.strip_suffix(".out") {
+        Some(stem) => {
+            let (pid, n) = stem.split_once('-')?;
+            n.parse::<u32>().ok()?;
+            pid
+        }
+        // Only `-0`: a step keeps one capture, named for its supervisor.
+        None => name.strip_suffix(".in")?.strip_suffix("-0")?,
+    };
     pid.parse().ok().filter(|&p| p > 0)
 }
 
@@ -472,6 +497,19 @@ pub fn swap_check(
     rl: &RateLimits,
     cfg: &Config,
 ) -> Result<(), ProfileError> {
+    swap_check_seeing(&liveness::HostSessions, state, profiles, owner, rl, cfg)
+}
+
+/// [`swap_check`] with the view of running sessions given (issue #2935). A
+/// view that cannot see sessions allows no swap.
+pub(super) fn swap_check_seeing(
+    sessions: &dyn SessionView,
+    state: &State,
+    profiles: &[ProfileName],
+    owner: &ProfileName,
+    rl: &RateLimits,
+    cfg: &Config,
+) -> Result<(), ProfileError> {
     let now = fsx::now();
     // Most updates need no move: decide that cheaply, before recovery and
     // the `/proc` scan. The status-line wrapper ran recovery moments ago in
@@ -485,9 +523,9 @@ pub fn swap_check(
     if !worth_checking {
         return Ok(());
     }
-    let live = match recover(state)? {
+    let live = match recover_seeing(sessions, state)?.0 {
         Some(live) => live,
-        None => liveness::scan_system(&state.root),
+        None => sessions.liveness(&state.root),
     };
     if !swap_allowed(state, &live, owner) {
         return Ok(());
@@ -505,6 +543,7 @@ pub fn swap_check(
     let readings = state.load_usage().accounts;
     let overflow = OverflowInputs::load(&state.root, cfg, now);
     let leaving_overflow = overflow.order.iter().any(|o| o.as_str() == current);
+    let need = amplihack_utils::organisation_affinity::Need::of(leaving_overflow, exhausted);
     if !exhausted && !leaving_overflow {
         return Ok(()); // the account changed since the first check
     }
@@ -526,9 +565,24 @@ pub fn swap_check(
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
     };
-    let Some(target) =
-        candidate::select_with_overflow(&pool, &overflow.pool(), &current, eligible).cloned()
-    else {
+    let restriction = super::affinity::restrict(
+        state,
+        &ledger,
+        &pool,
+        &overflow,
+        owner.as_str(),
+        &current,
+        need,
+        eligible,
+    );
+    let Some(target) = candidate::select_restricted(
+        &pool,
+        &overflow.pool(),
+        &current,
+        |p| eligible(p) && restriction.allowed.contains(p),
+        |p| restriction.plan_room.contains(p),
+    )
+    .cloned() else {
         return Ok(());
     };
     if !ledger.hosts.contains_key(target.as_str()) {
@@ -537,6 +591,8 @@ pub fn swap_check(
     if current == owner.as_str() {
         snapshot_account(state, owner.as_str());
     }
+    let source_org = restriction.source_org.clone();
+    let target_org = restriction.org_of(&target).map(str::to_owned);
     let Some(ino) = take_refresh_lock(state, owner.as_str()) else {
         return Ok(());
     };
@@ -563,9 +619,28 @@ pub fn swap_check(
         fingerprint: Some(usage::fingerprint(rl)),
         refresh_lock_ino: Some(ino),
     };
-    let result = transfer(state, &mut ledger, j);
+    // The organisations this decision used must still hold before the
+    // move: a record rewritten in between could turn the swap into a
+    // crossing the policy refused. Two record reads, not a fresh selection.
+    let unchanged = super::super::organisation::resolve(state, &ledger, owner.as_str())
+        == source_org
+        && super::super::organisation::resolve_login(state, target.as_str()) == target_org;
+    let result = if unchanged {
+        transfer(state, &mut ledger, j)
+    } else {
+        Err(invariant("organisation affinity changed before swap"))
+    };
     release_refresh_lock(state, owner.as_str(), Some(ino));
     result?;
+    super::affinity::record_swap(
+        state,
+        owner.as_str(),
+        &current,
+        target.as_str(),
+        source_org.as_deref(),
+        target_org.as_deref(),
+        now,
+    );
     let why = if !leaving_overflow {
         "reached the auto-switch threshold"
     } else if !candidate::overflow_usable(&current, &overflow.blocked) {

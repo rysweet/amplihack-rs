@@ -178,7 +178,7 @@ mod tests {
         let _guard = lock_env();
         let temp = tempfile::tempdir().unwrap();
         let stub = temp.path().join("recipe-runner-rs");
-        std::fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n").unwrap();
+        std::fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -350,7 +350,7 @@ mod downgrade_guard_tests {
         std::fs::create_dir_all(home.join(".amplihack/state")).unwrap();
         executable(
             &cargo.join("bin/recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n",
         );
         receipt(&cargo, &installed);
         std::fs::write(

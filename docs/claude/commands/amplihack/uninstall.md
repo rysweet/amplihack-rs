@@ -1,5 +1,6 @@
 ---
 name: amplihack:uninstall
+disable-model-invocation: true
 version: 1.0.0
 description: Uninstall amplihack framework and tools
 triggers:

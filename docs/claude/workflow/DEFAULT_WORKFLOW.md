@@ -64,7 +64,7 @@ finalize. It returns these outputs:
 | `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `SUPERSEDED`, `FAILED_MEANINGFUL_DIFF`, `FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, or `BLOCKED_CI`. |
 | `terminal_reason` | Human-readable evidence for the decision. |
 | `publish_status` | Publish-facing status using the same vocabulary as the terminal state. |
-| `should_publish` | `true` only when meaningful unmerged work should continue through a publish path. |
+| `terminal_state.should_publish` | Internal output, not a caller option. `true` only when meaningful unmerged work should continue through a publish path. The caller context key `should_publish` was removed by #1976; see [Removed context keys](../../reference/recipe-cli-reference.md#removed-context-keys). |
 | `should_finalize` | `true` when the workflow should route to finalize so it can emit the non-mutating final decision. |
 | `should_run_ci_wait` | `true` only when CI should be waited on for an active publish path. |
 | `should_merge` | `true` only when merge remains valid for green, active work. |
@@ -120,10 +120,10 @@ The loud blocking states include:
 | `FAILED_CLOSED_UNMERGED` | A GitHub PR is closed without merge evidence and obsolete/no-diff proof is missing. |
 | `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely treated as terminal success. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | GitHub metadata is required for a GitHub PR proof or meaningful-diff safety decision but cannot be loaded. This is not used merely because an Azure or unknown remote lacks GitHub metadata. |
-| `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. |
+| `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. An unfinished CI repair is not this state: since #2966 the assessment answers `CI_REPAIR_UNFINISHED` and is started again. |
 | `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`, implementation/verification markers) is preserved and reported. |
-| `HOLLOW_SUCCESS` | The run appeared successful but lacked implementation, verification, publish, or valid no-op evidence. |
-| `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
+| `HOLLOW_SUCCESS` | The run appeared successful but its agent output was empty or inaccessible, so it may have produced nothing at all. Unchanged by #2343. |
+| `BLOCKED_CI` | A check on the PR head fails, or cannot run, for a cause the run cannot fix itself, such as a missing secret (#2966). A red CI the run can fix is repaired and is not a terminal state. The reason names the check and the cause, and the next action names the owner and the exact step. |
 
 `workflow-terminal-state` never invokes `gh pr list`, `gh pr view`, or related
 GitHub metadata commands for Azure Repos, `visualstudio.com`,
@@ -182,7 +182,7 @@ When creating todos during workflow execution, reference the workflow steps dire
 Step 0: Workflow Preparation - Read workflow, create todos for ALL steps (0-21)
 Step 1: Prepare the Workspace - Check git status and fetch
 Step 2: Rewrite and Clarify Requirements - Use prompt-writer agent to clarify task
-Step 3: Create GitHub Issue - Define requirements and constraints using gh issue create
+Step 3: Select Tracking Issue - Reuse a referenced issue; local tracking unless create_issue=true
 Step 4: Setup Worktree and Branch - Create feat/issue-XXX branch in worktrees/
 Step 5: Research and Design - Use architect agent for solution design
 ...
@@ -264,14 +264,15 @@ Agents that skip workflow steps (especially mandatory review steps 10, 16-17) cr
 - [ ] Document acceptance criteria
 - [ ] **CRITICAL: Pass explicit requirements to ALL subsequent agents**
 
-### Step 3: Create GitHub Issue
+### Step 3: Select Tracking Issue
 
-- [ ] **Use** GitHub issue creation tool via agent
-- [ ] Create issue using `gh issue create`
-- [ ] Include clear problem description
-- [ ] Define requirements and constraints
-- [ ] Add success criteria
-- [ ] Assign appropriate labels
+- [ ] Reuse an explicit `issue_number`, or an open issue the task references
+- [ ] Otherwise use local tracking; no GitHub issue is created by default
+- [ ] Create a GitHub issue only when the run passes `-c create_issue=true`
+      (also `1` or `yes`); text in the task description does not opt in
+- [ ] When opted in, reuse an open issue with exactly the same title in the
+      same repository before creating one
+- [ ] See `docs/reference/workflow-tracking-issue-selection.md`
 
 ### Step 4: Setup Worktree and Branch
 
@@ -561,7 +562,12 @@ gh pr ready 2>&1 | cat
 ### Step 21: Ensure PR is Mergeable
 
 - [ ] Check CI status (all checks passing)
-- [ ] **Always use** ci-diagnostic-workflow agent if CI fails
+- [ ] **Always use** ci-diagnostic-workflow agent if CI fails. It diagnoses,
+      fixes, pushes, waits with `gh pr checks --watch` and reassesses until
+      every check is green, with no round or time limit (#2966). It stops early
+      only on a cause the run cannot fix (a missing secret, a workflow run
+      awaiting maintainer approval), and then names the check, the cause, the
+      owner and the exact step to take.
 - [ ] **💡 TIP**: When investigating CI failures, use [parallel agent investigation](../../../amplifier-bundle/CLAUDE.md#parallel-agent-investigation-strategy) to explore logs and code simultaneously
 - [ ] Resolve any merge conflicts
 - [ ] Verify all review comments addressed, including check for any that showed up after marking the PR as ready

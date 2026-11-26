@@ -15,6 +15,7 @@
 //! of the same binary (`--exact <name> --test-threads=1`), under both
 //! `cargo test` and `cargo nextest`.
 
+use super::claude_profile_isolation;
 use super::test_path::test_path;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -33,6 +34,13 @@ const QUIET_CHILD_ENV: &str = "AMPLIHACK_CLI_INTEGRATION_QUIET_CHILD";
 /// `child_*` checks. A marker naming some other PID panics. A genuine child
 /// removes the marker from its own environment at once, so nothing it spawns
 /// inherits it.
+///
+/// A genuine child also fires `claude_profile_isolation::purge_inherited`
+/// (issue #2922) before any test body runs, so a `CLAUDE_CONFIG_DIR` or login
+/// profile inherited from the session that started `cargo test` can never send
+/// a settings write out of the temporary `HOME` the body sets. This binary has
+/// no `env_lock()` to hang the purge on, and the quiet child is the one place
+/// in it where changing the environment is sound.
 fn in_quiet_child() -> bool {
     static QUIET: OnceLock<bool> = OnceLock::new();
     *QUIET.get_or_init(|| {
@@ -51,6 +59,7 @@ fn in_quiet_child() -> bool {
         // test thread, before the body starts anything that reads the
         // environment.
         unsafe { std::env::remove_var(QUIET_CHILD_ENV) };
+        claude_profile_isolation::purge_inherited();
         true
     })
 }
@@ -59,15 +68,37 @@ fn in_quiet_child() -> bool {
 /// `module_path` (pass `module_path!()`) is the only test. In the child
 /// itself, runs `body` directly.
 pub fn in_quiet_process(module_path: &str, name: &str, body: impl FnOnce()) {
+    in_quiet_process_with_env(module_path, name, &[], body);
+}
+
+/// [`in_quiet_process`], with `exports` added to the child's environment.
+///
+/// This is for a test whose subject is what the child inherits: it is the only
+/// way to put a variable into a quiet child from the parent, where changing
+/// the environment would be unsound. The child's own purge still runs first
+/// (issue #2922), so the six profile variables do not survive being exported
+/// this way; that is what the purge is for, and what
+/// `issue_2922_quiet_child_purge` asserts.
+pub fn in_quiet_process_with_env(
+    module_path: &str,
+    name: &str,
+    exports: &[(&str, &str)],
+    body: impl FnOnce(),
+) {
     if in_quiet_child() {
         body();
         return;
     }
     let name = test_path(module_path, name);
     let exe = std::env::current_exe().expect("resolve the running test binary");
-    let output = Command::new(&exe)
+    let mut command = Command::new(&exe);
+    command
         .args(["--exact", &name, "--test-threads=1", "--nocapture"])
-        .env(QUIET_CHILD_ENV, std::process::id().to_string())
+        .env(QUIET_CHILD_ENV, std::process::id().to_string());
+    for (key, value) in exports {
+        command.env(key, value);
+    }
+    let output = command
         .output()
         .unwrap_or_else(|e| panic!("cannot re-run {name} in {}: {e}", exe.display()));
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -92,8 +123,20 @@ fn require_quiet_child(what: &str) {
 }
 
 /// `std::env::set_var`, allowed only inside an `in_quiet_process` child.
+///
+/// Setting `HOME` here also fires `claude_profile_isolation::purge_inherited`
+/// (issue #2922), so that this child-side primitive carries the same guarantee
+/// as the in-process `HomeGuard` and `set_home`: a temporary `HOME` is never
+/// left alongside a `CLAUDE_CONFIG_DIR` or login profile that would send a
+/// settings write somewhere else. The child's own startup purge has already
+/// run by this point; the repeat is what holds if the body set one of the six
+/// itself before moving `HOME`.
 pub fn child_set_var(key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
     require_quiet_child("child_set_var");
+    let key = key.as_ref();
+    if key == OsStr::new("HOME") {
+        claude_profile_isolation::purge_inherited();
+    }
     // SAFETY: this is a quiet child, where the calling test is the only test
     // and libtest runs it on its one test thread. Nothing else in the process
     // reads the environment concurrently.

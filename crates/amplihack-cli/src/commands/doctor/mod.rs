@@ -5,8 +5,9 @@
 //!
 //! # Check inventory (5 checks)
 //!
-//! 1. amplihack hooks installed — reads `$HOME/.claude/settings.json` and
-//!    verifies the `hooks` section contains a value with `"amplihack"`.
+//! 1. amplihack hooks installed — checks amplihack's hooks block in
+//!    `$HOME/.claude/settings.json`, every profile's `settings.json` and the
+//!    launch `--settings` file, one line per file (issue #2279).
 //! 2. settings.json valid JSON — parses the file; reports only validity, never content.
 //! 3. recipe-runner-rs available — locates binary on `$PATH` and runs `--version`.
 //! 4. tmux installed — runs `tmux -V` and extracts version string.
@@ -20,11 +21,14 @@
 //! * SEC-WS2-04: `settings.json` content is never printed.
 
 mod checks;
+mod hook_drift;
+#[cfg(all(test, unix))]
+mod tests_issue_2279_hook_drift;
 
 use amplihack_launcher::flag_matrix::{
-    delivery_mode_name, prompt_delivery_name, prompt_delivery_report_for,
+    effective_mode_name, prompt_delivery_name, prompt_delivery_report_for,
 };
-use amplihack_utils::prompt_delivery::{AUTO_TEMPFILE_THRESHOLD_BYTES, PromptDelivery, from_env};
+use amplihack_utils::prompt_delivery::{PromptDelivery, from_env};
 use anyhow::{Result, bail};
 use std::path::PathBuf;
 
@@ -60,19 +64,6 @@ pub fn settings_json_path() -> Option<PathBuf> {
         .map(|home| settings_json_path_for(std::path::Path::new(&home)))
 }
 
-// ── Private helpers ───────────────────────────────────────────────────────────
-
-/// Recursively walk a `serde_json::Value` and return `true` if any string
-/// value within it contains the substring `"amplihack"`.
-fn json_contains_amplihack(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::String(s) => s.contains("amplihack"),
-        serde_json::Value::Array(arr) => arr.iter().any(json_contains_amplihack),
-        serde_json::Value::Object(map) => map.values().any(json_contains_amplihack),
-        _ => false,
-    }
-}
-
 // ── Summary printer ───────────────────────────────────────────────────────────
 
 /// Print a formatted summary of `results` to stdout and return `(passed,
@@ -105,21 +96,18 @@ pub fn print_summary(results: &[(bool, String)]) -> (usize, usize) {
 
 pub struct PromptDeliveryDoctorOptions {
     pub requested: PromptDelivery,
-    pub diagnostic_prompt_size: usize,
 }
 
 pub fn render_prompt_delivery_diagnostics(options: PromptDeliveryDoctorOptions) -> String {
-    let report = prompt_delivery_report_for(options.requested, options.diagnostic_prompt_size);
+    let report = prompt_delivery_report_for(options.requested);
     let mut output = String::new();
     output.push_str("Prompt delivery\n");
     output.push_str(&format!(
         "  requested: {}\n",
         prompt_delivery_name(report.requested)
     ));
-    output.push_str(&format!(
-        "  auto threshold: {} bytes\n",
-        AUTO_TEMPFILE_THRESHOLD_BYTES
-    ));
+    // Issue #2030: auto never selects argv, whatever the prompt size.
+    output.push_str("  auto: stdin, then file-reference, then tempfile; never argv\n");
     output.push('\n');
     for entry in report.entries {
         output.push_str(&format!("  {}\n", entry.binary));
@@ -131,8 +119,8 @@ pub fn render_prompt_delivery_diagnostics(options: PromptDeliveryDoctorOptions) 
             output.push_str(&format!("    note: {}\n", entry.note));
         }
         output.push_str(&format!(
-            "    effective for long prompt: {}\n",
-            delivery_mode_name(entry.effective_mode)
+            "    effective: {}\n",
+            effective_mode_name(entry.effective_mode)
         ));
         if !entry.warning.is_empty() {
             output.push_str(&format!("    warning: {}\n", entry.warning));
@@ -165,7 +153,7 @@ pub fn render_doctor_help() -> String {
 Usage:\n  amplihack doctor\n  amplihack doctor node [--ensure]\n  amplihack doctor copilot [--ensure-node]\n\n\
 Commands:\n  node       Diagnose Node.js >=24.0.0 for Copilot CLI\n  copilot    Diagnose Copilot CLI prerequisites\n\n\
 Options:\n  --ensure        Print remediation and use safe auto-remediation only when available\n  --ensure-node   Run the Node.js ensure flow before Copilot checks\n\n\
-Prompt delivery:\n  AMPLIHACK_PROMPT_DELIVERY=auto|argv|tempfile|stdin selects the requested subprocess prompt delivery mode.\n"
+Prompt delivery:\n  AMPLIHACK_PROMPT_DELIVERY=auto|tempfile|stdin selects the requested subprocess prompt delivery mode.\n"
         .to_string()
 }
 
@@ -211,7 +199,6 @@ fn run_all_checks() -> Result<()> {
     let r5 = check_amplihack_version();
     let prompt_delivery = render_prompt_delivery_diagnostics(PromptDeliveryDoctorOptions {
         requested: from_env(),
-        diagnostic_prompt_size: 64 * 1024,
     });
 
     // Collect results in canonical display order (1–5), waiting for threads.
@@ -340,107 +327,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "run_doctor should return Ok on healthy machine"
-        );
-    }
-
-    #[test]
-    fn test_check_hooks_installed_passes_with_repo_local_hooks_only() {
-        use crate::test_support::{CwdGuard, HomeGuard, env_lock};
-
-        let _guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        // Global HOME has no settings.json; hooks live only in the repo-local
-        // <cwd>/.claude/settings.json — a valid project-local install.
-        let home = tempfile::tempdir().unwrap();
-        let repo = tempfile::tempdir().unwrap();
-        let _home_guard = HomeGuard::set(home.path());
-
-        let repo_settings = repo.path().join(".claude").join("settings.json");
-        std::fs::create_dir_all(repo_settings.parent().unwrap()).unwrap();
-        std::fs::write(
-            &repo_settings,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "hooks": {
-                    "SessionStart": [
-                        { "hooks": [{"type": "command", "command": "/home/user/.local/bin/amplihack-hooks session-start"}] }
-                    ]
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        let _cwd_guard = CwdGuard::set(repo.path()).unwrap();
-        let (passed, msg) = check_hooks_installed();
-        assert!(
-            passed,
-            "project-local hooks must satisfy the doctor check; got: {msg}"
-        );
-    }
-
-    #[test]
-    fn test_check_hooks_installed_fails_when_no_hooks_anywhere() {
-        use crate::test_support::{CwdGuard, HomeGuard, env_lock};
-
-        let _guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        let home = tempfile::tempdir().unwrap();
-        let repo = tempfile::tempdir().unwrap();
-        let _home_guard = HomeGuard::set(home.path());
-        let _cwd_guard = CwdGuard::set(repo.path()).unwrap();
-
-        let (passed, msg) = check_hooks_installed();
-        assert!(!passed, "no hooks anywhere should fail");
-        assert!(
-            msg.contains("global") && msg.contains("project-local"),
-            "failure message should mention both checked locations; got: {msg}"
-        );
-    }
-
-    #[test]
-    fn test_check_hooks_installed_corrupt_global_does_not_mask_repo_local() {
-        use crate::test_support::{CwdGuard, HomeGuard, env_lock};
-
-        let _guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        // Global settings.json is present but corrupt (invalid JSON), while a
-        // valid project-local install exists. A read/parse error on the global
-        // candidate must not short-circuit and mask the working repo-local
-        // hooks — otherwise we reintroduce the #1088 false-negative.
-        let home = tempfile::tempdir().unwrap();
-        let repo = tempfile::tempdir().unwrap();
-        let _home_guard = HomeGuard::set(home.path());
-
-        let global_settings = home.path().join(".claude").join("settings.json");
-        std::fs::create_dir_all(global_settings.parent().unwrap()).unwrap();
-        std::fs::write(&global_settings, "{ this is not valid json ").unwrap();
-
-        let repo_settings = repo.path().join(".claude").join("settings.json");
-        std::fs::create_dir_all(repo_settings.parent().unwrap()).unwrap();
-        std::fs::write(
-            &repo_settings,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "hooks": {
-                    "SessionStart": [
-                        { "hooks": [{"type": "command", "command": "/home/user/.local/bin/amplihack-hooks session-start"}] }
-                    ]
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        let _cwd_guard = CwdGuard::set(repo.path()).unwrap();
-        let (passed, msg) = check_hooks_installed();
-        assert!(
-            passed,
-            "a corrupt global settings.json must not mask valid repo-local hooks; got: {msg}"
         );
     }
 }

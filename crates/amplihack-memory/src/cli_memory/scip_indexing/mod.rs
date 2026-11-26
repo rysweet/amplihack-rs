@@ -8,7 +8,7 @@ pub use commands::{
 };
 pub use types::{LanguageStatus, NativeScipIndexSummary, PrerequisiteResult, ScipIndexResult};
 
-pub(crate) use helpers::{language_for_path, normalize_languages, should_ignore_dir};
+pub(crate) use helpers::{language_for_path, normalize_languages};
 pub(crate) use types::LANGUAGE_ORDER;
 
 #[cfg(test)]
@@ -36,6 +36,32 @@ mod tests {
         let languages = detect_project_languages(dir.path()).unwrap();
 
         assert_eq!(languages, vec!["python", "typescript", "rust"]);
+    }
+
+    #[test]
+    fn detect_project_languages_skips_worktrees_and_git_ignored_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let status = amplihack_git::command_in(root)
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        fs::write(root.join(".gitignore"), "scratch/\n").unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::create_dir_all(root.join("worktrees/task-1")).unwrap();
+        fs::write(root.join("worktrees/task-1/app.py"), "print(1)\n").unwrap();
+        fs::create_dir_all(root.join("scratch")).unwrap();
+        fs::write(root.join("scratch/tool.py"), "print(2)\n").unwrap();
+
+        let languages = detect_project_languages(root).unwrap();
+
+        assert_eq!(languages, vec!["rust"]);
     }
 
     #[test]

@@ -13,8 +13,8 @@
 #      or unmerged-meaningful worktrees are PRESERVED (archived first, never
 #      destroyed).
 #   2. Cleanup-on-failure — a failed/aborted run prunes its own worktree+branch,
-#      but only AFTER archiving unique commits to local refs (never destroy
-#      unmerged meaningful work).
+#      but only AFTER archiving any unique commits to a local ref (never
+#      destroy unmerged meaningful work; nothing is pushed since #2061).
 #
 # Design (from the approved spec): the destructive lifecycle logic lives in a
 # self-contained helper `amplifier-bundle/tools/workflow_worktree_sweep.sh` to
@@ -42,6 +42,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 TOOLS="${REPO_ROOT}/amplifier-bundle/tools"
 
@@ -147,7 +152,8 @@ STEP04="$(extract_step "${WORKTREE_YAML}" "step-04-setup-worktree")"
 if [[ -z "${STEP04}" ]]; then
     fail "A8-step" "could not extract step-04-setup-worktree from workflow-worktree.yaml"
 else
-    # A here-string avoids printf SIGPIPE when grep -q finds an early match.
+    # Here-strings, not `printf | grep -q`: grep -q exits on the first match and,
+    # under pipefail, the SIGPIPE to printf would fail this check intermittently.
     if grep -qE 'workflow_worktree_sweep\.sh' <<<"${STEP04}"; then
         pass "A8-invoke" "step-04 invokes workflow_worktree_sweep.sh"
     else
@@ -157,8 +163,8 @@ fi
 
 # A9: the inline sweep call is best-effort (graceful no-op): guarded by a
 # file-existence test and/or `|| true` so a missing helper never aborts setup.
-if printf '%s\n' "${STEP04}" | grep -E 'workflow_worktree_sweep\.sh' \
-       | grep -qE '(\|\| true|-f )'; then
+SWEEP_CALLS="$(grep -E 'workflow_worktree_sweep\.sh' <<<"${STEP04}" || true)"
+if grep -qE '(\|\| true|-f )' <<<"${SWEEP_CALLS}"; then
     pass "A9-best-effort" "step-04 sweep call is best-effort (guarded / '|| true')"
 else
     fail "A9-best-effort" "step-04 sweep call is not guarded best-effort"
@@ -323,13 +329,6 @@ else
     else
         fail "B7-converges" "re-add after sweep failed — leaked worktree/branch blocked convergence"
     fi
-fi
-
-# Keep #1930 in the existing registered entry; propagate a focused child failure.
-if bash "${SCRIPT_DIR}/test-issue-1930-setup-does-not-push.sh"; then
-    pass "C1-no-setup-push" "setup and sweep preserve recovery without pushing"
-else
-    fail "C1-no-setup-push" "issue #1930 focused regression failed"
 fi
 
 # ===========================================================================

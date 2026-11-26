@@ -27,6 +27,7 @@ fn executable(path: &Path, body: &str) {
 /// Records argv (NUL-separated) and a copy of `--context-file`, then reports
 /// success in the runner's JSON format.
 const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 : > "$RECORD_DIR/argv.bin"
 for a in "$@"; do printf '%s\0' "$a" >> "$RECORD_DIR/argv.bin"; done
 prev=
@@ -103,6 +104,8 @@ impl Fixture {
             .current_dir(&self.root)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env("TMPDIR", std::env::temp_dir())
             .env("PATH", path)
             .env("HOME", &self.home)

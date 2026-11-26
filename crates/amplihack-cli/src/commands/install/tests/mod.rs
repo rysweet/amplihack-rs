@@ -4,6 +4,13 @@ mod binary_tests;
 mod claude_command_staging_tests;
 mod deploy_binary_tests;
 mod helpers;
+// Issue #2279: the single source of amplihack's hooks block.
+mod hook_block_drift;
+#[cfg(unix)]
+mod hook_block_file;
+mod hook_block_source;
+mod hook_block_target;
+mod hook_block_xpia;
 mod hook_specs;
 mod hook_staging_tests;
 mod install_flow;
@@ -13,6 +20,9 @@ mod issue_1449_partial_registration;
 mod issue_1526_implicit_downgrade;
 mod issue_1526_implicit_mode;
 mod issue_1526_launch_bootstrap;
+// Issue #1582: the launch bootstrap re-checks under the install lock.
+#[cfg(unix)]
+mod issue_1582_bootstrap_lock;
 #[cfg(unix)]
 mod issue_1745_launch_repair_statusline;
 // Issue #1699: the real-profile-root guard also runs in this binary, where
@@ -20,7 +30,39 @@ mod issue_1745_launch_repair_statusline;
 #[cfg(unix)]
 #[path = "../../../../tests/issue_1699_real_root_guard.rs"]
 mod issue_1699_real_root_guard;
+#[cfg(unix)]
+mod issue_1954_install_lock;
+#[cfg(unix)]
+mod issue_1954_release_layout;
+mod issue_1955_fetch_backoff;
+mod issue_1955_force_refresh;
+mod issue_1955_manifest;
+#[cfg(unix)]
+mod issue_1955_modes;
+mod issue_1955_self_heal;
+mod issue_1955_source_gate;
+mod issue_1955_support;
+#[cfg(unix)]
+mod issue_1955_tag_fetch;
+#[cfg(unix)]
+mod issue_2279_launch_repair;
+#[cfg(unix)]
+mod issue_2589_claude_deny;
+#[cfg(unix)]
+mod issue_2589_codex_rules;
+#[cfg(unix)]
+mod issue_2589_update_coverage;
+// Issue #2922: an inherited CLAUDE_CONFIG_DIR is never written by tests.
+#[cfg(unix)]
+mod issue_2922_helper_contract;
+#[cfg(unix)]
+mod issue_2922_inherited_config_dir;
+#[cfg(unix)]
+mod issue_2940_inherited_codex_home;
+mod issue_3220_directory_index;
 mod issue_527_tests;
+// Issue #3203: no file loaded as memory sits under amplifier-bundle/.
+mod issue_3203_bundle_memory_files;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]
 mod limit_resume_install;

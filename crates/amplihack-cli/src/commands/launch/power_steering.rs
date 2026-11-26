@@ -32,7 +32,7 @@ where
         return Ok(());
     }
 
-    println!("\nPower-Steering is currently disabled.");
+    eprintln!("\nPower-Steering is currently disabled.");
     let prompt = "Would you like to re-enable it? [Y/n] (30s timeout, defaults to YES): ";
     let response = match prompt_reader(prompt, POWER_STEERING_PROMPT_TIMEOUT) {
         Ok(response) => response,
@@ -51,7 +51,7 @@ where
         .trim()
         .to_ascii_lowercase();
     if normalized == "n" || normalized == "no" {
-        println!(
+        eprintln!(
             "\nPower-Steering remains disabled. You can re-enable it by removing:\n{}\n",
             disabled_file.display()
         );
@@ -72,7 +72,7 @@ where
 fn remove_disabled_file_with_warning(disabled_file: &Path) {
     match fs::remove_file(disabled_file) {
         Ok(()) => {
-            println!("\nPower-Steering re-enabled.\n");
+            eprintln!("\nPower-Steering re-enabled.\n");
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => {

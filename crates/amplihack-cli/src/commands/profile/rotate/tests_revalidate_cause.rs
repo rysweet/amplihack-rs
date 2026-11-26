@@ -20,7 +20,7 @@ use super::observe::{Measurement, Snap, decide_measured, snapshot};
 use super::settings;
 use super::tests_swap::{CREDS, Env, env, ino_at, login, n, private};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Liveness, State, now};
+use crate::commands::profile::auto_switch::kit::{FakeExchange, Liveness, State, now};
 use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeSet;
 use std::fs;
@@ -53,11 +53,14 @@ pub(super) fn env3() -> (Env, u64, u64) {
     (e, s2, th)
 }
 
-/// A watch or one-shot context whose scan sees no session.
+/// A watch or one-shot context whose scan sees no session, and whose
+/// exchange is a fake (issue #2935): what the cycle decides does not depend
+/// on what the host can see or exchange.
 pub(super) fn ctx_with(e: &Env, measure: MeasureFn) -> Ctx {
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     ctx.scan = |_| Liveness::Known(BTreeSet::new());
+    ctx.exchange = FakeExchange::working();
     ctx.measure = Some(measure);
     ctx
 }
@@ -71,6 +74,7 @@ pub(super) fn ok(session: f64, week: f64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -83,6 +87,7 @@ pub(super) fn spent() -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 

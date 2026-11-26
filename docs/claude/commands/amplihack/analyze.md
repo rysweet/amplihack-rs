@@ -1,5 +1,6 @@
 ---
 name: amplihack:analyze
+disable-model-invocation: true
 version: 1.0.0
 description: Comprehensive code analysis and philosophy compliance review
 triggers:

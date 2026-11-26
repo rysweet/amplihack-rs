@@ -16,16 +16,11 @@ pub(crate) fn load_user_preferences_with_patterns(dirs: &ProjectDirs) -> (Option
         if path.exists() {
             match fs::read_to_string(path) {
                 Ok(content) => {
-                    let has_learned = content.contains("## Learned Patterns")
-                        && content
-                            .split("## Learned Patterns")
-                            .nth(1)
-                            .map(|s| {
-                                s.lines()
-                                    .any(|l| !l.trim().is_empty() && !l.starts_with('#'))
-                            })
-                            .unwrap_or(false);
-                    let prefs = extract_preferences(&content);
+                    let has_learned = has_learned_patterns(&content);
+                    let mut prefs = extract_preferences(&content);
+                    // A placeholder tells the model nothing, so the per-prompt
+                    // table leaves it out.
+                    prefs.retain(|(_, value)| !value.trim().eq_ignore_ascii_case("(not set)"));
                     if !prefs.is_empty() {
                         return (Some(build_preference_context(&prefs)), has_learned);
                     }
@@ -39,6 +34,64 @@ pub(crate) fn load_user_preferences_with_patterns(dirs: &ProjectDirs) -> (Option
     }
 
     (None, false)
+}
+
+/// True when the `## Learned Patterns` section holds at least one line of
+/// content. The section runs to the next level-1 or level-2 heading. Blank
+/// lines and HTML comments, including comments over several lines, are not
+/// content.
+fn has_learned_patterns(content: &str) -> bool {
+    let mut lines = content.lines();
+    if !lines
+        .by_ref()
+        .any(|line| line.trim() == "## Learned Patterns")
+    {
+        return false;
+    }
+
+    let mut in_comment = false;
+    for line in lines {
+        let trimmed = line.trim();
+        if !in_comment && is_top_level_heading(trimmed) {
+            return false;
+        }
+
+        let mut rest = line;
+        let mut visible = String::new();
+        loop {
+            if in_comment {
+                match rest.find("-->") {
+                    Some(end) => {
+                        rest = &rest[end + 3..];
+                        in_comment = false;
+                    }
+                    None => break,
+                }
+            } else {
+                match rest.find("<!--") {
+                    Some(start) => {
+                        visible.push_str(&rest[..start]);
+                        rest = &rest[start + 4..];
+                        in_comment = true;
+                    }
+                    None => {
+                        visible.push_str(rest);
+                        break;
+                    }
+                }
+            }
+        }
+        if !visible.trim().is_empty() {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// True for a level-1 or level-2 markdown heading.
+fn is_top_level_heading(trimmed: &str) -> bool {
+    trimmed == "#" || trimmed == "##" || trimmed.starts_with("# ") || trimmed.starts_with("## ")
 }
 
 /// Check if the user prompt is a /dev invocation.

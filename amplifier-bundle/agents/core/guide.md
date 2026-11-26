@@ -3,7 +3,6 @@ name: guide
 version: 1.0.0
 description: Interactive guide to amplihack features. Walks users through workflows, recipes, skills, agents, and hooks. Use this agent to learn what amplihack can do and how to use it effectively.
 role: "Amplihack feature guide and onboarding specialist"
-model: inherit
 ---
 
 # Amplihack Guide Agent

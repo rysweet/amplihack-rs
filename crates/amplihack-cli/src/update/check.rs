@@ -103,6 +103,15 @@ pub fn run_update(skip_install: bool) -> Result<()> {
     // execute the OLD binary's compiled-in code. Instead we spawn the NEW
     // binary as a subprocess so the freshly-installed code runs.
     super::post_install::run_post_update_install(skip_install, || {
+        // Issue #1954 D6: `download_and_replace` released the install lock
+        // when it returned. The child takes it itself; were it still held
+        // here, the child would wait for this process forever.
+        if crate::install_lock::held_by_current_thread() {
+            bail!(
+                "internal error: the install lock is still held before the post-update \
+                 install starts; the install child would wait for it forever (#1954)"
+            );
+        }
         let cmd = build_install_command(&installed_exe);
         let status =
             crate::util::run_with_timeout(cmd, POST_UPDATE_INSTALL_TIMEOUT).with_context(|| {

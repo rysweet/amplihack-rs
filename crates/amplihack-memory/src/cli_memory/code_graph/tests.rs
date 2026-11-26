@@ -5,7 +5,7 @@ use super::paths::{
 };
 use super::scip::{
     SCIP_KIND_CLASS, SCIP_KIND_FUNCTION, SCIP_SYMBOL_ROLE_DEFINITION, ScipDocument, ScipIndex,
-    ScipOccurrence, ScipSymbolInformation,
+    ScipOccurrence, ScipSymbolInformation, convert_scip_to_blarify,
 };
 use super::types::{CodeGraphImportCounts, CodeGraphSummary};
 use super::validation::{enforce_db_permissions, validate_blarify_json_size, validate_index_path};
@@ -956,4 +956,26 @@ fn resolve_code_graph_db_path_for_project_disk_shim_blocks_escaping_symlink() {
     let rendered = format!("{error:#}");
     assert!(rendered.contains("legacy graph DB shim escapes project root"));
     assert!(rendered.contains(kuzu_symlink.to_string_lossy().as_ref()));
+}
+
+#[test]
+fn convert_scip_to_blarify_drops_documents_under_excluded_folders() {
+    let mut index = sample_scip_index();
+    let mut nested = index.documents[0].clone();
+    nested.relative_path = "worktrees/task-1/src/example/module.py".to_string();
+    let mut built = index.documents[0].clone();
+    built.relative_path = "target/debug/module.py".to_string();
+    index.documents.push(nested);
+    index.documents.push(built);
+
+    let payload = convert_scip_to_blarify(&index, Path::new("/project"), Some("python"));
+
+    let paths: Vec<&str> = payload
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    assert_eq!(paths, vec!["/project/src/example/module.py"]);
+    assert_eq!(payload.classes.len(), 1);
+    assert_eq!(payload.functions.len(), 1);
 }

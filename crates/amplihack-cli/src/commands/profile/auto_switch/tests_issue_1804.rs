@@ -8,11 +8,12 @@ use super::candidate::{Pool, select_with_overflow};
 use super::capacity::{self, Evidence, refresh};
 use super::config::{self, Config};
 use super::fsx;
+use super::liveness::FakeSessions;
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
 use super::rerun::{Pick, nested_candidate};
 use super::state::{CREDS, Ledger, State, UsageFile};
-use super::swap::swap_check;
+use super::swap::swap_check_seeing;
 use super::usage::{RateLimits, Reading, ReadingSource, Window};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry};
@@ -46,9 +47,19 @@ fn private(p: &Path, body: &str) {
     fs::set_permissions(p, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+/// The view of running sessions these tests hand to `swap_check`: sessions
+/// can be seen, and no profile has one. Held in memory (issue #2935).
+fn no_sessions() -> FakeSessions {
+    FakeSessions::running(&[])
+}
+
 /// A private root: `work`, `spare` and `cred` hold OAuth logins; `console`
 /// and `ignored` are API-key profiles with mode-600 `{}` logins, which pass
 /// `fsx::movable_login` like the host's did on 30 October.
+///
+/// Every login here is a file. A test build reads as not macOS unless the
+/// test holds `keychain::test_seam` (issue #2885), so a missing file means
+/// no login on every host; the Keychain answers are in `tests_own_login.rs`.
 struct Fx {
     _tmp: tempfile::TempDir,
     home: PathBuf,
@@ -300,15 +311,19 @@ fn capacity_counts_no_overflow_profile_without_a_login_file() {
     let now = 2_000_000_000;
     let blocked = |f: &Fx| {
         let mut inputs = f.inputs(&c, Some(GATE), now);
-        inputs.refuse_no_login(&f.root);
+        // No Keychain is asked in this test, so none is unreadable.
+        assert!(inputs.refuse_no_login(&f.root, Some(&f.home)).is_empty());
         inputs.blocked.contains(&"console".to_string())
     };
     assert!(!blocked(&f), "its login file is there");
-    assert!(super::can_take_login(&f.root, &console));
+    assert_eq!(super::login_gap(&f.root, &console), None);
 
     fs::remove_file(f.root.join("console").join(CREDS)).unwrap();
     assert!(blocked(&f), "selection would pass it over");
-    assert!(!super::can_take_login(&f.root, &console));
+    assert_eq!(
+        super::login_gap(&f.root, &console),
+        Some(super::overflow_inputs::LoginGap::NoLogin)
+    );
 
     let rs = RotateState::new(&f.root);
     rs.ensure().unwrap();
@@ -434,7 +449,8 @@ fn a_held_key_names_the_login_that_held_it() {
     );
 }
 
-/// `swap_check` needs the real `/proc` scan and the real gate.
+/// `swap_check` needs a view of running sessions, here one that sees none
+/// (`no_sessions`), and the real overflow setting (`Gate`).
 #[test]
 fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {
     let _l = lock();
@@ -462,7 +478,15 @@ fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {
         five_hour: window,
         seven_day: window,
     };
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&[])).unwrap();
+    swap_check_seeing(
+        &no_sessions(),
+        &f.state,
+        &f.profiles,
+        &n("work"),
+        &rl,
+        &cfg(&[]),
+    )
+    .unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.is_empty(),
         "no login moved"
@@ -586,7 +610,7 @@ fn swap_check_never_swaps_a_marked_key_into_a_session() {
     let inputs = OverflowInputs::load(&f.root, &c, now);
     assert!(inputs.gate.is_some(), "the gate must be open for this test");
     assert!(inputs.check_note(&f.root, &n("console")).is_some());
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &c).unwrap();
+    swap_check_seeing(&no_sessions(), &f.state, &f.profiles, &n("work"), &rl, &c).unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.is_empty(),
         "no login moved"
@@ -748,7 +772,15 @@ fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
         five_hour: window,
         seven_day: window,
     };
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&["cred"])).unwrap();
+    swap_check_seeing(
+        &no_sessions(),
+        &f.state,
+        &f.profiles,
+        &n("work"),
+        &rl,
+        &cfg(&["cred"]),
+    )
+    .unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.contains_key("work"),
         "the login moved"
@@ -761,6 +793,112 @@ fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
         ) && lines[0].ends_with("; no spend block; auto-switch from work"),
         "{lines:?}"
     );
+}
+
+/// Issue #2136 test 3 for auto-switch: `work` (org-a) is used up and the
+/// only login with room, `spare`, is in org-b. `swap_check` makes the
+/// crossing as the last resort, and records it where an operator reads it:
+/// the rotate log, the last-crossing record and `auto-switch status`.
+/// Returns the rotate log lines and the status line.
+fn crossing_run(spare_org: &str) -> (Fx, Vec<String>, Option<String>) {
+    let _l = lock();
+    let f = fx("enabled=on\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _gate = default_gate();
+    for (name, org) in [("work", "org-a"), ("spare", spare_org), ("cred", "org-b")] {
+        f.state
+            .write_sub_json(
+                "expected",
+                name,
+                &serde_json::json!({"account": format!("u-{name}"), "org": org}),
+            )
+            .unwrap();
+    }
+    let now = fsx::now();
+    let mut accounts = used_up(now);
+    accounts.insert("spare".into(), reading(10.0, 4 * 3600, now));
+    f.state
+        .save_usage(&UsageFile {
+            version: 1,
+            accounts,
+        })
+        .unwrap();
+    let window = Some(Window {
+        used_percentage: 100.0,
+        resets_at: now + 4 * 3600,
+    });
+    let rl = RateLimits {
+        five_hour: window,
+        seven_day: window,
+    };
+    swap_check_seeing(
+        &no_sessions(),
+        &f.state,
+        &f.profiles,
+        &n("work"),
+        &rl,
+        &cfg(&[]),
+    )
+    .unwrap();
+    assert_eq!(
+        f.state
+            .load_ledger()
+            .unwrap()
+            .hosts
+            .get("work")
+            .map(|h| h.live.as_str()),
+        Some("spare"),
+        "the login moved"
+    );
+    let log = fs::read_to_string(RotateState::new(&f.root).log).unwrap_or_default();
+    let lines = log
+        .lines()
+        .filter(|l| l.contains(" affinity: "))
+        .map(str::to_string)
+        .collect();
+    let status = super::affinity::status_line(&f.state, |_| "just now".into());
+    (f, lines, status)
+}
+
+#[test]
+fn an_auto_switch_crossing_is_recorded_and_reported() {
+    let (f, lines, status) = crossing_run("org-b");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].ends_with(
+            " affinity: crossing work->spare: Cross-organisation swap: earlier \
+             thinking becomes unavailable on the next turn. The visible conversation \
+             remains and the session can continue."
+        ),
+        "{lines:?}"
+    );
+    let record = f
+        .state
+        .read_sub_json("affinity", "last-crossing")
+        .unwrap()
+        .expect("the crossing is recorded");
+    assert_eq!(record["dir"], "work");
+    assert_eq!(record["from"], "work");
+    assert_eq!(record["to"], "spare");
+    assert_eq!(record["from_org"], "org-a");
+    assert_eq!(record["to_org"], "org-b");
+    assert_eq!(record["affinity"], "crossing");
+    let status = status.expect("auto-switch status names the crossing");
+    assert!(
+        status.starts_with(
+            "last crossing: in work from work (organisation org-a) to spare \
+             (organisation org-b), just now: Cross-organisation swap"
+        ),
+        "{status}"
+    );
+}
+
+#[test]
+fn an_auto_switch_swap_within_one_organisation_records_no_crossing() {
+    let (f, lines, status) = crossing_run("org-a");
+    assert!(lines.is_empty(), "{lines:?}");
+    assert_eq!(f.state.read_sub_json("affinity", "last-crossing"), Ok(None));
+    assert_eq!(status, None);
 }
 
 /// The rotator's capacity write takes the kinds from the home it was given,

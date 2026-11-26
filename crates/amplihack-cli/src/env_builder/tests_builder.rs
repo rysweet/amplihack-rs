@@ -322,7 +322,7 @@ fn with_amplihack_home_sets_from_home_when_no_bundle_root() {
         .unwrap_or_else(|p| p.into_inner());
 
     let temp = tempfile::tempdir().unwrap();
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::test_support::tempdir_outside_framework_roots();
     let _home_guard = crate::test_support::HomeGuard::set(temp.path());
     let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };
@@ -378,7 +378,7 @@ fn with_amplihack_home_rejects_traversal_path() {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
 
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = crate::test_support::tempdir_outside_framework_roots();
     let prev_home = crate::test_support::set_home(std::path::Path::new("/tmp/../../etc"));
     let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };

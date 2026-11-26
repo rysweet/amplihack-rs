@@ -22,6 +22,7 @@ steps:
   # ==========================================================================
   - id: "formulate-hypotheses"
     agent: "amplihack:architect"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Formulate hypotheses based on the consolidated findings.
@@ -64,6 +65,7 @@ steps:
 
   - id: "execute-verification"
     agent: "amplihack:architect"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Execute practical verification tests for each hypothesis.
@@ -118,6 +120,7 @@ steps:
 
   - id: "validate-verification"
     agent: "amplihack:reviewer"
+    model: "standard"
     working_dir: "{{repo_path}}"
     prompt: |
       Validate the verification results and overall understanding.
@@ -160,6 +163,7 @@ steps:
   # ==========================================================================
   - id: "identify-patterns"
     agent: "amplihack:patterns"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Identify reusable patterns discovered during this investigation.
@@ -204,6 +208,7 @@ steps:
 
   - id: "synthesis"
     agent: "amplihack:architect"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Synthesize all findings into the 5 REQUIRED outputs.
@@ -277,6 +282,7 @@ steps:
 
   - id: "validate-synthesis"
     agent: "amplihack:reviewer"
+    model: "standard"
     working_dir: "{{repo_path}}"
     prompt: |
       Validate the synthesis addresses all original questions.

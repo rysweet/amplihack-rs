@@ -3,17 +3,44 @@ use super::*;
 pub(super) const HOOK_WRAPPER: &str = "#!/bin/sh\nexport AMPLIHACK_HOOK_PROTOCOL=codex\nexec \"$(dirname -- \"$0\")/amplihack-hooks\" \"$@\"\n";
 pub(super) const LEGACY_HOOK_WRAPPER: &str = "#!/bin/sh\nexport AMPLIHACK_AGENT_BINARY=codex\nexec \"$(dirname -- \"$0\")/amplihack-hooks\" \"$@\"\n";
 pub(super) fn build(source: &Path, hooks_binary: &Path, staged: &Path) -> Result<()> {
+    build_with_selection(
+        source,
+        hooks_binary,
+        staged,
+        &crate::user_config::list_selection(),
+    )
+}
+
+pub(super) fn build_with_selection(
+    source: &Path,
+    hooks_binary: &Path,
+    staged: &Path,
+    selection: &ListSelection,
+) -> Result<()> {
     let skills = staged.join("skills");
     let canonical = source.join("amplifier-bundle/skills").canonicalize()?;
-    validate_skill_names(&canonical, &mut std::collections::BTreeSet::new(), 0)?;
-    copy_tree(&canonical, &skills, &canonical, 0)?;
-    expose_nested_skills(&skills, &skills, 0)?;
-    instruction_skills(
-        &source.join("docs/claude/commands/amplihack"),
-        &skills,
-        "command",
+    validate_skill_names(
+        &canonical,
+        &mut std::collections::BTreeSet::new(),
+        0,
+        selection,
     )?;
-    instruction_skills(&source.join("amplifier-bundle/agents"), &skills, "persona")?;
+    copy_tree(&canonical, &skills, &canonical, 0, selection)?;
+    expose_nested_skills(&skills, &skills, 0, selection)?;
+    if selection.set == ListSet::All {
+        instruction_skills(
+            &source.join("docs/claude/commands/amplihack"),
+            &skills,
+            "command",
+            selection,
+        )?;
+    }
+    instruction_skills(
+        &source.join("amplifier-bundle/agents"),
+        &skills,
+        "persona",
+        selection,
+    )?;
     fs::create_dir(staged.join("hooks"))?;
     // Empty declaration avoids duplicate execution if bundled hooks become supported.
     fs::write(staged.join("hooks/hooks.json"), "{\"hooks\":{}}\n")?;
@@ -53,5 +80,41 @@ mod hook_wrapper_contract_tests {
             .unwrap();
         assert!(export < exec);
         assert!(!HOOK_WRAPPER.contains("eval"));
+    }
+}
+
+#[cfg(test)]
+mod analyst_skill_tests {
+    use super::*;
+
+    #[test]
+    fn package_leaves_out_analyst_skills_and_source_keeps_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let skills = source.join("amplifier-bundle/skills");
+        for name in ["economist-analyst", "code-review"] {
+            fs::create_dir_all(skills.join(name)).unwrap();
+            fs::write(
+                skills.join(name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test skill\n---\n"),
+            )
+            .unwrap();
+        }
+        let hooks_binary = dir.path().join("amplihack-hooks");
+        fs::write(&hooks_binary, b"hooks").unwrap();
+        let staged = dir.path().join("staged");
+
+        build_with_selection(
+            &source,
+            &hooks_binary,
+            &staged,
+            &ListSelection::new(ListSet::All, []),
+        )
+        .unwrap();
+
+        assert!(staged.join("skills/code-review/SKILL.md").is_file());
+        assert!(!staged.join("skills/economist-analyst").exists());
+        assert!(skills.join("code-review/SKILL.md").is_file());
+        assert!(skills.join("economist-analyst/SKILL.md").is_file());
     }
 }

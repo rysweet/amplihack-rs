@@ -49,6 +49,9 @@ pub enum Commands {
     /// Report workstream token observations or explicitly publish a PR summary
     #[command(subcommand)]
     Usage(crate::commands::usage::UsageCommands),
+    /// Search the index of installed amplihack skills and agents
+    #[command(subcommand)]
+    Directory(crate::commands::directory::DirectoryCommands),
     /// Show the capacity governor's limit, budgets, slots and queue
     #[command(subcommand)]
     Governor(crate::commands::governor::GovernorCommands),
@@ -170,6 +173,19 @@ MODEL SELECTION (issues #1421, #1527)
             conflicts_with_all = ["auto", "append", "docker", "checkout_repo"]
         )]
         supervise: Option<String>,
+        /// Keep this supervised session running: relaunch it in the same
+        /// pane with 'claude --continue' when its process exits other than
+        /// by you ending it. Overrides the agent.standing user key.
+        #[arg(
+            long = "standing",
+            requires = "supervise",
+            conflicts_with = "no_standing"
+        )]
+        standing: bool,
+        /// Do not keep this supervised session running, whatever the
+        /// agent.standing user key says.
+        #[arg(long = "no-standing", requires = "supervise")]
+        no_standing: bool,
         #[command(flatten)]
         governor: crate::commands::governor::GovernorArgs,
         /// Extra args passed to claude
@@ -215,6 +231,9 @@ MODEL SELECTION (issues #1421, #1527)
     },
     /// Launch OpenAI Codex CLI
     Codex {
+        /// Preserve the pending recovery journal as pending.json.stale-<UTC stamp>, then launch. Resets metadata only.
+        #[arg(long = "reset-recovery")]
+        reset_recovery: bool,
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
         no_reflection: bool,
@@ -239,6 +258,18 @@ MODEL SELECTION (issues #1421, #1527)
         /// Read the initial auto-mode prompt from a file (requires --auto).
         #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
         prompt_file: Option<PathBuf>,
+        /// Launch for a local model. NAME is the Codex profile
+        /// <Codex home>/NAME.config.toml that holds the model's provider
+        /// settings. amplihack starts Codex on a small Codex home of its own,
+        /// ~/.amplihack/codex-local/NAME, and its hooks add no text to the
+        /// model's context. Also selected by AMPLIHACK_CODEX_LOCAL_MODEL=NAME,
+        /// which a recipe agent step inherits; this flag wins over it.
+        #[arg(
+            long = "local-model",
+            value_name = "NAME",
+            value_parser = clap::builder::NonEmptyStringValueParser::new()
+        )]
+        local_model: Option<String>,
         /// Extra args passed to codex
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -380,7 +411,10 @@ MODEL SELECTION (issues #1421, #1527)
     /// prefix for a command started with `tmux new-session`. tmux gives a new
     /// session the server's global environment, not this shell's, and that
     /// holds the session markers of whatever started the server; the prefix
-    /// removes them, so only this shell's answer arrives. `setsid` and `nohup`
+    /// removes them, so only this shell's answer arrives. It also removes
+    /// AMPLIHACK_PARENT_RECIPE_PID, AMPLIHACK_PARENT_RECIPE_STARTTIME and
+    /// AMPLIHACK_AUTODRIVE_STATE_DIR, which a server started from a recipe
+    /// step would otherwise hand to every session. `setsid` and `nohup`
     /// keep this shell's environment and need no prefix. A default guess stays
     /// tagged as one. Keep the tmux command in double quotes: in single quotes
     /// this runs in the new session and reads the server's markers.

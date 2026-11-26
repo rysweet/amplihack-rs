@@ -36,9 +36,15 @@ fn repair(home: &Path, settings: Value) -> Value {
     let path = home.join(".claude/settings.json");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, settings.to_string()).unwrap();
-    assert_eq!(
-        hooks_registered_in_settings(&path).unwrap(),
-        HookRegistration::Missing,
+    let target = hook_block::HookTarget {
+        bin: hooks_stub.clone(),
+        limit_resume: true,
+    };
+    assert!(
+        matches!(
+            hook_block::drift_file(&path, &target),
+            hook_block::FileDrift::Drift(_)
+        ),
         "the fixture must send the launch down the repair path"
     );
 
@@ -46,8 +52,8 @@ fn repair(home: &Path, settings: Value) -> Value {
         ensure_framework_installed_with(&mut Vec::new()).expect("the launch repair must succeed")
     });
     assert_eq!(
-        hooks_registered_in_settings(&path).unwrap(),
-        HookRegistration::Registered,
+        hook_block::drift_file(&path, &target),
+        hook_block::FileDrift::Clean,
         "the launch repair did not run"
     );
     serde_json::from_slice(&fs::read(&path).unwrap()).unwrap()

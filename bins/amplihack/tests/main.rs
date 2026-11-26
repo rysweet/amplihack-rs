@@ -28,6 +28,8 @@ mod issue_1525_agent_binary_is_not_subprocess_safe;
 mod issue_1525_migrate_detect_cli_uses_the_resolver;
 #[path = "issue_1810_usage_startup.rs"]
 mod issue_1810_usage_startup;
+#[path = "issue_2284_reset_before_update.rs"]
+mod issue_2284_reset_before_update;
 #[path = "issue_537_git_optional_recipes.rs"]
 mod issue_537_git_optional_recipes;
 #[path = "issue_538_install_completeness.rs"]
@@ -36,3 +38,9 @@ mod issue_538_install_completeness;
 mod issue_625_update_prompt_subprocess_safe;
 #[path = "spec_conformance_process.rs"]
 mod spec_conformance_process;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One copy follows the call-out.
+#[path = "../../../tests/integration/recipe_step_body.rs"]
+mod recipe_step_body;

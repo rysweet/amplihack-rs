@@ -25,7 +25,7 @@ const KEY_HELD: &str = "key-held";
 pub const MAX_CLAUDE_JSON: u64 = 32 * 1024 * 1024;
 const VERSION: u32 = 1;
 /// The readings that passive reads, `profile rotate` and auto-switch use.
-const USAGE: &str = "usage.json";
+pub const USAGE: &str = "usage.json";
 /// Readings taken in `~/.claude`; see [`State::try_load_home_usage`].
 pub const HOME_USAGE: &str = "home-usage.json";
 
@@ -414,6 +414,25 @@ impl State {
         let bytes = serde_json::to_vec_pretty(v).map_err(|e| invariant(e.to_string()))?;
         fsx::write_private_atomic(&dir, &format!("{name}.json"), &bytes)
             .map_err(|e| invariant(format!("{DIR}/{sub}/{name}.json: {e}")))
+    }
+
+    /// [`State::write_sub_json`] for a file that must not be replaced (issue
+    /// #1962): `Ok(false)` when the name already exists, which is left as it
+    /// is. A symlink at the name is refused and never followed.
+    pub fn create_sub_json(
+        &self,
+        sub: &str,
+        name: &str,
+        v: &serde_json::Value,
+    ) -> Result<bool, ProfileError> {
+        self.ensure()?;
+        let dir = self.dir.join(sub);
+        self.ensure_sub(&dir)?;
+        let bytes = serde_json::to_vec_pretty(v).map_err(|e| invariant(e.to_string()))?;
+        let shown = |e: std::io::Error| invariant(format!("{DIR}/{sub}/{name}.json: {e}"));
+        fsx::PrivateTemp::create(&dir, &format!("{name}.json"))
+            .and_then(|temp| temp.link_new(&bytes))
+            .map_err(shown)
     }
 
     /// Removes a file written by [`State::write_sub_json`]. A file that is

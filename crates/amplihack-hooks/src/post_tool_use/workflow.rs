@@ -3,12 +3,17 @@
 //! Detects when `/dev` (dev-orchestrator) is invoked and monitors subsequent
 //! tool calls for evidence of recipe-runner execution.  Emits a warning if the
 //! tool-call threshold is reached without evidence.
+//!
+//! The state lives at `<state root>/runtime/sessions/<key>/workflow_state.json`
+//! (#1963), where an absent or blank session id uses the key `current` so that
+//! an id-less `/dev` prompt and the following tool calls share one file.
 
-use amplihack_types::{ProjectDirs, sanitize_session_id};
+use crate::state_dir::create_private_dir_all;
+use amplihack_types::{amplihack_state_root, session_state_dir_under};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 // ---------------------------------------------------------------------------
@@ -60,45 +65,63 @@ pub(super) struct WorkflowEnforcementState {
     pub(super) warning_emitted: bool,
 }
 
-fn workflow_state_file(dirs: &ProjectDirs, session_id: Option<&str>) -> PathBuf {
+/// Session key for workflow state when the hook received no usable id.
+const CURRENT_SESSION_KEY: &str = "current";
+
+/// The per-session directory holding the workflow state.
+///
+/// This is the only place the `current` fallback is applied; the key still
+/// goes through `session_state_dir_under`, so it is one sanitised component.
+pub(super) fn workflow_session_dir(state_root: &Path, session_id: Option<&str>) -> PathBuf {
     let session = session_id
         .filter(|value| !value.trim().is_empty())
-        .map(sanitize_session_id)
-        .unwrap_or_else(|| "current".to_string());
-    dirs.runtime
-        .join("workflow_state")
-        .join(format!("{session}.json"))
+        .unwrap_or(CURRENT_SESSION_KEY);
+    session_state_dir_under(state_root, Some(session))
 }
 
-pub(super) fn read_workflow_state(
-    dirs: &ProjectDirs,
-    session_id: Option<&str>,
-) -> Option<WorkflowEnforcementState> {
-    let path = workflow_state_file(dirs, session_id);
-    let raw = fs::read_to_string(path).ok()?;
+fn workflow_state_file(session_dir: &Path) -> PathBuf {
+    session_dir.join("workflow_state.json")
+}
+
+pub(super) fn read_workflow_state(session_dir: &Path) -> Option<WorkflowEnforcementState> {
+    let raw = fs::read_to_string(workflow_state_file(session_dir)).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
 pub(super) fn write_workflow_state(
-    dirs: &ProjectDirs,
-    session_id: Option<&str>,
+    session_dir: &Path,
     state: &WorkflowEnforcementState,
 ) -> anyhow::Result<()> {
-    let path = workflow_state_file(dirs, session_id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_vec(state)?)?;
+    create_private_dir_all(session_dir)?;
+    fs::write(workflow_state_file(session_dir), serde_json::to_vec(state)?)?;
     Ok(())
 }
 
-fn clear_workflow_state(dirs: &ProjectDirs, session_id: Option<&str>) {
-    let path = workflow_state_file(dirs, session_id);
-    let _ = fs::remove_file(path);
+fn clear_workflow_state(session_dir: &Path) {
+    let path = workflow_state_file(session_dir);
+    if let Err(error) = fs::remove_file(&path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            path = %path.display(),
+            error = %error,
+            "workflow enforcement: failed to clear state"
+        );
+    }
 }
 
+/// Start `/dev` tracking for `session_id` under the amplihack state root.
+///
+/// This is the only workflow helper that reads the environment. It returns
+/// an error when no state root resolves, so callers log and carry on.
 pub(crate) fn begin_workflow_enforcement_tracking(session_id: Option<&str>) -> anyhow::Result<()> {
-    let dirs = ProjectDirs::from_cwd();
+    let state_root = amplihack_state_root()
+        .ok_or_else(|| anyhow::anyhow!("no amplihack state root (set HOME or AMPLIHACK_HOME)"))?;
+    begin_workflow_enforcement_tracking_in(&workflow_session_dir(&state_root, session_id))
+}
+
+/// Write a fresh tracking state into `session_dir`.
+pub(super) fn begin_workflow_enforcement_tracking_in(session_dir: &Path) -> anyhow::Result<()> {
     let state = WorkflowEnforcementState {
         dev_invoked_at: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -107,7 +130,7 @@ pub(crate) fn begin_workflow_enforcement_tracking(session_id: Option<&str>) -> a
         tool_calls_since: 0,
         warning_emitted: false,
     };
-    write_workflow_state(&dirs, session_id, &state)
+    write_workflow_state(session_dir, &state)
 }
 
 fn is_dev_skill_invocation(tool_name: &str, tool_input: &Value) -> bool {
@@ -165,30 +188,31 @@ the recipe runner NOW."
 // ---------------------------------------------------------------------------
 
 pub(super) fn update_workflow_enforcement(
+    state_root: &Path,
     tool_name: &str,
     tool_input: &Value,
     session_id: Option<&str>,
 ) -> Option<String> {
-    let dirs = ProjectDirs::from_cwd();
+    let session_dir = workflow_session_dir(state_root, session_id);
 
     if is_dev_skill_invocation(tool_name, tool_input) {
-        if let Err(error) = begin_workflow_enforcement_tracking(session_id) {
+        if let Err(error) = begin_workflow_enforcement_tracking_in(&session_dir) {
             tracing::warn!("workflow enforcement: failed to write state: {}", error);
         }
         return None;
     }
 
-    let mut state = read_workflow_state(&dirs, session_id)?;
+    let mut state = read_workflow_state(&session_dir)?;
 
     if has_workflow_evidence(tool_name, tool_input) {
-        clear_workflow_state(&dirs, session_id);
+        clear_workflow_state(&session_dir);
         return None;
     }
 
     state.tool_calls_since += 1;
     if state.tool_calls_since >= TOOL_CALL_THRESHOLD && !state.warning_emitted {
         state.warning_emitted = true;
-        if let Err(error) = write_workflow_state(&dirs, session_id, &state) {
+        if let Err(error) = write_workflow_state(&session_dir, &state) {
             tracing::warn!(
                 "workflow enforcement: failed to persist warning state: {}",
                 error
@@ -197,7 +221,7 @@ pub(super) fn update_workflow_enforcement(
         return Some(workflow_bypass_warning(state.tool_calls_since));
     }
 
-    if let Err(error) = write_workflow_state(&dirs, session_id, &state) {
+    if let Err(error) = write_workflow_state(&session_dir, &state) {
         tracing::warn!("workflow enforcement: failed to update state: {}", error);
     }
     None
@@ -314,16 +338,21 @@ mod tests {
     #[test]
     fn state_roundtrip_through_filesystem() {
         let dir = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::new(dir.path());
+        let session_dir = workflow_session_dir(dir.path(), Some("test-session"));
 
         let state = WorkflowEnforcementState {
             dev_invoked_at: 1234567890,
             tool_calls_since: 2,
             warning_emitted: false,
         };
-        write_workflow_state(&dirs, Some("test-session"), &state).unwrap();
+        write_workflow_state(&session_dir, &state).unwrap();
 
-        let loaded = read_workflow_state(&dirs, Some("test-session")).unwrap();
+        assert!(
+            dir.path()
+                .join("runtime/sessions/test-session/workflow_state.json")
+                .exists()
+        );
+        let loaded = read_workflow_state(&session_dir).unwrap();
         assert_eq!(loaded.dev_invoked_at, 1234567890);
         assert_eq!(loaded.tool_calls_since, 2);
         assert!(!loaded.warning_emitted);
@@ -332,41 +361,41 @@ mod tests {
     #[test]
     fn read_workflow_state_missing_returns_none() {
         let dir = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::new(dir.path());
-        assert!(read_workflow_state(&dirs, Some("nonexistent")).is_none());
+        let session_dir = workflow_session_dir(dir.path(), Some("nonexistent"));
+        assert!(read_workflow_state(&session_dir).is_none());
     }
 
     #[test]
     fn clear_workflow_state_removes_file() {
         let dir = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::new(dir.path());
+        let session_dir = workflow_session_dir(dir.path(), Some("sess"));
         let state = WorkflowEnforcementState::default();
-        write_workflow_state(&dirs, Some("sess"), &state).unwrap();
-        assert!(read_workflow_state(&dirs, Some("sess")).is_some());
+        write_workflow_state(&session_dir, &state).unwrap();
+        assert!(read_workflow_state(&session_dir).is_some());
 
-        clear_workflow_state(&dirs, Some("sess"));
-        assert!(read_workflow_state(&dirs, Some("sess")).is_none());
+        clear_workflow_state(&session_dir);
+        assert!(read_workflow_state(&session_dir).is_none());
     }
 
     #[test]
-    fn workflow_state_file_sanitizes_session_id() {
+    fn workflow_session_dir_sanitizes_session_id() {
         let dir = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::new(dir.path());
-        let path = workflow_state_file(&dirs, Some("my/bad\\session"));
-        let filename = path.file_stem().unwrap().to_str().unwrap();
-        assert!(!filename.contains('/'));
-        assert!(!filename.contains('\\'));
+        let path = workflow_session_dir(dir.path(), Some("my/bad\\session"));
+        assert_eq!(
+            path.parent(),
+            Some(dir.path().join("runtime/sessions").as_path())
+        );
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(!name.contains('/'));
+        assert!(!name.contains('\\'));
     }
 
     #[test]
-    fn workflow_state_file_empty_session_uses_current() {
+    fn workflow_session_dir_empty_session_uses_current() {
         let dir = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::new(dir.path());
-        let path = workflow_state_file(&dirs, Some("  "));
-        assert!(path.to_str().unwrap().contains("current"));
-
-        let path2 = workflow_state_file(&dirs, None);
-        assert!(path2.to_str().unwrap().contains("current"));
+        let current = dir.path().join("runtime/sessions/current");
+        assert_eq!(workflow_session_dir(dir.path(), Some("  ")), current);
+        assert_eq!(workflow_session_dir(dir.path(), None), current);
     }
 
     // --- update_workflow_enforcement integration ---
@@ -374,17 +403,27 @@ mod tests {
     #[test]
     fn update_enforcement_dev_invocation_starts_tracking() {
         let dir = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::new(dir.path());
+        let input = json!({"skill": "dev-orchestrator"});
 
-        // Manually write state to known dir to avoid from_cwd dependency
-        let state = WorkflowEnforcementState {
-            dev_invoked_at: 100,
-            tool_calls_since: 0,
-            warning_emitted: false,
-        };
-        write_workflow_state(&dirs, Some("test"), &state).unwrap();
-        let loaded = read_workflow_state(&dirs, Some("test")).unwrap();
+        assert!(update_workflow_enforcement(dir.path(), "Skill", &input, Some("test")).is_none());
+
+        let session_dir = workflow_session_dir(dir.path(), Some("test"));
+        let loaded = read_workflow_state(&session_dir).unwrap();
         assert_eq!(loaded.tool_calls_since, 0);
+        assert!(!loaded.warning_emitted);
+    }
+
+    #[test]
+    fn update_enforcement_warns_at_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = json!({"skill": "dev-orchestrator"});
+        let other = json!({"path": "/tmp/x.txt"});
+        update_workflow_enforcement(dir.path(), "Skill", &skill, Some("t"));
+        for _ in 0..TOOL_CALL_THRESHOLD - 1 {
+            assert!(update_workflow_enforcement(dir.path(), "View", &other, Some("t")).is_none());
+        }
+        let warning = update_workflow_enforcement(dir.path(), "View", &other, Some("t"));
+        assert!(warning.unwrap().contains("WORKFLOW BYPASS DETECTED"));
     }
 
     #[test]

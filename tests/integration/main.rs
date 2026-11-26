@@ -17,12 +17,26 @@
 
 #[path = "amplihack_path.rs"]
 mod amplihack_path;
+#[path = "../../crates/amplihack-cli/tests/support/exec_stub.rs"]
+#[allow(dead_code)]
+mod exec_stub;
 #[path = "investigation_workflow_decomposition_test.rs"]
 mod investigation_workflow_decomposition;
 #[path = "../support/isolated_amplihack.rs"]
 mod isolated_amplihack;
 #[path = "isolated_amplihack_scan.rs"]
 mod isolated_amplihack_scan;
+// Issue #2658: the real-runner tests build or reuse recipe-runner-rs at the
+// pinned revision instead of using whatever the host has installed.
+#[path = "../support/pinned_runner.rs"]
+mod pinned_runner;
+// The helper's unit tests run in this binary only.
+#[path = "../support/pinned_runner_tests.rs"]
+mod pinned_runner_tests;
+
+// Issue #1973: condition waits with one ceiling, shared with cli_integration.
+#[path = "../../crates/amplihack-cli/tests/support/wait.rs"]
+mod wait;
 
 #[path = "smart_orchestrator_decomposition_test.rs"]
 mod smart_orchestrator_decomposition;
@@ -65,6 +79,11 @@ mod test_harness_binary_path_contract;
 // resolve for it, so it can locate the binary robustly.
 #[path = "skip_update_check_flag_test.rs"]
 mod skip_update_check_flag;
+
+// Issue #1971: pins the AMPLIHACK_SKIP_AUTO_INSTALL bypass and --skip-update-check
+// by recording stub git/npm/curl, with no timing assertion.
+#[path = "issue_1971_skip_guard_test.rs"]
+mod issue_1971_skip_guard;
 
 // WS3: Recipe runner E2E integration tests
 // These tests verify the full recipe delegation chain:
@@ -125,6 +144,14 @@ mod workflow_publish_pr_metadata;
 
 #[path = "workflow_publish_resilience.rs"]
 mod workflow_publish_resilience;
+
+// Issue #2335: amplihack runtime files never make a worktree dirty.
+#[path = "issue_2335_runtime_paths_publish.rs"]
+mod issue_2335_runtime_paths_publish;
+
+// Issue #1976: step-16 publishes a local tracking reference as no linked issue.
+#[path = "issue_1976_publish_local_issue.rs"]
+mod issue_1976_publish_local_issue;
 
 #[path = "issue_978_step15_rebase_base_test.rs"]
 mod issue_978_step15_rebase_base;
@@ -364,6 +391,17 @@ mod issue_684_host_aware_workflow;
 #[path = "issue_1595_tracking_issue_selection_test.rs"]
 mod issue_1595_tracking_issue_selection;
 
+// Issue #1881: step-03 uses local tracking unless create_issue=true, reuses an
+// open issue with exactly the same title, and bounds creation retries.
+#[path = "issue_1881_local_default_tracking_test.rs"]
+mod issue_1881_local_default_tracking;
+// base_branch and strict_delivery: the shared helper, the step-15/16 guard,
+// step-06d for an issue in another repository, step-04's base, finalize, and
+// the callers that do not deliver to base_branch (quick-change, auto-drive-light,
+// smart-orchestrator's parallel launcher).
+#[path = "workflow_delivery_inputs_test.rs"]
+mod workflow_delivery_inputs;
+
 // Issues #815/#804: default-workflow local tracking issue-number extraction.
 // step-03b must accept hash-based `local-<hash>` references (propagate them),
 // never surface a bare number for a local fallback, and never abort the workflow.
@@ -375,6 +413,8 @@ mod issue_815_804_local_tracking_extract;
 #[path = "issue_815_804_local_tracking_scope_args_test.rs"]
 mod issue_815_804_local_tracking_scope_args;
 
+#[path = "issue_2538_terminal_state_cross_repo.rs"]
+mod issue_2538_terminal_state_cross_repo;
 // Issue #1017: PR-scope must match on the (head,base,same-repo) primary key so
 // the recipe adopts its own unique-by-branch PR (stale --issue/--head-sha), and
 // publish must be collision-tolerant (adopt an existing OPEN PR on create fail).
@@ -406,6 +446,12 @@ mod issue_849_skill_mirror_citation;
 #[path = "verus_expert_skill_test.rs"]
 mod verus_expert_skill;
 
+// Agent definitions leave the model to the user: each definition under
+// amplifier-bundle/agents and docs/claude/agents parses, and none sets its
+// model to `inherit`, which would override the user's default for helpers.
+#[path = "agent_definitions_model_test.rs"]
+mod agent_definitions_model;
+
 // PR #1027 (spike/ci-wallclock-parallelize): CI wall-clock parallelization +
 // conditional release-profile contract. Pins the 7 required check names, the
 // removal of `needs: check` from test/install-smoke/cross-compile, the release
@@ -431,11 +477,12 @@ mod issue_1337_loop_health_evaluator;
 #[path = "issue_1671_hook_rejection_repair_test.rs"]
 mod issue_1671_hook_rejection_repair;
 
-// Issue #1510: the loop-evidence collector drops agent output lines
-// (`[HH:MM:SS] [amplihack:...]`) before its BLOCKED_TERMINAL and exit-79
-// detectors, the same rule as terminal_refusal() in autodrive_loop.sh, so a
-// review quoting the token is not a terminal policy refusal. Runs the real
-// step-01 command through bash; needs bash and git, not the amplihack binary.
+// Issues #1510 and #1437: the loop-evidence collector reads no round text for
+// a refusal. It applies terminal_refusal from autodrive_refusal.sh, the helper
+// autodrive_loop.sh sources: exit 79, or the runner's final failure_class
+// marker with structural_refusal true. A review quoting the guard is not a
+// refusal. Runs the real step-01 command through bash; needs bash, git and
+// the built amplihack binary.
 #[path = "issue_1510_collector_agent_prose_test.rs"]
 mod issue_1510_collector_agent_prose;
 
@@ -449,17 +496,22 @@ mod issue_1510_collector_agent_prose;
 #[path = "auto_drive_to_merge_test.rs"]
 mod auto_drive_to_merge;
 
+// Issue #2458: the base qa.toml declares how merge-ready criterion 1 is met.
+#[path = "issue_2458_qa_declaration_test.rs"]
+mod issue_2458_qa_declaration;
+
 // Issue #1641: a resumed run whose branch already has an open, same-repo PR
-// with green checks (or pending/no CI plus this run's typed precommit evidence)
-// finalizes as EXISTING_OPEN_PR instead of FAILED_IMPLEMENTATION; a failing
-// check is BLOCKED_CI, and every fail-closed case (no PR, no verification
-// signal, hollow success, blockers) is kept. Runs the
-// real validator against a private git repo and a stub gh.
+// that the assessment reports as EXISTING_OPEN_PR finalizes as such instead of
+// FAILED_IMPLEMENTATION; failing checks are repaired first (#2966; BLOCKED_CI
+// only for a cause the run cannot fix), and every fail-closed case (no PR, no
+// verification signal, hollow success, blockers) is kept. Runs the real
+// validator against a private git repo and a stub gh.
 #[path = "issue_1641_finalization_open_pr.rs"]
 mod issue_1641_finalization_open_pr;
 
 // Issue #1714: under auto-drive, a default-workflow build that finalizes
-// BLOCKED_CI with a published open PR hands that PR to the crusty and
+// BLOCKED_CI (#2966: an unfixable cause, named, from the assessment) with a
+// published open PR hands that PR to the crusty and
 // merge-ready loops; a standalone run and every other failure still fail
 // closed. Runs the real validator and autodrive-build step-03 against stubs.
 #[path = "issue_1714_finalization_handoff.rs"]
@@ -475,6 +527,14 @@ mod issue_1642_github_origin_parsing;
 // a fake gh, all through `isolated(..)`.
 #[path = "issue_1762_caller_branch_alias_test.rs"]
 mod issue_1762_caller_branch_alias;
+
+// Issue #2471 (first slice of #2472): a failed push step (15, 18c) gets
+// an agentic recovery. The real steps, taken by id, run through
+// recipe-runner-rs against a bare remote whose pre-receive hook rejects an
+// inherited RECIPE_VAR_issue_number, with a fake agent. Skipped without the
+// runner; CI installs it.
+#[path = "push_failure_recovery.rs"]
+mod push_failure_recovery;
 
 // Issue #1697: bundled journalistic-writing-style skill — content, trigger
 // separation from documentation-writing, registration, isolated install.
@@ -494,3 +554,43 @@ mod issue_1764_git_never_prompts;
 // `cargo test --workspace` covers the shell change as well as CI's lint job.
 #[path = "issue_1771_precommit_symlinked_caches_test.rs"]
 mod issue_1771_precommit_symlinked_caches;
+
+// Issue #2712: a recipe shell suite started inside a recipe run inherited
+// AMPLIHACK_WORK_ROOT and AMPLIHACK_WORK_ROOT_EXPLICIT=1 and put its
+// worktrees in the shared work root, outside its own EXIT trap. Runs
+// test-default-workflow-reliability.sh with an explicit work root supplied
+// from outside and requires that directory to stay empty, plus two unit tests
+// of the shared setup fragment the suites source.
+#[path = "issue_2712_recipe_test_work_root.rs"]
+mod issue_2712_recipe_test_work_root;
+
+// Issue #1966: is_critical_code is a required caller input. consensus-workflow
+// step 0 and consensus-tdd-impl reject a missing or malformed value before any
+// route, and the route gate fails unless exactly one route completed. Static
+// checks, helper unit tests in bash, and the real recipes through
+// recipe-runner-rs with agent steps stubbed, all under isolated(..).
+#[path = "issue_1966_consensus_criticality.rs"]
+mod issue_1966_consensus_criticality;
+
+// Issue #1619 (TDD): the small-diff combined review. Runs the review-mode
+// step's script against a temporary git repository with the settings in a
+// temporary home, and checks the answer it prints in each case.
+#[path = "issue_1619_review_mode_test.rs"]
+mod issue_1619_review_mode;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One place follows the call-out.
+#[path = "recipe_step_body.rs"]
+mod recipe_step_body;
+
+// Issues #2343, #1726, #2809: finalization reads the run's real outcome.
+#[path = "issue_2343_finalization_outcome.rs"]
+mod issue_2343_finalization_outcome;
+
+// Issue #2966, crusty rounds 1 to 3: continue-ci-repair's body starts one fresh
+// assessment pass, hands it the last answer as data, prints its answer and
+// passes on the nested run's exit code, with no loop and no answer field read.
+// Runs the real dispatcher with a stub nested `recipe run`.
+#[path = "issue_2966_ci_repair_reentry.rs"]
+mod issue_2966_ci_repair_reentry;

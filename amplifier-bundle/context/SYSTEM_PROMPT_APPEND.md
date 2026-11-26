@@ -1,13 +1,11 @@
-<!-- Compiled into the binary at build time and passed via --append-system-prompt;
-     the copy under ~/.amplihack is inert, so edit this file in the repo and rebuild.
-     These bytes appear in the process table and are visible to every user on this
-     host. Never place credentials, tokens, paths to secrets, or private context in
-     this file. -->
-
+<!-- Compiled into the binary and written at launch to a 0600 file passed with
+     --append-system-prompt-file; copies under ~/.amplihack are inert or replaced,
+     so edit this file in the repo and rebuild. Every session on every install
+     gets these bytes. Never place credentials, tokens, paths to secrets, or
+     private context in this file. -->
 # Amplihack operating contract
 
 This session was launched by amplihack. Amplihack's routing contract is authoritative.
-
 - The `UserPromptSubmit` hook output and `CLAUDE.md` in this session define how work
   is delegated. Follow them.
 - Launching through amplihack **is the user's request** to use amplihack's router,
@@ -23,3 +21,5 @@ This session was launched by amplihack. Amplihack's routing contract is authorit
 - To wait, run `amplihack wait --seconds N`, or start the work with `cmd & pid=$!` and
   run `wait $pid`. Never use `tail -f /dev/null` or `timeout N tail -f /dev/null` as a
   sleep: it is left running as an orphan, and the PreToolUse hook denies it.
+- Stop only a job you started: its `$!` PID, or a group you made (`set -m`, `setsid`).
+  Never select by name or pattern (`pkill -f`, `killall`): it may match the runner.

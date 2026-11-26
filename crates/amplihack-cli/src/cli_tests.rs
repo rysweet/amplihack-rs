@@ -757,6 +757,14 @@ mod tests {
             !help.contains("instead of the table"),
             "help still calls the table the default: {help}"
         );
+        // Issue #1974: the help states the passive window.
+        for want in [
+            "300",
+            "AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS",
+            "3600",
+        ] {
+            assert!(help.contains(want), "help names {want}: {help}");
+        }
         let list = Cli::try_parse_from(["amplihack", "profile", "--help"])
             .unwrap_err()
             .to_string();
@@ -764,6 +772,48 @@ mod tests {
             !list.contains("most capacity first"),
             "summary still says most capacity first: {list}"
         );
+    }
+
+    #[test]
+    fn profile_prune_probe_logs_parses_its_flags() {
+        let _env = launcher_env_lock();
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "profile",
+            "prune-probe-logs",
+            "--dir",
+            "/x/y",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::PruneProbeLogs {
+                dir,
+                dry_run,
+            }) => {
+                assert_eq!(dir.as_deref(), Some("/x/y"));
+                assert!(dry_run);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["amplihack", "profile", "prune-probe-logs"]).unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::PruneProbeLogs {
+                dir,
+                dry_run,
+            }) => {
+                assert_eq!(dir, None);
+                assert!(!dry_run);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["amplihack", "profile", "prune-probe-logs", "--force"]).is_err()
+        );
+        let list = Cli::try_parse_from(["amplihack", "profile", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(list.contains("prune-probe-logs"), "listed: {list}");
     }
 
     #[test]
@@ -892,6 +942,96 @@ mod tests {
             .expect("sessions command should exist");
         for sub in ["archive", "restore"] {
             assert!(sessions.find_subcommand(sub).is_some(), "{sub}");
+        }
+    }
+
+    /// `amplihack codex --local-model <name>`. The flag takes a non-empty
+    /// value and has no clap `env`: the variable is read by hand so that an
+    /// empty one counts as unset, and parsing never sees it.
+    mod local_model_flag {
+        use super::launcher_env_lock;
+        use crate::*;
+
+        fn local_model(args: &[&str]) -> (Option<String>, Vec<String>) {
+            match Cli::try_parse_from(args)
+                .unwrap_or_else(|e| panic!("{args:?}: {e}"))
+                .command
+            {
+                Commands::Codex {
+                    local_model, args, ..
+                } => (local_model, args),
+                other => panic!("expected codex, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn the_flag_is_parsed_before_the_codex_arguments() {
+            let _env = launcher_env_lock();
+            assert_eq!(
+                local_model(&[
+                    "amplihack",
+                    "codex",
+                    "--local-model",
+                    "inkling",
+                    "--",
+                    "exec",
+                    "-"
+                ]),
+                (
+                    Some("inkling".to_string()),
+                    vec!["exec".to_string(), "-".to_string()]
+                )
+            );
+            assert_eq!(
+                local_model(&["amplihack", "codex", "--local-model=inkling"]),
+                (Some("inkling".to_string()), vec![])
+            );
+            assert_eq!(
+                local_model(&["amplihack", "codex", "--", "--local-model", "inkling"]).0,
+                None,
+                "after `--` it is a Codex argument"
+            );
+        }
+
+        #[test]
+        fn the_variable_does_not_reach_parsing() {
+            let _env = launcher_env_lock();
+            let _var =
+                crate::test_support::EnvGuard::set([("AMPLIHACK_CODEX_LOCAL_MODEL", "inkling")]);
+            assert_eq!(local_model(&["amplihack", "codex"]).0, None);
+        }
+
+        #[test]
+        fn an_empty_or_missing_value_is_a_usage_error() {
+            let _env = launcher_env_lock();
+            for args in [
+                &["amplihack", "codex", "--local-model", ""][..],
+                &["amplihack", "codex", "--local-model="][..],
+                &["amplihack", "codex", "--local-model"][..],
+            ] {
+                let err = Cli::try_parse_from(args).expect_err("refused");
+                assert_eq!(err.exit_code(), 2, "{args:?}: {:?}", err.kind());
+            }
+        }
+
+        #[test]
+        fn other_launchers_keep_their_passthrough_arguments() {
+            let _env = launcher_env_lock();
+            for launcher in ["claude", "copilot", "amplifier"] {
+                let command =
+                    Cli::try_parse_from(["amplihack", launcher, "--local-model", "inkling"])
+                        .unwrap()
+                        .command;
+                let args = match command {
+                    Commands::Claude {
+                        claude_args: args, ..
+                    }
+                    | Commands::Copilot { args, .. }
+                    | Commands::Amplifier { args, .. } => args,
+                    other => panic!("unexpected command: {other:?}"),
+                };
+                assert_eq!(args, ["--local-model", "inkling"], "{launcher}");
+            }
         }
     }
 }

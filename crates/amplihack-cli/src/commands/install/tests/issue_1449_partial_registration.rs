@@ -42,6 +42,11 @@ fn a_shadowed_skill_is_named_in_the_install_output_and_not_counted_as_published(
     for name in ["anthropologist-analyst", "crusty-old-engineer"] {
         write_skill(&staged, name, &format!("---\nname: {name}\n---\nbundled\n"));
     }
+    fs::write(
+        temp.path().join(".amplihack/config.toml"),
+        "[lists]\nset = 'all'\n",
+    )
+    .unwrap();
     // The reporting host's condition: a stale directory of the same name,
     // written months earlier by something else, with drifted content.
     let shadow = temp.path().join(".claude/skills/anthropologist-analyst");

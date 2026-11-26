@@ -95,6 +95,7 @@ steps:
   # ==========================================================================
   - id: "transition-guidance"
     agent: "amplihack:patterns"
+    model: "standard"
     working_dir: "{{repo_path}}"
     prompt: |
       Analyze whether this investigation should transition to implementation.

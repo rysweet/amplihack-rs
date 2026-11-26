@@ -14,7 +14,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(10);
+/// The time limit of each child process `amplihack agent` runs: tmux,
+/// `systemd-run` and git.
+pub const CHILD_TIMEOUT: Duration = Duration::from_secs(10);
+/// Debug builds only: raises [`CHILD_TIMEOUT`] for tests on a loaded host,
+/// where the fake tmux can take longer than 10 s and record a different
+/// result (issue #1973; see `crate::debug_knob`).
+#[cfg(debug_assertions)]
+pub const CHILD_TIMEOUT_ENV: &str = "AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS";
 const MAX_OUTPUT: usize = 64 * 1024;
 const MAX_LINE: usize = 200;
 const NO_SERVER: &str = "tmux display-message failed: no tmux server is running on the socket";
@@ -191,10 +198,22 @@ pub fn client(program: &OsStr) -> Command {
     cmd
 }
 
+/// [`CHILD_TIMEOUT`], unless a debug build has the test knob set.
+#[cfg(debug_assertions)]
+pub fn child_timeout() -> Duration {
+    crate::debug_knob::secs(CHILD_TIMEOUT_ENV, CHILD_TIMEOUT)
+}
+
+/// Release builds: always [`CHILD_TIMEOUT`].
+#[cfg(not(debug_assertions))]
+pub fn child_timeout() -> Duration {
+    CHILD_TIMEOUT
+}
+
 /// Runs `cmd` with the bounds of S15; a spawn error or timeout is the
 /// sanitised reason.
 fn run(cmd: Command) -> Result<Output, String> {
-    crate::util::run_output_with_timeout_limited(cmd, TIMEOUT, MAX_OUTPUT)
+    crate::util::run_output_with_timeout_limited(cmd, child_timeout(), MAX_OUTPUT)
         .map_err(|e| sanitize(&format!("{e:#}"), MAX_LINE))
 }
 

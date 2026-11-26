@@ -112,6 +112,8 @@ pub struct WrapRequest<'a> {
     pub subprocess_safe: bool,
     pub no_reflection: bool,
     pub claude_args: &'a [String],
+    /// Issue #2912: `--standing`/`--no-standing`, else `agent.standing`.
+    pub standing: Option<bool>,
 }
 
 #[cfg(unix)]
@@ -122,6 +124,8 @@ mod cmdline;
 mod dirty;
 #[cfg(unix)]
 mod discover;
+#[cfg(unix)]
+mod entry;
 #[cfg(unix)]
 mod env_record;
 #[cfg(unix)]
@@ -155,6 +159,8 @@ mod sessions;
 #[cfg(unix)]
 mod socket_check;
 #[cfg(unix)]
+mod standing;
+#[cfg(unix)]
 mod store;
 #[cfg(unix)]
 mod supervise;
@@ -163,7 +169,7 @@ mod tmux;
 #[cfg(unix)]
 mod tmux_parse;
 #[cfg(unix)]
-mod validate;
+pub(crate) mod validate;
 #[cfg(unix)]
 mod wrapper;
 
@@ -176,7 +182,7 @@ pub use wrapper::run_wrapped;
 #[cfg(not(unix))]
 pub fn run_wrapped(
     _req: &WrapRequest,
-    _launch: impl FnOnce() -> anyhow::Result<()>,
+    _launch: impl Fn(&[String]) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     anyhow::bail!("amplihack claude --supervise needs Linux; nothing was started")
 }
@@ -219,6 +225,9 @@ fn run_status(json: bool, home: &std::path::Path) -> anyhow::Result<()> {
 #[cfg(test)]
 #[path = "tests_cmdline.rs"]
 mod tests_cmdline;
+#[cfg(test)]
+#[path = "tests_cmdline_issue_2030.rs"]
+mod tests_cmdline_issue_2030;
 #[cfg(test)]
 #[path = "tests_env_drift.rs"]
 mod tests_env_drift;

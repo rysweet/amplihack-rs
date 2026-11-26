@@ -2,20 +2,16 @@
 //! measurements and the decision.
 
 use super::cycle::Ctx;
-use super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};
-use super::decide::{Decision, Measured, Probed, Reading};
+use super::decide::target_seen::Seen;
+use super::decide::{Decision, Probed, Reading};
 use super::identify::{self, Account, CandidateInput, LiveId, LoginKind, Skip};
-use super::key_check;
 use super::log::msg;
-use super::measure::{self, Live};
-use super::overflow::{OverflowInput, Tag, decide_overflow};
+use super::overflow::Tag;
 use super::pin::{self, PinState};
-use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::CREDS;
-use crate::commands::profile::auto_switch::kit::{Liveness, State, effective, now};
+use crate::commands::profile::auto_switch::Unreadable;
 use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER, tiers_detail};
+use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER};
 
 /// Who is live, who may receive the login, and the rotation pin: compared
 /// again under the lock before a swap, so a `profile switch` during the
@@ -25,9 +21,22 @@ pub struct Snap {
     pub live: LiveId,
     pub proto: Option<&'static str>,
     pub account: Option<String>,
+    /// Full credential identity, compared with Account::same under the lock.
+    pub trusted_live: Option<Account>,
+    /// A fixed, redacted authorization refusal, naming only the profile.
+    pub identity_refusal: Option<String>,
+    /// Why `trusted_live` is empty: one of "Identity read causes".
+    pub identity_cause: Option<&'static str>,
+    /// Why each candidate skipped as `no account` had no trusted reading.
+    pub candidate_refusals: Vec<(ProfileName, &'static str)>,
     pub candidates: Vec<ProfileName>,
     pub skips: Vec<(ProfileName, Skip)>,
     pub sees_sessions: bool,
+    /// Issue #2820: the processes whose environment the liveness scan could
+    /// not read and that it noted, in pid order, for the `unreadable
+    /// process` lines. Only logs; the profiles they count for are already
+    /// in `skips` as `session running`.
+    pub unreadable: Vec<Unreadable>,
     /// The overflow entries with their tiers, in file order. Part of the
     /// snapshot, so a mark or tier changed during measurement skips the
     /// cycle. The API-key profile (issue #1700) is the entry at
@@ -48,6 +57,10 @@ pub struct Snap {
     pub home_no_oauth: bool,
     /// Each candidate's account; step 6 compares the target's (#1721).
     pub candidate_accounts: Vec<(ProfileName, Option<Account>)>,
+    /// Issue #2218: the live login is a known profile in the auto-switch
+    /// `exclude` list. It is never probed or refreshed, nothing measured is
+    /// recorded under its name, and the cycle moves off it.
+    pub live_excluded: bool,
 }
 
 impl Snap {
@@ -82,13 +95,8 @@ impl Snap {
         self.adopted_platform().or(self.platform())
     }
 
-    /// Plan logins not measured this cycle, each of which may have room:
-    /// those skipped as busy (a session running, leased, hosting or
-    /// parked), and `no account` profiles, whose `.claude.json` has no
-    /// usable `oauthAccount` but which are still plan profiles. The usage
-    /// history lists them all as unknown. Excluded, login-less and
-    /// non-OAuth profiles are not plan logins that could be used, and
-    /// overflow and API-key profiles never were (issue #1804).
+    /// Busy or identity-unreadable plan logins remain unknown capacity.
+    /// Excluded, login-less, non-OAuth and overflow profiles are not plan room.
     pub fn unmeasured_plan(&self) -> Vec<ProfileName> {
         self.skips
             .iter()
@@ -140,63 +148,16 @@ impl Snap {
     }
 }
 
-pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
-    let root = ctx.store.root();
-    let (live, proto) = identify::live(&ctx.store, &ctx.rs, &ctx.home)?;
-    let liveness = (ctx.scan)(root);
-    let sees_sessions = matches!(liveness, Liveness::Known(_));
-    let live_name = match &live {
-        LiveId::Known(n) => Some(n.clone()),
-        _ => None,
-    };
-    let config = effective(root).config;
-    let (overflow, ignored) = tiers_detail(&ctx.store, Some(&ctx.home));
-    let input = CandidateInput {
-        live: live_name.as_ref(),
-        exclude: config.exclude,
-        liveness,
-        auto_switch: state.load_ledger()?,
-    };
-    let (mut candidates, skips) = identify::candidates(&ctx.store, &input)?;
-    // Only the marked API-key profile the tier uses is ever a target: the
-    // others share its credential, and an unmarked one has no consent to
-    // per-token billing (issue #1804). None of them is probed or treated as
-    // a plan login, so a synthetic 0/0 never counts as plan room.
-    let kinds = kind::Ctx::load(&ctx.store, Some(&ctx.home));
-    let platforms = kinds.platform_profiles(&ctx.store);
-    let marked = overflow
-        .iter()
-        .find(|e| e.tier == PLATFORM_TIER)
-        .map(|e| &e.name);
-    let home_no_oauth =
-        identify::login_kind(&ctx.home.join(".claude").join(CREDS)) == LoginKind::NoOAuth;
-    // On an API-key profile, no other one is a target: they share one
-    // credential, so such a move would change nothing but the name.
-    let on_key = home_no_oauth && live_name.as_ref().is_some_and(|n| platforms.contains(n));
-    candidates.retain(|c| !platforms.contains(c) || (marked == Some(c) && !on_key));
-    let unmarked: Vec<ProfileName> = platforms
-        .into_iter()
-        .filter(|p| marked != Some(p) && !ignored.contains(p))
-        .collect();
-    let detected_mark = marked
-        .filter(|n| kinds.resolve_kind(&ctx.store, n).source != kind::KindSource::Override)
-        .cloned();
-    Ok(Snap {
-        account: Account::of_dir(&ctx.home).map(|a| a.key().to_string()),
-        candidate_accounts: super::revalidate::accounts(&ctx.store, &candidates),
-        live,
-        proto,
-        candidates,
-        skips,
-        sees_sessions,
-        overflow,
-        pin: pin::read(&ctx.rs),
-        ignored,
-        unmarked,
-        detected_mark,
-        home_no_oauth,
-    })
-}
+#[path = "affinity.rs"]
+pub(super) mod affinity;
+#[path = "observe_decide.rs"]
+mod decided;
+#[cfg(test)]
+pub(super) use decided::decide_measured;
+pub(super) use decided::decide_with;
+#[path = "observe_snapshot.rs"]
+mod take;
+pub use take::snapshot;
 
 pub fn live_name(id: &LiveId) -> Option<&ProfileName> {
     match id {
@@ -207,6 +168,21 @@ pub fn live_name(id: &LiveId) -> Option<&ProfileName> {
 
 /// The ALERT for a live login that cannot be used, if any.
 pub fn live_alert(snap: &Snap) -> Option<(&'static str, String)> {
+    if let Some(reason) = &snap.identity_refusal {
+        let kind = if reason.starts_with(super::swap_expect::ACCOUNT_MISMATCH) {
+            "account_mismatch"
+        } else {
+            "trusted-identity"
+        };
+        return Some((kind, format!("ALERT: swap refused: {reason}")));
+    }
+    if !snap.home_no_oauth && snap.trusted_live.is_none() && !matches!(snap.live, LiveId::NoLogin) {
+        let text = snap.identity_cause.map_or_else(
+            || super::login_identity::UNAVAILABLE.to_string(),
+            super::login_identity::unavailable_line,
+        );
+        return Some(("trusted-identity", format!("ALERT: {text}")));
+    }
     live_alert_for(&snap.live, snap.home_no_oauth)
 }
 
@@ -256,117 +232,13 @@ pub struct Measurement {
     pub probed: Option<Probes>,
     /// Issue #1870: the freshness gate's `reread:` and `damp:` lines.
     pub fresh_lines: Vec<String>,
+    /// Issue #2910: what the cycle saw of each login, its `Extra`, and why an
+    /// ALERT decision did not move. `Seen::default()` from a stub.
+    pub seen: Seen,
 }
 
-pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
-    let measured_at = now();
-    let platform = snap.platform();
-    let live = match &snap.live {
-        _ if snap.platform_live() => Live::Platform,
-        LiveId::Known(n) => Live::Profile(n),
-        _ => Live::Unowned,
-    };
-    // The API-key profile is never probed: it gets its synthetic reading,
-    // and it is in the overflow order, so never in the plan pool.
-    let to_probe: Vec<ProfileName> = snap
-        .candidates
-        .iter()
-        .filter(|c| Some(*c) != platform)
-        .cloned()
-        .collect();
-    let (probe, mut probes) = measure::measure_ordered(ctx, live, &to_probe, measured_at);
-    if let Some(p) = platform.filter(|p| snap.candidates.contains(p)) {
-        probes.push((p.clone(), Probed::platform()));
-    }
-    decide_measured(ctx, snap, probe, probes, measured_at)
-}
-
-/// Step 5 of a cycle: the overflow-aware decision on this cycle's probes,
-/// the live profile's and each candidate's, measured from `measured_at`.
-/// Tests that stub probing call this, so they run the real decision.
-pub(super) fn decide_measured(
-    ctx: &Ctx,
-    snap: &Snap,
-    probe: Probed,
-    probes: Vec<(ProfileName, Probed)>,
-    measured_at: i64,
-) -> Result<Measurement, ProfileError> {
-    let measured: Vec<Measured> = probes
-        .iter()
-        .map(|(name, p)| Measured::new(name.clone(), p))
-        .collect();
-    // A ledger that cannot be read ends the cycle here, before any move onto
-    // credits: its spend blocks are unknown. Only a missing ledger means no
-    // blocks.
-    let ledger = ctx.rs.load_ledger()?;
-    let swapped_at = ledger.as_ref().and_then(|l| l.swapped_at);
-    let platform_block = ledger.as_ref().and_then(|l| l.platform_block.clone());
-    let blocks = ledger.map(|l| l.overflow_blocked).unwrap_or_default();
-    let live_name = match &snap.live {
-        LiveId::Known(n) => Some(n),
-        _ => None,
-    };
-    let t = now();
-    let overflow = snap.decision_overflow();
-    let unmeasured_plan = snap.unmeasured_plan();
-    let verdict = decide_overflow(&OverflowInput {
-        settings: &ctx.settings,
-        live_name,
-        live: &probe,
-        candidates: &measured,
-        unmeasured_plan: &unmeasured_plan,
-        refused: &snap.refused_plan(),
-        overflow: &overflow,
-        blocks: &blocks,
-        platform_block: platform_block.as_ref(),
-        swapped_at,
-        now: t,
-    });
-    // A spend limit on a live overflow profile is handled by its block, so
-    // it does not count towards the failed live probes.
-    let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));
-    let failed = if live_over && probe.spend_limit {
-        ctx.failed_live
-    } else {
-        next_failed(ctx.failed_live, &probe.reading)
-    };
-    let (decision, note) = damp(
-        verdict.decision,
-        &probe.reading,
-        failed,
-        swapped_at,
-        t,
-        &ctx.settings,
-    );
-    // Only here is the file read: a swap on this ground is rare. The strict
-    // reader, not `key_check::home_key`: a key Claude may not read must not
-    // keep a dead login live, and the swap it would have stopped is harmless.
-    let home_key = (is_failed_probe_swap(&decision) && !snap.platform_live())
-        .then(|| key_check::reachable(&ctx.home).ok())
-        .flatten();
-    let (decision, note) = keep_for_home_key(decision, note, home_key);
-    // A damped move off credits is a stay on them.
-    let tag = match (&decision, verdict.tag) {
-        (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),
-        (_, tag) => tag,
-    };
-    let others = probes.iter().map(|(n, p)| (n.clone(), p.reading)).collect();
-    Ok(Measurement {
-        live: probe.reading,
-        others,
-        probed: Some((probe, probes)),
-        decision,
-        note,
-        failed,
-        tag,
-        new_blocks: verdict.new_blocks,
-        next_plan_reset: verdict.next_plan_reset,
-        unknown_plan: verdict.unknown_plan,
-        key_held: verdict.key_held,
-        measured_at,
-        fresh_lines: Vec::new(),
-    })
-}
+// Steps 4 and 5 together, `measure_and_decide`, are in `event_read.rs`
+// (issue #2909): an event cycle reads less than an interval cycle.
 
 /// The reason of the API-key block in the ledger, for the ALERT that stays
 /// on a blocked API key.

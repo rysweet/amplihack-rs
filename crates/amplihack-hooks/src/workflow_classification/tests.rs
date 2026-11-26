@@ -5,8 +5,10 @@
 //! and the state file in `marker`, the work-request rule and verb-led reports
 //! in `work_request`, the gates and robustness cases in `gates`, and the
 //! routing prompt and its docs in `prompt_docs`. `layout` holds the module to
-//! the crate's line budget.
+//! the crate's line budget. `provenance` holds the prompts that are not a
+//! person's (issue #2533).
 
+use super::provenance::STEP_ID_ENV;
 use super::*;
 use std::fs;
 
@@ -14,14 +16,23 @@ mod gates;
 mod layout;
 mod marker;
 mod prompt_docs;
+mod provenance;
 mod support;
 mod work_request;
+
+/// The session state directory these unit tests use: the temp root in `dirs`
+/// stands in for the amplihack state root (#1963), so state never lands in
+/// the real one.
+fn test_session_dir(dirs: &ProjectDirs, session_id: &str) -> std::path::PathBuf {
+    amplihack_types::session_state_dir_under(&dirs.root, Some(session_id))
+}
 
 /// Test-only view of `topic_decision`. Issue #1757 removes it together with
 /// `save_classification_state` once `classify` below uses `record_outcome`.
 fn is_new_topic(dirs: &ProjectDirs, session_id: &str, turn_count: u64, user_prompt: &str) -> bool {
+    let session_dir = test_session_dir(dirs, session_id);
     matches!(
-        topic_decision(dirs, session_id, turn_count, user_prompt),
+        topic_decision(Some(&session_dir), turn_count, user_prompt),
         TopicDecision::NewTopic
     )
 }
@@ -31,7 +42,7 @@ fn save_classification_state(
     session_id: &str,
     turn_count: u64,
 ) -> anyhow::Result<()> {
-    let path = state_file(dirs, session_id);
+    let path = state_file(&test_session_dir(dirs, session_id));
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -84,6 +95,7 @@ fn human_prompts_are_still_routed() {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+    let _step = crate::test_support::EnvVarGuard::unset(STEP_ID_ENV);
     let _depth = crate::test_support::EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     assert!(!is_agent_authored_prompt());
 }
@@ -253,6 +265,7 @@ fn emits_the_copilot_shape_for_a_human_prompt() {
     let temp = tempfile::tempdir().unwrap();
     let dirs = ProjectDirs::from_root(temp.path());
     let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+    let _step = crate::test_support::EnvVarGuard::unset(STEP_ID_ENV);
 
     let out = classify(&dirs, "s-copilot", None, "Please investigate this issue");
 
@@ -287,6 +300,7 @@ fn a_runtime_that_reports_no_turn_count_is_still_throttled() {
     let temp = tempfile::tempdir().unwrap();
     let dirs = ProjectDirs::from_root(temp.path());
     let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+    let _step = crate::test_support::EnvVarGuard::unset(STEP_ID_ENV);
 
     // Every prompt below omits turnCount, exactly as Copilot sends it.
     let routed: Vec<bool> = (0..8)
@@ -328,6 +342,7 @@ fn a_reported_turn_count_is_used_verbatim() {
     let temp = tempfile::tempdir().unwrap();
     let dirs = ProjectDirs::from_root(temp.path());
     let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
+    let _step = crate::test_support::EnvVarGuard::unset(STEP_ID_ENV);
 
     let first = classify(&dirs, "s-claude", Some(0), "Please investigate this");
     assert!(first.get("additionalContext").is_some());
@@ -348,7 +363,7 @@ fn classify(dirs: &ProjectDirs, session: &str, turn: Option<u64>, prompt: &str) 
     };
     let turn_count = match extract_turn_count(&extra) {
         Some(reported) => reported,
-        None => next_observed_turn(dirs, session),
+        None => next_observed_turn(Some(&test_session_dir(dirs, session)), session),
     };
     if !is_new_topic(dirs, session, turn_count, prompt) {
         return Value::Object(serde_json::Map::new());

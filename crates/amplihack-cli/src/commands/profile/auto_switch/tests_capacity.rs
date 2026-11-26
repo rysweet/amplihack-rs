@@ -1268,3 +1268,24 @@ fn on_overflow_writes_nothing_while_auto_switch_is_off() {
     );
     assert!(!r.capacity().exists());
 }
+
+/// Issue #2030: a rewritten Claude launch has a bare `-p`/`--print` and
+/// `*-file` flags; it is still recognised as print mode and stays silent.
+#[test]
+fn launch_warning_is_silent_for_bare_print_with_prompt_file_flags() {
+    for print in ["-p", "--print"] {
+        let args: Vec<String> = [
+            print,
+            "--append-system-prompt-file",
+            "/home/a/.amplihack/private/system-prompt-append.md",
+            "--system-prompt-file",
+            "/tmp/amplihack-prompt-x/system-prompt.md",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut out = Vec::new();
+        launch_warning(&args, &mut out);
+        assert!(out.is_empty(), "{print}: {}", String::from_utf8_lossy(&out));
+    }
+}

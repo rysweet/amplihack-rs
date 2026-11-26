@@ -106,6 +106,14 @@ fn all_plan_logins_out(f: &Fixture) {
     f.usage_resetting("extra", 100, 100, 3);
 }
 
+/// Issue #1962: a dry run reads the usage endpoint only, so its decision needs the
+/// same figures there.
+fn all_plan_logins_out_direct(f: &Fixture) {
+    f.usage_direct("work", 100, 40);
+    f.usage_direct("spare", 100, 100);
+    f.usage_direct("extra", 100, 100);
+}
+
 // --- list, kind, show ------------------------------------------------------------
 
 #[test]
@@ -477,6 +485,7 @@ fn a_dry_run_onto_the_api_key_moves_nothing_and_probes_nothing() {
     add_console(&f);
     mark_console(&f);
     all_plan_logins_out(&f);
+    all_plan_logins_out_direct(&f);
     let s = stdout(&f.ok(&["profile", "rotate", "--dry-run"]));
     assert!(s.contains("console"), "{s}");
     assert!(s.contains("overflow-in"), "{s}");
@@ -576,8 +585,9 @@ fn rotate_moves_onto_the_api_key_and_off_it_at_the_next_cycle() {
     assert_eq!(f.ledger().unwrap()["last_cycle"]["overflow"], "on");
 
     // spare has capacity again: off at once, though the 1-hour hold has
-    // not passed.
-    f.usage("spare", 10, 20);
+    // not passed. Issue #3181: in a later window, since use never falls in
+    // the window it was read at 100% in.
+    f.usage_resetting("spare", 10, 20, 5);
     f.ok(&["profile", "rotate"]);
     let log = f.log();
     assert!(

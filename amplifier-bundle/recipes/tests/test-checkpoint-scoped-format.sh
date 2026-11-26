@@ -2,7 +2,28 @@
 # The checkpoint must not turn a Python/model edit into a Rust-wide formatting commit.
 set -euo pipefail
 
+# An enclosing hook's repository selectors override even `git -C <fixture>
+# init`, which then writes the repository where the selector points instead of
+# inside the owned scratch directory (#1937). Isolate before the first Git call.
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR \
+    GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION \
+    GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE \
+    GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+while IFS= read -r git_variable; do
+  case "${git_variable}" in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset "${git_variable}" ;; esac
+done < <(compgen -e)
+unset git_variable
+
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
+# This suite resolves ROOT from $0; the shared setup below is resolved from
+# ${BASH_SOURCE[0]} instead, so a source argument always carries a directory
+# component and is never searched along PATH (#2712).
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/checkpoint-scoped-format-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 

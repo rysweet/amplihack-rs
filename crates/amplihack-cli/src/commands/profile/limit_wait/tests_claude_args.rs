@@ -92,7 +92,7 @@ fn a_prompt_starting_with_a_dash_is_reachable_only_after_double_dash() {
         p(&["--", "-p"]),
         ClaudeArgs {
             print: false,
-            prompt: true
+            prompt: true,
         }
     );
     assert_eq!(p(&["-p", "--", ""]), PRINT_ONLY);
@@ -114,13 +114,21 @@ fn print_needs_the_flag_itself() {
 #[test]
 fn an_unknown_option_fails_safe_by_taking_the_next_word_as_its_value() {
     // A newer Claude's option this table lacks: its value is not the
-    // prompt, so a piped prompt skips the wait instead of waiting hours and
-    // rerunning with no prompt.
+    // prompt. The launch is therefore treated as having its prompt on
+    // stdin, so stdin is copied aside and replayed (issue #2815). The
+    // other way round would be worse: a wait of hours and then a rerun
+    // with no prompt at all.
     assert_eq!(p(&["-p", "--some-new-opt", "value"]), PRINT_ONLY);
     assert_eq!(p(&["-p", "-z", "value"]), PRINT_ONLY);
     // Followed by a real prompt, the prompt is missed too. That is the safe
-    // side: `prompt` only matters with stdin on a pipe, where a missed
-    // prompt means "no wait", the behaviour before this feature.
+    // side, and issue #2816 is what makes it one. The pipe is copied aside,
+    // and a caller that passed its prompt in argv may well hold that pipe
+    // open for ever: the copier reads it on its own thread, nothing joins
+    // that thread unless it is certain to end, and a rerun with no whole
+    // copy to read is refused with a named reason
+    // (`scratch::Capture::settle`). So the cost is a file and a refused
+    // rerun, where before #2816 it was a step hung after its wait with no
+    // line saying why, and a supervisor deaf to SIGTERM.
     assert_eq!(p(&["-p", "--some-new-flag", "the real prompt"]), PRINT_ONLY);
     // It takes at most one word, and never an option.
     assert_eq!(p(&["-p", "--some-new-opt", "v", "x"]), PRINT_PROMPT);
@@ -130,6 +138,47 @@ fn an_unknown_option_fails_safe_by_taking_the_next_word_as_its_value() {
     );
     assert_eq!(p(&["--some-new-opt=v", "-p", "x"]), PRINT_PROMPT);
     assert_eq!(p(&["-p", "--some-new-flag", "--", "x"]), PRINT_PROMPT);
+}
+
+/// Issue #3036: an `--input-format` value, `stream-json` or `text`, is
+/// skipped and never read as the prompt, so whatever stdin carries is
+/// copied aside and replayed to a retry, a stream channel included.
+///
+/// `stream-json` is the shape amplihack's own usage request uses
+/// (`usage_request::ARGS`). Before #3036 such a channel was not copied and a
+/// usage limit ended the step; it is now copied as any piped input is,
+/// because a supervised step's stdout is held back until the step finishes,
+/// so its caller has seen nothing of an attempt that is run again.
+#[test]
+fn an_input_format_value_is_never_the_prompt() {
+    for args in [
+        &["-p", "--input-format", "stream-json"][..],
+        &["-p", "--input-format=stream-json"],
+        &[
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ],
+        // A value that is missing altogether reads the same way: stdin
+        // carries the input, and is copied.
+        &["-p", "--input-format"],
+    ] {
+        assert_eq!(p(args), PRINT_ONLY, "{args:?}");
+    }
+    // `text` is the default and is a prompt: it is copied as a bare `-p` is.
+    for args in [
+        &["-p", "--input-format", "text"][..],
+        &["-p", "--input-format=text"],
+    ] {
+        let parsed = p(args);
+        assert!(!parsed.prompt, "{args:?}");
+    }
+    // A prompt in argv is still found whatever the input format.
+    assert_eq!(p(&["-p", "--input-format", "text", "x"]), PRINT_PROMPT);
+    assert_eq!(p(&["-p"]), PRINT_ONLY, "a bare -p reads stdin");
 }
 
 #[test]
@@ -187,4 +236,41 @@ fn the_tables_cover_claude_help() {
         missing.is_empty(),
         "options missing from claude_args: {missing:?}"
     );
+}
+
+/// Issue #2030: after the passthrough rewrite a Claude child gets a bare
+/// `-p`/`--print` (prompt on stdin) and `*-file` flags with path values. The
+/// paths are option values, never a positional prompt.
+#[test]
+fn bare_print_and_prompt_file_flags_after_the_issue_2030_rewrite() {
+    for print in ["-p", "--print"] {
+        assert_eq!(
+            p(&[
+                "--dangerously-skip-permissions",
+                print,
+                "--system-prompt-file",
+                "/tmp/amplihack-prompt-x/system-prompt.md",
+                "--append-system-prompt-file",
+                "/home/a/.amplihack/private/system-prompt-append.md",
+                "--model",
+                "opus",
+            ]),
+            PRINT_ONLY,
+            "{print}"
+        );
+    }
+    for flag in ["system-prompt-file", "append-system-prompt-file"] {
+        assert!(REQUIRED.contains(&flag), "{flag} takes one value");
+    }
+}
+
+#[test]
+fn option_end_skips_file_flag_values_for_the_rewrite() {
+    use super::claude_args::option_end;
+    let args = ["--system-prompt-file", "/x.md", "hello"];
+    assert_eq!(option_end(&args, 0), 2);
+    let args = ["--verbose", "hello"];
+    assert_eq!(option_end(&args, 0), 1);
+    let args = ["--model=opus", "hello"];
+    assert_eq!(option_end(&args, 0), 1);
 }

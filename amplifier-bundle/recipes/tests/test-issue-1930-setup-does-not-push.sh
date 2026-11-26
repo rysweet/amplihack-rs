@@ -45,7 +45,7 @@ printf '%q ' "${args[@]}" >> "$GIT_LOG"; printf '\n' >> "$GIT_LOG"
 if [[ ${1:-} == push ]]; then
     printf '%q ' "${args[@]}" >> "$PUSH_LOG"; printf '\n' >> "$PUSH_LOG"
 fi
-if [[ ${FAIL_ARCHIVE:-0} == 1 && ${1:-} == update-ref && ${2:-} == refs/amplihack-archive/* ]]; then
+if [[ ${FAIL_ARCHIVE:-0} == 1 && ${1:-} == update-ref && " ${args[*]} " == *" refs/amplihack-archive/"* ]]; then
     echo 'injected archive write failure' >&2; exit 73
 fi
 if [[ ${FAIL_STATUS:-0} == 1 && ${1:-} == status ]]; then exit 74; fi

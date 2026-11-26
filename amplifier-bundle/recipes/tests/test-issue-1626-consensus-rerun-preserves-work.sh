@@ -18,7 +18,7 @@
 #   - A clean existing branch is reused unchanged.
 #   - The guard runs on the RESOLVED name: if the helper's suffixed answer
 #     itself holds work, the step refuses and nothing is pushed (S13, both
-#     states). The push follows the resolved branch, never the original (S1/S2).
+#     states). Setup never pushes the resolved or the original branch (S1/S2, #1930).
 #   - The helper is located the way step-04 does it: the 5-place ladder
 #     (AMPLIHACK_HOME, else REPO_PATH, else $(pwd); REPO_PATH; $(pwd);
 #     ~/.copilot; ~/.amplihack), then TOOLS_DIR and step-04's two
@@ -48,6 +48,11 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 WORKTREE_YAML="${WORKTREE_YAML:-${REPO_ROOT}/amplifier-bundle/recipes/consensus-issue-worktree.yaml}"
 HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
 HELPER_REL="amplifier-bundle/tools/workflow_worktree_deconflict.sh"
@@ -440,18 +445,17 @@ if ! git -C "${R}-origin.git" cat-file -e "${KEPT_SHA}^{commit}" 2>/dev/null; th
 else
     fail "S1-not-pushed" "unpushed commit ${KEPT_SHA:0:12} was pushed to origin"
 fi
-# push_checks <id> <repo> <new-branch>: the push follows the resolved branch.
-# The suffixed branch reaches origin at BASE_REF; the original never does.
+# push_checks <id> <repo> <new-branch>: setup never pushes (#1930), so neither
+# the suffixed branch nor the original reaches origin.
 push_checks() {
-    local id="$1" r="$2" nb="$3" remote_new remote_orig base
-    base="$(git -C "${r}" rev-parse origin/main)"
+    local id="$1" r="$2" nb="$3" remote_new remote_orig
     remote_new=""
     [[ -n "${nb}" ]] && remote_new="$(git -C "${r}" ls-remote origin "refs/heads/${nb}" 2>/dev/null | awk '{print $1}')"
     remote_orig="$(git -C "${r}" ls-remote origin "refs/heads/${ORIG}" 2>/dev/null)"
-    if [[ -n "${nb}" && "${nb}" != "${ORIG}" && "${remote_new}" == "${base}" ]]; then
-        pass "${id}-push-suffixed" "origin has refs/heads/${nb} at BASE_REF"
+    if [[ -n "${nb}" && "${nb}" != "${ORIG}" && -z "${remote_new}" ]]; then
+        pass "${id}-push-suffixed" "setup did not push refs/heads/${nb}"
     else
-        fail "${id}-push-suffixed" "origin refs/heads/${nb:-<new>} is '${remote_new}', expected BASE_REF ${base:0:12}"
+        fail "${id}-push-suffixed" "origin refs/heads/${nb:-<new>} is '${remote_new}', expected none (setup never pushes, #1930)"
     fi
     if [[ -z "${remote_orig}" ]]; then
         pass "${id}-push-not-orig" "origin has no refs/heads/${ORIG}"

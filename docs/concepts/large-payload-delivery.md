@@ -1,7 +1,7 @@
 ---
 title: "Large Payload Delivery to Child Processes"
 description: "Why amplihack never places unbounded text in a single argv element or environment value, and how it delivers large prompts, recipe context and GitHub bodies instead."
-last_updated: 2026-10-17
+last_updated: 2026-11-07
 review_schedule: quarterly
 owner: rysweet
 doc_type: explanation
@@ -98,10 +98,12 @@ A child process can receive a large payload in three ways that avoid argv:
 | Stdin | Bytes written to the child's stdin, which is then closed | The tool reads its prompt from stdin |
 | File reference | A 0600 temporary file, plus one short argument asking the agent to read it | The agent can read files at that path |
 
-For prompts above 4096 bytes, `auto` delivery tries the channels in that order
-and uses argv only when the tool supports none of them, logging a warning. The
-order prefers channels where the tool reads the bytes itself over the file
-reference, where the agent must choose to open the file.
+At every prompt size, `auto` delivery tries stdin, then the file reference,
+then a tempfile flag, and fails with `NoSafeChannel` when the tool supports none
+of them. It never falls back to argv; see
+[Why Prompt Text Stays Out of argv](./prompt-text-out-of-argv.md). Stdin comes
+first because the tool reads the bytes itself, where with a file reference the
+agent must choose to open the file.
 
 The file reference exists because Copilot and Amplifier have no verified
 prompt-file or stdin contract. Both can read files: Copilot auto mode runs with
@@ -115,15 +117,16 @@ Read and follow the complete instructions in the file /tmp/.tmpQ3x9Lk. Its conte
 
 The resulting choices are:
 
-| Tool | Large prompt channel |
+| Tool | Prompt channel |
 | --- | --- |
 | Claude Code | stdin |
 | Codex | stdin |
 | GitHub Copilot CLI | file reference |
 | Microsoft Amplifier | file reference |
 
-Prompts of 4096 bytes or fewer still use argv for every tool, so short
-interactive prompts behave as before.
+Short prompts use the same channel. Until issue #2030, prompts of 4096 bytes
+or fewer used argv; that put the operating contract and every short task prompt
+in the process table.
 
 ### Stdin without deadlocks
 
@@ -174,7 +177,9 @@ runner then exports it to each step's environment. Both hops hit
 `--context-file <json>` and `--context-from-file key=path` read the values from
 files, so only the path appears in argv. `amplihack` then hands the merged
 context to the runner as `--set` arguments, the only context input the runner
-has. Each pair must fit in one argument; see [Known limits](#known-limits).
+has unless it reports `context_file_v1`; see
+[Recipe context transport](../reference/recipe-context-transport.md).
+Each pair must fit in one argument; see [Known limits](#known-limits).
 
 Inside a run, the recipe runner pinned in `claude-plugin/recipe-runner.rev`
 (`4d5187e`) gives a bash step every context value as `RECIPE_VAR_<key>` at any size,
@@ -260,7 +265,7 @@ with the file path as its prompt. There is no fallback to argv.
 | Payloads stay out of logs | Errors and warnings report sizes and modes, never payload bytes or file contents |
 | Paths cannot inject commands | The admiral validates the remote path against `^/[A-Za-z0-9._/-]+$` and rejects `..`; the agent, mode, turn count and session name are allowlisted or validated, so no value placed in the stage 2 command can contain a quote, `$`, a backquote or `\` |
 | Context keys cannot set control variables | File-sourced keys must match `[A-Za-z0-9_]+`, and `AMPLIHACK_*` keys are rejected |
-| Large prompts no longer appear in `/proc/<pid>/cmdline` | Prompts above 4096 bytes travel on stdin or in 0600 files, which other users cannot read. Prompts of 4096 bytes or fewer, and prompts at the sites still on argv, remain visible in the child's command line |
+| Prompts do not appear in an agent's `/proc/<pid>/cmdline` | Prompts of every size travel on stdin or in 0600 files, which other users cannot read. No setting puts a prompt in the child's command line; `AMPLIHACK_PROMPT_DELIVERY=argv` is treated as `auto`. See [Agent Prompt Channels Reference](../reference/agent-prompt-channels.md#what-argv-still-contains) for the two documented exceptions in a wrapper's own argv |
 
 ## Known limits
 
@@ -284,22 +289,27 @@ with the file path as its prompt. There is no fallback to argv.
   text, so a value containing the delimiter line ends the heredoc and runs as
   shell. Recipes converted by this change read such values with
   `write_context_value` instead.
-- `recipe-runner-rs` takes context only as `--set` arguments, so
-  `amplihack recipe run` refuses, before spawning the runner, a context value
-  longer than one argument (128 KiB), naming the key and size. Many values may
-  together exceed 128 KiB. Values that grow past that size inside a run, such
+- A runner that does not report `context_file_v1` takes context only as
+  `--set` arguments, so `amplihack recipe run` refuses, before spawning that
+  runner, a context value longer than one argument (128 KiB), naming the key
+  and size. Many values may together exceed 128 KiB. The pinned runner does
+  report it and takes the context as a file, which has no per-value limit
+  (#2582); only a runner supplied through `RECIPE_RUNNER_RS_PATH` and older
+  than v0.7.0 reaches the refusal. Values that grow past that size inside a run, such
   as step outputs, reach bash steps intact.
 - Remote and admiral runs support auto mode only.
-- An auto-switch [usage-limit rerun](../reference/profile-command.md#usage-limit-reruns)
-  of `amplihack claude -p` whose prompt was piped on stdin by hand starts with
-  an empty stdin; see
+- A prompt piped into `amplihack claude -p` on stdin, which is how the recipe
+  runner delivers every Claude agent step's task, is copied aside by the
+  supervisor and replayed on a
+  [usage-limit rerun](../reference/profile-command.md#usage-limit-reruns). The
+  copy is a private file that is removed when the step ends. Where it cannot
+  be made, the rerun starts with an empty stdin and the step is run once
+  instead; see
   [Supervised reruns and stdin](../reference/large-payload-delivery.md#supervised-reruns-and-stdin).
 - File-reference delivery depends on the agent reading the file. It is used
-  only above 4096 bytes and only for tools with no stronger channel.
+  only for tools with no stdin channel.
 - A temporary file is not removed if amplihack is killed with `SIGKILL`. It
-  remains 0600.
-- `platform_cli`, `copilot_strategy` and `turn.rs` build argv from prompts but
-  have no caller that passes large text. They still use argv.
+  remains 0600, in a 0700 directory.
 
 ## Related
 

@@ -3,8 +3,9 @@
 //! `claude`, `isolated(..)`; never a real `claude` or profile root).
 //!
 //! Contract:
-//! - A candidate whose probe passes the deadline shows as `<name>:failed`
-//!   in the cycle line, never as a percentage, is never swapped to, warns
+//! - A candidate whose probe passes the deadline shows as
+//!   `<name>:unknown, timeout` in the cycle line (issue #2910; it was
+//!   `<name>:failed`), never as a percentage, is never swapped to, warns
 //!   `probe of <name> timed out` on stderr, and is probed again on the next
 //!   cycle.
 //! - The live probe counts against `AMPLIHACK_PROFILE_USAGE_PARALLEL`.
@@ -67,19 +68,27 @@ fn a_timed_out_candidate_is_failed_never_chosen_and_probed_again() {
         let out = rotate(&f, &["profile", "rotate"], &[(TIMEOUT_ENV, "3")]);
         let line = cycle_line(&out);
         assert_log_grammar(&line, true);
-        assert!(line.contains(" spare:failed"), "{line}");
+        // Issue #2910 (D11): an unknown probe shows its label.
+        assert!(line.contains(" spare:unknown, timeout"), "{line}");
         assert!(!line.contains("spare:s="), "never a percentage: {line}");
         assert!(
             !text(&out.stdout).contains("->spare"),
             "{}",
             text(&out.stdout)
         );
+        // This cycle's own warning is the proof that this cycle probed
+        // spare again: the rotator writes it only after starting a probe
+        // and reaching the deadline with no answer, so a slower host only
+        // makes it surer. Counting spare's record files instead would ask
+        // the stub to spawn and write within the 3 s it is being cut off
+        // at, which is the race this test deliberately sets up; see
+        // `docs/howto/keep-tests-passing-under-host-load.md`, "Keep the
+        // rest of the run off the short deadline".
         assert!(
             text(&out.stderr).contains("warning: rotate: probe of spare timed out"),
-            "{}",
+            "cycle {cycle}: {}",
             text(&out.stderr)
         );
-        assert_eq!(f.usage_probes("spare"), cycle, "probed every cycle");
     }
     assert_eq!(ino(&f.home_login()), Some(f.live_ino));
     assert_each_login_once_by_inode(&f);
@@ -98,9 +107,10 @@ fn the_live_probe_counts_against_the_bound() {
     f.add_logged_in("fourth", 60, 60);
     f.add_logged_in("fifth", 70, 70);
     fs::write(f.canned.join("marks"), "").unwrap();
+    // A real cycle: since issue #1962 a dry run never starts `claude`.
     rotate(
         &f,
-        &["profile", "rotate", "--dry-run"],
+        &["profile", "rotate"],
         &[("AMPLIHACK_PROFILE_USAGE_PARALLEL", "2")],
     );
     let marks = fs::read_to_string(f.records.join("marks")).unwrap();
@@ -130,12 +140,18 @@ fn a_timed_out_plan_probe_holds_the_move_onto_overflow() {
     f.usage("extra", 100, 100);
     let out = rotate(&f, &["profile", "rotate"], &[(TIMEOUT_ENV, "5")]);
     let stdout = text(&out.stdout);
-    assert!(cycle_line(&out).contains(" spare:failed"), "{stdout}");
+    assert!(
+        cycle_line(&out).contains(" spare:unknown, timeout"),
+        "{stdout}"
+    );
     assert!(!stdout.contains("reason=overflow-in"), "{stdout}");
     // The ALERT counts spare among the candidates that could not be read.
+    // Issue #2910 (D9): an unknown login means capacity is not known to be
+    // gone, and the overflow profile is not a plan candidate, so it is not
+    // counted.
     assert!(
-        stdout.contains("ALERT: no profile has capacity live=work")
-            && stdout.contains("(candidates: 1 failed, 1 exhausted)"),
+        stdout.contains("ALERT: no capacity known live=work")
+            && stdout.contains("(candidates: 1 unknown (timeout))"),
         "{stdout}"
     );
     assert_eq!(ino(&f.home_login()), Some(f.live_ino));
@@ -172,9 +188,20 @@ fn a_refused_plan_profile_directory_holds_the_move_onto_overflow_until_fixed() {
             !stdout.contains("reason=overflow-in"),
             "cycle {cycle}: {stdout}"
         );
+        // Issue #2910: `spare` was never probed, so its room was never read
+        // and the cycle cannot say that no login has capacity. The line names
+        // how many were not read and why, in the wording of the `skip:` line
+        // above it.
         assert!(
-            stdout.contains("ALERT: no profile has capacity live=work"),
+            stdout.contains(
+                "ALERT: no capacity known live=work s=100% w=40% \
+                 (candidates: 1 not read (directory refused))"
+            ),
             "cycle {cycle}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("no profile has capacity"),
+            "cycle {cycle}: the one plan login was never read: {stdout}"
         );
         assert_eq!(ino(&f.home_login()), Some(f.live_ino), "cycle {cycle}");
     }

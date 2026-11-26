@@ -20,7 +20,7 @@ for provider in claude copilot; do
 #!/bin/sh
 provider=${0##*/}
 case "$*" in
-    *--version*) if [ "$provider" = claude ]; then echo '2.1.0 (Claude Code)'; else echo '0.0.400'; fi;;
+    *--version*) if [ "$provider" = claude ]; then echo '2.1.319 (Claude Code)'; else echo '0.0.400'; fi;;
     *plugin*) echo "$provider:plugin" >> "$HOME/events"; echo '{}';;
     *) echo "$provider:launch" >> "$HOME/events";;
 esac
@@ -36,7 +36,7 @@ esac
 CLIENT
 printf '#!/bin/sh\necho v24.1.0\n' > "$tools/node"
 printf '#!/bin/sh\necho "{}"\n' > "$tools/amplihack-hooks"
-printf '#!/bin/sh\necho '\''{"schema_version":1,"version":"fixture","capabilities":["codex_exec"]}'\''\n' > "$tools/recipe-runner-rs"
+printf '#!/bin/sh\necho '\''{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'\''\n' > "$tools/recipe-runner-rs"
 for tool in "$tools"/*; do
     # Installer binary-size validation should accept these observable fixtures.
     printf '# %1200s\n' '' >> "$tool"

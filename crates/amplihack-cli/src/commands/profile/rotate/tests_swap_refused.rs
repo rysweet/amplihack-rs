@@ -3,7 +3,7 @@
 //! (D9, issue #1592). Uses the fixture in `tests_swap.rs`.
 
 use super::ledger::Phase;
-use super::swap::{Source, swap};
+use super::swap::{Source, swap, swap_by};
 use super::tests_swap::{LOCK, NOW, env, ino, ino_at, login, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::euid;
@@ -13,6 +13,54 @@ use std::path::Path;
 
 fn refused<T: std::fmt::Debug>(r: Result<T, ProfileError>) {
     assert!(matches!(r, Err(ProfileError::RotateRefused(_))), "{r:?}");
+}
+
+/// Issue #2935, the first macOS refusal at the swap. Where the atomic
+/// exchange is absent (every system but Linux), the swap declines with the
+/// documented reason before it writes anything: the exchange is never asked,
+/// no login moves, no lock is taken and no journal is left.
+#[test]
+fn a_swap_is_declined_where_the_exchange_is_absent_and_nothing_is_written() {
+    use crate::commands::profile::auto_switch::kit::FakeExchange;
+    let e = env();
+    let absent = FakeExchange::absent();
+    let got = swap_by(
+        absent.as_ref(),
+        &e.store,
+        &e.rs,
+        &e.home,
+        Source::Profile(n("work")),
+        &n("spare"),
+        NOW,
+    );
+    match got {
+        Err(ProfileError::RotateRefused(reason)) => {
+            assert_eq!(reason, "atomic exchange is not supported here");
+        }
+        other => panic!("expected the documented refusal, got {other:?}"),
+    }
+    assert!(absent.calls().is_empty(), "declined before the exchange");
+    e.assert_unchanged();
+    assert!(!e.rs.journal.exists());
+
+    // The same fixture with an exchange that works does swap, so the
+    // refusal above came from the exchange and nothing else.
+    let working = FakeExchange::working();
+    let from = swap_by(
+        working.as_ref(),
+        &e.store,
+        &e.rs,
+        &e.home,
+        Source::Profile(n("work")),
+        &n("spare"),
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(from, n("work"));
+    assert_eq!(working.calls().len(), 1);
+    assert_eq!(ino_at(&e.live()), Some(e.t));
+    assert_eq!(ino_at(&e.slot("work")), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare")), None);
 }
 
 #[test]

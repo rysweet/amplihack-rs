@@ -30,6 +30,7 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn prepare_launcher(tool: &str) -> Result<()> {
+    let _notice = crate::list_notice::begin();
     freshness::with_provider(tool, || prepare_selected_launcher(tool))
 }
 
@@ -133,7 +134,10 @@ fn check_required_tools() -> Result<()> {
 /// Issue #1274 — one seam. A "choose a file to run" walk (the result names a
 /// prerequisite the user is told to install, and `tool` is spawned by name
 /// elsewhere), so relative entries are dropped like everywhere else.
-fn which(tool: &str) -> Option<PathBuf> {
+///
+/// `pub(crate)` for the vendor-gated tests, which skip rather than fail when
+/// the harness binary they check against is absent.
+pub(crate) fn which(tool: &str) -> Option<PathBuf> {
     launch_target::env_path_dirs().into_iter().find_map(|dir| {
         let full = dir.join(tool);
         if full.is_file() { Some(full) } else { None }
@@ -180,7 +184,7 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
     // Already installed?
     if bin_dir.join("node").exists() {
         tracing::info!(path = %bin_dir.display(), "managed Node.js already present");
-        println!("  ✅ Managed Node.js {NODE_AUTO_INSTALL_VERSION} already installed");
+        eprintln!("  ✅ Managed Node.js {NODE_AUTO_INSTALL_VERSION} already installed");
         return Ok(Some(bin_dir));
     }
 
@@ -191,7 +195,7 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
     let checksum_url =
         format!("https://nodejs.org/dist/{NODE_AUTO_INSTALL_VERSION}/{checksum_filename}");
 
-    println!("  ⬇️  Downloading Node.js {NODE_AUTO_INSTALL_VERSION} ({os_name}-{arch_name})...");
+    eprintln!("  ⬇️  Downloading Node.js {NODE_AUTO_INSTALL_VERSION} ({os_name}-{arch_name})...");
     tracing::info!(%url, "downloading Node.js");
 
     fs::create_dir_all(&runtimes_dir)
@@ -217,7 +221,7 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
     }
     let _ = fs::remove_file(&checksum_path);
 
-    println!("  📦 Installing Node.js {NODE_AUTO_INSTALL_VERSION}...");
+    eprintln!("  📦 Installing Node.js {NODE_AUTO_INSTALL_VERSION}...");
 
     // Extract to a temp directory, then atomically rename to install_dir.
     // This prevents partial extraction (disk full, interrupted) from leaving
@@ -266,7 +270,7 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
         )
     })?;
 
-    println!(
+    eprintln!(
         "  ✅ Node.js {NODE_AUTO_INSTALL_VERSION} installed to {}",
         install_dir.display()
     );
@@ -371,6 +375,11 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
             // the per-candidate one sends the reader looking at the wrong
             // number.
             log_rejected_candidates(tool, &resolution);
+            if tool == "codex" && resolution.rejected.iter().any(|(_, rejection)| {
+                matches!(rejection, launch_target::Rejection::InstallationHealth(error) if !error.repairable)
+            }) {
+                bail!("Codex installation validation is inconclusive; automatic repair was not attempted.\n{}", resolution.rejection_report(tool, package.unwrap_or(tool)));
+            }
             // Issue #1424: `Abstain` has two shapes now, and quoting the probe
             // budgets at a user whose binary was killed by SIGABRT names the
             // wrong number as confidently as the old "no platform package
@@ -410,6 +419,11 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
                 .as_deref()
                 .map(launch_target::display_untrusted_path)
                 .unwrap_or_default();
+            let additional_guidance = if tool == "codex" {
+                "\nAlso check the higher-priority AMPLIHACK_CODEX_BINARY_PATH override. To resume discovery, unset both:\n  unset AMPLIHACK_CODEX_BINARY_PATH CODEX_BINARY_PATH"
+            } else {
+                ""
+            };
             bail!(
                 "'{tool}' was resolved from {tool_upper}_BINARY_PATH, and that binary \
                  is not usable:\n\n{report}\n\
@@ -417,7 +431,7 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
                  {named} — it is not a file amplihack writes.\n\
                  Point {tool_upper}_BINARY_PATH at a working '{tool}', or unset it to \
                  let amplihack resolve one:\n  \
-                 unset {tool_upper}_BINARY_PATH",
+                 unset {tool_upper}_BINARY_PATH{additional_guidance}",
                 report = resolution.rejection_report(tool, package.unwrap_or(tool)),
                 prefix = amplihack_bin
                     .as_deref()
@@ -430,13 +444,25 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
             if let (Some(target), Some(pkg), Some(latest)) =
                 (resolution.target.as_ref(), package, latest.as_deref())
             {
-                println!("📦 Upgrading {tool} ({pkg}): {} → {latest}", target.version);
+                eprintln!("📦 Upgrading {tool} ({pkg}): {} → {latest}", target.version);
             }
             reinstall_and_reresolve(tool, override_origin)
         }
         InstallDecision::InstallMissing => {
             log_rejected_candidates(tool, &resolution);
-            install_tool(tool)?;
+            if tool == "codex" {
+                let original = resolution.rejection_report(tool, package.unwrap_or(tool));
+                eprintln!("{original}");
+                if std::env::var_os("AMPLIHACK_SKIP_AUTO_INSTALL").is_some_and(|v| !v.is_empty()) {
+                    bail!(
+                        "{original}\nAutomatic Codex installation is disabled. Repair with npm install -g @openai/codex."
+                    );
+                }
+                install_tool(tool)
+                    .map_err(|error| anyhow!("{original}\nInstallation failed: {error:#}"))?;
+            } else {
+                install_tool(tool)?;
+            }
             // Uncached: the install just changed the filesystem, which is the
             // one thing the resolution memo cannot see.
             launch_target::resolve_uncached(tool, override_origin)
@@ -612,7 +638,7 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
         .with_context(|| format!("failed to create {}", bin_dir.display()))?;
 
     prepend_path(&bin_dir)?;
-    println!("📦 Installing {tool} via npm package {package}...");
+    eprintln!("📦 Installing {tool} via npm package {package}...");
 
     // Clean any stale temp dirs npm left behind from a prior failed install
     // (e.g. `@github/.copilot-YYsO5Mpa`). Left in place, these cause
@@ -622,12 +648,42 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
     match run_npm_install(&npm, &prefix, package) {
         Ok(()) => {}
         Err(err) => {
+            if tool == "codex" {
+                return Err(err);
+            }
             // Last-ditch: clean again and retry once. npm's own rename can fail
             // if a concurrent install (or even the first part of this one) raced.
             tracing::warn!(%err, "npm install failed; cleaning stale temp dirs and retrying once");
             clean_stale_npm_temp_dirs(&prefix, package);
             remove_package_install_dir(&prefix, package);
             run_npm_install(&npm, &prefix, package)?;
+        }
+    }
+
+    if package == "@openai/codex" {
+        let node_modules = if cfg!(windows) {
+            prefix.join("node_modules")
+        } else {
+            prefix.join("lib").join("node_modules")
+        };
+        let package_json = node_modules.join("@openai/codex/package.json");
+        let replacement = bin_dir.join(format!("codex{}", std::env::consts::EXE_SUFFIX));
+        let platform =
+            amplihack_utils::codex_installation::pinned_npm_platform_package(&package_json)
+                .with_context(|| {
+                    format!(
+                        "cannot complete Codex replacement {}",
+                        launch_target::display_untrusted_path(&replacement)
+                    )
+                })?;
+        if let Some(platform) = platform {
+            eprintln!("📦 Installing Codex native platform package {platform}...");
+            run_npm_install(&npm, &prefix, &platform).with_context(|| {
+                format!(
+                    "failed native component for Codex replacement {}",
+                    launch_target::display_untrusted_path(&replacement)
+                )
+            })?;
         }
     }
 
@@ -638,7 +694,7 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
     if package == "@github/copilot" {
         let (os_name, arch) = current_platform();
         if let Some(platform_pkg) = copilot_platform_package(os_name, arch) {
-            println!("📦 Installing platform binary {platform_pkg}...");
+            eprintln!("📦 Installing platform binary {platform_pkg}...");
             if let Err(err) = run_npm_install(&npm, &prefix, platform_pkg) {
                 // Non-fatal: Node.js may have a JS fallback via index.js on
                 // sufficiently recent versions. Warn but don't fail the install.
@@ -732,7 +788,7 @@ fn materialize_claude_native(npm: &Path, prefix: &Path) {
     let placeholder = pkg_dir.join("bin").join("claude.exe");
     for platform_pkg in candidates {
         let pinned = format!("{platform_pkg}@{version}");
-        println!("📦 Installing platform binary {pinned}...");
+        eprintln!("📦 Installing platform binary {pinned}...");
         if let Err(err) = run_npm_install(npm, prefix, &pinned) {
             tracing::warn!(%err, platform_pkg, "claude platform package install failed");
             continue;
@@ -1003,7 +1059,7 @@ fn clean_stale_npm_temp_dirs(prefix: &Path, package: &str) {
         if let Err(err) = fs::remove_dir_all(&path) {
             tracing::warn!(%err, path = %path.display(), "failed to remove stale npm temp dir");
         } else {
-            println!("  🧹 Removed stale npm temp dir: {}", path.display());
+            eprintln!("  🧹 Removed stale npm temp dir: {}", path.display());
         }
     }
 }
@@ -1042,7 +1098,7 @@ fn install_amplifier() -> Result<()> {
     let bin_dir = uv_bin_dir()?;
     prepend_path(&bin_dir)?;
 
-    println!("📦 Installing amplifier via uv tool...");
+    eprintln!("📦 Installing amplifier via uv tool...");
     let mut uv_cmd = Command::new(uv);
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut uv_cmd);
     uv_cmd

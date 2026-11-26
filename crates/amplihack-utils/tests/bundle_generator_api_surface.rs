@@ -35,7 +35,7 @@ fn valid_agent() -> GeneratedAgent {
         role: "tester".into(),
         description: "tests things".into(),
         content: "x".repeat(2048),
-        model: "inherit".into(),
+        model: String::new(),
         capabilities: vec!["testing".into()],
         dependencies: vec![],
         tests: vec![],
@@ -259,6 +259,17 @@ fn bundle_serde_roundtrip() {
     let restored: AgentBundle = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.name, bundle.name);
     assert_eq!(restored.agents.len(), 1);
+}
+
+/// A generated agent for which no model was asked has none: its `model` is
+/// empty rather than `inherit`, so a definition written from it has no `model`
+/// line and the user's own default for helpers applies.
+#[test]
+fn generated_agent_without_a_model_asks_for_none() {
+    let mut value = serde_json::to_value(valid_agent()).unwrap();
+    value.as_object_mut().unwrap().remove("model");
+    let agent: GeneratedAgent = serde_json::from_value(value).unwrap();
+    assert!(agent.model.is_empty());
 }
 
 // ---------------------------------------------------------------------------

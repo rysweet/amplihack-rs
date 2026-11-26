@@ -2601,8 +2601,8 @@ time amplihack claude --help
 # Monitor memory
 ps aux | grep -E "(amplihack|claude|python)"
 
-# Or use htop
-htop -p $(pgrep -f amplihack)
+# Or watch one process in htop, using a PID from the listing above
+htop -p <pid>
 ```
 
 **Solutions**:
@@ -3049,8 +3049,8 @@ amplihack claude --auto --max-turns 20 -- -p "task"
 # Force staging (UVX mode)
 amplihack claude --force-staging
 
-# With system prompt
-amplihack claude --append-system-prompt ./prompt.md
+# With your own appended system prompt (replaces amplihack's contract)
+amplihack claude -- --append-system-prompt-file ./prompt.md
 
 # Forward args to Claude
 amplihack claude -- --model claude-sonnet-4-5-20250929

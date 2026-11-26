@@ -28,7 +28,7 @@
 //! anything it cannot prove it owns, and keeps its scratch directories out of
 //! the scan root — see [`super::command_staging`].
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use super::command_staging::{StageRequest, command_source_dir_excluding, stage_command_files};
@@ -77,6 +77,12 @@ pub(super) fn stage_claude_commands_in(
     repo_root: &Path,
 ) -> Result<StagedClaudeCommands> {
     let target = claude_home.join("commands").join("amplihack");
+    // `staged_framework` is `<amplihack home>/.claude` (`staging_claude_dir`),
+    // so its parent is where the previous command set is retired to.
+    let retire_root = staged_framework
+        .parent()
+        .with_context(|| format!("{} has no parent", staged_framework.display()))?
+        .to_path_buf();
     let manifest = crate::claude_plugin::ownership_manifest_path(staged_framework);
     let Some(source) = command_source_dir_excluding(repo_root, Some(&target)) else {
         return Ok(StagedClaudeCommands {
@@ -91,6 +97,7 @@ pub(super) fn stage_claude_commands_in(
             source: &source,
             target: &target,
             scratch_root: &claude_home.join(SCRATCH_DIR),
+            retire_root: &retire_root,
             target_is_owned: crate::claude_plugin::claude_commands_are_owned(&manifest, &target)?,
         },
         |_path, body| Ok(body.to_string()),
@@ -115,11 +122,23 @@ pub(super) fn stage_claude_commands_in(
 /// (review finding 4) is exactly such a gap. So this is a single bounded
 /// top-up instead: one attempt per launch, warn and continue on failure.
 pub(super) fn ensure_claude_commands_staged() -> Result<()> {
+    ensure_claude_commands_staged_for(
+        &super::clone::FrameworkRootQuery::from_environment(),
+        crate::VERSION,
+    )
+}
+
+/// [`ensure_claude_commands_staged`] with the source decision's inputs passed in.
+/// Only a same-version local source qualifies, and nothing is fetched (#1955).
+pub(super) fn ensure_claude_commands_staged_for(
+    query: &super::clone::FrameworkRootQuery,
+    binary_version: &str,
+) -> Result<()> {
     let target = claude_commands_dir()?;
     if target.is_dir() {
         return Ok(());
     }
-    let Some(source) = super::clone::find_bundled_framework_root() else {
+    let Some(source) = super::clone::find_bundled_framework_root_for(query, binary_version) else {
         tracing::warn!(
             path = %target.display(),
             "amplihack slash commands are missing and no framework source was found to restage them"

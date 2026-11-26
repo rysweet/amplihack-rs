@@ -267,6 +267,14 @@ finalization:
 }
 ```
 
+Later steps read the `should_publish` field of this block as
+`terminal_state.should_publish`. It is an internal output that
+`workflow-terminal-state` computes; a caller cannot set it. Do not pass
+`-c should_publish=false` to keep a recovery run from publishing. That
+context key was removed by #1976, and `amplihack recipe run` now refuses it
+with exit code `1` before any step runs. See
+[Removed context keys](../reference/recipe-cli-reference.md#removed-context-keys).
+
 Use the status exactly as emitted:
 
 | Status | Meaning | What the workflow does next |
@@ -275,7 +283,8 @@ Use the status exactly as emitted:
 | `CLOSED_OBSOLETE` | The PR is closed without merge evidence, but the branch is clean and the intended changes are already upstream or no meaningful work remains. | Stops successfully and records the obsolete proof. |
 | `NO_DIFF_SUCCESS` | The worktree is clean and no meaningful diff or branch-only commits remain against the intended base. | Stops successfully without creating a no-op commit or follow-up PR. |
 | `FOLLOWUP_CREATED` | Meaningful unmerged work remains and the workflow created or updated a PR for it. | Continues through normal CI and merge readiness checks. |
-| `BLOCKED_CI` | Required checks are failing or policy blocks merge. | Fails loudly; do not reinterpret as terminal success. |
+| Failing checks | Required checks are failing. | Not a status (#2966): the workflow continues and repairs them (diagnose, fix, push, wait, reassess) until the checks are green. |
+| `BLOCKED_CI` | A check fails for a cause the run cannot fix itself, such as a missing secret. | Fails loudly with the check, the cause, the owner and the exact step; do not reinterpret as terminal success. |
 
 Closed-unmerged PRs are failures unless the workflow proves
 `CLOSED_OBSOLETE`. A closed PR with remaining diff evidence is reported as a
@@ -416,10 +425,12 @@ completion. A terminal-success finalization looks like this:
 ```
 
 If finalization observes a dirty worktree, a closed-unmerged PR without obsolete
-proof, a meaningful unmerged diff, or failing required checks, it emits a
-blocking status such as `BLOCKED_DIRTY_WORKTREE`, `BLOCKED_CLOSED_UNMERGED`,
-`BLOCKED_UNMERGED_DIFF`, or `BLOCKED_CI`. Those statuses require remediation;
-they are not successful no-op completions.
+proof, or a meaningful unmerged diff, it emits a blocking status such as
+`BLOCKED_DIRTY_WORKTREE`, `BLOCKED_CLOSED_UNMERGED` or `BLOCKED_UNMERGED_DIFF`.
+A failing check the run cannot fix, such as a missing secret, emits
+`BLOCKED_CI` with the cause and the step to take. Those statuses require
+remediation; they are not successful no-op completions. Failing checks the run
+can fix are repaired by the workflow itself (#2966), and are not a status.
 
 Interpret the status exactly as emitted:
 

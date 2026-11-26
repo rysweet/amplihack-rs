@@ -20,13 +20,15 @@
 use super::config::{self, Config, FileState};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
-use super::rerun::{Pick, login_ready, nested_candidate};
+use super::own_login::OwnLogins;
+use super::rerun::{KeyAlert, Pick, login_ready, nested_candidate, silent_candidate};
 use super::state::State;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate;
 use crate::commands::profile::rotate::ledger::{RotateState, active_blocks};
 use crate::commands::profile::store::ProfileStore;
 use std::collections::BTreeSet;
+use std::path::Path;
 
 /// How far ahead of the wait's clock a reading may be stamped.
 const FUTURE_MARGIN: i64 = 60;
@@ -41,9 +43,12 @@ fn live_profile(store: &ProfileStore) -> Option<String> {
 /// holds only while a rotator is running with auto-switch on, and another
 /// stored login could take over from the profile live there. A running
 /// rotator with auto-switch off is idle: it records no cycle and makes no
-/// swap, so it does not count. Without a rotating rotator a far reset stays
-/// `reset_too_far`, failing at once as before. The store is read only when the
-/// check is called, which is when a limit is seen.
+/// swap, so it does not count. Since #2911 a usage limit waits whatever this
+/// answers; it now gates only a bare 429 ([`plan::rate_limit_capacity`]),
+/// which goes back to the recipe runner when no login could take over. The
+/// store is read only when the check is called, which is when that 429 is seen.
+///
+/// [`plan::rate_limit_capacity`]: crate::commands::profile::limit_wait::plan::rate_limit_capacity
 pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
     Box::new(move || {
         store.as_ref().is_some_and(|s| {
@@ -59,8 +64,8 @@ pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
 /// unattended recipe run no rotator starts and a `claude -p` step has no
 /// status line, so without a running rotator nothing may record a reading and
 /// the wait would run to its maximum. The check therefore holds only while a
-/// rotator is running with auto-switch on, as [`home_check`] does, and a far reset stays
-/// `reset_too_far`, failing at once as before.
+/// rotator is running with auto-switch on, as [`home_check`] does. Since #2911 it
+/// gates only a bare 429, never a usage limit, which waits regardless.
 pub(crate) fn profile_check(store: &ProfileStore, own: &str) -> bool {
     rotate::daemon::rotating(store.root()) && could_take_over(Some(store), Some(own))
 }
@@ -69,7 +74,21 @@ pub(crate) fn profile_check(store: &ProfileStore, own: &str) -> bool {
 /// inherited profile, or the profile live in `$HOME/.claude`. With none, the
 /// login in `$HOME/.claude` is unknown and two accounts must be eligible.
 pub(crate) fn could_take_over(store: Option<&ProfileStore>, own: Option<&str>) -> bool {
-    store.is_some_and(|s| another_login(s, own).unwrap_or(false))
+    could_take_over_at(
+        store,
+        own,
+        crate::commands::profile::usage_cmd::home_dir().as_deref(),
+    )
+}
+
+/// [`could_take_over`] with the home directory given (`None`: nothing
+/// outside the store is read), so a test never reads the real `$HOME`.
+pub(super) fn could_take_over_at(
+    store: Option<&ProfileStore>,
+    own: Option<&str>,
+    home: Option<&Path>,
+) -> bool {
+    store.is_some_and(|s| another_login(s, own, home).unwrap_or(false))
 }
 
 /// A stored profile on another account than `own` that the selection could
@@ -77,11 +96,12 @@ pub(crate) fn could_take_over(store: Option<&ProfileStore>, own: Option<&str>) -
 /// login or a usable overflow profile ([`OverflowPool::could_select`]), and
 /// passing the login checks ([`login_ready`]). Both rules are the ones
 /// `nested_candidate` applies, read from the same [`OverflowInputs`], so an
-/// unmarked API-key profile never counts (issue #1804) and a wait never
-/// starts for a login the probe could not choose. `None` on any read error.
+/// unmarked API-key profile never counts (issue #1804) and the check never
+/// counts a login the probe could not choose. `None` on any read error, so a
+/// bare 429 then starts no wait.
 ///
 /// [`OverflowPool::could_select`]: super::candidate::OverflowPool::could_select
-fn another_login(store: &ProfileStore, own: Option<&str>) -> Option<bool> {
+fn another_login(store: &ProfileStore, own: Option<&str>, home: Option<&Path>) -> Option<bool> {
     let cfg = match config::read(store.root()) {
         FileState::Valid(c) => c,
         FileState::Missing => Config::default(),
@@ -90,17 +110,33 @@ fn another_login(store: &ProfileStore, own: Option<&str>) -> Option<bool> {
             return None;
         }
     };
-    let overflow = OverflowInputs::load(store.root(), &cfg, fsx::now());
-    another_login_with(store, own, &cfg, &overflow)
+    let overflow = OverflowInputs::load_at(store.root(), &cfg, fsx::now(), home);
+    // The same home for the Keychain lookups as for everything else here.
+    another_login_in(store, own, &cfg, &overflow, &OwnLogins::new(store, home))
 }
 
 /// [`another_login`] with the config and overflow inputs already read, so a
-/// test can give the overflow gate.
+/// test can give the overflow gate. The home is the process's own.
+#[cfg(test)]
 pub(super) fn another_login_with(
     store: &ProfileStore,
     own: Option<&str>,
     cfg: &Config,
     overflow: &OverflowInputs,
+) -> Option<bool> {
+    let home = crate::commands::profile::usage_cmd::home_dir();
+    let logins = OwnLogins::new(store, home.as_deref());
+    another_login_in(store, own, cfg, overflow, &logins)
+}
+
+/// [`another_login`] over inputs already read; `logins` answers whether
+/// each profile holds a login of its own.
+fn another_login_in(
+    store: &ProfileStore,
+    own: Option<&str>,
+    cfg: &Config,
+    overflow: &OverflowInputs,
+    logins: &OwnLogins<'_>,
 ) -> Option<bool> {
     let state = State::new(store.root()).ok()?;
     let ledger = RotateState::new(&state.root).load_ledger().ok()?;
@@ -118,7 +154,7 @@ pub(super) fn another_login_with(
             !blocked.contains_key(*n)
                 && !cfg.exclude.iter().any(|e| e == p)
                 && pool.could_select(p)
-                && login_ready(&state, overflow, p)
+                && login_ready(&state, overflow, logins, p)
         })
         .map(|(n, _)| hosts.account_in(n))
         .collect();
@@ -138,17 +174,43 @@ pub(super) fn is_fresh(observed_at: i64, start: i64, now: i64) -> bool {
 /// The profile auto-switch would choose now for a step that inherited
 /// `inherited`, from readings taken since `start` only: a profile with an
 /// older reading, or none, has shown nothing during this wait.
-pub(crate) fn capacity_candidate(
+///
+/// The same candidate rules as `rerun::nested_candidate`, narrowed by the
+/// freshness skip above. `alert` is the caller's, because this has two
+/// callers that want different things of it (issue #2694):
+///
+/// - the wait's probe passes [`KeyAlert::Silent`], since over a multi-hour
+///   wait it asks after every write to the files the wait watches, and the
+///   held-key ALERT, the rotate-log line and the key-held marker write would
+///   repeat for hours in the step's stderr;
+/// - the retry's single selection once the wait is over passes
+///   [`KeyAlert::Write`], as it did before #2694: it runs once and it is the
+///   call that moves the step, so its held-back key is worth a line.
+///
+/// Its reads are bounded: the effective configuration, the auto-switch
+/// ledger, the readings, a listing of the profile root, and the overflow
+/// inputs, which resolve each stored profile's kind and read the rotate
+/// ledger for spend blocks and the overflow gate. Each candidate costs one
+/// further `stat` for its login file; on macOS a candidate without one is
+/// resolved once more through `kind::Ctx`, which is where the Keychain is
+/// asked (issue #2885).
+pub(super) fn capacity_candidate(
     store: &ProfileStore,
     state: &State,
     inherited: &ProfileName,
     start: i64,
     now: i64,
+    alert: KeyAlert,
 ) -> Option<Pick> {
     let eff = config::effective(store.root());
     if !eff.on {
         return None;
     }
+    // A refused readings file — wrong mode, a symlink, over the size bound,
+    // an unparsable account key — is indistinguishable here from no
+    // readings, so takeover goes quiet instead of complaining. Refusing to
+    // parse it is the right posture; the missing diagnostic is issue #2728,
+    // which this probe makes more pressing by asking on every wait kind.
     let ledger = state.load_ledger().ok()?;
     let readings = state.try_load_usage().ok()?.accounts;
     let profiles: Vec<ProfileName> = store
@@ -166,15 +228,25 @@ pub(crate) fn capacity_candidate(
                 .is_some_and(|r| is_fresh(r.observed_at, start, now))
         })
         .collect();
-    let account = ledger.account_in(inherited.as_str());
-    nested_candidate(
-        state,
-        &ledger,
-        &profiles,
-        &readings,
-        &eff.config,
-        account,
-        &stale,
-    )
-    .filter(|p| p.profile != *inherited)
+    let pick = match alert {
+        KeyAlert::Silent => silent_candidate(
+            state,
+            &ledger,
+            &profiles,
+            &readings,
+            &eff.config,
+            inherited.as_str(),
+            &stale,
+        ),
+        KeyAlert::Write => nested_candidate(
+            state,
+            &ledger,
+            &profiles,
+            &readings,
+            &eff.config,
+            inherited.as_str(),
+            &stale,
+        ),
+    };
+    pick.filter(|p| p.profile != *inherited)
 }

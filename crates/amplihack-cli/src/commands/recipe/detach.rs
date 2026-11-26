@@ -77,6 +77,12 @@ pub(crate) struct Spec {
     pub log: PathBuf,
     /// The private context file the run reads; removed when the run ends.
     pub context_file: PathBuf,
+    /// Issue #2778: the launching process's file-creation mask, which the
+    /// pane applies before it starts the run, so the run does not keep the
+    /// tmux server's. `None` (a spec from an older launcher) leaves the
+    /// pane's own mask in place.
+    #[serde(default)]
+    pub umask: Option<libc::mode_t>,
 }
 
 /// The line a pane writes to the log when the run cannot start.
@@ -96,8 +102,24 @@ pub(crate) struct Launch<'a> {
     pub agent_binary: &'a Resolution,
 }
 
+/// The process's file-creation mask. umask(2) can only be read by setting
+/// it, so this sets the strict 0o077 and puts the old value straight back.
+fn current_umask() -> libc::mode_t {
+    // SAFETY: umask(2) cannot fail and touches no memory. The mask is
+    // process-wide, but `launch` calls this before it starts any thread, and
+    // the value set for that moment is only ever stricter than the old one.
+    unsafe {
+        let old = libc::umask(0o077);
+        libc::umask(old);
+        old
+    }
+}
+
 /// Start the run in a new tmux session and print where it is.
 pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
+    // Issue #2778: read before anything else, while this process has a
+    // single thread; the pane applies it to the run.
+    let umask = current_umask();
     let tmux_ok = Command::new("tmux")
         .arg("-V")
         .stdin(Stdio::null())
@@ -136,18 +158,21 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     let spec = Spec {
         args,
         cwd,
-        env: child_env(request.agent_binary),
+        env: child_env(request.agent_binary, &log),
         log: log.clone(),
         context_file: secrets.context.clone(),
+        umask: Some(umask),
     };
     create_private(&secrets.spec)?.write_all(&serde_json::to_vec(&spec)?)?;
 
-    let started = Command::new("tmux")
-        // Issue #1811: a tmux server started here keeps this environment
-        // for every later session; the governor's parent and recipe markers
-        // must not reach them.
-        .env_remove(crate::commands::governor::GOVERNOR_PARENT_ENV)
-        .env_remove(crate::commands::governor::GOVERNOR_RECIPE_ENV)
+    let mut tmux = Command::new("tmux");
+    // Issue #1811: a tmux server started here keeps this environment for
+    // every later session; the governor's parent and recipe markers must not
+    // reach them. Issue #1976: nor the parent-watch and state-dir variables.
+    for name in PANE_ENV_REMOVED {
+        tmux.env_remove(name);
+    }
+    let started = tmux
         .args(["new-session", "-d", "-s", &session, "--"])
         .arg(&exe)
         .args(["recipe", "detached-child", "--log"])
@@ -284,12 +309,8 @@ fn context_object(pairs: &[String]) -> Result<serde_json::Map<String, serde_json
 /// an earlier run, or a concurrent launch in the same second then moves on to
 /// the next name instead of failing.
 fn claim_session(base: &str, log_dir: &Path) -> Result<(String, PathBuf)> {
-    for n in 1..=1000 {
-        let session = if n == 1 {
-            base.to_string()
-        } else {
-            format!("{base}-{n}")
-        };
+    for n in 1..=MAX_CLAIM_TRIES {
+        let session = nth_claim_name(base, n);
         if session_exists(&session) {
             continue;
         }
@@ -306,7 +327,22 @@ fn claim_session(base: &str, log_dir: &Path) -> Result<(String, PathBuf)> {
             Err(error) => return Err(error),
         }
     }
-    bail!("no free tmux session name for {base} after 1000 tries")
+    bail!("no free tmux session name for {base} after {MAX_CLAIM_TRIES} tries")
+}
+
+/// The `n`th name [`claim_session`] tries for `base`: `base` itself, then
+/// `base-2`, `base-3`, and so on.
+///
+/// Its own function, and visible to the crate, so that the suffix
+/// [`MAX_CLAIM_SUFFIX_CHARS`] bounds is derived from the formatting that
+/// actually happens rather than written out a second time in a test here or
+/// in `guide`. One identifier, one bound (issue #2818).
+pub(crate) fn nth_claim_name(base: &str, n: u32) -> String {
+    if n == 1 {
+        base.to_string()
+    } else {
+        format!("{base}-{n}")
+    }
 }
 
 fn session_exists(session: &str) -> bool {
@@ -319,21 +355,60 @@ fn session_exists(session: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// Variables a detached pane never inherits. A pane root is a top-level run
+/// (issue #1976, D8): it must not watch the launching run as its parent, nor
+/// write into another drive's state directory. The governor markers are
+/// issue #1811's.
+pub(crate) const PANE_ENV_REMOVED: [&str; 9] = [
+    "AMPLIHACK_RECOVERY_ATTACHMENT",
+    "AMPLIHACK_RECOVERY_DESCRIPTOR",
+    crate::commands::governor::GOVERNOR_PARENT_ENV,
+    crate::commands::governor::GOVERNOR_RECIPE_ENV,
+    super::run::parent_watch::PARENT_WATCH_ENV[0],
+    super::run::parent_watch::PARENT_WATCH_ENV[1],
+    super::run::parent_watch::PARENT_WATCH_ENV[2],
+    // Issue #2535: a new top-level run reads only its own guidance.
+    crate::run_guidance::GUIDANCE_DIRS_ENV,
+    // Issue #2886: a pane root is an outermost run, so it owns the build
+    // output it makes and the launcher's claim still applies to it.
+    "AMPLIHACK_RUN_ID",
+];
+
+/// Where a detached run's steps append their usage-limit wait lines (issue
+/// #2731). One marker, named in one place, so the writer and the exporter
+/// cannot drift.
+pub(crate) const RECIPE_LOG_ENV: &str = crate::commands::profile::limit_wait::RECIPE_LOG_ENV;
+
+/// Points `env` at this run's log. Set, never defaulted: a detached run
+/// started from inside another one must append to its own log, so an
+/// inherited value is replaced rather than kept.
+fn with_recipe_log(env: &mut BTreeMap<String, String>, log: &Path) {
+    env.insert(
+        RECIPE_LOG_ENV.to_string(),
+        log.to_string_lossy().into_owned(),
+    );
+}
+
+/// Whether the pane may inherit `name`.
+pub(crate) fn keeps_in_pane(name: &str) -> bool {
+    !PANE_ENV_REMOVED.contains(&name)
+}
+
 /// The caller's environment for the run: every agent session marker removed,
 /// and the resolved agent binary set with the tag `recipe run` would export.
 /// The capacity governor's parent and recipe markers are removed too (issue
 /// #1811): a detached run is independent work and asks for a slot of its own.
-fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
+fn child_env(agent_binary: &Resolution, log: &Path) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
         .filter(|(k, _)| {
             !SESSION_MARKERS.iter().any(|(marker, _)| marker == k)
                 && !TMUX_VARS.contains(&k.as_str())
-                && k != crate::commands::governor::GOVERNOR_PARENT_ENV
-                && k != crate::commands::governor::GOVERNOR_RECIPE_ENV
+                && keeps_in_pane(k)
         })
         .collect();
     env.insert(BINARY_ENV.to_string(), agent_binary.binary.clone());
+    with_recipe_log(&mut env, log);
     match export_tag(&agent_binary.binary, agent_binary.source) {
         Some(tag) => env.insert(SOURCE_ENV.to_string(), tag),
         None => env.remove(SOURCE_ENV),
@@ -342,7 +417,7 @@ fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
 }
 
 /// `recipe.log_dir`, or `~/.amplihack/recipe-logs`.
-fn log_dir() -> Result<PathBuf> {
+pub(crate) fn log_dir() -> Result<PathBuf> {
     if let Some(dir) = crate::user_config::recipe_log_dir() {
         return Ok(dir);
     }
@@ -381,6 +456,26 @@ fn create_private(path: &Path) -> Result<File> {
         .with_context(|| format!("cannot create {}", path.display()))
 }
 
+/// The most characters [`session_name`] keeps of an expanded pattern.
+pub(crate) const MAX_PATTERN_CHARS: usize = 80;
+
+/// The most names [`claim_session`] tries before giving up. The suffix it
+/// appends, `-<n>`, is longest at this value.
+pub(crate) const MAX_CLAIM_TRIES: u32 = 1000;
+
+/// The longest suffix [`claim_session`] can append to a name from
+/// [`session_name`]: `-1000`, five characters.
+pub(crate) const MAX_CLAIM_SUFFIX_CHARS: usize = 5;
+
+/// The longest session name `recipe run --detach` can create, and so the
+/// longest a reader of `<log dir>/<session>.log` must accept. Anything that
+/// looks a session up by name takes this bound, not the shorter rule for a
+/// name tmux is about to be asked to create: holding a lookup to the latter
+/// is what made `recipe guide` skip 65-character auto-drive sessions in
+/// issue #2818. `the_three_bounds_of_a_detached_session_name_agree` keeps
+/// the three constants in step.
+pub(crate) const MAX_DETACHED_SESSION_CHARS: usize = MAX_PATTERN_CHARS + MAX_CLAIM_SUFFIX_CHARS;
+
 /// Expand a validated pattern, then keep only characters tmux accepts in a
 /// session name and nothing needs quoting for.
 pub(crate) fn session_name(pattern: &str, recipe: &str, repo: &str, ts: &str) -> String {
@@ -397,7 +492,7 @@ pub(crate) fn session_name(pattern: &str, recipe: &str, repo: &str, ts: &str) ->
                 '-'
             }
         })
-        .take(80)
+        .take(MAX_PATTERN_CHARS)
         .collect();
     if name.is_empty() {
         "amp".to_string()
@@ -458,6 +553,16 @@ pub(crate) fn run_detached_child(spec_path: &Path, log_path: &Path) -> Result<i3
         let _ = signal_hook::flag::register(signal, Arc::clone(&ignored));
     }
 
+    // Issue #2778: the run takes the launching shell's file-creation mask,
+    // not the one this pane inherited from the tmux server.
+    if let Some(mask) = spec.umask {
+        // SAFETY: umask(2) cannot fail and touches no memory. This process
+        // has no other thread yet (the output copier starts after the run),
+        // and from here on it only appends to its open log and removes
+        // files, so the new mask reaches nothing but the run it starts.
+        unsafe { libc::umask(mask & 0o777) };
+    }
+
     let (mut child, mut reader) = match start_run(&spec) {
         Ok(started) => started,
         Err(error) => {
@@ -473,16 +578,8 @@ pub(crate) fn run_detached_child(spec_path: &Path, log_path: &Path) -> Result<i3
     let _ = log.sync_all();
 
     let copier = std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
         let mut stdout = std::io::stdout();
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-            let _ = stdout.write_all(&buf[..n]);
-            let _ = stdout.flush();
-            let _ = log.write_all(&buf[..n]);
-        }
+        copy_output(&mut reader, &mut stdout, &mut log);
     });
     let status = child.wait().context("failed to wait for recipe run");
     let _ = fs::remove_file(&spec.context_file);
@@ -497,6 +594,63 @@ pub(crate) fn run_detached_child(spec_path: &Path, log_path: &Path) -> Result<i3
     Ok(status
         .code()
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+}
+
+/// The most unterminated output the copier holds back before giving up on
+/// the line boundary and writing what it has. The runner's line discipline
+/// is not this code's to assume, and losing the log is worse than losing a
+/// boundary, so the hold is bounded and the bytes are written, never
+/// dropped.
+const MAX_HELD: usize = 1 << 20;
+
+/// Copies the run's output from `reader` to `stdout` and to `log` until the
+/// pipe closes.
+///
+/// Stdout is byte for byte and flushed on every read, so interactive output
+/// is unchanged. The recipe log is different: it is a shared sink, because a
+/// step waiting out a usage limit appends its own `start` and `end` lines to
+/// the same file (issue #2731). A write that leaves the log in the middle of
+/// a line puts the next writer's line inside a runner line, which reads as
+/// nonsense and is invisible to a line-oriented `grep`, so the wait stays
+/// hidden in exactly the case it was added for. Each write to the log
+/// therefore carries whole lines only, with any unterminated tail held until
+/// the newline arrives, or until the pipe closes and the tail is written with
+/// one.
+///
+/// The single exception is [`MAX_HELD`]: a tail that reaches it is written
+/// as it stands, still unterminated. Holding it for ever would cost the log
+/// and the memory both, and no newline is invented for it: one here would
+/// split a single runner line into two lines the run never ended, and leave
+/// a blank line behind whenever the run's own newline is the very next byte.
+/// A line over a mebibyte long can therefore still be interleaved with;
+/// nothing shorter can.
+fn copy_output(reader: &mut impl Read, stdout: &mut impl Write, log: &mut impl Write) {
+    let mut buf = [0u8; 8192];
+    let mut held: Vec<u8> = Vec::new();
+    while let Ok(n) = reader.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        let _ = stdout.write_all(&buf[..n]);
+        let _ = stdout.flush();
+        held.extend_from_slice(&buf[..n]);
+        match held.iter().rposition(|b| *b == b'\n') {
+            Some(last) => {
+                let _ = log.write_all(&held[..=last]);
+                held.drain(..=last);
+            }
+            // Output that never ends a line must not be held for ever.
+            None if held.len() >= MAX_HELD => {
+                let _ = log.write_all(&held);
+                held.clear();
+            }
+            None => {}
+        }
+    }
+    if !held.is_empty() {
+        held.push(b'\n');
+        let _ = log.write_all(&held);
+    }
 }
 
 /// Start the real `recipe run` with the spec's argv, directory and
@@ -604,6 +758,48 @@ mod tests {
         assert_eq!(session_name("{recipe}", "", "", ""), "amp");
     }
 
+    /// Issue #2818: a session name is bounded in two places -- the pattern
+    /// truncation here and the collision suffix `claim_session` appends --
+    /// and read back somewhere else entirely, by `recipe guide`. Two
+    /// independent numbers for one identifier is what let the reader refuse
+    /// names this module had already created, so they are held together
+    /// here against the code that produces each.
+    #[test]
+    fn the_three_bounds_of_a_detached_session_name_agree() {
+        let truncated = session_name("{repo}", "r", &"a".repeat(500), "t");
+        assert_eq!(
+            truncated.chars().count(),
+            MAX_PATTERN_CHARS,
+            "session_name truncates at MAX_PATTERN_CHARS"
+        );
+
+        // The suffix comes from `claim_session`'s own name builder, not from
+        // this test formatting one: a change to the format then fails here
+        // rather than passing and leaving the reader's bound behind.
+        assert_eq!(
+            nth_claim_name("base", 1),
+            "base",
+            "the first name claim_session tries is the base itself"
+        );
+        let longest_candidate = nth_claim_name(&truncated, MAX_CLAIM_TRIES);
+        let longest_suffix = longest_candidate
+            .strip_prefix(&truncated)
+            .expect("claim_session appends to the base rather than rewriting it");
+        assert_eq!(
+            longest_suffix.chars().count(),
+            MAX_CLAIM_SUFFIX_CHARS,
+            "MAX_CLAIM_SUFFIX_CHARS does not match the longest suffix claim_session appends"
+        );
+
+        // The two together are the bound every reader of a session log must
+        // accept. `recipe guide`'s lookup is checked against a name of this
+        // length in `guide::every_name_detach_can_produce_is_accepted_by_the_lookup`.
+        assert_eq!(
+            longest_candidate.chars().count(),
+            MAX_DETACHED_SESSION_CHARS
+        );
+    }
+
     #[test]
     fn pane_args_repeat_everything_but_detach_and_context() {
         let args = pane_args("r.yaml", false, true, "table", Some("."), Some(30));
@@ -673,11 +869,387 @@ mod tests {
             env: BTreeMap::new(),
             log: dir.path().join("log"),
             context_file: dir.path().join("context.json"),
+            umask: Some(0o022),
         };
         fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_spec(&path).is_err());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(read_spec(&path).unwrap(), spec);
+    }
+
+    /// Issue #2778: a spec with no umask, as a launcher from before the field
+    /// existed writes it, is still read, and asks the pane for no umask, so
+    /// the pane keeps the one it has.
+    #[test]
+    fn a_spec_without_a_umask_is_read_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.json");
+        let older = serde_json::json!({
+            "args": ["recipe"],
+            "cwd": dir.path(),
+            "env": {},
+            "log": dir.path().join("log"),
+            "context_file": dir.path().join("context.json"),
+        });
+        fs::write(&path, serde_json::to_vec(&older).unwrap()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_spec(&path).unwrap().umask, None);
+    }
+
+    /// Issue #2582 (D9): the arguments a detached launch repeats in the pane
+    /// carry no context flag and no context value. The context reaches the
+    /// pane only in the private `<session>.context.json`, so the tmux argv
+    /// holds paths only. The args are assembled as `commands::recipe` does.
+    #[test]
+    fn launch_args_hold_no_context_flag_or_value() {
+        let token = "ZQXV2582DETACHWORD";
+        let task = format!("task={token} fix it");
+        let cli = crate::Cli::try_parse_from([
+            "amplihack",
+            "recipe",
+            "run",
+            "r.yaml",
+            "-c",
+            task.as_str(),
+            "--context=repo_note=ZQXV2582NOTEWORD",
+            "--detach",
+            "--fresh",
+            "-w",
+            ".",
+        ])
+        .expect("recipe run arguments parse");
+        let crate::Commands::Recipe {
+            command:
+                crate::RecipeCommands::Run {
+                    recipe_path,
+                    context,
+                    dry_run,
+                    verbose,
+                    format,
+                    working_dir,
+                    step_timeout,
+                    governor,
+                    fresh,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected recipe run");
+        };
+        assert!(
+            context.iter().any(|c| c.contains(token)),
+            "the token was parsed"
+        );
+        let mut args = pane_args(
+            &recipe_path,
+            dry_run,
+            verbose,
+            &format,
+            working_dir.as_deref(),
+            step_timeout,
+        );
+        args.extend(governor.to_args());
+        if fresh {
+            args.push("--fresh".into());
+        }
+        for flag in ["-c", "--set", "--context", "--context-from-file"] {
+            assert!(!args.iter().any(|a| a == flag), "{flag} in {args:?}");
+        }
+        assert!(
+            !args.iter().any(|a| a.contains("ZQXV2582")),
+            "a context value reached the pane argv: {args:?}"
+        );
+    }
+
+    /// Issue #2582 (D11): the folder holding the spec and context files is
+    /// private, even when it existed with wider modes.
+    #[test]
+    fn the_log_dir_is_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("a").join("recipe-logs");
+        ensure_private_dir(&fresh).unwrap();
+        assert_eq!(
+            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let wide = dir.path().join("wide");
+        fs::create_dir(&wide).unwrap();
+        fs::set_permissions(&wide, fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_private_dir(&wide).unwrap();
+        assert_eq!(
+            fs::metadata(&wide).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    /// Issue #1976 (D8, C-S12): a detached run is a top-level run. Its pane
+    /// must never watch the launching run as a parent, nor write into another
+    /// drive's state directory. `child_env` and the `tmux new-session`
+    /// command both drop every name in `PANE_ENV_REMOVED`, through the one
+    /// predicate `keeps_in_pane`.
+    #[test]
+    fn the_pane_drops_the_parent_watch_and_state_dir_variables() {
+        for name in [
+            "AMPLIHACK_PARENT_RECIPE_PID",
+            "AMPLIHACK_PARENT_RECIPE_STARTTIME",
+            "AMPLIHACK_AUTODRIVE_STATE_DIR",
+            // Issue #2886: a pane root is an outermost run.
+            "AMPLIHACK_RUN_ID",
+        ] {
+            assert!(PANE_ENV_REMOVED.contains(&name), "{name} missing");
+            assert!(!keeps_in_pane(name), "{name} reaches the pane");
+        }
+        assert!(!keeps_in_pane(
+            crate::commands::governor::GOVERNOR_PARENT_ENV
+        ));
+        assert!(!keeps_in_pane(
+            crate::commands::governor::GOVERNOR_RECIPE_ENV
+        ));
+        for kept in [
+            "PATH",
+            "HOME",
+            "AMPLIHACK_HOME",
+            "AMPLIHACK_PARENT_RECIPE_PIDX",
+        ] {
+            assert!(keeps_in_pane(kept), "{kept} must reach the pane");
+        }
+    }
+
+    /// Issue #2731: a detached run tells its steps where its log is, so a
+    /// step that waits out a usage limit can say so where the run is being
+    /// watched. The value is set, never defaulted: a detached run started
+    /// from inside another one must append to its own log, not the
+    /// enclosing run's.
+    #[test]
+    fn the_recipe_log_marker_is_set_for_the_pane_and_overrides_any_inherited_one() {
+        let mut env: BTreeMap<String, String> = BTreeMap::new();
+        env.insert("PATH".into(), "/usr/bin".into());
+        env.insert(
+            RECIPE_LOG_ENV.into(),
+            "/tmp/an-enclosing-run.log".to_string(),
+        );
+        with_recipe_log(&mut env, Path::new("/logs/amp-run.log"));
+        assert_eq!(env[RECIPE_LOG_ENV], "/logs/amp-run.log");
+        assert_eq!(env["PATH"], "/usr/bin", "nothing else is touched");
+    }
+
+    #[test]
+    fn the_recipe_log_marker_reaches_the_pane() {
+        assert!(
+            keeps_in_pane(RECIPE_LOG_ENV),
+            "a pane that strips it would write no wait lines at all"
+        );
+        assert_eq!(
+            RECIPE_LOG_ENV,
+            crate::commands::profile::limit_wait::RECIPE_LOG_ENV,
+            "both sides must name the same marker"
+        );
+    }
+
+    // --- the recipe log carries whole lines (issue #2731) -----------------
+    //
+    // Two writers share a detached run's log: this copier, with the runner's
+    // own output, and each waiting step, with its `start` and `end` lines.
+    // The copier used to write each pipe read straight through, so a read
+    // that ended mid-line left the log mid-line, and the step's append then
+    // landed inside a runner line:
+    //
+    //   amplihack.recipe.step_1 working (30s eamplihack.recipe.usage_limit_wait
+    //   start reason=spend_limit account=work ...lapsed)
+    //
+    // which is unreadable by eye and invisible to a line-oriented grep, so
+    // the wait stayed hidden in exactly the case it was added for. The
+    // copier therefore holds an unterminated tail and writes only up to the
+    // last newline of each read.
+
+    /// A reader that hands out `chunks` one `read` at a time, running
+    /// `between` before each one. The hook is how a test puts another
+    /// writer's append between two of the copier's writes without any
+    /// timing.
+    struct Chunks<'a> {
+        chunks: Vec<Vec<u8>>,
+        between: Box<dyn FnMut(usize) + 'a>,
+        taken: usize,
+    }
+
+    impl Chunks<'_> {
+        fn new<const N: usize>(chunks: [&str; N]) -> Self {
+            Self {
+                chunks: chunks.iter().map(|c| c.as_bytes().to_vec()).collect(),
+                between: Box::new(|_| {}),
+                taken: 0,
+            }
+        }
+    }
+
+    impl Read for Chunks<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            (self.between)(self.taken);
+            let Some(chunk) = self.chunks.get_mut(self.taken) else {
+                return Ok(0);
+            };
+            let n = chunk.len().min(buf.len());
+            buf[..n].copy_from_slice(&chunk[..n]);
+            chunk.drain(..n);
+            // A chunk larger than the copier's own buffer arrives over
+            // several reads, as a pipe's would.
+            if chunk.is_empty() {
+                self.taken += 1;
+            }
+            Ok(n)
+        }
+    }
+
+    /// A sink that keeps each `write_all` separately, so a test can ask
+    /// what the log looked like between two of them and not only at the end.
+    #[derive(Default)]
+    struct Writes(Vec<Vec<u8>>);
+
+    impl Writes {
+        fn joined(&self) -> String {
+            String::from_utf8(self.0.concat()).unwrap()
+        }
+    }
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_log_is_never_left_in_the_middle_of_a_line() {
+        let mut reader = Chunks::new([
+            "amplihack.recipe.step_1 working (30s e",
+            "lapsed)\namplihack.recipe.step_1 wo",
+            "rking (60s elapsed)\n",
+        ]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        for write in &log.0 {
+            assert_eq!(
+                write.last(),
+                Some(&b'\n'),
+                "a write that does not end a line leaves the log open for \
+                 the next writer to land inside: {:?}",
+                String::from_utf8_lossy(write)
+            );
+        }
+        assert_eq!(
+            log.joined(),
+            "amplihack.recipe.step_1 working (30s elapsed)\n\
+             amplihack.recipe.step_1 working (60s elapsed)\n",
+            "every byte still reaches the log, and in order"
+        );
+    }
+
+    #[test]
+    fn a_waiting_steps_line_cannot_land_inside_a_runner_line() {
+        // The step appends after the copier's first read, while the runner's
+        // heartbeat is half written.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.log");
+        fs::write(&path, "").unwrap();
+        let wait_line = "amplihack.recipe.usage_limit_wait start reason=spend_limit \
+                         wait=login_change account=work reset=none \
+                         until=none bound=none";
+        let appender = path.clone();
+        let line = wait_line.to_string();
+        let mut reader = Chunks::new([
+            "amplihack.recipe.step_1 working (30s e",
+            "lapsed)\n",
+            "amplihack.recipe.step_1 working (60s elapsed)\n",
+        ]);
+        reader.between = Box::new(move |taken| {
+            if taken == 1 {
+                let mut f = OpenOptions::new().append(true).open(&appender).unwrap();
+                f.write_all(format!("{line}\n").as_bytes()).unwrap();
+            }
+        });
+        let mut log = OpenOptions::new().append(true).open(&path).unwrap();
+        let mut out = Writes::default();
+        copy_output(&mut reader, &mut out, &mut log);
+        drop(log);
+
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(
+            body.lines().any(|l| l == wait_line),
+            "the wait's line must stand whole on a line of its own: {body:?}"
+        );
+        for l in body.lines() {
+            assert!(
+                !(l.contains("working (") && l.contains("usage_limit_wait")),
+                "a wait line landed inside a runner line: {l:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stdout_stays_byte_for_byte() {
+        // Interactive output must not be held back a line at a time; only
+        // the write to the log moves.
+        let chunks = ["a prompt with no newline yet", " and the rest\n", "partial"];
+        let mut reader = Chunks::new(chunks);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert_eq!(out.joined(), chunks.concat());
+        assert_eq!(
+            out.0.len(),
+            chunks.len(),
+            "one write out per read in, so nothing waits for a newline"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_tail_is_written_whole_when_the_pipe_closes() {
+        // The run's last line may have no newline. Dropping it would lose
+        // the runner's final message; writing it without one would leave the
+        // log open for whatever writes next.
+        let mut reader = Chunks::new(["done\nno newline at the end"]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert_eq!(log.joined(), "done\nno newline at the end\n");
+        assert_eq!(log.0.last().unwrap().last(), Some(&b'\n'));
+    }
+
+    #[test]
+    fn a_pipe_that_closes_on_a_line_boundary_adds_nothing() {
+        let mut reader = Chunks::new(["done\n"]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert_eq!(log.joined(), "done\n", "no empty line at the end");
+    }
+
+    #[test]
+    fn output_that_never_ends_a_line_is_flushed_rather_than_held_for_ever() {
+        // The held tail comes from the pinned external runner, so its line
+        // discipline is not this code's to assume. Past `MAX_HELD` the hold
+        // is given up and the bytes are written: the log is worth more than
+        // the line boundary, and dropping them is never the answer.
+        // Two mebibytes, so the input is past `MAX_HELD` whatever rounding
+        // the reads happen to fall on.
+        let long = "x".repeat(2 << 20);
+        let mut reader = Chunks::new([long.as_str(), "\n"]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert_eq!(
+            log.joined(),
+            format!("{long}\n"),
+            "held bytes are flushed, never discarded"
+        );
+    }
+
+    #[test]
+    fn an_empty_run_writes_nothing() {
+        let mut reader = Chunks::new([]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert!(log.0.is_empty() && out.0.is_empty());
     }
 }

@@ -21,7 +21,7 @@ use std::process::Output;
 
 const LOGIN_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 cj="$CLAUDE_CONFIG_DIR/.claude.json"
 printf '{"oauthAccount":%s,"numStartups":9}' "$LOGIN_ACCOUNT" > "$cj.tmp" && chmod 600 "$cj.tmp" && mv "$cj.tmp" "$cj"
@@ -31,7 +31,7 @@ exit "${LOGIN_EXIT:-0}"
 
 const LAUNCH_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 {
   printf 'CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR-<unset>}"
@@ -272,7 +272,9 @@ const CANNOT_TELL: &str = "profiles 'extra' and 'spare' are signed in to the sam
 #[test]
 fn without_a_record_the_duplicate_warning_cannot_tell() {
     let f = Fixture::new();
+    fs::remove_dir_all(f.root.join(".auto-switch.d/expected")).unwrap();
     set_account(&f, "spare", &account_json("extra"));
+    login(&f.slot("spare"));
     let stderr = text(&f.run(&["profile", "usage"]).stderr);
     assert!(
         stderr.contains(&format!("warning: {CANNOT_TELL}\n")),
@@ -375,7 +377,9 @@ fn a_profile_duplicating_the_home_login_is_warned_with_home_first() {
     // judged by `work`'s record. Without any record amplihack cannot tell
     // which holder is wrong and says so.
     let f = Fixture::new();
+    fs::remove_dir_all(f.root.join(".auto-switch.d/expected")).unwrap();
     set_account(&f, "extra", &account_json("work"));
+    login(&f.slot("extra"));
     let stderr = text(&f.run(&["profile", "usage"]).stderr);
     assert!(
         stderr.contains(

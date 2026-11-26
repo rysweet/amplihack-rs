@@ -1,0 +1,148 @@
+name: issue-2806-end-to-end-build-and-drive
+description: >
+  Outside-in QA for issue #2806, the release evidence for the whole product.
+  The scenario (via
+  tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh) runs the
+  shipped `smart-orchestrator` recipe on a small task, routed to
+  `default-workflow`, in a temporary repository whose origin is a local bare
+  repository; then the shipped `auto-drive-to-merge` recipe on the pull
+  request that build opened, from a per-PR clone with a linked worktree added
+  from it. The drive is launched with that pull request's number and with the
+  task it implements: the Crusty loop refuses to start a round without a task
+  description, and so does the re-review between merge rounds, so a drive
+  given only a number cannot review the pull request at all.
+  Only the outside world is stood in for: `gh` (which answers the
+  pull request, issue and account calls the shipped steps make, records every
+  call, and exits 96 on any call it does not answer, GraphQL included),
+  `claude` and `codex`. The `claude` stand-in gives the build one fixed
+  answer whatever step asks, except the build loop's turn (#3129:
+  default-workflow 4.0.0 builds through the shared goal loop), which it
+  answers from the turn's own reading: commit and push the task's file in the
+  run's worktree, open the pull request, mark it ready, then end with
+  `ready`. It answers the drive from a dispatch table with
+  one entry per agent step, keyed on a substring that occurs in exactly one
+  shipped prompt, because the drive's preflights and readers need answer
+  shapes that contradict each other and four shipped steps open with the same
+  first line. Each entry reports what a competent agent would report of this
+  fixture, reading the head, branch and base from the PR worktree rather than
+  asserting them, and performs the actions its step asks for (posting the
+  Crusty verdict, writing the completion decision, saving the measured qa
+  record) before reporting them. A prompt matching no entry keeps the fixed
+  answer and is recorded. Every call is recorded. The pull request's checks
+  are PENDING for the build, which is the issue #2343 case: the build
+  ends with the pull request open and marked ready whatever the checks say,
+  and never merges. They are SUCCESS for the drive, so the merge step's
+  precondition holds and the drive ends at a verdict with a merge recorded on
+  the stub. Cleanup is left on and no phase is skipped: reflection and power
+  steering are not disabled.
+
+  Eight cases, each asserted below, on outcomes only; no internal run-folder
+  path or layout is asserted. Part 1: `part1_build_opens_pr_and_pushes_branch`
+  (the stub recorded a `pr create` for the run's branch, and the bare origin
+  holds that branch at the head of the run's worktree, read from
+  `git worktree list`) and `part1_build_loop_ends_ready_without_merge` (the
+  gh stand-in recorded `pr ready 42` and no `pr merge`, which the `claude`
+  stand-in cannot produce since it does not write gh-calls, and the run
+  exited 0). Part 2:
+  `part2_drive_ends_at_verdict_and_merges` (the stub recorded a `pr merge` for
+  the pull request and the drive printed its own terminal report, the object
+  carrying `stop_reason`, which is its verdict however it ended; the sentence
+  beside it is the product's and is not read) and
+  `part2_every_drive_agent_prompt_matched_a_discriminator` (every agent step
+  the drive ran matched an entry of the stand-in's dispatch table, so a
+  shipped prompt reworded out from under its discriminator fails the scenario
+  by name instead of falling back to the fixed answer and quietly changing
+  what part 2 covers; the build's prompts are recorded as falling back and are
+  not read here). Part 3, over the evidence of
+  both runs: `part3_committed_work_survives` (the committed work is still on
+  the branch in the origin and readable in the per-PR worktree) and
+  `part3_unsaved_work_folder_kept_with_reason` (for the repository copy the
+  stand-in agent left a file in, the run emitted a line beginning `amplihack:
+  leaving ` naming the folder kept, that copy as the work tree and the reason
+  `has uncommitted changes`, once or twice and identical each time, and the
+  folder is still there with the file in it; issue #2785) and
+  `part3_the_runs_wrote_nothing_into_the_repository` (AMPLIHACK_HOME points
+  the product at this checkout, and `git status --porcelain` gained no entry
+  across the two runs). And one on this file:
+  `every_case_this_run_emitted_is_asserted_by_the_descriptor`, which fails the
+  scenario when a case the script emits has no assertion here.
+
+  Everything runs under `env -i` with a 0700 root, a PATH holding only the
+  scenario's own tool links, no Git system or global configuration and only
+  the file transport; the real ~/.claude and ~/.amplihack are never read or
+  written. A missing binary, runner or host tool is a failure, not a skip. The
+  driver runs in CI, in the host-install job, after the pinned recipe runner
+  is installed; it is never run by hand on a shared host.
+version: "1.0"
+config:
+  timeout: 2400000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, end-to-end, build, drive, release-evidence]
+  priority: high
+  issues: ["2806", "2802", "2785", "2343", "3129"]
+steps:
+  - name: run-issue-2806-end-to-end-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh
+    timeout: 2300000
+  - name: all-end-to-end-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+# One assertion per PASS line the script emits, so the descriptor states the
+# scenario in full rather than a subset of it.
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: the-build-opens-a-pull-request-and-pushes-the-branch
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part1_build_opens_pr_and_pushes_branch"
+  - name: the-build-loop-ends-ready-without-a-merge
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part1_build_loop_ends_ready_without_merge"
+  - name: the-drive-ends-at-a-verdict-with-a-merge-recorded
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part2_drive_ends_at_verdict_and_merges"
+  - name: every-drive-agent-prompt-matched-a-discriminator
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part2_every_drive_agent_prompt_matched_a_discriminator"
+  - name: the-committed-work-survives-both-runs
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part3_committed_work_survives"
+  - name: a-folder-with-unsaved-work-is-kept-and-says-why
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part3_unsaved_work_folder_kept_with_reason"
+  - name: the-runs-wrote-nothing-into-the-repository-under-test
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part3_the_runs_wrote_nothing_into_the_repository"
+  - name: the-descriptor-states-every-case-the-script-emits
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: every_case_this_run_emitted_is_asserted_by_the_descriptor"

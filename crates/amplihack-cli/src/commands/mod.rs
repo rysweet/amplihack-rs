@@ -9,6 +9,7 @@ pub mod cleanup;
 pub mod completions;
 pub mod config;
 pub mod cs_validate;
+pub mod directory;
 pub mod doctor;
 pub mod fleet;
 pub mod governor;
@@ -128,6 +129,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Usage(cmd) => usage::run(cmd),
         Commands::Cleanup(args) => cleanup::run(args),
         Commands::Governor(cmd) => governor::run(cmd),
+        Commands::Directory(cmd) => directory::run(cmd),
         Commands::Agent(cmd) => agent::run_agent(cmd),
         Commands::Launch {
             resume,
@@ -205,6 +207,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             profile,
             prompt_file,
             supervise,
+            standing,
+            no_standing,
             governor,
             claude_args,
         } => {
@@ -216,44 +220,50 @@ pub fn dispatch(command: Commands) -> Result<()> {
             // below, so these are copied before the closure takes them.
             let profile_copy = profile.clone();
             let args_copy = claude_args.clone();
-            let launch = move || -> Result<()> {
-                if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
+            // Issue #2912: the wrapper may call this more than once, with
+            // the arguments of a relaunch rather than the user's own, so
+            // the closure takes them instead of holding one copy. Every
+            // call is the same launch otherwise, so a relaunch is started
+            // exactly as the run it continues was.
+            let launch = move |claude_args: &[String]| -> Result<()> {
+                if run_supervised(profile.as_deref(), docker, auto, claude_args)? {
                     return Ok(());
                 }
                 let claude_config_dir =
                     profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
                 profile::autostart_on_launch(docker);
-                profile::capacity_launch_warning(&claude_args);
+                profile::capacity_launch_warning(claude_args);
                 // Issue #1811: after supervision, whose rerun child is the
                 // process that asks; held until the launch returns.
-                let _slot = governor::admit(AdmitRequest::launch(&governor, &claude_args))
+                let _slot = governor::admit(AdmitRequest::launch(&governor, claude_args))
                     .map_err(Denied::report)?;
                 if auto {
-                    validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
+                    validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, claude_args)?;
                     let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
                     return auto_mode::run_auto_mode(
                         auto_mode::AutoModeTool::Claude,
                         max_turns,
                         ui,
-                        claude_args,
-                        checkout_repo,
+                        claude_args.to_vec(),
+                        checkout_repo.clone(),
                         working_dir,
-                        prompt_file,
+                        prompt_file.clone(),
                     );
                 }
-                // Always inject --dangerously-skip-permissions to match Python launcher parity.
                 launch::run_launch_profiled(
                     "claude",
                     "claude",
                     docker,
                     false,
                     false,
+                    // Always inject --dangerously-skip-permissions to match
+                    // Python launcher parity.
                     true,
                     false,
                     no_reflection,
                     subprocess_safe,
-                    checkout_repo,
-                    claude_args,
+                    checkout_repo.clone(),
+                    claude_args.to_vec(),
                     // Issue #1276: not the rustyclawd path — nothing has set an override
                     // on amplihack's behalf, so any override in the environment is the
                     // user's instruction.
@@ -270,10 +280,14 @@ pub fn dispatch(command: Commands) -> Result<()> {
                         subprocess_safe,
                         no_reflection,
                         claude_args: &args_copy,
+                        // Issue #2912: `None` defers to `agent.standing`.
+                        // Clap refuses both flags together; `--no-standing`
+                        // would win if it did not.
+                        standing: (standing || no_standing).then_some(!no_standing),
                     },
                     launch,
                 ),
-                None => launch(),
+                None => launch(&args_copy),
             }
         }
         Commands::Copilot {
@@ -354,6 +368,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             )
         }
         Commands::Codex {
+            reset_recovery: _, // Consumed by startup before client resolution/self-heal.
             no_reflection,
             subprocess_safe,
             docker,
@@ -362,12 +377,24 @@ pub fn dispatch(command: Commands) -> Result<()> {
             max_turns,
             ui,
             prompt_file,
+            local_model,
             args,
         } => {
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
+            // A local-model launch (`--local-model` or
+            // AMPLIHACK_CODEX_LOCAL_MODEL) is selected, checked and has its
+            // inputs read here, before anything is created; `None` for an
+            // ordinary launch, which this leaves unchanged.
+            let local = launch::codex_local_model::prepare_launch(
+                local_model.as_deref(),
+                launch::codex_local_model::Conflicts {
+                    docker: launch::codex_local_model::docker_request(docker),
+                    auto,
+                },
+            )?;
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Codex, &args)?;
                 return auto_mode::run_auto_mode(
@@ -380,24 +407,26 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     prompt_file,
                 );
             }
-            launch::run_launch(
-                "codex",
-                "codex",
-                docker,
-                false,
-                false,
-                true,
-                false,
-                no_reflection,
-                subprocess_safe,
-                None,
-                args,
-                // Issue #1276: not the rustyclawd path — nothing has set an override
-                // on amplihack's behalf, so any override in the environment is the
-                // user's instruction.
-                OverrideOrigin::User,
-                None,
-            )
+            launch::codex_local_model::scoped(local, || {
+                launch::run_launch(
+                    "codex",
+                    "codex",
+                    docker,
+                    false,
+                    false,
+                    true,
+                    false,
+                    no_reflection,
+                    subprocess_safe,
+                    None,
+                    args,
+                    // Issue #1276: not the rustyclawd path — nothing has set an override
+                    // on amplihack's behalf, so any override in the environment is the
+                    // user's instruction.
+                    OverrideOrigin::User,
+                    None,
+                )
+            })
         }
         Commands::Amplifier {
             no_reflection,
@@ -710,6 +739,7 @@ fn dispatch_memory(command: MemoryCommands) -> Result<()> {
 fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
     match command {
         RecipeCommands::Run {
+            fresh,
             recipe_path,
             context,
             context_file,
@@ -736,13 +766,16 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 &context_from_file,
                 context.clone(),
             )?;
+            // Issue #1976: a removed context key fails closed here, before
+            // the --detach branch and before any worktree, tmux or git work.
+            recipe::reject_removed_context_keys(&resolved, &mut std::io::stderr())?;
             // Issue #1606: --detach / --no-detach, else `recipe.detach` for
             // the directory the steps run in.
             let detach = detach
                 || (!no_detach
                     && recipe::validate_path(working_dir.as_deref().unwrap_or("."), false)
                         .is_ok_and(|working| crate::user_config::recipe_detach(&working)));
-            if detach {
+            if detach && !dry_run {
                 let working = recipe::validate_path(working_dir.as_deref().unwrap_or("."), false)?;
                 let agent_binary = crate::env_builder::resolve_agent_binary_in(&working);
                 let mut args = recipe::detach::pane_args(
@@ -756,6 +789,9 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 // Issue #1811: the pane's run asks the governor, so it needs
                 // the same workstream, class and wait.
                 args.extend(governor.to_args());
+                if fresh {
+                    args.push("--fresh".into());
+                }
                 return recipe::detach::launch(recipe::detach::Launch {
                     args,
                     context: &resolved,
@@ -765,7 +801,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 });
             }
             let context = resolved;
-            recipe::run_recipe(
+            recipe::run_recipe_fresh(
                 &recipe_path,
                 &context,
                 dry_run,
@@ -774,8 +810,16 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 working_dir.as_deref(),
                 step_timeout,
                 &governor,
+                fresh,
             )
         }
+        RecipeCommands::Guide {
+            target,
+            text,
+            file,
+            from_step,
+        } => recipe::guide::run_guide(&target, &text, file.as_deref(), from_step),
+        RecipeCommands::Guidance { command } => recipe::guidance::run_guidance(command),
         RecipeCommands::Stop { target } => recipe::stop::run_stop(&target),
         RecipeCommands::DetachedChild { log, spec } => {
             let code = recipe::detach::run_detached_child(&spec, &log)?;

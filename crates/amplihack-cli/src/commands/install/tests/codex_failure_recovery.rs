@@ -217,6 +217,12 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
+    fs::create_dir_all(home.join(".amplihack")).unwrap();
+    fs::write(
+        home.join(".amplihack/config.toml"),
+        "[lists]\nset = 'all'\n",
+    )
+    .unwrap();
     let source = home.join("source");
     create_source_repo(&source);
     let bin = home.join("bin");
@@ -241,6 +247,11 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     // Explicit executable outside PATH must own native registration too.
     let explicit = home.join("selected-codex");
     fs::rename(codex, &explicit).unwrap();
+    fs::rename(
+        bin.join("codex-code-mode-host"),
+        home.join("codex-code-mode-host"),
+    )
+    .unwrap();
     unsafe {
         std::env::set_var("AMPLIHACK_CODEX_BINARY_PATH", &explicit);
     }
@@ -248,7 +259,21 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     assert!(home.join(".amplihack/codex/ownership.json").is_file());
     assert!(explicit.with_extension("installed").exists());
     let skills = home.join(".amplihack/codex/market/plugin/skills");
-    assert!(fs::read_dir(skills).unwrap().count() >= 196);
+    // #3195: the 23 `-analyst` skills are left out of the Codex package, so
+    // the floor is the earlier 196 less those 23. #3220 adds
+    // `skill-and-agents-directory`, which the package copies with no new code.
+    let names = fs::read_dir(skills)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(names.len() >= 174, "{} packaged skills", names.len());
+    assert!(
+        names
+            .iter()
+            .any(|name| name == "skill-and-agents-directory"),
+        "the directory skill must reach the Codex package"
+    );
+    assert!(!names.iter().any(|name| name.ends_with("-analyst")));
     let hooks: serde_json::Value =
         serde_json::from_slice(&fs::read(home.join(".codex/hooks.json")).unwrap()).unwrap();
     assert!(hooks["hooks"]["PreToolUse"].is_array());

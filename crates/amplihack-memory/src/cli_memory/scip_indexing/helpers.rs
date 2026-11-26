@@ -1,39 +1,16 @@
-use super::types::{IGNORED_DIRS, LanguageStatus};
-use anyhow::{Context, Result};
+use super::types::LanguageStatus;
+use crate::cli_memory::source_files::project_source_files;
 use std::collections::BTreeMap;
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(super) fn scan_languages(path: &Path, found: &mut BTreeMap<String, bool>) -> Result<()> {
-    let entries = fs::read_dir(path)
-        .with_context(|| format!("failed to read directory {}", path.display()))?;
-    for entry in entries {
-        let entry = entry?;
-        let entry_path = entry.path();
-        let file_name = entry.file_name().to_string_lossy().to_string();
-
-        if entry_path.is_dir() {
-            if should_ignore_dir(&file_name) {
-                continue;
-            }
-            scan_languages(&entry_path, found)?;
-            continue;
-        }
-
-        if !entry_path.is_file() {
-            continue;
-        }
-
-        if let Some(language) = language_for_path(&entry_path) {
+/// Marks each language found among the project's own source files.
+pub(super) fn scan_languages(path: &Path, found: &mut BTreeMap<String, bool>) {
+    for file in project_source_files(path) {
+        if let Some(language) = language_for_path(&file) {
             found.insert(language.to_string(), true);
         }
     }
-    Ok(())
-}
-
-pub(crate) fn should_ignore_dir(file_name: &str) -> bool {
-    IGNORED_DIRS.contains(&file_name) || file_name.ends_with(".egg-info")
 }
 
 pub(crate) fn language_for_path(path: &Path) -> Option<&'static str> {

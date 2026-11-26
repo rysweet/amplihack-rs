@@ -191,9 +191,17 @@ fn direct_git_recipe_steps_are_guarded_or_visibly_skipped() {
     for recipe in all_recipe_files() {
         let yaml = load_yaml(&recipe);
         for step in steps(&yaml) {
-            let Some(command) = step.get("command").and_then(Value::as_str) else {
+            // Issue #1619: follow a brick-budget call-out into
+            // amplifier-bundle/tools/, or a step whose git moved there would
+            // read as a step that runs no git at all.
+            let Some(command) = step
+                .get("command")
+                .and_then(Value::as_str)
+                .map(crate::recipe_step_body::resolved)
+            else {
                 continue;
             };
+            let command = command.as_str();
             if !contains_git_command(&without_worktree_path_probes(command)) {
                 continue;
             }
@@ -241,10 +249,14 @@ fn investigation_recipe_family_has_no_direct_git_operations() {
 
         let yaml = load_yaml(&recipe);
         for step in steps(&yaml) {
-            let Some(command) = step.get("command").and_then(Value::as_str) else {
+            let Some(command) = step
+                .get("command")
+                .and_then(Value::as_str)
+                .map(crate::recipe_step_body::resolved)
+            else {
                 continue;
             };
-            if contains_git_command(command) {
+            if contains_git_command(&command) {
                 let step_id = step
                     .get("id")
                     .and_then(Value::as_str)
@@ -263,14 +275,22 @@ fn investigation_recipe_family_has_no_direct_git_operations() {
 
 #[test]
 fn git_required_workflow_recipes_document_loud_git_preconditions() {
+    // default-workflow 4.0.0 (#3129) runs workflow-prep first, whose step-01
+    // holds the git precondition for the whole build; it is checked there.
     for recipe in [
-        "default-workflow.yaml",
         "workflow-prep.yaml",
         "workflow-worktree.yaml",
         "workflow-tdd.yaml",
         "workflow-publish.yaml",
     ] {
-        let source = fs::read_to_string(recipe_path(recipe)).expect("read recipe");
+        // Issue #1619: the recipe's own text plus the shell of any step whose
+        // body was extracted into amplifier-bundle/tools/ for the brick budget.
+        let mut source = fs::read_to_string(recipe_path(recipe)).expect("read recipe");
+        for step in steps(&load_yaml(&recipe_path(recipe))) {
+            if let Some(command) = step.get("command").and_then(Value::as_str) {
+                source.push_str(&crate::recipe_step_body::resolved(command));
+            }
+        }
         assert!(
             source.contains("requires a git repo")
                 && source.contains("git init")

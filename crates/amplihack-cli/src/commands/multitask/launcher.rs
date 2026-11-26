@@ -13,16 +13,34 @@ use amplihack_types::hook_io::normalize_executable_script_line_endings;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-/// Write recipe-mode launcher scripts for a workstream.
+/// Write recipe-mode launcher scripts for a workstream, reading the pinned
+/// Claude profile from the process environment.
 pub(super) fn write_recipe_launcher(ws: &Workstream, delegate: &str) -> Result<()> {
+    write_recipe_launcher_with(
+        ws,
+        delegate,
+        command_builder::env_var_os,
+        crate::commands::profile::substitute_inherited_profile,
+    )
+}
+
+/// Write recipe-mode launcher scripts for a workstream, reading the profile
+/// variables through `get` instead of the process environment (issue #2014).
+pub(super) fn write_recipe_launcher_with(
+    ws: &Workstream,
+    delegate: &str,
+    get: impl Fn(&str) -> Option<OsString>,
+    substitute: impl Fn(&str) -> Option<String>,
+) -> Result<()> {
     // Built first so a refused profile export or recipe name leaves no
     // partial scripts behind.
-    let run_content = command_builder::recipe_run_script(ws, delegate)?;
+    let run_content = command_builder::recipe_run_script(ws, delegate, get, substitute)?;
     let launcher_content = command_builder::recipe_launcher_script(&ws.recipe)?;
     let resume_context = command_builder::build_resume_context(ws);
     let safe_context = serde_json::to_string(&resume_context)?;
@@ -43,9 +61,26 @@ pub(super) fn write_recipe_launcher(ws: &Workstream, delegate: &str) -> Result<(
     Ok(())
 }
 
-/// Write classic-mode launcher scripts for a workstream.
+/// Write classic-mode launcher scripts for a workstream, reading the pinned
+/// Claude profile from the process environment.
 pub(super) fn write_classic_launcher(ws: &Workstream, delegate: &str) -> Result<()> {
-    let run_content = command_builder::classic_run_script(ws, delegate)?;
+    write_classic_launcher_with(
+        ws,
+        delegate,
+        command_builder::env_var_os,
+        crate::commands::profile::substitute_inherited_profile,
+    )
+}
+
+/// Write classic-mode launcher scripts for a workstream, reading the profile
+/// variables through `get` instead of the process environment (issue #2014).
+pub(super) fn write_classic_launcher_with(
+    ws: &Workstream,
+    delegate: &str,
+    get: impl Fn(&str) -> Option<OsString>,
+    substitute: impl Fn(&str) -> Option<String>,
+) -> Result<()> {
+    let run_content = command_builder::classic_run_script(ws, delegate, get, substitute)?;
     let task_md = ws.work_dir.join("TASK.md");
     fs::write(&task_md, command_builder::classic_task_markdown(ws))?;
 
@@ -93,16 +128,15 @@ pub(super) fn launch_workstream(
 ) -> Result<()> {
     let issue = ws.issue;
 
-    let mut env_vars: HashMap<String, String> = std::env::vars().collect();
-    env_vars.insert("AMPLIHACK_DELEGATE".to_string(), delegate.to_string());
-
+    // The child inherits the process environment. Copying it with
+    // `std::env::vars()` would panic on any non-UTF-8 variable.
     let run_sh = ws.work_dir.join("run.sh");
     let child = Command::new("bash")
         .arg(&run_sh)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(&ws.work_dir)
-        .envs(&env_vars)
+        .env("AMPLIHACK_DELEGATE", delegate)
         .spawn()
         .with_context(|| format!("[{issue}] Failed to launch workstream"))?;
 

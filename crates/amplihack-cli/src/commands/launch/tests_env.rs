@@ -39,7 +39,10 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
         Some(execution_dir.path()),
         false,
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
+    )
+    .unwrap();
     let args = cmd
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -167,7 +170,10 @@ fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
         Some(execution_dir.path()),
         false,
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
+    )
+    .unwrap();
     let args = cmd
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -237,15 +243,12 @@ fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
         None => unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") },
     }
 
-    // The system-prompt fragment (issue #1265) is compiled into the binary, so
-    // it is injected on every claude launch regardless of what is on disk —
-    // there is no `$HOME` state that can suppress it. Assert around it rather
-    // than against it: this test is about `--plugin-dir` / `--add-dir` not
-    // being duplicated, and pinning the fragment's bytes here would make an
-    // unrelated wording change fail this test.
+    // The contract (issue #1265) is injected on every claude launch, by file
+    // since issue #2030. Assert around it rather than against it: this test is
+    // about `--plugin-dir` / `--add-dir` not being duplicated.
     let append = args
         .iter()
-        .position(|a| a == "--append-system-prompt")
+        .position(|a| a == "--append-system-prompt-file")
         .expect("the compiled-in fragment is always injected for claude");
     let mut without_fragment = args.clone();
     without_fragment.drain(append..=append + 1);

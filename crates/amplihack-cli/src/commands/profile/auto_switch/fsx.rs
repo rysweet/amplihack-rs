@@ -21,8 +21,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 pub use amplihack_utils::secure_files::{
-    check_private_dir, ensure_private_dir, euid, fsync_dir, invalid, read_bounded,
-    read_bounded_nofollow, writable_by_others, write_atomic_keep_mode, write_private_atomic,
+    PrivateTemp, check_private_dir, dir_writable_by_others, ensure_private_dir, euid, fsync_dir,
+    invalid, read_bounded, read_bounded_nofollow, writable_by_others, write_atomic_keep_mode,
+    write_private_atomic,
 };
 
 pub fn now() -> i64 {
@@ -44,6 +45,18 @@ pub fn exists(path: &Path) -> bool {
 pub fn movable_login(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .is_ok_and(|m| m.is_file() && m.uid() == euid() && m.mode() & 0o077 == 0 && m.nlink() == 1)
+}
+
+/// Issue #2218: whether two files hold the same bytes. Each is read without
+/// following a symlink, from a regular file owned by the current user, at
+/// most `limit` bytes. A file that is missing, unsafe or unreadable never
+/// matches. Only the answer leaves this function, never the content.
+pub fn same_private_bytes(a: &Path, b: &Path, limit: u64) -> bool {
+    let read = |p: &Path| match read_bounded_nofollow(p, limit) {
+        Ok(Some((raw, meta))) if meta.uid() == euid() && meta.mode() & 0o022 == 0 => Some(raw),
+        _ => None,
+    };
+    matches!((read(a), read(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// Sets the modification time to now without following a symlink, so Claude

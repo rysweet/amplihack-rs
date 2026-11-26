@@ -1,13 +1,14 @@
-//! Issue #1618, AC6: the usage-limit wait settings from
-//! `AMPLIHACK_USAGE_LIMIT_WAIT`, `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` and
-//! the `recipe.usage_limit_wait` / `recipe.usage_limit_max_wait_secs` keys of
-//! `~/.amplihack/config.toml`, read through the user-config loader.
+//! Issue #1618, AC6: the usage-limit wait setting from
+//! `AMPLIHACK_USAGE_LIMIT_WAIT` and the `recipe.usage_limit_wait` key of
+//! `~/.amplihack/config.toml`, read through the user-config loader. There is
+//! no length setting (issue #2911): `recipe.usage_limit_max_wait_secs` is an
+//! unknown key and `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is not read.
 //!
 //! Disabled, an unprofiled step behaves exactly as before (D7): one
-//! invocation, the original exit code, no wait line. With no explicit
-//! setting, `CI=true` turns the wait off. Invalid values warn without being
-//! quoted. ST5: no account identity reaches a wait line. See
-//! `issue_1618_fixture`.
+//! invocation, the original exit code, no wait line. `CI=true` does not turn
+//! the wait off (issue #2911); only the key or its variable does. Invalid
+//! values warn without being quoted. ST5: no account identity reaches a wait
+//! line. See `issue_1618_fixture`.
 
 #![cfg(unix)]
 
@@ -15,6 +16,9 @@ use crate::issue_1618_fixture::{Fixture, describe, events, private_file, text, w
 
 const ENABLED_VAR: &str = "AMPLIHACK_USAGE_LIMIT_WAIT";
 const MAX_VAR: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
+/// A session limit that states no reset. Its wait is a capacity wait with no
+/// deadline, so it is the wait on which a length setting would show.
+const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 
 fn assert_today(f: &Fixture, out: &std::process::Output) {
     assert_eq!(out.status.code(), Some(1), "{}", describe(out));
@@ -63,32 +67,65 @@ fn the_variable_overrides_the_file_in_both_directions() {
     assert_waited(&f, &f.run(&mut c));
 }
 
+/// Issue #2911: a run that meets a limit does not end because of it, and
+/// `CI` is not a setting. It used to turn the wait off by default, and
+/// amplihack's own delegation layer exports `CI=true` to every delegated
+/// `claude -p`, so a recipe run started from one ended at its first limit.
+/// The explicit opt-out still applies under `CI`.
 #[test]
-fn ci_turns_the_wait_off_unless_it_is_set_explicitly() {
-    let f = Fixture::new();
-    let mut c = f.step();
-    c.env("CI", "true");
-    assert_today(&f, &f.run(&mut c));
+fn issue_2911_ci_does_not_turn_the_wait_off() {
+    for ci in ["true", "1", "github"] {
+        let f = Fixture::new();
+        let mut c = f.step();
+        c.env("CI", ci);
+        assert_waited(&f, &f.run(&mut c));
+    }
 
     let f = Fixture::new();
-    f.write_config("[recipe]\nusage_limit_wait = true\n");
+    f.write_config("[recipe]\nusage_limit_wait = false\n");
     let mut c = f.step();
     c.env("CI", "true");
-    assert_waited(&f, &f.run(&mut c));
+    let out = f.run(&mut c);
+    assert_today(&f, &out);
+    assert!(
+        !text(&out.stderr).contains("reason=ci"),
+        "no ci reason is written: {}",
+        describe(&out)
+    );
 }
 
+/// Issue #2911: a config file that still sets the removed length key gives
+/// a wait with no reset no deadline: the wait ends on the login change, and
+/// on nothing timed.
 #[test]
-fn the_config_maximum_bounds_the_wait() {
+fn the_removed_config_length_does_not_bound_the_wait() {
+    let f = Fixture::new();
+    f.write_config("[recipe]\nusage_limit_max_wait_secs = 0\n");
+    let mut c = f.step();
+    c.env("LIMIT_MESSAGE", NO_RESET_TEXT);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
+    assert_waited(&f, &out);
+    assert!(
+        events(&out)[1].ends_with(" until=none bound=none"),
+        "{:?}",
+        events(&out)
+    );
+    assert_eq!(events(&out)[2], "end reason=login changed");
+}
+
+/// Nor does it bound a reset wait, which ends at its reset.
+#[test]
+fn the_removed_config_length_does_not_bound_a_reset_wait() {
     let f = Fixture::new();
     f.write_config("[recipe]\nusage_limit_max_wait_secs = 0\n");
     let out = f.run(&mut f.step());
     assert_waited(&f, &out);
     assert!(
-        events(&out)[0].ends_with("bound=max_wait"),
+        events(&out)[0].ends_with("until=2026-10-18 08:32:00 -07:00 bound=reset+margin"),
         "{:?}",
         events(&out)
     );
-    assert_eq!(events(&out)[1], "end reason=max reached");
+    assert_eq!(events(&out)[1], "end reason=reset reached");
 }
 
 #[test]
@@ -105,25 +142,31 @@ fn an_empty_variable_is_unset() {
     );
 }
 
+/// An invalid enabling variable is reported without its value and the file
+/// below it decides. The old length variable, exported with any value, is
+/// reported as no longer read, again without its value.
 #[test]
 fn an_invalid_variable_warns_and_the_layers_below_decide() {
     let f = Fixture::new();
-    f.write_config("[recipe]\nusage_limit_max_wait_secs = 600\n");
+    f.write_config("[recipe]\nusage_limit_wait = true\n");
     let mut c = f.step();
-    c.env(ENABLED_VAR, "maybe-VALUE-1618").env(MAX_VAR, "60s");
-    let out = f.run(&mut c);
+    c.env(ENABLED_VAR, "maybe-VALUE-1618")
+        .env(MAX_VAR, "60s-VALUE-2911")
+        .env("LIMIT_MESSAGE", NO_RESET_TEXT);
+    let out = f.run_with_a_login_change_per_open_wait(&mut c);
     assert_waited(&f, &out);
     let stderr = text(&out.stderr);
+    assert!(stderr.contains(ENABLED_VAR), "{stderr}");
     assert!(
-        stderr.contains(ENABLED_VAR) && stderr.contains(MAX_VAR),
+        stderr.contains(&format!("warning: {MAX_VAR} is no longer read")),
         "{stderr}"
     );
     assert!(
-        !stderr.contains("VALUE-1618"),
-        "the value is quoted: {stderr}"
+        !stderr.contains("VALUE-1618") && !stderr.contains("VALUE-2911"),
+        "a value is quoted: {stderr}"
     );
     assert!(
-        events(&out)[0].ends_with("until=2026-10-18 08:10:00 -07:00 bound=max_wait"),
+        events(&out)[1].ends_with(" until=none bound=none"),
         "{:?}",
         events(&out)
     );

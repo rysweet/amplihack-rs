@@ -8,8 +8,10 @@ use amplihack_cli::command_error;
 use amplihack_cli::commands;
 use amplihack_cli::update;
 
+mod startup;
+
 fn main() {
-    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if args.get(1).is_some_and(|arg| arg == "internal") {
         let cli = Cli::parse_from(&args);
         if let Err(error) = commands::dispatch(cli.command) {
@@ -50,18 +52,17 @@ fn main() {
         return;
     }
 
-    if matches!(
-        update::maybe_print_update_notice_from_args(&args),
-        update::StartupUpdateOutcome::ExitSuccess
-    ) {
-        return;
+    // Parse once before any updater can install/reconcile assets. Reset is a
+    // locked metadata operation; failure stops both updates and self-healing.
+    let mut cli = Cli::parse_from(&args);
+    match startup::prepare(&mut cli.command, &mut args) {
+        Ok(update::StartupUpdateOutcome::ExitSuccess) => return,
+        Ok(update::StartupUpdateOutcome::Continue) => {}
+        Err(error) => {
+            eprintln!("amplihack: startup recovery failed: {error:#}");
+            std::process::exit(1);
+        }
     }
-
-    // clap parses (and short-circuits on --help/--version/unknown commands)
-    // before self_heal runs, so typos and help requests never pay for an
-    // install. Subcommands like `install`/`update`/`uninstall` are filtered
-    // by self_heal's own skip-list to prevent recursion.
-    let cli = Cli::parse_from(&args);
 
     if let Err(e) = amplihack_cli::self_heal::resolve_startup_client(&cli.command)
         .and_then(|()| amplihack_cli::self_heal::ensure_assets_for_command(&args, &cli.command))

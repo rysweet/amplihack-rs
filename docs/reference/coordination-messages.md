@@ -1,7 +1,7 @@
 ---
 title: Coordination Messages
-description: The [coord] marker, which stops the workflow classification reminder from routing session-to-session messages into a recipe.
-last_updated: 2026-10-30
+description: The [coord] marker, which stops the workflow classification reminder from routing session-to-session messages into a recipe, and the prompts that are not a person's, which get no routing text.
+last_updated: 2026-11-24
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -13,6 +13,8 @@ A prompt that starts with `[coord]` is coordination traffic between sessions. Th
 
 The marker is read by code. The hook does not infer coordination traffic from wording, sender or tmux pane.
 
+The same hook inserts no routing text for a prompt that is not a person's own: an agent step, a task notification or system notice, a message from another session, or a loop tick (issue #2533). See [Prompts that are not a person's](#prompts-that-are-not-a-persons).
+
 ## Contents
 
 - [Sending a coordination message](#sending-a-coordination-message)
@@ -22,6 +24,7 @@ The marker is read by code. The hook does not infer coordination traffic from wo
 - [Reports that start with a verb](#reports-that-start-with-a-verb)
 - [The coordination note](#the-coordination-note)
 - [Routing prompt calibration](#routing-prompt-calibration)
+- [Prompts that are not a person's](#prompts-that-are-not-a-persons)
 - [Gate order](#gate-order)
 - [Outcomes and `last_rule`](#outcomes-and-last_rule)
 - [State file](#state-file)
@@ -246,6 +249,27 @@ When in doubt, choose DEV. False positive costs minutes. False negative costs qu
 
 A local override at `.claude/tools/amplihack/hooks/templates/routing_prompt.txt` takes precedence over the built-in prompt and does not receive these lines automatically. Copy them into the override by hand. The marker branch does not read the routing prompt, so marked messages receive the note whether or not the override is updated.
 
+## Prompts that are not a person's
+
+Some prompts reach the hook without a person typing them. The hook decides this in code, from the environment and the start of the prompt, and never by asking the model (issue #2533). Such a prompt gets no routing text. Its rule is recorded in `last_rule`, and `last_classified_turn` is unchanged, so it never opens or extends the throttle window.
+
+The checks are in `crates/amplihack-hooks/src/workflow_classification/provenance.rs`. They read the prompt with leading whitespace removed. Prefixes are literal and case-sensitive, and the first rule that matches wins.
+
+| Order | `last_rule` | Matches when |
+| --- | --- | --- |
+| 1 | `agent_step_id` | `AMPLIHACK_STEP_ID` is set and non-empty. The recipe runner sets it on every agent launch, so a nested step whose `AMPLIHACK_RECIPE_RUN_ID` was not passed on is still skipped. The runner this repository pins, `2833a0b`, does not set it yet. |
+| 2 | `harness_notice` | The prompt starts with `[SYSTEM NOTIFICATION - NOT USER INPUT]`, or with `<task-notification` followed by `>` or ASCII whitespace. |
+| 3 | `peer_message` | The prompt starts with a peer envelope: `<cross-session-message` or `<agent-message`, followed by `>` or ASCII whitespace. Or it starts with `Another Claude session sent a message:`, `Another Claude session sent a message while you were working:` or `A peer session sent a message while you were working:`, and the rest, after leading whitespace, starts with a peer envelope. A header followed by anything else is routed. |
+| 4 | `scheduled_prompt` | The prompt starts with `<<autonomous-loop>>`, `<<autonomous-loop-dynamic>>`, `<<loop.md>>` or `<<loop.md-dynamic>>`, or with `# Autonomous loop tick`, `# Autonomous loop check` or `# /loop tick` followed by whitespace or the end of the text. |
+
+An envelope that follows other text is not matched, so a person who quotes one inside a longer prompt is still routed. A person whose prompt itself starts with one of these envelopes gets no routing text for that prompt. A `[coord]` body inside a peer envelope is decided here, as `peer_message`, and does not receive the note.
+
+These prompts are not matched and are routed as a person's prompt:
+
+- A person's message that arrives while the session is working. The harness puts `The user sent a new message while you were working:` in front of it.
+- `<system-reminder>` text, coordinator and plugin messages, `<teammate-message>` and usage-limit continuation text.
+- A scheduled wake-up, `/loop` input or cron prompt whose text was written by a person or a session, and text typed into a pane with `tmux send-keys`. These carry no envelope that the hook can read.
+
 ## Gate order
 
 `process()` applies these checks in order. The first one that decides the outcome wins.
@@ -254,14 +278,15 @@ A local override at `.claude/tools/amplihack/hooks/templates/routing_prompt.txt`
 2. Turn resolution: use the runtime's `turnCount` or `turn_count`, or the session's own `observed_turns` counter when none is reported.
 3. Provenance: if `AMPLIHACK_RECIPE_RUN_ID` is set and non-empty, the prompt was written by a recipe step. Emit nothing and record no outcome.
 4. Nested session or active workflow: emit nothing and record no outcome.
-5. Marker: a marked body that is neither an explicit `/dev` command nor a work request receives the note.
-6. Topic decision, for unmarked prompts and for the remaining marked bodies, applied to the body: explicit `/dev` command, new topic or throttled. A throttled marked body receives the note.
-7. Record the outcome. A new topic whose classification cannot be written is held back like a throttled prompt; see [State file](#state-file).
-8. Emit the result.
+5. Not a person's prompt: an agent step, a harness notice, a peer session's message or a loop tick (see [Prompts that are not a person's](#prompts-that-are-not-a-persons)). Emit nothing and record the rule, leaving `last_classified_turn` unchanged.
+6. Marker: a marked body that is neither an explicit `/dev` command nor a work request receives the note.
+7. Topic decision, for unmarked prompts and for the remaining marked bodies, applied to the body: explicit `/dev` command, new topic or throttled. A throttled marked body receives the note.
+8. Record the outcome. A new topic whose classification cannot be written is held back like a throttled prompt; see [State file](#state-file).
+9. Emit the result.
 
 Provenance takes precedence over the marker. A marked prompt inside a recipe run, including `[coord] build #1740`, produces `{}`. The marker can only replace the routing prompt, or the empty output of the throttle, with the note. It never adds a routing prompt and never starts a recipe itself.
 
-Turn resolution runs before the provenance gate. When the runtime reports no turn number, step 2 increments `observed_turns` and saves the state file, so a prompt stopped at step 3 or 4 can still raise `observed_turns` by one. It never changes `last_rule` or `last_classified_turn`. When the runtime does report a turn number, these gates leave the state file untouched.
+Turn resolution runs before the provenance gate. When the runtime reports no turn number, step 2 increments `observed_turns` and saves the state file, so a prompt stopped at step 3, 4 or 5 can still raise `observed_turns` by one. Steps 3 and 4 never change `last_rule` or `last_classified_turn`, and when the runtime does report a turn number they leave the state file untouched. Step 5 writes its rule to `last_rule` and never changes `last_classified_turn`.
 
 An empty `session_id` is treated as `unknown-session`, as a missing one already is.
 
@@ -278,20 +303,26 @@ Each outcome is recorded in the state file's `last_rule` field. These values are
 | Unmarked explicit `/dev` command | `{}` | `explicit_dev_command` | unchanged |
 | Unmarked new topic | routing prompt | `classification` | set to the current turn |
 | Unmarked, not a new topic | `{}` | `throttled` | unchanged |
+| Agent step (`AMPLIHACK_STEP_ID` set) | `{}` | `agent_step_id` | unchanged |
+| Task notification or system notice | `{}` | `harness_notice` | unchanged |
+| Message from another session | `{}` | `peer_message` | unchanged |
+| Loop tick or loop sentinel | `{}` | `scheduled_prompt` | unchanged |
 
 The note path leaves `last_classified_turn` unchanged because no classification took place, so a note never starts or extends the three-turn throttle window. A note still counts as a turn. The next unmarked prompt is judged at its own turn number, so after two notes in a fresh session it is at turn 2: past the rule that routes turns 0 and 1 unconditionally, and subject to the follow-up wording check like any later prompt. In a session where nothing has been classified, `last_classified_turn` is absent and the window does not apply, so a new topic after the notes receives the routing prompt.
 
-The provenance, nested-session and workflow-active gates record no outcome: `last_rule` and `last_classified_turn` keep their previous values. Only `observed_turns` can change on those paths, as described under [Gate order](#gate-order). If a custom routing prompt is blank, the hook emits `{}`, but the outcome has already been recorded. If a new topic's outcome cannot be written, the hook emits `{}` for an unmarked prompt and the note for a marked one, and nothing is recorded; see [State file](#state-file).
+The provenance, nested-session and workflow-active gates (steps 3 and 4) record no outcome: `last_rule` and `last_classified_turn` keep their previous values. Only `observed_turns` can change on those paths, as described under [Gate order](#gate-order). If a custom routing prompt is blank, the hook emits `{}`, but the outcome has already been recorded. If a new topic's outcome cannot be written, the hook emits `{}` for an unmarked prompt and the note for a marked one, and nothing is recorded; see [State file](#state-file).
+
+A prompt that is not a person's (step 5) records its rule but never sets `last_classified_turn`, so it opens no throttle window. It still counts as a turn, as every prompt does. Before issue #2533 a task notification or peer message on a new topic received the routing prompt and opened the window, which then held back the person's next prompt. It no longer does.
 
 ## State file
 
-The hook keeps one file per session at:
+The hook keeps one file per session in the hook state root, outside the project:
 
 ```text
-<project>/.claude/runtime/classification_state/<session>.json
+<state root>/runtime/sessions/<session key>/classification_state.json
 ```
 
-`<session>` is the session ID with every character outside `[A-Za-z0-9_-]` replaced by `_`. An example after a coordination note at turn 7:
+`<state root>` is `$AMPLIHACK_HOME` when that is an absolute path with no `..` component, otherwise `$HOME/.amplihack`. `<session key>` is the session ID with every character outside `[A-Za-z0-9_-]` replaced by `_`, or `unknown-session` when the ID is absent or blank. See [Hook State Root Reference](./hook-state-root.md). When no state root resolves, nothing is read or written, and a new topic gets the same output as when the outcome cannot be written. An example after a coordination note at turn 7:
 
 ```json
 {
@@ -325,12 +356,12 @@ Before this feature, a state file created by turn resolution held `last_classifi
 
 State writes are best-effort. A write failure is logged at debug level with the error and path, never the prompt, and does not fail the hook. An unreadable or malformed file is treated as empty, which leans towards emitting the routing prompt, not suppressing it.
 
-A failed write on a new topic is the exception: the hook does not emit the routing prompt. The prompt is held back like a throttled one, so an unmarked prompt receives `{}` and a marked one the note. The throttle cannot see a classification that was never written. Under a runtime that sends no turn number, the hook's own `observed_turns` counter cannot advance either, so every prompt stays at turn 0, which is always a new topic. Emitting the routing prompt after a failed write would therefore route every prompt in every session of the project. This happens when the project directory cannot be written or the disk is full. Before this feature, the failed write returned an error and the hook emitted `{}`; unmarked prompts are handled the same way now. A single failed write followed by successful ones costs at most one extra or one missed reminder.
+A failed write on a new topic is the exception: the hook does not emit the routing prompt. The prompt is held back like a throttled one, so an unmarked prompt receives `{}` and a marked one the note. The throttle cannot see a classification that was never written. Under a runtime that sends no turn number, the hook's own `observed_turns` counter cannot advance either, so every prompt stays at turn 0, which is always a new topic. Emitting the routing prompt after a failed write would therefore route every prompt in every session of the project. This happens when the state root cannot be written or the disk is full. Before this feature, the failed write returned an error and the hook emitted `{}`; unmarked prompts are handled the same way now. A single failed write followed by successful ones costs at most one extra or one missed reminder.
 
 ## Security properties
 
 - The marker is advisory. No marked prompt leads directly to a recipe; the strongest effect, for a work request, is the routing prompt, and only when the same text without the marker would receive it.
-- The provenance, nested-session and workflow-active gates run before the marker is read.
+- The provenance, nested-session and workflow-active gates, and the checks for prompts that are not a person's, run before the marker is read.
 - The prefix comparison cannot panic on short, whitespace-only or multibyte input.
 - The work-request and report patterns are literal regexes, each compiled once. The `regex` crate matches in linear time.
 - Neither the prompt nor the body is written to the state file or the debug log, and neither is copied into the hook output, so a peer session cannot forge hook context through a coordination message.

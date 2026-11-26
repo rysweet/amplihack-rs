@@ -13,15 +13,18 @@
 //!   with one `skipped reason=disabled` line.
 //! - With no inherited profile but a `.default` pointer, the wait watches
 //!   the pointed-to profile's login, the one the launch uses.
-//! - A prompt piped on stdin is neither rerun by auto-switch nor waited for:
-//!   the rerun would get no prompt.
+//! - A prompt piped on stdin is copied as it arrives, so auto-switch reruns
+//!   it under another profile with the same bytes (issue #2815). One still
+//!   arriving when the rerun is due is waited for, and the rerun then runs
+//!   (issue #3036); it used to be refused, and a step that had no wait to
+//!   fall back on then ended on its limit.
 //!
 //! See `issue_1618_fixture`.
 
 #![cfg(unix)]
 
 use crate::issue_1618_fixture::{
-    Fixture, SPEND_TEXT, WEEKLY_TEXT, describe, events, private_file, text, wait_lines,
+    Fixture, SPEND_TEXT, WAIT_PREFIX, WEEKLY_TEXT, describe, events, private_file, text, wait_lines,
 };
 use crate::support::profile_default::set_default;
 use std::process::Command;
@@ -216,9 +219,10 @@ fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
     // Only the pointer: `profile switch X` would also move X's login into
     // `~/.claude` (#1691), and this test needs it in X's directory.
     set_default(&f.profiles, "X");
-    // X's login arrives during the wait (the stub creates the file in the
-    // directory it runs with); nothing changes in CLAUDE_CONFIG_DIR.
-    std::fs::remove_file(f.profiles.join("X").join(".credentials.json")).unwrap();
+    // X's login arrives during the wait, in X's own directory; nothing
+    // changes in CLAUDE_CONFIG_DIR.
+    let login = f.profiles.join("X").join(".credentials.json");
+    std::fs::remove_file(&login).unwrap();
     // Without a login of its own X is refused by the launch guard (issue
     // #1700); an explicit API-key kind is the documented way to launch it.
     let out = f.run(&mut f.cmd(&["profile", "kind", "set", "X", "api-key"]));
@@ -228,9 +232,23 @@ fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
         describe(&out)
     );
     let mut c = f.step();
-    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "100")
-        .env("CHANGE_LOGIN_AFTER", "1");
-    let out = f.run(&mut c);
+    // The test moves the login into place itself, when the wait's first
+    // `progress` line shows it is polling, as `ac5` of `issue_1618_wait_ends`
+    // does (#1973). Before, the stub started a process that made the file
+    // one second after the first attempt while the wait ran at 100x, and on
+    // a loaded host the reset came first (issue #2931). At 3x the wait
+    // cannot reach its reset before the change; the `end reason=login
+    // changed` event shows what ended it.
+    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "3");
+    let progress = format!("{WAIT_PREFIX}progress ");
+    let mut moved = false;
+    let out = f.run_watching(&mut c, |line| {
+        if !moved && line.starts_with(&progress) {
+            std::fs::write(&login, "").expect("move X's login into place");
+            moved = true;
+        }
+    });
+    assert!(moved, "the wait wrote no progress line: {}", describe(&out));
     assert!(out.status.success(), "{}", describe(&out));
     let x = f.profiles.join("X").to_string_lossy().to_string();
     assert_eq!(
@@ -247,7 +265,7 @@ fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
 }
 
 #[test]
-fn a_piped_prompt_is_not_rerun_by_auto_switch_either() {
+fn a_piped_prompt_is_rerun_by_auto_switch_with_the_same_prompt() {
     let f = with_profiles();
     switch_on(&f);
     // `-p` with no prompt text: the prompt is on the pipe.
@@ -255,7 +273,7 @@ fn a_piped_prompt_is_not_rerun_by_auto_switch_either() {
     c.env("AMPLIHACK_CLAUDE_PROFILE", "X")
         .env("CLAUDE_CONFIG_DIR", f.profiles.join("X"))
         .env(TOGGLE_ENV, "1")
-        .env("LIMIT_CALLS", "5")
+        .env("LIMIT_CALLS", "1")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -266,12 +284,73 @@ fn a_piped_prompt_is_not_rerun_by_auto_switch_either() {
         stdin.write_all(b"the piped prompt\n").unwrap();
     }
     let out = child.wait_with_output().unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 1, "no rerun under Y with an empty prompt");
-    let stderr = text(&out.stderr);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "X, then the rerun under Y");
+    assert_eq!(f.call("0", 1)["PROFILE"], "X");
+    assert_eq!(f.call("0", 2)["PROFILE"], "Y");
+    let want = crate::issue_1618_fixture::sha256_hex(b"the piped prompt\n");
+    assert_eq!(f.call("0", 1)["STDIN"], want);
+    assert_eq!(f.call("0", 2)["STDIN"], want, "Y got the same prompt");
     assert!(
-        stderr.contains("auto-switch: no rerun under profile \"Y\""),
-        "{stderr}"
+        !text(&out.stderr).contains("piped_prompt"),
+        "{}",
+        describe(&out)
     );
-    assert_eq!(wait_lines(&out), vec!["skipped reason=piped_prompt"]);
+    assert!(wait_lines(&out).iter().all(|l| !l.starts_with("skipped")));
+}
+
+/// Issue #3036: an auto-switch rerun whose
+/// prompt is still arriving runs at once, under the candidate, with no wait
+/// of any kind.
+///
+/// The caller holds the pipe open, writing nothing, for the whole of the
+/// step. The rerun used to be refused here (`auto-switch: no rerun under
+/// profile "Y": ... still arriving`), which sent the step into a wait for
+/// X's reset, and a step whose inherited profile had never run had no wait
+/// to fall back on and ended on its limit. Round 4 waited for the caller
+/// instead, which held the step for as long as the caller held the pipe.
+/// Now the rerun is fed the copy already held and the rest as it arrives,
+/// so it starts at once and nothing waits on the caller.
+#[test]
+fn issue_3036_an_auto_switch_rerun_runs_at_once_on_a_pipe_still_held_open() {
+    let f = with_profiles();
+    switch_on(&f);
+    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    // The agent is told not to read its stdin: the caller writes nothing.
+    let (read, write) = std::io::pipe().expect("a pipe");
+    c.env("AMPLIHACK_CLAUDE_PROFILE", "X")
+        .env("CLAUDE_CONFIG_DIR", f.profiles.join("X"))
+        .env(TOGGLE_ENV, "1")
+        .env("LIMIT_PROFILE", "X")
+        .env("LIMIT_CALLS", "1")
+        .env("SKIP_STDIN", "1")
+        .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(read)));
+    // Held open, never written, for the whole of the step.
+    let out = f.run_watching(&mut c, |_| {});
+    drop(write);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(
+        f.count("0"),
+        2,
+        "X, then the rerun under Y\n{}",
+        describe(&out)
+    );
+    assert_eq!(f.call("0", 1)["PROFILE"], "X");
+    assert_eq!(
+        f.call("0", 2)["PROFILE"],
+        "Y",
+        "the rerun ran under the candidate"
+    );
+    let err = text(&out.stderr);
+    assert!(
+        !err.contains("no rerun under profile") && !err.contains("piped_prompt"),
+        "a late prompt refuses nothing\n{}",
+        describe(&out)
+    );
+    assert_eq!(
+        events(&out),
+        Vec::<String>::new(),
+        "no wait of any kind: the rerun ran at once\n{}",
+        describe(&out)
+    );
 }

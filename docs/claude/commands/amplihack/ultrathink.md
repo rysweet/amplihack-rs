@@ -1,5 +1,6 @@
 ---
 name: amplihack:ultrathink
+disable-model-invocation: true
 version: 1.0.0
 description: Deep analysis mode with multi-agent orchestration
 DEPRECATED: true

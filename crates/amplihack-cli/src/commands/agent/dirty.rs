@@ -5,9 +5,7 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OUTPUT: usize = 1024 * 1024;
 
 /// `git -c core.fsmonitor=false -C DIR status --porcelain --untracked-files=no`,
@@ -39,7 +37,11 @@ pub fn count(stdout: &[u8]) -> usize {
 pub fn dirty_count(dir: &Path) -> usize {
     let mut cmd = command(dir);
     cmd.stdin(Stdio::null());
-    match crate::util::run_output_with_timeout_limited(cmd, TIMEOUT, MAX_OUTPUT) {
+    match crate::util::run_output_with_timeout_limited(
+        cmd,
+        super::tmux::child_timeout(),
+        MAX_OUTPUT,
+    ) {
         Ok(out) if out.status.success() => count(&out.stdout),
         _ => 0,
     }

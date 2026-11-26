@@ -140,10 +140,8 @@ fn copilot_spawn_config() {
             &[],
             "",
         )
-        .expect("config");
-    assert_eq!(cfg.command[0], "gh");
-    assert_eq!(cfg.command[1], "copilot");
-    assert_eq!(cfg.command[2], "suggest");
+        .expect_err("gh copilot suggest has no safe prompt channel (issue #2030)");
+    assert!(cfg.to_string().contains("no safe channel"), "{cfg}");
 }
 
 #[test]

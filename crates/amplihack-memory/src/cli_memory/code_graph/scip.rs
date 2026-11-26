@@ -1,6 +1,7 @@
 //! SCIP protobuf parsing and conversion to blarify format.
 
 use super::types::{BlarifyClass, BlarifyFile, BlarifyFunction, BlarifyOutput};
+use crate::cli_memory::source_files::is_excluded;
 
 use prost::Message;
 use std::path::Path;
@@ -75,6 +76,11 @@ pub(super) fn convert_scip_to_blarify(
     let mut payload = BlarifyOutput::default();
 
     for doc in &index.documents {
+        // Issue #2170: whatever a native indexer walked, nested worktrees,
+        // build output and the project's own artifacts never enter the graph.
+        if is_excluded(Path::new(&doc.relative_path)) {
+            continue;
+        }
         let language = if doc.language.trim().is_empty() {
             language_hint.unwrap_or_default().to_string()
         } else {
