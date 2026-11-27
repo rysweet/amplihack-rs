@@ -24,12 +24,16 @@ pub(super) struct Repository {
 
 /// Resolve the checkout's GitHub repository without contacting its remotes.
 /// Honor GH_REPO, then the selection saved by gh repo set-default. Otherwise
-/// the GitHub fetch remotes must agree. Diagnostics omit selection values.
+/// the GitHub fetch remotes must agree. GH_HOST applies unless GH_REPO names
+/// a host explicitly. Diagnostics omit selection values.
 pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repository> {
     if let Some(value) = std::env::var_os("GH_REPO").filter(|value| !value.is_empty()) {
         let value = value.to_str().context("GH_REPO is not UTF-8")?;
         let (name, use_default_host) = match value.split('/').count() {
-            2 => (value, true),
+            2 => {
+                check_gh_host()?;
+                (value, true)
+            }
             3 => {
                 let (host, name) = value.split_once('/').context("invalid GH_REPO")?;
                 ensure!(
@@ -45,6 +49,7 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repos
             use_default_host,
         });
     }
+    check_gh_host()?;
     let mut command = hardened_git();
     command.arg("-C").arg(checkout).args(["remote", "-v"]);
     let output = crate::util::run_output_with_timeout_limited(command, git_timeout, MAX_OUTPUT)
@@ -84,6 +89,17 @@ pub(super) fn repository(checkout: &Path, git_timeout: Duration) -> Result<Repos
         name,
         use_default_host: false,
     })
+}
+
+fn check_gh_host() -> Result<()> {
+    // gh filters checkout remotes by an explicit GH_HOST. A public listing
+    // cannot establish PR evidence for a different selected host.
+    ensure!(
+        std::env::var_os("GH_HOST")
+            .is_none_or(|host| host.is_empty() || host.eq_ignore_ascii_case("github.com")),
+        "unsupported GH_HOST for PR listing"
+    );
+    Ok(())
 }
 
 fn configured_repository(

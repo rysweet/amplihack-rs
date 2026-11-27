@@ -328,6 +328,35 @@ fn conflicting_repository_identities_keep_the_worktree_without_a_listing() {
 }
 
 #[test]
+fn unsupported_gh_host_keeps_worktrees_without_requesting_a_listing() {
+    let fx = Fx::new();
+    let wt = seed_worktree(&fx, &fx.repo, "first", "old-worktree");
+    fx.gh_page(DEFAULT_REPOSITORY, 1, false, "[]");
+
+    for repository in [None, Some(DEFAULT_REPOSITORY)] {
+        let report = fx.cleanup_json_with(&["--apply"], |c| {
+            c.env("GH_HOST", "ghe.example");
+            if let Some(repository) = repository {
+                c.env("GH_REPO", repository);
+            }
+        });
+        assert_kept(&report, &wt);
+        assert_eq!(
+            entry_for(&report, &wt)["reason"],
+            "cannot identify repository: unsupported GH_HOST for PR listing"
+        );
+        assert!(fx.gh_calls().is_empty());
+    }
+
+    let report = fx.cleanup_json_with(&["--apply"], |c| {
+        c.env("GH_HOST", "github.com");
+    });
+    assert_eq!(entry_for(&report, &wt)["action"], "removed");
+    assert!(!wt.exists());
+    assert_eq!(fx.take_gh_calls().len(), 1);
+}
+
+#[test]
 fn configured_github_repository_selects_the_upstream_of_a_fork() {
     let fx = Fx::new();
     let open = seed_worktree(&fx, &fx.repo, "first", "upstream-open");
@@ -402,6 +431,9 @@ fn gh_repo_override_keeps_the_upstream_pr_open_in_a_fork_checkout() {
     ] {
         let report = fx.cleanup_json_with(&["--apply"], |c| {
             c.env("GH_REPO", selector);
+            if hostname {
+                c.env("GH_HOST", "ghe.example");
+            }
         });
         assert_kept(&report, &wt);
         let calls = fx.take_gh_calls();
