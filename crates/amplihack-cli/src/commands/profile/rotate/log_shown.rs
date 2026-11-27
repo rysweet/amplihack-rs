@@ -3,6 +3,7 @@
 //! decision reads it.
 
 use super::super::cycle::Ctx;
+use super::super::decide::last_good::LAST_GOOD_MAX_AGE_SECS;
 use super::super::decide::target_msg::annotate;
 use super::super::decide::{Probed, Reading};
 use super::super::fresh::{MAX_READING_AGE_SECS, read_at};
@@ -166,13 +167,37 @@ pub(in crate::commands::profile::rotate) fn cycle_shown(
             .filter(|&at| live.cached.is_some() && at <= now)
             .map(|at| (at, live.clone()));
         let previous = previous.into_iter().chain(cached).max_by_key(|(at, _)| *at);
-        annotate_failure(&mut live, label.as_str(), previous, now);
+        annotate_failure(
+            &mut live,
+            label.as_str(),
+            previous,
+            now,
+            MAX_READING_AGE_SECS,
+        );
     }
     for (name, shown) in &mut others {
         if shown.reading == Reading::Failed
             && let Some(label) = m.seen.extra.labels.get(name)
         {
-            annotate_failure(shown, label.as_str(), cached_figures(name), now);
+            // Use the same history and newer-reading check as candidate ranking.
+            let last_good = m
+                .seen
+                .extra
+                .last_good
+                .as_ref()
+                .and_then(|readings| readings.get(name))
+                .filter(|reading| m.seen.extra.older_by(name, reading.at).is_none())
+                .map(|reading| {
+                    (
+                        reading.observed_at.unwrap_or(reading.at),
+                        Shown::from_reading(reading.reading),
+                    )
+                });
+            let previous = cached_figures(name)
+                .into_iter()
+                .chain(last_good)
+                .max_by_key(|(at, _)| *at);
+            annotate_failure(shown, label.as_str(), previous, now, LAST_GOOD_MAX_AGE_SECS);
         }
     }
     (live, others)
@@ -198,6 +223,7 @@ mod tests {
             label,
             Some((at, Shown::from_reading(previous))),
             at + MAX_READING_AGE_SECS,
+            MAX_READING_AGE_SECS,
         );
         assert_eq!(shown.label, Some(label));
         assert_eq!(shown.cached, Some(MAX_READING_AGE_SECS as u64));
@@ -210,6 +236,7 @@ mod tests {
             label,
             Some((at, Shown::from_reading(previous))),
             at + MAX_READING_AGE_SECS + 1,
+            MAX_READING_AGE_SECS,
         );
         assert_eq!(shown.label, Some(label));
         assert_eq!(shown.cached, None);
@@ -222,10 +249,11 @@ fn annotate_failure(
     label: &'static str,
     previous: Option<(i64, Shown)>,
     now: i64,
+    max_age: i64,
 ) {
     let cached = previous.and_then(|(at, mut figures)| {
         let age = now.checked_sub(at)?;
-        if !(0..=MAX_READING_AGE_SECS).contains(&age) {
+        if !(0..=max_age).contains(&age) {
             return None;
         }
         figures.cached = Some(age as u64);

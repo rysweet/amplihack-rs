@@ -88,7 +88,7 @@ impl Endpoint {
                     refreshed.fetch_add(1, Ordering::Relaxed);
                     // Each fake refresh token renews one fake login only.
                     let renews = match request["refresh_token"].as_str() {
-                        Some("fake-task1753-unused-refresh") => Some("extra"),
+                        Some("fake-task1753-extra-refresh") => Some("extra"),
                         Some(LIVE_REFRESH) => Some("work"),
                         _ => None,
                     };
@@ -170,7 +170,7 @@ fn fake_login(path: &std::path::Path, account: &str) {
         path,
         &serde_json::json!({"claudeAiOauth": {
             "accessToken": format!("fake-task1753-{account}"),
-            "refreshToken": "fake-task1753-unused-refresh",
+            "refreshToken": format!("fake-task1753-{account}-refresh"),
             "expiresAt": chrono::Utc::now().timestamp_millis() + 3_600_000,
             "subscriptionType": "max"
         }})

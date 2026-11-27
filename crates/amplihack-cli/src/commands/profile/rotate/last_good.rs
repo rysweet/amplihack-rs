@@ -36,11 +36,12 @@ use std::path::Path;
 /// The oldest a last good reading may be: one session window.
 pub const LAST_GOOD_MAX_AGE_SECS: i64 = 18_000;
 
-/// A login's last good reading and when it was taken.
+/// A login's last good reading, with its batch and observation times.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LastGood {
     pub reading: Reading,
     pub at: i64,
+    pub observed_at: Option<i64>,
 }
 
 /// L4, L6, L7: the reading of a usable point at `now`.
@@ -85,7 +86,14 @@ pub fn last_good(root: &Path, names: &[ProfileName], now: i64) -> BTreeMap<Profi
         .filter_map(|n| {
             let (at, p) = newest.get(n.as_str())?;
             let reading = usable(p, now)?;
-            Some((n.clone(), LastGood { reading, at: *at }))
+            Some((
+                n.clone(),
+                LastGood {
+                    reading,
+                    at: *at,
+                    observed_at: p.observed_at,
+                },
+            ))
         })
         .collect()
 }

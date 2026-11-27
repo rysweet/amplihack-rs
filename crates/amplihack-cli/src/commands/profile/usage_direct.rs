@@ -23,7 +23,7 @@ use amplihack_utils::clock::{Clock, SystemClock};
 use amplihack_utils::secure_files::PrivateTemp;
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
+use std::io::{self, Read};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -148,6 +148,8 @@ pub(super) mod reason {
         HTTP_403 = Http403: "http 403";
         HTTP_429 = Http429: "http 429";
         RETRY_STATE = RetryState: "usage retry state unavailable";
+        RETRY_BUSY = RetryBusy: "usage retry lock busy";
+        RETRY_NOT_SAVED = RetryNotSaved: "http 429 (usage retry deadline not saved)";
         HTTP_3XX = Http3xx: "http 3xx";
         HTTP_4XX = Http4xx: "http 4xx";
         HTTP_5XX = Http5xx: "http 5xx";
@@ -398,9 +400,18 @@ pub(super) struct Creds {
     whole: Value,
 }
 
+const RETRY_KEYS: &str = "amplihackUsageRetryKeys";
+
 impl Creds {
-    fn retry_key(&self) -> &Token {
-        self.refresh.as_ref().unwrap_or(&self.access)
+    fn retry_key(&self, endpoint: &str) -> usage_retry::Key {
+        let scope = usage_retry::Key::new(endpoint, "");
+        self.whole["claudeAiOauth"][RETRY_KEYS][scope.as_str()]
+            .as_str()
+            .and_then(usage_retry::Key::parse)
+            .unwrap_or_else(|| {
+                let token = self.refresh.as_ref().unwrap_or(&self.access);
+                usage_retry::Key::new(endpoint, token.as_str())
+            })
     }
 
     /// `claudeAiOauth.accessToken` is required; `refreshToken` and
@@ -823,6 +834,16 @@ impl Failure {
     }
 }
 
+fn retry_lock(parent: &Path, key: &usage_retry::Key) -> Result<usage_retry::Held, &'static str> {
+    usage_retry::Held::take(parent, key).map_err(|err| {
+        if err.kind() == io::ErrorKind::WouldBlock {
+            reason::RETRY_BUSY
+        } else {
+            reason::RETRY_STATE
+        }
+    })
+}
+
 /// Check the server deadline when a caller already has a passive reading
 /// or selected a mode that does not make the direct request.
 pub(super) fn active_retry(
@@ -837,9 +858,8 @@ pub(super) fn active_retry(
     let Ok(creds) = load(creds_dir) else {
         return Ok(None);
     };
-    let held = usage_retry::Held::take(retry_parent, &ep.api, creds.retry_key().as_str())
-        .map_err(|_| reason::RETRY_STATE)?;
-    held.active(now_ms()).map_err(|_| reason::RETRY_STATE)
+    let held = retry_lock(retry_parent, &creds.retry_key(&ep.api))?;
+    held.deadline(now_ms()).map_err(|_| reason::RETRY_STATE)
 }
 /// The usage of the login in `req.creds_dir`. At most two GETs and one
 /// refresh POST, all within `req.timeout` from the start of the read; a 429
@@ -886,18 +906,18 @@ pub(super) fn read_on(
         require_refresh_token(&creds, req.now_ms)?;
         return Err(reason::TRANSPORT.into());
     }
-    let take_retry = |creds: &Creds| -> Result<Option<usage_retry::Held>, Failure> {
+    let take_retry = |key: &usage_retry::Key| -> Result<Option<usage_retry::Held>, Failure> {
         let Some(parent) = retry_parent else {
             return Ok(None);
         };
-        let held = usage_retry::Held::take(parent, &ep.api, creds.retry_key().as_str())
-            .map_err(|_| reason::RETRY_STATE)?;
-        if let Some(until) = held.active(wall_now()).map_err(|_| reason::RETRY_STATE)? {
+        let held = retry_lock(parent, key)?;
+        if let Some(until) = held.deadline(wall_now()).map_err(|_| reason::RETRY_STATE)? {
             return Err(Failure::declined(Some(until)));
         }
         Ok(Some(held))
     };
-    let held = take_retry(&creds)?;
+    let key = creds.retry_key(&ep.api);
+    let held = take_retry(&key)?;
     require_refresh_token(&creds, req.now_ms)?;
     let agent = agent(ep, req.timeout, deadline);
     let now_s = req.now_ms.div_euclid(1000);
@@ -915,13 +935,13 @@ pub(super) fn read_on(
     };
     let refresh_and_read = |held: Option<usage_retry::Held>| {
         let fresh = refresh(ep, req, ctx, &creds.access, deadline)?;
-        if fresh.retry_key().same(creds.retry_key()) {
+        let fresh_key = fresh.retry_key(&ep.api);
+        if fresh_key == key {
             return usage(&fresh, held.as_ref());
         }
-        // The refresh may rotate the key. Coordinate the GET under the key
-        // that another caller will read from the newly saved credentials.
+        // Another writer replaced the login while we took the refresh lock.
         drop(held);
-        let fresh_held = take_retry(&fresh)?;
+        let fresh_held = take_retry(&fresh_key)?;
         usage(&fresh, fresh_held.as_ref())
     };
     let margin_ms = REFRESH_MARGIN_SECS * 1000;
@@ -1111,32 +1131,43 @@ fn get_usage(
     let url = ep.usage_url();
     let req = agent
         .get(&url)
-        .timeout(deadline.transport_timeout()?)
         .set("Authorization", &token.header())
         .set("anthropic-beta", BETA)
         .set("Accept", "application/json");
     if !parsed_agrees(&req, &url) {
         return Err(reason::TRANSPORT.into());
     }
-    let resp = match ctx.send(req, None) {
-        Ok(resp) => resp,
-        Err(e) => match *e {
-            HttpError::Status(429, resp) => resp,
-            _ => return Err(map_err(&e).into()),
-        },
-    };
-    if resp.status() == 429 {
-        let received_ms = wall_now();
-        let retry_until_ms = resp
-            .header("Retry-After")
-            .and_then(|value| usage_retry::deadline(value, received_ms));
-        if let (Some(held), Some(until)) = (held, retry_until_ms)
-            && held.publish(until).is_err()
-        {
-            tracing::warn!("could not save the server's usage retry deadline");
+    let record = held
+        .map(usage_retry::Held::begin)
+        .transpose()
+        .map_err(|_| reason::RETRY_STATE)?;
+    let response = deadline.transport_timeout().and_then(|timeout| {
+        match ctx.send(req.timeout(timeout), None) {
+            Ok(resp) => Ok(resp),
+            Err(err) => match *err {
+                HttpError::Status(429, resp) => Ok(resp),
+                _ => Err(map_err(&err)),
+            },
         }
+    });
+    let declined = response.as_ref().ok().filter(|resp| resp.status() == 429);
+    let retry_until_ms = declined.and_then(|resp| {
+        resp.header("Retry-After")
+            .and_then(|value| usage_retry::deadline(value, wall_now()))
+    });
+    if let Some((held, record)) = held.zip(record) {
+        match retry_until_ms {
+            Some(until) => usage_retry::Held::publish(record, until).map_err(|_| Failure {
+                why: reason::RETRY_NOT_SAVED,
+                retry_until_ms,
+            })?,
+            None => held.clear().map_err(|_| reason::RETRY_STATE)?,
+        }
+    }
+    if declined.is_some() {
         return Err(Failure::declined(retry_until_ms));
     }
+    let resp = response?;
     if resp.status() != 200 {
         return Err(status_reason(resp.status()).into());
     }
@@ -1368,6 +1399,10 @@ fn refresh(
         .checked_mul(1000)
         .and_then(|ms| now_ms.checked_add(ms))
         .ok_or(reason::REFRESH_NOT_SAVED)?;
+    let previous_key = next_refresh
+        .as_ref()
+        .filter(|next| !next.same(old_refresh))
+        .map(|_| current.retry_key(&ep.api));
     let Some(oauth) = current
         .whole
         .get_mut("claudeAiOauth")
@@ -1379,6 +1414,17 @@ fn refresh(
     oauth.insert("expiresAt".into(), Value::from(expires_at));
     if let Some(r) = &next_refresh {
         oauth.insert("refreshToken".into(), Value::from(r.as_str()));
+    }
+    // Commit the key and the new tokens together. In-flight probes and
+    // deadlines then refer to the same files before and after the refresh.
+    if let Some(key) = previous_key {
+        let scope = usage_retry::Key::new(&ep.api, "");
+        let mut keys = match oauth.remove(RETRY_KEYS) {
+            Some(Value::Object(keys)) => keys,
+            _ => serde_json::Map::new(),
+        };
+        keys.insert(scope.as_str().into(), Value::from(key.as_str()));
+        oauth.insert(RETRY_KEYS.into(), Value::Object(keys));
     }
     let bytes = serde_json::to_vec_pretty(&current.whole).map_err(|_| reason::REFRESH_NOT_SAVED)?;
     temp.commit(&bytes).map_err(|_| reason::REFRESH_NOT_SAVED)?;

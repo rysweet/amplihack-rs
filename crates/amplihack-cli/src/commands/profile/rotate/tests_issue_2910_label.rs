@@ -81,6 +81,8 @@ const TABLE: &[(Reason, Option<ProbeLabel>)] = &[
     (Reason::Http403, None),
     (Reason::Http429, Some(Http429)),
     (Reason::RetryState, Some(ProbeError)),
+    (Reason::RetryBusy, Some(ProbeLabel::RetryBusy)),
+    (Reason::RetryNotSaved, Some(ProbeLabel::RetryNotSaved)),
     (Reason::Http3xx, Some(ProbeError)),
     (Reason::Http4xx, None),
     (Reason::Http5xx, Some(ProbeError)),

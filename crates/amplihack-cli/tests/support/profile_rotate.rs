@@ -111,7 +111,8 @@ pub fn euid() -> u32 {
 /// a login file has (`claudeAiOauth` or not) to tell a subscription login
 /// from an API-key profile, so the file is a readable private JSON object.
 /// Its values are sentinels that must never be printed; its inode
-/// identifies it.
+/// identifies it. Use a distinct refresh token for each account so
+/// parallel probes exercise separate retry locks.
 pub fn login(path: &Path) -> u64 {
     assert!(path.starts_with(std::env::temp_dir()));
     let dir = path.parent().unwrap();
@@ -154,7 +155,8 @@ pub fn login(path: &Path) -> u64 {
     private_file(
         path,
         &serde_json::json!({"claudeAiOauth": {
-            "accessToken": format!("fake-rotation1753-{fake}"), "refreshToken": "SENTINEL-TOKEN",
+            "accessToken": format!("fake-rotation1753-{fake}"),
+            "refreshToken": format!("SENTINEL-TOKEN-{fake}"),
             "expiresAt": 4_102_444_800_000_i64
         }})
         .to_string(),

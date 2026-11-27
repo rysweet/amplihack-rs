@@ -24,7 +24,7 @@
 //!
 //! ```text
 //! const LAST_GOOD_MAX_AGE_SECS: i64 = 18_000;
-//! struct LastGood { pub reading: Reading, pub at: i64 }   // Debug, Clone, PartialEq
+//! struct LastGood { pub reading: Reading, pub at: i64, pub observed_at: Option<i64> }
 //! last_good(root: &Path, names: &[ProfileName], now: i64)
 //!     -> BTreeMap<ProfileName, LastGood>
 //! ```

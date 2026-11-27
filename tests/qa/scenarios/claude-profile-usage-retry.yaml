@@ -1,7 +1,8 @@
 name: claude-profile-usage-retry
 description: >
   A loopback usage endpoint declines a login and supplies a retry time.
-  A separate process reads the same login after it moves to the live slot.
+  A separate process reads the same login after it moves to the live slot
+  and again after its OAuth tokens rotate.
   The endpoint receives no request before the deadline and receives one
   exactly at the deadline. A new deadline in that response is shared again.
   A different login remains readable throughout. The usage command and
@@ -15,7 +16,7 @@ steps:
   - name: verify-shared-retry-deadlines
     agent: cli-agent
     action: execute_command
-    target: 'cargo test --locked -j 4 -p amplihack-cli --lib separate_processes_observe_the_same_retry_deadline'
+    target: 'cargo test --locked -j 4 -p amplihack-cli --lib separate_processes_observe_the_same_retry_deadline_after_a_move_and_refresh'
   - name: verify-usage-and-rotator-entry-points
     agent: cli-agent
     action: execute_command

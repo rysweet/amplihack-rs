@@ -79,6 +79,8 @@ pub enum ProbeLabel {
     /// Another failure of the probe itself that says nothing about the
     /// login: a server error, an unreadable answer, `claude` not starting.
     ProbeError,
+    RetryBusy,
+    RetryNotSaved,
 }
 
 impl ProbeLabel {
@@ -90,6 +92,8 @@ impl ProbeLabel {
             Self::Timeout => "timeout",
             Self::StillRunning => "still running",
             Self::ProbeError => "probe error",
+            Self::RetryBusy => "usage retry lock busy",
+            Self::RetryNotSaved => "HTTP 429 (usage retry deadline not saved)",
         }
     }
 }
@@ -105,6 +109,8 @@ impl ProbeLabel {
 fn direct_label(why: &str) -> Option<ProbeLabel> {
     match Reason::parse(why)? {
         Reason::Http429 => Some(ProbeLabel::Http429),
+        Reason::RetryBusy => Some(ProbeLabel::RetryBusy),
+        Reason::RetryNotSaved => Some(ProbeLabel::RetryNotSaved),
         Reason::Transport => Some(ProbeLabel::Transport),
         Reason::Timeout => Some(ProbeLabel::Timeout),
         Reason::Http3xx

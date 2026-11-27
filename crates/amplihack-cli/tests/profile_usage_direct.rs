@@ -279,14 +279,7 @@ fn usage_command_and_rotator_share_the_server_retry_deadline() {
     const FIRST: i64 = START + 60_000;
     const SECOND: i64 = FIRST + 60_000;
     let f = Fixture::new();
-    for (name, path) in [
-        ("work", f.home_login()),
-        ("spare", f.slot("spare")),
-        ("extra", f.slot("extra")),
-    ] {
-        let mut doc: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        doc["claudeAiOauth"]["refreshToken"] = refresh(name).into();
-        private_file(&path, &doc.to_string());
+    for name in ["work", "spare", "extra"] {
         f.usage_direct(name, 100, 55);
     }
     f.canned_usage("spare", "");
@@ -318,7 +311,8 @@ fn usage_command_and_rotator_share_the_server_retry_deadline() {
 
     rotate(FIRST - 5_000);
     assert_eq!(f.direct_usage_requests("spare"), 1);
-    assert!(f.direct_usage_requests("extra") > 0);
+    assert!(f.direct_usage_requests("work") > 0);
+    assert_eq!(f.direct_usage_requests("extra"), 1);
 
     f.usage_retry_after("spare", Some(&deadline(SECOND)));
     rotate(FIRST);

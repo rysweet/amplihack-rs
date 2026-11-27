@@ -279,7 +279,8 @@ pub(super) fn declined(_: &SourceEnv, _: &Plan, _: &Path) -> Option<Probe> {
 
 #[cfg(unix)]
 fn retry_state_failed(why: &str) -> bool {
-    why == usage_direct::reason::RETRY_STATE
+    use usage_direct::reason::{RETRY_BUSY, RETRY_NOT_SAVED, RETRY_STATE};
+    matches!(why, RETRY_BUSY | RETRY_NOT_SAVED | RETRY_STATE)
 }
 
 #[cfg(not(unix))]
@@ -360,6 +361,9 @@ fn read_without_claude(
     {
         let mut p = Probe::read(report, Source::Passive);
         if let Some(declined) = declined(env, plan, retry_parent) {
+            if declined.retry_until_ms.is_none() {
+                return Ok(declined);
+            }
             p.retry_until_ms = declined.retry_until_ms;
         }
         return Ok(p);

@@ -675,16 +675,23 @@ fn ac7_a_failed_login_is_shown_as_failed_and_an_unknown_one_as_unknown() {
 }
 
 #[test]
-fn cycle_displays_dated_history_for_unread_logins_through_the_age_limit() {
+fn cycle_displays_dated_history_through_each_logins_age_limit() {
     use super::Extra;
     use crate::commands::profile::auto_switch::kit::State;
+    use crate::commands::profile::rotate::decide::last_good::LAST_GOOD_MAX_AGE_SECS;
     use crate::commands::profile::rotate::fresh::MAX_READING_AGE_SECS;
     use crate::commands::profile::rotate::{log, observe};
 
     let f = fleet(&["example"], &[]);
     let fresh = clock();
     f.history("work", MAX_READING_AGE_SECS, 51, 80);
-    f.history("example", MAX_READING_AGE_SECS, 12, 34);
+    f.history_observed(
+        "example",
+        MAX_READING_AGE_SECS - 60,
+        MAX_READING_AGE_SECS,
+        12,
+        34,
+    );
     let ctx = crate::commands::profile::rotate::tests_revalidate_cause::ctx_with(
         &f.e,
         super::tests_issue_2910_fixture::stub,
@@ -713,22 +720,25 @@ fn cycle_displays_dated_history_for_unread_logins_through_the_age_limit() {
     )
     .unwrap();
 
-    let (live, others) = log::cycle_shown(&ctx, &snap, &measurement, fresh);
-    for (shown, figures) in [(&live, (51.0, 80.0)), (&others[0].1, (12.0, 34.0))] {
-        assert_eq!(shown.label, Some(label.as_str()));
-        assert_eq!(shown.cached, Some(MAX_READING_AGE_SECS as u64));
-        assert_eq!(
-            (shown.session, shown.week),
-            (Some(figures.0), Some(figures.1))
-        );
-    }
-
-    let (live, others) = log::cycle_shown(&ctx, &snap, &measurement, fresh + 1);
-    for shown in [&live, &others[0].1] {
-        assert_eq!(shown.label, Some(label.as_str()));
-        assert_eq!(shown.cached, None);
-        assert_eq!((shown.session, shown.week), (None, None));
-        assert!(shown.note.is_none());
+    for (age, live_visible, candidate_visible) in [
+        (MAX_READING_AGE_SECS, true, true),
+        (MAX_READING_AGE_SECS + 1, false, true),
+        (1800, false, true),
+        (LAST_GOOD_MAX_AGE_SECS, false, true),
+        (LAST_GOOD_MAX_AGE_SECS + 1, false, false),
+    ] {
+        let now = fresh + age - MAX_READING_AGE_SECS;
+        let (live, others) = log::cycle_shown(&ctx, &snap, &measurement, now);
+        for (shown, visible, session, week) in [
+            (&live, live_visible, 51.0, 80.0),
+            (&others[0].1, candidate_visible, 12.0, 34.0),
+        ] {
+            assert_eq!(shown.label, Some(label.as_str()));
+            assert_eq!(shown.cached, visible.then_some(age as u64));
+            assert_eq!(shown.session, visible.then_some(session));
+            assert_eq!(shown.week, visible.then_some(week));
+            assert!(shown.note.is_none());
+        }
     }
     let (live, others) = measurement.probed.unwrap();
     assert_eq!(live, failed);

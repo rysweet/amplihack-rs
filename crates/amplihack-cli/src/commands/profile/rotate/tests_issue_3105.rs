@@ -290,6 +290,7 @@ fn extra_with(newest: i64, last_good_at: Option<i64>) -> Extra {
                         week: 33.0,
                     },
                     at,
+                    observed_at: None,
                 },
             )])
         }),

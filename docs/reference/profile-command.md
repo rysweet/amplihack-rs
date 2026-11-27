@@ -325,6 +325,11 @@ HTTP date gives the earliest time a later caller can make a direct read
 for that login. The usage row shows that time. The usage command and every
 rotate mode, including `--dry-run`, share the deadline. An absent, invalid,
 or elapsed value leaves the next ordinary caller eligible.
+The deadline follows the login when it moves between profile slots or
+Amplihack refreshes its OAuth tokens. A caller that finds a usage request in
+progress reports the probe as unread and returns without sending a request.
+If a request exits before recording a server deadline, the next ordinary
+caller can read once it acquires the lock.
 
 **Endpoint overrides.** Two variables point the direct read at another
 server, for tests or a local relay:
@@ -3396,10 +3401,11 @@ the run and `at` are the same. The rule is:
   `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` is set above `300`.
 
 For a probe failure with a cause such as HTTP 429, `profile usage` and the
-rotator cycle line can show dated history figures up to 300 seconds after
-`observed_at`. When the figures expire, the cause stays visible. Older points
-without an observation time remain available for capacity estimates and
-candidate selection.
+rotator's live row can show dated history figures up to 300 seconds after
+`observed_at`. Candidate rows can show figures under the rotator's existing
+[last good reading](#last-good-reading) rule, up to five hours old. Their
+age uses the observation time when the history includes it. When the figures
+expire, the cause stays visible.
 
 A row that could not be read is unknown in the same way, whatever step
 failed. That includes a row whose [direct read](#direct-read) failed, with

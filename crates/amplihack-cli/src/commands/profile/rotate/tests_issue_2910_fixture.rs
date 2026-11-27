@@ -227,6 +227,10 @@ impl Fleet {
 
     /// A point of the usage history, `age` seconds before the decision clock.
     pub(in crate::commands::profile::rotate) fn history(&self, who: &str, age: i64, s: u8, w: u8) {
+        self.history_observed(who, age, age, s, w);
+    }
+
+    pub(super) fn history_observed(&self, who: &str, age: i64, observed_age: i64, s: u8, w: u8) {
         let dir = self.e.root.join(".auto-switch.d");
         fs::create_dir_all(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -235,7 +239,7 @@ impl Fleet {
             w,
             w_reset: Some(clock() + 3 * 86_400),
             s_reset: None,
-            observed_at: Some(clock() - age),
+            observed_at: Some(clock() - observed_age),
             no_session_limit: false,
             passive: false,
         };

@@ -74,6 +74,7 @@ use super::usage_direct::{
 };
 use super::usage_direct::{Ctx, get_step, post_step, read_on, read_with, refresh_expired_with};
 use super::usage_parse::UsageState;
+use super::usage_retry::{Held, Key};
 use crate::test_support::virtual_clock::VirtualClock;
 use serde_json::{Value, json};
 use std::ffi::OsStr;
@@ -306,16 +307,16 @@ fn retry_deadline_follows_a_login_between_slots_and_can_be_renewed() {
 }
 
 #[test]
-fn callers_share_the_retry_deadline_from_an_in_flight_request() {
+fn an_in_flight_request_does_not_block_or_admit_other_callers() {
     let l = login();
     let clock = VirtualClock::new();
     let (entered, first_request) = mpsc::channel();
-    let reply_ready = Arc::new(std::sync::Barrier::new(2));
-    let ready = Arc::clone(&reply_ready);
+    let gate = Gate::new();
+    let wait = gate.waiter();
     let fake = FakeHttp::scripted(move |_, n| {
         if n == 0 {
             entered.send(()).unwrap();
-            ready.wait();
+            wait();
         }
         Reply::raw(429, "").header("Retry-After", "60")
     });
@@ -327,35 +328,38 @@ fn callers_share_the_retry_deadline_from_an_in_flight_request() {
         read_on(&ep, &req, &ctx, Some(l._tmp.path())).unwrap_err()
     };
     std::thread::scope(|scope| {
+        let _release = gate.release_on_drop();
         let first = scope.spawn(read);
-        first_request.recv().unwrap();
-        let (started, second_caller) = mpsc::channel();
-        let second = scope.spawn(move || {
-            started.send(()).unwrap();
-            read()
-        });
-        second_caller.recv().unwrap();
-        reply_ready.wait();
+        first_request.recv_timeout(HANG_GUARD).unwrap();
+        let (returned, second_caller) = mpsc::channel();
+        let check_passive =
+            || super::usage_direct::active_retry(&ep, &l.dir, l._tmp.path(), || req.now_ms);
+        scope.spawn(move || returned.send((check_passive(), read())).unwrap());
+        let second = second_caller.recv_timeout(HANG_GUARD);
+        gate.release();
+        let (passive, second) = second.expect("retry checks return while the first GET is held");
         let first = first.join().unwrap();
-        let second = second.join().unwrap();
         assert_eq!(first.why, reason::HTTP_429);
-        assert_eq!(second.why, reason::HTTP_429);
+        assert_eq!(passive, Err(reason::RETRY_BUSY));
+        assert_eq!(second.why, reason::RETRY_BUSY);
+        assert_eq!(second.retry_until_ms, None);
         assert_eq!(first.retry_until_ms, Some(req.now_ms + 60_000));
-        assert_eq!(second.retry_until_ms, first.retry_until_ms);
+        assert_eq!(read().retry_until_ms, first.retry_until_ms);
     });
     assert_eq!(gets(&fake).len(), 1);
 }
 
 #[test]
-fn separate_processes_observe_the_same_retry_deadline() {
+fn separate_processes_observe_the_same_retry_deadline_after_a_move_and_refresh() {
     const CHILD_ROOT: &str = "AMPLIHACK_TEST_USAGE_RETRY_ROOT";
     const CHILD_PORT: &str = "AMPLIHACK_TEST_USAGE_RETRY_PORT";
     const CHILD_STEP: &str = "AMPLIHACK_TEST_USAGE_RETRY_STEP";
-    const START: i64 = 1_800_000_000_000;
+    const START: i64 = 1_700_000_000_000;
     const UNTIL: i64 = START + 60_000;
     const RENEWED: i64 = UNTIL + 30_000;
     let reads = [
         ("spare", START, Some(UNTIL), 1),
+        ("live", UNTIL - 1, Some(UNTIL), 1),
         ("live", UNTIL - 1, Some(UNTIL), 1),
         ("spare", UNTIL - 1, None, 2),
         ("live", UNTIL, Some(RENEWED), 3),
@@ -384,6 +388,13 @@ fn separate_processes_observe_the_same_retry_deadline() {
         let clock = VirtualClock::new();
         let counter = AtomicUsize::new(0);
         let ctx = Ctx::new(&clock, &counter, HANG_GUARD);
+        if step == 2 {
+            let refresh = Request {
+                allow_refresh: true,
+                ..req
+            };
+            assert_eq!(refresh_expired_with(&ep, &refresh, &ctx), Ok(true));
+        }
         let result = read_on(&ep, &req, &ctx, Some(&root));
         if let Some(until) = expected {
             let failure = result.unwrap_err();
@@ -400,8 +411,13 @@ fn separate_processes_observe_the_same_retry_deadline() {
     let root = &l.root;
     let live = root.join("live");
     fs::create_dir(&live).unwrap();
-    let replacement = json!({"claudeAiOauth": {"accessToken": NEW_ACCESS}});
-    let initial = json!({"claudeAiOauth": {"accessToken": ACCESS, "refreshToken": REFRESH}});
+    let replacement_access = "FAKE-ACCESS-1844-other";
+    let replacement = json!({"claudeAiOauth": {"accessToken": replacement_access}});
+    let initial = json!({"claudeAiOauth": {
+        "accessToken": ACCESS,
+        "refreshToken": REFRESH,
+        "expiresAt": START + 1_000
+    }});
     fs::write(l.path(), initial.to_string()).unwrap();
     let renewed_date = chrono::DateTime::from_timestamp_millis(RENEWED)
         .unwrap()
@@ -412,6 +428,13 @@ fn separate_processes_observe_the_same_retry_deadline() {
         "resets_at": iso(START / 1000 + 86_400),
     }});
     let fake = FakeHttp::start(move |seen, count| {
+        if seen.path == TOKEN_PATH {
+            assert_eq!(
+                serde_json::from_str::<Value>(&seen.body).unwrap()["refresh_token"],
+                REFRESH
+            );
+            return Reply::json(200, &token_answer());
+        }
         if seen.path != USAGE_PATH {
             return Reply::raw(404, "");
         }
@@ -424,7 +447,9 @@ fn separate_processes_observe_the_same_retry_deadline() {
     let base = fake.base();
     let port = base.rsplit_once(':').unwrap().1;
     let (_, tests) = module_path!().split_once("::").unwrap();
-    let name = format!("{tests}::separate_processes_observe_the_same_retry_deadline");
+    let name = format!(
+        "{tests}::separate_processes_observe_the_same_retry_deadline_after_a_move_and_refresh"
+    );
     for (step, (_, _, _, count)) in reads.into_iter().enumerate() {
         if step == 1 {
             fs::rename(l.path(), live.join(CREDS)).unwrap();
@@ -448,10 +473,72 @@ fn separate_processes_observe_the_same_retry_deadline() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(gets(&fake).len(), count);
+        assert_eq!(posts(&fake), usize::from(step >= 2));
     }
-    for (request, access) in gets(&fake).iter().zip([ACCESS, NEW_ACCESS, ACCESS, ACCESS]) {
+    for (request, access) in
+        gets(&fake)
+            .iter()
+            .zip([ACCESS, replacement_access, NEW_ACCESS, NEW_ACCESS])
+    {
         assert_eq!(bearer(request), Some(format!("Bearer {access}").as_str()));
     }
+}
+
+#[test]
+fn an_abandoned_request_leaves_the_next_caller_eligible() {
+    let l = login();
+    let fake = FakeHttp::scripted(|_, _| Reply::raw(429, "").header("Retry-After", "60"));
+    let ep = endpoints(&fake);
+    let req = request(&l, &[], false);
+    let clock = VirtualClock::new();
+    let counter = AtomicUsize::new(0);
+    let ctx = Ctx::new(&clock, &counter, HANG_GUARD).with_transport(&fake);
+    let key = Key::new(&fake.base(), REFRESH);
+    {
+        let held = Held::take(&l.root, &key).unwrap();
+        let _record = held.begin().unwrap();
+    }
+
+    let read = || read_on(&ep, &req, &ctx, Some(&l.root)).unwrap_err();
+    let first = read();
+    assert_eq!(first.why, reason::HTTP_429);
+    assert_eq!(first.retry_until_ms, Some(req.now_ms + 60_000));
+    let deferred = read();
+    assert_eq!(deferred.why, reason::HTTP_429);
+    assert_eq!(deferred.retry_until_ms, first.retry_until_ms);
+    assert_eq!(gets(&fake).len(), 1);
+}
+
+#[test]
+fn a_directory_move_during_the_request_keeps_the_server_deadline() {
+    let l = login();
+    let retry = l.root.join(".usage-retry");
+    let parked = l.root.join("parked-retry-state");
+    let (source, destination) = (retry.clone(), parked.clone());
+    let fake = FakeHttp::scripted(move |_, _| {
+        // The original path is unavailable when the deadline arrives.
+        fs::rename(&source, &destination).unwrap();
+        Reply::raw(429, "").header("Retry-After", "60")
+    });
+    let ep = endpoints(&fake);
+    let req = request(&l, &[], false);
+    let clock = VirtualClock::new();
+    let counter = AtomicUsize::new(0);
+    let ctx = Ctx::new(&clock, &counter, HANG_GUARD).with_transport(&fake);
+    let read = || read_on(&ep, &req, &ctx, Some(&l.root)).unwrap_err();
+    let failure = read();
+    assert_eq!(failure.why, reason::HTTP_429);
+    assert_eq!(failure.retry_until_ms, Some(req.now_ms + 60_000));
+    fs::rename(&parked, &retry).unwrap();
+
+    let deferred = read();
+    assert_eq!(deferred.why, reason::HTTP_429);
+    assert_eq!(deferred.retry_until_ms, failure.retry_until_ms);
+    assert_eq!(
+        super::usage_direct::active_retry(&ep, &l.dir, &l.root, || req.now_ms),
+        Ok(failure.retry_until_ms)
+    );
+    assert_eq!(gets(&fake).len(), 1);
 }
 
 #[test]
