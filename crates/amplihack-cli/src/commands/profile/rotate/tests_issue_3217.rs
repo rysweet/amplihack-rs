@@ -2,11 +2,14 @@
 //! clock, a stand-in usage source and a temporary profile store.
 
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+use super::damp::high_use::{Evidence, known_high};
 use super::decide::Probed;
 use super::decide::target_seen::Extra;
 use super::decide::target_seen::tests_issue_2910_fixture::{
     Fleet, clock, expired, fleet, name, reporter, set_clock,
 };
+use super::fresh::live::{Held, Series};
+use super::ledger::high_water::HighWater;
 use super::measure::ProbeLabel;
 use super::observe::{Measurement, Snap, decide_with};
 use super::tests_issue_1870::{exh, rd};
@@ -273,20 +276,21 @@ fn a_brief_rise_at_low_usage_preserves_the_hold_after_failed_probes() {
 }
 
 #[test]
-fn a_stored_weekly_peak_allows_a_third_failure_swap_only_while_open() {
-    for open in [true, false] {
+fn first_incident_timing_allows_a_third_failure_swap_given_an_open_weekly_peak() {
+    for (peak_reset, expect_swap) in [(Some(7200), true), (Some(1000), false), (None, false)] {
         after_swap(|f, ctx, t| {
-            // The first report gives no pre-failure usage. Supply a peak to
-            // test the decision with the reported outage timing. The 100%
-            // reading arrived later and is unavailable in these cycles.
-            let reset = t + if open { 7200 } else { 1000 };
-            let mut ledger = f.e.rs.load_ledger().unwrap().unwrap();
-            let mut peak = rd(5.0, f64::from(ctx.settings.week_at), None);
-            peak.windows.week.as_mut().unwrap().resets_at = Some(reset);
-            ledger.high_water.raise("target", &peak, t);
-            f.e.rs.save_ledger(&ledger).unwrap();
-            // The report gives the first and last failure times. Place the
-            // intermediate failure between them.
+            // #3181 records held cycles from 20:51:26 to 20:57:48 UTC
+            // and a 100% session reading at 20:59:08 UTC. It gives no
+            // pre-failure usage or time for the third counted failure.
+            // The peak and the placement of the three failures within
+            // the reported interval are inputs to the conditional replay.
+            if let Some(reset) = peak_reset {
+                let mut ledger = f.e.rs.load_ledger().unwrap().unwrap();
+                let mut peak = rd(5.0, f64::from(ctx.settings.week_at), None);
+                peak.windows.week.as_mut().unwrap().resets_at = Some(t + reset);
+                ledger.high_water.raise("target", &peak, t);
+                f.e.rs.save_ledger(&ledger).unwrap();
+            }
             for (i, offset) in [926, 1117, 1308].into_iter().enumerate() {
                 let at = t + offset;
                 let (outcome, calls) = fail(
@@ -296,7 +300,7 @@ fn a_stored_weekly_peak_allows_a_third_failure_swap_only_while_open() {
                     Some(rd(0.0, 0.0, None)),
                     rd(0.0, 0.0, Some(at)),
                 );
-                if open && i == 2 {
+                if expect_swap && i == 2 {
                     assert_eq!(outcome, CycleOutcome::Swapped);
                     assert_eq!(calls, [name("reserve")]);
                     assert!(f.live_is("reserve"));
@@ -348,6 +352,93 @@ fn a_last_weekly_reading_at_the_threshold_is_enough_without_a_peak() {
         assert_eq!(calls, [name("reserve")]);
         assert!(f.live_is("reserve"));
     });
+}
+
+#[test]
+fn a_weekly_reading_can_trigger_a_swap_after_session_reset_and_peak_eviction() {
+    for (week_reset, expect_swap) in [(7200, true), (181, false)] {
+        after_swap(|f, ctx, t| {
+            let mut live = reading(5.0, f64::from(ctx.settings.week_at), t + 37, t + 133);
+            live.windows.week.as_mut().unwrap().resets_at = Some(t + week_reset);
+            let (_, calls) = cycle(ctx, t + 37, live, None, None, Probed::failed());
+            assert!(calls.is_empty());
+            assert!(f.live_is("target"));
+
+            for (i, offset) in [85, 133].into_iter().enumerate() {
+                let (outcome, calls) = fail(
+                    ctx,
+                    t + offset,
+                    None,
+                    Some(rd(0.0, 77.0, None)),
+                    Probed::failed(),
+                );
+                assert_eq!(outcome, CycleOutcome::StayedUnread);
+                assert_eq!(ctx.failed_live, i as u32 + 1);
+                assert!(calls.is_empty());
+            }
+
+            // Fill the cap with earlier-resetting entries while the live
+            // login still has a peak for the other window.
+            let mut ledger = f.e.rs.load_ledger().unwrap().unwrap();
+            let now = t + 133;
+            let peaks = ledger.high_water.applicable("target", None, None, now);
+            assert!(peaks.week.is_some());
+            let shorter = reading(5.0, 10.0, now, t + 160);
+            for i in 0..16 {
+                ledger
+                    .high_water
+                    .raise(&format!("spare-{i}"), &shorter, now);
+            }
+            ledger.high_water.prune(now);
+            let peaks = ledger.high_water.applicable("target", None, None, now);
+            assert!(peaks.session.is_none() && peaks.week.is_none());
+            f.e.rs.save_ledger(&ledger).unwrap();
+
+            let at = t + 181;
+            let (outcome, calls) = fail(
+                ctx,
+                at,
+                None,
+                Some(rd(0.0, 77.0, None)),
+                rd(0.0, 77.0, Some(at)),
+            );
+            if expect_swap {
+                assert_eq!(outcome, CycleOutcome::Swapped);
+                assert_eq!(calls, [name("reserve")]);
+                assert!(f.live_is("reserve"));
+            } else {
+                assert_eq!(outcome, CycleOutcome::StayedUnread);
+                assert_eq!(ctx.failed_live, 3);
+                assert!(calls.is_empty());
+                assert!(f.live_is("target"));
+            }
+        });
+    }
+}
+
+#[test]
+fn a_session_reading_still_counts_after_the_week_resets() {
+    let settings = reporter();
+    let name = name("target");
+    let mut series = Series::default();
+    series.hold(
+        &name,
+        Held {
+            at: 37,
+            session: f64::from(settings.session_at),
+            week: f64::from(settings.week_at),
+            resets: Some(7200),
+            week_resets: Some(133),
+        },
+    );
+    assert!(matches!(
+        known_high(&series, &HighWater::default(), &name, 0, 133, &settings),
+        Some(Evidence::Level {
+            window: "session",
+            age: Some(96),
+            ..
+        })
+    ));
 }
 
 #[test]

@@ -92,15 +92,35 @@ pub(in crate::commands::profile::rotate) fn known_high(
             resets_at,
         })
     };
-    if let Some(h) = series.held(name, now).filter(|h| post_swap(h.at)) {
-        let age = Some(now.saturating_sub(h.at));
-        if let Some(evidence) = level("session", h.session, settings.session_at, age, h.resets)
-            .or_else(|| level("week", h.week, settings.week_at, age, h.week_resets))
+    let accepted = series.accepted(name).filter(|h| post_swap(h.at));
+    if let Some(h) = accepted {
+        let age = now.saturating_sub(h.at);
+        let session = Point {
+            at: h.at,
+            session: h.session,
+            resets: h.resets,
+        };
+        if session.open_at(now)
+            && let Some(evidence) = level(
+                "session",
+                h.session,
+                settings.session_at,
+                Some(age),
+                h.resets,
+            )
+        {
+            return Some(evidence);
+        }
+        // A known weekly reset bounds its reading independently. With no
+        // weekly reset time, keep the existing age limit for held readings.
+        let week_deadline = h.week_resets.unwrap_or_else(|| session.latest_reset());
+        if now < week_deadline
+            && let Some(evidence) =
+                level("week", h.week, settings.week_at, Some(age), h.week_resets)
         {
             return Some(evidence);
         }
     }
-    let accepted = series.accepted(name).filter(|h| post_swap(h.at));
     let peaks = high_water.applicable(
         name.as_str(),
         accepted.and_then(|h| h.resets),

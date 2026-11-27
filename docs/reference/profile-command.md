@@ -7040,12 +7040,14 @@ consecutive cycles, including this one, whose live probe failed.
 | The [API-key login check](#api-key-login-check) passes on the `$HOME` files and the API key is not live | Stay. | `stay: live probe failed; home key (<detail>) applies to every login once live, a swap changes nothing`; see [API-key login check](#api-key-login-check) |
 | Otherwise | Swap to the first-ranked qualifying candidate after a fresh confirmation, per [Rotate target choice](#rotate-target-choice). | `swap <from>-><to> live failed target s=<n>% w=<n>% reason=failed-probe`, with the usage evidence appended when the swap occurs during the hold |
 
-Use counts as high if the last accepted post-swap reading still applies and
-meets `--session-at` or `--week-at`, or an open high-water reading meets its
-threshold and no newer window supersedes it. A rise between two accepted
-post-swap session observations at least `--interval` seconds apart in the
-same session window also counts if it projects `--session-at` before the
-hold ends and before any known session reset. The projection starts at the
+Use counts as high if either figure from the last accepted post-swap
+reading meets its threshold (`--session-at` or `--week-at`) while its own
+window is still open. A weekly figure with no known reset time can count
+for less than five hours from the reading. An open high-water reading also
+counts if it meets its threshold and no newer window supersedes it. A rise
+between two accepted post-swap session observations at least `--interval`
+seconds apart in the same window also counts if it projects `--session-at`
+before the hold ends and before any known session reset. The projection starts at the
 last observation's original time, including when later cycles reuse that
 reading. The swap line gives the figures and thresholds used.
 
