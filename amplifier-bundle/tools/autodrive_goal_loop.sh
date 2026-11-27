@@ -1,37 +1,9 @@
 #!/usr/bin/env bash
-# autodrive_goal_loop.sh: the driver of the shared goal loop (#3129).
-#
-# One turn is one fresh `amplihack recipe run autodrive-goal-turn`, started
-# from here at constant depth. Each turn: the goal's `final` word (ends the
-# run), a fresh reading (goal tool `read` and guidance), the turn run (one
-# agent step that does any agentic work and names one action), a guidance
-# check, the mechanical action, and the turn record. Fixed code here only reads
-# state and dispatches: it never decides that a run ends because of how an
-# agent's work is going, nothing reads a record to stop, and there is no
-# sleep, timer or poll.
-#
-# The run ends when: the goal tool's `final` prints a word (merged, closed,
-# refused, or the goal's own), the turn carried out `handoff`, `ready` or
-# `stop`, or the owner stops it. Exit 79 and 75 pass up unchanged.
-#
-# A turn run that fails after the runner's own handling does not end the run
-# (failed_turn, #3129 R1): nothing is reset, the evidence goes into result.json
-# and one line into the run's own log, and a fresh agent judges it next turn.
-# Three cases end the run: `--once`; the operator's `recipe.usage_limit_wait =
-# false`; and a terminal policy refusal. A repeated pre-agent failure waits for
-# an owner event instead of starting another identical turn.
-#
-#   autodrive_goal_loop.sh --goal-tool <name.sh> --goal-file <bundle-relative path>
-#     --state-dir <dir> --repo <dir> [--task-file <f>] [--notes-file <f>]
-#     [--invocation <invocation.json>] [--recovery-dir <dir>] [--once]
-#
-# Exit: 0 an end (loop-end.json written) or one --once turn; 1 an error, a
-# failed --once turn, or a usage limit the operator asked to receive at once;
-# 2 usage, or a refused contract before turn 1 (no turn runs); 75 and 79
-# passed up. Stdout: exactly one JSON line.
-#
-# Goal contract v1, the reading, the records and the trust rules:
-# docs/reference/autodrive-goal-loop.md.
+# autodrive_goal_loop.sh drives one fresh goal-loop turn at a time.
+# It dispatches state and actions without timers or retry counters.
+# Repeated identical pre-agent failures publish one hand-off, then use the
+# existing owner wait until guidance, pull-request, worktree, or stop changes.
+# See docs/reference/autodrive-goal-loop.md for the contract and records.
 
 set -uo pipefail
 LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || exit 2
@@ -76,7 +48,6 @@ while [ $# -gt 0 ]; do
     *) usage "unknown argument '$(printf '%s' "$1" | goal_clean_line 64)'" ;;
   esac
 done
-
 # --- checks before turn 1 (exit 2; no turn runs) ---------------------------
 [[ "$GOAL_TOOL" =~ ^[a-z0-9_]+\.sh$ ]] || usage "--goal-tool must name a script in the bundle's tools/ folder"
 GOAL_PATH="$(goal_bundle_file "$BUNDLE_ROOT" "tools/$GOAL_TOOL")" || usage "the goal tool is not a regular file in the launch bundle"
@@ -99,7 +70,6 @@ trap 'stopped_by 129' HUP; trap 'stopped_by 130' INT; trap 'stopped_by 143' TERM
 if [ -n "$TASK_FILE" ] && [ -f "$TASK_FILE" ]; then cp -- "$TASK_FILE" "$W/TASK"; else : > "$W/TASK"; fi
 if [ -n "$NOTES_FILE" ] && [ -f "$NOTES_FILE" ]; then cp -- "$NOTES_FILE" "$W/NOTES"; else : > "$W/NOTES"; fi
 cp -- "$GOAL_TEXT" "$W/GOAL" || finish 1 "the goal text cannot be read"
-
 goal_call() { # the goal tool, with the contract and the driver's own state only
   ( cd "$REPO" && AUTODRIVE_GOAL_CONTRACT=1 AUTODRIVE_STATE_DIR="$STATE" AUTODRIVE_REPO="$REPO" AUTODRIVE_WORKTREE="$WORK" \
       AUTODRIVE_LOOP_HOME="$LOOP_HOME" AUTODRIVE_INVOCATION_FILE="$INVOCATION" \
