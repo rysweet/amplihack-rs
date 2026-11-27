@@ -87,7 +87,7 @@ A folder that holds unsaved Git work is left in place by every one of these
 commands, with one line on stderr naming it:
 
 ```text
-amplihack: leaving "/home/ryan/.amplihack/work/r/3f0c9a526d1e" in place: work tree "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs": has unpushed commits
+amplihack: leaving "/home/you/.amplihack/work/r/3f0c9a526d1e" in place: work tree "/home/you/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs": has unpushed commits
 ```
 
 To clear such a folder, save or discard the work, then run cleanup again. See
@@ -204,7 +204,7 @@ or step output:
   "recipe": "default-workflow",
   "pid": 418822,
   "pid_start_ticks": 91833412,
-  "cwd": "/home/ryan/src/amplihack-rs",
+  "cwd": "/home/you/src/amplihack-rs",
   "started_at": "2026-11-01T09:12:44Z",
   "ended_at": "2026-11-01T10:03:19Z",
   "outcome": "success",
@@ -213,7 +213,7 @@ or step output:
     { "correlation_id": "e4a2c6f1-58b7-4d0e-9a31-6f2b8c7d0e95" }
   ],
   "steps": [{ "id": "step-01-prepare-workspace", "status": "completed" }],
-  "log_path": "/home/ryan/.amplihack/recipe-logs/e4a2c6f1-58b7-4d0e-9a31-6f2b8c7d0e95.log"
+  "log_path": "/home/you/.amplihack/recipe-logs/e4a2c6f1-58b7-4d0e-9a31-6f2b8c7d0e95.log"
 }
 ```
 
@@ -233,7 +233,7 @@ reports the attempt id, search the run reports for that attempt:
 ATTEMPT_ID="$(jq -r '.run_id' result.json)"
 WORK_ROOT="${AMPLIHACK_WORK_ROOT:-$HOME/.amplihack/work}"
 grep -l "\"$ATTEMPT_ID\"" "$WORK_ROOT"/runs/*/run.json | xargs -r dirname
-# /home/ryan/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3
+# /home/you/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3
 ```
 
 Run folders themselves are never removed. After cleanup a folder retains
@@ -266,8 +266,8 @@ A target line written by the current hook has five: `kind`, `path`, an empty
 branch, the origin (`created` or `reused`) and the checkout path:
 
 ```text
-worktree	/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039	feat/issue-2039
-target	/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d		created	/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
+worktree	/home/you/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039	feat/issue-2039
+target	/home/you/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d		created	/home/you/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
 ```
 
 Cleanup also accepts the older forms: a line with two fields, or three with an
@@ -316,9 +316,9 @@ use:
 ```bash
 "$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_worktree_root.sh" base
 # with AMPLIHACK_WORK_ROOT_EXPLICIT=1:
-# /home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d
+# /home/you/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d
 # with AMPLIHACK_WORK_ROOT_EXPLICIT=0 or unset:
-# /home/ryan/src/amplihack-rs/worktrees
+# /home/you/src/amplihack-rs/worktrees
 ```
 
 `workflow_worktree_root.sh base` is the only source of this folder. These
@@ -468,12 +468,12 @@ When the sweep removes something from a run, it adds an entry to that run's
       "removed": [
         {
           "kind": "run-worktree",
-          "path": "/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-1808",
+          "path": "/home/you/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-1808",
           "size_bytes": 1843200
         },
         {
           "kind": "run-target",
-          "path": "/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d",
+          "path": "/home/you/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d",
           "size_bytes": 4294967296
         }
       ],
@@ -590,9 +590,9 @@ amplihack cleanup --only run-tmp
 
 ```text
 CATEGORY        ACTION                             SIZE  PATH
-run-tmp         skipped                        12.4 MiB  /Users/ryan/.amplihack/work/r/3f0c9a526d1e
+run-tmp         skipped                        12.4 MiB  /Users/you/.amplihack/work/r/3f0c9a526d1e
                 reason: running processes cannot be seen on this system
-run-tmp         skipped                               -  /Users/ryan/.amplihack/work/r/7b1e44c0a2d9
+run-tmp         skipped                               -  /Users/you/.amplihack/work/r/7b1e44c0a2d9
                 reason: run is active
 ```
 
@@ -641,7 +641,7 @@ It names each such entry in a warning on stderr and leaves its permissions
 unchanged:
 
 ```text
-amplihack: warning: leaving permissions unchanged on "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/fixture" in the runtime folder: not owned by this user or on another filesystem
+amplihack: warning: leaving permissions unchanged on "/home/you/.amplihack/work/r/3f0c9a526d1e/tmp/fixture" in the runtime folder: not owned by this user or on another filesystem
 ```
 
 At most 20 entries are named on stderr; any further ones are counted in one
@@ -714,7 +714,7 @@ holds:
 A refused step prints:
 
 ```text
-amplihack: this run's runtime folder cannot be used: "/home/ryan/.amplihack/work/r/3f0c9a526d1e" is no longer this run's runtime folder; refusing to launch the step
+amplihack: this run's runtime folder cannot be used: "/home/you/.amplihack/work/r/3f0c9a526d1e" is no longer this run's runtime folder; refusing to launch the step
 ```
 
 When the run ends, the runner checks the folder again in the same way while
@@ -724,7 +724,7 @@ holds and the one it removes. Any other folder at the path is kept, and the
 run fails with:
 
 ```text
-runtime resource identity changed; replacement retained at /home/ryan/.amplihack/work/r/3f0c9a526d1e
+runtime resource identity changed; replacement retained at /home/you/.amplihack/work/r/3f0c9a526d1e
 ```
 
 See step 2.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
@@ -1075,8 +1075,8 @@ The line names the folder and the reason. It names the work tree as well when
 the work tree is not the folder itself:
 
 ```text
-amplihack: leaving "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/fixture" in place: has uncommitted changes
-amplihack: leaving "/home/ryan/.amplihack/work/r/3f0c9a526d1e" in place: work tree "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs": has unpushed commits
+amplihack: leaving "/home/you/.amplihack/work/r/3f0c9a526d1e/tmp/fixture" in place: has uncommitted changes
+amplihack: leaving "/home/you/.amplihack/work/r/3f0c9a526d1e" in place: work tree "/home/you/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs": has unpushed commits
 ```
 
 The line goes to stderr whatever `RUST_LOG` is set to, so it is in any log that
@@ -1096,13 +1096,13 @@ amplihack cleanup --apply --only run-tmp --format json 2>/dev/null
 ```json
 {
   "dry_run": false,
-  "work_root": "/home/ryan/.amplihack/work",
+  "work_root": "/home/you/.amplihack/work",
   "entries": [
     {
       "category": "run-tmp",
-      "path": "/home/ryan/.amplihack/work/r/3f0c9a526d1e",
+      "path": "/home/you/.amplihack/work/r/3f0c9a526d1e",
       "size_bytes": 222298112,
-      "reason": "work tree \"/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs\": has unpushed commits",
+      "reason": "work tree \"/home/you/.amplihack/work/r/3f0c9a526d1e/tmp/amplihack-rs\": has unpushed commits",
       "action": "skipped",
       "run_id": "3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3"
     }
@@ -1247,9 +1247,9 @@ removed, and its target goes with it in the same sweep:
 
 ```text
 CATEGORY        ACTION                         SIZE     PATH
-run-worktree    removed                        1.8 MiB  /home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
+run-worktree    removed                        1.8 MiB  /home/you/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
                 reason: PR #2071 merged 2026-11-08T14:02:11Z
-run-target      removed                        4.0 GiB  /home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d
+run-target      removed                        4.0 GiB  /home/you/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d
                 reason: worktree removed by run cleanup
 ```
 
@@ -1260,7 +1260,7 @@ The same run also committed once in the main checkout and recorded that
 target as `reused`. That target stays:
 
 ```text
-run-target      skipped                        6.2 GiB  /home/ryan/.amplihack/work/targets/amplihack-precommit-target-0a1b2c3d4e5f
+run-target      skipped                        6.2 GiB  /home/you/.amplihack/work/targets/amplihack-precommit-target-0a1b2c3d4e5f
                 reason: reused target; checkout still exists
 ```
 
@@ -1294,19 +1294,19 @@ amplihack cleanup --only run-target
 
 ### Links made by the host cargo wrapper
 
-A host cargo wrapper, such as the one on candide, moves a new target off the
+A host cargo wrapper, such as the one on host-a, moves a new target off the
 root disk and leaves a link in its place:
 
 ```text
 ~/.cache/amplihack/amplihack-precommit-target-0e047858ba2f
-  -> /d0/ryan/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016
+  -> /data/you/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016
 ```
 
 Cleanup follows such a link with no setting. The destination's name must be
 exactly `<name of the link's folder>-<target name>-<12 lowercase hex>`, so it
 carries the checkout's own hash, and the folder that holds the destination
 must pass the same checks as an entry of `AMPLIHACK_TARGET_LINK_ROOTS`
-(below). Every other rule in this list still applies. On candide, therefore,
+(below). Every other rule in this list still applies. On host-a, therefore,
 `AMPLIHACK_TARGET_LINK_ROOTS` does not need to be set; it is only for links
 with some other layout.
 
@@ -1393,7 +1393,7 @@ amplihack cleanup --worktree-target ~/.amplihack/work/worktrees/amplihack-rs-1a2
 
 ```text
 CATEGORY        ACTION                         SIZE     PATH
-run-target      would-remove                   4.0 GiB  /home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d
+run-target      would-remove                   4.0 GiB  /home/you/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d
                 reason: worktree removed
 ```
 
@@ -1442,15 +1442,15 @@ amplihack cleanup
 
 ```text
 CATEGORY        ACTION                         SIZE     PATH
-run-target      would-remove                   4.0 GiB  /home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d
+run-target      would-remove                   4.0 GiB  /home/you/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d
                 reason: PR #1820 merged 2026-10-31T08:02:11Z
-run-worktree    would-remove                   1.8 MiB  /home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-1808
+run-worktree    would-remove                   1.8 MiB  /home/you/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-1808
                 reason: PR #1820 merged 2026-10-31T08:02:11Z
-run-worktree    skipped                        612 KiB  /home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-1829
+run-worktree    skipped                        612 KiB  /home/you/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-1829
                 reason: PR #1831 is open
-recipe-log      would-archive                  88 KiB   /home/ryan/.amplihack/recipe-logs/0d4e2c1a-7f33-4b5c-9e8d-1a2b3c4d5e6f.log
+recipe-log      would-archive                  88 KiB   /home/you/.amplihack/recipe-logs/0d4e2c1a-7f33-4b5c-9e8d-1a2b3c4d5e6f.log
                 reason: modified 41 days ago
-session-log     skipped                        2.1 MiB  /home/ryan/.claude/projects/-home-ryan-src-amplihack-rs/5c1f....jsonl
+session-log     skipped                        2.1 MiB  /home/you/.claude/projects/-home-you-src-amplihack-rs/5c1f....jsonl
                 reason: archived by `amplihack sessions archive`
 ```
 
@@ -1477,11 +1477,11 @@ amplihack cleanup --format json
 ```json
 {
   "dry_run": true,
-  "work_root": "/home/ryan/.amplihack/work",
+  "work_root": "/home/you/.amplihack/work",
   "entries": [
     {
       "category": "run-target",
-      "path": "/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d",
+      "path": "/home/you/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d",
       "size_bytes": 4294967296,
       "reason": "PR #1820 merged 2026-10-31T08:02:11Z",
       "action": "would-remove",
@@ -1608,7 +1608,7 @@ To list the targets a run recorded, with their origin and checkout:
 
 ```bash
 grep '^target' ~/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/owned-paths
-# target	/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d		created	/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
+# target	/home/you/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d		created	/home/you/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
 ```
 
 ## Archive and restore logs
@@ -1645,7 +1645,7 @@ the read-back check is removed, so a retry does not leave extra files.
 A manifest line looks like this:
 
 ```json
-{"original_path":"/home/ryan/.amplihack/recipe-logs/0d4e2c1a-7f33-4b5c-9e8d-1a2b3c4d5e6f.log","archive_path":"/home/ryan/.amplihack/work/archive/recipe-logs/0d4e2c1a-7f33-4b5c-9e8d-1a2b3c4d5e6f.log.tar.gz","size_bytes":90112,"digest":"sha256:4f1c...","archived_at":"2026-11-01T10:05:40Z"}
+{"original_path":"/home/you/.amplihack/recipe-logs/0d4e2c1a-7f33-4b5c-9e8d-1a2b3c4d5e6f.log","archive_path":"/home/you/.amplihack/work/archive/recipe-logs/0d4e2c1a-7f33-4b5c-9e8d-1a2b3c4d5e6f.log.tar.gz","size_bytes":90112,"digest":"sha256:4f1c...","archived_at":"2026-11-01T10:05:40Z"}
 ```
 
 The archive folder has no `CACHEDIR.TAG`, so backup tools still include it.

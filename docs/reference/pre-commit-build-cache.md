@@ -191,7 +191,7 @@ target	<target path>		<origin>	<checkout path>
 Example, for a worktree whose target this run built first:
 
 ```text
-target	/home/ryan/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d		created	/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
+target	/home/you/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d		created	/home/you/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2039
 ```
 
 The origin tells cleanup who made the target. A `reused` target belongs to a
@@ -229,7 +229,7 @@ A host can keep build output on a second disk by replacing a target folder
 with a link:
 
 ```text
-~/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d -> /d0/ryan/cargo-targets/amplihack-precommit-target-5e6f7a8b9c0d
+~/.amplihack/work/targets/amplihack-precommit-target-5e6f7a8b9c0d -> /data/you/cargo-targets/amplihack-precommit-target-5e6f7a8b9c0d
 ```
 
 `amplihack cleanup` removes such a target, both the folder on the second disk
@@ -245,11 +245,11 @@ allowed root. The allowed roots are:
 The host cargo wrapper names a moved target
 `<disk>/<name of the link's folder>-<target name>-<12 lowercase hex>`, for
 example
-`/d0/ryan/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016`
+`/data/you/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016`
 for `~/.cache/amplihack/amplihack-precommit-target-0e047858ba2f`. When the
 destination's name is exactly that, built from the link's own name, its
 folder is allowed for that link without any setting, provided the folder
-passes the entry checks below. So candide's `/d0/ryan/cargo-targets` links
+passes the entry checks below. So host-a's `/data/you/cargo-targets` links
 are removed with default settings.
 
 `AMPLIHACK_TARGET_LINK_ROOTS` is a colon-separated list of absolute folders,

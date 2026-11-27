@@ -454,15 +454,15 @@ including any links to later pages, without using the primary rate allowance.
 When GitHub declines a call because of a rate limit, the reading or wait looks
 up the limit with `gh api rate_limit`. It uses the applicable reset time and
 any `Retry-After` delay before retrying that call in the same turn. If GitHub
-provides no usable deadline, the retry uses the configured check interval with
-a minimum of 60 seconds. Guidance can end a CI wait during either delay.
+provides no usable deadline, the operation stays pending until guidance or
+cancellation. Guidance allows the reading to retry and ends a CI wait.
 
 ### CI check interval
 
 Set `checks_watch_interval` when you start `auto-drive-to-merge`,
 `auto-drive-light`, `autodrive-build` or `default-workflow`. The recipe passes
-it to the wait as `RECIPE_VAR_checks_watch_interval`. Give a positive whole
-number of seconds with up to ten digits and no leading zero. An empty or
+it to the wait as `RECIPE_VAR_checks_watch_interval`. Give a whole number of
+seconds from 1 through 9223372036 with no leading zero. An empty or
 omitted value uses 120 seconds. An invalid value also uses 120 seconds and
 prints one warning to stderr.
 

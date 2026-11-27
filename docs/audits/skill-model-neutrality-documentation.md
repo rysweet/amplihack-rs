@@ -26,7 +26,7 @@ This report records the documentation refinement step. Current behavior and the 
 
 ## Existing work preserved
 
-The 71-file statement described an earlier staged snapshot; it does not describe the later 76-path reconciliation manifest. Those are different snapshots, not interchangeable totals. The copied root snapshot contains 76 tracked changed paths (listed in `/d0/ryan/sunfixamp-model-neutrality/refinement-source-manifest.txt`); adding the preserved untracked regression and loader fix gives 78 paths in this branch. The current refinement copied the root tracked diff into the clean `feat/issue-1533-user-explicitly` worktree and preserved the untracked real-bundle regression. Root edits remain untouched. The three refined documentation pages were copied from `feat/issue-1532-complete-model`.
+The 71-file statement described an earlier staged snapshot; it does not describe the later 76-path reconciliation manifest. Those are different snapshots, not interchangeable totals. The copied root snapshot contains 76 tracked changed paths (listed in `/data/you/sunfixamp-model-neutrality/refinement-source-manifest.txt`); adding the preserved untracked regression and loader fix gives 78 paths in this branch. The current refinement copied the root tracked diff into the clean `feat/issue-1533-user-explicitly` worktree and preserved the untracked real-bundle regression. Root edits remain untouched. The three refined documentation pages were copied from `feat/issue-1532-complete-model`.
 
 ## Scope and decisions
 
@@ -38,38 +38,38 @@ Directory links from `docx` and `pptx` point to canonical `common/ooxml`; `outsi
 
 ## Validation evidence and limits
 
-Earlier statements about whitespace, links, fences, mirror checks, and caller-directory independence lacked revision, exit-code, and log attachments. They remain historical reports, not reproducible evidence for this branch. Parent frontmatter logs likewise omit a recorded tested revision; they are baseline evidence only. Baseline loader failure is retained at `/d0/ryan/sunfixamp-model-neutrality/real-skill-loader-tests.log` (nine omitted identities).
+Earlier statements about whitespace, links, fences, mirror checks, and caller-directory independence lacked revision, exit-code, and log attachments. They remain historical reports, not reproducible evidence for this branch. Parent frontmatter logs likewise omit a recorded tested revision; they are baseline evidence only. Baseline loader failure is retained at `/data/you/sunfixamp-model-neutrality/real-skill-loader-tests.log` (nine omitted identities).
 
 Current production-loader validation checks exactly 130 recursive files, exact name equality, resolved source-directory equality, and nonempty bodies. Unit tests cover optional description, extension round trips, typed metadata rejection, duplicate names, malformed delimiters, and empty bodies. Extension preservation does not add execution semantics.
 
 At this historical revision, supporting-YAML, corpus structure/assets, and complete isolated installation coverage were still planned. The follow-up evidence below supersedes the YAML and installation limitations. SDK compilation and provider execution remain unverified; C# configuration rejection is already implemented in all three examples and mirrors, so it is not pending implementation.
 
-Builds use the authorized existing cache `/d0/ryan/amplihack-builds/target/amp`; temporary files use `/d0/ryan/sunfixamp-model-neutrality/tmp`. Evidence for this refinement is recorded below with exact commands and log paths. The PR remains open and unmerged.
+Builds use the authorized existing cache `/data/you/amplihack-builds/target/amp`; temporary files use `/data/you/sunfixamp-model-neutrality/tmp`. Evidence for this refinement is recorded below with exact commands and log paths. The PR remains open and unmerged.
 
 ## Recorded refinement validation
 
-Tested tree: base revision `4ccd1977a54e06a7f940507ebc2041f2f638869e` plus this branch’s uncommitted 78-path change set, subsequently committed for publication. Commands ran from `feat/issue-1533-user-explicitly`, with `CARGO_TARGET_DIR=/d0/ryan/amplihack-builds/target/amp` and `TMPDIR=/d0/ryan/sunfixamp-model-neutrality/tmp`.
+Tested tree: base revision `4ccd1977a54e06a7f940507ebc2041f2f638869e` plus this branch’s uncommitted 78-path change set, subsequently committed for publication. Commands ran from `feat/issue-1533-user-explicitly`, with `CARGO_TARGET_DIR=/data/you/amplihack-builds/target/amp` and `TMPDIR=/data/you/sunfixamp-model-neutrality/tmp`.
 
 | Command | Exit | Log |
 | --- | --- | --- |
-| `cargo test -p amplihack-domain-agents --test bundled_skill_catalog` | 0 | `/d0/ryan/sunfixamp-model-neutrality/loader-final.log` |
-| `cargo test -p amplihack-domain-agents --lib skill_catalog` | 0 | `/d0/ryan/sunfixamp-model-neutrality/metadata-final.log` |
-| `cargo test -p amplihack --test skill_frontmatter_name --test skill_frontmatter_type --test issue_849_skill_mirror_citation` | 0 | `/d0/ryan/sunfixamp-model-neutrality/frontmatter-final.log` |
-| `cargo test -p amplihack-cli issue_1438_skill_publication` | 0 | `/d0/ryan/sunfixamp-model-neutrality/publication-final.log` |
-| `bash amplifier-bundle/recipes/tests/test-skill-model-neutrality.sh` | 0 | `/d0/ryan/sunfixamp-model-neutrality/neutrality-final.log` |
-| `PYTHONDONTWRITEBYTECODE=1 python3 amplifier-bundle/recipes/tests/test_skill_model_neutrality.py` | 0 | `/d0/ryan/sunfixamp-model-neutrality/regressions-final.log` |
-| `bash amplifier-bundle/recipes/tests/test-issue-962-skill-mirror-parity.sh` | 0 | `/d0/ryan/sunfixamp-model-neutrality/mirror-final.log` |
-| `bash -n amplifier-bundle/recipes/tests/test-skill-model-neutrality.sh` | 0 | `/d0/ryan/sunfixamp-model-neutrality/syntax-final.log` |
-| `git diff HEAD --check` | 0 | `/d0/ryan/sunfixamp-model-neutrality/whitespace-final.log` |
-| `shellcheck amplifier-bundle/recipes/tests/test-skill-model-neutrality.sh` | 0 | `/d0/ryan/sunfixamp-model-neutrality/shellcheck-final.log` |
+| `cargo test -p amplihack-domain-agents --test bundled_skill_catalog` | 0 | `/data/you/sunfixamp-model-neutrality/loader-final.log` |
+| `cargo test -p amplihack-domain-agents --lib skill_catalog` | 0 | `/data/you/sunfixamp-model-neutrality/metadata-final.log` |
+| `cargo test -p amplihack --test skill_frontmatter_name --test skill_frontmatter_type --test issue_849_skill_mirror_citation` | 0 | `/data/you/sunfixamp-model-neutrality/frontmatter-final.log` |
+| `cargo test -p amplihack-cli issue_1438_skill_publication` | 0 | `/data/you/sunfixamp-model-neutrality/publication-final.log` |
+| `bash amplifier-bundle/recipes/tests/test-skill-model-neutrality.sh` | 0 | `/data/you/sunfixamp-model-neutrality/neutrality-final.log` |
+| `PYTHONDONTWRITEBYTECODE=1 python3 amplifier-bundle/recipes/tests/test_skill_model_neutrality.py` | 0 | `/data/you/sunfixamp-model-neutrality/regressions-final.log` |
+| `bash amplifier-bundle/recipes/tests/test-issue-962-skill-mirror-parity.sh` | 0 | `/data/you/sunfixamp-model-neutrality/mirror-final.log` |
+| `bash -n amplifier-bundle/recipes/tests/test-skill-model-neutrality.sh` | 0 | `/data/you/sunfixamp-model-neutrality/syntax-final.log` |
+| `git diff HEAD --check` | 0 | `/data/you/sunfixamp-model-neutrality/whitespace-final.log` |
+| `shellcheck amplifier-bundle/recipes/tests/test-skill-model-neutrality.sh` | 0 | `/data/you/sunfixamp-model-neutrality/shellcheck-final.log` |
 
-The loader regression passed for all 130 names and resolved paths; 11 catalog unit tests passed, 11 frontmatter name tests, four type tests, six citation tests, one existing installation test, and six neutrality regression tests passed. The neutrality guard reports 130 skills and 860 text paths. Documentation local-link and paired-fence checks exited 0 (`/d0/ryan/sunfixamp-model-neutrality/documentation-final.log`); the script reads only the three refined pages. Root preservation was checked by `cmp` of `tmp/root.patch` and `tmp/root-after.patch` (exit 0).
+The loader regression passed for all 130 names and resolved paths; 11 catalog unit tests passed, 11 frontmatter name tests, four type tests, six citation tests, one existing installation test, and six neutrality regression tests passed. The neutrality guard reports 130 skills and 860 text paths. Documentation local-link and paired-fence checks exited 0 (`/data/you/sunfixamp-model-neutrality/documentation-final.log`); the script reads only the three refined pages. Root preservation was checked by `cmp` of `tmp/root.patch` and `tmp/root-after.patch` (exit 0).
 
 Review and double-check examined loader discovery, error propagation, metadata serialization, typed operational fields, exact corpus coverage, configuration validation and documentation claims. The citation target names were confirmed against Cargo registrations; no command rename was warranted. Remaining planned tests are disclosed above. Changing `SkillMeta.token_budget` from `Option<u32>` to `Option<TokenBudget>` is a Rust API change: callers matching scalar budgets must use `TokenBudget::Scalar`. Repository callers compile in the completed tests.
 
-Pre-commit initially exited 1 for a Rust formatting mismatch (`precommit-final.log`); `cargo fmt -p amplihack-domain-agents` corrected it. `cargo fmt --all --check` then exited 0 (`format-final.log`), and Clippy passed. The staged-tree pre-commit recheck exited 0 and is logged at `/d0/ryan/sunfixamp-model-neutrality/precommit-recheck.log`.
+Pre-commit initially exited 1 for a Rust formatting mismatch (`precommit-final.log`); `cargo fmt -p amplihack-domain-agents` corrected it. `cargo fmt --all --check` then exited 0 (`format-final.log`), and Clippy passed. The staged-tree pre-commit recheck exited 0 and is logged at `/data/you/sunfixamp-model-neutrality/precommit-recheck.log`.
 
-CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py` asset under the repository’s tracked-Python guard. The six regression cases were moved into `test-skill-model-neutrality-regressions.sh`, initially using the existing guard’s inline-Python shell convention. The shell regression command passed all six tests (exit 0, `/d0/ryan/sunfixamp-model-neutrality/regressions-shell.log`). `scripts/check-no-python-assets.sh`, ShellCheck on the regression shell, and staged pre-commit all exited 0 (`python-assets-final.log`, `shell-regressions-check.log`, `precommit-shell.log` in the same evidence directory). The guide now names that entry point; the earlier Python command above is historical evidence.
+CI on commit `740b133b83ce3aa18e844fc227acb54f478d86a4` rejected the copied `.py` asset under the repository’s tracked-Python guard. The six regression cases were moved into `test-skill-model-neutrality-regressions.sh`, initially using the existing guard’s inline-Python shell convention. The shell regression command passed all six tests (exit 0, `/data/you/sunfixamp-model-neutrality/regressions-shell.log`). `scripts/check-no-python-assets.sh`, ShellCheck on the regression shell, and staged pre-commit all exited 0 (`python-assets-final.log`, `shell-regressions-check.log`, `precommit-shell.log` in the same evidence directory). The guide now names that entry point; the earlier Python command above is historical evidence.
 
 ## Canonical inventory
 
@@ -215,6 +215,6 @@ second-document regression also passes. Isolated real-corpus publication verifie
 all 130 published SKILL.md files byte-for-byte. The issue #1438 local installation
 fixture and issue #1277 nested support-file fixture pass. Frontmatter name/type
 checks pass 15 tests, citation checks pass six, and issue #962 passes six checks.
-Logs use the `native-` prefix under `/d0/ryan/sunfixamp-model-neutrality`;
+Logs use the `native-` prefix under `/data/you/sunfixamp-model-neutrality`;
 `native-review.md` records review and double-check findings. Broad validation of
 all referenced assets and provider SDK execution remain unverified.

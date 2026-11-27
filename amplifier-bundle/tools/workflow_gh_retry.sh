@@ -520,9 +520,22 @@ _gh_header() {
     }' "$1"
 }
 
+# The reading can supply gh_rate_limit_guidance to wait for a new entry.
+# A CI wait is already under guidance wait. With no deadline, block until
+# the enclosing guidance wake or a cancellation interrupts the shell.
+_gh_goal_wait_for_guidance() {
+  local rc=0
+  if declare -F gh_rate_limit_guidance >/dev/null; then
+    gh_rate_limit_guidance || rc=$?
+    case "$rc" in 0|75|79) return "$rc" ;; esac
+  fi
+  mkfifo "$GH_READ_DIR/rate-limit.wait" || return 1
+  read -r <> "$GH_READ_DIR/rate-limit.wait"
+}
+
 _gh_goal_wait_for_reset() {
   local resource="$1" headers="$2" reported_at="$3"
-  local retry remaining reset deadline=0 rc=0 now delay
+  local retry remaining reset deadline=0 rc=0 now
   retry="$(_gh_header "$headers" retry-after)"
   remaining="$(_gh_header "$headers" x-ratelimit-remaining)"
   reset="$(_gh_header "$headers" x-ratelimit-reset)"
@@ -547,17 +560,8 @@ _gh_goal_wait_for_reset() {
     deadline=$((reported_at + 10#$retry))
   fi
   if [ "$deadline" -le "$reported_at" ]; then
-    GH_READ_INTERVAL="${GH_READ_INTERVAL:-$(goal_checks_watch_interval)}"
-    delay="$GH_READ_INTERVAL"
-    # GitHub asks clients to wait at least one minute with no Retry-After.
-    if [ "$delay" -lt 60 ]; then delay=60; fi
-    printf 'GitHub declined a %s read without a future retry deadline. Retrying after %ss.\n' "$resource" "$delay" >&2
-    if declare -F gh_rate_limit_guidance >/dev/null; then
-      rc=0
-      gh_rate_limit_guidance "$delay" || rc=$?
-      case "$rc" in 0|75|79) return "$rc" ;; esac
-    fi
-    gh_goal_command sleep "$delay"
+    printf 'GitHub declined a %s read and supplied no future retry deadline. The read is pending.\n' "$resource" >&2
+    _gh_goal_wait_for_guidance
     return $?
   fi
   now="$(date +%s)" || return 1

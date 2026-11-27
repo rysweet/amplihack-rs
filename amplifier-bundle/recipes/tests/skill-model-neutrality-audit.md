@@ -80,7 +80,7 @@ Follow-up review added failing regressions for generic provider recommendations,
 130. The guard now checks the exact reviewed inventory against this table and
 detects those selection forms. All six integration tests passed after correction.
 The parent staged patch was snapshotted under `/d0` and compared unchanged.
-Fixtures respect the caller’s TMPDIR; this run uses `/d0/ryan/sunfixamp-model-neutrality/tmp`.
+Fixtures respect the caller’s TMPDIR; this run uses `/data/you/sunfixamp-model-neutrality/tmp`.
 The guard, Bash syntax, ShellCheck, six default-workflow mirror assertions,
 six integration tests, and `git diff HEAD --check` passed in this worktree.
 All three C# mirror pairs are identical. Reviewed the 17 remaining family-name
@@ -88,11 +88,11 @@ lines: poetic forms, historical research, generic research examples, and the
 provider instruction filename `GEMINI.md`; no execution selection remains.
 Updated all three model-neutrality documentation pages to describe implemented
 validation. No builds were needed. Preserved NODE_OPTIONS=--max-old-space-size=32768,
-CARGO_TARGET_DIR=/d0/ryan/sunfixamp-model-neutrality/cargo-target, and TMPDIR above.
+CARGO_TARGET_DIR=/data/you/sunfixamp-model-neutrality/cargo-target, and TMPDIR above.
 
 Final changes are unstaged and uncommitted in
-`/home/ryan/src/SunFixAmp/worktrees/feat/issue-1532-complete-model`.
-The parent `/home/ryan/src/SunFixAmp` staged diff is unchanged.
+`/home/you/src/SunFixAmp/worktrees/feat/issue-1532-complete-model`.
+The parent `/home/you/src/SunFixAmp` staged diff is unchanged.
 
 ## Validation and limitations
 
@@ -123,7 +123,7 @@ Canonical frontmatter is checked, and both trees are scanned for execution pins.
 
 ## Final original-workspace review
 
-Final changes are held uncommitted in `/home/ryan/src/SunFixAmp`, with the original staged implementation preserved and review corrections unstaged. Fixed detector gaps for unversioned aliases in `primary_model` and `fallback_model` fields and generic Claude/GPT aliases in CLI model switches. Added integration and detector regressions; the new integration case failed before the fix. No builds or provider requests were needed. Temporary files and test fixtures remain under the requested `/d0` TMPDIR.
+Final changes are held uncommitted in `/home/you/src/SunFixAmp`, with the original staged implementation preserved and review corrections unstaged. Fixed detector gaps for unversioned aliases in `primary_model` and `fallback_model` fields and generic Claude/GPT aliases in CLI model switches. Added integration and detector regressions; the new integration case failed before the fix. No builds or provider requests were needed. Temporary files and test fixtures remain under the requested `/d0` TMPDIR.
 
 Final review checks passed: neutrality guard from the root and an unrelated `/d0` directory (130 skills, 860 text paths), all six Python integration tests, Bash syntax, ShellCheck, six mirror-policy assertions, and diff whitespace checks. System Python parsed 97 configured Python snippets and both custom-agent YAML examples; all three C# mirror pairs match. Corrected a nonexistent benchmark runner reference in both skill copies to describe manual execution. The `tsc` launcher points to a missing TypeScript installation, so TypeScript parsing was unavailable; C# compilation and live provider execution remain unverified.
 

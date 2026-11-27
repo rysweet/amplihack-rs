@@ -51,7 +51,6 @@ goal_check_turn_dir "$TD" || exit 2
 PR="${RECIPE_VAR_pr_number:-}"; STATE="${AUTODRIVE_STATE_DIR:-}"; REPO="${AUTODRIVE_REPO:-$PWD}"
 S="$(mktemp -d "$TD/.reading.XXXXXX")" || exit 1
 GH_READ_DIR="$S"
-GH_READ_INTERVAL=""
 trap 'gh_goal_cancel; rm -rf -- "$GH_READ_DIR"' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 g() { git -c core.fsmonitor=false -C "$WORK" "$@"; }
@@ -69,7 +68,7 @@ GUIDANCE_SINCE="${AUTODRIVE_GUIDANCE_MARK:-}"
 goal_is_entry "$GUIDANCE_SINCE" || GUIDANCE_SINCE=""
 GUIDANCE_TARGET="${AUTODRIVE_GUIDANCE_TARGET:-}"
 goal_github_pr_repo "$GUIDANCE_TARGET" "$PR" >/dev/null || GUIDANCE_TARGET=""
-gh_rate_limit_guidance() { goal_read_guidance "$1"; }
+gh_rate_limit_guidance() { goal_read_guidance; }
 
 # --- merge authority: the captured invocation only --------------------------
 AUTH=""; AUTH_ERR=""

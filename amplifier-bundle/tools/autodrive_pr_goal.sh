@@ -106,12 +106,22 @@ do_act_review() {
   case "$rc" in 79|75) exit "$rc" ;; 0) result reviewed "$s" ;; *) result review-failed "$s; the log is review.log in the turn folder" ;; esac
 }
 
+checks_watch_interval() {
+  local LC_ALL=C n="${RECIPE_VAR_checks_watch_interval:-}"
+  if [[ "$n" =~ ^[1-9][0-9]{0,9}$ ]] && (( n <= 9223372036 )); then
+    printf '%s\n' "$n"
+  else
+    [ -z "$n" ] || printf '%s\n' 'WARNING: invalid checks_watch_interval. Using 120 seconds.' >&2
+    printf '120\n'
+  fi
+}
+
 # Run in its own shell so the guidance wake can interrupt an API call, a
 # rate-limit wait or an ordinary interval sleep. Exit 10 signals a new head.
 do_ci_wait() {
   # shellcheck source=workflow_gh_retry.sh
   . "$HERE/workflow_gh_retry.sh" || return 2
-  local build_branch="${1:-}" head slug required required_only policy_error="" cache rc state=pending
+  local build_branch="${1:-}" head slug required required_only policy_error="" cache interval rc state=pending
   local reading="$TD/reading.json"
   head="$(jq -r '.goal.pr.head // empty | strings' "$reading")"
   slug="$(goal_github_pr_repo "$(jq -r '.goal.pr.url // empty | strings' "$reading")" "$PR")"
@@ -128,7 +138,7 @@ do_ci_wait() {
       policy_error="${policy_error:-the reading has no complete required-check policy}"
     fi
   fi
-  GH_READ_INTERVAL="$(goal_checks_watch_interval)"
+  interval="$(checks_watch_interval)"
   GH_READ_DIR="$(mktemp -d "$TD/.ci-wait.XXXXXX")" || return 2
   trap 'gh_goal_cancel; rm -rf -- "$GH_READ_DIR"' EXIT
   trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
@@ -171,7 +181,7 @@ do_ci_wait() {
     state="$(jq -r '.state' "$GH_READ_DIR/ci.json")"
     case "$state" in
       passed|failed) ;; # Revalidate the head before using the result.
-      pending) gh_goal_command sleep "$GH_READ_INTERVAL" || return 2 ;;
+      pending) gh_goal_command sleep "$interval" || return 2 ;;
       *) echo 'the CI read returned an unknown state' >&2; return 2 ;;
     esac
   done

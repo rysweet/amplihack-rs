@@ -14,7 +14,6 @@ recursion:
 context:
   step_recovery_dir: ""
   build_recovery: ""
-  checks_watch_interval: ""
   base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
   requirements: ""
@@ -28,6 +27,7 @@ context:
   workflow_result: ""
   finalization_handoff: ""
   no_merge: "true"
+  checks_watch_interval: ""
   autodrive_pr_input: ""
   autodrive_dry_run: "false"
 steps:
@@ -70,8 +70,8 @@ steps:
     # Issue #2539: a failed build goes to step-02r instead of ending the run.
     continue_on_error: true
     context:
-      base_branch: "{{base_branch}}"
       checks_watch_interval: "{{checks_watch_interval}}"
+      base_branch: "{{base_branch}}"
       task_description: "{{no_merge_directive.task_description}}"
       requirements: "{{no_merge_directive.requirements}}"
       repo_path: "{{repo_path}}"

@@ -10,7 +10,7 @@ use std::fs::{self, DirBuilder};
 use std::os::unix::fs::DirBuilderExt;
 use std::process::Command;
 
-fn goal(h: &Harness, args: &[&str]) -> Command {
+pub(super) fn goal(h: &Harness, args: &[&str]) -> Command {
     let mut cmd = Command::new("bash");
     cmd.arg(
         h.bundle_root
@@ -36,7 +36,7 @@ fn goal(h: &Harness, args: &[&str]) -> Command {
     cmd
 }
 
-fn read_and_decide(h: &Harness, required: bool) -> Value {
+pub(super) fn read_and_decide(h: &Harness, required: bool) -> Value {
     let turn = h.state.join("turns/001");
     DirBuilder::new()
         .mode(0o700)
@@ -60,13 +60,13 @@ fn read_and_decide(h: &Harness, required: bool) -> Value {
     reading
 }
 
-fn fake_sleep(h: &Harness, action: &str) {
+pub(crate) fn fake_sleep(h: &Harness, action: &str) {
     let body =
         format!("#!/bin/bash\nset -eu\nprintf '%s\\n' \"$1\" >> \"$GH_STATE/sleeps\"\n{action}\n");
     write_executable(&h.bin.join("sleep"), body, 0o755);
 }
 
-fn sleeps(h: &Harness) -> Vec<u64> {
+pub(crate) fn sleeps(h: &Harness) -> Vec<u64> {
     fs::read_to_string(h.gh.join("sleeps"))
         .unwrap_or_default()
         .lines()
@@ -265,26 +265,34 @@ printf '%040d\n' 7 > "$GH_STATE/moved-head""#,
 }
 
 #[test]
-fn a_secondary_decline_without_retry_after_can_recover_with_no_guidance_wake() {
+fn a_secondary_decline_without_a_deadline_waits_for_guidance_without_retrying() {
     let h = Harness::new();
     read_and_decide(&h, false);
+    fs::remove_file(h.gh.join("calls.log")).unwrap();
     fs::write(h.gh.join("no-retry-after"), "").unwrap();
-    fs::write(h.gh.join("decline-core-check-runs"), "2\n").unwrap();
-    let unarmed = h.bin.join("unarmed-guidance");
-    write_executable(&unarmed, "#!/bin/bash\nexit 3\n", 0o755);
-    // Keep the regression test finite if the wait tries to block on a private FIFO.
-    write_executable(&h.bin.join("mkfifo"), "#!/bin/bash\nexit 1\n", 0o755);
-    fake_sleep(&h, r#"test "$(wc -l < "$GH_STATE/sleeps")" -le 2"#);
-    let out = goal(&h, &["act", "wait"])
-        .env("AMPLIHACK_BIN", &unarmed)
-        .env("RECIPE_VAR_checks_watch_interval", "90")
-        .output()
-        .unwrap();
+    fs::write(h.gh.join("decline-core-check-runs"), "1\n").unwrap();
+    write_executable(
+        &h.bin.join("mkfifo"),
+        "#!/bin/bash\nset -eu\n/usr/bin/mkfifo \"$@\"\nread -r _ < \"$GH_STATE/release.fifo\"\n",
+        0o755,
+    );
+    fake_sleep(&h, "exit 2");
+    let mut live = fifo_release::start(
+        goal(&h, &["act", "wait"]),
+        &h.gh.join("release.fifo"),
+        "the wait for guidance after a declined CI read",
+    );
+    h.guide("Review the GitHub limit before continuing.");
+    let out = live.finish();
     assert!(out.status.success(), "{}", describe(&out));
-    let result = h.result("001");
-    assert_eq!(result["outcome"], "checks-complete", "{result}");
-    assert_eq!(result["checks_state"], "passed", "{result}");
-    assert_eq!(sleeps(&h), [90, 90]);
+    assert_eq!(h.result("001")["outcome"], "guidance-arrived");
+    let calls = h.calls();
+    assert_eq!(
+        calls.iter().filter(|c| c.contains("/check-runs?")).count(),
+        1
+    );
+    assert_eq!(calls.iter().filter(|c| *c == "api rate_limit").count(), 1);
+    assert!(sleeps(&h).is_empty());
 }
 
 #[test]

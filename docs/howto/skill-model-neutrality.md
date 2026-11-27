@@ -21,8 +21,8 @@ Run from the repository root:
 
 ```bash
 export NODE_OPTIONS=--max-old-space-size=32768
-export CARGO_TARGET_DIR=/d0/ryan/sunfixamp-model-neutrality/cargo-target
-export TMPDIR=/d0/ryan/sunfixamp-model-neutrality/tmp
+export CARGO_TARGET_DIR=/data/you/sunfixamp-model-neutrality/cargo-target
+export TMPDIR=/data/you/sunfixamp-model-neutrality/tmp
 mkdir -p "$TMPDIR"
 bash amplifier-bundle/recipes/tests/test-skill-model-neutrality.sh
 bash -n amplifier-bundle/recipes/tests/test-skill-model-neutrality.sh
@@ -83,8 +83,8 @@ bytecode and pre-commit caches under the evidence root as well:
 
 ```bash
 export PYTHONDONTWRITEBYTECODE=1
-export PRE_COMMIT_HOME=/d0/ryan/sunfixamp-model-neutrality/pre-commit
-export XDG_CACHE_HOME=/d0/ryan/sunfixamp-model-neutrality/cache
+export PRE_COMMIT_HOME=/data/you/sunfixamp-model-neutrality/pre-commit
+export XDG_CACHE_HOME=/data/you/sunfixamp-model-neutrality/cache
 ```
 
 Registered acceptance commands are shown below. Cargo target names come from `bins/amplihack/Cargo.toml`, rather than guessing from filenames: `skill_frontmatter_name_test.rs`, `skill_frontmatter_type_test.rs`, and `issue_849_skill_mirror_citation_test.rs` are registered without the `_test` suffix. `skill_corpus_validation` is an automatically discovered integration test in `amplihack-domain-agents` for supporting YAML documents.
@@ -107,7 +107,7 @@ reconciliation or fixes. Record unavailable tests explicitly instead of treating
 an absent test target as a pass.
 
 For this workstream, record evidence under
-`/d0/ryan/sunfixamp-model-neutrality`: reconciliation manifest, validation
+`/data/you/sunfixamp-model-neutrality`: reconciliation manifest, validation
 commands and exit codes, supporting-YAML counts and individual exclusions, and
 review findings. A successful loading result accounts for all 130 names and
 paths, all seven nested skills, and nonempty bodies. Preserve original workspace

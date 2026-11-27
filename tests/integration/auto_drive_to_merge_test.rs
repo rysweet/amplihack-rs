@@ -724,7 +724,7 @@ fn no_unauthenticated_input_reaches_control_flow() {
             }
         }
         // No pull-request comment may be read into this workflow's state at
-        // all, under any function name. #2628 (Ryan: criterion 3 is an
+        // all, under any function name. #2628 (the owner: criterion 3 is an
         // agentic step) makes the one exception: the Crusty verdict comment,
         // read and written only by the two agent steps below, which count a
         // comment only from the drive's own login or an OWNER, MEMBER or

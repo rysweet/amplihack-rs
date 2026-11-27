@@ -19,6 +19,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::issue_3129_goal_loop::ci_wait::{fake_sleep, sleeps};
 use crate::issue_3129_goal_loop::support::{Harness, PR_BRANCH, describe, git};
 use crate::support::exec_stub::write_executable;
 use serde_json::{Value, json};
@@ -105,6 +106,17 @@ elif [ "$prev" = marked-ready ] || [ "$prev" = already-ready ]; then
 else
   echo '{"action":"mark-ready","args":{},"outcomes":[],"why":"The pull request is open with the task text, so I mark it ready."}'
 fi
+"#;
+
+const WAIT_POLICY: &str = r#"
+case "$(jq -r '.previous.outcome // "none"' "$TURN/reading.json")" in
+  marked-ready|already-ready)
+    echo '{"action":"wait","args":{},"outcomes":[],"why":"Wait for the checks."}'
+    return 0 ;;
+  checks-complete)
+    echo '{"action":"ready","args":{"text":"The checks finished."},"outcomes":[],"why":"The checks finished."}'
+    return 0 ;;
+esac
 "#;
 
 const TITLE: &str = "Build the widget";
@@ -234,6 +246,24 @@ fn worktree_of(run: &Run) -> PathBuf {
     let setup: Value = serde_json::from_str(&run.output("build-goal-setup"))
         .unwrap_or_else(|e| panic!("build-goal-setup output: {e}: {}", run.result));
     PathBuf::from(setup["worktree"].as_str().unwrap_or_default())
+}
+
+#[test]
+fn checks_watch_interval_reaches_the_build_loop_from_startup_context() {
+    let h = prepare("https://github.com/o/r.git");
+    h.policy(&format!("{WAIT_POLICY}\n{POLICY}"));
+    h.set_checks("build\tpending\t0\n");
+    fake_sleep(
+        &h,
+        r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
+printf 'build\tpass\t0\n' > "$GH_STATE/checks""#,
+    );
+
+    let run = workflow(h, &["checks_watch_interval=37"]);
+    assert!(run.out.status.success(), "{}", describe(&run.out));
+    assert_eq!(run.unexpected(), "", "{}", describe(&run.out));
+    assert_eq!(run.status("build-loop"), "completed", "{}", run.result);
+    assert_eq!(sleeps(&run.h), [37]);
 }
 
 #[test]

@@ -50,32 +50,16 @@ goal_github_pr_repo() {
   printf '%s/%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 }
 
-goal_checks_watch_interval() {
-  local LC_ALL=C n="${RECIPE_VAR_checks_watch_interval:-}"
-  if [[ "$n" =~ ^[1-9][0-9]{0,9}$ ]]; then
-    printf '%s\n' "$n"
-  else
-    [ -z "$n" ] || printf '%s\n' 'WARNING: invalid checks_watch_interval. Using 120 seconds.' >&2
-    printf '120\n'
-  fi
-}
-
-# Allow guidance to wake a reading's fallback sleep. Only the retry's cursor
-# advances; the driver delivers the guidance from its own mark.
+# Advance only the retry's cursor. The driver still delivers the guidance to
+# the agent from its own mark once the reading finishes.
 goal_read_guidance() {
-  local delay="$1" rc=0 entry started now response="$GH_READ_DIR/rate-limit-guidance.json"
-  started="$(date +%s)" || return 1
+  local rc=0 entry response="$GH_READ_DIR/rate-limit-guidance.json"
   gh_goal_command "${AMPLIHACK_BIN:-amplihack}" recipe guidance wait "--since=$GUIDANCE_SINCE" \
-    ${GUIDANCE_TARGET:+"$GUIDANCE_TARGET"} -- sleep "$delay" >"$response" || rc=$?
+    ${GUIDANCE_TARGET:+"$GUIDANCE_TARGET"} >"$response" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
-  if jq -e '.event == "command" and .exit == 0' "$response" >/dev/null; then return 0; fi
   entry="$(jq -r 'select(.event == "guidance") | .entry // empty | strings' "$response")"
   [ -n "$entry" ] && goal_is_entry "$entry" || return 1
   GUIDANCE_SINCE="$entry"
-  now="$(date +%s)" || return 1
-  if [ "$now" -lt "$((started + delay))" ]; then
-    gh_goal_command sleep "$((started + delay - now))"
-  fi
 }
 
 goal_ci_cache_dir() {

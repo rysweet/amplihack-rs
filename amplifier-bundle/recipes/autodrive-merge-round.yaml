@@ -15,7 +15,6 @@ recursion:
   max_depth: 6
   max_total_steps: 8
 context:
-  checks_watch_interval: ""
   step_recovery_dir: ""
   repo_path: "."
   reviewed_head_sha: ""
@@ -42,6 +41,7 @@ context:
   crusty_evidence: ""
   autodrive_tools_dir: ""
   no_merge: "true"
+  checks_watch_interval: ""
   autodrive_dry_run: "false"
   merge_method: ""
   autodrive_invocation_file: ""
@@ -52,8 +52,8 @@ steps:
     type: "recipe"
     recipe: "autodrive-goal-loop"
     context:
-      goal_tool: "autodrive_pr_goal.sh"
       checks_watch_interval: "{{checks_watch_interval}}"
+      goal_tool: "autodrive_pr_goal.sh"
       goal_file: "skills/auto-drive-to-merge/goal-merge-pr.md"
       goal_once: "true"
 output:
