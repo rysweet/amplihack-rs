@@ -41,6 +41,27 @@ pub struct Point {
     pub resets: Option<i64>,
 }
 
+impl Point {
+    pub(in crate::commands::profile::rotate) fn open_at(&self, t: i64) -> bool {
+        t.saturating_sub(self.at) < SESSION_WINDOW_SECS && self.resets.is_none_or(|r| t < r)
+    }
+
+    pub(in crate::commands::profile::rotate) fn latest_reset(&self) -> i64 {
+        self.at.saturating_add(SESSION_WINDOW_SECS)
+    }
+
+    /// The time since `first`, if the observations are far enough apart to
+    /// estimate a rate.
+    pub(in crate::commands::profile::rotate) fn observation_span(
+        &self,
+        first: &Self,
+        min_span: i64,
+    ) -> Option<i64> {
+        let span = self.at.checked_sub(first.at)?;
+        (span > 0 && span >= min_span).then_some(span)
+    }
+}
+
 /// Issue #2889: the last reading the live step accepted, kept for the next
 /// cycle. Unlike a [`Point`] it carries the week figure and the weekly
 /// window's reset time, so a cycle that decides on it reports the week the
@@ -210,14 +231,36 @@ impl Series {
     /// held week that outlived its week would deny the login room it has,
     /// and one that outlived its session would misstate the session.
     pub fn held(&self, name: &ProfileName, t: i64) -> Option<Held> {
-        if self.name.as_ref() != Some(name) {
-            return None;
-        }
-        self.held.filter(|h| {
+        self.accepted(name).filter(|h| {
             t.saturating_sub(h.at) < SESSION_WINDOW_SECS
                 && h.resets.is_none_or(|r| t < r)
                 && h.week_resets.is_none_or(|r| t < r)
         })
+    }
+
+    /// The last accepted reading, including reset information after expiry.
+    pub(in crate::commands::profile::rotate) fn accepted(
+        &self,
+        name: &ProfileName,
+    ) -> Option<Held> {
+        if self.name.as_ref() != Some(name) {
+            return None;
+        }
+        self.held
+    }
+
+    /// Accepted observations after the swap, from newest to oldest.
+    pub(in crate::commands::profile::rotate) fn after_swap(
+        &self,
+        name: &ProfileName,
+        swapped_at: i64,
+    ) -> impl Iterator<Item = Point> + '_ {
+        let owned = self.name.as_ref() == Some(name);
+        self.points
+            .iter()
+            .rev()
+            .take_while(move |p| owned && p.at > swapped_at)
+            .copied()
     }
 
     pub fn clear(&mut self) {
@@ -235,11 +278,8 @@ impl Series {
     /// series has seen, so the projection never adds more than that.
     pub fn rate(&self, min_span: i64) -> Option<f64> {
         let (first, last) = (self.points.front()?, self.points.back()?);
-        let dt = last.at.checked_sub(first.at)?;
-        if dt <= 0 || dt < min_span {
-            return None;
-        }
-        let r = (last.session - first.session) / dt as f64;
+        let span = last.observation_span(first, min_span)?;
+        let r = (last.session - first.session) / span as f64;
         r.is_finite().then_some(r)
     }
 
@@ -258,9 +298,7 @@ impl Series {
     /// Not `fresh::MAX_READING_AGE_SECS` (300 s): the default `--interval`
     /// is 600 s, so the previous cycle's point would always be too old.
     pub fn last_known(&self, name: &ProfileName, t: i64) -> Option<Point> {
-        self.last_for(name).filter(|p| {
-            t.saturating_sub(p.at) < SESSION_WINDOW_SECS && p.resets.is_none_or(|r| t < r)
-        })
+        self.last_for(name).filter(|p| p.open_at(t))
     }
 
     /// Records this cycle's figures for `name` and returns how many cycles

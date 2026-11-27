@@ -43,6 +43,8 @@ mod tests_issue_2889_cycle;
 mod tests_issue_3181_budget;
 #[path = "tests_issue_3181_cycle.rs"]
 mod tests_issue_3181_cycle;
+#[path = "tests_issue_3217.rs"]
+mod tests_issue_3217;
 #[path = "tests_issue_3301_confirmation.rs"]
 mod tests_issue_3301_confirmation;
 #[path = "tests_issue_3301_reading.rs"]

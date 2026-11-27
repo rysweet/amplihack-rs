@@ -143,6 +143,23 @@ impl HighWater {
         self.0.is_empty()
     }
 
+    /// Open peaks that have not been superseded by a newer window.
+    pub(in crate::commands::profile::rotate) fn applicable(
+        &self,
+        name: &str,
+        session_resets: Option<i64>,
+        week_resets: Option<i64>,
+        now: i64,
+    ) -> Peaks {
+        let Some(peaks) = self.0.get(name) else {
+            return Peaks::default();
+        };
+        Peaks {
+            session: open(peaks.session, now).filter(|p| bounds(*p, session_resets)),
+            week: open(peaks.week, now).filter(|p| bounds(*p, week_resets)),
+        }
+    }
+
     /// Keeps `p`'s figures for `name` where they are the highest in their
     /// window. A reading with no reset time, one whose window has already
     /// reset, and a non-finite figure change nothing; a reading whose session
