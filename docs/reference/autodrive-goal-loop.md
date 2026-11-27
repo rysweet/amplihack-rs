@@ -439,8 +439,9 @@ Under `judge` and `file_all` the agent files each issue with
   verify the target's required-check policy and PR snapshot before reporting
   a pass. A head change ends the wait. When the wait detects a change to the
   target branch, target tip, or required-check policy, it scans again in the
-  same wait. The turn reading discards results if the PR snapshot or policy
-  changes during verification.
+  same wait. A required check with no result also prompts a conditional
+  policy refresh before the wait sleeps. The turn reading discards results
+  if the PR snapshot or policy changes during verification.
   A rate-limit retry during the scan or final PR verification
   requires another scan. The turn reading also revalidates the PR snapshot
   after a rate-limit retry between the first PR lookup and the scan.
@@ -448,6 +449,8 @@ Under `judge` and `file_all` the agent files each issue with
   workflow runs. A queued or running workflow keeps the result pending even
   while the check runs still show the previous attempt's passes. After a
   rerun, a pass requires matching successful job IDs from the current attempt.
+  The verifier rechecks the workflow runs after reading those jobs to detect
+  a new attempt queued during the jobs reads.
   Missing attempt evidence leaves the result unverified, which can happen
   when a partial rerun does not execute every check used for the pass.
   With `args.required: true` and readable required names, the wait selects the

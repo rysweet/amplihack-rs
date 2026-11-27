@@ -201,19 +201,23 @@ do_ci_wait() {
     esac
     state="$(jq -r '.state' "$GH_READ_DIR/ci.json")"
     case "$state" in
-      passed)
-        if [ "$GH_READ_RETRIED" = false ]; then
-          gh_verify_branch_policy "$slug" "$base" "$cache" "$required" "$strict"; rc=$?
+      passed|pending)
+        # A removed requirement can keep a scan pending without any change
+        # to the PR. Refresh policy when a synthesized check is pending.
+        if [ "$GH_READ_RETRIED" = false ] &&
+          { [ "$state" = passed ] || jq -e '.missing_required' "$GH_READ_DIR/ci.json" >/dev/null; }; then
+          gh_verify_branch_policy "$slug" "$base" "$cache" "$required" "$strict" "$policy_error"; rc=$?
           case "$rc" in
             75|79) return "$rc" ;;
             0) GH_BRANCH_POLICY="" ;;
             *)
               [ -n "$GH_BRANCH_POLICY" ] || return 2
-              state=pending ;; # Rescan with the newly read policy in this wait.
+              state=pending
+              continue ;; # Rescan with the newly read policy in this wait.
           esac
-        fi ;;
+        fi
+        if [ "$state" = pending ]; then gh_goal_command sleep "$interval" || return 2; fi ;;
       failed|unverified) ;;
-      pending) gh_goal_command sleep "$interval" || return 2 ;;
       *) echo 'the CI read returned an unknown state' >&2; return 2 ;;
     esac
   done

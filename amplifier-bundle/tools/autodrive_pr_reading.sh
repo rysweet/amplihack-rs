@@ -289,7 +289,7 @@ else
   done
   [ "$rc" -eq 0 ] || printf '{}\n' > "$S/ci.json"
   put checks "$(jq -c --arg why "$WHY" --argjson required "$REQUIRED" --argjson rc "$rc" '
-    . + {required_known:($why == ""), required_error:(if $why == "" then null else $why end),
+    del(.missing_required) + {required_known:($why == ""), required_error:(if $why == "" then null else $why end),
          required:($required | map(.name) | unique), required_checks:$required, gh_exit:$rc}
   ' "$S/ci.json")" "$checks_error"
 fi

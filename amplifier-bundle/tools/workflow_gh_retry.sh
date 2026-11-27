@@ -816,11 +816,12 @@ gh_read_branch_policy() {
      strict_unreadable:(if $strict == null then $strict_error else null end)}')"
 }
 
-# Verify the policy used for the scan before publishing a pass.
+# Compare the current policy with the policy used for the scan. Callers
+# verifying a pass expect a complete policy (an empty error).
 gh_verify_branch_policy() {
   gh_read_branch_policy "$1" "$2" "$3" || return $?
-  jq -e --argjson required "$4" --argjson strict "$5" '
-    .error == "" and .required == ($required | unique) and .strict_status_checks == $strict
+  jq -e --argjson required "$4" --argjson strict "$5" --arg error "${6:-}" '
+    .error == $error and .required == ($required | unique) and .strict_status_checks == $strict
   ' <<< "$GH_BRANCH_POLICY" >/dev/null
 }
 
@@ -835,41 +836,46 @@ gh_pr_base_matches() {
   jq -e --arg ref "$1" --arg sha "$2" '.base.ref == $ref and .base.sha == $sha' "$GH_READ_BODY" >/dev/null
 }
 
-# The check-runs endpoint can still serve the previous attempt's jobs while
-# Actions has a rerun queued. Verify the workflow state independently and
-# require check-run IDs from the current attempt after a rerun completes.
-_gh_verify_actions_checks() {
-  local repo="$1" head="$2" cache="$3" aggregate="$4" run attempt suite rc
-  local runs="$GH_READ_DIR/workflow-runs.jsonl" reruns="$GH_READ_DIR/reruns.tsv" jobs="$GH_READ_DIR/attempt-jobs.jsonl"
-  GH_EXECUTION_STATE=unverified
-  GH_EXECUTION_DETAIL="the current GitHub Actions workflow runs could not be verified"
+_gh_read_actions_attempts() {
+  local repo="$1" head="$2" cache="$3" aggregate="$4" runs="$GH_READ_DIR/workflow-runs.jsonl"
   gh_rest_pages "repos/$repo/actions/runs?head_sha=$head" "$cache" '
     (.workflow_runs | type == "array") and all(.workflow_runs[];
       (.id | type == "number" and . > 0 and floor == .) and
       (.run_attempt | type == "number" and . >= 1 and floor == .) and
       (.status | type == "string"))
-  ' '.workflow_runs[] | {id, head_sha, check_suite_id, run_attempt, status}' > "$runs" || {
-    rc=$?
-    case "$rc" in 75|79) return "$rc" ;; esac
-    [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
-    return "$rc"
-  }
-  jq -rs --arg head "$head" --slurpfile summary "$aggregate" '
+  ' '.workflow_runs[] | {id, head_sha, check_suite_id, run_attempt, status}' > "$runs" || return $?
+  jq -cs --arg head "$head" --slurpfile summary "$aggregate" '
     . as $runs
     | ($summary[0].actions | map(.suite_id) | unique) as $suites
     | $suites | map(. as $suite | [$runs[] | select(.head_sha == $head and .check_suite_id == $suite)])
     | if any(.[]; length != 1 or .[0].check_suite_id == null) then error("unmatched workflow run")
       else map(.[0]) end
-    | if any(.[]; .status != "completed") then ["pending"]
-      else .[] | select(.run_attempt > 1) | [.id, .run_attempt, .check_suite_id] end
-    | @tsv
-  ' "$runs" > "$reruns" 2>/dev/null || return 0
+  ' "$runs" 2>/dev/null
+}
+
+# The check-runs endpoint can still serve the previous attempt's jobs while
+# Actions has a rerun queued. Verify the workflow state independently and
+# require check-run IDs from the current attempt after a rerun completes.
+_gh_verify_actions_checks() {
+  local repo="$1" head="$2" cache="$3" aggregate="$4" run attempt suite rc
+  local attempts="$GH_READ_DIR/attempts.json" current="$GH_READ_DIR/current-attempts.json"
+  local reruns="$GH_READ_DIR/reruns.tsv" jobs="$GH_READ_DIR/attempt-jobs.jsonl"
+  GH_EXECUTION_STATE=unverified
+  GH_EXECUTION_DETAIL="the current GitHub Actions workflow runs could not be verified"
+  _gh_read_actions_attempts "$repo" "$head" "$cache" "$aggregate" > "$attempts" || {
+    rc=$?
+    case "$rc" in 75|79) return "$rc" ;; esac
+    [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
+    return "$rc"
+  }
+  if jq -e 'any(.[]; .status != "completed")' "$attempts" >/dev/null; then
+    GH_EXECUTION_STATE=pending
+    GH_EXECUTION_DETAIL="a GitHub Actions workflow for the checks is still running or queued"
+    return 0
+  fi
+  jq -r '.[] | select(.run_attempt > 1) | [.id, .run_attempt, .check_suite_id] | @tsv' \
+    "$attempts" > "$reruns" || return 0
   while IFS=$'\t' read -r run attempt suite; do
-    if [ "$run" = pending ]; then
-      GH_EXECUTION_STATE=pending
-      GH_EXECUTION_DETAIL="a GitHub Actions workflow for the checks is still running or queued"
-      return 0
-    fi
     GH_EXECUTION_DETAIL="the check runs could not be matched to the current GitHub Actions attempt"
     gh_rest_pages "repos/$repo/actions/runs/$run/attempts/$attempt/jobs" "$cache" '
       .jobs | type == "array"
@@ -886,6 +892,22 @@ _gh_verify_actions_checks() {
           .id != null and ("https://api.github.com/repos/\($repo)/check-runs/\(.id)" | ascii_downcase | IN($jobs[])))
     ' "$jobs" >/dev/null || return 0
   done < "$reruns"
+  if [ -s "$reruns" ]; then
+    # Pinned jobs remain readable after another attempt queues. Check all
+    # matched runs again after the jobs reads, before accepting their IDs.
+    GH_EXECUTION_DETAIL="the current GitHub Actions workflow runs could not be revalidated"
+    _gh_read_actions_attempts "$repo" "$head" "$cache" "$aggregate" > "$current" || {
+      rc=$?
+      case "$rc" in 75|79) return "$rc" ;; esac
+      [ -z "${GH_READ_DEFERRED_ERROR:-}" ] && return 0
+      return "$rc"
+    }
+    if ! cmp -s "$attempts" "$current"; then
+      GH_EXECUTION_STATE=pending
+      GH_EXECUTION_DETAIL="a GitHub Actions workflow changed during attempt verification"
+      return 0
+    fi
+  fi
   GH_EXECUTION_STATE=passed
   GH_EXECUTION_DETAIL=""
 }
@@ -926,6 +948,7 @@ gh_head_checks() {
       . as $need | any($checks[]; .legacy_status and .name == $need.name);
     . as $all
     | [$required[] | . as $need | select(all($all[]; . as $check | $need | matches($check) | not))] as $missing
+    | [$missing[] | select(has_unattributed_status($all) | not) | . + {state:"pending", link:""}] as $absent
     | ([$all[] | . as $check
         | [$required[] | select(matches($check))] as $matches
         | ([$required[] | select(.app_id != null and has_unattributed_status([$check])) | .app_id] | unique) as $expected_apps
@@ -940,7 +963,7 @@ gh_head_checks() {
           elif .state == "skipping" and ($matches | length) > 0 then
             . + {unverified_reason:"skipped_or_neutral"}
           else . end]
-       + [$missing[] | select(has_unattributed_status($all) | not) | . + {state:"pending", link:""}]
+       + $absent
        | map(del(.legacy_status) + {elapsed:""})) as $checks
     | ($checks | group_by(.state) | map({key:.[0].state, value:length}) | from_entries) as $n
     | (if ($n.pass // 0) == 0 then
@@ -949,6 +972,7 @@ gh_head_checks() {
     | [$display[] | select(.unverified_reason)] as $unverified
     | {checks:($display[:200] | map(del(.actions))), unverified_checks:($unverified[:200] | map(del(.actions))),
        actions:[$checks[] | select(.state == "pass") | .actions | objects],
+       missing_required:($absent | length > 0),
        required_error:(if $policy_error == "" then null else $policy_error end),
        counts:{total:($checks | length), passed:($n.pass // 0), unverified:($unverified | length),
         failing:(($n.fail // 0) + ($n.cancel // 0)), pending:($n.pending // 0), skipped:($n.skipping // 0)}}

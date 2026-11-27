@@ -268,8 +268,13 @@ case "${1:-} ${2:-}" in
         http 200 "$(cat "$G/workflow-runs.json" 2>/dev/null || echo '{"workflow_runs":[]}')" ;;
       repos/o/r/actions/runs/*/attempts/*/jobs\?*)
         conditional=true
-        http 200 "$(cat "$G/attempt-jobs.json" 2>/dev/null || echo '{"jobs":[]}')" ;;
-      *rules/branches*) if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
+        jobs="$(cat "$G/attempt-jobs.json" 2>/dev/null || echo '{"jobs":[]}')"
+        if [ -f "$G/rerun-during-jobs.json" ]; then
+          mv "$G/rerun-during-jobs.json" "$G/workflow-runs.json"
+        fi
+        http 200 "$jobs" ;;
+      *rules/branches*) conditional=true
+        if [ -e "$G/policy403" ]; then http 403 "Resource not accessible by integration"
         elif [[ "$endpoint" == *'&page=2' ]]; then http 200 "$(cat "$G/rules-page-2.json")" "${args[@]}"
         elif [ -f "$G/rules.json" ]; then
           if [ -f "$G/rules-page-2.json" ]; then
@@ -279,7 +284,8 @@ case "${1:-} ${2:-}" in
         elif [ -e "$G/strict" ]; then
           http 200 '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[]}}]' "${args[@]}"
         else http 200 '[]' "${args[@]}"; fi ;;
-      *protection*) if [ -e "$G/policy403" ] || [ -e "$G/classic403" ]; then http 403 "Resource not accessible by integration"
+      *protection*) conditional=true
+        if [ -e "$G/policy403" ] || [ -e "$G/classic403" ]; then http 403 "Resource not accessible by integration"
         elif [ -e "$G/classic404" ]; then http 404 "Not Found"
         elif [ -e "$G/protection.json" ]; then http 200 "$(cat "$G/protection.json")" "${args[@]}"
         else http 404 "Branch not protected"; fi ;;
