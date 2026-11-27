@@ -370,13 +370,14 @@ fn oversized_history_uses_open_prs_and_recent_updates() {
         let mut reopened = open_pr(130, "reopened");
         reopened["updated_at"] = json!(rfc3339_hours_ago(0));
         let mut rows = vec![reopened, closed_pr(129, "recently-closed", 1)];
+        let sample = closed_pr(pr_count, "unrelated", max_age);
         rows.extend((pr_count - PAGE_SIZE + 3..=pr_count).map(|number| {
-            let branch = if number == pr_count {
-                "old-closure"
-            } else {
-                "unrelated"
-            };
-            closed_pr(number, branch, max_age)
+            let mut row = sample.clone();
+            row["number"] = json!(number);
+            if number == pr_count {
+                row["head"]["ref"] = json!("old-closure");
+            }
+            row
         }));
         json!(rows).to_string()
     };
