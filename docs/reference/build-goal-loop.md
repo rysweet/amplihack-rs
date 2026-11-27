@@ -683,8 +683,8 @@ contain the agent. Branch protection is the enforcing control.
 
 The build goal runs a whole goal that starts with no pull request: no
 `guidance_target`, `publish` exiting 1, and `final` printing nothing. The shared
-loop files are not edited by this change. What the build side relies on, as
-read in PR 1's code:
+loop keeps the build turn at constant depth and applies pairwise recovery to
+marked failures before an agent decision. What the build side relies on:
 
 - The driver reads guidance at the start of each turn, before the agent step,
   and again after the decision, before the action. Guidance comes only from
@@ -693,6 +693,10 @@ read in PR 1's code:
   it. It is never read from pull request comments, so no author filter is
   needed for it.
 - Only `wait` (and the shared `wait-owner`) is woken when guidance arrives.
+- Two consecutive marked failures with the same structured class and detail,
+  before `decide` completes or `decision.json` exists, publish one hand-off and
+  arm `wait-owner`. Guidance, pull-request, worktree and owner-stop events wake
+  that wait. A missing or malformed marker clears the comparison.
 - Guidance text never reaches the turn folder or any JSON, by design. The goal
   tool reads the guidance folders itself, at each `open-pr`, with
   `amplihack recipe guidance show --operator-only`; see

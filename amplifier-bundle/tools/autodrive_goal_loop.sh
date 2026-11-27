@@ -81,14 +81,12 @@ turn_call() { # the shared turn tool, with what it needs from the driver
     AUTODRIVE_GOAL_ACTIONS="$ACTIONS" AUTODRIVE_MERGE_ALLOWED="$MERGE_ALLOWED" \
     AUTODRIVE_GUIDANCE_MARK="$MARK" bash "$TURN_TOOL" "$@"
 }
-
 if [ -n "$INVOCATION" ]; then
   AUTH="$("$AMPLIHACK_BIN" orch helper autodrive authorization --invocation "$INVOCATION" --directory "$STATE" 2>"$W/auth.err")" \
     || say "WARNING: the captured authorisation could not be read ($(goal_clean_line 300 < "$W/auth.err")); merging is treated as off and the end record names no run"
   RUN_ID="$(printf '%s' "${AUTH:-}" | jq -r '.run_id // empty | strings' 2>/dev/null)"
   [ "$(printf '%s' "${AUTH:-}" | jq -r '.allows_merge' 2>/dev/null)" = true ] && MERGE_ALLOWED=true
 fi
-
 ACTIONS="$(goal_call actions 2>"$W/actions.err")" || usage "the goal tool refused the contract (actions: $(goal_clean_line 200 < "$W/actions.err"))"
 ACTIONS="$(printf '%s' "$ACTIONS" | tr '\n\t' '  ')"
 for word in $ACTIONS; do
@@ -173,16 +171,18 @@ bundle_whole() {
   done
 }
 failed_turn() {
-  local rc="$1" summary judged=false limit=false lwait="" recovery=next-turn wrc err pre=false repeat=false nosteps=false marker_sig=""
+  local rc="$1" summary judged=false limit=false lwait="" recovery=next-turn wrc err pre=false repeat=false nosteps=false marker_valid=false marker_sig=""
   local why="the next turn starts at once; its agent reads this failure and the turn log and decides"
   classify_child "$TD/turn.log" >"$W/marker" # sets CHILD_FAILURE_* from the runner's last marker
   summary="$(child_failure_summary "$rc" "$TD/turn.log")"
   sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -c '{completed:[.completed_steps // [] | .[] | strings], failed:[.failed_steps // [] | .[] | strings]}' >"$W/steps" 2>/dev/null
   goal_json_file "$W/steps" 65536 || echo '{"completed":[],"failed":[]}' >"$W/steps"
-  sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -e '.completed_steps == [] and .failed_steps == []' >/dev/null 2>&1 && nosteps=true # only a marker shows no step ran; none is unknown
+  if sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -e 'type == "object" and (.completed_steps | type == "array") and (.failed_steps | type == "array")' >/dev/null 2>&1; then
+    marker_valid=true; sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -e '.completed_steps == [] and .failed_steps == []' >/dev/null 2>&1 && nosteps=true
+  fi
   jq -e '.completed | index("decide") != null' "$W/steps" >/dev/null 2>&1 && judged=true; [ -f "$TD/decision.json" ] && [ ! -L "$TD/decision.json" ] && judged=true
   err="$(goal_last_line "$TD/turn.log")"; [ -n "$err" ] || err="$summary"
-  if [ "$judged" = false ] && [ "$nosteps" = true ] && [ "$CHILD_FAILURE_CLASS" != unknown ]; then
+  if [ "$judged" = false ] && [ "$marker_valid" = true ] && [ "$CHILD_FAILURE_CLASS" != unknown ]; then
     pre=true
     marker_sig="$(sed 's/^amplihack\.recipe\.failure_class //' "$W/marker" | jq -c 'if type == "object" then {class:(.class // null), detail:(.signal // null)} else empty end' 2>/dev/null)"
     [ -n "$marker_sig" ] || pre=false

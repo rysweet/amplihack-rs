@@ -12,7 +12,8 @@ PASS=0; FAIL=0
 ok() { local name="$1"; shift; if "$@"; then PASS=$((PASS + 1)); echo "PASS $name"; else FAIL=$((FAIL + 1)); echo "FAIL $name" >&2; fi; }
 
 make_loop_case() {
-  local c="$WORK/loop" base="$WORK/bin/amplihack" wrapper="$WORK/bin/amplihack-wrapper"
+  local name="${1:-loop}" c base wrapper
+  c="$WORK/$name"; base="$WORK/bin/amplihack"; wrapper="$WORK/bin/amplihack-wrapper"
   mkdir -p "$c" "$WORK/bin" "$WORK/home" "$c/bundle/tools" "$c/bundle/recipes"
   cp "$ROOT/tests/issue_1437_amplihack_stub.sh" "$base"; chmod 755 "$base"
   cp -R "$TOOLS"/* "$c/bundle/tools/"
@@ -38,8 +39,13 @@ if [ "${1:-} ${2:-} ${3:-}" = "recipe guidance show" ]; then
   exit 0
 fi
 if [ "${1:-} ${2:-} ${3:-}" = "recipe guidance wait" ]; then
-  n="$(cat "${STUB_STATE}/waits" 2>/dev/null || echo 0)"
-  printf '%s' "$((n + 1))" > "${STUB_STATE}/waits"
+  if [ -n "${AUTODRIVE_STATE_DIR:-}" ]; then
+    n="$(cat "${STUB_STATE}/owner_waits" 2>/dev/null || echo 0)"
+    printf '%s' "$((n + 1))" > "${STUB_STATE}/owner_waits"
+  else
+    n="$(cat "${STUB_STATE}/waits" 2>/dev/null || echo 0)"
+    printf '%s' "$((n + 1))" > "${STUB_STATE}/waits"
+  fi
   printf '{"event":"guidance","entry":"fixture-change"}\n'
   exit 0
 fi
@@ -53,28 +59,30 @@ WRAP
   printf '%s\n' "$c|$wrapper|$base"
 }
 
-IFS='|' read -r LOOP_CASE LOOP_BIN LOOP_BASE < <(make_loop_case)
+IFS='|' read -r LOOP_CASE LOOP_BIN LOOP_BASE < <(make_loop_case environmental)
 MARK='amplihack.recipe.failure_class '
 OUT1="${MARK}{\"class\":\"environmental\",\"signal\":\"untrusted bundle\",\"retryable\":false,\"completed_steps\":[],\"failed_steps\":[]}"
 export BASE_STUB="$LOOP_BASE" STUB_STATE="$LOOP_CASE/stub" STUB_RC_1=1 STUB_RC_2=1 STUB_OUT_1="$OUT1" STUB_OUT_2="$OUT1"
 mkdir -p "$STUB_STATE"
+touch "$LOOP_CASE/run.log"
 set +e
 ( cd "$LOOP_CASE" && HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 PATH="$WORK/bin:$PATH" \
-    AMPLIHACK_BIN="$LOOP_BIN" bash "$LOOP_CASE/bundle/tools/autodrive_goal_loop.sh" \
+    AMPLIHACK_BIN="$LOOP_BIN" AMPLIHACK_RECIPE_LOG="$LOOP_CASE/run.log" bash "$LOOP_CASE/bundle/tools/autodrive_goal_loop.sh" \
       --goal-tool issue_3424_goal.sh --goal-file goal.md --repo "$LOOP_CASE" --state-dir "$LOOP_CASE/state" </dev/null ) \
   > "$LOOP_CASE/out" 2> "$LOOP_CASE/err"
 LOOP_RC=$?
 set -e
 ok repeated_pre_agent_wait test "$LOOP_RC" -eq 0
 ok one_handoff test "$(cat "$STUB_STATE/publishes" 2>/dev/null || echo 0)" -eq 1
-ok one_owner_wait test "$(cat "$STUB_STATE/waits" 2>/dev/null || echo 0)" -eq 1
+ok one_owner_wait test "$(cat "$STUB_STATE/owner_waits" 2>/dev/null || echo 0)" -eq 1
 ok fresh_turn_after_guidance test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
 ok failure_detail_recorded jq -e '.failure.class == "environmental" and .failure.detail == "untrusted bundle"' "$LOOP_CASE/state/turns/001/result.json" >/dev/null
 ok wait_result_is_guidance jq -e '.outcome == "guidance-arrived"' "$LOOP_CASE/state/turns/002/result.json" >/dev/null
+ok each_failed_turn_is_logged test "$(wc -l < "$LOOP_CASE/run.log")" -ge 2
 
 # Usage-limit failures emitted before the decide step take the same pairwise
 # owner wait as every other structured pre-agent failure.
-IFS='|' read -r LIMIT_CASE LIMIT_BIN LIMIT_BASE < <(make_loop_case)
+IFS='|' read -r LIMIT_CASE LIMIT_BIN LIMIT_BASE < <(make_loop_case usage_limit)
 LIMIT_OUT='amplihack.recipe.failure_class {"class":"usage_limit","signal":"ERROR: Your workspace is out of credits. Add credits to continue.","retryable":false,"completed_steps":[],"failed_steps":[]}'
 export BASE_STUB="$LIMIT_BASE" STUB_STATE="$LIMIT_CASE/stub" STUB_RC_1=1 STUB_RC_2=1 STUB_OUT_1="$LIMIT_OUT" STUB_OUT_2="$LIMIT_OUT"
 mkdir -p "$STUB_STATE"
@@ -87,8 +95,35 @@ LIMIT_RC=$?
 set -e
 ok usage_limit_pre_agent_wait test "$LIMIT_RC" -eq 0
 ok usage_limit_one_handoff test "$(cat "$STUB_STATE/publishes" 2>/dev/null || echo 0)" -eq 1
-ok usage_limit_one_owner_wait test "$(cat "$STUB_STATE/waits" 2>/dev/null || echo 0)" -eq 1
+ok usage_limit_one_owner_wait test "$(cat "$STUB_STATE/owner_waits" 2>/dev/null || echo 0)" -eq 1
 ok usage_limit_fresh_turn_after_guidance test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
+
+run_marker_case() {
+  local label="$1" class="$2" first="$3" second="$4" third="${5:-}" expected_wait="$6" marker1 marker2 marker3
+  IFS='|' read -r CASE BIN BASE < <(make_loop_case "$label")
+  marker1="amplihack.recipe.failure_class {\"class\":\"$class\",\"signal\":\"$first\",\"retryable\":false,\"completed_steps\":[\"read\"],\"failed_steps\":[\"decide\"]}"
+  marker2=""
+  [ -n "$second" ] && marker2="amplihack.recipe.failure_class {\"class\":\"$class\",\"signal\":\"$second\",\"retryable\":false,\"completed_steps\":[\"read\"],\"failed_steps\":[\"decide\"]}"
+  marker3=""
+  [ -n "$third" ] && marker3="amplihack.recipe.failure_class {\"class\":\"$class\",\"signal\":\"$third\",\"retryable\":false,\"completed_steps\":[\"read\"],\"failed_steps\":[\"decide\"]}"
+  export BASE_STUB="$BASE" STUB_STATE="$CASE/stub" STUB_RC_1=1 STUB_RC_2=1 STUB_RC_3=1 STUB_OUT_1="$marker1" STUB_OUT_2="$marker2" STUB_OUT_3="$marker3"
+  mkdir -p "$STUB_STATE"
+  set +e
+  ( cd "$CASE" && HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 PATH="$WORK/bin:$PATH" \
+      AMPLIHACK_BIN="$BIN" bash "$CASE/bundle/tools/autodrive_goal_loop.sh" \
+        --goal-tool issue_3424_goal.sh --goal-file goal.md --repo "$CASE" --state-dir "$CASE/state" </dev/null ) \
+    > "$CASE/out" 2> "$CASE/err"
+  rc=$?
+  set -e
+  ok "${label}_exit" test "$rc" -eq 0
+  ok "${label}_waits" test "$(cat "$STUB_STATE/owner_waits" 2>/dev/null || echo 0)" -eq "$expected_wait"
+  ok "${label}_rounds" test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
+}
+
+run_marker_case failed_decide_same environmental "workspace unavailable" "workspace unavailable" "" 1
+run_marker_case failed_decide_usage_limit usage_limit "ERROR: Your workspace is out of credits. Add credits to continue." "ERROR: Your workspace is out of credits. Add credits to continue." "" 1
+run_marker_case failed_decide_different environmental "workspace unavailable" "different workspace failure" "" 0
+run_marker_case failed_decide_unmarked environmental "workspace unavailable" "" "workspace unavailable" 0
 
 make_build_case() {
   local name="$1" mode="$2" c="$WORK/$1" main="$WORK/$1/main" candidate="$WORK/$1/candidate" bundle="$WORK/$1/bundle"

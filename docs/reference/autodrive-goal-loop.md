@@ -474,7 +474,7 @@ Trust-boundary refusals also end the run: exit 79 from any child, or the
 runner's `structural_refusal` failure-class marker on a turn run's log
 (`terminal_refusal` in `autodrive_refusal.sh`; nothing reads the transcript's
 wording). Nothing reads the turn record to decide, and nothing counts time.
-The one count is of turns in which no agent started, described below.
+The one count is of turns in which no agent made a decision, described below.
 
 ## Failures inside a turn
 
@@ -526,7 +526,7 @@ What runs before the next turn:
 | Case | What runs |
 |------|-----------|
 | Any failure, whether or not the agent had decided: a step after the agent failed, the agent step crashed, a setup or environment fault, a transport fault, `agent_api`, `work`, `indeterminate`, or a usage limit | The next turn starts at once, with the evidence above. |
-| Two consecutive failures before any agent started with the same structured class and detail | The driver publishes one hand-off naming the failure and the change that would clear it, then arms the existing owner wait. A guidance, pull-request, worktree or owner-stop event clears the comparison before another turn. |
+| Two consecutive failures before an agent made a decision, with a valid marker carrying the same structured class and detail | The driver publishes one hand-off naming the failure and the change that would clear it, then arms the existing owner wait. A guidance, pull-request, worktree or owner-stop event clears the comparison before another turn. This includes a marker whose `failed_steps` lists `decide` while `completed_steps` does not. |
 | A failure the runner classed `usage_limit`, when the operator's own `recipe.usage_limit_wait` reads `false` | The run ends as `usage_limit` and the driver exits 1. See [The limit wait turned off](#the-limit-wait-turned-off). |
 | The launch bundle no longer holds the turn recipe, the turn tool or the goal tool, as regular files | No turn can run, so the run waits for the owner's word (`amplihack recipe guidance wait`, an event with no timer), then starts the next turn. If no wake can be armed, the question goes to the operator in a hand-off, as `wait-owner` does. This is a fact the driver checks on disk, not a reading of the log. |
 | Any failure of a `--once` turn | The run ends, as `usage_limit` for a usage limit and as `failed` otherwise, and the driver exits 1. The caller asked for one turn. |
@@ -546,27 +546,26 @@ differ:
   reads `previous.failure` and can act on it, and the goal text tells it to
   hand off when a failure repeats and nothing it can do changes the cause.
   Nothing in code ends such a run.
-- No agent started (#3424). The turn run failed before any step ran, for
-  example because the trusted-bundle check refused a group-writable bundle.
-  No agent runs that could read the failure, hand off or act on guidance. The
-  driver compares the runner's structured class and detail for consecutive
-  failures. The second unchanged failure publishes one hand-off and arms the
-  existing owner wait. The wait returns for guidance, a pull-request change,
-  a worktree change or the owner's stop, and a fresh reading then decides what
-  to do.
+- No agent made a decision (#3424). The turn run can fail before any step ran,
+  or its `decide` step can fail before writing `decision.json`, for example
+  because the trusted-bundle check refused a group-writable bundle or Codex
+  refused a no-worktree launch. The driver compares the runner's structured
+  class and detail for consecutive failures. The second unchanged failure
+  publishes one hand-off and arms the existing owner wait. The wait returns
+  for guidance, a pull-request change, a worktree change or the owner's stop,
+  and a fresh reading then decides what to do.
 
-A turn counts as one in which no agent started only on positive evidence:
-the runner's last failure-class marker is present, parses, and lists
-`completed_steps` and `failed_steps` both as empty arrays, and `decision.json`
-was not written. A turn with no marker, with a marker that does not parse, or
-with one that does not list both fields, is unknown rather than pre-agent: an
-older runner writes no marker for the bundle check, and a runner killed by
-the system (an out-of-memory kill or `SIGKILL`) can die after an agent step
-ran and before it writes one. Such a turn clears the comparison, as a turn
-in which an agent ran does, and the next turn's agent reads its failure. The
-driver compares the marker's class and signal detail. It keeps that signature
-only in memory, clears it when an event wakes the wait, and adds no timer or
-retry limit.
+A turn counts as one in which no agent made a decision only on positive
+evidence. The runner's last failure-class marker is present, parses, and lists
+`completed_steps` and `failed_steps` as arrays, `decide` is not completed, and
+`decision.json` was not written. Empty arrays cover a failure before any step
+ran. A failed `decide` step covers a Codex refusal after the step began. A turn
+with no marker, with a marker that does not parse, or with one that does not
+list both fields is unknown rather than pre-agent. Such a turn clears the
+comparison, as a turn in which an agent made a decision does, and the next
+turn's agent reads its failure. The driver compares the marker's class and
+signal detail. It keeps that signature only in memory, clears it when an event
+wakes the wait, and adds no timer or retry limit.
 
 The runner writes its failure-class marker for a failed trusted-bundle check,
 classed `environmental` and not retryable, with empty step lists, before its
@@ -899,8 +898,9 @@ Rust:
   repeating. The operator can use `amplihack recipe stop`.
 - A turn run that fails the same way every turn starts the next turn at once,
   with no changed input, while an agent runs in it
-  ([A failure that repeats](#a-failure-that-repeats)). Where no agent starts,
-  three such turns in a row with the same error end the run.
+  ([A failure that repeats](#a-failure-that-repeats)). Where no agent makes a
+  decision, the second unchanged marked failure publishes one hand-off and
+  waits for an owner event.
 - `gh pr checks --watch` polls GitHub inside `gh`. The loop adds no poll of its
   own.
 - An operator who passes `--step-timeout` times out the whole loop step.
