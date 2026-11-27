@@ -4,7 +4,7 @@ Analyze claude-trace JSONL files for session health, patterns, and actionable in
 
 ## Overview
 
-The session-replay skill provides API-level analysis of Claude Code sessions by parsing claude-trace JSONL files. It complements the `/transcripts` command by focusing on performance metrics, token usage, and error patterns rather than conversation content.
+The session-replay skill provides API-level analysis of Claude Code sessions by parsing claude-trace JSONL files. It focuses on performance metrics, token usage, and error patterns.
 
 ## Features
 
@@ -80,7 +80,6 @@ Health Score: 82/100 (Good)
 | Need                             | Use This                        |
 | -------------------------------- | ------------------------------- |
 | Session performance metrics      | **session-replay** (this skill) |
-| Conversation content/restoration | `/transcripts` command          |
 | Knowledge extraction             | `codex_transcripts_builder.py`  |
 | Token optimization               | `context-management` skill      |
 
@@ -104,5 +103,4 @@ This skill strictly follows amplihack principles:
 
 - [SKILL.md](./SKILL.md) - Full skill specification with implementation details
 - `.claude-trace/` - Trace file location (project root)
-- `/transcripts` - Conversation transcript management command
 - `context-management` skill - Proactive context optimization

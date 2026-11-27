@@ -3104,9 +3104,6 @@ amplihack bundle_generator.cli create \
 
 /amplihack:reflect
   # Session reflection and learning
-
-/amplihack:xpia <content>
-  # Security validation
 ```
 
 ---

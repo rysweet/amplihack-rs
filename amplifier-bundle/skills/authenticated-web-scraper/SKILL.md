@@ -151,4 +151,4 @@ await cdpSend(ws, "Runtime.evaluate", {
 
 - Works with any documentation site behind corporate auth (SSO, SAML, FIDO2, etc.)
 - Output can be fed to other skills for analysis, summarization, or knowledge base building
-- Pairs well with `investigation-workflow` and `knowledge-builder` skills
+- Pairs well with the `investigation-workflow` skill

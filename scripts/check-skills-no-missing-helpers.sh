@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fail if live bundled skills reference legacy Python helper scripts that are
-# not shipped in amplihack-rs.
+# Fail if live bundled skills or Claude command files reference legacy Python
+# helper scripts that are not shipped in amplihack-rs.
 
 set -euo pipefail
 
@@ -35,21 +35,28 @@ patterns=(
 )
 
 regex=$(IFS='|'; echo "${patterns[*]}")
+command_regex="$regex|\.claude/[A-Za-z0-9_./-]+\.py"
 
-violations="$(rg -n "$regex" amplifier-bundle/skills || true)"
+scan() {
+    rg -n "$1" "$2" || [[ $? -eq 1 ]]
+}
 
-if [[ -n "$violations" ]]; then
+skill_violations="$(scan "$regex" amplifier-bundle/skills)"
+command_violations="$(scan "$command_regex" docs/claude/commands)"
+
+if [[ -n "$skill_violations" || -n "$command_violations" ]]; then
     cat >&2 <<EOF
-FAIL: live bundled skills reference missing legacy Python helper scripts.
+FAIL: live bundled skills or Claude command files reference missing legacy Python helper scripts.
 
-Skills may include Python language examples, but they must not instruct users to
-run helper scripts that amplihack-rs does not ship. Use native helpers, shell/JS
-helpers that exist in the bundle, Rust CLI commands, or explicit manual steps.
+Python language examples are allowed. Instructions that run helpers must use
+native helpers, shell/JS helpers that exist in the bundle, Rust CLI commands, or
+explicit manual steps.
 
 Violations:
-$violations
 EOF
+    [[ -z "$skill_violations" ]] || printf '%s\n' "$skill_violations" >&2
+    [[ -z "$command_violations" ]] || printf '%s\n' "$command_violations" >&2
     exit 1
 fi
 
-echo "PASS: live bundled skills do not reference missing legacy Python helpers."
+echo "PASS: live bundled skills and Claude command files are clear of missing legacy Python helper paths."

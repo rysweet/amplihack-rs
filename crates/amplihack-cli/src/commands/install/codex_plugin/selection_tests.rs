@@ -125,7 +125,7 @@ fn full_package_retains_commands_personas_and_analyst_exclusions() {
             .iter()
             .filter(|name| name.starts_with("amplihack-command-"))
             .count(),
-        18
+        14
     );
     assert_eq!(
         entries

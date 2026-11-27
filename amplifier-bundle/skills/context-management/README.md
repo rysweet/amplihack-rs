@@ -2,7 +2,7 @@
 
 Context management preserves useful session state with native agent workflows and the bundled `scripts/context-management.sh` helper.
 
-Use it to create compact handoffs, recover after compaction, and decide what context to retain. Prefer `/transcripts`, `/reflect`, session checkpoints, direct repository inspection, and helper snapshots.
+Use it to create compact handoffs, recover after compaction, and decide what context to retain. Prefer `/reflect`, session checkpoints, direct repository inspection, and helper snapshots.
 
 ```bash
 scripts/context-management.sh status

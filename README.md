@@ -358,7 +358,7 @@ Full reference:
 </details>
 
 <details>
-<summary>Memory & Knowledge (5 features)</summary>
+<summary>Memory & Knowledge (4 features)</summary>
 
 - **[Kuzu Memory System](https://rysweet.github.io/amplihack-rs/AGENT_MEMORY_QUICKSTART/)**
   — Persistent memory across sessions
@@ -366,8 +366,6 @@ Full reference:
   auto-documentation
 - **[Discoveries](https://rysweet.github.io/amplihack-rs/discoveries/)** —
   Documented problems and solutions
-- **[Knowledge Builder](/amplihack:knowledge-builder)** — Build knowledge base
-  from codebase
 - **[Goal-Seeking Agent Generator](https://rysweet.github.io/amplihack-rs/GOAL_AGENT_GENERATOR_GUIDE/)**
   — Create agents from prompts
 
@@ -392,7 +390,7 @@ Full reference:
 <details>
 <summary>Quality, Security & Customization (4 features)</summary>
 
-- **[Security Analysis](/amplihack:xpia)** — Cross-prompt injection defense (opt-in: set `XPIA_ENABLED=true`; see [XPIA configuration](docs/reference/xpia-configuration.md))
+- **[Security Analysis](docs/reference/xpia-configuration.md)** — Cross-prompt injection defense (opt in with `XPIA_ENABLED=true`)
 - **[Benchmarking](https://rysweet.github.io/amplihack-rs/BENCHMARKING/)** —
   Performance measurement
 - **[Customization](/amplihack:customize)** — User preferences (verbosity,

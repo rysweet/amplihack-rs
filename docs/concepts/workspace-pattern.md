@@ -332,7 +332,6 @@ amplihack's command system is available throughout your workspace and provides p
 
 ```
 /amplihack:analyze - Comprehensive codebase analysis
-/amplihack:knowledge-builder - Build comprehensive knowledge base
 ```
 
 These commands work seamlessly within project boundaries:
