@@ -6,30 +6,38 @@ use super::ci_wait::{fake_sleep, goal, read_and_decide, sleeps};
 use super::support::{Harness, describe};
 use serde_json::Value;
 use std::fs;
+use std::os::unix::fs::DirBuilderExt;
 
 fn run_wait(value: Option<&str>, guidance: bool) -> (Vec<u64>, usize) {
     let h = Harness::new();
     h.set_checks("build\tpending\t0\n");
     read_and_decide(&h, true);
     let turn = h.state.join("turns/001");
-    if !guidance {
-        let path = turn.join("reading.json");
-        let mut reading: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        reading["goal"]["guidance_target"] = Value::Null;
-        fs::write(path, reading.to_string()).unwrap();
-    }
+    let path = turn.join("reading.json");
+    let mut reading: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    reading["goal"]["guidance_target"] = Value::Null;
+    fs::write(path, reading.to_string()).unwrap();
     fake_sleep(
         &h,
         r#"test "$(wc -l < "$GH_STATE/sleeps")" -eq 1
 printf 'build\tpass\t0\n' > "$GH_STATE/checks""#,
     );
     let mut command = goal(&h, &["act", "wait"]);
+    if guidance {
+        let directory = h.state.join("guidance");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        command.env("AMPLIHACK_RUN_GUIDANCE_DIRS", directory);
+    }
     if let Some(value) = value {
         command.env("RECIPE_VAR_checks_watch_interval", value);
     }
     let out = command.output().unwrap();
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(h.result("001")["checks_state"], "passed");
+    assert_eq!(h.state.join("guidance-wake").is_dir(), guidance);
     let diagnostics = fs::read_to_string(turn.join("wait.err")).unwrap();
     (sleeps(&h), diagnostics.lines().count())
 }
