@@ -164,9 +164,9 @@ do_ci_wait() {
       0) ;;
       *) printf 'the PR head read failed (exit %s): %s\n' "$rc" "${GH_READ_ERROR:-unreadable response}" >&2; return 2 ;;
     esac
-    if [ -n "$build_branch" ] && ! jq -e --arg branch "$build_branch" --arg repo "${slug,,}" '
+    if [ -n "$build_branch" ] && ! jq -e --arg branch "$build_branch" --arg repo "$slug" '
       .state == "open" and .head.ref == $branch and
-      (.head.repo.full_name | strings | ascii_downcase) == $repo
+      (.head.repo.full_name | strings | ascii_downcase) == ($repo | ascii_downcase)
     ' "$GH_READ_BODY" >/dev/null; then
       echo "the pull request is no longer open on the build's branch and repository" >&2
       return 2

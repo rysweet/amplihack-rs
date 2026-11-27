@@ -217,8 +217,7 @@ act_mark_ready() {
 
 # --- review and wait: PR 1's goal tool, at the run's own pull request -----------
 delegate() { # delegate <review|wait>
-  local wt rc slug
-  local -a wait_branch=()
+  local wt rc slug wait_branch=""
   if [ "$1" = wait ]; then
     # Use the turn's candidate. The CI wait verifies it live on its first
     # conditional REST read, where a decline can be waited out.
@@ -227,11 +226,13 @@ delegate() { # delegate <review|wait>
     if ! build_repo_slug "$LAUNCH"; then result failed "the repository is unknown: ${BUILD_REPO_ERR}"; return 0; fi
     if ! build_run_branch; then result failed "the run branch is unknown"; return 0; fi
     slug="$(goal_github_pr_repo "$(jq -r '.goal.pr.url // empty | strings' "$TD/reading.json")" "$OWN_PR")"
-    if [ "$BUILD_REPO_MISMATCH" = true ] || [ "${slug,,}" != "${BUILD_REPO,,}" ]; then
+    if [ "$BUILD_REPO_MISMATCH" = true ] ||
+      [ "$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')" != \
+        "$(printf '%s' "$BUILD_REPO" | tr '[:upper:]' '[:lower:]')" ]; then
       result wait-error "the reading has no pull request URL for the run's repository"
       return 0
     fi
-    wait_branch=("$BUILD_BRANCH")
+    wait_branch="$BUILD_BRANCH"
   else
     identity_for_write || return 0
     own_verified true || return 0
@@ -243,7 +244,7 @@ delegate() { # delegate <review|wait>
     wt="$LAUNCH"
   fi
   RECIPE_VAR_pr_number="$OWN_PR" AUTODRIVE_WORKTREE="$wt" AUTODRIVE_REPO="$LAUNCH" AUTODRIVE_GOAL_CONTRACT=1 \
-    bash "$HERE/autodrive_pr_goal.sh" act "$1" "$TD" "${wait_branch[@]}" >"$S/delegate.log" 2>&1; rc=$?
+    bash "$HERE/autodrive_pr_goal.sh" act "$1" "$TD" ${wait_branch:+"$wait_branch"} >"$S/delegate.log" 2>&1; rc=$?
   passup "$rc"
   if [ "$rc" -ne 0 ] || ! goal_json_file "$TD/result.json" 65536; then
     result failed "the ${1} step of autodrive_pr_goal.sh exited ${rc}: $(build_redact_tail < "$S/delegate.log")" "$(jq -cn --argjson n "$OWN_PR" '{pr:$n}')"
