@@ -43,9 +43,17 @@ input, carry out a later task step), then pick one action: the goal's
 - Merge authority comes only from `no_merge` and the captured invocation. Only
   the loop's merge action merges, with `--match-head-commit`.
 - With merging off, carry out the task's later steps, then take `ready`.
+- Write a PR comment or other message to a person only when the reader has
+  something to act on: a push and what changed; the final check result before
+  merge or readiness; a question or decision for a named owner; a block the run
+  cannot clear; or the merge. Otherwise, write only the turn record. Keep the
+  required hand-off comments, answers to rejected outcomes, turn records and
+  readings unchanged.
 - Hand off only for a decision that belongs to a named owner, or for a failure
   that keeps repeating that nothing you can do will change, saying which owner
   and what decision. Write it in the journalistic style with literal words.
+  This applies when required checks cannot start, repeated waits change
+  nothing, and the run cannot clear the cause. Name the owner and decision.
 - When the owner asks the run to stop, commit and push, then take `stop` with
   the continuation note.
 
