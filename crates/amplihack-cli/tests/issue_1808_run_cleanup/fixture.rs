@@ -80,8 +80,7 @@ const TOOLS: &[&str] = &[
 pub const DEFAULT_REPOSITORY: &str = "fixture-owner/first";
 
 /// Records every call. A canned HTTP response overrides the default, which
-/// returns the repository's filtered JSON rows on page one. All-state pages
-/// require explicit responses so missing fallback fixtures cause a failure.
+/// returns the repository's JSON rows on page one.
 const FAKE_GH: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 test "$1" = api || exit 64
@@ -92,16 +91,15 @@ for a in "$@"; do
   case "$a" in
     repos/*/pulls) endpoint=$a ;;
     page=*) page=${a#page=} ;;
-    state=open|state=closed|state=all) state=${a#state=} ;;
+    state=all) state=all ;;
   esac
 done
 test -n "$endpoint" && test -n "$page" && test -n "$state" || exit 64
 repository=${endpoint#repos/}
 repository=${repository%/pulls}
-dir="$FAKE_GH_DIR/$repository/$state"
+dir="$FAKE_GH_DIR/$repository"
 if [ -f "$dir/$page.fail" ]; then echo 'fake gh: simulated failure' >&2; exit 1; fi
 if [ -f "$dir/$page.http" ]; then cat "$dir/$page.http"; exit 0; fi
-if [ "$state" = all ]; then echo 'fake gh: missing all-state response' >&2; exit 1; fi
 printf 'HTTP/2.0 200 OK\n\n'
 if [ "$page" = 1 ] && [ -f "$dir/pulls.json" ]; then
   cat "$dir/pulls.json"
@@ -398,24 +396,21 @@ impl Fx {
 
     // ----- gh answers -------------------------------------------------------
 
-    fn gh_listing_dir(&self, repository: &str, state: &str) -> PathBuf {
-        let dir = self.gh.join(repository).join(state);
+    fn gh_listing_dir(&self, repository: &str) -> PathBuf {
+        let dir = self.gh.join(repository);
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
     fn gh_add(&self, row: serde_json::Value) {
-        let state = row["state"].as_str().unwrap();
-        let path = self
-            .gh_listing_dir(DEFAULT_REPOSITORY, state)
-            .join("pulls.json");
+        let path = self.gh_listing_dir(DEFAULT_REPOSITORY).join("pulls.json");
         let mut rows: Vec<serde_json::Value> = match fs::read(&path) {
             Ok(data) => serde_json::from_slice(&data).unwrap(),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(err) => panic!("cannot read fake PR rows: {err}"),
         };
         rows.push(row);
-        rows.sort_by(|a, b| b["updated_at"].as_str().cmp(&a["updated_at"].as_str()));
+        rows.sort_by_key(|row| row["number"].as_u64());
         fs::write(path, serde_json::to_vec(&rows).unwrap()).unwrap();
     }
 
@@ -423,7 +418,7 @@ impl Fx {
         let at = rfc3339_hours_ago(closed_hours_ago);
         self.gh_add(serde_json::json!({
             "number": number, "state": "closed", "head": {"ref": branch},
-            "updated_at": at, "closed_at": at, "merged_at": merged.then_some(&at),
+            "closed_at": at, "merged_at": merged.then_some(&at),
         }));
     }
 
@@ -435,27 +430,21 @@ impl Fx {
     }
 
     pub fn gh_fail(&self, repository: &str, page: usize) {
-        self.gh_listing_fail(repository, "open", page);
-    }
-
-    pub fn gh_listing_fail(&self, repository: &str, state: &str, page: usize) {
         fs::write(
-            self.gh_listing_dir(repository, state)
-                .join(format!("{page}.fail")),
+            self.gh_listing_dir(repository).join(format!("{page}.fail")),
             "",
         )
         .unwrap();
     }
 
-    pub fn gh_page(&self, repository: &str, state: &str, page: usize, next: bool, rows: &str) {
+    pub fn gh_page(&self, repository: &str, page: usize, next: bool, rows: &str) {
         let links = next.then_some(("next", page + 1));
-        self.gh_page_with_links(repository, state, page, links.as_slice(), rows);
+        self.gh_page_with_links(repository, page, links.as_slice(), rows);
     }
 
     pub fn gh_page_with_links(
         &self,
         repository: &str,
-        state: &str,
         page: usize,
         links: &[(&str, usize)],
         rows: &str,
@@ -463,12 +452,12 @@ impl Fx {
         let mut response = String::from("HTTP/2.0 200 OK\r\n");
         for (relation, linked_page) in links {
             response.push_str(&format!(
-                "Link: <https://api.github.com/repos/{repository}/pulls?state={state}&per_page=100&page={linked_page}>; rel=\"{relation}\"\r\n",
+                "Link: <https://api.github.com/repos/{repository}/pulls?state=all&per_page=100&page={linked_page}>; rel=\"{relation}\"\r\n",
             ));
         }
         response.push_str("\r\n");
         response.push_str(rows);
-        let dir = self.gh_listing_dir(repository, state);
+        let dir = self.gh_listing_dir(repository);
         fs::write(dir.join(format!("{page}.http")), response).unwrap();
     }
 

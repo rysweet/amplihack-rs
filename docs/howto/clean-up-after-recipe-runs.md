@@ -935,17 +935,12 @@ In report and apply mode, `amplihack cleanup` matches pull requests by exact
 head branch name. It reads `GH_REPO` before the checkout's `gh repo set-default`
 selection. Without either selection, the checkout's GitHub fetch remotes
 must identify the same repository. Checkouts of the same repository share
-REST evidence. Cleanup requests pages of 100, with a combined limit of 40
-requests per repository and a 30-second timeout per request.
-
-When one page covers all open PRs, cleanup reads the first closed PR page in
-descending update order. For runs that already meet the no-PR age rule,
-reaching the keep-period cutoff on that page supplies enough evidence because
-older closures cannot extend the keep period. When a verdict requires more
-pages, cleanup reads all PR states in ascending creation order. Closing or
-reopening a PR leaves its position in that listing unchanged. Cleanup keeps
-dependent items and reports why if it cannot resolve the repository or validate
-the required evidence within the shared request limit.
+REST evidence. Cleanup reads all PR states in ascending creation order from
+`GET /repos/{owner}/{repo}/pulls`. Closing or reopening a PR leaves its
+position in the listing unchanged. The listing uses pages of 100, with a
+limit of 40 requests per repository and a 30-second timeout per request.
+Cleanup keeps dependent items and reports why if it cannot resolve the
+repository or read a complete listing within that limit.
 
 These rules decide worktrees, and targets recorded in the legacy format. A
 run's legacy targets are removed only when every worktree the run still has is

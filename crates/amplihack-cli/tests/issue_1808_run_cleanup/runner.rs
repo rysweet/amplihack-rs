@@ -496,7 +496,7 @@ printf 'WT=%s\nTGT=%s\n' "$wt" "$tgt" >> "$RECORD_DIR/env"
             "recipe log {path:?} changed"
         );
     }
-    assert_eq!(fx.gh_calls().lines().count(), 2);
+    assert_eq!(fx.gh_calls().lines().count(), 1);
 }
 
 #[test]

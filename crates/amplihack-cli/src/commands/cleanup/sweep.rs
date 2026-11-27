@@ -985,7 +985,7 @@ struct Collector<'a> {
     now: SystemTime,
     /// Taken on first use: most categories never ask.
     procs: Option<ProcScan>,
-    pr_listings: HashMap<pull_requests::Repository, pull_requests::Listing>,
+    pr_listings: HashMap<pull_requests::Repository, Result<pull_requests::Listing, String>>,
     common_cache: HashMap<PathBuf, Option<PathBuf>>,
     list_cache: HashMap<PathBuf, Result<Vec<PathBuf>, String>>,
     items: Vec<Item>,
@@ -1088,9 +1088,9 @@ impl Collector<'_> {
         let listing = self
             .pr_listings
             .entry(repository)
-            .or_insert_with_key(pull_requests::Listing::new);
-        match listing.verdict(branch, self.now.into(), self.s.keep, no_pr) {
-            Ok(verdict) => verdict,
+            .or_insert_with_key(pull_requests::Listing::read);
+        match listing {
+            Ok(listing) => listing.verdict(branch, self.now.into(), self.s.keep, no_pr),
             Err(error) => Verdict::Skip {
                 reason: format!("cannot list pull requests: {error}"),
             },
