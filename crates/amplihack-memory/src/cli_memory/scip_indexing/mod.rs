@@ -17,7 +17,8 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     fn write_executable(path: &Path, body: &str) {
         fs::write(path, body).unwrap();
@@ -67,9 +68,14 @@ mod tests {
 
     #[test]
     fn run_native_scip_indexing_with_stubbed_python_indexer_creates_artifact() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        const PROJECT_ENV: &str = "AMPLIHACK_TEST_SCIP_PROJECT";
+        if let Some(project) = std::env::var_os(PROJECT_ENV) {
+            let project = PathBuf::from(project);
+            let summary = run_native_scip_indexing(Some(&project), &[]).unwrap();
+            assert!(summary.success);
+            assert_eq!(summary.completed_languages, vec!["python"]);
+            return;
+        }
 
         let project = tempfile::tempdir().unwrap();
         let bin_dir = tempfile::tempdir().unwrap();
@@ -80,20 +86,26 @@ mod tests {
             "#!/bin/sh\nprintf 'stub-scip' > index.scip\n",
         );
 
-        let old_path = std::env::var_os("PATH");
-        unsafe { std::env::set_var("PATH", bin_dir.path()) };
-
-        let summary = run_native_scip_indexing(Some(project.path()), &[]).unwrap();
-
-        match old_path {
-            Some(path) => unsafe { std::env::set_var("PATH", path) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
-
-        assert!(summary.success);
-        assert_eq!(summary.completed_languages, vec!["python"]);
+        // Isolate PATH and HOME without changing how other tests find Git.
+        let probe = concat!(
+            module_path!(),
+            "::run_native_scip_indexing_with_stubbed_python_indexer_creates_artifact"
+        );
+        let (_, probe) = probe.split_once("::").unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", probe])
+            .env(PROJECT_ENV, project.path())
+            .env("HOME", project.path())
+            .env("PATH", bin_dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated indexing probe failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         let artifact = project.path().join(".amplihack/indexes/python.scip");
-        assert!(artifact.exists());
         assert_eq!(fs::read_to_string(artifact).unwrap(), "stub-scip");
     }
 }
