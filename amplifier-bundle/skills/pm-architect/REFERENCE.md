@@ -642,7 +642,10 @@ items:
     status: enum # READY, IN_PROGRESS, DONE, BLOCKED
     created_at: ISO8601 # UTC timestamp with Z suffix
     tags: list[string] # Optional categorization tags
+    dependencies: list[string] # List of BL-XXX this depends on
 ```
+
+Assign a new item the next `BL-` number after the highest existing one. Use HIGH for cues such as "urgent" or "critical", LOW for "nice to have", and MEDIUM otherwise.
 
 ### Workstream Schema (workstreams/ws-XXX.yaml)
 
@@ -660,6 +663,8 @@ progress_notes: list[string] # Progress updates
 dependencies: list[string] # List of BL-XXX this depends on
 last_activity: ISO8601 # Last progress update timestamp
 ```
+
+When status changes, append any progress note and refresh `last_activity`. Set `completed_at` when the workstream reaches COMPLETED or FAILED.
 
 ### Context Schema (context.yaml)
 

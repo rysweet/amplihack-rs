@@ -213,10 +213,9 @@ When working across local repositories, leverage the worktree-manager agent:
 
 For complex multi-repo projects:
 
-1. Use backlog-curator to track cross-repo items
-2. Use workstream-coordinator for multi-repo workstreams
-3. Linked PRs map to single workstream items
-4. Breaking change detection feeds into roadmap planning
+1. Use pm-architect to track cross-repo backlog items and workstreams
+2. Linked PRs map to single workstream items
+3. Breaking change detection feeds into roadmap planning
 
 ## Philosophy Alignment
 

@@ -133,13 +133,14 @@ Each example is marked with its level. Start at Level 1 and progress as needed.
 
 ## Navigation Guide
 
-Before you do any of the work in this table, read the named file from this skill's folder. The rule of Repo-Type Detection applies in those files too.
+Before you do any of the work in this table, read the named file from this skill's folder. Follow Repo-Type Detection in those files, subject to the existing-suite rule in `writing-e2e-tests.md`.
 
-| File                   | Read when                                                                          |
-| ---------------------- | ---------------------------------------------------------------------------------- |
-| `reference.md`         | You need the full list of actions, advanced patterns or custom agents.             |
-| `practice.md`          | You run scenarios and need where evidence is written, pitfalls or troubleshooting. |
-| `parity-and-shadow.md` | You need side-by-side parity, A/B comparison, shadow mode, tmux or SSH.            |
+| File                   | Read when                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| `reference.md`         | You need the full list of actions, advanced patterns or custom agents.               |
+| `practice.md`          | You run scenarios and need where evidence is written, pitfalls or troubleshooting.   |
+| `parity-and-shadow.md` | You need side-by-side parity, A/B comparison, shadow mode, tmux or SSH.              |
+| `writing-e2e-tests.md` | You are writing end-to-end tests and need to choose tooling and cover user journeys. |
 
 ## Quick Start [LEVEL 1]
 
