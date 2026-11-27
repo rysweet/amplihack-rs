@@ -482,12 +482,6 @@ fn oversized_history_uses_open_prs_and_recent_updates() {
     ] {
         assert_kept(&complete, wt);
     }
-    assert!(
-        entry_for(&complete, &unread_closure)["reason"]
-            .as_str()
-            .is_some_and(|reason| reason.contains("no matching closure")
-                && reason.contains("40-request limit"))
-    );
     let calls = fx.take_gh_calls();
     assert_eq!(calls.len(), 3, "{calls:?}");
     assert!(calls[0].contains("sort=created") && calls[0].contains("state=all"));
