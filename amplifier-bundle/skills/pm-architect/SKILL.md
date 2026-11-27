@@ -1,15 +1,15 @@
 ---
 name: pm-architect
-description: Expert project manager orchestrating backlog-curator, work-delegator, workstream-coordinator, and roadmap-strategist sub-skills. Coordinates complex software projects through delegation and strategic oversight. Activates when managing projects, coordinating work, or tracking overall progress.
+description: "Expert project manager for software projects: prioritizes a backlog, prepares delegation packages for coding agents, tracks concurrent workstreams and keeps a roadmap. Activates when managing projects, coordinating work, or tracking overall progress."
 explicit_triggers:
   - /top5
 ---
 
-# PM Architect Skill (Orchestrator)
+# PM Architect Skill
 
 ## Role
 
-You are the project manager orchestrating four specialized sub-skills to coordinate software development projects. You delegate to specialists and synthesize their insights for comprehensive project management.
+Manage the backlog, prepare work for coding agents, track concurrent workstreams, and keep the roadmap current.
 
 ## When to Activate
 
@@ -23,82 +23,56 @@ Activate when the user:
 - Asks "What are the top priorities?" or invokes `/top5`
 - Wants a quick daily standup or status overview
 
-## Sub-Skills
+## Activities
 
-### 1. backlog-curator
-
-**Focus**: Backlog prioritization and recommendations
-**Use when**: Analyzing what to work on next, adding items, checking priorities
-
-### 2. work-delegator
-
-**Focus**: Delegation package creation for agents
-**Use when**: Assigning work to coding agents, creating context packages
-
-### 3. workstream-coordinator
-
-**Focus**: Multi-workstream tracking and coordination
-**Use when**: Checking status, detecting stalls/conflicts, managing concurrent work
-
-### 4. roadmap-strategist
-
-**Focus**: Strategic planning and goal alignment
-**Use when**: Discussing goals, milestones, strategic direction, roadmap updates
+- To add backlog items and recommend priorities, read the Multi-Criteria Scoring Algorithm, Dependency Analysis, and Backlog Schema in [REFERENCE.md](REFERENCE.md).
+- To select an agent and prepare its package, read [delegation.md](delegation.md).
+- To track workstream capacity, conflicts, stalls, and status changes, read Coordination Patterns and Workstream Schema in [REFERENCE.md](REFERENCE.md).
+- To plan milestones, track goal progress, and update the roadmap, read [roadmap-planning.md](roadmap-planning.md).
 
 ## Core Workflow
 
-When user requests project management help:
+1. Identify which activities the user's request needs.
+2. Read the relevant guidance and inspect the project state.
+3. Combine the results into one response with recommended next steps.
 
-1. **Understand intent**: Determine which sub-skill(s) to invoke
-2. **Invoke specialist(s)**: Call appropriate sub-skill(s) in parallel when possible
-3. **Synthesize results**: Combine insights from sub-skills
-4. **Present cohesively**: Deliver unified response to user
-5. **Recommend actions**: Suggest next steps
+## Patterns
 
-## Orchestration Patterns
+### What Should I Work On?
 
-### Pattern 1: What Should I Work On?
+Rank backlog items using [REFERENCE.md](REFERENCE.md) and use [roadmap-planning.md](roadmap-planning.md) to relate the recommendations to current goals.
 
-Invoke backlog-curator + roadmap-strategist in parallel, synthesize recommendations with strategic alignment.
+### Check Overall Status
 
-### Pattern 2: Check Overall Status
+Combine active workstream health from [REFERENCE.md](REFERENCE.md) with goal progress from [roadmap-planning.md](roadmap-planning.md) in one project status report.
 
-Invoke workstream-coordinator + roadmap-strategist in parallel, present unified project health dashboard.
+### Start New Work
 
-### Pattern 3: Start New Work
+Prepare the package using [delegation.md](delegation.md), then record the workstream using the Workstream Schema in [REFERENCE.md](REFERENCE.md).
 
-Sequential: work-delegator creates package, then workstream-coordinator tracks it.
+### Initialize PM
 
-### Pattern 4: Initialize PM
+Create the `.pm/` structure using State File Schemas in [REFERENCE.md](REFERENCE.md) and create the project roadmap using [roadmap-planning.md](roadmap-planning.md).
 
-Create .pm/ structure, invoke roadmap-strategist for roadmap generation.
+### Top 5 Priorities (`/top5`)
 
-### Pattern 5: Top 5 Priorities (`/top5`)
+Aggregate priorities from GitHub issues, PRs, and the local backlog into a ranked Top 5. Give each item a score breakdown, its source, and a suggested next action.
 
-Run `direct Top 5 prioritization workflow` to aggregate priorities from GitHub issues, PRs, and local backlog into a strict ranked list. Present the Top 5 with score breakdown, source attribution, and suggested next action per item.
+Weight GitHub issues at 40%, GitHub PRs at 30%, roadmap alignment at 20%, and the local backlog at 10%.
 
-Weights: GitHub issues 40%, GitHub PRs 30%, roadmap alignment 20%, local backlog 10%.
+### Daily Standup
 
-### Pattern 6: Daily Standup
+Combine git activity, workstream health, backlog changes, and roadmap progress into a cross-project status report.
 
-Run `direct daily status synthesis workflow` to produce a cross-project status report. Combines git activity, workstream health, backlog changes, and roadmap progress.
+## Navigation Guide
 
-## Philosophy Alignment
-
-- **Ruthless Simplicity**: Thin orchestrator (< 200 lines), complexity in sub-skills
-- **Single Responsibility**: Coordinate, don't implement
-- **Zero-BS**: All sub-skills complete and functional
-
-## Scripts
-
-Orchestrator owns these scripts:
-- `direct .pm/ state editing workflow` — Basic .pm/ state operations (init, add, update, list)
-- `direct Top 5 prioritization workflow` — Top 5 priority aggregation across all sub-skills
-- `direct daily status synthesis workflow` — AI-powered daily status report generation
-- `direct roadmap review workflow` — Roadmap analysis and review
-
-Sub-skills own their specialized scripts.
+| File                                       | Read when                                                        |
+| ------------------------------------------ | ---------------------------------------------------------------- |
+| [REFERENCE.md](REFERENCE.md)               | You need scoring, dependency analysis, coordination, or schemas. |
+| [EXAMPLES.md](EXAMPLES.md)                 | You want to see a project management workflow in use.            |
+| [delegation.md](delegation.md)             | You are preparing work for a coding agent.                       |
+| [roadmap-planning.md](roadmap-planning.md) | You are creating, updating, or reviewing a roadmap.              |
 
 ## Success Criteria
 
-Users can manage projects, prioritize work, delegate to agents, track progress, and align with goals effectively.
+Users can manage projects, prioritize work, delegate to agents, track progress, and align work with goals effectively.

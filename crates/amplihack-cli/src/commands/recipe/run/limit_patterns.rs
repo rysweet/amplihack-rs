@@ -24,8 +24,8 @@ use super::limit_reset;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Harness {
     Claude,
-    /// OpenAI Codex. It states no reset and has no epoch form; its one shape
-    /// is the whole-line message in [`CODEX`] (issue #2911).
+    /// OpenAI Codex. It states no reset and has no epoch form; its shapes
+    /// are the whole-line messages in [`CODEX`] (issues #2911 and #2952).
     Codex,
 }
 
@@ -67,11 +67,10 @@ struct Patterns {
     /// `limit` and the middle dot is the harness's own limit message. `None`
     /// for a harness that prints no such line.
     message_prefix: Option<&'static str>,
-    /// A lowercase whole-line message: the harness's own limit line opens
-    /// with this phrase and continues, if at all, past a delimiter. `None`
-    /// for a harness whose message has a prefix shape instead. See
-    /// [`whole_line`].
-    whole_line: Option<&'static str>,
+    /// The harness's own whole-line limit messages, each naming its kind.
+    /// Empty for a harness whose message has a prefix shape instead. See
+    /// [`WholeLine`].
+    whole_lines: &'static [WholeLine],
     /// Lowercase prefixes of the harness's own rate-limit (429) envelope,
     /// matched at the start of a line only. See [`rate_limit`].
     rate_limit: &'static [&'static str],
@@ -88,6 +87,48 @@ const WEEKLY_LIMIT: &str = "weekly limit";
 /// states no reset, so a step that meets it waits for capacity rather than
 /// for a time.
 const CODEX_CREDITS: &str = "your workspace is out of credits";
+
+/// Codex's own words when an account's usage limit is reached (issue #2952).
+/// It states no reset either.
+const CODEX_USAGE: &str = "usage limit reached. you've reached your usage limit";
+
+/// The words a failed Codex `exec` step ends with when the service refuses
+/// it for its rate or quota (issue #2952). The recipe runner prints them
+/// after its own `Codex exec failed with status ...` wrapper.
+const CODEX_SERVICE_RATE: &str = "service rate limit; retry later or check account quota";
+
+/// The classifier's marker for [`CODEX_SERVICE_RATE`]: its tail, without the
+/// words "rate limit". A bare "rate limit" belongs to the short-lived 429
+/// envelopes, and no usage-limit marker may contain it (see
+/// [`CLAUDE_RATE_LIMIT`]).
+const CODEX_QUOTA: &str = "retry later or check account quota";
+
+/// The runner's wrappers in front of [`CODEX_SERVICE_RATE`]: the line opens
+/// with one of these and ends with `": "` and that phrase.
+const CODEX_EXEC_FAILED: &[&str] = &[
+    "agent step failed: codex exec failed with status ",
+    "codex exec failed with status ",
+];
+
+/// The log-level prefixes a harness may print in front of its own whole-line
+/// message, as Codex prints `ERROR: ` (issue #2952). Matched in this case
+/// only, with exactly one space after the colon, and at most one is removed.
+/// A lowercase `error: ` is not one: it is how other tools, and models, open
+/// a sentence about an error.
+const LOG_LEVELS: &[&str] = &["ERROR: ", "WARN: ", "WARNING: "];
+
+/// One whole-line limit message (issues #2911 and #2952).
+///
+/// After at most one [`LOG_LEVELS`] prefix, the trimmed line, lowercased,
+/// must open with one of `opens`. With no `ends`, what follows must be a
+/// delimiter or nothing, so the harness's own sentence may continue ("...
+/// out of credits. Add credits to continue."). With `ends`, the line must
+/// end with it, which is how a wrapper line carries the harness's words.
+struct WholeLine {
+    opens: &'static [&'static str],
+    ends: Option<&'static str>,
+    kind: LimitKind,
+}
 
 /// The anchor the text form of a reset follows, in any case.
 const RESETS: &str = "resets ";
@@ -184,27 +225,53 @@ const CLAUDE: Patterns = Patterns {
     epoch_marker: Some("Claude AI usage limit reached"),
     anchor: Some(RESETS),
     message_prefix: Some("You've hit your "),
-    whole_line: None,
+    whole_lines: &[],
     rate_limit: CLAUDE_RATE_LIMIT,
 };
 
 /// Codex's patterns (issue #2911).
 ///
-/// Codex carries neither shape Claude's row carries: its message has no
-/// middle dot and does not open with "You've hit your ", so [`shaped`] would
-/// never match it, and it states no reset to read. [`whole_line`] is the
-/// shape it does have. `rate_limit` is empty because nothing reads Codex's
-/// own 429 envelope yet, and an empty list matches nothing.
+/// Codex carries neither shape Claude's row carries: its messages have no
+/// middle dot and do not open with "You've hit your ", and they state no
+/// reset to read. Whole lines ([`WholeLine`]) are the shape they do have.
+/// `rate_limit` is empty because nothing reads Codex's own 429 envelope yet,
+/// and an empty list matches nothing.
 ///
 /// Over the 72 hours to 21 November 2026, 36 runs ended as `indeterminate`
-/// on this message and were reported as authentication rejections (#2876).
-/// It is a usage limit, so it classifies as one and waits like one.
+/// on the credits message and were reported as authentication rejections
+/// (#2876). On 27 November Codex printed it after `ERROR: `, and printed the
+/// usage-limit and service rate-limit lines, and none waited (#2952). Each
+/// is a limit, so it classifies as one and waits like one. The usage-limit
+/// line needs no marker of its own: Claude's "usage limit" already matches
+/// it. The usage and rate lines are [`LimitKind::Session`], the existing
+/// fallback kind: neither names a budget, and neither states a reset.
 const CODEX: Patterns = Patterns {
-    markers: &[CODEX_CREDITS],
+    markers: &[CODEX_CREDITS, CODEX_QUOTA],
     epoch_marker: None,
     anchor: None,
     message_prefix: None,
-    whole_line: Some(CODEX_CREDITS),
+    whole_lines: &[
+        WholeLine {
+            opens: &[CODEX_CREDITS],
+            ends: None,
+            kind: LimitKind::Credits,
+        },
+        WholeLine {
+            opens: &[CODEX_USAGE],
+            ends: None,
+            kind: LimitKind::Session,
+        },
+        WholeLine {
+            opens: &[CODEX_SERVICE_RATE],
+            ends: None,
+            kind: LimitKind::Session,
+        },
+        WholeLine {
+            opens: CODEX_EXEC_FAILED,
+            ends: Some(CODEX_SERVICE_RATE),
+            kind: LimitKind::Session,
+        },
+    ],
     rate_limit: &[],
 };
 
@@ -314,10 +381,7 @@ pub(crate) fn limit_message(stderr: &[u8], stdout: &[u8], now: i64) -> Option<Li
         Some(LimitMessage {
             harness: h,
             // A whole-line message names its own kind outright.
-            kind: match p.whole_line {
-                Some(_) => LimitKind::Credits,
-                None => LimitKind::of(line),
-            },
+            kind: whole_line_kind(p, line).unwrap_or_else(|| LimitKind::of(line)),
             reset,
         })
     })
@@ -348,7 +412,7 @@ fn shaped(p: &Patterns, line: &str) -> bool {
     {
         return true;
     }
-    if p.whole_line.is_some_and(|phrase| whole_line(line, phrase)) {
+    if whole_line_kind(p, line).is_some() {
         return true;
     }
     let Some(prefix) = p.message_prefix else {
@@ -360,21 +424,44 @@ fn shaped(p: &Patterns, line: &str) -> bool {
         && line.contains('\u{b7}')
 }
 
-/// Whether `line` is the whole-line message `phrase` (issue #2911).
+/// The kind the first of the row's whole-line messages that `line` is
+/// states, or `None` when it is none of them (issues #2911 and #2952).
+fn whole_line_kind(p: &Patterns, line: &str) -> Option<LimitKind> {
+    p.whole_lines
+        .iter()
+        .find(|w| whole_line(line, w))
+        .map(|w| w.kind)
+}
+
+/// Whether `line` is the whole-line message `w`.
 ///
-/// The line, already trimmed by [`positioned`], must *open* with the phrase,
-/// and what follows must be a delimiter rather than more of a word: the
-/// harness prints its own sentence after it ("... out of credits. Add
-/// credits to continue."), while a model writing about the phrase puts words
-/// in front of it. A bare `contains` would match the phrase anywhere in a
-/// sentence, which is the weaker rule this deliberately is not. The
-/// comparison is case-insensitive, as every other reading here is.
-fn whole_line(line: &str, phrase: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    let Some(rest) = lower.strip_prefix(phrase) else {
-        return false;
-    };
-    rest.chars().next().is_none_or(|c| !c.is_alphanumeric())
+/// The line, already trimmed by [`positioned`], may start with one
+/// [`LOG_LEVELS`] prefix, and must then *open* with one of the message's
+/// phrases. Without `ends`, what follows must be a delimiter rather than
+/// more of a word: the harness prints its own sentence after it ("... out of
+/// credits. Add credits to continue."), while a model writing about the
+/// phrase puts words in front of it. With `ends`, the line must end with
+/// `": "` and that phrase. A bare `contains` would match a phrase anywhere
+/// in a sentence, which is the weaker rule this deliberately is not. The
+/// comparison is case-insensitive, as every other reading here is, and a
+/// curly apostrophe reads as a straight one.
+fn whole_line(line: &str, w: &WholeLine) -> bool {
+    let line = LOG_LEVELS
+        .iter()
+        .find_map(|level| line.strip_prefix(level))
+        .unwrap_or(line);
+    let lower = line.to_ascii_lowercase().replace('\u{2019}', "'");
+    w.opens.iter().any(|phrase| {
+        let Some(rest) = lower.strip_prefix(phrase) else {
+            return false;
+        };
+        match w.ends {
+            Some(end) => rest
+                .strip_suffix(end)
+                .is_some_and(|middle| middle.ends_with(": ")),
+            None => rest.chars().next().is_none_or(|c| !c.is_alphanumeric()),
+        }
+    })
 }
 
 /// The reset a usage-limit message states, quoted verbatim for the
