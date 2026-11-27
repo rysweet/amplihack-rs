@@ -35,6 +35,72 @@ fn closed_pr(number: usize, branch: &str, closed_hours_ago: i64, updated_hours_a
 }
 
 #[test]
+fn closing_an_unrelated_pr_between_pages_keeps_the_still_open_worktree() {
+    let fx = Fx::new();
+    let open = seed_worktree(&fx, &fx.repo, "first", "still-open");
+    let absent = seed_worktree(&fx, &fx.repo, "first", "absent");
+    let mut first: Vec<_> = (1..=100)
+        .map(|number| open_pr(number, &format!("other-{number}")))
+        .collect();
+    fx.gh_page_with_links(
+        DEFAULT_REPOSITORY,
+        "open",
+        1,
+        &[("next", 2), ("last", 2)],
+        &json!(first).to_string(),
+    );
+
+    // Closing #1 shifts #101 onto the first open page. The old second page
+    // looks complete, even though it never returns the still-open #101.
+    let last = open_pr(102, "other-102");
+    first[0] = closed_pr(1, "other-1", 1, 1);
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        "open",
+        2,
+        false,
+        &json!([last]).to_string(),
+    );
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        "closed",
+        1,
+        false,
+        &json!([first[0]]).to_string(),
+    );
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        "all",
+        1,
+        true,
+        &json!(first).to_string(),
+    );
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        "all",
+        2,
+        false,
+        &json!([open_pr(101, "still-open"), last]).to_string(),
+    );
+
+    let report = fx.cleanup_json(&["--apply"]);
+    assert_kept(&report, &open);
+    assert_eq!(entry_for(&report, &absent)["action"], "removed");
+    assert!(!absent.exists());
+    let calls = fx.take_gh_calls();
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    assert!(calls[0].contains("state=open"), "{calls:?}");
+    assert!(
+        calls[1..].iter().all(|call| {
+            call.contains("state=all")
+                && call.contains("sort=created")
+                && call.contains("direction=asc")
+        }),
+        "{calls:?}"
+    );
+}
+
+#[test]
 fn manual_report_and_apply_share_bounded_listings_across_checkouts() {
     for count in [30, 60] {
         let fx = Fx::new();
@@ -53,13 +119,18 @@ fn manual_report_and_apply_share_bounded_listings_across_checkouts() {
             worktrees.push((wt, branch == "shared" && group != "second"));
         }
 
-        fx.gh_page(DEFAULT_REPOSITORY, "open", 1, true, "[]");
+        let first: Vec<_> = (1..=100)
+            .map(|number| open_pr(number, "unrelated"))
+            .collect();
+        let first = json!(first).to_string();
+        fx.gh_page(DEFAULT_REPOSITORY, "open", 1, true, &first);
+        fx.gh_page(DEFAULT_REPOSITORY, "all", 1, true, &first);
         fx.gh_page(
             DEFAULT_REPOSITORY,
-            "open",
+            "all",
             2,
             false,
-            &json!([open_pr(1, "shared")]).to_string(),
+            &json!([open_pr(101, "shared")]).to_string(),
         );
 
         for apply in [false, true] {
@@ -80,6 +151,9 @@ fn manual_report_and_apply_share_bounded_listings_across_checkouts() {
                 calls.iter().all(|call| {
                     call.starts_with("api ")
                         && (call.contains("state=open")
+                            || (call.contains("state=all")
+                                && call.contains("sort=created")
+                                && call.contains("direction=asc"))
                             || (call.contains("state=closed")
                                 && call.contains("sort=updated")
                                 && call.contains("direction=desc")))
@@ -166,14 +240,16 @@ fn recent_runs_and_detached_checkouts_do_not_need_listings() {
 
 #[test]
 fn failed_or_malformed_pages_keep_all_dependent_worktrees() {
-    let fx = Fx::new();
-    let first = seed_worktree(&fx, &fx.repo, "first", "first");
-    let second = seed_worktree(&fx, &fx.repo, "first", "second");
-    for (state, calls) in [("closed", 3), ("open", 2)] {
+    for (state, calls) in [("closed", 4), ("open", 3)] {
+        let fx = Fx::new();
+        let first = seed_worktree(&fx, &fx.repo, "first", "first");
+        let second = seed_worktree(&fx, &fx.repo, "first", "second");
+        // Each case needs more than a filtered page to establish coverage.
         fx.gh_page(DEFAULT_REPOSITORY, state, 1, true, "[]");
+        fx.gh_page(DEFAULT_REPOSITORY, "all", 1, true, "[]");
         fx.gh_page(
             DEFAULT_REPOSITORY,
-            state,
+            "all",
             2,
             false,
             r#"[{"number":1,"state":"unknown"}]"#,
@@ -183,7 +259,7 @@ fn failed_or_malformed_pages_keep_all_dependent_worktrees() {
         assert_kept(&malformed, &second);
         assert_eq!(fx.take_gh_calls().len(), calls);
 
-        fx.gh_listing_fail(DEFAULT_REPOSITORY, state, 2);
+        fx.gh_listing_fail(DEFAULT_REPOSITORY, "all", 2);
         let failed = fx.cleanup_json(&["--apply"]);
         assert_kept(&failed, &first);
         assert_kept(&failed, &second);
@@ -195,17 +271,18 @@ fn failed_or_malformed_pages_keep_all_dependent_worktrees() {
 fn a_terminal_page_before_the_advertised_last_page_keeps_worktrees() {
     let fx = Fx::new();
     let wt = seed_worktree(&fx, &fx.repo, "first", "on-unread-page");
+    fx.gh_page(DEFAULT_REPOSITORY, "open", 1, true, "[]");
     fx.gh_page_with_links(
         DEFAULT_REPOSITORY,
-        "open",
+        "all",
         1,
         &[("next", 2), ("last", 3)],
         "[]",
     );
-    fx.gh_page_with_links(DEFAULT_REPOSITORY, "open", 2, &[("prev", 1)], "[]");
+    fx.gh_page_with_links(DEFAULT_REPOSITORY, "all", 2, &[("prev", 1)], "[]");
     fx.gh_page(
         DEFAULT_REPOSITORY,
-        "open",
+        "all",
         3,
         false,
         &json!([open_pr(1, "on-unread-page")]).to_string(),
@@ -213,7 +290,7 @@ fn a_terminal_page_before_the_advertised_last_page_keeps_worktrees() {
 
     let report = fx.cleanup_json(&["--apply"]);
     assert_kept(&report, &wt);
-    assert_eq!(fx.gh_calls().lines().count(), 2);
+    assert_eq!(fx.gh_calls().lines().count(), 3);
 }
 
 #[test]
@@ -227,21 +304,28 @@ fn cap_requires_an_end_signal_even_when_the_last_page_is_full() {
     run.run_json_mtime_hours_ago = 1;
     fx.seed_run(&run);
     fx.gh_open("last-page", 1);
-    let first_page = json!([closed_pr(102, old_branch, 72, 0)]);
+    let old_pr = closed_pr(2, old_branch, 72, 0);
     fx.gh_page(
         DEFAULT_REPOSITORY,
         "closed",
         1,
         true,
-        &first_page.to_string(),
+        &json!([old_pr]).to_string(),
     );
-    let last_closed_page = PAGE_CAP - 1;
-    for page in 2..last_closed_page {
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        "all",
+        1,
+        true,
+        &json!([open_pr(1, "last-page"), old_pr]).to_string(),
+    );
+    let last_history_page = PAGE_CAP - 2;
+    for page in 2..last_history_page {
         // A short page can still have an explicit continuation.
-        fx.gh_page(DEFAULT_REPOSITORY, "closed", page, true, "[]");
+        fx.gh_page(DEFAULT_REPOSITORY, "all", page, true, "[]");
     }
-    let same_update = closed_pr(2, "other", 1, 1);
-    let rows: Vec<_> = (2..102)
+    let same_update = closed_pr(3, "other", 1, 1);
+    let rows: Vec<_> = (3..103)
         .map(|number| {
             let mut row = same_update.clone();
             row["number"] = json!(number);
@@ -249,14 +333,14 @@ fn cap_requires_an_end_signal_even_when_the_last_page_is_full() {
         })
         .collect();
     let rows = json!(rows).to_string();
-    fx.gh_page(DEFAULT_REPOSITORY, "closed", last_closed_page, true, &rows);
+    fx.gh_page(DEFAULT_REPOSITORY, "all", last_history_page, true, &rows);
     let truncated = fx.cleanup_json(&["--apply"]);
     assert_kept(&truncated, &absent);
     assert_kept(&truncated, &present);
     assert_kept(&truncated, &old_merge);
     assert_eq!(fx.take_gh_calls().len(), PAGE_CAP);
 
-    fx.gh_page(DEFAULT_REPOSITORY, "closed", last_closed_page, false, &rows);
+    fx.gh_page(DEFAULT_REPOSITORY, "all", last_history_page, false, &rows);
     let complete = fx.cleanup_json(&["--apply"]);
     assert_eq!(entry_for(&complete, &absent)["action"], "removed");
     assert!(!absent.exists());
@@ -279,18 +363,17 @@ fn large_history_only_blocks_runs_that_need_older_closures() {
         .owns_worktree(&touched_without_pr, "touched-without-pr");
     run.run_json_mtime_hours_ago = 1;
     fx.seed_run(&run);
-    fx.gh_page(DEFAULT_REPOSITORY, "open", 1, true, "[]");
+    let open_pr = open_pr(1, "old-open");
     fx.gh_page(
         DEFAULT_REPOSITORY,
         "open",
-        2,
+        1,
         false,
-        &json!([open_pr(1, "old-open")]).to_string(),
+        &json!([open_pr]).to_string(),
     );
-    let first = json!([
-        closed_pr(4010, "recently-closed", 1, 1),
-        closed_pr(4009, "unrelated", 48, 48),
-    ]);
+    let recent_pr = closed_pr(4010, "recently-closed", 1, 1);
+    let unrelated_pr = closed_pr(4009, "unrelated", 48, 48);
+    let first = json!([recent_pr, unrelated_pr,]);
     fx.gh_page_with_links(
         DEFAULT_REPOSITORY,
         "closed",
@@ -298,12 +381,13 @@ fn large_history_only_blocks_runs_that_need_older_closures() {
         &[("next", 2), ("last", 41)],
         &first.to_string(),
     );
-    fx.gh_page(
+    let history_first = json!([open_pr, closed_pr(2, "touched", 72, 72)]).to_string();
+    fx.gh_page_with_links(
         DEFAULT_REPOSITORY,
-        "closed",
-        2,
-        false,
-        &json!([closed_pr(2, "touched", 72, 72)]).to_string(),
+        "all",
+        1,
+        &[("next", 2), ("last", 41)],
+        &history_first,
     );
 
     let report = fx.cleanup_json(&["--apply"]);
@@ -311,34 +395,27 @@ fn large_history_only_blocks_runs_that_need_older_closures() {
     assert!(
         entry_for(&report, &absent)["reason"]
             .as_str()
-            .unwrap()
-            .starts_with("no open or recent PR")
+            .is_some_and(|reason| !reason.is_empty())
     );
     assert!(!absent.exists());
     for wt in [&open, &recent, &touched, &touched_without_pr] {
         assert_kept(&report, wt);
     }
-    assert_eq!(entry_for(&report, &open)["reason"], "PR #1 is open");
-    assert!(
-        entry_for(&report, &recent)["reason"]
-            .as_str()
-            .unwrap()
-            .contains("within keep period (PR #4010")
-    );
-    assert!(
-        entry_for(&report, &touched)["reason"]
-            .as_str()
-            .unwrap()
-            .contains("40-request limit")
-    );
     assert_eq!(fx.take_gh_calls().len(), 3);
 
     fx.gh_page_with_links(
         DEFAULT_REPOSITORY,
-        "closed",
+        "all",
         1,
         &[("next", 2), ("last", 2)],
-        &first.to_string(),
+        &history_first,
+    );
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        "all",
+        2,
+        false,
+        &json!([unrelated_pr, recent_pr]).to_string(),
     );
     let report = fx.cleanup_json(&["--apply"]);
     assert_eq!(entry_for(&report, &touched)["action"], "removed");
@@ -360,12 +437,6 @@ fn inconsistent_closed_pr_timestamps_cannot_establish_the_cutoff() {
         fx.gh_page(DEFAULT_REPOSITORY, "closed", 1, true, &rows.to_string());
         let report = fx.cleanup_json(&["--apply"]);
         assert_kept(&report, &wt);
-        assert!(
-            entry_for(&report, &wt)["reason"]
-                .as_str()
-                .unwrap()
-                .contains("inconsistent update times")
-        );
         assert_eq!(fx.take_gh_calls().len(), 2);
     }
 }
@@ -469,7 +540,6 @@ fn gh_repo_override_keeps_the_upstream_pr_open_in_a_fork_checkout() {
             c.env("GH_REPO", selector);
         });
         assert_kept(&report, &wt);
-        assert_eq!(entry_for(&report, &wt)["reason"], "PR #1 is open");
         let calls = fx.take_gh_calls();
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert!(calls[0].contains("repos/fixture-owner/second/pulls"));

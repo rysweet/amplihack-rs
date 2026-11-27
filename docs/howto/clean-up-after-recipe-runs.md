@@ -938,14 +938,14 @@ must identify the same repository. Checkouts of the same repository share
 REST evidence. Cleanup requests pages of 100, with a combined limit of 40
 requests per repository and a 30-second timeout per request.
 
-Cleanup reads the complete open PR listing and reads closed PRs in
+When one page covers all open PRs, cleanup reads the first closed PR page in
 descending update order. For runs that already meet the no-PR age rule,
-reaching the keep-period cutoff supplies enough evidence because older
-closures cannot extend the keep period. When a recent `run.json` modification
-makes an old closure and an absent PR yield different verdicts, cleanup
-requires complete history before removing the worktree. If it cannot
-resolve the repository or validate the required evidence, it keeps the
-dependent items and reports why.
+reaching the keep-period cutoff on that page supplies enough evidence because
+older closures cannot extend the keep period. When a verdict requires more
+pages, cleanup reads all PR states in ascending creation order. Closing or
+reopening a PR leaves its position in that listing unchanged. Cleanup keeps
+dependent items and reports why if it cannot resolve the repository or validate
+the required evidence within the shared request limit.
 
 These rules decide worktrees, and targets recorded in the legacy format. A
 run's legacy targets are removed only when every worktree the run still has is

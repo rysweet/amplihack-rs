@@ -80,7 +80,8 @@ const TOOLS: &[&str] = &[
 pub const DEFAULT_REPOSITORY: &str = "fixture-owner/first";
 
 /// Records every call. A canned HTTP response overrides the default, which
-/// returns the repository's JSON rows on page one and ends the listing.
+/// returns the repository's filtered JSON rows on page one. All-state pages
+/// require explicit responses so missing fallback fixtures cause a failure.
 const FAKE_GH: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 test "$1" = api || exit 64
@@ -91,7 +92,7 @@ for a in "$@"; do
   case "$a" in
     repos/*/pulls) endpoint=$a ;;
     page=*) page=${a#page=} ;;
-    state=open|state=closed) state=${a#state=} ;;
+    state=open|state=closed|state=all) state=${a#state=} ;;
   esac
 done
 test -n "$endpoint" && test -n "$page" && test -n "$state" || exit 64
@@ -100,6 +101,7 @@ repository=${repository%/pulls}
 dir="$FAKE_GH_DIR/$repository/$state"
 if [ -f "$dir/$page.fail" ]; then echo 'fake gh: simulated failure' >&2; exit 1; fi
 if [ -f "$dir/$page.http" ]; then cat "$dir/$page.http"; exit 0; fi
+if [ "$state" = all ]; then echo 'fake gh: missing all-state response' >&2; exit 1; fi
 printf 'HTTP/2.0 200 OK\n\n'
 if [ "$page" = 1 ] && [ -f "$dir/pulls.json" ]; then
   cat "$dir/pulls.json"

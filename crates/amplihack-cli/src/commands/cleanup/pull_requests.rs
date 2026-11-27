@@ -14,7 +14,7 @@ use std::time::Duration;
 const GH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 100;
-// Shared across the open and closed listings for one repository.
+// Shared across all listings for one repository.
 const MAX_PAGES: usize = 40;
 
 #[derive(PartialEq, Eq, Hash)]
@@ -189,13 +189,14 @@ fn public_github_repository(url: &str) -> Option<String> {
     github_repository_from_remote_url(url).map(|name| name.to_ascii_lowercase())
 }
 
-/// Invocation-local evidence. Every removal needs the complete open listing.
-/// Closed PRs are read through the keep period, with older pages loaded only
-/// when an old closure would make a run eligible despite recent local activity.
+/// Invocation-local evidence. A single filtered page can establish coverage.
+/// When a removal needs more pages, read all states in creation order so
+/// closing or reopening a PR cannot move other PRs across page boundaries.
 pub(super) struct Listing {
     requests: Requests,
     open: Pages,
     closed: Pages,
+    history: Pages,
 }
 
 impl Listing {
@@ -208,6 +209,7 @@ impl Listing {
             },
             open: Pages::new("open"),
             closed: Pages::new("closed"),
+            history: Pages::new("all"),
         }
     }
 
@@ -218,36 +220,40 @@ impl Listing {
         keep: Duration,
         no_pr: Verdict,
     ) -> Result<Verdict, String> {
-        self.open.cover(&mut self.requests, None)?;
+        self.open.cover_first_page(&mut self.requests)?;
         if let Some(pr) = self.open.branches.get(branch) {
             return Ok(pr_verdict(pr, now, keep));
         }
-
-        let cutoff = chrono::Duration::from_std(keep)
-            .ok()
-            .and_then(|keep| now.checked_sub_signed(keep));
-        self.closed.cover(&mut self.requests, cutoff)?;
-        let pr = self
-            .closed
-            .branches
-            .get(branch)
-            .map(|pr| pr_verdict(pr, now, keep));
-        if matches!(no_pr, Verdict::Eligible { .. }) {
-            if pr.is_none() && self.closed.next_page.is_some() {
-                return Ok(Verdict::Eligible {
+        if self.open.next_page.is_none() {
+            self.closed.cover_first_page(&mut self.requests)?;
+            let pr = self
+                .closed
+                .branches
+                .get(branch)
+                .map(|pr| pr_verdict(pr, now, keep));
+            if self.closed.next_page.is_none() || matches!(pr, Some(Verdict::Skip { .. })) {
+                return Ok(pr.unwrap_or(no_pr));
+            }
+            // On this single page, descending update order and a timestamp at
+            // or before the cutoff rule out recent closures on later pages.
+            let cutoff = chrono::Duration::from_std(keep)
+                .ok()
+                .and_then(|keep| now.checked_sub_signed(keep));
+            if matches!(no_pr, Verdict::Eligible { .. })
+                && cutoff
+                    .zip(self.closed.oldest_update)
+                    .is_some_and(|(cutoff, oldest)| oldest <= cutoff)
+            {
+                return Ok(pr.unwrap_or_else(|| Verdict::Eligible {
                     reason: "no open or recent PR and run activity is outside the keep period"
                         .into(),
-                });
+                }));
             }
-            return Ok(pr.unwrap_or(no_pr));
-        }
-        if let Some(verdict @ Verdict::Skip { .. }) = pr {
-            return Ok(verdict);
         }
 
-        self.closed.cover(&mut self.requests, None)?;
+        self.history.cover_all_pages(&mut self.requests)?;
         Ok(self
-            .closed
+            .history
             .branches
             .get(branch)
             .map_or(no_pr, |pr| pr_verdict(pr, now, keep)))
@@ -277,40 +283,36 @@ impl Pages {
         }
     }
 
-    fn cover(
-        &mut self,
-        requests: &mut Requests,
-        cutoff: Option<DateTime<Utc>>,
-    ) -> Result<(), String> {
+    fn cover_first_page(&mut self, requests: &mut Requests) -> Result<(), String> {
+        if self.next_page == Some(1) {
+            self.read_next_page(requests, 1)?;
+        }
+        Ok(())
+    }
+
+    fn cover_all_pages(&mut self, requests: &mut Requests) -> Result<(), String> {
         while let Some(page) = self.next_page {
-            // Closures advance updated_at. After reaching the cutoff in
-            // descending update order, unread closures cannot require a keep.
-            if cutoff.is_some_and(|cutoff| self.oldest_update.is_some_and(|stamp| stamp <= cutoff))
-            {
-                break;
-            }
-            if let Some(error) = &self.error {
-                return Err(error.clone());
-            }
-            let pages_needed = if cutoff.is_some() {
-                1
-            } else {
-                self.advertised_last.saturating_sub(page) + 1
-            };
+            let pages_needed = self.advertised_last.saturating_sub(page).saturating_add(1);
             if requests.pages_left < pages_needed {
-                // A full scan cannot fit. Leave any verified keep-period evidence intact.
                 return Err(format!(
                     "{} PR listing exceeds the {MAX_PAGES}-request limit",
                     self.state
                 ));
             }
-            if let Err(error) = self.read_page(requests, page) {
-                let error = format!("{} PR listing page {page}: {error:#}", self.state);
-                self.error = Some(error.clone());
-                return Err(error);
-            }
+            self.read_next_page(requests, page)?;
         }
         Ok(())
+    }
+
+    fn read_next_page(&mut self, requests: &mut Requests, page: usize) -> Result<(), String> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        self.read_page(requests, page).map_err(|error| {
+            let error = format!("{} PR listing page {page}: {error:#}", self.state);
+            self.error = Some(error.clone());
+            error
+        })
     }
 
     fn read_page(&mut self, requests: &mut Requests, page: usize) -> Result<()> {
@@ -329,7 +331,7 @@ impl Pages {
             let updated = row.updated_at;
             let (branch, pr) = row.into_pr()?;
             ensure!(
-                (pr.state == "OPEN") == (self.state == "open"),
+                self.state == "all" || (pr.state == "OPEN") == (self.state == "open"),
                 "PR listing returned the wrong state"
             );
             if self.state == "closed" {
@@ -354,7 +356,10 @@ impl Pages {
             self.branches
                 .entry(branch)
                 .and_modify(|known| {
-                    if pr.closed_at.or(pr.merged_at) >= known.closed_at.or(known.merged_at) {
+                    if known.state != "OPEN"
+                        && (pr.state == "OPEN"
+                            || pr.closed_at.or(pr.merged_at) >= known.closed_at.or(known.merged_at))
+                    {
                         *known = pr.clone();
                     }
                 })
@@ -375,6 +380,10 @@ struct Requests {
 
 impl Requests {
     fn read(&mut self, state: &str, page: usize) -> Result<Vec<u8>> {
+        ensure!(
+            self.pages_left > 0,
+            "PR listings exceed the {MAX_PAGES}-request limit"
+        );
         self.pages_left -= 1;
         let mut command = Command::new("gh");
         amplihack_git::scrub(&mut command);
@@ -383,10 +392,10 @@ impl Requests {
         if !self.use_default_host {
             command.args(["--hostname", "github.com"]);
         }
-        let (sort, direction) = if state == "open" {
-            ("sort=created", "direction=asc")
-        } else {
+        let (sort, direction) = if state == "closed" {
             ("sort=updated", "direction=desc")
+        } else {
+            ("sort=created", "direction=asc")
         };
         command
             .args(["--include", "--method", "GET"])
