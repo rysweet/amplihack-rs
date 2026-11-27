@@ -262,6 +262,26 @@ fn a_short_intermediate_page_keeps_worktrees() {
 }
 
 #[test]
+fn a_short_continuation_requires_a_valid_back_link_before_removal() {
+    let fx = Fx::new();
+    let unseen = seed_worktree(&fx, &fx.repo, "first", "on-unread-page");
+    let mut first = full_page(1);
+    let closed = seed_worktree(&fx, &fx.repo, "first", "old-closure");
+    first[0] = closed_pr(1, "old-closure", 72);
+    fx.gh_page(DEFAULT_REPOSITORY, 1, true, &json!(first).to_string());
+    let second = json!([open_pr(101, "unrelated")]).to_string();
+
+    for links in [&[][..], &[("prev", 2)][..]] {
+        fx.gh_page_with_links(DEFAULT_REPOSITORY, 2, links, &second);
+
+        let report = fx.cleanup_json(&["--apply"]);
+        assert_kept(&report, &unseen);
+        assert_kept(&report, &closed);
+        assert_eq!(fx.take_gh_calls().len(), 2);
+    }
+}
+
+#[test]
 fn a_terminal_page_before_the_advertised_last_page_keeps_worktrees() {
     let fx = Fx::new();
     let wt = seed_worktree(&fx, &fx.repo, "first", "on-unread-page");
@@ -355,9 +375,11 @@ fn oversized_history_uses_open_prs_and_recent_updates() {
     let recent = seed_worktree(&fx, &fx.repo, "first", "recently-closed");
     let reopened = seed_worktree(&fx, &fx.repo, "first", "reopened");
     let old = fx.worktree("old-closure");
+    let unread_closure = fx.worktree("unread-closure");
     let touched_without_pr = fx.worktree("touched-without-pr");
     let mut run = SeedRun::ended(72)
         .owns_worktree(&old, "old-closure")
+        .owns_worktree(&unread_closure, "unread-closure")
         .owns_worktree(&touched_without_pr, "touched-without-pr");
     run.run_json_mtime_hours_ago = 1;
     fx.seed_run(&run);
@@ -375,7 +397,8 @@ fn oversized_history_uses_open_prs_and_recent_updates() {
             let mut row = sample.clone();
             row["number"] = json!(number);
             if number == pr_count {
-                row["head"]["ref"] = json!("old-closure");
+                row = closed_pr(number, "old-closure", 72);
+                row["updated_at"] = sample["updated_at"].clone();
             }
             row
         }));
@@ -386,6 +409,27 @@ fn oversized_history_uses_open_prs_and_recent_updates() {
         1,
         &[("next", 2), ("last", PAGE_CAP + 1)],
         &json!(first).to_string(),
+    );
+    // This closure is 72 hours old but outside the fetched pages. Enough
+    // other PRs were updated more recently to push it onto updated page 2.
+    let unread_row = closed_pr(131, "unread-closure", 72);
+    let mut second: Vec<_> = (PAGE_SIZE + 1..=2 * PAGE_SIZE)
+        .map(|number| closed_pr(number, "unrelated", 9000))
+        .collect();
+    second[27] = open_pr(128, "old-open");
+    second[28] = closed_pr(129, "recently-closed", 1);
+    second[29] = open_pr(130, "reopened");
+    second[30] = unread_row.clone();
+    fx.gh_page(DEFAULT_REPOSITORY, 2, true, &json!(second).to_string());
+    let older_updates: Vec<_> = std::iter::once(unread_row)
+        .chain(first.into_iter().take(PAGE_SIZE - 1))
+        .collect();
+    fx.gh_page_with_filters(
+        DEFAULT_REPOSITORY,
+        UPDATED_FILTERS,
+        2,
+        &[("prev", 1), ("next", 3), ("last", PAGE_CAP + 1)],
+        &json!(older_updates).to_string(),
     );
     fx.gh_page_with_filters(
         DEFAULT_REPOSITORY,
@@ -410,6 +454,7 @@ fn oversized_history_uses_open_prs_and_recent_updates() {
         &recent,
         &reopened,
         &old,
+        &unread_closure,
         &touched_without_pr,
     ] {
         assert_kept(&truncated, wt);
@@ -421,16 +466,28 @@ fn oversized_history_uses_open_prs_and_recent_updates() {
         UPDATED_FILTERS,
         1,
         &links,
-        &recent_page(9000),
+        &recent_page(48),
     );
     let complete = fx.cleanup_json(&["--apply"]);
     for wt in [&absent, &old] {
         assert_eq!(entry_for(&complete, wt)["action"], "removed");
         assert!(!wt.exists(), "{wt:?}");
     }
-    for wt in [&open, &recent, &reopened, &touched_without_pr] {
+    for wt in [
+        &open,
+        &recent,
+        &reopened,
+        &unread_closure,
+        &touched_without_pr,
+    ] {
         assert_kept(&complete, wt);
     }
+    assert!(
+        entry_for(&complete, &unread_closure)["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("no matching closure")
+                && reason.contains("40-request limit"))
+    );
     let calls = fx.take_gh_calls();
     assert_eq!(calls.len(), 3, "{calls:?}");
     assert!(calls[0].contains("sort=created") && calls[0].contains("state=all"));

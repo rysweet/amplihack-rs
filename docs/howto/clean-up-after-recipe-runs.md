@@ -952,11 +952,15 @@ must reach the keep-period cutoff or finish the listing. A close or reopen
 between the requests appears in the most recent updates. When sufficient
 evidence covers open PRs and recent closures, old run activity can authorize
 removal. A recently touched `run.json` still requires a matching older
-closure for removal.
+closure for removal. If that closure falls outside the fetched pages,
+cleanup keeps the worktree and reports that the bounded listing found no
+matching closure. A complete history would make that worktree eligible.
 
 Cleanup keeps dependent items and reports why if the repository is
-ambiguous or the required pages are incomplete. An empty response to an
-advertised continuation is treated as incomplete.
+ambiguous or the required pages are incomplete. A continuation must
+contain results and link back to the previous page of the same listing.
+Cleanup keeps dependent items if a continuation lacks that link, even
+when the returned page is short.
 
 These rules decide worktrees, and targets recorded in the legacy format. A
 run's legacy targets are removed only when every worktree the run still has is

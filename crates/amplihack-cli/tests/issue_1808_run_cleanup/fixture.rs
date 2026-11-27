@@ -448,8 +448,14 @@ impl Fx {
     }
 
     pub fn gh_page(&self, repository: &str, page: usize, next: bool, rows: &str) {
-        let links = next.then_some(("next", page + 1));
-        self.gh_page_with_links(repository, page, links.as_slice(), rows);
+        let mut links = Vec::new();
+        if page > 1 {
+            links.push(("prev", page - 1));
+        }
+        if next {
+            links.push(("next", page + 1));
+        }
+        self.gh_page_with_links(repository, page, &links, rows);
     }
 
     pub fn gh_page_with_links(

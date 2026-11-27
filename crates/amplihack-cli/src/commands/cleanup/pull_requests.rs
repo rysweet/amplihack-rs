@@ -404,8 +404,9 @@ impl Listing {
                 reason: "no open or recent PR; run activity is outside the keep period".into(),
             },
             Verdict::Skip { .. } => Verdict::Skip {
-                reason: "run activity is within the keep period and full PR history is unavailable"
-                    .into(),
+                reason: format!(
+                    "run activity is within the keep period; no matching closure in the PR evidence available under the {MAX_PAGES}-request limit"
+                ),
             },
         }
     }
@@ -530,12 +531,26 @@ fn response_page<'a>(
                         linked_page(url, endpoint, filters)? == page + 1,
                         "PR continuation does not advance to the next page"
                     ),
+                    "prev" => ensure!(
+                        page > 1 && linked_page(url, endpoint, filters)? == page - 1,
+                        "PR pagination does not link to the previous page"
+                    ),
+                    "first" => ensure!(
+                        linked_page(url, endpoint, filters)? == 1,
+                        "PR pagination does not link to the first page"
+                    ),
                     "last" => last_page = Some(linked_page(url, endpoint, filters)?),
-                    _ => {}
+                    _ => unreachable!("pagination relation was validated"),
                 }
             }
         }
     }
+    // GitHub omits Link for a single-page listing. A continuation must
+    // carry a back link before the absence of next can establish the end.
+    ensure!(
+        page == 1 || relations.contains("prev"),
+        "PR continuation is missing a previous-page link"
+    );
     let has_next = relations.contains("next");
     ensure!(
         last_page.is_none_or(|last| last >= page && (last > page) == has_next),
@@ -646,9 +661,11 @@ mod tests {
             response_page(first.as_bytes(), ENDPOINT, &HISTORY_FILTERS, 1).unwrap(),
             ("[]", true, Some(40))
         );
-        let last = b"HTTP/2.0 200 OK\nLink: <https://api.github.com/repositories/12/pulls?page=39>; rel=\"prev\"\n\n[]";
+        let last = format!(
+            "HTTP/2.0 200 OK\nLink: <https://api.github.com/repositories/12/pulls?{QUERY}&page=39>; rel=\"prev\", <https://api.github.com/repositories/12/pulls?{QUERY}&page=1>; rel=\"first\"\n\n[]"
+        );
         assert_eq!(
-            response_page(last, ENDPOINT, &HISTORY_FILTERS, MAX_PAGES).unwrap(),
+            response_page(last.as_bytes(), ENDPOINT, &HISTORY_FILTERS, MAX_PAGES).unwrap(),
             ("[]", false, None)
         );
     }
