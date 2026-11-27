@@ -282,6 +282,47 @@ fn a_short_continuation_requires_a_valid_back_link_before_removal() {
 }
 
 #[test]
+fn a_continuation_linking_to_a_different_numeric_repository_keeps_worktrees() {
+    let fx = Fx::new();
+    let unseen = seed_worktree(&fx, &fx.repo, "first", "on-unread-page");
+    let closed = seed_worktree(&fx, &fx.repo, "first", "old-closure");
+    let mut first = full_page(1);
+    first[0] = closed_pr(1, "old-closure", 72);
+    let filters = ["all", "created", "asc"];
+    let query = "state=all&sort=created&direction=asc&per_page=100";
+    fx.gh_response(
+        DEFAULT_REPOSITORY,
+        filters,
+        1,
+        &format!(
+            "HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/12/pulls?{query}&page=2>; rel=\"next\"\r\n\r\n{}",
+            json!(first)
+        ),
+    );
+    fx.gh_response(
+        DEFAULT_REPOSITORY,
+        filters,
+        2,
+        &format!(
+            "HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/34/pulls?{query}&page=1>; rel=\"prev\"\r\n\r\n{}",
+            json!([open_pr(101, "unrelated")])
+        ),
+    );
+
+    let report = fx.cleanup_json(&["--apply"]);
+    for wt in [&unseen, &closed] {
+        assert_kept(&report, wt);
+        assert!(
+            entry_for(&report, wt)["reason"]
+                .as_str()
+                .unwrap()
+                .contains("PR pagination changes repository identity")
+        );
+    }
+    assert_eq!(fx.take_gh_calls().len(), 2);
+}
+
+#[test]
 fn a_terminal_page_before_the_advertised_last_page_keeps_worktrees() {
     let fx = Fx::new();
     let wt = seed_worktree(&fx, &fx.repo, "first", "on-unread-page");
@@ -514,6 +555,60 @@ fn oversized_history_and_incomplete_open_listing_keep_every_dependent_worktree()
     assert_kept(&report, &absent);
     assert_kept(&report, &on_first_page);
     assert_eq!(fx.take_gh_calls().len(), 2);
+}
+
+#[test]
+fn oversized_history_and_contradictory_recent_listing_keep_every_dependent_worktree() {
+    let fx = Fx::new();
+    let recent = seed_worktree(&fx, &fx.repo, "first", "recently-closed");
+    let old = seed_worktree(&fx, &fx.repo, "first", "old-closure");
+    let mut rows: Vec<_> = (1..=PAGE_SIZE)
+        .map(|number| closed_pr(number, "unrelated", 9000))
+        .collect();
+    rows[0] = closed_pr(1, "old-closure", 72);
+    fx.gh_page_with_links(
+        DEFAULT_REPOSITORY,
+        1,
+        &[("next", 2), ("last", PAGE_CAP + 1)],
+        &json!(rows).to_string(),
+    );
+    fx.gh_page(
+        DEFAULT_REPOSITORY,
+        2,
+        false,
+        &json!([closed_pr(101, "recently-closed", 1)]).to_string(),
+    );
+    fx.gh_page_with_filters(DEFAULT_REPOSITORY, OPEN_FILTERS, 1, &[], "[]");
+
+    let older_pr = closed_pr(102, "unrelated", 9000);
+    let shorter_listing: Vec<_> = (102..102 + PAGE_SIZE)
+        .map(|number| {
+            let mut row = older_pr.clone();
+            row["number"] = json!(number);
+            row
+        })
+        .collect();
+    for (links, body) in [
+        (&[][..], "[]".to_owned()),
+        (
+            &[("next", 2), ("last", 2)][..],
+            json!(shorter_listing).to_string(),
+        ),
+    ] {
+        fx.gh_page_with_filters(DEFAULT_REPOSITORY, UPDATED_FILTERS, 1, links, &body);
+
+        let report = fx.cleanup_json(&["--apply"]);
+        for wt in [&recent, &old] {
+            assert_kept(&report, wt);
+            assert!(
+                entry_for(&report, wt)["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("recent PR listing contradicts history")
+            );
+        }
+        assert_eq!(fx.take_gh_calls().len(), 3);
+    }
 }
 
 #[test]

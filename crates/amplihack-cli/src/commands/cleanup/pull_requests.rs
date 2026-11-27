@@ -265,10 +265,11 @@ impl Listing {
         };
         let mut seen = HashSet::new();
         let mut advertised_last = 1;
+        let mut numeric_repository = None;
         // Creation order keeps PRs in place when they close, reopen, or
         // receive updates, so this listing can safely span multiple pages.
         for page in 1..=MAX_PAGES {
-            let response = read_page(&endpoint, &HISTORY_FILTERS, page)
+            let response = read_page(&endpoint, &HISTORY_FILTERS, page, &mut numeric_repository)
                 .with_context(|| format!("PR history page {page}"))?;
             advertised_last = advertised_last.max(response.last_page.unwrap_or(1));
             ensure!(
@@ -281,7 +282,13 @@ impl Listing {
             // Leave room for both narrower requests. Incomplete pages are
             // rejected above, even when a narrower query would fit.
             if advertised_last > MAX_PAGES && page <= MAX_PAGES - 2 {
-                listing.read_open_and_recent(&endpoint, now, keep)?;
+                listing.read_open_and_recent(
+                    &endpoint,
+                    now,
+                    keep,
+                    advertised_last,
+                    &mut numeric_repository,
+                )?;
                 return Ok(listing);
             }
             ensure!(
@@ -311,8 +318,11 @@ impl Listing {
         endpoint: &str,
         now: DateTime<Utc>,
         keep: Duration,
+        advertised_last: usize,
+        numeric_repository: &mut Option<u64>,
     ) -> Result<()> {
-        let open = read_page(endpoint, &OPEN_FILTERS, 1).context("open PR listing")?;
+        let open =
+            read_page(endpoint, &OPEN_FILTERS, 1, numeric_repository).context("open PR listing")?;
         ensure!(!open.has_next, "open PR listing requires multiple pages");
         ensure!(
             open.rows.iter().all(|row| row.state == "open"),
@@ -324,7 +334,14 @@ impl Listing {
         // between these requests appear among the recent updates either way.
         // Neither filtered nor update-ordered evidence can safely cross an
         // offset boundary, since a state change or update can move rows.
-        let recent = read_page(endpoint, &UPDATED_FILTERS, 1).context("recent PR listing")?;
+        let recent = read_page(endpoint, &UPDATED_FILTERS, 1, numeric_repository)
+            .context("recent PR listing")?;
+        // Both queries list all states. Changing the order cannot shrink
+        // the listing advertised by history.
+        ensure!(
+            recent.has_next && recent.last_page.is_none_or(|last| last >= advertised_last),
+            "recent PR listing contradicts history's advertised page {advertised_last}"
+        );
         let mut oldest_update = None;
         for row in &recent.rows {
             let updated = row.updated_at.context("PR is missing its update time")?;
@@ -342,10 +359,9 @@ impl Listing {
             .ok()
             .and_then(|keep| now.checked_sub_signed(keep));
         ensure!(
-            !recent.has_next
-                || oldest_update
-                    .zip(cutoff)
-                    .is_some_and(|(updated, cutoff)| updated <= cutoff),
+            oldest_update
+                .zip(cutoff)
+                .is_some_and(|(updated, cutoff)| updated <= cutoff),
             "recent PR listing did not reach the keep-period cutoff on its first page"
         );
         self.record_page(recent.rows, &mut HashSet::new())?;
@@ -403,9 +419,15 @@ struct Page {
     last_page: Option<usize>,
 }
 
-fn read_page(endpoint: &str, filters: &[&str], page: usize) -> Result<Page> {
+fn read_page(
+    endpoint: &str,
+    filters: &[&str],
+    page: usize,
+    numeric_repository: &mut Option<u64>,
+) -> Result<Page> {
     let body = request_page(endpoint, filters, page)?;
-    let (payload, has_next, last_page) = response_page(&body, endpoint, filters, page)?;
+    let (payload, has_next, last_page) =
+        response_page(&body, endpoint, filters, page, numeric_repository)?;
     let rows: Vec<RawPr> = serde_json::from_str(payload).context("cannot parse PR listing")?;
     ensure!(rows.len() <= PAGE_SIZE, "PR listing exceeds the page size");
     ensure!(
@@ -461,6 +483,7 @@ fn response_page<'a>(
     endpoint: &str,
     filters: &[&str],
     page: usize,
+    numeric_repository: &mut Option<u64>,
 ) -> Result<(&'a str, bool, Option<usize>)> {
     let text = std::str::from_utf8(output).context("gh output is not UTF-8")?;
     let (headers, payload) = text
@@ -497,20 +520,20 @@ fn response_page<'a>(
                     relations.insert(relation),
                     "repeated PR pagination relation"
                 );
+                let linked = linked_page(url, endpoint, filters, numeric_repository)?;
                 match relation {
                     "next" => ensure!(
-                        linked_page(url, endpoint, filters)? == page + 1,
+                        linked == page + 1,
                         "PR continuation does not advance to the next page"
                     ),
                     "prev" => ensure!(
-                        page > 1 && linked_page(url, endpoint, filters)? == page - 1,
+                        page > 1 && linked == page - 1,
                         "PR pagination does not link to the previous page"
                     ),
-                    "first" => ensure!(
-                        linked_page(url, endpoint, filters)? == 1,
-                        "PR pagination does not link to the first page"
-                    ),
-                    "last" => last_page = Some(linked_page(url, endpoint, filters)?),
+                    "first" => {
+                        ensure!(linked == 1, "PR pagination does not link to the first page")
+                    }
+                    "last" => last_page = Some(linked),
                     _ => unreachable!("pagination relation was validated"),
                 }
             }
@@ -530,21 +553,31 @@ fn response_page<'a>(
     Ok((payload, has_next, last_page))
 }
 
-fn linked_page(url: &str, endpoint: &str, filters: &[&str]) -> Result<usize> {
+fn linked_page(
+    url: &str,
+    endpoint: &str,
+    filters: &[&str],
+    numeric_repository: &mut Option<u64>,
+) -> Result<usize> {
     let (path, query) = url
         .strip_prefix("https://api.github.com/")
         .and_then(|url| url.split_once('?'))
         .context("invalid PR continuation URL")?;
-    // GitHub can use a numeric repository path in its Link header. Page
-    // requests always use the original endpoint.
-    let numeric_repository = path
-        .strip_prefix("repositories/")
-        .and_then(|path| path.strip_suffix("/pulls"))
-        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()));
-    ensure!(
-        path.eq_ignore_ascii_case(endpoint) || numeric_repository,
-        "invalid PR continuation path"
-    );
+    // Requests use the original endpoint. GitHub can use a numeric path
+    // in links, and its repository ID must agree across all responses.
+    if !path.eq_ignore_ascii_case(endpoint) {
+        let id = path
+            .strip_prefix("repositories/")
+            .and_then(|path| path.strip_suffix("/pulls"))
+            .filter(|id| id.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|id| id.parse::<u64>().ok())
+            .filter(|id| *id > 0)
+            .context("invalid PR continuation path")?;
+        ensure!(
+            *numeric_repository.get_or_insert(id) == id,
+            "PR pagination changes repository identity"
+        );
+    }
     // Rebuilding the request is safe only if the link keeps the same
     // filters, ordering and page size.
     let page_size = format!("per_page={PAGE_SIZE}");
@@ -625,18 +658,33 @@ mod tests {
 
     #[test]
     fn response_separates_http_headers_from_json_and_reads_continuation() {
+        let mut numeric_repository = None;
         let first = format!(
             "HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/12/pulls?page=2&{QUERY}>; rel=\"next\", <https://api.github.com/repositories/12/pulls?{QUERY}&page=40>; rel=\"last\"\r\n\r\n[]"
         );
         assert_eq!(
-            response_page(first.as_bytes(), ENDPOINT, &HISTORY_FILTERS, 1).unwrap(),
+            response_page(
+                first.as_bytes(),
+                ENDPOINT,
+                &HISTORY_FILTERS,
+                1,
+                &mut numeric_repository
+            )
+            .unwrap(),
             ("[]", true, Some(40))
         );
         let last = format!(
             "HTTP/2.0 200 OK\nLink: <https://api.github.com/repositories/12/pulls?{QUERY}&page=39>; rel=\"prev\", <https://api.github.com/repositories/12/pulls?{QUERY}&page=1>; rel=\"first\"\n\n[]"
         );
         assert_eq!(
-            response_page(last.as_bytes(), ENDPOINT, &HISTORY_FILTERS, MAX_PAGES).unwrap(),
+            response_page(
+                last.as_bytes(),
+                ENDPOINT,
+                &HISTORY_FILTERS,
+                MAX_PAGES,
+                &mut numeric_repository
+            )
+            .unwrap(),
             ("[]", false, None)
         );
     }
@@ -658,15 +706,25 @@ mod tests {
             ),
         ] {
             let response = format!("HTTP/2.0 200 OK\n{header}\n\n[]");
-            assert!(response_page(response.as_bytes(), ENDPOINT, &HISTORY_FILTERS, 1).is_err());
+            assert!(
+                response_page(
+                    response.as_bytes(),
+                    ENDPOINT,
+                    &HISTORY_FILTERS,
+                    1,
+                    &mut None
+                )
+                .is_err()
+            );
         }
-        assert!(response_page(b"[]", ENDPOINT, &HISTORY_FILTERS, 1).is_err());
+        assert!(response_page(b"[]", ENDPOINT, &HISTORY_FILTERS, 1, &mut None).is_err());
         assert!(
             response_page(
                 b"HTTP/2.0 206 Partial Content\n\n[]",
                 ENDPOINT,
                 &HISTORY_FILTERS,
-                1
+                1,
+                &mut None,
             )
             .is_err()
         );
@@ -687,7 +745,14 @@ mod tests {
                 "HTTP/2.0 200 OK\nLink: <https://api.github.com/{ENDPOINT}?{query}&page=2>; rel=\"next\"\n\n[]"
             );
             assert!(
-                response_page(response.as_bytes(), ENDPOINT, &HISTORY_FILTERS, 1).is_err(),
+                response_page(
+                    response.as_bytes(),
+                    ENDPOINT,
+                    &HISTORY_FILTERS,
+                    1,
+                    &mut None
+                )
+                .is_err(),
                 "{query}"
             );
         }

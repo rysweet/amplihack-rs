@@ -484,6 +484,16 @@ impl Fx {
         }
         response.push_str("\r\n");
         response.push_str(rows);
+        self.gh_response(repository, [state, sort, direction], page, &response);
+    }
+
+    pub fn gh_response(
+        &self,
+        repository: &str,
+        [state, sort, direction]: [&str; 3],
+        page: usize,
+        response: &str,
+    ) {
         let dir = self.gh_listing_dir(repository);
         fs::write(
             dir.join(format!("{state}-{sort}-{direction}-{page}.http")),
