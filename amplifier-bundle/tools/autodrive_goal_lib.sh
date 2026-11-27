@@ -120,6 +120,23 @@ goal_atomic_write() {
   mv -f -- "$tmp" "$path" || { rm -f -- "$tmp"; return 1; }
 }
 
+goal_write_ci_result() {
+  jq -c --arg head "$2" --arg base "$3" --arg base_sha "$4" '
+    . as $ci | {outcome:"checks-complete", checks_state:.state, head:$head, base:$base, base_sha:$base_sha, summary:(
+      if .state == "passed" then "the checks at the head completed and passed"
+      elif .state == "failed" then "the checks at the head completed and at least one failed"
+      else "the checks at the head completed with unverified results" end)}
+    + (if (.unverified_checks | length) > 0 then {unverified_checks} else {} end)
+    | if $ci.execution_detail then
+        . + ($ci | {execution_detail}) | .summary += ". " + .execution_detail
+      else . end
+    | if $ci.required_error then
+        . + ($ci | {counts, required_error})
+        | .summary += ". The required-check policy is incomplete: " + .required_error
+      else . end' "$1" \
+    | goal_atomic_write "$5"
+}
+
 goal_clean_text() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }
 
 goal_clean_line() {
