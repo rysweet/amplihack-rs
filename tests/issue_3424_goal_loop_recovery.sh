@@ -43,6 +43,10 @@ if [ "${1:-} ${2:-} ${3:-}" = "recipe guidance wait" ]; then
   printf '{"event":"guidance","entry":"fixture-change"}\n'
   exit 0
 fi
+if [ "${1:-} ${2:-} ${3:-}" = "config get recipe.usage_limit_wait" ]; then
+  printf 'true\n'
+  exit 0
+fi
 exec "${BASE_STUB:?}" "$@"
 WRAP
   chmod 755 "$wrapper"
@@ -67,6 +71,24 @@ ok one_owner_wait test "$(cat "$STUB_STATE/waits" 2>/dev/null || echo 0)" -eq 1
 ok fresh_turn_after_guidance test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
 ok failure_detail_recorded jq -e '.failure.class == "environmental" and .failure.detail == "untrusted bundle"' "$LOOP_CASE/state/turns/001/result.json" >/dev/null
 ok wait_result_is_guidance jq -e '.outcome == "guidance-arrived"' "$LOOP_CASE/state/turns/002/result.json" >/dev/null
+
+# Usage-limit failures emitted before the decide step take the same pairwise
+# owner wait as every other structured pre-agent failure.
+IFS='|' read -r LIMIT_CASE LIMIT_BIN LIMIT_BASE < <(make_loop_case)
+LIMIT_OUT='amplihack.recipe.failure_class {"class":"usage_limit","signal":"ERROR: Your workspace is out of credits. Add credits to continue.","retryable":false,"completed_steps":[],"failed_steps":[]}'
+export BASE_STUB="$LIMIT_BASE" STUB_STATE="$LIMIT_CASE/stub" STUB_RC_1=1 STUB_RC_2=1 STUB_OUT_1="$LIMIT_OUT" STUB_OUT_2="$LIMIT_OUT"
+mkdir -p "$STUB_STATE"
+set +e
+( cd "$LIMIT_CASE" && HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 PATH="$WORK/bin:$PATH" \
+    AMPLIHACK_BIN="$LIMIT_BIN" bash "$LIMIT_CASE/bundle/tools/autodrive_goal_loop.sh" \
+      --goal-tool issue_3424_goal.sh --goal-file goal.md --repo "$LIMIT_CASE" --state-dir "$LIMIT_CASE/state" </dev/null ) \
+  > "$LIMIT_CASE/out" 2> "$LIMIT_CASE/err"
+LIMIT_RC=$?
+set -e
+ok usage_limit_pre_agent_wait test "$LIMIT_RC" -eq 0
+ok usage_limit_one_handoff test "$(cat "$STUB_STATE/publishes" 2>/dev/null || echo 0)" -eq 1
+ok usage_limit_one_owner_wait test "$(cat "$STUB_STATE/waits" 2>/dev/null || echo 0)" -eq 1
+ok usage_limit_fresh_turn_after_guidance test "$(cat "$STUB_STATE/rounds" 2>/dev/null || echo 0)" -eq 3
 
 make_build_case() {
   local name="$1" mode="$2" c="$WORK/$1" main="$WORK/$1/main" candidate="$WORK/$1/candidate" bundle="$WORK/$1/bundle"
