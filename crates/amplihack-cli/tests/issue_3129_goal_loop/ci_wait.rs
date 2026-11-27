@@ -15,7 +15,7 @@ pub(super) fn goal(h: &Harness, args: &[&str]) -> Command {
 }
 
 fn goal_tool(h: &Harness, script: &str, args: &[&str]) -> Command {
-    let mut cmd = Command::new("bash");
+    let mut cmd = crate::isolated_amplihack::isolated("bash");
     cmd.arg(h.bundle_root.join("amplifier-bundle/tools").join(script))
         .args(args)
         .arg(h.state.join("turns/001"))
@@ -27,6 +27,7 @@ fn goal_tool(h: &Harness, script: &str, args: &[&str]) -> Command {
         .env("GH_ORIGIN", &h.origin)
         .env("GH_PR_BRANCH", super::support::PR_BRANCH)
         .env("AMPLIHACK_BIN", h.bin.join("amplihack"))
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .env("AMPLIHACK_STATE_DIR", &h.state_root)
         .env("AMPLIHACK_WORK_ROOT", &h.work)
         .env("AUTODRIVE_GOAL_CONTRACT", "1")
@@ -135,8 +136,16 @@ fn assert_ten_minute_pending_wait(
   *) exit 2 ;;
 esac"#,
     );
+    let guidance_with_startup_output = h.bin.join("guidance-with-startup-output");
+    write_executable(
+        &guidance_with_startup_output,
+        "#!/bin/bash\necho 'Checking framework assets'\nexec \"${0%/*}/amplihack\" \"$@\"\n",
+        0o755,
+    );
+    let mut command = goal(h, &["act", "wait"]);
+    command.env("AMPLIHACK_BIN", guidance_with_startup_output);
     let mut live = fifo_release::start(
-        goal(h, &["act", "wait"]),
+        command,
         &h.gh.join("release.fifo"),
         "the ten-minute CI wait",
     );

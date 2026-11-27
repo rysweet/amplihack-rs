@@ -56,8 +56,13 @@ goal_read_guidance() {
   gh_goal_command "${AMPLIHACK_BIN:-amplihack}" recipe guidance wait "--since=$GUIDANCE_SINCE" \
     ${GUIDANCE_TARGET:+"$GUIDANCE_TARGET"} >"$response" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
-  entry="$(jq -r 'select(.event == "guidance") | .entry // empty | strings' "$response")"
+  entry="$(goal_guidance_wait_event < "$response" | jq -r 'select(.event == "guidance") | .entry | strings')" || return 1
   [ -n "$entry" ] && goal_is_entry "$entry"
+}
+
+# The CLI can print startup diagnostics before its final JSON event.
+goal_guidance_wait_event() {
+  tail -n 1 | jq -ce 'objects | select(.event | type == "string")'
 }
 
 goal_ci_cache_dir() {

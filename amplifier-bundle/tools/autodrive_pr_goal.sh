@@ -253,7 +253,7 @@ do_ci_wait() {
 }
 
 do_act_wait() {
-  local target since out rc ev code
+  local target since out rc event ev code
   local -a cmd
   need_pr
   target="$(jq -r '.goal.guidance_target // empty | strings' "$TD/reading.json" 2>/dev/null)"
@@ -262,13 +262,18 @@ do_act_wait() {
   cmd=(bash "$HERE/autodrive_pr_goal.sh" ci-wait "$TD" "$@")
   out="$(cd "$WORK" && "$AMPLIHACK_BIN" recipe guidance wait "--since=$since" ${target:+"$target"} -- "${cmd[@]}" 2>"$TD/wait.err")"; rc=$?
   case "$rc" in 79|75) exit "$rc" ;; esac
-  ev="$(jq -r '.event // empty' 2>/dev/null <<< "$out")"
+  event="$(goal_guidance_wait_event <<< "$out" 2>>"$TD/wait.err")" || event='{}'
+  ev="$(jq -r '.event // empty' <<< "$event")"
   case "$rc:$ev" in
     0:guidance) result guidance-arrived "new guidance arrived during the wait. The next turn reads it"; return 0 ;;
-    0:command) code="$(jq -r '.exit // empty' <<< "$out")" ;;
-    *)
+    0:command) code="$(jq -r '.exit | numbers' <<< "$event")" ;;
+    3:*|0:unarmed)
       echo "the guidance wake was not available (exit ${rc}). Waiting for checks directly" >&2
       ( cd "$WORK" && exec "${cmd[@]}" ) >>"$TD/wait.err" 2>&1; code=$? ;;
+    0:*)
+      echo 'the guidance wait returned no usable event' >>"$TD/wait.err"
+      code="" ;;
+    *) code="$rc" ;;
   esac
   case "$code" in
     79|75) exit "$code" ;;
