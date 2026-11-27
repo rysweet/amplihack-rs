@@ -78,7 +78,6 @@ do_final() {
   [ "$(printf '%s' "$out" | jq -r '.isCrossRepository | tostring')" = false ] || echo refused
 }
 
-# Read the PR before accepting check evidence for the observed head.
 ci_wait_read_pr() {
   local slug="$1" head="$2" cache="$3" build_branch="$4" rc
   gh_rest_pr "$slug" "$PR" "$cache" "$head"
@@ -154,8 +153,7 @@ do_ci_wait() {
   # shellcheck source=workflow_gh_retry.sh
   . "$HERE/workflow_gh_retry.sh" || return 2
   local build_branch="${1:-}" head base base_sha slug required required_only strict policy_error="" cache interval rc state=pending
-  local revalidate_execution
-  local GH_READ_RETRIED=false GH_BRANCH_POLICY=""
+  local revalidate_execution GH_READ_RETRIED=false GH_BRANCH_POLICY=""
   local reading="$TD/reading.json"
   head="$(jq -r '.goal.pr.head // empty | strings' "$reading")"
   base="$(jq -r '.goal.pr.base // empty | strings' "$reading")"
@@ -193,8 +191,7 @@ do_ci_wait() {
       GH_BRANCH_POLICY=""
     fi
 
-    # A rate-limit retry can span a rerun even while the head stays the same.
-    # Read the checks again if any request since the start of the scan retried.
+    # A rate-limit retry can span a rerun, so start a new scan after a retry.
     if [ "$state" != pending ] && [ "$GH_READ_RETRIED" = false ]; then
       revalidate_execution="$GH_EXECUTION_STATE"
       gh_revalidate_actions_checks "$slug" "$head" "$cache" "$GH_READ_DIR/ci.json"
