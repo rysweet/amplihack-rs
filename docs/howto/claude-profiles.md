@@ -429,11 +429,11 @@ amplihack profile switch --none   # no default, rotation released
 
 `switch` moves `work`'s login into `~/.claude` with the same swap
 [`profile rotate`](claude-profile-rotation.md) uses, and holds rotation on
-`work` until you run `switch --none`. Plain `claude` and every amplihack
-launch without `--profile` then use `work`. Moving the login needs Linux
-and a profile that has a login of its own. When the login cannot be moved
+`work` until you run `switch --none`. Claude launches that use `~/.claude`
+then run as `work`. Moving the login needs Linux and a profile that has a
+login of its own. When the login cannot be moved
 (on macOS or Windows, or when `work` is open in a session of its own),
-`switch` still makes `work` the default for new launches, prints
+`switch` still makes `work` the default for launches outside recipes, prints
 `Live login not moved; ...`, holds nothing, and exits 1; see
 [Switch to a login by hand](claude-profile-rotation.md#switch-to-a-login-by-hand)
 for the details and the refusals.
@@ -441,14 +441,13 @@ for the details and the refusals.
 See [Clearing the default profile](#clearing-the-default-profile) and
 [Launching the rotator's live profile](#launching-the-rotators-live-profile).
 
-Resolution order: `--profile` flag, then an inherited
-`AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then none. An explicit
-`--profile` never reads the inherited value or the pointer, so it works even if
-the pointer is dangling or corrupt. With
-no profile, `CLAUDE_CONFIG_DIR` is neither set nor altered, so existing
-behavior (including an ambient `CLAUDE_CONFIG_DIR` you exported yourself) is
-unchanged. When a profile is selected, it overrides the ambient value for the
-child process only.
+Amplihack first checks the `--profile` flag, then an inherited
+`AMPLIHACK_CLAUDE_PROFILE`, then the default pointer outside recipe runs.
+An explicit `--profile` never reads the inherited value or the pointer, so it
+works even if the pointer is dangling or corrupt. With no profile, Claude
+uses the inherited `CLAUDE_CONFIG_DIR` if set, or the live login in
+`~/.claude`. When a profile is selected, it overrides the ambient value for
+the child process only.
 
 ### Nested sessions keep the parent's profile
 
@@ -475,8 +474,8 @@ or the orchestration it runs, to another account part way through: those run
 with `CLAUDE_CONFIG_DIR=<root>/<name>`, which `switch` does not touch. It
 changes the login in `~/.claude`, so sessions of plain `claude` (no
 `CLAUDE_CONFIG_DIR`) use the new account when they next read their
-credentials, exactly as after a rotator swap. Launches from a shell without
-`AMPLIHACK_CLAUDE_PROFILE` use the new default.
+credentials, exactly as after a rotator swap. Outside recipe runs, launches
+without a profile flag or inherited profile use the new default pointer.
 
 To pin a profile for a run started from a plain shell, set the variable
 yourself:
@@ -513,10 +512,11 @@ rotator is free to swap it again on its next cycle. The second line appears
 only when a `switch` had held rotation. Clear the default when the
 [rotator](claude-profile-rotation.md) uses a
 [credit-backed overflow profile](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted):
-a default always wins over the rotator, so a default that names the overflow
-profile spends credits on every launch. If no default was set, the command
-prints `No default profile was set.` and still exits 0. `--none` cannot be combined
-with a name, and `switch` with neither is a usage error (exit 2).
+a launch that selects the overflow profile through the default pointer can
+spend credits even while the rotator has a plan login live. If no default
+was set, the command prints `No default profile was set.` and still exits 0.
+`--none` cannot be combined with a name, and `switch` with neither is a
+usage error (exit 2).
 
 There is no `switch default` form: `default` is a valid profile name, so
 `amplihack profile switch default` selects a profile called `default`.
@@ -2729,11 +2729,10 @@ and the variable in
   profiled session and the Docker daemon is running, every nested launch is
   refused. Unset it before starting the run.
 - `amplihack recipe run` and `amplihack multitask` started from a plain shell
-  (no inherited `AMPLIHACK_CLAUDE_PROFILE`) do not pin a profile: each agent
-  step reads the default pointer itself, so a `profile switch` during the run
-  moves later steps to the new profile. Start the run from inside an
-  `amplihack claude` session, or prefix it with
-  `AMPLIHACK_CLAUDE_PROFILE=<name>`.
+  use the inherited `CLAUDE_CONFIG_DIR` or `~/.claude` for agent steps without
+  a profile. A successful `profile switch` changes the login in `~/.claude`.
+  To select a profile for a run, start it from inside a profiled
+  `amplihack claude` session or set `AMPLIHACK_CLAUDE_PROFILE=<name>`.
 - Removing a profile while sessions pinned to it are running makes their later
   nested launches fail closed with the inherited-profile error.
 - Fleet and remote VM launches do not pass the profile on. An
@@ -2763,8 +2762,8 @@ and the variable in
   configuration: hooks and the status line run commands, and permissions
   control what Claude may run. Review them before sharing a profile, and treat
   `~/.claude/settings.json` as trusted input.
-- If the default pointer names a deleted profile, launch fails with a hint
-  (`amplihack profile switch <name>`); it does not fall back silently.
+- A launch that reads a default pointer naming a deleted profile fails with
+  a hint (`amplihack profile switch <name>`).
 - `profile run <name>` with the rotator's live profile still runs in the
   profile's empty directory; only `amplihack claude` and `amplihack launch`
   [redirect to `~/.claude`](#launching-the-rotators-live-profile).
