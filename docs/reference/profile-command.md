@@ -4509,6 +4509,11 @@ profile in this order:
 3. `<root>/.default`
 4. none — `CLAUDE_CONFIG_DIR` is left exactly as inherited.
 
+Recipe launches marked by `AMPLIHACK_RECIPE_RUN_ID` skip step 3. With no
+explicit profile they use the inherited `CLAUDE_CONFIG_DIR`, or the live
+host login in `$HOME/.claude` when the variable is unset. This also applies
+when usage-limit waiting is disabled.
+
 When a profile resolves, three variables are set on the child `Command` only
 (never `set_var`), and only for Claude-compatible binaries. This applies to
 every command that starts Claude with a profile: `amplihack claude`,
@@ -4569,11 +4574,12 @@ AMPLIHACK_CLAUDE_PROFILE=work amplihack recipe run default-workflow
 A stale export in a shell startup file acts as a per-shell default that beats
 the pointer; `unset AMPLIHACK_CLAUDE_PROFILE` removes it.
 
-`amplihack recipe run` and `amplihack multitask` do not resolve a profile
-themselves. Started from a plain shell with no inherited
-`AMPLIHACK_CLAUDE_PROFILE`, each agent step resolves the pointer on its own,
-so a `profile switch` part way through moves later steps to the new profile.
-Start them from inside an `amplihack claude` session, or set
+Agent steps in `amplihack recipe run` and recipe-mode `amplihack multitask`
+without an explicit or inherited profile use the inherited `CLAUDE_CONFIG_DIR`
+or `~/.claude`. A successful `profile switch` changes the login used by steps
+on `~/.claude`. Classic multitask launches started from a plain shell still
+read the default pointer when no profile is selected. Start a run from inside
+a profiled `amplihack claude` session, or set
 `AMPLIHACK_CLAUDE_PROFILE` as above, to pin one profile for the whole run.
 
 Fleet and remote VM launches do not pass the profile on, so nested launches
@@ -10362,12 +10368,11 @@ writes. If a recovery ran, only that recovery's changes are made, and its
 
 #### Default only
 
-Making `<name>` the default for new launches never depended on moving the
-live login, and it still does not. When the live login cannot be moved for
-a reason about the live login or `<name>` (step 6, 7 or 8, or a platform
-without Unix file semantics), `switch` writes `<root>/.default` under the
-rotate lock, prints two lines on stdout, and exits 1 with the refusal on
-stderr:
+When the live login cannot be moved for a reason about the live login or
+`<name>` (step 6, 7 or 8, or a platform without Unix file semantics),
+`switch` still sets the default for launches outside recipes. It writes
+`<root>/.default` under the rotate lock, prints two lines on stdout, and
+exits 1 with the refusal on stderr:
 
 ```
 Default for new launches: spare
@@ -10379,10 +10384,10 @@ It writes no pin and no ledger record, so the
 and the rotator keeps rotating. A pin left by an earlier `switch` is not
 changed; the second line then names it:
 ``Live login not moved; rotation still held on work until `amplihack profile switch --none`.``
-The pin decides what `~/.claude` holds and `.default` decides what
-amplihack launches without `--profile` use, so after a default-only refusal
-they can name different profiles until the next successful `switch` or
-`switch --none`. `switch --none` removes both.
+The pin holds a login in `~/.claude`. The `.default` pointer applies outside
+recipe runs when no flag or inherited profile selects one. After a
+default-only refusal, the live login and the default pointer can name
+different profiles. `switch --none` removes the pin and the default pointer.
 
 This is how `switch` sets the default on macOS, where `/proc` cannot be
 scanned and every profile counts as having a running session, and for a
@@ -10400,8 +10405,8 @@ pin to `<other>`.
 
 A `switch` counts as capacity for the [usage-limit wait](#usage-limit-wait):
 you chose that login, so the switch stands in for a measurement taken at the
-moment of the switch, and a recipe step that stopped on a usage limit before
-the switch reruns. This holds for every held cycle that follows, because a
+moment of the switch, and a recipe step waiting on a limit in `~/.claude`
+reruns. This holds for every held cycle that follows, because a
 held cycle keeps the `switched` record (see [Rotate pin](#rotate-pin)).
 
 A `switch` does not resume interactive sessions. It writes no
@@ -12512,9 +12517,10 @@ login in `~/.claude`, and its retry runs on whichever login is live there.
 See [Retry login](#retry-login).
 Otherwise the same supervisor runs with no profile substitution: the retry
 runs under the inherited profile, or with no override when none was
-inherited. With no inherited profile the launch may still apply the
-`.default` pointer's profile; the wait then watches that profile's login,
-unless it is the rotator's live profile, whose login is in `~/.claude`.
+inherited. With no inherited profile, recipe launches watch the login in
+`CLAUDE_CONFIG_DIR` when set, or the live host login in `~/.claude`. Other
+launches may apply the `.default` pointer's profile. The wait then watches
+that profile's login, unless it is the rotator's live profile in `~/.claude`.
 
 The supervisor keeps the held-back stdout in `<root>/.auto-switch.d/rerun/`
 when auto-switch is on, otherwise in `$HOME/.amplihack/rerun/`.

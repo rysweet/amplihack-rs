@@ -981,13 +981,22 @@ pub(crate) fn resume_profile_dir(
     Ok(Some(dir))
 }
 
-/// Profile directory for an interactive `launch`/`claude`: `--profile`, then
-/// an inherited `AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then
-/// none. Docker and auto launches refuse a non-empty inherited value and skip
-/// the pointer.
+/// Recipe launches without a profile choice use Claude's ambient config, so
+/// they follow the host's live login when there is no config override.
+fn uses_default_launch_profile() -> bool {
+    !std::env::var_os("AMPLIHACK_RECIPE_RUN_ID").is_some_and(|id| !id.is_empty())
+}
+
+/// Profile directory for `launch`/`claude`: `--profile`, then an inherited
+/// `AMPLIHACK_CLAUDE_PROFILE`, then the default pointer outside recipe runs.
+/// Docker and auto launches refuse a non-empty inherited value and skip the
+/// pointer.
 pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Result<Option<PathBuf>> {
+    let inherited = std::env::var_os(PROFILE_ENV).filter(|v| !v.is_empty());
+    if flag.is_none() && inherited.is_none() && !uses_default_launch_profile() {
+        return Ok(None);
+    }
     let docker_env = !docker && docker_env_active();
-    let inherited = std::env::var_os(PROFILE_ENV);
     launch_profile_dir_with(
         flag,
         inherited.as_deref(),
