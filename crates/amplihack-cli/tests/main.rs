@@ -500,6 +500,8 @@ mod issue_2911_spend_limit_no_reset;
 mod issue_2911_wait_wakes_on_events;
 #[path = "issue_2911_weekly_limit_waits.rs"]
 mod issue_2911_weekly_limit_waits;
+#[path = "issue_2952_codex_limit_texts.rs"]
+mod issue_2952_codex_limit_texts;
 #[path = "issue_2967_other_logins.rs"]
 mod issue_2967_other_logins;
 #[path = "issue_439_no_per_step_timeout.rs"]
