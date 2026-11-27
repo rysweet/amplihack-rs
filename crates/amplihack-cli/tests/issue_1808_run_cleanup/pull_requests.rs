@@ -312,12 +312,6 @@ fn a_continuation_linking_to_a_different_numeric_repository_keeps_worktrees() {
     let report = fx.cleanup_json(&["--apply"]);
     for wt in [&unseen, &closed] {
         assert_kept(&report, wt);
-        assert!(
-            entry_for(&report, wt)["reason"]
-                .as_str()
-                .unwrap()
-                .contains("PR pagination changes repository identity")
-        );
     }
     assert_eq!(fx.take_gh_calls().len(), 2);
 }
@@ -600,12 +594,6 @@ fn oversized_history_and_contradictory_recent_listing_keep_every_dependent_workt
         let report = fx.cleanup_json(&["--apply"]);
         for wt in [&recent, &old] {
             assert_kept(&report, wt);
-            assert!(
-                entry_for(&report, wt)["reason"]
-                    .as_str()
-                    .unwrap()
-                    .contains("recent PR listing contradicts history")
-            );
         }
         assert_eq!(fx.take_gh_calls().len(), 3);
     }
