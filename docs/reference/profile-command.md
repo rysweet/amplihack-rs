@@ -12952,7 +12952,9 @@ starts with `Claude AI usage limit reached|` and Unix seconds, or with
 | Epoch | `Claude AI usage limit reached\|1792335000` | reset wait, when at most five hours away; further away, as for a weekly limit |
 | Shape, no readable reset, or wording the supervisor does not recognise | `You've hit your session limit · try again later` | [capacity wait](#capacity-wait), `reason=no_reset`; read as a session limit |
 | No message in the shape | model prose, `credit balance is too low` | `skipped reason=no_limit_message`, or not a usage limit at all |
-| Credit exhaustion | `Your workspace is out of credits` (Codex) | [capacity wait](#capacity-wait), `reason=credits` |
+| Credit exhaustion | `Your workspace is out of credits` (Codex), also after `ERROR: ` | [capacity wait](#capacity-wait), `reason=credits` |
+| Codex usage limit | `Usage limit reached. You've reached your usage limit. …` (Codex) | [capacity wait](#capacity-wait), `reason=no_reset`; read as a session limit |
+| Codex service rate limit | `… Codex exec failed with status exit status: 1: service rate limit; retry later or check account quota` | [capacity wait](#capacity-wait), `reason=no_reset`; read as a session limit |
 
 A spend-limit message that states a reset also records a block on the login
 the step ran under, before the wait is planned; see
